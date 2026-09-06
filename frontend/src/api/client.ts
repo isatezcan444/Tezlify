@@ -48,10 +48,7 @@ function resolveApiBase(): string {
   if (envApi) {
     return envApi.endsWith('/api/v1') ? envApi : `${envApi.replace(/\/$/, '')}/api/v1`;
   }
-  if (isRemoteHost) {
-    return 'https://tezlify.onrender.com/api/v1';
-  }
-  return `http://${host}:8000/api/v1`;
+  return 'https://tezlify.onrender.com/api/v1';
 }
 
 function resolveWsUrl(): string {
@@ -68,11 +65,7 @@ function resolveWsUrl(): string {
     const cleanHost = envApi.replace(/^https?:\/\//i, '').replace(/\/api\/v1\/?$/i, '').replace(/\/$/, '');
     return `${wsProto}${cleanHost}/ws`;
   }
-  if (isRemoteHost) {
-    return 'wss://tezlify.onrender.com/ws';
-  }
-  const wsProto = isHttps ? 'wss://' : 'ws://';
-  return `${wsProto}${host}:8000/ws`;
+  return 'wss://tezlify.onrender.com/ws';
 }
 
 export const API_BASE = resolveApiBase();
