@@ -1,4 +1,4 @@
-# Scoutify — Final Test Trustworthiness Matrix
+# Tezlify — Final Test Trustworthiness Matrix
 
 **Audit Mode:** Deep Forensic Test Inspection  
 **Audit Standard:** Evaluation of Real Execution vs. False Confidence  

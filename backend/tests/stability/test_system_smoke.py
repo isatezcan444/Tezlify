@@ -30,7 +30,7 @@ async def test_openapi_schema_generation(client: AsyncClient):
 @pytest.mark.asyncio
 async def test_core_settings_invariants():
     """Proves critical application configurations adhere to security & system invariants."""
-    assert settings.PROJECT_NAME == "Scoutify"
+    assert settings.PROJECT_NAME == "Tezlify"
     assert settings.API_V1_STR == "/api/v1"
     assert settings.DATABASE_URL is not None
     assert settings.SCRAPER_MAX_CONCURRENT_TASKS >= 1

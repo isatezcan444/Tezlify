@@ -1,1 +1,1 @@
-# Scoutify Stability & Audit Test Suite
+# Tezlify Stability & Audit Test Suite

@@ -10,7 +10,7 @@
 *.db
 *.sqlite
 *.sqlite3
-scoutify.db
+tezlify.db
 
 # Python
 venv/

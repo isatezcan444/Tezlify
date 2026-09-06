@@ -194,9 +194,9 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       }
     };
 
-    window.addEventListener('scoutify:ws_event', handleWsEvent);
+    window.addEventListener('tezlify:ws_event', handleWsEvent);
     return () => {
-      window.removeEventListener('scoutify:ws_event', handleWsEvent);
+      window.removeEventListener('tezlify:ws_event', handleWsEvent);
     };
   }, [selectedConv]);
 
@@ -214,7 +214,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
 
   // Test Sandbox State
   const [testPhone, setTestPhone] = useState('0532 100 20 30');
-  const [testMsg, setTestMsg] = useState('Scoutify WhatsApp Gateway test message.');
+  const [testMsg, setTestMsg] = useState('Tezlify WhatsApp Gateway test message.');
   const [selectedSessionForTest] = useState<number | undefined>(undefined);
   const [testSending, setTestSending] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
@@ -246,7 +246,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         fetchConversations();
       }
     };
-    window.addEventListener('scoutify:ws_event', handleWs);
+    window.addEventListener('tezlify:ws_event', handleWs);
 
     // Load persisted Anti-Ban configuration from backend database
     ApiClient.getAntiBanSettings()
@@ -264,7 +264,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       });
 
     return () => {
-      window.removeEventListener('scoutify:ws_event', handleWs);
+      window.removeEventListener('tezlify:ws_event', handleWs);
     };
   }, []);
 

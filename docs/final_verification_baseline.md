@@ -1,4 +1,4 @@
-# Scoutify — Final Verification Baseline & System Configuration
+# Tezlify — Final Verification Baseline & System Configuration
 
 **Audit Mode:** Independent Principal QA & Security Audit Baseline  
 **Audit Date:** 2026-09-01  
@@ -24,7 +24,7 @@
 
 ## 2. Database & Application Configuration
 
-- **Development DB Engine:** SQLite via `aiosqlite` (`sqlite+aiosqlite:///./scoutify.db`).
+- **Development DB Engine:** SQLite via `aiosqlite` (`sqlite+aiosqlite:///./tezlify.db`).
 - **Test DB Engine:** Isolated SQLite file databases per worker / clean temporary DB instances.
 - **Connection Management:** Async connection pool with WAL mode (`PRAGMA journal_mode=WAL`).
 - **Total Backend Statements:** 5,648 statements across 68 Python modules.

@@ -52,7 +52,7 @@ const listeners: ToastListener[] = [];
 // Resolve default toast titles from dictionaries (usable outside React, no hardcoded strings)
 function getStoredLanguage(): Language {
   if (typeof window !== 'undefined') {
-    const saved = window.localStorage.getItem('scoutify_lang');
+    const saved = window.localStorage.getItem('tezlify_lang');
     if (saved === 'en' || saved === 'tr') return saved;
   }
   return 'en';

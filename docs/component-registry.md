@@ -1,6 +1,6 @@
-# Scoutify Component Registry
+# Tezlify Component Registry
 
-This document serves as the single centralized registry for all reusable components in the Scoutify frontend design system (based on the Vuexy Admin Template architecture).
+This document serves as the single centralized registry for all reusable components in the Tezlify frontend design system (based on the Vuexy Admin Template architecture).
 
 ---
 

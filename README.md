@@ -1,6 +1,6 @@
-# 🚀 Scoutify - B2B Lead Generation & Automated WhatsApp Outreach Platform
+# 🚀 Tezlify - B2B Lead Generation & Automated WhatsApp Outreach Platform
 
-**Scoutify**, B2B işletmelerin (Ajanslar, Yazılım Şirketleri, Danışmanlar, Satış Ekipleri) Google Maps ve web dizinlerinden otomatik olarak müşteri adayı (Lead) toplamalarını, telefon numaralarını uluslararası E.164 standartlarında doğrulayıp WhatsApp uyumluluklarını filtrelemelerini ve **ban riski oluşturmadan (Anti-Ban Kalkanı)** Spintax ile kişiselleştirilmiş otomatik WhatsApp mesajları göndermelerini sağlayan modern bir SaaS platformudur.
+**Tezlify**, B2B işletmelerin (Ajanslar, Yazılım Şirketleri, Danışmanlar, Satış Ekipleri) Google Maps ve web dizinlerinden otomatik olarak müşteri adayı (Lead) toplamalarını, telefon numaralarını uluslararası E.164 standartlarında doğrulayıp WhatsApp uyumluluklarını filtrelemelerini ve **ban riski oluşturmadan (Anti-Ban Kalkanı)** Spintax ile kişiselleştirilmiş otomatik WhatsApp mesajları göndermelerini sağlayan modern bir SaaS platformudur.
 
 ---
 
@@ -28,7 +28,7 @@
 ## 🏗️ Mimari & Teknoloji Yığını
 
 ```
-Scoutify/
+Tezlify/
 ├── backend/                  # FastAPI Core (Python 3.11+)
 │   ├── app/
 │   │   ├── api/v1/          # REST & WebSocket Gateway

@@ -1,4 +1,4 @@
-# Scoutify — Test Effectiveness & Mutation Audit Report
+# Tezlify — Test Effectiveness & Mutation Audit Report
 
 **Audit Mode:** Independent Adversarial Reliability Audit  
 **Scope:** `backend/tests/` (Regression, Stability, Adversarial suites)  

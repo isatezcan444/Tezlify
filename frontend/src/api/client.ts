@@ -32,7 +32,7 @@ function resolveApiBase(): string {
     return envApi.endsWith('/api/v1') ? envApi : `${envApi.replace(/\/$/, '')}/api/v1`;
   }
   if (isRemoteHost) {
-    return 'https://scoutify-kuv3.onrender.com/api/v1';
+    return 'https://tezlify-kuv3.onrender.com/api/v1';
   }
   return `http://${host}:8000/api/v1`;
 }
@@ -52,7 +52,7 @@ function resolveWsUrl(): string {
     return `${wsProto}${cleanHost}/ws`;
   }
   if (isRemoteHost) {
-    return 'wss://scoutify-kuv3.onrender.com/ws';
+    return 'wss://tezlify-kuv3.onrender.com/ws';
   }
   const wsProto = isHttps ? 'wss://' : 'ws://';
   return `${wsProto}${host}:8000/ws`;
@@ -195,7 +195,7 @@ export class ApiClient {
     const url = window.URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `scoutify_leads_${new Date().toISOString().slice(0, 10)}.csv`;
+    a.download = `tezlify_leads_${new Date().toISOString().slice(0, 10)}.csv`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -215,7 +215,7 @@ export class ApiClient {
     const url = window.URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `scoutify_leads_${new Date().toISOString().slice(0, 10)}.xlsx`;
+    a.download = `tezlify_leads_${new Date().toISOString().slice(0, 10)}.xlsx`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -857,7 +857,7 @@ export function createWebSocket(
       ws = new WebSocket(WS_URL);
 
       ws.onopen = () => {
-        console.log('[Scoutify WS] Connected to realtime event stream');
+        console.log('[Tezlify WS] Connected to realtime event stream');
         onStatusChange?.(true);
       };
 
@@ -880,7 +880,7 @@ export function createWebSocket(
       };
 
       ws.onerror = (err) => {
-        console.warn('[Scoutify WS] Error:', err);
+        console.warn('[Tezlify WS] Error:', err);
         ws?.close();
       };
     } catch (e) {

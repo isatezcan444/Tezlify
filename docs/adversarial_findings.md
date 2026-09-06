@@ -1,4 +1,4 @@
-# Scoutify — Adversarial Findings & Forensic Vulnerability Register
+# Tezlify — Adversarial Findings & Forensic Vulnerability Register
 
 **Audit Mode:** Independent Adversarial Reliability Audit  
 **Audit Date:** 2026-09-01  

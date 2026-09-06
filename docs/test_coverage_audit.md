@@ -1,4 +1,4 @@
-# Scoutify — Test Coverage & Branch Audit Report
+# Tezlify — Test Coverage & Branch Audit Report
 
 **Audit Mode:** Forensic Code Coverage Audit  
 **Target:** `backend/app/` (5,648 statements)  

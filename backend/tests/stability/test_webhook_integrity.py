@@ -21,7 +21,7 @@ async def test_webhook_get_verification_handshake(client: AsyncClient):
     Valid verify token -> 200 plain text challenge
     Invalid verify token -> 403 Forbidden
     """
-    token = "scoutify_test_verify_token_123"
+    token = "tezlify_test_verify_token_123"
     with patch.object(settings, "WHATSAPP_CLOUD_WEBHOOK_VERIFY_TOKEN", token):
         # 1. Valid handshake
         res_valid = await client.get("/api/v1/whatsapp/cloud-webhook", params={

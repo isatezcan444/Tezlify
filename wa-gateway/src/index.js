@@ -24,7 +24,7 @@ sessions.set("default", {
 app.get('/health', (req, res) => {
     res.json({
         status: 'healthy',
-        service: 'Scoutify WhatsApp Gateway',
+        service: 'Tezlify WhatsApp Gateway',
         activeSessions: sessions.size
     });
 });
@@ -41,7 +41,7 @@ app.post('/api/sessions/create', async (req, res) => {
         return res.status(400).json({ error: 'sessionName is required' });
     }
 
-    const qrData = `2@scoutify_${sessionName}_${Date.now()}_pairing_code`;
+    const qrData = `2@tezlify_${sessionName}_${Date.now()}_pairing_code`;
     const qrImageBase64 = await QRCode.toDataURL(qrData);
 
     const sessionObj = {
@@ -93,5 +93,5 @@ app.post('/api/send', async (req, res) => {
 });
 
 app.listen(PORT, () => {
-    console.log(`[Scoutify WA-Gateway] Running on http://localhost:${PORT}`);
+    console.log(`[Tezlify WA-Gateway] Running on http://localhost:${PORT}`);
 });

@@ -47,7 +47,7 @@ async def test_inbound_message_creates_conversation_and_message():
             message_id="wamid.CONV_TEST_001",
             sender_phone=test_phone,
             sender_name="Conversation Test Lead",
-            text="Hello Scoutify, this is my first message.",
+            text="Hello Tezlify, this is my first message.",
             timestamp=datetime.now(timezone.utc),
         )
 
@@ -70,12 +70,12 @@ async def test_inbound_message_creates_conversation_and_message():
         assert messages[0].wa_message_id == "wamid.CONV_TEST_001"
         assert messages[0].direction == MessageDirection.INBOUND
         assert messages[0].status == ConversationMessageStatus.RECEIVED
-        assert messages[0].body == "Hello Scoutify, this is my first message."
+        assert messages[0].body == "Hello Tezlify, this is my first message."
 
         # Check Lead status
         await db_session.refresh(lead)
         assert lead.status == LeadStatus.REPLIED
-        assert "Hello Scoutify" in lead.notes
+        assert "Hello Tezlify" in lead.notes
 
 
 @pytest.mark.asyncio
@@ -675,13 +675,13 @@ async def test_send_outbound_text_message_success():
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             res = await client.post(
                 f"/api/v1/conversations/{conv_id}/messages",
-                json={"body": "Hello from Scoutify Outbound Engine!"}
+                json={"body": "Hello from Tezlify Outbound Engine!"}
             )
             assert res.status_code == 201
             data = res.json()
             assert data["direction"] == "OUTBOUND"
             assert data["status"] == "SENT"
-            assert data["body"] == "Hello from Scoutify Outbound Engine!"
+            assert data["body"] == "Hello from Tezlify Outbound Engine!"
             assert data["wa_message_id"] == "wamid.MOCK_DISPATCH_001"
             assert data["recipient_phone"] == test_phone
 

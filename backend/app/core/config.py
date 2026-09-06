@@ -19,13 +19,13 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    PROJECT_NAME: str = "Scoutify"
+    PROJECT_NAME: str = "Tezlify"
     VERSION: str = "1.0.0"
     API_V1_STR: str = "/api/v1"
 
     # Database
     DATABASE_URL: str = Field(
-        default="sqlite+aiosqlite:///./scoutify.db",
+        default="sqlite+aiosqlite:///./tezlify.db",
         description="Async SQLite or PostgreSQL connection string",
     )
 
@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     @classmethod
     def assemble_db_connection(cls, v: Optional[str]) -> str:
         if not v:
-            return "sqlite+aiosqlite:///./scoutify.db"
+            return "sqlite+aiosqlite:///./tezlify.db"
         if isinstance(v, str):
             if v.startswith("postgres://"):
                 return v.replace("postgres://", "postgresql+asyncpg://", 1)

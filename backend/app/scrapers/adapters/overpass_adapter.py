@@ -35,7 +35,7 @@ class OverpassAdapter(BaseProviderAdapter):
     ]
 
     HEADERS = {
-        "User-Agent": "Scoutify-DiscoveryEngine-V3/1.0 (contact@scoutify.io)",
+        "User-Agent": "Tezlify-DiscoveryEngine-V3/1.0 (contact@tezlify.io)",
         "Accept": "application/json"
     }
 

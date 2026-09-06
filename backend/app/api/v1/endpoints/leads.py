@@ -416,7 +416,7 @@ async def export_leads_csv(
     return Response(
         content=csv_bytes,
         media_type="text/csv",
-        headers={"Content-Disposition": "attachment; filename=scoutify_leads.csv"}
+        headers={"Content-Disposition": "attachment; filename=tezlify_leads.csv"}
     )
 
 
@@ -459,5 +459,5 @@ async def export_leads_excel(
     return Response(
         content=excel_bytes,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": "attachment; filename=scoutify_leads.xlsx"}
+        headers={"Content-Disposition": "attachment; filename=tezlify_leads.xlsx"}
     )

@@ -9,7 +9,7 @@ from backend.app.services.smart_matching_service import SmartMatchingService
 
 def test_deterministic_place_id_hashing():
     """Proves place_id hashing is deterministic and process-independent."""
-    url = "https://www.google.com/maps/place/Scoutify+Dental/@40.99,29.12,17z"
+    url = "https://www.google.com/maps/place/Tezlify+Dental/@40.99,29.12,17z"
     expected = hashlib.sha256(url.encode()).hexdigest()[:16]
     actual_1 = hashlib.sha256(url.encode()).hexdigest()[:16]
     actual_2 = hashlib.sha256(url.encode()).hexdigest()[:16]

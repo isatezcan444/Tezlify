@@ -45,7 +45,7 @@ async def create_session(session_in: WhatsAppSessionCreate, db: AsyncSession = D
         phone_number=session_in.phone_number,
         max_daily_limit=session_in.max_daily_limit,
         status=SessionStatus.SCAN_QR,
-        qr_code="2@wS12dE98vA==,Scoutify_WA_Pairing_Token_Ready",
+        qr_code="2@wS12dE98vA==,Tezlify_WA_Pairing_Token_Ready",
         warm_up_day=1,
         daily_sent_count=0
     )

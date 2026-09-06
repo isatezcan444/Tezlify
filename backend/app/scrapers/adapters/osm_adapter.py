@@ -21,7 +21,7 @@ class OSMAdapter(BaseProviderAdapter):
     """
 
     HEADERS = {
-        "User-Agent": "Scoutify-DiscoveryEngine-V2/8.0 (contact@scoutify.io)"
+        "User-Agent": "Tezlify-DiscoveryEngine-V2/8.0 (contact@tezlify.io)"
     }
 
     @property

@@ -364,11 +364,11 @@ export function useWhatsAppConversation({
       }
     };
 
-    window.addEventListener('scoutify:ws_event', handleWsEvent);
-    window.addEventListener('scoutify:ws_connected', handleReconnect);
+    window.addEventListener('tezlify:ws_event', handleWsEvent);
+    window.addEventListener('tezlify:ws_connected', handleReconnect);
     return () => {
-      window.removeEventListener('scoutify:ws_event', handleWsEvent);
-      window.removeEventListener('scoutify:ws_connected', handleReconnect);
+      window.removeEventListener('tezlify:ws_event', handleWsEvent);
+      window.removeEventListener('tezlify:ws_connected', handleReconnect);
     };
   }, [leadId, conversationId, conversation, autoMarkAsRead, enabled, fetchConversation]);
 

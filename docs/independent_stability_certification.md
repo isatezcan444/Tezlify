@@ -1,4 +1,4 @@
-# Scoutify — Independent Stability Certification & Adversarial Audit Report
+# Tezlify — Independent Stability Certification & Adversarial Audit Report
 
 **Role:** Independent Senior Software Reliability Engineer, QA Architect & Security Auditor  
 **Audit Date:** 2026-09-01  
@@ -9,14 +9,14 @@
 
 ## 1. Executive Summary
 
-An exhaustive, adversarial audit of Scoutify was performed to independently test the validity of previous stability claims. Rather than simply re-running existing happy-path tests, the audit subjected the codebase to:
+An exhaustive, adversarial audit of Tezlify was performed to independently test the validity of previous stability claims. Rather than simply re-running existing happy-path tests, the audit subjected the codebase to:
 1. **Test Effectiveness & Mutation Analysis (100% kill rate on 7 faults).**
 2. **Pathological & Adversarial Input Fuzzing (30 new adversarial tests).**
 3. **Deep Playwright E2E User Journeys & API Failure Interception (6 journeys passed).**
 4. **Database Constraint & Forensic Integrity Scans (0 orphan leads/messages).**
 5. **Multi-Pass Determinism Runs (3 full passes with 0 flaky tests).**
 
-The audit confirmed that Scoutify's core architectural invariants (Truthfulness Layer, Zero Early Send, Anti-Ban Fail-Closed, Spintax Synthesis, Webhook HMAC Security) are robust and backed by high-sensitivity tests. One genuine concurrency race condition (`ADV-CONC-01`) was exposed during simultaneous group deletion and lead insertion, and documented for post-audit remediation.
+The audit confirmed that Tezlify's core architectural invariants (Truthfulness Layer, Zero Early Send, Anti-Ban Fail-Closed, Spintax Synthesis, Webhook HMAC Security) are robust and backed by high-sensitivity tests. One genuine concurrency race condition (`ADV-CONC-01`) was exposed during simultaneous group deletion and lead insertion, and documented for post-audit remediation.
 
 ---
 

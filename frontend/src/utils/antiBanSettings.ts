@@ -34,7 +34,7 @@ export const ANTI_BAN_PRESETS: Record<'ultra_safe' | 'standard_balanced' | 'fast
   }
 };
 
-const STORAGE_KEY = 'scoutify_anti_ban_config';
+const STORAGE_KEY = 'tezlify_anti_ban_config';
 
 export const DEFAULT_ANTI_BAN_CONFIG: AntiBanConfig = {
   preset: 'standard_balanced',

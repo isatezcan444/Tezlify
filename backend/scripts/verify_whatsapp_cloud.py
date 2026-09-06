@@ -96,7 +96,7 @@ async def verify_whatsapp_cloud_health() -> Dict[str, Any]:
 
 def print_report(res: Dict[str, Any]) -> None:
     print("============================================================")
-    print("SCOUTIFY META WHATSAPP CLOUD API — HEALTH CHECK REPORT")
+    print("TEZLIFY META WHATSAPP CLOUD API — HEALTH CHECK REPORT")
     print("============================================================")
     print(f"Token Configured      : {'YES' if res['token_present'] else 'NO'} [REDACTED]")
     print(f"Phone Number ID       : {res['phone_number_id']}")

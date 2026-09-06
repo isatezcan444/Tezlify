@@ -509,7 +509,7 @@ async def test_cloud_client_send_text_message_success():
         mock_post.return_value = mock_resp
         res = await client.send_text_message(
             to_phone="+905321002030",
-            message_text="Merhaba, Scoutify üzerinden test!",
+            message_text="Merhaba, Tezlify üzerinden test!",
         )
 
         assert res["success"] is True

@@ -31,7 +31,7 @@ from backend.app.scrapers.google_maps_playwright_scraper import (
 )
 from backend.app.services.phone_service import PhoneService
 
-logger = logging.getLogger("scoutify.scraper.http")
+logger = logging.getLogger("tezlify.scraper.http")
 
 PHONE_REGEX = re.compile(
     r"(?:0[2-5]\d{2}[\s.\-()]*\d{3}[\s.\-()]*\d{2}[\s.\-()]*\d{2}|"
@@ -175,7 +175,7 @@ class GoogleMapsHttpScraper:
         city: str,
         district: str,
     ) -> Optional[Dict[str, Any]]:
-        """Transforms a raw Google Maps JSON array item into a canonical Scoutify lead dict."""
+        """Transforms a raw Google Maps JSON array item into a canonical Tezlify lead dict."""
         if not isinstance(entry, list) or len(entry) <= 14:
             return None
 

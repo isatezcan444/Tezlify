@@ -143,7 +143,7 @@ export const SettingsPage: React.FC = () => {
                 </span>
                 <Badge variant="success">SQLite + WAL</Badge>
               </div>
-              <p className="font-mono text-[#28C76F] text-[11px] font-bold">sqlite+aiosqlite:///scoutify.db</p>
+              <p className="font-mono text-[#28C76F] text-[11px] font-bold">sqlite+aiosqlite:///tezlify.db</p>
               <p className="text-slate-400 dark:text-[#7E7F96] text-[10px]">Async I/O non-blocking connection pool</p>
             </div>
 

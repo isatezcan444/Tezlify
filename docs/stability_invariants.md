@@ -1,4 +1,4 @@
-# Scoutify — Data Invariant Catalog
+# Tezlify — Data Invariant Catalog
 
 **Version:** 2.0  
 **Classification:** Forensic Reliability Standard  

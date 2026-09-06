@@ -1,9 +1,9 @@
 ============================================================
-              SCOUTIFY FINAL RELEASE GATE
+              TEZLIFY FINAL RELEASE GATE
 ============================================================
 
 System:
-Scoutify
+Tezlify
 
 Audit Type:
 Independent Adversarial Stability & Reliability Audit

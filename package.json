@@ -1,5 +1,5 @@
 {
-  "name": "scoutify-monorepo",
+  "name": "tezlify-monorepo",
   "private": true,
   "version": "1.0.0",
   "workspaces": [

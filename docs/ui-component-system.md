@@ -1,6 +1,6 @@
-# Scoutify UI Component System & Architecture Guide
+# Tezlify UI Component System & Architecture Guide
 
-> **Design System Standard**: Inspired by the **Vuexy Admin Template (v9+)** Design Language, adapted for the **Scoutify B2B Lead Generation & WhatsApp Outreach Platform**.
+> **Design System Standard**: Inspired by the **Vuexy Admin Template (v9+)** Design Language, adapted for the **Tezlify B2B Lead Generation & WhatsApp Outreach Platform**.
 
 ---
 

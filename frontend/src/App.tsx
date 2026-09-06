@@ -52,7 +52,7 @@ const AppContent: React.FC = () => {
       ws = createWebSocket(
         (eventData) => {
           // Broadcast to hooks/subscribers
-          window.dispatchEvent(new CustomEvent('scoutify:ws_event', { detail: eventData }));
+          window.dispatchEvent(new CustomEvent('tezlify:ws_event', { detail: eventData }));
 
           // Handle Inbound Reply Event
           if (eventData.event === 'inbound_reply') {
@@ -77,7 +77,7 @@ const AppContent: React.FC = () => {
         },
         (connected) => {
           if (connected) {
-            window.dispatchEvent(new CustomEvent('scoutify:ws_connected'));
+            window.dispatchEvent(new CustomEvent('tezlify:ws_connected'));
             // Only announce re-connections (cold starts, sleep/wake): the
             // initial mount connects silently to avoid a boot toast.
             if (wasDisconnectedRef.current) {
@@ -124,7 +124,7 @@ const AppContent: React.FC = () => {
       case 'settings':
         return t('titles.settings');
       default:
-        return 'Scoutify';
+        return 'Tezlify';
     }
   };
 

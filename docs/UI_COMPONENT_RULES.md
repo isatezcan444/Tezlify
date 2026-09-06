@@ -1,11 +1,11 @@
 # UI Component Architecture & Self-Updating Design System Rules
 
-This living document defines the strict engineering standards, decision trees, and self-updating contracts for the Scoutify frontend design system.
+This living document defines the strict engineering standards, decision trees, and self-updating contracts for the Tezlify frontend design system.
 
 ---
 
 ## RULE 1 — REUSE FIRST & CONSULT THE REGISTRY
-Before writing any new UI elements, the developer or AI agent **MUST** review [`docs/component-registry.md`](file:///Users/isatezcan/Documents/Github/Scoutify/docs/component-registry.md) and [`frontend/src/components/`](file:///Users/isatezcan/Documents/Github/Scoutify/frontend/src/components).
+Before writing any new UI elements, the developer or AI agent **MUST** review [`docs/component-registry.md`](file:///Users/isatezcan/Documents/Github/Tezlify/docs/component-registry.md) and [`frontend/src/components/`](file:///Users/isatezcan/Documents/Github/Tezlify/frontend/src/components).
 Never build ad-hoc HTML/Tailwind elements when an existing component in `ui/`, `forms/`, `data-display/`, `navigation/`, or `domain/` fulfills the requirement.
 
 ---
@@ -51,8 +51,8 @@ When developing a new feature or page, automatically follow this decision workfl
 Whenever you (the developer or AI Agent) create or modify a reusable component:
 1. Create the component file under `frontend/src/components/<category>/<ComponentName>.tsx`.
 2. Add the export to `frontend/src/components/<category>/index.ts`.
-3. Add the component specification to [`docs/component-registry.md`](file:///Users/isatezcan/Documents/Github/Scoutify/docs/component-registry.md).
-4. Update this file ([`docs/UI_COMPONENT_RULES.md`](file:///Users/isatezcan/Documents/Github/Scoutify/docs/UI_COMPONENT_RULES.md)) if any new pattern or invariant emerges.
+3. Add the component specification to [`docs/component-registry.md`](file:///Users/isatezcan/Documents/Github/Tezlify/docs/component-registry.md).
+4. Update this file ([`docs/UI_COMPONENT_RULES.md`](file:///Users/isatezcan/Documents/Github/Tezlify/docs/UI_COMPONENT_RULES.md)) if any new pattern or invariant emerges.
 5. **Never wait for the user to request rule updates.** Rule updates are part of the atomic definition of done.
 
 ---

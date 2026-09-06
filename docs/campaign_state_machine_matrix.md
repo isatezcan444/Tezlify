@@ -1,4 +1,4 @@
-# Scoutify — Campaign State Machine & Transition Matrix
+# Tezlify — Campaign State Machine & Transition Matrix
 
 **Architecture Layer:** `backend/app/models/campaign.py` & `backend/app/api/v1/endpoints/campaigns.py`  
 **State Machine Class:** `CampaignStatus` Enum  

@@ -1,4 +1,4 @@
-# Scoutify — Final Concurrency, Race Condition & Transaction Isolation Audit
+# Tezlify — Final Concurrency, Race Condition & Transaction Isolation Audit
 
 **Audit Mode:** Deep Concurrency & Transaction Boundary Inspection  
 **Concurrency Test Harness:** Independent async sessions (`AsyncSessionLocal()`) under `asyncio.gather`  

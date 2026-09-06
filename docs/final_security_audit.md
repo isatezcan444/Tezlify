@@ -1,4 +1,4 @@
-# Scoutify — Final Security & Invariant Audit Report
+# Tezlify — Final Security & Invariant Audit Report
 
 **Audit Mode:** Forensic Security & Invariant Verification  
 **Security Scope:** Webhook Cryptography, Authentication, Input Sanitization & Anti-Ban Safety  

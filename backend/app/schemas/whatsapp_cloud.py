@@ -155,7 +155,7 @@ class ParsedStatusUpdate(BaseModel):
     error_message: Optional[str] = None
 
 
-# Status mapper from Meta Cloud API status string to Scoutify MessageStatus
+# Status mapper from Meta Cloud API status string to Tezlify MessageStatus
 META_STATUS_MAP: Dict[str, MessageStatus] = {
     "sent": MessageStatus.SENT,
     "delivered": MessageStatus.DELIVERED,

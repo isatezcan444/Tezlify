@@ -23,7 +23,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
-logger = logging.getLogger("scoutify")
+logger = logging.getLogger("tezlify")
 
 
 async def recover_stuck_jobs() -> None:
@@ -89,7 +89,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title=settings.PROJECT_NAME,
     version=settings.VERSION,
-    description="Scoutify - B2B Lead Generation & Automated WhatsApp Outreach Platform API",
+    description="Tezlify - B2B Lead Generation & Automated WhatsApp Outreach Platform API",
     lifespan=lifespan,
 )
 
@@ -131,7 +131,7 @@ app.include_router(api_router, prefix=settings.API_V1_STR)
 async def root():
     return {
         "status": "ok",
-        "service": "Scoutify Backend API",
+        "service": "Tezlify Backend API",
         "docs": "/docs",
         "health": "/health",
         "version": settings.VERSION,
@@ -149,7 +149,7 @@ async def health_check():
     memory_mb = round(maxrss / 1024, 1) if sys.platform.startswith("linux") else round(maxrss / (1024 * 1024), 1)
     return {
         "status": "healthy",
-        "service": "Scoutify Backend API",
+        "service": "Tezlify Backend API",
         "version": settings.VERSION,
         "simulation_mode": settings.SIMULATION_MODE,
         "scraper_engine": getattr(settings, "SCRAPER_ENGINE", "HTTP"),

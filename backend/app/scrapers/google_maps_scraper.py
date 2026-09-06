@@ -1,5 +1,5 @@
 """
-Google Maps Discovery Engine & Lead Orchestrator for Scoutify.
+Google Maps Discovery Engine & Lead Orchestrator for Tezlify.
 High-recall Google Maps Playwright extractor with real-time streaming,
 contact enrichment, and strict B2B lead validation.
 

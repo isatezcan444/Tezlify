@@ -1,5 +1,5 @@
 """
-WhatsApp Template Service for Scoutify.
+WhatsApp Template Service for Tezlify.
 
 Provides a clean, simplicity-first template engine:
 - Pre-configured business templates (Welcome, Follow-up, Reminder, Info Request).
@@ -34,7 +34,7 @@ BUSINESS_TEMPLATES: Dict[str, Dict[str, Any]] = {
         "category": "UTILITY",
         "meta_template_name": "hello_world",
         "language": "tr",
-        "body_pattern": "Merhaba {name}, Scoutify üzerinden sizinle iletişime geçiyoruz. Size nasıl yardımcı olabiliriz?",
+        "body_pattern": "Merhaba {name}, Tezlify üzerinden sizinle iletişime geçiyoruz. Size nasıl yardımcı olabiliriz?",
         "variables": [
             {"key": "name", "label": "Müşteri / Firma Adı", "default_from": "lead_name"}
         ],
