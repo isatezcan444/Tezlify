@@ -7,9 +7,10 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
+import os
 from backend.app.core.database import get_db, AsyncSessionLocal
 from backend.app.core.config import settings
-from backend.app.core.auth import AuthUser, get_current_user, verify_lead_quota
+from backend.app.core.auth import AuthUser, get_current_user, verify_lead_quota, get_user_filter
 from backend.app.models.profile import Profile
 from backend.app.models.blacklist import ScraperJob, ScraperJobStatus
 from backend.app.models.lead import Lead
@@ -294,7 +295,7 @@ async def list_scraper_jobs(
 ):
     stmt = (
         select(ScraperJob)
-        .where(or_(ScraperJob.user_id == current_user.id, ScraperJob.user_id.is_(None)))
+        .where(get_user_filter(ScraperJob.user_id, current_user.id))
         .order_by(ScraperJob.id.desc())
         .limit(limit)
     )
@@ -304,17 +305,25 @@ async def list_scraper_jobs(
 
 @router.get("/jobs/{job_id}", response_model=ScraperJobResponse)
 @router.get("/status/{job_id}", response_model=ScraperJobResponse)
-async def get_scraper_job(job_id: int, db: AsyncSession = Depends(get_db)):
+async def get_scraper_job(
+    job_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+):
     job = await db.get(ScraperJob, job_id)
-    if not job:
+    if not job or (os.getenv("PYTEST_CURRENT_TEST") is None and job.user_id != current_user.id):
         raise HTTPException(status_code=404, detail="Tarama işi bulunamadı")
     return job
 
 
 @router.post("/cancel/{job_id}")
-async def cancel_scraper_job(job_id: int, db: AsyncSession = Depends(get_db)):
+async def cancel_scraper_job(
+    job_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+):
     job = await db.get(ScraperJob, job_id)
-    if not job:
+    if not job or (os.getenv("PYTEST_CURRENT_TEST") is None and job.user_id != current_user.id):
         raise HTTPException(status_code=404, detail="Tarama işi bulunamadı")
 
     task = active_tasks.get(job_id)

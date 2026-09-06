@@ -151,7 +151,7 @@ async def ensure_user_id_columns(engine: AsyncEngine) -> None:
     """Ensures user_id column exists on all domain tables and profiles table is created."""
     tables = [
         "leads", "discovery_runs", "campaign_groups", "campaigns", 
-        "conversations", "messages", "scraper_jobs", "whatsapp_sessions", "blacklist"
+        "conversations", "messages", "scraper_jobs", "whatsapp_sessions", "blacklist", "message_logs"
     ]
     if engine.dialect.name == "sqlite":
         async with engine.begin() as conn:

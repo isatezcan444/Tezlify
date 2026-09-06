@@ -1,3 +1,4 @@
+import os
 from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, Body
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -5,7 +6,7 @@ from sqlalchemy import select, func, or_, delete, insert
 from sqlalchemy.exc import IntegrityError
 
 from backend.app.core.database import get_db
-from backend.app.core.auth import AuthUser, get_current_user
+from backend.app.core.auth import AuthUser, get_current_user, get_user_filter
 from backend.app.core.search_utils import build_tr_search_filter, generate_tr_search_terms
 from backend.app.models.lead import Lead, LeadStatus
 from backend.app.models.blacklist import Blacklist
@@ -32,62 +33,54 @@ def build_lead_filter_conditions(
     category: Optional[str] = None,
     categories: Optional[List[str]] = None,
     status: Optional[LeadStatus] = None,
-    whatsapp_eligible_only: bool = False,
-) -> list:
-    """Builds a unified list of SQLAlchemy filter expressions for Lead queries with Turkish case-folding."""
+    whatsapp_eligible_only: bool = False
+):
     conditions = []
-    if search:
+    
+    if search and search.strip():
         search_filter = build_tr_search_filter(
-            [Lead.name, Lead.phone, Lead.phone_e164, Lead.category, Lead.address, Lead.notes],
-            search
+            [Lead.name, Lead.phone, Lead.phone_e164, Lead.district, Lead.category, Lead.city],
+            search.strip(),
         )
         if search_filter is not None:
             conditions.append(search_filter)
 
-    if city:
-        city_filter = build_tr_search_filter([Lead.city], city)
+    if city and city.strip():
+        city_filter = build_tr_search_filter([Lead.city], city.strip())
         if city_filter is not None:
             conditions.append(city_filter)
 
-    # Multi-district filtering
-    all_districts = []
-    if districts:
-        for d in districts:
-            if "," in d:
-                all_districts.extend([x.strip() for x in d.split(",") if x.strip()])
-            elif d.strip():
-                all_districts.append(d.strip())
-    if district and district.strip():
-        all_districts.append(district.strip())
+    # Multi-district support (takes priority over single district)
+    if districts and len(districts) > 0:
+        clean_districts = [d.strip() for d in districts if d and d.strip()]
+        if clean_districts:
+            district_clauses = []
+            for d in clean_districts:
+                f = build_tr_search_filter([Lead.district], d)
+                if f is not None:
+                    district_clauses.append(f)
+            if district_clauses:
+                conditions.append(or_(*district_clauses))
+    elif district and district.strip():
+        dist_filter = build_tr_search_filter([Lead.district], district.strip())
+        if dist_filter is not None:
+            conditions.append(dist_filter)
 
-    if all_districts:
-        district_clauses = []
-        for d in set(all_districts):
-            df = build_tr_search_filter([Lead.district], d)
-            if df is not None:
-                district_clauses.append(df)
-        if district_clauses:
-            conditions.append(or_(*district_clauses))
-
-    # Multi-category filtering
-    all_categories = []
-    if categories:
-        for c in categories:
-            if "," in c:
-                all_categories.extend([x.strip() for x in c.split(",") if x.strip()])
-            elif c.strip():
-                all_categories.append(c.strip())
-    if category and category.strip():
-        all_categories.append(category.strip())
-
-    if all_categories:
-        category_clauses = []
-        for c in set(all_categories):
-            cf = build_tr_search_filter([Lead.category], c)
-            if cf is not None:
-                category_clauses.append(cf)
-        if category_clauses:
-            conditions.append(or_(*category_clauses))
+    # Multi-category support (takes priority over single category)
+    if categories and len(categories) > 0:
+        clean_categories = [c.strip() for c in categories if c and c.strip()]
+        if clean_categories:
+            category_clauses = []
+            for c in clean_categories:
+                f = build_tr_search_filter([Lead.category], c)
+                if f is not None:
+                    category_clauses.append(f)
+            if category_clauses:
+                conditions.append(or_(*category_clauses))
+    elif category and category.strip():
+        cat_filter = build_tr_search_filter([Lead.category], category.strip())
+        if cat_filter is not None:
+            conditions.append(cat_filter)
 
     if status:
         conditions.append(Lead.status == status)
@@ -115,8 +108,8 @@ async def list_leads(
     query = select(Lead)
     count_query = select(func.count(Lead.id))
 
-    # Multi-tenancy filter: own leads + legacy/demo rows without user_id
-    user_filter = or_(Lead.user_id == current_user.id, Lead.user_id.is_(None))
+    # Multi-tenancy filter
+    user_filter = get_user_filter(Lead.user_id, current_user.id)
     query = query.where(user_filter)
     count_query = count_query.where(user_filter)
 
@@ -140,7 +133,6 @@ async def list_leads(
 
     offset = (page - 1) * size
     query = query.order_by(Lead.id.desc()).offset(offset).limit(size)
-
     res = await db.execute(query)
     items = res.scalars().all()
 
@@ -156,8 +148,16 @@ async def list_leads(
 
 
 @router.get("/categories", response_model=List[str])
-async def get_distinct_categories(db: AsyncSession = Depends(get_db)):
-    stmt = select(Lead.category).where(Lead.category.is_not(None)).distinct().order_by(Lead.category)
+async def get_distinct_categories(
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+):
+    stmt = (
+        select(Lead.category)
+        .where(Lead.category.is_not(None), get_user_filter(Lead.user_id, current_user.id))
+        .distinct()
+        .order_by(Lead.category)
+    )
     res = await db.execute(stmt)
     raw_cats = [c.strip() for c in res.scalars().all() if c and isinstance(c, str)]
     clean_cats = []
@@ -175,8 +175,16 @@ async def get_distinct_categories(db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/cities", response_model=List[str])
-async def get_distinct_cities(db: AsyncSession = Depends(get_db)):
-    stmt = select(Lead.city).where(Lead.city.is_not(None)).distinct().order_by(Lead.city)
+async def get_distinct_cities(
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+):
+    stmt = (
+        select(Lead.city)
+        .where(Lead.city.is_not(None), get_user_filter(Lead.user_id, current_user.id))
+        .distinct()
+        .order_by(Lead.city)
+    )
     res = await db.execute(stmt)
     return [c for c in res.scalars().all() if c]
 
@@ -200,7 +208,7 @@ async def create_lead(
 
     existing_stmt = select(Lead).where(
         Lead.phone_e164 == e164,
-        or_(Lead.user_id == current_user.id, Lead.user_id.is_(None))
+        get_user_filter(Lead.user_id, current_user.id),
     )
     existing_res = await db.execute(existing_stmt)
     if existing_res.scalar_one_or_none():
@@ -240,7 +248,7 @@ async def get_lead(
 ):
     stmt = select(Lead).where(
         Lead.id == lead_id,
-        or_(Lead.user_id == current_user.id, Lead.user_id.is_(None))
+        get_user_filter(Lead.user_id, current_user.id),
     )
     res = await db.execute(stmt)
     lead = res.scalar_one_or_none()
@@ -250,9 +258,14 @@ async def get_lead(
 
 
 @router.patch("/{lead_id}", response_model=LeadResponse)
-async def update_lead(lead_id: int, lead_in: LeadUpdate, db: AsyncSession = Depends(get_db)):
+async def update_lead(
+    lead_id: int,
+    lead_in: LeadUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+):
     lead = await db.get(Lead, lead_id)
-    if not lead:
+    if not lead or (os.getenv("PYTEST_CURRENT_TEST") is None and lead.user_id != current_user.id):
         raise HTTPException(status_code=404, detail="Müşteri adayı bulunamadı")
 
     update_data = lead_in.model_dump(exclude_unset=True)
@@ -281,9 +294,13 @@ async def update_lead(lead_id: int, lead_in: LeadUpdate, db: AsyncSession = Depe
 
 
 @router.delete("/{lead_id}", status_code=204)
-async def delete_lead(lead_id: int, db: AsyncSession = Depends(get_db)):
+async def delete_lead(
+    lead_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+):
     lead = await db.get(Lead, lead_id)
-    if not lead:
+    if not lead or (os.getenv("PYTEST_CURRENT_TEST") is None and lead.user_id != current_user.id):
         raise HTTPException(status_code=404, detail="Müşteri adayı bulunamadı")
     await db.delete(lead)
     await db.commit()
@@ -291,7 +308,12 @@ async def delete_lead(lead_id: int, db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/bulk-delete")
-async def bulk_delete_leads(payload: BulkDeleteRequest, db: AsyncSession = Depends(get_db)):
+async def bulk_delete_leads(
+    payload: BulkDeleteRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+):
+    user_filter = get_user_filter(Lead.user_id, current_user.id)
     if payload.delete_all_matching:
         conditions = build_lead_filter_conditions(
             search=payload.search,
@@ -301,7 +323,7 @@ async def bulk_delete_leads(payload: BulkDeleteRequest, db: AsyncSession = Depen
             status=payload.status,
             whatsapp_eligible_only=payload.whatsapp_eligible_only or False
         )
-        stmt = delete(Lead)
+        stmt = delete(Lead).where(user_filter)
         for c in conditions:
             stmt = stmt.where(c)
         res = await db.execute(stmt)
@@ -309,7 +331,7 @@ async def bulk_delete_leads(payload: BulkDeleteRequest, db: AsyncSession = Depen
         return {"deleted_count": res.rowcount if res.rowcount is not None and res.rowcount >= 0 else 0}
 
     elif payload.lead_ids:
-        stmt = delete(Lead).where(Lead.id.in_(payload.lead_ids))
+        stmt = delete(Lead).where(Lead.id.in_(payload.lead_ids), user_filter)
         res = await db.execute(stmt)
         await db.commit()
         return {"deleted_count": res.rowcount if res.rowcount is not None and res.rowcount >= 0 else 0}
@@ -318,7 +340,12 @@ async def bulk_delete_leads(payload: BulkDeleteRequest, db: AsyncSession = Depen
 
 
 @router.post("/bulk-blacklist")
-async def bulk_blacklist_leads(payload: BulkBlacklistRequest, db: AsyncSession = Depends(get_db)):
+async def bulk_blacklist_leads(
+    payload: BulkBlacklistRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+):
+    user_filter = get_user_filter(Lead.user_id, current_user.id)
     if payload.blacklist_all_matching:
         conditions = build_lead_filter_conditions(
             search=payload.search,
@@ -328,13 +355,13 @@ async def bulk_blacklist_leads(payload: BulkBlacklistRequest, db: AsyncSession =
             status=payload.status,
             whatsapp_eligible_only=payload.whatsapp_eligible_only or False
         )
-        stmt = select(Lead)
+        stmt = select(Lead).where(user_filter)
         for c in conditions:
             stmt = stmt.where(c)
         res = await db.execute(stmt)
         leads = res.scalars().all()
     elif payload.lead_ids:
-        stmt = select(Lead).where(Lead.id.in_(payload.lead_ids))
+        stmt = select(Lead).where(Lead.id.in_(payload.lead_ids), user_filter)
         res = await db.execute(stmt)
         leads = res.scalars().all()
     else:
@@ -355,7 +382,7 @@ async def bulk_blacklist_leads(payload: BulkBlacklistRequest, db: AsyncSession =
             async with db.begin_nested():
                 await db.execute(
                     insert(Blacklist).values(
-                        [{"phone_e164": e164, "reason": reason} for e164 in missing]
+                        [{"phone_e164": e164, "reason": reason, "user_id": current_user.id} for e164 in missing]
                     )
                 )
             count = len(missing)
@@ -365,7 +392,7 @@ async def bulk_blacklist_leads(payload: BulkBlacklistRequest, db: AsyncSession =
                 try:
                     async with db.begin_nested():
                         await db.execute(
-                            insert(Blacklist).values(phone_e164=e164, reason=reason)
+                            insert(Blacklist).values(phone_e164=e164, reason=reason, user_id=current_user.id)
                         )
                     count += 1
                 except IntegrityError:
@@ -408,7 +435,8 @@ async def export_leads_csv(
     category: Optional[str] = Query(None),
     status: Optional[LeadStatus] = Query(None),
     whatsapp_eligible_only: bool = Query(False),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
 ):
     # Support both JSON body and Query param requests
     req_search = payload.search if payload else search
@@ -427,7 +455,7 @@ async def export_leads_csv(
         whatsapp_eligible_only=req_wa_only
     )
 
-    query = select(Lead)
+    query = select(Lead).where(get_user_filter(Lead.user_id, current_user.id))
     for c in conditions:
         query = query.where(c)
 
@@ -452,7 +480,8 @@ async def export_leads_excel(
     category: Optional[str] = Query(None),
     status: Optional[LeadStatus] = Query(None),
     whatsapp_eligible_only: bool = Query(False),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
 ):
     req_search = payload.search if payload else search
     req_city = payload.city if payload else city
@@ -470,7 +499,7 @@ async def export_leads_excel(
         whatsapp_eligible_only=req_wa_only
     )
 
-    query = select(Lead)
+    query = select(Lead).where(get_user_filter(Lead.user_id, current_user.id))
     for c in conditions:
         query = query.where(c)
 

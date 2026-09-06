@@ -337,6 +337,8 @@ export const tr = {
     sessionsTitle: 'WhatsApp Oturumları ve Numaralar',
     sessionsSubtitle: 'Çoklu hat yönetimi, QR eşleme, Gaussian Jitter bekleme süreleri ve anti-ban koruma parametreleri',
     addSession: 'Yeni WhatsApp Hattı Bağla (QR)',
+    noSessions: 'Bağlı WhatsApp Hattı Bulunmuyor',
+    noSessionsDesc: 'Henüz sisteme bağlı aktif bir WhatsApp cihazınız yok. Kampanya ve mesajlaşma başlatmak için yeni bir hat bağlayabilirsiniz.',
     antiBanTitle: 'WhatsApp Anti-Ban Yapılandırması',
     antiBanSubtitle: 'Mesajlar arası bekleme süreleri (Gaussian Jitter), insan taklidi ve kurumsal mesai saatleri koruması',
     tabSessions: 'Aktif Numaralar',

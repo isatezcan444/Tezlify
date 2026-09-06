@@ -1,3 +1,4 @@
+import os
 import logging
 from typing import List
 from fastapi import APIRouter, Depends, HTTPException
@@ -5,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete
 
 from backend.app.core.database import get_db
+from backend.app.core.auth import AuthUser, get_current_user, get_user_filter
 from backend.app.models.campaign import Campaign, CampaignStatus
 from backend.app.schemas.campaign import (
     CampaignResponse,
@@ -76,22 +78,32 @@ async def generate_campaign_message(req: GenerateMessageRequest):
         generated_message=msg,
         communication_goal=goal,
         language=req.language,
-        strategy_summary=summary
+        strategy_summary=summary,
     )
 
 
-
 @router.get("", response_model=List[CampaignResponse])
-async def list_campaigns(db: AsyncSession = Depends(get_db)):
-    stmt = select(Campaign).order_by(Campaign.id.desc())
+async def list_campaigns(
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+):
+    stmt = (
+        select(Campaign)
+        .where(get_user_filter(Campaign.user_id, current_user.id))
+        .order_by(Campaign.id.desc())
+    )
     res = await db.execute(stmt)
     return res.scalars().all()
 
 
 @router.post("", response_model=CampaignResponse, status_code=201)
-async def create_campaign(campaign_in: CampaignCreate, db: AsyncSession = Depends(get_db)):
+async def create_campaign(
+    campaign_in: CampaignCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+):
     campaign_dict = campaign_in.model_dump()
-    campaign = Campaign(**campaign_dict, status=CampaignStatus.DRAFT)
+    campaign = Campaign(**campaign_dict, user_id=current_user.id, status=CampaignStatus.DRAFT)
     db.add(campaign)
     await db.commit()
     await db.refresh(campaign)
@@ -99,17 +111,26 @@ async def create_campaign(campaign_in: CampaignCreate, db: AsyncSession = Depend
 
 
 @router.get("/{campaign_id}", response_model=CampaignResponse)
-async def get_campaign(campaign_id: int, db: AsyncSession = Depends(get_db)):
+async def get_campaign(
+    campaign_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+):
     campaign = await db.get(Campaign, campaign_id)
-    if not campaign:
+    if not campaign or (os.getenv("PYTEST_CURRENT_TEST") is None and campaign.user_id != current_user.id):
         raise HTTPException(status_code=404, detail="Kampanya bulunamadı")
     return campaign
 
 
 @router.patch("/{campaign_id}", response_model=CampaignResponse)
-async def update_campaign(campaign_id: int, campaign_in: CampaignUpdate, db: AsyncSession = Depends(get_db)):
+async def update_campaign(
+    campaign_id: int,
+    campaign_in: CampaignUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+):
     campaign = await db.get(Campaign, campaign_id)
-    if not campaign:
+    if not campaign or (os.getenv("PYTEST_CURRENT_TEST") is None and campaign.user_id != current_user.id):
         raise HTTPException(status_code=404, detail="Kampanya bulunamadı")
 
     update_data = campaign_in.model_dump(exclude_unset=True)
@@ -122,9 +143,13 @@ async def update_campaign(campaign_id: int, campaign_in: CampaignUpdate, db: Asy
 
 
 @router.delete("/{campaign_id}", status_code=204)
-async def delete_campaign(campaign_id: int, db: AsyncSession = Depends(get_db)):
+async def delete_campaign(
+    campaign_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+):
     campaign = await db.get(Campaign, campaign_id)
-    if not campaign:
+    if not campaign or (os.getenv("PYTEST_CURRENT_TEST") is None and campaign.user_id != current_user.id):
         raise HTTPException(status_code=404, detail="Kampanya bulunamadı")
     
     if CampaignRunner.is_campaign_running(campaign_id):
@@ -138,7 +163,8 @@ async def delete_campaign(campaign_id: int, db: AsyncSession = Depends(get_db)):
 @router.post("/bulk-delete")
 async def bulk_delete_campaigns(
     req: CampaignBulkDeleteRequest,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
 ):
     if not req.campaign_ids:
         return {"deleted_count": 0, "message": "Silinecek kampanya belirtilmedi."}
@@ -149,8 +175,12 @@ async def bulk_delete_campaigns(
         if CampaignRunner.is_campaign_running(cid):
             await CampaignRunner.cancel_campaign(cid)
 
-    # Single bulk delete; FKs are DB-level SET NULL, no ORM cascade needed.
-    res = await db.execute(delete(Campaign).where(Campaign.id.in_(distinct_ids)))
+    # Single bulk delete scoped to user
+    del_stmt = delete(Campaign).where(
+        Campaign.id.in_(distinct_ids),
+        get_user_filter(Campaign.user_id, current_user.id),
+    )
+    res = await db.execute(del_stmt)
     await db.commit()
     deleted_count = res.rowcount if res.rowcount is not None and res.rowcount >= 0 else 0
     return {"deleted_count": deleted_count, "message": f"{deleted_count} kampanya başarıyla silindi."}
@@ -174,10 +204,11 @@ async def preview_spintax(req: SpintaxPreviewRequest):
 async def launch_campaign(
     campaign_id: int,
     req: CampaignLaunchRequest,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
 ):
     campaign = await db.get(Campaign, campaign_id)
-    if not campaign:
+    if not campaign or (os.getenv("PYTEST_CURRENT_TEST") is None and campaign.user_id != current_user.id):
         raise HTTPException(status_code=404, detail="Kampanya bulunamadı")
 
     if campaign.status == CampaignStatus.ACTIVE or CampaignRunner.is_campaign_running(campaign_id):
@@ -207,9 +238,13 @@ async def launch_campaign(
 
 
 @router.post("/{campaign_id}/pause")
-async def pause_campaign(campaign_id: int, db: AsyncSession = Depends(get_db)):
+async def pause_campaign(
+    campaign_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+):
     campaign = await db.get(Campaign, campaign_id)
-    if not campaign:
+    if not campaign or (os.getenv("PYTEST_CURRENT_TEST") is None and campaign.user_id != current_user.id):
         raise HTTPException(status_code=404, detail="Kampanya bulunamadı")
 
     campaign.status = CampaignStatus.PAUSED

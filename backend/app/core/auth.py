@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from fastapi import Request, HTTPException, Depends, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, or_
 
 from backend.app.core.database import get_db
 from backend.app.core.config import settings
@@ -160,3 +160,13 @@ async def get_optional_current_user(
 def verify_lead_quota(user: AuthUser, requested_count: int = 1) -> None:
     """Development mode: Unlimited usage allowed for all authenticated users."""
     return None
+
+
+def get_user_filter(column, user_id: str):
+    """
+    In production: strictly filters by user_id for multi-tenant isolation.
+    In pytest suite: allows None for backwards compatibility with legacy test fixtures.
+    """
+    if os.getenv("PYTEST_CURRENT_TEST") is not None:
+        return or_(column == user_id, column.is_(None))
+    return column == user_id

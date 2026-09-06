@@ -337,6 +337,8 @@ export const en = {
     sessionsTitle: 'WhatsApp Sessions & Numbers',
     sessionsSubtitle: 'Multi-device session routing, Gaussian Jitter and anti-ban safeguards',
     addSession: 'Pair New WhatsApp Device (QR)',
+    noSessions: 'No WhatsApp Sessions Connected',
+    noSessionsDesc: 'You do not have any active WhatsApp devices connected yet. Pair a new device to start campaigns and outreach.',
     antiBanTitle: 'WhatsApp Anti-Ban Configuration',
     antiBanSubtitle: 'Randomized Gaussian delay intervals, human typing emulation, and business hours protection',
     tabSessions: 'Active Numbers',

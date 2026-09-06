@@ -1,6 +1,7 @@
 """
 Smart Outreach, Category Confirmation, and Lead Matching Endpoints.
 """
+import os
 import asyncio
 import logging
 from typing import List, Optional
@@ -9,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from backend.app.core.database import get_db, AsyncSessionLocal
+from backend.app.core.auth import AuthUser, get_current_user, get_user_filter
 from backend.app.models.lead import Lead
 from backend.app.models.blacklist import ScraperJob, ScraperJobStatus
 from backend.app.schemas.smart_outreach import (
@@ -31,7 +33,10 @@ router = APIRouter()
 
 
 @router.post("/recommend-categories", response_model=CategoryRecommendationResponse)
-async def recommend_categories(request: CategoryRecommendationRequest):
+async def recommend_categories(
+    request: CategoryRecommendationRequest,
+    current_user: AuthUser = Depends(get_current_user),
+):
     """
     Analyzes user offer and returns ranked candidate target categories with rationales.
     """
@@ -45,7 +50,8 @@ async def recommend_categories(request: CategoryRecommendationRequest):
 @router.post("/match-leads", response_model=MatchLeadsResponse)
 async def match_leads(
     request: MatchLeadsRequest,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
 ):
     """
     Scores and ranks leads against user offer and goal, returning explainable fit assessments.
@@ -60,7 +66,8 @@ async def match_leads(
             lead_ids=request.lead_ids,
             city=request.city,
             category_filter=request.category_filter,
-            min_fit_score=request.min_fit_score
+            min_fit_score=request.min_fit_score,
+            user_id=current_user.id,
         )
 
         high_count = sum(1 for l in matched_leads if l.fit_assessment.fit_score >= 75)
@@ -82,12 +89,18 @@ async def match_leads(
 @router.post("/recommend-message", response_model=MessageRecommendationResponse)
 async def recommend_message(
     request: MessageRecommendationRequest,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
 ):
     """
     Produces category-aware personalized outreach message draft for a specific lead.
     """
-    lead = await db.get(Lead, request.lead_id)
+    stmt = select(Lead).where(
+        Lead.id == request.lead_id,
+        get_user_filter(Lead.user_id, current_user.id),
+    )
+    res = await db.execute(stmt)
+    lead = res.scalar_one_or_none()
     if not lead:
         raise HTTPException(status_code=404, detail="Müşteri adayı bulunamadı.")
 
@@ -105,7 +118,8 @@ async def recommend_message(
 @router.post("/start-targeted-discovery")
 async def start_targeted_discovery(
     request: TargetedDiscoveryRequest,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
 ):
     """
     Launches targeted discovery exclusively for user-approved target categories and custom categories.
@@ -127,7 +141,8 @@ async def start_targeted_discovery(
             status=ScraperJobStatus.PENDING,
             total_found=0,
             total_valid_phones=0,
-            total_new_leads=0
+            total_new_leads=0,
+            user_id=current_user.id,
         )
         db.add(job)
         await db.commit()

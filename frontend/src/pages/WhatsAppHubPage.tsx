@@ -708,20 +708,35 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
             </Button>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-            {sessions.map((sess) => (
-              <SessionCard
-                key={sess.id}
-                session={sess}
-                onDisconnect={handleDisconnect}
-                onScanQR={(id) => {
-                  setPairingSessionId(id);
-                  setIsQRModalOpen(true);
+          {sessions.length === 0 ? (
+            <Card className="p-8">
+              <EmptyState
+                icon={QrCode}
+                title={t('whatsapp.noSessions')}
+                description={t('whatsapp.noSessionsDesc')}
+                action={{
+                  label: t('whatsapp.addSession'),
+                  onClick: handleCreateSession,
+                  icon: QrCode,
                 }}
-                onDelete={handleDelete}
               />
-            ))}
-          </div>
+            </Card>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+              {sessions.map((sess) => (
+                <SessionCard
+                  key={sess.id}
+                  session={sess}
+                  onDisconnect={handleDisconnect}
+                  onScanQR={(id) => {
+                    setPairingSessionId(id);
+                    setIsQRModalOpen(true);
+                  }}
+                  onDelete={handleDelete}
+                />
+              ))}
+            </div>
+          )}
         </div>
       )}
 

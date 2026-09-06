@@ -3,9 +3,10 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import select, func, or_
 
 from backend.app.core.database import get_db
+from backend.app.core.auth import AuthUser, get_current_user, get_user_filter
 from backend.app.models.lead import Lead, LeadStatus
 from backend.app.models.campaign import Campaign, CampaignStatus
 from backend.app.models.whatsapp_session import WhatsAppSession, SessionStatus
@@ -16,18 +17,30 @@ router = APIRouter()
 
 
 @router.get("/dashboard", response_model=DashboardStatsResponse)
-async def get_dashboard_stats(db: AsyncSession = Depends(get_db)):
+async def get_dashboard_stats(
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+):
+    lead_filter = get_user_filter(Lead.user_id, current_user.id)
+    session_filter = get_user_filter(WhatsAppSession.user_id, current_user.id)
+    camp_filter = get_user_filter(Campaign.user_id, current_user.id)
+    msg_filter = or_(
+        get_user_filter(MessageLog.user_id, current_user.id),
+        MessageLog.session_id.in_(select(WhatsAppSession.id).where(session_filter)),
+    )
+
     # 1. Total Leads Count
-    total_leads_res = await db.execute(select(func.count(Lead.id)))
+    total_leads_res = await db.execute(select(func.count(Lead.id)).where(lead_filter))
     total_leads = total_leads_res.scalar_one()
 
     # 2. WhatsApp Eligible Leads
-    wa_eligible_res = await db.execute(select(func.count(Lead.id)).where(Lead.is_whatsapp_eligible == True))
+    wa_eligible_res = await db.execute(select(func.count(Lead.id)).where(lead_filter, Lead.is_whatsapp_eligible == True))
     wa_eligible = wa_eligible_res.scalar_one()
 
     # 3. Contacted Leads
     contacted_res = await db.execute(
         select(func.count(Lead.id)).where(
+            lead_filter,
             Lead.status.in_([LeadStatus.CONTACTED, LeadStatus.REPLIED, LeadStatus.INTERESTED])
         )
     )
@@ -36,6 +49,7 @@ async def get_dashboard_stats(db: AsyncSession = Depends(get_db)):
     # 4. Replied Leads
     replied_res = await db.execute(
         select(func.count(Lead.id)).where(
+            lead_filter,
             Lead.status.in_([LeadStatus.REPLIED, LeadStatus.INTERESTED])
         )
     )
@@ -45,21 +59,22 @@ async def get_dashboard_stats(db: AsyncSession = Depends(get_db)):
     response_rate = round((replied / contacted * 100), 1) if contacted > 0 else 0.0
 
     # 5. Total & Active Campaigns
-    total_camp_res = await db.execute(select(func.count(Campaign.id)))
+    total_camp_res = await db.execute(select(func.count(Campaign.id)).where(camp_filter))
     total_campaigns = total_camp_res.scalar_one()
 
-    active_camp_res = await db.execute(select(func.count(Campaign.id)).where(Campaign.status == CampaignStatus.ACTIVE))
+    active_camp_res = await db.execute(select(func.count(Campaign.id)).where(camp_filter, Campaign.status == CampaignStatus.ACTIVE))
     active_campaigns = active_camp_res.scalar_one()
 
     # 6. Connected WhatsApp Sessions
     connected_sess_res = await db.execute(
-        select(func.count(WhatsAppSession.id)).where(WhatsAppSession.status == SessionStatus.CONNECTED)
+        select(func.count(WhatsAppSession.id)).where(session_filter, WhatsAppSession.status == SessionStatus.CONNECTED)
     )
     connected_sessions = connected_sess_res.scalar_one()
 
     # 7. Messages Sent Metrics
     total_sent_res = await db.execute(
         select(func.count(MessageLog.id)).where(
+            msg_filter,
             MessageLog.status.in_([MessageStatus.SENT, MessageStatus.DELIVERED, MessageStatus.READ, MessageStatus.REPLIED])
         )
     )
@@ -76,6 +91,7 @@ async def get_dashboard_stats(db: AsyncSession = Depends(get_db)):
     )
     today_sent_res = await db.execute(
         select(func.count(MessageLog.id)).where(
+            msg_filter,
             MessageLog.created_at >= today_start,
             MessageLog.status.in_([MessageStatus.SENT, MessageStatus.DELIVERED, MessageStatus.READ, MessageStatus.REPLIED]),
         )
@@ -83,7 +99,7 @@ async def get_dashboard_stats(db: AsyncSession = Depends(get_db)):
     messages_sent_today = today_sent_res.scalar_one()
 
     # 8. Leads by Status Breakdown
-    status_counts_res = await db.execute(select(Lead.status, func.count(Lead.id)).group_by(Lead.status))
+    status_counts_res = await db.execute(select(Lead.status, func.count(Lead.id)).where(lead_filter).group_by(Lead.status))
     leads_by_status = {
         status.value if hasattr(status, "value") else str(status): count
         for status, count in status_counts_res.all()
@@ -92,7 +108,7 @@ async def get_dashboard_stats(db: AsyncSession = Depends(get_db)):
     # 9. Top Categories
     top_cat_res = await db.execute(
         select(Lead.category, func.count(Lead.id).label("count"))
-        .where(Lead.category.is_not(None))
+        .where(lead_filter, Lead.category.is_not(None))
         .group_by(Lead.category)
         .order_by(func.count(Lead.id).desc())
         .limit(5)
@@ -107,7 +123,7 @@ async def get_dashboard_stats(db: AsyncSession = Depends(get_db)):
             func.date(MessageLog.created_at).label("d"),
             func.count(MessageLog.id)
         )
-        .where(MessageLog.created_at >= seven_days_ago)
+        .where(msg_filter, MessageLog.created_at >= seven_days_ago)
         .group_by(func.date(MessageLog.created_at))
     )
     sent_map = {str(row[0]): row[1] for row in sent_by_day_res.all()}
@@ -117,7 +133,7 @@ async def get_dashboard_stats(db: AsyncSession = Depends(get_db)):
             func.date(Lead.created_at).label("d"),
             func.count(Lead.id)
         )
-        .where(Lead.created_at >= seven_days_ago)
+        .where(lead_filter, Lead.created_at >= seven_days_ago)
         .group_by(func.date(Lead.created_at))
     )
     leads_map = {str(row[0]): row[1] for row in leads_by_day_res.all()}
@@ -133,7 +149,7 @@ async def get_dashboard_stats(db: AsyncSession = Depends(get_db)):
         })
 
     # 11. Recent Activity
-    recent_logs = await db.execute(select(MessageLog).order_by(MessageLog.id.desc()).limit(6))
+    recent_logs = await db.execute(select(MessageLog).where(msg_filter).order_by(MessageLog.id.desc()).limit(6))
     recent_activity = []
     for log in recent_logs.scalars().all():
         recent_activity.append({

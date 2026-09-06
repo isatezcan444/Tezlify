@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.models.lead import Lead, LeadStatus, EntityType, VerificationStatus
 from backend.app.models.conversation import Conversation
 from backend.app.core.search_utils import build_tr_search_filter
+from backend.app.core.auth import get_user_filter
 from backend.app.schemas.smart_outreach import (
     FitAssessment,
     CategoryFitLevel,
@@ -188,12 +189,16 @@ class SmartMatchingService:
         city: Optional[str] = None,
         category_filter: Optional[str] = None,
         min_fit_score: int = 40,
-        limit: int = 100
+        limit: int = 100,
+        user_id: Optional[str] = None,
     ) -> List[SmartMatchedLead]:
         """
         Evaluates, filters, and ranks leads from database.
         """
         query = select(Lead)
+
+        if user_id:
+            query = query.where(get_user_filter(Lead.user_id, user_id))
 
         if lead_ids:
             query = query.where(Lead.id.in_(lead_ids))

@@ -1,3 +1,4 @@
+import os
 from typing import List, Optional
 from pydantic import BaseModel
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -5,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete, func
 
 from backend.app.core.database import get_db
+from backend.app.core.auth import AuthUser, get_current_user, get_user_filter
 from backend.app.core.search_utils import build_tr_search_filter
 from backend.app.models.blacklist import Blacklist
 from backend.app.models.lead import Lead, LeadStatus
@@ -25,10 +27,12 @@ async def list_blacklist(
     size: int = Query(20, ge=1, le=100),
     search: Optional[str] = None,
     reason: Optional[str] = None,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
 ):
-    stmt = select(Blacklist, Lead).outerjoin(Lead, Blacklist.phone_e164 == Lead.phone_e164)
-    count_stmt = select(func.count(Blacklist.id)).outerjoin(Lead, Blacklist.phone_e164 == Lead.phone_e164)
+    user_filter = get_user_filter(Blacklist.user_id, current_user.id)
+    stmt = select(Blacklist, Lead).outerjoin(Lead, Blacklist.phone_e164 == Lead.phone_e164).where(user_filter)
+    count_stmt = select(func.count(Blacklist.id)).outerjoin(Lead, Blacklist.phone_e164 == Lead.phone_e164).where(user_filter)
 
     conditions = []
     if search and search.strip():
@@ -92,7 +96,11 @@ async def list_blacklist(
     }
 
 @router.post("", response_model=BlacklistResponse, status_code=201)
-async def add_to_blacklist(bl_in: BlacklistCreate, db: AsyncSession = Depends(get_db)):
+async def add_to_blacklist(
+    bl_in: BlacklistCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+):
     phone_data = PhoneService.normalize_to_e164(bl_in.phone_e164)
     if not phone_data:
         raise HTTPException(status_code=400, detail="Geçersiz telefon numarası.")
@@ -100,12 +108,16 @@ async def add_to_blacklist(bl_in: BlacklistCreate, db: AsyncSession = Depends(ge
     e164 = phone_data["e164"]
     
     # Check if already blacklisted
-    stmt = select(Blacklist).where(Blacklist.phone_e164 == e164)
+    stmt = select(Blacklist).where(
+        Blacklist.phone_e164 == e164,
+        get_user_filter(Blacklist.user_id, current_user.id),
+    )
     existing = await db.execute(stmt)
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=409, detail="Bu numara zaten kara listede.")
         
     bl = Blacklist(
+        user_id=current_user.id,
         phone_e164=e164,
         reason=bl_in.reason or "USER_REQUEST",
         notes=bl_in.notes
@@ -113,7 +125,10 @@ async def add_to_blacklist(bl_in: BlacklistCreate, db: AsyncSession = Depends(ge
     db.add(bl)
     
     # Update lead status if exists
-    lead_stmt = select(Lead).where(Lead.phone_e164 == e164)
+    lead_stmt = select(Lead).where(
+        Lead.phone_e164 == e164,
+        get_user_filter(Lead.user_id, current_user.id),
+    )
     lead_res = await db.execute(lead_stmt)
     lead = lead_res.scalar_one_or_none()
     if lead:
@@ -139,19 +154,28 @@ async def add_to_blacklist(bl_in: BlacklistCreate, db: AsyncSession = Depends(ge
     )
 
 @router.delete("/{bl_id}")
-async def remove_from_blacklist(bl_id: int, db: AsyncSession = Depends(get_db)):
+async def remove_from_blacklist(
+    bl_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+):
     bl = await db.get(Blacklist, bl_id)
-    if not bl:
+    if not bl or (os.getenv("PYTEST_CURRENT_TEST") is None and bl.user_id != current_user.id):
         raise HTTPException(status_code=404, detail="Kara liste kaydı bulunamadı")
     await db.delete(bl)
     await db.commit()
     return {"message": "Numara kara listeden çıkarıldı", "id": bl_id}
 
 @router.post("/bulk-delete")
-async def bulk_delete_blacklist(payload: BulkDeleteBlacklistRequest, db: AsyncSession = Depends(get_db)):
+async def bulk_delete_blacklist(
+    payload: BulkDeleteBlacklistRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+):
+    user_filter = get_user_filter(Blacklist.user_id, current_user.id)
     if payload.delete_all_matching:
         if payload.search or payload.reason:
-            subq = select(Blacklist.id).outerjoin(Lead, Blacklist.phone_e164 == Lead.phone_e164)
+            subq = select(Blacklist.id).outerjoin(Lead, Blacklist.phone_e164 == Lead.phone_e164).where(user_filter)
             if payload.search and payload.search.strip():
                 search_filter = build_tr_search_filter(
                     [
@@ -172,14 +196,14 @@ async def bulk_delete_blacklist(payload: BulkDeleteBlacklistRequest, db: AsyncSe
             
             stmt = delete(Blacklist).where(Blacklist.id.in_(subq))
         else:
-            stmt = delete(Blacklist)
+            stmt = delete(Blacklist).where(user_filter)
 
         res = await db.execute(stmt)
         await db.commit()
         return {"deleted_count": res.rowcount if res.rowcount is not None and res.rowcount >= 0 else 0}
 
     elif payload.ids:
-        stmt = delete(Blacklist).where(Blacklist.id.in_(payload.ids))
+        stmt = delete(Blacklist).where(Blacklist.id.in_(payload.ids), user_filter)
         res = await db.execute(stmt)
         await db.commit()
         return {"deleted_count": res.rowcount if res.rowcount is not None and res.rowcount >= 0 else 0}

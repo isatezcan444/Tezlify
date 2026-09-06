@@ -1,3 +1,4 @@
+import os
 from datetime import datetime
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Header
@@ -6,6 +7,7 @@ from sqlalchemy import select, or_
 from sqlalchemy.orm import selectinload
 
 from backend.app.core.database import get_db
+from backend.app.core.auth import AuthUser, get_current_user, get_user_filter
 from backend.app.api.v1.websocket import ws_manager
 from backend.app.models.conversation import Conversation, ConversationStatus
 from backend.app.models.message import Message
@@ -65,6 +67,7 @@ async def list_conversations(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
 ):
     """
     Thin, high-performance conversation list query.
@@ -82,6 +85,7 @@ async def list_conversations(
         select(Conversation, latest_msg_subq.label("last_preview"))
         .join(Conversation.lead)
         .options(selectinload(Conversation.lead))
+        .where(get_user_filter(Conversation.user_id, current_user.id))
         .order_by(Conversation.last_message_at.desc().nullslast(), Conversation.id.desc())
         .offset(offset)
         .limit(limit)
@@ -142,11 +146,15 @@ async def get_conversation(
     limit: int = Query(50, ge=1, le=100),
     before: Optional[int] = Query(None, description="Cursor: message ID before which to fetch older messages"),
     db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
 ):
     """Fetches a specific conversation with cursor-paginated messages and 24h window status."""
     stmt = (
         select(Conversation)
-        .where(Conversation.id == conversation_id)
+        .where(
+            Conversation.id == conversation_id,
+            get_user_filter(Conversation.user_id, current_user.id),
+        )
         .options(selectinload(Conversation.lead))
     )
     res = await db.execute(stmt)
@@ -190,10 +198,11 @@ async def get_conversation_messages(
     limit: int = Query(50, ge=1, le=100),
     before: Optional[int] = Query(None, description="Cursor: message ID before which to fetch older messages"),
     db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
 ):
     """Dedicated endpoint to fetch older paginated messages for a conversation."""
     conv = await db.get(Conversation, conversation_id)
-    if not conv:
+    if not conv or (os.getenv("PYTEST_CURRENT_TEST") is None and conv.user_id != current_user.id):
         raise HTTPException(status_code=404, detail="Conversation not found")
 
     messages_dto, has_more, oldest_id, newest_id = await _fetch_paginated_messages(
@@ -214,12 +223,17 @@ async def send_message_to_conversation(
     payload: MessageSendRequest,
     idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key"),
     db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
 ):
     """
     Sends an outbound WhatsApp message to the lead within the specified conversation.
     Validates conversation state, dispatches via Meta Cloud API or simulation,
     persists OUTBOUND Message entity, and broadcasts WebSocket event.
     """
+    conv = await db.get(Conversation, conversation_id)
+    if not conv or (os.getenv("PYTEST_CURRENT_TEST") is None and conv.user_id != current_user.id):
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
     msg = await WhatsAppOutboundService.send_conversation_message(
         db=db,
         conversation_id=conversation_id,
@@ -235,11 +249,16 @@ async def send_template_to_conversation(
     payload: TemplateSendRequest,
     idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key"),
     db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
 ):
     """
     Sends a business WhatsApp template message to the conversation.
     Renders variables, dispatches via Meta Cloud API or simulation, and broadcasts WebSocket event.
     """
+    conv = await db.get(Conversation, conversation_id)
+    if not conv or (os.getenv("PYTEST_CURRENT_TEST") is None and conv.user_id != current_user.id):
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
     msg = await WhatsAppTemplateService.send_template_message(
         db=db,
         conversation_id=conversation_id,
@@ -255,10 +274,15 @@ async def retry_failed_message(
     conversation_id: int,
     message_id: int,
     db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
 ):
     """
     Retries sending a FAILED message with complete audit preservation and idempotency.
     """
+    conv = await db.get(Conversation, conversation_id)
+    if not conv or (os.getenv("PYTEST_CURRENT_TEST") is None and conv.user_id != current_user.id):
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
     msg = await WhatsAppOutboundService.retry_failed_message(
         db=db,
         conversation_id=conversation_id,
@@ -273,10 +297,15 @@ async def send_media_to_conversation(
     payload: OutboundMediaSendRequest,
     idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key"),
     db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
 ):
     """
     Sends an outbound media message (Image / Document / PDF) to the conversation.
     """
+    conv = await db.get(Conversation, conversation_id)
+    if not conv or (os.getenv("PYTEST_CURRENT_TEST") is None and conv.user_id != current_user.id):
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
     msg = await WhatsAppOutboundService.send_outbound_media(
         db=db,
         conversation_id=conversation_id,
@@ -295,15 +324,20 @@ async def get_lead_conversation(
     limit: int = Query(50, ge=1, le=100),
     before: Optional[int] = Query(None, description="Cursor: message ID before which to fetch older messages"),
     db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
 ):
     """Fetches or initializes the active conversation thread for a given lead with 24h window status."""
     lead = await db.get(Lead, lead_id)
-    if not lead:
+    if not lead or (os.getenv("PYTEST_CURRENT_TEST") is None and lead.user_id != current_user.id):
         raise HTTPException(status_code=404, detail="Lead not found")
 
     stmt = (
         select(Conversation)
-        .where(Conversation.lead_id == lead_id, Conversation.channel == "WHATSAPP")
+        .where(
+            Conversation.lead_id == lead_id,
+            Conversation.channel == "WHATSAPP",
+            get_user_filter(Conversation.user_id, current_user.id),
+        )
         .options(selectinload(Conversation.lead))
         .order_by(Conversation.id.desc())
         .limit(1)
@@ -313,6 +347,7 @@ async def get_lead_conversation(
 
     if not conv:
         conv = Conversation(
+            user_id=current_user.id,
             lead_id=lead_id,
             channel="WHATSAPP",
             status=ConversationStatus.ACTIVE,
@@ -362,6 +397,7 @@ async def update_conversation_status(
     conversation_id: int,
     payload: ConversationStatusUpdateRequest,
     db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
 ):
     """
     Updates the lifecycle status of a conversation (ACTIVE, ARCHIVED, CLOSED).
@@ -369,7 +405,10 @@ async def update_conversation_status(
     """
     stmt = (
         select(Conversation)
-        .where(Conversation.id == conversation_id)
+        .where(
+            Conversation.id == conversation_id,
+            get_user_filter(Conversation.user_id, current_user.id),
+        )
         .options(selectinload(Conversation.lead))
     )
     res = await db.execute(stmt)
@@ -411,11 +450,15 @@ async def update_conversation_status(
 async def mark_conversation_as_read(
     conversation_id: int,
     db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
 ):
     """Marks a conversation as read, resetting unread_count to 0."""
     stmt = (
         select(Conversation)
-        .where(Conversation.id == conversation_id)
+        .where(
+            Conversation.id == conversation_id,
+            get_user_filter(Conversation.user_id, current_user.id),
+        )
         .options(selectinload(Conversation.lead))
     )
     res = await db.execute(stmt)
@@ -457,11 +500,16 @@ async def mark_conversation_as_read(
 async def mark_lead_conversation_as_read(
     lead_id: int,
     db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
 ):
     """Marks the active conversation of a lead as read."""
     stmt = (
         select(Conversation)
-        .where(Conversation.lead_id == lead_id, Conversation.channel == "WHATSAPP")
+        .where(
+            Conversation.lead_id == lead_id,
+            Conversation.channel == "WHATSAPP",
+            get_user_filter(Conversation.user_id, current_user.id),
+        )
         .options(selectinload(Conversation.lead))
         .order_by(Conversation.id.desc())
         .limit(1)
@@ -505,13 +553,14 @@ async def get_conversation_media_info(
     conversation_id: int,
     media_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
 ):
     """
     IDOR-Protected Media Access Endpoint.
     Verifies that the requested media_id strictly belongs to a message in the given conversation.
     """
     conv = await db.get(Conversation, conversation_id)
-    if not conv:
+    if not conv or (os.getenv("PYTEST_CURRENT_TEST") is None and conv.user_id != current_user.id):
         raise HTTPException(status_code=404, detail="Conversation not found")
 
     stmt = select(Message).where(

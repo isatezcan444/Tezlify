@@ -51,7 +51,7 @@ class Settings(BaseSettings):
 
     # Demo verisi: boş veritabanına örnek oturum/kampanya/lead ekler.
     # Üretimde kapatın.
-    SEED_DEMO_DATA: bool = True
+    SEED_DEMO_DATA: bool = False
 
     # Security / CORS
     SECRET_KEY: str = Field(
