@@ -9,6 +9,8 @@ from sqlalchemy import select
 
 from backend.app.core.database import get_db, AsyncSessionLocal
 from backend.app.core.config import settings
+from backend.app.core.auth import AuthUser, get_current_user, verify_lead_quota
+from backend.app.models.profile import Profile
 from backend.app.models.blacklist import ScraperJob, ScraperJobStatus
 from backend.app.models.lead import Lead
 from backend.app.schemas.scraper import ScraperRunRequest, ScraperSaveRequest, ScraperSaveResponse, ScraperJobResponse
@@ -16,6 +18,7 @@ from backend.app.scrapers.google_maps_scraper import GoogleMapsScraper
 from backend.app.services.lead_ingest_service import LeadIngestService
 from backend.app.api.v1.websocket import ws_manager
 from backend.app.data.turkey_locations import get_districts_for_city, get_supported_cities
+from sqlalchemy import or_
 
 logger = logging.getLogger(__name__)
 
@@ -145,8 +148,12 @@ async def run_scraper_task(
 @router.post("/start", response_model=ScraperJobResponse)
 async def start_scraper(
     req: ScraperRunRequest,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
 ):
+    # Enforce SaaS Lead Search Quota
+    verify_lead_quota(current_user, requested_count=1)
+
     keyword = req.keyword.strip()
     city = req.city.strip()
     districts = req.districts or []
@@ -176,7 +183,8 @@ async def start_scraper(
         total_found=0,
         total_valid_phones=0,
         total_new_leads=0,
-        created_at=datetime.utcnow()
+        created_at=datetime.utcnow(),
+        user_id=current_user.id,
     )
     db.add(job)
     await db.commit()
@@ -228,7 +236,8 @@ def lead_to_dict(l: Lead) -> Dict[str, Any]:
 async def save_scraper_leads(
     job_id: int,
     req: ScraperSaveRequest,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
 ):
     """Persists a user-reviewed selection of discovery results to CRM.
 
@@ -244,19 +253,29 @@ async def save_scraper_leads(
             detail="Yalnızca tamamlanmış taramaların sonuçları kaydedilebilir."
         )
 
+    # Verify quota for saving leads
+    verify_lead_quota(current_user, requested_count=len(req.leads))
+
     all_leads, new_count, updated_count = await LeadIngestService.ingest_leads(
         db=db,
         raw_leads=req.leads,
         source="GOOGLE_MAPS",
         search_keyword=job.keyword,
         search_location=job.location,
+        user_id=current_user.id,
     )
 
     job.total_new_leads = (job.total_new_leads or 0) + new_count
+
+    # Update user monthly usage in Profile table
+    profile = await db.get(Profile, current_user.id)
+    if profile:
+        profile.leads_used_this_month = (profile.leads_used_this_month or 0) + new_count
+
     await db.commit()
 
     logger.info(
-        f"[SEARCH_JOB_SAVE] job_id={job_id} saved={len(all_leads)} "
+        f"[SEARCH_JOB_SAVE] job_id={job_id} user_id={current_user.id} saved={len(all_leads)} "
         f"new={new_count} updated={updated_count}"
     )
     return ScraperSaveResponse(
@@ -268,8 +287,17 @@ async def save_scraper_leads(
 
 
 @router.get("/jobs", response_model=List[ScraperJobResponse])
-async def list_scraper_jobs(limit: int = 20, db: AsyncSession = Depends(get_db)):
-    stmt = select(ScraperJob).order_by(ScraperJob.id.desc()).limit(limit)
+async def list_scraper_jobs(
+    limit: int = 20, 
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+):
+    stmt = (
+        select(ScraperJob)
+        .where(or_(ScraperJob.user_id == current_user.id, ScraperJob.user_id.is_(None)))
+        .order_by(ScraperJob.id.desc())
+        .limit(limit)
+    )
     res = await db.execute(stmt)
     return res.scalars().all()
 

@@ -1,8 +1,9 @@
 import React from 'react';
-import { Search, Sun, Moon, Bell, Menu, Settings } from 'lucide-react';
+import { Search, Sun, Moon, Bell, Menu, Settings, LogOut, Sparkles } from 'lucide-react';
 import { Button } from '../ui/button';
 import { useTheme } from '../../context/ThemeContext';
 import { useI18n } from '../../context/I18nContext';
+import { useAuth } from '../../context/AuthContext';
 import { LanguageSwitcher } from '../ui/LanguageSwitcher';
 
 interface TopHeaderProps {
@@ -24,6 +25,15 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
 }) => {
   const { theme, toggleTheme } = useTheme();
   const { t } = useI18n();
+  const { user, profile, signOut } = useAuth();
+
+  const userDisplayName = profile?.full_name || user?.user_metadata?.full_name || user?.email?.split('@')[0] || t('header.adminUser');
+  const userEmail = profile?.email || user?.email || '';
+  const avatarUrl = profile?.avatar_url || user?.user_metadata?.avatar_url || user?.user_metadata?.picture;
+  const initials = (userDisplayName.slice(0, 2) || 'TZ').toUpperCase();
+
+  const leadsUsed = profile?.leads_used_this_month ?? 0;
+  const leadsLimit = profile?.leads_monthly_limit ?? 50;
 
   return (
     <header className="sticky top-0 z-30 px-3.5 sm:px-6 lg:px-8 pt-3.5 sm:pt-6 pb-2 select-none">
@@ -55,6 +65,12 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
 
         {/* Right Side: Quick Actions & Profile */}
         <div className="flex items-center space-x-1.5 sm:space-x-2.5 shrink-0">
+          {/* SaaS Quota Badge */}
+          <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-primary-500/25 bg-primary-500/10 text-primary-600 dark:text-primary-400 text-xs font-semibold">
+            <Sparkles className="w-3.5 h-3.5" />
+            <span>Kota: {leadsUsed}/{leadsLimit}</span>
+          </div>
+
           {onOpenQuickScrape && (
             <Button
               onClick={onOpenQuickScrape}
@@ -107,18 +123,42 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
 
           <div className="h-5 sm:h-6 w-[1px] bg-slate-200 dark:bg-white/[0.1] mx-0.5 sm:mx-1" />
 
-          {/* User Profile Avatar */}
-          <div className="flex items-center space-x-2 pl-0.5 cursor-pointer">
+          {/* User Profile Avatar & Sign Out */}
+          <div className="flex items-center space-x-2 pl-0.5">
             <div className="relative">
-              <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-[#7367F0]/15 text-[#7367F0] border border-[#7367F0]/30 flex items-center justify-center text-xs font-extrabold shadow-sm">
-                AD
-              </div>
+              {avatarUrl ? (
+                <img
+                  src={avatarUrl}
+                  alt={userDisplayName}
+                  className="w-8 h-8 sm:w-9 sm:h-9 rounded-full object-cover border border-primary-500/30 shadow-sm"
+                />
+              ) : (
+                <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-[#7367F0]/15 text-[#7367F0] border border-[#7367F0]/30 flex items-center justify-center text-xs font-extrabold shadow-sm">
+                  {initials}
+                </div>
+              )}
               <span className="absolute bottom-0 right-0 w-2 h-2 rounded-full bg-[#28C76F] ring-2 ring-white dark:ring-[#2F3349]" />
             </div>
+
             <div className="hidden xl:block text-left">
-              <p className="text-xs font-bold text-slate-800 dark:text-slate-100 leading-tight">{t('header.adminUser')}</p>
-              <p className="text-[10px] text-slate-400 dark:text-[#7E7F96] font-semibold">{t('header.administrator')}</p>
+              <p className="text-xs font-bold text-slate-800 dark:text-slate-100 leading-tight truncate max-w-[120px]">
+                {userDisplayName}
+              </p>
+              <p className="text-[10px] text-slate-400 dark:text-[#7E7F96] font-semibold truncate max-w-[120px]">
+                {userEmail || t('header.administrator')}
+              </p>
             </div>
+
+            {user && (
+              <button
+                type="button"
+                onClick={() => signOut()}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-500/10 transition-colors cursor-pointer"
+                title={t('auth.signOut')}
+              >
+                <LogOut className="w-4 h-4" />
+              </button>
+            )}
           </div>
         </div>
       </div>

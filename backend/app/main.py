@@ -13,6 +13,7 @@ from backend.app.core.migrations import (
     ensure_leads_phone_nullable,
     ensure_conversations_columns,
     ensure_messages_media_columns,
+    ensure_user_id_columns,
 )
 from backend.app.core.seed import seed_demo_data_if_empty
 from backend.app.models.blacklist import ScraperJob, ScraperJobStatus
@@ -68,6 +69,7 @@ async def lifespan(app: FastAPI):
     await ensure_leads_phone_nullable(engine)
     await ensure_conversations_columns(engine)
     await ensure_messages_media_columns(engine)
+    await ensure_user_id_columns(engine)
 
     # Restart sonrası yarıda kalan arka plan işlerini toparla
     await recover_stuck_jobs()

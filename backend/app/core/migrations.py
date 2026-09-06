@@ -147,6 +147,48 @@ async def ensure_messages_media_columns(engine: AsyncEngine) -> None:
                 logger.info("[MIGRATION] Added campaigns.group_id")
 
 
+async def ensure_user_id_columns(engine: AsyncEngine) -> None:
+    """Ensures user_id column exists on all domain tables and profiles table is created."""
+    tables = [
+        "leads", "discovery_runs", "campaign_groups", "campaigns", 
+        "conversations", "messages", "scraper_jobs", "whatsapp_sessions", "blacklist"
+    ]
+    if engine.dialect.name == "sqlite":
+        async with engine.begin() as conn:
+            # Create profiles table if not exists
+            await conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS profiles (
+                    id VARCHAR(36) PRIMARY KEY,
+                    email VARCHAR(255) NOT NULL,
+                    full_name VARCHAR(255),
+                    avatar_url VARCHAR(500),
+                    plan_tier VARCHAR(50) DEFAULT 'STARTER',
+                    leads_monthly_limit INTEGER DEFAULT 50,
+                    leads_used_this_month INTEGER DEFAULT 0,
+                    messages_daily_limit INTEGER DEFAULT 20,
+                    created_at TIMESTAMP,
+                    updated_at TIMESTAMP
+                )
+            """))
+
+            for tbl in tables:
+                exists = await conn.execute(
+                    text(f"SELECT name FROM sqlite_master WHERE type='table' AND name='{tbl}'")
+                )
+                if exists.first() is not None:
+                    info_rows = (await conn.execute(text(f"PRAGMA table_info({tbl})"))).fetchall()
+                    columns = _sqlite_columns(info_rows)
+                    if "user_id" not in columns:
+                        await conn.execute(text(f"ALTER TABLE {tbl} ADD COLUMN user_id VARCHAR(36)"))
+                        await conn.execute(text(f"CREATE INDEX IF NOT EXISTS ix_{tbl}_user_id ON {tbl} (user_id)"))
+                        logger.info(f"[MIGRATION] Added {tbl}.user_id")
+    elif engine.dialect.name == "postgresql":
+        async with engine.begin() as conn:
+            for tbl in tables:
+                await conn.execute(text(f"ALTER TABLE {tbl} ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE"))
+                await conn.execute(text(f"CREATE INDEX IF NOT EXISTS ix_{tbl}_user_id ON {tbl} (user_id)"))
+
+
 def _create_leads_only(sync_conn: Any) -> None:
     """Yalnızca `leads` tablosunu model metadata'sından oluşturur."""
     from backend.app.core.database import Base

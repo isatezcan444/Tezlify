@@ -20,6 +20,7 @@ import {
   CampaignGroupDetail,
   CampaignGroupCreatePayload,
   AddLeadsToGroupResponse,
+  UserProfile,
 } from '../types';
 
 const isHttps = typeof window !== 'undefined' && window.location.protocol === 'https:';
@@ -77,10 +78,26 @@ function resolveWsUrl(): string {
 export const API_BASE = resolveApiBase();
 export const WS_URL = resolveWsUrl();
 
+let currentAuthToken: string | null = null;
+
+export async function authFetch(url: string, options: RequestInit = {}): Promise<Response> {
+  const headers = new Headers(options.headers || {});
+  if (currentAuthToken && !headers.has('Authorization')) {
+    headers.set('Authorization', `Bearer ${currentAuthToken}`);
+  }
+  return fetch(url, { ...options, headers });
+}
+
 export class ApiClient {
+  static setAuthToken(token: string | null) {
+    currentAuthToken = token;
+  }
+  static getAuthToken(): string | null {
+    return currentAuthToken;
+  }
   // --- Analytics ---
   static async getDashboardStats(): Promise<DashboardStats> {
-    const res = await fetch(`${API_BASE}/analytics/dashboard`);
+    const res = await authFetch(`${API_BASE}/analytics/dashboard`);
     if (!res.ok) throw new Error('Failed to fetch dashboard stats');
     return res.json();
   }
@@ -114,25 +131,25 @@ export class ApiClient {
     if (params.status) query.set('status', params.status);
     if (params.whatsapp_eligible_only) query.set('whatsapp_eligible_only', 'true');
 
-    const res = await fetch(`${API_BASE}/leads?${query.toString()}`);
+    const res = await authFetch(`${API_BASE}/leads?${query.toString()}`);
     if (!res.ok) throw new Error('Failed to fetch leads');
     return res.json();
   }
 
   static async getLead(id: number): Promise<Lead> {
-    const res = await fetch(`${API_BASE}/leads/${id}`);
+    const res = await authFetch(`${API_BASE}/leads/${id}`);
     if (!res.ok) throw new Error('Lead detayı yüklenemedi');
     return res.json();
   }
 
   static async getLeadCategories(): Promise<string[]> {
-    const res = await fetch(`${API_BASE}/leads/categories`);
+    const res = await authFetch(`${API_BASE}/leads/categories`);
     if (!res.ok) return [];
     return res.json();
   }
 
   static async createLead(lead: Partial<Lead>): Promise<Lead> {
-    const res = await fetch(`${API_BASE}/leads`, {
+    const res = await authFetch(`${API_BASE}/leads`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(lead)
@@ -145,7 +162,7 @@ export class ApiClient {
   }
 
   static async updateLead(id: number, lead: Partial<Lead>): Promise<Lead> {
-    const res = await fetch(`${API_BASE}/leads/${id}`, {
+    const res = await authFetch(`${API_BASE}/leads/${id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(lead)
@@ -155,7 +172,7 @@ export class ApiClient {
   }
 
   static async deleteLead(id: number): Promise<void> {
-    const res = await fetch(`${API_BASE}/leads/${id}`, { method: 'DELETE' });
+    const res = await authFetch(`${API_BASE}/leads/${id}`, { method: 'DELETE' });
     if (!res.ok) throw new Error('Lead silinemedi');
   }
 
@@ -169,7 +186,7 @@ export class ApiClient {
     status?: string;
     whatsapp_eligible_only?: boolean;
   }): Promise<{ deleted_count: number }> {
-    const res = await fetch(`${API_BASE}/leads/bulk-delete`, {
+    const res = await authFetch(`${API_BASE}/leads/bulk-delete`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
@@ -189,7 +206,7 @@ export class ApiClient {
     status?: string;
     whatsapp_eligible_only?: boolean;
   }): Promise<{ blacklisted_count: number; leads_updated: number }> {
-    const res = await fetch(`${API_BASE}/leads/bulk-blacklist`, {
+    const res = await authFetch(`${API_BASE}/leads/bulk-blacklist`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
@@ -199,7 +216,7 @@ export class ApiClient {
   }
 
   static async exportCsv(filters: any = {}): Promise<void> {
-    const res = await fetch(`${API_BASE}/leads/export/csv`, {
+    const res = await authFetch(`${API_BASE}/leads/export/csv`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(filters)
@@ -219,7 +236,7 @@ export class ApiClient {
   }
 
   static async exportExcel(filters: any = {}): Promise<void> {
-    const res = await fetch(`${API_BASE}/leads/export/excel`, {
+    const res = await authFetch(`${API_BASE}/leads/export/excel`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(filters)
@@ -240,7 +257,7 @@ export class ApiClient {
 
   // --- Scraper ---
   static async startScraper(params: { keyword: string; city: string; districts: string[]; max_results: number }): Promise<ScraperJob> {
-    const res = await fetch(`${API_BASE}/scraper/run`, {
+    const res = await authFetch(`${API_BASE}/scraper/run`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(params)
@@ -253,7 +270,7 @@ export class ApiClient {
   }
 
   static async cancelScraper(jobId: number): Promise<ScraperJob> {
-    const res = await fetch(`${API_BASE}/scraper/cancel/${jobId}`, {
+    const res = await authFetch(`${API_BASE}/scraper/cancel/${jobId}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' }
     });
@@ -262,19 +279,19 @@ export class ApiClient {
   }
 
   static async getScraperJobs(): Promise<ScraperJob[]> {
-    const res = await fetch(`${API_BASE}/scraper/jobs`);
+    const res = await authFetch(`${API_BASE}/scraper/jobs`);
     if (!res.ok) throw new Error('Failed to fetch scraper jobs');
     return res.json();
   }
 
   static async getScraperJob(jobId: number): Promise<ScraperJob> {
-    const res = await fetch(`${API_BASE}/scraper/jobs/${jobId}`);
+    const res = await authFetch(`${API_BASE}/scraper/jobs/${jobId}`);
     if (!res.ok) throw new Error('Failed to fetch scraper job details');
     return res.json();
   }
 
   static async saveScraperLeads(jobId: number, leads: any[]): Promise<{ job_id: number; saved: any[]; new_count: number; updated_count: number }> {
-    const res = await fetch(`${API_BASE}/scraper/jobs/${jobId}/save`, {
+    const res = await authFetch(`${API_BASE}/scraper/jobs/${jobId}/save`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ leads })
@@ -288,13 +305,13 @@ export class ApiClient {
 
   // --- Campaigns ---
   static async getCampaigns(): Promise<Campaign[]> {
-    const res = await fetch(`${API_BASE}/campaigns`);
+    const res = await authFetch(`${API_BASE}/campaigns`);
     if (!res.ok) throw new Error('Failed to fetch campaigns');
     return res.json();
   }
 
   static async createCampaign(campaign: Partial<Campaign>): Promise<Campaign> {
-    const res = await fetch(`${API_BASE}/campaigns`, {
+    const res = await authFetch(`${API_BASE}/campaigns`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(campaign)
@@ -304,7 +321,7 @@ export class ApiClient {
   }
 
   static async deleteCampaign(campaignId: number): Promise<void> {
-    const res = await fetch(`${API_BASE}/campaigns/${campaignId}`, {
+    const res = await authFetch(`${API_BASE}/campaigns/${campaignId}`, {
       method: 'DELETE'
     });
     if (!res.ok) {
@@ -314,7 +331,7 @@ export class ApiClient {
   }
 
   static async bulkDeleteCampaigns(campaignIds: number[]): Promise<{ deleted_count: number; message: string }> {
-    const res = await fetch(`${API_BASE}/campaigns/bulk-delete`, {
+    const res = await authFetch(`${API_BASE}/campaigns/bulk-delete`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ campaign_ids: campaignIds }),
@@ -328,19 +345,19 @@ export class ApiClient {
 
   // --- Campaign Groups ---
   static async getCampaignGroups(): Promise<CampaignGroup[]> {
-    const res = await fetch(`${API_BASE}/campaign-groups`);
+    const res = await authFetch(`${API_BASE}/campaign-groups`);
     if (!res.ok) throw new Error('Kampanya grupları yüklenemedi');
     return res.json();
   }
 
   static async getCampaignGroup(id: number): Promise<CampaignGroupDetail> {
-    const res = await fetch(`${API_BASE}/campaign-groups/${id}`);
+    const res = await authFetch(`${API_BASE}/campaign-groups/${id}`);
     if (!res.ok) throw new Error('Kampanya grubu detayı yüklenemedi');
     return res.json();
   }
 
   static async createCampaignGroup(data: CampaignGroupCreatePayload): Promise<CampaignGroup> {
-    const res = await fetch(`${API_BASE}/campaign-groups`, {
+    const res = await authFetch(`${API_BASE}/campaign-groups`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
@@ -353,7 +370,7 @@ export class ApiClient {
   }
 
   static async updateCampaignGroup(id: number, data: Partial<CampaignGroupCreatePayload>): Promise<CampaignGroup> {
-    const res = await fetch(`${API_BASE}/campaign-groups/${id}`, {
+    const res = await authFetch(`${API_BASE}/campaign-groups/${id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
@@ -366,7 +383,7 @@ export class ApiClient {
   }
 
   static async deleteCampaignGroup(id: number): Promise<void> {
-    const res = await fetch(`${API_BASE}/campaign-groups/${id}`, {
+    const res = await authFetch(`${API_BASE}/campaign-groups/${id}`, {
       method: 'DELETE',
     });
     if (!res.ok) {
@@ -376,7 +393,7 @@ export class ApiClient {
   }
 
   static async bulkDeleteCampaignGroups(groupIds: number[]): Promise<{ deleted_count: number; message: string }> {
-    const res = await fetch(`${API_BASE}/campaign-groups/bulk-delete`, {
+    const res = await authFetch(`${API_BASE}/campaign-groups/bulk-delete`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ group_ids: groupIds }),
@@ -389,7 +406,7 @@ export class ApiClient {
   }
 
   static async addLeadsToCampaignGroup(groupId: number, leadIds: number[]): Promise<AddLeadsToGroupResponse> {
-    const res = await fetch(`${API_BASE}/campaign-groups/${groupId}/leads`, {
+    const res = await authFetch(`${API_BASE}/campaign-groups/${groupId}/leads`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ lead_ids: leadIds }),
@@ -405,7 +422,7 @@ export class ApiClient {
     groupId: number,
     leadId: number
   ): Promise<{ message: string; total_leads_count: number; whatsapp_eligible_count: number }> {
-    const res = await fetch(`${API_BASE}/campaign-groups/${groupId}/leads/${leadId}`, {
+    const res = await authFetch(`${API_BASE}/campaign-groups/${groupId}/leads/${leadId}`, {
       method: 'DELETE',
     });
     if (!res.ok) {
@@ -416,7 +433,7 @@ export class ApiClient {
   }
 
   static async generateCampaignMessage(payload: GenerateMessagePayload): Promise<GenerateMessageResponse> {
-    const res = await fetch(`${API_BASE}/campaigns/generate-message`, {
+    const res = await authFetch(`${API_BASE}/campaigns/generate-message`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
@@ -429,7 +446,7 @@ export class ApiClient {
   }
 
   static async previewSpintax(template: string, count: number = 5): Promise<{ permutations_count: number; samples: string[] }> {
-    const res = await fetch(`${API_BASE}/campaigns/spintax/preview`, {
+    const res = await authFetch(`${API_BASE}/campaigns/spintax/preview`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ template, count })
@@ -439,7 +456,7 @@ export class ApiClient {
   }
 
   static async launchCampaign(campaignId: number, params: { lead_ids?: number[]; limit?: number } = {}): Promise<any> {
-    const res = await fetch(`${API_BASE}/campaigns/${campaignId}/launch`, {
+    const res = await authFetch(`${API_BASE}/campaigns/${campaignId}/launch`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(params)
@@ -452,7 +469,7 @@ export class ApiClient {
   }
 
   static async pauseCampaign(campaignId: number): Promise<any> {
-    const res = await fetch(`${API_BASE}/campaigns/${campaignId}/pause`, {
+    const res = await authFetch(`${API_BASE}/campaigns/${campaignId}/pause`, {
       method: 'POST'
     });
     if (!res.ok) throw new Error('Kampanya duraklatılamadı');
@@ -461,13 +478,13 @@ export class ApiClient {
 
   // --- Settings & Anti-Ban Suite ---
   static async getAntiBanSettings(): Promise<AntiBanConfig> {
-    const res = await fetch(`${API_BASE}/settings/antiban`);
+    const res = await authFetch(`${API_BASE}/settings/antiban`);
     if (!res.ok) throw new Error('Anti-ban ayarları alınamadı');
     return res.json();
   }
 
   static async updateAntiBanSettings(settings: Partial<AntiBanConfig>): Promise<AntiBanConfig> {
-    const res = await fetch(`${API_BASE}/settings/antiban`, {
+    const res = await authFetch(`${API_BASE}/settings/antiban`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(settings)
@@ -478,13 +495,13 @@ export class ApiClient {
 
   // --- WhatsApp ---
   static async getWhatsAppSessions(): Promise<WhatsAppSession[]> {
-    const res = await fetch(`${API_BASE}/whatsapp/sessions`);
+    const res = await authFetch(`${API_BASE}/whatsapp/sessions`);
     if (!res.ok) throw new Error('Failed to fetch WhatsApp sessions');
     return res.json();
   }
 
   static async createWhatsAppSession(name: string, maxDailyLimit: number = 50): Promise<WhatsAppSession> {
-    const res = await fetch(`${API_BASE}/whatsapp/sessions`, {
+    const res = await authFetch(`${API_BASE}/whatsapp/sessions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ session_name: name, max_daily_limit: maxDailyLimit })
@@ -497,7 +514,7 @@ export class ApiClient {
   }
 
   static async simulateConnectSession(sessionId: number): Promise<any> {
-    const res = await fetch(`${API_BASE}/whatsapp/sessions/${sessionId}/connect-demo`, {
+    const res = await authFetch(`${API_BASE}/whatsapp/sessions/${sessionId}/connect-demo`, {
       method: 'POST'
     });
     if (!res.ok) throw new Error('Oturum bağlanamadı');
@@ -505,7 +522,7 @@ export class ApiClient {
   }
 
   static async disconnectSession(sessionId: number): Promise<any> {
-    const res = await fetch(`${API_BASE}/whatsapp/sessions/${sessionId}/disconnect`, {
+    const res = await authFetch(`${API_BASE}/whatsapp/sessions/${sessionId}/disconnect`, {
       method: 'POST'
     });
     if (!res.ok) throw new Error('Oturum kesilemedi');
@@ -513,14 +530,14 @@ export class ApiClient {
   }
 
   static async deleteSession(sessionId: number): Promise<void> {
-    const res = await fetch(`${API_BASE}/whatsapp/sessions/${sessionId}`, {
+    const res = await authFetch(`${API_BASE}/whatsapp/sessions/${sessionId}`, {
       method: 'DELETE'
     });
     if (!res.ok) throw new Error('Oturum silinemedi');
   }
 
   static async sendTestMessage(phone: string, message: string, sessionId?: number): Promise<any> {
-    const res = await fetch(`${API_BASE}/whatsapp/send-test`, {
+    const res = await authFetch(`${API_BASE}/whatsapp/send-test`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ phone_e164: phone, message, session_id: sessionId })
@@ -537,7 +554,7 @@ export class ApiClient {
   }
 
   static async getMessageLogs(): Promise<MessageLog[]> {
-    const res = await fetch(`${API_BASE}/whatsapp/logs`);
+    const res = await authFetch(`${API_BASE}/whatsapp/logs`);
     if (!res.ok) throw new Error('Failed to fetch message logs');
     return res.json();
   }
@@ -563,7 +580,7 @@ export class ApiClient {
   }
 
   static async addToBlacklist(phone: string, reason: string = 'USER_REQUEST'): Promise<BlacklistEntry> {
-    const res = await fetch(`${API_BASE}/blacklist`, {
+    const res = await authFetch(`${API_BASE}/blacklist`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ phone_e164: phone, reason })
@@ -580,7 +597,7 @@ export class ApiClient {
   }
 
   static async removeFromBlacklist(id: number): Promise<void> {
-    const res = await fetch(`${API_BASE}/blacklist/${id}`, { method: 'DELETE' });
+    const res = await authFetch(`${API_BASE}/blacklist/${id}`, { method: 'DELETE' });
     if (!res.ok) throw new Error('Numara kara listeden silinemedi');
   }
 
@@ -591,7 +608,7 @@ export class ApiClient {
     reason?: string;
   } | number[]): Promise<{ deleted_count: number }> {
     const body = Array.isArray(payload) ? { ids: payload } : payload;
-    const res = await fetch(`${API_BASE}/blacklist/bulk-delete`, {
+    const res = await authFetch(`${API_BASE}/blacklist/bulk-delete`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
@@ -614,7 +631,7 @@ export class ApiClient {
     if (params?.search) query.set('search', params.search);
     if (params?.limit) query.set('limit', params.limit.toString());
     if (params?.offset) query.set('offset', params.offset.toString());
-    const res = await fetch(`${API_BASE}/conversations?${query.toString()}`);
+    const res = await authFetch(`${API_BASE}/conversations?${query.toString()}`);
     if (!res.ok) throw new Error('Konuşmalar yüklenemedi');
     return res.json();
   }
@@ -623,7 +640,7 @@ export class ApiClient {
     conversationId: number,
     status: ConversationStatus
   ): Promise<Conversation> {
-    const res = await fetch(`${API_BASE}/conversations/${conversationId}/status`, {
+    const res = await authFetch(`${API_BASE}/conversations/${conversationId}/status`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ status }),
@@ -640,7 +657,7 @@ export class ApiClient {
     if (params?.limit) query.set('limit', params.limit.toString());
     if (params?.before) query.set('before', params.before.toString());
     const qStr = query.toString() ? `?${query.toString()}` : '';
-    const res = await fetch(`${API_BASE}/conversations/${conversationId}${qStr}`);
+    const res = await authFetch(`${API_BASE}/conversations/${conversationId}${qStr}`);
     if (!res.ok) throw new Error('Konuşma detayı yüklenemedi');
     return res.json();
   }
@@ -653,7 +670,7 @@ export class ApiClient {
     if (params?.limit) query.set('limit', params.limit.toString());
     if (params?.before) query.set('before', params.before.toString());
     const qStr = query.toString() ? `?${query.toString()}` : '';
-    const res = await fetch(`${API_BASE}/conversations/${conversationId}/messages${qStr}`);
+    const res = await authFetch(`${API_BASE}/conversations/${conversationId}/messages${qStr}`);
     if (!res.ok) throw new Error('Mesajlar yüklenemedi');
     return res.json();
   }
@@ -667,7 +684,7 @@ export class ApiClient {
     if (idempotencyKey) {
       headers['X-Idempotency-Key'] = idempotencyKey;
     }
-    const res = await fetch(`${API_BASE}/conversations/${conversationId}/messages`, {
+    const res = await authFetch(`${API_BASE}/conversations/${conversationId}/messages`, {
       method: 'POST',
       headers,
       body: JSON.stringify({ body, type: 'text' }),
@@ -687,13 +704,13 @@ export class ApiClient {
     if (params?.limit) query.set('limit', params.limit.toString());
     if (params?.before) query.set('before', params.before.toString());
     const qStr = query.toString() ? `?${query.toString()}` : '';
-    const res = await fetch(`${API_BASE}/conversations/lead/${leadId}${qStr}`);
+    const res = await authFetch(`${API_BASE}/conversations/lead/${leadId}${qStr}`);
     if (!res.ok) throw new Error('Lead konuşması yüklenemedi');
     return res.json();
   }
 
   static async getTemplates(): Promise<WhatsAppTemplate[]> {
-    const res = await fetch(`${API_BASE}/conversations/templates`);
+    const res = await authFetch(`${API_BASE}/conversations/templates`);
     if (!res.ok) throw new Error('Şablonlar yüklenemedi');
     return res.json();
   }
@@ -708,7 +725,7 @@ export class ApiClient {
     if (idempotencyKey) {
       headers['X-Idempotency-Key'] = idempotencyKey;
     }
-    const res = await fetch(`${API_BASE}/conversations/${conversationId}/templates/send`, {
+    const res = await authFetch(`${API_BASE}/conversations/${conversationId}/templates/send`, {
       method: 'POST',
       headers,
       body: JSON.stringify({ template_key: templateKey, variables }),
@@ -724,7 +741,7 @@ export class ApiClient {
     conversationId: number,
     messageId: number
   ): Promise<Message> {
-    const res = await fetch(`${API_BASE}/conversations/${conversationId}/messages/${messageId}/retry`, {
+    const res = await authFetch(`${API_BASE}/conversations/${conversationId}/messages/${messageId}/retry`, {
       method: 'POST',
     });
     if (!res.ok) {
@@ -743,7 +760,7 @@ export class ApiClient {
     if (idempotencyKey) {
       headers['X-Idempotency-Key'] = idempotencyKey;
     }
-    const res = await fetch(`${API_BASE}/conversations/${conversationId}/media`, {
+    const res = await authFetch(`${API_BASE}/conversations/${conversationId}/media`, {
       method: 'POST',
       headers,
       body: JSON.stringify(mediaData),
@@ -756,7 +773,7 @@ export class ApiClient {
   }
 
   static async markConversationAsRead(conversationId: number): Promise<Conversation> {
-    const res = await fetch(`${API_BASE}/conversations/${conversationId}/read`, {
+    const res = await authFetch(`${API_BASE}/conversations/${conversationId}/read`, {
       method: 'POST',
     });
     if (!res.ok) throw new Error('Konuşma okundu olarak işaretlenemedi');
@@ -764,7 +781,7 @@ export class ApiClient {
   }
 
   static async markLeadConversationAsRead(leadId: number): Promise<Conversation> {
-    const res = await fetch(`${API_BASE}/conversations/lead/${leadId}/read`, {
+    const res = await authFetch(`${API_BASE}/conversations/lead/${leadId}/read`, {
       method: 'POST',
     });
     if (!res.ok) throw new Error('Lead konuşması okundu olarak işaretlenemedi');
@@ -778,7 +795,7 @@ export class ApiClient {
     business_goal?: string;
     target_sector_hint?: string;
   }): Promise<import('../types').CategoryRecommendationResponse> {
-    const res = await fetch(`${API_BASE}/smart-outreach/recommend-categories`, {
+    const res = await authFetch(`${API_BASE}/smart-outreach/recommend-categories`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
@@ -800,7 +817,7 @@ export class ApiClient {
     category_filter?: string;
     min_fit_score?: number;
   }): Promise<import('../types').MatchLeadsResponse> {
-    const res = await fetch(`${API_BASE}/smart-outreach/match-leads`, {
+    const res = await authFetch(`${API_BASE}/smart-outreach/match-leads`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
@@ -819,7 +836,7 @@ export class ApiClient {
     business_goal?: string;
     target_category?: string;
   }): Promise<import('../types').MessageRecommendationResponse> {
-    const res = await fetch(`${API_BASE}/smart-outreach/recommend-message`, {
+    const res = await authFetch(`${API_BASE}/smart-outreach/recommend-message`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
@@ -841,7 +858,7 @@ export class ApiClient {
     user_added_categories?: string[];
     max_results_per_category?: number;
   }): Promise<{ status: string; approved_categories_count: number; job_ids: number[]; message: string }> {
-    const res = await fetch(`${API_BASE}/smart-outreach/start-targeted-discovery`, {
+    const res = await authFetch(`${API_BASE}/smart-outreach/start-targeted-discovery`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
@@ -850,6 +867,13 @@ export class ApiClient {
       const err = await res.json().catch(() => ({ detail: 'Hedefli arama başlatılamadı' }));
       throw new Error(err.detail || 'Hedefli arama başlatılamadı');
     }
+    return res.json();
+  }
+
+  // --- User Profile & Quota ---
+  static async getUserProfile(): Promise<UserProfile> {
+    const res = await authFetch(`${API_BASE}/auth/me`);
+    if (!res.ok) throw new Error('Profil bilgisi alınamadı');
     return res.json();
   }
 }
@@ -870,7 +894,8 @@ export function createWebSocket(
   function connect() {
     if (isManuallyClosed) return;
     try {
-      ws = new WebSocket(WS_URL);
+      const wsUrlWithAuth = currentAuthToken ? `${WS_URL}${WS_URL.includes('?') ? '&' : '?'}token=${encodeURIComponent(currentAuthToken)}` : WS_URL;
+      ws = new WebSocket(wsUrlWithAuth);
 
       ws.onopen = () => {
         console.log('[Tezlify WS] Connected to realtime event stream');

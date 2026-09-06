@@ -14,6 +14,8 @@ import { BlacklistPage } from './pages/BlacklistPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { ApiClient, createWebSocket } from './api/client';
 import { DashboardStats } from './types';
+import { AuthProvider, useAuth } from './context/AuthContext';
+import { LoginPage } from './pages/LoginPage';
 
 const AppContent: React.FC = () => {
   const [activeTab, setActiveTab] = useState('dashboard');
@@ -212,12 +214,40 @@ const AppContent: React.FC = () => {
   );
 };
 
+const AuthGate: React.FC = () => {
+  const { user, loading } = useAuth();
+
+  if (loading) {
+    return (
+      <div className="min-h-screen w-full flex items-center justify-center bg-slate-50 dark:bg-slate-950">
+        <div className="flex flex-col items-center gap-4">
+          <div className="w-12 h-12 rounded-xl bg-gradient-to-tr from-primary-600 to-indigo-500 text-white flex items-center justify-center text-xl font-black shadow-lg shadow-primary-500/25 animate-pulse">
+            T
+          </div>
+          <div className="flex items-center gap-2 text-xs font-semibold text-slate-500 dark:text-slate-400">
+            <div className="w-2 h-2 rounded-full bg-primary-500 animate-ping" />
+            <span>Tezlify yükleniyor...</span>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <LoginPage />;
+  }
+
+  return <AppContent />;
+};
+
 export const App: React.FC = () => {
   return (
     <ThemeProvider>
       <I18nProvider>
         <ToastProvider>
-          <AppContent />
+          <AuthProvider>
+            <AuthGate />
+          </AuthProvider>
         </ToastProvider>
       </I18nProvider>
     </ThemeProvider>

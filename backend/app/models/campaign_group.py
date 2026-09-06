@@ -17,6 +17,7 @@ class CampaignGroup(Base):
     __tablename__ = "campaign_groups"
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    user_id = Column(String(36), nullable=True, index=True)
     name = Column(String(200), nullable=False, index=True)
     description = Column(Text, nullable=True)
     

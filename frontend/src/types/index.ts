@@ -388,3 +388,17 @@ export interface MessageRecommendationResponse {
   alternative_message?: string;
 }
 
+export type PlanTier = 'STARTER' | 'PRO' | 'AGENCY';
+
+export interface UserProfile {
+  id: string;
+  email: string;
+  full_name?: string;
+  avatar_url?: string;
+  plan_tier: PlanTier;
+  leads_monthly_limit: number;
+  leads_used_this_month: number;
+  messages_daily_limit: number;
+  created_at: string;
+}
+

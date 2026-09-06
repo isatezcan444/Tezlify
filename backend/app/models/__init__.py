@@ -11,6 +11,7 @@ from backend.app.models.discovery_run import DiscoveryRun, DiscoveryRunStatus
 from backend.app.models.system_settings import SystemSetting
 from backend.app.models.conversation import Conversation, ConversationStatus
 from backend.app.models.message import Message, MessageDirection, MessageType, ConversationMessageStatus
+from backend.app.models.profile import Profile
 
 __all__ = [
     "Base",
@@ -38,4 +39,5 @@ __all__ = [
     "MessageDirection",
     "MessageType",
     "ConversationMessageStatus",
+    "Profile",
 ]

@@ -5,6 +5,7 @@ from sqlalchemy import select, func, or_, delete, insert
 from sqlalchemy.exc import IntegrityError
 
 from backend.app.core.database import get_db
+from backend.app.core.auth import AuthUser, get_current_user
 from backend.app.core.search_utils import build_tr_search_filter, generate_tr_search_terms
 from backend.app.models.lead import Lead, LeadStatus
 from backend.app.models.blacklist import Blacklist
@@ -108,10 +109,16 @@ async def list_leads(
     categories: Optional[List[str]] = Query(None),
     status: Optional[LeadStatus] = None,
     whatsapp_eligible_only: bool = False,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
 ):
     query = select(Lead)
     count_query = select(func.count(Lead.id))
+
+    # Multi-tenancy filter: own leads + legacy/demo rows without user_id
+    user_filter = or_(Lead.user_id == current_user.id, Lead.user_id.is_(None))
+    query = query.where(user_filter)
+    count_query = count_query.where(user_filter)
 
     conditions = build_lead_filter_conditions(
         search=search,
@@ -175,7 +182,11 @@ async def get_distinct_cities(db: AsyncSession = Depends(get_db)):
 
 
 @router.post("", response_model=LeadResponse, status_code=201)
-async def create_lead(lead_in: LeadCreate, db: AsyncSession = Depends(get_db)):
+async def create_lead(
+    lead_in: LeadCreate, 
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+):
     phone_data = PhoneService.normalize_to_e164(lead_in.phone)
     if not phone_data or not phone_data["is_valid"]:
         raise HTTPException(status_code=400, detail="Geçersiz telefon numarası.")
@@ -187,7 +198,10 @@ async def create_lead(lead_in: LeadCreate, db: AsyncSession = Depends(get_db)):
     if bl_res.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="Bu numara kara listede bulunmaktadır.")
 
-    existing_stmt = select(Lead).where(Lead.phone_e164 == e164)
+    existing_stmt = select(Lead).where(
+        Lead.phone_e164 == e164,
+        or_(Lead.user_id == current_user.id, Lead.user_id.is_(None))
+    )
     existing_res = await db.execute(existing_stmt)
     if existing_res.scalar_one_or_none():
         raise HTTPException(status_code=409, detail="Bu numara ile kayıtlı bir müşteri adayı zaten mevcut.")
@@ -209,7 +223,8 @@ async def create_lead(lead_in: LeadCreate, db: AsyncSession = Depends(get_db)):
         search_keyword=lead_in.search_keyword,
         search_location=lead_in.search_location,
         notes=lead_in.notes,
-        status=LeadStatus.NEW
+        status=LeadStatus.NEW,
+        user_id=current_user.id,
     )
     db.add(lead)
     await db.commit()
@@ -218,8 +233,17 @@ async def create_lead(lead_in: LeadCreate, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/{lead_id}", response_model=LeadResponse)
-async def get_lead(lead_id: int, db: AsyncSession = Depends(get_db)):
-    lead = await db.get(Lead, lead_id)
+async def get_lead(
+    lead_id: int, 
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+):
+    stmt = select(Lead).where(
+        Lead.id == lead_id,
+        or_(Lead.user_id == current_user.id, Lead.user_id.is_(None))
+    )
+    res = await db.execute(stmt)
+    lead = res.scalar_one_or_none()
     if not lead:
         raise HTTPException(status_code=404, detail="Müşteri adayı bulunamadı")
     return lead

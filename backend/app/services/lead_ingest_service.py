@@ -44,6 +44,7 @@ class LeadIngestService:
         search_keyword: Optional[str] = None,
         search_location: Optional[str] = None,
         progress_callback: Optional[Callable[[int, int], Awaitable[None]]] = None,
+        user_id: Optional[str] = None,
     ) -> Tuple[List[Lead], int, int]:
         """
         Processes and saves raw leads into the database.
@@ -225,6 +226,7 @@ class LeadIngestService:
                     raw, name, e164, phone_data, is_wa_eligible,
                     is_verified, is_blacklisted, source,
                     search_keyword, search_location,
+                    user_id=user_id,
                 )
                 transient = Lead(**values)
                 register_created(transient, raw, transient.phone_e164)
@@ -381,7 +383,7 @@ class LeadIngestService:
         "verified_by", "phone", "phone_e164", "is_mobile", "is_whatsapp_eligible",
         "address", "city", "district", "latitude", "longitude", "website",
         "rating", "reviews_count", "place_id", "search_keyword", "search_location",
-        "source", "status", "custom_data",
+        "source", "status", "custom_data", "user_id",
     )
 
     @classmethod
@@ -397,6 +399,7 @@ class LeadIngestService:
         source: str,
         search_keyword: Optional[str],
         search_location: Optional[str],
+        user_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Builds the column-value dict for a brand-new lead row.
 
@@ -444,6 +447,7 @@ class LeadIngestService:
             "source": _trunc(source, 50),
             "status": initial_status,
             "custom_data": cls._initial_custom_data(raw),
+            "user_id": user_id,
         }
 
     @staticmethod

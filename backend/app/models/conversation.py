@@ -19,6 +19,7 @@ class Conversation(Base):
     __tablename__ = "conversations"
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    user_id = Column(String(36), nullable=True, index=True)
     lead_id = Column(Integer, ForeignKey("leads.id", ondelete="CASCADE"), nullable=False, index=True)
     channel = Column(String(30), default="WHATSAPP", nullable=False, index=True)
     status = Column(Enum(ConversationStatus), default=ConversationStatus.ACTIVE, nullable=False, index=True)

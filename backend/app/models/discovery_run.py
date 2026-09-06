@@ -28,6 +28,7 @@ class DiscoveryRun(Base):
     __tablename__ = "discovery_runs"
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    user_id = Column(String(36), nullable=True, index=True)
 
     # Intent Snapshot
     user_keyword = Column(String(200), nullable=False)

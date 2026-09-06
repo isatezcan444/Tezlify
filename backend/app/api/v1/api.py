@@ -11,10 +11,12 @@ from backend.app.api.v1.endpoints import (
     settings,
     smart_outreach,
     campaign_groups,
+    auth,
 )
 
 api_router = APIRouter()
 
+api_router.include_router(auth.router, prefix="/auth", tags=["Auth"])
 api_router.include_router(leads.router, prefix="/leads", tags=["Leads"])
 api_router.include_router(scraper.router, prefix="/scraper", tags=["Scraper"])
 api_router.include_router(campaigns.router, prefix="/campaigns", tags=["Campaigns"])

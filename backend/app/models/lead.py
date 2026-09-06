@@ -40,6 +40,7 @@ class Lead(Base):
     __tablename__ = "leads"
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    user_id = Column(String(36), nullable=True, index=True)
 
     # Business Details
     name = Column(String(255), nullable=False, index=True)
