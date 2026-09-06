@@ -838,6 +838,14 @@ export const tr = {
     monthlyLeadLimit: 'Aylık Lead Kotası',
     dailyMessageLimit: 'Günlük Mesaj Limiti',
     accountEmail: 'Google Hesabı',
+    brandTitle: 'Tezlify',
+    brandTagline: 'B2B Lead & WhatsApp Büyüme Motoru',
+    loginPrompt: 'Devam etmek için Google hesabınızla giriş yapın.',
+    badgeSecure: 'SSL Korumalı Güvenli Giriş',
+    badgeOAuth: 'Google OAuth 2.0',
+    pillLeads: 'Harita Madenciliği',
+    pillAntiBan: 'Anti-Ban Kalkanı',
+    pillAutomation: 'Otomatik WhatsApp',
   }
 };
 

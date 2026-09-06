@@ -838,6 +838,14 @@ export const en = {
     monthlyLeadLimit: 'Monthly Lead Quota',
     dailyMessageLimit: 'Daily Message Limit',
     accountEmail: 'Google Account',
+    brandTitle: 'Tezlify',
+    brandTagline: 'B2B Lead & WhatsApp Growth Engine',
+    loginPrompt: 'Sign in with your Google account to continue.',
+    badgeSecure: 'SSL Encrypted Secure Sign-In',
+    badgeOAuth: 'Google OAuth 2.0',
+    pillLeads: 'Live Maps Mining',
+    pillAntiBan: 'Anti-Ban Shield',
+    pillAutomation: 'Automated WhatsApp',
   }
 };
 
