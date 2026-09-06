@@ -2,6 +2,8 @@
 .env
 .env.*
 !.env.example
+!frontend/.env.production
+!frontend/.env.example
 
 # Antigravity Workspace Config with Tokens
 .agents/mcp_config.json

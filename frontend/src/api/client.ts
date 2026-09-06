@@ -25,9 +25,25 @@ import {
 const isHttps = typeof window !== 'undefined' && window.location.protocol === 'https:';
 const host = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
 const isRemoteHost = typeof window !== 'undefined' && host !== 'localhost' && host !== '127.0.0.1';
+const isVercel = typeof window !== 'undefined' && (host.endsWith('.vercel.app') || host.includes('vercel.app'));
+
+function sanitizeBackendUrl(rawUrl: string | undefined): string | undefined {
+  if (!rawUrl) return undefined;
+  // Automatically heal and rewrite any legacy or stale subdomain references
+  if (rawUrl.includes('scoutify') || rawUrl.includes('tezlify-kuv3') || rawUrl.includes('kuv3')) {
+    return rawUrl
+      .replace(/https?:\/\/[^\/]+/i, 'https://tezlify.onrender.com')
+      .replace(/wss?:\/\/[^\/]+/i, 'wss://tezlify.onrender.com');
+  }
+  return rawUrl;
+}
 
 function resolveApiBase(): string {
-  const envApi = import.meta.env?.VITE_API_URL as string | undefined;
+  // If hosted on Vercel, use same-origin proxy rewrite `/api/v1` for optimal reliability and no CORS overhead
+  if (isVercel) {
+    return '/api/v1';
+  }
+  const envApi = sanitizeBackendUrl(import.meta.env?.VITE_API_URL as string | undefined);
   if (envApi) {
     return envApi.endsWith('/api/v1') ? envApi : `${envApi.replace(/\/$/, '')}/api/v1`;
   }
@@ -38,14 +54,14 @@ function resolveApiBase(): string {
 }
 
 function resolveWsUrl(): string {
-  const envWs = import.meta.env?.VITE_WS_URL as string | undefined;
+  const envWs = sanitizeBackendUrl(import.meta.env?.VITE_WS_URL as string | undefined);
   if (envWs) {
     if (isHttps && envWs.startsWith('ws://')) {
       return envWs.replace(/^ws:\/\//i, 'wss://');
     }
     return envWs;
   }
-  const envApi = import.meta.env?.VITE_API_URL as string | undefined;
+  const envApi = sanitizeBackendUrl(import.meta.env?.VITE_API_URL as string | undefined);
   if (envApi) {
     const wsProto = envApi.startsWith('https://') || isHttps ? 'wss://' : 'ws://';
     const cleanHost = envApi.replace(/^https?:\/\//i, '').replace(/\/api\/v1\/?$/i, '').replace(/\/$/, '');
