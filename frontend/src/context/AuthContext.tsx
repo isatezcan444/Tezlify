@@ -41,10 +41,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           email: currentUser.email || '',
           full_name: currentUser.user_metadata?.full_name || currentUser.user_metadata?.name || '',
           avatar_url: currentUser.user_metadata?.avatar_url || currentUser.user_metadata?.picture || '',
-          plan_tier: 'STARTER',
-          leads_monthly_limit: 50,
+          plan_tier: 'DEVELOPER_PRO',
+          leads_monthly_limit: 999999,
           leads_used_this_month: 0,
-          messages_daily_limit: 20,
+          messages_daily_limit: 999999,
         };
 
         const { data: inserted, error: insertError } = await supabase
@@ -64,10 +64,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         email: currentUser.email || '',
         full_name: currentUser.user_metadata?.full_name || currentUser.user_metadata?.name || '',
         avatar_url: currentUser.user_metadata?.avatar_url || currentUser.user_metadata?.picture || '',
-        plan_tier: 'STARTER',
-        leads_monthly_limit: 50,
+        plan_tier: 'DEVELOPER_PRO',
+        leads_monthly_limit: 999999,
         leads_used_this_month: 0,
-        messages_daily_limit: 20,
+        messages_daily_limit: 999999,
         created_at: new Date().toISOString(),
       };
     } catch (err) {
@@ -77,10 +77,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         email: currentUser.email || '',
         full_name: currentUser.user_metadata?.full_name || currentUser.user_metadata?.name || '',
         avatar_url: currentUser.user_metadata?.avatar_url || currentUser.user_metadata?.picture || '',
-        plan_tier: 'STARTER',
-        leads_monthly_limit: 50,
+        plan_tier: 'DEVELOPER_PRO',
+        leads_monthly_limit: 999999,
         leads_used_this_month: 0,
-        messages_daily_limit: 20,
+        messages_daily_limit: 999999,
         created_at: new Date().toISOString(),
       };
     }

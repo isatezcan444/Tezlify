@@ -1,5 +1,5 @@
 import React from 'react';
-import { Search, Sun, Moon, Bell, Menu, Settings, LogOut, Sparkles } from 'lucide-react';
+import { Search, Sun, Moon, Bell, Menu, Settings, LogOut } from 'lucide-react';
 import { Button } from '../ui/button';
 import { useTheme } from '../../context/ThemeContext';
 import { useI18n } from '../../context/I18nContext';
@@ -32,9 +32,6 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
   const avatarUrl = profile?.avatar_url || user?.user_metadata?.avatar_url || user?.user_metadata?.picture;
   const initials = (userDisplayName.slice(0, 2) || 'TZ').toUpperCase();
 
-  const leadsUsed = profile?.leads_used_this_month ?? 0;
-  const leadsLimit = profile?.leads_monthly_limit ?? 50;
-
   return (
     <header className="sticky top-0 z-30 px-3.5 sm:px-6 lg:px-8 pt-3.5 sm:pt-6 pb-2 select-none">
       <div className="h-14 sm:h-16 px-3 sm:px-6 rounded-xl bg-white/95 dark:bg-[#2F3349]/95 backdrop-blur-xl border border-slate-200/80 dark:border-white/[0.08] shadow-sm flex items-center justify-between transition-colors duration-200 gap-2">
@@ -65,12 +62,6 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
 
         {/* Right Side: Quick Actions & Profile */}
         <div className="flex items-center space-x-1.5 sm:space-x-2.5 shrink-0">
-          {/* SaaS Quota Badge */}
-          <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-primary-500/25 bg-primary-500/10 text-primary-600 dark:text-primary-400 text-xs font-semibold">
-            <Sparkles className="w-3.5 h-3.5" />
-            <span>Kota: {leadsUsed}/{leadsLimit}</span>
-          </div>
-
           {onOpenQuickScrape && (
             <Button
               onClick={onOpenQuickScrape}

@@ -388,7 +388,7 @@ export interface MessageRecommendationResponse {
   alternative_message?: string;
 }
 
-export type PlanTier = 'STARTER' | 'PRO' | 'AGENCY';
+export type PlanTier = 'STARTER' | 'PRO' | 'AGENCY' | 'DEVELOPER_PRO' | 'UNLIMITED';
 
 export interface UserProfile {
   id: string;

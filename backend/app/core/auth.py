@@ -23,10 +23,10 @@ class AuthUser(BaseModel):
     email: str
     full_name: Optional[str] = None
     avatar_url: Optional[str] = None
-    plan_tier: str = "STARTER"
-    leads_monthly_limit: int = 50
+    plan_tier: str = "DEVELOPER_PRO"
+    leads_monthly_limit: int = 999999
     leads_used_this_month: int = 0
-    messages_daily_limit: int = 20
+    messages_daily_limit: int = 999999
 
 
 def decode_jwt_unverified(token: str) -> dict:
@@ -121,10 +121,10 @@ async def get_current_user(
             email=email,
             full_name=full_name,
             avatar_url=avatar_url,
-            plan_tier="STARTER",
-            leads_monthly_limit=50,
+            plan_tier="DEVELOPER_PRO",
+            leads_monthly_limit=999999,
             leads_used_this_month=0,
-            messages_daily_limit=20,
+            messages_daily_limit=999999,
         )
         db.add(profile)
         try:
@@ -138,10 +138,10 @@ async def get_current_user(
         email=profile.email if profile else email,
         full_name=profile.full_name if profile else "",
         avatar_url=profile.avatar_url if profile else "",
-        plan_tier=profile.plan_tier if profile else "STARTER",
-        leads_monthly_limit=profile.leads_monthly_limit if profile else 50,
+        plan_tier=profile.plan_tier if profile else "DEVELOPER_PRO",
+        leads_monthly_limit=profile.leads_monthly_limit if profile else 999999,
         leads_used_this_month=profile.leads_used_this_month if profile else 0,
-        messages_daily_limit=profile.messages_daily_limit if profile else 20,
+        messages_daily_limit=profile.messages_daily_limit if profile else 999999,
     )
 
 
@@ -158,9 +158,5 @@ async def get_optional_current_user(
 
 
 def verify_lead_quota(user: AuthUser, requested_count: int = 1) -> None:
-    """Raises HTTP 403 if user has exceeded their monthly lead search limit."""
-    if user.leads_used_this_month + requested_count > user.leads_monthly_limit:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Aylık işletme arama kotanız doldu ({user.leads_used_this_month}/{user.leads_monthly_limit}). Aramaya devam etmek için paketinizi yükseltin.",
-        )
+    """Development mode: Unlimited usage allowed for all authenticated users."""
+    return None

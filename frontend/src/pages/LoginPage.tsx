@@ -11,7 +11,6 @@ import {
   Sun, 
   Moon, 
   Languages, 
-  CheckCircle2, 
   ArrowRight,
   Lock
 } from 'lucide-react';
@@ -186,24 +185,6 @@ export const LoginPage: React.FC = () => {
               <div className="flex items-center justify-center gap-1.5 text-[11px] text-slate-500 dark:text-slate-400 pt-2">
                 <Lock className="w-3.5 h-3.5 text-emerald-500" />
                 <span>{t('auth.securityNote')}</span>
-              </div>
-            </div>
-
-            {/* Quick Pricing / Starter Perks */}
-            <div className="pt-4 border-t border-slate-100 dark:border-slate-800">
-              <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-100 dark:border-slate-800 flex items-center justify-between">
-                <div className="space-y-0.5">
-                  <span className="text-[10px] uppercase tracking-wider font-bold text-primary-600 dark:text-primary-400">
-                    {t('auth.starterPlan')}
-                  </span>
-                  <p className="text-xs font-semibold text-slate-800 dark:text-slate-200">
-                    50 Ücretsiz Lead / Ay
-                  </p>
-                </div>
-                <div className="flex items-center gap-1 text-[11px] font-bold text-emerald-600 dark:text-emerald-400">
-                  <CheckCircle2 className="w-4 h-4" />
-                  <span>Aktif</span>
-                </div>
               </div>
             </div>
 
