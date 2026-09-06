@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useCallback } from 'react';
+import React, { createContext, useContext, useState, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { 
   CheckCircle2, 
@@ -23,6 +23,7 @@ export interface ToastItem {
   type: ToastType;
   duration?: number;
 }
+
 
 export interface ConfirmDialogOptions {
   title: string;
@@ -164,20 +165,24 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
   };
 
+  const contextValue = useMemo(
+    () => ({
+      showToast,
+      removeToast,
+      success,
+      error,
+      warning,
+      info,
+      reply,
+      confirm,
+    }),
+    [showToast, removeToast, success, error, warning, info, reply, confirm]
+  );
+
   return (
-    <ToastContext.Provider
-      value={{
-        showToast,
-        removeToast,
-        success,
-        error,
-        warning,
-        info,
-        reply,
-        confirm,
-      }}
-    >
+    <ToastContext.Provider value={contextValue}>
       {children}
+
 
       {/* Floating Toast Notification Container */}
       {typeof document !== 'undefined' &&

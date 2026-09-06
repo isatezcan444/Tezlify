@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useMemo, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useCallback, useMemo, ReactNode } from 'react';
 import { Language, translations } from '../locales';
 
 interface I18nContextType {
@@ -22,12 +22,12 @@ export const I18nProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     return 'en'; // Default to English as requested
   });
 
-  const setLanguage = (lang: Language) => {
+  const setLanguage = useCallback((lang: Language) => {
     setLanguageState(lang);
     if (typeof window !== 'undefined') {
       localStorage.setItem(STORAGE_KEY, lang);
     }
-  };
+  }, []);
 
   // Nested translation resolver with parameter interpolation
   const t = useMemo(() => {
@@ -76,8 +76,13 @@ export const I18nProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     };
   }, [language]);
 
+  const contextValue = useMemo(
+    () => ({ language, setLanguage, t }),
+    [language, setLanguage, t]
+  );
+
   return (
-    <I18nContext.Provider value={{ language, setLanguage, t }}>
+    <I18nContext.Provider value={contextValue}>
       {children}
     </I18nContext.Provider>
   );

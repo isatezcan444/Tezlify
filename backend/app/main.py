@@ -117,10 +117,12 @@ async def websocket_endpoint(websocket: WebSocket):
             if data == "ping":
                 await websocket.send_text("pong")
     except WebSocketDisconnect:
-        ws_manager.disconnect(websocket)
+        pass
     except Exception as e:
         logger.warning(f"WebSocket exception: {e}")
+    finally:
         ws_manager.disconnect(websocket)
+
 
 
 # Include API Router
