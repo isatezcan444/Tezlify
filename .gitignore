@@ -29,6 +29,7 @@ node_modules/
 dist/
 build/
 .next/
+/package-lock.json
 
 # Logs & Playwright
 *.log

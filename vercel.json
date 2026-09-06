@@ -1,5 +1,5 @@
 {
-  "installCommand": "npm install",
+  "installCommand": "npm install --legacy-peer-deps --engine-strict=false",
   "buildCommand": "npm run build",
   "outputDirectory": "frontend/dist",
   "framework": "vite",
