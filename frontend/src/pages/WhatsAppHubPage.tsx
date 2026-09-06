@@ -349,7 +349,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       } catch (e) {
         // ignore transient poll error
       }
-    }, 3500);
+    }, 2000);
 
     return () => {
       isMounted = false;

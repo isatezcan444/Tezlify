@@ -95,11 +95,13 @@ async function getOrCreateSession(sessionName) {
         auth: state,
         printQRInTerminal: false,
         logger: pino({ level: 'silent' }),
-        browser: Browsers.macOS('Desktop'),
+        browser: Browsers.macOS('Chrome'),
         syncFullHistory: false,
+        markOnlineOnConnect: true,
         defaultQueryTimeoutMs: 60000,
         connectTimeoutMs: 60000,
-        generateHighQualityLinkPreview: false
+        generateHighQualityLinkPreview: false,
+        getMessage: async () => ({ conversation: '' })
     });
 
     sessionData.sock = sock;
@@ -190,12 +192,12 @@ async function getOrCreateSession(sessionName) {
 
         if (connection === 'close') {
             const statusCode = lastDisconnect?.error?.output?.statusCode;
-            const isLoggedOut = statusCode === DisconnectReason.loggedOut;
+            const isLoggedOut = statusCode === DisconnectReason.loggedOut; // 401
 
             console.log(`[WA-Gateway] Session ${sessionName} closed. Status code: ${statusCode}, LoggedOut: ${isLoggedOut}`);
 
-            const wasConnected = !!sessionData.phone;
-            if (isLoggedOut || (!wasConnected && (statusCode === 401 || statusCode === 403 || statusCode === 500))) {
+            if (isLoggedOut) {
+                // Permanently logged out from phone or session unlinked
                 sessionData.status = 'DISCONNECTED';
                 sessionData.phone = null;
                 sessionData.qr = null;
@@ -213,28 +215,23 @@ async function getOrCreateSession(sessionName) {
                     status: 'DISCONNECTED',
                     phone: null
                 });
-            } else if (wasConnected) {
-                // Was already connected previously: auto-reconnect to maintain online line
+            } else {
+                // CRITICAL: For restartRequired (515), connectionClosed (428), timedOut (408), etc.:
+                // NEVER delete sessionAuthDir!
+                // During QR pairing, WhatsApp sends new credentials then sends 515 (restartRequired).
+                // The socket must reconnect USING those saved credentials to finalize handshake.
+                const isRestartRequired = statusCode === DisconnectReason.restartRequired;
+                console.log(`[WA-Gateway] Reconnecting session ${sessionName} to finalize/maintain connection (status: ${statusCode})...`);
+
                 sessionData.status = 'CONNECTING';
+                activeSessions.delete(sessionName);
+
+                // Wait 1000ms for creds.update to flush to disk before reconnecting
                 setTimeout(() => {
-                    activeSessions.delete(sessionName);
                     getOrCreateSession(sessionName).catch(err => {
                         console.error(`[WA-Gateway] Reconnect failed for ${sessionName}:`, err.message);
                     });
-                }, 3000);
-            } else {
-                // Not connected yet (QR scan timeout): clean auth dir to ensure fresh crypto keys for next QR
-                setTimeout(() => {
-                    if (activeSessions.has(sessionName)) {
-                        activeSessions.delete(sessionName);
-                        try {
-                            fs.rmSync(sessionAuthDir, { recursive: true, force: true });
-                        } catch (e) {}
-                        getOrCreateSession(sessionName).catch(err => {
-                            console.error(`[WA-Gateway] QR refresh failed for ${sessionName}:`, err.message);
-                        });
-                    }
-                }, 2000);
+                }, isRestartRequired ? 1000 : 3000);
             }
         }
     });
@@ -381,11 +378,17 @@ async function restoreSavedSessions() {
         .map(dirent => dirent.name);
 
     for (const name of dirs) {
-        console.log(`[WA-Gateway] Restoring saved session: ${name}`);
-        try {
-            await getOrCreateSession(name);
-        } catch (err) {
-            console.error(`[WA-Gateway] Failed to restore session ${name}:`, err.message);
+        const credsPath = path.join(SESSIONS_DIR, name, 'creds.json');
+        if (fs.existsSync(credsPath)) {
+            try {
+                const creds = JSON.parse(fs.readFileSync(credsPath, 'utf8'));
+                if (creds.registered) {
+                    console.log(`[WA-Gateway] Restoring saved active session: ${name}`);
+                    await getOrCreateSession(name);
+                }
+            } catch (err) {
+                console.error(`[WA-Gateway] Failed to restore session ${name}:`, err.message);
+            }
         }
     }
 }
