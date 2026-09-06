@@ -152,5 +152,32 @@ class WhatsAppGatewayClient:
             logger.warning(f"[GatewayClient] delete_session error: {e}")
             return False
 
+    async def send_message(
+        self,
+        session_name: str,
+        phone: str,
+        message: str,
+        typing_delay_ms: int = 0
+    ) -> Dict[str, Any]:
+        """Dispatches an outbound message through an active Baileys session on wa-gateway."""
+        url = f"{self.gateway_url}/api/send"
+        payload = {
+            "session": session_name,
+            "phone": phone,
+            "message": message,
+            "typingDelayMs": typing_delay_ms,
+        }
+        try:
+            async with httpx.AsyncClient(timeout=self._get_timeout(5.0)) as client:
+                res = await client.post(url, json=payload, headers=self._headers())
+                if res.status_code == 200:
+                    self._last_unreachable_time = 0.0
+                    return res.json()
+                else:
+                    return {"success": False, "error": f"Gateway HTTP {res.status_code}: {res.text}"}
+        except Exception as e:
+            self._last_unreachable_time = time.monotonic()
+            return {"success": False, "error": f"Gateway unreachable: {str(e)}"}
+
 
 gateway_client = WhatsAppGatewayClient()

@@ -91,7 +91,7 @@ async function getOrCreateSession(sessionName) {
         printQRInTerminal: false,
         logger: pino({ level: 'silent' }),
         browser: Browsers.macOS('Desktop'),
-        syncFullHistory: false,
+        syncFullHistory: true,
         defaultQueryTimeoutMs: 60000,
         connectTimeoutMs: 60000
     });
@@ -100,6 +100,44 @@ async function getOrCreateSession(sessionName) {
 
     // Listen to credentials update
     sock.ev.on('creds.update', saveCreds);
+
+    // Listen to WhatsApp initial chat & message history synchronization
+    sock.ev.on('messaging-history.set', async ({ chats, contacts, messages }) => {
+        console.log(`[WA-Gateway] History sync received for ${sessionName}: ${chats?.length || 0} chats, ${messages?.length || 0} messages`);
+        try {
+            const validChats = (chats || [])
+                .filter(c => c.id && c.id.endsWith('@s.whatsapp.net'))
+                .map(c => ({
+                    id: c.id,
+                    phone: `+${c.id.split('@')[0]}`,
+                    name: c.name || ''
+                }));
+
+            const validMessages = (messages || [])
+                .map(m => {
+                    const remoteJid = m.key?.remoteJid || '';
+                    const text = extractMessageText(m.message);
+                    if (!remoteJid.endsWith('@s.whatsapp.net') || !text) return null;
+                    return {
+                        wa_message_id: m.key?.id,
+                        fromMe: !!m.key?.fromMe,
+                        phone: `+${remoteJid.split('@')[0]}`,
+                        message: text,
+                        timestamp: m.messageTimestamp
+                    };
+                })
+                .filter(Boolean);
+
+            if (validChats.length > 0 || validMessages.length > 0) {
+                await notifyBackend(sessionName, 'history-sync', {
+                    chats: validChats,
+                    messages: validMessages
+                });
+            }
+        } catch (err) {
+            console.warn(`[WA-Gateway] History sync dispatch failed for ${sessionName}:`, err.message);
+        }
+    });
 
     // Listen to connection state & QR generation
     sock.ev.on('connection.update', async (update) => {
@@ -173,30 +211,41 @@ async function getOrCreateSession(sessionName) {
         }
     });
 
-    // Listen to incoming messages from contacts
+    // Listen to live message events (inbound from contacts & outbound from user's phone)
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
-        if (type !== 'notify' || !messages || messages.length === 0) return;
+        if (!messages || messages.length === 0) return;
 
         for (const msg of messages) {
-            if (msg.key.fromMe) continue; // Ignore outbound messages sent by self
-
-            const remoteJid = msg.key.remoteJid || '';
+            const remoteJid = msg.key?.remoteJid || '';
             if (!remoteJid.endsWith('@s.whatsapp.net')) continue; // Ignore group chats, status updates
 
-            const senderDigits = remoteJid.split('@')[0];
-            const senderPhone = `+${senderDigits}`;
+            const contactDigits = remoteJid.split('@')[0];
+            const contactPhone = `+${contactDigits}`;
             const text = extractMessageText(msg.message);
 
             if (!text) continue;
 
-            console.log(`[WA-Gateway] Inbound message from ${senderPhone} on ${sessionName}: "${text}"`);
+            const fromMe = !!msg.key?.fromMe;
+            console.log(`[WA-Gateway] Message (${fromMe ? 'Outbound phone' : 'Inbound'}) for ${contactPhone} on ${sessionName}: "${text}"`);
 
-            await notifyBackend(sessionName, 'inbound', {
-                phone: senderPhone,
+            // Dispatch message-event webhook for full two-way chat synchronization
+            await notifyBackend(sessionName, 'message-event', {
+                fromMe: fromMe,
+                phone: contactPhone,
                 message: text,
                 wa_message_id: msg.key.id,
                 timestamp: msg.messageTimestamp
             });
+
+            // Backward compatibility for opt-out & lead reply processing
+            if (!fromMe) {
+                await notifyBackend(sessionName, 'inbound', {
+                    phone: contactPhone,
+                    message: text,
+                    wa_message_id: msg.key.id,
+                    timestamp: msg.messageTimestamp
+                });
+            }
         }
     });
 

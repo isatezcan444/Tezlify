@@ -21,9 +21,10 @@ from backend.app.models.message import (
     MessageType,
     ConversationMessageStatus,
 )
-from backend.app.models.lead import Lead
+from backend.app.models.whatsapp_session import WhatsAppSession, SessionStatus
 from backend.app.services.phone_service import PhoneService
 from backend.app.services.whatsapp_cloud_client import WhatsAppCloudApiClient
+from backend.app.services.whatsapp_gateway_client import gateway_client
 from backend.app.api.v1.websocket import ws_manager
 
 logger = logging.getLogger(__name__)
@@ -119,13 +120,30 @@ class WhatsAppOutboundService:
             f"+{raw_phone}" if not raw_phone.startswith("+") else raw_phone
         )
 
-        # 3b. Check 24-Hour Customer Window Enforcement
-        window_info = await cls.check_24h_window(conversation_id, db)
-        if not window_info["is_window_open"]:
-            raise HTTPException(
-                status_code=400,
-                detail="24 saatlik müşteri iletişim süresi dolmuştur. Lütfen konuşmaya devam etmek için bir şablon mesajı kullanın.",
+        # Check if user has an active connected Baileys WhatsAppSession
+        active_session = None
+        if conv.user_id:
+            sess_stmt = (
+                select(WhatsAppSession)
+                .where(
+                    WhatsAppSession.status == SessionStatus.CONNECTED,
+                    WhatsAppSession.user_id == conv.user_id,
+                )
+                .order_by(WhatsAppSession.id.asc())
+                .limit(1)
             )
+            active_session = (await db.execute(sess_stmt)).scalar_one_or_none()
+
+        is_sim = settings.SIMULATION_MODE if force_simulation is None else force_simulation
+
+        # 3b. Check 24-Hour Customer Window Enforcement only for Meta Cloud API without a Baileys session
+        if not active_session and settings.WHATSAPP_CLOUD_ENABLED and not is_sim:
+            window_info = await cls.check_24h_window(conversation_id, db)
+            if not window_info["is_window_open"]:
+                raise HTTPException(
+                    status_code=400,
+                    detail="24 saatlik müşteri iletişim süresi dolmuştur. Lütfen konuşmaya devam etmek için bir şablon mesajı kullanın.",
+                )
 
         # 4. Check Idempotency (if key provided)
         if idempotency_key:
@@ -145,11 +163,25 @@ class WhatsAppOutboundService:
                 logger.info(f"[WhatsAppOutboundService] Idempotency match for key {idempotency_key}")
                 return existing_msg
 
-        # 5. Dispatch via WhatsApp Cloud Client or Simulation
-        is_sim = settings.SIMULATION_MODE if force_simulation is None else force_simulation
+        # 5. Dispatch via Baileys Gateway, Meta Cloud Client, or Simulation
         wa_message_id: Optional[str] = None
+        sender_phone = active_session.phone_number if active_session and active_session.phone_number else "BUSINESS"
 
-        if is_sim or not settings.WHATSAPP_CLOUD_ENABLED:
+        if active_session and not is_sim:
+            gw_res = await gateway_client.send_message(
+                session_name=active_session.session_name,
+                phone=e164_phone,
+                message=clean_text,
+            )
+            if not gw_res.get("success"):
+                error_msg = gw_res.get("error") or "WhatsApp hattı üzerinden iletilemedi."
+                logger.error(f"[WhatsAppOutboundService] Gateway dispatch failed: {error_msg}")
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"WhatsApp mesajı iletilemedi: {error_msg}",
+                )
+            wa_message_id = gw_res.get("messageId") or f"baileys_{int(time.time())}"
+        elif is_sim or not settings.WHATSAPP_CLOUD_ENABLED:
             import time, random
             wa_message_id = f"wamid.SIM_{int(time.time())}_{random.randint(100000, 999999)}"
             logger.info(
@@ -173,19 +205,19 @@ class WhatsAppOutboundService:
 
             wa_message_id = dispatch_res.get("message_id")
 
-        now_utc = datetime.now(timezone.utc)
+        now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
 
         # 6. Persist OUTBOUND Message Entity
         outbound_msg = Message(
+            user_id=conv.user_id,
             conversation_id=conv.id,
             direction=MessageDirection.OUTBOUND,
             message_type=MessageType.TEXT,
             body=clean_text,
             wa_message_id=wa_message_id,
-            sender_phone="BUSINESS",
+            sender_phone=sender_phone,
             recipient_phone=e164_phone,
             status=ConversationMessageStatus.SENT,
-            external_timestamp=now_utc,
             created_at=now_utc,
             updated_at=now_utc,
         )

@@ -260,8 +260,8 @@ export function useWhatsAppConversation({
         }
       }
 
-      // Handle incoming message (TEXT or RICH MEDIA)
-      if (eventData.event === 'inbound_reply') {
+      // Handle incoming message or mirrored outbound message (TEXT or RICH MEDIA)
+      if (eventData.event === 'new_message' || eventData.event === 'inbound_reply') {
         const matchesLead = leadId && eventData.lead_id === leadId;
         const matchesConvId = conversationId && eventData.conversation_id === conversationId;
         const matchesCurrentConv =
@@ -271,16 +271,28 @@ export function useWhatsAppConversation({
           setConversation((prev) => {
             if (!prev) return prev;
 
+            const msgObj = eventData.message && typeof eventData.message === 'object' ? eventData.message : null;
+            const msgId = msgObj ? msgObj.id : eventData.message_id;
+            const waId = msgObj ? msgObj.wa_message_id : eventData.wa_message_id;
+
             // Idempotency: check if message with this wa_message_id or id already exists
-            const msgId = eventData.message_id;
-            const waId = eventData.wa_message_id;
             const isDuplicate = prev.messages.some(
               (m) => (waId && m.wa_message_id === waId) || (msgId && m.id === msgId)
             );
 
             if (isDuplicate) return prev;
 
-            const newMsg: Message = {
+            const newMsg: Message = msgObj ? {
+              id: msgObj.id || Date.now(),
+              conversation_id: prev.id,
+              direction: msgObj.direction || 'INBOUND',
+              message_type: msgObj.message_type || 'TEXT',
+              status: msgObj.status || 'RECEIVED',
+              body: msgObj.body,
+              wa_message_id: msgObj.wa_message_id,
+              sender_phone: eventData.lead_phone || '',
+              created_at: msgObj.created_at || new Date().toISOString(),
+            } : {
               id: eventData.message_id || Date.now(),
               conversation_id: prev.id,
               direction: eventData.direction || 'INBOUND',
@@ -301,7 +313,7 @@ export function useWhatsAppConversation({
               status: 'ACTIVE',
               last_message_at: newMsg.created_at,
               last_message_preview: newMsg.body,
-              unread_count: autoMarkAsRead ? 0 : (prev.unread_count || 0) + 1,
+              unread_count: autoMarkAsRead || newMsg.direction === 'OUTBOUND' ? 0 : (prev.unread_count || 0) + 1,
               messages: [...prev.messages, newMsg],
             };
           });

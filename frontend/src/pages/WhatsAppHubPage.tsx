@@ -146,9 +146,12 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       const eventData = customEvent.detail;
       if (!eventData) return;
 
-      if (eventData.event === 'inbound_reply') {
+      if (eventData.event === 'new_message' || eventData.event === 'inbound_reply') {
         const convId = eventData.conversation_id;
         const isCurrentSelected = selectedConv && selectedConv.id === convId;
+        const msgText = eventData.message?.body || eventData.message || '';
+        const msgTime = eventData.message?.created_at || eventData.timestamp || new Date().toISOString();
+        const isOutbound = eventData.message?.direction === 'OUTBOUND' || eventData.direction === 'OUTBOUND';
 
         setConversations((prev) => {
           const idx = prev.findIndex((c) => c.id === convId);
@@ -157,9 +160,9 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
             const updated: Conversation = {
               ...existing,
               status: 'ACTIVE',
-              last_message_preview: eventData.message,
-              last_message_at: eventData.timestamp || new Date().toISOString(),
-              unread_count: isCurrentSelected ? 0 : (existing.unread_count || 0) + 1,
+              last_message_preview: typeof msgText === 'string' ? msgText : existing.last_message_preview,
+              last_message_at: msgTime,
+              unread_count: isCurrentSelected || isOutbound ? 0 : (existing.unread_count || 0) + 1,
             };
             if (selectedConv && selectedConv.id === convId) {
               setSelectedConv(updated);
@@ -173,6 +176,10 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
             return prev;
           }
         });
+      }
+
+      if (eventData.event === 'conversations_updated') {
+        fetchConversations();
       }
 
       if (eventData.event === 'conversation_status_updated') {
