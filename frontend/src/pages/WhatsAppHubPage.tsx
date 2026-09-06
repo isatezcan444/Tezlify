@@ -208,7 +208,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
 
   // New Line / QR Pairing Modal
   const [isQRModalOpen, setIsQRModalOpen] = useState(false);
-  const [newSessionName] = useState('Line 1');
+  const [isCreatingSession, setIsCreatingSession] = useState(false);
   const [pairingSessionId, setPairingSessionId] = useState<number | null>(null);
   const [isPairingSuccess, setIsPairingSuccess] = useState(false);
 
@@ -219,8 +219,8 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   const [testSending, setTestSending] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
 
-  const fetchSessionsAndLogs = async () => {
-    setLoading(true);
+  const fetchSessionsAndLogs = async (silent = false) => {
+    if (!silent) setLoading(true);
     try {
       const [sessData, logsData] = await Promise.all([
         ApiClient.getWhatsAppSessions(),
@@ -231,7 +231,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     } catch (err: any) {
       toast.error(err.message, t('common.error'));
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   };
 
@@ -388,15 +388,31 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   const riskInfo = calculateRiskLevel(config.min_delay_seconds, config.daily_message_limit);
 
   const handleCreateSession = async () => {
-    if (!newSessionName) return;
+    if (isCreatingSession) return;
+    setIsCreatingSession(true);
+
+    // Auto-generate unique sequential session name (Line 1, Line 2...)
+    const existingNames = new Set(sessions.map((s) => s.session_name));
+    let nextIdx = sessions.length + 1;
+    let targetName = `Line ${nextIdx}`;
+    while (existingNames.has(targetName)) {
+      nextIdx++;
+      targetName = `Line ${nextIdx}`;
+    }
+
     try {
-      const session = await ApiClient.createWhatsAppSession(newSessionName);
+      const session = await ApiClient.createWhatsAppSession(targetName);
       setPairingSessionId(session.id);
       setIsQRModalOpen(true);
       setIsPairingSuccess(false);
-      fetchSessionsAndLogs();
+      // Optimistically add session to state so it shows up instantly
+      setSessions((prev) => [session, ...prev.filter((s) => s.id !== session.id)]);
+      fetchSessionsAndLogs(true);
+      onRefreshStats();
     } catch (err: any) {
-      toast.error(err.message, t('common.error'));
+      toast.error(err.message || t('common.error'), t('common.error'));
+    } finally {
+      setIsCreatingSession(false);
     }
   };
 
@@ -406,24 +422,34 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       await ApiClient.simulateConnectSession(pairingSessionId);
       setIsPairingSuccess(true);
       toast.success(t('whatsapp.qrPairSuccess'), t('common.success'));
+      fetchSessionsAndLogs(true);
+      onRefreshStats();
       setTimeout(() => {
         setIsQRModalOpen(false);
-        fetchSessionsAndLogs();
-        onRefreshStats();
-      }, 1500);
+      }, 1200);
     } catch (err: any) {
       toast.error(err.message, t('common.error'));
     }
   };
 
   const handleDisconnect = async (sessionId: number) => {
+    // 1. Instant optimistic state update (0ms perceived latency)
+    setSessions((prev) =>
+      prev.map((s) =>
+        s.id === sessionId
+          ? { ...s, status: 'DISCONNECTED', is_phone_online: false, qr_code: null }
+          : s
+      )
+    );
+    toast.info(t('whatsapp.statusDisconnected'), t('common.info'));
+
     try {
       await ApiClient.disconnectSession(sessionId);
-      toast.info(t('whatsapp.statusDisconnected'), t('common.info'));
-      fetchSessionsAndLogs();
+      fetchSessionsAndLogs(true);
       onRefreshStats();
     } catch (err: any) {
       toast.error(err.message || t('common.error'), t('common.error'));
+      fetchSessionsAndLogs(true);
     }
   };
 
@@ -436,12 +462,19 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       variant: 'danger',
     });
     if (!ok) return;
+
+    // 1. Instant optimistic removal from UI (0ms perceived latency)
+    const previousSessions = [...sessions];
+    setSessions((prev) => prev.filter((s) => s.id !== sessionId));
+    toast.success(t('common.success'), t('whatsapp.deleteSession'));
+
     try {
       await ApiClient.deleteSession(sessionId);
-      toast.success(t('common.success'), t('whatsapp.deleteSession'));
-      fetchSessionsAndLogs();
+      fetchSessionsAndLogs(true);
       onRefreshStats();
     } catch (err: any) {
+      // Revert if API failed
+      setSessions(previousSessions);
       toast.error(err.message || t('common.error'), t('common.error'));
     }
   };
@@ -748,10 +781,15 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
           <div className="flex justify-end">
             <Button
               onClick={handleCreateSession}
+              disabled={isCreatingSession}
               size="sm"
               className="space-x-2 font-bold shadow-md shadow-[#7367F0]/30 cursor-pointer"
             >
-              <QrCode className="w-4 h-4" />
+              {isCreatingSession ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <QrCode className="w-4 h-4" />
+              )}
               <span>{t('whatsapp.addSession')}</span>
             </Button>
           </div>

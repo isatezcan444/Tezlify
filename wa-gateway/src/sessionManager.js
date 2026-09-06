@@ -246,7 +246,10 @@ async function disconnectSession(sessionName) {
     const session = activeSessions.get(sessionName);
     if (session && session.sock) {
         try {
-            await session.sock.logout();
+            await Promise.race([
+                session.sock.logout(),
+                new Promise((_, reject) => setTimeout(() => reject(new Error('Logout timeout')), 500))
+            ]);
         } catch (e) {
             try {
                 session.sock.end();

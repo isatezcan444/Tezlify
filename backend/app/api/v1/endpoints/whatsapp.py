@@ -1,13 +1,14 @@
 import re
 import os
+import asyncio
 import logging
 from typing import List, Optional
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, Body, Header
+from fastapi import APIRouter, Depends, HTTPException, Body, Header, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, or_
 
-from backend.app.core.database import get_db
+from backend.app.core.database import get_db, AsyncSessionLocal
 from backend.app.core.config import settings
 from backend.app.core.auth import AuthUser, get_current_user, get_user_filter
 from backend.app.models.whatsapp_session import WhatsAppSession, SessionStatus
@@ -30,6 +31,37 @@ router = APIRouter()
 
 OPT_OUT_PATTERN = re.compile(r"\b(istemiyorum|iptal|sil|stop|unsubscribe|rahats[ıi]z\s+etmeyin)\b", re.IGNORECASE)
 
+
+async def _async_init_gateway_session(session_id: int, session_name: str):
+    """Background task to initialize Baileys session and notify UI when QR arrives."""
+    try:
+        gw_res = await gateway_client.create_session(session_name)
+        if gw_res.get("success"):
+            async with AsyncSessionLocal() as db:
+                s = await db.get(WhatsAppSession, session_id)
+                if s:
+                    updated = False
+                    if gw_res.get("qr_code") and s.qr_code != gw_res["qr_code"]:
+                        s.qr_code = gw_res["qr_code"]
+                        s.status = SessionStatus.SCAN_QR
+                        updated = True
+                    if gw_res.get("status") == "CONNECTED":
+                        s.status = SessionStatus.CONNECTED
+                        if gw_res.get("phone"):
+                            s.phone_number = gw_res["phone"]
+                        updated = True
+                    if updated:
+                        await db.commit()
+                        await ws_manager.broadcast({
+                            "event": "session_qr_updated",
+                            "session_id": s.id,
+                            "session_name": s.session_name,
+                            "qr_code": s.qr_code,
+                        })
+    except Exception as e:
+        logger.debug(f"[BackgroundInitSession] error: {e}")
+
+
 @router.get("/sessions", response_model=List[WhatsAppSessionResponse])
 async def list_sessions(
     db: AsyncSession = Depends(get_db),
@@ -45,7 +77,8 @@ async def list_sessions(
 
 @router.post("/sessions", response_model=WhatsAppSessionResponse, status_code=201)
 async def create_session(
-    session_in: WhatsAppSessionCreate, 
+    session_in: WhatsAppSessionCreate,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     current_user: AuthUser = Depends(get_current_user),
 ):
@@ -57,26 +90,38 @@ async def create_session(
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=409, detail="Bu oturum adı zaten kullanılıyor.")
 
-    # Call wa-gateway microservice to initialize real Baileys session & QR
-    gw_res = await gateway_client.create_session(session_in.session_name)
-    qr_code = gw_res.get("qr_code") or "2@wS12dE98vA==,Tezlify_WA_Pairing_Token_Ready"
-    initial_status = SessionStatus.CONNECTED if gw_res.get("status") == "CONNECTED" else SessionStatus.SCAN_QR
-    phone_number = session_in.phone_number or gw_res.get("phone")
+    initial_qr = "2@wS12dE98vA==,Tezlify_WA_Pairing_Token_Ready" if settings.SIMULATION_MODE else None
 
     session = WhatsAppSession(
         user_id=current_user.id,
         session_name=session_in.session_name,
-        phone_number=phone_number,
+        phone_number=session_in.phone_number,
         max_daily_limit=session_in.max_daily_limit,
-        status=initial_status,
-        qr_code=qr_code,
+        status=SessionStatus.SCAN_QR,
+        qr_code=initial_qr,
         warm_up_day=1,
         daily_sent_count=0,
     )
     db.add(session)
     await db.commit()
     await db.refresh(session)
-    
+
+    # Fast non-blocking query to gateway (max 400ms)
+    try:
+        gw_res = await asyncio.wait_for(gateway_client.create_session(session_in.session_name), timeout=0.4)
+        if gw_res.get("qr_code"):
+            session.qr_code = gw_res["qr_code"]
+        if gw_res.get("status") == "CONNECTED":
+            session.status = SessionStatus.CONNECTED
+            if gw_res.get("phone"):
+                session.phone_number = gw_res["phone"]
+        if session.qr_code is not None or session.status == SessionStatus.CONNECTED:
+            await db.commit()
+            await db.refresh(session)
+    except (asyncio.TimeoutError, Exception):
+        # Schedule in background so endpoint returns in <30ms without freezing the UI
+        background_tasks.add_task(_async_init_gateway_session, session.id, session.session_name)
+
     await ws_manager.broadcast({
         "event": "session_created",
         "session": {"id": session.id, "name": session.session_name, "status": session.status, "qr_code": session.qr_code}
@@ -135,6 +180,7 @@ async def simulate_session_connect(
 @router.post("/sessions/{session_id}/disconnect")
 async def disconnect_session(
     session_id: int,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     current_user: AuthUser = Depends(get_current_user),
 ):
@@ -147,7 +193,8 @@ async def disconnect_session(
     session.is_phone_online = False
     await db.commit()
     
-    await gateway_client.disconnect_session(session.session_name)
+    # Asynchronously notify gateway in background without blocking client response
+    background_tasks.add_task(gateway_client.disconnect_session, session.session_name)
 
     await ws_manager.broadcast({
         "event": "session_disconnected",
@@ -159,6 +206,7 @@ async def disconnect_session(
 @router.delete("/sessions/{session_id}", status_code=204)
 async def delete_session(
     session_id: int,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     current_user: AuthUser = Depends(get_current_user),
 ):
@@ -168,7 +216,8 @@ async def delete_session(
     session_name = session.session_name
     await db.delete(session)
     await db.commit()
-    await gateway_client.delete_session(session_name)
+    # Asynchronously delete from gateway in background without blocking response
+    background_tasks.add_task(gateway_client.delete_session, session_name)
     return None
 
 @router.post("/send-test")
