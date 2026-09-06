@@ -1,6 +1,6 @@
 import enum
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text, Enum, ForeignKey, Index
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text, Enum, ForeignKey, Index, Uuid
 from sqlalchemy.orm import relationship
 from backend.app.core.database import Base
 
@@ -21,7 +21,7 @@ class MessageLog(Base):
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     
     # Foreign Keys
-    user_id = Column(String(36), nullable=True, index=True)
+    user_id = Column(Uuid(as_uuid=False), nullable=True, index=True)
     lead_id = Column(Integer, ForeignKey("leads.id", ondelete="CASCADE"), nullable=False, index=True)
     campaign_id = Column(Integer, ForeignKey("campaigns.id", ondelete="SET NULL"), nullable=True, index=True)
     session_id = Column(Integer, ForeignKey("whatsapp_sessions.id", ondelete="SET NULL"), nullable=True, index=True)

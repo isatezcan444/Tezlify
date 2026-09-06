@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, DateTime, Text, ForeignKey, Table
+from sqlalchemy import Column, Integer, String, DateTime, Text, ForeignKey, Table, Uuid
 from sqlalchemy.orm import relationship
 
 from backend.app.core.database import Base
@@ -17,7 +17,7 @@ class CampaignGroup(Base):
     __tablename__ = "campaign_groups"
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    user_id = Column(String(36), nullable=True, index=True)
+    user_id = Column(Uuid(as_uuid=False), nullable=True, index=True)
     name = Column(String(200), nullable=False, index=True)
     description = Column(Text, nullable=True)
     

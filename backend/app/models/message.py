@@ -1,6 +1,6 @@
 import enum
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, DateTime, Text, Enum, ForeignKey, Index
+from sqlalchemy import Column, Integer, String, DateTime, Text, Enum, ForeignKey, Index, Uuid
 from sqlalchemy.orm import relationship
 from backend.app.core.database import Base
 
@@ -36,7 +36,7 @@ class Message(Base):
     __tablename__ = "messages"
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    user_id = Column(String(36), nullable=True, index=True)
+    user_id = Column(Uuid(as_uuid=False), nullable=True, index=True)
     conversation_id = Column(Integer, ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False, index=True)
     
     direction = Column(Enum(MessageDirection), nullable=False, index=True)

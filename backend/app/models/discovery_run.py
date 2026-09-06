@@ -4,7 +4,7 @@ Stores execution history, strategy progression, coverage metrics, and benchmark 
 """
 import enum
 from datetime import datetime, timezone
-from sqlalchemy import Column, Integer, String, Float, DateTime, Text, JSON, Enum, Index
+from sqlalchemy import Column, Integer, String, Float, DateTime, Text, JSON, Enum, Index, Uuid
 from backend.app.core.database import Base
 
 
@@ -28,7 +28,7 @@ class DiscoveryRun(Base):
     __tablename__ = "discovery_runs"
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    user_id = Column(String(36), nullable=True, index=True)
+    user_id = Column(Uuid(as_uuid=False), nullable=True, index=True)
 
     # Intent Snapshot
     user_keyword = Column(String(200), nullable=False)

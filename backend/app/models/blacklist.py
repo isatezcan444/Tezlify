@@ -1,7 +1,7 @@
 import enum
 import json
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Text, DateTime, Enum, Index, JSON
+from sqlalchemy import Column, Integer, String, Text, DateTime, Enum, Index, JSON, Uuid
 from backend.app.core.database import Base
 
 
@@ -9,7 +9,7 @@ class Blacklist(Base):
     __tablename__ = "blacklist"
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    user_id = Column(String(36), nullable=True, index=True)
+    user_id = Column(Uuid(as_uuid=False), nullable=True, index=True)
     phone_e164 = Column(String(50), nullable=False, index=True)
     reason = Column(String(255), default="USER_REQUEST")  # USER_REQUEST, SPAM_REPORT, INVALID, OPT_OUT
     notes = Column(Text, nullable=True)
@@ -28,7 +28,7 @@ class ScraperJob(Base):
     __tablename__ = "scraper_jobs"
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    user_id = Column(String(36), nullable=True, index=True)
+    user_id = Column(Uuid(as_uuid=False), nullable=True, index=True)
     keyword = Column(String(200), nullable=False)
     location = Column(String(200), nullable=False)  # display string for backward compat
 

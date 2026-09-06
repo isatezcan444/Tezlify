@@ -1,6 +1,6 @@
 import enum
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text, Enum, ForeignKey
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text, Enum, ForeignKey, Uuid
 from sqlalchemy.orm import relationship
 
 from backend.app.core.config import settings
@@ -17,7 +17,7 @@ class Campaign(Base):
     __tablename__ = "campaigns"
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    user_id = Column(String(36), nullable=True, index=True)
+    user_id = Column(Uuid(as_uuid=False), nullable=True, index=True)
     name = Column(String(200), nullable=False)
     description = Column(Text, nullable=True)
     

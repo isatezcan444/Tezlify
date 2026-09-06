@@ -1,6 +1,6 @@
 import enum
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, Text, Enum, JSON, Index
+from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, Text, Enum, JSON, Index, Uuid
 from sqlalchemy.orm import relationship
 from backend.app.core.database import Base
 
@@ -40,7 +40,7 @@ class Lead(Base):
     __tablename__ = "leads"
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    user_id = Column(String(36), nullable=True, index=True)
+    user_id = Column(Uuid(as_uuid=False), nullable=True, index=True)
 
     # Business Details
     name = Column(String(255), nullable=False, index=True)

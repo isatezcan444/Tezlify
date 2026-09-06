@@ -81,6 +81,20 @@ export async function authFetch(url: string, options: RequestInit = {}): Promise
   return fetch(url, { ...options, headers });
 }
 
+export async function parseError(res: Response, defaultMessage: string = 'Bir hata oluştu'): Promise<string> {
+  try {
+    const data = await res.json();
+    return data.detail || data.message || data.error || defaultMessage;
+  } catch {
+    try {
+      const text = await res.text();
+      return text && text.length < 200 ? text : `${defaultMessage} (${res.status})`;
+    } catch {
+      return `${defaultMessage} (${res.status})`;
+    }
+  }
+}
+
 export class ApiClient {
   static setAuthToken(token: string | null) {
     currentAuthToken = token;
@@ -91,7 +105,10 @@ export class ApiClient {
   // --- Analytics ---
   static async getDashboardStats(): Promise<DashboardStats> {
     const res = await authFetch(`${API_BASE}/analytics/dashboard`);
-    if (!res.ok) throw new Error('Failed to fetch dashboard stats');
+    if (!res.ok) {
+      const msg = await parseError(res, 'Failed to fetch dashboard stats');
+      throw new Error(msg);
+    }
     return res.json();
   }
 
@@ -256,8 +273,8 @@ export class ApiClient {
       body: JSON.stringify(params)
     });
     if (!res.ok) {
-      const err = await res.json();
-      throw new Error(err.detail || 'Tarama başlatılamadı');
+      const msg = await parseError(res, 'Tarama başlatılamadı');
+      throw new Error(msg);
     }
     return res.json();
   }
