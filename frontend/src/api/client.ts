@@ -517,8 +517,17 @@ export class ApiClient {
       body: JSON.stringify({ session_name: name, max_daily_limit: maxDailyLimit })
     });
     if (!res.ok) {
-      const err = await res.json();
-      throw new Error(err.detail || 'Oturum oluşturulamadı');
+      const msg = await parseError(res, 'Oturum oluşturulamadı');
+      throw new Error(msg);
+    }
+    return res.json();
+  }
+
+  static async getSessionQr(sessionId: number): Promise<{ status: string; qr_code: string | null; phone: string | null }> {
+    const res = await authFetch(`${API_BASE}/whatsapp/sessions/${sessionId}/qr`);
+    if (!res.ok) {
+      const msg = await parseError(res, 'QR kod alınamadı');
+      throw new Error(msg);
     }
     return res.json();
   }

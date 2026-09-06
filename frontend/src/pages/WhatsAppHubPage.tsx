@@ -239,11 +239,26 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     fetchSessionsAndLogs();
     fetchConversations();
 
-    // Listen to real-time inbound messages to update conversation previews
+    // Listen to real-time inbound messages and WhatsApp session events
     const handleWs = (e: Event) => {
       const eventData = (e as CustomEvent<any>).detail;
       if (eventData?.event === 'inbound_reply') {
         fetchConversations();
+      } else if (eventData?.event === 'session_connected') {
+        fetchSessionsAndLogs();
+        onRefreshStats();
+        setIsPairingSuccess(true);
+        toast.success(t('whatsapp.qrPairSuccess'), t('common.success'));
+        setTimeout(() => {
+          setIsQRModalOpen(false);
+        }, 1500);
+      } else if (eventData?.event === 'session_disconnected') {
+        fetchSessionsAndLogs();
+        onRefreshStats();
+      } else if (eventData?.event === 'session_qr_updated') {
+        setSessions((prev) =>
+          prev.map((s) => (s.id === eventData.session_id ? { ...s, qr_code: eventData.qr_code } : s))
+        );
       }
     };
     window.addEventListener('tezlify:ws_event', handleWs);
@@ -267,6 +282,39 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       window.removeEventListener('tezlify:ws_event', handleWs);
     };
   }, []);
+
+  // Polling fallback to guarantee state progression when QR modal is open
+  useEffect(() => {
+    if (!isQRModalOpen || !pairingSessionId) return;
+
+    let isMounted = true;
+    const interval = setInterval(async () => {
+      try {
+        const res = await ApiClient.getSessionQr(pairingSessionId);
+        if (!isMounted) return;
+        if (res.status === 'CONNECTED') {
+          setIsPairingSuccess(true);
+          toast.success(t('whatsapp.qrPairSuccess'), t('common.success'));
+          fetchSessionsAndLogs();
+          onRefreshStats();
+          setTimeout(() => {
+            setIsQRModalOpen(false);
+          }, 1500);
+        } else if (res.qr_code) {
+          setSessions((prev) =>
+            prev.map((s) => (s.id === pairingSessionId ? { ...s, qr_code: res.qr_code } : s))
+          );
+        }
+      } catch (e) {
+        // ignore transient poll error
+      }
+    }, 3500);
+
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
+  }, [isQRModalOpen, pairingSessionId]);
 
   const handlePresetSelect = (presetKey: 'ultra_safe' | 'standard_balanced' | 'fast_warmed') => {
     const presetData = ANTI_BAN_PRESETS[presetKey];
@@ -1294,32 +1342,31 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
             </div>
 
             {/* QR Code Presentation */}
-            <div className="p-3.5 bg-white rounded-2xl mx-auto inline-block shadow-md border border-slate-200/80 relative">
-              <svg viewBox="0 0 100 100" className="w-44 h-44">
-                <rect width="100" height="100" fill="white" />
-                <rect x="8" y="8" width="26" height="26" fill="#1E293B" rx="3" />
-                <rect x="12" y="12" width="18" height="18" fill="white" rx="2" />
-                <rect x="15" y="15" width="12" height="12" fill="#1E293B" rx="1.5" />
-
-                <rect x="66" y="8" width="26" height="26" fill="#1E293B" rx="3" />
-                <rect x="70" y="12" width="18" height="18" fill="white" rx="2" />
-                <rect x="73" y="15" width="12" height="12" fill="#1E293B" rx="1.5" />
-
-                <rect x="8" y="66" width="26" height="26" fill="#1E293B" rx="3" />
-                <rect x="12" y="70" width="18" height="18" fill="white" rx="2" />
-                <rect x="15" y="73" width="12" height="12" fill="#1E293B" rx="1.5" />
-
-                <rect x="42" y="12" width="6" height="6" fill="#1E293B" rx="1" />
-                <rect x="52" y="20" width="6" height="6" fill="#1E293B" rx="1" />
-                <rect x="42" y="32" width="6" height="6" fill="#1E293B" rx="1" />
-                <rect x="66" y="42" width="6" height="6" fill="#1E293B" rx="1" />
-                <rect x="46" y="52" width="6" height="6" fill="#1E293B" rx="1" />
-                <rect x="56" y="62" width="6" height="6" fill="#1E293B" rx="1" />
-                <rect x="42" y="72" width="6" height="6" fill="#1E293B" rx="1" />
-                <rect x="76" y="72" width="6" height="6" fill="#1E293B" rx="1" />
-                <rect x="84" y="52" width="6" height="6" fill="#1E293B" rx="1" />
-                <rect x="52" y="82" width="6" height="6" fill="#1E293B" rx="1" />
-              </svg>
+            <div className="p-3.5 bg-white rounded-2xl mx-auto inline-flex items-center justify-center shadow-md border border-slate-200/80 min-w-[200px] min-h-[200px]">
+              {(() => {
+                const pairingSession = sessions.find((s) => s.id === pairingSessionId);
+                const activeQr = pairingSession?.qr_code;
+                if (activeQr) {
+                  const qrSrc = activeQr.startsWith('data:image') || activeQr.startsWith('http')
+                    ? activeQr
+                    : `https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(activeQr)}`;
+                  return (
+                    <img
+                      src={qrSrc}
+                      alt="WhatsApp QR Code"
+                      className="w-48 h-48 rounded-xl object-contain"
+                    />
+                  );
+                }
+                return (
+                  <div className="w-48 h-48 flex flex-col items-center justify-center text-slate-400 gap-3">
+                    <Loader2 className="w-8 h-8 animate-spin text-[#7367F0]" />
+                    <span className="text-xs font-medium text-slate-500 text-center px-2">
+                      {t('whatsapp.qrPreparing')}
+                    </span>
+                  </div>
+                );
+              })()}
             </div>
 
             {isPairingSuccess ? (

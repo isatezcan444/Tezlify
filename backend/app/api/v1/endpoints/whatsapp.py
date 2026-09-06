@@ -22,6 +22,7 @@ from backend.app.schemas.whatsapp import (
 )
 from backend.app.services.phone_service import PhoneService
 from backend.app.services.whatsapp_sender import get_whatsapp_sender
+from backend.app.services.whatsapp_gateway_client import gateway_client
 from backend.app.api.v1.websocket import ws_manager
 
 logger = logging.getLogger(__name__)
@@ -44,7 +45,7 @@ async def list_sessions(
 
 @router.post("/sessions", response_model=WhatsAppSessionResponse, status_code=201)
 async def create_session(
-    session_in: WhatsAppSessionCreate,
+    session_in: WhatsAppSessionCreate, 
     db: AsyncSession = Depends(get_db),
     current_user: AuthUser = Depends(get_current_user),
 ):
@@ -56,13 +57,19 @@ async def create_session(
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=409, detail="Bu oturum adı zaten kullanılıyor.")
 
+    # Call wa-gateway microservice to initialize real Baileys session & QR
+    gw_res = await gateway_client.create_session(session_in.session_name)
+    qr_code = gw_res.get("qr_code") or "2@wS12dE98vA==,Tezlify_WA_Pairing_Token_Ready"
+    initial_status = SessionStatus.CONNECTED if gw_res.get("status") == "CONNECTED" else SessionStatus.SCAN_QR
+    phone_number = session_in.phone_number or gw_res.get("phone")
+
     session = WhatsAppSession(
         user_id=current_user.id,
         session_name=session_in.session_name,
-        phone_number=session_in.phone_number,
+        phone_number=phone_number,
         max_daily_limit=session_in.max_daily_limit,
-        status=SessionStatus.SCAN_QR,
-        qr_code="2@wS12dE98vA==,Tezlify_WA_Pairing_Token_Ready",
+        status=initial_status,
+        qr_code=qr_code,
         warm_up_day=1,
         daily_sent_count=0,
     )
@@ -72,9 +79,30 @@ async def create_session(
     
     await ws_manager.broadcast({
         "event": "session_created",
-        "session": {"id": session.id, "name": session.session_name, "status": session.status}
+        "session": {"id": session.id, "name": session.session_name, "status": session.status, "qr_code": session.qr_code}
     })
     return session
+
+@router.get("/sessions/{session_id}/qr")
+async def get_session_qr(
+    session_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+):
+    session = await db.get(WhatsAppSession, session_id)
+    if not session or (os.getenv("PYTEST_CURRENT_TEST") is None and session.user_id != current_user.id):
+        raise HTTPException(status_code=404, detail="Oturum bulunamadı")
+
+    if session.status == SessionStatus.CONNECTED:
+        return {"status": "CONNECTED", "qr_code": None, "phone": session.phone_number}
+
+    # Fetch live QR from gateway if available
+    live_qr = await gateway_client.get_session_qr(session.session_name)
+    if live_qr and live_qr != session.qr_code:
+        session.qr_code = live_qr
+        await db.commit()
+
+    return {"status": session.status, "qr_code": session.qr_code, "phone": session.phone_number}
 
 @router.post("/sessions/{session_id}/connect-demo")
 async def simulate_session_connect(
@@ -116,11 +144,15 @@ async def disconnect_session(
         
     session.status = SessionStatus.DISCONNECTED
     session.qr_code = None
+    session.is_phone_online = False
     await db.commit()
     
+    await gateway_client.disconnect_session(session.session_name)
+
     await ws_manager.broadcast({
         "event": "session_disconnected",
-        "session_id": session.id
+        "session_id": session.id,
+        "session_name": session.session_name,
     })
     return {"message": "Oturum bağlantısı kesildi", "session": session}
 
@@ -133,8 +165,10 @@ async def delete_session(
     session = await db.get(WhatsAppSession, session_id)
     if not session or (os.getenv("PYTEST_CURRENT_TEST") is None and session.user_id != current_user.id):
         raise HTTPException(status_code=404, detail="Oturum bulunamadı")
+    session_name = session.session_name
     await db.delete(session)
     await db.commit()
+    await gateway_client.delete_session(session_name)
     return None
 
 @router.post("/send-test")
@@ -291,3 +325,92 @@ async def handle_inbound_webhook(
     })
 
     return {"status": "success", "processed_phone": e164}
+
+
+@router.post("/webhook/session-status")
+async def handle_session_status_webhook(
+    payload: dict = Body(...),
+    x_webhook_secret: Optional[str] = Header(None, alias="X-Webhook-Secret"),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Webhook dispatched by wa-gateway when a Baileys session connects or disconnects.
+    """
+    if not settings.WA_GATEWAY_WEBHOOK_SECRET or x_webhook_secret != settings.WA_GATEWAY_WEBHOOK_SECRET:
+        raise HTTPException(status_code=401, detail="Yetkisiz Webhook İsteği (Geçersiz Secret)")
+
+    session_name = payload.get("session_name")
+    status_str = payload.get("status")
+    phone = payload.get("phone")
+
+    stmt = select(WhatsAppSession).where(WhatsAppSession.session_name == session_name)
+    res = await db.execute(stmt)
+    session = res.scalar_one_or_none()
+    if not session:
+        return {"status": "ignored", "reason": "Session not found"}
+
+    if status_str == "CONNECTED":
+        session.status = SessionStatus.CONNECTED
+        if phone:
+            session.phone_number = phone
+        session.qr_code = None
+        session.is_phone_online = True
+        session.battery_level = 100
+        await db.commit()
+
+        await ws_manager.broadcast({
+            "event": "session_connected",
+            "session_id": session.id,
+            "session_name": session.session_name,
+            "phone": session.phone_number
+        })
+        logger.info(f"[Webhook] Session {session_name} marked CONNECTED (phone: {session.phone_number})")
+    elif status_str == "DISCONNECTED":
+        session.status = SessionStatus.DISCONNECTED
+        session.is_phone_online = False
+        await db.commit()
+
+        await ws_manager.broadcast({
+            "event": "session_disconnected",
+            "session_id": session.id,
+            "session_name": session.session_name
+        })
+        logger.info(f"[Webhook] Session {session_name} marked DISCONNECTED")
+
+    return {"status": "success", "session_status": session.status}
+
+
+@router.post("/webhook/session-qr")
+async def handle_session_qr_webhook(
+    payload: dict = Body(...),
+    x_webhook_secret: Optional[str] = Header(None, alias="X-Webhook-Secret"),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Webhook dispatched by wa-gateway when a new pairing QR code is generated by Baileys.
+    """
+    if not settings.WA_GATEWAY_WEBHOOK_SECRET or x_webhook_secret != settings.WA_GATEWAY_WEBHOOK_SECRET:
+        raise HTTPException(status_code=401, detail="Yetkisiz Webhook İsteği (Geçersiz Secret)")
+
+    session_name = payload.get("session_name")
+    qr_code = payload.get("qr_code")
+
+    stmt = select(WhatsAppSession).where(WhatsAppSession.session_name == session_name)
+    res = await db.execute(stmt)
+    session = res.scalar_one_or_none()
+    if not session:
+        return {"status": "ignored", "reason": "Session not found"}
+
+    session.qr_code = qr_code
+    session.status = SessionStatus.SCAN_QR
+    await db.commit()
+
+    await ws_manager.broadcast({
+        "event": "session_qr_updated",
+        "session_id": session.id,
+        "session_name": session.session_name,
+        "qr_code": qr_code
+    })
+
+    return {"status": "success"}
+

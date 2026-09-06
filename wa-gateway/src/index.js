@@ -1,6 +1,12 @@
 const express = require('express');
 const cors = require('cors');
-const QRCode = require('qrcode');
+const {
+    activeSessions,
+    getOrCreateSession,
+    sendMessage,
+    disconnectSession,
+    restoreSavedSessions
+} = require('./sessionManager');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -8,90 +14,143 @@ const PORT = process.env.PORT || 3001;
 app.use(cors());
 app.use(express.json());
 
-// In-memory session registry
-const sessions = new Map();
+// Optional auth token verification
+const GATEWAY_AUTH_TOKEN = process.env.WA_GATEWAY_AUTH_TOKEN || '';
+function authMiddleware(req, res, next) {
+    if (!GATEWAY_AUTH_TOKEN) return next();
+    const authHeader = req.headers['authorization'];
+    if (!authHeader || authHeader !== `Bearer ${GATEWAY_AUTH_TOKEN}`) {
+        return res.status(401).json({ error: 'Unauthorized gateway request' });
+    }
+    next();
+}
 
-// Initialize default mock session
-sessions.set("default", {
-    name: "default",
-    status: "CONNECTED",
-    phone: "+905321002030",
-    connectedAt: new Date().toISOString(),
-    messagesSent: 12
-});
+app.use(authMiddleware);
 
 // Health check
 app.get('/health', (req, res) => {
     res.json({
         status: 'healthy',
-        service: 'Tezlify WhatsApp Gateway',
-        activeSessions: sessions.size
+        service: 'Tezlify WhatsApp Gateway (Baileys)',
+        activeSessions: activeSessions.size
     });
 });
 
-// List sessions
+// List all sessions
 app.get('/api/sessions', (req, res) => {
-    res.json(Array.from(sessions.values()));
+    const list = Array.from(activeSessions.values()).map(s => ({
+        name: s.name,
+        status: s.status,
+        phone: s.phone,
+        hasQr: !!s.qrImage,
+        createdAt: s.createdAt,
+        messagesSent: s.messagesSent
+    }));
+    res.json(list);
 });
 
-// Create new session & generate QR
+// Create new session / Trigger QR pairing
 app.post('/api/sessions/create', async (req, res) => {
     const { sessionName } = req.body;
     if (!sessionName) {
         return res.status(400).json({ error: 'sessionName is required' });
     }
 
-    const qrData = `2@tezlify_${sessionName}_${Date.now()}_pairing_code`;
-    const qrImageBase64 = await QRCode.toDataURL(qrData);
+    try {
+        const session = await getOrCreateSession(sessionName);
+        res.json({
+            message: 'Session initialized',
+            session: {
+                name: session.name,
+                status: session.status,
+                phone: session.phone,
+                qrImage: session.qrImage
+            }
+        });
+    } catch (err) {
+        console.error(`[WA-Gateway] Error creating session ${sessionName}:`, err);
+        res.status(500).json({ error: err.message });
+    }
+});
 
-    const sessionObj = {
-        name: sessionName,
-        status: 'SCAN_QR',
-        qrData: qrData,
-        qrImage: qrImageBase64,
-        createdAt: new Date().toISOString(),
-        messagesSent: 0
-    };
-
-    sessions.set(sessionName, sessionObj);
+// Get session QR Code
+app.get('/api/sessions/:sessionName/qr', (req, res) => {
+    const { sessionName } = req.params;
+    const session = activeSessions.get(sessionName);
+    if (!session) {
+        return res.status(404).json({ error: 'Session not found' });
+    }
 
     res.json({
-        message: 'QR Code generated for session pairing',
-        session: sessionObj
+        name: session.name,
+        status: session.status,
+        phone: session.phone,
+        qrImage: session.qrImage
     });
 });
 
-// Send Message endpoint with typing delay simulation
+// Get session Status
+app.get('/api/sessions/:sessionName/status', (req, res) => {
+    const { sessionName } = req.params;
+    const session = activeSessions.get(sessionName);
+    if (!session) {
+        return res.status(404).json({ error: 'Session not found' });
+    }
+
+    res.json({
+        name: session.name,
+        status: session.status,
+        phone: session.phone,
+        messagesSent: session.messagesSent
+    });
+});
+
+// Disconnect session
+app.post('/api/sessions/:sessionName/disconnect', async (req, res) => {
+    const { sessionName } = req.params;
+    try {
+        const result = await disconnectSession(sessionName);
+        res.json(result);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Delete session
+app.delete('/api/sessions/:sessionName', async (req, res) => {
+    const { sessionName } = req.params;
+    try {
+        const result = await disconnectSession(sessionName);
+        res.json(result);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Send Message endpoint with presence typing
 app.post('/api/send', async (req, res) => {
-    const { session = "default", phone, message, typingDelayMs = 4000 } = req.body;
+    const { session = 'default', phone, message, typingDelayMs = 0 } = req.body;
 
     if (!phone || !message) {
         return res.status(400).json({ error: 'phone and message are required' });
     }
 
-    const sessionData = sessions.get(session) || sessions.get("default");
-
-    // Simulate realistic typing delay
-    if (typingDelayMs > 0) {
-        const sleepTime = Math.min(typingDelayMs, 3000); // cap simulation
-        await new Promise(resolve => setTimeout(resolve, sleepTime));
+    try {
+        const result = await sendMessage(session, phone, message, typingDelayMs);
+        res.json(result);
+    } catch (err) {
+        console.error(`[WA-Gateway] Send failed for ${phone}:`, err.message);
+        res.status(500).json({
+            success: false,
+            error: err.message
+        });
     }
-
-    const messageId = `wa_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
-
-    if (sessionData) {
-        sessionData.messagesSent = (sessionData.messagesSent || 0) + 1;
-    }
-
-    res.json({
-        success: true,
-        messageId: messageId,
-        phone: phone,
-        status: 'SENT',
-        timestamp: new Date().toISOString()
-    });
 });
 
 app.listen(PORT, () => {
     console.log(`[Tezlify WA-Gateway] Running on http://localhost:${PORT}`);
+    // Auto-restore saved sessions if any exist
+    restoreSavedSessions().catch(err => {
+        console.warn('[WA-Gateway] Session auto-restore error:', err.message);
+    });
 });
