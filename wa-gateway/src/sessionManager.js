@@ -7,7 +7,8 @@ const {
     default: makeWASocket,
     useMultiFileAuthState,
     DisconnectReason,
-    Browsers
+    Browsers,
+    fetchLatestBaileysVersion
 } = require('@whiskeysockets/baileys');
 
 const SESSIONS_DIR = path.join(__dirname, '..', 'sessions');
@@ -86,14 +87,19 @@ async function getOrCreateSession(sessionName) {
 
     activeSessions.set(sessionName, sessionData);
 
+    const { version } = await fetchLatestBaileysVersion().catch(() => ({ version: [2, 3000, 1043857760] }));
+    console.log(`[WA-Gateway] Starting socket for ${sessionName} with WA Web v${version.join('.')}`);
+
     const sock = makeWASocket({
+        version,
         auth: state,
         printQRInTerminal: false,
         logger: pino({ level: 'silent' }),
         browser: Browsers.macOS('Desktop'),
-        syncFullHistory: true,
+        syncFullHistory: false,
         defaultQueryTimeoutMs: 60000,
-        connectTimeoutMs: 60000
+        connectTimeoutMs: 60000,
+        generateHighQualityLinkPreview: false
     });
 
     sessionData.sock = sock;
@@ -147,7 +153,15 @@ async function getOrCreateSession(sessionName) {
             sessionData.status = 'SCAN_QR';
             sessionData.qr = qr;
             try {
-                sessionData.qrImage = await QRCode.toDataURL(qr);
+                sessionData.qrImage = await QRCode.toDataURL(qr, {
+                    errorCorrectionLevel: 'M',
+                    margin: 2,
+                    scale: 8,
+                    color: {
+                        dark: '#000000',
+                        light: '#FFFFFF'
+                    }
+                });
                 await notifyBackend(sessionName, 'session-qr', {
                     qr_code: sessionData.qrImage
                 });
@@ -180,7 +194,8 @@ async function getOrCreateSession(sessionName) {
 
             console.log(`[WA-Gateway] Session ${sessionName} closed. Status code: ${statusCode}, LoggedOut: ${isLoggedOut}`);
 
-            if (isLoggedOut) {
+            const wasConnected = !!sessionData.phone;
+            if (isLoggedOut || (!wasConnected && (statusCode === 401 || statusCode === 403 || statusCode === 500))) {
                 sessionData.status = 'DISCONNECTED';
                 sessionData.phone = null;
                 sessionData.qr = null;
@@ -198,15 +213,28 @@ async function getOrCreateSession(sessionName) {
                     status: 'DISCONNECTED',
                     phone: null
                 });
-            } else {
+            } else if (wasConnected) {
+                // Was already connected previously: auto-reconnect to maintain online line
                 sessionData.status = 'CONNECTING';
-                // Automatically attempt reconnect after 3 seconds
                 setTimeout(() => {
                     activeSessions.delete(sessionName);
                     getOrCreateSession(sessionName).catch(err => {
                         console.error(`[WA-Gateway] Reconnect failed for ${sessionName}:`, err.message);
                     });
                 }, 3000);
+            } else {
+                // Not connected yet (QR scan timeout): clean auth dir to ensure fresh crypto keys for next QR
+                setTimeout(() => {
+                    if (activeSessions.has(sessionName)) {
+                        activeSessions.delete(sessionName);
+                        try {
+                            fs.rmSync(sessionAuthDir, { recursive: true, force: true });
+                        } catch (e) {}
+                        getOrCreateSession(sessionName).catch(err => {
+                            console.error(`[WA-Gateway] QR refresh failed for ${sessionName}:`, err.message);
+                        });
+                    }
+                }, 2000);
             }
         }
     });
@@ -289,6 +317,30 @@ async function sendMessage(sessionName, phone, messageText, typingDelayMs = 0) {
 }
 
 /**
+ * Requests an 8-digit WhatsApp pairing code for linking via phone number.
+ */
+async function requestPairingCode(sessionName, phoneNumber) {
+    const session = await getOrCreateSession(sessionName);
+    if (!session || !session.sock) {
+        throw new Error('Oturum soketi hazır değil.');
+    }
+
+    const cleanPhone = phoneNumber.replace(/\D/g, '');
+    if (!cleanPhone || cleanPhone.length < 10) {
+        throw new Error('Geçerli bir telefon numarası giriniz (örn: 905321234567).');
+    }
+
+    // Wait a brief moment for socket connection initialization
+    if (session.status === 'INITIALIZING') {
+        await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+
+    const code = await session.sock.requestPairingCode(cleanPhone);
+    session.pairingCode = code;
+    return code;
+}
+
+/**
  * Disconnects and deletes a session cleanly.
  */
 async function disconnectSession(sessionName) {
@@ -341,6 +393,7 @@ async function restoreSavedSessions() {
 module.exports = {
     activeSessions,
     getOrCreateSession,
+    requestPairingCode,
     sendMessage,
     disconnectSession,
     restoreSavedSessions

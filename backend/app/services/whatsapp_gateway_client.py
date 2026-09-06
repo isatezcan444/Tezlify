@@ -179,5 +179,24 @@ class WhatsAppGatewayClient:
             self._last_unreachable_time = time.monotonic()
             return {"success": False, "error": f"Gateway unreachable: {str(e)}"}
 
+    async def request_pairing_code(self, session_name: str, phone: str) -> Optional[str]:
+        """Requests an 8-digit WhatsApp pairing code for linking via phone number."""
+        if self.is_recently_offline():
+            return None
+        url = f"{self.gateway_url}/api/sessions/{session_name}/pairing-code"
+        try:
+            async with httpx.AsyncClient(timeout=self._get_timeout(10.0)) as client:
+                res = await client.post(url, json={"phone": phone}, headers=self._headers())
+                if res.status_code == 200:
+                    self._last_unreachable_time = 0.0
+                    return res.json().get("pairingCode")
+                else:
+                    logger.warning(f"[GatewayClient] request_pairing_code failed: {res.text}")
+                    return None
+        except Exception as e:
+            logger.warning(f"[GatewayClient] request_pairing_code error: {e}")
+            self._last_unreachable_time = time.monotonic()
+            return None
+
 
 gateway_client = WhatsAppGatewayClient()

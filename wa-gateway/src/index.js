@@ -3,6 +3,7 @@ const cors = require('cors');
 const {
     activeSessions,
     getOrCreateSession,
+    requestPairingCode,
     sendMessage,
     disconnectSession,
     restoreSavedSessions
@@ -87,6 +88,27 @@ app.get('/api/sessions/:sessionName/qr', (req, res) => {
         phone: session.phone,
         qrImage: session.qrImage
     });
+});
+
+// Request 8-digit WhatsApp Pairing Code for phone linking
+app.post('/api/sessions/:sessionName/pairing-code', async (req, res) => {
+    const { sessionName } = req.params;
+    const { phone } = req.body || {};
+    if (!phone) {
+        return res.status(400).json({ error: 'Telefon numarası gereklidir.' });
+    }
+
+    try {
+        const code = await requestPairingCode(sessionName, phone);
+        res.json({
+            success: true,
+            sessionName,
+            pairingCode: code
+        });
+    } catch (err) {
+        console.error(`[WA-Gateway] Pairing code request failed for ${sessionName}:`, err.message);
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // Get session Status

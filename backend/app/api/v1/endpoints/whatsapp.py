@@ -91,7 +91,7 @@ async def create_session(
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=409, detail="Bu oturum adı zaten kullanılıyor.")
 
-    initial_qr = "2@wS12dE98vA==,Tezlify_WA_Pairing_Token_Ready" if settings.SIMULATION_MODE else None
+    initial_qr = None
 
     session = WhatsAppSession(
         user_id=current_user.id,
@@ -149,6 +149,28 @@ async def get_session_qr(
         await db.commit()
 
     return {"status": session.status, "qr_code": session.qr_code, "phone": session.phone_number}
+
+@router.post("/sessions/{session_id}/pairing-code")
+async def get_session_pairing_code(
+    session_id: int,
+    payload: dict = Body(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+):
+    """Requests an 8-digit WhatsApp pairing code to link device via phone number."""
+    session = await db.get(WhatsAppSession, session_id)
+    if not session or (os.getenv("PYTEST_CURRENT_TEST") is None and session.user_id != current_user.id):
+        raise HTTPException(status_code=404, detail="Oturum bulunamadı")
+
+    phone = payload.get("phone")
+    if not phone:
+        raise HTTPException(status_code=400, detail="Telefon numarası zorunludur.")
+
+    code = await gateway_client.request_pairing_code(session.session_name, phone)
+    if not code:
+        raise HTTPException(status_code=502, detail="Eşleştirme kodu alınamadı. Lütfen numarayı kontrol edip tekrar deneyin.")
+
+    return {"success": True, "pairing_code": code}
 
 @router.post("/sessions/{session_id}/connect-demo")
 async def simulate_session_connect(

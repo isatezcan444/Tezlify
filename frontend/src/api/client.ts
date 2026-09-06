@@ -532,6 +532,19 @@ export class ApiClient {
     return res.json();
   }
 
+  static async getSessionPairingCode(sessionId: number, phone: string): Promise<{ success: boolean; pairing_code: string }> {
+    const res = await authFetch(`${API_BASE}/whatsapp/sessions/${sessionId}/pairing-code`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone }),
+    });
+    if (!res.ok) {
+      const msg = await parseError(res, 'Eşleştirme kodu alınamadı');
+      throw new Error(msg);
+    }
+    return res.json();
+  }
+
   static async simulateConnectSession(sessionId: number): Promise<any> {
     const res = await authFetch(`${API_BASE}/whatsapp/sessions/${sessionId}/connect-demo`, {
       method: 'POST'

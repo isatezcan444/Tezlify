@@ -2,13 +2,14 @@
 Unit and integration tests for WhatsApp Gateway Client and Webhooks.
 Verifies SOLID principles, fail-closed security, and session lifecycle handling.
 """
+import uuid
 import pytest
 from unittest.mock import AsyncMock, patch
 from httpx import AsyncClient, ASGITransport, Response
 
 from backend.app.main import app
 from backend.app.core.config import settings
-from backend.app.services.whatsapp_gateway_client import WhatsAppGatewayClient
+from backend.app.services.whatsapp_gateway_client import WhatsAppGatewayClient, gateway_client
 from backend.app.models.whatsapp_session import WhatsAppSession, SessionStatus
 from backend.app.core.database import AsyncSessionLocal
 
@@ -175,3 +176,49 @@ async def test_webhook_session_status_lifecycle():
             if s_clean:
                 await db.delete(s_clean)
                 await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_session_pairing_code_endpoint():
+    transport = ASGITransport(app=app)
+    session_name = f"pairing_code_test_{uuid.uuid4().hex[:6]}"
+    sess_id = None
+
+    try:
+        async with AsyncSessionLocal() as db:
+            sess = WhatsAppSession(
+                session_name=session_name,
+                status=SessionStatus.SCAN_QR,
+            )
+            db.add(sess)
+            await db.commit()
+            await db.refresh(sess)
+            sess_id = sess.id
+
+        with patch.object(gateway_client, "request_pairing_code", new_callable=AsyncMock) as mock_req:
+            mock_req.return_value = "ABCD-1234"
+
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                # 1. Validation error on missing phone
+                res_bad = await client.post(f"/api/v1/whatsapp/sessions/{sess_id}/pairing-code", json={})
+                assert res_bad.status_code == 400
+
+                # 2. Success pairing code
+                res = await client.post(
+                    f"/api/v1/whatsapp/sessions/{sess_id}/pairing-code",
+                    json={"phone": "+905321002030"}
+                )
+                assert res.status_code == 200
+                data = res.json()
+                assert data["success"] is True
+                assert data["pairing_code"] == "ABCD-1234"
+
+            mock_req.assert_called_once_with(session_name, "+905321002030")
+
+    finally:
+        if sess_id:
+            async with AsyncSessionLocal() as db:
+                s = await db.get(WhatsAppSession, sess_id)
+                if s:
+                    await db.delete(s)
+                    await db.commit()
