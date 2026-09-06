@@ -84,7 +84,7 @@ export const en = {
     leads: 'Leads CRM',
     campaigns: 'Campaigns',
     campaignGroups: 'Campaign Groups',
-    whatsappHub: 'WhatsApp & Anti-Ban Hub',
+    whatsappHub: 'WhatsApp',
     blacklist: 'Blacklist',
     settings: 'Settings',
     liveSync: 'Live Sync',

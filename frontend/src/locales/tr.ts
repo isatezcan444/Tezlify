@@ -84,7 +84,7 @@ export const tr = {
     leads: 'Müşteri Adayları',
     campaigns: 'Kampanyalar',
     campaignGroups: 'Kampanya Grupları',
-    whatsappHub: 'WhatsApp & Anti-Ban Hub',
+    whatsappHub: 'WhatsApp',
     blacklist: 'Kara Liste',
     settings: 'Ayarlar',
     liveSync: 'Canlı Senkronize',
