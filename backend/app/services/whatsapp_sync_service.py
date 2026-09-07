@@ -156,21 +156,31 @@ class WhatsAppSyncService:
             if not phone_e164 and not raw_key:
                 raise ValueError("phone_e164 is required for individual direct chats.")
 
+            lead = None
             if phone_e164:
                 lead_stmt = select(Lead).where(
                     Lead.phone_e164 == phone_e164,
                     Lead.user_id == user_id,
                 )
-            else:
+                lead_res = await db.execute(lead_stmt.limit(1))
+                lead = lead_res.scalars().first()
+
+            if not lead and raw_key:
                 # Unresolvable identity (e.g. @lid without PN mapping): key by
-                # the raw JID string so the chat is never lost. phone_e164
-                # stays None until a later sync resolves it.
+                # the raw JID string so the chat is never lost.
                 lead_stmt = select(Lead).where(
                     Lead.phone == raw_key,
                     Lead.user_id == user_id,
                 )
-            lead_res = await db.execute(lead_stmt.limit(1))
-            lead = lead_res.scalars().first()
+                lead_res = await db.execute(lead_stmt.limit(1))
+                lead = lead_res.scalars().first()
+                if lead is not None and phone_e164:
+                    # Self-healing: the phone is now known — upgrade the
+                    # placeholder row in place instead of splitting identity.
+                    lead.phone = phone_e164
+                    lead.phone_e164 = phone_e164
+                    lead.is_whatsapp_eligible = True
+                    await db.flush()
 
             if not lead:
                 display_name = contact_name.strip() if contact_name and contact_name.strip() else f"WhatsApp ({phone_e164 or raw_key})"
@@ -405,6 +415,8 @@ class WhatsAppSyncService:
         my_phone = session.phone_number or "ME"
 
         gateway_name = event_data.get("sender_name")
+        remote_jid = event_data.get("remote_jid") or ""
+        raw_lid_key = remote_jid if remote_jid.strip().endswith("@lid") else None
         lead, conv = await cls.get_or_create_lead_and_conversation(
             db=db,
             user_id=user_id,
@@ -412,7 +424,7 @@ class WhatsAppSyncService:
             contact_name=gateway_name if (gateway_name and not from_me) else None,
             is_group=is_group,
             group_jid=contact_e164 if is_group else None,
-            raw_key=(None if is_group else raw_contact_key),
+            raw_key=(None if is_group else (raw_contact_key or raw_lid_key)),
         )
 
         # Check idempotency by wa_message_id
@@ -544,14 +556,21 @@ class WhatsAppSyncService:
 
             contact_key = ""
             e164 = None
+            raw_key = None
             if is_group:
                 contact_key = chat_id if chat_id.endswith("@g.us") else phone_raw
             else:
                 phone_data = PhoneService.normalize_to_e164(phone_raw)
-                if not phone_data:
+                if phone_data and phone_data.get("is_valid"):
+                    e164 = phone_data["e164"]
+                    contact_key = e164
+                elif chat_id and "@" in chat_id:
+                    # Unresolvable identity (e.g. @lid without PN mapping):
+                    # key by raw JID so the chat is never lost.
+                    raw_key = chat_id
+                    contact_key = chat_id
+                else:
                     continue
-                e164 = phone_data["e164"]
-                contact_key = e164
 
             raw_ts = chat.get("conversation_timestamp")
             conv_time = None
@@ -574,6 +593,7 @@ class WhatsAppSyncService:
                 group_jid=contact_key if is_group else None,
                 avatar_url=chat.get("avatar_url"),
                 conversation_timestamp=conv_time,
+                raw_key=(None if (is_group or e164) else raw_key),
             )
             chat_map[contact_key] = conv
 
@@ -623,15 +643,27 @@ class WhatsAppSyncService:
         for m in messages:
             phone_raw = m.get("phone") or ""
             is_group = bool(m.get("is_group") or phone_raw.endswith("@g.us"))
+            msg_remote_jid = m.get("remote_jid") or ""
+            msg_raw_key: Optional[str] = None
             if is_group:
                 contact_key = phone_raw
                 e164 = None
             else:
                 phone_data = PhoneService.normalize_to_e164(phone_raw)
-                if not phone_data:
+                if phone_data and phone_data.get("is_valid"):
+                    e164 = phone_data["e164"]
+                    contact_key = e164
+                elif "@" in phone_raw:
+                    # Unresolvable identity: key by raw JID, never drop.
+                    e164 = None
+                    msg_raw_key = phone_raw
+                    contact_key = phone_raw
+                elif msg_remote_jid.strip().endswith("@lid"):
+                    e164 = None
+                    msg_raw_key = msg_remote_jid
+                    contact_key = msg_remote_jid
+                else:
                     continue
-                e164 = phone_data["e164"]
-                contact_key = e164
 
             conv = chat_map.get(contact_key)
             if not conv:
@@ -641,6 +673,7 @@ class WhatsAppSyncService:
                     phone_e164=e164,
                     is_group=is_group,
                     group_jid=contact_key if is_group else None,
+                    raw_key=(None if (is_group or e164) else msg_raw_key),
                 )
                 chat_map[contact_key] = conv
 

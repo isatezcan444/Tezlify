@@ -672,6 +672,7 @@ async function initSessionSocket(sessionData) {
                     wa_message_id: m.key?.id,
                     fromMe: fromMe,
                     phone: phone,
+                    remote_jid: remoteJid,
                     participant: partJid,
                     participant_pn: partPn,
                     sender_name: senderName,
@@ -840,6 +841,7 @@ async function initSessionSocket(sessionData) {
             await notifyBackend(sessionName, 'message-event', {
                 fromMe: fromMe,
                 phone: contactPhone,
+                remote_jid: remoteJid,
                 participant: partJid,
                 participant_pn: partPn,
                 sender_name: senderName,

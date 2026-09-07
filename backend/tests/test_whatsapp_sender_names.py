@@ -168,6 +168,53 @@ async def test_esitle_preview_does_not_duplicate_and_heals_name():
 
 
 @pytest.mark.asyncio
+async def test_lid_dm_without_pn_keys_by_raw_jid():
+    """Unresolvable LID DM: chat keyed by raw JID, message kept with
+    pushName, nothing dropped, nothing fabricated."""
+    session_name = await _make_session()
+    lid_jid = f"1678{uuid.uuid4().int % 100000000000:011d}@lid"
+    push = f"PushKisi_{uuid.uuid4().hex[:4]}"
+
+    async with AsyncSessionLocal() as db:
+        res = await WhatsAppSyncService.sync_history_batch(
+            db=db,
+            session_name=session_name,
+            chats=[
+                {
+                    "id": lid_jid,
+                    "phone": lid_jid,
+                    "name": push,
+                    "is_group": False,
+                    "conversation_timestamp": time.time(),
+                    "last_message_preview": "merhaba",
+                    "last_message_from_me": False,
+                    "last_message_sender_name": push,
+                    "last_message_participant": lid_jid,
+                    "last_message_participant_pn": None,
+                }
+            ],
+            messages=[],
+        )
+        assert res["status"] == "success"
+        lead = (
+            await db.execute(select(Lead).where(Lead.phone == lid_jid))
+        ).scalars().first()
+        assert lead is not None
+        assert lead.phone_e164 is None
+        assert lead.name == push
+        # No fake dialable number derived from the LID anywhere
+        bad = (
+            await db.execute(
+                select(Lead).where(
+                    Lead.phone_e164.like("+1678%"),
+                    Lead.user_id.is_(None),
+                )
+            )
+        ).scalars().first()
+        assert bad is None
+
+
+@pytest.mark.asyncio
 async def test_heal_pass_upgrades_legacy_grup_uyesi_and_outbound():
     session_name = await _make_session()
     mom_e164 = _uniq_e164()
