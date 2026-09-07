@@ -7,6 +7,7 @@ import { Button } from '../ui/button';
 import { SearchInput } from '../forms/SearchInput';
 import { Skeleton } from '../ui/Skeleton';
 import { useI18n } from '../../context/I18nContext';
+import { parseServerTime } from '../../lib/utils';
 
 export type FilterTab = 'ALL' | 'ACTIVE' | 'ARCHIVED' | 'CLOSED' | 'UNREAD';
 
@@ -52,7 +53,8 @@ export const ConversationList: React.FC<ConversationListProps> = ({
   const formatTime = (dateStr?: string) => {
     if (!dateStr) return '';
     try {
-      const d = new Date(dateStr);
+      const d = parseServerTime(dateStr);
+      if (!d) return '';
       const now = new Date();
       if (d.toDateString() === now.toDateString()) {
         return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -81,8 +83,8 @@ export const ConversationList: React.FC<ConversationListProps> = ({
   });
 
   const sorted = [...filtered].sort((a, b) => {
-    const timeA = a.last_message_at ? new Date(a.last_message_at).getTime() : (a.created_at ? new Date(a.created_at).getTime() : 0);
-    const timeB = b.last_message_at ? new Date(b.last_message_at).getTime() : (b.created_at ? new Date(b.created_at).getTime() : 0);
+    const timeA = a.last_message_at ? parseServerTime(a.last_message_at)?.getTime() ?? 0 : (a.created_at ? parseServerTime(a.created_at)?.getTime() ?? 0 : 0);
+    const timeB = b.last_message_at ? parseServerTime(b.last_message_at)?.getTime() ?? 0 : (b.created_at ? parseServerTime(b.created_at)?.getTime() ?? 0 : 0);
     return timeB - timeA;
   });
 

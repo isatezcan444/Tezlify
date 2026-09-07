@@ -7,6 +7,7 @@ from sqlalchemy import select, or_, func
 from sqlalchemy.orm import selectinload
 
 from backend.app.core.database import get_db
+from backend.app.core.search_utils import escape_like_literal
 from backend.app.core.auth import AuthUser, get_current_user, get_user_filter
 from backend.app.api.v1.websocket import ws_manager
 from backend.app.models.conversation import Conversation, ConversationStatus
@@ -118,11 +119,11 @@ async def list_conversations(
         stmt = stmt.where(Conversation.unread_count > 0)
 
     if search and search.strip():
-        q_clean = search.strip()
+        q_clean = escape_like_literal(search.strip())
         search_filter = or_(
-            Lead.name.ilike(f"%{q_clean}%"),
-            Lead.phone_e164.ilike(f"%{q_clean}%"),
-            Lead.phone.ilike(f"%{q_clean}%"),
+            Lead.name.ilike(f"%{q_clean}%", escape="\\"),
+            Lead.phone_e164.ilike(f"%{q_clean}%", escape="\\"),
+            Lead.phone.ilike(f"%{q_clean}%", escape="\\"),
         )
         stmt = stmt.where(search_filter)
 
@@ -130,7 +131,14 @@ async def list_conversations(
     rows = res.all()
 
     result = []
+    seen_lead_ids: set = set()
     for conv, last_preview, effective_time in rows:
+        # Read-side dedupe: legacy races created twin conversations for one
+        # lead (same group twice). Rows arrive newest-first, so the first
+        # occurrence per lead wins; the sync merge pass removes the rest.
+        if conv.lead_id in seen_lead_ids:
+            continue
+        seen_lead_ids.add(conv.lead_id)
         lead_custom = conv.lead.custom_data or {} if conv.lead else {}
         is_group = bool(
             (conv.lead and (conv.lead.phone.endswith("@g.us") or conv.lead.category == "WhatsApp Grubu"))
@@ -735,8 +743,9 @@ async def sync_whatsapp_conversations(
     if not session:
         raise HTTPException(status_code=400, detail="Bağlı aktif bir WhatsApp oturumu bulunamadı.")
 
-    # 2. Trigger gateway sync or fetch chats
-    chats = await gateway_client.get_session_chats(session.session_name)
+    # 2. Trigger gateway sync or fetch chats (avatars skipped: they dominate
+    #    sync latency and refresh through the live path instead).
+    chats = await gateway_client.get_session_chats(session.session_name, include_avatars=False)
     synced_count = 0
 
     if chats:
@@ -753,8 +762,9 @@ async def sync_whatsapp_conversations(
                     "conversation_timestamp": c.get("conversation_timestamp"),
                     "last_message_preview": c.get("last_message_preview"),
                     "last_message_from_me": c.get("last_message_from_me"),
-                    "last_message_sender_name": c.get("last_message_sender_name"),
-                    "last_message_participant": c.get("last_message_participant"),
+                "last_message_sender_name": c.get("last_message_sender_name"),
+                "last_message_participant": c.get("last_message_participant"),
+                "last_message_participant_pn": c.get("last_message_participant_pn"),
                 }
                 for c in chats
             ],
@@ -765,6 +775,7 @@ async def sync_whatsapp_conversations(
                     "fromMe": bool(c.get("last_message_from_me", False)),
                     "sender_name": c.get("last_message_sender_name"),
                     "participant": c.get("last_message_participant"),
+                    "participant_pn": c.get("last_message_participant_pn"),
                     "is_group": c.get("is_group"),
                     "timestamp": c.get("conversation_timestamp"),
                 }

@@ -17,6 +17,7 @@ import { Message } from '../../types';
 import { Tooltip } from '../ui/Tooltip';
 import { Modal } from '../ui/Modal';
 import { useI18n } from '../../context/I18nContext';
+import { parseServerTime } from '../../lib/utils';
 
 export interface ChatBubbleProps {
   message: Message;
@@ -45,7 +46,8 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({ message, onRetry }) => {
   const formatTime = (dateStr?: string) => {
     if (!dateStr) return '';
     try {
-      const d = new Date(dateStr);
+      const d = parseServerTime(dateStr);
+      if (!d) return '';
       return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     } catch {
       return '';

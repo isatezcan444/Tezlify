@@ -6,6 +6,7 @@ import { EmptyState } from '../ui/EmptyState';
 import { Skeleton } from '../ui/Skeleton';
 import { WhatsAppIcon } from '../ui/whatsapp-icon';
 import { useI18n } from '../../context/I18nContext';
+import { parseServerTime } from '../../lib/utils';
 
 export interface ChatThreadProps {
   messages: Message[];
@@ -100,7 +101,8 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
   const getDateLabel = (dateStr?: string) => {
     if (!dateStr) return '';
     try {
-      const d = new Date(dateStr);
+      const d = parseServerTime(dateStr);
+      if (!d) return '';
       const today = new Date();
       const yesterday = new Date();
       yesterday.setDate(today.getDate() - 1);

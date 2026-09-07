@@ -8,7 +8,7 @@ import logging
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, or_
+from sqlalchemy import select, or_, update, delete, func
 
 from backend.app.models.whatsapp_session import WhatsAppSession
 from backend.app.models.lead import Lead, LeadStatus
@@ -183,7 +183,9 @@ class WhatsAppSyncService:
                     await db.flush()
 
             if not lead:
-                display_name = contact_name.strip() if contact_name and contact_name.strip() else f"WhatsApp ({phone_e164 or raw_key})"
+                raw_name = (contact_name or "").strip()
+                # A JID-looking string is not a name — fall back honestly.
+                display_name = raw_name if (raw_name and "@" not in raw_name) else f"WhatsApp ({phone_e164 or raw_key})"
                 custom_data = {}
                 if avatar_url:
                     custom_data["avatar_url"] = avatar_url
@@ -346,6 +348,112 @@ class WhatsAppSyncService:
             row.sender_name = name_by_phone.get(e164, e164)
             healed += 1
         return healed
+
+    @classmethod
+    async def _merge_conversations_of_lead(
+        cls, db: AsyncSession, lead_id: int
+    ) -> tuple[Optional[Conversation], int]:
+        """Collapses all WHATSAPP conversations of one lead into the latest.
+
+        Moves messages, sums unread, keeps max last_message_at. Returns
+        (keeper or None, deleted_count). Respects the (lead_id, channel)
+        unique constraint by never moving a conversation onto a lead that
+        already has one.
+        """
+        convs = (
+            await db.execute(
+                select(Conversation)
+                .where(
+                    Conversation.lead_id == lead_id,
+                    Conversation.channel == "WHATSAPP",
+                )
+                .order_by(Conversation.id)
+            )
+        ).scalars().all()
+        if not convs:
+            return None, 0
+        keeper = max(
+            convs,
+            key=lambda c: (
+                _to_naive_utc(c.last_message_at) or datetime.min,
+                c.id,
+            ),
+        )
+        for dup_c in convs:
+            if dup_c.id == keeper.id:
+                continue
+            await db.execute(
+                update(Message)
+                .where(Message.conversation_id == dup_c.id)
+                .values(conversation_id=keeper.id)
+            )
+            keeper.unread_count = (keeper.unread_count or 0) + (dup_c.unread_count or 0)
+            newest = _to_naive_utc(dup_c.last_message_at)
+            current = _to_naive_utc(keeper.last_message_at)
+            if newest and (not current or newest > current):
+                keeper.last_message_at = dup_c.last_message_at
+            await db.delete(dup_c)
+        await db.flush()
+        return keeper, len(convs) - 1
+
+    @classmethod
+    async def _merge_duplicate_threads(
+        cls, db: AsyncSession, user_id: Optional[str], group_jids: List[str]
+    ) -> Dict[str, int]:
+        """Merges duplicate group leads (same JID string) and duplicate
+        conversations per lead. Legacy races (double-clicked Eşitle, live +
+        sync overlap) created them; the list UI otherwise shows one group
+        twice. Returns {"leads": n, "conversations": n} merged counts."""
+        merged = {"leads": 0, "conversations": 0}
+        jids = sorted({j for j in group_jids if j})
+        if not jids:
+            return merged
+
+        rows = (
+            await db.execute(
+                select(Lead)
+                .where(Lead.phone.in_(jids), Lead.user_id == user_id)
+                .order_by(Lead.id)
+            )
+        ).scalars().all()
+        by_phone: Dict[str, List[Lead]] = {}
+        for row in rows:
+            by_phone.setdefault(row.phone, []).append(row)
+
+        for phone, dupes in by_phone.items():
+            keeper = dupes[0]
+            keeper_conv, n_keeper = await cls._merge_conversations_of_lead(db, keeper.id)
+            merged["conversations"] += n_keeper
+            for dup in dupes[1:]:
+                dup_conv, n_dup = await cls._merge_conversations_of_lead(db, dup.id)
+                merged["conversations"] += n_dup
+                if dup_conv is not None and keeper_conv is not None and dup_conv.id != keeper_conv.id:
+                    await db.execute(
+                        update(Message)
+                        .where(Message.conversation_id == dup_conv.id)
+                        .values(conversation_id=keeper_conv.id)
+                    )
+                    keeper_conv.unread_count = (keeper_conv.unread_count or 0) + (dup_conv.unread_count or 0)
+                    newest = _to_naive_utc(dup_conv.last_message_at)
+                    current = _to_naive_utc(keeper_conv.last_message_at)
+                    if newest and (not current or newest > current):
+                        keeper_conv.last_message_at = dup_conv.last_message_at
+                    await db.delete(dup_conv)
+                    merged["conversations"] += 1
+                elif dup_conv is not None and keeper_conv is None:
+                    dup_conv.lead_id = keeper.id
+                    keeper_conv = dup_conv
+                keeper_cdata = dict(keeper.custom_data or {})
+                dup_cdata = dup.custom_data or {}
+                if not keeper_cdata.get("avatar_url") and dup_cdata.get("avatar_url"):
+                    keeper_cdata["avatar_url"] = dup_cdata["avatar_url"]
+                    keeper.custom_data = keeper_cdata
+                if dup.name and keeper.name in ("WhatsApp Grubu", "", None):
+                    keeper.name = dup.name
+                await db.delete(dup)
+                merged["leads"] += 1
+        await db.flush()
+        return merged
 
     @classmethod
     async def _lookup_lead_name(        cls, db: AsyncSession, user_id: Optional[str], e164: Optional[str]
@@ -543,59 +651,156 @@ class WhatsAppSyncService:
         user_id = session.user_id
         my_phone = session.phone_number or "ME"
 
-        # 1. Provision Leads & Conversations for all chats
-        chat_map: Dict[str, Conversation] = {}
+        # 1. Provision Leads & Conversations for all chats.
+        # Key resolution is pure (no IO); identity reads are batched (2 IN
+        # queries) instead of N per-chat round-trips; only genuinely missing
+        # rows fall back to single-row provisioning.
+        specs: List[Dict[str, Any]] = []
         for chat in chats:
             chat_id = chat.get("id") or ""
             phone_raw = chat.get("phone") or (chat_id.split("@")[0] if "@" in chat_id else chat_id)
-            is_group = bool(
+            spec_is_group = bool(
                 chat.get("is_group")
                 or chat_id.endswith("@g.us")
                 or (phone_raw and phone_raw.endswith("@g.us"))
             )
-
-            contact_key = ""
-            e164 = None
-            raw_key = None
-            if is_group:
-                contact_key = chat_id if chat_id.endswith("@g.us") else phone_raw
+            spec_key = ""
+            spec_e164 = None
+            spec_raw = None
+            if spec_is_group:
+                spec_key = chat_id if chat_id.endswith("@g.us") else phone_raw
             else:
                 phone_data = PhoneService.normalize_to_e164(phone_raw)
                 if phone_data and phone_data.get("is_valid"):
-                    e164 = phone_data["e164"]
-                    contact_key = e164
+                    spec_e164 = phone_data["e164"]
+                    spec_key = spec_e164
                 elif chat_id and "@" in chat_id:
-                    # Unresolvable identity (e.g. @lid without PN mapping):
-                    # key by raw JID so the chat is never lost.
-                    raw_key = chat_id
-                    contact_key = chat_id
+                    spec_raw = chat_id
+                    spec_key = chat_id
                 else:
                     continue
-
             raw_ts = chat.get("conversation_timestamp")
-            conv_time = None
+            spec_time = None
             if raw_ts:
                 try:
                     ts_num = float(raw_ts["low"] if isinstance(raw_ts, dict) and "low" in raw_ts else raw_ts)
                     if ts_num > 1e11:
                         ts_num /= 1000
                     if ts_num > 86400:
-                        conv_time = datetime.fromtimestamp(ts_num, tz=timezone.utc)
+                        spec_time = datetime.fromtimestamp(ts_num, tz=timezone.utc)
                 except Exception:
                     pass
+            specs.append({
+                "chat": chat, "chat_id": chat_id, "key": spec_key,
+                "e164": spec_e164, "raw": spec_raw, "is_group": spec_is_group,
+                "time": spec_time,
+            })
 
-            lead, conv = await cls.get_or_create_lead_and_conversation(
-                db=db,
-                user_id=user_id,
-                phone_e164=e164,
-                contact_name=chat.get("name"),
-                is_group=is_group,
-                group_jid=contact_key if is_group else None,
-                avatar_url=chat.get("avatar_url"),
-                conversation_timestamp=conv_time,
-                raw_key=(None if (is_group or e164) else raw_key),
-            )
-            chat_map[contact_key] = conv
+        # Heal duplicate threads before mapping, so every key lands on a keeper.
+        await cls._merge_duplicate_threads(
+            db, user_id,
+            [s["key"] for s in specs if s["is_group"]],
+        )
+
+        leads_by_e164: Dict[str, Lead] = {}
+        leads_by_phone: Dict[str, Lead] = {}
+        want_e164 = sorted({s["e164"] for s in specs if s["e164"]})
+        want_phone = sorted({
+            (s["raw"] or s["key"]) for s in specs
+            if not s["e164"] and (s["raw"] or s["key"])
+        })
+        if want_e164:
+            for row in (await db.execute(
+                select(Lead).where(Lead.phone_e164.in_(want_e164), Lead.user_id == user_id)
+            )).scalars().all():
+                leads_by_e164.setdefault(row.phone_e164, row)
+        if want_phone:
+            for row in (await db.execute(
+                select(Lead).where(Lead.phone.in_(want_phone), Lead.user_id == user_id)
+            )).scalars().all():
+                leads_by_phone.setdefault(row.phone, row)
+
+        lead_ids = sorted({l.id for l in list(leads_by_e164.values()) + list(leads_by_phone.values())})
+        conv_by_lead: Dict[int, Conversation] = {}
+        if lead_ids:
+            for conv_row in (await db.execute(
+                select(Conversation).where(
+                    Conversation.lead_id.in_(lead_ids),
+                    Conversation.channel == "WHATSAPP",
+                    Conversation.user_id == user_id,
+                )
+            )).scalars().all():
+                prev = conv_by_lead.get(conv_row.lead_id)
+                if prev is None or (
+                    _to_naive_utc(conv_row.last_message_at) or datetime.min,
+                    conv_row.id,
+                ) > (
+                    _to_naive_utc(prev.last_message_at) or datetime.min,
+                    prev.id,
+                ):
+                    conv_by_lead[conv_row.lead_id] = conv_row
+
+        chat_map: Dict[str, Conversation] = {}
+        # Preview messages created this run (autoflush is OFF, so they are
+        # invisible to SELECTs until commit — track in-session instead).
+        init_created: Dict[tuple, Message] = {}
+        for spec in specs:
+            chat = spec["chat"]
+            lead = leads_by_e164.get(spec["e164"]) if spec["e164"] else None
+            if lead is None:
+                lookup_key = spec["raw"] or spec["key"]
+                lead = leads_by_phone.get(lookup_key)
+            if lead is None:
+                # Genuinely missing: single-row provisioning (rare, steady-state).
+                lead, conv = await cls.get_or_create_lead_and_conversation(
+                    db=db,
+                    user_id=user_id,
+                    phone_e164=spec["e164"],
+                    contact_name=chat.get("name"),
+                    is_group=spec["is_group"],
+                    group_jid=spec["key"] if spec["is_group"] else None,
+                    avatar_url=chat.get("avatar_url"),
+                    conversation_timestamp=spec["time"],
+                    raw_key=(None if (spec["is_group"] or spec["e164"]) else spec["raw"]),
+                )
+                if spec["e164"]:
+                    leads_by_e164.setdefault(spec["e164"], lead)
+                else:
+                    leads_by_phone.setdefault(spec["raw"] or spec["key"], lead)
+                conv_by_lead[lead.id] = conv
+            else:
+                # Refresh in-memory state exactly like get_or_create would.
+                cname = chat.get("name")
+                if spec["is_group"]:
+                    if cname and cname.strip() and lead.name in ("WhatsApp Grubu", "", None):
+                        lead.name = cname.strip()
+                elif cname and cname.strip() and (not lead.name or lead.name.startswith("WhatsApp (")):
+                    lead.name = cname.strip()
+                if chat.get("avatar_url"):
+                    cdata = dict(lead.custom_data or {})
+                    if cdata.get("avatar_url") != chat.get("avatar_url"):
+                        cdata["avatar_url"] = chat.get("avatar_url")
+                        lead.custom_data = cdata
+                conv = conv_by_lead.get(lead.id)
+                naive_spec_time = _to_naive_utc(spec["time"])
+                if conv is None:
+                    conv = Conversation(
+                        user_id=user_id,
+                        lead_id=lead.id,
+                        channel="WHATSAPP",
+                        status=ConversationStatus.ACTIVE,
+                        unread_count=0,
+                        last_message_at=naive_spec_time,
+                    )
+                    db.add(conv)
+                    await db.flush()
+                    conv_by_lead[lead.id] = conv
+                elif naive_spec_time:
+                    current_last = _to_naive_utc(conv.last_message_at)
+                    if not current_last or current_last.year < 2020 or naive_spec_time > current_last:
+                        conv.last_message_at = naive_spec_time
+                        await db.flush()
+            chat_map[spec["key"]] = conv
 
             # If chat came with last_message_preview, ensure there's at least one message in conversation
             preview_text = (chat.get("last_message_preview") or "").strip()
@@ -603,25 +808,17 @@ class WhatsAppSyncService:
                 existing_msg_stmt = select(Message.id).where(Message.conversation_id == conv.id).limit(1)
                 has_existing = (await db.execute(existing_msg_stmt)).scalars().first()
                 if not has_existing:
-                    msg_time = _to_naive_utc(conv_time) or _to_naive_utc(datetime.now(timezone.utc))
+                    msg_time = _to_naive_utc(spec["time"]) or _to_naive_utc(datetime.now(timezone.utc))
                     init_from_me = bool(chat.get("last_message_from_me", False))
                     init_sender_name = chat.get("last_message_sender_name")
                     if init_from_me:
                         init_sender_name = "Siz"
-                    elif not init_sender_name and is_group:
-                        participant_init = chat.get("last_message_participant")
-                        if participant_init:
-                            init_raw_num = participant_init.split(":")[0].split("@")[0]
-                            if init_raw_num and init_raw_num.isdigit():
-                                pn_init = PhoneService.normalize_to_e164(f"+{init_raw_num}")
-                                if pn_init:
-                                    pl_init = (await db.execute(select(Lead).where(Lead.phone_e164 == pn_init["e164"], Lead.user_id == user_id).limit(1))).scalars().first()
-                                    if pl_init and pl_init.name and not pl_init.name.startswith("WhatsApp ("):
-                                        init_sender_name = pl_init.name
-                                    else:
-                                        init_sender_name = pn_init["e164"]
-                                else:
-                                    init_sender_name = f"+{init_raw_num}"
+                    elif not init_sender_name and spec["is_group"]:
+                        init_sender_name = await cls._resolve_sender_via_participant(
+                            db, user_id,
+                            chat.get("last_message_participant"),
+                            chat.get("last_message_participant_pn"),
+                        )
 
                     init_msg = Message(
                         user_id=user_id,
@@ -630,13 +827,18 @@ class WhatsAppSyncService:
                         message_type=MessageType.TEXT,
                         body=preview_text,
                         wa_message_id=f"wa_init_{conv.id}_{int(time.time())}",
-                        sender_phone=my_phone if init_from_me else contact_key,
-                        recipient_phone=contact_key if init_from_me else my_phone,
+                        sender_phone=my_phone if init_from_me else spec["key"],
+                        recipient_phone=spec["key"] if init_from_me else my_phone,
                         sender_name=init_sender_name,
                         status=ConversationMessageStatus.SENT if init_from_me else ConversationMessageStatus.RECEIVED,
                         created_at=msg_time,
                     )
                     db.add(init_msg)
+                    init_created[(
+                        conv.id,
+                        preview_text,
+                        MessageDirection.OUTBOUND if init_from_me else MessageDirection.INBOUND,
+                    )] = init_msg
 
         # 2. Ingest Messages
         imported_count = 0
@@ -711,8 +913,18 @@ class WhatsAppSyncService:
             # Eşitle pseudo-messages carry no wa_message_id (last-message
             # previews). Without a content match they would duplicate on every
             # click — match the latest same-body message instead, upgrade its
-            # name if poor, and skip the insert.
+            # name if poor, and skip the insert. In-session init rows are
+            # checked first (autoflush is off, SELECTs can't see them yet).
             if not wa_id:
+                pseudo_dir = MessageDirection.OUTBOUND if from_me else MessageDirection.INBOUND
+                pending = init_created.get((conv.id, text, pseudo_dir))
+                if pending is not None:
+                    heal_name = m.get("sender_name") or await cls._resolve_sender_via_participant(
+                        db, user_id, m.get("participant"), m.get("participant_pn")
+                    )
+                    if heal_name and _is_poor_sender_name(pending.sender_name, pending.sender_phone):
+                        pending.sender_name = heal_name
+                    continue
                 dup_stmt = (
                     select(Message)
                     .where(
@@ -770,10 +982,50 @@ class WhatsAppSyncService:
                 conv.last_message_at = msg_time
             imported_count += 1
 
+        # Self-heal ordering: last_message_at is the max of itself and the
+        # newest stored message, so a stale gateway timestamp can never park
+        # a chat below its real activity (single batched query).
+        touched_ids = sorted({c.id for c in chat_map.values() if c.id is not None})
+        if touched_ids:
+            latest_rows = (
+                await db.execute(
+                    select(Message.conversation_id, func.max(Message.created_at))
+                    .where(Message.conversation_id.in_(touched_ids))
+                    .group_by(Message.conversation_id)
+                )
+            ).all()
+            latest_by_conv = {cid: ts for cid, ts in latest_rows if ts is not None}
+            if latest_by_conv:
+                conv_rows = (
+                    await db.execute(
+                        select(Conversation).where(Conversation.id.in_(touched_ids))
+                    )
+                ).scalars().all()
+                for conv_row in conv_rows:
+                    newest = _to_naive_utc(latest_by_conv.get(conv_row.id))
+                    current = _to_naive_utc(conv_row.last_message_at)
+                    if newest and (not current or newest > current):
+                        conv_row.last_message_at = newest
+
+        # Skip the poor-name scan entirely when nothing can match it: one
+        # cheap EXISTS instead of a 1000-row sweep on every Eşitle click.
+        poor_exists = (
+            await db.execute(
+                select(Message.id)
+                .where(
+                    Message.user_id == user_id,
+                    or_(
+                        Message.sender_name.is_(None),
+                        Message.sender_name.in_(["", "Grup Üyesi"]),
+                    ),
+                )
+                .limit(1)
+            )
+        ).scalars().first()
+        healed_count = 0
+        if poor_exists is not None:
+            healed_count = await cls._heal_poor_sender_names(db, user_id)
         await db.commit()
-        healed_count = await cls._heal_poor_sender_names(db, user_id)
-        if healed_count:
-            await db.commit()
         logger.info(f"[WhatsAppSyncService] Batch sync completed for {session_name}: {len(chat_map)} chats, {imported_count} messages")
 
         await ws_manager.broadcast({

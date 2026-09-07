@@ -220,11 +220,19 @@ class WhatsAppGatewayClient:
             self._last_unreachable_time = time.monotonic()
             return None
 
-    async def get_session_chats(self, session_name: str) -> List[Dict[str, Any]]:
-        """Fetches all in-memory tracked chats from the gateway."""
+    async def get_session_chats(
+        self, session_name: str, include_avatars: bool = True
+    ) -> List[Dict[str, Any]]:
+        """Fetches all in-memory tracked chats from the gateway.
+
+        Sync callers pass include_avatars=False: avatar refresh dominates
+        Eşitle latency and avatars arrive via the live path anyway.
+        """
         if self.is_recently_offline():
             return []
         url = f"{self.gateway_url}/api/sessions/{session_name}/chats"
+        if not include_avatars:
+            url += "?include_avatars=0"
         try:
             async with httpx.AsyncClient(timeout=self._get_timeout(35.0)) as client:
                 res = await client.get(url, headers=self._headers())

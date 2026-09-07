@@ -640,6 +640,7 @@ async function initSessionSocket(sessionData) {
                 last_message_sender_name: c.lastMessageSenderName || null,
                 last_message_participant: c.lastMessageParticipant || null,
                 last_message_participant_pn: c.lastMessageParticipantPn || null,
+                last_message_participant_pn: c.lastMessageParticipantPn || null,
                 };
             });
             validChats.sort((a, b) => (b.conversation_timestamp || 0) - (a.conversation_timestamp || 0));
@@ -1133,7 +1134,8 @@ async function refreshSessionQR(sessionName) {
 /**
  * Returns all in-memory tracked chats for a session, enriched with avatars and sorted by latest activity.
  */
-async function getSessionChats(sessionName) {
+async function getSessionChats(sessionName, options = {}) {
+    const { includeAvatars = true } = options || {};
     let session = activeSessions.get(sessionName);
     if (!session || !session.chats) {
         // Attempt on-the-fly restoration from disk or DB
@@ -1172,6 +1174,10 @@ async function getSessionChats(sessionName) {
 
     // Sort strictly descending by latest message activity
     chatList.sort((a, b) => (b.conversation_timestamp || 0) - (a.conversation_timestamp || 0));
+
+    if (includeAvatars === false) {
+        return chatList;
+    }
 
     // Fetch avatars in small batches of 4 for top 25 chats to prevent socket saturation
     const pendingAvatars = chatList.slice(0, 25).filter(c => !c.avatar_url);

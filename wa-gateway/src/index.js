@@ -152,8 +152,11 @@ app.get('/api/sessions/:sessionName/status', (req, res) => {
 // Get all tracked chats for session
 app.get('/api/sessions/:sessionName/chats', async (req, res) => {
     const { sessionName } = req.params;
+    // Eşitle/sync path passes include_avatars=0: avatar refresh (up to ~17s
+    // for 25 chats) would otherwise dominate every sync click.
+    const includeAvatars = req.query.include_avatars !== '0';
     try {
-        const chats = await getSessionChats(sessionName);
+        const chats = await getSessionChats(sessionName, { includeAvatars });
         res.json(chats);
     } catch (err) {
         console.error(`[WA-Gateway] Failed to get chats for ${sessionName}:`, err.message);

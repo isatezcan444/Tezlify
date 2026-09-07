@@ -7,7 +7,20 @@ export function cn(...inputs: ClassValue[]) {
 }
 
 /**
- * Safely renders an icon prop that could be either a rendered ReactNode (like `<Sun />`)
+ * Parses a backend timestamp honoring its true instant.
+ * The API stores naive UTC ("2026-09-07 11:30:00"); `new Date()` would read
+ * that as browser-local time (3h off in TRT). Appending 'Z' recovers UTC.
+ * Strings already carrying a zone/offset pass through untouched.
+ */
+export function parseServerTime(dateStr?: string | null): Date | null {
+  if (!dateStr) return null;
+  const s = String(dateStr).trim().replace(' ', 'T');
+  if (/[zZ]$/.test(s) || /[+-]\d{2}:?\d{2}$/.test(s)) return new Date(s);
+  return new Date(`${s}Z`);
+}
+
+/**
+ * Safely renders an icon prop that could be either a rendered ReactNode (like `<Send />`)
  * or a component definition (function / forwardRef object from Lucide React).
  */
 export function renderIcon(
