@@ -3,9 +3,10 @@ WhatsApp Gateway HTTP Client.
 Handles high-performance, non-blocking communication between FastAPI backend
 and the Baileys wa-gateway microservice.
 """
+from __future__ import annotations
 import time
 import logging
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import httpx
 
 from backend.app.core.config import settings
