@@ -405,9 +405,19 @@ class WhatsAppSyncService:
                     if init_from_me:
                         init_sender_name = "Siz"
                     elif not init_sender_name and is_group:
-                        participant = chat.get("last_message_participant")
-                        if participant:
-                            init_sender_name = f"+{participant.split(':')[0].split('@')[0]}" if "@" in participant else participant
+                        participant_init = chat.get("last_message_participant")
+                        if participant_init:
+                            init_raw_num = participant_init.split(":")[0].split("@")[0]
+                            if init_raw_num and init_raw_num.isdigit():
+                                pn_init = PhoneService.normalize_to_e164(f"+{init_raw_num}")
+                                if pn_init:
+                                    pl_init = (await db.execute(select(Lead).where(Lead.phone_e164 == pn_init["e164"], Lead.user_id == user_id).limit(1))).scalars().first()
+                                    if pl_init and pl_init.name and not pl_init.name.startswith("WhatsApp ("):
+                                        init_sender_name = pl_init.name
+                                    else:
+                                        init_sender_name = pn_init["e164"]
+                                else:
+                                    init_sender_name = f"+{init_raw_num}"
 
                     init_msg = Message(
                         user_id=user_id,
@@ -452,9 +462,25 @@ class WhatsAppSyncService:
 
             wa_id = m.get("wa_message_id")
             if wa_id:
-                # Deduplication
-                ex_stmt = select(Message.id).where(Message.wa_message_id == wa_id)
-                if (await db.execute(ex_stmt)).scalar_one_or_none():
+                # Deduplication: check if message already exists
+                ex_stmt = select(Message).where(Message.wa_message_id == wa_id).limit(1)
+                existing_m = (await db.execute(ex_stmt)).scalars().first()
+                if existing_m:
+                    # If existing message has a poor sender_name (null or generic fallback),
+                    # upgrade it with the newly resolved name from contacts/leads
+                    new_sname_check = m.get("sender_name")
+                    if not new_sname_check and m.get("participant"):
+                        rn = m.get("participant", "").split(":")[0].split("@")[0]
+                        if rn and rn.isdigit():
+                            pn = PhoneService.normalize_to_e164(f"+{rn}")
+                            if pn:
+                                pl = (await db.execute(select(Lead).where(Lead.phone_e164 == pn["e164"], Lead.user_id == user_id).limit(1))).scalars().first()
+                                if pl and pl.name and not pl.name.startswith("WhatsApp ("):
+                                    new_sname_check = pl.name
+                                else:
+                                    new_sname_check = pn["e164"]
+                    if new_sname_check and (not existing_m.sender_name or existing_m.sender_name in ("Grup Üyesi", "")):
+                        existing_m.sender_name = new_sname_check
                     continue
 
             from_me = bool(m.get("fromMe", False))
