@@ -414,3 +414,111 @@ async def test_messages_chronological_order_in_fetch():
         assert dtos[0].body == "En eski mesaj"
         assert dtos[1].body == "Eski mesaj"
         assert dtos[2].body == "Son mesaj"
+
+
+@pytest.mark.asyncio
+async def test_sync_contacts_heals_lid_placeholder_names():
+    session_name = await _make_session()
+    lid_jid = f"{uuid.uuid4().int % 100000000000000:014d}@lid"
+
+    async with AsyncSessionLocal() as db:
+        lead = Lead(
+            name="WhatsApp Sohbeti",
+            phone=lid_jid,
+            phone_e164=None,
+            category="WhatsApp Sohbeti",
+            status=LeadStatus.CONTACTED,
+        )
+        db.add(lead)
+        await db.commit()
+        await db.refresh(lead)
+
+    async with AsyncSessionLocal() as db:
+        res = await WhatsAppSyncService.sync_contacts(
+            db,
+            session_name,
+            contacts=[{"id": lid_jid, "name": "Ufuk"}],
+        )
+        assert res.get("healed_leads", 0) >= 1
+
+    async with AsyncSessionLocal() as db:
+        refreshed = (await db.execute(select(Lead).where(Lead.id == lead.id))).scalar_one()
+        assert refreshed.name == "Ufuk"
+
+
+@pytest.mark.asyncio
+async def test_sync_history_batch_ingests_multi_messages_and_heals_whatsapp_sohbeti():
+    session_name = await _make_session()
+    group_jid = f"group_{uuid.uuid4().hex[:6]}@g.us"
+
+    async with AsyncSessionLocal() as db:
+        # Pre-existing lead with poor placeholder name
+        lead = Lead(
+            name="WhatsApp Sohbeti",
+            phone=group_jid,
+            phone_e164=None,
+            category="WhatsApp Grubu",
+            status=LeadStatus.CONTACTED,
+        )
+        db.add(lead)
+        await db.commit()
+        await db.refresh(lead)
+
+    now_ts = int(time.time())
+    sync_msgs = [
+        {
+            "wa_message_id": f"msg_1_{uuid.uuid4().hex[:6]}",
+            "phone": group_jid,
+            "message": "İlk mesaj",
+            "fromMe": False,
+            "sender_name": "Cevat Aydın",
+            "is_group": True,
+            "timestamp": now_ts - 60,
+        },
+        {
+            "wa_message_id": f"msg_2_{uuid.uuid4().hex[:6]}",
+            "phone": group_jid,
+            "message": "İkinci mesaj",
+            "fromMe": False,
+            "sender_name": "Tolga Cebeci",
+            "is_group": True,
+            "timestamp": now_ts - 30,
+        },
+        {
+            "wa_message_id": f"msg_3_{uuid.uuid4().hex[:6]}",
+            "phone": group_jid,
+            "message": "Üçüncü mesaj",
+            "fromMe": True,
+            "sender_name": "Siz",
+            "is_group": True,
+            "timestamp": now_ts,
+        },
+    ]
+
+    async with AsyncSessionLocal() as db:
+        res = await WhatsAppSyncService.sync_history_batch(
+            db,
+            session_name,
+            chats=[
+                {
+                    "id": group_jid,
+                    "phone": group_jid,
+                    "name": "3Hacker",
+                    "is_group": True,
+                    "conversation_timestamp": now_ts,
+                    "last_message_preview": "Üçüncü mesaj",
+                    "last_message_from_me": True,
+                }
+            ],
+            messages=sync_msgs,
+        )
+        assert res.get("messages_imported", 0) >= 3
+
+    async with AsyncSessionLocal() as db:
+        refreshed = (await db.execute(select(Lead).where(Lead.id == lead.id))).scalar_one()
+        assert refreshed.name == "3Hacker"
+
+        # Check all 3 messages exist
+        conv = (await db.execute(select(Conversation).where(Conversation.lead_id == lead.id))).scalar_one()
+        msg_count = (await db.execute(select(func.count(Message.id)).where(Message.conversation_id == conv.id))).scalar()
+        assert msg_count == 3

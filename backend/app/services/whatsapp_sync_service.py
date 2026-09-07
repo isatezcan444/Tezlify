@@ -63,22 +63,29 @@ def _normalize_pn_jid(participant_pn: Optional[str]) -> Optional[str]:
     return None
 
 
-#: Sender names that carry no information — eligible for upgrade on resync.
-POOR_SENDER_NAMES = frozenset({"", "Grup Üyesi"})
+#: Sender and chat names that carry no information — eligible for upgrade on resync.
+POOR_SENDER_NAMES = frozenset({
+    "",
+    "Grup Üyesi",
+    "WhatsApp Sohbeti",
+    "WhatsApp Grubu",
+    "WhatsApp",
+    "İsimsiz Müşteri",
+})
 
 
 def _lead_display_name(contact_name: Optional[str], phone_e164: Optional[str], raw_key: Optional[str]) -> str:
     """Honest display name for a newly provisioned chat lead.
 
     JID-looking strings are never names. Order: real contact name →
-    phone-based placeholder → generic label.
+    phone number → generic label.
     """
     raw_name = (contact_name or "").strip()
-    if raw_name and "@" not in raw_name:
+    if raw_name and "@" not in raw_name and raw_name not in POOR_SENDER_NAMES:
         return raw_name
     shown = phone_e164 or raw_key or ""
     if shown and "@" not in shown:
-        return f"WhatsApp ({shown})"
+        return shown if shown.startswith("+") else f"+{shown}"
     return "WhatsApp Sohbeti"
 
 
@@ -194,7 +201,7 @@ class WhatsAppSyncService:
                 if (
                     contact_name
                     and contact_name.strip()
-                    and (lead.name in ("WhatsApp Grubu", "", None) or str(lead.name).startswith("WhatsApp ("))
+                    and (not lead.name or lead.name in POOR_SENDER_NAMES or str(lead.name).startswith("WhatsApp ("))
                 ):
                     lead.name = contact_name.strip()
                     updated = True
@@ -289,7 +296,7 @@ class WhatsAppSyncService:
                 await db.flush()
             else:
                 updated = False
-                if contact_name and contact_name.strip() and (not lead.name or lead.name.startswith("WhatsApp (")):
+                if contact_name and contact_name.strip() and (not lead.name or lead.name in POOR_SENDER_NAMES or str(lead.name).startswith("WhatsApp (")):
                     lead.name = contact_name.strip()
                     updated = True
                 if avatar_url:
@@ -385,7 +392,7 @@ class WhatsAppSyncService:
             select(Message)
             .where(
                 Message.user_id == user_id,
-                or_(Message.sender_name.is_(None), Message.sender_name.in_(["", "Grup Üyesi"])),
+                or_(Message.sender_name.is_(None), Message.sender_name.in_(list(POOR_SENDER_NAMES))),
             )
             .order_by(Message.id.desc())
             .limit(limit)
@@ -576,7 +583,7 @@ class WhatsAppSyncService:
         if not keeper_cdata.get("avatar_url") and src_cdata.get("avatar_url"):
             keeper_cdata["avatar_url"] = src_cdata["avatar_url"]
             keeper.custom_data = keeper_cdata
-        if src.name and keeper.name in ("WhatsApp Grubu", "", None):
+        if src.name and (not keeper.name or keeper.name in POOR_SENDER_NAMES or str(keeper.name).startswith("WhatsApp (")):
             keeper.name = src.name
         await db.delete(src)
         await db.flush()
@@ -754,11 +761,35 @@ class WhatsAppSyncService:
         healed_messages = 0
 
         for c in contacts:
-            raw_phone = c.get("phone") or c.get("id") or ""
+            raw_id = (c.get("id") or "").strip()
+            raw_phone = (c.get("phone") or raw_id).strip()
             name = (c.get("name") or "").strip()
-            if not name or "@" in name or name.startswith("WhatsApp ("):
+            if not name or "@" in name or name.startswith("WhatsApp (") or name in POOR_SENDER_NAMES:
                 continue
 
+            # Case 1: Match @lid lead directly by raw JID
+            if raw_id.endswith("@lid"):
+                lid_stmt = (
+                    select(Lead)
+                    .where(
+                        Lead.user_id == user_id,
+                        Lead.phone == raw_id,
+                    )
+                    .limit(1)
+                )
+                lid_lead = (await db.execute(lid_stmt)).scalars().first()
+                if lid_lead:
+                    is_placeholder = (
+                        not lid_lead.name
+                        or lid_lead.name in POOR_SENDER_NAMES
+                        or lid_lead.name.startswith("WhatsApp (")
+                        or lid_lead.name == lid_lead.phone
+                    )
+                    if is_placeholder and name:
+                        lid_lead.name = name
+                        healed_leads += 1
+
+            # Case 2: Match by phone number if a valid phone exists
             phone_norm = PhoneService.normalize_to_e164(raw_phone)
             if not phone_norm or not phone_norm.get("is_valid"):
                 continue
@@ -785,8 +816,8 @@ class WhatsAppSyncService:
             if lead:
                 is_placeholder = (
                     not lead.name
+                    or lead.name in POOR_SENDER_NAMES
                     or lead.name.startswith("WhatsApp (")
-                    or lead.name in ("WhatsApp Sohbeti", "İsimsiz Müşteri", "")
                     or lead.name == lead.phone
                     or lead.name == lead.phone_e164
                 )
@@ -808,7 +839,7 @@ class WhatsAppSyncService:
                     ),
                     or_(
                         Message.sender_name.is_(None),
-                        Message.sender_name.in_(["", "Grup Üyesi"]),
+                        Message.sender_name.in_(list(POOR_SENDER_NAMES)),
                         Message.sender_name.startswith("WhatsApp ("),
                         Message.sender_name.startswith("+"),
                     ),
@@ -1196,9 +1227,9 @@ class WhatsAppSyncService:
                 # Refresh in-memory state exactly like get_or_create would.
                 cname = chat.get("name")
                 if spec["is_group"]:
-                    if cname and cname.strip() and lead.name in ("WhatsApp Grubu", "", None):
+                    if cname and cname.strip() and (not lead.name or lead.name in POOR_SENDER_NAMES or str(lead.name).startswith("WhatsApp (")):
                         lead.name = cname.strip()
-                elif cname and cname.strip() and (not lead.name or lead.name.startswith("WhatsApp (")):
+                elif cname and cname.strip() and (not lead.name or lead.name in POOR_SENDER_NAMES or str(lead.name).startswith("WhatsApp (")):
                     lead.name = cname.strip()
                 if chat.get("avatar_url"):
                     cdata = dict(lead.custom_data or {})
@@ -1230,41 +1261,46 @@ class WhatsAppSyncService:
             preview_text = (chat.get("last_message_preview") or "").strip()
             if preview_text:
                 conv.last_message_preview = preview_text
-                existing_msg_stmt = select(Message.id).where(Message.conversation_id == conv.id).limit(1)
-                has_existing = (await db.execute(existing_msg_stmt)).scalars().first()
-                if not has_existing:
-                    msg_time = _to_naive_utc(spec["time"]) or _to_naive_utc(datetime.now(timezone.utc))
-                    init_from_me = bool(chat.get("last_message_from_me", False))
-                    init_sender_name = chat.get("last_message_sender_name")
-                    if init_from_me:
-                        init_sender_name = "Siz"
-                    elif not init_sender_name and spec["is_group"]:
-                        init_sender_name = await cls._resolve_sender_via_participant(
-                            db, user_id,
-                            chat.get("last_message_participant"),
-                            chat.get("last_message_participant_pn"),
-                        )
+                has_payload_messages = any(
+                    (m.get("phone") in (spec["raw"], spec["key"], spec["e164"]) or m.get("remote_jid") in (spec["raw"], spec["key"]))
+                    for m in (messages or [])
+                )
+                if not has_payload_messages:
+                    existing_msg_stmt = select(Message.id).where(Message.conversation_id == conv.id).limit(1)
+                    has_existing = (await db.execute(existing_msg_stmt)).scalars().first()
+                    if not has_existing:
+                        msg_time = _to_naive_utc(spec["time"]) or _to_naive_utc(datetime.now(timezone.utc))
+                        init_from_me = bool(chat.get("last_message_from_me", False))
+                        init_sender_name = chat.get("last_message_sender_name")
+                        if init_from_me:
+                            init_sender_name = "Siz"
+                        elif not init_sender_name and spec["is_group"]:
+                            init_sender_name = await cls._resolve_sender_via_participant(
+                                db, user_id,
+                                chat.get("last_message_participant"),
+                                chat.get("last_message_participant_pn"),
+                            )
 
-                    init_msg = Message(
-                        user_id=user_id,
-                        conversation_id=conv.id,
-                        direction=MessageDirection.OUTBOUND if init_from_me else MessageDirection.INBOUND,
-                        message_type=MessageType.TEXT,
-                        body=preview_text,
-                        wa_message_id=f"wa_init_{conv.id}_{int(time.time())}",
-                        sender_phone=my_phone if init_from_me else spec["key"],
-                        recipient_phone=spec["key"] if init_from_me else my_phone,
-                        sender_name=init_sender_name,
-                        status=ConversationMessageStatus.SENT if init_from_me else ConversationMessageStatus.RECEIVED,
-                        created_at=msg_time,
-                    )
-                    db.add(init_msg)
-                    init_created[(
-                        conv.id,
-                        preview_text,
-                        MessageDirection.OUTBOUND if init_from_me else MessageDirection.INBOUND,
-                    )] = init_msg
-                    imported_count += 1
+                        init_msg = Message(
+                            user_id=user_id,
+                            conversation_id=conv.id,
+                            direction=MessageDirection.OUTBOUND if init_from_me else MessageDirection.INBOUND,
+                            message_type=MessageType.TEXT,
+                            body=preview_text,
+                            wa_message_id=f"wa_init_{conv.id}_{int(time.time())}",
+                            sender_phone=my_phone if init_from_me else spec["key"],
+                            recipient_phone=spec["key"] if init_from_me else my_phone,
+                            sender_name=init_sender_name,
+                            status=ConversationMessageStatus.SENT if init_from_me else ConversationMessageStatus.RECEIVED,
+                            created_at=msg_time,
+                        )
+                        db.add(init_msg)
+                        init_created[(
+                            conv.id,
+                            preview_text,
+                            MessageDirection.OUTBOUND if init_from_me else MessageDirection.INBOUND,
+                        )] = init_msg
+                        imported_count += 1
 
         # 2. Ingest Messages
         for m in messages:

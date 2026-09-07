@@ -767,6 +767,34 @@ async def sync_whatsapp_conversations(
     messages_imported = 0
 
     if chats:
+        all_messages = []
+        for c in chats:
+            chat_msgs = c.get("messages") or []
+            if chat_msgs:
+                for m in chat_msgs:
+                    all_messages.append({
+                        "phone": m.get("phone") or c.get("phone"),
+                        "message": m.get("message") or m.get("text"),
+                        "fromMe": bool(m.get("fromMe", False)),
+                        "sender_name": m.get("sender_name"),
+                        "participant": m.get("participant"),
+                        "participant_pn": m.get("participant_pn"),
+                        "is_group": c.get("is_group"),
+                        "timestamp": m.get("timestamp"),
+                        "wa_message_id": m.get("wa_message_id"),
+                    })
+            elif c.get("last_message_preview"):
+                all_messages.append({
+                    "phone": c.get("phone"),
+                    "message": c.get("last_message_preview"),
+                    "fromMe": bool(c.get("last_message_from_me", False)),
+                    "sender_name": c.get("last_message_sender_name"),
+                    "participant": c.get("last_message_participant"),
+                    "participant_pn": c.get("last_message_participant_pn"),
+                    "is_group": c.get("is_group"),
+                    "timestamp": c.get("conversation_timestamp"),
+                })
+
         res = await WhatsAppSyncService.sync_history_batch(
             db=db,
             session_name=session.session_name,
@@ -780,26 +808,13 @@ async def sync_whatsapp_conversations(
                     "conversation_timestamp": c.get("conversation_timestamp"),
                     "last_message_preview": c.get("last_message_preview"),
                     "last_message_from_me": c.get("last_message_from_me"),
-                "last_message_sender_name": c.get("last_message_sender_name"),
-                "last_message_participant": c.get("last_message_participant"),
-                "last_message_participant_pn": c.get("last_message_participant_pn"),
+                    "last_message_sender_name": c.get("last_message_sender_name"),
+                    "last_message_participant": c.get("last_message_participant"),
+                    "last_message_participant_pn": c.get("last_message_participant_pn"),
                 }
                 for c in chats
             ],
-            messages=[
-                {
-                    "phone": c.get("phone"),
-                    "message": c.get("last_message_preview"),
-                    "fromMe": bool(c.get("last_message_from_me", False)),
-                    "sender_name": c.get("last_message_sender_name"),
-                    "participant": c.get("last_message_participant"),
-                    "participant_pn": c.get("last_message_participant_pn"),
-                    "is_group": c.get("is_group"),
-                    "timestamp": c.get("conversation_timestamp"),
-                }
-                for c in chats
-                if c.get("last_message_preview")
-            ],
+            messages=all_messages,
         )
         synced_count = res.get("chats_synced", len(chats))
         merged_threads = int(res.get("threads_merged", 0) or 0)

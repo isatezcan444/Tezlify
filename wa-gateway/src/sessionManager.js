@@ -253,12 +253,25 @@ function updateContact(sessionData, contact) {
     // A @lid value is opaque — never fabricate a phone number from it.
     const phone = isGroup ? jid : (isLidJid(jid) ? null : `+${jid.split('@')[0]}`);
     const existing = sessionData.contacts.get(jid) || {};
+    const contactName = contact.name || contact.notify || contact.verifiedName || contact.subject || existing.name || '';
     sessionData.contacts.set(jid, {
         id: jid,
         phone,
-        name: contact.name || contact.notify || contact.verifiedName || contact.subject || existing.name || '',
+        name: contactName,
         isGroup
     });
+    // If contact has a linked LID property, register contact under that LID too
+    if (contact.lid && isLidJid(contact.lid)) {
+        const existingLid = sessionData.contacts.get(contact.lid) || {};
+        sessionData.contacts.set(contact.lid, {
+            id: contact.lid,
+            phone: phone || existingLid.phone || null,
+            name: contactName || existingLid.name || '',
+            isGroup: false
+        });
+        if (!sessionData.resolvedLidPairs) sessionData.resolvedLidPairs = new Map();
+        if (phone) sessionData.resolvedLidPairs.set(contact.lid, phone);
+    }
     // Alias phone-form JIDs under their normalized form too, so lookups hit
     // regardless of which representation a message carries.
     if (!isGroup && !isLidJid(jid)) {
@@ -508,6 +521,31 @@ function extractMessageText(message) {
 }
 
 /**
+ * Records a message in session memory buffer (up to 100 recent messages per chat).
+ */
+function recordChatMessage(sessionData, msg) {
+    if (!sessionData || !msg) return;
+    if (!sessionData.chatMessages) sessionData.chatMessages = new Map();
+    const remoteJid = msg.remote_jid || msg.remoteJid || msg.phone;
+    if (!remoteJid) return;
+    let list = sessionData.chatMessages.get(remoteJid);
+    if (!list) {
+        list = [];
+        sessionData.chatMessages.set(remoteJid, list);
+    }
+    // Deduplicate by wa_message_id if present
+    if (msg.wa_message_id && list.some(existing => existing.wa_message_id === msg.wa_message_id)) {
+        return;
+    }
+    list.push(msg);
+    // Sort ascending by timestamp
+    list.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+    if (list.length > 100) {
+        list.splice(0, list.length - 100);
+    }
+}
+
+/**
  * Updates or adds a chat in session memory with strict sorting timestamps.
  */
 function updateChat(sessionData, chat) {
@@ -528,24 +566,39 @@ function updateChat(sessionData, chat) {
     let lastMessageParticipant = chat.lastMessageParticipant || existing.lastMessageParticipant || null;
     let lastMessageParticipantPn = chat.lastMessageParticipantPn || existing.lastMessageParticipantPn || null;
 
-    // If chat has Baileys messages array (IHistorySyncMsg[]), extract the latest message!
+    // If chat has Baileys messages array (IHistorySyncMsg[]), extract all messages and track latest!
     if (chat.messages && Array.isArray(chat.messages) && chat.messages.length > 0) {
-        for (let i = chat.messages.length - 1; i >= 0; i--) {
+        let latestFound = false;
+        for (let i = 0; i < chat.messages.length; i++) {
             const histMsg = chat.messages[i]?.message || chat.messages[i];
             if (!histMsg) continue;
             const text = extractMessageText(histMsg.message);
-            if (text) {
+            if (!text) continue;
+            const msgTs = toUnixTimestamp(histMsg.messageTimestamp);
+            const histFromMe = !!histMsg.key?.fromMe;
+            const partJid = histMsg.key?.participant || (histFromMe ? null : (isGroup ? null : jid));
+            const senderName = resolveSenderName(sessionData, histMsg, partJid, histFromMe);
+
+            recordChatMessage(sessionData, {
+                wa_message_id: histMsg.key?.id,
+                fromMe: histFromMe,
+                phone: phone,
+                remote_jid: jid,
+                participant: partJid,
+                participant_pn: null,
+                sender_name: senderName,
+                is_group: isGroup,
+                message: text,
+                timestamp: msgTs
+            });
+
+            if (!latestFound || (msgTs > 0 && msgTs >= toUnixTimestamp(rawTs))) {
                 lastMessage = text;
-                const msgTs = toUnixTimestamp(histMsg.messageTimestamp);
-                if (msgTs > 0 && (!rawTs || msgTs > toUnixTimestamp(rawTs))) {
-                    rawTs = msgTs;
-                }
-                const histFromMe = !!histMsg.key?.fromMe;
+                if (msgTs > 0) rawTs = msgTs;
                 lastMessageFromMe = histFromMe;
-                const partJid = histMsg.key?.participant || (histFromMe ? null : histMsg.key?.remoteJid);
                 lastMessageParticipant = partJid;
-                lastMessageSenderName = resolveSenderName(sessionData, histMsg, partJid, histFromMe);
-                break;
+                lastMessageSenderName = senderName;
+                latestFound = true;
             }
         }
     }
@@ -838,6 +891,8 @@ async function initSessionSocket(sessionData) {
             validChats.sort((a, b) => (b.conversation_timestamp || 0) - (a.conversation_timestamp || 0));
 
             const validMessages = [];
+            const seenMsgIds = new Set();
+
             for (const m of (messages || [])) {
                 const remoteJid = m.key?.remoteJid || '';
                 if (!isSupportedJid(remoteJid)) continue;
@@ -860,8 +915,7 @@ async function initSessionSocket(sessionData) {
                     phone = `+${remoteJid.split('@')[0]}`;
                 }
                 const senderName = resolveSenderName(sessionData, m, partJid, fromMe, partPn);
-
-                validMessages.push({
+                const msgObj = {
                     wa_message_id: m.key?.id,
                     fromMe: fromMe,
                     phone: phone,
@@ -872,8 +926,26 @@ async function initSessionSocket(sessionData) {
                     is_group: isGroup,
                     message: text,
                     timestamp: toUnixTimestamp(m.messageTimestamp)
-                });
+                };
+
+                if (msgObj.wa_message_id) seenMsgIds.add(msgObj.wa_message_id);
+                validMessages.push(msgObj);
+                recordChatMessage(sessionData, msgObj);
             }
+
+            // Merge messages captured from chat.messages during updateChat
+            if (sessionData.chatMessages && sessionData.chatMessages.size > 0) {
+                for (const msgList of sessionData.chatMessages.values()) {
+                    for (const cachedMsg of msgList) {
+                        if (!cachedMsg.wa_message_id || !seenMsgIds.has(cachedMsg.wa_message_id)) {
+                            if (cachedMsg.wa_message_id) seenMsgIds.add(cachedMsg.wa_message_id);
+                            validMessages.push(cachedMsg);
+                        }
+                    }
+                }
+            }
+
+            validMessages.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
 
             if (validChats.length > 0 || validMessages.length > 0) {
                 await notifyBackend(sessionName, 'history-sync', {
@@ -1033,6 +1105,19 @@ async function initSessionSocket(sessionData) {
                 lastMessageParticipant: partJid,
                 lastMessageParticipantPn: partPn,
                 unreadCount: fromMe ? 0 : ((sessionData.chats?.get(remoteJid)?.unreadCount || 0) + 1)
+            });
+
+            recordChatMessage(sessionData, {
+                wa_message_id: msg.key?.id,
+                fromMe: fromMe,
+                phone: contactPhone,
+                remote_jid: remoteJid,
+                participant: partJid,
+                participant_pn: partPn,
+                sender_name: senderName,
+                is_group: isGroup,
+                message: text,
+                timestamp: ts
             });
 
             // Dispatch message-event webhook for full two-way chat synchronization
@@ -1353,11 +1438,22 @@ async function getSessionChats(sessionName, options = {}) {
     discoverParticipatingGroups(session).catch(() => {});
 
     const chatList = Array.from(session.chats.values()).map((c) => {
-        const contact = session.contacts?.get(c.id);
-        const name = c.name || contact?.name || contact?.notify || (c.isGroup ? 'WhatsApp Grubu' : '');
+        let contact = session.contacts?.get(c.id);
+        let resolvedPhone = c.phone;
+        // If chat id is LID, resolve phone and contact if mapped
+        if (isLidJid(c.id)) {
+            if (!resolvedPhone && session.resolvedLidPairs?.has(c.id)) {
+                resolvedPhone = session.resolvedLidPairs.get(c.id);
+            }
+            if (!contact && resolvedPhone) {
+                contact = session.contacts?.get(resolvedPhone);
+            }
+        }
+        const name = c.name || contact?.name || contact?.notify || (c.isGroup ? 'WhatsApp Grubu' : (resolvedPhone || ''));
+        const msgs = session.chatMessages?.get(c.id) || [];
         return {
             id: c.id,
-            phone: c.phone,
+            phone: resolvedPhone || c.phone,
             name: name,
             is_group: !!c.isGroup,
             unread_count: c.unreadCount || 0,
@@ -1366,7 +1462,9 @@ async function getSessionChats(sessionName, options = {}) {
             last_message_from_me: !!c.lastMessageFromMe,
             last_message_sender_name: c.lastMessageSenderName || null,
             last_message_participant: c.lastMessageParticipant || null,
-            avatar_url: session.avatars?.get(c.id) || null
+            last_message_participant_pn: c.lastMessageParticipantPn || null,
+            avatar_url: session.avatars?.get(c.id) || null,
+            messages: msgs
         };
     });
 
@@ -1405,6 +1503,12 @@ async function syncSessionHistoryToBackend(sessionName) {
 
     const chats = await getSessionChats(sessionName);
     if (chats.length > 0) {
+        const allMessages = [];
+        for (const c of chats) {
+            if (c.messages && c.messages.length > 0) {
+                allMessages.push(...c.messages);
+            }
+        }
         await notifyBackend(sessionName, 'history-sync', {
             chats: chats.map((c) => ({
                 id: c.id,
@@ -1416,9 +1520,10 @@ async function syncSessionHistoryToBackend(sessionName) {
                 last_message_preview: c.last_message_preview,
                 last_message_from_me: c.last_message_from_me,
                 last_message_sender_name: c.last_message_sender_name,
-                last_message_participant: c.last_message_participant
+                last_message_participant: c.last_message_participant,
+                last_message_participant_pn: c.last_message_participant_pn
             })),
-            messages: []
+            messages: allMessages
         });
     }
 
