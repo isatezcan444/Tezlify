@@ -26,7 +26,8 @@ import {
   Archive,
   ExternalLink,
   Copy,
-  KeyRound
+  KeyRound,
+  RefreshCw
 } from 'lucide-react';
 import { ApiClient } from '../api/client';
 import { WhatsAppSession, MessageLog, Conversation, ConversationStatus, Lead } from '../types';
@@ -225,6 +226,34 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   const [pairingCode, setPairingCode] = useState<string | null>(null);
   const [isRequestingCode, setIsRequestingCode] = useState(false);
   const [isCopiedCode, setIsCopiedCode] = useState(false);
+  const [isRefreshingQr, setIsRefreshingQr] = useState(false);
+  const [qrSecondsLeft, setQrSecondsLeft] = useState(25);
+
+  const handleRefreshQr = async (sessionId?: number) => {
+    const targetId = sessionId || pairingSessionId;
+    if (!targetId || isRefreshingQr) return;
+    setIsRefreshingQr(true);
+    try {
+      const res = await ApiClient.refreshSessionQr(targetId);
+      if (res.qr_code) {
+        setSessions((prev) =>
+          prev.map((s) => (s.id === targetId ? { ...s, qr_code: res.qr_code } : s))
+        );
+        setQrSecondsLeft(25);
+      }
+      if (res.status === 'CONNECTED') {
+        setIsPairingSuccess(true);
+        toast.success(t('whatsapp.qrPairSuccess'), t('common.success'));
+        fetchSessionsAndLogs();
+        onRefreshStats();
+        setTimeout(() => setIsQRModalOpen(false), 1500);
+      }
+    } catch (e: any) {
+      toast.error(e.message || 'QR kod yenilenemedi');
+    } finally {
+      setIsRefreshingQr(false);
+    }
+  };
 
   const handleRequestPairingCode = async () => {
     if (!pairingSessionId || !pairingPhone.trim()) {
@@ -300,6 +329,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         setSessions((prev) =>
           prev.map((s) => (s.id === eventData.session_id ? { ...s, qr_code: eventData.qr_code } : s))
         );
+        setQrSecondsLeft(25);
       }
     };
     window.addEventListener('tezlify:ws_event', handleWs);
@@ -324,6 +354,20 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     };
   }, []);
 
+  // Countdown timer for QR code validity
+  useEffect(() => {
+    if (!isQRModalOpen || pairingMode !== 'qr' || isPairingSuccess) return;
+
+    const timer = setInterval(() => {
+      setQrSecondsLeft((prev) => {
+        if (prev <= 1) return 0;
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [isQRModalOpen, pairingMode, isPairingSuccess]);
+
   // Polling fallback to guarantee state progression when QR modal is open
   useEffect(() => {
     if (!isQRModalOpen || !pairingSessionId) return;
@@ -342,9 +386,13 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
             setIsQRModalOpen(false);
           }, 1500);
         } else if (res.qr_code) {
-          setSessions((prev) =>
-            prev.map((s) => (s.id === pairingSessionId ? { ...s, qr_code: res.qr_code } : s))
-          );
+          setSessions((prev) => {
+            const current = prev.find((s) => s.id === pairingSessionId);
+            if (current && current.qr_code !== res.qr_code) {
+              setQrSecondsLeft(25);
+            }
+            return prev.map((s) => (s.id === pairingSessionId ? { ...s, qr_code: res.qr_code } : s));
+          });
         }
       } catch (e) {
         // ignore transient poll error
@@ -449,10 +497,14 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       setPairingMode('qr');
       setPairingCode(null);
       setPairingPhone('');
+      setQrSecondsLeft(25);
       // Optimistically add session to state so it shows up instantly
       setSessions((prev) => [session, ...prev.filter((s) => s.id !== session.id)]);
       fetchSessionsAndLogs(true);
       onRefreshStats();
+      if (!session.qr_code) {
+        handleRefreshQr(session.id);
+      }
     } catch (err: any) {
       toast.error(err.message || t('common.error'), t('common.error'));
     } finally {
@@ -865,6 +917,8 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                     setPairingMode('qr');
                     setPairingCode(null);
                     setPairingPhone('');
+                    setQrSecondsLeft(25);
+                    handleRefreshQr(id);
                   }}
                   onDelete={handleDelete}
                 />
@@ -1458,24 +1512,49 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                 </div>
 
                 {/* QR Code Presentation */}
-                <div className="p-3.5 bg-white rounded-2xl mx-auto inline-flex items-center justify-center shadow-md border border-slate-200/80 min-w-[210px] min-h-[210px]">
+                <div className="relative p-3.5 bg-white rounded-2xl mx-auto flex flex-col items-center justify-center shadow-lg border border-slate-200/90 w-full max-w-[280px]">
+                  {/* Active / Expiration Status Badge */}
+                  <div className="w-full flex items-center justify-between mb-2 px-1 text-[11px] font-semibold">
+                    <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-600 border border-emerald-200/60">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                      {t('whatsapp.qrLiveBadge')}
+                    </span>
+                    <span className={`tabular-nums ${qrSecondsLeft <= 5 ? 'text-rose-500 font-bold animate-pulse' : 'text-slate-400'}`}>
+                      {qrSecondsLeft} {t('whatsapp.qrSecLeft')}
+                    </span>
+                  </div>
+
                   {(() => {
                     const pairingSession = sessions.find((s) => s.id === pairingSessionId);
                     const activeQr = pairingSession?.qr_code;
                     if (activeQr) {
                       const qrSrc = activeQr.startsWith('data:image') || activeQr.startsWith('http')
                         ? activeQr
-                        : `https://api.qrserver.com/v1/create-qr-code/?size=260x260&margin=2&data=${encodeURIComponent(activeQr)}`;
+                        : `https://api.qrserver.com/v1/create-qr-code/?size=260x260&margin=4&data=${encodeURIComponent(activeQr)}`;
                       return (
-                        <img
-                          src={qrSrc}
-                          alt="WhatsApp QR Code"
-                          className="w-52 h-52 rounded-xl object-contain shadow-sm"
-                        />
+                        <div className="relative w-56 h-56 flex items-center justify-center bg-white">
+                          <img
+                            src={qrSrc}
+                            alt="WhatsApp QR Code"
+                            className="w-full h-full object-contain select-none rounded-none"
+                            style={{ imageRendering: 'pixelated' }}
+                          />
+                          {/* Expired Overlay if qrSecondsLeft === 0 */}
+                          {qrSecondsLeft === 0 && (
+                            <div 
+                              onClick={() => handleRefreshQr()}
+                              className="absolute inset-0 bg-slate-900/80 backdrop-blur-[2px] rounded-lg flex flex-col items-center justify-center p-3 text-white text-center cursor-pointer transition-all hover:bg-slate-900/85 group"
+                            >
+                              <RefreshCw className="w-8 h-8 mb-2 text-emerald-400 group-hover:rotate-180 transition-transform duration-500" />
+                              <span className="text-xs font-bold">{t('whatsapp.qrExpired')}</span>
+                              <span className="text-[10px] text-slate-300 mt-1">{t('whatsapp.qrExpiredDesc')}</span>
+                            </div>
+                          )}
+                        </div>
                       );
                     }
                     return (
-                      <div className="w-52 h-52 flex flex-col items-center justify-center text-slate-400 gap-3">
+                      <div className="w-56 h-56 flex flex-col items-center justify-center text-slate-400 gap-3">
                         <Loader2 className="w-8 h-8 animate-spin text-[#7367F0]" />
                         <span className="text-xs font-medium text-slate-500 text-center px-2">
                           {t('whatsapp.qrPreparing')}
@@ -1483,6 +1562,17 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                       </div>
                     );
                   })()}
+
+                  {/* Manual Refresh Button */}
+                  <button
+                    type="button"
+                    onClick={() => handleRefreshQr()}
+                    disabled={isRefreshingQr}
+                    className="mt-2.5 w-full py-1.5 px-3 rounded-lg text-xs font-semibold text-slate-600 dark:text-slate-700 bg-slate-100 hover:bg-slate-200 flex items-center justify-center gap-1.5 transition-all cursor-pointer disabled:opacity-50"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${isRefreshingQr ? 'animate-spin text-[#7367F0]' : ''}`} />
+                    <span>{isRefreshingQr ? t('whatsapp.refreshingQr') : t('whatsapp.refreshQr')}</span>
+                  </button>
                 </div>
               </>
             ) : (

@@ -222,3 +222,51 @@ async def test_session_pairing_code_endpoint():
                 if s:
                     await db.delete(s)
                     await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_session_refresh_qr_endpoint():
+    transport = ASGITransport(app=app)
+    session_name = f"refresh_qr_test_{uuid.uuid4().hex[:6]}"
+    sess_id = None
+
+    try:
+        async with AsyncSessionLocal() as db:
+            sess = WhatsAppSession(
+                session_name=session_name,
+                status=SessionStatus.SCAN_QR,
+                qr_code="data:image/png;base64,old_qr",
+            )
+            db.add(sess)
+            await db.commit()
+            await db.refresh(sess)
+            sess_id = sess.id
+
+        with patch.object(gateway_client, "refresh_session_qr", new_callable=AsyncMock) as mock_refresh:
+            mock_refresh.return_value = {
+                "success": True,
+                "status": "SCAN_QR",
+                "qr_code": "data:image/png;base64,fresh_new_qr"
+            }
+
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                res = await client.post(f"/api/v1/whatsapp/sessions/{sess_id}/refresh-qr")
+                assert res.status_code == 200
+                data = res.json()
+                assert data["success"] is True
+                assert data["qr_code"] == "data:image/png;base64,fresh_new_qr"
+
+            mock_refresh.assert_called_once_with(session_name)
+
+            async with AsyncSessionLocal() as db:
+                updated = await db.get(WhatsAppSession, sess_id)
+                assert updated.qr_code == "data:image/png;base64,fresh_new_qr"
+
+    finally:
+        if sess_id:
+            async with AsyncSessionLocal() as db:
+                s = await db.get(WhatsAppSession, sess_id)
+                if s:
+                    await db.delete(s)
+                    await db.commit()
+

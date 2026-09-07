@@ -532,6 +532,17 @@ export class ApiClient {
     return res.json();
   }
 
+  static async refreshSessionQr(sessionId: number): Promise<{ success: boolean; status: string; qr_code: string | null }> {
+    const res = await authFetch(`${API_BASE}/whatsapp/sessions/${sessionId}/refresh-qr`, {
+      method: 'POST'
+    });
+    if (!res.ok) {
+      const msg = await parseError(res, 'QR kod yenilenemedi');
+      throw new Error(msg);
+    }
+    return res.json();
+  }
+
   static async getSessionPairingCode(sessionId: number, phone: string): Promise<{ success: boolean; pairing_code: string }> {
     const res = await authFetch(`${API_BASE}/whatsapp/sessions/${sessionId}/pairing-code`, {
       method: 'POST',

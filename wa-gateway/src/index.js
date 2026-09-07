@@ -3,6 +3,7 @@ const cors = require('cors');
 const {
     activeSessions,
     getOrCreateSession,
+    refreshSessionQR,
     requestPairingCode,
     sendMessage,
     disconnectSession,
@@ -58,7 +59,10 @@ app.post('/api/sessions/create', async (req, res) => {
     }
 
     try {
-        const session = await getOrCreateSession(sessionName);
+        let session = activeSessions.get(sessionName);
+        if (!session || session.status !== 'CONNECTED') {
+            session = await refreshSessionQR(sessionName);
+        }
         res.json({
             message: 'Session initialized',
             session: {
@@ -70,6 +74,22 @@ app.post('/api/sessions/create', async (req, res) => {
         });
     } catch (err) {
         console.error(`[WA-Gateway] Error creating session ${sessionName}:`, err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Refresh QR Code on demand
+app.post('/api/sessions/:sessionName/refresh-qr', async (req, res) => {
+    const { sessionName } = req.params;
+    try {
+        const session = await refreshSessionQR(sessionName);
+        res.json({
+            success: true,
+            status: session.status,
+            qrImage: session.qrImage
+        });
+    } catch (err) {
+        console.error(`[WA-Gateway] Error refreshing QR for ${sessionName}:`, err);
         res.status(500).json({ error: err.message });
     }
 });

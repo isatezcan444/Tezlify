@@ -89,10 +89,31 @@ class WhatsAppGatewayClient:
                 return {
                     "success": True,
                     "status": "SCAN_QR",
-                    "qr_code": "2@wS12dE98vA==,Tezlify_WA_Pairing_Token_Ready",
+                    "qr_code": None,
                     "phone": None,
                 }
             return {"success": False, "error": f"Gateway unreachable: {str(e)}"}
+
+    async def refresh_session_qr(self, session_name: str) -> Dict[str, Any]:
+        """Requests a forced fresh QR code regeneration on wa-gateway."""
+        if self.is_recently_offline() and not settings.SIMULATION_MODE:
+            return {"success": False, "error": "Gateway offline"}
+        url = f"{self.gateway_url}/api/sessions/{session_name}/refresh-qr"
+        try:
+            async with httpx.AsyncClient(timeout=self._get_timeout(5.0)) as client:
+                res = await client.post(url, headers=self._headers())
+                if res.status_code == 200:
+                    self._last_unreachable_time = 0.0
+                    data = res.json()
+                    return {
+                        "success": True,
+                        "status": data.get("status", "SCAN_QR"),
+                        "qr_code": data.get("qrImage")
+                    }
+        except Exception as e:
+            self._last_unreachable_time = time.monotonic()
+            logger.warning(f"[GatewayClient] refresh_session_qr error: {e}")
+        return {"success": False, "qr_code": None}
 
     async def get_session_qr(self, session_name: str) -> Optional[str]:
         """Fetches the latest generated QR code for the session."""

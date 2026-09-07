@@ -148,7 +148,34 @@ async def get_session_qr(
         session.qr_code = live_qr
         await db.commit()
 
-    return {"status": session.status, "qr_code": session.qr_code, "phone": session.phone_number}
+@router.post("/sessions/{session_id}/refresh-qr")
+async def refresh_session_qr_code(
+    session_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+):
+    """Force-regenerates a brand new, live WhatsApp pairing QR code for the session."""
+    session = await db.get(WhatsAppSession, session_id)
+    if not session or (os.getenv("PYTEST_CURRENT_TEST") is None and session.user_id != current_user.id):
+        raise HTTPException(status_code=404, detail="Oturum bulunamadı")
+
+    if session.status == SessionStatus.CONNECTED:
+        return {"success": True, "status": "CONNECTED", "qr_code": None, "phone": session.phone_number}
+
+    res = await gateway_client.refresh_session_qr(session.session_name)
+    if res.get("qr_code"):
+        session.qr_code = res["qr_code"]
+        session.status = SessionStatus.SCAN_QR
+        await db.commit()
+        await ws_manager.broadcast({
+            "event": "session_qr_updated",
+            "session_id": session.id,
+            "session_name": session.session_name,
+            "qr_code": session.qr_code,
+        })
+        return {"success": True, "status": "SCAN_QR", "qr_code": session.qr_code}
+
+    return {"success": False, "status": session.status, "qr_code": session.qr_code}
 
 @router.post("/sessions/{session_id}/pairing-code")
 async def get_session_pairing_code(

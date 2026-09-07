@@ -156,9 +156,9 @@ async function getOrCreateSession(sessionName) {
             sessionData.qr = qr;
             try {
                 sessionData.qrImage = await QRCode.toDataURL(qr, {
-                    errorCorrectionLevel: 'M',
-                    margin: 2,
-                    scale: 8,
+                    errorCorrectionLevel: 'L',
+                    margin: 4,
+                    scale: 10,
                     color: {
                         dark: '#000000',
                         light: '#FFFFFF'
@@ -393,9 +393,64 @@ async function restoreSavedSessions() {
     }
 }
 
+/**
+ * Forces a clean refresh of an un-connected session to provide a brand new QR code.
+ */
+async function refreshSessionQR(sessionName) {
+    const existing = activeSessions.get(sessionName);
+    if (existing && existing.status === 'CONNECTED') {
+        return existing;
+    }
+
+    if (existing && existing.sock) {
+        try {
+            existing.sock.end(undefined);
+        } catch (e) {}
+    }
+
+    activeSessions.delete(sessionName);
+
+    const sessionAuthDir = path.join(SESSIONS_DIR, sessionName);
+    const credsPath = path.join(sessionAuthDir, 'creds.json');
+    let isRegistered = false;
+    if (fs.existsSync(credsPath)) {
+        try {
+            const creds = JSON.parse(fs.readFileSync(credsPath, 'utf8'));
+            isRegistered = !!creds.registered;
+        } catch (e) {}
+    }
+
+    // If not yet registered, wipe stale un-registered keys so Baileys starts completely fresh
+    if (!isRegistered && fs.existsSync(sessionAuthDir)) {
+        try {
+            fs.rmSync(sessionAuthDir, { recursive: true, force: true });
+        } catch (e) {}
+    }
+
+    const session = await getOrCreateSession(sessionName);
+
+    // Wait up to 3.5s for initial QR to be generated
+    if (!session.qrImage && session.status !== 'CONNECTED') {
+        await new Promise((resolve) => {
+            const timeout = setTimeout(resolve, 3500);
+            const onUpdate = (update) => {
+                if (update.qr || update.connection === 'open') {
+                    clearTimeout(timeout);
+                    session.sock?.ev?.off('connection.update', onUpdate);
+                    resolve();
+                }
+            };
+            session.sock?.ev?.on('connection.update', onUpdate);
+        });
+    }
+
+    return session;
+}
+
 module.exports = {
     activeSessions,
     getOrCreateSession,
+    refreshSessionQR,
     requestPairingCode,
     sendMessage,
     disconnectSession,
