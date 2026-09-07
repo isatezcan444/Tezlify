@@ -196,30 +196,33 @@ class WhatsAppOutboundService:
                     detail=f"WhatsApp mesajı iletilemedi: {error_msg}",
                 )
             wa_message_id = gw_res.get("messageId") or f"baileys_{int(time.time())}"
-        elif is_sim or not settings.WHATSAPP_CLOUD_ENABLED:
+        elif is_sim:
             import time, random
             wa_message_id = f"wamid.SIM_{int(time.time())}_{random.randint(100000, 999999)}"
             logger.info(
                 f"[WhatsAppOutboundService] (SIMULATION) Message dispatched: "
                 f"conv_id={conv.id}, recipient={e164_phone}, wamid={wa_message_id}"
             )
-        else:
+        elif not active_session:
+            if is_group or (lead.category in ("WhatsApp Sohbeti", "WhatsApp Grubu")) or not settings.WHATSAPP_CLOUD_ENABLED:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Bağlı bir WhatsApp hattı bulunamadı. Lütfen 'Aktif Numaralar' sekmesinden bir WhatsApp hattı bağlayın.",
+                )
+            # Fallback to Meta Cloud API only if configured and lead is not a synced WhatsApp Web contact
             client = WhatsAppCloudApiClient()
             dispatch_res = await client.send_text_message(
                 to_phone=e164_phone,
                 message_text=clean_text,
             )
-            wa_message_id = dispatch_res.get("messages", [{}])[0].get("id")
-
             if not dispatch_res.get("success"):
                 error_msg = dispatch_res.get("error") or "Meta Cloud API mesajı iletemedi."
                 logger.error(f"[WhatsAppOutboundService] Dispatch failed: {error_msg}")
                 raise HTTPException(
                     status_code=502,
-                    detail=f"WhatsApp mesajı gönderilemedi: {error_msg}",
+                    detail=f"WhatsApp mesajı gönderilemedi: {error_msg}. Lütfen 'Aktif Numaralar' sekmesinden bağlı bir WhatsApp hattınız olduğundan emin olun.",
                 )
-
-            wa_message_id = dispatch_res.get("message_id")
+            wa_message_id = dispatch_res.get("message_id") or dispatch_res.get("messages", [{}])[0].get("id")
 
         now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
 

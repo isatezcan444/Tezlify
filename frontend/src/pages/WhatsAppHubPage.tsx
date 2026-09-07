@@ -359,6 +359,9 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
           prev.map((s) => (s.id === eventData.session_id ? { ...s, qr_code: eventData.qr_code } : s))
         );
         setQrSecondsLeft(25);
+      } else if (eventData?.event === 'conversations_cleared') {
+        setConversations([]);
+        setSelectedConv(null);
       }
     };
     window.addEventListener('tezlify:ws_event', handleWs);
@@ -591,18 +594,26 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     });
     if (!ok) return;
 
-    // 1. Instant optimistic removal from UI (0ms perceived latency)
+    // 1. Instant optimistic removal of session and live conversations (0ms perceived latency)
     const previousSessions = [...sessions];
+    const previousConversations = [...conversations];
+    const previousSelected = selectedConv;
+
     setSessions((prev) => prev.filter((s) => s.id !== sessionId));
+    setConversations([]);
+    setSelectedConv(null);
     toast.success(t('common.success'), t('whatsapp.deleteSession'));
 
     try {
       await ApiClient.deleteSession(sessionId);
       fetchSessionsAndLogs(true);
+      fetchConversations();
       onRefreshStats();
     } catch (err: any) {
       // Revert if API failed
       setSessions(previousSessions);
+      setConversations(previousConversations);
+      setSelectedConv(previousSelected);
       toast.error(err.message || t('common.error'), t('common.error'));
     }
   };
@@ -858,7 +869,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                       if (msg.includes('24 saat') || msg.includes('window')) {
                         toast.error(t('whatsapp.windowExpiredNotice') || 'Bu konuşmaya devam etmek için bir WhatsApp şablonu kullanın.', t('common.error'));
                       } else {
-                        toast.error(t('whatsapp.msgFailed') || 'Mesaj gönderilemedi', t('common.error'));
+                        toast.error(err?.message || t('whatsapp.msgFailed') || 'Mesaj gönderilemedi', t('common.error'));
                       }
                       throw err;
                     }

@@ -15,6 +15,7 @@ from backend.app.models.whatsapp_session import WhatsAppSession, SessionStatus
 from backend.app.models.message_log import MessageLog, MessageStatus
 from backend.app.models.lead import Lead, LeadStatus
 from backend.app.models.blacklist import Blacklist
+from backend.app.models.conversation import Conversation
 from backend.app.schemas.whatsapp import (
     WhatsAppSessionResponse,
     WhatsAppSessionCreate,
@@ -264,9 +265,40 @@ async def delete_session(
     if not session or (os.getenv("PYTEST_CURRENT_TEST") is None and session.user_id != current_user.id):
         raise HTTPException(status_code=404, detail="Oturum bulunamadı")
     session_name = session.session_name
+    sess_user_id = session.user_id or current_user.id
+
+    # 1. Delete all WhatsApp conversations belonging to this user (cascades to messages)
+    conv_stmt = select(Conversation).where(
+        Conversation.channel == "WHATSAPP",
+        get_user_filter(Conversation.user_id, sess_user_id),
+    )
+    convs_res = await db.execute(conv_stmt)
+    convs = convs_res.scalars().all()
+    for conv in convs:
+        await db.delete(conv)
+
+    # 2. Delete auto-synced WhatsApp leads for this user (groups and raw WhatsApp chats)
+    lead_stmt = select(Lead).where(
+        Lead.category.in_(["WhatsApp Grubu", "WhatsApp Sohbeti"]),
+        get_user_filter(Lead.user_id, sess_user_id),
+    )
+    leads_res = await db.execute(lead_stmt)
+    leads = leads_res.scalars().all()
+    for lead in leads:
+        await db.delete(lead)
+
+    # 3. Delete the session itself
     await db.delete(session)
     await db.commit()
-    # Asynchronously delete from gateway in background without blocking response
+
+    # 4. Broadcast conversation clearance to UI clients
+    await ws_manager.broadcast({
+        "event": "conversations_cleared",
+        "user_id": sess_user_id,
+        "session_name": session_name,
+    })
+
+    # 5. Asynchronously delete from gateway in background without blocking response
     background_tasks.add_task(gateway_client.delete_session, session_name)
     return None
 

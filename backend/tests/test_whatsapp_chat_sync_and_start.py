@@ -8,6 +8,7 @@ from backend.app.core.database import AsyncSessionLocal
 from backend.app.models.whatsapp_session import WhatsAppSession, SessionStatus
 from backend.app.models.conversation import Conversation
 from backend.app.models.lead import Lead
+from sqlalchemy import select
 from backend.app.services.whatsapp_gateway_client import WhatsAppGatewayClient
 
 
@@ -190,3 +191,115 @@ async def test_sync_whatsapp_group_chat_and_avatar():
             assert group_conv["is_group"] is True
             assert group_conv["lead_avatar_url"] == "https://pps.whatsapp.net/v/t61/mock_group_avatar.jpg"
             assert group_conv["last_message_preview"] == "Hey hackers!"
+
+
+@pytest.mark.asyncio
+async def test_delete_session_wipes_whatsapp_conversations_and_leads():
+    """Verifies that deleting an active WhatsApp session cascades and deletes all associated live conversations and synced leads."""
+    test_user_id = str(uuid.uuid4())
+    session_name = f"sess_del_{uuid.uuid4().hex[:8]}"
+
+    async with AsyncSessionLocal() as db:
+        session = WhatsAppSession(
+            user_id=test_user_id,
+            session_name=session_name,
+            phone_number="+905550001122",
+            status=SessionStatus.CONNECTED,
+        )
+        db.add(session)
+        await db.commit()
+        await db.refresh(session)
+        session_id = session.id
+
+    headers = {
+        "X-Test-User-Id": test_user_id,
+        "X-Test-User-Email": "testuser@tezlify.com",
+    }
+
+    mock_chats = [
+        {
+            "id": "120363045678912345@g.us",
+            "phone": "120363045678912345@g.us",
+            "name": "3hacker",
+            "is_group": True,
+            "unread_count": 0,
+            "conversation_timestamp": 1725700000,
+            "last_message_preview": "Hey hackers!",
+        }
+    ]
+
+    transport = ASGITransport(app=app)
+    with patch("backend.app.services.whatsapp_gateway_client.gateway_client.get_session_chats", new_callable=AsyncMock) as mock_get_chats, \
+         patch("backend.app.services.whatsapp_gateway_client.gateway_client.delete_session", new_callable=AsyncMock) as mock_delete_gw:
+        mock_get_chats.return_value = mock_chats
+
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            # Sync chats
+            sync_res = await ac.post("/api/v1/conversations/sync-whatsapp", headers=headers)
+            assert sync_res.status_code == 200
+
+            # Verify conversation is present
+            list_res = await ac.get("/api/v1/conversations", headers=headers)
+            assert list_res.status_code == 200
+            assert len(list_res.json()) >= 1
+
+            # Delete the session
+            del_res = await ac.delete(f"/api/v1/whatsapp/sessions/{session_id}", headers=headers)
+            assert del_res.status_code == 204
+
+            # Verify WhatsApp conversation is completely wiped
+            after_convs = await ac.get("/api/v1/conversations", headers=headers)
+            assert after_convs.status_code == 200
+            assert not any(c.get("lead_name") == "3hacker" for c in after_convs.json())
+
+            # Verify in DB that all conversations for this user were deleted
+            async with AsyncSessionLocal() as db:
+                user_convs = (await db.execute(
+                    select(Conversation).where(Conversation.user_id == test_user_id)
+                )).scalars().all()
+                assert len(user_convs) == 0
+
+
+@pytest.mark.asyncio
+async def test_send_message_without_active_session_fails_cleanly():
+    """Verifies that attempting to send a live message without a connected WhatsApp session returns a clean 400 error."""
+    test_user_id = str(uuid.uuid4())
+
+    unique_phone = f"+90555{uuid.uuid4().int % 10000000:07d}"
+    async with AsyncSessionLocal() as db:
+        lead = Lead(
+            user_id=test_user_id,
+            name="Test Contact",
+            phone=unique_phone,
+            phone_e164=unique_phone,
+            category="WhatsApp Sohbeti",
+        )
+        db.add(lead)
+        await db.flush()
+
+        conv = Conversation(
+            user_id=test_user_id,
+            lead_id=lead.id,
+            channel="WHATSAPP",
+        )
+        db.add(conv)
+        await db.commit()
+        conv_id = conv.id
+
+    headers = {
+        "X-Test-User-Id": test_user_id,
+        "X-Test-User-Email": "testuser@tezlify.com",
+    }
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        res = await ac.post(
+            f"/api/v1/conversations/{conv_id}/messages",
+            json={"body": "Selam, hat bagli olmadan gonderim testi."},
+            headers=headers,
+        )
+        assert res.status_code == 400
+        assert "Bağlı bir WhatsApp hattı bulunamadı" in res.json()["detail"]
+
+
+

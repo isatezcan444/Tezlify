@@ -138,6 +138,43 @@ function updateChat(sessionData, chat) {
 }
 
 /**
+ * Queries WhatsApp Multi-Device servers for all groups the session participates in,
+ * ensuring groups (such as "3hacker") are populated in session memory with their titles.
+ */
+async function discoverParticipatingGroups(sessionData) {
+    if (!sessionData || !sessionData.sock || typeof sessionData.sock.groupFetchAllParticipating !== 'function') {
+        return;
+    }
+    try {
+        const groups = await sessionData.sock.groupFetchAllParticipating();
+        if (groups && typeof groups === 'object') {
+            for (const [groupId, group] of Object.entries(groups)) {
+                if (!groupId.endsWith('@g.us')) continue;
+                const subject = (group.subject || 'WhatsApp Grubu').trim();
+                const existing = sessionData.chats.get(groupId);
+                const ts = toUnixTimestamp(group.creation) || Math.floor(Date.now() / 1000);
+                if (existing) {
+                    if (!existing.name || existing.name === 'WhatsApp Grubu') {
+                        existing.name = subject;
+                    }
+                    existing.isGroup = true;
+                    if (!existing.conversationTimestamp) existing.conversationTimestamp = ts;
+                } else {
+                    updateChat(sessionData, {
+                        id: groupId,
+                        name: subject,
+                        isGroup: true,
+                        conversationTimestamp: ts
+                    });
+                }
+            }
+        }
+    } catch (err) {
+        console.warn(`[WA-Gateway] Could not fetch participating groups for ${sessionData.name || 'session'}:`, err.message);
+    }
+}
+
+/**
  * Extracts plain text from any Baileys message object.
  */
 function extractMessageText(message) {
@@ -358,6 +395,11 @@ async function getOrCreateSession(sessionName) {
                     phone: sessionData.phone
                 });
             }
+
+            // Asynchronously discover all participating WhatsApp groups (e.g. "3hacker") on connection
+            setTimeout(() => {
+                discoverParticipatingGroups(sessionData).catch(() => {});
+            }, 500);
         }
 
         if (connection === 'close') {
@@ -641,6 +683,9 @@ async function refreshSessionQR(sessionName) {
 async function getSessionChats(sessionName) {
     const session = activeSessions.get(sessionName);
     if (!session || !session.chats) return [];
+
+    // Ensure all participating groups (e.g. "3hacker") are discovered
+    await discoverParticipatingGroups(session);
 
     const chatList = Array.from(session.chats.values()).map((c) => {
         const contact = session.contacts?.get(c.id);
