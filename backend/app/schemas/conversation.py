@@ -11,6 +11,7 @@ class MessageBase(BaseModel):
     body: Optional[str] = None
     sender_phone: str
     recipient_phone: str
+    sender_name: Optional[str] = None
     status: ConversationMessageStatus = ConversationMessageStatus.RECEIVED
     wa_message_id: Optional[str] = None
     media_id: Optional[str] = None

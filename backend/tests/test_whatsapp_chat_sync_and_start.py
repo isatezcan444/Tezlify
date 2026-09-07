@@ -43,7 +43,7 @@ async def test_gateway_client_get_session_chats_and_trigger_sync():
 @pytest.mark.asyncio
 async def test_start_conversation_endpoint_creates_lead_and_conversation():
     test_user_id = str(uuid.uuid4())
-    test_phone = "+905329998877"
+    test_phone = f"+90532{uuid.uuid4().int % 10000000:07d}"
 
     headers = {
         "X-Test-User-Id": test_user_id,

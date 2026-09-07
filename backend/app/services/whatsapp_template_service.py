@@ -241,6 +241,7 @@ class WhatsAppTemplateService:
             wa_message_id=wa_message_id,
             sender_phone="BUSINESS",
             recipient_phone=e164_phone,
+            sender_name="Siz",
             status=ConversationMessageStatus.SENT,
             external_timestamp=now_utc,
             created_at=now_utc,

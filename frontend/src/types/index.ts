@@ -267,6 +267,7 @@ export interface Message {
   media_url?: string;
   wa_message_id?: string;
   sender_phone?: string;
+  sender_name?: string | null;
   recipient_phone?: string;
   error_message?: string;
   external_timestamp?: string;

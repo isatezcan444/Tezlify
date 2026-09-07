@@ -215,6 +215,108 @@ function updateContact(sessionData, contact) {
 /**
  * Updates or adds a chat in session memory with strict sorting timestamps.
  */
+/**
+ * Resolves human-readable sender name for group chats or inbound messages.
+ */
+function resolveSenderName(sessionData, msg, participantJid, fromMe) {
+    if (fromMe) return 'Siz';
+    if (!participantJid) return null;
+
+    // 1. Check msg.pushName (WhatsApp push name sent in message packet)
+    if (msg?.pushName && typeof msg.pushName === 'string' && msg.pushName.trim()) {
+        return msg.pushName.trim();
+    }
+
+    // 2. Check session contact book
+    const contact = sessionData?.contacts?.get(participantJid);
+    if (contact?.name && typeof contact.name === 'string' && contact.name.trim()) {
+        return contact.name.trim();
+    }
+
+    // 3. Fallback to formatted phone number from participant JID
+    const rawNumber = participantJid.split(':')[0].split('@')[0];
+    if (rawNumber && /^\d+$/.test(rawNumber)) {
+        return `+${rawNumber}`;
+    }
+
+    return participantJid;
+}
+
+/**
+ * Extracts plain text from any Baileys message object with recursive unwrapping
+ * and descriptive fallbacks for media types.
+ */
+function extractMessageText(message) {
+    if (!message) return '';
+
+    // Unwrap wrappers
+    if (message.ephemeralMessage?.message) {
+        return extractMessageText(message.ephemeralMessage.message);
+    }
+    if (message.viewOnceMessage?.message) {
+        return extractMessageText(message.viewOnceMessage.message);
+    }
+    if (message.viewOnceMessageV2?.message) {
+        return extractMessageText(message.viewOnceMessageV2.message);
+    }
+    if (message.viewOnceMessageV2Extension?.message) {
+        return extractMessageText(message.viewOnceMessageV2Extension.message);
+    }
+    if (message.documentWithCaptionMessage?.message) {
+        return extractMessageText(message.documentWithCaptionMessage.message);
+    }
+    if (message.protocolMessage?.editedMessage) {
+        return extractMessageText(message.protocolMessage.editedMessage);
+    }
+
+    // Text & extended text
+    if (message.conversation) return message.conversation;
+    if (message.extendedTextMessage?.text) return message.extendedTextMessage.text;
+
+    // Media messages with caption or descriptive fallback
+    if (message.imageMessage) {
+        return message.imageMessage.caption || '[Fotoğraf]';
+    }
+    if (message.videoMessage) {
+        return message.videoMessage.caption || '[Video]';
+    }
+    if (message.audioMessage) {
+        return message.audioMessage.ptt ? '[Sesli Mesaj]' : '[Ses Dosyası]';
+    }
+    if (message.ptvMessage) {
+        return '[Video Notu]';
+    }
+    if (message.stickerMessage) {
+        return '[Çıkartma]';
+    }
+    if (message.documentMessage) {
+        return message.documentMessage.fileName 
+            ? `[Belge: ${message.documentMessage.fileName}]` 
+            : (message.documentMessage.caption || '[Belge]');
+    }
+    if (message.contactMessage) {
+        return `[Kişi: ${message.contactMessage.displayName || 'Kişi Kartı'}]`;
+    }
+    if (message.contactsArrayMessage) {
+        return `[${message.contactsArrayMessage.contacts?.length || 0} Kişi Kartı]`;
+    }
+    if (message.locationMessage || message.liveLocationMessage) {
+        return '[Konum]';
+    }
+    if (message.pollCreationMessage || message.pollCreationMessageV2 || message.pollCreationMessageV3) {
+        const pollName = message.pollCreationMessage?.name || message.pollCreationMessageV2?.name || message.pollCreationMessageV3?.name;
+        return pollName ? `[Anket: ${pollName}]` : '[Anket]';
+    }
+    if (message.reactionMessage) {
+        return message.reactionMessage.text || '';
+    }
+
+    return '';
+}
+
+/**
+ * Updates or adds a chat in session memory with strict sorting timestamps.
+ */
 function updateChat(sessionData, chat) {
     if (!chat || !chat.id) return;
     const jid = chat.id;
@@ -225,9 +327,36 @@ function updateChat(sessionData, chat) {
     const contact = sessionData.contacts.get(jid) || {};
     const name = chat.name || chat.subject || contact.name || existing.name || (isGroup ? 'WhatsApp Grubu' : '');
     const unreadCount = chat.unreadCount ?? existing.unreadCount ?? 0;
-    const rawTs = chat.conversationTimestamp ?? existing.conversationTimestamp;
-    const conversationTimestamp = toUnixTimestamp(rawTs); // Strict: 0 if no message yet
-    const lastMessage = chat.lastMessageText || existing.lastMessage || '';
+
+    let rawTs = chat.conversationTimestamp || chat.lastMessageRecvTimestamp || chat.lastMsgTimestamp || existing.conversationTimestamp;
+    let lastMessage = chat.lastMessageText || existing.lastMessage || '';
+    let lastMessageFromMe = chat.lastMessageFromMe ?? existing.lastMessageFromMe ?? false;
+    let lastMessageSenderName = chat.lastMessageSenderName || existing.lastMessageSenderName || null;
+    let lastMessageParticipant = chat.lastMessageParticipant || existing.lastMessageParticipant || null;
+
+    // If chat has Baileys messages array (IHistorySyncMsg[]), extract the latest message!
+    if (chat.messages && Array.isArray(chat.messages) && chat.messages.length > 0) {
+        for (let i = chat.messages.length - 1; i >= 0; i--) {
+            const histMsg = chat.messages[i]?.message || chat.messages[i];
+            if (!histMsg) continue;
+            const text = extractMessageText(histMsg.message);
+            if (text) {
+                lastMessage = text;
+                const msgTs = toUnixTimestamp(histMsg.messageTimestamp);
+                if (msgTs > 0 && (!rawTs || msgTs > toUnixTimestamp(rawTs))) {
+                    rawTs = msgTs;
+                }
+                const histFromMe = !!histMsg.key?.fromMe;
+                lastMessageFromMe = histFromMe;
+                const partJid = histMsg.key?.participant || (histFromMe ? null : histMsg.key?.remoteJid);
+                lastMessageParticipant = partJid;
+                lastMessageSenderName = resolveSenderName(sessionData, histMsg, partJid, histFromMe);
+                break;
+            }
+        }
+    }
+
+    const conversationTimestamp = toUnixTimestamp(rawTs);
 
     sessionData.chats.set(jid, {
         id: jid,
@@ -236,7 +365,10 @@ function updateChat(sessionData, chat) {
         isGroup,
         unreadCount,
         conversationTimestamp,
-        lastMessage
+        lastMessage,
+        lastMessageFromMe,
+        lastMessageSenderName,
+        lastMessageParticipant
     });
 }
 
@@ -276,20 +408,6 @@ async function discoverParticipatingGroups(sessionData) {
     }
 }
 
-
-/**
- * Extracts plain text from any Baileys message object.
- */
-function extractMessageText(message) {
-    if (!message) return '';
-    if (message.conversation) return message.conversation;
-    if (message.extendedTextMessage?.text) return message.extendedTextMessage.text;
-    if (message.imageMessage?.caption) return message.imageMessage.caption;
-    if (message.videoMessage?.caption) return message.videoMessage.caption;
-    if (message.documentMessage?.caption) return message.documentMessage.caption;
-    return '';
-}
-
 /**
  * Initializes or re-initializes the underlying Baileys WhatsApp socket and its listeners.
  */
@@ -326,7 +444,7 @@ async function initSessionSocket(sessionData) {
         printQRInTerminal: false,
         logger: pino({ level: 'silent' }),
         browser: Browsers.macOS('Chrome'),
-        syncFullHistory: false,
+        syncFullHistory: true,
         markOnlineOnConnect: true,
         defaultQueryTimeoutMs: 60000,
         connectTimeoutMs: 60000,
@@ -392,18 +510,28 @@ async function initSessionSocket(sessionData) {
                 if (!isSupportedJid(remoteJid)) continue;
                 const text = extractMessageText(m.message);
                 const ts = toUnixTimestamp(m.messageTimestamp);
+                const fromMe = !!m.key?.fromMe;
+                const partJid = m.key?.participant || (fromMe ? null : remoteJid);
+                const senderName = resolveSenderName(sessionData, m, partJid, fromMe);
+
                 if (text && remoteJid) {
                     const existingChat = sessionData.chats.get(remoteJid);
                     if (existingChat) {
                         if (!existingChat.conversationTimestamp || ts >= existingChat.conversationTimestamp) {
                             existingChat.lastMessage = text;
                             existingChat.conversationTimestamp = ts;
+                            existingChat.lastMessageFromMe = fromMe;
+                            existingChat.lastMessageSenderName = senderName;
+                            existingChat.lastMessageParticipant = partJid;
                         }
                     } else {
                         updateChat(sessionData, {
                             id: remoteJid,
                             lastMessageText: text,
-                            conversationTimestamp: ts
+                            conversationTimestamp: ts,
+                            lastMessageFromMe: fromMe,
+                            lastMessageSenderName: senderName,
+                            lastMessageParticipant: partJid
                         });
                     }
                 }
@@ -417,7 +545,10 @@ async function initSessionSocket(sessionData) {
                     name: c.name || contact?.name || (c.isGroup ? 'WhatsApp Grubu' : ''),
                     is_group: !!c.isGroup,
                     conversation_timestamp: toUnixTimestamp(c.conversationTimestamp),
-                    last_message_preview: c.lastMessage || ''
+                    last_message_preview: c.lastMessage || '',
+                    last_message_from_me: !!c.lastMessageFromMe,
+                    last_message_sender_name: c.lastMessageSenderName || null,
+                    last_message_participant: c.lastMessageParticipant || null,
                 };
             });
             validChats.sort((a, b) => (b.conversation_timestamp || 0) - (a.conversation_timestamp || 0));
@@ -430,10 +561,16 @@ async function initSessionSocket(sessionData) {
                     if (!text) return null;
                     const isGroup = remoteJid.endsWith('@g.us');
                     const phone = isGroup ? remoteJid : `+${remoteJid.split('@')[0]}`;
+                    const fromMe = !!m.key?.fromMe;
+                    const partJid = m.key?.participant || (fromMe ? null : remoteJid);
+                    const senderName = resolveSenderName(sessionData, m, partJid, fromMe);
+
                     return {
                         wa_message_id: m.key?.id,
-                        fromMe: !!m.key?.fromMe,
+                        fromMe: fromMe,
                         phone: phone,
+                        participant: partJid,
+                        sender_name: senderName,
                         is_group: isGroup,
                         message: text,
                         timestamp: toUnixTimestamp(m.messageTimestamp)
@@ -567,13 +704,19 @@ async function initSessionSocket(sessionData) {
 
             const fromMe = !!msg.key?.fromMe;
             const ts = toUnixTimestamp(msg.messageTimestamp) || Math.floor(Date.now() / 1000);
-            console.log(`[WA-Gateway] Message (${fromMe ? 'Outbound phone' : 'Inbound'}) for ${contactPhone} on ${sessionName}: "${text}"`);
+            const partJid = msg.key?.participant || (fromMe ? null : remoteJid);
+            const senderName = resolveSenderName(sessionData, msg, partJid, fromMe);
+
+            console.log(`[WA-Gateway] Message (${fromMe ? 'Outbound phone' : 'Inbound'}) for ${contactPhone} on ${sessionName}: "${text}" (sender: ${senderName || 'unknown'})`);
 
             // Update in-memory chat cache
             updateChat(sessionData, {
                 id: remoteJid,
                 lastMessageText: text,
                 conversationTimestamp: ts,
+                lastMessageFromMe: fromMe,
+                lastMessageSenderName: senderName,
+                lastMessageParticipant: partJid,
                 unreadCount: fromMe ? 0 : ((sessionData.chats?.get(remoteJid)?.unreadCount || 0) + 1)
             });
 
@@ -581,6 +724,8 @@ async function initSessionSocket(sessionData) {
             await notifyBackend(sessionName, 'message-event', {
                 fromMe: fromMe,
                 phone: contactPhone,
+                participant: partJid,
+                sender_name: senderName,
                 is_group: isGroup,
                 message: text,
                 wa_message_id: msg.key?.id,
@@ -697,6 +842,8 @@ async function sendMessage(sessionName, phone, messageText, typingDelayMs = 0) {
         id: jid,
         lastMessageText: messageText,
         conversationTimestamp: Math.floor(Date.now() / 1000),
+        lastMessageFromMe: true,
+        lastMessageSenderName: 'Siz',
         unreadCount: 0
     });
 
@@ -897,6 +1044,9 @@ async function getSessionChats(sessionName) {
             unread_count: c.unreadCount || 0,
             conversation_timestamp: toUnixTimestamp(c.conversationTimestamp),
             last_message_preview: c.lastMessage || '',
+            last_message_from_me: !!c.lastMessageFromMe,
+            last_message_sender_name: c.lastMessageSenderName || null,
+            last_message_participant: c.lastMessageParticipant || null,
             avatar_url: session.avatars?.get(c.id) || null
         };
     });
@@ -940,7 +1090,10 @@ async function syncSessionHistoryToBackend(sessionName) {
                 is_group: c.is_group,
                 avatar_url: c.avatar_url,
                 conversation_timestamp: c.conversation_timestamp,
-                last_message_preview: c.last_message_preview
+                last_message_preview: c.last_message_preview,
+                last_message_from_me: c.last_message_from_me,
+                last_message_sender_name: c.last_message_sender_name,
+                last_message_participant: c.last_message_participant
             })),
             messages: []
         });

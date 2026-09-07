@@ -3,7 +3,7 @@ from datetime import datetime
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Header
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, or_
+from sqlalchemy import select, or_, func
 from sqlalchemy.orm import selectinload
 
 from backend.app.core.database import get_db
@@ -43,20 +43,25 @@ async def _fetch_paginated_messages(
 ):
     """
     Fetches messages for a conversation with cursor pagination using composite index.
-    Returns (messages in chronological order, has_more, oldest_id, newest_id).
     """
-    stmt = select(Message).where(Message.conversation_id == conversation_id)
-    if before is not None:
+    stmt = (
+        select(Message)
+        .where(Message.conversation_id == conversation_id)
+        .order_by(Message.id.desc())
+        .limit(limit + 1)
+    )
+    if before:
         stmt = stmt.where(Message.id < before)
 
-    stmt = stmt.order_by(Message.id.desc()).limit(limit + 1)
     res = await db.execute(stmt)
-    raw_messages = res.scalars().all()
+    records = list(res.scalars().all())
 
-    has_more = len(raw_messages) > limit
-    paginated = raw_messages[:limit]
-    chronological = list(reversed(paginated))
+    has_more = len(records) > limit
+    if has_more:
+        records = records[:limit]
 
+    # Return chronological order (oldest to newest) for UI
+    chronological = list(reversed(records))
     oldest_id = chronological[0].id if chronological else None
     newest_id = chronological[-1].id if chronological else None
 
@@ -81,17 +86,27 @@ async def list_conversations(
     latest_msg_subq = (
         select(Message.body)
         .where(Message.conversation_id == Conversation.id)
-        .order_by(Message.id.desc())
+        .order_by(Message.created_at.desc(), Message.id.desc())
         .limit(1)
         .scalar_subquery()
     )
 
+    latest_msg_time_subq = (
+        select(Message.created_at)
+        .where(Message.conversation_id == Conversation.id)
+        .order_by(Message.created_at.desc(), Message.id.desc())
+        .limit(1)
+        .scalar_subquery()
+    )
+
+    effective_last_at = func.coalesce(Conversation.last_message_at, latest_msg_time_subq, Conversation.created_at)
+
     stmt = (
-        select(Conversation, latest_msg_subq.label("last_preview"))
+        select(Conversation, latest_msg_subq.label("last_preview"), effective_last_at.label("effective_time"))
         .join(Conversation.lead)
         .options(selectinload(Conversation.lead))
         .where(get_user_filter(Conversation.user_id, current_user.id))
-        .order_by(Conversation.last_message_at.desc().nullslast(), Conversation.id.desc())
+        .order_by(effective_last_at.desc().nullslast(), Conversation.id.desc())
         .offset(offset)
         .limit(limit)
     )
@@ -115,7 +130,7 @@ async def list_conversations(
     rows = res.all()
 
     result = []
-    for conv, last_preview in rows:
+    for conv, last_preview, effective_time in rows:
         lead_custom = conv.lead.custom_data or {} if conv.lead else {}
         is_group = bool(
             (conv.lead and (conv.lead.phone.endswith("@g.us") or conv.lead.category == "WhatsApp Grubu"))
@@ -129,7 +144,7 @@ async def list_conversations(
             lead_id=conv.lead_id,
             channel=conv.channel,
             status=conv.status,
-            last_message_at=conv.last_message_at,
+            last_message_at=effective_time or conv.last_message_at or conv.created_at,
             unread_count=conv.unread_count or 0,
             last_read_at=conv.last_read_at,
             created_at=conv.created_at,
@@ -737,6 +752,9 @@ async def sync_whatsapp_conversations(
                     "avatar_url": c.get("avatar_url"),
                     "conversation_timestamp": c.get("conversation_timestamp"),
                     "last_message_preview": c.get("last_message_preview"),
+                    "last_message_from_me": c.get("last_message_from_me"),
+                    "last_message_sender_name": c.get("last_message_sender_name"),
+                    "last_message_participant": c.get("last_message_participant"),
                 }
                 for c in chats
             ],
@@ -744,7 +762,9 @@ async def sync_whatsapp_conversations(
                 {
                     "phone": c.get("phone"),
                     "message": c.get("last_message_preview"),
-                    "fromMe": False,
+                    "fromMe": bool(c.get("last_message_from_me", False)),
+                    "sender_name": c.get("last_message_sender_name"),
+                    "participant": c.get("last_message_participant"),
                     "is_group": c.get("is_group"),
                     "timestamp": c.get("conversation_timestamp"),
                 }

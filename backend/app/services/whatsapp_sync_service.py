@@ -170,7 +170,7 @@ class WhatsAppSyncService:
             await db.flush()
         elif naive_conv_time:
             current_last = _to_naive_utc(conv.last_message_at)
-            if not current_last or naive_conv_time > current_last:
+            if not current_last or current_last.year < 2020 or naive_conv_time > current_last:
                 conv.last_message_at = naive_conv_time
                 await db.flush()
 
@@ -229,7 +229,7 @@ class WhatsAppSyncService:
             if existing_msg:
                 return {"status": "duplicate", "message_id": existing_msg.id}
 
-        msg_time = datetime.fromtimestamp(timestamp, tz=timezone.utc) if timestamp else datetime.now(timezone.utc)
+        msg_time = datetime.fromtimestamp(timestamp, tz=timezone.utc) if (timestamp and float(timestamp) > 86400) else datetime.now(timezone.utc)
         # Convert to naive UTC for db compatibility
         naive_msg_time = msg_time.replace(tzinfo=None)
 
@@ -237,6 +237,14 @@ class WhatsAppSyncService:
         status = ConversationMessageStatus.SENT if from_me else ConversationMessageStatus.RECEIVED
         sender = my_phone if from_me else contact_e164
         recipient = contact_e164 if from_me else my_phone
+
+        sender_name = event_data.get("sender_name")
+        if from_me:
+            sender_name = "Siz"
+        elif not sender_name and is_group:
+            participant = event_data.get("participant")
+            if participant:
+                sender_name = f"+{participant.split(':')[0].split('@')[0]}" if "@" in participant else participant
 
         new_msg = Message(
             user_id=user_id,
@@ -247,6 +255,7 @@ class WhatsAppSyncService:
             wa_message_id=wa_message_id,
             sender_phone=sender,
             recipient_phone=recipient,
+            sender_name=sender_name,
             status=status,
             created_at=naive_msg_time,
         )
@@ -275,6 +284,7 @@ class WhatsAppSyncService:
                 "conversation_id": conv.id,
                 "direction": new_msg.direction.value,
                 "body": new_msg.body,
+                "sender_name": new_msg.sender_name,
                 "wa_message_id": new_msg.wa_message_id,
                 "status": new_msg.status.value,
                 "created_at": new_msg.created_at.isoformat(),
@@ -338,7 +348,8 @@ class WhatsAppSyncService:
                     ts_num = float(raw_ts["low"] if isinstance(raw_ts, dict) and "low" in raw_ts else raw_ts)
                     if ts_num > 1e11:
                         ts_num /= 1000
-                    conv_time = datetime.fromtimestamp(ts_num, tz=timezone.utc)
+                    if ts_num > 86400:
+                        conv_time = datetime.fromtimestamp(ts_num, tz=timezone.utc)
                 except Exception:
                     pass
 
@@ -361,16 +372,26 @@ class WhatsAppSyncService:
                 has_existing = (await db.execute(existing_msg_stmt)).scalar_one_or_none()
                 if not has_existing:
                     msg_time = _to_naive_utc(conv_time) or _to_naive_utc(datetime.now(timezone.utc))
+                    init_from_me = bool(chat.get("last_message_from_me", False))
+                    init_sender_name = chat.get("last_message_sender_name")
+                    if init_from_me:
+                        init_sender_name = "Siz"
+                    elif not init_sender_name and is_group:
+                        participant = chat.get("last_message_participant")
+                        if participant:
+                            init_sender_name = f"+{participant.split(':')[0].split('@')[0]}" if "@" in participant else participant
+
                     init_msg = Message(
                         user_id=user_id,
                         conversation_id=conv.id,
-                        direction=MessageDirection.INBOUND,
+                        direction=MessageDirection.OUTBOUND if init_from_me else MessageDirection.INBOUND,
                         message_type=MessageType.TEXT,
                         body=preview_text,
                         wa_message_id=f"wa_init_{conv.id}_{int(time.time())}",
-                        sender_phone=contact_key,
-                        recipient_phone=my_phone,
-                        status=ConversationMessageStatus.RECEIVED,
+                        sender_phone=my_phone if init_from_me else contact_key,
+                        recipient_phone=contact_key if init_from_me else my_phone,
+                        sender_name=init_sender_name,
+                        status=ConversationMessageStatus.SENT if init_from_me else ConversationMessageStatus.RECEIVED,
                         created_at=msg_time,
                     )
                     db.add(init_msg)
@@ -418,9 +439,17 @@ class WhatsAppSyncService:
                 ts_num = float(ts["low"] if isinstance(ts, dict) and "low" in ts else ts) if ts else None
                 if ts_num and ts_num > 1e11:
                     ts_num /= 1000
-                msg_time = datetime.fromtimestamp(ts_num, tz=timezone.utc).replace(tzinfo=None) if ts_num else datetime.now(timezone.utc).replace(tzinfo=None)
+                msg_time = datetime.fromtimestamp(ts_num, tz=timezone.utc).replace(tzinfo=None) if (ts_num and ts_num > 86400) else datetime.now(timezone.utc).replace(tzinfo=None)
             except Exception:
                 msg_time = datetime.now(timezone.utc).replace(tzinfo=None)
+
+            sender_name = m.get("sender_name")
+            if from_me:
+                sender_name = "Siz"
+            elif not sender_name and is_group:
+                participant = m.get("participant")
+                if participant:
+                    sender_name = f"+{participant.split(':')[0].split('@')[0]}" if "@" in participant else participant
 
             new_msg = Message(
                 user_id=user_id,
@@ -431,6 +460,7 @@ class WhatsAppSyncService:
                 wa_message_id=wa_id,
                 sender_phone=my_phone if from_me else contact_key,
                 recipient_phone=contact_key if from_me else my_phone,
+                sender_name=sender_name,
                 status=ConversationMessageStatus.SENT if from_me else ConversationMessageStatus.RECEIVED,
                 created_at=msg_time,
             )

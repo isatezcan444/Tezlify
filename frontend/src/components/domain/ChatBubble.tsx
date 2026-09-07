@@ -213,6 +213,13 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({ message, onRetry }) => {
               : 'bg-[#7367F0] text-white rounded-2xl rounded-tr-sm shadow-[#7367F0]/20'
           }`}
         >
+          {/* Sender name for inbound messages (especially in group chats) */}
+          {isInbound && message.sender_name && (
+            <div className="text-[11px] font-bold text-[#7367F0] dark:text-[#a59bf5] mb-1 select-none flex items-center gap-1">
+              <span>{message.sender_name}</span>
+            </div>
+          )}
+
           {/* Message Content */}
           {renderMediaContent()}
 

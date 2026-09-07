@@ -80,6 +80,12 @@ export const ConversationList: React.FC<ConversationListProps> = ({
     );
   });
 
+  const sorted = [...filtered].sort((a, b) => {
+    const timeA = a.last_message_at ? new Date(a.last_message_at).getTime() : (a.created_at ? new Date(a.created_at).getTime() : 0);
+    const timeB = b.last_message_at ? new Date(b.last_message_at).getTime() : (b.created_at ? new Date(b.created_at).getTime() : 0);
+    return timeB - timeA;
+  });
+
   const filterTabs: { id: FilterTab; label: string; icon: React.FC<{ className?: string }> }[] = [
     { id: 'ALL', label: t('whatsapp.tabAll') || 'Tümü', icon: Inbox },
     { id: 'ACTIVE', label: t('whatsapp.tabActive') || 'Aktif', icon: MessageSquare },
@@ -170,13 +176,13 @@ export const ConversationList: React.FC<ConversationListProps> = ({
               </div>
             ))}
           </div>
-        ) : filtered.length === 0 ? (
+        ) : sorted.length === 0 ? (
           <div className="p-6 text-center text-slate-400 dark:text-slate-500 text-xs">
             <MessageSquare className="w-8 h-8 mx-auto mb-2 opacity-40" />
             <p>{t('whatsapp.noConversations')}</p>
           </div>
         ) : (
-          filtered.map((conv) => {
+          sorted.map((conv) => {
             const isSelected = selectedId === conv.id;
             return (
               <button

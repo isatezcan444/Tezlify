@@ -54,6 +54,7 @@ class Message(Base):
     
     sender_phone = Column(String(50), nullable=False, index=True)
     recipient_phone = Column(String(50), nullable=False, index=True)
+    sender_name = Column(String(100), nullable=True)
     
     status = Column(Enum(ConversationMessageStatus), default=ConversationMessageStatus.RECEIVED, nullable=False, index=True)
     error_code = Column(Integer, nullable=True)
