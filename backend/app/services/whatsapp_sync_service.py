@@ -67,6 +67,50 @@ def _normalize_pn_jid(participant_pn: Optional[str]) -> Optional[str]:
 POOR_SENDER_NAMES = frozenset({"", "Grup Üyesi"})
 
 
+def _lead_display_name(contact_name: Optional[str], phone_e164: Optional[str], raw_key: Optional[str]) -> str:
+    """Honest display name for a newly provisioned chat lead.
+
+    JID-looking strings are never names. Order: real contact name →
+    phone-based placeholder → generic label.
+    """
+    raw_name = (contact_name or "").strip()
+    if raw_name and "@" not in raw_name:
+        return raw_name
+    shown = phone_e164 or raw_key or ""
+    if shown and "@" not in shown:
+        return f"WhatsApp ({shown})"
+    return "WhatsApp Sohbeti"
+
+
+def _conversation_phone_key(phone_e164: Optional[str], phone: Optional[str]) -> Optional[str]:
+    """Stable identity key for one chat counterpart across duplicate rows.
+
+    Validated E.164 wins; otherwise canonical national digits (leading
+    trunk/country prefixes stripped) so "+90532…" and "0532…" collide.
+    Raw JIDs (@g.us/@lid) key by themselves. None when unkeyable.
+    """
+    for cand in (phone_e164, phone):
+        if not cand or "@" in cand:
+            continue
+        norm = PhoneService.normalize_to_e164(cand)
+        if norm and norm.get("is_valid"):
+            return norm["e164"]
+    for cand in (phone_e164, phone):
+        if not cand or "@" in cand:
+            continue
+        digits = re.sub(r"\D", "", cand)
+        if digits.startswith("90") and len(digits) > 10:
+            digits = digits[2:]
+        if digits.startswith("0"):
+            digits = digits[1:]
+        if len(digits) >= 7:
+            return f"tel:{digits}"
+    for cand in (phone_e164, phone):
+        if cand and "@" in cand:
+            return cand.strip()
+    return None
+
+
 def _is_poor_sender_name(sender_name: Optional[str], sender_phone: Optional[str] = None) -> bool:
     """True when a stored sender name is missing, generic, merely echoes
     the sender's own phone number, or is a generated "WhatsApp (...)"
@@ -147,7 +191,11 @@ class WhatsAppSyncService:
                 await db.flush()
             else:
                 updated = False
-                if contact_name and contact_name.strip() and lead.name in ("WhatsApp Grubu", "", None):
+                if (
+                    contact_name
+                    and contact_name.strip()
+                    and (lead.name in ("WhatsApp Grubu", "", None) or str(lead.name).startswith("WhatsApp ("))
+                ):
                     lead.name = contact_name.strip()
                     updated = True
                 if avatar_url:
@@ -170,6 +218,20 @@ class WhatsAppSyncService:
                 )
                 lead_res = await db.execute(lead_stmt.limit(1))
                 lead = lead_res.scalars().first()
+                if lead is None:
+                    # Display-phone duplicate (older flows stored the number in
+                    # `phone` with NULL e164): adopt the row and fill e164 —
+                    # vacant by construction (queried above), so no conflict.
+                    disp_stmt = select(Lead).where(
+                        Lead.phone == phone_e164,
+                        Lead.user_id == user_id,
+                    )
+                    disp_row = (await db.execute(disp_stmt.limit(1))).scalars().first()
+                    if disp_row is not None:
+                        disp_row.phone_e164 = phone_e164
+                        disp_row.is_whatsapp_eligible = True
+                        await db.flush()
+                        lead = disp_row
 
             if not lead and raw_key:
                 # Unresolvable identity (e.g. @lid without PN mapping): key by
@@ -189,9 +251,7 @@ class WhatsAppSyncService:
                     await db.flush()
 
             if not lead:
-                raw_name = (contact_name or "").strip()
-                # A JID-looking string is not a name — fall back honestly.
-                display_name = raw_name if (raw_name and "@" not in raw_name) else f"WhatsApp ({phone_e164 or raw_key})"
+                display_name = _lead_display_name(contact_name, phone_e164, raw_key)
                 custom_data = {}
                 if avatar_url:
                     custom_data["avatar_url"] = avatar_url
@@ -553,6 +613,84 @@ class WhatsAppSyncService:
         return absorbed
 
     @classmethod
+    async def _merge_threads_by_phone(
+        cls, db: AsyncSession, user_id: Optional[str], limit_groups: int = 100
+    ) -> int:
+        """Unifies split chat threads that share one counterpart number.
+
+        Same phone, several lead rows (placeholder vs real contact) → several
+        conversations. Keeper conversation = latest; its lead keeps the best
+        (non-placeholder) name found among siblings. Lead rows themselves are
+        preserved (CRM data is never destroyed by a chat merge). Returns the
+        number of conversations folded away.
+        """
+        rows = (
+            await db.execute(
+                select(Conversation, Lead)
+                .join(Lead, Conversation.lead_id == Lead.id)
+                .where(
+                    Conversation.channel == "WHATSAPP",
+                    Conversation.user_id == user_id,
+                )
+                .order_by(Conversation.id)
+            )
+        ).all()
+        groups: Dict[str, List[tuple]] = {}
+        lead_by_id: Dict[int, Lead] = {}
+        for conv, lead in rows:
+            key = _conversation_phone_key(lead.phone_e164, lead.phone)
+            if not key:
+                continue
+            groups.setdefault(key, []).append((conv, lead))
+            lead_by_id[lead.id] = lead
+
+        folded = 0
+        for key, members in list(groups.items())[:limit_groups]:
+            conv_ids = sorted({c.id for c, _ in members})
+            if len(conv_ids) < 2:
+                continue
+            keeper = max(
+                (c for c, _ in members),
+                key=lambda c: (
+                    _to_naive_utc(c.last_message_at) or datetime.min,
+                    c.id,
+                ),
+            )
+            # Best real name among sibling leads (never a placeholder).
+            best_name: Optional[str] = None
+            for _c, sib in members:
+                sib_name = (sib.name or "").strip()
+                if sib_name and not sib_name.startswith("WhatsApp (") and sib_name != "WhatsApp Grubu":
+                    best_name = sib_name
+                    break
+            for dup_c, dup_lead in members:
+                if dup_c.id == keeper.id:
+                    continue
+                await db.execute(
+                    update(Message)
+                    .where(Message.conversation_id == dup_c.id)
+                    .values(conversation_id=keeper.id)
+                )
+                keeper.unread_count = (keeper.unread_count or 0) + (dup_c.unread_count or 0)
+                newest = _to_naive_utc(dup_c.last_message_at)
+                current = _to_naive_utc(keeper.last_message_at)
+                if newest and (not current or newest > current):
+                    keeper.last_message_at = dup_c.last_message_at
+                await db.delete(dup_c)
+                folded += 1
+            if best_name:
+                keeper_lead = lead_by_id.get(keeper.lead_id)
+                if keeper_lead is not None and (
+                    not (keeper_lead.name or "").strip()
+                    or keeper_lead.name.strip().startswith("WhatsApp (")
+                    or keeper_lead.name.strip() == "WhatsApp Grubu"
+                ):
+                    keeper_lead.name = best_name
+        if folded:
+            await db.flush()
+        return folded
+
+    @classmethod
     async def _lookup_lead_name(
         cls, db: AsyncSession, user_id: Optional[str], e164: Optional[str]
     ) -> Optional[str]:
@@ -823,11 +961,42 @@ class WhatsAppSyncService:
                 "time": spec_time,
             })
 
-        # Heal duplicate threads before mapping, so every key lands on a keeper.
+        # Heal duplicate threads before mapping, so every key lands on a keeper:
+        # same-JID twins first, then same-number threads spread over several
+        # lead rows (e.g. a "WhatsApp (+90…)" placeholder next to the real
+        # contact). Lead rows are never deleted here — only conversations move.
         await cls._merge_duplicate_threads(
             db, user_id,
             [s["key"] for s in specs if s["is_group"]],
         )
+        await cls._merge_threads_by_phone(db, user_id, limit_groups=100)
+
+        # Dedupe specs sharing one dialable identity inside this payload
+        # (e.g. LID-form + PN-form chats of one person): without this, the
+        # second insert would violate the phone_e164 unique constraint and
+        # fail the entire sync. First occurrence wins; name/avatar fold in.
+        by_identity: Dict[str, Dict[str, Any]] = {}
+        deduped_specs: List[Dict[str, Any]] = []
+        for spec in specs:
+            ident = spec["e164"] or (None if "@" in (spec["raw"] or spec["key"]) else spec["key"])
+            if ident is None:
+                ident = f"jid:{spec['raw'] or spec['key']}"
+            prev = by_identity.get(ident)
+            if prev is None:
+                by_identity[ident] = spec
+                deduped_specs.append(spec)
+                continue
+            prev_chat, cur_chat = prev["chat"], spec["chat"]
+            if not (prev_chat.get("name") or "").strip() or "@" in prev_chat.get("name", ""):
+                if (cur_chat.get("name") or "").strip() and "@" not in cur_chat.get("name", ""):
+                    prev_chat["name"] = cur_chat["name"]
+            if not prev_chat.get("avatar_url") and cur_chat.get("avatar_url"):
+                prev_chat["avatar_url"] = cur_chat["avatar_url"]
+            prev_time = prev.get("time")
+            cur_time = spec.get("time")
+            if cur_time and (not prev_time or cur_time > prev_time):
+                prev["time"] = cur_time
+        specs = deduped_specs
 
         leads_by_e164: Dict[str, Lead] = {}
         leads_by_phone: Dict[str, Lead] = {}

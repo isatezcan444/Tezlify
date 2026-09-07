@@ -227,3 +227,59 @@ async def test_last_message_at_recomputed_from_stored_messages():
                 # Recomputed from the stored fresh message, not the stale gateway ts.
                 assert conv_after.last_message_at is not None
                 assert conv_after.last_message_at.timestamp() >= fresh_ts - 5
+
+
+@pytest.mark.asyncio
+async def test_same_number_threads_unify_under_real_name():
+    """The reported bug: one number split into 'Ahmed Tuncay Boyacı' and
+    'WhatsApp (+90…)' threads. After sync there is a single thread showing
+    the real name with every message inside."""
+    from backend.app.services.whatsapp_sync_service import WhatsAppSyncService
+
+    phone = f"+90532{uuid.uuid4().int % 10000000:07d}"
+    group_jid_unused = None
+    _ = group_jid_unused
+
+    async with AsyncSessionLocal() as db:
+        real = Lead(user_id=None, name="Ahmed Tuncay Boyacı", phone=phone,
+                    phone_e164=phone, status=LeadStatus.CONTACTED)
+        placeholder = Lead(user_id=None, name=f"WhatsApp ({phone})", phone=phone,
+                           phone_e164=None, status=LeadStatus.CONTACTED)
+        db.add_all([real, placeholder])
+        await db.flush()
+        conv_real = Conversation(user_id=None, lead_id=real.id, channel="WHATSAPP",
+                                 status=ConversationStatus.ACTIVE,
+                                 last_message_at=datetime(2026, 9, 1))
+        conv_ph = Conversation(user_id=None, lead_id=placeholder.id, channel="WHATSAPP",
+                               status=ConversationStatus.ACTIVE,
+                               last_message_at=datetime(2026, 9, 6))
+        db.add_all([conv_real, conv_ph])
+        await db.flush()
+        db.add(Message(user_id=None, conversation_id=conv_real.id,
+                       direction=MessageDirection.INBOUND, body="Abi müsait olunca",
+                       sender_phone=phone, recipient_phone="+900", sender_name="Ahmed Tuncay Boyacı",
+                       created_at=datetime(2026, 9, 1)))
+        db.add(Message(user_id=None, conversation_id=conv_ph.id,
+                       direction=MessageDirection.INBOUND, body="Selamün aleyküm",
+                       sender_phone=phone, recipient_phone="+900", sender_name="Tuncay",
+                       created_at=datetime(2026, 9, 6)))
+        await db.commit()
+
+        merged = await WhatsAppSyncService._merge_threads_by_phone(db, None, limit_groups=100)
+        await db.commit()
+        assert merged >= 1
+
+        remaining = (
+            await db.execute(select(Conversation).where(Conversation.channel == "WHATSAPP"))
+        ).scalars().all()
+        mine = [c for c in remaining if c.lead_id in (real.id, placeholder.id)]
+        assert len(mine) == 1
+        keeper = mine[0]
+        bodies = sorted(
+            (await db.execute(select(Message.body).where(Message.conversation_id == keeper.id))).scalars().all()
+        )
+        assert bodies == ["Abi müsait olunca", "Selamün aleyküm"]
+        # Keeper lead shows the real contact name, placeholder row preserved.
+        shown = await db.get(Lead, keeper.lead_id)
+        assert shown.name == "Ahmed Tuncay Boyacı"
+        assert (await db.get(Lead, placeholder.id)) is not None

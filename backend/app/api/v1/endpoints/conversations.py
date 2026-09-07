@@ -8,6 +8,7 @@ from sqlalchemy.orm import selectinload
 
 from backend.app.core.database import get_db
 from backend.app.core.search_utils import escape_like_literal
+from backend.app.services.whatsapp_sync_service import _conversation_phone_key
 from backend.app.core.auth import AuthUser, get_current_user, get_user_filter
 from backend.app.api.v1.websocket import ws_manager
 from backend.app.models.conversation import Conversation, ConversationStatus
@@ -131,14 +132,20 @@ async def list_conversations(
     rows = res.all()
 
     result = []
-    seen_lead_ids: set = set()
+    seen_keys: set = set()
     for conv, last_preview, effective_time in rows:
-        # Read-side dedupe: legacy races created twin conversations for one
-        # lead (same group twice). Rows arrive newest-first, so the first
-        # occurrence per lead wins; the sync merge pass removes the rest.
-        if conv.lead_id in seen_lead_ids:
+        # Read-side dedupe by counterpart identity (not lead row): legacy
+        # races left one number on several lead rows ("Ahmed Tuncay Boyacı"
+        # next to "WhatsApp (+90…)"). Rows arrive newest-first, so the first
+        # occurrence per number wins; the sync merge pass removes the rest.
+        lead_key = None
+        if conv.lead is not None:
+            lead_key = _conversation_phone_key(conv.lead.phone_e164, conv.lead.phone)
+        if lead_key is None:
+            lead_key = f"lead:{conv.lead_id}"
+        if lead_key in seen_keys:
             continue
-        seen_lead_ids.add(conv.lead_id)
+        seen_keys.add(lead_key)
         lead_custom = conv.lead.custom_data or {} if conv.lead else {}
         is_group = bool(
             (conv.lead and (conv.lead.phone.endswith("@g.us") or conv.lead.category == "WhatsApp Grubu"))
