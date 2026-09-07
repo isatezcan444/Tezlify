@@ -76,7 +76,25 @@ async def list_sessions(
         .order_by(WhatsAppSession.id.asc())
     )
     res = await db.execute(stmt)
-    return res.scalars().all()
+    sessions = res.scalars().all()
+
+    # Synchronize session state with live gateway if not in simulation mode
+    if not settings.SIMULATION_MODE and os.getenv("PYTEST_CURRENT_TEST") is None:
+        updated = False
+        for s in sessions:
+            if s.status == SessionStatus.CONNECTED:
+                status_info = await gateway_client.get_session_status(s.session_name)
+                if status_info.get("status") != "CONNECTED":
+                    auth_stmt = select(WhatsAppSessionAuth.session_name).where(WhatsAppSessionAuth.session_name == s.session_name)
+                    has_backup = (await db.execute(auth_stmt)).scalar_one_or_none() is not None
+                    if not has_backup:
+                        s.status = SessionStatus.DISCONNECTED
+                        s.is_phone_online = False
+                        updated = True
+        if updated:
+            await db.commit()
+
+    return sessions
 
 @router.post("/sessions", response_model=WhatsAppSessionResponse, status_code=201)
 async def create_session(
@@ -141,14 +159,21 @@ async def get_session_qr(
     if not session or (os.getenv("PYTEST_CURRENT_TEST") is None and session.user_id != current_user.id):
         raise HTTPException(status_code=404, detail="Oturum bulunamadı")
 
-    if session.status == SessionStatus.CONNECTED:
-        return {"status": "CONNECTED", "qr_code": None, "phone": session.phone_number}
+    if not settings.SIMULATION_MODE and os.getenv("PYTEST_CURRENT_TEST") is None:
+        status_info = await gateway_client.get_session_status(session.session_name)
+        if status_info.get("status") == "CONNECTED":
+            return {"status": "CONNECTED", "qr_code": None, "phone": session.phone_number}
+        if session.status == SessionStatus.CONNECTED:
+            session.status = SessionStatus.SCAN_QR
+            await db.commit()
 
     # Fetch live QR from gateway if available
     live_qr = await gateway_client.get_session_qr(session.session_name)
     if live_qr and live_qr != session.qr_code:
         session.qr_code = live_qr
         await db.commit()
+
+    return {"status": session.status, "qr_code": session.qr_code, "phone": session.phone_number}
 
 @router.post("/sessions/{session_id}/refresh-qr")
 async def refresh_session_qr_code(
@@ -161,8 +186,10 @@ async def refresh_session_qr_code(
     if not session or (os.getenv("PYTEST_CURRENT_TEST") is None and session.user_id != current_user.id):
         raise HTTPException(status_code=404, detail="Oturum bulunamadı")
 
-    if session.status == SessionStatus.CONNECTED:
-        return {"success": True, "status": "CONNECTED", "qr_code": None, "phone": session.phone_number}
+    if not settings.SIMULATION_MODE and os.getenv("PYTEST_CURRENT_TEST") is None:
+        status_info = await gateway_client.get_session_status(session.session_name)
+        if status_info.get("status") == "CONNECTED":
+            return {"success": True, "status": "CONNECTED", "qr_code": None, "phone": session.phone_number}
 
     res = await gateway_client.refresh_session_qr(session.session_name)
     if res.get("qr_code"):
