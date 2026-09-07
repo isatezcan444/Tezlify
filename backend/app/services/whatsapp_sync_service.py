@@ -232,6 +232,24 @@ class WhatsAppSyncService:
                         disp_row.is_whatsapp_eligible = True
                         await db.flush()
                         lead = disp_row
+                    else:
+                        digits = re.sub(r"\D", "", phone_e164)
+                        if len(digits) >= 10:
+                            last10 = digits[-10:]
+                            nat_stmt = select(Lead).where(
+                                Lead.user_id == user_id,
+                                or_(
+                                    Lead.phone.ilike(f"%{last10}%"),
+                                    Lead.phone_e164.ilike(f"%{last10}%"),
+                                ),
+                            )
+                            nat_row = (await db.execute(nat_stmt.limit(1))).scalars().first()
+                            if nat_row is not None:
+                                if not nat_row.phone_e164:
+                                    nat_row.phone_e164 = phone_e164
+                                nat_row.is_whatsapp_eligible = True
+                                await db.flush()
+                                lead = nat_row
 
             if not lead and raw_key:
                 # Unresolvable identity (e.g. @lid without PN mapping): key by
@@ -713,6 +731,111 @@ class WhatsAppSyncService:
         return None
 
     @classmethod
+    async def sync_contacts(
+        cls,
+        db: AsyncSession,
+        session_name: str,
+        contacts: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """
+        Syncs real contact names from the connected phone's address book into the Leads table.
+        Heals placeholder names ('WhatsApp (+90...)') and updates Message.sender_name on historical messages.
+        """
+        if not session_name or not contacts:
+            return {"status": "ignored", "reason": "No session_name or contacts"}
+
+        sess_stmt = select(WhatsAppSession).where(WhatsAppSession.session_name == session_name)
+        session = (await db.execute(sess_stmt.limit(1))).scalars().first()
+        if not session:
+            return {"status": "ignored", "reason": f"Session {session_name} not found"}
+
+        user_id = session.user_id
+        healed_leads = 0
+        healed_messages = 0
+
+        for c in contacts:
+            raw_phone = c.get("phone") or c.get("id") or ""
+            name = (c.get("name") or "").strip()
+            if not name or "@" in name or name.startswith("WhatsApp ("):
+                continue
+
+            phone_norm = PhoneService.normalize_to_e164(raw_phone)
+            if not phone_norm or not phone_norm.get("is_valid"):
+                continue
+
+            e164 = phone_norm["e164"]
+            digits = re.sub(r"\D", "", e164)
+            last10 = digits[-10:] if len(digits) >= 10 else digits
+
+            # Find matching lead
+            lead_stmt = (
+                select(Lead)
+                .where(
+                    Lead.user_id == user_id,
+                    or_(
+                        Lead.phone_e164 == e164,
+                        Lead.phone == e164,
+                        Lead.phone.ilike(f"%{last10}%"),
+                        Lead.phone_e164.ilike(f"%{last10}%"),
+                    ),
+                )
+                .limit(1)
+            )
+            lead = (await db.execute(lead_stmt)).scalars().first()
+            if lead:
+                is_placeholder = (
+                    not lead.name
+                    or lead.name.startswith("WhatsApp (")
+                    or lead.name in ("WhatsApp Sohbeti", "İsimsiz Müşteri", "")
+                    or lead.name == lead.phone
+                    or lead.name == lead.phone_e164
+                )
+                if is_placeholder and name:
+                    lead.name = name
+                    if not lead.phone_e164:
+                        lead.phone_e164 = e164
+                    lead.is_whatsapp_eligible = True
+                    healed_leads += 1
+
+            # Heal messages from this contact that have phone or empty sender_name
+            msg_update = (
+                update(Message)
+                .where(
+                    Message.user_id == user_id,
+                    or_(
+                        Message.sender_phone == e164,
+                        Message.sender_phone.ilike(f"%{last10}%"),
+                    ),
+                    or_(
+                        Message.sender_name.is_(None),
+                        Message.sender_name.in_(["", "Grup Üyesi"]),
+                        Message.sender_name.startswith("WhatsApp ("),
+                        Message.sender_name.startswith("+"),
+                    ),
+                )
+                .values(sender_name=name)
+            )
+            res_m = await db.execute(msg_update)
+            if res_m.rowcount and res_m.rowcount > 0:
+                healed_messages += res_m.rowcount
+
+        if healed_leads > 0 or healed_messages > 0:
+            await db.commit()
+            logger.info(f"[WhatsAppSyncService] Synced contacts for {session_name}: {healed_leads} leads updated, {healed_messages} messages updated with real names")
+            await ws_manager.broadcast({
+                "event": "conversations_updated",
+                "healed_leads": healed_leads,
+                "healed_messages": healed_messages,
+            })
+
+        return {
+            "status": "success",
+            "contacts_processed": len(contacts),
+            "healed_leads": healed_leads,
+            "healed_messages": healed_messages,
+        }
+
+    @classmethod
     async def process_message_event(
         cls,
         db: AsyncSession,
@@ -831,6 +954,7 @@ class WhatsAppSyncService:
 
         # Update Conversation state
         conv.last_message_at = naive_msg_time
+        conv.last_message_preview = message_text
         if not from_me:
             conv.unread_count += 1
             if lead.status == LeadStatus.NEW or lead.status == LeadStatus.CONTACTED:
@@ -869,6 +993,7 @@ class WhatsAppSyncService:
                 "direction": new_msg.direction.value,
                 "body": new_msg.body,
                 "sender_name": new_msg.sender_name,
+                "sender_phone": new_msg.sender_phone,
                 "wa_message_id": new_msg.wa_message_id,
                 "status": new_msg.status.value,
                 "created_at": new_msg.created_at.isoformat(),
@@ -1104,6 +1229,7 @@ class WhatsAppSyncService:
             # If chat came with last_message_preview, ensure there's at least one message in conversation
             preview_text = (chat.get("last_message_preview") or "").strip()
             if preview_text:
+                conv.last_message_preview = preview_text
                 existing_msg_stmt = select(Message.id).where(Message.conversation_id == conv.id).limit(1)
                 has_existing = (await db.execute(existing_msg_stmt)).scalars().first()
                 if not has_existing:
@@ -1279,6 +1405,7 @@ class WhatsAppSyncService:
             conv_last = _to_naive_utc(conv.last_message_at)
             if not conv_last or msg_time > conv_last:
                 conv.last_message_at = msg_time
+                conv.last_message_preview = text
             imported_count += 1
 
         # Self-heal ordering: last_message_at is the max of itself and the

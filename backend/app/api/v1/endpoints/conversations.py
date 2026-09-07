@@ -3,7 +3,7 @@ from datetime import datetime
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Header
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, or_, func
+from sqlalchemy import select, or_, and_, func
 from sqlalchemy.orm import selectinload
 
 from backend.app.core.database import get_db
@@ -44,16 +44,28 @@ async def _fetch_paginated_messages(
     before: Optional[int] = None,
 ):
     """
-    Fetches messages for a conversation with cursor pagination using composite index.
+    Fetches messages for a conversation strictly in chronological order (oldest to newest).
+    Orders descending by created_at and id, then reverses to ensure 100% time accuracy with the phone.
     """
     stmt = (
         select(Message)
         .where(Message.conversation_id == conversation_id)
-        .order_by(Message.id.desc())
+        .order_by(Message.created_at.desc(), Message.id.desc())
         .limit(limit + 1)
     )
     if before:
-        stmt = stmt.where(Message.id < before)
+        # Before is the message ID cursor: find reference message created_at
+        cursor_ref_stmt = select(Message.created_at).where(Message.id == before).limit(1)
+        cursor_time = (await db.execute(cursor_ref_stmt)).scalar_one_or_none()
+        if cursor_time:
+            stmt = stmt.where(
+                or_(
+                    Message.created_at < cursor_time,
+                    and_(Message.created_at == cursor_time, Message.id < before),
+                )
+            )
+        else:
+            stmt = stmt.where(Message.id < before)
 
     res = await db.execute(stmt)
     records = list(res.scalars().all())
@@ -62,7 +74,7 @@ async def _fetch_paginated_messages(
     if has_more:
         records = records[:limit]
 
-    # Return chronological order (oldest to newest) for UI
+    # Return chronological order (oldest to newest) matching WhatsApp Web/Phone
     chronological = list(reversed(records))
     oldest_id = chronological[0].id if chronological else None
     newest_id = chronological[-1].id if chronological else None
@@ -82,29 +94,13 @@ async def list_conversations(
     current_user: AuthUser = Depends(get_current_user),
 ):
     """
-    Thin, high-performance conversation list query.
-    Eliminates loading full message histories in memory using correlated SQL subquery for preview.
+    High-performance conversation list query.
+    Direct indexed sort by last_message_at without heavy correlated subqueries.
     """
-    latest_msg_subq = (
-        select(Message.body)
-        .where(Message.conversation_id == Conversation.id)
-        .order_by(Message.created_at.desc(), Message.id.desc())
-        .limit(1)
-        .scalar_subquery()
-    )
-
-    latest_msg_time_subq = (
-        select(Message.created_at)
-        .where(Message.conversation_id == Conversation.id)
-        .order_by(Message.created_at.desc(), Message.id.desc())
-        .limit(1)
-        .scalar_subquery()
-    )
-
-    effective_last_at = func.coalesce(Conversation.last_message_at, latest_msg_time_subq, Conversation.created_at)
+    effective_last_at = func.coalesce(Conversation.last_message_at, Conversation.created_at)
 
     stmt = (
-        select(Conversation, latest_msg_subq.label("last_preview"), effective_last_at.label("effective_time"))
+        select(Conversation)
         .join(Conversation.lead)
         .options(selectinload(Conversation.lead))
         .where(get_user_filter(Conversation.user_id, current_user.id))
@@ -129,15 +125,24 @@ async def list_conversations(
         stmt = stmt.where(search_filter)
 
     res = await db.execute(stmt)
-    rows = res.all()
+    conv_rows = list(res.scalars().all())
+
+    # Single batched fallback for any legacy conversations that have NULL last_message_preview
+    missing_preview_ids = [c.id for c in conv_rows if not c.last_message_preview]
+    fallback_previews = {}
+    if missing_preview_ids:
+        fb_stmt = (
+            select(Message.conversation_id, Message.body)
+            .where(Message.conversation_id.in_(missing_preview_ids))
+            .order_by(Message.conversation_id, Message.created_at.desc(), Message.id.desc())
+        )
+        for cid, body in (await db.execute(fb_stmt)).all():
+            if cid not in fallback_previews and body:
+                fallback_previews[cid] = body
 
     result = []
     seen_keys: set = set()
-    for conv, last_preview, effective_time in rows:
-        # Read-side dedupe by counterpart identity (not lead row): legacy
-        # races left one number on several lead rows ("Ahmed Tuncay Boyacı"
-        # next to "WhatsApp (+90…)"). Rows arrive newest-first, so the first
-        # occurrence per number wins; the sync merge pass removes the rest.
+    for conv in conv_rows:
         lead_key = None
         if conv.lead is not None:
             lead_key = _conversation_phone_key(conv.lead.phone_e164, conv.lead.phone)
@@ -146,6 +151,7 @@ async def list_conversations(
         if lead_key in seen_keys:
             continue
         seen_keys.add(lead_key)
+
         lead_custom = conv.lead.custom_data or {} if conv.lead else {}
         is_group = bool(
             (conv.lead and (conv.lead.phone.endswith("@g.us") or conv.lead.category == "WhatsApp Grubu"))
@@ -153,13 +159,14 @@ async def list_conversations(
         )
         lead_avatar = lead_custom.get("avatar_url")
         lead_phone_display = (conv.lead.phone if is_group else conv.lead.phone_e164) if conv.lead else None
+        preview = conv.last_message_preview or fallback_previews.get(conv.id)
 
         item = ConversationResponse(
             id=conv.id,
             lead_id=conv.lead_id,
             channel=conv.channel,
             status=conv.status,
-            last_message_at=effective_time or conv.last_message_at or conv.created_at,
+            last_message_at=conv.last_message_at or conv.created_at,
             unread_count=conv.unread_count or 0,
             last_read_at=conv.last_read_at,
             created_at=conv.created_at,
@@ -168,7 +175,7 @@ async def list_conversations(
             lead_phone=lead_phone_display,
             lead_avatar_url=lead_avatar,
             is_group=is_group,
-            last_message_preview=last_preview,
+            last_message_preview=preview,
         )
         result.append(item)
 

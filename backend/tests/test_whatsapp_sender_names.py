@@ -13,6 +13,7 @@ from backend.app.core.database import AsyncSessionLocal
 from backend.app.models.whatsapp_session import WhatsAppSession, SessionStatus
 from backend.app.models.lead import Lead, LeadStatus
 from backend.app.models.message import Message, MessageDirection
+from backend.app.models.conversation import Conversation
 from backend.app.services.whatsapp_sync_service import WhatsAppSyncService
 
 
@@ -329,3 +330,87 @@ async def test_merge_lid_identities_upgrades_placeholder_in_place():
         kept = await db.get(Lead, raw_lead.id)
         assert kept.phone_e164 == pn
         assert kept.phone == pn
+
+
+@pytest.mark.asyncio
+async def test_sync_contacts_updates_lead_name_and_heals_messages():
+    session_name = await _make_session()
+    phone = _uniq_e164()
+
+    async with AsyncSessionLocal() as db:
+        # Create a lead with placeholder name
+        lead = Lead(name=f"WhatsApp ({phone})", phone=phone, phone_e164=phone, status=LeadStatus.CONTACTED)
+        db.add(lead)
+        await db.commit()
+        await db.refresh(lead)
+
+        conv = Conversation(lead_id=lead.id, channel="WHATSAPP")
+        db.add(conv)
+        await db.commit()
+        await db.refresh(conv)
+
+        # Message with phone number as sender_name
+        msg = Message(
+            conversation_id=conv.id,
+            direction=MessageDirection.INBOUND,
+            body="Merhaba",
+            sender_phone=phone,
+            recipient_phone="ME",
+            sender_name=phone,
+        )
+        db.add(msg)
+        await db.commit()
+
+        # Perform contacts sync
+        res = await WhatsAppSyncService.sync_contacts(
+            db=db,
+            session_name=session_name,
+            contacts=[{"id": f"{phone.replace('+', '')}@s.whatsapp.net", "phone": phone, "name": "Tolga Cebeci"}],
+        )
+        assert res["status"] == "success"
+        assert res["healed_leads"] >= 1
+        assert res["healed_messages"] >= 1
+
+        # Check lead name updated
+        await db.refresh(lead)
+        assert lead.name == "Tolga Cebeci"
+
+        # Check message sender_name updated
+        await db.refresh(msg)
+        assert msg.sender_name == "Tolga Cebeci"
+
+
+@pytest.mark.asyncio
+async def test_messages_chronological_order_in_fetch():
+    from backend.app.api.v1.endpoints.conversations import _fetch_paginated_messages
+    from datetime import datetime, timedelta
+
+    async with AsyncSessionLocal() as db:
+        lead = Lead(name="Order Test Lead", phone=_uniq_e164(), phone_e164=_uniq_e164(), status=LeadStatus.CONTACTED)
+        db.add(lead)
+        await db.commit()
+        await db.refresh(lead)
+
+        conv = Conversation(lead_id=lead.id, channel="WHATSAPP")
+        db.add(conv)
+        await db.commit()
+        await db.refresh(conv)
+
+        now = datetime.utcnow()
+        # Insert newer message first (id 1, but time now)
+        m1 = Message(conversation_id=conv.id, direction=MessageDirection.INBOUND, body="Son mesaj", sender_phone="1", recipient_phone="2", created_at=now)
+        # Insert older message second (id 2, but time now - 1h)
+        m2 = Message(conversation_id=conv.id, direction=MessageDirection.INBOUND, body="Eski mesaj", sender_phone="1", recipient_phone="2", created_at=now - timedelta(hours=1))
+        # Insert oldest message third (id 3, but time now - 2h)
+        m3 = Message(conversation_id=conv.id, direction=MessageDirection.INBOUND, body="En eski mesaj", sender_phone="1", recipient_phone="2", created_at=now - timedelta(hours=2))
+
+        db.add_all([m1, m2, m3])
+        await db.commit()
+
+        # Fetch messages
+        dtos, has_more, oldest_id, newest_id = await _fetch_paginated_messages(db, conv.id, limit=50)
+        # Verify strict chronological order (oldest first, newest last)
+        assert len(dtos) == 3
+        assert dtos[0].body == "En eski mesaj"
+        assert dtos[1].body == "Eski mesaj"
+        assert dtos[2].body == "Son mesaj"

@@ -88,6 +88,43 @@ export const ConversationList: React.FC<ConversationListProps> = ({
     return timeB - timeA;
   });
 
+  // Deduplicate conversations by phone number (last 10 digits) or group JID so duplicate windows never appear
+  const deduplicated = React.useMemo(() => {
+    const seen = new Map<string, Conversation>();
+    for (const c of sorted) {
+      let key = '';
+      if (c.is_group || c.lead_phone?.endsWith('@g.us')) {
+        key = `grp_${c.lead_phone || c.id}`;
+      } else {
+        const digits = c.lead_phone ? c.lead_phone.replace(/\D/g, '').slice(-10) : '';
+        key = digits ? `phone_${digits}` : `conv_${c.id}`;
+      }
+
+      if (!seen.has(key)) {
+        seen.set(key, { ...c });
+      } else {
+        const existing = seen.get(key)!;
+        const existingTime = existing.last_message_at ? new Date(existing.last_message_at).getTime() : 0;
+        const currentTime = c.last_message_at ? new Date(c.last_message_at).getTime() : 0;
+        if (currentTime > existingTime) {
+          seen.set(key, {
+            ...c,
+            unread_count: (c.unread_count || 0) + (existing.unread_count || 0),
+          });
+        } else {
+          existing.unread_count = (existing.unread_count || 0) + (c.unread_count || 0);
+        }
+      }
+    }
+    return Array.from(seen.values());
+  }, [sorted]);
+
+  const selectedConvDigits = React.useMemo(() => {
+    if (!selectedId) return '';
+    const found = conversations.find((c) => c.id === selectedId);
+    return found?.lead_phone ? found.lead_phone.replace(/\D/g, '').slice(-10) : '';
+  }, [selectedId, conversations]);
+
   const filterTabs: { id: FilterTab; label: string; icon: React.FC<{ className?: string }> }[] = [
     { id: 'ALL', label: t('whatsapp.tabAll') || 'Tümü', icon: Inbox },
     { id: 'ACTIVE', label: t('whatsapp.tabActive') || 'Aktif', icon: MessageSquare },
@@ -178,14 +215,15 @@ export const ConversationList: React.FC<ConversationListProps> = ({
               </div>
             ))}
           </div>
-        ) : sorted.length === 0 ? (
+        ) : deduplicated.length === 0 ? (
           <div className="p-6 text-center text-slate-400 dark:text-slate-500 text-xs">
             <MessageSquare className="w-8 h-8 mx-auto mb-2 opacity-40" />
             <p>{t('whatsapp.noConversations')}</p>
           </div>
         ) : (
-          sorted.map((conv) => {
-            const isSelected = selectedId === conv.id;
+          deduplicated.map((conv) => {
+            const convDigits = conv.lead_phone ? conv.lead_phone.replace(/\D/g, '').slice(-10) : '';
+            const isSelected = selectedId === conv.id || Boolean(selectedConvDigits && convDigits && selectedConvDigits === convDigits);
             return (
               <button
                 key={conv.id}

@@ -183,36 +183,53 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       const eventData = customEvent.detail;
       if (!eventData) return;
 
-      if (eventData.event === 'new_message' || eventData.event === 'inbound_reply') {
+      if (
+        eventData.event === 'new_message' ||
+        eventData.event === 'inbound_reply' ||
+        eventData.event === 'outbound_message_sent'
+      ) {
         const convId = eventData.conversation_id;
-        const isCurrentSelected = selectedConv && selectedConv.id === convId;
-        const msgText = eventData.message?.body || eventData.message || '';
-        const msgTime = eventData.message?.created_at || eventData.timestamp || new Date().toISOString();
-        const isOutbound = eventData.message?.direction === 'OUTBOUND' || eventData.direction === 'OUTBOUND';
+        const rawPhone = eventData.lead_phone || eventData.phone || eventData.recipient_phone || eventData.sender_phone || '';
+        const eventDigits = rawPhone.replace(/\D/g, '').slice(-10);
 
+        const msgText = eventData.message?.body || (typeof eventData.message === 'string' ? eventData.message : '') || '';
+        const msgTime = eventData.message?.created_at || eventData.created_at || eventData.timestamp || new Date().toISOString();
+        const isOutbound =
+          eventData.event === 'outbound_message_sent' ||
+          eventData.message?.direction === 'OUTBOUND' ||
+          eventData.direction === 'OUTBOUND';
+
+        let found = false;
         setConversations((prev) => {
-          const idx = prev.findIndex((c) => c.id === convId);
+          const idx = prev.findIndex(
+            (c) => c.id === convId || (eventDigits && c.lead_phone && c.lead_phone.replace(/\D/g, '').slice(-10) === eventDigits)
+          );
+
           if (idx !== -1) {
+            found = true;
             const existing = prev[idx];
+            const isCurrentSelected = selectedConv && (selectedConv.id === existing.id || selectedConv.id === convId);
             const updated: Conversation = {
               ...existing,
               status: 'ACTIVE',
-              last_message_preview: typeof msgText === 'string' ? msgText : existing.last_message_preview,
+              last_message_preview: typeof msgText === 'string' && msgText ? msgText : existing.last_message_preview,
               last_message_at: msgTime,
               unread_count: isCurrentSelected || isOutbound ? 0 : (existing.unread_count || 0) + 1,
             };
-            if (selectedConv && selectedConv.id === convId) {
+            if (isCurrentSelected) {
               setSelectedConv(updated);
             }
             // Move updated conversation to top of list
-            const rest = prev.filter((c) => c.id !== convId);
+            const rest = prev.filter((_, i) => i !== idx);
             return [updated, ...rest];
-          } else {
-            // New conversation arrived
-            fetchConversations();
-            return prev;
           }
+          return prev;
         });
+
+        // If not found in existing list, fetch freshly without side-effects in updater
+        if (!found) {
+          fetchConversations();
+        }
       }
 
       if (eventData.event === 'conversations_updated') {

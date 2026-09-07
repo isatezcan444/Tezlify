@@ -1,6 +1,6 @@
 import enum
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, DateTime, Enum, ForeignKey, Index, Uuid
+from sqlalchemy import Column, Integer, String, DateTime, Enum, ForeignKey, Index, Uuid, Text
 from sqlalchemy.orm import relationship
 from backend.app.core.database import Base
 
@@ -25,6 +25,7 @@ class Conversation(Base):
     status = Column(Enum(ConversationStatus), default=ConversationStatus.ACTIVE, nullable=False, index=True)
     
     last_message_at = Column(DateTime, nullable=True, index=True)
+    last_message_preview = Column(Text, nullable=True)
     unread_count = Column(Integer, default=0, nullable=False)
     last_read_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)

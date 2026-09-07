@@ -2,6 +2,15 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { ApiClient } from '../api/client';
 import { ConversationDetail, Message, ConversationStatus } from '../types';
 
+export const sortMessagesChronologically = (list: Message[]): Message[] => {
+  return [...list].sort((a, b) => {
+    const tA = new Date(a.created_at || a.external_timestamp || 0).getTime();
+    const tB = new Date(b.created_at || b.external_timestamp || 0).getTime();
+    if (tA !== tB) return tA - tB;
+    return (a.id || 0) - (b.id || 0);
+  });
+};
+
 interface UseWhatsAppConversationOptions {
   leadId?: number;
   conversationId?: number;
@@ -40,6 +49,7 @@ export function useWhatsAppConversation({
       } else {
         return;
       }
+      data.messages = sortMessagesChronologically(data.messages || []);
       setConversation(data);
 
       // Auto mark as read when opened if there are unread messages
@@ -91,11 +101,12 @@ export function useWhatsAppConversation({
             (m) => !existingIds.has(m.id) && (!m.wa_message_id || !existingWaIds.has(m.wa_message_id))
           );
 
+          const merged = sortMessagesChronologically([...uniqueNew, ...prev.messages]);
           return {
             ...prev,
             has_more: res.has_more,
-            oldest_message_id: res.oldest_message_id || (uniqueNew[0]?.id ?? prev.oldest_message_id),
-            messages: [...uniqueNew, ...prev.messages],
+            oldest_message_id: res.oldest_message_id || (merged[0]?.id ?? prev.oldest_message_id),
+            messages: merged,
           };
         });
       } else {
@@ -156,7 +167,7 @@ export function useWhatsAppConversation({
         status: 'ACTIVE',
         last_message_at: tempCreatedAt,
         last_message_preview: text,
-        messages: [...prev.messages, optimisticMsg],
+        messages: sortMessagesChronologically([...prev.messages, optimisticMsg]),
       };
     });
 
@@ -172,7 +183,7 @@ export function useWhatsAppConversation({
           status: 'ACTIVE',
           last_message_at: resMsg.created_at,
           last_message_preview: resMsg.body,
-          messages: prev.messages.map((m) => (m.id === tempId ? resMsg : m)),
+          messages: sortMessagesChronologically(prev.messages.map((m) => (m.id === tempId ? resMsg : m))),
         };
       });
       return resMsg;
@@ -208,7 +219,7 @@ export function useWhatsAppConversation({
         status: 'ACTIVE',
         last_message_at: resMsg.created_at,
         last_message_preview: resMsg.body,
-        messages: [...prev.messages, resMsg],
+        messages: sortMessagesChronologically([...prev.messages, resMsg]),
       };
     });
     return resMsg;
@@ -222,7 +233,7 @@ export function useWhatsAppConversation({
       if (!prev) return prev;
       return {
         ...prev,
-        messages: prev.messages.map((m) => (m.id === messageId ? resMsg : m)),
+        messages: sortMessagesChronologically(prev.messages.map((m) => (m.id === messageId ? resMsg : m))),
       };
     });
     return resMsg;
@@ -248,7 +259,7 @@ export function useWhatsAppConversation({
         status: 'ACTIVE',
         last_message_at: resMsg.created_at,
         last_message_preview: resMsg.body,
-        messages: [...prev.messages, resMsg],
+        messages: sortMessagesChronologically([...prev.messages, resMsg]),
       };
     });
     return resMsg;
@@ -261,11 +272,19 @@ export function useWhatsAppConversation({
       const eventData = customEvent.detail;
       if (!eventData) return;
 
+      // Helper for phone normalization matching
+      const normDigits = (p?: string | null) => (p ? p.replace(/\D/g, '').slice(-10) : '');
+
       // Handle outbound message sent event
       if (eventData.event === 'outbound_message_sent') {
+        const eventPhoneDigits = normDigits(eventData.recipient_phone || eventData.phone);
+        const currentPhoneDigits = normDigits(conversation?.lead_phone);
+        const matchesPhone = Boolean(eventPhoneDigits && currentPhoneDigits && eventPhoneDigits === currentPhoneDigits);
+
         const matchesConv =
           (conversationId && eventData.conversation_id === conversationId) ||
-          (conversation && eventData.conversation_id === conversation.id);
+          (conversation && eventData.conversation_id === conversation.id) ||
+          matchesPhone;
 
         if (matchesConv) {
           setConversation((prev) => {
@@ -295,7 +314,7 @@ export function useWhatsAppConversation({
               status: 'ACTIVE',
               last_message_at: newMsg.created_at,
               last_message_preview: newMsg.body,
-              messages: [...prev.messages, newMsg],
+              messages: sortMessagesChronologically([...prev.messages, newMsg]),
             };
           });
         }
@@ -303,12 +322,16 @@ export function useWhatsAppConversation({
 
       // Handle incoming message or mirrored outbound message (TEXT or RICH MEDIA)
       if (eventData.event === 'new_message' || eventData.event === 'inbound_reply') {
+        const eventPhoneDigits = normDigits(eventData.lead_phone || eventData.phone || eventData.sender_phone);
+        const currentPhoneDigits = normDigits(conversation?.lead_phone);
+        const matchesPhone = Boolean(eventPhoneDigits && currentPhoneDigits && eventPhoneDigits === currentPhoneDigits);
+
         const matchesLead = leadId && eventData.lead_id === leadId;
         const matchesConvId = conversationId && eventData.conversation_id === conversationId;
         const matchesCurrentConv =
           conversation && (eventData.conversation_id === conversation.id || eventData.lead_id === conversation.lead_id);
 
-        if (matchesLead || matchesConvId || matchesCurrentConv) {
+        if (matchesLead || matchesConvId || matchesCurrentConv || matchesPhone) {
           setConversation((prev) => {
             if (!prev) return prev;
 
@@ -332,7 +355,11 @@ export function useWhatsAppConversation({
               body: msgObj.body,
               sender_name: msgObj.sender_name || eventData.sender_name || null,
               wa_message_id: msgObj.wa_message_id,
-              sender_phone: eventData.lead_phone || '',
+              sender_phone: msgObj.sender_phone || eventData.sender_phone || eventData.phone || eventData.lead_phone || '',
+              media_id: msgObj.media_id || eventData.media_id,
+              media_mime_type: msgObj.media_mime_type || eventData.media_mime_type,
+              media_filename: msgObj.media_filename || eventData.media_filename,
+              media_caption: msgObj.media_caption || eventData.media_caption,
               created_at: msgObj.created_at || new Date().toISOString(),
             } : {
               id: eventData.message_id || Date.now(),
@@ -347,7 +374,7 @@ export function useWhatsAppConversation({
               media_filename: eventData.media_filename,
               media_caption: eventData.media_caption,
               wa_message_id: eventData.wa_message_id,
-              sender_phone: eventData.phone,
+              sender_phone: eventData.sender_phone || eventData.phone || eventData.lead_phone || '',
               created_at: eventData.created_at || new Date().toISOString(),
             };
 
@@ -357,7 +384,7 @@ export function useWhatsAppConversation({
               last_message_at: newMsg.created_at,
               last_message_preview: newMsg.body,
               unread_count: autoMarkAsRead || newMsg.direction === 'OUTBOUND' ? 0 : (prev.unread_count || 0) + 1,
-              messages: [...prev.messages, newMsg],
+              messages: sortMessagesChronologically([...prev.messages, newMsg]),
             };
           });
 

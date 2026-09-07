@@ -639,6 +639,28 @@ async def handle_message_event_webhook(
     )
 
 
+@router.post("/webhook/contacts-sync")
+async def handle_contacts_sync_webhook(
+    payload: dict = Body(...),
+    x_webhook_secret: Optional[str] = Header(None, alias="X-Webhook-Secret"),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Webhook dispatched by wa-gateway when phonebook contacts are updated on connected phone.
+    Syncs truthful contact names to Leads and historical messages.
+    """
+    if not settings.WA_GATEWAY_WEBHOOK_SECRET or x_webhook_secret != settings.WA_GATEWAY_WEBHOOK_SECRET:
+        raise HTTPException(status_code=401, detail="Yetkisiz Webhook İsteği (Geçersiz Secret)")
+
+    session_name = payload.get("session_name")
+    contacts = payload.get("contacts") or []
+    return await WhatsAppSyncService.sync_contacts(
+        db=db,
+        session_name=session_name,
+        contacts=contacts,
+    )
+
+
 @router.post("/webhook/session-backup")
 async def backup_session_auth_webhook(
     payload: dict = Body(...),

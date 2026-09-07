@@ -39,6 +39,16 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
   const [isNearBottom, setIsNearBottom] = useState<boolean>(true);
   const [showNewMessagePill, setShowNewMessagePill] = useState<boolean>(false);
 
+  // Guarantee strictly chronological message order in the thread
+  const sortedMessages = React.useMemo(() => {
+    return [...messages].sort((a, b) => {
+      const tA = new Date(a.created_at || a.external_timestamp || 0).getTime();
+      const tB = new Date(b.created_at || b.external_timestamp || 0).getTime();
+      if (tA !== tB) return tA - tB;
+      return (a.id || 0) - (b.id || 0);
+    });
+  }, [messages]);
+
   // Monitor scroll position
   const handleScroll = () => {
     if (!containerRef.current) return;
@@ -69,12 +79,12 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
       containerRef.current.scrollTop = prevScrollTopRef.current + heightDiff;
       isPrependingRef.current = false;
     }
-  }, [messages]);
+  }, [sortedMessages]);
 
   // Smart Auto-Scroll when new messages arrive at the end
   useEffect(() => {
-    const isNewMessageAdded = messages.length > prevMessagesCountRef.current;
-    prevMessagesCountRef.current = messages.length;
+    const isNewMessageAdded = sortedMessages.length > prevMessagesCountRef.current;
+    prevMessagesCountRef.current = sortedMessages.length;
 
     if (isNewMessageAdded && !isPrependingRef.current) {
       if (isNearBottom) {
@@ -84,11 +94,11 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
         setShowNewMessagePill(true);
       }
     }
-  }, [messages, isNearBottom]);
+  }, [sortedMessages, isNearBottom]);
 
   // Initial scroll to bottom on mount or load
   useEffect(() => {
-    if (!loading && messages.length > 0 && isNearBottom) {
+    if (!loading && sortedMessages.length > 0 && isNearBottom) {
       bottomRef.current?.scrollIntoView({ behavior: 'auto' });
     }
   }, [loading]);
@@ -135,7 +145,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
     );
   }
 
-  if (!messages || messages.length === 0) {
+  if (!sortedMessages || sortedMessages.length === 0) {
     return (
       <div className="flex-1 flex items-center justify-center p-6">
         <EmptyState
@@ -180,7 +190,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
           </div>
         )}
 
-        {messages.map((msg) => {
+        {sortedMessages.map((msg) => {
           const currentDate = getDateLabel(msg.created_at || msg.external_timestamp);
           const showDateSeparator = currentDate && currentDate !== lastDate;
           if (showDateSeparator) {

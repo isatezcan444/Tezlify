@@ -272,33 +272,116 @@ function updateContact(sessionData, contact) {
             // normalization is best-effort only
         }
     }
+    // Save contacts and schedule sync whenever contacts are added/updated
+    saveContactsToDisk(sessionData);
+}
+
+const contactsSyncTimers = new Map();
+
+/**
+ * Saves in-memory contacts map to contacts.json in sessionAuthDir.
+ * Automatically included in session-backup because it ends with .json.
+ */
+function saveContactsToDisk(sessionData) {
+    if (!sessionData?.name || !(sessionData.contacts instanceof Map)) return;
+    try {
+        const sessionAuthDir = path.join(SESSIONS_DIR, sessionData.name);
+        if (!fs.existsSync(sessionAuthDir)) {
+            fs.mkdirSync(sessionAuthDir, { recursive: true });
+        }
+        const arr = Array.from(sessionData.contacts.values());
+        fs.writeFileSync(path.join(sessionAuthDir, 'contacts.json'), JSON.stringify(arr), 'utf8');
+    } catch (err) {
+        console.warn(`[WA-Gateway] Failed to save contacts to disk for ${sessionData.name}:`, err.message);
+    }
 }
 
 /**
- * Updates or adds a chat in session memory with strict sorting timestamps.
+ * Loads contacts from contacts.json in sessionAuthDir into sessionData.contacts.
  */
+function loadContactsFromDisk(sessionData) {
+    if (!sessionData?.name) return;
+    try {
+        const sessionAuthDir = path.join(SESSIONS_DIR, sessionData.name);
+        const contactsFile = path.join(sessionAuthDir, 'contacts.json');
+        if (fs.existsSync(contactsFile)) {
+            const content = fs.readFileSync(contactsFile, 'utf8');
+            const arr = JSON.parse(content);
+            if (Array.isArray(arr)) {
+                if (!(sessionData.contacts instanceof Map)) sessionData.contacts = new Map();
+                for (const c of arr) {
+                    if (c && c.id) {
+                        sessionData.contacts.set(c.id, c);
+                    }
+                }
+                console.log(`[WA-Gateway] Loaded ${sessionData.contacts.size} contacts from disk for ${sessionData.name}`);
+            }
+        }
+    } catch (err) {
+        console.warn(`[WA-Gateway] Failed to load contacts from disk for ${sessionData.name}:`, err.message);
+    }
+}
+
+/**
+ * Pushes contacts to the backend webhook so the CRM database (leads) always has
+ * truthful contact names from the connected phone's address book.
+ */
+async function syncContactsToBackend(sessionData) {
+    if (!sessionData?.name || !(sessionData.contacts instanceof Map)) return;
+    const contactsList = [];
+    for (const c of sessionData.contacts.values()) {
+        if (c && (c.name || c.phone) && !c.isGroup) {
+            contactsList.push({
+                id: c.id,
+                phone: c.phone,
+                name: c.name
+            });
+        }
+    }
+    if (contactsList.length > 0) {
+        try {
+            await notifyBackend(sessionData.name, 'contacts-sync', {
+                contacts: contactsList
+            });
+            console.log(`[WA-Gateway] Synced ${contactsList.length} contacts to backend for ${sessionData.name}`);
+        } catch (e) {
+            console.warn(`[WA-Gateway] Failed to sync contacts to backend:`, e.message);
+        }
+    }
+}
+
+function scheduleContactsSync(sessionData) {
+    if (!sessionData?.name) return;
+    saveContactsToDisk(sessionData);
+    backupSessionAuth(sessionData.name);
+
+    if (contactsSyncTimers.has(sessionData.name)) {
+        clearTimeout(contactsSyncTimers.get(sessionData.name));
+    }
+    const timer = setTimeout(() => {
+        contactsSyncTimers.delete(sessionData.name);
+        syncContactsToBackend(sessionData).catch(err => {
+            console.warn(`[WA-Gateway] syncContactsToBackend error:`, err.message);
+        });
+    }, 1500);
+    contactsSyncTimers.set(sessionData.name, timer);
+}
+
 /**
  * Resolves human-readable sender name for group chats or inbound messages.
  * Uses jidNormalizedUser() to strip Baileys multi-device ":1" device index suffix
- * before looking up contacts, which is the root cause of group sender names being
- * unresolvable (e.g. "905342236672:1@s.whatsapp.net" vs stored "905342236672@s.whatsapp.net").
+ * before looking up contacts.
  *
- * participantPn (optional): phone JID pre-resolved from a @lid JID via
- * resolveParticipantPN(). Contacts are checked under every known form.
- * NEVER fabricates a phone number from a LID — returns null instead so the
- * backend stores an honest fallback instead of a fake +number.
+ * Priority:
+ * 1. Saved address book name from phone (sessionData.contacts, e.g. "Annem", "Tolga Cebeci").
+ * 2. pushName (WhatsApp nickname set by user on their app).
+ * 3. Formatted phone number (+90...).
  */
 function resolveSenderName(sessionData, msg, participantJid, fromMe, participantPn = null) {
     if (fromMe) return 'Siz';
     if (!participantJid && !participantPn) return null;
 
-    // 1. Check msg.pushName (WhatsApp push name sent in message packet —
-    //    the author's self-chosen name, present even for unknown contacts)
-    if (msg?.pushName && typeof msg.pushName === 'string' && msg.pushName.trim()) {
-        return msg.pushName.trim();
-    }
-
-    // 2. Normalize the JID to strip multi-device index (e.g. "9053xxx:1@s.whatsapp.net" -> "9053xxx@s.whatsapp.net")
+    // 1. Normalize the JID to strip multi-device index (e.g. "9053xxx:1@s.whatsapp.net" -> "9053xxx@s.whatsapp.net")
     let normJid = participantJid;
     try {
         normJid = (participantJid && jidNormalizedUser(participantJid)) || participantJid;
@@ -306,8 +389,8 @@ function resolveSenderName(sessionData, msg, participantJid, fromMe, participant
         // jidNormalizedUser may throw on unsupported JID formats – fallback to raw
     }
 
-    // 3. Check session contact book (this phone's address book) under every
-    //    known form: normalized JID, raw JID, and resolved phone JID.
+    // 2. Check session contact book (this phone's address book) FIRST under every known form.
+    //    The user's own saved contact name always has the highest precedence.
     const candidates = [];
     if (normJid) candidates.push(normJid);
     if (participantJid && participantJid !== normJid) candidates.push(participantJid);
@@ -321,8 +404,7 @@ function resolveSenderName(sessionData, msg, participantJid, fromMe, participant
                 return contact.name.trim();
             }
         }
-        // Backfill: remember the PN alias so future lookups hit directly,
-        // and record the pair for the backend identity merge.
+        // Backfill: remember the PN alias so future lookups hit directly
         if (participantPn && normJid && isLidJid(normJid)) {
             const lidContact = sessionData.contacts.get(normJid);
             if (lidContact && !sessionData.contacts.has(participantPn)) {
@@ -336,8 +418,12 @@ function resolveSenderName(sessionData, msg, participantJid, fromMe, participant
         }
     }
 
+    // 3. Check msg.pushName (WhatsApp push name sent in message packet)
+    if (msg?.pushName && typeof msg.pushName === 'string' && msg.pushName.trim()) {
+        return msg.pushName.trim();
+    }
+
     // 4. Fallback to formatted phone number — ONLY for genuine phone JIDs.
-    //    A @lid value is an opaque device identity, never a dialable number.
     const refJid = participantPn || normJid || participantJid;
     if (refJid && !isLidJid(refJid)) {
         const rawNumber = refJid.split(':')[0].split('@')[0];
@@ -527,6 +613,9 @@ async function initSessionSocket(sessionData) {
         fs.mkdirSync(sessionAuthDir, { recursive: true });
     }
 
+    // Restore persistent contacts from disk if available
+    loadContactsFromDisk(sessionData);
+
     if (sessionData.reconnectTimer) {
         clearTimeout(sessionData.reconnectTimer);
         sessionData.reconnectTimer = null;
@@ -558,7 +647,10 @@ async function initSessionSocket(sessionData) {
         defaultQueryTimeoutMs: 60000,
         connectTimeoutMs: 60000,
         generateHighQualityLinkPreview: false,
-        getMessage: async () => ({ conversation: '' })
+        keepAliveIntervalMs: 25000,
+        getMessage: async (key) => {
+            return undefined;
+        }
     });
 
     sessionData.sock = sock;
@@ -575,6 +667,7 @@ async function initSessionSocket(sessionData) {
         for (const c of contacts) {
             updateContact(sessionData, c);
         }
+        scheduleContactsSync(sessionData);
     });
 
     sock.ev.on('contacts.update', (updates) => {
@@ -582,6 +675,7 @@ async function initSessionSocket(sessionData) {
         for (const u of updates) {
             updateContact(sessionData, u);
         }
+        scheduleContactsSync(sessionData);
     });
 
     // Listen to chat list updates from phone
@@ -607,6 +701,7 @@ async function initSessionSocket(sessionData) {
             for (const c of (contacts || [])) {
                 updateContact(sessionData, c);
             }
+            scheduleContactsSync(sessionData);
 
             // Ingest chats into memory
             for (const c of (chats || [])) {
@@ -1190,7 +1285,7 @@ async function getSessionChats(sessionName, options = {}) {
 
     const chatList = Array.from(session.chats.values()).map((c) => {
         const contact = session.contacts?.get(c.id);
-        const name = c.name || contact?.name || (c.isGroup ? 'WhatsApp Grubu' : '');
+        const name = c.name || contact?.name || contact?.notify || (c.isGroup ? 'WhatsApp Grubu' : '');
         return {
             id: c.id,
             phone: c.phone,
