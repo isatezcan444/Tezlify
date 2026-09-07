@@ -3,6 +3,7 @@ WhatsApp Sync Service.
 Coordinates synchronization of WhatsApp chat history and live two-way message mirroring
 between Baileys wa-gateway, Leads, Conversations, and Messages.
 """
+import re
 import time
 import logging
 from datetime import datetime, timezone
@@ -20,6 +21,7 @@ from backend.app.models.message import (
     ConversationMessageStatus,
 )
 from backend.app.services.phone_service import PhoneService
+from backend.app.services.whatsapp_gateway_client import gateway_client
 from backend.app.api.v1.websocket import ws_manager
 
 logger = logging.getLogger(__name__)
@@ -66,16 +68,20 @@ POOR_SENDER_NAMES = frozenset({"", "Grup Üyesi"})
 
 
 def _is_poor_sender_name(sender_name: Optional[str], sender_phone: Optional[str] = None) -> bool:
-    """True when a stored sender name is missing, generic, or merely echoes
-    the sender's own phone number (a previous honest fallback, still
-    upgradeable to a real contact name later)."""
+    """True when a stored sender name is missing, generic, merely echoes
+    the sender's own phone number, or is a generated "WhatsApp (...)"
+    placeholder from an unresolved identity. All such values remain
+    upgradeable to a real contact name later."""
     if not sender_name or sender_name in POOR_SENDER_NAMES:
+        return True
+    stripped = sender_name.strip()
+    if re.fullmatch(r"WhatsApp\s*\([^)]*\)", stripped):
         return True
     if sender_phone and "@" not in sender_phone:
         norm = PhoneService.normalize_to_e164(sender_phone)
-        if norm and norm.get("is_valid") and sender_name.strip() == norm["e164"]:
+        if norm and norm.get("is_valid") and stripped == norm["e164"]:
             return True
-        if sender_name.strip() == sender_phone.strip():
+        if stripped == sender_phone.strip():
             return True
     return False
 
@@ -456,7 +462,99 @@ class WhatsAppSyncService:
         return merged
 
     @classmethod
-    async def _lookup_lead_name(        cls, db: AsyncSession, user_id: Optional[str], e164: Optional[str]
+    async def _absorb_lead(
+        cls, db: AsyncSession, src: Lead, keeper: Lead
+    ) -> None:
+        """Folds a duplicate identity row into its keeper: moves conversations
+        (merging threads that would collide), folds avatar/name gaps, deletes
+        the source row. Used for LID-keyed placeholders once the phone is known.
+        """
+        src_convs = (
+            await db.execute(
+                select(Conversation).where(
+                    Conversation.lead_id == src.id,
+                    Conversation.channel == "WHATSAPP",
+                )
+            )
+        ).scalars().all()
+        for src_conv in src_convs:
+            keeper_conv = await cls._merge_conversations_of_lead(db, keeper.id)
+            if keeper_conv is not None and keeper_conv.id != src_conv.id:
+                await db.execute(
+                    update(Message)
+                    .where(Message.conversation_id == src_conv.id)
+                    .values(conversation_id=keeper_conv.id)
+                )
+                keeper_conv.unread_count = (keeper_conv.unread_count or 0) + (src_conv.unread_count or 0)
+                newest = _to_naive_utc(src_conv.last_message_at)
+                current = _to_naive_utc(keeper_conv.last_message_at)
+                if newest and (not current or newest > current):
+                    keeper_conv.last_message_at = src_conv.last_message_at
+                await db.delete(src_conv)
+            elif keeper_conv is None:
+                src_conv.lead_id = keeper.id
+        keeper_cdata = dict(keeper.custom_data or {})
+        src_cdata = src.custom_data or {}
+        if not keeper_cdata.get("avatar_url") and src_cdata.get("avatar_url"):
+            keeper_cdata["avatar_url"] = src_cdata["avatar_url"]
+            keeper.custom_data = keeper_cdata
+        if src.name and keeper.name in ("WhatsApp Grubu", "", None):
+            keeper.name = src.name
+        await db.delete(src)
+        await db.flush()
+
+    @classmethod
+    async def _merge_lid_identities(
+        cls,
+        db: AsyncSession,
+        user_id: Optional[str],
+        pairs: List[tuple],
+    ) -> int:
+        """Merges raw-LID placeholder leads into their phone-resolved rows.
+
+        pairs: [(lid_jid_or_user, e164_or_pn_string)]. For each pair where BOTH
+        rows exist and differ, the LID row is absorbed. Returns absorbed count.
+        Runs on live events and on Eşitle (gateway-resolved pairs).
+        """
+        absorbed = 0
+        for lid_raw, pn_raw in pairs or []:
+            if not lid_raw or not pn_raw:
+                continue
+            e164 = _normalize_pn_jid(pn_raw if "@" in str(pn_raw) else f"+{pn_raw}")
+            if not e164:
+                continue
+            lid_jid = lid_raw if "@" in str(lid_raw) else f"{lid_raw}@lid"
+            src = (
+                await db.execute(
+                    select(Lead)
+                    .where(Lead.phone == lid_jid, Lead.user_id == user_id)
+                    .limit(1)
+                )
+            ).scalars().first()
+            if src is None:
+                continue
+            keeper = (
+                await db.execute(
+                    select(Lead)
+                    .where(Lead.phone_e164 == e164, Lead.user_id == user_id)
+                    .limit(1)
+                )
+            ).scalars().first()
+            if keeper is None or keeper.id == src.id:
+                if keeper is None:
+                    # No phone row yet: upgrade the placeholder in place.
+                    src.phone = e164
+                    src.phone_e164 = e164
+                    src.is_whatsapp_eligible = True
+                    await db.flush()
+                continue
+            await cls._absorb_lead(db, src, keeper)
+            absorbed += 1
+        return absorbed
+
+    @classmethod
+    async def _lookup_lead_name(
+        cls, db: AsyncSession, user_id: Optional[str], e164: Optional[str]
     ) -> Optional[str]:
         """Returns the CRM contact name for a phone number, else None.
 
@@ -604,6 +702,22 @@ class WhatsAppSyncService:
         await db.refresh(new_msg)
         await db.refresh(conv)
 
+        # Identity merge: a raw-LID placeholder for this author now has a
+        # resolved phone — fold it instead of keeping twin identities.
+        if not from_me:
+            _lid_raw = event_data.get("participant")
+            _lid_pn = event_data.get("participant_pn")
+            if _lid_raw and str(_lid_raw).strip().endswith("@lid") and _lid_pn:
+                try:
+                    await cls._merge_lid_identities(db, user_id, [(_lid_raw, _lid_pn)])
+                    await db.commit()
+                except Exception:
+                    # Merge is best-effort: roll its work back and re-load the
+                    # already-committed message rows for the broadcast below.
+                    await db.rollback()
+                    await db.refresh(new_msg)
+                    await db.refresh(conv)
+
         # Broadcast realtime WebSocket notification
         await ws_manager.broadcast({
             "event": "new_message",
@@ -650,6 +764,19 @@ class WhatsAppSyncService:
 
         user_id = session.user_id
         my_phone = session.phone_number or "ME"
+
+        # Identity merge first: fold raw-LID placeholder rows into their
+        # phone-resolved counterparts (pairs learned by THIS connected phone),
+        # so every step below maps rows to keepers.
+        try:
+            lid_pairs = await gateway_client.get_lid_pairs(session_name)
+            if lid_pairs:
+                await cls._merge_lid_identities(
+                    db, user_id,
+                    [(p.get("lid"), p.get("pn")) for p in lid_pairs],
+                )
+        except Exception as e:
+            logger.warning(f"[WhatsAppSyncService] LID merge skipped for {session_name}: {e}")
 
         # 1. Provision Leads & Conversations for all chats.
         # Key resolution is pure (no IO); identity reads are batched (2 IN

@@ -283,3 +283,49 @@ async def test_heal_pass_upgrades_legacy_grup_uyesi_and_outbound():
             )
         ).scalar_one()
         assert leftovers == 0
+
+
+@pytest.mark.asyncio
+async def test_merge_lid_identities_absorbs_placeholder():
+    from backend.app.services.whatsapp_sync_service import _is_poor_sender_name
+
+    # "WhatsApp (...)" placeholders are upgradeable like other poor names.
+    assert _is_poor_sender_name("WhatsApp (+905321112233)", "+905321112233") is True
+    assert _is_poor_sender_name("WhatsApp (167812345678901@lid)") is True
+    assert _is_poor_sender_name("Annem", "+905321112233") is False
+    assert _is_poor_sender_name(None) is True
+
+    async with AsyncSessionLocal() as db:
+        lid_jid = f"1678{uuid.uuid4().int % 100000000000:011d}@lid"
+        pn = _uniq_e164()
+        raw_lead = Lead(name=f"WhatsApp ({lid_jid})", phone=lid_jid, phone_e164=None,
+                        status=LeadStatus.CONTACTED)
+        keeper = Lead(name="Gerçek İsim", phone=pn, phone_e164=pn,
+                      status=LeadStatus.CONTACTED)
+        db.add_all([raw_lead, keeper])
+        await db.commit()
+
+        n = await WhatsAppSyncService._merge_lid_identities(db, None, [(lid_jid, pn)])
+        await db.commit()
+        assert n == 1
+        assert (await db.get(Lead, raw_lead.id)) is None
+        kept = await db.get(Lead, keeper.id)
+        assert kept.phone_e164 == pn
+
+
+@pytest.mark.asyncio
+async def test_merge_lid_identities_upgrades_placeholder_in_place():
+    async with AsyncSessionLocal() as db:
+        lid_jid = f"1678{uuid.uuid4().int % 100000000000:011d}@lid"
+        pn = _uniq_e164()
+        raw_lead = Lead(name=f"WhatsApp ({lid_jid})", phone=lid_jid, phone_e164=None,
+                        status=LeadStatus.CONTACTED)
+        db.add(raw_lead)
+        await db.commit()
+
+        n = await WhatsAppSyncService._merge_lid_identities(db, None, [(lid_jid, pn)])
+        await db.commit()
+        assert n == 0
+        kept = await db.get(Lead, raw_lead.id)
+        assert kept.phone_e164 == pn
+        assert kept.phone == pn

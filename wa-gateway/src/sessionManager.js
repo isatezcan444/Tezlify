@@ -245,17 +245,33 @@ function updateContact(sessionData, contact) {
     if (!contact || !contact.id) return;
     const jid = contact.id;
     if (!isSupportedJid(jid)) return;
+    if (!(sessionData.contacts instanceof Map)) sessionData.contacts = new Map();
+    // Bound memory: traffic-learned entries stop at 10k (chat/contact churn
+    // on busy phones is unbounded over months).
+    if (!sessionData.contacts.has(jid) && sessionData.contacts.size >= 10000) return;
     const isGroup = jid.endsWith('@g.us');
     // A @lid value is opaque — never fabricate a phone number from it.
     const phone = isGroup ? jid : (isLidJid(jid) ? null : `+${jid.split('@')[0]}`);
-    const name = contact.name || contact.notify || contact.verifiedName || contact.subject || '';
     const existing = sessionData.contacts.get(jid) || {};
     sessionData.contacts.set(jid, {
         id: jid,
         phone,
-        name: name || existing.name || '',
+        name: contact.name || contact.notify || contact.verifiedName || contact.subject || existing.name || '',
         isGroup
     });
+    // Alias phone-form JIDs under their normalized form too, so lookups hit
+    // regardless of which representation a message carries.
+    if (!isGroup && !isLidJid(jid)) {
+        try {
+            const norm = (jidNormalizedUser(jid) || jid);
+            if (norm !== jid && !sessionData.contacts.has(norm)) {
+                const stored = sessionData.contacts.get(jid);
+                sessionData.contacts.set(norm, { ...stored, id: norm });
+            }
+        } catch (e) {
+            // normalization is best-effort only
+        }
+    }
 }
 
 /**
@@ -305,11 +321,17 @@ function resolveSenderName(sessionData, msg, participantJid, fromMe, participant
                 return contact.name.trim();
             }
         }
-        // Backfill: remember the PN alias so future lookups hit directly.
+        // Backfill: remember the PN alias so future lookups hit directly,
+        // and record the pair for the backend identity merge.
         if (participantPn && normJid && isLidJid(normJid)) {
             const lidContact = sessionData.contacts.get(normJid);
             if (lidContact && !sessionData.contacts.has(participantPn)) {
                 sessionData.contacts.set(participantPn, { ...lidContact, id: participantPn });
+            }
+            const lidUser = normJid.split('@')[0].split(':')[0];
+            const pnUser = participantPn.split('@')[0].split(':')[0];
+            if (lidUser && pnUser && sessionData.resolvedLidPairs instanceof Map) {
+                sessionData.resolvedLidPairs.set(lidUser, pnUser);
             }
         }
     }
@@ -598,9 +620,15 @@ async function initSessionSocket(sessionData) {
                 const text = extractMessageText(m.message);
                 const ts = toUnixTimestamp(m.messageTimestamp);
                 const fromMe = !!m.key?.fromMe;
-                const partJid = m.key?.participant || (fromMe ? null : remoteJid);
-                const partPn = (!fromMe && partJid) ? await resolveParticipantPN(sessionData, partJid) : null;
-                const senderName = resolveSenderName(sessionData, m, partJid, fromMe, partPn);
+            const partJid = m.key?.participant || (fromMe ? null : remoteJid);
+            const partPn = (!fromMe && partJid) ? await resolveParticipantPN(sessionData, partJid) : null;
+            // Learn contacts from traffic: a pushName on any message is the
+            // author's self-chosen name — persist under both JID forms.
+            if (!fromMe && partJid && m.pushName && typeof m.pushName === 'string' && m.pushName.trim()) {
+                updateContact(sessionData, { id: partJid, notify: m.pushName.trim() });
+                if (partPn) updateContact(sessionData, { id: partPn, notify: m.pushName.trim() });
+            }
+            const senderName = resolveSenderName(sessionData, m, partJid, fromMe, partPn);
 
                 if (text && remoteJid) {
                     const existingChat = sessionData.chats.get(remoteJid);
@@ -807,6 +835,11 @@ async function initSessionSocket(sessionData) {
             const partJid = msg.key?.participant || (fromMe ? null : remoteJid);
             // Resolve LID -> phone via the signal store (per connected phone).
             const partPn = (!fromMe && partJid) ? await resolveParticipantPN(sessionData, partJid) : null;
+            // Learn contacts from traffic (see history handler above).
+            if (!fromMe && partJid && msg.pushName && typeof msg.pushName === 'string' && msg.pushName.trim()) {
+                updateContact(sessionData, { id: partJid, notify: msg.pushName.trim() });
+                if (partPn) updateContact(sessionData, { id: partPn, notify: msg.pushName.trim() });
+            }
             // DM chat identity prefers the resolved phone; raw LID is kept
             // separately so the backend keys honestly instead of dropping.
             let contactPhone;
@@ -893,6 +926,7 @@ async function getOrCreateSession(sessionName, forceNewSocket = false) {
         sock: null,
         chats: new Map(),
         contacts: new Map(),
+        resolvedLidPairs: new Map(),
         avatars: new Map(),
         createdAt: new Date().toISOString(),
         messagesSent: 0,

@@ -164,6 +164,25 @@ app.get('/api/sessions/:sessionName/chats', async (req, res) => {
     }
 });
 
+// Resolved LID -> phone pairs learned by this session (for backend identity merge)
+app.get('/api/sessions/:sessionName/lid-pairs', async (req, res) => {
+    const { sessionName } = req.params;
+    try {
+        const session = activeSessions.get(sessionName);
+        const pairs = [];
+        const seen = session?.resolvedLidPairs;
+        if (seen instanceof Map) {
+            for (const [lidUser, pnUser] of seen.entries()) {
+                if (lidUser && pnUser) pairs.push({ lid: `${lidUser}@lid`, pn: `+${pnUser}` });
+            }
+        }
+        res.json({ pairs });
+    } catch (err) {
+        console.error(`[WA-Gateway] Failed to get LID pairs for ${sessionName}:`, err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // Trigger on-demand sync of session history to backend
 app.post('/api/sessions/:sessionName/sync', async (req, res) => {
     const { sessionName } = req.params;

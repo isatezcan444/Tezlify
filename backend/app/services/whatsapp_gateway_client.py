@@ -258,6 +258,27 @@ class WhatsAppGatewayClient:
             self._last_unreachable_time = time.monotonic()
             return []
 
+    async def get_lid_pairs(self, session_name: str) -> List[Dict[str, str]]:
+        """Fetches LID->phone pairs the gateway resolved for this session.
+
+        Used to merge raw-LID placeholder identities into phone rows.
+        Returns [] on any failure (best-effort).
+        """
+        if self.is_recently_offline():
+            return []
+        url = f"{self.gateway_url}/api/sessions/{session_name}/lid-pairs"
+        try:
+            async with httpx.AsyncClient(timeout=self._get_timeout(10.0)) as client:
+                res = await client.get(url, headers=self._headers())
+                if res.status_code == 200:
+                    self._last_unreachable_time = 0.0
+                    data = res.json()
+                    pairs = data.get("pairs", []) if isinstance(data, dict) else []
+                    return [p for p in pairs if isinstance(p, dict) and p.get("lid") and p.get("pn")]
+        except Exception as e:
+            logger.warning(f"[GatewayClient] get_lid_pairs error: {e}")
+        return []
+
     async def trigger_sync(self, session_name: str) -> Dict[str, Any]:
         """Triggers gateway to push its cached chats and history to the backend webhook."""
         if self.is_recently_offline():
