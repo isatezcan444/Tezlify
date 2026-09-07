@@ -7,7 +7,7 @@ import { Button } from '../ui/button';
 import { SearchInput } from '../forms/SearchInput';
 import { Skeleton } from '../ui/Skeleton';
 import { useI18n } from '../../context/I18nContext';
-import { parseServerTime } from '../../lib/utils';
+import { parseServerTime, formatConversationTime } from '../../lib/utils';
 
 export type FilterTab = 'ALL' | 'ACTIVE' | 'ARCHIVED' | 'CLOSED' | 'UNREAD';
 
@@ -38,7 +38,7 @@ export const ConversationList: React.FC<ConversationListProps> = ({
   onSync,
   isSyncing = false,
 }) => {
-  const { t } = useI18n();
+  const { t, language } = useI18n();
   const [internalFilter, setInternalFilter] = useState<FilterTab>(activeFilter);
   const currentFilter = onFilterChange ? activeFilter : internalFilter;
 
@@ -51,18 +51,7 @@ export const ConversationList: React.FC<ConversationListProps> = ({
   };
 
   const formatTime = (dateStr?: string) => {
-    if (!dateStr) return '';
-    try {
-      const d = parseServerTime(dateStr);
-      if (!d) return '';
-      const now = new Date();
-      if (d.toDateString() === now.toDateString()) {
-        return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      }
-      return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-    } catch {
-      return '';
-    }
+    return formatConversationTime(dateStr, language);
   };
 
   const filtered = conversations.filter((c) => {

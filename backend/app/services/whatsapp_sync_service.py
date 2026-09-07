@@ -1260,7 +1260,9 @@ class WhatsAppSyncService:
             # If chat came with last_message_preview, ensure there's at least one message in conversation
             preview_text = (chat.get("last_message_preview") or "").strip()
             if preview_text:
-                conv.last_message_preview = preview_text
+                current_last = _to_naive_utc(conv.last_message_at)
+                if not conv.last_message_preview or not current_last or (naive_spec_time and naive_spec_time >= current_last):
+                    conv.last_message_preview = preview_text
                 has_payload_messages = any(
                     (m.get("phone") in (spec["raw"], spec["key"], spec["e164"]) or m.get("remote_jid") in (spec["raw"], spec["key"]))
                     for m in (messages or [])
@@ -1444,30 +1446,32 @@ class WhatsAppSyncService:
                 conv.last_message_preview = text
             imported_count += 1
 
-        # Self-heal ordering: last_message_at is the max of itself and the
-        # newest stored message, so a stale gateway timestamp can never park
-        # a chat below its real activity (single batched query).
+        # Self-heal ordering & previews: last_message_at and last_message_preview
+        # are synced to the newest stored message, so stale gateway timestamps
+        # or previews can never park a chat below its real activity.
         touched_ids = sorted({c.id for c in chat_map.values() if c.id is not None})
         if touched_ids:
-            latest_rows = (
+            conv_rows = (
                 await db.execute(
-                    select(Message.conversation_id, func.max(Message.created_at))
-                    .where(Message.conversation_id.in_(touched_ids))
-                    .group_by(Message.conversation_id)
+                    select(Conversation).where(Conversation.id.in_(touched_ids))
                 )
-            ).all()
-            latest_by_conv = {cid: ts for cid, ts in latest_rows if ts is not None}
-            if latest_by_conv:
-                conv_rows = (
+            ).scalars().all()
+            for conv_row in conv_rows:
+                latest_msg = (
                     await db.execute(
-                        select(Conversation).where(Conversation.id.in_(touched_ids))
+                        select(Message)
+                        .where(Message.conversation_id == conv_row.id)
+                        .order_by(Message.created_at.desc(), Message.id.desc())
+                        .limit(1)
                     )
-                ).scalars().all()
-                for conv_row in conv_rows:
-                    newest = _to_naive_utc(latest_by_conv.get(conv_row.id))
+                ).scalars().first()
+                if latest_msg:
+                    newest = _to_naive_utc(latest_msg.created_at)
                     current = _to_naive_utc(conv_row.last_message_at)
-                    if newest and (not current or newest > current):
+                    if newest and (not current or newest >= current):
                         conv_row.last_message_at = newest
+                    if latest_msg.body:
+                        conv_row.last_message_preview = latest_msg.body
 
         # Skip the poor-name scan entirely when nothing can match it: one
         # cheap EXISTS instead of a 1000-row sweep on every Eşitle click.

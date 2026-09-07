@@ -9,7 +9,8 @@ const {
     disconnectSession,
     restoreSavedSessions,
     getSessionChats,
-    syncSessionHistoryToBackend
+    syncSessionHistoryToBackend,
+    fetchChatMessages
 } = require('./sessionManager');
 
 const app = express();
@@ -161,6 +162,27 @@ app.get('/api/sessions/:sessionName/chats', async (req, res) => {
     } catch (err) {
         console.error(`[WA-Gateway] Failed to get chats for ${sessionName}:`, err.message);
         res.status(500).json({ error: err.message });
+    }
+});
+
+// Get messages for a specific chat
+app.get('/api/sessions/:sessionName/chats/:chatJid/messages', async (req, res) => {
+    const { sessionName, chatJid } = req.params;
+    const fetchOlder = req.query.fetch_older === '1' || req.query.fetch_older === 'true';
+    const oldestMsgId = req.query.oldest_msg_id || undefined;
+    const oldestFromMe = req.query.oldest_from_me === 'true' || req.query.oldest_from_me === '1';
+    const oldestTimestamp = req.query.oldest_timestamp ? parseInt(req.query.oldest_timestamp, 10) : undefined;
+    try {
+        const result = await fetchChatMessages(sessionName, chatJid, {
+            fetchOlder,
+            oldestMsgId,
+            oldestFromMe,
+            oldestTimestamp
+        });
+        res.json(result);
+    } catch (err) {
+        console.error(`[WA-Gateway] Failed to get messages for ${chatJid} in ${sessionName}:`, err.message);
+        res.status(500).json({ error: err.message, messages: [] });
     }
 });
 

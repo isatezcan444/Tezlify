@@ -543,6 +543,7 @@ function recordChatMessage(sessionData, msg) {
     if (list.length > 100) {
         list.splice(0, list.length - 100);
     }
+    scheduleMessagesSave(sessionData);
 }
 
 /**
@@ -624,6 +625,7 @@ function updateChat(sessionData, chat) {
 }
 
 const chatsSaveTimers = new Map();
+const messagesSaveTimers = new Map();
 
 /**
  * Saves in-memory chats to chats.json in sessionAuthDir.
@@ -686,6 +688,127 @@ function scheduleChatsSave(sessionData) {
 }
 
 /**
+ * Saves in-memory chat messages to messages.json in sessionAuthDir.
+ * Automatically backed up to database via backupSessionAuth.
+ */
+function saveMessagesToDisk(sessionData) {
+    if (!sessionData?.name || !(sessionData.chatMessages instanceof Map)) return;
+    try {
+        const sessionAuthDir = path.join(SESSIONS_DIR, sessionData.name);
+        if (!fs.existsSync(sessionAuthDir)) {
+            fs.mkdirSync(sessionAuthDir, { recursive: true });
+        }
+        const obj = {};
+        for (const [jid, msgs] of sessionData.chatMessages.entries()) {
+            if (Array.isArray(msgs) && msgs.length > 0) {
+                obj[jid] = msgs.slice(-100);
+            }
+        }
+        fs.writeFileSync(path.join(sessionAuthDir, 'messages.json'), JSON.stringify(obj), 'utf8');
+    } catch (err) {
+        console.warn(`[WA-Gateway] Failed to save messages to disk for ${sessionData.name}:`, err.message);
+    }
+}
+
+/**
+ * Loads messages from messages.json in sessionAuthDir into sessionData.chatMessages on startup.
+ */
+function loadMessagesFromDisk(sessionData) {
+    if (!sessionData?.name) return;
+    try {
+        const sessionAuthDir = path.join(SESSIONS_DIR, sessionData.name);
+        const messagesFile = path.join(sessionAuthDir, 'messages.json');
+        if (fs.existsSync(messagesFile)) {
+            const content = fs.readFileSync(messagesFile, 'utf8');
+            const obj = JSON.parse(content);
+            if (obj && typeof obj === 'object') {
+                if (!(sessionData.chatMessages instanceof Map)) sessionData.chatMessages = new Map();
+                for (const [jid, msgs] of Object.entries(obj)) {
+                    if (Array.isArray(msgs) && msgs.length > 0) {
+                        sessionData.chatMessages.set(jid, msgs);
+                    }
+                }
+                console.log(`[WA-Gateway] Loaded message caches for ${sessionData.chatMessages.size} chats from disk for ${sessionData.name}`);
+            }
+        }
+    } catch (err) {
+        console.warn(`[WA-Gateway] Failed to load messages from disk for ${sessionData.name}:`, err.message);
+    }
+}
+
+function scheduleMessagesSave(sessionData) {
+    if (!sessionData?.name) return;
+    saveMessagesToDisk(sessionData);
+    backupSessionAuth(sessionData.name);
+
+    if (messagesSaveTimers.has(sessionData.name)) {
+        clearTimeout(messagesSaveTimers.get(sessionData.name));
+    }
+    const timer = setTimeout(() => {
+        messagesSaveTimers.delete(sessionData.name);
+        saveMessagesToDisk(sessionData);
+        backupSessionAuth(sessionData.name);
+    }, 2000);
+    messagesSaveTimers.set(sessionData.name, timer);
+}
+
+/**
+ * Fetches messages for a specific chat, optionally querying the phone for older history.
+ */
+async function fetchChatMessages(sessionName, chatJid, options = {}) {
+    const session = activeSessions.get(sessionName);
+    if (!session) {
+        throw new Error(`Session not found: ${sessionName}`);
+    }
+    if (!(session.chatMessages instanceof Map)) {
+        session.chatMessages = new Map();
+    }
+
+    let msgs = session.chatMessages.get(chatJid) || [];
+
+    if (options.fetchOlder && session.sock && typeof session.sock.fetchMessageHistory === 'function') {
+        try {
+            let oldestKey = null;
+            let oldestTsMs = null;
+
+            if (msgs.length > 0) {
+                const oldest = msgs[0];
+                if (oldest && oldest.wa_message_id) {
+                    oldestKey = {
+                        remoteJid: chatJid,
+                        id: oldest.wa_message_id,
+                        fromMe: !!oldest.fromMe
+                    };
+                    oldestTsMs = (oldest.timestamp || Math.floor(Date.now() / 1000)) * 1000;
+                }
+            } else if (options.oldestMsgId) {
+                oldestKey = {
+                    remoteJid: chatJid,
+                    id: options.oldestMsgId,
+                    fromMe: !!options.oldestFromMe
+                };
+                oldestTsMs = (options.oldestTimestamp || Math.floor(Date.now() / 1000)) * 1000;
+            }
+
+            if (oldestKey) {
+                console.log(`[WA-Gateway] Requesting older message history for ${chatJid} (${oldestKey.id}) from phone...`);
+                await session.sock.fetchMessageHistory(50, oldestKey, oldestTsMs);
+                await new Promise(r => setTimeout(r, 1200));
+                msgs = session.chatMessages.get(chatJid) || msgs;
+            }
+        } catch (err) {
+            console.warn(`[WA-Gateway] fetchMessageHistory failed for ${chatJid}:`, err.message);
+        }
+    }
+
+    return {
+        success: true,
+        chat_jid: chatJid,
+        messages: msgs
+    };
+}
+
+/**
  * Queries WhatsApp Multi-Device servers for all groups the session participates in,
  * ensuring groups (such as "3hacker") are populated in session memory with their titles.
  * Uses a strict 3.5s timeout to prevent socket hanging.
@@ -734,9 +857,10 @@ async function initSessionSocket(sessionData) {
         fs.mkdirSync(sessionAuthDir, { recursive: true });
     }
 
-    // Restore persistent contacts and chats from disk if available
+    // Restore persistent contacts, chats and messages from disk if available
     loadContactsFromDisk(sessionData);
     loadChatsFromDisk(sessionData);
+    loadMessagesFromDisk(sessionData);
 
     if (sessionData.reconnectTimer) {
         clearTimeout(sessionData.reconnectTimer);
@@ -883,9 +1007,8 @@ async function initSessionSocket(sessionData) {
                     last_message_preview: c.lastMessage || '',
                     last_message_from_me: !!c.lastMessageFromMe,
                 last_message_sender_name: c.lastMessageSenderName || null,
-                last_message_participant: c.lastMessageParticipant || null,
-                last_message_participant_pn: c.lastMessageParticipantPn || null,
-                last_message_participant_pn: c.lastMessageParticipantPn || null,
+                    last_message_participant: c.lastMessageParticipant || null,
+                    last_message_participant_pn: c.lastMessageParticipantPn || null
                 };
             });
             validChats.sort((a, b) => (b.conversation_timestamp || 0) - (a.conversation_timestamp || 0));
@@ -1539,5 +1662,6 @@ module.exports = {
     disconnectSession,
     restoreSavedSessions,
     getSessionChats,
-    syncSessionHistoryToBackend
+    syncSessionHistoryToBackend,
+    fetchChatMessages
 };

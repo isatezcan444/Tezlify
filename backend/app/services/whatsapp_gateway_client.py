@@ -258,6 +258,42 @@ class WhatsAppGatewayClient:
             self._last_unreachable_time = time.monotonic()
             return []
 
+    async def get_chat_messages(
+        self,
+        session_name: str,
+        chat_jid: str,
+        fetch_older: bool = False,
+        oldest_msg_id: Optional[str] = None,
+        oldest_from_me: Optional[bool] = None,
+        oldest_timestamp: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Fetches message history for a specific chat from the gateway."""
+        if self.is_recently_offline():
+            return []
+        url = f"{self.gateway_url}/api/sessions/{session_name}/chats/{chat_jid}/messages"
+        params: Dict[str, Any] = {}
+        if fetch_older:
+            params["fetch_older"] = "1"
+        if oldest_msg_id:
+            params["oldest_msg_id"] = oldest_msg_id
+        if oldest_from_me is not None:
+            params["oldest_from_me"] = "1" if oldest_from_me else "0"
+        if oldest_timestamp is not None:
+            params["oldest_timestamp"] = str(oldest_timestamp)
+        try:
+            async with httpx.AsyncClient(timeout=self._get_timeout(10.0)) as client:
+                res = await client.get(url, params=params, headers=self._headers())
+                if res.status_code == 200:
+                    self._last_unreachable_time = 0.0
+                    data = res.json()
+                    return data.get("messages", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
+                else:
+                    logger.warning(f"[GatewayClient] get_chat_messages HTTP {res.status_code}: {res.text}")
+                    return []
+        except Exception as e:
+            logger.warning(f"[GatewayClient] get_chat_messages error: {e}")
+            return []
+
     async def get_lid_pairs(self, session_name: str) -> List[Dict[str, str]]:
         """Fetches LID->phone pairs the gateway resolved for this session.
 

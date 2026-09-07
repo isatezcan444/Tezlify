@@ -20,6 +20,74 @@ export function parseServerTime(dateStr?: string | null): Date | null {
 }
 
 /**
+ * Formats a message time (e.g. "17:40" or "05:40 PM") strictly honoring the application locale
+ * and 24-hour presentation standard matching WhatsApp Web.
+ */
+export function formatMessageTime(dateStr?: string | null, language: string = 'tr'): string {
+  if (!dateStr) return '';
+  try {
+    const d = parseServerTime(dateStr);
+    if (!d || isNaN(d.getTime())) return '';
+    const locale = language === 'tr' ? 'tr-TR' : 'en-US';
+    return d.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit', hour12: false });
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Formats a date label for the chat thread dividers ("Bugün", "Dün", "24 Ağustos 2026")
+ * honoring application locale.
+ */
+export function formatMessageDate(
+  dateStr?: string | null,
+  language: string = 'tr',
+  todayLabel: string = 'Bugün',
+  yesterdayLabel: string = 'Dün'
+): string {
+  if (!dateStr) return '';
+  try {
+    const d = parseServerTime(dateStr);
+    if (!d || isNaN(d.getTime())) return '';
+    const now = new Date();
+    const todayStr = now.toDateString();
+    const yesterday = new Date();
+    yesterday.setDate(now.getDate() - 1);
+    const yesterdayStr = yesterday.toDateString();
+
+    if (d.toDateString() === todayStr) {
+      return todayLabel;
+    }
+    if (d.toDateString() === yesterdayStr) {
+      return yesterdayLabel;
+    }
+    const locale = language === 'tr' ? 'tr-TR' : 'en-US';
+    return d.toLocaleDateString(locale, { day: 'numeric', month: 'long', year: 'numeric' });
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Formats conversation list preview timestamp ("17:40" if today, else "6 Eyl" or "24 Ağu").
+ */
+export function formatConversationTime(dateStr?: string | null, language: string = 'tr'): string {
+  if (!dateStr) return '';
+  try {
+    const d = parseServerTime(dateStr);
+    if (!d || isNaN(d.getTime())) return '';
+    const now = new Date();
+    const locale = language === 'tr' ? 'tr-TR' : 'en-US';
+    if (d.toDateString() === now.toDateString()) {
+      return d.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit', hour12: false });
+    }
+    return d.toLocaleDateString(locale, { month: 'short', day: 'numeric' });
+  } catch {
+    return '';
+  }
+}
+
+/**
  * Safely renders an icon prop that could be either a rendered ReactNode (like `<Send />`)
  * or a component definition (function / forwardRef object from Lucide React).
  */

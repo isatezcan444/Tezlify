@@ -17,7 +17,7 @@ import { Message } from '../../types';
 import { Tooltip } from '../ui/Tooltip';
 import { Modal } from '../ui/Modal';
 import { useI18n } from '../../context/I18nContext';
-import { parseServerTime } from '../../lib/utils';
+import { parseServerTime, formatMessageTime } from '../../lib/utils';
 
 export interface ChatBubbleProps {
   message: Message;
@@ -25,7 +25,7 @@ export interface ChatBubbleProps {
 }
 
 export const ChatBubble: React.FC<ChatBubbleProps> = ({ message, onRetry }) => {
-  const { t } = useI18n();
+  const { t, language } = useI18n();
   const isInbound = message.direction === 'INBOUND';
   const [isLightboxOpen, setIsLightboxOpen] = useState(false);
   const [retrying, setRetrying] = useState(false);
@@ -44,14 +44,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({ message, onRetry }) => {
   };
 
   const formatTime = (dateStr?: string) => {
-    if (!dateStr) return '';
-    try {
-      const d = parseServerTime(dateStr);
-      if (!d) return '';
-      return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    } catch {
-      return '';
-    }
+    return formatMessageTime(dateStr, language);
   };
 
   const renderStatusIcon = () => {

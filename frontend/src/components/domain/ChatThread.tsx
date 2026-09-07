@@ -6,7 +6,7 @@ import { EmptyState } from '../ui/EmptyState';
 import { Skeleton } from '../ui/Skeleton';
 import { WhatsAppIcon } from '../ui/whatsapp-icon';
 import { useI18n } from '../../context/I18nContext';
-import { parseServerTime } from '../../lib/utils';
+import { parseServerTime, formatMessageDate } from '../../lib/utils';
 
 export interface ChatThreadProps {
   messages: Message[];
@@ -27,7 +27,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
   onLoadOlder,
   onRetry,
 }) => {
-  const { t } = useI18n();
+  const { t, language } = useI18n();
   const containerRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -109,24 +109,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
   };
 
   const getDateLabel = (dateStr?: string) => {
-    if (!dateStr) return '';
-    try {
-      const d = parseServerTime(dateStr);
-      if (!d) return '';
-      const today = new Date();
-      const yesterday = new Date();
-      yesterday.setDate(today.getDate() - 1);
-
-      if (d.toDateString() === today.toDateString()) {
-        return t('leads.today');
-      }
-      if (d.toDateString() === yesterday.toDateString()) {
-        return t('leads.yesterday');
-      }
-      return d.toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' });
-    } catch {
-      return '';
-    }
+    return formatMessageDate(dateStr, language, t('leads.today'), t('leads.yesterday'));
   };
 
   if (loading) {
