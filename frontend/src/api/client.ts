@@ -700,7 +700,15 @@ export class ApiClient {
     return res.json();
   }
 
-  static async syncWhatsAppChats(): Promise<{ status: string; synced_count: number; session_name?: string }> {
+  static async syncWhatsAppChats(): Promise<{
+    status: string;
+    synced_count: number;
+    session_name?: string;
+    threads_merged?: number;
+    names_healed?: number;
+    messages_imported?: number;
+    note?: string | null;
+  }> {
     const res = await authFetch(`${API_BASE}/conversations/sync-whatsapp`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

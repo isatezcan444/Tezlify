@@ -921,6 +921,7 @@ class WhatsAppSyncService:
         # queries) instead of N per-chat round-trips; only genuinely missing
         # rows fall back to single-row provisioning.
         specs: List[Dict[str, Any]] = []
+        imported_count = 0
         for chat in chats:
             chat_id = chat.get("id") or ""
             phone_raw = chat.get("phone") or (chat_id.split("@")[0] if "@" in chat_id else chat_id)
@@ -965,11 +966,13 @@ class WhatsAppSyncService:
         # same-JID twins first, then same-number threads spread over several
         # lead rows (e.g. a "WhatsApp (+90…)" placeholder next to the real
         # contact). Lead rows are never deleted here — only conversations move.
-        await cls._merge_duplicate_threads(
+        merged_threads_total = 0
+        dup_res = await cls._merge_duplicate_threads(
             db, user_id,
             [s["key"] for s in specs if s["is_group"]],
         )
-        await cls._merge_threads_by_phone(db, user_id, limit_groups=100)
+        merged_threads_total += dup_res.get("leads", 0) + dup_res.get("conversations", 0)
+        merged_threads_total += await cls._merge_threads_by_phone(db, user_id, limit_groups=100)
 
         # Dedupe specs sharing one dialable identity inside this payload
         # (e.g. LID-form + PN-form chats of one person): without this, the
@@ -1135,9 +1138,9 @@ class WhatsAppSyncService:
                         preview_text,
                         MessageDirection.OUTBOUND if init_from_me else MessageDirection.INBOUND,
                     )] = init_msg
+                    imported_count += 1
 
         # 2. Ingest Messages
-        imported_count = 0
         for m in messages:
             phone_raw = m.get("phone") or ""
             is_group = bool(m.get("is_group") or phone_raw.endswith("@g.us"))
@@ -1333,4 +1336,6 @@ class WhatsAppSyncService:
             "status": "success",
             "chats_synced": len(chat_map),
             "messages_imported": imported_count,
+            "threads_merged": merged_threads_total,
+            "names_healed": healed_count,
         }

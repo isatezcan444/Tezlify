@@ -369,6 +369,8 @@ export const tr = {
     sync: 'Eşitle',
     syncChats: "WhatsApp'tan Sohbetleri Güncelle",
     syncSuccess: '{count} sohbet WhatsApp\'tan başarıyla eşitlendi.',
+    syncEmpty: 'Eşitlenecek yeni sohbet bulunamadı.',
+    syncHealedDetail: '{merged} yinelenen konuşma birleştirildi, {healed} isim düzeltildi.',
     syncFailed: 'WhatsApp sohbetleri eşitlenemedi.',
     unreadBadge: '{count} okunmamış',
     tabAll: 'Tümü',

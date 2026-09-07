@@ -754,6 +754,10 @@ async def sync_whatsapp_conversations(
     #    sync latency and refresh through the live path instead).
     chats = await gateway_client.get_session_chats(session.session_name, include_avatars=False)
     synced_count = 0
+    note: Optional[str] = None
+    merged_threads = 0
+    names_healed = 0
+    messages_imported = 0
 
     if chats:
         res = await WhatsAppSyncService.sync_history_batch(
@@ -791,9 +795,22 @@ async def sync_whatsapp_conversations(
             ],
         )
         synced_count = res.get("chats_synced", len(chats))
+        merged_threads = int(res.get("threads_merged", 0) or 0)
+        names_healed = int(res.get("names_healed", 0) or 0)
+        messages_imported = int(res.get("messages_imported", 0) or 0)
     else:
-        # Fallback: trigger gateway push
+        # Honest empty states instead of a fake success: distinguish a dead
+        # gateway (actionable) from a live one with nothing cached.
+        if gateway_client.is_recently_offline():
+            raise HTTPException(
+                status_code=502,
+                detail="WhatsApp servisine ulaşılamıyor. Sunucu uyanıyor olabilir; bir dakika sonra tekrar deneyin.",
+            )
         await gateway_client.trigger_sync(session.session_name)
+        note = (
+            "Telefonda okunacak sohbet bulunamadı. Hat bağlı değilse önce "
+            "bağlayın; bağlıysa birkaç saniye sonra tekrar deneyin."
+        )
 
     await ws_manager.broadcast({
         "event": "conversations_updated",
@@ -804,5 +821,9 @@ async def sync_whatsapp_conversations(
         "status": "success",
         "synced_count": synced_count,
         "session_name": session.session_name,
+        "threads_merged": merged_threads,
+        "names_healed": names_healed,
+        "messages_imported": messages_imported,
+        "note": note,
     }
 

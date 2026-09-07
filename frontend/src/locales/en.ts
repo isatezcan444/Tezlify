@@ -369,6 +369,8 @@ export const en = {
     sync: 'Sync',
     syncChats: 'Sync Chats from WhatsApp',
     syncSuccess: '{count} chats synced from WhatsApp successfully.',
+    syncEmpty: 'No new chats to sync.',
+    syncHealedDetail: '{merged} duplicate threads merged, {healed} names fixed.',
     syncFailed: 'Failed to sync WhatsApp chats.',
     unreadBadge: '{count} unread',
     tabAll: 'All',

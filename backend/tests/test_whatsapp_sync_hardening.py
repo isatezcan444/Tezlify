@@ -283,3 +283,83 @@ async def test_same_number_threads_unify_under_real_name():
         shown = await db.get(Lead, keeper.lead_id)
         assert shown.name == "Ahmed Tuncay Boyacı"
         assert (await db.get(Lead, placeholder.id)) is not None
+
+
+@pytest.mark.asyncio
+async def test_esitle_empty_gateway_returns_honest_note():
+    """Gateway'de sohbet yoksa sahte başarı yerine açıklayıcı not döner."""
+    from backend.app.models.whatsapp_session import WhatsAppSession, SessionStatus
+
+    await _reset_sessions()
+    async with AsyncSessionLocal() as db:
+        db.add(WhatsAppSession(
+            session_name=f"sess_empty_{uuid.uuid4().hex[:8]}",
+            phone_number="+905550001122",
+            status=SessionStatus.CONNECTED,
+        ))
+        await db.commit()
+
+    transport = ASGITransport(app=app)
+    with patch(
+        "backend.app.services.whatsapp_gateway_client.gateway_client.get_session_chats",
+        new_callable=AsyncMock,
+    ) as mock_get, patch(
+        "backend.app.services.whatsapp_gateway_client.gateway_client.is_recently_offline",
+        return_value=False,
+    ):
+        mock_get.return_value = []
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            res = await ac.post(
+                "/api/v1/conversations/sync-whatsapp",
+                headers=_headers(str(uuid.uuid4())),
+            )
+            assert res.status_code == 200
+            data = res.json()
+            assert data["status"] == "success"
+            assert data["synced_count"] == 0
+            assert data["note"]
+
+
+@pytest.mark.asyncio
+async def test_esitle_response_carries_merge_and_heal_counts():
+    """Başarılı senkron yanıtı birleştirme/iyileştirme sayaçlarını taşır."""
+    from backend.app.models.whatsapp_session import WhatsAppSession, SessionStatus
+
+    await _reset_sessions()
+    group_jid = f"cntgrp_{uuid.uuid4().hex[:6]}@g.us"
+    async with AsyncSessionLocal() as db:
+        db.add(WhatsAppSession(
+            session_name=f"sess_cnt_{uuid.uuid4().hex[:8]}",
+            phone_number="+905550001122",
+            status=SessionStatus.CONNECTED,
+        ))
+        await db.commit()
+
+    mock_chats = [
+        {
+            "id": group_jid,
+            "phone": group_jid,
+            "name": "Sayaç Grup",
+            "is_group": True,
+            "conversation_timestamp": time.time(),
+            "last_message_preview": "merhaba",
+            "last_message_from_me": False,
+        }
+    ]
+    transport = ASGITransport(app=app)
+    with patch(
+        "backend.app.services.whatsapp_gateway_client.gateway_client.get_session_chats",
+        new_callable=AsyncMock,
+    ) as mock_get:
+        mock_get.return_value = mock_chats
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            headers = _headers(str(uuid.uuid4()))
+            res = await ac.post("/api/v1/conversations/sync-whatsapp", headers=headers)
+            assert res.status_code == 200
+            data = res.json()
+            assert data["status"] == "success"
+            assert data["synced_count"] == 1
+            assert data["threads_merged"] == 0
+            assert data["names_healed"] == 0
+            assert data["messages_imported"] == 1
+            assert data["note"] is None

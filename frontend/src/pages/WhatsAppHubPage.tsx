@@ -89,12 +89,24 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     setIsSyncingChats(true);
     try {
       const res = await ApiClient.syncWhatsAppChats();
-      toast.success(
-        res.synced_count > 0
-          ? `${res.synced_count} sohbet WhatsApp'tan başarıyla eşitlendi.`
-          : 'WhatsApp sohbetleriniz eşitlendi.',
-        t('common.success')
-      );
+      if (res.note) {
+        toast.warning(res.note, t('common.warning'));
+      } else {
+        toast.success(
+          res.synced_count > 0
+            ? t('whatsapp.syncSuccess', { count: res.synced_count })
+            : t('whatsapp.syncEmpty'),
+          t('common.success')
+        );
+        const merged = res.threads_merged || 0;
+        const healed = res.names_healed || 0;
+        if (merged > 0 || healed > 0) {
+          toast.info(
+            t('whatsapp.syncHealedDetail', { merged, healed }),
+            t('common.info')
+          );
+        }
+      }
       await fetchConversations();
     } catch (err: any) {
       toast.error(err.message || 'Sohbetler eşitlenemedi', t('common.error'));
