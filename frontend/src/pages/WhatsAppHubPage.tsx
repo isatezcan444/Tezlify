@@ -241,9 +241,25 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   // New Line / QR & Pairing Code Modal
   const [isQRModalOpen, setIsQRModalOpen] = useState(false);
   const isQRModalOpenRef = useRef(false);
+  const pairingSuccessTriggeredRef = useRef(false);
   useEffect(() => {
     isQRModalOpenRef.current = isQRModalOpen;
+    if (isQRModalOpen) {
+      pairingSuccessTriggeredRef.current = false;
+    }
   }, [isQRModalOpen]);
+
+  const notifyPairingSuccess = () => {
+    if (pairingSuccessTriggeredRef.current) return;
+    pairingSuccessTriggeredRef.current = true;
+    setIsPairingSuccess(true);
+    toast.success(t('whatsapp.qrPairSuccess'), t('common.success'));
+    fetchSessionsAndLogs(true);
+    onRefreshStats();
+    setTimeout(() => {
+      setIsQRModalOpen(false);
+    }, 1500);
+  };
 
   const [isCreatingSession, setIsCreatingSession] = useState(false);
   const [pairingSessionId, setPairingSessionId] = useState<number | null>(null);
@@ -269,11 +285,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         setQrSecondsLeft(25);
       }
       if (res.status === 'CONNECTED') {
-        setIsPairingSuccess(true);
-        toast.success(t('whatsapp.qrPairSuccess'), t('common.success'));
-        fetchSessionsAndLogs();
-        onRefreshStats();
-        setTimeout(() => setIsQRModalOpen(false), 1500);
+        notifyPairingSuccess();
       }
     } catch (e: any) {
       toast.error(e.message || 'QR kod yenilenemedi');
@@ -345,11 +357,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         fetchSessionsAndLogs(true);
         onRefreshStats();
         if (isQRModalOpenRef.current) {
-          setIsPairingSuccess(true);
-          toast.success(t('whatsapp.qrPairSuccess'), t('common.success'));
-          setTimeout(() => {
-            setIsQRModalOpen(false);
-          }, 1500);
+          notifyPairingSuccess();
         }
       } else if (eventData?.event === 'session_disconnected') {
         fetchSessionsAndLogs(true);
@@ -413,13 +421,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         if (!isMounted) return;
         if (res.status === 'CONNECTED') {
           if (pollTimer) clearInterval(pollTimer);
-          setIsPairingSuccess(true);
-          toast.success(t('whatsapp.qrPairSuccess'), t('common.success'));
-          fetchSessionsAndLogs(true);
-          onRefreshStats();
-          setTimeout(() => {
-            if (isMounted) setIsQRModalOpen(false);
-          }, 1500);
+          notifyPairingSuccess();
         } else if (res.qr_code) {
           setSessions((prev) => {
             const current = prev.find((s) => s.id === pairingSessionId);
@@ -551,13 +553,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     if (!pairingSessionId) return;
     try {
       await ApiClient.simulateConnectSession(pairingSessionId);
-      setIsPairingSuccess(true);
-      toast.success(t('whatsapp.qrPairSuccess'), t('common.success'));
-      fetchSessionsAndLogs(true);
-      onRefreshStats();
-      setTimeout(() => {
-        setIsQRModalOpen(false);
-      }, 1200);
+      notifyPairingSuccess();
     } catch (err: any) {
       toast.error(err.message, t('common.error'));
     }

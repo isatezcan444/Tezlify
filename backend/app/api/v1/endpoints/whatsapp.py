@@ -162,10 +162,20 @@ async def get_session_qr(
     if not settings.SIMULATION_MODE and os.getenv("PYTEST_CURRENT_TEST") is None:
         status_info = await gateway_client.get_session_status(session.session_name)
         if status_info.get("status") == "CONNECTED":
+            if session.status != SessionStatus.CONNECTED:
+                session.status = SessionStatus.CONNECTED
+                if status_info.get("phone"):
+                    session.phone_number = status_info.get("phone")
+                session.qr_code = None
+                session.is_phone_online = True
+                await db.commit()
+                await ws_manager.broadcast({
+                    "event": "session_connected",
+                    "session_id": session.id,
+                    "session_name": session.session_name,
+                    "phone": session.phone_number
+                })
             return {"status": "CONNECTED", "qr_code": None, "phone": session.phone_number}
-        if session.status == SessionStatus.CONNECTED:
-            session.status = SessionStatus.SCAN_QR
-            await db.commit()
 
     # Fetch live QR from gateway if available
     live_qr = await gateway_client.get_session_qr(session.session_name)

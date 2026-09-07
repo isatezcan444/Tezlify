@@ -291,37 +291,32 @@ function extractMessageText(message) {
 }
 
 /**
- * Initializes or retrieves an active Baileys WhatsApp socket session.
+ * Initializes or re-initializes the underlying Baileys WhatsApp socket and its listeners.
  */
-async function getOrCreateSession(sessionName) {
-    if (activeSessions.has(sessionName)) {
-        const existing = activeSessions.get(sessionName);
-        return existing;
-    }
-
+async function initSessionSocket(sessionData) {
+    const sessionName = sessionData.name;
     const sessionAuthDir = path.join(SESSIONS_DIR, sessionName);
     if (!fs.existsSync(sessionAuthDir)) {
         fs.mkdirSync(sessionAuthDir, { recursive: true });
     }
 
+    if (sessionData.reconnectTimer) {
+        clearTimeout(sessionData.reconnectTimer);
+        sessionData.reconnectTimer = null;
+    }
+
+    // Clean up any existing socket and listeners cleanly
+    if (sessionData.sock) {
+        try {
+            sessionData.sock.ev?.removeAllListeners();
+        } catch (e) {}
+        try {
+            sessionData.sock.end(undefined);
+        } catch (e) {}
+        sessionData.sock = null;
+    }
+
     const { state, saveCreds } = await useMultiFileAuthState(sessionAuthDir);
-
-    const sessionData = {
-        name: sessionName,
-        status: 'INITIALIZING',
-        phone: null,
-        qr: null,
-        qrImage: null,
-        sock: null,
-        chats: new Map(),
-        contacts: new Map(),
-        avatars: new Map(),
-        createdAt: new Date().toISOString(),
-        messagesSent: 0
-    };
-
-    activeSessions.set(sessionName, sessionData);
-
     const { version } = await fetchLatestBaileysVersion().catch(() => ({ version: [2, 3000, 1043857760] }));
     console.log(`[WA-Gateway] Starting socket for ${sessionName} with WA Web v${version.join('.')}`);
 
@@ -537,17 +532,21 @@ async function getOrCreateSession(sessionName) {
                     phone: null
                 });
             } else {
-                // For transient disconnects, retain session in activeSessions to eliminate BULUNAMADI errors
+                // For transient disconnects or Baileys 515 restartRequired, recreate socket
                 const isRestartRequired = statusCode === DisconnectReason.restartRequired;
-                console.log(`[WA-Gateway] Reconnecting session ${sessionName} (status: ${statusCode})...`);
+                console.log(`[WA-Gateway] Reconnecting session ${sessionName} (status: ${statusCode}, restartRequired: ${isRestartRequired})...`);
 
                 sessionData.status = 'CONNECTING';
 
-                setTimeout(() => {
-                    getOrCreateSession(sessionName).catch(err => {
+                if (sessionData.reconnectTimer) {
+                    clearTimeout(sessionData.reconnectTimer);
+                }
+                sessionData.reconnectTimer = setTimeout(() => {
+                    sessionData.reconnectTimer = null;
+                    initSessionSocket(sessionData).catch(err => {
                         console.error(`[WA-Gateway] Reconnect failed for ${sessionName}:`, err.message);
                     });
-                }, isRestartRequired ? 1000 : 3000);
+                }, isRestartRequired ? 500 : 3000);
             }
         }
     });
@@ -600,6 +599,43 @@ async function getOrCreateSession(sessionName) {
         }
     });
 
+    return sessionData;
+}
+
+/**
+ * Initializes or retrieves an active Baileys WhatsApp socket session.
+ */
+async function getOrCreateSession(sessionName, forceNewSocket = false) {
+    let sessionData = activeSessions.get(sessionName);
+
+    if (sessionData) {
+        if (!forceNewSocket && sessionData.sock && sessionData.status === 'CONNECTED') {
+            return sessionData;
+        }
+        if (!forceNewSocket && sessionData.status === 'CONNECTING' && sessionData.reconnectTimer) {
+            return sessionData;
+        }
+        await initSessionSocket(sessionData);
+        return sessionData;
+    }
+
+    sessionData = {
+        name: sessionName,
+        status: 'INITIALIZING',
+        phone: null,
+        qr: null,
+        qrImage: null,
+        sock: null,
+        chats: new Map(),
+        contacts: new Map(),
+        avatars: new Map(),
+        createdAt: new Date().toISOString(),
+        messagesSent: 0,
+        reconnectTimer: null
+    };
+
+    activeSessions.set(sessionName, sessionData);
+    await initSessionSocket(sessionData);
     return sessionData;
 }
 
@@ -703,16 +739,25 @@ async function requestPairingCode(sessionName, phoneNumber) {
  */
 async function disconnectSession(sessionName) {
     const session = activeSessions.get(sessionName);
-    if (session && session.sock) {
-        try {
-            await Promise.race([
-                session.sock.logout(),
-                new Promise((_, reject) => setTimeout(() => reject(new Error('Logout timeout')), 500))
-            ]);
-        } catch (e) {
+    if (session) {
+        if (session.reconnectTimer) {
+            clearTimeout(session.reconnectTimer);
+            session.reconnectTimer = null;
+        }
+        if (session.sock) {
             try {
-                session.sock.end();
-            } catch (err) {}
+                session.sock.ev?.removeAllListeners();
+            } catch (e) {}
+            try {
+                await Promise.race([
+                    session.sock.logout(),
+                    new Promise((_, reject) => setTimeout(() => reject(new Error('Logout timeout')), 500))
+                ]);
+            } catch (e) {
+                try {
+                    session.sock.end();
+                } catch (err) {}
+            }
         }
     }
 
@@ -748,7 +793,7 @@ async function restoreSavedSessions() {
         if (fs.existsSync(credsPath)) {
             try {
                 const creds = JSON.parse(fs.readFileSync(credsPath, 'utf8'));
-                if (creds.registered) {
+                if (creds.registered || creds.me) {
                     console.log(`[WA-Gateway] Restoring saved active session from disk: ${name}`);
                     await getOrCreateSession(name);
                 }
@@ -768,32 +813,38 @@ async function refreshSessionQR(sessionName) {
         return existing;
     }
 
+    if (existing && existing.reconnectTimer) {
+        clearTimeout(existing.reconnectTimer);
+        existing.reconnectTimer = null;
+    }
+
     if (existing && existing.sock) {
+        try {
+            existing.sock.ev?.removeAllListeners();
+        } catch (e) {}
         try {
             existing.sock.end(undefined);
         } catch (e) {}
     }
 
-    activeSessions.delete(sessionName);
-
     const sessionAuthDir = path.join(SESSIONS_DIR, sessionName);
     const credsPath = path.join(sessionAuthDir, 'creds.json');
-    let isRegistered = false;
+    let hasPairedCreds = false;
     if (fs.existsSync(credsPath)) {
         try {
             const creds = JSON.parse(fs.readFileSync(credsPath, 'utf8'));
-            isRegistered = !!creds.registered;
+            hasPairedCreds = !!(creds.registered || creds.me);
         } catch (e) {}
     }
 
-    // If not yet registered, wipe stale un-registered keys so Baileys starts completely fresh
-    if (!isRegistered && fs.existsSync(sessionAuthDir)) {
+    // Only wipe stale un-registered keys if creds are not already paired/pairing
+    if (!hasPairedCreds && fs.existsSync(sessionAuthDir)) {
         try {
             fs.rmSync(sessionAuthDir, { recursive: true, force: true });
         } catch (e) {}
     }
 
-    const session = await getOrCreateSession(sessionName);
+    const session = await getOrCreateSession(sessionName, true);
 
     // Wait up to 3.5s for initial QR to be generated
     if (!session.qrImage && session.status !== 'CONNECTED') {
