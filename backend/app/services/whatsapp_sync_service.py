@@ -8,7 +8,7 @@ import logging
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, or_
 
 from backend.app.models.whatsapp_session import WhatsAppSession
 from backend.app.models.lead import Lead, LeadStatus
@@ -33,6 +33,53 @@ def _to_naive_utc(dt: Optional[datetime]) -> Optional[datetime]:
     return dt
 
 
+def _split_jid_number(participant_raw: Optional[str]) -> tuple[bool, str]:
+    """Splits 'user[:device]@domain' into (is_lid, digit_or_empty).
+
+    A @lid value is an opaque device identity — never a dialable number.
+    """
+    if not participant_raw or not isinstance(participant_raw, str):
+        return False, ""
+    is_lid = participant_raw.strip().endswith("@lid")
+    number = participant_raw.split(":")[0].split("@")[0].strip()
+    if not number or not number.isdigit():
+        return is_lid, ""
+    return is_lid, number
+
+
+def _normalize_pn_jid(participant_pn: Optional[str]) -> Optional[str]:
+    """Normalizes a gateway-resolved phone JID ('9053..@s.whatsapp.net' or
+    '+9053..') to E.164, else None."""
+    if not participant_pn or not isinstance(participant_pn, str):
+        return None
+    candidate = participant_pn.strip()
+    if "@" in candidate:
+        candidate = "+" + candidate.split(":")[0].split("@")[0].strip()
+    phone_data = PhoneService.normalize_to_e164(candidate)
+    if phone_data and phone_data.get("is_valid"):
+        return phone_data["e164"]
+    return None
+
+
+#: Sender names that carry no information — eligible for upgrade on resync.
+POOR_SENDER_NAMES = frozenset({"", "Grup Üyesi"})
+
+
+def _is_poor_sender_name(sender_name: Optional[str], sender_phone: Optional[str] = None) -> bool:
+    """True when a stored sender name is missing, generic, or merely echoes
+    the sender's own phone number (a previous honest fallback, still
+    upgradeable to a real contact name later)."""
+    if not sender_name or sender_name in POOR_SENDER_NAMES:
+        return True
+    if sender_phone and "@" not in sender_phone:
+        norm = PhoneService.normalize_to_e164(sender_phone)
+        if norm and norm.get("is_valid") and sender_name.strip() == norm["e164"]:
+            return True
+        if sender_name.strip() == sender_phone.strip():
+            return True
+    return False
+
+
 class WhatsAppSyncService:
     """Handles synchronization of WhatsApp chat history and two-way messaging."""
 
@@ -47,10 +94,13 @@ class WhatsAppSyncService:
         group_jid: Optional[str] = None,
         avatar_url: Optional[str] = None,
         conversation_timestamp: Optional[datetime] = None,
+        raw_key: Optional[str] = None,
     ) -> tuple[Lead, Conversation]:
         """
         Idempotently resolves or provisions a Lead and an active WHATSAPP Conversation.
-        Supports both individual contacts and WhatsApp groups (@g.us).
+        Supports individual contacts, WhatsApp groups (@g.us), and unresolvable
+        LID identities (raw_key: keyed by raw JID string, phone_e164 stays None —
+        a fake +number is never fabricated).
         Strictly scoped to the tenant's user_id.
         """
         resolved_is_group = bool(
@@ -103,18 +153,27 @@ class WhatsAppSyncService:
                 if updated:
                     await db.flush()
         else:
-            if not phone_e164:
+            if not phone_e164 and not raw_key:
                 raise ValueError("phone_e164 is required for individual direct chats.")
 
-            lead_stmt = select(Lead).where(
-                Lead.phone_e164 == phone_e164,
-                Lead.user_id == user_id,
-            )
+            if phone_e164:
+                lead_stmt = select(Lead).where(
+                    Lead.phone_e164 == phone_e164,
+                    Lead.user_id == user_id,
+                )
+            else:
+                # Unresolvable identity (e.g. @lid without PN mapping): key by
+                # the raw JID string so the chat is never lost. phone_e164
+                # stays None until a later sync resolves it.
+                lead_stmt = select(Lead).where(
+                    Lead.phone == raw_key,
+                    Lead.user_id == user_id,
+                )
             lead_res = await db.execute(lead_stmt.limit(1))
             lead = lead_res.scalars().first()
 
             if not lead:
-                display_name = contact_name.strip() if contact_name and contact_name.strip() else f"WhatsApp ({phone_e164})"
+                display_name = contact_name.strip() if contact_name and contact_name.strip() else f"WhatsApp ({phone_e164 or raw_key})"
                 custom_data = {}
                 if avatar_url:
                     custom_data["avatar_url"] = avatar_url
@@ -122,9 +181,9 @@ class WhatsAppSyncService:
                 lead = Lead(
                     user_id=user_id,
                     name=display_name,
-                    phone=phone_e164,
+                    phone=phone_e164 or raw_key,
                     phone_e164=phone_e164,
-                    is_whatsapp_eligible=True,
+                    is_whatsapp_eligible=bool(phone_e164),
                     category="WhatsApp Sohbeti",
                     notes=f"WhatsApp üzerinden senkronize edildi ({datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')})",
                     custom_data=custom_data if custom_data else None,
@@ -175,6 +234,130 @@ class WhatsAppSyncService:
 
         return lead, conv
 
+    @staticmethod
+    def _participant_identity(
+        participant_raw: Optional[str], participant_pn: Optional[str]
+    ) -> tuple[Optional[str], Optional[str], Optional[str]]:
+        """Resolves a message author to (e164, display, raw).
+
+        PN (the gateway's LID→phone mapping for THIS connected phone) wins.
+        A raw phone JID normalizes; a @lid value without mapping stays opaque.
+        Display is the real number when known, else None — a fake +number is
+        never fabricated from a LID.
+        """
+        if participant_pn:
+            e164 = _normalize_pn_jid(participant_pn)
+            if e164:
+                return e164, e164, participant_raw
+        if participant_raw:
+            is_lid, number = _split_jid_number(participant_raw)
+            if number and not is_lid:
+                phone_norm = PhoneService.normalize_to_e164(f"+{number}")
+                if phone_norm and phone_norm.get("is_valid"):
+                    return phone_norm["e164"], phone_norm["e164"], participant_raw
+                return None, f"+{number}", participant_raw
+            return None, None, participant_raw
+        return None, None, None
+
+    @classmethod
+    async def _resolve_sender_via_participant(
+        cls,
+        db: AsyncSession,
+        user_id: Optional[str],
+        participant_raw: Optional[str],
+        participant_pn: Optional[str],
+    ) -> Optional[str]:
+        """CRM contact name for a participant, else real-phone display, else None."""
+        e164, display, _raw = cls._participant_identity(participant_raw, participant_pn)
+        if e164:
+            name = await cls._lookup_lead_name(db, user_id, e164)
+            return name or e164
+        return display
+
+    @classmethod
+    async def _heal_poor_sender_names(
+        cls, db: AsyncSession, user_id: Optional[str], limit: int = 1000
+    ) -> int:
+        """Upgrades uninformative sender_names on historical rows.
+
+        Covers legacy 'Grup Üyesi'/empty placeholders using the phone already
+        stored on each row (CRM leads lookup, else the real number itself).
+        Outbound rows become 'Siz'. Returns healed count. Only ever writes
+        truthful values — unknown senders are left untouched.
+        """
+        stmt = (
+            select(Message)
+            .where(
+                Message.user_id == user_id,
+                or_(Message.sender_name.is_(None), Message.sender_name.in_(["", "Grup Üyesi"])),
+            )
+            .order_by(Message.id.desc())
+            .limit(limit)
+        )
+        rows = (await db.execute(stmt)).scalars().all()
+        if not rows:
+            return 0
+
+        # Batch the CRM name lookup over distinct phones (one round-trip).
+        wanted: set[str] = set()
+        for row in rows:
+            if (
+                row.direction == MessageDirection.INBOUND
+                and row.sender_phone
+                and "@" not in row.sender_phone
+            ):
+                norm = PhoneService.normalize_to_e164(row.sender_phone)
+                if norm and norm.get("is_valid"):
+                    wanted.add(norm["e164"])
+        name_by_phone: dict[str, str] = {}
+        if wanted:
+            lead_rows = (
+                await db.execute(
+                    select(Lead.phone_e164, Lead.name)
+                    .where(Lead.phone_e164.in_(wanted), Lead.user_id == user_id)
+                )
+            ).all()
+            for e164, name in lead_rows:
+                if name and not name.startswith("WhatsApp ("):
+                    name_by_phone[e164] = name
+
+        healed = 0
+        for row in rows:
+            if row.direction == MessageDirection.OUTBOUND:
+                row.sender_name = "Siz"
+                healed += 1
+                continue
+            if not row.sender_phone or "@" in row.sender_phone:
+                continue
+            norm = PhoneService.normalize_to_e164(row.sender_phone)
+            if not norm or not norm.get("is_valid"):
+                continue
+            e164 = norm["e164"]
+            row.sender_name = name_by_phone.get(e164, e164)
+            healed += 1
+        return healed
+
+    @classmethod
+    async def _lookup_lead_name(        cls, db: AsyncSession, user_id: Optional[str], e164: Optional[str]
+    ) -> Optional[str]:
+        """Returns the CRM contact name for a phone number, else None.
+
+        Only real saved names qualify (never 'WhatsApp (...)' placeholders,
+        never fabricated numbers). A None user_id matches NULL-tenant rows
+        via IS NULL, same as every other query in this service.
+        """
+        if not e164:
+            return None
+        stmt = (
+            select(Lead)
+            .where(Lead.phone_e164 == e164, Lead.user_id == user_id)
+            .limit(1)
+        )
+        row = (await db.execute(stmt)).scalars().first()
+        if row and row.name and not row.name.startswith("WhatsApp ("):
+            return row.name
+        return None
+
     @classmethod
     async def process_message_event(
         cls,
@@ -197,34 +380,45 @@ class WhatsAppSyncService:
 
         if is_group:
             contact_e164 = raw_phone
+            raw_contact_key = None
         else:
             phone_data = PhoneService.normalize_to_e164(raw_phone)
-            if not phone_data:
+            if phone_data and phone_data.get("is_valid"):
+                contact_e164 = phone_data["e164"]
+                raw_contact_key = None
+            elif raw_phone and "@" in raw_phone:
+                # Unresolvable identity (e.g. @lid without PN mapping yet):
+                # key the chat by raw JID instead of dropping the message.
+                contact_e164 = None
+                raw_contact_key = raw_phone
+            else:
                 return {"status": "ignored", "reason": "Invalid phone format"}
-            contact_e164 = phone_data["e164"]
 
         # Resolve WhatsApp session to find user_id & sender phone
         sess_stmt = select(WhatsAppSession).where(WhatsAppSession.session_name == session_name)
-        sess_res = await db.execute(sess_stmt)
-        session = sess_res.scalar_one_or_none()
+        sess_res = await db.execute(sess_stmt.limit(1))
+        session = sess_res.scalars().first()
         if not session:
             return {"status": "ignored", "reason": f"Session {session_name} not found"}
 
         user_id = session.user_id
         my_phone = session.phone_number or "ME"
 
+        gateway_name = event_data.get("sender_name")
         lead, conv = await cls.get_or_create_lead_and_conversation(
             db=db,
             user_id=user_id,
             phone_e164=None if is_group else contact_e164,
+            contact_name=gateway_name if (gateway_name and not from_me) else None,
             is_group=is_group,
             group_jid=contact_e164 if is_group else None,
+            raw_key=(None if is_group else raw_contact_key),
         )
 
         # Check idempotency by wa_message_id
         if wa_message_id:
             existing_msg_stmt = select(Message).where(Message.wa_message_id == wa_message_id)
-            existing_msg = (await db.execute(existing_msg_stmt)).scalar_one_or_none()
+            existing_msg = (await db.execute(existing_msg_stmt.limit(1))).scalars().first()
             if existing_msg:
                 return {"status": "duplicate", "message_id": existing_msg.id}
 
@@ -239,40 +433,30 @@ class WhatsAppSyncService:
 
         sender_name = event_data.get("sender_name")
         participant_raw = event_data.get("participant")
-        participant_e164: Optional[str] = None
 
         if from_me:
             sender_name = "Siz"
-        else:
-            if is_group and participant_raw:
-                # Normalize participant JID to strip multi-device index (:1, :0 etc.)
-                # e.g. "905342236672:1@s.whatsapp.net" -> "+905342236672"
-                raw_number = participant_raw.split(":")[0].split("@")[0]
-                if raw_number and raw_number.isdigit():
-                    phone_norm = PhoneService.normalize_to_e164(f"+{raw_number}")
-                    if phone_norm:
-                        participant_e164 = phone_norm["e164"]
+        elif not sender_name:
+            # Name chain: pushName/contacts (gateway, per connected phone) →
+            # CRM leads table ("Annem", "Tolga Cebeci"…) → real phone display.
+            # Never a fabricated number, never a generic placeholder.
+            sender_name = await cls._resolve_sender_via_participant(
+                db, user_id, participant_raw, event_data.get("participant_pn")
+            )
 
-            # If wa-gateway provided a pushName, use it directly
-            if not sender_name and participant_e164:
-                # Try to resolve the sender's real name from the leads table
-                lead_stmt = select(Lead).where(Lead.phone_e164 == participant_e164, Lead.user_id == user_id)
-                participant_lead = (await db.execute(lead_stmt.limit(1))).scalars().first()
-                if participant_lead and participant_lead.name and not participant_lead.name.startswith("WhatsApp ("):
-                    sender_name = participant_lead.name
-                else:
-                    # Fallback to phone number
-                    sender_name = participant_e164
-
-            elif not sender_name and participant_raw:
-                # Last resort: extract phone from raw JID
-                raw_number = participant_raw.split(":")[0].split("@")[0]
-                if raw_number and raw_number.isdigit():
-                    sender_name = f"+{raw_number}"
-
-        # For inbound group messages, update sender_phone to the individual participant's phone
-        if not from_me and is_group and participant_e164:
-            sender = participant_e164
+        # Sender identity for group inbound (DM path keeps contact_e164).
+        if not from_me and is_group:
+            participant_e164, participant_display, participant_fallback = cls._participant_identity(
+                participant_raw, event_data.get("participant_pn")
+            )
+            if participant_e164:
+                sender = participant_e164
+            elif participant_display:
+                sender = participant_display
+            elif participant_fallback:
+                sender = participant_fallback
+            else:
+                sender = contact_e164
 
         new_msg = Message(
             user_id=user_id,
@@ -339,8 +523,8 @@ class WhatsAppSyncService:
         Bulk ingests WhatsApp chat and message history from Baileys initial sync.
         """
         sess_stmt = select(WhatsAppSession).where(WhatsAppSession.session_name == session_name)
-        sess_res = await db.execute(sess_stmt)
-        session = sess_res.scalar_one_or_none()
+        sess_res = await db.execute(sess_stmt.limit(1))
+        session = sess_res.scalars().first()
         if not session:
             return {"status": "ignored", "reason": f"Session {session_name} not found"}
 
@@ -397,7 +581,7 @@ class WhatsAppSyncService:
             preview_text = (chat.get("last_message_preview") or "").strip()
             if preview_text:
                 existing_msg_stmt = select(Message.id).where(Message.conversation_id == conv.id).limit(1)
-                has_existing = (await db.execute(existing_msg_stmt)).scalar_one_or_none()
+                has_existing = (await db.execute(existing_msg_stmt)).scalars().first()
                 if not has_existing:
                     msg_time = _to_naive_utc(conv_time) or _to_naive_utc(datetime.now(timezone.utc))
                     init_from_me = bool(chat.get("last_message_from_me", False))
@@ -469,17 +653,11 @@ class WhatsAppSyncService:
                     # If existing message has a poor sender_name (null or generic fallback),
                     # upgrade it with the newly resolved name from contacts/leads
                     new_sname_check = m.get("sender_name")
-                    if not new_sname_check and m.get("participant"):
-                        rn = m.get("participant", "").split(":")[0].split("@")[0]
-                        if rn and rn.isdigit():
-                            pn = PhoneService.normalize_to_e164(f"+{rn}")
-                            if pn:
-                                pl = (await db.execute(select(Lead).where(Lead.phone_e164 == pn["e164"], Lead.user_id == user_id).limit(1))).scalars().first()
-                                if pl and pl.name and not pl.name.startswith("WhatsApp ("):
-                                    new_sname_check = pl.name
-                                else:
-                                    new_sname_check = pn["e164"]
-                    if new_sname_check and (not existing_m.sender_name or existing_m.sender_name in ("Grup Üyesi", "")):
+                    if not new_sname_check:
+                        new_sname_check = await cls._resolve_sender_via_participant(
+                            db, user_id, m.get("participant"), m.get("participant_pn")
+                        )
+                    if new_sname_check and _is_poor_sender_name(existing_m.sender_name, existing_m.sender_phone):
                         existing_m.sender_name = new_sname_check
                     continue
 
@@ -497,33 +675,49 @@ class WhatsAppSyncService:
             except Exception:
                 msg_time = datetime.now(timezone.utc).replace(tzinfo=None)
 
+            # Eşitle pseudo-messages carry no wa_message_id (last-message
+            # previews). Without a content match they would duplicate on every
+            # click — match the latest same-body message instead, upgrade its
+            # name if poor, and skip the insert.
+            if not wa_id:
+                dup_stmt = (
+                    select(Message)
+                    .where(
+                        Message.conversation_id == conv.id,
+                        Message.body == text,
+                        Message.direction == (MessageDirection.OUTBOUND if from_me else MessageDirection.INBOUND),
+                    )
+                    .order_by(Message.id.desc())
+                    .limit(1)
+                )
+                dup_row = (await db.execute(dup_stmt)).scalars().first()
+                if dup_row:
+                    heal_name = m.get("sender_name") or await cls._resolve_sender_via_participant(
+                        db, user_id, m.get("participant"), m.get("participant_pn")
+                    )
+                    if heal_name and _is_poor_sender_name(dup_row.sender_name, dup_row.sender_phone):
+                        dup_row.sender_name = heal_name
+                    continue
+
             sender_name = m.get("sender_name")
             participant_raw_h = m.get("participant")
-            participant_e164_h: Optional[str] = None
 
             if from_me:
                 sender_name = "Siz"
             else:
-                if is_group and participant_raw_h:
-                    raw_num = participant_raw_h.split(":")[0].split("@")[0]
-                    if raw_num and raw_num.isdigit():
-                        phone_norm_h = PhoneService.normalize_to_e164(f"+{raw_num}")
-                        if phone_norm_h:
-                            participant_e164_h = phone_norm_h["e164"]
+                if not sender_name:
+                    sender_name = await cls._resolve_sender_via_participant(
+                        db, user_id, participant_raw_h, m.get("participant_pn")
+                    )
 
-                if not sender_name and participant_e164_h:
-                    lead_stmt_h = select(Lead).where(Lead.phone_e164 == participant_e164_h, Lead.user_id == user_id)
-                    participant_lead_h = (await db.execute(lead_stmt_h.limit(1))).scalars().first()
-                    if participant_lead_h and participant_lead_h.name and not participant_lead_h.name.startswith("WhatsApp ("):
-                        sender_name = participant_lead_h.name
-                    else:
-                        sender_name = participant_e164_h
-                elif not sender_name and participant_raw_h:
-                    raw_num = participant_raw_h.split(":")[0].split("@")[0]
-                    if raw_num and raw_num.isdigit():
-                        sender_name = f"+{raw_num}"
-
-            inbound_sender_phone_h = (participant_e164_h if (not from_me and is_group and participant_e164_h) else None) or (my_phone if from_me else contact_key)
+            inbound_sender_phone_h = None
+            if from_me:
+                inbound_sender_phone_h = my_phone
+            else:
+                resolved_e164_h, resolved_display_h, resolved_raw_h = cls._participant_identity(
+                    participant_raw_h, m.get("participant_pn")
+                )
+                inbound_sender_phone_h = resolved_e164_h or resolved_display_h or resolved_raw_h or contact_key
             new_msg = Message(
                 user_id=user_id,
                 conversation_id=conv.id,
@@ -544,6 +738,9 @@ class WhatsAppSyncService:
             imported_count += 1
 
         await db.commit()
+        healed_count = await cls._heal_poor_sender_names(db, user_id)
+        if healed_count:
+            await db.commit()
         logger.info(f"[WhatsAppSyncService] Batch sync completed for {session_name}: {len(chat_map)} chats, {imported_count} messages")
 
         await ws_manager.broadcast({

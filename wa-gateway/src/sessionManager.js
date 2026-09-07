@@ -160,10 +160,54 @@ function toUnixTimestamp(ts) {
 
 /**
  * Validates if JID is a supported WhatsApp contact or group chat.
+ * NOTE: @lid (Linked Identity) JIDs are accepted too — modern WhatsApp
+ * addresses group authors (and sometimes DMs) by LID instead of phone.
+ * Dropping them loses messages; fabricating +<lid> as a phone corrupts data.
+ * LID senders are resolved to phone (PN) via resolveParticipantPN().
  */
 function isSupportedJid(jid) {
     if (!jid || typeof jid !== 'string') return false;
-    return jid.endsWith('@s.whatsapp.net') || jid.endsWith('@g.us');
+    return jid.endsWith('@s.whatsapp.net') || jid.endsWith('@g.us') || jid.endsWith('@lid');
+}
+
+function isLidJid(jid) {
+    return typeof jid === 'string' && jid.endsWith('@lid');
+}
+
+/**
+ * Resolves a participant JID to its phone-number (PN) JID using Baileys'
+ * LID mapping store. Returns '<digits>@s.whatsapp.net' or null.
+ * Phone JIDs pass through normalized; LIDs map only when the store knows
+ * them — otherwise null (caller must NOT fabricate a phone number).
+ */
+async function resolveParticipantPN(sessionData, participantJid) {
+    if (!participantJid || typeof participantJid !== 'string') return null;
+    let norm = participantJid;
+    try {
+        norm = jidNormalizedUser(participantJid) || participantJid;
+    } catch (e) {
+        // fall through with raw value
+    }
+    if (!isLidJid(norm)) {
+        return norm;
+    }
+    try {
+        const mapping = sessionData?.sock?.signalRepository?.lidMapping;
+        if (mapping && typeof mapping.getPNForLID === 'function') {
+            // Pass the full LID JID; the store decodes it internally.
+            // Returns e.g. "9053...:0@s.whatsapp.net" or null on miss.
+            const pn = await mapping.getPNForLID(norm);
+            if (pn && typeof pn === 'string' && pn.trim()) {
+                const pnUser = pn.split('@')[0].split(':')[0];
+                if (pnUser && /^\d+$/.test(pnUser)) {
+                    return `${pnUser}@s.whatsapp.net`;
+                }
+            }
+        }
+    } catch (e) {
+        // Mapping miss — caller falls back to pushName/contacts honestly.
+    }
+    return null;
 }
 
 /**
@@ -202,8 +246,9 @@ function updateContact(sessionData, contact) {
     const jid = contact.id;
     if (!isSupportedJid(jid)) return;
     const isGroup = jid.endsWith('@g.us');
+    // A @lid value is opaque — never fabricate a phone number from it.
+    const phone = isGroup ? jid : (isLidJid(jid) ? null : `+${jid.split('@')[0]}`);
     const name = contact.name || contact.notify || contact.verifiedName || contact.subject || '';
-    const phone = isGroup ? jid : `+${jid.split('@')[0]}`;
     const existing = sessionData.contacts.get(jid) || {};
     sessionData.contacts.set(jid, {
         id: jid,
@@ -221,12 +266,18 @@ function updateContact(sessionData, contact) {
  * Uses jidNormalizedUser() to strip Baileys multi-device ":1" device index suffix
  * before looking up contacts, which is the root cause of group sender names being
  * unresolvable (e.g. "905342236672:1@s.whatsapp.net" vs stored "905342236672@s.whatsapp.net").
+ *
+ * participantPn (optional): phone JID pre-resolved from a @lid JID via
+ * resolveParticipantPN(). Contacts are checked under every known form.
+ * NEVER fabricates a phone number from a LID — returns null instead so the
+ * backend stores an honest fallback instead of a fake +number.
  */
-function resolveSenderName(sessionData, msg, participantJid, fromMe) {
+function resolveSenderName(sessionData, msg, participantJid, fromMe, participantPn = null) {
     if (fromMe) return 'Siz';
-    if (!participantJid) return null;
+    if (!participantJid && !participantPn) return null;
 
-    // 1. Check msg.pushName (WhatsApp push name sent in message packet)
+    // 1. Check msg.pushName (WhatsApp push name sent in message packet —
+    //    the author's self-chosen name, present even for unknown contacts)
     if (msg?.pushName && typeof msg.pushName === 'string' && msg.pushName.trim()) {
         return msg.pushName.trim();
     }
@@ -234,32 +285,46 @@ function resolveSenderName(sessionData, msg, participantJid, fromMe) {
     // 2. Normalize the JID to strip multi-device index (e.g. "9053xxx:1@s.whatsapp.net" -> "9053xxx@s.whatsapp.net")
     let normJid = participantJid;
     try {
-        normJid = jidNormalizedUser(participantJid) || participantJid;
+        normJid = (participantJid && jidNormalizedUser(participantJid)) || participantJid;
     } catch (e) {
         // jidNormalizedUser may throw on unsupported JID formats – fallback to raw
     }
 
-    // 3. Check session contact book with normalized JID
-    const contact = sessionData?.contacts?.get(normJid);
-    if (contact?.name && typeof contact.name === 'string' && contact.name.trim()) {
-        return contact.name.trim();
+    // 3. Check session contact book (this phone's address book) under every
+    //    known form: normalized JID, raw JID, and resolved phone JID.
+    const candidates = [];
+    if (normJid) candidates.push(normJid);
+    if (participantJid && participantJid !== normJid) candidates.push(participantJid);
+    if (participantPn && participantPn !== normJid && participantPn !== participantJid) {
+        candidates.push(participantPn);
     }
-
-    // 4. Also try original JID (pre-normalization) as fallback
-    if (normJid !== participantJid) {
-        const contactRaw = sessionData?.contacts?.get(participantJid);
-        if (contactRaw?.name && typeof contactRaw.name === 'string' && contactRaw.name.trim()) {
-            return contactRaw.name.trim();
+    if (sessionData?.contacts) {
+        for (const key of candidates) {
+            const contact = sessionData.contacts.get(key);
+            if (contact?.name && typeof contact.name === 'string' && contact.name.trim()) {
+                return contact.name.trim();
+            }
+        }
+        // Backfill: remember the PN alias so future lookups hit directly.
+        if (participantPn && normJid && isLidJid(normJid)) {
+            const lidContact = sessionData.contacts.get(normJid);
+            if (lidContact && !sessionData.contacts.has(participantPn)) {
+                sessionData.contacts.set(participantPn, { ...lidContact, id: participantPn });
+            }
         }
     }
 
-    // 5. Fallback to formatted phone number from participant JID
-    const rawNumber = (normJid || participantJid).split(':')[0].split('@')[0];
-    if (rawNumber && /^\d+$/.test(rawNumber)) {
-        return `+${rawNumber}`;
+    // 4. Fallback to formatted phone number — ONLY for genuine phone JIDs.
+    //    A @lid value is an opaque device identity, never a dialable number.
+    const refJid = participantPn || normJid || participantJid;
+    if (refJid && !isLidJid(refJid)) {
+        const rawNumber = refJid.split(':')[0].split('@')[0];
+        if (rawNumber && /^\d+$/.test(rawNumber)) {
+            return `+${rawNumber}`;
+        }
     }
 
-    return participantJid;
+    return null;
 }
 
 /**
@@ -342,7 +407,7 @@ function updateChat(sessionData, chat) {
     const jid = chat.id;
     if (!isSupportedJid(jid)) return;
     const isGroup = jid.endsWith('@g.us');
-    const phone = isGroup ? jid : `+${jid.split('@')[0]}`;
+    const phone = isGroup ? jid : (isLidJid(jid) ? null : `+${jid.split('@')[0]}`);
     const existing = sessionData.chats.get(jid) || {};
     const contact = sessionData.contacts.get(jid) || {};
     const name = chat.name || chat.subject || contact.name || existing.name || (isGroup ? 'WhatsApp Grubu' : '');
@@ -353,6 +418,7 @@ function updateChat(sessionData, chat) {
     let lastMessageFromMe = chat.lastMessageFromMe ?? existing.lastMessageFromMe ?? false;
     let lastMessageSenderName = chat.lastMessageSenderName || existing.lastMessageSenderName || null;
     let lastMessageParticipant = chat.lastMessageParticipant || existing.lastMessageParticipant || null;
+    let lastMessageParticipantPn = chat.lastMessageParticipantPn || existing.lastMessageParticipantPn || null;
 
     // If chat has Baileys messages array (IHistorySyncMsg[]), extract the latest message!
     if (chat.messages && Array.isArray(chat.messages) && chat.messages.length > 0) {
@@ -388,7 +454,8 @@ function updateChat(sessionData, chat) {
         lastMessage,
         lastMessageFromMe,
         lastMessageSenderName,
-        lastMessageParticipant
+        lastMessageParticipant,
+        lastMessageParticipantPn
     });
 }
 
@@ -532,7 +599,8 @@ async function initSessionSocket(sessionData) {
                 const ts = toUnixTimestamp(m.messageTimestamp);
                 const fromMe = !!m.key?.fromMe;
                 const partJid = m.key?.participant || (fromMe ? null : remoteJid);
-                const senderName = resolveSenderName(sessionData, m, partJid, fromMe);
+                const partPn = (!fromMe && partJid) ? await resolveParticipantPN(sessionData, partJid) : null;
+                const senderName = resolveSenderName(sessionData, m, partJid, fromMe, partPn);
 
                 if (text && remoteJid) {
                     const existingChat = sessionData.chats.get(remoteJid);
@@ -543,6 +611,7 @@ async function initSessionSocket(sessionData) {
                             existingChat.lastMessageFromMe = fromMe;
                             existingChat.lastMessageSenderName = senderName;
                             existingChat.lastMessageParticipant = partJid;
+                            existingChat.lastMessageParticipantPn = partPn;
                         }
                     } else {
                         updateChat(sessionData, {
@@ -551,7 +620,8 @@ async function initSessionSocket(sessionData) {
                             conversationTimestamp: ts,
                             lastMessageFromMe: fromMe,
                             lastMessageSenderName: senderName,
-                            lastMessageParticipant: partJid
+                            lastMessageParticipant: partJid,
+                            lastMessageParticipantPn: partPn
                         });
                     }
                 }
@@ -567,36 +637,49 @@ async function initSessionSocket(sessionData) {
                     conversation_timestamp: toUnixTimestamp(c.conversationTimestamp),
                     last_message_preview: c.lastMessage || '',
                     last_message_from_me: !!c.lastMessageFromMe,
-                    last_message_sender_name: c.lastMessageSenderName || null,
-                    last_message_participant: c.lastMessageParticipant || null,
+                last_message_sender_name: c.lastMessageSenderName || null,
+                last_message_participant: c.lastMessageParticipant || null,
+                last_message_participant_pn: c.lastMessageParticipantPn || null,
                 };
             });
             validChats.sort((a, b) => (b.conversation_timestamp || 0) - (a.conversation_timestamp || 0));
 
-            const validMessages = (messages || [])
-                .map(m => {
-                    const remoteJid = m.key?.remoteJid || '';
-                    if (!isSupportedJid(remoteJid)) return null;
-                    const text = extractMessageText(m.message);
-                    if (!text) return null;
-                    const isGroup = remoteJid.endsWith('@g.us');
-                    const phone = isGroup ? remoteJid : `+${remoteJid.split('@')[0]}`;
-                    const fromMe = !!m.key?.fromMe;
-                    const partJid = m.key?.participant || (fromMe ? null : remoteJid);
-                    const senderName = resolveSenderName(sessionData, m, partJid, fromMe);
+            const validMessages = [];
+            for (const m of (messages || [])) {
+                const remoteJid = m.key?.remoteJid || '';
+                if (!isSupportedJid(remoteJid)) continue;
+                const text = extractMessageText(m.message);
+                if (!text) continue;
+                const isGroup = remoteJid.endsWith('@g.us');
+                const fromMe = !!m.key?.fromMe;
+                const partJid = m.key?.participant || (fromMe ? null : remoteJid);
+                const partPn = (!fromMe && partJid) ? await resolveParticipantPN(sessionData, partJid) : null;
+                // DM chat identity prefers the resolved phone; raw LID is kept
+                // separately so the backend can key the conversation honestly.
+                let phone;
+                if (isGroup) {
+                    phone = remoteJid;
+                } else if (partPn) {
+                    phone = `+${partPn.split('@')[0]}`;
+                } else if (isLidJid(remoteJid)) {
+                    phone = remoteJid;
+                } else {
+                    phone = `+${remoteJid.split('@')[0]}`;
+                }
+                const senderName = resolveSenderName(sessionData, m, partJid, fromMe, partPn);
 
-                    return {
-                        wa_message_id: m.key?.id,
-                        fromMe: fromMe,
-                        phone: phone,
-                        participant: partJid,
-                        sender_name: senderName,
-                        is_group: isGroup,
-                        message: text,
-                        timestamp: toUnixTimestamp(m.messageTimestamp)
-                    };
-                })
-                .filter(Boolean);
+                validMessages.push({
+                    wa_message_id: m.key?.id,
+                    fromMe: fromMe,
+                    phone: phone,
+                    participant: partJid,
+                    participant_pn: partPn,
+                    sender_name: senderName,
+                    is_group: isGroup,
+                    message: text,
+                    timestamp: toUnixTimestamp(m.messageTimestamp)
+                });
+            }
 
             if (validChats.length > 0 || validMessages.length > 0) {
                 await notifyBackend(sessionName, 'history-sync', {
@@ -714,18 +797,30 @@ async function initSessionSocket(sessionData) {
 
         for (const msg of messages) {
             const remoteJid = msg.key?.remoteJid || '';
-            if (!isSupportedJid(remoteJid)) continue; // Allow @s.whatsapp.net and @g.us
+            if (!isSupportedJid(remoteJid)) continue; // Allow @s.whatsapp.net, @g.us and @lid
 
             const isGroup = remoteJid.endsWith('@g.us');
-            const contactPhone = isGroup ? remoteJid : `+${remoteJid.split('@')[0]}`;
+            const fromMe = !!msg.key?.fromMe;
+            const ts = toUnixTimestamp(msg.messageTimestamp) || Math.floor(Date.now() / 1000);
+            const partJid = msg.key?.participant || (fromMe ? null : remoteJid);
+            // Resolve LID -> phone via the signal store (per connected phone).
+            const partPn = (!fromMe && partJid) ? await resolveParticipantPN(sessionData, partJid) : null;
+            // DM chat identity prefers the resolved phone; raw LID is kept
+            // separately so the backend keys honestly instead of dropping.
+            let contactPhone;
+            if (isGroup) {
+                contactPhone = remoteJid;
+            } else if (!isLidJid(remoteJid)) {
+                contactPhone = `+${remoteJid.split('@')[0]}`;
+            } else {
+                const remotePn = await resolveParticipantPN(sessionData, remoteJid);
+                contactPhone = remotePn ? `+${remotePn.split('@')[0]}` : remoteJid;
+            }
             const text = extractMessageText(msg.message);
 
             if (!text) continue;
 
-            const fromMe = !!msg.key?.fromMe;
-            const ts = toUnixTimestamp(msg.messageTimestamp) || Math.floor(Date.now() / 1000);
-            const partJid = msg.key?.participant || (fromMe ? null : remoteJid);
-            const senderName = resolveSenderName(sessionData, msg, partJid, fromMe);
+            const senderName = resolveSenderName(sessionData, msg, partJid, fromMe, partPn);
 
             console.log(`[WA-Gateway] Message (${fromMe ? 'Outbound phone' : 'Inbound'}) for ${contactPhone} on ${sessionName}: "${text}" (sender: ${senderName || 'unknown'})`);
 
@@ -737,6 +832,7 @@ async function initSessionSocket(sessionData) {
                 lastMessageFromMe: fromMe,
                 lastMessageSenderName: senderName,
                 lastMessageParticipant: partJid,
+                lastMessageParticipantPn: partPn,
                 unreadCount: fromMe ? 0 : ((sessionData.chats?.get(remoteJid)?.unreadCount || 0) + 1)
             });
 
@@ -745,6 +841,7 @@ async function initSessionSocket(sessionData) {
                 fromMe: fromMe,
                 phone: contactPhone,
                 participant: partJid,
+                participant_pn: partPn,
                 sender_name: senderName,
                 is_group: isGroup,
                 message: text,
