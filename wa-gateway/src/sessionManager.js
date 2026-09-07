@@ -8,7 +8,8 @@ const {
     useMultiFileAuthState,
     DisconnectReason,
     Browsers,
-    fetchLatestBaileysVersion
+    fetchLatestBaileysVersion,
+    jidNormalizedUser
 } = require('@whiskeysockets/baileys');
 
 const SESSIONS_DIR = path.join(__dirname, '..', 'sessions');
@@ -217,6 +218,9 @@ function updateContact(sessionData, contact) {
  */
 /**
  * Resolves human-readable sender name for group chats or inbound messages.
+ * Uses jidNormalizedUser() to strip Baileys multi-device ":1" device index suffix
+ * before looking up contacts, which is the root cause of group sender names being
+ * unresolvable (e.g. "905342236672:1@s.whatsapp.net" vs stored "905342236672@s.whatsapp.net").
  */
 function resolveSenderName(sessionData, msg, participantJid, fromMe) {
     if (fromMe) return 'Siz';
@@ -227,14 +231,30 @@ function resolveSenderName(sessionData, msg, participantJid, fromMe) {
         return msg.pushName.trim();
     }
 
-    // 2. Check session contact book
-    const contact = sessionData?.contacts?.get(participantJid);
+    // 2. Normalize the JID to strip multi-device index (e.g. "9053xxx:1@s.whatsapp.net" -> "9053xxx@s.whatsapp.net")
+    let normJid = participantJid;
+    try {
+        normJid = jidNormalizedUser(participantJid) || participantJid;
+    } catch (e) {
+        // jidNormalizedUser may throw on unsupported JID formats – fallback to raw
+    }
+
+    // 3. Check session contact book with normalized JID
+    const contact = sessionData?.contacts?.get(normJid);
     if (contact?.name && typeof contact.name === 'string' && contact.name.trim()) {
         return contact.name.trim();
     }
 
-    // 3. Fallback to formatted phone number from participant JID
-    const rawNumber = participantJid.split(':')[0].split('@')[0];
+    // 4. Also try original JID (pre-normalization) as fallback
+    if (normJid !== participantJid) {
+        const contactRaw = sessionData?.contacts?.get(participantJid);
+        if (contactRaw?.name && typeof contactRaw.name === 'string' && contactRaw.name.trim()) {
+            return contactRaw.name.trim();
+        }
+    }
+
+    // 5. Fallback to formatted phone number from participant JID
+    const rawNumber = (normJid || participantJid).split(':')[0].split('@')[0];
     if (rawNumber && /^\d+$/.test(rawNumber)) {
         return `+${rawNumber}`;
     }

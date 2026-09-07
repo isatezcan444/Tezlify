@@ -235,16 +235,46 @@ class WhatsAppSyncService:
 
         direction = MessageDirection.OUTBOUND if from_me else MessageDirection.INBOUND
         status = ConversationMessageStatus.SENT if from_me else ConversationMessageStatus.RECEIVED
-        sender = my_phone if from_me else contact_e164
+        sender = my_phone if from_me else contact_e164  # Will be refined below for group inbound
         recipient = contact_e164 if from_me else my_phone
 
         sender_name = event_data.get("sender_name")
+        participant_raw = event_data.get("participant")
+        participant_e164: Optional[str] = None
+
         if from_me:
             sender_name = "Siz"
-        elif not sender_name and is_group:
-            participant = event_data.get("participant")
-            if participant:
-                sender_name = f"+{participant.split(':')[0].split('@')[0]}" if "@" in participant else participant
+        else:
+            if is_group and participant_raw:
+                # Normalize participant JID to strip multi-device index (:1, :0 etc.)
+                # e.g. "905342236672:1@s.whatsapp.net" -> "+905342236672"
+                raw_number = participant_raw.split(":")[0].split("@")[0]
+                if raw_number and raw_number.isdigit():
+                    phone_norm = PhoneService.normalize_to_e164(f"+{raw_number}")
+                    if phone_norm:
+                        participant_e164 = phone_norm["e164"]
+
+            # If wa-gateway provided a pushName, use it directly
+            if not sender_name and participant_e164:
+                # Try to resolve the sender's real name from the leads table
+                lead_stmt = select(Lead).where(Lead.phone_e164 == participant_e164, Lead.user_id == user_id)
+                lead_res = await db.execute(lead_stmt)
+                participant_lead = lead_res.scalar_one_or_none()
+                if participant_lead and participant_lead.name and not participant_lead.name.startswith("WhatsApp ("):
+                    sender_name = participant_lead.name
+                else:
+                    # Fallback to phone number
+                    sender_name = participant_e164
+
+            elif not sender_name and participant_raw:
+                # Last resort: extract phone from raw JID
+                raw_number = participant_raw.split(":")[0].split("@")[0]
+                if raw_number and raw_number.isdigit():
+                    sender_name = f"+{raw_number}"
+
+        # For inbound group messages, update sender_phone to the individual participant's phone
+        if not from_me and is_group and participant_e164:
+            sender = participant_e164
 
         new_msg = Message(
             user_id=user_id,
@@ -444,13 +474,33 @@ class WhatsAppSyncService:
                 msg_time = datetime.now(timezone.utc).replace(tzinfo=None)
 
             sender_name = m.get("sender_name")
+            participant_raw_h = m.get("participant")
+            participant_e164_h: Optional[str] = None
+
             if from_me:
                 sender_name = "Siz"
-            elif not sender_name and is_group:
-                participant = m.get("participant")
-                if participant:
-                    sender_name = f"+{participant.split(':')[0].split('@')[0]}" if "@" in participant else participant
+            else:
+                if is_group and participant_raw_h:
+                    raw_num = participant_raw_h.split(":")[0].split("@")[0]
+                    if raw_num and raw_num.isdigit():
+                        phone_norm_h = PhoneService.normalize_to_e164(f"+{raw_num}")
+                        if phone_norm_h:
+                            participant_e164_h = phone_norm_h["e164"]
 
+                if not sender_name and participant_e164_h:
+                    lead_stmt_h = select(Lead).where(Lead.phone_e164 == participant_e164_h, Lead.user_id == user_id)
+                    lead_res_h = await db.execute(lead_stmt_h)
+                    participant_lead_h = lead_res_h.scalar_one_or_none()
+                    if participant_lead_h and participant_lead_h.name and not participant_lead_h.name.startswith("WhatsApp ("):
+                        sender_name = participant_lead_h.name
+                    else:
+                        sender_name = participant_e164_h
+                elif not sender_name and participant_raw_h:
+                    raw_num = participant_raw_h.split(":")[0].split("@")[0]
+                    if raw_num and raw_num.isdigit():
+                        sender_name = f"+{raw_num}"
+
+            inbound_sender_phone_h = (participant_e164_h if (not from_me and is_group and participant_e164_h) else None) or (my_phone if from_me else contact_key)
             new_msg = Message(
                 user_id=user_id,
                 conversation_id=conv.id,
@@ -458,7 +508,7 @@ class WhatsAppSyncService:
                 message_type=MessageType.TEXT,
                 body=text,
                 wa_message_id=wa_id,
-                sender_phone=my_phone if from_me else contact_key,
+                sender_phone=inbound_sender_phone_h,
                 recipient_phone=contact_key if from_me else my_phone,
                 sender_name=sender_name,
                 status=ConversationMessageStatus.SENT if from_me else ConversationMessageStatus.RECEIVED,
