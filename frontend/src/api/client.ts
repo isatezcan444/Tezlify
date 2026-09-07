@@ -576,7 +576,11 @@ export class ApiClient {
     const res = await authFetch(`${API_BASE}/whatsapp/sessions/${sessionId}`, {
       method: 'DELETE'
     });
-    if (!res.ok) throw new Error('Oturum silinemedi');
+    if (!res.ok) {
+      const err: any = new Error(await parseError(res, 'Oturum silinemedi'));
+      err.status = res.status;
+      throw err;
+    }
   }
 
   static async sendTestMessage(phone: string, message: string, sessionId?: number): Promise<any> {

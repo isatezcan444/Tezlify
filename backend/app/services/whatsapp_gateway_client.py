@@ -162,16 +162,27 @@ class WhatsAppGatewayClient:
             return False
 
     async def delete_session(self, session_name: str) -> bool:
-        """Deletes session credentials and auth data on wa-gateway."""
+        """Deletes session credentials and auth data on wa-gateway.
+
+        Runs in background (non-blocking), but with a generous timeout:
+        Baileys logout + credential wipe routinely exceeds 1s on free-tier
+        CPU, and a timed-out delete leaves a live session behind that looks
+        "resurrected" to the user.
+        """
         if self.is_recently_offline():
             return False
         url = f"{self.gateway_url}/api/sessions/{session_name}"
         try:
-            async with httpx.AsyncClient(timeout=self._get_timeout(1.0)) as client:
+            async with httpx.AsyncClient(timeout=self._get_timeout(10.0)) as client:
                 res = await client.delete(url, headers=self._headers())
-                return res.status_code in (200, 204)
+                if res.status_code not in (200, 204):
+                    logger.warning(
+                        f"[GatewayClient] delete_session HTTP {res.status_code} for {session_name}: {res.text[:200]}"
+                    )
+                    return False
+                return True
         except Exception as e:
-            logger.warning(f"[GatewayClient] delete_session error: {e}")
+            logger.warning(f"[GatewayClient] delete_session error for {session_name}: {e}")
             return False
 
     async def send_message(

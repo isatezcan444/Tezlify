@@ -97,11 +97,24 @@ SEED_CAMPAIGN_TEMPLATE = (
 )
 
 
+async def should_seed_demo_data(db: AsyncSession) -> bool:
+    """True only on a truly fresh database: no sessions, leads, or campaigns.
+
+    A sessions-only check resurrects the demo line after the user deletes
+    their last session (every Render restart re-seeds it). User data in ANY
+    of the three tables proves this is not a fresh install.
+    """
+    for model in (WhatsAppSession, Lead, Campaign):
+        count = await db.execute(select(func.count(model.id)))
+        if count.scalar_one() > 0:
+            return False
+    return True
+
+
 async def seed_demo_data_if_empty() -> None:
     """Veritabanı boşsa örnek oturum + kampanya + lead kayıtları oluşturur."""
     async with AsyncSessionLocal() as db:  # type: AsyncSession
-        sess_count = await db.execute(select(func.count(WhatsAppSession.id)))
-        if sess_count.scalar_one() > 0:
+        if not await should_seed_demo_data(db):
             return
 
         default_session = WhatsAppSession(

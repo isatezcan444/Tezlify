@@ -606,6 +606,16 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       fetchConversations();
       onRefreshStats();
     } catch (err: any) {
+      // 404 means the row is already gone (e.g. deleted elsewhere) — that IS
+      // the desired end state, so keep the optimistic removal instead of
+      // reverting the UI and confusing the user with a phantom comeback.
+      const msg = String(err?.message || '');
+      if (err?.status === 404 || /404|bulunamadı|not found/i.test(msg)) {
+        fetchSessionsAndLogs(true);
+        fetchConversations();
+        onRefreshStats();
+        return;
+      }
       // Revert if API failed
       setSessions(previousSessions);
       setConversations(previousConversations);
