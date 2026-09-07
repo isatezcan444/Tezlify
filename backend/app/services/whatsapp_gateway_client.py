@@ -245,7 +245,7 @@ class WhatsAppGatewayClient:
         if not include_avatars:
             url += "?include_avatars=0"
         try:
-            async with httpx.AsyncClient(timeout=self._get_timeout(35.0)) as client:
+            async with httpx.AsyncClient(timeout=self._get_timeout(10.0)) as client:
                 res = await client.get(url, headers=self._headers())
                 if res.status_code == 200:
                     self._last_unreachable_time = 0.0

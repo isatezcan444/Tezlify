@@ -565,18 +565,86 @@ function updateChat(sessionData, chat) {
         lastMessageParticipant,
         lastMessageParticipantPn
     });
+
+    // Schedule persistent chat caching to disk and database backup
+    scheduleChatsSave(sessionData);
+}
+
+const chatsSaveTimers = new Map();
+
+/**
+ * Saves in-memory chats to chats.json in sessionAuthDir.
+ * Automatically backed up to database via backupSessionAuth.
+ */
+function saveChatsToDisk(sessionData) {
+    if (!sessionData?.name || !(sessionData.chats instanceof Map)) return;
+    try {
+        const sessionAuthDir = path.join(SESSIONS_DIR, sessionData.name);
+        if (!fs.existsSync(sessionAuthDir)) {
+            fs.mkdirSync(sessionAuthDir, { recursive: true });
+        }
+        const arr = Array.from(sessionData.chats.values());
+        fs.writeFileSync(path.join(sessionAuthDir, 'chats.json'), JSON.stringify(arr), 'utf8');
+    } catch (err) {
+        console.warn(`[WA-Gateway] Failed to save chats to disk for ${sessionData.name}:`, err.message);
+    }
+}
+
+/**
+ * Loads chats from chats.json in sessionAuthDir into sessionData.chats on startup.
+ */
+function loadChatsFromDisk(sessionData) {
+    if (!sessionData?.name) return;
+    try {
+        const sessionAuthDir = path.join(SESSIONS_DIR, sessionData.name);
+        const chatsFile = path.join(sessionAuthDir, 'chats.json');
+        if (fs.existsSync(chatsFile)) {
+            const content = fs.readFileSync(chatsFile, 'utf8');
+            const arr = JSON.parse(content);
+            if (Array.isArray(arr)) {
+                if (!(sessionData.chats instanceof Map)) sessionData.chats = new Map();
+                for (const c of arr) {
+                    if (c && c.id) {
+                        sessionData.chats.set(c.id, c);
+                    }
+                }
+                console.log(`[WA-Gateway] Loaded ${sessionData.chats.size} chats from disk for ${sessionData.name}`);
+            }
+        }
+    } catch (err) {
+        console.warn(`[WA-Gateway] Failed to load chats from disk for ${sessionData.name}:`, err.message);
+    }
+}
+
+function scheduleChatsSave(sessionData) {
+    if (!sessionData?.name) return;
+    saveChatsToDisk(sessionData);
+    backupSessionAuth(sessionData.name);
+
+    if (chatsSaveTimers.has(sessionData.name)) {
+        clearTimeout(chatsSaveTimers.get(sessionData.name));
+    }
+    const timer = setTimeout(() => {
+        chatsSaveTimers.delete(sessionData.name);
+        saveChatsToDisk(sessionData);
+        backupSessionAuth(sessionData.name);
+    }, 1500);
+    chatsSaveTimers.set(sessionData.name, timer);
 }
 
 /**
  * Queries WhatsApp Multi-Device servers for all groups the session participates in,
  * ensuring groups (such as "3hacker") are populated in session memory with their titles.
+ * Uses a strict 3.5s timeout to prevent socket hanging.
  */
 async function discoverParticipatingGroups(sessionData) {
     if (!sessionData || !sessionData.sock || typeof sessionData.sock.groupFetchAllParticipating !== 'function') {
         return;
     }
     try {
-        const groups = await sessionData.sock.groupFetchAllParticipating();
+        const groupsPromise = sessionData.sock.groupFetchAllParticipating();
+        const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Group fetch timeout')), 3500));
+        const groups = await Promise.race([groupsPromise, timeoutPromise]);
         if (groups && typeof groups === 'object') {
             for (const [groupId, group] of Object.entries(groups)) {
                 if (!groupId.endsWith('@g.us')) continue;
@@ -613,8 +681,9 @@ async function initSessionSocket(sessionData) {
         fs.mkdirSync(sessionAuthDir, { recursive: true });
     }
 
-    // Restore persistent contacts from disk if available
+    // Restore persistent contacts and chats from disk if available
     loadContactsFromDisk(sessionData);
+    loadChatsFromDisk(sessionData);
 
     if (sessionData.reconnectTimer) {
         clearTimeout(sessionData.reconnectTimer);
@@ -1280,8 +1349,8 @@ async function getSessionChats(sessionName, options = {}) {
     }
     if (!session || !session.chats) return [];
 
-    // Ensure all participating groups (e.g. "3hacker") are discovered
-    await discoverParticipatingGroups(session);
+    // Ensure participating groups are discovered asynchronously without blocking chat listing response
+    discoverParticipatingGroups(session).catch(() => {});
 
     const chatList = Array.from(session.chats.values()).map((c) => {
         const contact = session.contacts?.get(c.id);
