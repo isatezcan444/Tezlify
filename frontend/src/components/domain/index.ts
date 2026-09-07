@@ -9,3 +9,4 @@ export * from './ChatComposer';
 export * from './ConversationList';
 export * from './TemplateSelectModal';
 export * from './CampaignGroupCard';
+export * from './NewChatModal';

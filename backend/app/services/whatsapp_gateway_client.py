@@ -219,5 +219,42 @@ class WhatsAppGatewayClient:
             self._last_unreachable_time = time.monotonic()
             return None
 
+    async def get_session_chats(self, session_name: str) -> List[Dict[str, Any]]:
+        """Fetches all in-memory tracked chats from the gateway."""
+        if self.is_recently_offline():
+            return []
+        url = f"{self.gateway_url}/api/sessions/{session_name}/chats"
+        try:
+            async with httpx.AsyncClient(timeout=self._get_timeout(5.0)) as client:
+                res = await client.get(url, headers=self._headers())
+                if res.status_code == 200:
+                    self._last_unreachable_time = 0.0
+                    return res.json()
+                else:
+                    logger.warning(f"[GatewayClient] get_session_chats HTTP {res.status_code}: {res.text}")
+                    return []
+        except Exception as e:
+            logger.warning(f"[GatewayClient] get_session_chats error: {e}")
+            self._last_unreachable_time = time.monotonic()
+            return []
+
+    async def trigger_sync(self, session_name: str) -> Dict[str, Any]:
+        """Triggers gateway to push its cached chats and history to the backend webhook."""
+        if self.is_recently_offline():
+            return {"success": False, "error": "Gateway offline"}
+        url = f"{self.gateway_url}/api/sessions/{session_name}/sync"
+        try:
+            async with httpx.AsyncClient(timeout=self._get_timeout(10.0)) as client:
+                res = await client.post(url, headers=self._headers())
+                if res.status_code == 200:
+                    self._last_unreachable_time = 0.0
+                    return res.json()
+                else:
+                    return {"success": False, "error": f"Gateway HTTP {res.status_code}: {res.text}"}
+        except Exception as e:
+            logger.warning(f"[GatewayClient] trigger_sync error: {e}")
+            self._last_unreachable_time = time.monotonic()
+            return {"success": False, "error": str(e)}
+
 
 gateway_client = WhatsAppGatewayClient()

@@ -119,3 +119,9 @@ class ConversationMessagesResponse(BaseModel):
     newest_message_id: Optional[int] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class StartConversationRequest(BaseModel):
+    phone: str
+    name: Optional[str] = None
+    message: Optional[str] = None

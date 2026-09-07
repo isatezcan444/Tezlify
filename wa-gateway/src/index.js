@@ -7,7 +7,9 @@ const {
     requestPairingCode,
     sendMessage,
     disconnectSession,
-    restoreSavedSessions
+    restoreSavedSessions,
+    getSessionChats,
+    syncSessionHistoryToBackend
 } = require('./sessionManager');
 
 const app = express();
@@ -145,6 +147,25 @@ app.get('/api/sessions/:sessionName/status', (req, res) => {
         phone: session.phone,
         messagesSent: session.messagesSent
     });
+});
+
+// Get all tracked chats for session
+app.get('/api/sessions/:sessionName/chats', (req, res) => {
+    const { sessionName } = req.params;
+    const chats = getSessionChats(sessionName);
+    res.json(chats);
+});
+
+// Trigger on-demand sync of session history to backend
+app.post('/api/sessions/:sessionName/sync', async (req, res) => {
+    const { sessionName } = req.params;
+    try {
+        const result = await syncSessionHistoryToBackend(sessionName);
+        res.json(result);
+    } catch (err) {
+        console.error(`[WA-Gateway] Sync failed for ${sessionName}:`, err.message);
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // Disconnect session

@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
-import { MessageSquare, Archive, CheckCircle2, Inbox, Mail } from 'lucide-react';
+import { MessageSquare, Archive, CheckCircle2, Inbox, Mail, MessageSquarePlus, RefreshCw } from 'lucide-react';
 import { Conversation, ConversationStatus } from '../../types';
 import { Avatar } from '../ui/Avatar';
 import { Badge } from '../ui/badge';
+import { Button } from '../ui/button';
 import { SearchInput } from '../forms/SearchInput';
 import { Skeleton } from '../ui/Skeleton';
 import { useI18n } from '../../context/I18nContext';
@@ -18,6 +19,9 @@ export interface ConversationListProps {
   onSearchChange?: (query: string) => void;
   activeFilter?: FilterTab;
   onFilterChange?: (filter: FilterTab) => void;
+  onNewChat?: () => void;
+  onSync?: () => void;
+  isSyncing?: boolean;
 }
 
 export const ConversationList: React.FC<ConversationListProps> = ({
@@ -29,6 +33,9 @@ export const ConversationList: React.FC<ConversationListProps> = ({
   onSearchChange,
   activeFilter = 'ALL',
   onFilterChange,
+  onNewChat,
+  onSync,
+  isSyncing = false,
 }) => {
   const { t } = useI18n();
   const [internalFilter, setInternalFilter] = useState<FilterTab>(activeFilter);
@@ -83,15 +90,47 @@ export const ConversationList: React.FC<ConversationListProps> = ({
 
   return (
     <div className="flex flex-col h-full border-r border-slate-200/80 dark:border-white/[0.08] bg-slate-50/50 dark:bg-black/10">
-      {/* Search Header */}
-      {onSearchChange && (
-        <div className="p-3 border-b border-slate-200/80 dark:border-white/[0.08] space-y-2.5">
+      {/* Top Action Bar & Search Header */}
+      <div className="p-3 border-b border-slate-200/80 dark:border-white/[0.08] space-y-2.5">
+        {/* Action Buttons: New Chat & Sync WhatsApp */}
+        {(onNewChat || onSync) && (
+          <div className="flex items-center gap-2">
+            {onNewChat && (
+              <Button
+                type="button"
+                size="sm"
+                onClick={onNewChat}
+                className="flex-1 space-x-1.5 bg-[#25D366] hover:bg-[#20ba59] text-white font-bold text-xs cursor-pointer shadow-xs"
+              >
+                <MessageSquarePlus className="w-3.5 h-3.5" />
+                <span>{t('whatsapp.newChat') || 'Yeni Sohbet'}</span>
+              </Button>
+            )}
+            {onSync && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={onSync}
+                disabled={isSyncing}
+                title={t('whatsapp.syncChats') || "WhatsApp'tan Sohbetleri Güncelle"}
+                className="px-2.5 space-x-1 text-xs font-bold border-slate-200 dark:border-white/[0.1] hover:bg-slate-100 dark:hover:bg-white/[0.06] cursor-pointer shrink-0"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 text-[#7367F0] ${isSyncing ? 'animate-spin' : ''}`} />
+                <span className="hidden sm:inline">{t('whatsapp.sync') || 'Eşitle'}</span>
+              </Button>
+            )}
+          </div>
+        )}
+
+        {onSearchChange && (
           <SearchInput
             value={searchQuery}
             onChange={onSearchChange}
             placeholder={t('whatsapp.searchConversations')}
             sizeVariant="sm"
           />
+        )}
 
           {/* Filter Pills */}
           <div className="flex items-center space-x-1 overflow-x-auto pb-0.5 scrollbar-none">
@@ -116,7 +155,6 @@ export const ConversationList: React.FC<ConversationListProps> = ({
             })}
           </div>
         </div>
-      )}
 
       {/* List content */}
       <div className="flex-1 overflow-y-auto divide-y divide-slate-100 dark:divide-white/[0.04]">

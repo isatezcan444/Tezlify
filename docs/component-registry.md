@@ -239,4 +239,9 @@ components/
 - **Props**: `conversations: Conversation[]`, `selectedId?: number`, `onSelect: (conv: Conversation) => void`, `loading?: boolean`, `searchQuery?: string`, `onSearchChange?: (q: string) => void`.
 - **Import**: `import { ConversationList } from '@/components/domain';`
 
+### `NewChatModal`
+- **Purpose**: Modal for initiating a new WhatsApp conversation with any phone number (including non-CRM numbers), optional contact name, and immediate first message dispatch.
+- **Props**: `isOpen: boolean`, `onClose: () => void`, `onSuccess: (conv: ConversationDetail) => void`.
+- **Import**: `import { NewChatModal } from '@/components/domain';`
+
 

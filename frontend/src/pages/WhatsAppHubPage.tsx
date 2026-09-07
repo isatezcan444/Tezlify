@@ -27,7 +27,8 @@ import {
   ExternalLink,
   Copy,
   KeyRound,
-  RefreshCw
+  RefreshCw,
+  MessageSquarePlus
 } from 'lucide-react';
 import { ApiClient } from '../api/client';
 import { WhatsAppSession, MessageLog, Conversation, ConversationStatus, Lead } from '../types';
@@ -37,7 +38,7 @@ import { Card } from '../components/ui/card';
 import { EmptyState } from '../components/ui/EmptyState';
 import { Avatar } from '../components/ui/Avatar';
 import { WhatsAppIcon } from '../components/ui/whatsapp-icon';
-import { SessionCard, ConversationList, ChatThread, ChatComposer, LeadDetailDrawer, TemplateSelectModal } from '../components/domain';
+import { SessionCard, ConversationList, ChatThread, ChatComposer, LeadDetailDrawer, TemplateSelectModal, NewChatModal } from '../components/domain';
 import { FilterTab } from '../components/domain/ConversationList';
 import { Slider, Switch } from '../components/forms';
 import { 
@@ -80,6 +81,26 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   const [isLeadDrawerOpen, setIsLeadDrawerOpen] = useState<boolean>(false);
   const [leadLoading, setLeadLoading] = useState<boolean>(false);
   const [isTemplateModalOpen, setIsTemplateModalOpen] = useState<boolean>(false);
+  const [isNewChatModalOpen, setIsNewChatModalOpen] = useState<boolean>(false);
+  const [isSyncingChats, setIsSyncingChats] = useState<boolean>(false);
+
+  const handleSyncChats = async () => {
+    setIsSyncingChats(true);
+    try {
+      const res = await ApiClient.syncWhatsAppChats();
+      toast.success(
+        res.synced_count > 0
+          ? `${res.synced_count} sohbet WhatsApp'tan başarıyla eşitlendi.`
+          : 'WhatsApp sohbetleriniz eşitlendi.',
+        t('common.success')
+      );
+      await fetchConversations();
+    } catch (err: any) {
+      toast.error(err.message || 'Sohbetler eşitlenemedi', t('common.error'));
+    } finally {
+      setIsSyncingChats(false);
+    }
+  };
 
   // Active chat hook for selected conversation
   const {
@@ -691,6 +712,9 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
               onSearchChange={setConvSearch}
               activeFilter={convFilter}
               onFilterChange={setConvFilter}
+              onNewChat={() => setIsNewChatModalOpen(true)}
+              onSync={handleSyncChats}
+              isSyncing={isSyncingChats}
               onSelect={(c) => {
                 setSelectedConv(c);
                 if (c.unread_count > 0) {
@@ -861,6 +885,15 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                     conversations.length > 0
                       ? (t('whatsapp.selectConversation') || 'Mesaj geçmişini görüntülemek ve yanıt vermek için soldaki listeden bir konuşma seçin.')
                       : (t('whatsapp.noConversationsDesc') || 'Gelen müşteri yanıtları veya başlatılan diyaloglar burada listelenir.')
+                  }
+                  action={
+                    conversations.length === 0
+                      ? {
+                          label: t('whatsapp.newChat') || 'Yeni Sohbet Başlat',
+                          onClick: () => setIsNewChatModalOpen(true),
+                          icon: MessageSquarePlus,
+                        }
+                      : undefined
                   }
                 />
               </div>
@@ -1672,6 +1705,23 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         }}
         initialTab="overview"
       />
+
+      {/* New WhatsApp Conversation Modal */}
+      <NewChatModal
+        isOpen={isNewChatModalOpen}
+        onClose={() => setIsNewChatModalOpen(false)}
+        onSuccess={(newConv) => {
+          setConversations((prev) => {
+            const exists = prev.some((c) => c.id === newConv.id);
+            if (exists) {
+              return prev.map((c) => (c.id === newConv.id ? newConv : c));
+            }
+            return [newConv, ...prev];
+          });
+          setSelectedConv(newConv);
+        }}
+      />
     </div>
   );
 };
+

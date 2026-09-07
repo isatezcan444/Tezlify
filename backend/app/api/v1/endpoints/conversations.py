@@ -12,8 +12,12 @@ from backend.app.api.v1.websocket import ws_manager
 from backend.app.models.conversation import Conversation, ConversationStatus
 from backend.app.models.message import Message
 from backend.app.models.lead import Lead
+from backend.app.models.whatsapp_session import WhatsAppSession, SessionStatus
 from backend.app.services.whatsapp_outbound_service import WhatsAppOutboundService
 from backend.app.services.whatsapp_template_service import WhatsAppTemplateService
+from backend.app.services.whatsapp_sync_service import WhatsAppSyncService
+from backend.app.services.whatsapp_gateway_client import gateway_client
+from backend.app.services.phone_service import PhoneService
 from backend.app.schemas.conversation import (
     ConversationResponse,
     ConversationDetailResponse,
@@ -25,6 +29,7 @@ from backend.app.schemas.conversation import (
     OutboundMediaSendRequest,
     MediaInfoResponse,
     MessageResponse,
+    StartConversationRequest,
 )
 
 router = APIRouter()
@@ -582,3 +587,152 @@ async def get_conversation_media_info(
         download_ready=False,
         message="Media metadata verified. Direct download isolated during safe testing mode.",
     )
+
+
+@router.post("/start", response_model=ConversationDetailResponse)
+async def start_conversation(
+    req: StartConversationRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+):
+    """
+    Starts a new WhatsApp conversation with any phone number.
+    Creates Lead and Conversation if they don't exist, and optionally sends an initial message.
+    """
+    raw_phone = req.phone.strip() if req.phone else ""
+    if not raw_phone:
+        raise HTTPException(status_code=400, detail="Telefon numarası gereklidir.")
+
+    phone_data = PhoneService.normalize_to_e164(raw_phone)
+    if not phone_data:
+        raise HTTPException(status_code=400, detail="Geçersiz telefon numarası formatı.")
+
+    e164 = phone_data["e164"]
+
+    lead, conv = await WhatsAppSyncService.get_or_create_lead_and_conversation(
+        db=db,
+        user_id=current_user.id,
+        phone_e164=e164,
+        contact_name=req.name.strip() if req.name else None,
+    )
+    await db.commit()
+    await db.refresh(lead)
+    await db.refresh(conv)
+
+    # If initial message provided, dispatch it through active WhatsApp session
+    if req.message and req.message.strip():
+        sess_stmt = select(WhatsAppSession).where(
+            get_user_filter(WhatsAppSession.user_id, current_user.id),
+            WhatsAppSession.status == SessionStatus.CONNECTED,
+        )
+        sess_res = await db.execute(sess_stmt)
+        session = sess_res.scalars().first()
+        session_name = session.session_name if session else "default"
+
+        try:
+            await WhatsAppOutboundService.send_message(
+                db=db,
+                conversation_id=conv.id,
+                body=req.message.strip(),
+                current_user=current_user,
+                session_name=session_name,
+            )
+        except Exception as e:
+            # Non-blocking if gateway fails to deliver immediate message
+            pass
+
+    # Fetch updated messages
+    messages_dto, has_more, oldest_id, newest_id = await _fetch_paginated_messages(
+        db=db, conversation_id=conv.id, limit=50
+    )
+
+    # Broadcast conversation list update
+    await ws_manager.broadcast({
+        "event": "new_conversation",
+        "conversation_id": conv.id,
+        "lead_id": lead.id,
+        "lead_name": lead.name,
+        "lead_phone": lead.phone_e164,
+    })
+
+    return ConversationDetailResponse(
+        id=conv.id,
+        lead_id=lead.id,
+        channel=conv.channel,
+        status=conv.status,
+        last_message_at=conv.last_message_at,
+        unread_count=conv.unread_count,
+        last_read_at=conv.last_read_at,
+        created_at=conv.created_at,
+        updated_at=conv.updated_at,
+        lead_name=lead.name,
+        lead_phone=lead.phone_e164,
+        last_message_preview=req.message.strip() if req.message else None,
+        messages=messages_dto,
+        has_more=has_more,
+        oldest_message_id=oldest_id,
+        newest_message_id=newest_id,
+    )
+
+
+@router.post("/sync-whatsapp")
+async def sync_whatsapp_conversations(
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+):
+    """
+    Syncs in-memory WhatsApp chats and contacts from connected Baileys session.
+    """
+    # 1. Resolve user's connected session
+    sess_stmt = select(WhatsAppSession).where(
+        get_user_filter(WhatsAppSession.user_id, current_user.id),
+        WhatsAppSession.status == SessionStatus.CONNECTED,
+    )
+    sess_res = await db.execute(sess_stmt)
+    session = sess_res.scalars().first()
+
+    if not session:
+        # Fallback: check any connected session if test or single-user dev
+        any_sess_stmt = select(WhatsAppSession).where(WhatsAppSession.status == SessionStatus.CONNECTED)
+        any_res = await db.execute(any_sess_stmt)
+        session = any_res.scalars().first()
+
+    if not session:
+        raise HTTPException(status_code=400, detail="Bağlı aktif bir WhatsApp oturumu bulunamadı.")
+
+    # 2. Trigger gateway sync or fetch chats
+    chats = await gateway_client.get_session_chats(session.session_name)
+    synced_count = 0
+
+    if chats:
+        res = await WhatsAppSyncService.sync_history_batch(
+            db=db,
+            session_name=session.session_name,
+            chats=[{"id": c.get("id"), "phone": c.get("phone"), "name": c.get("name")} for c in chats],
+            messages=[
+                {
+                    "phone": c.get("phone"),
+                    "message": c.get("last_message_preview"),
+                    "fromMe": False,
+                    "timestamp": c.get("conversation_timestamp"),
+                }
+                for c in chats
+                if c.get("last_message_preview")
+            ],
+        )
+        synced_count = res.get("chats_synced", len(chats))
+    else:
+        # Fallback: trigger gateway push
+        await gateway_client.trigger_sync(session.session_name)
+
+    await ws_manager.broadcast({
+        "event": "conversations_updated",
+        "count": synced_count,
+    })
+
+    return {
+        "status": "success",
+        "synced_count": synced_count,
+        "session_name": session.session_name,
+    }
+

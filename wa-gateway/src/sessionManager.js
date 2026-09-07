@@ -37,12 +37,54 @@ async function notifyBackend(sessionName, endpoint, payload) {
                 'X-Webhook-Secret': webhookSecret,
                 'Content-Type': 'application/json'
             },
-            timeout: 5000
+            timeout: 15000
         });
         console.log(`[WA-Gateway] Webhook dispatched to ${endpoint} for ${sessionName}`);
     } catch (err) {
         console.warn(`[WA-Gateway] Webhook to ${endpoint} failed for ${sessionName}:`, err.message);
     }
+}
+
+/**
+ * Updates or adds a contact in session memory.
+ */
+function updateContact(sessionData, contact) {
+    if (!contact || !contact.id) return;
+    const jid = contact.id;
+    if (!jid.endsWith('@s.whatsapp.net')) return;
+    const name = contact.name || contact.notify || contact.verifiedName || '';
+    const phone = `+${jid.split('@')[0]}`;
+    const existing = sessionData.contacts.get(jid) || {};
+    sessionData.contacts.set(jid, {
+        id: jid,
+        phone,
+        name: name || existing.name || ''
+    });
+}
+
+/**
+ * Updates or adds a chat in session memory.
+ */
+function updateChat(sessionData, chat) {
+    if (!chat || !chat.id) return;
+    const jid = chat.id;
+    if (!jid.endsWith('@s.whatsapp.net')) return;
+    const phone = `+${jid.split('@')[0]}`;
+    const existing = sessionData.chats.get(jid) || {};
+    const contact = sessionData.contacts.get(jid) || {};
+    const name = chat.name || contact.name || existing.name || '';
+    const unreadCount = chat.unreadCount ?? existing.unreadCount ?? 0;
+    const conversationTimestamp = chat.conversationTimestamp ?? existing.conversationTimestamp ?? Math.floor(Date.now() / 1000);
+    const lastMessage = chat.lastMessageText || existing.lastMessage || '';
+
+    sessionData.chats.set(jid, {
+        id: jid,
+        phone,
+        name,
+        unreadCount,
+        conversationTimestamp,
+        lastMessage
+    });
 }
 
 /**
@@ -81,6 +123,8 @@ async function getOrCreateSession(sessionName) {
         qr: null,
         qrImage: null,
         sock: null,
+        chats: new Map(),
+        contacts: new Map(),
         createdAt: new Date().toISOString(),
         messagesSent: 0
     };
@@ -109,17 +153,60 @@ async function getOrCreateSession(sessionName) {
     // Listen to credentials update
     sock.ev.on('creds.update', saveCreds);
 
+    // Listen to contacts updates from phone
+    sock.ev.on('contacts.upsert', (contacts) => {
+        if (!contacts || !Array.isArray(contacts)) return;
+        for (const c of contacts) {
+            updateContact(sessionData, c);
+        }
+    });
+
+    sock.ev.on('contacts.update', (updates) => {
+        if (!updates || !Array.isArray(updates)) return;
+        for (const u of updates) {
+            updateContact(sessionData, u);
+        }
+    });
+
+    // Listen to chat list updates from phone
+    sock.ev.on('chats.upsert', (chats) => {
+        if (!chats || !Array.isArray(chats)) return;
+        for (const c of chats) {
+            updateChat(sessionData, c);
+        }
+    });
+
+    sock.ev.on('chats.update', (updates) => {
+        if (!updates || !Array.isArray(updates)) return;
+        for (const u of updates) {
+            updateChat(sessionData, u);
+        }
+    });
+
     // Listen to WhatsApp initial chat & message history synchronization
     sock.ev.on('messaging-history.set', async ({ chats, contacts, messages }) => {
-        console.log(`[WA-Gateway] History sync received for ${sessionName}: ${chats?.length || 0} chats, ${messages?.length || 0} messages`);
+        console.log(`[WA-Gateway] History sync received for ${sessionName}: ${chats?.length || 0} chats, ${contacts?.length || 0} contacts, ${messages?.length || 0} messages`);
         try {
+            // Ingest contacts into memory
+            for (const c of (contacts || [])) {
+                updateContact(sessionData, c);
+            }
+
+            // Ingest chats into memory
+            for (const c of (chats || [])) {
+                updateChat(sessionData, c);
+            }
+
             const validChats = (chats || [])
                 .filter(c => c.id && c.id.endsWith('@s.whatsapp.net'))
-                .map(c => ({
-                    id: c.id,
-                    phone: `+${c.id.split('@')[0]}`,
-                    name: c.name || ''
-                }));
+                .map(c => {
+                    const contact = sessionData.contacts.get(c.id);
+                    return {
+                        id: c.id,
+                        phone: `+${c.id.split('@')[0]}`,
+                        name: c.name || contact?.name || ''
+                    };
+                });
 
             const validMessages = (messages || [])
                 .map(m => {
@@ -252,6 +339,14 @@ async function getOrCreateSession(sessionName) {
 
             const fromMe = !!msg.key?.fromMe;
             console.log(`[WA-Gateway] Message (${fromMe ? 'Outbound phone' : 'Inbound'}) for ${contactPhone} on ${sessionName}: "${text}"`);
+
+            // Update in-memory chat cache
+            updateChat(sessionData, {
+                id: remoteJid,
+                lastMessageText: text,
+                conversationTimestamp: msg.messageTimestamp,
+                unreadCount: fromMe ? 0 : ((sessionData.chats?.get(remoteJid)?.unreadCount || 0) + 1)
+            });
 
             // Dispatch message-event webhook for full two-way chat synchronization
             await notifyBackend(sessionName, 'message-event', {
@@ -447,6 +542,53 @@ async function refreshSessionQR(sessionName) {
     return session;
 }
 
+/**
+ * Returns all in-memory tracked chats for a session, sorted by latest activity.
+ */
+function getSessionChats(sessionName) {
+    const session = activeSessions.get(sessionName);
+    if (!session || !session.chats) return [];
+
+    const chatList = Array.from(session.chats.values()).map((c) => {
+        const contact = session.contacts?.get(c.id);
+        return {
+            id: c.id,
+            phone: c.phone,
+            name: c.name || contact?.name || '',
+            unread_count: c.unreadCount || 0,
+            conversation_timestamp: c.conversationTimestamp,
+            last_message_preview: c.lastMessage || ''
+        };
+    });
+
+    chatList.sort((a, b) => (b.conversation_timestamp || 0) - (a.conversation_timestamp || 0));
+    return chatList;
+}
+
+/**
+ * Pushes all known chats and contacts to the FastAPI backend webhook.
+ */
+async function syncSessionHistoryToBackend(sessionName) {
+    const session = activeSessions.get(sessionName);
+    if (!session) {
+        throw new Error(`Oturum bulunamadı: ${sessionName}`);
+    }
+
+    const chats = getSessionChats(sessionName);
+    if (chats.length > 0) {
+        await notifyBackend(sessionName, 'history-sync', {
+            chats: chats.map((c) => ({
+                id: c.id,
+                phone: c.phone,
+                name: c.name
+            })),
+            messages: []
+        });
+    }
+
+    return { success: true, count: chats.length };
+}
+
 module.exports = {
     activeSessions,
     getOrCreateSession,
@@ -454,5 +596,7 @@ module.exports = {
     requestPairingCode,
     sendMessage,
     disconnectSession,
-    restoreSavedSessions
+    restoreSavedSessions,
+    getSessionChats,
+    syncSessionHistoryToBackend
 };

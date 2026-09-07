@@ -679,6 +679,35 @@ export class ApiClient {
     return res.json();
   }
 
+  static async startConversation(data: {
+    phone: string;
+    name?: string;
+    message?: string;
+  }): Promise<ConversationDetail> {
+    const res = await authFetch(`${API_BASE}/conversations/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || 'Yeni sohbet başlatılamadı');
+    }
+    return res.json();
+  }
+
+  static async syncWhatsAppChats(): Promise<{ status: string; synced_count: number; session_name?: string }> {
+    const res = await authFetch(`${API_BASE}/conversations/sync-whatsapp`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || 'WhatsApp sohbetleri eşitlenemedi');
+    }
+    return res.json();
+  }
+
   static async updateConversationStatus(
     conversationId: number,
     status: ConversationStatus
