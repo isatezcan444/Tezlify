@@ -134,3 +134,59 @@ async def test_sync_whatsapp_conversations_populates_chats():
             assert list_res.status_code == 200
             convs = list_res.json()
             assert any(c["lead_phone"] == "+905333334455" for c in convs)
+
+
+@pytest.mark.asyncio
+async def test_sync_whatsapp_group_chat_and_avatar():
+    """Verifies that WhatsApp group chats (@g.us) like 3hacker and avatars are correctly ingested and displayed."""
+    test_user_id = str(uuid.uuid4())
+    session_name = f"sess_grp_{uuid.uuid4().hex[:8]}"
+
+    async with AsyncSessionLocal() as db:
+        session = WhatsAppSession(
+            user_id=test_user_id,
+            session_name=session_name,
+            phone_number="+905550001122",
+            status=SessionStatus.CONNECTED,
+        )
+        db.add(session)
+        await db.commit()
+
+    headers = {
+        "X-Test-User-Id": test_user_id,
+        "X-Test-User-Email": "testuser@tezlify.com",
+    }
+
+    mock_chats = [
+        {
+            "id": "120363045678912345@g.us",
+            "phone": "120363045678912345@g.us",
+            "name": "3hacker",
+            "is_group": True,
+            "unread_count": 0,
+            "conversation_timestamp": 1725700000,
+            "last_message_preview": "Hey hackers!",
+            "avatar_url": "https://pps.whatsapp.net/v/t61/mock_group_avatar.jpg",
+        }
+    ]
+
+    transport = ASGITransport(app=app)
+    with patch("backend.app.services.whatsapp_gateway_client.gateway_client.get_session_chats", new_callable=AsyncMock) as mock_get_chats:
+        mock_get_chats.return_value = mock_chats
+
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            res = await ac.post("/api/v1/conversations/sync-whatsapp", headers=headers)
+            assert res.status_code == 200
+            data = res.json()
+            assert data["status"] == "success"
+            assert data["synced_count"] >= 1
+
+            # Verify group conversation is present in conversation list with avatar and is_group flag
+            list_res = await ac.get("/api/v1/conversations", headers=headers)
+            assert list_res.status_code == 200
+            convs = list_res.json()
+            group_conv = next((c for c in convs if c["lead_name"] == "3hacker"), None)
+            assert group_conv is not None
+            assert group_conv["is_group"] is True
+            assert group_conv["lead_avatar_url"] == "https://pps.whatsapp.net/v/t61/mock_group_avatar.jpg"
+            assert group_conv["last_message_preview"] == "Hey hackers!"

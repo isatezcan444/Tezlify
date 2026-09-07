@@ -3,6 +3,7 @@ WhatsApp Sync Service.
 Coordinates synchronization of WhatsApp chat history and live two-way message mirroring
 between Baileys wa-gateway, Leads, Conversations, and Messages.
 """
+import time
 import logging
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
@@ -40,39 +41,110 @@ class WhatsAppSyncService:
         cls,
         db: AsyncSession,
         user_id: Optional[str],
-        phone_e164: str,
+        phone_e164: Optional[str] = None,
         contact_name: Optional[str] = None,
+        is_group: bool = False,
+        group_jid: Optional[str] = None,
+        avatar_url: Optional[str] = None,
+        conversation_timestamp: Optional[datetime] = None,
     ) -> tuple[Lead, Conversation]:
         """
         Idempotently resolves or provisions a Lead and an active WHATSAPP Conversation.
+        Supports both individual contacts and WhatsApp groups (@g.us).
         Strictly scoped to the tenant's user_id.
         """
-        # 1. Resolve or create Lead
-        lead_stmt = select(Lead).where(
-            Lead.phone_e164 == phone_e164,
-            Lead.user_id == user_id,
+        resolved_is_group = bool(
+            is_group
+            or (group_jid and group_jid.endswith("@g.us"))
+            or (phone_e164 and phone_e164.endswith("@g.us"))
         )
-        lead_res = await db.execute(lead_stmt)
-        lead = lead_res.scalar_one_or_none()
 
-        if not lead:
-            display_name = contact_name.strip() if contact_name and contact_name.strip() else f"WhatsApp ({phone_e164})"
-            lead = Lead(
-                user_id=user_id,
-                name=display_name,
-                phone=phone_e164,
-                phone_e164=phone_e164,
-                is_whatsapp_eligible=True,
-                category="WhatsApp Sohbeti",
-                notes=f"WhatsApp üzerinden senkronize edildi ({datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')})",
-                status=LeadStatus.CONTACTED,
+        lead: Optional[Lead] = None
+
+        if resolved_is_group:
+            effective_jid = group_jid or phone_e164 or ""
+            lead_stmt = select(Lead).where(
+                Lead.phone == effective_jid,
+                Lead.user_id == user_id,
             )
-            db.add(lead)
-            await db.flush()
-        elif contact_name and contact_name.strip() and (not lead.name or lead.name.startswith("WhatsApp (")):
-            # Update placeholder name if real contact name arrived from WhatsApp
-            lead.name = contact_name.strip()
-            await db.flush()
+            lead_res = await db.execute(lead_stmt)
+            lead = lead_res.scalar_one_or_none()
+
+            if not lead:
+                display_name = (contact_name or "").strip() or "WhatsApp Grubu"
+                custom_data = {"is_group": True, "jid": effective_jid}
+                if avatar_url:
+                    custom_data["avatar_url"] = avatar_url
+
+                lead = Lead(
+                    user_id=user_id,
+                    name=display_name,
+                    phone=effective_jid,
+                    phone_e164=None,
+                    is_whatsapp_eligible=True,
+                    category="WhatsApp Grubu",
+                    notes=f"WhatsApp Grubu senkronize edildi ({datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')})",
+                    custom_data=custom_data,
+                    status=LeadStatus.CONTACTED,
+                )
+                db.add(lead)
+                await db.flush()
+            else:
+                updated = False
+                if contact_name and contact_name.strip() and lead.name in ("WhatsApp Grubu", "", None):
+                    lead.name = contact_name.strip()
+                    updated = True
+                if avatar_url:
+                    cdata = dict(lead.custom_data or {})
+                    if cdata.get("avatar_url") != avatar_url:
+                        cdata["avatar_url"] = avatar_url
+                        lead.custom_data = cdata
+                        updated = True
+                if updated:
+                    await db.flush()
+        else:
+            if not phone_e164:
+                raise ValueError("phone_e164 is required for individual direct chats.")
+
+            lead_stmt = select(Lead).where(
+                Lead.phone_e164 == phone_e164,
+                Lead.user_id == user_id,
+            )
+            lead_res = await db.execute(lead_stmt)
+            lead = lead_res.scalar_one_or_none()
+
+            if not lead:
+                display_name = contact_name.strip() if contact_name and contact_name.strip() else f"WhatsApp ({phone_e164})"
+                custom_data = {}
+                if avatar_url:
+                    custom_data["avatar_url"] = avatar_url
+
+                lead = Lead(
+                    user_id=user_id,
+                    name=display_name,
+                    phone=phone_e164,
+                    phone_e164=phone_e164,
+                    is_whatsapp_eligible=True,
+                    category="WhatsApp Sohbeti",
+                    notes=f"WhatsApp üzerinden senkronize edildi ({datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')})",
+                    custom_data=custom_data if custom_data else None,
+                    status=LeadStatus.CONTACTED,
+                )
+                db.add(lead)
+                await db.flush()
+            else:
+                updated = False
+                if contact_name and contact_name.strip() and (not lead.name or lead.name.startswith("WhatsApp (")):
+                    lead.name = contact_name.strip()
+                    updated = True
+                if avatar_url:
+                    cdata = dict(lead.custom_data or {})
+                    if cdata.get("avatar_url") != avatar_url:
+                        cdata["avatar_url"] = avatar_url
+                        lead.custom_data = cdata
+                        updated = True
+                if updated:
+                    await db.flush()
 
         # 2. Resolve or create Conversation
         conv_stmt = select(Conversation).where(
@@ -83,6 +155,8 @@ class WhatsAppSyncService:
         conv_res = await db.execute(conv_stmt)
         conv = conv_res.scalar_one_or_none()
 
+        naive_conv_time = _to_naive_utc(conversation_timestamp)
+
         if not conv:
             conv = Conversation(
                 user_id=user_id,
@@ -90,10 +164,15 @@ class WhatsAppSyncService:
                 channel="WHATSAPP",
                 status=ConversationStatus.ACTIVE,
                 unread_count=0,
-                last_message_at=_to_naive_utc(datetime.now(timezone.utc)),
+                last_message_at=naive_conv_time or _to_naive_utc(datetime.now(timezone.utc)),
             )
             db.add(conv)
             await db.flush()
+        elif naive_conv_time:
+            current_last = _to_naive_utc(conv.last_message_at)
+            if not current_last or naive_conv_time > current_last:
+                conv.last_message_at = naive_conv_time
+                await db.flush()
 
         return lead, conv
 
@@ -105,22 +184,25 @@ class WhatsAppSyncService:
         event_data: Dict[str, Any],
     ) -> Dict[str, Any]:
         """
-        Processes a live single-message event (inbound from contact OR outbound from user's phone).
+        Processes a live single-message event (inbound from contact/group OR outbound from user's phone).
         """
         raw_phone = event_data.get("phone")
         message_text = (event_data.get("message") or "").strip()
         from_me = bool(event_data.get("fromMe", False))
         wa_message_id = event_data.get("wa_message_id")
         timestamp = event_data.get("timestamp")
+        is_group = bool(event_data.get("is_group", False) or (raw_phone and raw_phone.endswith("@g.us")))
 
         if not raw_phone or not message_text:
             return {"status": "ignored", "reason": "Missing phone or message"}
 
-        phone_data = PhoneService.normalize_to_e164(raw_phone)
-        if not phone_data:
-            return {"status": "ignored", "reason": "Invalid phone format"}
-
-        contact_e164 = phone_data["e164"]
+        if is_group:
+            contact_e164 = raw_phone
+        else:
+            phone_data = PhoneService.normalize_to_e164(raw_phone)
+            if not phone_data:
+                return {"status": "ignored", "reason": "Invalid phone format"}
+            contact_e164 = phone_data["e164"]
 
         # Resolve WhatsApp session to find user_id & sender phone
         sess_stmt = select(WhatsAppSession).where(WhatsAppSession.session_name == session_name)
@@ -135,7 +217,9 @@ class WhatsAppSyncService:
         lead, conv = await cls.get_or_create_lead_and_conversation(
             db=db,
             user_id=user_id,
-            phone_e164=contact_e164,
+            phone_e164=None if is_group else contact_e164,
+            is_group=is_group,
+            group_jid=contact_e164 if is_group else None,
         )
 
         # Check idempotency by wa_message_id
@@ -228,36 +312,94 @@ class WhatsAppSyncService:
         # 1. Provision Leads & Conversations for all chats
         chat_map: Dict[str, Conversation] = {}
         for chat in chats:
-            phone_raw = chat.get("phone") or chat.get("id", "").split("@")[0]
-            phone_data = PhoneService.normalize_to_e164(phone_raw)
-            if not phone_data:
-                continue
-            e164 = phone_data["e164"]
+            chat_id = chat.get("id") or ""
+            phone_raw = chat.get("phone") or (chat_id.split("@")[0] if "@" in chat_id else chat_id)
+            is_group = bool(
+                chat.get("is_group")
+                or chat_id.endswith("@g.us")
+                or (phone_raw and phone_raw.endswith("@g.us"))
+            )
+
+            contact_key = ""
+            e164 = None
+            if is_group:
+                contact_key = chat_id if chat_id.endswith("@g.us") else phone_raw
+            else:
+                phone_data = PhoneService.normalize_to_e164(phone_raw)
+                if not phone_data:
+                    continue
+                e164 = phone_data["e164"]
+                contact_key = e164
+
+            raw_ts = chat.get("conversation_timestamp")
+            conv_time = None
+            if raw_ts:
+                try:
+                    ts_num = float(raw_ts["low"] if isinstance(raw_ts, dict) and "low" in raw_ts else raw_ts)
+                    if ts_num > 1e11:
+                        ts_num /= 1000
+                    conv_time = datetime.fromtimestamp(ts_num, tz=timezone.utc)
+                except Exception:
+                    pass
+
             lead, conv = await cls.get_or_create_lead_and_conversation(
                 db=db,
                 user_id=user_id,
                 phone_e164=e164,
                 contact_name=chat.get("name"),
+                is_group=is_group,
+                group_jid=contact_key if is_group else None,
+                avatar_url=chat.get("avatar_url"),
+                conversation_timestamp=conv_time,
             )
-            chat_map[e164] = conv
+            chat_map[contact_key] = conv
+
+            # If chat came with last_message_preview, ensure there's at least one message in conversation
+            preview_text = (chat.get("last_message_preview") or "").strip()
+            if preview_text:
+                existing_msg_stmt = select(Message.id).where(Message.conversation_id == conv.id).limit(1)
+                has_existing = (await db.execute(existing_msg_stmt)).scalar_one_or_none()
+                if not has_existing:
+                    msg_time = _to_naive_utc(conv_time) or _to_naive_utc(datetime.now(timezone.utc))
+                    init_msg = Message(
+                        user_id=user_id,
+                        conversation_id=conv.id,
+                        direction=MessageDirection.INBOUND,
+                        message_type=MessageType.TEXT,
+                        body=preview_text,
+                        wa_message_id=f"wa_init_{conv.id}_{int(time.time())}",
+                        sender_phone=contact_key,
+                        recipient_phone=my_phone,
+                        status=ConversationMessageStatus.RECEIVED,
+                        created_at=msg_time,
+                    )
+                    db.add(init_msg)
 
         # 2. Ingest Messages
         imported_count = 0
         for m in messages:
-            phone_raw = m.get("phone")
-            phone_data = PhoneService.normalize_to_e164(phone_raw)
-            if not phone_data:
-                continue
-            e164 = phone_data["e164"]
+            phone_raw = m.get("phone") or ""
+            is_group = bool(m.get("is_group") or phone_raw.endswith("@g.us"))
+            if is_group:
+                contact_key = phone_raw
+                e164 = None
+            else:
+                phone_data = PhoneService.normalize_to_e164(phone_raw)
+                if not phone_data:
+                    continue
+                e164 = phone_data["e164"]
+                contact_key = e164
 
-            conv = chat_map.get(e164)
+            conv = chat_map.get(contact_key)
             if not conv:
                 _, conv = await cls.get_or_create_lead_and_conversation(
                     db=db,
                     user_id=user_id,
                     phone_e164=e164,
+                    is_group=is_group,
+                    group_jid=contact_key if is_group else None,
                 )
-                chat_map[e164] = conv
+                chat_map[contact_key] = conv
 
             wa_id = m.get("wa_message_id")
             if wa_id:
@@ -272,7 +414,13 @@ class WhatsAppSyncService:
                 continue
 
             ts = m.get("timestamp")
-            msg_time = datetime.fromtimestamp(ts, tz=timezone.utc).replace(tzinfo=None) if ts else datetime.now(timezone.utc).replace(tzinfo=None)
+            try:
+                ts_num = float(ts["low"] if isinstance(ts, dict) and "low" in ts else ts) if ts else None
+                if ts_num and ts_num > 1e11:
+                    ts_num /= 1000
+                msg_time = datetime.fromtimestamp(ts_num, tz=timezone.utc).replace(tzinfo=None) if ts_num else datetime.now(timezone.utc).replace(tzinfo=None)
+            except Exception:
+                msg_time = datetime.now(timezone.utc).replace(tzinfo=None)
 
             new_msg = Message(
                 user_id=user_id,
@@ -281,8 +429,8 @@ class WhatsAppSyncService:
                 message_type=MessageType.TEXT,
                 body=text,
                 wa_message_id=wa_id,
-                sender_phone=my_phone if from_me else e164,
-                recipient_phone=e164 if from_me else my_phone,
+                sender_phone=my_phone if from_me else contact_key,
+                recipient_phone=contact_key if from_me else my_phone,
                 status=ConversationMessageStatus.SENT if from_me else ConversationMessageStatus.RECEIVED,
                 created_at=msg_time,
             )

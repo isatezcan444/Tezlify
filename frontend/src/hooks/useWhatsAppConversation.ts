@@ -131,25 +131,66 @@ export function useWhatsAppConversation({
     }
   }, [conversation]);
 
-  // Send message helper
+  // Send message helper with optimistic instant UI feedback (WhatsApp Web snappy experience)
   const sendMessage = useCallback(async (text: string) => {
     if (!conversation) return;
-    const resMsg = await ApiClient.sendMessage(conversation.id, text);
+    const tempId = -Date.now();
+    const tempCreatedAt = new Date().toISOString();
+    const optimisticMsg: Message = {
+      id: tempId,
+      conversation_id: conversation.id,
+      direction: 'OUTBOUND',
+      message_type: 'TEXT',
+      body: text,
+      status: 'SENT',
+      created_at: tempCreatedAt,
+      sender_phone: 'ME',
+      recipient_phone: conversation.lead_phone || '',
+    };
+
+    // 1. Instant append (0ms perceived latency)
     setConversation((prev) => {
       if (!prev) return prev;
-      const isDuplicate = prev.messages.some(
-        (m) => (resMsg.wa_message_id && m.wa_message_id === resMsg.wa_message_id) || m.id === resMsg.id
-      );
-      if (isDuplicate) return prev;
       return {
         ...prev,
         status: 'ACTIVE',
-        last_message_at: resMsg.created_at,
-        last_message_preview: resMsg.body,
-        messages: [...prev.messages, resMsg],
+        last_message_at: tempCreatedAt,
+        last_message_preview: text,
+        messages: [...prev.messages, optimisticMsg],
       };
     });
-    return resMsg;
+
+    try {
+      // 2. Dispatch to backend & gateway
+      const resMsg = await ApiClient.sendMessage(conversation.id, text);
+
+      // 3. Reconcile temporary message with real database message
+      setConversation((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          status: 'ACTIVE',
+          last_message_at: resMsg.created_at,
+          last_message_preview: resMsg.body,
+          messages: prev.messages.map((m) => (m.id === tempId ? resMsg : m)),
+        };
+      });
+      return resMsg;
+    } catch (err: any) {
+      // 4. Mark optimistic message as failed on error
+      setConversation((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          messages: prev.messages.map((m) =>
+            m.id === tempId
+              ? { ...m, status: 'FAILED', error_message: err.message || 'Gönderilemedi' }
+              : m
+          ),
+        };
+      });
+      throw err;
+    }
   }, [conversation]);
 
   // Send template helper

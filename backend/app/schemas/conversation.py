@@ -93,6 +93,8 @@ class ConversationResponse(ConversationBase):
     # Enriched Lead attributes
     lead_name: Optional[str] = None
     lead_phone: Optional[str] = None
+    lead_avatar_url: Optional[str] = None
+    is_group: bool = False
     last_message_preview: Optional[str] = None
 
     # 24-hour Customer Care Window status

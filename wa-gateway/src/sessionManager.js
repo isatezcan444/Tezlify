@@ -46,19 +46,66 @@ async function notifyBackend(sessionName, endpoint, payload) {
 }
 
 /**
+ * Safely converts Baileys Long objects, milliseconds or number timestamps to Unix epoch seconds.
+ */
+function toUnixTimestamp(ts) {
+    if (!ts) return 0;
+    if (typeof ts === 'object' && ts.low !== undefined) {
+        return Number(ts.low);
+    }
+    if (typeof ts === 'number') {
+        return ts > 1e11 ? Math.floor(ts / 1000) : ts;
+    }
+    const n = Number(ts);
+    return isNaN(n) ? 0 : (n > 1e11 ? Math.floor(n / 1000) : n);
+}
+
+/**
+ * Validates if JID is a supported WhatsApp contact or group chat.
+ */
+function isSupportedJid(jid) {
+    if (!jid || typeof jid !== 'string') return false;
+    return jid.endsWith('@s.whatsapp.net') || jid.endsWith('@g.us');
+}
+
+/**
+ * Fetches and caches WhatsApp avatar URL.
+ */
+async function fetchAvatar(sessionData, jid) {
+    if (!sessionData || !sessionData.sock || !jid) return null;
+    if (sessionData.avatars && sessionData.avatars.has(jid)) {
+        return sessionData.avatars.get(jid);
+    }
+    try {
+        const url = await sessionData.sock.profilePictureUrl(jid, 'preview');
+        if (url) {
+            if (!sessionData.avatars) sessionData.avatars = new Map();
+            sessionData.avatars.set(jid, url);
+            return url;
+        }
+    } catch (e) {
+        if (!sessionData.avatars) sessionData.avatars = new Map();
+        sessionData.avatars.set(jid, null);
+    }
+    return null;
+}
+
+/**
  * Updates or adds a contact in session memory.
  */
 function updateContact(sessionData, contact) {
     if (!contact || !contact.id) return;
     const jid = contact.id;
-    if (!jid.endsWith('@s.whatsapp.net')) return;
-    const name = contact.name || contact.notify || contact.verifiedName || '';
-    const phone = `+${jid.split('@')[0]}`;
+    if (!isSupportedJid(jid)) return;
+    const isGroup = jid.endsWith('@g.us');
+    const name = contact.name || contact.notify || contact.verifiedName || contact.subject || '';
+    const phone = isGroup ? jid : `+${jid.split('@')[0]}`;
     const existing = sessionData.contacts.get(jid) || {};
     sessionData.contacts.set(jid, {
         id: jid,
         phone,
-        name: name || existing.name || ''
+        name: name || existing.name || '',
+        isGroup
     });
 }
 
@@ -68,19 +115,22 @@ function updateContact(sessionData, contact) {
 function updateChat(sessionData, chat) {
     if (!chat || !chat.id) return;
     const jid = chat.id;
-    if (!jid.endsWith('@s.whatsapp.net')) return;
-    const phone = `+${jid.split('@')[0]}`;
+    if (!isSupportedJid(jid)) return;
+    const isGroup = jid.endsWith('@g.us');
+    const phone = isGroup ? jid : `+${jid.split('@')[0]}`;
     const existing = sessionData.chats.get(jid) || {};
     const contact = sessionData.contacts.get(jid) || {};
-    const name = chat.name || contact.name || existing.name || '';
+    const name = chat.name || chat.subject || contact.name || existing.name || (isGroup ? 'WhatsApp Grubu' : '');
     const unreadCount = chat.unreadCount ?? existing.unreadCount ?? 0;
-    const conversationTimestamp = chat.conversationTimestamp ?? existing.conversationTimestamp ?? Math.floor(Date.now() / 1000);
+    const rawTs = chat.conversationTimestamp ?? existing.conversationTimestamp;
+    const conversationTimestamp = toUnixTimestamp(rawTs) || Math.floor(Date.now() / 1000);
     const lastMessage = chat.lastMessageText || existing.lastMessage || '';
 
     sessionData.chats.set(jid, {
         id: jid,
         phone,
         name,
+        isGroup,
         unreadCount,
         conversationTimestamp,
         lastMessage
@@ -125,6 +175,7 @@ async function getOrCreateSession(sessionName) {
         sock: null,
         chats: new Map(),
         contacts: new Map(),
+        avatars: new Map(),
         createdAt: new Date().toISOString(),
         messagesSent: 0
     };
@@ -197,28 +248,57 @@ async function getOrCreateSession(sessionName) {
                 updateChat(sessionData, c);
             }
 
-            const validChats = (chats || [])
-                .filter(c => c.id && c.id.endsWith('@s.whatsapp.net'))
-                .map(c => {
-                    const contact = sessionData.contacts.get(c.id);
-                    return {
-                        id: c.id,
-                        phone: `+${c.id.split('@')[0]}`,
-                        name: c.name || contact?.name || ''
-                    };
-                });
+            // Update chats with latest message details from message history
+            for (const m of (messages || [])) {
+                const remoteJid = m.key?.remoteJid;
+                if (!isSupportedJid(remoteJid)) continue;
+                const text = extractMessageText(m.message);
+                const ts = toUnixTimestamp(m.messageTimestamp);
+                if (text && remoteJid) {
+                    const existingChat = sessionData.chats.get(remoteJid);
+                    if (existingChat) {
+                        if (!existingChat.conversationTimestamp || ts >= existingChat.conversationTimestamp) {
+                            existingChat.lastMessage = text;
+                            existingChat.conversationTimestamp = ts;
+                        }
+                    } else {
+                        updateChat(sessionData, {
+                            id: remoteJid,
+                            lastMessageText: text,
+                            conversationTimestamp: ts
+                        });
+                    }
+                }
+            }
+
+            const validChats = Array.from(sessionData.chats.values()).map(c => {
+                const contact = sessionData.contacts.get(c.id);
+                return {
+                    id: c.id,
+                    phone: c.phone,
+                    name: c.name || contact?.name || (c.isGroup ? 'WhatsApp Grubu' : ''),
+                    is_group: !!c.isGroup,
+                    conversation_timestamp: toUnixTimestamp(c.conversationTimestamp),
+                    last_message_preview: c.lastMessage || ''
+                };
+            });
+            validChats.sort((a, b) => (b.conversation_timestamp || 0) - (a.conversation_timestamp || 0));
 
             const validMessages = (messages || [])
                 .map(m => {
                     const remoteJid = m.key?.remoteJid || '';
+                    if (!isSupportedJid(remoteJid)) return null;
                     const text = extractMessageText(m.message);
-                    if (!remoteJid.endsWith('@s.whatsapp.net') || !text) return null;
+                    if (!text) return null;
+                    const isGroup = remoteJid.endsWith('@g.us');
+                    const phone = isGroup ? remoteJid : `+${remoteJid.split('@')[0]}`;
                     return {
                         wa_message_id: m.key?.id,
                         fromMe: !!m.key?.fromMe,
-                        phone: `+${remoteJid.split('@')[0]}`,
+                        phone: phone,
+                        is_group: isGroup,
                         message: text,
-                        timestamp: m.messageTimestamp
+                        timestamp: toUnixTimestamp(m.messageTimestamp)
                     };
                 })
                 .filter(Boolean);
@@ -260,6 +340,7 @@ async function getOrCreateSession(sessionName) {
         }
 
         if (connection === 'open') {
+            const alreadyConnected = sessionData.status === 'CONNECTED';
             sessionData.status = 'CONNECTED';
             sessionData.qr = null;
             sessionData.qrImage = null;
@@ -271,10 +352,12 @@ async function getOrCreateSession(sessionName) {
 
             console.log(`[WA-Gateway] Session ${sessionName} connected as ${sessionData.phone}`);
 
-            await notifyBackend(sessionName, 'session-status', {
-                status: 'CONNECTED',
-                phone: sessionData.phone
-            });
+            if (!alreadyConnected) {
+                await notifyBackend(sessionName, 'session-status', {
+                    status: 'CONNECTED',
+                    phone: sessionData.phone
+                });
+            }
         }
 
         if (connection === 'close') {
@@ -323,28 +406,29 @@ async function getOrCreateSession(sessionName) {
         }
     });
 
-    // Listen to live message events (inbound from contacts & outbound from user's phone)
+    // Listen to live message events (inbound from contacts/groups & outbound from user's phone)
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
         if (!messages || messages.length === 0) return;
 
         for (const msg of messages) {
             const remoteJid = msg.key?.remoteJid || '';
-            if (!remoteJid.endsWith('@s.whatsapp.net')) continue; // Ignore group chats, status updates
+            if (!isSupportedJid(remoteJid)) continue; // Allow @s.whatsapp.net and @g.us
 
-            const contactDigits = remoteJid.split('@')[0];
-            const contactPhone = `+${contactDigits}`;
+            const isGroup = remoteJid.endsWith('@g.us');
+            const contactPhone = isGroup ? remoteJid : `+${remoteJid.split('@')[0]}`;
             const text = extractMessageText(msg.message);
 
             if (!text) continue;
 
             const fromMe = !!msg.key?.fromMe;
+            const ts = toUnixTimestamp(msg.messageTimestamp) || Math.floor(Date.now() / 1000);
             console.log(`[WA-Gateway] Message (${fromMe ? 'Outbound phone' : 'Inbound'}) for ${contactPhone} on ${sessionName}: "${text}"`);
 
             // Update in-memory chat cache
             updateChat(sessionData, {
                 id: remoteJid,
                 lastMessageText: text,
-                conversationTimestamp: msg.messageTimestamp,
+                conversationTimestamp: ts,
                 unreadCount: fromMe ? 0 : ((sessionData.chats?.get(remoteJid)?.unreadCount || 0) + 1)
             });
 
@@ -352,18 +436,19 @@ async function getOrCreateSession(sessionName) {
             await notifyBackend(sessionName, 'message-event', {
                 fromMe: fromMe,
                 phone: contactPhone,
+                is_group: isGroup,
                 message: text,
-                wa_message_id: msg.key.id,
-                timestamp: msg.messageTimestamp
+                wa_message_id: msg.key?.id,
+                timestamp: ts
             });
 
-            // Backward compatibility for opt-out & lead reply processing
-            if (!fromMe) {
+            // Backward compatibility for opt-out & lead reply processing (DMs only)
+            if (!fromMe && !isGroup) {
                 await notifyBackend(sessionName, 'inbound', {
                     phone: contactPhone,
                     message: text,
-                    wa_message_id: msg.key.id,
-                    timestamp: msg.messageTimestamp
+                    wa_message_id: msg.key?.id,
+                    timestamp: ts
                 });
             }
         }
@@ -381,8 +466,8 @@ async function sendMessage(sessionName, phone, messageText, typingDelayMs = 0) {
         throw new Error(`WhatsApp hattı bağlı değil (Oturum: ${sessionName}, Durum: ${session ? session.status : 'BULUNAMADI'})`);
     }
 
-    const cleanPhone = phone.replace(/[^\d]/g, '');
-    const jid = `${cleanPhone}@s.whatsapp.net`;
+    const isGroup = phone.endsWith('@g.us');
+    const jid = isGroup ? phone : `${phone.replace(/[^\d]/g, '')}@s.whatsapp.net`;
 
     // Simulated human typing
     if (typingDelayMs > 0) {
@@ -398,6 +483,14 @@ async function sendMessage(sessionName, phone, messageText, typingDelayMs = 0) {
 
     const sent = await session.sock.sendMessage(jid, { text: messageText });
     session.messagesSent = (session.messagesSent || 0) + 1;
+
+    // Update in-memory chat immediately
+    updateChat(session, {
+        id: jid,
+        lastMessageText: messageText,
+        conversationTimestamp: Math.floor(Date.now() / 1000),
+        unreadCount: 0
+    });
 
     return {
         success: true,
@@ -543,30 +636,44 @@ async function refreshSessionQR(sessionName) {
 }
 
 /**
- * Returns all in-memory tracked chats for a session, sorted by latest activity.
+ * Returns all in-memory tracked chats for a session, enriched with avatars and sorted by latest activity.
  */
-function getSessionChats(sessionName) {
+async function getSessionChats(sessionName) {
     const session = activeSessions.get(sessionName);
     if (!session || !session.chats) return [];
 
     const chatList = Array.from(session.chats.values()).map((c) => {
         const contact = session.contacts?.get(c.id);
+        const name = c.name || contact?.name || (c.isGroup ? 'WhatsApp Grubu' : '');
         return {
             id: c.id,
             phone: c.phone,
-            name: c.name || contact?.name || '',
+            name: name,
+            is_group: !!c.isGroup,
             unread_count: c.unreadCount || 0,
-            conversation_timestamp: c.conversationTimestamp,
-            last_message_preview: c.lastMessage || ''
+            conversation_timestamp: toUnixTimestamp(c.conversationTimestamp),
+            last_message_preview: c.lastMessage || '',
+            avatar_url: session.avatars?.get(c.id) || null
         };
     });
 
+    // Sort strictly descending by latest message activity
     chatList.sort((a, b) => (b.conversation_timestamp || 0) - (a.conversation_timestamp || 0));
+
+    // Lazily fetch avatars in parallel for the top 50 active chats
+    const pendingAvatars = chatList.slice(0, 50).filter(c => !c.avatar_url);
+    if (pendingAvatars.length > 0 && session.sock) {
+        await Promise.allSettled(pendingAvatars.map(async (c) => {
+            const avatar = await fetchAvatar(session, c.id);
+            c.avatar_url = avatar;
+        }));
+    }
+
     return chatList;
 }
 
 /**
- * Pushes all known chats and contacts to the FastAPI backend webhook.
+ * Pushes all known chats, avatars, and timestamps to the FastAPI backend webhook.
  */
 async function syncSessionHistoryToBackend(sessionName) {
     const session = activeSessions.get(sessionName);
@@ -574,13 +681,17 @@ async function syncSessionHistoryToBackend(sessionName) {
         throw new Error(`Oturum bulunamadı: ${sessionName}`);
     }
 
-    const chats = getSessionChats(sessionName);
+    const chats = await getSessionChats(sessionName);
     if (chats.length > 0) {
         await notifyBackend(sessionName, 'history-sync', {
             chats: chats.map((c) => ({
                 id: c.id,
                 phone: c.phone,
-                name: c.name
+                name: c.name,
+                is_group: c.is_group,
+                avatar_url: c.avatar_url,
+                conversation_timestamp: c.conversation_timestamp,
+                last_message_preview: c.last_message_preview
             })),
             messages: []
         });

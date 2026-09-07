@@ -511,6 +511,10 @@ export const en = {
     guideline3Desc: 'Unique text and hash signature per recipient to avoid automated spam detection.',
     testPhonePlaceholder: '0532 123 45 67',
     testMessagePlaceholder: 'Test message...',
+    group: 'Group',
+    connectionActive: 'Multi-Device Active',
+    socketLive: 'Live Socket',
+    offline: 'Offline',
   },
   campaigns: {
     title: 'WhatsApp Campaigns',

@@ -116,6 +116,14 @@ async def list_conversations(
 
     result = []
     for conv, last_preview in rows:
+        lead_custom = conv.lead.custom_data or {} if conv.lead else {}
+        is_group = bool(
+            (conv.lead and (conv.lead.phone.endswith("@g.us") or conv.lead.category == "WhatsApp Grubu"))
+            or lead_custom.get("is_group")
+        )
+        lead_avatar = lead_custom.get("avatar_url")
+        lead_phone_display = (conv.lead.phone if is_group else conv.lead.phone_e164) if conv.lead else None
+
         item = ConversationResponse(
             id=conv.id,
             lead_id=conv.lead_id,
@@ -127,7 +135,9 @@ async def list_conversations(
             created_at=conv.created_at,
             updated_at=conv.updated_at,
             lead_name=conv.lead.name if conv.lead else None,
-            lead_phone=conv.lead.phone_e164 if conv.lead else None,
+            lead_phone=lead_phone_display,
+            lead_avatar_url=lead_avatar,
+            is_group=is_group,
             last_message_preview=last_preview,
         )
         result.append(item)
@@ -174,6 +184,14 @@ async def get_conversation(
     latest_msg_body = messages_dto[-1].body if messages_dto else None
     window_info = await WhatsAppOutboundService.check_24h_window(conv.id, db)
 
+    lead_custom = conv.lead.custom_data or {} if conv.lead else {}
+    is_group = bool(
+        (conv.lead and (conv.lead.phone.endswith("@g.us") or conv.lead.category == "WhatsApp Grubu"))
+        or lead_custom.get("is_group")
+    )
+    lead_avatar = lead_custom.get("avatar_url")
+    lead_phone_display = (conv.lead.phone if is_group else conv.lead.phone_e164) if conv.lead else None
+
     return ConversationDetailResponse(
         id=conv.id,
         lead_id=conv.lead_id,
@@ -185,7 +203,9 @@ async def get_conversation(
         created_at=conv.created_at,
         updated_at=conv.updated_at,
         lead_name=conv.lead.name if conv.lead else None,
-        lead_phone=conv.lead.phone_e164 if conv.lead else None,
+        lead_phone=lead_phone_display,
+        lead_avatar_url=lead_avatar,
+        is_group=is_group,
         last_message_preview=latest_msg_body,
         is_window_open=window_info["is_window_open"],
         last_inbound_at=window_info["last_inbound_at"],
@@ -708,12 +728,24 @@ async def sync_whatsapp_conversations(
         res = await WhatsAppSyncService.sync_history_batch(
             db=db,
             session_name=session.session_name,
-            chats=[{"id": c.get("id"), "phone": c.get("phone"), "name": c.get("name")} for c in chats],
+            chats=[
+                {
+                    "id": c.get("id"),
+                    "phone": c.get("phone"),
+                    "name": c.get("name"),
+                    "is_group": c.get("is_group"),
+                    "avatar_url": c.get("avatar_url"),
+                    "conversation_timestamp": c.get("conversation_timestamp"),
+                    "last_message_preview": c.get("last_message_preview"),
+                }
+                for c in chats
+            ],
             messages=[
                 {
                     "phone": c.get("phone"),
                     "message": c.get("last_message_preview"),
                     "fromMe": False,
+                    "is_group": c.get("is_group"),
                     "timestamp": c.get("conversation_timestamp"),
                 }
                 for c in chats

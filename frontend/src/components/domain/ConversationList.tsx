@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { MessageSquare, Archive, CheckCircle2, Inbox, Mail, MessageSquarePlus, RefreshCw } from 'lucide-react';
+import { MessageSquare, Archive, CheckCircle2, Inbox, Mail, MessageSquarePlus, RefreshCw, Users } from 'lucide-react';
 import { Conversation, ConversationStatus } from '../../types';
 import { Avatar } from '../ui/Avatar';
 import { Badge } from '../ui/badge';
@@ -189,13 +189,26 @@ export const ConversationList: React.FC<ConversationListProps> = ({
                     : 'hover:bg-slate-100/60 dark:hover:bg-white/[0.04]'
                 }`}
               >
-                <Avatar name={conv.lead_name || conv.lead_phone || 'Lead'} size="md" shape="rounded" />
+                <Avatar
+                  name={conv.lead_name || conv.lead_phone || 'Lead'}
+                  image={conv.lead_avatar_url}
+                  size="md"
+                  shape="rounded"
+                />
 
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center justify-between">
-                    <h4 className="font-bold text-xs text-slate-800 dark:text-slate-100 truncate">
-                      {conv.lead_name || conv.lead_phone || t('common.unnamedLead') || 'İsimsiz Müşteri'}
-                    </h4>
+                    <div className="flex items-center space-x-1.5 truncate">
+                      {conv.is_group && (
+                        <span className="shrink-0 inline-flex items-center gap-0.5 text-[9px] font-bold px-1.5 py-0.5 rounded-md bg-[#7367F0]/15 text-[#7367F0] dark:bg-[#7367F0]/25">
+                          <Users className="w-2.5 h-2.5" />
+                          <span>{t('whatsapp.group') || 'Grup'}</span>
+                        </span>
+                      )}
+                      <h4 className="font-bold text-xs text-slate-800 dark:text-slate-100 truncate">
+                        {conv.lead_name || conv.lead_phone || t('common.unnamedLead') || 'İsimsiz Müşteri'}
+                      </h4>
+                    </div>
                     <span className="text-[10px] text-slate-400 font-medium shrink-0 ml-1">
                       {formatTime(conv.last_message_at || conv.created_at)}
                     </span>

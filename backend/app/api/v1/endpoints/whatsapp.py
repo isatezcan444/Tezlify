@@ -449,6 +449,7 @@ async def handle_session_status_webhook(
         return {"status": "ignored", "reason": "Session not found"}
 
     if status_str == "CONNECTED":
+        was_already_connected = (session.status == SessionStatus.CONNECTED)
         session.status = SessionStatus.CONNECTED
         if phone:
             session.phone_number = phone
@@ -457,13 +458,14 @@ async def handle_session_status_webhook(
         session.battery_level = 100
         await db.commit()
 
-        await ws_manager.broadcast({
-            "event": "session_connected",
-            "session_id": session.id,
-            "session_name": session.session_name,
-            "phone": session.phone_number
-        })
-        logger.info(f"[Webhook] Session {session_name} marked CONNECTED (phone: {session.phone_number})")
+        if not was_already_connected:
+            await ws_manager.broadcast({
+                "event": "session_connected",
+                "session_id": session.id,
+                "session_name": session.session_name,
+                "phone": session.phone_number
+            })
+            logger.info(f"[Webhook] Session {session_name} marked CONNECTED (phone: {session.phone_number})")
     elif status_str == "DISCONNECTED":
         session.status = SessionStatus.DISCONNECTED
         session.is_phone_online = False

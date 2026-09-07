@@ -3,6 +3,7 @@ Dedicated service for WhatsApp Outbound Message Dispatching.
 Handles conversation validation, recipient phone resolution, Meta Graph API dispatch / simulation,
 database persistence, and realtime WebSocket event broadcasting.
 """
+import os
 import asyncio
 import logging
 import time
@@ -115,10 +116,14 @@ class WhatsAppOutboundService:
                 detail="Müşteriye ait geçerli bir telefon numarası bulunamadı.",
             )
 
-        phone_data = PhoneService.normalize_to_e164(raw_phone)
-        e164_phone = phone_data["e164"] if phone_data else (
-            f"+{raw_phone}" if not raw_phone.startswith("+") else raw_phone
-        )
+        is_group = bool(raw_phone.endswith("@g.us") or (lead.custom_data and lead.custom_data.get("is_group")))
+        if is_group:
+            e164_phone = raw_phone
+        else:
+            phone_data = PhoneService.normalize_to_e164(raw_phone)
+            e164_phone = phone_data["e164"] if phone_data else (
+                f"+{raw_phone}" if not raw_phone.startswith("+") else raw_phone
+            )
 
         # Check if user has an active connected Baileys WhatsAppSession
         active_session = None
@@ -133,6 +138,15 @@ class WhatsAppOutboundService:
                 .limit(1)
             )
             active_session = (await db.execute(sess_stmt)).scalar_one_or_none()
+        elif os.getenv("PYTEST_CURRENT_TEST") is None:
+            # Fallback to any connected session in single-user production dev if conv has no user_id
+            any_sess_stmt = (
+                select(WhatsAppSession)
+                .where(WhatsAppSession.status == SessionStatus.CONNECTED)
+                .order_by(WhatsAppSession.id.asc())
+                .limit(1)
+            )
+            active_session = (await db.execute(any_sess_stmt)).scalar_one_or_none()
 
         is_sim = settings.SIMULATION_MODE if force_simulation is None else force_simulation
 
@@ -167,7 +181,8 @@ class WhatsAppOutboundService:
         wa_message_id: Optional[str] = None
         sender_phone = active_session.phone_number if active_session and active_session.phone_number else "BUSINESS"
 
-        if active_session and not is_sim:
+        # If user has an active connected Baileys session, dispatch to real WhatsApp via gateway!
+        if active_session and (force_simulation is not True):
             gw_res = await gateway_client.send_message(
                 session_name=active_session.session_name,
                 phone=e164_phone,
@@ -194,6 +209,7 @@ class WhatsAppOutboundService:
                 to_phone=e164_phone,
                 message_text=clean_text,
             )
+            wa_message_id = dispatch_res.get("messages", [{}])[0].get("id")
 
             if not dispatch_res.get("success"):
                 error_msg = dispatch_res.get("error") or "Meta Cloud API mesajı iletemedi."

@@ -150,10 +150,15 @@ app.get('/api/sessions/:sessionName/status', (req, res) => {
 });
 
 // Get all tracked chats for session
-app.get('/api/sessions/:sessionName/chats', (req, res) => {
+app.get('/api/sessions/:sessionName/chats', async (req, res) => {
     const { sessionName } = req.params;
-    const chats = getSessionChats(sessionName);
-    res.json(chats);
+    try {
+        const chats = await getSessionChats(sessionName);
+        res.json(chats);
+    } catch (err) {
+        console.error(`[WA-Gateway] Failed to get chats for ${sessionName}:`, err.message);
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // Trigger on-demand sync of session history to backend

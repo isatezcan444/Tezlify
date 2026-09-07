@@ -190,7 +190,7 @@ class WhatsAppGatewayClient:
             "typingDelayMs": typing_delay_ms,
         }
         try:
-            async with httpx.AsyncClient(timeout=self._get_timeout(5.0)) as client:
+            async with httpx.AsyncClient(timeout=self._get_timeout(15.0)) as client:
                 res = await client.post(url, json=payload, headers=self._headers())
                 if res.status_code == 200:
                     self._last_unreachable_time = 0.0

@@ -302,6 +302,8 @@ export interface Conversation {
   updated_at: string;
   lead_name?: string;
   lead_phone?: string;
+  lead_avatar_url?: string;
+  is_group?: boolean;
   last_message_preview?: string;
   is_window_open?: boolean;
   last_inbound_at?: string;

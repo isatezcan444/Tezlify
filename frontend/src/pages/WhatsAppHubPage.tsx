@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { 
   Smartphone, 
@@ -28,7 +28,8 @@ import {
   Copy,
   KeyRound,
   RefreshCw,
-  MessageSquarePlus
+  MessageSquarePlus,
+  Users
 } from 'lucide-react';
 import { ApiClient } from '../api/client';
 import { WhatsAppSession, MessageLog, Conversation, ConversationStatus, Lead } from '../types';
@@ -239,6 +240,11 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
 
   // New Line / QR & Pairing Code Modal
   const [isQRModalOpen, setIsQRModalOpen] = useState(false);
+  const isQRModalOpenRef = useRef(false);
+  useEffect(() => {
+    isQRModalOpenRef.current = isQRModalOpen;
+  }, [isQRModalOpen]);
+
   const [isCreatingSession, setIsCreatingSession] = useState(false);
   const [pairingSessionId, setPairingSessionId] = useState<number | null>(null);
   const [isPairingSuccess, setIsPairingSuccess] = useState(false);
@@ -336,15 +342,17 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       if (eventData?.event === 'inbound_reply') {
         fetchConversations();
       } else if (eventData?.event === 'session_connected') {
-        fetchSessionsAndLogs();
+        fetchSessionsAndLogs(true);
         onRefreshStats();
-        setIsPairingSuccess(true);
-        toast.success(t('whatsapp.qrPairSuccess'), t('common.success'));
-        setTimeout(() => {
-          setIsQRModalOpen(false);
-        }, 1500);
+        if (isQRModalOpenRef.current) {
+          setIsPairingSuccess(true);
+          toast.success(t('whatsapp.qrPairSuccess'), t('common.success'));
+          setTimeout(() => {
+            setIsQRModalOpen(false);
+          }, 1500);
+        }
       } else if (eventData?.event === 'session_disconnected') {
-        fetchSessionsAndLogs();
+        fetchSessionsAndLogs(true);
         onRefreshStats();
       } else if (eventData?.event === 'session_qr_updated') {
         setSessions((prev) =>
@@ -391,20 +399,23 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
 
   // Polling fallback to guarantee state progression when QR modal is open
   useEffect(() => {
-    if (!isQRModalOpen || !pairingSessionId) return;
+    if (!isQRModalOpen || !pairingSessionId || isPairingSuccess) return;
 
     let isMounted = true;
-    const interval = setInterval(async () => {
+    let pollTimer: ReturnType<typeof setInterval> | null = null;
+
+    pollTimer = setInterval(async () => {
       try {
         const res = await ApiClient.getSessionQr(pairingSessionId);
         if (!isMounted) return;
         if (res.status === 'CONNECTED') {
+          if (pollTimer) clearInterval(pollTimer);
           setIsPairingSuccess(true);
           toast.success(t('whatsapp.qrPairSuccess'), t('common.success'));
-          fetchSessionsAndLogs();
+          fetchSessionsAndLogs(true);
           onRefreshStats();
           setTimeout(() => {
-            setIsQRModalOpen(false);
+            if (isMounted) setIsQRModalOpen(false);
           }, 1500);
         } else if (res.qr_code) {
           setSessions((prev) => {
@@ -422,9 +433,9 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
 
     return () => {
       isMounted = false;
-      clearInterval(interval);
+      if (pollTimer) clearInterval(pollTimer);
     };
-  }, [isQRModalOpen, pairingSessionId]);
+  }, [isQRModalOpen, pairingSessionId, isPairingSuccess]);
 
   const handlePresetSelect = (presetKey: 'ultra_safe' | 'standard_balanced' | 'fast_warmed') => {
     const presetData = ANTI_BAN_PRESETS[presetKey];
@@ -734,9 +745,20 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                 {/* Active Chat Header */}
                 <div className="p-3.5 border-b border-slate-200/80 dark:border-white/[0.08] bg-slate-50/50 dark:bg-black/20 flex items-center justify-between shrink-0">
                   <div className="flex items-center space-x-3">
-                    <Avatar name={selectedConv.lead_name || selectedConv.lead_phone || 'Lead'} size="md" shape="rounded" />
+                    <Avatar
+                      name={selectedConv.lead_name || selectedConv.lead_phone || 'Lead'}
+                      image={selectedConv.lead_avatar_url}
+                      size="md"
+                      shape="rounded"
+                    />
                     <div>
                       <div className="flex items-center space-x-2">
+                        {selectedConv.is_group && (
+                          <span className="shrink-0 inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-md bg-[#7367F0]/15 text-[#7367F0] dark:bg-[#7367F0]/25">
+                            <Users className="w-3 h-3" />
+                            <span>{t('whatsapp.group') || 'Grup'}</span>
+                          </span>
+                        )}
                         <h4 className="font-extrabold text-sm text-slate-800 dark:text-white">
                           {selectedConv.lead_name || selectedConv.lead_phone || t('common.unnamedLead') || 'İsimsiz Müşteri'}
                         </h4>

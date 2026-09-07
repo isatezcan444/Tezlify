@@ -94,11 +94,15 @@ export const SessionCard: React.FC<SessionCardProps> = ({
           </div>
 
           <div className="flex items-center justify-between text-[10px] text-slate-400 pt-1 font-semibold">
-            <span className="flex items-center gap-1">
-              <BatteryCharging className="w-3 h-3 text-[#28C76F]" />
-              {t('whatsapp.battery')}: %{session.battery_level || 90}
+            <span className="flex items-center gap-1.5">
+              <span className={`w-2 h-2 rounded-full ${isConnected ? 'bg-[#28C76F] animate-pulse' : 'bg-slate-400'}`} />
+              <span className={isConnected ? 'text-[#28C76F] font-bold' : 'text-slate-400 font-medium'}>
+                {isConnected ? (t('whatsapp.connectionActive') || 'Multi-Device Aktif') : (t('whatsapp.disconnected') || 'Bağlantı Yok')}
+              </span>
             </span>
-            <span>{t('whatsapp.batteryHealthy')}</span>
+            <span className="font-mono text-[10px] text-slate-400">
+              {isConnected ? (t('whatsapp.socketLive') || 'Canlı Soket') : (t('whatsapp.offline') || 'Çevrimdışı')}
+            </span>
           </div>
         </div>
       </div>

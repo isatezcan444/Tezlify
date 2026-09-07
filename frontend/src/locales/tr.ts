@@ -511,6 +511,10 @@ export const tr = {
     guideline3Desc: 'Her alıcıya giden mesajın metin ve hash imzası farklılaşarak spam filtrelerine takılma riski minimize edilir.',
     testPhonePlaceholder: '0532 123 45 67',
     testMessagePlaceholder: 'Test mesajı...',
+    group: 'Grup',
+    connectionActive: 'Multi-Device Aktif',
+    socketLive: 'Canlı Soket',
+    offline: 'Çevrimdışı',
   },
   campaigns: {
     title: 'WhatsApp Kampanyaları',
