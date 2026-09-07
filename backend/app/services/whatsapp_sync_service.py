@@ -67,8 +67,8 @@ class WhatsAppSyncService:
                 Lead.phone == effective_jid,
                 Lead.user_id == user_id,
             )
-            lead_res = await db.execute(lead_stmt)
-            lead = lead_res.scalar_one_or_none()
+            lead_res = await db.execute(lead_stmt.limit(1))
+            lead = lead_res.scalars().first()
 
             if not lead:
                 display_name = (contact_name or "").strip() or "WhatsApp Grubu"
@@ -110,8 +110,8 @@ class WhatsAppSyncService:
                 Lead.phone_e164 == phone_e164,
                 Lead.user_id == user_id,
             )
-            lead_res = await db.execute(lead_stmt)
-            lead = lead_res.scalar_one_or_none()
+            lead_res = await db.execute(lead_stmt.limit(1))
+            lead = lead_res.scalars().first()
 
             if not lead:
                 display_name = contact_name.strip() if contact_name and contact_name.strip() else f"WhatsApp ({phone_e164})"
@@ -152,8 +152,7 @@ class WhatsAppSyncService:
             Conversation.channel == "WHATSAPP",
             Conversation.user_id == user_id,
         )
-        conv_res = await db.execute(conv_stmt)
-        conv = conv_res.scalar_one_or_none()
+        conv = (await db.execute(conv_stmt.limit(1))).scalars().first()
 
         naive_conv_time = _to_naive_utc(conversation_timestamp)
 
@@ -258,8 +257,7 @@ class WhatsAppSyncService:
             if not sender_name and participant_e164:
                 # Try to resolve the sender's real name from the leads table
                 lead_stmt = select(Lead).where(Lead.phone_e164 == participant_e164, Lead.user_id == user_id)
-                lead_res = await db.execute(lead_stmt)
-                participant_lead = lead_res.scalar_one_or_none()
+                participant_lead = (await db.execute(lead_stmt.limit(1))).scalars().first()
                 if participant_lead and participant_lead.name and not participant_lead.name.startswith("WhatsApp ("):
                     sender_name = participant_lead.name
                 else:
@@ -489,8 +487,7 @@ class WhatsAppSyncService:
 
                 if not sender_name and participant_e164_h:
                     lead_stmt_h = select(Lead).where(Lead.phone_e164 == participant_e164_h, Lead.user_id == user_id)
-                    lead_res_h = await db.execute(lead_stmt_h)
-                    participant_lead_h = lead_res_h.scalar_one_or_none()
+                    participant_lead_h = (await db.execute(lead_stmt_h.limit(1))).scalars().first()
                     if participant_lead_h and participant_lead_h.name and not participant_lead_h.name.startswith("WhatsApp ("):
                         sender_name = participant_lead_h.name
                     else:
