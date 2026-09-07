@@ -1,6 +1,6 @@
 from backend.app.core.database import Base
 from backend.app.models.lead import Lead, LeadStatus, EntityType, VerificationStatus, ConfidenceLevel
-from backend.app.models.whatsapp_session import WhatsAppSession, SessionStatus
+from backend.app.models.whatsapp_session import WhatsAppSession, SessionStatus, WhatsAppSessionAuth
 from backend.app.models.campaign import Campaign, CampaignStatus
 from backend.app.models.campaign_group import CampaignGroup, campaign_group_leads
 from backend.app.models.message_log import MessageLog, MessageStatus
@@ -40,4 +40,5 @@ __all__ = [
     "MessageType",
     "ConversationMessageStatus",
     "Profile",
+    "WhatsAppSessionAuth",
 ]

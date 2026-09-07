@@ -2,6 +2,7 @@ import re
 import os
 import asyncio
 import logging
+import json
 from typing import List, Optional
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Body, Header, BackgroundTasks
@@ -11,7 +12,7 @@ from sqlalchemy import select, or_
 from backend.app.core.database import get_db, AsyncSessionLocal
 from backend.app.core.config import settings
 from backend.app.core.auth import AuthUser, get_current_user, get_user_filter
-from backend.app.models.whatsapp_session import WhatsAppSession, SessionStatus
+from backend.app.models.whatsapp_session import WhatsAppSession, SessionStatus, WhatsAppSessionAuth
 from backend.app.models.message_log import MessageLog, MessageStatus
 from backend.app.models.lead import Lead, LeadStatus
 from backend.app.models.blacklist import Blacklist
@@ -287,7 +288,16 @@ async def delete_session(
     for lead in leads:
         await db.delete(lead)
 
-    # 3. Delete the session itself
+    # 3. Delete session auth backup and the session itself
+    try:
+        auth_stmt = select(WhatsAppSessionAuth).where(WhatsAppSessionAuth.session_name == session_name)
+        auth_res = await db.execute(auth_stmt)
+        auth_row = auth_res.scalar_one_or_none()
+        if auth_row:
+            await db.delete(auth_row)
+    except Exception:
+        pass
+
     await db.delete(session)
     await db.commit()
 
@@ -590,5 +600,92 @@ async def handle_message_event_webhook(
         session_name=session_name,
         event_data=payload,
     )
+
+
+@router.post("/webhook/session-backup")
+async def backup_session_auth_webhook(
+    payload: dict = Body(...),
+    x_webhook_secret: Optional[str] = Header(None, alias="X-Webhook-Secret"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Persists Baileys multi-file auth credentials bundle into the database.
+    Ensures sessions survive server restarts and ephemeral container redeployments.
+    """
+    if not settings.WA_GATEWAY_WEBHOOK_SECRET or x_webhook_secret != settings.WA_GATEWAY_WEBHOOK_SECRET:
+        raise HTTPException(status_code=401, detail="Yetkisiz Webhook İsteği (Geçersiz Secret)")
+
+    session_name = payload.get("session_name")
+    auth_bundle = payload.get("auth_bundle")
+    if not session_name or not auth_bundle:
+        raise HTTPException(status_code=400, detail="session_name ve auth_bundle gereklidir")
+
+    stmt = select(WhatsAppSessionAuth).where(WhatsAppSessionAuth.session_name == session_name)
+    auth_row = (await db.execute(stmt)).scalar_one_or_none()
+    bundle_str = json.dumps(auth_bundle) if isinstance(auth_bundle, dict) else str(auth_bundle)
+
+    if not auth_row:
+        auth_row = WhatsAppSessionAuth(session_name=session_name, auth_bundle=bundle_str)
+        db.add(auth_row)
+    else:
+        auth_row.auth_bundle = bundle_str
+    await db.commit()
+    return {"status": "success", "session_name": session_name}
+
+
+@router.get("/webhook/session-restore/{session_name}")
+async def restore_session_auth_webhook(
+    session_name: str,
+    x_webhook_secret: Optional[str] = Header(None, alias="X-Webhook-Secret"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Fetches the persisted Baileys auth bundle for a specific session.
+    """
+    if not settings.WA_GATEWAY_WEBHOOK_SECRET or x_webhook_secret != settings.WA_GATEWAY_WEBHOOK_SECRET:
+        raise HTTPException(status_code=401, detail="Yetkisiz Webhook İsteği (Geçersiz Secret)")
+
+    stmt = select(WhatsAppSessionAuth).where(WhatsAppSessionAuth.session_name == session_name)
+    auth_row = (await db.execute(stmt)).scalar_one_or_none()
+    if not auth_row:
+        raise HTTPException(status_code=404, detail="Session backup not found")
+
+    try:
+        bundle = json.loads(auth_row.auth_bundle)
+    except Exception:
+        bundle = {}
+
+    return {
+        "status": "success",
+        "session_name": auth_row.session_name,
+        "auth_bundle": bundle,
+    }
+
+
+@router.get("/webhook/session-restore-all")
+async def restore_all_sessions_auth_webhook(
+    x_webhook_secret: Optional[str] = Header(None, alias="X-Webhook-Secret"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Fetches all persisted Baileys auth bundles to restore all sessions on wa-gateway startup.
+    """
+    if not settings.WA_GATEWAY_WEBHOOK_SECRET or x_webhook_secret != settings.WA_GATEWAY_WEBHOOK_SECRET:
+        raise HTTPException(status_code=401, detail="Yetkisiz Webhook İsteği (Geçersiz Secret)")
+
+    stmt = select(WhatsAppSessionAuth)
+    rows = (await db.execute(stmt)).scalars().all()
+    result = []
+    for r in rows:
+        try:
+            bundle = json.loads(r.auth_bundle)
+            result.append({
+                "session_name": r.session_name,
+                "auth_bundle": bundle,
+            })
+        except Exception:
+            continue
+
+    return result
 
 

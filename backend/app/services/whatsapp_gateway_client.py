@@ -35,8 +35,8 @@ class WhatsAppGatewayClient:
         return headers
 
     def _get_timeout(self, read_timeout: Optional[float] = None) -> httpx.Timeout:
-        """Returns a fast-fail connect timeout (0.4s) to eliminate hanging."""
-        return httpx.Timeout(timeout=read_timeout or self.timeout, connect=0.4)
+        """Returns a resilient connect timeout (5.0s) and specified read timeout."""
+        return httpx.Timeout(timeout=read_timeout or self.timeout, connect=5.0)
 
     def is_recently_offline(self) -> bool:
         """Returns True if the gateway failed connection within the last 3 seconds."""
@@ -190,7 +190,7 @@ class WhatsAppGatewayClient:
             "typingDelayMs": typing_delay_ms,
         }
         try:
-            async with httpx.AsyncClient(timeout=self._get_timeout(15.0)) as client:
+            async with httpx.AsyncClient(timeout=self._get_timeout(25.0)) as client:
                 res = await client.post(url, json=payload, headers=self._headers())
                 if res.status_code == 200:
                     self._last_unreachable_time = 0.0
@@ -226,7 +226,7 @@ class WhatsAppGatewayClient:
             return []
         url = f"{self.gateway_url}/api/sessions/{session_name}/chats"
         try:
-            async with httpx.AsyncClient(timeout=self._get_timeout(5.0)) as client:
+            async with httpx.AsyncClient(timeout=self._get_timeout(35.0)) as client:
                 res = await client.get(url, headers=self._headers())
                 if res.status_code == 200:
                     self._last_unreachable_time = 0.0
@@ -245,7 +245,7 @@ class WhatsAppGatewayClient:
             return {"success": False, "error": "Gateway offline"}
         url = f"{self.gateway_url}/api/sessions/{session_name}/sync"
         try:
-            async with httpx.AsyncClient(timeout=self._get_timeout(10.0)) as client:
+            async with httpx.AsyncClient(timeout=self._get_timeout(30.0)) as client:
                 res = await client.post(url, headers=self._headers())
                 if res.status_code == 200:
                     self._last_unreachable_time = 0.0

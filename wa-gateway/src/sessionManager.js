@@ -45,6 +45,103 @@ async function notifyBackend(sessionName, endpoint, payload) {
     }
 }
 
+// Map of debounce timers for backing up auth files to DB
+const backupDebounceTimers = new Map();
+
+/**
+ * Backs up all session credentials and keys to the database via webhook.
+ */
+function backupSessionAuth(sessionName) {
+    if (backupDebounceTimers.has(sessionName)) {
+        clearTimeout(backupDebounceTimers.get(sessionName));
+    }
+    const timer = setTimeout(async () => {
+        backupDebounceTimers.delete(sessionName);
+        try {
+            const sessionAuthDir = path.join(SESSIONS_DIR, sessionName);
+            if (!fs.existsSync(sessionAuthDir)) return;
+            const files = fs.readdirSync(sessionAuthDir);
+            const authBundle = {};
+            for (const file of files) {
+                if (file.endsWith('.json')) {
+                    try {
+                        const content = fs.readFileSync(path.join(sessionAuthDir, file), 'utf8');
+                        authBundle[file] = content;
+                    } catch (err) {}
+                }
+            }
+            if (authBundle['creds.json']) {
+                await notifyBackend(sessionName, 'session-backup', { auth_bundle: authBundle });
+                console.log(`[WA-Gateway] Backed up ${Object.keys(authBundle).length} auth files to database for ${sessionName}`);
+            }
+        } catch (e) {
+            console.warn(`[WA-Gateway] Auth backup failed for ${sessionName}:`, e.message);
+        }
+    }, 800);
+    backupDebounceTimers.set(sessionName, timer);
+}
+
+/**
+ * Restores session auth files from database backup into the local SESSIONS_DIR.
+ */
+async function restoreSessionFromDatabase(sessionName) {
+    const backendUrl = (process.env.BACKEND_URL || 'http://localhost:8000').replace(/\/$/, '');
+    const webhookSecret = process.env.WA_GATEWAY_WEBHOOK_SECRET || 'dev-webhook-secret';
+    try {
+        const res = await axios.get(`${backendUrl}/api/v1/whatsapp/webhook/session-restore/${encodeURIComponent(sessionName)}`, {
+            headers: { 'X-Webhook-Secret': webhookSecret },
+            timeout: 5000
+        });
+        if (res.data && res.data.auth_bundle) {
+            const sessionAuthDir = path.join(SESSIONS_DIR, sessionName);
+            if (!fs.existsSync(sessionAuthDir)) {
+                fs.mkdirSync(sessionAuthDir, { recursive: true });
+            }
+            for (const [file, content] of Object.entries(res.data.auth_bundle)) {
+                fs.writeFileSync(path.join(sessionAuthDir, file), content, 'utf8');
+            }
+            console.log(`[WA-Gateway] Restored ${Object.keys(res.data.auth_bundle).length} auth files from database for ${sessionName}`);
+            return true;
+        }
+    } catch (e) {
+        // Not found or network error
+    }
+    return false;
+}
+
+/**
+ * Restores all active sessions backed up in the database.
+ */
+async function restoreAllSessionsFromDatabase() {
+    const backendUrl = (process.env.BACKEND_URL || 'http://localhost:8000').replace(/\/$/, '');
+    const webhookSecret = process.env.WA_GATEWAY_WEBHOOK_SECRET || 'dev-webhook-secret';
+    try {
+        const res = await axios.get(`${backendUrl}/api/v1/whatsapp/webhook/session-restore-all`, {
+            headers: { 'X-Webhook-Secret': webhookSecret },
+            timeout: 6000
+        });
+        if (Array.isArray(res.data) && res.data.length > 0) {
+            for (const item of res.data) {
+                const sName = item.session_name;
+                const bundle = item.auth_bundle;
+                if (!sName || !bundle) continue;
+                const dir = path.join(SESSIONS_DIR, sName);
+                if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+                for (const [file, content] of Object.entries(bundle)) {
+                    fs.writeFileSync(path.join(dir, file), content, 'utf8');
+                }
+                console.log(`[WA-Gateway] Restored session files for ${sName} from database (${Object.keys(bundle).length} files)`);
+                await getOrCreateSession(sName).catch(err => {
+                    console.warn(`[WA-Gateway] Auto-start restored session ${sName} failed:`, err.message);
+                });
+            }
+        }
+    } catch (e) {
+        console.warn(`[WA-Gateway] Failed to restore sessions from database:`, e.message);
+    }
+}
+
+
 /**
  * Safely converts Baileys Long objects, milliseconds or number timestamps to Unix epoch seconds.
  */
@@ -69,7 +166,7 @@ function isSupportedJid(jid) {
 }
 
 /**
- * Fetches and caches WhatsApp avatar URL.
+ * Fetches and caches WhatsApp avatar URL with strict 2.5s timeout to prevent socket hanging.
  */
 async function fetchAvatar(sessionData, jid) {
     if (!sessionData || !sessionData.sock || !jid) return null;
@@ -77,15 +174,21 @@ async function fetchAvatar(sessionData, jid) {
         return sessionData.avatars.get(jid);
     }
     try {
-        const url = await sessionData.sock.profilePictureUrl(jid, 'preview');
+        const urlPromise = sessionData.sock.profilePictureUrl(jid, 'preview');
+        const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Avatar timeout')), 2500));
+        const url = await Promise.race([urlPromise, timeoutPromise]);
         if (url) {
             if (!sessionData.avatars) sessionData.avatars = new Map();
             sessionData.avatars.set(jid, url);
             return url;
         }
     } catch (e) {
-        if (!sessionData.avatars) sessionData.avatars = new Map();
-        sessionData.avatars.set(jid, null);
+        // If profile photo doesn't exist or is blocked, cache empty string to prevent redundant queries
+        if (e && (e.output?.statusCode === 404 || e.message?.includes('item-not-found') || e.message?.includes('not-authorized'))) {
+            if (!sessionData.avatars) sessionData.avatars = new Map();
+            sessionData.avatars.set(jid, '');
+        }
+        // If temporary timeout, do not poison cache so future sync can retry
     }
     return null;
 }
@@ -110,7 +213,7 @@ function updateContact(sessionData, contact) {
 }
 
 /**
- * Updates or adds a chat in session memory.
+ * Updates or adds a chat in session memory with strict sorting timestamps.
  */
 function updateChat(sessionData, chat) {
     if (!chat || !chat.id) return;
@@ -123,7 +226,7 @@ function updateChat(sessionData, chat) {
     const name = chat.name || chat.subject || contact.name || existing.name || (isGroup ? 'WhatsApp Grubu' : '');
     const unreadCount = chat.unreadCount ?? existing.unreadCount ?? 0;
     const rawTs = chat.conversationTimestamp ?? existing.conversationTimestamp;
-    const conversationTimestamp = toUnixTimestamp(rawTs) || Math.floor(Date.now() / 1000);
+    const conversationTimestamp = toUnixTimestamp(rawTs); // Strict: 0 if no message yet
     const lastMessage = chat.lastMessageText || existing.lastMessage || '';
 
     sessionData.chats.set(jid, {
@@ -152,19 +255,18 @@ async function discoverParticipatingGroups(sessionData) {
                 if (!groupId.endsWith('@g.us')) continue;
                 const subject = (group.subject || 'WhatsApp Grubu').trim();
                 const existing = sessionData.chats.get(groupId);
-                const ts = toUnixTimestamp(group.creation) || Math.floor(Date.now() / 1000);
+                const existingTs = existing?.conversationTimestamp || 0;
                 if (existing) {
                     if (!existing.name || existing.name === 'WhatsApp Grubu') {
                         existing.name = subject;
                     }
                     existing.isGroup = true;
-                    if (!existing.conversationTimestamp) existing.conversationTimestamp = ts;
                 } else {
                     updateChat(sessionData, {
                         id: groupId,
                         name: subject,
                         isGroup: true,
-                        conversationTimestamp: ts
+                        conversationTimestamp: existingTs
                     });
                 }
             }
@@ -173,6 +275,7 @@ async function discoverParticipatingGroups(sessionData) {
         console.warn(`[WA-Gateway] Could not fetch participating groups for ${sessionData.name || 'session'}:`, err.message);
     }
 }
+
 
 /**
  * Extracts plain text from any Baileys message object.
@@ -239,7 +342,10 @@ async function getOrCreateSession(sessionName) {
     sessionData.sock = sock;
 
     // Listen to credentials update
-    sock.ev.on('creds.update', saveCreds);
+    sock.ev.on('creds.update', async () => {
+        await saveCreds();
+        backupSessionAuth(sessionName);
+    });
 
     // Listen to contacts updates from phone
     sock.ev.on('contacts.upsert', (contacts) => {
@@ -396,6 +502,9 @@ async function getOrCreateSession(sessionName) {
                 });
             }
 
+            // Persist full auth state to database
+            backupSessionAuth(sessionName);
+
             // Asynchronously discover all participating WhatsApp groups (e.g. "3hacker") on connection
             setTimeout(() => {
                 discoverParticipatingGroups(sessionData).catch(() => {});
@@ -428,17 +537,12 @@ async function getOrCreateSession(sessionName) {
                     phone: null
                 });
             } else {
-                // CRITICAL: For restartRequired (515), connectionClosed (428), timedOut (408), etc.:
-                // NEVER delete sessionAuthDir!
-                // During QR pairing, WhatsApp sends new credentials then sends 515 (restartRequired).
-                // The socket must reconnect USING those saved credentials to finalize handshake.
+                // For transient disconnects, retain session in activeSessions to eliminate BULUNAMADI errors
                 const isRestartRequired = statusCode === DisconnectReason.restartRequired;
-                console.log(`[WA-Gateway] Reconnecting session ${sessionName} to finalize/maintain connection (status: ${statusCode})...`);
+                console.log(`[WA-Gateway] Reconnecting session ${sessionName} (status: ${statusCode})...`);
 
                 sessionData.status = 'CONNECTING';
-                activeSessions.delete(sessionName);
 
-                // Wait 1000ms for creds.update to flush to disk before reconnecting
                 setTimeout(() => {
                     getOrCreateSession(sessionName).catch(err => {
                         console.error(`[WA-Gateway] Reconnect failed for ${sessionName}:`, err.message);
@@ -501,9 +605,35 @@ async function getOrCreateSession(sessionName) {
 
 /**
  * Dispatches an outbound WhatsApp message through an active session socket.
+ * If session is not currently in memory, attempts on-the-fly recovery from database/disk.
  */
 async function sendMessage(sessionName, phone, messageText, typingDelayMs = 0) {
-    const session = activeSessions.get(sessionName);
+    let session = activeSessions.get(sessionName);
+    if (!session || session.status !== 'CONNECTED' || !session.sock) {
+        const credsPath = path.join(SESSIONS_DIR, sessionName, 'creds.json');
+        let hasCreds = fs.existsSync(credsPath);
+        if (!hasCreds) {
+            hasCreds = await restoreSessionFromDatabase(sessionName);
+        }
+        if (hasCreds) {
+            console.log(`[WA-Gateway] Session ${sessionName} found during sendMessage, restoring...`);
+            session = await getOrCreateSession(sessionName);
+            if (session.status !== 'CONNECTED') {
+                await new Promise((resolve) => {
+                    const timeout = setTimeout(resolve, 3500);
+                    const onUpdate = (update) => {
+                        if (update.connection === 'open') {
+                            clearTimeout(timeout);
+                            session.sock?.ev?.off('connection.update', onUpdate);
+                            resolve();
+                        }
+                    };
+                    session.sock?.ev?.on('connection.update', onUpdate);
+                });
+            }
+        }
+    }
+
     if (!session || session.status !== 'CONNECTED' || !session.sock) {
         throw new Error(`WhatsApp hattı bağlı değil (Oturum: ${sessionName}, Durum: ${session ? session.status : 'BULUNAMADI'})`);
     }
@@ -542,6 +672,7 @@ async function sendMessage(sessionName, phone, messageText, typingDelayMs = 0) {
         timestamp: new Date().toISOString()
     };
 }
+
 
 /**
  * Requests an 8-digit WhatsApp pairing code for linking via phone number.
@@ -598,9 +729,13 @@ async function disconnectSession(sessionName) {
 }
 
 /**
- * Restores previously paired sessions on server startup.
+ * Restores previously paired sessions on server startup from database backup and local disk.
  */
 async function restoreSavedSessions() {
+    // 1. Restore all sessions backed up to database
+    await restoreAllSessionsFromDatabase();
+
+    // 2. Scan local disk for any registered sessions not yet loaded
     if (!fs.existsSync(SESSIONS_DIR)) return;
 
     const dirs = fs.readdirSync(SESSIONS_DIR, { withFileTypes: true })
@@ -608,12 +743,13 @@ async function restoreSavedSessions() {
         .map(dirent => dirent.name);
 
     for (const name of dirs) {
+        if (activeSessions.has(name)) continue;
         const credsPath = path.join(SESSIONS_DIR, name, 'creds.json');
         if (fs.existsSync(credsPath)) {
             try {
                 const creds = JSON.parse(fs.readFileSync(credsPath, 'utf8'));
                 if (creds.registered) {
-                    console.log(`[WA-Gateway] Restoring saved active session: ${name}`);
+                    console.log(`[WA-Gateway] Restoring saved active session from disk: ${name}`);
                     await getOrCreateSession(name);
                 }
             } catch (err) {
@@ -681,7 +817,19 @@ async function refreshSessionQR(sessionName) {
  * Returns all in-memory tracked chats for a session, enriched with avatars and sorted by latest activity.
  */
 async function getSessionChats(sessionName) {
-    const session = activeSessions.get(sessionName);
+    let session = activeSessions.get(sessionName);
+    if (!session || !session.chats) {
+        // Attempt on-the-fly restoration from disk or DB
+        const credsPath = path.join(SESSIONS_DIR, sessionName, 'creds.json');
+        let hasCreds = fs.existsSync(credsPath);
+        if (!hasCreds) {
+            hasCreds = await restoreSessionFromDatabase(sessionName);
+        }
+        if (hasCreds) {
+            console.log(`[WA-Gateway] Auto-restoring session for getSessionChats: ${sessionName}`);
+            session = await getOrCreateSession(sessionName);
+        }
+    }
     if (!session || !session.chats) return [];
 
     // Ensure all participating groups (e.g. "3hacker") are discovered
@@ -705,17 +853,22 @@ async function getSessionChats(sessionName) {
     // Sort strictly descending by latest message activity
     chatList.sort((a, b) => (b.conversation_timestamp || 0) - (a.conversation_timestamp || 0));
 
-    // Lazily fetch avatars in parallel for the top 50 active chats
-    const pendingAvatars = chatList.slice(0, 50).filter(c => !c.avatar_url);
+    // Fetch avatars in small batches of 4 for top 25 chats to prevent socket saturation
+    const pendingAvatars = chatList.slice(0, 25).filter(c => !c.avatar_url);
     if (pendingAvatars.length > 0 && session.sock) {
-        await Promise.allSettled(pendingAvatars.map(async (c) => {
-            const avatar = await fetchAvatar(session, c.id);
-            c.avatar_url = avatar;
-        }));
+        const chunkSize = 4;
+        for (let i = 0; i < pendingAvatars.length; i += chunkSize) {
+            const chunk = pendingAvatars.slice(i, i + chunkSize);
+            await Promise.allSettled(chunk.map(async (c) => {
+                const avatar = await fetchAvatar(session, c.id);
+                if (avatar) c.avatar_url = avatar;
+            }));
+        }
     }
 
     return chatList;
 }
+
 
 /**
  * Pushes all known chats, avatars, and timestamps to the FastAPI backend webhook.

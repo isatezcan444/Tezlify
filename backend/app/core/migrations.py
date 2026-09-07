@@ -195,3 +195,26 @@ def _create_leads_only(sync_conn: Any) -> None:
     from backend.app.models.lead import Lead  # noqa: F401 — metadata'ya kayıt için
 
     Lead.__table__.create(sync_conn, checkfirst=True)
+
+
+async def ensure_whatsapp_session_auth_table(engine: AsyncEngine) -> None:
+    """whatsapp_session_auth tablosunun varlığını garanti eder."""
+    async with engine.begin() as conn:
+        if engine.dialect.name == "sqlite":
+            await conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS whatsapp_session_auth (
+                    session_name VARCHAR(100) PRIMARY KEY,
+                    auth_bundle TEXT NOT NULL,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
+        elif engine.dialect.name == "postgresql":
+            await conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS whatsapp_session_auth (
+                    session_name VARCHAR(100) PRIMARY KEY,
+                    auth_bundle TEXT NOT NULL,
+                    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                )
+            """))
+    logger.info("[MIGRATION] ensure_whatsapp_session_auth_table verified")
+

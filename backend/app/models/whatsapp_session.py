@@ -37,3 +37,12 @@ class WhatsAppSession(Base):
     
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
+class WhatsAppSessionAuth(Base):
+    __tablename__ = "whatsapp_session_auth"
+
+    session_name = Column(String(100), primary_key=True, index=True)
+    auth_bundle = Column(Text, nullable=False)  # JSON-encoded dictionary of filename -> content
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+

@@ -164,7 +164,7 @@ class WhatsAppSyncService:
                 channel="WHATSAPP",
                 status=ConversationStatus.ACTIVE,
                 unread_count=0,
-                last_message_at=naive_conv_time or _to_naive_utc(datetime.now(timezone.utc)),
+                last_message_at=naive_conv_time,
             )
             db.add(conv)
             await db.flush()
