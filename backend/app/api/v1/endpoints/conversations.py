@@ -785,7 +785,7 @@ async def sync_whatsapp_conversations(
             get_user_filter(WhatsAppSession.user_id, current_user.id),
             WhatsAppSession.status == SessionStatus.CONNECTED,
         )
-        .order_by((WhatsAppSession.user_id == current_user.id).desc(), WhatsAppSession.id.desc())
+        .order_by(WhatsAppSession.id.desc())
     )
     sess_res = await db.execute(sess_stmt)
     session = sess_res.scalars().first()
@@ -795,7 +795,7 @@ async def sync_whatsapp_conversations(
         any_sess_stmt = (
             select(WhatsAppSession)
             .where(get_user_filter(WhatsAppSession.user_id, current_user.id))
-            .order_by((WhatsAppSession.user_id == current_user.id).desc(), WhatsAppSession.id.desc())
+            .order_by(WhatsAppSession.id.desc())
         )
         candidates = (await db.execute(any_sess_stmt)).scalars().all()
         for cand in candidates:
@@ -811,6 +811,29 @@ async def sync_whatsapp_conversations(
                     break
             except Exception:
                 pass
+
+    if not session:
+        # Check if wa-gateway has any active connected session to adopt
+        try:
+            active_list = await gateway_client.list_sessions()
+            for s in active_list:
+                if s.get("status") == "CONNECTED":
+                    gw_name = s.get("name")
+                    gw_phone = s.get("phone")
+                    new_sess = WhatsAppSession(
+                        user_id=current_user.id,
+                        session_name=gw_name,
+                        status=SessionStatus.CONNECTED,
+                        is_phone_online=True,
+                        phone_number=gw_phone,
+                    )
+                    db.add(new_sess)
+                    await db.commit()
+                    await db.refresh(new_sess)
+                    session = new_sess
+                    break
+        except Exception as e:
+            logger.warning(f"Could not auto-adopt gateway session: {e}")
 
     if not session:
         raise HTTPException(
@@ -852,18 +875,18 @@ async def sync_whatsapp_conversations(
         if is_group:
             phone_e164 = None
             category = "WhatsApp Grubu"
-            place_id = f"group_{hashlib.sha256(f'{current_user.id}_{jid}'.encode()).hexdigest()[:16]}"
+            place_id = f"group_{hashlib.sha256(f'{jid}'.encode()).hexdigest()[:16]}"
             lead_stmt = select(Lead).where(
                 or_(
                     Lead.place_id == place_id,
-                    and_(get_user_filter(Lead.user_id, current_user.id), Lead.name == raw_name),
+                    and_(Lead.name == raw_name, Lead.category == category),
                 )
             )
         else:
             category = "WhatsApp Kişisi"
             phone_parsed = PhoneService.normalize_to_e164(phone) if phone else None
             phone_e164 = phone_parsed.get("e164") if phone_parsed else (f"+{phone}" if phone and not phone.startswith("+") else phone)
-            place_id = f"wa_{hashlib.sha256(f'{current_user.id}_{phone_e164 or jid}'.encode()).hexdigest()[:16]}"
+            place_id = f"wa_{hashlib.sha256(f'{phone_e164 or jid}'.encode()).hexdigest()[:16]}"
 
             lead_stmt = select(Lead).where(
                 or_(
@@ -891,6 +914,8 @@ async def sync_whatsapp_conversations(
             db.add(lead)
             await db.flush()
         else:
+            if not lead.user_id:
+                lead.user_id = current_user.id
             # Update name if previously empty or generic
             if resolved_name and (not lead.name or lead.name.startswith("+") or lead.name == "Bilinmeyen Numara"):
                 lead.name = resolved_name
@@ -922,19 +947,18 @@ async def sync_whatsapp_conversations(
             if last_text:
                 conv.last_message_preview = last_text
 
-        if timestamp:
+        if timestamp and timestamp > 0:
             try:
                 msg_dt = datetime.fromtimestamp(timestamp)
-                if not conv.last_message_at or msg_dt > conv.last_message_at:
-                    conv.last_message_at = msg_dt
+                conv.last_message_at = msg_dt
             except Exception:
                 pass
-        if not conv.last_message_at:
+        elif last_text and not conv.last_message_at:
             conv.last_message_at = datetime.utcnow()
 
         # Sync latest message if present
         if last_text:
-            msg_dt = datetime.fromtimestamp(timestamp) if timestamp else datetime.utcnow()
+            msg_dt = datetime.fromtimestamp(timestamp) if (timestamp and timestamp > 0) else datetime.utcnow()
 
             m_stmt = (
                 select(Message)

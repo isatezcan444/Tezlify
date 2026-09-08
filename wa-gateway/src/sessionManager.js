@@ -22,6 +22,43 @@ if (!fs.existsSync(SESSIONS_DIR)) {
 // Global active sessions map: sessionName -> sessionData
 const activeSessions = new Map();
 
+/**
+ * Safely converts protobuf Long, number, or string timestamps to unix seconds.
+ */
+function extractTimestamp(ts) {
+    if (!ts) return 0;
+    if (typeof ts === 'number') return ts;
+    if (typeof ts === 'string') {
+        const n = Number(ts);
+        return isNaN(n) ? 0 : n;
+    }
+    if (typeof ts === 'object') {
+        if (typeof ts.low === 'number') return ts.low;
+        if (typeof ts.toNumber === 'function') return ts.toNumber();
+    }
+    return 0;
+}
+
+/**
+ * Robustly extracts the display preview text from any Baileys message structure.
+ */
+function extractMessageText(msg) {
+    if (!msg) return '';
+    const m = msg.message?.message || msg.message || msg;
+    if (typeof m === 'string') return m;
+    return m.conversation ||
+        m.extendedTextMessage?.text ||
+        m.imageMessage?.caption ||
+        (m.imageMessage ? '📷 Fotoğraf' : '') ||
+        (m.videoMessage?.caption || (m.videoMessage ? '🎥 Video' : '')) ||
+        (m.documentMessage?.title || m.documentMessage?.fileName || (m.documentMessage ? '📄 Belge' : '')) ||
+        (m.audioMessage ? '🎵 Ses' : '') ||
+        (m.stickerMessage ? '💟 Çıkartma' : '') ||
+        (m.contactMessage ? '👤 Kişi kartı' : '') ||
+        (m.locationMessage ? '📍 Konum' : '') ||
+        '';
+}
+
 // In-flight initialization promises to avoid race conditions and double-socket creation
 const pendingInitializations = new Map();
 
@@ -273,12 +310,14 @@ async function initSessionSocket(sessionData) {
         logger: pino({ level: 'silent' }),
         browser: Browsers.macOS('Desktop'),
         syncFullHistory: true,
+        shouldSyncHistoryMessage: () => true, // CRITICAL: Never drop FULL or RECENT history sync notifications
         markOnlineOnConnect: true,
         fireInitQueries: true,
         defaultQueryTimeoutMs: 60000,
         connectTimeoutMs: 60000,
         generateHighQualityLinkPreview: false,
         keepAliveIntervalMs: 25000,
+        getMessage: async () => undefined,
     });
 
     sessionData.sock = sock;
@@ -302,7 +341,7 @@ async function initSessionSocket(sessionData) {
                 sessionData.contacts.set(c.id, {
                     ...existing,
                     ...c,
-                    name: c.name || existing.name,
+                    name: c.name || c.displayName || c.verifiedName || existing.name,
                     notify: c.notify || existing.notify,
                     verifiedName: c.verifiedName || existing.verifiedName,
                 });
@@ -312,25 +351,18 @@ async function initSessionSocket(sessionData) {
             for (const chat of chats) {
                 if (!chat.id) continue;
                 const existing = sessionData.chats.get(chat.id) || {};
-                const lastMsg = chat.messages?.[0]?.message;
-                const lastText = lastMsg?.conversation ||
-                    lastMsg?.extendedTextMessage?.text ||
-                    lastMsg?.imageMessage?.caption ||
-                    (lastMsg?.imageMessage ? '📷 Fotoğraf' : '') ||
-                    (lastMsg?.documentMessage ? '📄 Belge' : '') ||
-                    (lastMsg?.audioMessage ? '🎵 Ses' : '') ||
-                    existing.lastMessage || '';
+                const lastMsg = chat.messages?.[0];
+                const lastText = extractMessageText(lastMsg) || existing.lastMessage || '';
 
-                const ts = chat.conversationTimestamp
-                    ? Number(chat.conversationTimestamp)
-                    : (existing.timestamp || Math.floor(Date.now() / 1000));
+                const rawTs = chat.conversationTimestamp || chat.lastMsgTimestamp || lastMsg?.messageTimestamp;
+                const ts = extractTimestamp(rawTs) || existing.timestamp || 0;
 
                 sessionData.chats.set(chat.id, {
                     ...existing,
                     ...chat,
                     id: chat.id,
-                    name: chat.name || existing.name,
-                    unreadCount: chat.unreadCount ?? existing.unreadCount ?? 0,
+                    name: chat.name || chat.displayName || existing.name,
+                    unreadCount: chat.unreadCount != null ? Number(chat.unreadCount) : (existing.unreadCount ?? 0),
                     lastMessage: lastText,
                     timestamp: ts,
                     isGroup: chat.id.endsWith('@g.us'),
@@ -342,17 +374,8 @@ async function initSessionSocket(sessionData) {
                 const remoteJid = msg.key?.remoteJid;
                 if (!remoteJid || remoteJid === 'status@broadcast') continue;
 
-                const text = msg.message?.conversation ||
-                    msg.message?.extendedTextMessage?.text ||
-                    msg.message?.imageMessage?.caption ||
-                    (msg.message?.imageMessage ? '📷 Fotoğraf' : '') ||
-                    (msg.message?.documentMessage ? '📄 Belge' : '') ||
-                    (msg.message?.audioMessage ? '🎵 Ses' : '') ||
-                    '';
-
-                const ts = typeof msg.messageTimestamp === 'number'
-                    ? msg.messageTimestamp
-                    : (typeof msg.messageTimestamp?.low === 'number' ? msg.messageTimestamp.low : 0);
+                const text = extractMessageText(msg);
+                const ts = extractTimestamp(msg.messageTimestamp) || 0;
 
                 if (msg.pushName) {
                     const existingC = sessionData.contacts.get(remoteJid) || {};
@@ -369,7 +392,7 @@ async function initSessionSocket(sessionData) {
                         ...existingChat,
                         id: remoteJid,
                         lastMessage: text || existingChat.lastMessage || '',
-                        timestamp: ts || existingChat.timestamp || Math.floor(Date.now() / 1000),
+                        timestamp: ts || existingChat.timestamp || 0,
                         isGroup: remoteJid.endsWith('@g.us'),
                     });
                 }
@@ -393,7 +416,7 @@ async function initSessionSocket(sessionData) {
             sessionData.contacts.set(c.id, {
                 ...existing,
                 ...c,
-                name: c.name || existing.name,
+                name: c.name || c.displayName || existing.name,
                 notify: c.notify || existing.notify,
                 verifiedName: c.verifiedName || existing.verifiedName,
             });
@@ -408,6 +431,7 @@ async function initSessionSocket(sessionData) {
             sessionData.contacts.set(update.id, {
                 ...existing,
                 ...update,
+                name: update.name || update.displayName || existing.name,
             });
         }
         saveSessionStore(sessionName);
@@ -418,10 +442,13 @@ async function initSessionSocket(sessionData) {
         for (const chat of newChats) {
             if (!chat.id) continue;
             const existing = sessionData.chats.get(chat.id) || {};
+            const ts = extractTimestamp(chat.conversationTimestamp || chat.lastMsgTimestamp) || existing.timestamp || 0;
             sessionData.chats.set(chat.id, {
                 ...existing,
                 ...chat,
                 id: chat.id,
+                name: chat.name || chat.displayName || existing.name,
+                timestamp: ts || existing.timestamp || 0,
                 isGroup: chat.id.endsWith('@g.us'),
             });
         }
@@ -432,10 +459,13 @@ async function initSessionSocket(sessionData) {
         for (const update of updates) {
             if (!update.id) continue;
             const existing = sessionData.chats.get(update.id) || {};
+            const ts = extractTimestamp(update.conversationTimestamp || update.lastMsgTimestamp);
             sessionData.chats.set(update.id, {
                 ...existing,
                 ...update,
-                unreadCount: update.unreadCount !== undefined ? update.unreadCount : existing.unreadCount,
+                name: update.name || update.displayName || existing.name,
+                timestamp: ts || existing.timestamp || 0,
+                unreadCount: update.unreadCount !== undefined ? Number(update.unreadCount) : existing.unreadCount,
             });
         }
         saveSessionStore(sessionName);
@@ -497,6 +527,16 @@ async function initSessionSocket(sessionData) {
                 }
             } catch (gErr) {
                 console.warn(`[WA-Gateway] groupFetchAllParticipating error for ${sessionName}:`, gErr.message);
+            }
+
+            // Resync app state collections (contacts, blocklists, chat updates)
+            try {
+                if (typeof sock.resyncAppState === 'function') {
+                    await sock.resyncAppState(['critical_block', 'critical_unblock_low', 'regular_high', 'regular_low', 'regular'], false);
+                    console.log(`[WA-Gateway] Resynced app state for ${sessionName}`);
+                }
+            } catch (appStateErr) {
+                console.warn(`[WA-Gateway] resyncAppState warning for ${sessionName}:`, appStateErr.message);
             }
 
             saveSessionStore(sessionName);
@@ -887,6 +927,22 @@ async function refreshSessionQR(sessionName) {
 async function getSessionChats(sessionName) {
     let session = activeSessions.get(sessionName);
     if (!session) {
+        // Fallback 1: Case-insensitive and decoded lookup
+        const cleanName = (sessionName || '').trim().toLowerCase();
+        for (const [k, v] of activeSessions.entries()) {
+            if (k.toLowerCase() === cleanName || decodeURIComponent(k).trim().toLowerCase() === cleanName) {
+                session = v;
+                sessionName = k;
+                break;
+            }
+        }
+    }
+    if (!session && activeSessions.size === 1) {
+        // Fallback 2: Single active session on gateway
+        session = activeSessions.values().next().value;
+        sessionName = session.name;
+    }
+    if (!session) {
         const sessionAuthDir = path.join(SESSIONS_DIR, sessionName);
         if (fs.existsSync(sessionAuthDir)) {
             try {
@@ -900,7 +956,7 @@ async function getSessionChats(sessionName) {
         loadSessionStore(sessionName);
     }
 
-    // If still empty and socket is connected, fetch groups immediately
+    // If still empty and socket is connected, fetch groups and resync app state immediately
     if ((!session.chats || session.chats.size === 0) && session.sock && session.status === 'CONNECTED') {
         try {
             const groups = await session.sock.groupFetchAllParticipating();
@@ -915,26 +971,39 @@ async function getSessionChats(sessionName) {
                         timestamp: grp.creation || existing.timestamp || Math.floor(Date.now() / 1000),
                     });
                 }
-                saveSessionStore(sessionName);
             }
         } catch (e) {
             console.warn(`[WA-Gateway] On-demand group fetch failed:`, e.message);
         }
+
+        try {
+            if (typeof session.sock.resyncAppState === 'function') {
+                await session.sock.resyncAppState(['critical_block', 'critical_unblock_low', 'regular_high', 'regular_low', 'regular'], false);
+            }
+        } catch (e) {
+            console.warn(`[WA-Gateway] On-demand app-state resync failed:`, e.message);
+        }
+
+        saveSessionStore(sessionName);
     }
 
-    const result = [];
     const chatsMap = session.chats || new Map();
     const contactsMap = session.contacts || new Map();
 
-    for (const [jid, chat] of chatsMap.entries()) {
-        if (!jid || jid === 'status@broadcast') continue;
+    // Union of all known chat JIDs and phonebook contacts
+    const allJids = new Set([...chatsMap.keys(), ...contactsMap.keys()]);
+    const result = [];
+
+    for (const jid of allJids) {
+        if (!jid || jid === 'status@broadcast' || jid.endsWith('@newsletter')) continue;
 
         const isGroup = jid.endsWith('@g.us');
+        const chat = chatsMap.get(jid) || {};
         const contact = contactsMap.get(jid) || {};
         const rawPhone = jid.split('@')[0];
         const formattedPhone = isGroup ? jid : (rawPhone.startsWith('+') ? rawPhone : `+${rawPhone}`);
 
-        // Resolve display name: Phonebook name -> Group name -> Contact push name -> Formatted phone
+        // Resolve display name: Phonebook name -> Group subject -> Contact push name -> Formatted phone
         const resolvedName = contact.name ||
                              chat.name ||
                              contact.notify ||
@@ -942,6 +1011,7 @@ async function getSessionChats(sessionName) {
                              (isGroup ? 'WhatsApp Grubu' : formattedPhone);
 
         const lastMsg = typeof chat.lastMessage === 'string' ? chat.lastMessage : (chat.lastMessage?.text || '');
+        const ts = chat.timestamp || (chat.conversationTimestamp ? extractTimestamp(chat.conversationTimestamp) : 0);
 
         result.push({
             id: jid,
@@ -956,12 +1026,17 @@ async function getSessionChats(sessionName) {
             unreadCount: chat.unreadCount || 0,
             last_message: lastMsg,
             lastMessage: lastMsg,
-            timestamp: chat.timestamp || Math.floor(Date.now() / 1000),
+            timestamp: ts || 0,
         });
     }
 
-    // Sort reverse-chronological by timestamp (newest first, like WhatsApp Web)
-    result.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+    // Sort reverse-chronological by timestamp (newest active chats first, exactly like WhatsApp Web)
+    result.sort((a, b) => {
+        if (b.timestamp !== a.timestamp) {
+            return (b.timestamp || 0) - (a.timestamp || 0);
+        }
+        return (a.name || '').localeCompare(b.name || '');
+    });
     return result;
 }
 

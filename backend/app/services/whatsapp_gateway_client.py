@@ -7,6 +7,7 @@ from __future__ import annotations
 import time
 import logging
 from typing import Optional, Dict, Any, List
+from urllib.parse import quote
 import httpx
 
 from backend.app.core.config import settings
@@ -148,21 +149,61 @@ class WhatsAppGatewayClient:
             logger.debug(f"[GatewayClient] get_session_status error: {e}")
         return {"status": "DISCONNECTED", "phone": None}
 
+    async def list_sessions(self) -> List[Dict[str, Any]]:
+        """Fetches all active sessions from wa-gateway."""
+        if self.is_recently_offline() and not settings.SIMULATION_MODE:
+            return []
+        url = f"{self.gateway_url}/api/sessions"
+        try:
+            async with httpx.AsyncClient(timeout=self._get_timeout(4.0)) as client:
+                res = await client.get(url, headers=self._headers())
+                if res.status_code == 200:
+                    self._last_unreachable_time = 0.0
+                    return res.json()
+        except Exception as e:
+            self._last_unreachable_time = time.monotonic()
+            logger.warning(f"[GatewayClient] list_sessions error: {e}")
+        return []
+
     async def get_session_chats(self, session_name: str) -> List[Dict[str, Any]]:
         """Fetches the synced WhatsApp chats with contact names and last messages from wa-gateway."""
         if self.is_recently_offline() and not settings.SIMULATION_MODE:
             return []
-        url = f"{self.gateway_url}/api/sessions/{session_name}/chats"
+        encoded_name = quote(session_name, safe="")
+        url = f"{self.gateway_url}/api/sessions/{encoded_name}/chats"
         try:
-            async with httpx.AsyncClient(timeout=self._get_timeout(8.0)) as client:
+            async with httpx.AsyncClient(timeout=self._get_timeout(10.0)) as client:
                 res = await client.get(url, headers=self._headers())
                 if res.status_code == 200:
                     self._last_unreachable_time = 0.0
                     data = res.json()
-                    return data.get("chats", [])
+                    chats = data.get("chats", [])
+                    if chats:
+                        return chats
         except Exception as e:
             self._last_unreachable_time = time.monotonic()
             logger.warning(f"[GatewayClient] get_session_chats error for {session_name}: {e}")
+
+        # Resilient fallback: If no chats found under the exact name, check if another active session exists
+        try:
+            active_list = await self.list_sessions()
+            for s in active_list:
+                s_name = s.get("name")
+                if s_name and s_name != session_name and s.get("status") == "CONNECTED":
+                    async with httpx.AsyncClient(timeout=self._get_timeout(8.0)) as client:
+                        fb_res = await client.get(
+                            f"{self.gateway_url}/api/sessions/{quote(s_name, safe='')}/chats",
+                            headers=self._headers()
+                        )
+                        if fb_res.status_code == 200:
+                            fb_data = fb_res.json()
+                            fb_chats = fb_data.get("chats", [])
+                            if fb_chats:
+                                logger.info(f"[GatewayClient] Recovered {len(fb_chats)} chats using fallback active session {s_name}")
+                                return fb_chats
+        except Exception as fb_err:
+            logger.debug(f"[GatewayClient] fallback get_session_chats error: {fb_err}")
+
         return []
 
     async def disconnect_session(self, session_name: str) -> bool:
