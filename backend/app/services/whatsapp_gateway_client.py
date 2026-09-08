@@ -146,6 +146,8 @@ class WhatsAppGatewayClient:
         except Exception as e:
             self._last_unreachable_time = time.monotonic()
             logger.debug(f"[GatewayClient] get_session_status error: {e}")
+        return {"status": "DISCONNECTED", "phone": None}
+
     async def get_session_chats(self, session_name: str) -> List[Dict[str, Any]]:
         """Fetches the synced WhatsApp chats with contact names and last messages from wa-gateway."""
         if self.is_recently_offline() and not settings.SIMULATION_MODE:

@@ -14,7 +14,7 @@ class WhatsAppSession(Base):
     __tablename__ = "whatsapp_sessions"
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    user_id = Column(Uuid(as_uuid=False), nullable=True, index=True)
+    user_id = Column(String(64), nullable=True, index=True)
     session_name = Column(String(100), unique=True, nullable=False, index=True) # e.g. "Hat-1-Satis"
     phone_number = Column(String(50), nullable=True) # Connected WhatsApp Phone Number
     

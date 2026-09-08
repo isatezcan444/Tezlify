@@ -109,16 +109,23 @@ async def list_sessions(
         updated = False
         for s in sessions:
             if s.status == SessionStatus.CONNECTED:
-                status_info = await gateway_client.get_session_status(s.session_name)
-                if status_info.get("status") != "CONNECTED":
-                    auth_stmt = select(WhatsAppSessionAuth.session_name).where(WhatsAppSessionAuth.session_name == s.session_name)
-                    has_backup = (await db.execute(auth_stmt)).scalar_one_or_none() is not None
-                    if not has_backup:
-                        s.status = SessionStatus.DISCONNECTED
-                        s.is_phone_online = False
-                        updated = True
+                try:
+                    status_info = await gateway_client.get_session_status(s.session_name)
+                    if status_info and status_info.get("status") != "CONNECTED":
+                        auth_stmt = select(WhatsAppSessionAuth.session_name).where(WhatsAppSessionAuth.session_name == s.session_name)
+                        has_backup = (await db.execute(auth_stmt)).scalar_one_or_none() is not None
+                        if not has_backup:
+                            s.status = SessionStatus.DISCONNECTED
+                            s.is_phone_online = False
+                            updated = True
+                except Exception as e:
+                    logger.warning(f"Error checking status for session {s.session_name}: {e}")
         if updated:
-            await db.commit()
+            try:
+                await db.commit()
+            except Exception as e:
+                logger.warning(f"Failed to commit updated session status: {e}")
+                await db.rollback()
 
     return sessions
 
@@ -131,11 +138,43 @@ async def create_session(
 ):
     stmt = select(WhatsAppSession).where(
         WhatsAppSession.session_name == session_in.session_name,
-        get_user_filter(WhatsAppSession.user_id, current_user.id),
     )
-    existing = await db.execute(stmt)
-    if existing.scalar_one_or_none():
-        raise HTTPException(status_code=409, detail="Bu oturum adı zaten kullanılıyor.")
+    existing = (await db.execute(stmt)).scalars().first()
+    if existing:
+        # If session is disconnected or in QR scan state, reuse it to prevent deadlock
+        if existing.status in (SessionStatus.DISCONNECTED, SessionStatus.SCAN_QR):
+            existing.user_id = current_user.id
+            existing.status = SessionStatus.SCAN_QR
+            if session_in.phone_number:
+                existing.phone_number = session_in.phone_number
+            if session_in.max_daily_limit:
+                existing.max_daily_limit = session_in.max_daily_limit
+            await db.commit()
+            await db.refresh(existing)
+
+            try:
+                gw_res = await asyncio.wait_for(gateway_client.create_session(existing.session_name), timeout=3.0)
+                if gw_res.get("qr_code"):
+                    existing.qr_code = gw_res["qr_code"]
+                if gw_res.get("status") == "CONNECTED":
+                    existing.status = SessionStatus.CONNECTED
+                    if gw_res.get("phone"):
+                        existing.phone_number = gw_res["phone"]
+                await db.commit()
+                await db.refresh(existing)
+            except Exception as e:
+                logger.warning(f"Gateway create_session error on existing re-connect: {e}")
+
+            return existing
+        else:
+            # If session is actively connected, generate next available name e.g. Line 1 (2)
+            base_name = session_in.session_name
+            suffix = 2
+            candidate = f"{base_name} ({suffix})"
+            while (await db.execute(select(WhatsAppSession).where(WhatsAppSession.session_name == candidate))).scalars().first():
+                suffix += 1
+                candidate = f"{base_name} ({suffix})"
+            session_in.session_name = candidate
 
     initial_qr = None
 
@@ -358,7 +397,7 @@ async def delete_session(
     # 3. Delete auto-synced WhatsApp leads for this user (groups and raw WhatsApp chats)
     try:
         lead_stmt = select(Lead).where(
-            Lead.category.in_(["WhatsApp Grubu", "WhatsApp Sohbeti"]),
+            Lead.category.in_(["WhatsApp Grubu", "WhatsApp Sohbeti", "WhatsApp Kişisi"]),
             get_user_filter(Lead.user_id, sess_user_id),
         )
         leads_res = await db.execute(lead_stmt)
