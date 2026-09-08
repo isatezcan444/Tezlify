@@ -146,7 +146,21 @@ class WhatsAppGatewayClient:
         except Exception as e:
             self._last_unreachable_time = time.monotonic()
             logger.debug(f"[GatewayClient] get_session_status error: {e}")
-        return {"status": "DISCONNECTED", "phone": None}
+    async def get_session_chats(self, session_name: str) -> List[Dict[str, Any]]:
+        """Fetches the synced WhatsApp chats with contact names and last messages from wa-gateway."""
+        if self.is_recently_offline() and not settings.SIMULATION_MODE:
+            return []
+        url = f"{self.gateway_url}/api/sessions/{session_name}/chats"
+        try:
+            async with httpx.AsyncClient(timeout=self._get_timeout(3.5)) as client:
+                res = await client.get(url, headers=self._headers())
+                if res.status_code == 200:
+                    self._last_unreachable_time = 0.0
+                    return res.json().get("chats", [])
+        except Exception as e:
+            self._last_unreachable_time = time.monotonic()
+            logger.debug(f"[GatewayClient] get_session_chats error: {e}")
+        return []
 
     async def disconnect_session(self, session_name: str) -> bool:
         """Disconnects and logs out the session on wa-gateway."""

@@ -7,6 +7,7 @@ const {
     sendMessage,
     disconnectSession,
     restoreSavedSessions,
+    getSessionChats,
 } = require('./sessionManager');
 
 const app = express();
@@ -143,6 +144,18 @@ app.get('/api/sessions/:sessionName/status', (req, res) => {
         status: session.status,
         phone: session.phone,
         messagesSent: session.messagesSent
+    });
+});
+
+// Get synced chats with contact names and last messages from active session
+app.get('/api/sessions/:sessionName/chats', (req, res) => {
+    const { sessionName } = req.params;
+    const chats = getSessionChats(sessionName);
+    res.json({
+        success: true,
+        sessionName,
+        total: chats.length,
+        chats
     });
 });
 

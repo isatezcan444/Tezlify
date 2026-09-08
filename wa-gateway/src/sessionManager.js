@@ -223,10 +223,110 @@ async function initSessionSocket(sessionData) {
 
     sessionData.sock = sock;
 
+    if (!sessionData.chats) sessionData.chats = new Map();
+    if (!sessionData.contacts) sessionData.contacts = new Map();
+
     // Listen to credentials update
     sock.ev.on('creds.update', async () => {
         await saveCreds();
         backupSessionAuth(sessionName);
+    });
+
+    // 1. Initial bootstrap & history sync: captures all active chats and phonebook contacts
+    sock.ev.on('messaging-history.set', ({ chats, contacts }) => {
+        if (contacts && Array.isArray(contacts)) {
+            for (const c of contacts) {
+                if (!c.id) continue;
+                const existing = sessionData.contacts.get(c.id) || {};
+                sessionData.contacts.set(c.id, {
+                    ...existing,
+                    ...c,
+                    name: c.name || existing.name,
+                    notify: c.notify || existing.notify,
+                    verifiedName: c.verifiedName || existing.verifiedName,
+                });
+            }
+        }
+        if (chats && Array.isArray(chats)) {
+            for (const chat of chats) {
+                if (!chat.id) continue;
+                const existing = sessionData.chats.get(chat.id) || {};
+                const lastMsg = chat.messages?.[0]?.message;
+                const lastText = lastMsg?.conversation ||
+                    lastMsg?.extendedTextMessage?.text ||
+                    lastMsg?.imageMessage?.caption ||
+                    (lastMsg?.imageMessage ? '📷 Fotoğraf' : '') ||
+                    (lastMsg?.documentMessage ? '📄 Belge' : '') ||
+                    (lastMsg?.audioMessage ? '🎵 Ses' : '') ||
+                    existing.lastMessage || '';
+
+                const ts = chat.conversationTimestamp
+                    ? Number(chat.conversationTimestamp)
+                    : (existing.timestamp || Math.floor(Date.now() / 1000));
+
+                sessionData.chats.set(chat.id, {
+                    ...existing,
+                    ...chat,
+                    id: chat.id,
+                    name: chat.name || existing.name,
+                    unreadCount: chat.unreadCount ?? existing.unreadCount ?? 0,
+                    lastMessage: lastText,
+                    timestamp: ts,
+                });
+            }
+        }
+        console.log(`[WA-Gateway] Synced ${sessionData.chats.size} chats and ${sessionData.contacts.size} contacts for ${sessionName}`);
+    });
+
+    // 2. Real-time contacts updates
+    sock.ev.on('contacts.upsert', (newContacts) => {
+        for (const c of newContacts) {
+            if (!c.id) continue;
+            const existing = sessionData.contacts.get(c.id) || {};
+            sessionData.contacts.set(c.id, {
+                ...existing,
+                ...c,
+                name: c.name || existing.name,
+                notify: c.notify || existing.notify,
+                verifiedName: c.verifiedName || existing.verifiedName,
+            });
+        }
+    });
+
+    sock.ev.on('contacts.update', (updates) => {
+        for (const update of updates) {
+            if (!update.id) continue;
+            const existing = sessionData.contacts.get(update.id) || {};
+            sessionData.contacts.set(update.id, {
+                ...existing,
+                ...update,
+            });
+        }
+    });
+
+    // 3. Real-time chat list updates
+    sock.ev.on('chats.upsert', (newChats) => {
+        for (const chat of newChats) {
+            if (!chat.id) continue;
+            const existing = sessionData.chats.get(chat.id) || {};
+            sessionData.chats.set(chat.id, {
+                ...existing,
+                ...chat,
+                id: chat.id,
+            });
+        }
+    });
+
+    sock.ev.on('chats.update', (updates) => {
+        for (const update of updates) {
+            if (!update.id) continue;
+            const existing = sessionData.chats.get(update.id) || {};
+            sessionData.chats.set(update.id, {
+                ...existing,
+                ...update,
+                unreadCount: update.unreadCount !== undefined ? update.unreadCount : existing.unreadCount,
+            });
+        }
     });
 
     // Listen to connection state & QR generation
@@ -322,34 +422,62 @@ async function initSessionSocket(sessionData) {
         }
     });
 
-    // Inbound messages (for opt-out / STOP keyword detection only)
+    // Inbound & outbound messages (updates chat preview, unread count & timestamp instantly)
     sock.ev.on('messages.upsert', async ({ messages }) => {
         if (!messages || messages.length === 0) return;
 
         for (const msg of messages) {
             const remoteJid = msg.key?.remoteJid || '';
+            if (!remoteJid || remoteJid === 'status@broadcast') continue;
+
             const isGroup = remoteJid.endsWith('@g.us');
             const fromMe = !!msg.key?.fromMe;
 
-            if (fromMe || isGroup) continue;
-
             const text = msg.message?.conversation ||
                 msg.message?.extendedTextMessage?.text ||
+                msg.message?.imageMessage?.caption ||
+                (msg.message?.imageMessage ? '📷 Fotoğraf' : '') ||
+                (msg.message?.documentMessage ? '📄 Belge' : '') ||
+                (msg.message?.audioMessage ? '🎵 Ses' : '') ||
                 '';
 
-            if (!text) continue;
-
-            const contactPhone = `+${remoteJid.split('@')[0]}`;
             const ts = typeof msg.messageTimestamp === 'number'
                 ? msg.messageTimestamp
                 : Math.floor(Date.now() / 1000);
 
-            await notifyBackend(sessionName, 'inbound', {
-                phone: contactPhone,
-                message: text,
-                wa_message_id: msg.key?.id,
-                timestamp: ts
+            // Update in-memory chat immediately
+            const existingChat = sessionData.chats.get(remoteJid) || {};
+            const unreadDelta = (!fromMe && !existingChat.unreadCount) ? 1 : (existingChat.unreadCount || 0);
+
+            sessionData.chats.set(remoteJid, {
+                ...existingChat,
+                id: remoteJid,
+                lastMessage: text || existingChat.lastMessage || '',
+                timestamp: ts,
+                unreadCount: fromMe ? 0 : unreadDelta,
+                isGroup,
             });
+
+            // If pushName exists on message, update contact
+            if (msg.pushName) {
+                const existingContact = sessionData.contacts.get(remoteJid) || {};
+                sessionData.contacts.set(remoteJid, {
+                    ...existingContact,
+                    id: remoteJid,
+                    notify: msg.pushName,
+                });
+            }
+
+            if (!fromMe && !isGroup && text) {
+                const contactPhone = `+${remoteJid.split('@')[0]}`;
+                await notifyBackend(sessionName, 'inbound', {
+                    phone: contactPhone,
+                    message: text,
+                    wa_message_id: msg.key?.id,
+                    timestamp: ts,
+                    push_name: msg.pushName || null,
+                });
+            }
         }
     });
 
@@ -380,6 +508,8 @@ async function getOrCreateSession(sessionName, forceNewSocket = false) {
         qr: null,
         qrImage: null,
         sock: null,
+        chats: new Map(),
+        contacts: new Map(),
         createdAt: new Date().toISOString(),
         messagesSent: 0,
         reconnectTimer: null
@@ -617,6 +747,49 @@ async function refreshSessionQR(sessionName) {
     return await initPromise;
 }
 
+/**
+ * Retrieves all synced chats with resolved contact names from memory.
+ */
+function getSessionChats(sessionName) {
+    const session = activeSessions.get(sessionName);
+    if (!session) return [];
+
+    const result = [];
+    const chatsMap = session.chats || new Map();
+    const contactsMap = session.contacts || new Map();
+
+    for (const [jid, chat] of chatsMap.entries()) {
+        if (!jid || jid === 'status@broadcast') continue;
+
+        const isGroup = jid.endsWith('@g.us');
+        const contact = contactsMap.get(jid) || {};
+        const rawPhone = jid.split('@')[0];
+        const formattedPhone = isGroup ? jid : (rawPhone.startsWith('+') ? rawPhone : `+${rawPhone}`);
+
+        // Resolve display name: Phonebook name -> Group name -> Contact push name -> Formatted phone
+        const resolvedName = contact.name ||
+                             chat.name ||
+                             contact.notify ||
+                             contact.verifiedName ||
+                             (isGroup ? 'WhatsApp Grubu' : formattedPhone);
+
+        result.push({
+            jid,
+            phone: formattedPhone,
+            name: resolvedName,
+            pushName: contact.notify || null,
+            isGroup,
+            unreadCount: chat.unreadCount || 0,
+            lastMessage: chat.lastMessage || '',
+            timestamp: chat.timestamp || Math.floor(Date.now() / 1000),
+        });
+    }
+
+    // Sort reverse-chronological by timestamp (newest first, like WhatsApp Web)
+    result.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+    return result;
+}
+
 module.exports = {
     activeSessions,
     getOrCreateSession,
@@ -624,5 +797,6 @@ module.exports = {
     requestPairingCode,
     sendMessage,
     disconnectSession,
-    restoreSavedSessions
+    restoreSavedSessions,
+    getSessionChats
 };

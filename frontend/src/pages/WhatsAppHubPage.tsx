@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { 
   Smartphone, 
@@ -55,122 +55,6 @@ import {
 import { useToast } from '../context/ToastContext';
 import { useI18n } from '../context/I18nContext';
 
-const MOCK_INITIAL_CONVERSATIONS: Conversation[] = [
-  {
-    id: 1,
-    lead_id: 101,
-    lead_name: 'Ahmet Yılmaz',
-    lead_phone: '+90 532 111 22 33',
-    lead_avatar_url: null,
-    channel: 'WHATSAPP',
-    status: 'ACTIVE',
-    unread_count: 1,
-    is_group: false,
-    last_message_at: new Date(Date.now() - 1000 * 60 * 15).toISOString(),
-    last_message_preview: 'Merhaba, ürün detayları hakkında bilgi alabilir miyim?',
-    created_at: new Date(Date.now() - 1000 * 60 * 60 * 24).toISOString(),
-    updated_at: new Date().toISOString(),
-  },
-  {
-    id: 2,
-    lead_id: 102,
-    lead_name: 'Örnek İşletme',
-    lead_phone: '+90 555 444 33 22',
-    lead_avatar_url: null,
-    channel: 'WHATSAPP',
-    status: 'ACTIVE',
-    unread_count: 0,
-    is_group: false,
-    last_message_at: new Date(Date.now() - 1000 * 60 * 120).toISOString(),
-    last_message_preview: 'Katalog ve fiyat listesini inceledik, teşekkürler.',
-    created_at: new Date(Date.now() - 1000 * 60 * 60 * 48).toISOString(),
-    updated_at: new Date().toISOString(),
-  },
-  {
-    id: 3,
-    lead_id: 103,
-    lead_name: 'Saha Satış Ekibi',
-    lead_phone: '1203630456789@g.us',
-    lead_avatar_url: null,
-    channel: 'WHATSAPP',
-    status: 'ACTIVE',
-    unread_count: 0,
-    is_group: true,
-    last_message_at: new Date(Date.now() - 1000 * 60 * 360).toISOString(),
-    last_message_preview: 'Haftalık ziyaret planı sisteme yüklendi.',
-    created_at: new Date(Date.now() - 1000 * 60 * 60 * 72).toISOString(),
-    updated_at: new Date().toISOString(),
-  },
-];
-
-const MOCK_INITIAL_MESSAGES: Record<number, Message[]> = {
-  1: [
-    {
-      id: 1,
-      conversation_id: 1,
-      direction: 'INBOUND',
-      message_type: 'TEXT',
-      status: 'DELIVERED',
-      body: 'Merhaba, ürün detayları hakkında bilgi alabilir miyim?',
-      sender_name: 'Ahmet Yılmaz',
-      created_at: new Date(Date.now() - 1000 * 60 * 30).toISOString(),
-    },
-    {
-      id: 2,
-      conversation_id: 1,
-      direction: 'OUTBOUND',
-      message_type: 'TEXT',
-      status: 'READ',
-      body: 'Merhaba Ahmet Bey, memnuniyetle! Güncel ürün kataloğumuzu ve avantajlı tekliflerimizi buradan iletebiliriz.',
-      sender_name: 'Siz',
-      created_at: new Date(Date.now() - 1000 * 60 * 20).toISOString(),
-    },
-    {
-      id: 3,
-      conversation_id: 1,
-      direction: 'INBOUND',
-      message_type: 'TEXT',
-      status: 'DELIVERED',
-      body: 'Harika olur, özellikle B2B otomasyon paketiyle ilgileniyoruz.',
-      sender_name: 'Ahmet Yılmaz',
-      created_at: new Date(Date.now() - 1000 * 60 * 15).toISOString(),
-    },
-  ],
-  2: [
-    {
-      id: 4,
-      conversation_id: 2,
-      direction: 'OUTBOUND',
-      message_type: 'TEXT',
-      status: 'READ',
-      body: 'Merhaba, fiyat listesini inceleme fırsatınız oldu mu?',
-      sender_name: 'Siz',
-      created_at: new Date(Date.now() - 1000 * 60 * 180).toISOString(),
-    },
-    {
-      id: 5,
-      conversation_id: 2,
-      direction: 'INBOUND',
-      message_type: 'TEXT',
-      status: 'DELIVERED',
-      body: 'Katalog ve fiyat listesini inceledik, teşekkürler.',
-      sender_name: 'Örnek İşletme',
-      created_at: new Date(Date.now() - 1000 * 60 * 120).toISOString(),
-    },
-  ],
-  3: [
-    {
-      id: 6,
-      conversation_id: 3,
-      direction: 'INBOUND',
-      message_type: 'TEXT',
-      status: 'DELIVERED',
-      body: 'Haftalık ziyaret planı sisteme yüklendi.',
-      sender_name: 'Mehmet Demir',
-      created_at: new Date(Date.now() - 1000 * 60 * 360).toISOString(),
-    },
-  ],
-};
 
 interface WhatsAppHubPageProps {
   onRefreshStats: () => void;
@@ -186,10 +70,10 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   // Tab State: 'conversations' | 'sessions' | 'antiban'
   const [hubTab, setHubTab] = useState<'conversations' | 'sessions' | 'antiban'>('conversations');
 
-  // Live Conversations State (pure visual design / zero backend network calls)
-  const [conversations, setConversations] = useState<Conversation[]>(MOCK_INITIAL_CONVERSATIONS);
-  const [selectedConv, setSelectedConv] = useState<Conversation | null>(MOCK_INITIAL_CONVERSATIONS[0]);
-  const [messagesMap, setMessagesMap] = useState<Record<number, Message[]>>(MOCK_INITIAL_MESSAGES);
+  // Live Conversations State (connected directly to WhatsApp session)
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [selectedConv, setSelectedConv] = useState<Conversation | null>(null);
+  const [messagesMap, setMessagesMap] = useState<Record<number, Message[]>>({});
   const [convsLoading, setConvsLoading] = useState<boolean>(false);
   const [convSearch, setConvSearch] = useState<string>('');
   const [convFilter, setConvFilter] = useState<FilterTab>('ALL');
@@ -210,15 +94,72 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
 
   const activeLoadOlder = async () => {};
 
+  const loadConversations = useCallback(async (isSilent: boolean = false) => {
+    if (!isSilent) setConvsLoading(true);
+    try {
+      const list = await ApiClient.getConversations({
+        status: convFilter === 'ALL' ? undefined : (convFilter as ConversationStatus),
+        unread_only: convFilter === 'UNREAD',
+        search: convSearch.trim() || undefined,
+      });
+      setConversations(list);
+      setSelectedConv((prev) => {
+        if (!prev && list.length > 0) return list[0];
+        if (prev) {
+          const updated = list.find((c) => c.id === prev.id);
+          return updated || (list.length > 0 ? list[0] : null);
+        }
+        return null;
+      });
+    } catch (err: any) {
+      console.error('Failed to load conversations:', err);
+    } finally {
+      if (!isSilent) setConvsLoading(false);
+    }
+  }, [convFilter, convSearch]);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      loadConversations();
+    }, convSearch ? 300 : 0);
+    return () => clearTimeout(timer);
+  }, [loadConversations, convSearch]);
+
+  // Load messages whenever selected conversation changes
+  useEffect(() => {
+    if (!selectedConv?.id) return;
+    let isMounted = true;
+    ApiClient.getConversationMessages(selectedConv.id, { limit: 50 })
+      .then((res) => {
+        if (isMounted && res?.messages) {
+          setMessagesMap((prev) => ({
+            ...prev,
+            [selectedConv.id]: res.messages,
+          }));
+        }
+      })
+      .catch((err) => {
+        console.error('Failed to fetch messages for conversation', selectedConv.id, err);
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, [selectedConv?.id]);
+
   const handleSyncChats = async () => {
     setIsSyncingChats(true);
-    setTimeout(() => {
-      setIsSyncingChats(false);
+    try {
+      const res = await ApiClient.syncWhatsAppChats();
+      await loadConversations(true);
       toast.success(
-        t('whatsapp.syncSuccess', { count: conversations.length }) || 'Sohbetler eşitlendi',
+        t('whatsapp.syncSuccess', { count: res.synced_count }) || `${res.synced_count} sohbet eşitlendi`,
         t('common.success')
       );
-    }, 350);
+    } catch (err: any) {
+      toast.error(err.message || 'Sohbetler eşitlenemedi', t('common.error'));
+    } finally {
+      setIsSyncingChats(false);
+    }
   };
 
   const handleOpenLead = async (leadId: number) => {
@@ -245,8 +186,9 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   const activeSendMessage = async (text: string) => {
     if (!selectedConv || !text.trim()) return;
     const trimmed = text.trim();
+    const tempId = Date.now();
     const newMsg: Message = {
-      id: Date.now(),
+      id: tempId,
       conversation_id: selectedConv.id,
       direction: 'OUTBOUND',
       message_type: 'TEXT',
@@ -255,6 +197,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       sender_name: 'Siz',
       created_at: new Date().toISOString(),
     };
+    // Optimistic zero-lag UI feedback
     setMessagesMap((prev) => ({
       ...prev,
       [selectedConv.id]: [...(prev[selectedConv.id] || []), newMsg],
@@ -266,6 +209,24 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
           : c
       )
     );
+
+    try {
+      const res = await ApiClient.sendMessage(selectedConv.id, trimmed);
+      setMessagesMap((prev) => ({
+        ...prev,
+        [selectedConv.id]: (prev[selectedConv.id] || []).map((m) =>
+          m.id === tempId ? { ...m, id: res.id, status: 'SENT' } : m
+        ),
+      }));
+    } catch (err: any) {
+      setMessagesMap((prev) => ({
+        ...prev,
+        [selectedConv.id]: (prev[selectedConv.id] || []).map((m) =>
+          m.id === tempId ? { ...m, status: 'FAILED' } : m
+        ),
+      }));
+      toast.error(err.message || 'Mesaj gönderilemedi', t('common.error'));
+    }
   };
 
   const activeRetryMessage = async (msgId: number) => {
@@ -371,8 +332,8 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         // If not found in existing list
       }
 
-      if (eventData.event === 'conversations_updated') {
-        // Handled locally
+      if (eventData.event === 'conversations_updated' || eventData.event === 'session_connected') {
+        loadConversations(true);
       }
 
       if (eventData.event === 'conversation_status_updated') {
@@ -398,7 +359,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     return () => {
       window.removeEventListener('tezlify:ws_event', handleWsEvent);
     };
-  }, [selectedConv]);
+  }, [selectedConv, loadConversations]);
 
   // Anti-Ban Timing & Change-Tracking State
   const [savedConfig, setSavedConfig] = useState<AntiBanConfig>(getStoredAntiBanConfig());
@@ -424,6 +385,14 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     toast.success(t('whatsapp.qrPairSuccess'), t('common.success'));
     fetchSessionsAndLogs(true);
     onRefreshStats();
+    // Auto-sync WhatsApp chats immediately upon connection
+    ApiClient.syncWhatsAppChats()
+      .then(() => {
+        loadConversations(true);
+      })
+      .catch((e) => {
+        console.warn('Auto sync after pairing failed:', e);
+      });
     setTimeout(() => {
       setIsQRModalOpen(false);
     }, 1500);
