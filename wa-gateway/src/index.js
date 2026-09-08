@@ -8,6 +8,7 @@ const {
     disconnectSession,
     restoreSavedSessions,
     getSessionChats,
+    getSessionChatsDelta,
 } = require('./sessionManager');
 
 const app = express();
@@ -164,6 +165,19 @@ app.get('/api/sessions/:sessionName/chats', async (req, res) => {
     }
 });
 
+
+// Fast in-memory chats delta poll: returns only changes since last revision (zero I/O)
+app.get('/api/sessions/:sessionName/chats/delta', (req, res) => {
+    const { sessionName } = req.params;
+    const since = Number(req.query.since);
+    try {
+        const delta = getSessionChatsDelta(sessionName, Number.isFinite(since) ? since : undefined);
+        res.json({ success: true, sessionName, ...delta });
+    } catch (err) {
+        console.warn(`[WA-Gateway] chats delta error for ${sessionName}:`, err.message);
+        res.status(500).json({ success: false, error: err.message, revision: 0, changed: [] });
+    }
+});
 
 // Disconnect session
 app.post('/api/sessions/:sessionName/disconnect', async (req, res) => {

@@ -206,6 +206,35 @@ class WhatsAppGatewayClient:
 
         return []
 
+    async def get_session_chats_delta(self, session_name: str, since_revision: int) -> Dict[str, Any]:
+        """Fetches only chats changed since the given gateway revision (zero-lag delta poll).
+
+        Returns {"revision": int, "changed": [chat, ...]} — changed is empty when
+        the gateway reports the caller is already up to date.
+        """
+        if self.is_recently_offline() and not settings.SIMULATION_MODE:
+            return {"revision": since_revision, "changed": []}
+        encoded_name = quote(session_name, safe="")
+        url = f"{self.gateway_url}/api/sessions/{encoded_name}/chats/delta"
+        try:
+            async with httpx.AsyncClient(timeout=self._get_timeout(3.0)) as client:
+                res = await client.get(
+                    url,
+                    params={"since": since_revision},
+                    headers=self._headers(),
+                )
+                if res.status_code == 200:
+                    self._last_unreachable_time = 0.0
+                    data = res.json()
+                    return {
+                        "revision": int(data.get("revision") or 0),
+                        "changed": data.get("changed") or [],
+                    }
+        except Exception as e:
+            self._last_unreachable_time = time.monotonic()
+            logger.debug(f"[GatewayClient] get_session_chats_delta error for {session_name}: {e}")
+        return {"revision": since_revision, "changed": []}
+
     async def disconnect_session(self, session_name: str) -> bool:
         """Disconnects and logs out the session on wa-gateway."""
         if self.is_recently_offline():

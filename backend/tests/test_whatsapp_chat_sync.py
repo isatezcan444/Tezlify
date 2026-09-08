@@ -58,9 +58,9 @@ async def test_sync_whatsapp_conversations_endpoint():
 
     mock_chats_payload = [
         {
-            "id": "905329998877@s.whatsapp.net",
+            "id": f"90532999{uuid.uuid4().int % 900000 + 100000}@s.whatsapp.net",
             "name": "Mehmet Kaya (Rehber)",
-            "phone": "905329998877",
+            "phone": f"90532999{uuid.uuid4().int % 900000 + 100000}",
             "unread_count": 3,
             "last_message": {"text": "Toplantı saat kaçta?", "from_me": False},
             "timestamp": 1717001000,
@@ -134,9 +134,9 @@ async def test_sync_whatsapp_conversations_with_gateway_string_messages():
 
     gateway_format_chats = [
         {
-            "id": "905321110022@s.whatsapp.net",
-            "jid": "905321110022@s.whatsapp.net",
-            "phone": "+905321110022",
+            "id": f"9053211100{uuid.uuid4().int % 90 + 10}@s.whatsapp.net",
+            "jid": f"9053211100{uuid.uuid4().int % 90 + 10}@s.whatsapp.net",
+            "phone": f"+9053211100{uuid.uuid4().int % 90 + 10}",
             "name": "Ayşe Hanım (Müşteri)",
             "pushName": "Ayşe",
             "isGroup": False,

@@ -400,6 +400,7 @@ async function initSessionSocket(sessionData) {
         }
 
         saveSessionStore(sessionName);
+        bumpChatRevision(sessionName);
         console.log(`[WA-Gateway] Synced ${sessionData.chats.size} chats and ${sessionData.contacts.size} contacts for ${sessionName}`);
 
         await notifyBackend(sessionName, 'chats-synced', {
@@ -421,6 +422,7 @@ async function initSessionSocket(sessionData) {
                 verifiedName: c.verifiedName || existing.verifiedName,
             });
         }
+        bumpChatRevision(sessionName);
         saveSessionStore(sessionName);
     });
 
@@ -434,6 +436,7 @@ async function initSessionSocket(sessionData) {
                 name: update.name || update.displayName || existing.name,
             });
         }
+        bumpChatRevision(sessionName);
         saveSessionStore(sessionName);
     });
 
@@ -452,6 +455,7 @@ async function initSessionSocket(sessionData) {
                 isGroup: chat.id.endsWith('@g.us'),
             });
         }
+        bumpChatRevision(sessionName);
         saveSessionStore(sessionName);
     });
 
@@ -468,6 +472,7 @@ async function initSessionSocket(sessionData) {
                 unreadCount: update.unreadCount !== undefined ? Number(update.unreadCount) : existing.unreadCount,
             });
         }
+        bumpChatRevision(sessionName);
         saveSessionStore(sessionName);
     });
 
@@ -540,6 +545,7 @@ async function initSessionSocket(sessionData) {
             }
 
             saveSessionStore(sessionName);
+            bumpChatRevision(sessionName);
 
             if (!alreadyConnected) {
                 await notifyBackend(sessionName, 'session-status', {
@@ -642,6 +648,7 @@ async function initSessionSocket(sessionData) {
                 unreadCount: fromMe ? 0 : unreadDelta,
                 isGroup,
             });
+            bumpChatRevision(sessionName);
 
             // If pushName exists on message, update contact
             if (msg.pushName) {
@@ -651,6 +658,7 @@ async function initSessionSocket(sessionData) {
                     id: remoteJid,
                     notify: msg.pushName,
                 });
+                bumpChatRevision(sessionName);
             }
 
             if (!fromMe && !isGroup && text) {
@@ -922,6 +930,17 @@ async function refreshSessionQR(sessionName) {
 }
 
 /**
+ * Builds a per-session revision counter that increments whenever chats/contacts mutate.
+ * Used by the backend to cheaply detect deltas without transferring full payloads.
+ */
+function bumpChatRevision(sessionName) {
+    const session = activeSessions.get(sessionName);
+    if (session) {
+        session.chatsRevision = (session.chatsRevision || 0) + 1;
+    }
+}
+
+/**
  * Retrieves all synced chats with resolved contact names from memory and disk.
  */
 async function getSessionChats(sessionName) {
@@ -1040,6 +1059,65 @@ async function getSessionChats(sessionName) {
     return result;
 }
 
+/**
+ * Returns only the chats changed since the caller's last revision (WhatsApp-Web-style delta).
+ * Zero-lag design: pure in-memory scan, no disk or network I/O.
+ * Returns { revision, changed } — changed is empty when the caller is already up to date.
+ */
+function getSessionChatsDelta(sessionName, sinceRevision) {
+    let session = activeSessions.get(sessionName);
+    if (!session) {
+        const cleanName = (sessionName || '').trim().toLowerCase();
+        for (const [k, v] of activeSessions.entries()) {
+            if (k.toLowerCase() === cleanName || decodeURIComponent(k).trim().toLowerCase() === cleanName) {
+                session = v;
+                sessionName = k;
+                break;
+            }
+        }
+    }
+    if (!session && activeSessions.size === 1) {
+        session = activeSessions.values().next().value;
+        sessionName = session.name;
+    }
+    if (!session) {
+        return { revision: 0, changed: [] };
+    }
+
+    const currentRevision = session.chatsRevision || 0;
+    if (typeof sinceRevision === 'number' && sinceRevision === currentRevision) {
+        return { revision: currentRevision, changed: [] };
+    }
+
+    const chatsMap = session.chats || new Map();
+    const contactsMap = session.contacts || new Map();
+    const changed = [];
+
+    for (const jid of chatsMap.keys()) {
+        if (!jid || jid === 'status@broadcast' || jid.endsWith('@newsletter')) continue;
+        const chat = chatsMap.get(jid) || {};
+        const isGroup = jid.endsWith('@g.us');
+        const rawPhone = jid.split('@')[0];
+        const formattedPhone = isGroup ? jid : (rawPhone.startsWith('+') ? rawPhone : `+${rawPhone}`);
+        const resolvedName = chat.name ||
+            (contactsMap.get(jid) || {}).notify ||
+            (isGroup ? 'WhatsApp Grubu' : formattedPhone);
+        changed.push({
+            id: jid,
+            jid,
+            phone: formattedPhone,
+            name: resolvedName,
+            is_group: isGroup,
+            unread_count: chat.unreadCount || 0,
+            last_message: typeof chat.lastMessage === 'string' ? chat.lastMessage : (chat.lastMessage?.text || ''),
+            timestamp: chat.timestamp || 0,
+        });
+    }
+
+    changed.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+    return { revision: currentRevision, changed };
+}
+
 module.exports = {
     activeSessions,
     getOrCreateSession,
@@ -1048,5 +1126,7 @@ module.exports = {
     sendMessage,
     disconnectSession,
     restoreSavedSessions,
-    getSessionChats
+    getSessionChats,
+    getSessionChatsDelta,
+    bumpChatRevision
 };

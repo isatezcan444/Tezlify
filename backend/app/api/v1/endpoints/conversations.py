@@ -19,6 +19,7 @@ from backend.app.models.whatsapp_session import WhatsAppSession, SessionStatus
 from backend.app.services.whatsapp_outbound_service import WhatsAppOutboundService
 from backend.app.services.whatsapp_template_service import WhatsAppTemplateService
 from backend.app.services.whatsapp_gateway_client import gateway_client
+from backend.app.services.whatsapp_chat_sync_service import WhatsAppChatSyncService
 from backend.app.services.phone_service import PhoneService
 
 def _conversation_phone_key(phone_e164: Optional[str], phone: Optional[str]) -> Optional[str]:
@@ -850,156 +851,66 @@ async def sync_whatsapp_conversations(
             detail=f"WhatsApp servisinden sohbetler alınamadı: {str(e)}",
         )
 
-    synced_count = 0
-
-    for c in chats:
-        jid = c.get("id") or c.get("jid")
-        if not jid or "@broadcast" in jid:
-            continue
-
-        raw_name = c.get("name")
-        phone = c.get("phone")
-        unread_count = c.get("unread_count") if c.get("unread_count") is not None else c.get("unreadCount", 0)
-        last_msg = c.get("last_message") if c.get("last_message") is not None else c.get("lastMessage")
-        timestamp = c.get("timestamp")
-        is_group = c.get("is_group") if c.get("is_group") is not None else c.get("isGroup", False)
-
-        last_text = ""
-        from_me = False
-        if isinstance(last_msg, dict):
-            last_text = last_msg.get("text") or last_msg.get("body") or ""
-            from_me = bool(last_msg.get("from_me", False))
-        elif isinstance(last_msg, str):
-            last_text = last_msg
-
-        if is_group:
-            phone_e164 = None
-            category = "WhatsApp Grubu"
-            place_id = f"group_{hashlib.sha256(f'{jid}'.encode()).hexdigest()[:16]}"
-            lead_stmt = select(Lead).where(
-                or_(
-                    Lead.place_id == place_id,
-                    and_(Lead.name == raw_name, Lead.category == category),
-                )
-            )
-        else:
-            category = "WhatsApp Kişisi"
-            phone_parsed = PhoneService.normalize_to_e164(phone) if phone else None
-            phone_e164 = phone_parsed.get("e164") if phone_parsed else (f"+{phone}" if phone and not phone.startswith("+") else phone)
-            place_id = f"wa_{hashlib.sha256(f'{phone_e164 or jid}'.encode()).hexdigest()[:16]}"
-
-            lead_stmt = select(Lead).where(
-                or_(
-                    Lead.phone_e164 == phone_e164,
-                    Lead.place_id == place_id,
-                ) if phone_e164 else Lead.place_id == place_id,
-            )
-
-        lead_res = await db.execute(lead_stmt)
-        lead = lead_res.scalars().first()
-
-        resolved_name = raw_name or (phone_e164 or "Bilinmeyen Numara")
-
-        if not lead:
-            lead = Lead(
-                user_id=current_user.id,
-                name=resolved_name,
-                phone=phone or jid,
-                phone_e164=phone_e164,
-                is_whatsapp_eligible=True if phone_e164 else False,
-                place_id=place_id,
-                category=category,
-                custom_data={"is_group": is_group, "whatsapp_jid": jid},
-            )
-            db.add(lead)
-            await db.flush()
-        else:
-            if not lead.user_id:
-                lead.user_id = current_user.id
-            # Update name if previously empty or generic
-            if resolved_name and (not lead.name or lead.name.startswith("+") or lead.name == "Bilinmeyen Numara"):
-                lead.name = resolved_name
-
-        # Find or create conversation
-        conv_stmt = select(Conversation).where(
-            Conversation.lead_id == lead.id,
-            Conversation.channel == "WHATSAPP",
-        )
-        conv_res = await db.execute(conv_stmt)
-        conv = conv_res.scalars().first()
-
-        if not conv:
-            conv = Conversation(
-                user_id=current_user.id,
-                lead_id=lead.id,
-                channel="WHATSAPP",
-                status=ConversationStatus.ACTIVE,
-                unread_count=unread_count or 0,
-                last_message_preview=last_text or None,
-            )
-            db.add(conv)
-            await db.flush()
-        else:
-            if not conv.user_id or conv.user_id != current_user.id:
-                conv.user_id = current_user.id
-            if unread_count is not None:
-                conv.unread_count = unread_count
-            if last_text:
-                conv.last_message_preview = last_text
-
-        if timestamp and timestamp > 0:
-            try:
-                msg_dt = datetime.fromtimestamp(timestamp)
-                conv.last_message_at = msg_dt
-            except Exception:
-                pass
-        elif last_text and not conv.last_message_at:
-            conv.last_message_at = datetime.utcnow()
-
-        # Sync latest message if present
-        if last_text:
-            msg_dt = datetime.fromtimestamp(timestamp) if (timestamp and timestamp > 0) else datetime.utcnow()
-
-            m_stmt = (
-                select(Message)
-                .where(Message.conversation_id == conv.id)
-                .order_by(Message.id.desc())
-                .limit(1)
-            )
-            latest_m = (await db.execute(m_stmt)).scalars().first()
-            if not latest_m or latest_m.body != last_text:
-                sender_phone = (session.phone_number or "BUSINESS") if from_me else (phone_e164 or jid)
-                recipient_phone = (phone_e164 or jid) if from_me else (session.phone_number or "BUSINESS")
-                sender_name = "Siz" if from_me else resolved_name
-
-                new_msg = Message(
-                    user_id=current_user.id,
-                    conversation_id=conv.id,
-                    direction=MessageDirection.OUTBOUND if from_me else MessageDirection.INBOUND,
-                    body=last_text,
-                    sender_phone=sender_phone,
-                    recipient_phone=recipient_phone,
-                    sender_name=sender_name,
-                    created_at=msg_dt,
-                )
-                db.add(new_msg)
-
-        synced_count += 1
-
-    await db.commit()
+    report = await WhatsAppChatSyncService.sync_chats(db=db, session=session, chats=chats)
 
     # Broadcast real-time update
     await ws_manager.broadcast({
         "event": "conversations_updated",
-        "synced_count": synced_count,
+        "synced_count": report.synced_count,
         "session_name": session.session_name,
     })
 
-    return {
-        "status": "success",
-        "synced_count": synced_count,
+    return report.to_payload()
+
+
+@router.post("/sync-whatsapp/delta")
+async def sync_whatsapp_conversations_delta(
+    current_user: AuthUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """WhatsApp-Web-style delta reconcile: pulls only chats changed since the
+    last materialized gateway revision. Returns immediately with no DB writes
+    when the caller is already up to date — the cheap heartbeat for the
+    zero-lag left panel."""
+    sess_stmt = (
+        select(WhatsAppSession)
+        .where(
+            get_user_filter(WhatsAppSession.user_id, current_user.id),
+            WhatsAppSession.status == SessionStatus.CONNECTED,
+        )
+        .order_by(WhatsAppSession.id.desc())
+    )
+    session = (await db.execute(sess_stmt)).scalars().first()
+    if not session:
+        raise HTTPException(
+            status_code=400,
+            detail="Aktif bağlı WhatsApp oturumu bulunamadı. Lütfen önce bir hat bağlayın.",
+        )
+
+    since = WhatsAppChatSyncService.last_sync_revisions.get(session.session_name, 0)
+    delta = await gateway_client.get_session_chats_delta(session.session_name, since)
+    changed = delta.get("changed") or []
+    revision = delta.get("revision")
+
+    if not changed:
+        return {
+            "status": "up_to_date",
+            "synced_count": 0,
+            "session_name": session.session_name,
+            "revision": revision if revision is not None else since,
+        }
+
+    report = await WhatsAppChatSyncService.sync_chats(
+        db=db, session=session, chats=changed, revision=revision
+    )
+
+    await ws_manager.broadcast({
+        "event": "conversations_updated",
+        "synced_count": report.synced_count,
         "session_name": session.session_name,
-    }
+    })
+
+    return report.to_payload()
 
 
 

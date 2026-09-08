@@ -708,8 +708,33 @@ export class ApiClient {
     names_healed?: number;
     messages_imported?: number;
     note?: string | null;
+    created_leads?: number;
+    created_conversations?: number;
+    new_messages?: number;
   }> {
-    const res = await authFetch(`${API_BASE}/conversations/sync-whatsapp`, {
+    return this.syncWhatsAppChatsInternal(`${API_BASE}/conversations/sync-whatsapp`);
+  }
+
+  /** Cheap delta reconcile: only chats changed since last sync; no-op when up to date. */
+  static async syncWhatsAppChatsDelta(): Promise<{
+    status: string;
+    synced_count: number;
+    session_name?: string;
+    revision?: number | null;
+  }> {
+    return this.syncWhatsAppChatsInternal(`${API_BASE}/conversations/sync-whatsapp/delta`);
+  }
+
+  private static async syncWhatsAppChatsInternal(url: string): Promise<{
+    status: string;
+    synced_count: number;
+    session_name?: string;
+    created_leads?: number;
+    created_conversations?: number;
+    new_messages?: number;
+    revision?: number | null;
+  }> {
+    const res = await authFetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
     });

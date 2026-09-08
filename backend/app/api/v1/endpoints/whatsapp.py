@@ -28,6 +28,8 @@ from backend.app.schemas.whatsapp import (
 )
 from backend.app.services.phone_service import PhoneService
 from backend.app.services.whatsapp_sender import get_whatsapp_sender
+from backend.app.services.whatsapp_chat_sync_service import WhatsAppChatSyncService
+from backend.app.services.whatsapp_gateway_client import gateway_client
 from backend.app.services.whatsapp_gateway_client import gateway_client
 from backend.app.api.v1.websocket import ws_manager
 
@@ -673,15 +675,44 @@ async def handle_chats_synced_webhook(
 
     logger.info(f"[Webhook] WhatsApp chats synced for session {session_name}: {total_chats} chats, {total_contacts} contacts")
 
+    # Zero-lag auto-sync: materialize gateway chats into the inbox immediately
+    # (WhatsApp-Web behavior — the list fills itself the moment a session connects,
+    # without waiting for a manual refresh).
+    synced_count = 0
+    try:
+        stmt = select(WhatsAppSession).where(WhatsAppSession.session_name == session_name)
+        res = await db.execute(stmt)
+        session = res.scalars().first()
+        if session is None and session_name:
+            session = WhatsAppSession(
+                user_id=None,
+                session_name=session_name,
+                status=SessionStatus.CONNECTED,
+                is_phone_online=True,
+            )
+            db.add(session)
+            await db.flush()
+
+        if session is not None:
+            chats = await gateway_client.get_session_chats(session_name)
+            if chats:
+                report = await WhatsAppChatSyncService.sync_chats(db=db, session=session, chats=chats)
+                synced_count = report.synced_count
+                if report.errors:
+                    logger.warning(f"[Webhook] Auto-sync partial errors for {session_name}: {report.errors}")
+    except Exception as e:
+        logger.warning(f"[Webhook] Auto-sync failed for {session_name}: {e}")
+
     # Broadcast real-time event so frontend updates conversations without delay
     await ws_manager.broadcast({
         "event": "conversations_updated",
         "session_name": session_name,
         "total_chats": total_chats,
-        "total_contacts": total_contacts
+        "total_contacts": total_contacts,
+        "synced_count": synced_count
     })
 
-    return {"status": "success", "session_name": session_name}
+    return {"status": "success", "session_name": session_name, "synced_count": synced_count}
 
 
 @router.post("/webhook/session-status")

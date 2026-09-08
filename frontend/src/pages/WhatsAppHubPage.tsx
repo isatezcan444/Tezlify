@@ -162,6 +162,43 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     }
   };
 
+  // Zero-lag live list: cheap delta reconcile while the conversations tab is
+  // mounted (WhatsApp-Web behavior). Skips silently when the tab is hidden,
+  // when a full sync is already running, or when nothing changed on gateway.
+  const isSyncingChatsRef = useRef(false);
+  useEffect(() => {
+    isSyncingChatsRef.current = isSyncingChats;
+  }, [isSyncingChats]);
+
+  useEffect(() => {
+    if (hubTab !== 'conversations') return;
+    let cancelled = false;
+    let inFlight = false;
+
+    const poll = async () => {
+      if (cancelled || inFlight || isSyncingChatsRef.current) return;
+      if (typeof document !== 'undefined' && document.hidden) return;
+      inFlight = true;
+      try {
+        const res = await ApiClient.syncWhatsAppChatsDelta();
+        if (!cancelled && res.synced_count > 0) {
+          await loadConversations(true);
+        }
+      } catch {
+        // Session offline or transient error: silent retry on next tick.
+      } finally {
+        inFlight = false;
+      }
+    };
+
+    const interval = setInterval(poll, 4000);
+    poll();
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [hubTab, loadConversations]);
+
   const handleOpenLead = async (leadId: number) => {
     setDrawerLead({
       id: leadId,

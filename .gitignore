@@ -5,8 +5,9 @@
 !frontend/.env.production
 !frontend/.env.example
 
-# Antigravity Workspace Config with Tokens
+# Antigravity / Freebuff Workspace Config with Tokens
 .agents/mcp_config.json
+.agents/mcp.json
 
 # Database & SQLite
 *.db
