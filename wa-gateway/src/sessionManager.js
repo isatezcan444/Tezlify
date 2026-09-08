@@ -8,7 +8,8 @@ const {
     useMultiFileAuthState,
     DisconnectReason,
     Browsers,
-    fetchLatestBaileysVersion
+    fetchLatestBaileysVersion,
+    proto
 } = require('@whiskeysockets/baileys');
 
 const SESSIONS_DIR = path.join(__dirname, '..', 'sessions');
@@ -191,6 +192,10 @@ async function initSessionSocket(sessionData) {
     }
 
     const { state, saveCreds } = await useMultiFileAuthState(sessionAuthDir);
+    // Initialize accountSyncCounter so Baileys skips the 20-second AwaitingInitialSync wait
+    if (!state.creds.accountSyncCounter || state.creds.accountSyncCounter < 1) {
+        state.creds.accountSyncCounter = 1;
+    }
     const version = await getCachedBaileysVersion();
     console.log(`[WA-Gateway] Starting socket for ${sessionName} with WA Web v${version.join('.')}`);
 
@@ -201,7 +206,15 @@ async function initSessionSocket(sessionData) {
         logger: pino({ level: 'silent' }),
         browser: Browsers.macOS('Chrome'),
         syncFullHistory: false,
+        shouldSyncHistoryMessage: (msg) => {
+            // Prevent mobile phone from hanging on "Giriş yapılıyor..." (Logging in...)
+            // By skipping RECENT and FULL history dumps, the phone finishes companion login immediately
+            const syncType = msg?.syncType;
+            return syncType !== proto.HistorySync.HistorySyncType.RECENT &&
+                   syncType !== proto.HistorySync.HistorySyncType.FULL;
+        },
         markOnlineOnConnect: true,
+        fireInitQueries: true,
         defaultQueryTimeoutMs: 60000,
         connectTimeoutMs: 60000,
         generateHighQualityLinkPreview: false,
@@ -290,7 +303,9 @@ async function initSessionSocket(sessionData) {
                 });
             } else {
                 const isRestartRequired = statusCode === DisconnectReason.restartRequired;
-                console.log(`[WA-Gateway] Reconnecting session ${sessionName} (status: ${statusCode}, restartRequired: ${isRestartRequired})...`);
+                const wasPairing = sessionData.status === 'SCAN_QR' || !sessionData.phone;
+                const reconnectDelay = isRestartRequired || wasPairing ? 80 : 2500;
+                console.log(`[WA-Gateway] Reconnecting session ${sessionName} in ${reconnectDelay}ms (status: ${statusCode}, restartRequired: ${isRestartRequired}, wasPairing: ${wasPairing})...`);
 
                 sessionData.status = 'CONNECTING';
 
@@ -302,7 +317,7 @@ async function initSessionSocket(sessionData) {
                     initSessionSocket(sessionData).catch(err => {
                         console.error(`[WA-Gateway] Reconnect failed for ${sessionName}:`, err.message);
                     });
-                }, isRestartRequired ? 500 : 3000);
+                }, reconnectDelay);
             }
         }
     });
