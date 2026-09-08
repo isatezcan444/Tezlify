@@ -810,7 +810,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     <div className="space-y-6 pb-16 select-none animate-fade-in">
       {/* Top Header & Tab Switcher */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div>
+        <div className="min-w-0">
           <h2 className="text-xl font-extrabold text-slate-800 dark:text-white flex items-center gap-2">
             {hubTab === 'conversations' ? (
               <>
@@ -839,20 +839,20 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         </div>
 
         {/* Segmented Tab Switcher */}
-        <div className="flex p-1 rounded-2xl bg-slate-200/80 dark:bg-white/[0.04] border border-slate-200 dark:border-white/[0.08] w-full md:w-auto">
+        <div className="flex p-1 rounded-2xl bg-slate-200/80 dark:bg-white/[0.04] border border-slate-200 dark:border-white/[0.08] w-full md:w-auto shrink-0">
           <button
             type="button"
             onClick={() => setHubTab('conversations')}
-            className={`flex-1 md:flex-initial py-1.5 px-3.5 rounded-xl text-xs font-extrabold transition-all flex items-center justify-center space-x-2 cursor-pointer ${
+            className={`flex-1 md:flex-initial py-1.5 px-3.5 rounded-xl text-xs font-extrabold transition-all flex items-center justify-center space-x-2 cursor-pointer whitespace-nowrap ${
               hubTab === 'conversations'
                 ? 'bg-white dark:bg-[#7367F0] text-slate-900 dark:text-white shadow-xs'
                 : 'text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white'
             }`}
           >
-            <MessageSquare className="w-3.5 h-3.5" />
-            <span>{t('whatsapp.tabConversations')}</span>
+            <MessageSquare className="w-3.5 h-3.5 shrink-0" />
+            <span className="whitespace-nowrap">{t('whatsapp.tabConversations')}</span>
             {conversations.length > 0 && (
-              <span className="px-1.5 py-0.2 rounded-full text-[10px] font-bold bg-[#25D366]/20 text-[#25D366] dark:text-[#25D366]">
+              <span className="px-1.5 py-0.2 rounded-full text-[10px] font-bold bg-[#25D366]/20 text-[#25D366] dark:text-[#25D366] shrink-0">
                 {conversations.length}
               </span>
             )}
@@ -861,29 +861,29 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
           <button
             type="button"
             onClick={() => setHubTab('sessions')}
-            className={`flex-1 md:flex-initial py-1.5 px-3.5 rounded-xl text-xs font-extrabold transition-all flex items-center justify-center space-x-2 cursor-pointer ${
+            className={`flex-1 md:flex-initial py-1.5 px-3.5 rounded-xl text-xs font-extrabold transition-all flex items-center justify-center space-x-2 cursor-pointer whitespace-nowrap ${
               hubTab === 'sessions'
                 ? 'bg-white dark:bg-[#7367F0] text-slate-900 dark:text-white shadow-xs'
                 : 'text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white'
             }`}
           >
-            <Smartphone className="w-3.5 h-3.5" />
-            <span>{t('whatsapp.tabSessions')}</span>
+            <Smartphone className="w-3.5 h-3.5 shrink-0" />
+            <span className="whitespace-nowrap">{t('whatsapp.tabSessions')}</span>
           </button>
 
           <button
             type="button"
             onClick={() => setHubTab('antiban')}
-            className={`flex-1 md:flex-initial py-1.5 px-3.5 rounded-xl text-xs font-extrabold transition-all flex items-center justify-center space-x-2 cursor-pointer ${
+            className={`flex-1 md:flex-initial py-1.5 px-3.5 rounded-xl text-xs font-extrabold transition-all flex items-center justify-center space-x-2 cursor-pointer whitespace-nowrap ${
               hubTab === 'antiban'
                 ? 'bg-white dark:bg-[#7367F0] text-slate-900 dark:text-white shadow-xs'
                 : 'text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white'
             }`}
           >
-            <ShieldCheck className="w-3.5 h-3.5" />
-            <span>{t('whatsapp.tabAntiBan')}</span>
+            <ShieldCheck className="w-3.5 h-3.5 shrink-0" />
+            <span className="whitespace-nowrap">{t('whatsapp.tabAntiBan')}</span>
             {hasUnsavedChanges && (
-              <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+              <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse shrink-0" />
             )}
           </button>
         </div>
