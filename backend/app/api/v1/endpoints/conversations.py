@@ -1,5 +1,6 @@
 import logging
 import os
+import hashlib
 from datetime import datetime
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Header
@@ -9,7 +10,6 @@ from sqlalchemy.orm import selectinload
 
 from backend.app.core.database import get_db
 from backend.app.core.search_utils import escape_like_literal
-from backend.app.services.whatsapp_sync_service import _conversation_phone_key
 from backend.app.core.auth import AuthUser, get_current_user, get_user_filter
 from backend.app.api.v1.websocket import ws_manager
 from backend.app.models.conversation import Conversation, ConversationStatus
@@ -18,9 +18,12 @@ from backend.app.models.lead import Lead
 from backend.app.models.whatsapp_session import WhatsAppSession, SessionStatus
 from backend.app.services.whatsapp_outbound_service import WhatsAppOutboundService
 from backend.app.services.whatsapp_template_service import WhatsAppTemplateService
-from backend.app.services.whatsapp_sync_service import WhatsAppSyncService
-from backend.app.services.whatsapp_gateway_client import gateway_client
 from backend.app.services.phone_service import PhoneService
+
+def _conversation_phone_key(phone_e164: Optional[str], phone: Optional[str]) -> Optional[str]:
+    raw = phone_e164 or phone or ""
+    digits = "".join(ch for ch in raw if ch.isdigit())
+    return digits[-10:] if len(digits) >= 10 else (digits or None)
 from backend.app.schemas.conversation import (
     ConversationResponse,
     ConversationDetailResponse,
@@ -221,53 +224,6 @@ async def get_conversation(
         db=db, conversation_id=conv.id, limit=limit, before=before
     )
 
-    # On-demand WhatsApp history sync: if conversation has <= 1 message (or cursor reached end of DB history),
-    # pull message history from the connected Baileys session so the chat displays full thread history like WhatsApp Web.
-    if conv.channel == "WHATSAPP" and ((len(messages_dto) <= 1 and before is None) or (before is not None and not has_more)):
-        try:
-            sess_stmt = select(WhatsAppSession).where(
-                get_user_filter(WhatsAppSession.user_id, current_user.id),
-                WhatsAppSession.status == SessionStatus.CONNECTED,
-            )
-            sess_res = await db.execute(sess_stmt)
-            wa_sess = sess_res.scalars().first()
-            if not wa_sess:
-                any_sess_stmt = select(WhatsAppSession).where(WhatsAppSession.status == SessionStatus.CONNECTED)
-                wa_sess = (await db.execute(any_sess_stmt)).scalars().first()
-
-            if wa_sess and conv.lead:
-                chat_jid = None
-                if conv.lead.phone and ("@" in conv.lead.phone):
-                    chat_jid = conv.lead.phone
-                elif conv.lead.custom_data and conv.lead.custom_data.get("remote_jid"):
-                    chat_jid = conv.lead.custom_data["remote_jid"]
-                elif conv.lead.phone_e164:
-                    chat_jid = f"{conv.lead.phone_e164.lstrip('+')}@s.whatsapp.net"
-                elif conv.lead.phone:
-                    chat_jid = f"{conv.lead.phone.lstrip('+')}@s.whatsapp.net"
-
-                if chat_jid:
-                    oldest_msg = messages_dto[0] if messages_dto else None
-                    gw_msgs = await gateway_client.get_chat_messages(
-                        session_name=wa_sess.session_name,
-                        chat_jid=chat_jid,
-                        fetch_older=True,
-                        oldest_msg_id=oldest_msg.wa_message_id if oldest_msg else None,
-                        oldest_from_me=(oldest_msg.direction == MessageDirection.OUTBOUND) if oldest_msg else None,
-                        oldest_timestamp=int(oldest_msg.created_at.timestamp()) if (oldest_msg and oldest_msg.created_at) else None,
-                    )
-                    if gw_msgs:
-                        await WhatsAppSyncService.sync_history_batch(
-                            db=db,
-                            user_id=current_user.id,
-                            chats=[],
-                            messages=gw_msgs,
-                        )
-                        messages_dto, has_more, oldest_id, newest_id = await _fetch_paginated_messages(
-                            db=db, conversation_id=conv.id, limit=limit, before=before
-                        )
-        except Exception as e:
-            logger.warning(f"[Conversations] On-demand chat message sync failed for conv {conv.id}: {e}")
 
     latest_msg_body = messages_dto[-1].body if messages_dto else None
     window_info = await WhatsAppOutboundService.check_24h_window(conv.id, db)
@@ -717,12 +673,40 @@ async def start_conversation(
 
     e164 = phone_data["e164"]
 
-    lead, conv = await WhatsAppSyncService.get_or_create_lead_and_conversation(
-        db=db,
-        user_id=current_user.id,
-        phone_e164=e164,
-        contact_name=req.name.strip() if req.name else None,
+    lead_stmt = select(Lead).where(
+        get_user_filter(Lead.user_id, current_user.id),
+        or_(Lead.phone_e164 == e164, Lead.phone == e164),
     )
+    lead = (await db.execute(lead_stmt)).scalars().first()
+    if not lead:
+        place_id = f"lead_{hashlib.sha256(e164.encode()).hexdigest()[:16]}"
+        lead = Lead(
+            user_id=current_user.id,
+            name=req.name.strip() if req.name else "Yeni Müşteri",
+            phone=e164,
+            phone_e164=e164,
+            place_id=place_id,
+            is_whatsapp_eligible=True,
+            category="WhatsApp Sohbeti",
+        )
+        db.add(lead)
+        await db.flush()
+
+    conv_stmt = select(Conversation).where(
+        Conversation.lead_id == lead.id,
+        Conversation.channel == "WHATSAPP",
+        get_user_filter(Conversation.user_id, current_user.id),
+    )
+    conv = (await db.execute(conv_stmt)).scalars().first()
+    if not conv:
+        conv = Conversation(
+            user_id=current_user.id,
+            lead_id=lead.id,
+            channel="WHATSAPP",
+            status=ConversationStatus.ACTIVE,
+        )
+        db.add(conv)
+        await db.flush()
     await db.commit()
     await db.refresh(lead)
     await db.refresh(conv)
@@ -783,120 +767,4 @@ async def start_conversation(
     )
 
 
-@router.post("/sync-whatsapp")
-async def sync_whatsapp_conversations(
-    db: AsyncSession = Depends(get_db),
-    current_user: AuthUser = Depends(get_current_user),
-):
-    """
-    Syncs in-memory WhatsApp chats and contacts from connected Baileys session.
-    """
-    # 1. Resolve user's connected session
-    sess_stmt = select(WhatsAppSession).where(
-        get_user_filter(WhatsAppSession.user_id, current_user.id),
-        WhatsAppSession.status == SessionStatus.CONNECTED,
-    )
-    sess_res = await db.execute(sess_stmt)
-    session = sess_res.scalars().first()
-
-    if not session:
-        # Fallback: check any connected session if test or single-user dev
-        any_sess_stmt = select(WhatsAppSession).where(WhatsAppSession.status == SessionStatus.CONNECTED)
-        any_res = await db.execute(any_sess_stmt)
-        session = any_res.scalars().first()
-
-    if not session:
-        raise HTTPException(status_code=400, detail="Bağlı aktif bir WhatsApp oturumu bulunamadı.")
-
-    # 2. Trigger gateway sync or fetch chats (avatars skipped: they dominate
-    #    sync latency and refresh through the live path instead).
-    chats = await gateway_client.get_session_chats(session.session_name, include_avatars=False)
-    synced_count = 0
-    note: Optional[str] = None
-    merged_threads = 0
-    names_healed = 0
-    messages_imported = 0
-
-    if chats:
-        all_messages = []
-        for c in chats:
-            chat_msgs = c.get("messages") or []
-            if chat_msgs:
-                for m in chat_msgs:
-                    all_messages.append({
-                        "phone": m.get("phone") or c.get("phone"),
-                        "message": m.get("message") or m.get("text"),
-                        "fromMe": bool(m.get("fromMe", False)),
-                        "sender_name": m.get("sender_name"),
-                        "participant": m.get("participant"),
-                        "participant_pn": m.get("participant_pn"),
-                        "is_group": c.get("is_group"),
-                        "timestamp": m.get("timestamp"),
-                        "wa_message_id": m.get("wa_message_id"),
-                    })
-            elif c.get("last_message_preview"):
-                all_messages.append({
-                    "phone": c.get("phone"),
-                    "message": c.get("last_message_preview"),
-                    "fromMe": bool(c.get("last_message_from_me", False)),
-                    "sender_name": c.get("last_message_sender_name"),
-                    "participant": c.get("last_message_participant"),
-                    "participant_pn": c.get("last_message_participant_pn"),
-                    "is_group": c.get("is_group"),
-                    "timestamp": c.get("conversation_timestamp"),
-                })
-
-        res = await WhatsAppSyncService.sync_history_batch(
-            db=db,
-            session_name=session.session_name,
-            chats=[
-                {
-                    "id": c.get("id"),
-                    "phone": c.get("phone"),
-                    "name": c.get("name"),
-                    "is_group": c.get("is_group"),
-                    "avatar_url": c.get("avatar_url"),
-                    "conversation_timestamp": c.get("conversation_timestamp"),
-                    "last_message_preview": c.get("last_message_preview"),
-                    "last_message_from_me": c.get("last_message_from_me"),
-                    "last_message_sender_name": c.get("last_message_sender_name"),
-                    "last_message_participant": c.get("last_message_participant"),
-                    "last_message_participant_pn": c.get("last_message_participant_pn"),
-                }
-                for c in chats
-            ],
-            messages=all_messages,
-        )
-        synced_count = res.get("chats_synced", len(chats))
-        merged_threads = int(res.get("threads_merged", 0) or 0)
-        names_healed = int(res.get("names_healed", 0) or 0)
-        messages_imported = int(res.get("messages_imported", 0) or 0)
-    else:
-        # Honest empty states instead of a fake success: distinguish a dead
-        # gateway (actionable) from a live one with nothing cached.
-        if gateway_client.is_recently_offline():
-            raise HTTPException(
-                status_code=502,
-                detail="WhatsApp servisine ulaşılamıyor. Sunucu uyanıyor olabilir; bir dakika sonra tekrar deneyin.",
-            )
-        await gateway_client.trigger_sync(session.session_name)
-        note = (
-            "Telefonda okunacak sohbet bulunamadı. Hat bağlı değilse önce "
-            "bağlayın; bağlıysa birkaç saniye sonra tekrar deneyin."
-        )
-
-    await ws_manager.broadcast({
-        "event": "conversations_updated",
-        "count": synced_count,
-    })
-
-    return {
-        "status": "success",
-        "synced_count": synced_count,
-        "session_name": session.session_name,
-        "threads_merged": merged_threads,
-        "names_healed": names_healed,
-        "messages_imported": messages_imported,
-        "note": note,
-    }
 

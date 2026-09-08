@@ -27,7 +27,6 @@ from backend.app.schemas.whatsapp import (
 from backend.app.services.phone_service import PhoneService
 from backend.app.services.whatsapp_sender import get_whatsapp_sender
 from backend.app.services.whatsapp_gateway_client import gateway_client
-from backend.app.services.whatsapp_sync_service import WhatsAppSyncService
 from backend.app.api.v1.websocket import ws_manager
 
 logger = logging.getLogger(__name__)
@@ -639,70 +638,6 @@ async def handle_session_qr_webhook(
     return {"status": "success"}
 
 
-@router.post("/webhook/history-sync")
-async def handle_history_sync_webhook(
-    payload: dict = Body(...),
-    x_webhook_secret: Optional[str] = Header(None, alias="X-Webhook-Secret"),
-    db: AsyncSession = Depends(get_db)
-):
-    """
-    Webhook dispatched by wa-gateway when Baileys completes initial chat/message history sync.
-    """
-    if not settings.WA_GATEWAY_WEBHOOK_SECRET or x_webhook_secret != settings.WA_GATEWAY_WEBHOOK_SECRET:
-        raise HTTPException(status_code=401, detail="Yetkisiz Webhook İsteği (Geçersiz Secret)")
-
-    session_name = payload.get("session_name")
-    chats = payload.get("chats", [])
-    messages = payload.get("messages", [])
-
-    return await WhatsAppSyncService.sync_history_batch(
-        db=db,
-        session_name=session_name,
-        chats=chats,
-        messages=messages,
-    )
-
-
-@router.post("/webhook/message-event")
-async def handle_message_event_webhook(
-    payload: dict = Body(...),
-    x_webhook_secret: Optional[str] = Header(None, alias="X-Webhook-Secret"),
-    db: AsyncSession = Depends(get_db)
-):
-    """
-    Webhook dispatched by wa-gateway for live two-way message mirroring (inbound and phone outbound).
-    """
-    if not settings.WA_GATEWAY_WEBHOOK_SECRET or x_webhook_secret != settings.WA_GATEWAY_WEBHOOK_SECRET:
-        raise HTTPException(status_code=401, detail="Yetkisiz Webhook İsteği (Geçersiz Secret)")
-
-    session_name = payload.get("session_name")
-    return await WhatsAppSyncService.process_message_event(
-        db=db,
-        session_name=session_name,
-        event_data=payload,
-    )
-
-
-@router.post("/webhook/contacts-sync")
-async def handle_contacts_sync_webhook(
-    payload: dict = Body(...),
-    x_webhook_secret: Optional[str] = Header(None, alias="X-Webhook-Secret"),
-    db: AsyncSession = Depends(get_db)
-):
-    """
-    Webhook dispatched by wa-gateway when phonebook contacts are updated on connected phone.
-    Syncs truthful contact names to Leads and historical messages.
-    """
-    if not settings.WA_GATEWAY_WEBHOOK_SECRET or x_webhook_secret != settings.WA_GATEWAY_WEBHOOK_SECRET:
-        raise HTTPException(status_code=401, detail="Yetkisiz Webhook İsteği (Geçersiz Secret)")
-
-    session_name = payload.get("session_name")
-    contacts = payload.get("contacts") or []
-    return await WhatsAppSyncService.sync_contacts(
-        db=db,
-        session_name=session_name,
-        contacts=contacts,
-    )
 
 
 @router.post("/webhook/session-backup")

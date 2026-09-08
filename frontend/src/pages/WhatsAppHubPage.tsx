@@ -32,7 +32,7 @@ import {
   Users
 } from 'lucide-react';
 import { ApiClient } from '../api/client';
-import { WhatsAppSession, MessageLog, Conversation, ConversationStatus, Lead } from '../types';
+import { WhatsAppSession, MessageLog, Conversation, ConversationStatus, Lead, Message } from '../types';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 import { Card } from '../components/ui/card';
@@ -54,7 +54,123 @@ import {
 } from '../utils/antiBanSettings';
 import { useToast } from '../context/ToastContext';
 import { useI18n } from '../context/I18nContext';
-import { useWhatsAppConversation } from '../hooks/useWhatsAppConversation';
+
+const MOCK_INITIAL_CONVERSATIONS: Conversation[] = [
+  {
+    id: 1,
+    lead_id: 101,
+    lead_name: 'Ahmet Yılmaz',
+    lead_phone: '+90 532 111 22 33',
+    lead_avatar_url: null,
+    channel: 'WHATSAPP',
+    status: 'ACTIVE',
+    unread_count: 1,
+    is_group: false,
+    last_message_at: new Date(Date.now() - 1000 * 60 * 15).toISOString(),
+    last_message_preview: 'Merhaba, ürün detayları hakkında bilgi alabilir miyim?',
+    created_at: new Date(Date.now() - 1000 * 60 * 60 * 24).toISOString(),
+    updated_at: new Date().toISOString(),
+  },
+  {
+    id: 2,
+    lead_id: 102,
+    lead_name: 'Örnek İşletme',
+    lead_phone: '+90 555 444 33 22',
+    lead_avatar_url: null,
+    channel: 'WHATSAPP',
+    status: 'ACTIVE',
+    unread_count: 0,
+    is_group: false,
+    last_message_at: new Date(Date.now() - 1000 * 60 * 120).toISOString(),
+    last_message_preview: 'Katalog ve fiyat listesini inceledik, teşekkürler.',
+    created_at: new Date(Date.now() - 1000 * 60 * 60 * 48).toISOString(),
+    updated_at: new Date().toISOString(),
+  },
+  {
+    id: 3,
+    lead_id: 103,
+    lead_name: 'Saha Satış Ekibi',
+    lead_phone: '1203630456789@g.us',
+    lead_avatar_url: null,
+    channel: 'WHATSAPP',
+    status: 'ACTIVE',
+    unread_count: 0,
+    is_group: true,
+    last_message_at: new Date(Date.now() - 1000 * 60 * 360).toISOString(),
+    last_message_preview: 'Haftalık ziyaret planı sisteme yüklendi.',
+    created_at: new Date(Date.now() - 1000 * 60 * 60 * 72).toISOString(),
+    updated_at: new Date().toISOString(),
+  },
+];
+
+const MOCK_INITIAL_MESSAGES: Record<number, Message[]> = {
+  1: [
+    {
+      id: 1,
+      conversation_id: 1,
+      direction: 'INBOUND',
+      message_type: 'TEXT',
+      status: 'DELIVERED',
+      body: 'Merhaba, ürün detayları hakkında bilgi alabilir miyim?',
+      sender_name: 'Ahmet Yılmaz',
+      created_at: new Date(Date.now() - 1000 * 60 * 30).toISOString(),
+    },
+    {
+      id: 2,
+      conversation_id: 1,
+      direction: 'OUTBOUND',
+      message_type: 'TEXT',
+      status: 'READ',
+      body: 'Merhaba Ahmet Bey, memnuniyetle! Güncel ürün kataloğumuzu ve avantajlı tekliflerimizi buradan iletebiliriz.',
+      sender_name: 'Siz',
+      created_at: new Date(Date.now() - 1000 * 60 * 20).toISOString(),
+    },
+    {
+      id: 3,
+      conversation_id: 1,
+      direction: 'INBOUND',
+      message_type: 'TEXT',
+      status: 'DELIVERED',
+      body: 'Harika olur, özellikle B2B otomasyon paketiyle ilgileniyoruz.',
+      sender_name: 'Ahmet Yılmaz',
+      created_at: new Date(Date.now() - 1000 * 60 * 15).toISOString(),
+    },
+  ],
+  2: [
+    {
+      id: 4,
+      conversation_id: 2,
+      direction: 'OUTBOUND',
+      message_type: 'TEXT',
+      status: 'READ',
+      body: 'Merhaba, fiyat listesini inceleme fırsatınız oldu mu?',
+      sender_name: 'Siz',
+      created_at: new Date(Date.now() - 1000 * 60 * 180).toISOString(),
+    },
+    {
+      id: 5,
+      conversation_id: 2,
+      direction: 'INBOUND',
+      message_type: 'TEXT',
+      status: 'DELIVERED',
+      body: 'Katalog ve fiyat listesini inceledik, teşekkürler.',
+      sender_name: 'Örnek İşletme',
+      created_at: new Date(Date.now() - 1000 * 60 * 120).toISOString(),
+    },
+  ],
+  3: [
+    {
+      id: 6,
+      conversation_id: 3,
+      direction: 'INBOUND',
+      message_type: 'TEXT',
+      status: 'DELIVERED',
+      body: 'Haftalık ziyaret planı sisteme yüklendi.',
+      sender_name: 'Mehmet Demir',
+      created_at: new Date(Date.now() - 1000 * 60 * 360).toISOString(),
+    },
+  ],
+};
 
 interface WhatsAppHubPageProps {
   onRefreshStats: () => void;
@@ -70,9 +186,10 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   // Tab State: 'conversations' | 'sessions' | 'antiban'
   const [hubTab, setHubTab] = useState<'conversations' | 'sessions' | 'antiban'>('conversations');
 
-  // Live Conversations State
-  const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [selectedConv, setSelectedConv] = useState<Conversation | null>(null);
+  // Live Conversations State (pure visual design / zero backend network calls)
+  const [conversations, setConversations] = useState<Conversation[]>(MOCK_INITIAL_CONVERSATIONS);
+  const [selectedConv, setSelectedConv] = useState<Conversation | null>(MOCK_INITIAL_CONVERSATIONS[0]);
+  const [messagesMap, setMessagesMap] = useState<Record<number, Message[]>>(MOCK_INITIAL_MESSAGES);
   const [convsLoading, setConvsLoading] = useState<boolean>(false);
   const [convSearch, setConvSearch] = useState<string>('');
   const [convFilter, setConvFilter] = useState<FilterTab>('ALL');
@@ -85,95 +202,120 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   const [isNewChatModalOpen, setIsNewChatModalOpen] = useState<boolean>(false);
   const [isSyncingChats, setIsSyncingChats] = useState<boolean>(false);
 
+  const activeMessages = selectedConv ? (messagesMap[selectedConv.id] || []) : [];
+  const activeChatLoading = false;
+  const activeHasMore = false;
+  const activeLoadingOlder = false;
+  const activeConv = selectedConv;
+
+  const activeLoadOlder = async () => {};
+
   const handleSyncChats = async () => {
     setIsSyncingChats(true);
-    try {
-      const res = await ApiClient.syncWhatsAppChats();
-      if (res.note) {
-        toast.warning(res.note, t('common.warning'));
-      } else {
-        toast.success(
-          res.synced_count > 0
-            ? t('whatsapp.syncSuccess', { count: res.synced_count })
-            : t('whatsapp.syncEmpty'),
-          t('common.success')
-        );
-        const merged = res.threads_merged || 0;
-        const healed = res.names_healed || 0;
-        if (merged > 0 || healed > 0) {
-          toast.info(
-            t('whatsapp.syncHealedDetail', { merged, healed }),
-            t('common.info')
-          );
-        }
-      }
-      await fetchConversations();
-    } catch (err: any) {
-      toast.error(err.message || 'Sohbetler eşitlenemedi', t('common.error'));
-    } finally {
+    setTimeout(() => {
       setIsSyncingChats(false);
-    }
+      toast.success(
+        t('whatsapp.syncSuccess', { count: conversations.length }) || 'Sohbetler eşitlendi',
+        t('common.success')
+      );
+    }, 350);
   };
 
-  // Active chat hook for selected conversation
-  const {
-    conversation: activeConv,
-    messages: activeMessages,
-    hasMore: activeHasMore,
-    loadingOlder: activeLoadingOlder,
-    loading: activeChatLoading,
-    loadOlderMessages: activeLoadOlder,
-    sendMessage: activeSendMessage,
-    sendTemplate: activeSendTemplate,
-    retryMessage: activeRetryMessage,
-    sendMedia: activeSendMedia,
-  } = useWhatsAppConversation({
-    conversationId: selectedConv?.id,
-    enabled: hubTab === 'conversations' && !!selectedConv,
-    autoMarkAsRead: true,
-  });
-
   const handleOpenLead = async (leadId: number) => {
-    setLeadLoading(true);
-    try {
-      const leadData = await ApiClient.getLead(leadId);
-      setDrawerLead(leadData);
-      setIsLeadDrawerOpen(true);
-    } catch (err: any) {
-      toast.error(err.message || 'Müşteri bilgisi yüklenemedi', t('common.error'));
-    } finally {
-      setLeadLoading(false);
-    }
+    setDrawerLead({
+      id: leadId,
+      name: selectedConv?.lead_name || 'Müşteri',
+      phone: selectedConv?.lead_phone || '',
+      category: 'WhatsApp Sohbeti',
+      status: 'NEW',
+    } as any);
+    setIsLeadDrawerOpen(true);
   };
 
   const handleStatusChange = async (convId: number, newStatus: ConversationStatus) => {
-    try {
-      await ApiClient.updateConversationStatus(convId, newStatus);
-      setConversations((prev) =>
-        prev.map((c) => (c.id === convId ? { ...c, status: newStatus } : c))
-      );
-      if (selectedConv && selectedConv.id === convId) {
-        setSelectedConv((prev) => (prev ? { ...prev, status: newStatus } : prev));
-      }
-      toast.success(t('whatsapp.statusUpdated') || 'Durum güncellendi', t('common.success'));
-    } catch (err: any) {
-      toast.error(err.message || 'Durum güncellenemedi', t('common.error'));
+    setConversations((prev) =>
+      prev.map((c) => (c.id === convId ? { ...c, status: newStatus } : c))
+    );
+    if (selectedConv && selectedConv.id === convId) {
+      setSelectedConv((prev) => (prev ? { ...prev, status: newStatus } : prev));
     }
+    toast.success(t('whatsapp.statusUpdated') || 'Durum güncellendi', t('common.success'));
   };
 
-  const fetchConversations = async () => {
-    setConvsLoading(true);
-    try {
-      const data = await ApiClient.getConversations();
-      setConversations(data);
-      if (data.length > 0 && !selectedConv) {
-        setSelectedConv(data[0]);
-      }
-    } catch (e) {
-      console.warn('Failed to load conversations:', e);
-    } finally {
-      setConvsLoading(false);
-    }
+  const activeSendMessage = async (text: string) => {
+    if (!selectedConv || !text.trim()) return;
+    const trimmed = text.trim();
+    const newMsg: Message = {
+      id: Date.now(),
+      conversation_id: selectedConv.id,
+      direction: 'OUTBOUND',
+      message_type: 'TEXT',
+      status: 'SENT',
+      body: trimmed,
+      sender_name: 'Siz',
+      created_at: new Date().toISOString(),
+    };
+    setMessagesMap((prev) => ({
+      ...prev,
+      [selectedConv.id]: [...(prev[selectedConv.id] || []), newMsg],
+    }));
+    setConversations((prev) =>
+      prev.map((c) =>
+        c.id === selectedConv.id
+          ? { ...c, last_message_preview: trimmed, last_message_at: new Date().toISOString() }
+          : c
+      )
+    );
+  };
+
+  const activeRetryMessage = async (msgId: number) => {
+    if (!selectedConv) return;
+    setMessagesMap((prev) => ({
+      ...prev,
+      [selectedConv.id]: (prev[selectedConv.id] || []).map((m) =>
+        m.id === msgId ? { ...m, status: 'SENT' } : m
+      ),
+    }));
+  };
+
+  const activeSendMedia = async (type: string, url: string, caption?: string, filename?: string) => {
+    if (!selectedConv) return;
+    const newMsg: Message = {
+      id: Date.now(),
+      conversation_id: selectedConv.id,
+      direction: 'OUTBOUND',
+      message_type: 'DOCUMENT',
+      status: 'SENT',
+      body: caption || filename || url || `[${type}]`,
+      sender_name: 'Siz',
+      created_at: new Date().toISOString(),
+    };
+    setMessagesMap((prev) => ({
+      ...prev,
+      [selectedConv.id]: [...(prev[selectedConv.id] || []), newMsg],
+    }));
+  };
+
+  const activeSendTemplate = async (templateName: string, _variables?: any) => {
+    if (!selectedConv) return;
+    const newMsg: Message = {
+      id: Date.now(),
+      conversation_id: selectedConv.id,
+      direction: 'OUTBOUND',
+      message_type: 'TEMPLATE',
+      status: 'SENT',
+      body: `[Şablon: ${templateName}]`,
+      sender_name: 'Siz',
+      created_at: new Date().toISOString(),
+    };
+    setMessagesMap((prev) => ({
+      ...prev,
+      [selectedConv.id]: [...(prev[selectedConv.id] || []), newMsg],
+    }));
+  };
+
+  const fetchConversations = () => {
+    // Pure UI design / zero backend network calls
   };
 
   // Real-time listener for conversation list unread, status and preview updates
@@ -226,14 +368,11 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
           return prev;
         });
 
-        // If not found in existing list, fetch freshly without side-effects in updater
-        if (!found) {
-          fetchConversations();
-        }
+        // If not found in existing list
       }
 
       if (eventData.event === 'conversations_updated') {
-        fetchConversations();
+        // Handled locally
       }
 
       if (eventData.event === 'conversation_status_updated') {
@@ -375,13 +514,12 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
 
   useEffect(() => {
     fetchSessionsAndLogs();
-    fetchConversations();
 
     // Listen to real-time inbound messages and WhatsApp session events
     const handleWs = (e: Event) => {
       const eventData = (e as CustomEvent<any>).detail;
       if (eventData?.event === 'inbound_reply') {
-        fetchConversations();
+        // Handled locally
       } else if (eventData?.event === 'session_connected') {
         fetchSessionsAndLogs(true);
         onRefreshStats();
@@ -633,14 +771,12 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       toast.success(t('common.success'), t('whatsapp.deleteSession'));
       setSessions((prev) => prev.filter((s) => s.id !== sessionId));
       await fetchSessionsAndLogs(true);
-      fetchConversations();
       onRefreshStats();
     } catch (err: any) {
       const msg = String(err?.message || '');
       if (err?.status === 404 || /404|bulunamadı|not found/i.test(msg)) {
         toast.success(t('common.success'), t('whatsapp.deleteSession'));
         setSessions((prev) => prev.filter((s) => s.id !== sessionId));
-        fetchConversations();
         onRefreshStats();
         return;
       }

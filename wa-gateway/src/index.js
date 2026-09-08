@@ -2,15 +2,11 @@ const express = require('express');
 const cors = require('cors');
 const {
     activeSessions,
-    getOrCreateSession,
     refreshSessionQR,
     requestPairingCode,
     sendMessage,
     disconnectSession,
     restoreSavedSessions,
-    getSessionChats,
-    syncSessionHistoryToBackend,
-    fetchChatMessages
 } = require('./sessionManager');
 
 const app = express();
@@ -150,72 +146,6 @@ app.get('/api/sessions/:sessionName/status', (req, res) => {
     });
 });
 
-// Get all tracked chats for session
-app.get('/api/sessions/:sessionName/chats', async (req, res) => {
-    const { sessionName } = req.params;
-    // Eşitle/sync path passes include_avatars=0: avatar refresh (up to ~17s
-    // for 25 chats) would otherwise dominate every sync click.
-    const includeAvatars = req.query.include_avatars !== '0';
-    try {
-        const chats = await getSessionChats(sessionName, { includeAvatars });
-        res.json(chats);
-    } catch (err) {
-        console.error(`[WA-Gateway] Failed to get chats for ${sessionName}:`, err.message);
-        res.status(500).json({ error: err.message });
-    }
-});
-
-// Get messages for a specific chat
-app.get('/api/sessions/:sessionName/chats/:chatJid/messages', async (req, res) => {
-    const { sessionName, chatJid } = req.params;
-    const fetchOlder = req.query.fetch_older === '1' || req.query.fetch_older === 'true';
-    const oldestMsgId = req.query.oldest_msg_id || undefined;
-    const oldestFromMe = req.query.oldest_from_me === 'true' || req.query.oldest_from_me === '1';
-    const oldestTimestamp = req.query.oldest_timestamp ? parseInt(req.query.oldest_timestamp, 10) : undefined;
-    try {
-        const result = await fetchChatMessages(sessionName, chatJid, {
-            fetchOlder,
-            oldestMsgId,
-            oldestFromMe,
-            oldestTimestamp
-        });
-        res.json(result);
-    } catch (err) {
-        console.error(`[WA-Gateway] Failed to get messages for ${chatJid} in ${sessionName}:`, err.message);
-        res.status(500).json({ error: err.message, messages: [] });
-    }
-});
-
-// Resolved LID -> phone pairs learned by this session (for backend identity merge)
-app.get('/api/sessions/:sessionName/lid-pairs', async (req, res) => {
-    const { sessionName } = req.params;
-    try {
-        const session = activeSessions.get(sessionName);
-        const pairs = [];
-        const seen = session?.resolvedLidPairs;
-        if (seen instanceof Map) {
-            for (const [lidUser, pnUser] of seen.entries()) {
-                if (lidUser && pnUser) pairs.push({ lid: `${lidUser}@lid`, pn: `+${pnUser}` });
-            }
-        }
-        res.json({ pairs });
-    } catch (err) {
-        console.error(`[WA-Gateway] Failed to get LID pairs for ${sessionName}:`, err.message);
-        res.status(500).json({ error: err.message });
-    }
-});
-
-// Trigger on-demand sync of session history to backend
-app.post('/api/sessions/:sessionName/sync', async (req, res) => {
-    const { sessionName } = req.params;
-    try {
-        const result = await syncSessionHistoryToBackend(sessionName);
-        res.json(result);
-    } catch (err) {
-        console.error(`[WA-Gateway] Sync failed for ${sessionName}:`, err.message);
-        res.status(500).json({ error: err.message });
-    }
-});
 
 // Disconnect session
 app.post('/api/sessions/:sessionName/disconnect', async (req, res) => {
