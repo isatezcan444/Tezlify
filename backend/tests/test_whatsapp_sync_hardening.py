@@ -326,9 +326,11 @@ async def test_esitle_response_carries_merge_and_heal_counts():
     from backend.app.models.whatsapp_session import WhatsAppSession, SessionStatus
 
     await _reset_sessions()
+    test_user_id = str(uuid.uuid4())
     group_jid = f"cntgrp_{uuid.uuid4().hex[:6]}@g.us"
     async with AsyncSessionLocal() as db:
         db.add(WhatsAppSession(
+            user_id=test_user_id,
             session_name=f"sess_cnt_{uuid.uuid4().hex[:8]}",
             phone_number="+905550001122",
             status=SessionStatus.CONNECTED,
@@ -353,7 +355,7 @@ async def test_esitle_response_carries_merge_and_heal_counts():
     ) as mock_get:
         mock_get.return_value = mock_chats
         async with AsyncClient(transport=transport, base_url="http://test") as ac:
-            headers = _headers(str(uuid.uuid4()))
+            headers = _headers(test_user_id)
             res = await ac.post("/api/v1/conversations/sync-whatsapp", headers=headers)
             assert res.status_code == 200
             data = res.json()

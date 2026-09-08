@@ -619,7 +619,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     });
     if (!ok) return;
 
-    // 1. Instant optimistic removal of session and live conversations (0ms perceived latency)
+    // 1. Instant optimistic removal of session and live conversations
     const previousSessions = [...sessions];
     const previousConversations = [...conversations];
     const previousSelected = selectedConv;
@@ -627,20 +627,19 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     setSessions((prev) => prev.filter((s) => s.id !== sessionId));
     setConversations([]);
     setSelectedConv(null);
-    toast.success(t('common.success'), t('whatsapp.deleteSession'));
 
     try {
       await ApiClient.deleteSession(sessionId);
-      fetchSessionsAndLogs(true);
+      toast.success(t('common.success'), t('whatsapp.deleteSession'));
+      setSessions((prev) => prev.filter((s) => s.id !== sessionId));
+      await fetchSessionsAndLogs(true);
       fetchConversations();
       onRefreshStats();
     } catch (err: any) {
-      // 404 means the row is already gone (e.g. deleted elsewhere) — that IS
-      // the desired end state, so keep the optimistic removal instead of
-      // reverting the UI and confusing the user with a phantom comeback.
       const msg = String(err?.message || '');
       if (err?.status === 404 || /404|bulunamadı|not found/i.test(msg)) {
-        fetchSessionsAndLogs(true);
+        toast.success(t('common.success'), t('whatsapp.deleteSession'));
+        setSessions((prev) => prev.filter((s) => s.id !== sessionId));
         fetchConversations();
         onRefreshStats();
         return;

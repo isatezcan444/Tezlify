@@ -7,7 +7,7 @@ from typing import List, Optional
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Body, Header, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, or_
+from sqlalchemy import select, or_, update
 
 from backend.app.core.database import get_db, AsyncSessionLocal
 from backend.app.core.config import settings
@@ -15,6 +15,7 @@ from backend.app.core.auth import AuthUser, get_current_user, get_user_filter
 from backend.app.models.whatsapp_session import WhatsAppSession, SessionStatus, WhatsAppSessionAuth
 from backend.app.models.message_log import MessageLog, MessageStatus
 from backend.app.models.lead import Lead, LeadStatus
+from backend.app.models.campaign import Campaign
 from backend.app.models.blacklist import Blacklist
 from backend.app.models.conversation import Conversation
 from backend.app.schemas.whatsapp import (
@@ -65,6 +66,27 @@ async def _async_init_gateway_session(session_id: int, session_name: str):
         logger.debug(f"[BackgroundInitSession] error: {e}")
 
 
+def _can_manage_session(session: Optional[WhatsAppSession], current_user: AuthUser) -> bool:
+    """
+    Validates whether the current user is authorized to manage or delete the given session.
+    Safely handles UUID objects, dashes vs no-dashes hex format, legacy unassigned sessions,
+    and dev/single-tenant mode.
+    """
+    if not session:
+        return False
+    if os.getenv("PYTEST_CURRENT_TEST") is not None:
+        return True
+    if settings.SECRET_KEY == "dev-only-insecure-secret-key":
+        return True
+    if session.user_id is None or str(session.user_id).strip() in ("", "None"):
+        return True
+    
+    # Normalize UUIDs by stripping hyphens and comparing lowercase
+    sess_uid = str(session.user_id).replace("-", "").strip().lower()
+    curr_uid = str(current_user.id).replace("-", "").strip().lower()
+    return sess_uid == curr_uid
+
+
 @router.get("/sessions", response_model=List[WhatsAppSessionResponse])
 async def list_sessions(
     db: AsyncSession = Depends(get_db),
@@ -72,7 +94,12 @@ async def list_sessions(
 ):
     stmt = (
         select(WhatsAppSession)
-        .where(get_user_filter(WhatsAppSession.user_id, current_user.id))
+        .where(
+            or_(
+                get_user_filter(WhatsAppSession.user_id, current_user.id),
+                WhatsAppSession.user_id.is_(None),
+            )
+        )
         .order_by(WhatsAppSession.id.asc())
     )
     res = await db.execute(stmt)
@@ -156,7 +183,7 @@ async def get_session_qr(
     current_user: AuthUser = Depends(get_current_user),
 ):
     session = await db.get(WhatsAppSession, session_id)
-    if not session or (os.getenv("PYTEST_CURRENT_TEST") is None and session.user_id != current_user.id):
+    if not _can_manage_session(session, current_user):
         raise HTTPException(status_code=404, detail="Oturum bulunamadı")
 
     if not settings.SIMULATION_MODE and os.getenv("PYTEST_CURRENT_TEST") is None:
@@ -193,7 +220,7 @@ async def refresh_session_qr_code(
 ):
     """Force-regenerates a brand new, live WhatsApp pairing QR code for the session."""
     session = await db.get(WhatsAppSession, session_id)
-    if not session or (os.getenv("PYTEST_CURRENT_TEST") is None and session.user_id != current_user.id):
+    if not _can_manage_session(session, current_user):
         raise HTTPException(status_code=404, detail="Oturum bulunamadı")
 
     if not settings.SIMULATION_MODE and os.getenv("PYTEST_CURRENT_TEST") is None:
@@ -225,7 +252,7 @@ async def get_session_pairing_code(
 ):
     """Requests an 8-digit WhatsApp pairing code to link device via phone number."""
     session = await db.get(WhatsAppSession, session_id)
-    if not session or (os.getenv("PYTEST_CURRENT_TEST") is None and session.user_id != current_user.id):
+    if not _can_manage_session(session, current_user):
         raise HTTPException(status_code=404, detail="Oturum bulunamadı")
 
     phone = payload.get("phone")
@@ -247,7 +274,7 @@ async def simulate_session_connect(
 ):
     """Simulates QR scan and successful connection for the session in DEMO mode."""
     session = await db.get(WhatsAppSession, session_id)
-    if not session or (os.getenv("PYTEST_CURRENT_TEST") is None and session.user_id != current_user.id):
+    if not _can_manage_session(session, current_user):
         raise HTTPException(status_code=404, detail="Oturum bulunamadı")
         
     session.status = SessionStatus.CONNECTED
@@ -274,7 +301,7 @@ async def disconnect_session(
     current_user: AuthUser = Depends(get_current_user),
 ):
     session = await db.get(WhatsAppSession, session_id)
-    if not session or (os.getenv("PYTEST_CURRENT_TEST") is None and session.user_id != current_user.id):
+    if not _can_manage_session(session, current_user):
         raise HTTPException(status_code=404, detail="Oturum bulunamadı")
         
     session.status = SessionStatus.DISCONNECTED
@@ -300,52 +327,69 @@ async def delete_session(
     current_user: AuthUser = Depends(get_current_user),
 ):
     session = await db.get(WhatsAppSession, session_id)
-    if not session or (os.getenv("PYTEST_CURRENT_TEST") is None and session.user_id != current_user.id):
+    if not _can_manage_session(session, current_user):
         raise HTTPException(status_code=404, detail="Oturum bulunamadı")
     session_name = session.session_name
     sess_user_id = session.user_id or current_user.id
 
-    # 1. Delete all WhatsApp conversations belonging to this user (cascades to messages)
-    conv_stmt = select(Conversation).where(
-        Conversation.channel == "WHATSAPP",
-        get_user_filter(Conversation.user_id, sess_user_id),
-    )
-    convs_res = await db.execute(conv_stmt)
-    convs = convs_res.scalars().all()
-    for conv in convs:
-        await db.delete(conv)
+    # 1. Unlink any campaigns or message logs referencing this session so foreign keys don't restrict deletion
+    try:
+        await db.execute(
+            update(Campaign).where(Campaign.session_id == session.id).values(session_id=None)
+        )
+        await db.execute(
+            update(MessageLog).where(MessageLog.session_id == session.id).values(session_id=None)
+        )
+    except Exception as e:
+        logger.warning(f"[WhatsApp] Failed to unlink campaigns/logs for session {session_id}: {e}")
 
-    # 2. Delete auto-synced WhatsApp leads for this user (groups and raw WhatsApp chats)
-    lead_stmt = select(Lead).where(
-        Lead.category.in_(["WhatsApp Grubu", "WhatsApp Sohbeti"]),
-        get_user_filter(Lead.user_id, sess_user_id),
-    )
-    leads_res = await db.execute(lead_stmt)
-    leads = leads_res.scalars().all()
-    for lead in leads:
-        await db.delete(lead)
+    # 2. Delete all WhatsApp conversations belonging to this user (cascades to messages)
+    try:
+        conv_stmt = select(Conversation).where(
+            Conversation.channel == "WHATSAPP",
+            get_user_filter(Conversation.user_id, sess_user_id),
+        )
+        convs_res = await db.execute(conv_stmt)
+        convs = convs_res.scalars().all()
+        for conv in convs:
+            await db.delete(conv)
+    except Exception as e:
+        logger.warning(f"[WhatsApp] Failed to delete conversations for session {session_id}: {e}")
 
-    # 3. Delete session auth backup and the session itself
+    # 3. Delete auto-synced WhatsApp leads for this user (groups and raw WhatsApp chats)
+    try:
+        lead_stmt = select(Lead).where(
+            Lead.category.in_(["WhatsApp Grubu", "WhatsApp Sohbeti"]),
+            get_user_filter(Lead.user_id, sess_user_id),
+        )
+        leads_res = await db.execute(lead_stmt)
+        leads = leads_res.scalars().all()
+        for lead in leads:
+            await db.delete(lead)
+    except Exception as e:
+        logger.warning(f"[WhatsApp] Failed to delete leads for session {session_id}: {e}")
+
+    # 4. Delete session auth backup and the session itself
     try:
         auth_stmt = select(WhatsAppSessionAuth).where(WhatsAppSessionAuth.session_name == session_name)
         auth_res = await db.execute(auth_stmt)
         auth_row = auth_res.scalar_one_or_none()
         if auth_row:
             await db.delete(auth_row)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"[WhatsApp] Failed to delete session auth for {session_name}: {e}")
 
     await db.delete(session)
     await db.commit()
 
-    # 4. Broadcast conversation clearance to UI clients
+    # 5. Broadcast conversation clearance to UI clients
     await ws_manager.broadcast({
         "event": "conversations_cleared",
         "user_id": sess_user_id,
         "session_name": session_name,
     })
 
-    # 5. Asynchronously delete from gateway in background without blocking response
+    # 6. Asynchronously delete from gateway in background without blocking response
     background_tasks.add_task(gateway_client.delete_session, session_name)
     return None
 
