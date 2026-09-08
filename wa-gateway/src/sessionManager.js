@@ -192,10 +192,6 @@ async function initSessionSocket(sessionData) {
     }
 
     const { state, saveCreds } = await useMultiFileAuthState(sessionAuthDir);
-    // Initialize accountSyncCounter so Baileys skips the 20-second AwaitingInitialSync wait
-    if (!state.creds.accountSyncCounter || state.creds.accountSyncCounter < 1) {
-        state.creds.accountSyncCounter = 1;
-    }
     const version = await getCachedBaileysVersion();
     console.log(`[WA-Gateway] Starting socket for ${sessionName} with WA Web v${version.join('.')}`);
 
@@ -204,15 +200,8 @@ async function initSessionSocket(sessionData) {
         auth: state,
         printQRInTerminal: false,
         logger: pino({ level: 'silent' }),
-        browser: Browsers.macOS('Chrome'),
+        browser: Browsers.macOS('Desktop'),
         syncFullHistory: false,
-        shouldSyncHistoryMessage: (msg) => {
-            // Prevent mobile phone from hanging on "Giriş yapılıyor..." (Logging in...)
-            // By skipping RECENT and FULL history dumps, the phone finishes companion login immediately
-            const syncType = msg?.syncType;
-            return syncType !== proto.HistorySync.HistorySyncType.RECENT &&
-                   syncType !== proto.HistorySync.HistorySyncType.FULL;
-        },
         markOnlineOnConnect: true,
         fireInitQueries: true,
         defaultQueryTimeoutMs: 60000,
@@ -380,8 +369,15 @@ async function initSessionSocket(sessionData) {
         if (connection === 'close') {
             const statusCode = lastDisconnect?.error?.output?.statusCode;
             const isLoggedOut = statusCode === DisconnectReason.loggedOut;
+            const isRestartRequired = statusCode === DisconnectReason.restartRequired;
 
-            console.log(`[WA-Gateway] Session ${sessionName} closed. Status code: ${statusCode}, LoggedOut: ${isLoggedOut}`);
+            console.log(`[WA-Gateway] Session ${sessionName} closed. Status code: ${statusCode}, LoggedOut: ${isLoggedOut}, RestartRequired: ${isRestartRequired}`);
+
+            // Ensure any keys generated during handshake are saved before attempting reconnect
+            try {
+                await saveCreds();
+                backupSessionAuth(sessionName);
+            } catch (e) {}
 
             if (isLoggedOut) {
                 sessionData.status = 'DISCONNECTED';
@@ -402,9 +398,8 @@ async function initSessionSocket(sessionData) {
                     phone: null
                 });
             } else {
-                const isRestartRequired = statusCode === DisconnectReason.restartRequired;
                 const wasPairing = sessionData.status === 'SCAN_QR' || !sessionData.phone;
-                const reconnectDelay = isRestartRequired || wasPairing ? 80 : 2500;
+                const reconnectDelay = isRestartRequired ? 500 : (wasPairing ? 300 : 2500);
                 console.log(`[WA-Gateway] Reconnecting session ${sessionName} in ${reconnectDelay}ms (status: ${statusCode}, restartRequired: ${isRestartRequired}, wasPairing: ${wasPairing})...`);
 
                 sessionData.status = 'CONNECTING';
