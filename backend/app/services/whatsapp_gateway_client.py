@@ -68,7 +68,7 @@ class WhatsAppGatewayClient:
         payload = {"sessionName": session_name}
 
         try:
-            async with httpx.AsyncClient(timeout=self._get_timeout(self.timeout)) as client:
+            async with httpx.AsyncClient(timeout=self._get_timeout(3.5)) as client:
                 res = await client.post(url, json=payload, headers=self._headers())
                 if res.status_code in (200, 201):
                     self._last_unreachable_time = 0.0

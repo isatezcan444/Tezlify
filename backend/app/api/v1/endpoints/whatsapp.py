@@ -153,9 +153,9 @@ async def create_session(
     await db.commit()
     await db.refresh(session)
 
-    # Fast non-blocking query to gateway (max 400ms)
+    # Synchronously wait up to 3.0s for gateway to return the QR code so modal opens with QR ready
     try:
-        gw_res = await asyncio.wait_for(gateway_client.create_session(session_in.session_name), timeout=0.4)
+        gw_res = await asyncio.wait_for(gateway_client.create_session(session_in.session_name), timeout=3.0)
         if gw_res.get("qr_code"):
             session.qr_code = gw_res["qr_code"]
         if gw_res.get("status") == "CONNECTED":
@@ -166,7 +166,7 @@ async def create_session(
             await db.commit()
             await db.refresh(session)
     except (asyncio.TimeoutError, Exception):
-        # Schedule in background so endpoint returns in <30ms without freezing the UI
+        # Fallback to background task if gateway takes longer
         background_tasks.add_task(_async_init_gateway_session, session.id, session.session_name)
 
     await ws_manager.broadcast({

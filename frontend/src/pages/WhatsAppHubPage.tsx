@@ -601,7 +601,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       } catch (e) {
         // ignore transient poll error
       }
-    }, 2000);
+    }, 900);
 
     return () => {
       isMounted = false;
@@ -706,7 +706,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       setSessions((prev) => [session, ...prev.filter((s) => s.id !== session.id)]);
       fetchSessionsAndLogs(true);
       onRefreshStats();
-      if (!session.qr_code) {
+      if (!session.qr_code && session.status !== 'CONNECTED') {
         handleRefreshQr(session.id);
       }
     } catch (err: any) {

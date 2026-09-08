@@ -21,6 +21,28 @@ if (!fs.existsSync(SESSIONS_DIR)) {
 // Global active sessions map: sessionName -> sessionData
 const activeSessions = new Map();
 
+// In-flight initialization promises to avoid race conditions and double-socket creation
+const pendingInitializations = new Map();
+
+// Cached Baileys version to avoid slow external HTTP requests on every socket creation
+let cachedBaileysVersion = null;
+let lastVersionFetchTime = 0;
+
+async function getCachedBaileysVersion() {
+    const now = Date.now();
+    if (cachedBaileysVersion && (now - lastVersionFetchTime < 24 * 60 * 60 * 1000)) {
+        return cachedBaileysVersion;
+    }
+    try {
+        const { version } = await fetchLatestBaileysVersion();
+        cachedBaileysVersion = version;
+        lastVersionFetchTime = now;
+        return cachedBaileysVersion;
+    } catch (e) {
+        return cachedBaileysVersion || [2, 3000, 1043857760];
+    }
+}
+
 /**
  * Dispatches webhook notifications to the FastAPI backend.
  */
@@ -169,7 +191,7 @@ async function initSessionSocket(sessionData) {
     }
 
     const { state, saveCreds } = await useMultiFileAuthState(sessionAuthDir);
-    const { version } = await fetchLatestBaileysVersion().catch(() => ({ version: [2, 3000, 1043857760] }));
+    const version = await getCachedBaileysVersion();
     console.log(`[WA-Gateway] Starting socket for ${sessionName} with WA Web v${version.join('.')}`);
 
     const sock = makeWASocket({
@@ -204,8 +226,8 @@ async function initSessionSocket(sessionData) {
             try {
                 sessionData.qrImage = await QRCode.toDataURL(qr, {
                     errorCorrectionLevel: 'L',
-                    margin: 4,
-                    scale: 10,
+                    margin: 2,
+                    scale: 6,
                     color: {
                         dark: '#000000',
                         light: '#FFFFFF'
@@ -424,8 +446,12 @@ async function requestPairingCode(sessionName, phoneNumber) {
         throw new Error('Geçerli bir telefon numarası giriniz (örn: 905321234567).');
     }
 
-    if (session.status === 'INITIALIZING') {
-        await new Promise(resolve => setTimeout(resolve, 2000));
+    if (!session.sock.requestPairingCode || session.status === 'INITIALIZING') {
+        let attempts = 0;
+        while (attempts < 15 && (!session.sock?.requestPairingCode || session.status === 'INITIALIZING')) {
+            await new Promise(resolve => setTimeout(resolve, 80));
+            attempts++;
+        }
     }
 
     const code = await session.sock.requestPairingCode(cleanPhone);
@@ -476,6 +502,9 @@ async function disconnectSession(sessionName) {
  * Restores previously paired sessions on server startup from database backup and local disk.
  */
 async function restoreSavedSessions() {
+    // Pre-warm version cache in background
+    getCachedBaileysVersion().catch(() => {});
+
     await restoreAllSessionsFromDatabase();
 
     if (!fs.existsSync(SESSIONS_DIR)) return;
@@ -510,53 +539,67 @@ async function refreshSessionQR(sessionName) {
         return existing;
     }
 
-    if (existing && existing.reconnectTimer) {
-        clearTimeout(existing.reconnectTimer);
-        existing.reconnectTimer = null;
+    if (pendingInitializations.has(sessionName)) {
+        console.log(`[WA-Gateway] Awaiting in-flight initialization for ${sessionName}`);
+        return await pendingInitializations.get(sessionName);
     }
 
-    if (existing && existing.sock) {
+    const initPromise = (async () => {
         try {
-            existing.sock.ev?.removeAllListeners();
-        } catch (e) {}
-        try {
-            existing.sock.end(undefined);
-        } catch (e) {}
-    }
+            if (existing && existing.reconnectTimer) {
+                clearTimeout(existing.reconnectTimer);
+                existing.reconnectTimer = null;
+            }
 
-    const sessionAuthDir = path.join(SESSIONS_DIR, sessionName);
-    const credsPath = path.join(sessionAuthDir, 'creds.json');
-    let hasPairedCreds = false;
-    if (fs.existsSync(credsPath)) {
-        try {
-            const creds = JSON.parse(fs.readFileSync(credsPath, 'utf8'));
-            hasPairedCreds = !!(creds.registered || creds.me);
-        } catch (e) {}
-    }
+            if (existing && existing.sock) {
+                try {
+                    existing.sock.ev?.removeAllListeners();
+                } catch (e) {}
+                try {
+                    existing.sock.end(undefined);
+                } catch (e) {}
+            }
 
-    if (!hasPairedCreds && fs.existsSync(sessionAuthDir)) {
-        try {
-            fs.rmSync(sessionAuthDir, { recursive: true, force: true });
-        } catch (e) {}
-    }
+            const sessionAuthDir = path.join(SESSIONS_DIR, sessionName);
+            const credsPath = path.join(sessionAuthDir, 'creds.json');
+            let hasPairedCreds = false;
+            if (fs.existsSync(credsPath)) {
+                try {
+                    const creds = JSON.parse(fs.readFileSync(credsPath, 'utf8'));
+                    hasPairedCreds = !!(creds.registered || creds.me);
+                } catch (e) {}
+            }
 
-    const session = await getOrCreateSession(sessionName, true);
+            if (!hasPairedCreds && fs.existsSync(sessionAuthDir)) {
+                try {
+                    fs.rmSync(sessionAuthDir, { recursive: true, force: true });
+                } catch (e) {}
+            }
 
-    if (!session.qrImage && session.status !== 'CONNECTED') {
-        await new Promise((resolve) => {
-            const timeout = setTimeout(resolve, 3500);
-            const onUpdate = (update) => {
-                if (update.qr || update.connection === 'open') {
-                    clearTimeout(timeout);
-                    session.sock?.ev?.off('connection.update', onUpdate);
-                    resolve();
-                }
-            };
-            session.sock?.ev?.on('connection.update', onUpdate);
-        });
-    }
+            const session = await getOrCreateSession(sessionName, true);
 
-    return session;
+            if (!session.qrImage && session.status !== 'CONNECTED') {
+                await new Promise((resolve) => {
+                    const timeout = setTimeout(resolve, 3500);
+                    const onUpdate = (update) => {
+                        if (update.qr || update.connection === 'open') {
+                            clearTimeout(timeout);
+                            session.sock?.ev?.off('connection.update', onUpdate);
+                            resolve();
+                        }
+                    };
+                    session.sock?.ev?.on('connection.update', onUpdate);
+                });
+            }
+
+            return session;
+        } finally {
+            pendingInitializations.delete(sessionName);
+        }
+    })();
+
+    pendingInitializations.set(sessionName, initPromise);
+    return await initPromise;
 }
 
 module.exports = {
