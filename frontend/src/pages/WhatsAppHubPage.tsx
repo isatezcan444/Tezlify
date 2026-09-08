@@ -1879,19 +1879,11 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
               </div>
             )}
 
-            {isPairingSuccess ? (
+            {isPairingSuccess && (
               <div className="p-3 rounded-xl bg-[#28C76F]/15 border border-[#28C76F]/30 text-[#28C76F] text-xs font-bold flex items-center justify-center gap-2 animate-fade-in">
                 <CheckCircle2 className="w-4 h-4" />
                 <span>{t('whatsapp.qrPairSuccess')}</span>
               </div>
-            ) : (
-              <Button
-                onClick={handleSimulateScan}
-                size="lg"
-                className="w-full font-bold shadow-md shadow-[#7367F0]/30 cursor-pointer"
-              >
-                {t('whatsapp.simulateScan')}
-              </Button>
             )}
           </div>
         </div>,

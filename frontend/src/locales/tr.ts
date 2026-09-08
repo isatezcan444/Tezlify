@@ -487,7 +487,7 @@ export const tr = {
     qrSecLeft: 'sn',
     simulateScan: '(Demo) QR Taramasını Onayla & Bağlan',
     tabQrCode: 'QR Kod ile Tara',
-    tabPairingCode: 'Telefon No ile Bağlan (8 Haneli Kod)',
+    tabPairingCode: 'Telefon No ile Bağlan',
     pairingCodeInputLabel: 'WhatsApp Telefon Numaranız',
     pairingCodeInputPlaceholder: '+90 5XX XXX XX XX',
     getPairingCodeBtn: '8 Haneli Kodu Al',

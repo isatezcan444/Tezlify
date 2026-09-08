@@ -487,7 +487,7 @@ export const en = {
     qrSecLeft: 's',
     simulateScan: '(Demo) Confirm QR Scan & Connect',
     tabQrCode: 'Scan QR Code',
-    tabPairingCode: 'Link with Phone Number (8-Digit Code)',
+    tabPairingCode: 'Link with Phone Number',
     pairingCodeInputLabel: 'Your WhatsApp Phone Number',
     pairingCodeInputPlaceholder: '+90 5XX XXX XX XX',
     getPairingCodeBtn: 'Get 8-Digit Code',
