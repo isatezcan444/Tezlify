@@ -154,14 +154,15 @@ class WhatsAppGatewayClient:
             return []
         url = f"{self.gateway_url}/api/sessions/{session_name}/chats"
         try:
-            async with httpx.AsyncClient(timeout=self._get_timeout(3.5)) as client:
+            async with httpx.AsyncClient(timeout=self._get_timeout(8.0)) as client:
                 res = await client.get(url, headers=self._headers())
                 if res.status_code == 200:
                     self._last_unreachable_time = 0.0
-                    return res.json().get("chats", [])
+                    data = res.json()
+                    return data.get("chats", [])
         except Exception as e:
             self._last_unreachable_time = time.monotonic()
-            logger.debug(f"[GatewayClient] get_session_chats error: {e}")
+            logger.warning(f"[GatewayClient] get_session_chats error for {session_name}: {e}")
         return []
 
     async def disconnect_session(self, session_name: str) -> bool:

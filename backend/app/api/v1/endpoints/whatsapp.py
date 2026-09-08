@@ -3,6 +3,7 @@ import os
 import asyncio
 import logging
 import json
+import hashlib
 from typing import List, Optional
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Body, Header, BackgroundTasks
@@ -17,7 +18,8 @@ from backend.app.models.message_log import MessageLog, MessageStatus
 from backend.app.models.lead import Lead, LeadStatus
 from backend.app.models.campaign import Campaign
 from backend.app.models.blacklist import Blacklist
-from backend.app.models.conversation import Conversation
+from backend.app.models.conversation import Conversation, ConversationStatus
+from backend.app.models.message import Message, MessageDirection, MessageType
 from backend.app.schemas.whatsapp import (
     WhatsAppSessionResponse,
     WhatsAppSessionCreate,
@@ -559,11 +561,75 @@ async def handle_inbound_webhook(
     stmt = select(Lead).where(Lead.phone_e164 == e164)
     res = await db.execute(stmt)
     lead = res.scalar_one_or_none()
-    
-    if lead:
+
+    session_name = payload.get("session_name")
+    session = None
+    if session_name:
+        s_res = await db.execute(select(WhatsAppSession).where(WhatsAppSession.session_name == session_name))
+        session = s_res.scalar_one_or_none()
+
+    push_name = payload.get("push_name")
+    user_id = lead.user_id if lead else (session.user_id if session else None)
+
+    if not lead and user_id:
+        place_id = f"wa_{hashlib.sha256(f'{user_id}_{e164}'.encode()).hexdigest()[:16]}"
+        lead = Lead(
+            user_id=user_id,
+            name=push_name or e164,
+            phone=phone,
+            phone_e164=e164,
+            category="WhatsApp Kişisi",
+            status=LeadStatus.REPLIED,
+            place_id=place_id,
+            is_whatsapp_eligible=True,
+        )
+        db.add(lead)
+        await db.flush()
+    elif lead:
         lead.status = LeadStatus.REPLIED
+        if push_name and (not lead.name or lead.name == e164 or lead.name == "Bilinmeyen"):
+            lead.name = push_name
         new_note = f"Son yanıt ({datetime.utcnow().strftime('%Y-%m-%d %H:%M')}): {message_text}"
         lead.notes = f"{lead.notes}\n{new_note}" if lead.notes else new_note
+
+    conv_id = None
+    if lead and user_id:
+        conv_stmt = select(Conversation).where(
+            Conversation.lead_id == lead.id,
+            Conversation.channel == "WHATSAPP",
+        )
+        conv = (await db.execute(conv_stmt)).scalar_one_or_none()
+        if not conv:
+            conv = Conversation(
+                user_id=user_id,
+                lead_id=lead.id,
+                channel="WHATSAPP",
+                status=ConversationStatus.ACTIVE,
+                unread_count=1,
+                last_message_at=datetime.utcnow(),
+                last_message_preview=message_text,
+            )
+            db.add(conv)
+            await db.flush()
+        else:
+            conv.unread_count = (conv.unread_count or 0) + 1
+            conv.last_message_at = datetime.utcnow()
+            conv.last_message_preview = message_text
+            conv.status = ConversationStatus.ACTIVE
+
+        conv_id = conv.id
+
+        new_msg = Message(
+            user_id=user_id,
+            conversation_id=conv.id,
+            direction=MessageDirection.INBOUND,
+            body=message_text,
+            sender_phone=e164,
+            recipient_phone=session.phone_number if session else "BUSINESS",
+            sender_name=lead.name or push_name or e164,
+            created_at=datetime.utcnow(),
+        )
+        db.add(new_msg)
 
     if OPT_OUT_PATTERN.search(message_text):
         bl = Blacklist(
@@ -579,12 +645,43 @@ async def handle_inbound_webhook(
 
     await ws_manager.broadcast({
         "event": "inbound_reply",
+        "conversation_id": conv_id,
         "phone": e164,
-        "lead_name": lead.name if lead else "Bilinmeyen",
+        "lead_name": lead.name if lead else (push_name or "Bilinmeyen"),
         "message": message_text
     })
 
-    return {"status": "success", "processed_phone": e164}
+    return {"status": "success", "processed_phone": e164, "conversation_id": conv_id}
+
+
+@router.post("/webhook/chats-synced")
+async def handle_chats_synced_webhook(
+    payload: dict = Body(...),
+    x_webhook_secret: Optional[str] = Header(None, alias="X-Webhook-Secret"),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Webhook dispatched by wa-gateway when history sync, contacts sync or groups are retrieved from WhatsApp.
+    Automatically notifies frontend WebSocket to refresh conversations with zero lag.
+    """
+    if not settings.WA_GATEWAY_WEBHOOK_SECRET or x_webhook_secret != settings.WA_GATEWAY_WEBHOOK_SECRET:
+        raise HTTPException(status_code=401, detail="Yetkisiz Webhook İsteği (Geçersiz Secret)")
+
+    session_name = payload.get("session_name")
+    total_chats = payload.get("total_chats", 0)
+    total_contacts = payload.get("total_contacts", 0)
+
+    logger.info(f"[Webhook] WhatsApp chats synced for session {session_name}: {total_chats} chats, {total_contacts} contacts")
+
+    # Broadcast real-time event so frontend updates conversations without delay
+    await ws_manager.broadcast({
+        "event": "conversations_updated",
+        "session_name": session_name,
+        "total_chats": total_chats,
+        "total_contacts": total_contacts
+    })
+
+    return {"status": "success", "session_name": session_name}
 
 
 @router.post("/webhook/session-status")

@@ -104,6 +104,77 @@ function backupSessionAuth(sessionName) {
     backupDebounceTimers.set(sessionName, timer);
 }
 
+// Map of debounce timers for saving chats/contacts store to disk
+const storeDebounceTimers = new Map();
+
+/**
+ * Persists in-memory synced chats and contacts to disk and triggers DB backup.
+ */
+function saveSessionStore(sessionName) {
+    if (storeDebounceTimers.has(sessionName)) {
+        clearTimeout(storeDebounceTimers.get(sessionName));
+    }
+    const timer = setTimeout(() => {
+        storeDebounceTimers.delete(sessionName);
+        try {
+            const session = activeSessions.get(sessionName);
+            if (!session) return;
+            const sessionAuthDir = path.join(SESSIONS_DIR, sessionName);
+            if (!fs.existsSync(sessionAuthDir)) {
+                fs.mkdirSync(sessionAuthDir, { recursive: true });
+            }
+            const storePath = path.join(sessionAuthDir, 'chats_store.json');
+            const data = {
+                chats: Array.from((session.chats || new Map()).entries()),
+                contacts: Array.from((session.contacts || new Map()).entries()),
+                updatedAt: Date.now()
+            };
+            fs.writeFileSync(storePath, JSON.stringify(data), 'utf8');
+            // Trigger DB backup so chats_store.json is mirrored in database
+            backupSessionAuth(sessionName);
+        } catch (e) {
+            console.warn(`[WA-Gateway] Failed to save chats_store for ${sessionName}:`, e.message);
+        }
+    }, 500);
+    storeDebounceTimers.set(sessionName, timer);
+}
+
+/**
+ * Loads chats and contacts from disk for the session if available.
+ */
+function loadSessionStore(sessionName) {
+    const session = activeSessions.get(sessionName);
+    if (!session) return;
+    if (!session.chats) session.chats = new Map();
+    if (!session.contacts) session.contacts = new Map();
+
+    const sessionAuthDir = path.join(SESSIONS_DIR, sessionName);
+    const storePath = path.join(sessionAuthDir, 'chats_store.json');
+    if (!fs.existsSync(storePath)) return;
+
+    try {
+        const raw = fs.readFileSync(storePath, 'utf8');
+        const data = JSON.parse(raw);
+        if (data.chats && Array.isArray(data.chats)) {
+            for (const [k, v] of data.chats) {
+                if (!session.chats.has(k)) {
+                    session.chats.set(k, v);
+                }
+            }
+        }
+        if (data.contacts && Array.isArray(data.contacts)) {
+            for (const [k, v] of data.contacts) {
+                if (!session.contacts.has(k)) {
+                    session.contacts.set(k, v);
+                }
+            }
+        }
+        console.log(`[WA-Gateway] Restored ${session.chats.size} chats and ${session.contacts.size} contacts from disk for ${sessionName}`);
+    } catch (e) {
+        console.warn(`[WA-Gateway] Failed to load chats_store for ${sessionName}:`, e.message);
+    }
+}
+
 /**
  * Restores session auth files from database backup into the local SESSIONS_DIR.
  */
@@ -201,7 +272,7 @@ async function initSessionSocket(sessionData) {
         printQRInTerminal: false,
         logger: pino({ level: 'silent' }),
         browser: Browsers.macOS('Desktop'),
-        syncFullHistory: false,
+        syncFullHistory: true,
         markOnlineOnConnect: true,
         fireInitQueries: true,
         defaultQueryTimeoutMs: 60000,
@@ -214,6 +285,7 @@ async function initSessionSocket(sessionData) {
 
     if (!sessionData.chats) sessionData.chats = new Map();
     if (!sessionData.contacts) sessionData.contacts = new Map();
+    loadSessionStore(sessionName);
 
     // Listen to credentials update
     sock.ev.on('creds.update', async () => {
@@ -222,7 +294,7 @@ async function initSessionSocket(sessionData) {
     });
 
     // 1. Initial bootstrap & history sync: captures all active chats and phonebook contacts
-    sock.ev.on('messaging-history.set', ({ chats, contacts }) => {
+    sock.ev.on('messaging-history.set', async ({ chats, contacts, messages }) => {
         if (contacts && Array.isArray(contacts)) {
             for (const c of contacts) {
                 if (!c.id) continue;
@@ -261,10 +333,56 @@ async function initSessionSocket(sessionData) {
                     unreadCount: chat.unreadCount ?? existing.unreadCount ?? 0,
                     lastMessage: lastText,
                     timestamp: ts,
+                    isGroup: chat.id.endsWith('@g.us'),
                 });
             }
         }
+        if (messages && Array.isArray(messages)) {
+            for (const msg of messages) {
+                const remoteJid = msg.key?.remoteJid;
+                if (!remoteJid || remoteJid === 'status@broadcast') continue;
+
+                const text = msg.message?.conversation ||
+                    msg.message?.extendedTextMessage?.text ||
+                    msg.message?.imageMessage?.caption ||
+                    (msg.message?.imageMessage ? '📷 Fotoğraf' : '') ||
+                    (msg.message?.documentMessage ? '📄 Belge' : '') ||
+                    (msg.message?.audioMessage ? '🎵 Ses' : '') ||
+                    '';
+
+                const ts = typeof msg.messageTimestamp === 'number'
+                    ? msg.messageTimestamp
+                    : (typeof msg.messageTimestamp?.low === 'number' ? msg.messageTimestamp.low : 0);
+
+                if (msg.pushName) {
+                    const existingC = sessionData.contacts.get(remoteJid) || {};
+                    sessionData.contacts.set(remoteJid, {
+                        ...existingC,
+                        id: remoteJid,
+                        notify: msg.pushName || existingC.notify
+                    });
+                }
+
+                const existingChat = sessionData.chats.get(remoteJid) || {};
+                if (!existingChat.lastMessage || (ts && ts >= (existingChat.timestamp || 0))) {
+                    sessionData.chats.set(remoteJid, {
+                        ...existingChat,
+                        id: remoteJid,
+                        lastMessage: text || existingChat.lastMessage || '',
+                        timestamp: ts || existingChat.timestamp || Math.floor(Date.now() / 1000),
+                        isGroup: remoteJid.endsWith('@g.us'),
+                    });
+                }
+            }
+        }
+
+        saveSessionStore(sessionName);
         console.log(`[WA-Gateway] Synced ${sessionData.chats.size} chats and ${sessionData.contacts.size} contacts for ${sessionName}`);
+
+        await notifyBackend(sessionName, 'chats-synced', {
+            total_chats: sessionData.chats.size,
+            total_contacts: sessionData.contacts.size
+        });
     });
 
     // 2. Real-time contacts updates
@@ -280,6 +398,7 @@ async function initSessionSocket(sessionData) {
                 verifiedName: c.verifiedName || existing.verifiedName,
             });
         }
+        saveSessionStore(sessionName);
     });
 
     sock.ev.on('contacts.update', (updates) => {
@@ -291,6 +410,7 @@ async function initSessionSocket(sessionData) {
                 ...update,
             });
         }
+        saveSessionStore(sessionName);
     });
 
     // 3. Real-time chat list updates
@@ -302,8 +422,10 @@ async function initSessionSocket(sessionData) {
                 ...existing,
                 ...chat,
                 id: chat.id,
+                isGroup: chat.id.endsWith('@g.us'),
             });
         }
+        saveSessionStore(sessionName);
     });
 
     sock.ev.on('chats.update', (updates) => {
@@ -316,6 +438,7 @@ async function initSessionSocket(sessionData) {
                 unreadCount: update.unreadCount !== undefined ? update.unreadCount : existing.unreadCount,
             });
         }
+        saveSessionStore(sessionName);
     });
 
     // Listen to connection state & QR generation
@@ -356,6 +479,28 @@ async function initSessionSocket(sessionData) {
 
             console.log(`[WA-Gateway] Session ${sessionName} connected as ${sessionData.phone}`);
 
+            // Fetch participating WhatsApp groups immediately
+            try {
+                const groups = await sock.groupFetchAllParticipating();
+                if (groups && typeof groups === 'object') {
+                    for (const [jid, grp] of Object.entries(groups)) {
+                        const existing = sessionData.chats.get(jid) || {};
+                        sessionData.chats.set(jid, {
+                            ...existing,
+                            id: jid,
+                            name: grp.subject || existing.name,
+                            isGroup: true,
+                            timestamp: grp.creation || existing.timestamp || Math.floor(Date.now() / 1000),
+                        });
+                    }
+                    console.log(`[WA-Gateway] Fetched ${Object.keys(groups).length} WhatsApp groups for ${sessionName}`);
+                }
+            } catch (gErr) {
+                console.warn(`[WA-Gateway] groupFetchAllParticipating error for ${sessionName}:`, gErr.message);
+            }
+
+            saveSessionStore(sessionName);
+
             if (!alreadyConnected) {
                 await notifyBackend(sessionName, 'session-status', {
                     status: 'CONNECTED',
@@ -364,6 +509,11 @@ async function initSessionSocket(sessionData) {
             }
 
             backupSessionAuth(sessionName);
+
+            await notifyBackend(sessionName, 'chats-synced', {
+                total_chats: sessionData.chats.size,
+                total_contacts: sessionData.contacts.size
+            });
         }
 
         if (connection === 'close') {
@@ -653,18 +803,15 @@ async function restoreSavedSessions() {
         .filter(dirent => dirent.isDirectory())
         .map(dirent => dirent.name);
 
-    for (const name of dirs) {
-        if (activeSessions.has(name)) continue;
-        const credsPath = path.join(SESSIONS_DIR, name, 'creds.json');
+    for (const sessionName of dirs) {
+        if (activeSessions.has(sessionName)) continue;
+        const credsPath = path.join(SESSIONS_DIR, sessionName, 'creds.json');
         if (fs.existsSync(credsPath)) {
+            console.log(`[WA-Gateway] Auto-restoring saved session: ${sessionName}`);
             try {
-                const creds = JSON.parse(fs.readFileSync(credsPath, 'utf8'));
-                if (creds.registered || creds.me) {
-                    console.log(`[WA-Gateway] Restoring saved active session from disk: ${name}`);
-                    await getOrCreateSession(name);
-                }
-            } catch (err) {
-                console.error(`[WA-Gateway] Failed to restore session ${name}:`, err.message);
+                await getOrCreateSession(sessionName, false);
+            } catch (e) {
+                console.error(`[WA-Gateway] Failed to restore session ${sessionName}:`, e.message);
             }
         }
     }
@@ -674,29 +821,21 @@ async function restoreSavedSessions() {
  * Forces a clean refresh of an un-connected session to provide a brand new QR code.
  */
 async function refreshSessionQR(sessionName) {
-    const existing = activeSessions.get(sessionName);
-    if (existing && existing.status === 'CONNECTED') {
-        return existing;
-    }
-
     if (pendingInitializations.has(sessionName)) {
-        console.log(`[WA-Gateway] Awaiting in-flight initialization for ${sessionName}`);
         return await pendingInitializations.get(sessionName);
     }
 
     const initPromise = (async () => {
         try {
-            if (existing && existing.reconnectTimer) {
-                clearTimeout(existing.reconnectTimer);
-                existing.reconnectTimer = null;
-            }
-
-            if (existing && existing.sock) {
+            const existing = activeSessions.get(sessionName);
+            if (existing) {
+                if (existing.reconnectTimer) {
+                    clearTimeout(existing.reconnectTimer);
+                    existing.reconnectTimer = null;
+                }
                 try {
-                    existing.sock.ev?.removeAllListeners();
-                } catch (e) {}
-                try {
-                    existing.sock.end(undefined);
+                    existing.sock?.ev?.removeAllListeners();
+                    existing.sock?.end(undefined);
                 } catch (e) {}
             }
 
@@ -743,11 +882,45 @@ async function refreshSessionQR(sessionName) {
 }
 
 /**
- * Retrieves all synced chats with resolved contact names from memory.
+ * Retrieves all synced chats with resolved contact names from memory and disk.
  */
-function getSessionChats(sessionName) {
-    const session = activeSessions.get(sessionName);
+async function getSessionChats(sessionName) {
+    let session = activeSessions.get(sessionName);
+    if (!session) {
+        const sessionAuthDir = path.join(SESSIONS_DIR, sessionName);
+        if (fs.existsSync(sessionAuthDir)) {
+            try {
+                session = await getOrCreateSession(sessionName, false);
+            } catch (e) {}
+        }
+    }
     if (!session) return [];
+
+    if (!session.chats || session.chats.size === 0) {
+        loadSessionStore(sessionName);
+    }
+
+    // If still empty and socket is connected, fetch groups immediately
+    if ((!session.chats || session.chats.size === 0) && session.sock && session.status === 'CONNECTED') {
+        try {
+            const groups = await session.sock.groupFetchAllParticipating();
+            if (groups && typeof groups === 'object') {
+                for (const [jid, grp] of Object.entries(groups)) {
+                    const existing = session.chats.get(jid) || {};
+                    session.chats.set(jid, {
+                        ...existing,
+                        id: jid,
+                        name: grp.subject || existing.name,
+                        isGroup: true,
+                        timestamp: grp.creation || existing.timestamp || Math.floor(Date.now() / 1000),
+                    });
+                }
+                saveSessionStore(sessionName);
+            }
+        } catch (e) {
+            console.warn(`[WA-Gateway] On-demand group fetch failed:`, e.message);
+        }
+    }
 
     const result = [];
     const chatsMap = session.chats || new Map();
@@ -768,14 +941,21 @@ function getSessionChats(sessionName) {
                              contact.verifiedName ||
                              (isGroup ? 'WhatsApp Grubu' : formattedPhone);
 
+        const lastMsg = typeof chat.lastMessage === 'string' ? chat.lastMessage : (chat.lastMessage?.text || '');
+
         result.push({
+            id: jid,
             jid,
             phone: formattedPhone,
             name: resolvedName,
+            push_name: contact.notify || null,
             pushName: contact.notify || null,
+            is_group: isGroup,
             isGroup,
+            unread_count: chat.unreadCount || 0,
             unreadCount: chat.unreadCount || 0,
-            lastMessage: chat.lastMessage || '',
+            last_message: lastMsg,
+            lastMessage: lastMsg,
             timestamp: chat.timestamp || Math.floor(Date.now() / 1000),
         });
     }

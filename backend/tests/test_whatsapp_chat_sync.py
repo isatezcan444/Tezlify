@@ -114,3 +114,136 @@ async def test_sync_whatsapp_conversations_endpoint():
                 assert group_lead.phone_e164 is None  # Invariant 1.3: Never synthesize fake numbers
     finally:
         app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_sync_whatsapp_conversations_with_gateway_string_messages():
+    """Verifies that wa-gateway string lastMessage and camelCase unreadCount are handled without error."""
+    test_user = str(uuid.uuid4())
+    test_sess_name = f"sess_{uuid.uuid4().hex[:8]}"
+
+    async with AsyncSessionLocal() as db:
+        session = WhatsAppSession(
+            user_id=test_user,
+            session_name=test_sess_name,
+            phone_number="+905559876543",
+            status=SessionStatus.CONNECTED,
+        )
+        db.add(session)
+        await db.commit()
+
+    gateway_format_chats = [
+        {
+            "id": "905321110022@s.whatsapp.net",
+            "jid": "905321110022@s.whatsapp.net",
+            "phone": "+905321110022",
+            "name": "Ayşe Hanım (Müşteri)",
+            "pushName": "Ayşe",
+            "isGroup": False,
+            "unreadCount": 5,
+            "lastMessage": "Teklifinizi kabul ediyoruz, teşekkürler.",
+            "timestamp": 1717005000,
+        }
+    ]
+
+    from backend.app.core.auth import get_current_user, AuthUser
+    app.dependency_overrides[get_current_user] = lambda: AuthUser(
+        id=test_user, email="test2@test.com", full_name="Test User 2"
+    )
+
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+        ) as ac:
+            with patch("backend.app.services.whatsapp_gateway_client.gateway_client.get_session_chats", new_callable=AsyncMock) as mock_fetch:
+                mock_fetch.return_value = gateway_format_chats
+                res = await ac.post("/api/v1/conversations/sync-whatsapp")
+                assert res.status_code == 200, res.text
+                data = res.json()
+                assert data["synced_count"] == 1
+
+            conv_res = await ac.get("/api/v1/conversations")
+            assert conv_res.status_code == 200
+            convs = conv_res.json()
+            ayse_conv = next(c for c in convs if c["lead_name"] == "Ayşe Hanım (Müşteri)")
+            assert ayse_conv["unread_count"] == 5
+            assert ayse_conv["last_message_preview"] == "Teklifinizi kabul ediyoruz, teşekkürler."
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_webhook_chats_synced():
+    """Verifies that wa-gateway dispatches /webhook/chats-synced successfully."""
+    from backend.app.core.config import settings
+    secret = settings.WA_GATEWAY_WEBHOOK_SECRET or "dev-webhook-secret"
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+    ) as ac:
+        res = await ac.post(
+            "/api/v1/whatsapp/webhook/chats-synced",
+            headers={"X-Webhook-Secret": secret},
+            json={
+                "session_name": "test_session",
+                "total_chats": 12,
+                "total_contacts": 45,
+            },
+        )
+        assert res.status_code == 200
+        assert res.json()["status"] == "success"
+
+
+@pytest.mark.asyncio
+async def test_webhook_inbound_persists_conversation_and_message():
+    """Verifies that inbound WhatsApp message creates lead, conversation, and message entity."""
+    from backend.app.core.config import settings
+    secret = settings.WA_GATEWAY_WEBHOOK_SECRET or "dev-webhook-secret"
+    test_user = str(uuid.uuid4())
+    test_sess = f"inbound_sess_{uuid.uuid4().hex[:8]}"
+
+    async with AsyncSessionLocal() as db:
+        session = WhatsAppSession(
+            user_id=test_user,
+            session_name=test_sess,
+            phone_number="+905550001122",
+            status=SessionStatus.CONNECTED,
+        )
+        db.add(session)
+        await db.commit()
+
+    import random
+    test_phone = f"+90533{random.randint(1000000, 9999999)}"
+    inbound_text = "Merhaba, ürün hakkında bilgi alabilir miyim?"
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+    ) as ac:
+        res = await ac.post(
+            "/api/v1/whatsapp/webhook/inbound",
+            headers={"X-Webhook-Secret": secret},
+            json={
+                "session_name": test_sess,
+                "phone": test_phone,
+                "message": inbound_text,
+                "push_name": "Kemal Sunal",
+            },
+        )
+        assert res.status_code == 200
+        data = res.json()
+        assert data["status"] == "success"
+        assert data["conversation_id"] is not None
+
+        # Verify DB state
+        async with AsyncSessionLocal() as db:
+            lead = (await db.execute(select(Lead).where(Lead.phone_e164 == test_phone))).scalar_one_or_none()
+            assert lead is not None
+            assert lead.name == "Kemal Sunal"
+
+            conv = (await db.execute(select(Conversation).where(Conversation.lead_id == lead.id))).scalar_one_or_none()
+            assert conv is not None
+            assert conv.last_message_preview == inbound_text
+            assert conv.unread_count == 1

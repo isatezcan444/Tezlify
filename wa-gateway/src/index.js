@@ -148,15 +148,20 @@ app.get('/api/sessions/:sessionName/status', (req, res) => {
 });
 
 // Get synced chats with contact names and last messages from active session
-app.get('/api/sessions/:sessionName/chats', (req, res) => {
+app.get('/api/sessions/:sessionName/chats', async (req, res) => {
     const { sessionName } = req.params;
-    const chats = getSessionChats(sessionName);
-    res.json({
-        success: true,
-        sessionName,
-        total: chats.length,
-        chats
-    });
+    try {
+        const chats = await getSessionChats(sessionName);
+        res.json({
+            success: true,
+            sessionName,
+            total: chats.length,
+            chats
+        });
+    } catch (err) {
+        console.warn(`[WA-Gateway] getSessionChats error for ${sessionName}:`, err.message);
+        res.status(500).json({ success: false, error: err.message, chats: [] });
+    }
 });
 
 

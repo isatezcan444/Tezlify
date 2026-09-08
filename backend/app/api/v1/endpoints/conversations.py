@@ -22,6 +22,8 @@ from backend.app.services.whatsapp_gateway_client import gateway_client
 from backend.app.services.phone_service import PhoneService
 
 def _conversation_phone_key(phone_e164: Optional[str], phone: Optional[str]) -> Optional[str]:
+    if phone and "@g.us" in phone:
+        return phone
     raw = phone_e164 or phone or ""
     digits = "".join(ch for ch in raw if ch.isdigit())
     return digits[-10:] if len(digits) >= 10 else (digits or None)
@@ -789,6 +791,28 @@ async def sync_whatsapp_conversations(
     session = sess_res.scalars().first()
 
     if not session:
+        # Check any session for user to see if it's connected in wa-gateway
+        any_sess_stmt = (
+            select(WhatsAppSession)
+            .where(get_user_filter(WhatsAppSession.user_id, current_user.id))
+            .order_by((WhatsAppSession.user_id == current_user.id).desc(), WhatsAppSession.id.desc())
+        )
+        candidates = (await db.execute(any_sess_stmt)).scalars().all()
+        for cand in candidates:
+            try:
+                gw_status = await gateway_client.get_session_status(cand.session_name)
+                if gw_status.get("status") == "CONNECTED":
+                    cand.status = SessionStatus.CONNECTED
+                    cand.is_phone_online = True
+                    if gw_status.get("phone"):
+                        cand.phone_number = gw_status.get("phone")
+                    await db.commit()
+                    session = cand
+                    break
+            except Exception:
+                pass
+
+    if not session:
         raise HTTPException(
             status_code=400,
             detail="Aktif bağlı WhatsApp oturumu bulunamadı. Lütfen önce bir hat bağlayın.",
@@ -806,16 +830,24 @@ async def sync_whatsapp_conversations(
     synced_count = 0
 
     for c in chats:
-        jid = c.get("id")
+        jid = c.get("id") or c.get("jid")
         if not jid or "@broadcast" in jid:
             continue
 
         raw_name = c.get("name")
         phone = c.get("phone")
-        unread_count = c.get("unread_count", 0)
-        last_msg = c.get("last_message")
+        unread_count = c.get("unread_count") if c.get("unread_count") is not None else c.get("unreadCount", 0)
+        last_msg = c.get("last_message") if c.get("last_message") is not None else c.get("lastMessage")
         timestamp = c.get("timestamp")
-        is_group = c.get("is_group", False)
+        is_group = c.get("is_group") if c.get("is_group") is not None else c.get("isGroup", False)
+
+        last_text = ""
+        from_me = False
+        if isinstance(last_msg, dict):
+            last_text = last_msg.get("text") or last_msg.get("body") or ""
+            from_me = bool(last_msg.get("from_me", False))
+        elif isinstance(last_msg, str):
+            last_text = last_msg
 
         if is_group:
             phone_e164 = None
@@ -832,7 +864,7 @@ async def sync_whatsapp_conversations(
             phone_parsed = PhoneService.normalize_to_e164(phone) if phone else None
             phone_e164 = phone_parsed.get("e164") if phone_parsed else (f"+{phone}" if phone and not phone.startswith("+") else phone)
             place_id = f"wa_{hashlib.sha256(f'{current_user.id}_{phone_e164 or jid}'.encode()).hexdigest()[:16]}"
-            
+
             lead_stmt = select(Lead).where(
                 or_(
                     Lead.phone_e164 == phone_e164,
@@ -877,7 +909,8 @@ async def sync_whatsapp_conversations(
                 lead_id=lead.id,
                 channel="WHATSAPP",
                 status=ConversationStatus.ACTIVE,
-                unread_count=unread_count,
+                unread_count=unread_count or 0,
+                last_message_preview=last_text or None,
             )
             db.add(conv)
             await db.flush()
@@ -886,6 +919,8 @@ async def sync_whatsapp_conversations(
                 conv.user_id = current_user.id
             if unread_count is not None:
                 conv.unread_count = unread_count
+            if last_text:
+                conv.last_message_preview = last_text
 
         if timestamp:
             try:
@@ -894,11 +929,11 @@ async def sync_whatsapp_conversations(
                     conv.last_message_at = msg_dt
             except Exception:
                 pass
+        if not conv.last_message_at:
+            conv.last_message_at = datetime.utcnow()
 
         # Sync latest message if present
-        if last_msg and last_msg.get("text"):
-            last_text = last_msg.get("text")
-            from_me = last_msg.get("from_me", False)
+        if last_text:
             msg_dt = datetime.fromtimestamp(timestamp) if timestamp else datetime.utcnow()
 
             m_stmt = (
