@@ -515,6 +515,8 @@ export const en = {
     testMessagePlaceholder: 'Test message...',
     group: 'Group',
     connectionActive: 'Multi-Device Active',
+    disconnected: 'No Connection',
+    confirmDeleteSession: 'Are you sure you want to delete this WhatsApp session? This action cannot be undone.',
     socketLive: 'Live Socket',
     offline: 'Offline',
   },

@@ -515,6 +515,8 @@ export const tr = {
     testMessagePlaceholder: 'Test mesajı...',
     group: 'Grup',
     connectionActive: 'Multi-Device Aktif',
+    disconnected: 'Bağlantı Yok',
+    confirmDeleteSession: 'Bu WhatsApp hattını silmek istediğinize emin misiniz? Bu işlem geri alınamaz.',
     socketLive: 'Canlı Soket',
     offline: 'Çevrimdışı',
   },

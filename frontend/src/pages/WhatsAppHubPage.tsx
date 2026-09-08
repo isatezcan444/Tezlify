@@ -750,7 +750,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   const handleDelete = async (sessionId: number) => {
     const ok = await toast.confirm({
       title: t('whatsapp.deleteSession'),
-      message: t('leads.deleteConfirmMsg'),
+      message: t('whatsapp.confirmDeleteSession'),
       confirmText: t('common.delete'),
       cancelText: t('common.cancel'),
       variant: 'danger',
@@ -1132,11 +1132,6 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                 icon={QrCode}
                 title={t('whatsapp.noSessions')}
                 description={t('whatsapp.noSessionsDesc')}
-                action={{
-                  label: t('whatsapp.addSession'),
-                  onClick: handleCreateSession,
-                  icon: QrCode,
-                }}
               />
             </Card>
           ) : (
