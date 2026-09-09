@@ -5,12 +5,14 @@ group handling (phone_e164 stays NULL per AGENTS.md 1.3) and revision tracking.
 """
 import uuid
 import pytest
+from sqlalchemy import select
 from unittest.mock import AsyncMock, patch
 from httpx import AsyncClient, ASGITransport
 
 from backend.app.main import app
 from backend.app.core.database import AsyncSessionLocal
 from backend.app.models.whatsapp_session import WhatsAppSession, SessionStatus
+from backend.app.models.lead import Lead
 from backend.app.services.whatsapp_chat_sync_service import (
     WhatsAppChatSyncService,
     NormalizedChat,
@@ -104,6 +106,13 @@ async def test_sync_chats_bulk_creates_and_updates():
         assert report.created_conversations == 2
         assert report.new_messages == 2
         assert WhatsAppChatSyncService.last_sync_revisions.get(test_sess) == 7
+
+        synced_leads = (await db.execute(select(Lead).where(Lead.user_id == test_user))).scalars().all()
+        assert synced_leads
+        assert all(
+            (lead.custom_data or {}).get("whatsapp_session_name") == test_sess
+            for lead in synced_leads
+        )
 
         # Idempotent second run: nothing new is created
         second = await WhatsAppChatSyncService.sync_chats(db=db, session=session, chats=chats, revision=7)

@@ -85,6 +85,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   const [isTemplateModalOpen, setIsTemplateModalOpen] = useState<boolean>(false);
   const [isNewChatModalOpen, setIsNewChatModalOpen] = useState<boolean>(false);
   const [isSyncingChats, setIsSyncingChats] = useState<boolean>(false);
+  const conversationsGenerationRef = useRef(0);
 
   const activeMessages = selectedConv ? (messagesMap[selectedConv.id] || []) : [];
   const activeChatLoading = false;
@@ -95,6 +96,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   const activeLoadOlder = async () => {};
 
   const loadConversations = useCallback(async (isSilent: boolean = false) => {
+    const generation = conversationsGenerationRef.current;
     if (!isSilent) setConvsLoading(true);
     try {
       const list = await ApiClient.getConversations({
@@ -102,6 +104,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         unread_only: convFilter === 'UNREAD',
         search: convSearch.trim() || undefined,
       });
+      if (generation !== conversationsGenerationRef.current) return;
       setConversations(list);
       setSelectedConv((prev) => {
         if (!prev && list.length > 0) return list[0];
@@ -114,7 +117,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     } catch (err: any) {
       console.error('Failed to load conversations:', err);
     } finally {
-      if (!isSilent) setConvsLoading(false);
+      if (!isSilent && generation === conversationsGenerationRef.current) setConvsLoading(false);
     }
   }, [convFilter, convSearch]);
 
@@ -541,8 +544,10 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         );
         setQrSecondsLeft(25);
       } else if (eventData?.event === 'conversations_cleared') {
+        conversationsGenerationRef.current += 1;
         setConversations([]);
         setSelectedConv(null);
+        setMessagesMap({});
       }
     };
     window.addEventListener('tezlify:ws_event', handleWs);
@@ -767,10 +772,13 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     const previousSessions = [...sessions];
     const previousConversations = [...conversations];
     const previousSelected = selectedConv;
+    const previousMessages = messagesMap;
 
+    conversationsGenerationRef.current += 1;
     setSessions((prev) => prev.filter((s) => s.id !== sessionId));
     setConversations([]);
     setSelectedConv(null);
+    setMessagesMap({});
 
     try {
       await ApiClient.deleteSession(sessionId);
@@ -790,6 +798,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       setSessions(previousSessions);
       setConversations(previousConversations);
       setSelectedConv(previousSelected);
+      setMessagesMap(previousMessages);
       toast.error(err.message || t('common.error'), t('common.error'));
     }
   };
@@ -1920,4 +1929,3 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     </div>
   );
 };
-

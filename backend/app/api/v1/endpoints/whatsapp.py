@@ -30,7 +30,6 @@ from backend.app.services.phone_service import PhoneService
 from backend.app.services.whatsapp_sender import get_whatsapp_sender
 from backend.app.services.whatsapp_chat_sync_service import WhatsAppChatSyncService
 from backend.app.services.whatsapp_gateway_client import gateway_client
-from backend.app.services.whatsapp_gateway_client import gateway_client
 from backend.app.api.v1.websocket import ws_manager
 
 logger = logging.getLogger(__name__)
@@ -376,7 +375,6 @@ async def disconnect_session(
 @router.delete("/sessions/{session_id}", status_code=204)
 async def delete_session(
     session_id: int,
-    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     current_user: AuthUser = Depends(get_current_user),
 ):
@@ -385,6 +383,17 @@ async def delete_session(
         raise HTTPException(status_code=404, detail="Oturum bulunamadı")
     session_name = session.session_name
     sess_user_id = session.user_id or current_user.id
+
+    # Delete gateway state first. A failed logout must not be reported as a
+    # successful deletion, otherwise the still-live gateway session is adopted
+    # again on the next synchronization.
+    if not settings.SIMULATION_MODE and os.getenv("PYTEST_CURRENT_TEST") is None:
+        gateway_deleted = await gateway_client.delete_session(session_name)
+        if not gateway_deleted:
+            raise HTTPException(
+                status_code=502,
+                detail="WhatsApp hattı gateway üzerinden silinemedi. Lütfen tekrar deneyin.",
+            )
 
     # 1. Unlink any campaigns or message logs referencing this session so foreign keys don't restrict deletion
     try:
@@ -397,12 +406,25 @@ async def delete_session(
     except Exception as e:
         logger.warning(f"[WhatsApp] Failed to unlink campaigns/logs for session {session_id}: {e}")
 
-    # 2. Delete all WhatsApp conversations belonging to this user (cascades to messages)
+    # 2. Delete conversations materialized from this session (cascades to messages).
+    # Legacy rows have no session marker, so only clear all user conversations
+    # when deleting the user's last line, which preserves multi-line isolation.
     try:
+        other_sessions = await db.execute(
+            select(WhatsAppSession.id).where(
+                WhatsAppSession.id != session.id,
+                get_user_filter(WhatsAppSession.user_id, sess_user_id),
+            ).limit(1)
+        )
+        is_last_session = other_sessions.scalar_one_or_none() is None
         conv_stmt = select(Conversation).where(
             Conversation.channel == "WHATSAPP",
             get_user_filter(Conversation.user_id, sess_user_id),
         )
+        if not is_last_session:
+            conv_stmt = conv_stmt.join(Lead).where(
+                Lead.custom_data["whatsapp_session_name"].as_string() == session_name
+            )
         convs_res = await db.execute(conv_stmt)
         convs = convs_res.scalars().all()
         for conv in convs:
@@ -410,12 +432,16 @@ async def delete_session(
     except Exception as e:
         logger.warning(f"[WhatsApp] Failed to delete conversations for session {session_id}: {e}")
 
-    # 3. Delete auto-synced WhatsApp leads for this user (groups and raw WhatsApp chats)
+    # 3. Delete orphaned auto-synced leads owned by this session.
     try:
         lead_stmt = select(Lead).where(
             Lead.category.in_(["WhatsApp Grubu", "WhatsApp Sohbeti", "WhatsApp Kişisi"]),
             get_user_filter(Lead.user_id, sess_user_id),
         )
+        if not is_last_session:
+            lead_stmt = lead_stmt.where(
+                Lead.custom_data["whatsapp_session_name"].as_string() == session_name
+            )
         leads_res = await db.execute(lead_stmt)
         leads = leads_res.scalars().all()
         for lead in leads:
@@ -443,8 +469,7 @@ async def delete_session(
         "session_name": session_name,
     })
 
-    # 6. Asynchronously delete from gateway in background without blocking response
-    background_tasks.add_task(gateway_client.delete_session, session_name)
+    WhatsAppChatSyncService.last_sync_revisions.pop(session_name, None)
     return None
 
 @router.post("/send-test")
@@ -605,6 +630,11 @@ async def handle_inbound_webhook(
             lead.name = push_name
         new_note = f"Son yanıt ({datetime.utcnow().strftime('%Y-%m-%d %H:%M')}): {message_text}"
         lead.notes = f"{lead.notes}\n{new_note}" if lead.notes else new_note
+
+    if lead and session:
+        custom = dict(lead.custom_data or {})
+        custom["whatsapp_session_name"] = session.session_name
+        lead.custom_data = custom
 
     conv_id = None
     if lead and user_id:
@@ -904,5 +934,3 @@ async def restore_all_sessions_auth_webhook(
             continue
 
     return result
-
-

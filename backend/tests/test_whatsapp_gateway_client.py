@@ -11,6 +11,8 @@ from backend.app.main import app
 from backend.app.core.config import settings
 from backend.app.services.whatsapp_gateway_client import WhatsAppGatewayClient, gateway_client
 from backend.app.models.whatsapp_session import WhatsAppSession, SessionStatus
+from backend.app.models.lead import Lead
+from backend.app.models.conversation import Conversation
 from backend.app.core.database import AsyncSessionLocal
 
 
@@ -93,6 +95,104 @@ async def test_gateway_client_status_and_qr():
         status_info = await client.get_session_status("session_x")
         assert status_info["status"] == "CONNECTED"
         assert status_info["phone"] == "+905551234567"
+
+
+@pytest.mark.asyncio
+async def test_gateway_client_does_not_fallback_to_another_sessions_chats():
+    client = WhatsAppGatewayClient(gateway_url="http://mock-gateway:3001")
+
+    with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
+        mock_get.return_value = Response(404, text="Session not found")
+        result = await client.get_session_chats("deleted-session")
+
+    assert result == []
+    mock_get.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_delete_session_clears_its_conversations():
+    user_id = str(uuid.uuid4())
+    session_name = f"delete_{uuid.uuid4().hex[:8]}"
+    phone = f"+9053{uuid.uuid4().int % 100000000:08d}"
+
+    async with AsyncSessionLocal() as db:
+        session = WhatsAppSession(
+            user_id=user_id,
+            session_name=session_name,
+            status=SessionStatus.CONNECTED,
+        )
+        lead = Lead(
+            user_id=user_id,
+            name="Delete Test",
+            phone=phone,
+            phone_e164=phone,
+            place_id=f"delete_{uuid.uuid4().hex[:16]}",
+            category="WhatsApp Kişisi",
+            custom_data={"whatsapp_session_name": session_name},
+        )
+        db.add_all([session, lead])
+        await db.flush()
+        conversation = Conversation(user_id=user_id, lead_id=lead.id, channel="WHATSAPP")
+        db.add(conversation)
+        await db.commit()
+        session_id = session.id
+        conversation_id = conversation.id
+
+    from backend.app.core.auth import AuthUser, get_current_user
+    app.dependency_overrides[get_current_user] = lambda: AuthUser(
+        id=user_id, email="delete@test.com", full_name="Delete User"
+    )
+    try:
+        with patch.dict("os.environ", {}, clear=True), patch.object(
+            gateway_client, "delete_session", new_callable=AsyncMock, return_value=True
+        ):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                response = await client.delete(f"/api/v1/whatsapp/sessions/{session_id}")
+        assert response.status_code == 204
+
+        async with AsyncSessionLocal() as db:
+            assert await db.get(WhatsAppSession, session_id) is None
+            assert await db.get(Conversation, conversation_id) is None
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_delete_session_keeps_database_state_when_gateway_fails():
+    user_id = str(uuid.uuid4())
+    session_name = f"delete_fail_{uuid.uuid4().hex[:8]}"
+
+    async with AsyncSessionLocal() as db:
+        session = WhatsAppSession(
+            user_id=user_id,
+            session_name=session_name,
+            status=SessionStatus.CONNECTED,
+        )
+        db.add(session)
+        await db.commit()
+        session_id = session.id
+
+    from backend.app.core.auth import AuthUser, get_current_user
+    app.dependency_overrides[get_current_user] = lambda: AuthUser(
+        id=user_id, email="delete-fail@test.com", full_name="Delete Fail User"
+    )
+    try:
+        with patch.dict("os.environ", {}, clear=True), patch.object(
+            gateway_client, "delete_session", new_callable=AsyncMock, return_value=False
+        ):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                response = await client.delete(f"/api/v1/whatsapp/sessions/{session_id}")
+        assert response.status_code == 502
+
+        async with AsyncSessionLocal() as db:
+            assert await db.get(WhatsAppSession, session_id) is not None
+    finally:
+        app.dependency_overrides.clear()
+        async with AsyncSessionLocal() as db:
+            session = await db.get(WhatsAppSession, session_id)
+            if session:
+                await db.delete(session)
+                await db.commit()
 
 
 @pytest.mark.asyncio
@@ -269,4 +369,3 @@ async def test_session_refresh_qr_endpoint():
                 if s:
                     await db.delete(s)
                     await db.commit()
-

@@ -808,7 +808,19 @@ async function requestPairingCode(sessionName, phoneNumber) {
  * Disconnects and deletes a session cleanly.
  */
 async function disconnectSession(sessionName) {
-    const session = activeSessions.get(sessionName);
+    let pendingSession = null;
+    const pendingInit = pendingInitializations.get(sessionName);
+    pendingInitializations.delete(sessionName);
+    if (pendingInit) {
+        try {
+            pendingSession = await Promise.race([
+                pendingInit,
+                new Promise(resolve => setTimeout(() => resolve(null), 1000))
+            ]);
+        } catch (e) {}
+    }
+
+    const session = activeSessions.get(sessionName) || pendingSession;
     if (session) {
         if (session.reconnectTimer) {
             clearTimeout(session.reconnectTimer);
@@ -831,14 +843,23 @@ async function disconnectSession(sessionName) {
         }
     }
 
+    const backupTimer = backupDebounceTimers.get(sessionName);
+    if (backupTimer) clearTimeout(backupTimer);
+    backupDebounceTimers.delete(sessionName);
+    const storeTimer = storeDebounceTimers.get(sessionName);
+    if (storeTimer) clearTimeout(storeTimer);
+    storeDebounceTimers.delete(sessionName);
+
+    activeSessions.delete(sessionName);
+
     const sessionAuthDir = path.join(SESSIONS_DIR, sessionName);
     try {
         if (fs.existsSync(sessionAuthDir)) {
             fs.rmSync(sessionAuthDir, { recursive: true, force: true });
         }
-    } catch (e) {}
-
-    activeSessions.delete(sessionName);
+    } catch (e) {
+        throw new Error(`Session files could not be deleted: ${e.message}`);
+    }
 
     return { success: true, message: `Session ${sessionName} disconnected` };
 }
@@ -979,11 +1000,6 @@ async function getSessionChats(sessionName) {
             }
         }
     }
-    if (!session && activeSessions.size === 1) {
-        // Fallback 2: Single active session on gateway
-        session = activeSessions.values().next().value;
-        sessionName = session.name;
-    }
     if (!session) {
         const sessionAuthDir = path.join(SESSIONS_DIR, sessionName);
         if (fs.existsSync(sessionAuthDir)) {
@@ -1097,10 +1113,6 @@ function getSessionChatsDelta(sessionName, sinceRevision) {
                 break;
             }
         }
-    }
-    if (!session && activeSessions.size === 1) {
-        session = activeSessions.values().next().value;
-        sessionName = session.name;
     }
     if (!session) {
         return { revision: 0, changed: [] };

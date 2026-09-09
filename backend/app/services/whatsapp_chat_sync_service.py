@@ -285,7 +285,11 @@ class WhatsAppChatSyncService:
                 lead.is_whatsapp_eligible = True
 
             custom = dict(lead.custom_data or {})
-            custom.update({"is_group": chat.is_group, "whatsapp_jid": chat.jid})
+            custom.update({
+                "is_group": chat.is_group,
+                "whatsapp_jid": chat.jid,
+                "whatsapp_session_name": session.session_name,
+            })
             lead.custom_data = custom
             result[cls._chat_key(chat)] = lead
             db.add(lead)
@@ -424,4 +428,3 @@ class WhatsAppChatSyncService:
                 )
             )
             report.new_messages += 1
-

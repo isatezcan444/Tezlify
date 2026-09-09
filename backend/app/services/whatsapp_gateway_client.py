@@ -183,31 +183,10 @@ class WhatsAppGatewayClient:
                     self._last_unreachable_time = 0.0
                     data = res.json()
                     chats = data.get("chats", [])
-                    if chats:
-                        return chats
+                    return chats
         except Exception as e:
             self._last_unreachable_time = time.monotonic()
             logger.warning(f"[GatewayClient] get_session_chats error for {session_name}: {e}")
-
-        # Resilient fallback: If no chats found under the exact name, check if another active session exists
-        try:
-            active_list = await self.list_sessions()
-            for s in active_list:
-                s_name = s.get("name")
-                if s_name and s_name != session_name and s.get("status") == "CONNECTED":
-                    async with httpx.AsyncClient(timeout=self._get_timeout(8.0)) as client:
-                        fb_res = await client.get(
-                            f"{self.gateway_url}/api/sessions/{quote(s_name, safe='')}/chats",
-                            headers=self._headers()
-                        )
-                        if fb_res.status_code == 200:
-                            fb_data = fb_res.json()
-                            fb_chats = fb_data.get("chats", [])
-                            if fb_chats:
-                                logger.info(f"[GatewayClient] Recovered {len(fb_chats)} chats using fallback active session {s_name}")
-                                return fb_chats
-        except Exception as fb_err:
-            logger.debug(f"[GatewayClient] fallback get_session_chats error: {fb_err}")
 
         return []
 

@@ -108,6 +108,15 @@ async def list_conversations(
     """
     effective_last_at = func.coalesce(Conversation.last_message_at, Conversation.created_at)
 
+    active_session_names = (
+        select(WhatsAppSession.session_name)
+        .where(
+            get_user_filter(WhatsAppSession.user_id, current_user.id),
+            WhatsAppSession.status == SessionStatus.CONNECTED,
+        )
+    )
+    active_session_names = set((await db.execute(active_session_names)).scalars().all())
+
     stmt = (
         select(Conversation)
         .join(Conversation.lead)
@@ -154,6 +163,9 @@ async def list_conversations(
     for conv in conv_rows:
         lead_key = None
         if conv.lead is not None:
+            owner_session = (conv.lead.custom_data or {}).get("whatsapp_session_name")
+            if owner_session and owner_session not in active_session_names:
+                continue
             lead_key = _conversation_phone_key(conv.lead.phone_e164, conv.lead.phone)
         if lead_key is None:
             lead_key = f"lead:{conv.lead_id}"
@@ -1001,7 +1013,6 @@ async def sync_whatsapp_conversations_delta(
         logger.warning(f"Failed to broadcast delta conversations_updated: {ws_err}")
 
     return report.to_payload()
-
 
 
 
