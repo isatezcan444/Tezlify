@@ -21,7 +21,13 @@ if is_sqlite:
     engine_kwargs["connect_args"] = {"check_same_thread": False}
 else:
     # Supabase / PostgreSQL Connection Pooling Best Practices
-    engine_kwargs["connect_args"] = {"statement_cache_size": 0}
+    engine_kwargs["connect_args"] = {
+        "statement_cache_size": 0,
+        "server_settings": {
+            "idle_in_transaction_session_timeout": "30000",
+            "lock_timeout": "5000",
+        },
+    }
     engine_kwargs["pool_size"] = 10
     engine_kwargs["max_overflow"] = 20
     engine_kwargs["pool_recycle"] = 300

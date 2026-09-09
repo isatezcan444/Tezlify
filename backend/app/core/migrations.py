@@ -23,15 +23,27 @@ def _sqlite_columns(raw_rows: List[Any]) -> Dict[str, bool]:
 async def ensure_leads_phone_nullable(engine: AsyncEngine) -> None:
     """`leads.phone_e164` kolonunu nullable yapar (uydurma numara üretimi kaldırıldı).
 
-    - PostgreSQL: ALTER TABLE ... ALTER COLUMN ... DROP NOT NULL
+    - PostgreSQL: information_schema üzerinden kontrol eder, kilit almadan geçer.
     - SQLite: ALTER COLUMN desteklenmediği için yedek tablo üzerinden rebuild.
     """
     if engine.dialect.name == "postgresql":
-        async with engine.begin() as conn:
-            await conn.execute(
-                text("ALTER TABLE leads ALTER COLUMN phone_e164 DROP NOT NULL")
-            )
-        logger.info("[MIGRATION] leads.phone_e164 -> NULLABLE (postgresql)")
+        try:
+            async with engine.connect() as conn:
+                res = await conn.execute(
+                    text("SELECT is_nullable FROM information_schema.columns WHERE table_name = 'leads' AND column_name = 'phone_e164'")
+                )
+                row = res.first()
+                if row and row[0] == "YES":
+                    return  # Zaten nullable; kilit gerektiren ALTER TABLE atlandı
+
+            async with engine.begin() as conn:
+                await conn.execute(text("SET LOCAL lock_timeout = '3s'"))
+                await conn.execute(
+                    text("ALTER TABLE leads ALTER COLUMN phone_e164 DROP NOT NULL")
+                )
+            logger.info("[MIGRATION] leads.phone_e164 -> NULLABLE (postgresql)")
+        except Exception as e:
+            logger.warning("[MIGRATION] leads.phone_e164 kontrolü/geçişi atlandı: %s", e)
         return
 
     if engine.dialect.name != "sqlite":
@@ -102,8 +114,19 @@ async def ensure_conversations_columns(engine: AsyncEngine) -> None:
 async def ensure_messages_media_columns(engine: AsyncEngine) -> None:
     """Adds media_id, media_mime_type, media_filename, media_caption to messages if missing, and ensures indexes."""
     if engine.dialect.name == "postgresql":
-        async with engine.begin() as conn:
-            await conn.execute(text("ALTER TABLE messages ADD COLUMN IF NOT EXISTS sender_name VARCHAR(100)"))
+        try:
+            async with engine.connect() as conn:
+                res = await conn.execute(
+                    text("SELECT 1 FROM information_schema.columns WHERE table_name = 'messages' AND column_name = 'sender_name'")
+                )
+                if res.first() is not None:
+                    return  # Kolon zaten mevcut, kilit alarak tabloyu dondurma
+
+            async with engine.begin() as conn:
+                await conn.execute(text("SET LOCAL lock_timeout = '3s'"))
+                await conn.execute(text("ALTER TABLE messages ADD COLUMN IF NOT EXISTS sender_name VARCHAR(100)"))
+        except Exception as e:
+            logger.warning("[MIGRATION] messages.sender_name kontrolü/geçişi atlandı: %s", e)
         return
 
     if engine.dialect.name != "sqlite":
@@ -193,10 +216,23 @@ async def ensure_user_id_columns(engine: AsyncEngine) -> None:
                         await conn.execute(text(f"CREATE INDEX IF NOT EXISTS ix_{tbl}_user_id ON {tbl} (user_id)"))
                         logger.info(f"[MIGRATION] Added {tbl}.user_id")
     elif engine.dialect.name == "postgresql":
-        async with engine.begin() as conn:
-            for tbl in tables:
-                await conn.execute(text(f"ALTER TABLE {tbl} ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE"))
-                await conn.execute(text(f"CREATE INDEX IF NOT EXISTS ix_{tbl}_user_id ON {tbl} (user_id)"))
+        try:
+            async with engine.connect() as conn:
+                res = await conn.execute(
+                    text("SELECT table_name FROM information_schema.columns WHERE column_name = 'user_id' AND table_name = ANY(:tbls)"),
+                    {"tbls": tables},
+                )
+                existing_tbls = {r[0] for r in res.fetchall()}
+
+            missing_tbls = [t for t in tables if t not in existing_tbls]
+            if missing_tbls:
+                async with engine.begin() as conn:
+                    await conn.execute(text("SET LOCAL lock_timeout = '3s'"))
+                    for tbl in missing_tbls:
+                        await conn.execute(text(f"ALTER TABLE {tbl} ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE"))
+                        await conn.execute(text(f"CREATE INDEX IF NOT EXISTS ix_{tbl}_user_id ON {tbl} (user_id)"))
+        except Exception as e:
+            logger.warning("[MIGRATION] ensure_user_id_columns postgres kontrolü/geçişi atlandı: %s", e)
 
 
 def _create_leads_only(sync_conn: Any) -> None:
@@ -209,8 +245,8 @@ def _create_leads_only(sync_conn: Any) -> None:
 
 async def ensure_whatsapp_session_auth_table(engine: AsyncEngine) -> None:
     """whatsapp_session_auth tablosunun varlığını garanti eder."""
-    async with engine.begin() as conn:
-        if engine.dialect.name == "sqlite":
+    if engine.dialect.name == "sqlite":
+        async with engine.begin() as conn:
             await conn.execute(text("""
                 CREATE TABLE IF NOT EXISTS whatsapp_session_auth (
                     session_name VARCHAR(100) PRIMARY KEY,
@@ -218,13 +254,25 @@ async def ensure_whatsapp_session_auth_table(engine: AsyncEngine) -> None:
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """))
-        elif engine.dialect.name == "postgresql":
-            await conn.execute(text("""
-                CREATE TABLE IF NOT EXISTS whatsapp_session_auth (
-                    session_name VARCHAR(100) PRIMARY KEY,
-                    auth_bundle TEXT NOT NULL,
-                    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    elif engine.dialect.name == "postgresql":
+        try:
+            async with engine.connect() as conn:
+                res = await conn.execute(
+                    text("SELECT 1 FROM information_schema.tables WHERE table_name = 'whatsapp_session_auth'")
                 )
-            """))
+                if res.first() is not None:
+                    return
+
+            async with engine.begin() as conn:
+                await conn.execute(text("SET LOCAL lock_timeout = '3s'"))
+                await conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS whatsapp_session_auth (
+                        session_name VARCHAR(100) PRIMARY KEY,
+                        auth_bundle TEXT NOT NULL,
+                        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                    )
+                """))
+        except Exception as e:
+            logger.warning("[MIGRATION] ensure_whatsapp_session_auth_table atlandı: %s", e)
     logger.info("[MIGRATION] ensure_whatsapp_session_auth_table verified")
 
