@@ -100,17 +100,19 @@ class WhatsAppGatewayClient:
         """Requests a forced fresh QR code regeneration on wa-gateway."""
         if self.is_recently_offline() and not settings.SIMULATION_MODE:
             return {"success": False, "error": "Gateway offline"}
-        url = f"{self.gateway_url}/api/sessions/{session_name}/refresh-qr"
+        encoded_name = quote(session_name, safe="")
+        url = f"{self.gateway_url}/api/sessions/{encoded_name}/refresh-qr"
         try:
-            async with httpx.AsyncClient(timeout=self._get_timeout(5.0)) as client:
+            async with httpx.AsyncClient(timeout=self._get_timeout(7.0)) as client:
                 res = await client.post(url, headers=self._headers())
                 if res.status_code == 200:
                     self._last_unreachable_time = 0.0
                     data = res.json()
+                    qr_val = data.get("qrImage") or data.get("qr")
                     return {
                         "success": True,
                         "status": data.get("status", "SCAN_QR"),
-                        "qr_code": data.get("qrImage")
+                        "qr_code": qr_val
                     }
         except Exception as e:
             self._last_unreachable_time = time.monotonic()
@@ -121,13 +123,15 @@ class WhatsAppGatewayClient:
         """Fetches the latest generated QR code for the session."""
         if self.is_recently_offline():
             return None
-        url = f"{self.gateway_url}/api/sessions/{session_name}/qr"
+        encoded_name = quote(session_name, safe="")
+        url = f"{self.gateway_url}/api/sessions/{encoded_name}/qr"
         try:
-            async with httpx.AsyncClient(timeout=self._get_timeout(1.0)) as client:
+            async with httpx.AsyncClient(timeout=self._get_timeout(2.0)) as client:
                 res = await client.get(url, headers=self._headers())
                 if res.status_code == 200:
                     self._last_unreachable_time = 0.0
-                    return res.json().get("qrImage")
+                    data = res.json()
+                    return data.get("qrImage") or data.get("qr")
         except Exception as e:
             self._last_unreachable_time = time.monotonic()
             logger.debug(f"[GatewayClient] get_session_qr error: {e}")
@@ -137,7 +141,8 @@ class WhatsAppGatewayClient:
         """Fetches the live status of the session from wa-gateway."""
         if self.is_recently_offline():
             return {"status": "DISCONNECTED", "phone": None}
-        url = f"{self.gateway_url}/api/sessions/{session_name}/status"
+        encoded_name = quote(session_name, safe="")
+        url = f"{self.gateway_url}/api/sessions/{encoded_name}/status"
         try:
             async with httpx.AsyncClient(timeout=self._get_timeout(1.0)) as client:
                 res = await client.get(url, headers=self._headers())
@@ -239,7 +244,8 @@ class WhatsAppGatewayClient:
         """Disconnects and logs out the session on wa-gateway."""
         if self.is_recently_offline():
             return False
-        url = f"{self.gateway_url}/api/sessions/{session_name}/disconnect"
+        encoded_name = quote(session_name, safe="")
+        url = f"{self.gateway_url}/api/sessions/{encoded_name}/disconnect"
         try:
             async with httpx.AsyncClient(timeout=self._get_timeout(1.0)) as client:
                 res = await client.post(url, headers=self._headers())
@@ -258,7 +264,8 @@ class WhatsAppGatewayClient:
         """
         if self.is_recently_offline():
             return False
-        url = f"{self.gateway_url}/api/sessions/{session_name}"
+        encoded_name = quote(session_name, safe="")
+        url = f"{self.gateway_url}/api/sessions/{encoded_name}"
         try:
             async with httpx.AsyncClient(timeout=self._get_timeout(10.0)) as client:
                 res = await client.delete(url, headers=self._headers())
@@ -303,7 +310,8 @@ class WhatsAppGatewayClient:
         """Requests an 8-digit WhatsApp pairing code for linking via phone number."""
         if self.is_recently_offline():
             return None
-        url = f"{self.gateway_url}/api/sessions/{session_name}/pairing-code"
+        encoded_name = quote(session_name, safe="")
+        url = f"{self.gateway_url}/api/sessions/{encoded_name}/pairing-code"
         try:
             async with httpx.AsyncClient(timeout=self._get_timeout(10.0)) as client:
                 res = await client.post(url, json={"phone": phone}, headers=self._headers())

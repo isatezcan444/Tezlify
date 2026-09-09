@@ -168,7 +168,19 @@ async def create_session(
                 await db.refresh(existing)
             except Exception as e:
                 logger.warning(f"Gateway create_session error on existing re-connect: {e}")
+                background_tasks.add_task(_async_init_gateway_session, existing.id, existing.session_name)
 
+            await ws_manager.broadcast({
+                "event": "session_created",
+                "session": {"id": existing.id, "name": existing.session_name, "status": existing.status, "qr_code": existing.qr_code}
+            })
+            if existing.qr_code:
+                await ws_manager.broadcast({
+                    "event": "session_qr_updated",
+                    "session_id": existing.id,
+                    "session_name": existing.session_name,
+                    "qr_code": existing.qr_code,
+                })
             return existing
         else:
             # If session is actively connected, generate next available name e.g. Line 1 (2)

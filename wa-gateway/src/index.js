@@ -70,7 +70,7 @@ app.post('/api/sessions/create', async (req, res) => {
                 name: session.name,
                 status: session.status,
                 phone: session.phone,
-                qrImage: session.qrImage
+                qrImage: session.qrImage || session.qr
             }
         });
     } catch (err) {
@@ -87,7 +87,7 @@ app.post('/api/sessions/:sessionName/refresh-qr', async (req, res) => {
         res.json({
             success: true,
             status: session.status,
-            qrImage: session.qrImage
+            qrImage: session.qrImage || session.qr
         });
     } catch (err) {
         console.error(`[WA-Gateway] Error refreshing QR for ${sessionName}:`, err);
@@ -107,7 +107,7 @@ app.get('/api/sessions/:sessionName/qr', (req, res) => {
         name: session.name,
         status: session.status,
         phone: session.phone,
-        qrImage: session.qrImage
+        qrImage: session.qrImage || session.qr
     });
 });
 

@@ -31,6 +31,7 @@ dist/
 build/
 .next/
 /package-lock.json
+wa-gateway/sessions/
 
 # Logs & Playwright
 *.log

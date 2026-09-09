@@ -308,7 +308,7 @@ async function initSessionSocket(sessionData) {
         auth: state,
         printQRInTerminal: false,
         logger: pino({ level: 'silent' }),
-        browser: Browsers.macOS('Desktop'),
+        browser: Browsers.appropriate('Chrome'),
         syncFullHistory: true,
         shouldSyncHistoryMessage: () => true, // CRITICAL: Never drop FULL or RECENT history sync notifications
         markOnlineOnConnect: true,
@@ -914,9 +914,25 @@ async function refreshSessionQR(sessionName) {
 
             if (!session.qrImage && session.status !== 'CONNECTED') {
                 await new Promise((resolve) => {
-                    const timeout = setTimeout(resolve, 3500);
-                    const onUpdate = (update) => {
-                        if (update.qr || update.connection === 'open') {
+                    const timeout = setTimeout(resolve, 5000);
+                    const onUpdate = async (update) => {
+                        if (update.qr) {
+                            session.status = 'SCAN_QR';
+                            session.qr = update.qr;
+                            if (!session.qrImage) {
+                                try {
+                                    session.qrImage = await QRCode.toDataURL(update.qr, {
+                                        errorCorrectionLevel: 'L',
+                                        margin: 2,
+                                        scale: 6,
+                                        color: { dark: '#000000', light: '#FFFFFF' }
+                                    });
+                                } catch (e) {}
+                            }
+                            clearTimeout(timeout);
+                            session.sock?.ev?.off('connection.update', onUpdate);
+                            resolve();
+                        } else if (update.connection === 'open') {
                             clearTimeout(timeout);
                             session.sock?.ev?.off('connection.update', onUpdate);
                             resolve();
