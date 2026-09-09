@@ -5,6 +5,9 @@ Provides an isolated, production-grade HTTP client abstraction for communicating
 with Meta Graph API's WhatsApp Business endpoints.
 Handles authentication, request construction, response mapping, and structured error isolation.
 """
+import os
+import random
+import asyncio
 import logging
 from typing import Dict, Any, Optional, List
 import httpx
@@ -13,6 +16,31 @@ from backend.app.core.config import settings
 from backend.app.schemas.whatsapp_cloud import WhatsAppCloudSendMessageRequest, WhatsAppCloudTextObject
 
 logger = logging.getLogger(__name__)
+
+
+# ==============================================================================
+# NotebookLM WhatsApp API Audit: Error Code Classifications
+# ==============================================================================
+
+# Transient errors eligible for exponential backoff + jitter retry
+TRANSIENT_ERROR_CODES = {
+    130429,  # Cloud API Rate Limit Hit (Throughput)
+    131056,  # Business Pair Rate Limit Hit
+}
+TRANSIENT_HTTP_STATUSES = {429, 500, 502, 503, 504}
+
+# Fail-fast permanent errors that should NEVER be retried
+FAIL_FAST_ERROR_CODES = {
+    190,     # Access token expired / invalid
+    131047,  # Re-engagement message / 24-hour customer window expired (requires template)
+    131026,  # Message undeliverable (not on WhatsApp or blocked)
+    131051,  # Unsupported message type
+    131052,  # Media download error from customer device
+    132000,  # Template does not exist
+    132001,  # Template name does not exist in the specified language
+    132015,  # Template paused or disabled due to low quality rating
+    100,     # Invalid parameter
+}
 
 
 # ==============================================================================
@@ -92,6 +120,73 @@ class WhatsAppCloudApiClient:
             "Accept": "application/json",
         }
 
+    @staticmethod
+    def is_transient_error(meta_code: Optional[int], http_status: int) -> bool:
+        """Determines if a Meta Graph API error is temporary and eligible for retry."""
+        if meta_code in TRANSIENT_ERROR_CODES:
+            return True
+        if http_status in TRANSIENT_HTTP_STATUSES:
+            return True
+        return False
+
+    @staticmethod
+    def is_fail_fast_error(meta_code: Optional[int], http_status: int) -> bool:
+        """Determines if an error is permanent and should fail immediately without retries."""
+        if meta_code in FAIL_FAST_ERROR_CODES:
+            return True
+        if http_status in (400, 401, 403, 404):
+            return True
+        return False
+
+    async def _post_with_retry(
+        self,
+        client: httpx.AsyncClient,
+        url: str,
+        json_payload: dict,
+        headers: dict,
+        max_retries: int = 2,
+    ) -> httpx.Response:
+        """
+        Executes an HTTP POST against Meta Graph API with exponential backoff and jitter
+        for transient error codes (e.g. 130429, 131056, 503) and immediate fail-fast for
+        permanent errors (e.g. 190, 131047, 131026).
+        """
+        is_test = bool(os.getenv("PYTEST_CURRENT_TEST"))
+        base_delay = 0.01 if is_test else 0.5
+
+        last_resp = None
+        for attempt in range(max_retries + 1):
+            resp = await client.post(url, json=json_payload, headers=headers)
+            last_resp = resp
+            if resp.status_code == 200:
+                return resp
+
+            meta_code = None
+            try:
+                meta_code = resp.json().get("error", {}).get("code")
+            except Exception:
+                pass
+
+            # Fail-fast check
+            if self.is_fail_fast_error(meta_code, resp.status_code):
+                logger.warning(
+                    f"[WhatsAppCloudApiClient] Fail-fast error encountered (code={meta_code}, status={resp.status_code}). Not retrying."
+                )
+                return resp
+
+            # Transient check
+            if self.is_transient_error(meta_code, resp.status_code) and attempt < max_retries:
+                delay = base_delay * (2 ** attempt) + (0.001 if is_test else random.uniform(0.1, 0.4))
+                logger.warning(
+                    f"[WhatsAppCloudApiClient] Transient error (code={meta_code}, status={resp.status_code}). "
+                    f"Retrying in {delay:.2f}s (attempt {attempt + 1}/{max_retries})..."
+                )
+                await asyncio.sleep(delay)
+                continue
+
+            return resp
+        return last_resp
+
     async def send_text_message(
         self,
         to_phone: str,
@@ -134,9 +229,10 @@ class WhatsAppCloudApiClient:
 
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
-                resp = await client.post(
+                resp = await self._post_with_retry(
+                    client,
                     self.messages_endpoint_url,
-                    json=request_body,
+                    json_payload=request_body,
                     headers=headers,
                 )
 
@@ -214,7 +310,7 @@ class WhatsAppCloudApiClient:
         try:
             headers = self._get_headers()
             async with httpx.AsyncClient(timeout=self.timeout) as client:
-                resp = await client.post(self.messages_endpoint_url, json=payload, headers=headers)
+                resp = await self._post_with_retry(client, self.messages_endpoint_url, json_payload=payload, headers=headers)
                 if resp.status_code == 200:
                     data = resp.json()
                     messages = data.get("messages", [])
@@ -261,7 +357,7 @@ class WhatsAppCloudApiClient:
         try:
             headers = self._get_headers()
             async with httpx.AsyncClient(timeout=self.timeout) as client:
-                resp = await client.post(self.messages_endpoint_url, json=payload, headers=headers)
+                resp = await self._post_with_retry(client, self.messages_endpoint_url, json_payload=payload, headers=headers)
                 if resp.status_code == 200:
                     data = resp.json()
                     messages = data.get("messages", [])
@@ -270,6 +366,67 @@ class WhatsAppCloudApiClient:
                 return self._handle_meta_error_response(resp)
         except Exception as e:
             return {"success": False, "message_id": None, "error": str(e)}
+
+    async def download_media(self, media_id: str) -> Dict[str, Any]:
+        """
+        Downloads media (image, audio, video, document) sent by a WhatsApp user.
+        Strict 2-step authenticated protocol per NotebookLM Job 5 audit:
+        Step 1: GET /{api_version}/{media_id} with Bearer token to get media download URL.
+        Step 2: GET {url} with Bearer token to fetch raw binary payload.
+        """
+        if not media_id:
+            return {"success": False, "content": None, "error": "media_id is required."}
+
+        try:
+            headers = self._get_headers()
+        except WhatsAppCloudAuthError as e:
+            return {"success": False, "content": None, "error": str(e)}
+
+        meta_media_info_url = f"{self.base_url}/{self.api_version}/{media_id}"
+
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                # Step 1: Query Graph API for media URL
+                info_resp = await client.get(meta_media_info_url, headers=headers)
+                if info_resp.status_code != 200:
+                    return self._handle_meta_error_response(info_resp)
+
+                info_data = info_resp.json()
+                download_url = info_data.get("url")
+                mime_type = info_data.get("mime_type")
+                file_size = info_data.get("file_size")
+
+                if not download_url:
+                    return {
+                        "success": False,
+                        "content": None,
+                        "error": "Media download URL not returned by Meta.",
+                    }
+
+                # Step 2: Download raw media bytes (CRITICAL: Bearer token is required)
+                media_resp = await client.get(download_url, headers=headers)
+                if media_resp.status_code != 200:
+                    return {
+                        "success": False,
+                        "content": None,
+                        "error": f"Failed to download media binary stream: HTTP {media_resp.status_code}",
+                    }
+
+                logger.info(
+                    f"[WhatsAppCloudApiClient] Media {media_id} downloaded successfully: "
+                    f"mime={mime_type}, bytes={len(media_resp.content)}"
+                )
+                return {
+                    "success": True,
+                    "content": media_resp.content,
+                    "mime_type": mime_type,
+                    "file_size": file_size or len(media_resp.content),
+                    "error": None,
+                }
+        except Exception as e:
+            error_msg = f"Unexpected error during Meta media download: {str(e)}"
+            logger.error(f"[WhatsAppCloudApiClient] {error_msg}")
+            return {"success": False, "content": None, "error": error_msg}
 
     async def mark_as_read(self, message_id: str) -> bool:
         """

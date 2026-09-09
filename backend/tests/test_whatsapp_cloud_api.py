@@ -606,3 +606,70 @@ async def test_cloud_api_sender_protocol_conformance():
     assert res["is_simulated"] is False
     assert res["message_id"] == "wamid.SENDER_CONFORMANCE_1"
     assert res["error"] is None
+
+
+# ==============================================================================
+# 7. Error Classification & Media Download Tests (NotebookLM Audit)
+# ==============================================================================
+
+def test_meta_error_classification():
+    """Validates NotebookLM audit error rules: transient vs fail-fast."""
+    # Transient errors
+    assert WhatsAppCloudApiClient.is_transient_error(130429, 429) is True
+    assert WhatsAppCloudApiClient.is_transient_error(131056, 429) is True
+    assert WhatsAppCloudApiClient.is_transient_error(None, 503) is True
+    assert WhatsAppCloudApiClient.is_transient_error(None, 500) is True
+
+    # Fail-fast errors (never retry)
+    assert WhatsAppCloudApiClient.is_fail_fast_error(190, 401) is True
+    assert WhatsAppCloudApiClient.is_fail_fast_error(131047, 400) is True
+    assert WhatsAppCloudApiClient.is_fail_fast_error(131026, 400) is True
+    assert WhatsAppCloudApiClient.is_fail_fast_error(131051, 400) is True
+    assert WhatsAppCloudApiClient.is_fail_fast_error(100, 400) is True
+
+
+@pytest.mark.asyncio
+async def test_cloud_client_download_media_success():
+    """Validates 2-step authenticated media download flow."""
+    client = WhatsAppCloudApiClient(
+        access_token="test_media_token",
+        phone_number_id="1005001",
+    )
+
+    info_resp = httpx.Response(
+        status_code=200,
+        json={
+            "url": "https://lookaside.fbsbx.com/whatsapp_business/attachments/12345",
+            "mime_type": "image/jpeg",
+            "sha256": "fake_sha256_hash",
+            "file_size": 2048,
+            "id": "media_id_12345",
+        },
+        request=httpx.Request("GET", "https://graph.facebook.com/v21.0/media_id_12345"),
+    )
+
+    file_bytes = b"\xff\xd8\xff\xe0\x00\x10JFIFfake_jpeg_content"
+    media_resp = httpx.Response(
+        status_code=200,
+        content=file_bytes,
+        request=httpx.Request("GET", "https://lookaside.fbsbx.com/whatsapp_business/attachments/12345"),
+    )
+
+    with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
+        mock_get.side_effect = [info_resp, media_resp]
+
+        res = await client.download_media("media_id_12345")
+
+        assert res["success"] is True
+        assert res["content"] == file_bytes
+        assert res["mime_type"] == "image/jpeg"
+        assert res["file_size"] == 2048
+        assert res["error"] is None
+
+        # Verify Bearer token was passed in both Step 1 and Step 2 calls
+        assert mock_get.call_count == 2
+        call_headers_step1 = mock_get.call_args_list[0].kwargs.get("headers", {})
+        call_headers_step2 = mock_get.call_args_list[1].kwargs.get("headers", {})
+        assert "Bearer test_media_token" in call_headers_step1.get("Authorization", "")
+        assert "Bearer test_media_token" in call_headers_step2.get("Authorization", "")
+

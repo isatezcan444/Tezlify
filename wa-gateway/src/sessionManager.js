@@ -569,10 +569,15 @@ async function initSessionSocket(sessionData) {
 
             console.log(`[WA-Gateway] Session ${sessionName} closed. Status code: ${statusCode}, LoggedOut: ${isLoggedOut}, RestartRequired: ${isRestartRequired}`);
 
-            // Ensure any keys generated during handshake are saved before attempting reconnect
+            // Ensure any keys generated during handshake are saved immediately before reconnect
             try {
                 await saveCreds();
                 backupSessionAuth(sessionName);
+            } catch (e) {}
+
+            // Detach listeners from closed socket to avoid memory leak / ghost events
+            try {
+                sock?.ev?.removeAllListeners();
             } catch (e) {}
 
             if (isLoggedOut) {
@@ -580,6 +585,7 @@ async function initSessionSocket(sessionData) {
                 sessionData.phone = null;
                 sessionData.qr = null;
                 sessionData.qrImage = null;
+                sessionData.sock = null;
 
                 try {
                     fs.rmSync(sessionAuthDir, { recursive: true, force: true });
@@ -595,7 +601,8 @@ async function initSessionSocket(sessionData) {
                 });
             } else {
                 const wasPairing = sessionData.status === 'SCAN_QR' || !sessionData.phone;
-                const reconnectDelay = isRestartRequired ? 500 : (wasPairing ? 300 : 2500);
+                // Fast 150ms reconnect on restartRequired to ensure mobile WhatsApp completes pairing on first attempt
+                const reconnectDelay = isRestartRequired ? 150 : (wasPairing ? 250 : 2000);
                 console.log(`[WA-Gateway] Reconnecting session ${sessionName} in ${reconnectDelay}ms (status: ${statusCode}, restartRequired: ${isRestartRequired}, wasPairing: ${wasPairing})...`);
 
                 sessionData.status = 'CONNECTING';
@@ -971,9 +978,8 @@ async function getSessionChats(sessionName) {
     }
     if (!session) return [];
 
-    if (!session.chats || session.chats.size === 0) {
-        loadSessionStore(sessionName);
-    }
+    // Merge persisted chats and contacts from disk store
+    loadSessionStore(sessionName);
 
     // If still empty and socket is connected, fetch groups and resync app state immediately
     if ((!session.chats || session.chats.size === 0) && session.sock && session.status === 'CONNECTED') {

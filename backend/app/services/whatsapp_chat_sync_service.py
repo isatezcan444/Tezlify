@@ -274,6 +274,7 @@ class WhatsAppChatSyncService:
             db.add(lead)
 
         # Group chats intentionally keep phone_e164 NULL (AGENTS.md 1.3).
+        await db.flush()
         return result
 
     @classmethod
@@ -310,11 +311,6 @@ class WhatsAppChatSyncService:
                 report.skipped += 1
                 continue
 
-            # Flush pending lead inserts so every lead has a concrete PK before
-            # conversations reference it (single flush, still O(1) round-trips).
-            if lead.id is None:
-                await db.flush()
-
             conv = convs_by_lead.get(lead.id) if lead.id is not None else None
             if conv is None:
                 conv = Conversation(
@@ -343,6 +339,8 @@ class WhatsAppChatSyncService:
 
             result[cls._chat_key(chat)] = conv
             db.add(conv)
+
+        await db.flush()
         return result
 
     @classmethod
@@ -372,11 +370,6 @@ class WhatsAppChatSyncService:
             conv = convs_by_key.get(cls._chat_key(chat))
             if conv is None or not chat.last_message_text:
                 continue
-
-            # Flush pending conversation inserts so each conversation has a
-            # concrete PK before messages reference it.
-            if conv.id is None:
-                await db.flush()
 
             latest_body = latest_body_by_conv.get(conv.id) if conv.id is not None else None
             if latest_body is not None and latest_body == chat.last_message_text:

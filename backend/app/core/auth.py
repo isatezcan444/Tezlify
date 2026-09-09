@@ -166,7 +166,18 @@ def get_user_filter(column, user_id: str):
     """
     In production: strictly filters by user_id for multi-tenant isolation.
     In pytest suite: allows None for backwards compatibility with legacy test fixtures.
+    Multi-dialect matching handles PostgreSQL native UUID and SQLite storage formats seamlessly.
     """
+    from sqlalchemy import cast, String, or_
+    str_user_id = str(user_id).strip()
+    raw_hex = str_user_id.replace("-", "")
+
+    match_expr = or_(
+        column == str_user_id,
+        cast(column, String) == str_user_id,
+        cast(column, String) == raw_hex,
+    )
+
     if os.getenv("PYTEST_CURRENT_TEST") is not None:
-        return or_(column == user_id, column.is_(None))
-    return column == user_id
+        return or_(match_expr, column.is_(None))
+    return match_expr

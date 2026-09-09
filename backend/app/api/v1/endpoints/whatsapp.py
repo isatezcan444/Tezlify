@@ -157,7 +157,7 @@ async def create_session(
             await db.refresh(existing)
 
             try:
-                gw_res = await asyncio.wait_for(gateway_client.create_session(existing.session_name), timeout=3.0)
+                gw_res = await asyncio.wait_for(gateway_client.create_session(existing.session_name), timeout=5.0)
                 if gw_res.get("qr_code"):
                     existing.qr_code = gw_res["qr_code"]
                 if gw_res.get("status") == "CONNECTED":
@@ -196,9 +196,9 @@ async def create_session(
     await db.commit()
     await db.refresh(session)
 
-    # Synchronously wait up to 3.0s for gateway to return the QR code so modal opens with QR ready
+    # Synchronously wait up to 5.0s for gateway to return the QR code so modal opens with QR ready
     try:
-        gw_res = await asyncio.wait_for(gateway_client.create_session(session_in.session_name), timeout=3.0)
+        gw_res = await asyncio.wait_for(gateway_client.create_session(session_in.session_name), timeout=5.0)
         if gw_res.get("qr_code"):
             session.qr_code = gw_res["qr_code"]
         if gw_res.get("status") == "CONNECTED":
