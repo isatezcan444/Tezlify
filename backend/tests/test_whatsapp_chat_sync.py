@@ -6,7 +6,7 @@ import uuid
 import pytest
 from unittest.mock import AsyncMock, patch
 from httpx import AsyncClient, ASGITransport, Response
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from backend.app.main import app
 from backend.app.core.database import AsyncSessionLocal
@@ -247,3 +247,138 @@ async def test_webhook_inbound_persists_conversation_and_message():
             assert conv is not None
             assert conv.last_message_preview == inbound_text
             assert conv.unread_count == 1
+
+
+@pytest.mark.asyncio
+async def test_delta_heartbeat_without_active_session_returns_200():
+    """Verifies that /sync-whatsapp/delta returns 200 with no_active_session instead of 400 Bad Request."""
+    async with AsyncSessionLocal() as db:
+        await db.execute(update(WhatsAppSession).values(status=SessionStatus.DISCONNECTED))
+        await db.commit()
+
+    test_user = str(uuid.uuid4())
+    from backend.app.core.auth import get_current_user, AuthUser
+    app.dependency_overrides[get_current_user] = lambda: AuthUser(
+        id=test_user, email="no_sess@test.com", full_name="No Session User"
+    )
+
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+        ) as ac:
+            res = await ac.post("/api/v1/conversations/sync-whatsapp/delta")
+            assert res.status_code == 200, res.text
+            data = res.json()
+            assert data["status"] == "no_active_session"
+            assert data["synced_count"] == 0
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_sync_whatsapp_conversations_claims_unassigned_session():
+    """Verifies that an existing session with user_id=None is claimed and synced without 500 error."""
+    test_user = str(uuid.uuid4())
+    test_sess = f"unassigned_{uuid.uuid4().hex[:8]}"
+
+    async with AsyncSessionLocal() as db:
+        session = WhatsAppSession(
+            user_id=None,
+            session_name=test_sess,
+            phone_number="+905553334455",
+            status=SessionStatus.CONNECTED,
+        )
+        db.add(session)
+        await db.commit()
+
+    from backend.app.core.auth import get_current_user, AuthUser
+    app.dependency_overrides[get_current_user] = lambda: AuthUser(
+        id=test_user, email="claim_user@test.com", full_name="Claim User"
+    )
+
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+        ) as ac:
+            with patch("backend.app.services.whatsapp_gateway_client.gateway_client.get_session_chats", new_callable=AsyncMock) as mock_fetch:
+                mock_fetch.return_value = [
+                    {
+                        "id": "905329998877@s.whatsapp.net",
+                        "phone": "+905329998877",
+                        "name": "Müşteri Ahmet",
+                        "lastMessage": "Merhaba nasılsınız?",
+                        "unreadCount": 1,
+                        "timestamp": 1717005000,
+                    }
+                ]
+                res = await ac.post("/api/v1/conversations/sync-whatsapp")
+                assert res.status_code == 200, res.text
+                data = res.json()
+                assert data["status"] == "success"
+                assert data["synced_count"] == 1
+
+        # Verify that session now belongs to test_user
+        async with AsyncSessionLocal() as db:
+            claimed_sess = (await db.execute(select(WhatsAppSession).where(WhatsAppSession.session_name == test_sess))).scalar_one()
+            assert claimed_sess.user_id == test_user
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_sync_whatsapp_conversations_intra_batch_duplicates_safely_deduped():
+    """Verifies that duplicated chats in the same batch are safely merged without unique constraint failures."""
+    test_user = str(uuid.uuid4())
+    test_sess = f"dedup_{uuid.uuid4().hex[:8]}"
+
+    async with AsyncSessionLocal() as db:
+        session = WhatsAppSession(
+            user_id=test_user,
+            session_name=test_sess,
+            phone_number="+905556667788",
+            status=SessionStatus.CONNECTED,
+        )
+        db.add(session)
+        await db.commit()
+
+    from backend.app.core.auth import get_current_user, AuthUser
+    app.dependency_overrides[get_current_user] = lambda: AuthUser(
+        id=test_user, email="dedup_user@test.com", full_name="Dedup User"
+    )
+
+    dup_chats = [
+        {
+            "id": "905320001122@s.whatsapp.net",
+            "phone": "+905320001122",
+            "name": "Aynı Kişi 1",
+            "lastMessage": "İlk mesaj",
+            "unreadCount": 0,
+            "timestamp": 1717001000,
+        },
+        {
+            "id": "905320001122@s.whatsapp.net",  # exact duplicate JID
+            "phone": "+905320001122",
+            "name": "Aynı Kişi 2",
+            "lastMessage": "İkinci mesaj",
+            "unreadCount": 2,
+            "timestamp": 1717002000,
+        },
+    ]
+
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+        ) as ac:
+            with patch("backend.app.services.whatsapp_gateway_client.gateway_client.get_session_chats", new_callable=AsyncMock) as mock_fetch:
+                mock_fetch.return_value = dup_chats
+                res = await ac.post("/api/v1/conversations/sync-whatsapp")
+                assert res.status_code == 200, res.text
+                data = res.json()
+                assert data["status"] == "success"
+                assert data["synced_count"] == 1
+    finally:
+        app.dependency_overrides.clear()
+

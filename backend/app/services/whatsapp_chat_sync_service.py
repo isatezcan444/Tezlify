@@ -94,11 +94,17 @@ class WhatsAppChatSyncService:
     # ------------------------------------------------------------------
     @classmethod
     def normalize_chats(cls, chats: List[dict]) -> List[NormalizedChat]:
+        if not chats or not isinstance(chats, list):
+            return []
         normalized: List[NormalizedChat] = []
+        seen_jids = set()
         for c in chats:
-            jid = c.get("id") or c.get("jid") or ""
-            if not jid or "@broadcast" in jid or jid.endswith("@newsletter"):
+            if not isinstance(c, dict):
                 continue
+            jid = str(c.get("id") or c.get("jid") or "").strip()
+            if not jid or jid in seen_jids or "@broadcast" in jid or jid.endswith("@newsletter"):
+                continue
+            seen_jids.add(jid)
 
             is_group = bool(
                 c.get("is_group") if c.get("is_group") is not None else c.get("isGroup", False)
@@ -168,7 +174,13 @@ class WhatsAppChatSyncService:
         revision: Optional[int] = None,
     ) -> SyncReport:
         report = SyncReport(session_name=session.session_name, revision=revision)
-        normalized = cls.normalize_chats(chats)
+        try:
+            normalized = cls.normalize_chats(chats)
+        except Exception as e:
+            logger.exception("normalize_chats failed")
+            report.errors.append(f"Chat normalization error: {str(e)}")
+            return report
+
         if not normalized:
             return report
 
@@ -253,11 +265,16 @@ class WhatsAppChatSyncService:
                     custom_data={"is_group": chat.is_group, "whatsapp_jid": chat.jid},
                 )
                 report.created_leads += 1
+                # Intra-batch dedup: register immediately so repeated chats reuse this new instance
+                if chat.place_id:
+                    found[f"pid:{chat.place_id}"] = lead
+                if not chat.is_group and chat.phone_e164:
+                    digits = "".join(ch for ch in chat.phone_e164 if ch.isdigit())
+                    if len(digits) >= 10:
+                        found[f"tel:{digits[-10:]}"] = lead
 
-            # WhatsApp chats are personal to the session owner: a globally-unique
-            # lead row (phone/place_id unique) encountered during another user's
-            # sync is transferred to that owner, mirroring WhatsApp-Web semantics.
-            if lead.user_id != session.user_id:
+            # WhatsApp chats are personal to the session owner: transfer if owned by another user
+            if session.user_id and str(lead.user_id or "") != str(session.user_id):
                 lead.user_id = session.user_id
                 report.updated_leads += 1
 
@@ -322,8 +339,11 @@ class WhatsAppChatSyncService:
                     last_message_preview=chat.last_message_text or None,
                 )
                 report.created_conversations += 1
+                # Intra-batch dedup: register immediately so repeated chats reuse this conversation
+                if lead.id is not None:
+                    convs_by_lead[lead.id] = conv
             else:
-                if conv.user_id != session.user_id:
+                if session.user_id and str(conv.user_id or "") != str(session.user_id):
                     conv.user_id = session.user_id
                 conv.unread_count = chat.unread_count
                 if chat.last_message_text:
@@ -374,6 +394,10 @@ class WhatsAppChatSyncService:
             latest_body = latest_body_by_conv.get(conv.id) if conv.id is not None else None
             if latest_body is not None and latest_body == chat.last_message_text:
                 continue
+
+            # Update latest body to prevent inserting identical messages within the same sync batch
+            if conv.id is not None:
+                latest_body_by_conv[conv.id] = chat.last_message_text
 
             try:
                 msg_dt = (

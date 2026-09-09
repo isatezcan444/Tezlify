@@ -112,7 +112,7 @@ async def list_conversations(
         select(Conversation)
         .join(Conversation.lead)
         .options(selectinload(Conversation.lead))
-        .where(get_user_filter(Conversation.user_id, current_user.id))
+        .where(or_(get_user_filter(Conversation.user_id, current_user.id), Conversation.user_id.is_(None)))
         .order_by(effective_last_at.desc().nullslast(), Conversation.id.desc())
         .offset(offset)
         .limit(limit)
@@ -214,7 +214,10 @@ async def get_conversation(
         select(Conversation)
         .where(
             Conversation.id == conversation_id,
-            get_user_filter(Conversation.user_id, current_user.id),
+            or_(
+                get_user_filter(Conversation.user_id, current_user.id),
+                Conversation.user_id.is_(None),
+            ),
         )
         .options(selectinload(Conversation.lead))
     )
@@ -409,7 +412,10 @@ async def get_lead_conversation(
         .where(
             Conversation.lead_id == lead_id,
             Conversation.channel == "WHATSAPP",
-            get_user_filter(Conversation.user_id, current_user.id),
+            or_(
+                get_user_filter(Conversation.user_id, current_user.id),
+                Conversation.user_id.is_(None),
+            ),
         )
         .options(selectinload(Conversation.lead))
         .order_by(Conversation.id.desc())
@@ -480,7 +486,10 @@ async def update_conversation_status(
         select(Conversation)
         .where(
             Conversation.id == conversation_id,
-            get_user_filter(Conversation.user_id, current_user.id),
+            or_(
+                get_user_filter(Conversation.user_id, current_user.id),
+                Conversation.user_id.is_(None),
+            ),
         )
         .options(selectinload(Conversation.lead))
     )
@@ -530,7 +539,10 @@ async def mark_conversation_as_read(
         select(Conversation)
         .where(
             Conversation.id == conversation_id,
-            get_user_filter(Conversation.user_id, current_user.id),
+            or_(
+                get_user_filter(Conversation.user_id, current_user.id),
+                Conversation.user_id.is_(None),
+            ),
         )
         .options(selectinload(Conversation.lead))
     )
@@ -581,7 +593,10 @@ async def mark_lead_conversation_as_read(
         .where(
             Conversation.lead_id == lead_id,
             Conversation.channel == "WHATSAPP",
-            get_user_filter(Conversation.user_id, current_user.id),
+            or_(
+                get_user_filter(Conversation.user_id, current_user.id),
+                Conversation.user_id.is_(None),
+            ),
         )
         .options(selectinload(Conversation.lead))
         .order_by(Conversation.id.desc())
@@ -699,7 +714,10 @@ async def start_conversation(
     conv_stmt = select(Conversation).where(
         Conversation.lead_id == lead.id,
         Conversation.channel == "WHATSAPP",
-        get_user_filter(Conversation.user_id, current_user.id),
+        or_(
+            get_user_filter(Conversation.user_id, current_user.id),
+            Conversation.user_id.is_(None),
+        ),
     )
     conv = (await db.execute(conv_stmt)).scalars().first()
     if not conv:
@@ -718,7 +736,10 @@ async def start_conversation(
     # If initial message provided, dispatch it through active WhatsApp session
     if req.message and req.message.strip():
         sess_stmt = select(WhatsAppSession).where(
-            get_user_filter(WhatsAppSession.user_id, current_user.id),
+            or_(
+                get_user_filter(WhatsAppSession.user_id, current_user.id),
+                WhatsAppSession.user_id.is_(None),
+            ),
             WhatsAppSession.status == SessionStatus.CONNECTED,
         )
         sess_res = await db.execute(sess_stmt)
@@ -780,87 +801,137 @@ async def sync_whatsapp_conversations(
     Synchronizes chats and contacts from active Baileys WhatsApp session into Leads & Conversations.
     Resolves phonebook names, push names, last message preview, unread count and timestamps with zero lag.
     """
-    sess_stmt = (
-        select(WhatsAppSession)
-        .where(
-            get_user_filter(WhatsAppSession.user_id, current_user.id),
-            WhatsAppSession.status == SessionStatus.CONNECTED,
-        )
-        .order_by(WhatsAppSession.id.desc())
-    )
-    sess_res = await db.execute(sess_stmt)
-    session = sess_res.scalars().first()
-
-    if not session:
-        # Check any session for user to see if it's connected in wa-gateway
-        any_sess_stmt = (
+    try:
+        # 1. Look for active connected session (bound to user or unassigned)
+        sess_stmt = (
             select(WhatsAppSession)
-            .where(get_user_filter(WhatsAppSession.user_id, current_user.id))
+            .where(
+                or_(
+                    get_user_filter(WhatsAppSession.user_id, current_user.id),
+                    WhatsAppSession.user_id.is_(None),
+                ),
+                WhatsAppSession.status == SessionStatus.CONNECTED,
+            )
             .order_by(WhatsAppSession.id.desc())
         )
-        candidates = (await db.execute(any_sess_stmt)).scalars().all()
-        for cand in candidates:
-            try:
-                gw_status = await gateway_client.get_session_status(cand.session_name)
-                if gw_status.get("status") == "CONNECTED":
-                    cand.status = SessionStatus.CONNECTED
-                    cand.is_phone_online = True
-                    if gw_status.get("phone"):
-                        cand.phone_number = gw_status.get("phone")
-                    await db.commit()
-                    session = cand
-                    break
-            except Exception:
-                pass
+        sess_res = await db.execute(sess_stmt)
+        session = sess_res.scalars().first()
 
-    if not session:
-        # Check if wa-gateway has any active connected session to adopt
-        try:
-            active_list = await gateway_client.list_sessions()
-            for s in active_list:
-                if s.get("status") == "CONNECTED":
-                    gw_name = s.get("name")
-                    gw_phone = s.get("phone")
-                    new_sess = WhatsAppSession(
-                        user_id=current_user.id,
-                        session_name=gw_name,
-                        status=SessionStatus.CONNECTED,
-                        is_phone_online=True,
-                        phone_number=gw_phone,
+        # Claim session for current user if unassigned
+        if session and session.user_id is None:
+            session.user_id = current_user.id
+            await db.commit()
+            await db.refresh(session)
+
+        # 2. Check candidate sessions in DB against gateway status
+        if not session:
+            any_sess_stmt = (
+                select(WhatsAppSession)
+                .where(
+                    or_(
+                        get_user_filter(WhatsAppSession.user_id, current_user.id),
+                        WhatsAppSession.user_id.is_(None),
                     )
-                    db.add(new_sess)
-                    await db.commit()
-                    await db.refresh(new_sess)
-                    session = new_sess
-                    break
+                )
+                .order_by(WhatsAppSession.id.desc())
+            )
+            candidates = (await db.execute(any_sess_stmt)).scalars().all()
+            for cand in candidates:
+                try:
+                    gw_status = await gateway_client.get_session_status(cand.session_name)
+                    if gw_status.get("status") == "CONNECTED":
+                        cand.status = SessionStatus.CONNECTED
+                        cand.is_phone_online = True
+                        if cand.user_id is None:
+                            cand.user_id = current_user.id
+                        if gw_status.get("phone"):
+                            cand.phone_number = gw_status.get("phone")
+                        await db.commit()
+                        await db.refresh(cand)
+                        session = cand
+                        break
+                except Exception as cand_err:
+                    logger.debug(f"Candidate check error for {cand.session_name}: {cand_err}")
+
+        # 3. Check live gateway active sessions and safely adopt or update DB record
+        if not session:
+            try:
+                active_list = await gateway_client.list_sessions()
+                for s in active_list:
+                    if s.get("status") == "CONNECTED":
+                        gw_name = s.get("name")
+                        gw_phone = s.get("phone")
+                        if not gw_name:
+                            continue
+
+                        # Check if session_name already exists in DB to prevent unique constraint crash
+                        find_stmt = select(WhatsAppSession).where(WhatsAppSession.session_name == gw_name)
+                        existing_sess = (await db.execute(find_stmt)).scalars().first()
+                        if existing_sess:
+                            existing_sess.status = SessionStatus.CONNECTED
+                            existing_sess.is_phone_online = True
+                            if existing_sess.user_id is None:
+                                existing_sess.user_id = current_user.id
+                            if gw_phone:
+                                existing_sess.phone_number = gw_phone
+                            await db.commit()
+                            await db.refresh(existing_sess)
+                            session = existing_sess
+                        else:
+                            new_sess = WhatsAppSession(
+                                user_id=current_user.id,
+                                session_name=gw_name,
+                                status=SessionStatus.CONNECTED,
+                                is_phone_online=True,
+                                phone_number=gw_phone,
+                            )
+                            db.add(new_sess)
+                            await db.commit()
+                            await db.refresh(new_sess)
+                            session = new_sess
+                        break
+            except Exception as e:
+                await db.rollback()
+                logger.warning(f"Could not auto-adopt gateway session: {e}")
+
+        if not session:
+            raise HTTPException(
+                status_code=400,
+                detail="Aktif bağlı WhatsApp oturumu bulunamadı. Lütfen önce bir hat bağlayın.",
+            )
+
+        try:
+            chats = await gateway_client.get_session_chats(session.session_name)
         except Exception as e:
-            logger.warning(f"Could not auto-adopt gateway session: {e}")
+            logger.error(f"Failed to fetch chats from wa-gateway for session {session.session_name}: {e}")
+            raise HTTPException(
+                status_code=502,
+                detail=f"WhatsApp servisinden sohbetler alınamadı: {str(e)}",
+            )
 
-    if not session:
-        raise HTTPException(
-            status_code=400,
-            detail="Aktif bağlı WhatsApp oturumu bulunamadı. Lütfen önce bir hat bağlayın.",
-        )
+        report = await WhatsAppChatSyncService.sync_chats(db=db, session=session, chats=chats or [])
 
-    try:
-        chats = await gateway_client.get_session_chats(session.session_name)
+        # Broadcast real-time update
+        try:
+            await ws_manager.broadcast({
+                "event": "conversations_updated",
+                "synced_count": report.synced_count,
+                "session_name": session.session_name,
+            })
+        except Exception as ws_err:
+            logger.warning(f"Failed to broadcast conversations_updated: {ws_err}")
+
+        return report.to_payload()
+
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Failed to fetch chats from wa-gateway for session {session.session_name}: {e}")
+        await db.rollback()
+        logger.exception(f"Unexpected error during WhatsApp conversation sync: {e}")
         raise HTTPException(
-            status_code=502,
-            detail=f"WhatsApp servisinden sohbetler alınamadı: {str(e)}",
+            status_code=500,
+            detail=f"WhatsApp senkronizasyonu sırasında hata oluştu: {str(e)}",
         )
-
-    report = await WhatsAppChatSyncService.sync_chats(db=db, session=session, chats=chats)
-
-    # Broadcast real-time update
-    await ws_manager.broadcast({
-        "event": "conversations_updated",
-        "synced_count": report.synced_count,
-        "session_name": session.session_name,
-    })
-
-    return report.to_payload()
 
 
 @router.post("/sync-whatsapp/delta")
@@ -875,20 +946,36 @@ async def sync_whatsapp_conversations_delta(
     sess_stmt = (
         select(WhatsAppSession)
         .where(
-            get_user_filter(WhatsAppSession.user_id, current_user.id),
+            or_(
+                get_user_filter(WhatsAppSession.user_id, current_user.id),
+                WhatsAppSession.user_id.is_(None),
+            ),
             WhatsAppSession.status == SessionStatus.CONNECTED,
         )
         .order_by(WhatsAppSession.id.desc())
     )
     session = (await db.execute(sess_stmt)).scalars().first()
     if not session:
-        raise HTTPException(
-            status_code=400,
-            detail="Aktif bağlı WhatsApp oturumu bulunamadı. Lütfen önce bir hat bağlayın.",
-        )
+        # Non-blocking heartbeat: do not return 400 Bad Request to interval polling
+        return {
+            "status": "no_active_session",
+            "synced_count": 0,
+            "session_name": None,
+            "revision": 0,
+        }
 
     since = WhatsAppChatSyncService.last_sync_revisions.get(session.session_name, 0)
-    delta = await gateway_client.get_session_chats_delta(session.session_name, since)
+    try:
+        delta = await gateway_client.get_session_chats_delta(session.session_name, since)
+    except Exception as e:
+        logger.warning(f"get_session_chats_delta error for {session.session_name}: {e}")
+        return {
+            "status": "gateway_unreachable",
+            "synced_count": 0,
+            "session_name": session.session_name,
+            "revision": since,
+        }
+
     changed = delta.get("changed") or []
     revision = delta.get("revision")
 
@@ -904,11 +991,14 @@ async def sync_whatsapp_conversations_delta(
         db=db, session=session, chats=changed, revision=revision
     )
 
-    await ws_manager.broadcast({
-        "event": "conversations_updated",
-        "synced_count": report.synced_count,
-        "session_name": session.session_name,
-    })
+    try:
+        await ws_manager.broadcast({
+            "event": "conversations_updated",
+            "synced_count": report.synced_count,
+            "session_name": session.session_name,
+        })
+    except Exception as ws_err:
+        logger.warning(f"Failed to broadcast delta conversations_updated: {ws_err}")
 
     return report.to_payload()
 
