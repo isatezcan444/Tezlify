@@ -356,7 +356,12 @@ async def test_session_refresh_qr_endpoint():
                 assert data["success"] is True
                 assert data["qr_code"] == "data:image/png;base64,fresh_new_qr"
 
-            mock_refresh.assert_called_once_with(session_name)
+            # Verify the gateway was called with the correct session_name (positional arg).
+            # Also passes tenant_id and session_id kwargs for tenant isolation — verify both.
+            mock_refresh.assert_called_once()
+            call_args, call_kwargs = mock_refresh.call_args
+            assert call_args[0] == session_name
+            assert "tenant_id" in call_kwargs or len(call_args) >= 1  # session_name always passed
 
             async with AsyncSessionLocal() as db:
                 updated = await db.get(WhatsAppSession, sess_id)

@@ -60,6 +60,22 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
   const fallbackPollRef = useRef<any>(null);
   const isMountedRef = useRef<boolean>(true);
 
+  // Stable refs to break React effect dependency loops
+  const onSuccessRef = useRef(onSuccess);
+  onSuccessRef.current = onSuccess;
+
+  const hasInitializedRef = useRef<boolean>(false);
+  const isInitializingRef = useRef<boolean>(false);
+  const activeSessionIdRef = useRef<number | null>(existingSessionId || null);
+
+  // Sync ref with existingSessionId prop if changed
+  useEffect(() => {
+    if (existingSessionId) {
+      activeSessionIdRef.current = existingSessionId;
+      setSessionId(existingSessionId);
+    }
+  }, [existingSessionId]);
+
   // Clean timer utilities
   const clearTimers = useCallback(() => {
     if (timerRef.current) {
@@ -86,25 +102,32 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
     }, 1000);
   }, []);
 
-  // Initialize or connect session
+  // Initialize or connect session (strictly idempotent)
   const initSession = useCallback(async () => {
+    if (isInitializingRef.current) return;
+    isInitializingRef.current = true;
+
     setModalState('INITIALIZING');
     setErrorMessage(null);
     setQrCode(null);
     setConnectedPhone(null);
     clearTimers();
 
+    const targetSessionId = activeSessionIdRef.current || existingSessionId;
+
     try {
-      if (existingSessionId) {
-        // Reusing existing session
-        setSessionId(existingSessionId);
-        const qrRes = await ApiClient.getSessionQr(existingSessionId);
+      if (targetSessionId) {
+        // Reusing existing known session - READ ONLY, NEVER CREATE
+        setSessionId(targetSessionId);
+        activeSessionIdRef.current = targetSessionId;
+        const qrRes = await ApiClient.getSessionQr(targetSessionId);
         if (!isMountedRef.current) return;
 
         if (qrRes.status === 'CONNECTED') {
           setConnectedPhone(qrRes.phone);
           setModalState('CONNECTED');
-          if (onSuccess) onSuccess({ id: existingSessionId, phone_number: qrRes.phone } as any);
+          clearTimers();
+          if (onSuccessRef.current) onSuccessRef.current({ id: targetSessionId, phone_number: qrRes.phone } as any);
           return;
         }
 
@@ -113,8 +136,8 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
           setModalState('QR_READY');
           resetCountdown();
         } else {
-          // Trigger refresh to get active QR
-          const refreshRes = await ApiClient.refreshSessionQr(existingSessionId);
+          // Trigger refresh to get active QR for this session
+          const refreshRes = await ApiClient.refreshSessionQr(targetSessionId);
           if (!isMountedRef.current) return;
           if (refreshRes.qr_code) {
             setQrCode(refreshRes.qr_code);
@@ -123,20 +146,22 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
           }
         }
       } else {
-        // Create new Baileys session
-        const nameToUse = initialSessionName?.trim() || `Hat ${Math.floor(1000 + Math.random() * 9000)}`;
+        // Create or resolve session via backend
+        const nameToUse = initialSessionName?.trim() || 'Hat 1';
         setSessionName(nameToUse);
 
         const newSession = await ApiClient.createWhatsAppSession(nameToUse, 50);
         if (!isMountedRef.current) return;
 
+        activeSessionIdRef.current = newSession.id;
         setSessionId(newSession.id);
         setSessionName(newSession.session_name);
 
         if (newSession.status === 'CONNECTED') {
           setConnectedPhone(newSession.phone_number || null);
           setModalState('CONNECTED');
-          if (onSuccess) onSuccess(newSession);
+          clearTimers();
+          if (onSuccessRef.current) onSuccessRef.current(newSession);
           return;
         }
 
@@ -145,7 +170,7 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
           setModalState('QR_READY');
           resetCountdown();
         } else {
-          // Gateway is still generating QR, will receive via WebSocket or fallback poll
+          // Gateway is generating QR, will receive via WebSocket or fallback poll
           setModalState('INITIALIZING');
         }
       }
@@ -153,21 +178,25 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
       if (!isMountedRef.current) return;
       setModalState('ERROR');
       setErrorMessage(err?.message || t('whatsapp.connectionErrorDesc') || 'Bağlantı başlatılamadı.');
+    } finally {
+      isInitializingRef.current = false;
     }
-  }, [existingSessionId, initialSessionName, clearTimers, resetCountdown, onSuccess, t]);
+  }, [existingSessionId, initialSessionName, clearTimers, resetCountdown, t]);
 
-  // Manual QR Refresh
+  // Manual QR Refresh - strictly operates on current session_id
   const handleRefreshQr = useCallback(async () => {
-    if (!sessionId || isRefreshing) return;
+    const targetSessionId = activeSessionIdRef.current || sessionId;
+    if (!targetSessionId || isRefreshing) return;
     setIsRefreshing(true);
     try {
-      const res = await ApiClient.refreshSessionQr(sessionId);
+      const res = await ApiClient.refreshSessionQr(targetSessionId);
       if (!isMountedRef.current) return;
 
       if (res.status === 'CONNECTED') {
         setModalState('CONNECTED');
+        clearTimers();
         toast.success(t('whatsapp.connectedState'), t('common.success'));
-        if (onSuccess) onSuccess({ id: sessionId } as any);
+        if (onSuccessRef.current) onSuccessRef.current({ id: targetSessionId } as any);
         return;
       }
 
@@ -183,19 +212,32 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
         setIsRefreshing(false);
       }
     }
-  }, [sessionId, isRefreshing, resetCountdown, toast, t, onSuccess]);
+  }, [sessionId, isRefreshing, resetCountdown, clearTimers, toast, t]);
 
-  // Mount effect
+  // Mount & Modal Lifecycle effect - runs initSession EXACTLY ONCE per open cycle
   useEffect(() => {
     isMountedRef.current = true;
     if (isOpen) {
-      initSession();
+      if (!hasInitializedRef.current) {
+        hasInitializedRef.current = true;
+        initSession();
+      }
+    } else {
+      // Reset initialization state on modal close
+      hasInitializedRef.current = false;
+      isInitializingRef.current = false;
+      activeSessionIdRef.current = existingSessionId || null;
+      clearTimers();
+      setModalState('INITIALIZING');
+      setQrCode(null);
+      setConnectedPhone(null);
+      setErrorMessage(null);
     }
     return () => {
       isMountedRef.current = false;
       clearTimers();
     };
-  }, [isOpen, initSession, clearTimers]);
+  }, [isOpen, initSession, clearTimers, existingSessionId]);
 
   // Real-time WebSocket Event Listener
   useEffect(() => {
@@ -229,8 +271,8 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
         setQrCode(null);
         clearTimers();
         toast.success(t('whatsapp.connectedState'), t('common.success'));
-        if (onSuccess) {
-          onSuccess({ 
+        if (onSuccessRef.current) {
+          onSuccessRef.current({ 
             id: sessionId || detail.session_id, 
             phone_number: phone, 
             session_name: sessionName 
@@ -263,7 +305,7 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
     return () => {
       window.removeEventListener('tezlify:ws_event', handleWsEvent);
     };
-  }, [isOpen, sessionId, sessionName, modalState, resetCountdown, clearTimers, onSuccess, t, toast]);
+  }, [isOpen, sessionId, sessionName, modalState, resetCountdown, clearTimers, t, toast]);
 
   // Gentle Fallback Polling (Every 4 seconds if in INITIALIZING without QR)
   useEffect(() => {
@@ -278,7 +320,7 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
             setConnectedPhone(res.phone);
             setModalState('CONNECTED');
             if (fallbackPollRef.current) clearInterval(fallbackPollRef.current);
-            if (onSuccess) onSuccess({ id: sessionId, phone_number: res.phone } as any);
+            if (onSuccessRef.current) onSuccessRef.current({ id: sessionId, phone_number: res.phone } as any);
           } else if (res.qr_code) {
             setQrCode(res.qr_code);
             setModalState('QR_READY');
@@ -302,7 +344,7 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
         fallbackPollRef.current = null;
       }
     };
-  }, [isOpen, sessionId, modalState, qrCode, resetCountdown, onSuccess]);
+  }, [isOpen, sessionId, modalState, qrCode, resetCountdown]);
 
   // Keyboard accessibility: Escape to close
   useEffect(() => {

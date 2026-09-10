@@ -69,6 +69,10 @@ class WhatsAppNumber(Base):
     conversations = relationship("Conversation", back_populates="whatsapp_number")
     session = relationship("WhatsAppSession", back_populates="whatsapp_number", uselist=False, lazy="selectin")
 
+    @property
+    def session_id(self) -> Optional[int]:
+        return self.session.id if self.session else None
+
     __table_args__ = (
         Index("idx_wanum_user_status", "user_id", "status"),
         Index("idx_wanum_user_phone_id", "user_id", "phone_number_id"),

@@ -189,7 +189,14 @@ app.post('/api/sessions/create', async (req, res) => {
             ? { tenantId, sessionId, sessionName }
             : (sessionName || `session_${sessionId}`);
         let session = getSession(param);
-        if (!session || session.status !== 'CONNECTED') {
+        const hasValidQR = session && !!(session.qrImage || session.qr);
+        const isAlreadyActive = session && (
+            session.status === 'CONNECTED' ||
+            (session.status === 'SCAN_QR' && hasValidQR) ||
+            session.status === 'CONNECTING'
+        );
+
+        if (!session || !isAlreadyActive) {
             session = await refreshSessionQR(param);
         }
         res.json({

@@ -40,6 +40,16 @@ router = APIRouter()
 
 OPT_OUT_PATTERN = re.compile(r"\b(istemiyorum|iptal|sil|stop|unsubscribe|rahats[ıi]z\s+etmeyin)\b", re.IGNORECASE)
 
+# Per-user asyncio locks for serializing concurrent QR session creation.
+# asyncio is single-threaded so this correctly prevents race conditions
+# where concurrent requests all see "no existing session" before any commit.
+_qr_creation_locks: dict[str, asyncio.Lock] = {}
+
+def _get_qr_lock(user_id: str) -> asyncio.Lock:
+    if user_id not in _qr_creation_locks:
+        _qr_creation_locks[user_id] = asyncio.Lock()
+    return _qr_creation_locks[user_id]
+
 
 async def _async_init_gateway_session(session_id: int, session_name: str, tenant_id: Optional[str] = None):
     """Background task to initialize Baileys session and notify UI when QR arrives."""
@@ -142,85 +152,130 @@ async def create_session(
     db: AsyncSession = Depends(get_db),
     current_user: AuthUser = Depends(get_current_user),
 ):
-    stmt = select(WhatsAppSession).where(
-        WhatsAppSession.session_name == session_in.session_name,
-    )
-    existing = (await db.execute(stmt)).scalars().first()
+    user_id_str = str(current_user.id)
+    from backend.app.services.whatsapp_number_service import WhatsAppNumberService
+
+    # Acquire per-user lock to serialize concurrent creation requests.
+    # Without this, asyncio.gather tasks all see "no session exists" before any commit.
+    async with _get_qr_lock(user_id_str):
+        return await _create_session_locked(session_in, background_tasks, db, current_user, user_id_str)
+
+
+async def _create_session_locked(
+    session_in: WhatsAppSessionCreate,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession,
+    current_user: AuthUser,
+    user_id_str: str,
+):
+    """Inner implementation of create_session, called while holding the per-user QR creation lock."""
+    from backend.app.services.whatsapp_number_service import WhatsAppNumberService
+
+    # Invariant D: A tenant may have at most ONE active BAILEYS_QR connection attempt/session.
+    # Active states: SCAN_QR, CONNECTING, CONNECTED
+    stmt_active = select(WhatsAppSession).where(
+        get_user_filter(WhatsAppSession.user_id, user_id_str),
+        WhatsAppSession.status.in_([
+            SessionStatus.SCAN_QR, SessionStatus.CONNECTING, SessionStatus.CONNECTED
+        ])
+    ).order_by(WhatsAppSession.id.desc())
+    existing = (await db.execute(stmt_active)).scalars().first()
+
+    # If no active session, check if user has any existing session (any status) to reuse
+    if not existing:
+        stmt_any = select(WhatsAppSession).where(
+            get_user_filter(WhatsAppSession.user_id, user_id_str)
+        ).order_by(WhatsAppSession.id.desc())
+        existing = (await db.execute(stmt_any)).scalars().first()
+
     if existing:
-        # If session is disconnected or in QR scan state, reuse it to prevent deadlock
-        if existing.status in (SessionStatus.DISCONNECTED, SessionStatus.SCAN_QR):
-            existing.user_id = current_user.id
-            existing.status = SessionStatus.SCAN_QR
-            if session_in.phone_number:
-                existing.phone_number = session_in.phone_number
-            if session_in.max_daily_limit:
-                existing.max_daily_limit = session_in.max_daily_limit
+        # Re-use existing session to guarantee at most ONE active BAILEYS_QR session per tenant
+        existing.user_id = current_user.id
+        if session_in.phone_number and not existing.phone_number:
+            existing.phone_number = session_in.phone_number
+        if session_in.max_daily_limit:
+            existing.max_daily_limit = session_in.max_daily_limit
+
+        # If already CONNECTED, ensure linked number exists and return immediately
+        if existing.status == SessionStatus.CONNECTED:
             if not existing.whatsapp_number_id:
-                from backend.app.services.whatsapp_number_service import WhatsAppNumberService
                 wanum = await WhatsAppNumberService.create_qr_number(
                     db=db,
                     name=existing.session_name,
-                    user_id=str(current_user.id),
+                    user_id=user_id_str,
                     phone_number_e164=existing.phone_number,
                     display_phone_number=existing.phone_number,
                 )
                 existing.whatsapp_number_id = wanum.id
-
-            await db.commit()
-            await db.refresh(existing)
-
-            try:
-                gw_res = await asyncio.wait_for(
-                    gateway_client.create_session(
-                        existing.session_name,
-                        tenant_id=str(current_user.id),
-                        session_id=existing.id,
-                    ),
-                    timeout=5.0,
-                )
-                if gw_res.get("qr_code"):
-                    existing.qr_code = gw_res["qr_code"]
-                if gw_res.get("status") == "CONNECTED":
-                    existing.status = SessionStatus.CONNECTED
-                    if gw_res.get("phone"):
-                        existing.phone_number = gw_res["phone"]
                 await db.commit()
                 await db.refresh(existing)
-            except Exception as e:
-                logger.warning(f"Gateway create_session error on existing re-connect: {e}")
-                background_tasks.add_task(_async_init_gateway_session, existing.id, existing.session_name, str(current_user.id))
-
-            await ws_manager.broadcast({
-                "event": "session_created",
-                "session": {"id": existing.id, "name": existing.session_name, "status": existing.status, "qr_code": existing.qr_code}
-            })
-            if existing.qr_code:
-                await ws_manager.broadcast({
-                    "event": "session_qr_updated",
-                    "session_id": existing.id,
-                    "session_name": existing.session_name,
-                    "qr_code": existing.qr_code,
-                })
             return existing
-        else:
-            # If session is actively connected, generate next available name e.g. Line 1 (2)
-            base_name = session_in.session_name
-            suffix = 2
-            candidate = f"{base_name} ({suffix})"
-            while (await db.execute(select(WhatsAppSession).where(WhatsAppSession.session_name == candidate))).scalars().first():
-                suffix += 1
-                candidate = f"{base_name} ({suffix})"
-            session_in.session_name = candidate
 
-    initial_qr = None
+        # If in SCAN_QR or DISCONNECTED or CONNECTING: re-activate
+        existing.status = SessionStatus.SCAN_QR
+        if not existing.whatsapp_number_id:
+            wanum = await WhatsAppNumberService.create_qr_number(
+                db=db,
+                name=existing.session_name,
+                user_id=user_id_str,
+                phone_number_e164=existing.phone_number,
+                display_phone_number=existing.phone_number,
+            )
+            existing.whatsapp_number_id = wanum.id
+
+        await db.commit()
+        await db.refresh(existing)
+
+        # Call gateway to initialize or obtain QR code for this existing session
+        try:
+            gw_res = await asyncio.wait_for(
+                gateway_client.create_session(
+                    existing.session_name,
+                    tenant_id=user_id_str,
+                    session_id=existing.id,
+                ),
+                timeout=5.0,
+            )
+            if gw_res.get("qr_code"):
+                existing.qr_code = gw_res["qr_code"]
+            if gw_res.get("status") == "CONNECTED":
+                existing.status = SessionStatus.CONNECTED
+                if gw_res.get("phone"):
+                    existing.phone_number = gw_res["phone"]
+            await db.commit()
+            await db.refresh(existing)
+        except Exception as e:
+            logger.warning(f"Gateway create_session error on existing session reuse: {e}")
+            background_tasks.add_task(_async_init_gateway_session, existing.id, existing.session_name, user_id_str)
+
+        await ws_manager.broadcast({
+            "event": "session_created",
+            "session": {"id": existing.id, "name": existing.session_name, "status": existing.status, "qr_code": existing.qr_code}
+        })
+        if existing.qr_code:
+            await ws_manager.broadcast({
+                "event": "session_qr_updated",
+                "session_id": existing.id,
+                "session_name": existing.session_name,
+                "qr_code": existing.qr_code,
+            })
+        return existing
+
+    # Only if tenant has NO existing session at all, create a brand new one
+    base_name = session_in.session_name or "Hat 1"
+    candidate_name = base_name
+    suffix = 2
+    while (await db.execute(select(WhatsAppSession).where(WhatsAppSession.session_name == candidate_name))).scalars().first():
+        candidate_name = f"{base_name} ({suffix})"
+        suffix += 1
 
     session = WhatsAppSession(
         user_id=current_user.id,
-        session_name=session_in.session_name,
+        session_name=candidate_name,
         phone_number=session_in.phone_number,
-        max_daily_limit=session_in.max_daily_limit,
+        max_daily_limit=session_in.max_daily_limit or 50,
         status=SessionStatus.SCAN_QR,
-        qr_code=initial_qr,
+        qr_code=None,
         warm_up_day=1,
         daily_sent_count=0,
     )
@@ -229,25 +284,22 @@ async def create_session(
     await db.refresh(session)
 
     # Ensure 1:1 linked WhatsAppNumber domain root exists
-    if not session.whatsapp_number_id:
-        from backend.app.services.whatsapp_number_service import WhatsAppNumberService
-        wanum = await WhatsAppNumberService.create_qr_number(
-            db=db,
-            name=session.session_name,
-            user_id=str(current_user.id),
-            phone_number_e164=session.phone_number,
-            display_phone_number=session.phone_number,
-        )
-        session.whatsapp_number_id = wanum.id
-        await db.commit()
-        await db.refresh(session)
+    wanum = await WhatsAppNumberService.create_qr_number(
+        db=db,
+        name=session.session_name,
+        user_id=user_id_str,
+        phone_number_e164=session.phone_number,
+        display_phone_number=session.phone_number,
+    )
+    session.whatsapp_number_id = wanum.id
+    await db.commit()
+    await db.refresh(session)
 
-    # Synchronously wait up to 5.0s for gateway to return the QR code so modal opens with QR ready
     try:
         gw_res = await asyncio.wait_for(
             gateway_client.create_session(
                 session.session_name,
-                tenant_id=str(current_user.id),
+                tenant_id=user_id_str,
                 session_id=session.id,
             ),
             timeout=5.0,
@@ -262,8 +314,7 @@ async def create_session(
             await db.commit()
             await db.refresh(session)
     except (asyncio.TimeoutError, Exception):
-        # Fallback to background task if gateway takes longer
-        background_tasks.add_task(_async_init_gateway_session, session.id, session.session_name, str(current_user.id))
+        background_tasks.add_task(_async_init_gateway_session, session.id, session.session_name, user_id_str)
 
     await ws_manager.broadcast({
         "event": "session_created",
@@ -335,7 +386,11 @@ async def refresh_session_qr_code(
         if status_info.get("status") == "CONNECTED":
             return {"success": True, "status": "CONNECTED", "qr_code": None, "phone": session.phone_number}
 
-    res = await gateway_client.refresh_session_qr(session.session_name)
+    res = await gateway_client.refresh_session_qr(
+        session.session_name,
+        tenant_id=str(current_user.id),
+        session_id=session.id,
+    )
     if res.get("qr_code"):
         session.qr_code = res["qr_code"]
         session.status = SessionStatus.SCAN_QR

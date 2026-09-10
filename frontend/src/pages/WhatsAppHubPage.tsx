@@ -656,6 +656,17 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     }
   }, [t, toast]);
 
+  const handleQrSuccess = useCallback(() => {
+    fetchNumbersAndLogs(true);
+    onRefreshStats();
+  }, [fetchNumbersAndLogs, onRefreshStats]);
+
+  const handleOpenQrConnect = useCallback(() => {
+    const existingQrNumber = whatsAppNumbers.find((n) => n.provider === 'BAILEYS_QR');
+    setReconnectSessionId(existingQrNumber?.session_id);
+    setIsQrConnectModalOpen(true);
+  }, [whatsAppNumbers]);
+
   useEffect(() => {
     fetchNumbersAndLogs();
 
@@ -1178,10 +1189,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         <div className="space-y-6">
           <div className="flex items-center gap-3 justify-end flex-wrap">
             <Button
-              onClick={() => {
-                setReconnectSessionId(undefined);
-                setIsQrConnectModalOpen(true);
-              }}
+              onClick={handleOpenQrConnect}
               size="sm"
               className="space-x-2 font-bold shadow-md shadow-[#28C76F]/20 cursor-pointer bg-[#28C76F] hover:bg-[#24B263] text-white"
             >
@@ -1208,10 +1216,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                 description={t('whatsapp.noSessionsDesc')}
                 action={{
                   label: t('whatsapp.connectWithQr') || 'QR ile Bağla',
-                  onClick: () => {
-                    setReconnectSessionId(undefined);
-                    setIsQrConnectModalOpen(true);
-                  },
+                  onClick: handleOpenQrConnect,
                   icon: QrCode,
                 }}
               />
@@ -1227,7 +1232,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                   onDisconnect={handleDisconnectNumber}
                   onDelete={handleDeleteNumber}
                   onScanQR={(selectedNum) => {
-                    setReconnectSessionId(selectedNum.id);
+                    setReconnectSessionId(selectedNum.session_id || selectedNum.id);
                     setIsQrConnectModalOpen(true);
                   }}
                   isVerifying={verifyingNumberId === num.id}
@@ -1810,10 +1815,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
           setReconnectSessionId(undefined);
         }}
         existingSessionId={reconnectSessionId}
-        onSuccess={() => {
-          fetchNumbersAndLogs(true);
-          onRefreshStats();
-        }}
+        onSuccess={handleQrSuccess}
       />
     </div>
   );

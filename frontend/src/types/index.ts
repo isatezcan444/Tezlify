@@ -164,6 +164,7 @@ export interface WhatsAppNumber {
   waba_id?: string;
   business_account_id?: string;
   status: WhatsAppNumberStatus;
+  session_id?: number;
   quality_rating?: string;
   verified_name?: string;
   last_verified_at?: string;

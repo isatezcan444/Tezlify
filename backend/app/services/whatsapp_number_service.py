@@ -489,9 +489,26 @@ class WhatsAppNumberService:
         Creates a new WhatsAppNumber for Baileys QR transport.
         phone_number_id is intentionally None (Meta Cloud API specific).
         """
+        clean_name = name.strip()
+        if user_id and clean_name:
+            stmt = select(WhatsAppNumber).where(
+                get_user_filter(WhatsAppNumber.user_id, user_id),
+                WhatsAppNumber.provider == WhatsAppNumberProvider.BAILEYS_QR,
+                WhatsAppNumber.name == clean_name,
+            )
+            existing = (await db.execute(stmt)).scalars().first()
+            if existing:
+                if phone_number_e164 and not existing.phone_number_e164:
+                    existing.phone_number_e164 = phone_number_e164.strip()
+                if display_phone_number and not existing.display_phone_number:
+                    existing.display_phone_number = display_phone_number.strip()
+                existing.status = WhatsAppNumberStatus.ACTIVE
+                await db.flush()
+                return existing
+
         number = WhatsAppNumber(
             user_id=user_id,
-            name=name.strip(),
+            name=clean_name,
             provider=WhatsAppNumberProvider.BAILEYS_QR,
             phone_number_id=None,
             display_phone_number=display_phone_number.strip() if display_phone_number else None,

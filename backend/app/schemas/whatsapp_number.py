@@ -71,6 +71,7 @@ class WhatsAppNumberRead(WhatsAppNumberBase):
     id: int
     user_id: Optional[str] = None
     phone_number_e164: Optional[str] = None
+    session_id: Optional[int] = None
     last_verified_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
