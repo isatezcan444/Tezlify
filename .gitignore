@@ -39,3 +39,8 @@ scratch/
 test-results/
 playwright-report/
 .freebuff/
+
+# WhatsApp Gateway runtime state (never commit session credentials or media)
+whatsapp-gateway/sessions/
+whatsapp-gateway/media/
+whatsapp-gateway/.env

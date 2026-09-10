@@ -6,10 +6,13 @@
     "node": ">=20.0.0"
   },
   "workspaces": [
-    "frontend"
+    "frontend",
+    "whatsapp-gateway"
   ],
   "scripts": {
     "build": "npm --prefix frontend run build",
-    "dev": "npm --prefix frontend run dev"
+    "dev": "npm --prefix frontend run dev",
+    "gateway:start": "npm --prefix whatsapp-gateway run start",
+    "gateway:dev": "npm --prefix whatsapp-gateway run dev"
   }
 }
