@@ -177,7 +177,19 @@ async def test_sync_whatsapp_conversations_with_gateway_string_messages():
 async def test_webhook_chats_synced():
     """Verifies that wa-gateway dispatches /webhook/chats-synced successfully."""
     from backend.app.core.config import settings
+    from backend.app.models.whatsapp_session import WhatsAppSession, SessionStatus
     secret = settings.WA_GATEWAY_WEBHOOK_SECRET or "dev-webhook-secret"
+
+    test_sess_name = f"webhook_known_{uuid.uuid4().hex[:8]}"
+    async with AsyncSessionLocal() as db:
+        db.add(
+            WhatsAppSession(
+                user_id=str(uuid.uuid4()),
+                session_name=test_sess_name,
+                status=SessionStatus.CONNECTED,
+            )
+        )
+        await db.commit()
 
     async with AsyncClient(
         transport=ASGITransport(app=app),
@@ -187,7 +199,7 @@ async def test_webhook_chats_synced():
             "/api/v1/whatsapp/webhook/chats-synced",
             headers={"X-Webhook-Secret": secret},
             json={
-                "session_name": "test_session",
+                "session_name": test_sess_name,
                 "total_chats": 12,
                 "total_contacts": 45,
             },

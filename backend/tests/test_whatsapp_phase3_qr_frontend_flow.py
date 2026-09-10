@@ -255,7 +255,7 @@ async def test_05_disconnect_number_on_baileys_qr():
 
 @pytest.mark.asyncio
 async def test_06_remove_number_safely_unlinks_session():
-    """Verifies that removing a BAILEYS_QR number unlinks session without cascading errors."""
+    """Verifies that removing a BAILEYS_QR number deletes linked sessions (product rule)."""
     await _init_p3_db()
     user_id = str(uuid.uuid4())
     session_name = f"Hat Remove {uuid.uuid4().hex[:6]}"
@@ -274,6 +274,7 @@ async def test_06_remove_number_safely_unlinks_session():
         )
         db_session.add(session)
         await db_session.commit()
+        session_id = session.id
 
         await WhatsAppNumberService.remove_number_safely(
             db=db_session,
@@ -281,8 +282,8 @@ async def test_06_remove_number_safely_unlinks_session():
             user_id=user_id,
         )
 
-        await db_session.refresh(session)
-        assert session.whatsapp_number_id is None
+        # Linked session row is deleted so the next pairing starts from fresh QR
+        assert await db_session.get(WhatsAppSession, session_id) is None
 
         # Number should no longer exist
         deleted = await db_session.get(WhatsAppNumber, wanum.id)

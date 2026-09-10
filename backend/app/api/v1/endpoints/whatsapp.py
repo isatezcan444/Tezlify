@@ -196,20 +196,46 @@ async def _create_session_locked(
         if session_in.max_daily_limit:
             existing.max_daily_limit = session_in.max_daily_limit
 
-        # If already CONNECTED, ensure linked number exists and return immediately
+        # If already CONNECTED, verify the gateway session is really alive.
+        # A stale CONNECTED row (e.g. gateway purged/restarted) must NOT be
+        # returned as "connected" — that is what reconnected the old line
+        # without a QR scan. Demote to SCAN_QR and fall through to fresh QR.
         if existing.status == SessionStatus.CONNECTED:
-            if not existing.whatsapp_number_id:
-                wanum = await WhatsAppNumberService.create_qr_number(
-                    db=db,
-                    name=existing.session_name,
-                    user_id=user_id_str,
-                    phone_number_e164=existing.phone_number,
-                    display_phone_number=existing.phone_number,
-                )
-                existing.whatsapp_number_id = wanum.id
-                await db.commit()
-                await db.refresh(existing)
-            return existing
+            live_connected = True
+            if not settings.SIMULATION_MODE and os.getenv("PYTEST_CURRENT_TEST") is None:
+                try:
+                    live_status = await asyncio.wait_for(
+                        gateway_client.get_session_status(
+                            existing.session_name,
+                            tenant_id=user_id_str,
+                            session_id=existing.id,
+                        ),
+                        timeout=5.0,
+                    )
+                    live_connected = live_status.get("status") == "CONNECTED"
+                    if live_connected and live_status.get("phone") and not existing.phone_number:
+                        existing.phone_number = live_status.get("phone")
+                except Exception as e:
+                    logger.warning(f"Gateway liveness check failed for {existing.session_name}: {e}")
+                    live_connected = False
+            if live_connected:
+                if not existing.whatsapp_number_id:
+                    wanum = await WhatsAppNumberService.create_qr_number(
+                        db=db,
+                        name=existing.session_name,
+                        user_id=user_id_str,
+                        phone_number_e164=existing.phone_number,
+                        display_phone_number=existing.phone_number,
+                    )
+                    existing.whatsapp_number_id = wanum.id
+                    await db.commit()
+                    await db.refresh(existing)
+                return existing
+            existing.status = SessionStatus.SCAN_QR
+            existing.qr_code = None
+            existing.is_phone_online = False
+            await db.commit()
+            await db.refresh(existing)
 
         # If in SCAN_QR or DISCONNECTED or CONNECTING: re-activate
         existing.status = SessionStatus.SCAN_QR
@@ -497,7 +523,11 @@ async def delete_session(
     # successful deletion, otherwise the still-live gateway session is adopted
     # again on the next synchronization.
     if not settings.SIMULATION_MODE and os.getenv("PYTEST_CURRENT_TEST") is None:
-        gateway_deleted = await gateway_client.delete_session(session_name)
+        gateway_deleted = await gateway_client.delete_session(
+            session_name,
+            tenant_id=str(current_user.id) if current_user.id else None,
+            session_id=session.id,
+        )
         if not gateway_deleted:
             raise HTTPException(
                 status_code=502,
@@ -518,10 +548,15 @@ async def delete_session(
     # 2. Delete ALL live-dialog conversations of this user (cascades to messages).
     # Product rule: removing a WhatsApp line wipes the entire live dialog list,
     # so no orphaned chat from a disconnected line stays visible.
+    # Unclaimed (user_id NULL) rows are shown in the inbox too, so they are
+    # included in the wipe.
     try:
         conv_stmt = select(Conversation).where(
             Conversation.channel == "WHATSAPP",
-            get_user_filter(Conversation.user_id, sess_user_id),
+            or_(
+                get_user_filter(Conversation.user_id, sess_user_id),
+                Conversation.user_id.is_(None),
+            ),
         )
         convs_res = await db.execute(conv_stmt)
         convs = convs_res.scalars().all()
@@ -530,11 +565,15 @@ async def delete_session(
     except Exception as e:
         logger.warning(f"[WhatsApp] Failed to delete conversations for session {session_id}: {e}")
 
-    # 3. Delete all auto-synced WhatsApp leads of this user (groups/chats/contacts).
+    # 3. Delete all auto-synced WhatsApp leads of this user (groups/chats/contacts),
+    # including unclaimed (user_id NULL) rows.
     try:
         lead_stmt = select(Lead).where(
             Lead.category.in_(["WhatsApp Grubu", "WhatsApp Sohbeti", "WhatsApp Kişisi"]),
-            get_user_filter(Lead.user_id, sess_user_id),
+            or_(
+                get_user_filter(Lead.user_id, sess_user_id),
+                Lead.user_id.is_(None),
+            ),
         )
         leads_res = await db.execute(lead_stmt)
         leads = leads_res.scalars().all()
@@ -1047,23 +1086,27 @@ async def handle_chats_synced_webhook(
         stmt = select(WhatsAppSession).where(WhatsAppSession.session_name == session_name)
         res = await db.execute(stmt)
         session = res.scalars().first()
-        if session is None and session_name:
-            session = WhatsAppSession(
-                user_id=None,
-                session_name=session_name,
-                status=SessionStatus.CONNECTED,
-                is_phone_online=True,
-            )
-            db.add(session)
-            await db.flush()
+        # Never resurrect sessions here: a chats-synced webhook for an unknown
+        # session means the line was deleted (or belongs to another tenant's
+        # orphan gateway state). Auto-creating a row would bring the old line
+        # back without a fresh QR scan and re-sync its dialogs.
+        if session is None:
+            logger.info(f"[Webhook] Ignoring chats-synced for unknown session {session_name}")
+            await ws_manager.broadcast({
+                "event": "conversations_updated",
+                "session_name": session_name,
+                "total_chats": total_chats,
+                "total_contacts": total_contacts,
+                "synced_count": 0,
+            })
+            return {"status": "ignored", "reason": "Session not found", "session_name": session_name}
 
-        if session is not None:
-            chats = await gateway_client.get_session_chats(session_name)
-            if chats:
-                report = await WhatsAppChatSyncService.sync_chats(db=db, session=session, chats=chats)
-                synced_count = report.synced_count
-                if report.errors:
-                    logger.warning(f"[Webhook] Auto-sync partial errors for {session_name}: {report.errors}")
+        chats = await gateway_client.get_session_chats(session_name)
+        if chats:
+            report = await WhatsAppChatSyncService.sync_chats(db=db, session=session, chats=chats)
+            synced_count = report.synced_count
+            if report.errors:
+                logger.warning(f"[Webhook] Auto-sync partial errors for {session_name}: {report.errors}")
     except Exception as e:
         logger.warning(f"[Webhook] Auto-sync failed for {session_name}: {e}")
 

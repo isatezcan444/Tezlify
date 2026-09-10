@@ -7,8 +7,11 @@ Enforces:
 - Real Meta Graph API validation before activation.
 - Secure token encryption via CredentialVault (never stored plaintext, never leaked).
 - Atomic credential rotation (failed new token never destroys existing working credential).
-- Safe non-destructive deletion semantics:
-  Disconnecting or removing a number NEVER deletes CRM Leads, Contacts, Conversations, or Message history.
+- Deletion semantics (product rule): removing a number wipes the tenant's live
+  WhatsApp dialogs (Conversations + auto-synced WhatsApp Leads) and purges the
+  linked Baileys gateway session(s), so the next "QR ile bağla" always starts
+  from a fresh QR code and no orphaned chat survives. Disconnect only flips
+  status and preserves history.
 """
 import hashlib
 import logging
@@ -39,6 +42,15 @@ class WhatsAppNumberNotFoundError(ValueError, KeyError):
     def __init__(self, number_id: int):
         super().__init__(f"WhatsApp number with ID {number_id} was not found or access denied.")
         self.number_id = number_id
+
+
+class WhatsAppNumberGatewayError(RuntimeError):
+    """Raised when the live Baileys gateway session cannot be purged.
+
+    Deletion is fail-closed: reporting success while the gateway session
+    survives would resurrect the old line (via chats-synced webhooks) and
+    reconnect it without a fresh QR scan.
+    """
 
 
 class WhatsAppNumberService:
@@ -443,24 +455,103 @@ class WhatsAppNumberService:
         db: AsyncSession,
         number_id: int,
         user_id: Optional[str],
-    ) -> None:
+    ) -> Dict[str, Any]:
         """
-        Removes/unlinks WhatsAppNumber record from active lines.
-        Guarantees zero cascading destruction: DB FK is ON DELETE SET NULL on conversations.
+        Removes a WhatsApp line with full live-dialog cleanup (product rule).
+
+        Steps:
+        1. Purges every Baileys gateway session linked to this number
+           (tenant-aware; fail-closed via WhatsAppNumberGatewayError).
+        2. Deletes the linked WhatsAppSession rows + auth backups + sync
+           revision cache, so the next "QR ile bağla" cannot resurrect the
+           old pairing and always starts from a fresh QR code.
+        3. Deletes ALL live WhatsApp dialogs of the tenant (Conversations
+           cascade to Messages) and all auto-synced WhatsApp Leads —
+           including unclaimed (user_id NULL) rows, which the inbox also shows.
+        4. Deletes the WhatsAppNumber row itself.
+
+        Returns {"purged_session_names": [...]} for post-commit broadcasting.
         """
+        import os
+        from sqlalchemy import or_
+        from backend.app.core.config import settings
+        from backend.app.models.conversation import Conversation
+        from backend.app.models.lead import Lead
+        from backend.app.models.whatsapp_session import WhatsAppSession, WhatsAppSessionAuth
+        from backend.app.services.whatsapp_chat_sync_service import WhatsAppChatSyncService
+        from backend.app.services.whatsapp_gateway_client import gateway_client
+
         number = await cls.get_number(db, number_id, user_id)
         if not number:
             raise WhatsAppNumberNotFoundError(number_id)
 
-        from backend.app.models.whatsapp_session import WhatsAppSession
-        stmt = select(WhatsAppSession).where(WhatsAppSession.whatsapp_number_id == number.id)
-        sess = (await db.execute(stmt)).scalar_one_or_none()
-        if sess:
-            sess.whatsapp_number_id = None
-            sess.updated_at = datetime.utcnow()
+        owner_id = number.user_id or user_id
+
+        linked_sess_stmt = select(WhatsAppSession).where(
+            WhatsAppSession.whatsapp_number_id == number.id
+        )
+        linked_sessions = (await db.execute(linked_sess_stmt)).scalars().all()
+
+        # 1. Purge live gateway sessions first (fail-closed for BAILEYS_QR).
+        if (
+            number.provider == WhatsAppNumberProvider.BAILEYS_QR
+            and not settings.SIMULATION_MODE
+            and os.getenv("PYTEST_CURRENT_TEST") is None
+        ):
+            for sess in linked_sessions:
+                purged = await gateway_client.delete_session(
+                    sess.session_name,
+                    tenant_id=str(owner_id) if owner_id else None,
+                    session_id=sess.id,
+                )
+                if not purged:
+                    raise WhatsAppNumberGatewayError(
+                        "WhatsApp hattı gateway üzerinden silinemedi. Lütfen tekrar deneyin."
+                    )
+
+        purged_names = [s.session_name for s in linked_sessions]
+
+        # 2. Delete linked session rows + auth backups.
+        for sess in linked_sessions:
+            auth_row = (
+                await db.execute(
+                    select(WhatsAppSessionAuth).where(
+                        WhatsAppSessionAuth.session_name == sess.session_name
+                    )
+                )
+            ).scalar_one_or_none()
+            if auth_row:
+                await db.delete(auth_row)
+            await db.delete(sess)
+
+        # 3. Wipe ALL live WhatsApp dialogs of the tenant (incl. NULL-user rows
+        # the inbox displays) and all auto-synced WhatsApp leads.
+        conv_stmt = select(Conversation).where(
+            Conversation.channel == "WHATSAPP",
+            or_(
+                get_user_filter(Conversation.user_id, owner_id),
+                Conversation.user_id.is_(None),
+            ),
+        )
+        for conv in (await db.execute(conv_stmt)).scalars().all():
+            await db.delete(conv)
+
+        lead_stmt = select(Lead).where(
+            Lead.category.in_(["WhatsApp Grubu", "WhatsApp Sohbeti", "WhatsApp Kişisi"]),
+            or_(
+                get_user_filter(Lead.user_id, owner_id),
+                Lead.user_id.is_(None),
+            ),
+        )
+        for lead in (await db.execute(lead_stmt)).scalars().all():
+            await db.delete(lead)
+
+        for name in purged_names:
+            WhatsAppChatSyncService.last_sync_revisions.pop(name, None)
 
         await db.delete(number)
         await db.flush()
+        return {"purged_session_names": purged_names}
 
     @classmethod
     async def remove_number(
@@ -470,11 +561,11 @@ class WhatsAppNumberService:
         user_id: Optional[str],
         hard_delete: bool = False,
     ) -> None:
-        """Unified deletion/disconnect method respecting non-destructive delete semantics."""
+        """Unified deletion/disconnect method (delete wipes live dialogs)."""
         if hard_delete:
-            await cls.remove_number_safely(db, number_id, user_id)
-        else:
-            await cls.disconnect_number(db, number_id, user_id)
+            return await cls.remove_number_safely(db, number_id, user_id)
+        await cls.disconnect_number(db, number_id, user_id)
+        return {"purged_session_names": []}
 
     @classmethod
     async def create_qr_number(

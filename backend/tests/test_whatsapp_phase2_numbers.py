@@ -447,7 +447,7 @@ async def test_disconnect_number_preserves_conversations_and_leads(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_remove_number_hard_delete_nullifies_conversation_foreign_key(monkeypatch):
-    """Hard deleting a number nullifies conversation.whatsapp_number_id without deleting the conversation."""
+    """Hard deleting a number wipes live WhatsApp dialogs (product rule)."""
     async def mock_validate_connection(self, waba_id, phone_number_id, access_token, **kwargs):
         return {
             "is_valid": True,
@@ -492,11 +492,9 @@ async def test_remove_number_hard_delete_nullifies_conversation_foreign_key(monk
         
         # Check number is gone
         assert await WhatsAppNumberService.get_number(db, user_id=user_id, number_id=wanum_id) is None
-        
-        # Conversation must still exist with whatsapp_number_id NULL
-        await db.refresh(conv)
-        assert conv.id is not None
-        assert conv.whatsapp_number_id is None
+
+        # Product rule: live WhatsApp dialogs are wiped with the line
+        assert await db.get(Conversation, conv.id) is None
 
 
 # ============================================================================

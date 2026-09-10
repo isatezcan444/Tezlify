@@ -902,10 +902,18 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     try {
       await ApiClient.deleteWhatsAppNumber(numberId);
       setWhatsAppNumbers((prev) => prev.filter((n) => n.id !== numberId));
+      // Product rule: deleting a line wipes live dialogs. Clear immediately
+      // and reload from the server instead of relying solely on the realtime
+      // event (which can be missed on a reconnecting socket).
+      setConversations([]);
+      setSelectedConv(null);
+      setMessagesMap({});
+      await loadConversations(true);
       toast.success(t('whatsapp.deletedSuccess'), t('common.success'));
       onRefreshStats();
     } catch (err: any) {
       toast.error(err?.message || t('common.error'), t('common.error'));
+      await loadConversations(true);
     } finally {
       setDeletingNumberId(null);
     }

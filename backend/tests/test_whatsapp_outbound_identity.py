@@ -613,6 +613,155 @@ async def test_12_legacy_chat_window_open_with_connected_line():
     assert res.json()["is_window_open"] is True
 
 
+@pytest.mark.asyncio
+async def test_14_number_delete_wipes_dialogs_sessions_and_purges_gateway():
+    """Deleting a line wipes live dialogs + sessions and purges the gateway session."""
+    import os
+    from unittest.mock import patch as mock_patch
+    from backend.app.models.lead import Lead
+    from backend.app.models.whatsapp_session import WhatsAppSession
+    from backend.app.services.whatsapp_chat_sync_service import WhatsAppChatSyncService
+
+    user_id = str(uuid.uuid4())
+    async with AsyncSessionLocal() as db:
+        wanum, sess, _, conv = await _create_baileys_setup(db, user_id)
+        orphan_conv = Conversation(
+            user_id=None, lead_id=None, channel="WHATSAPP", status=ConversationStatus.ACTIVE
+        )
+        db.add(orphan_conv)
+        synced_lead = Lead(
+            user_id=None,
+            name="Orphan Sync",
+            phone=_dyn_phone("+9054"),
+            phone_e164=_dyn_phone("+9054"),
+            place_id=f"wa_{uuid.uuid4().hex[:16]}",
+            category="WhatsApp Sohbeti",
+        )
+        db.add(synced_lead)
+        await db.commit()
+        number_id, sess_id, sess_name = wanum.id, sess.id, sess.session_name
+        conv_id, orphan_id = conv.id, orphan_conv.id
+        WhatsAppChatSyncService.last_sync_revisions[sess_name] = 42
+
+    token = _make_jwt(user_id)
+    with mock_patch.dict("os.environ", {}, clear=True), mock_patch.object(
+        gateway_client, "delete_session", new_callable=AsyncMock, return_value=True
+    ) as mock_gw_delete:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            res = await client.delete(
+                f"/api/v1/whatsapp/numbers/{number_id}",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    assert res.status_code == 200, res.text
+    mock_gw_delete.assert_called_once()
+    _, kwargs = mock_gw_delete.call_args
+    assert kwargs.get("tenant_id") == user_id and kwargs.get("session_id") == sess_id
+
+    async with AsyncSessionLocal() as db:
+        assert await db.get(WhatsAppNumber, number_id) is None
+        assert await db.get(WhatsAppSession, sess_id) is None
+        assert await db.get(Conversation, conv_id) is None
+        assert await db.get(Conversation, orphan_id) is None
+        leftovers = (
+            await db.execute(
+                select(Lead).where(
+                    Lead.category.in_(["WhatsApp Grubu", "WhatsApp Sohbeti", "WhatsApp Kişisi"])
+                )
+            )
+        ).scalars().all()
+        assert [lead for lead in leftovers if lead.user_id in (None, user_id)] == []
+        assert sess_name not in WhatsAppChatSyncService.last_sync_revisions
+
+
+@pytest.mark.asyncio
+async def test_15_number_delete_gateway_failure_preserves_everything():
+    """Gateway purge failure is fail-closed: 502 and no rows deleted."""
+    from unittest.mock import patch as mock_patch
+
+    user_id = str(uuid.uuid4())
+    async with AsyncSessionLocal() as db:
+        wanum, sess, _, conv = await _create_baileys_setup(db, user_id)
+        await db.commit()
+        number_id, sess_id, conv_id = wanum.id, sess.id, conv.id
+
+    token = _make_jwt(user_id)
+    with mock_patch.dict("os.environ", {}, clear=True), mock_patch.object(
+        gateway_client, "delete_session", new_callable=AsyncMock, return_value=False
+    ):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            res = await client.delete(
+                f"/api/v1/whatsapp/numbers/{number_id}",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    assert res.status_code == 502
+    async with AsyncSessionLocal() as db:
+        assert await db.get(WhatsAppNumber, number_id) is not None
+        assert await db.get(WhatsAppSession, sess_id) is not None
+        assert await db.get(Conversation, conv_id) is not None
+
+
+@pytest.mark.asyncio
+async def test_16_chats_synced_unknown_session_is_ignored_not_resurrected():
+    """A chats-synced webhook for a deleted/unknown session creates nothing."""
+    from backend.app.core.config import settings
+    from backend.app.models.whatsapp_session import WhatsAppSession
+
+    secret = settings.WA_GATEWAY_WEBHOOK_SECRET or "dev-webhook-secret"
+    ghost = f"ghost_{uuid.uuid4().hex[:8]}"
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        res = await ac.post(
+            "/api/v1/whatsapp/webhook/chats-synced",
+            headers={"X-Webhook-Secret": secret},
+            json={"session_name": ghost, "total_chats": 5, "total_contacts": 9},
+        )
+    assert res.status_code == 200
+    assert res.json()["status"] == "ignored"
+    async with AsyncSessionLocal() as db:
+        row = (
+            await db.execute(select(WhatsAppSession).where(WhatsAppSession.session_name == ghost))
+        ).scalar_one_or_none()
+        assert row is None
+
+
+@pytest.mark.asyncio
+async def test_17_create_does_not_reuse_dead_connected_session():
+    """A stale CONNECTED row whose gateway session is dead falls back to QR flow."""
+    from unittest.mock import patch as mock_patch
+
+    user_id = str(uuid.uuid4())
+    async with AsyncSessionLocal() as db:
+        wanum, sess, _, _ = await _create_baileys_setup(db, user_id)
+        sess.status = SessionStatus.CONNECTED
+        sess.phone_number = "+905300000001"
+        await db.commit()
+        sess_name = sess.session_name
+
+    token = _make_jwt(user_id)
+    with mock_patch.dict("os.environ", {}, clear=True), mock_patch.object(
+        gateway_client, "get_session_status", new_callable=AsyncMock,
+        return_value={"status": "DISCONNECTED", "phone": None},
+    ), mock_patch.object(
+        gateway_client, "create_session", new_callable=AsyncMock,
+        return_value={"success": True, "status": "SCAN_QR", "qr_code": "data:fresh-qr", "phone": None},
+    ):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            res = await client.post(
+                "/api/v1/whatsapp/sessions",
+                json={"session_name": "Fresh Line", "max_daily_limit": 50},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    assert res.status_code == 201, res.text
+    data = res.json()
+    assert data["session_name"] == sess_name
+    assert data["status"] == "SCAN_QR"
+    assert data["qr_code"] == "data:fresh-qr"
+    async with AsyncSessionLocal() as db:
+        row = (
+            await db.execute(select(WhatsAppSession).where(WhatsAppSession.session_name == sess_name))
+        ).scalar_one()
+        assert row.status == SessionStatus.SCAN_QR
+
+
 def test_13_state_machine_default_event_time_is_naive():
     """MessageStateMachine default timestamps must survive asyncpg TIMESTAMP."""
     from backend.app.services.message_state_machine import MessageStateMachine

@@ -15,7 +15,8 @@ Security & Data Integrity Guarantees:
 - Strict tenant isolation enforced via current_user.id.
 - Access tokens, secrets, and raw credentials are NEVER returned in any response.
 - Meta errors are normalized and sanitized.
-- Safe delete semantics: Disconnecting/removing a number NEVER deletes Leads, Contacts, or Conversations.
+- Delete semantics (product rule): removing a number wipes the tenant's live
+  WhatsApp dialogs and purges linked Baileys sessions. Disconnect preserves history.
 """
 import logging
 from typing import List
@@ -36,7 +37,9 @@ from backend.app.services.whatsapp_number_service import (
     WhatsAppNumberService,
     DuplicatePhoneNumberIdError,
     WhatsAppNumberNotFoundError,
+    WhatsAppNumberGatewayError,
 )
+from backend.app.api.v1.websocket import ws_manager
 from backend.app.services.meta_cloud_client import MetaApiError
 
 logger = logging.getLogger(__name__)
@@ -282,25 +285,42 @@ async def remove_whatsapp_number(
     current_user: AuthUser = Depends(get_current_user),
 ):
     """
-    Safely removes/unlinks the WhatsApp number from active channels.
-    Due to database ON DELETE SET NULL on conversations, no CRM Leads, Contacts,
-    Conversations, or Message histories are ever cascaded or deleted.
+    Removes the WhatsApp line with full live-dialog cleanup (product rule):
+    linked Baileys gateway sessions are purged, linked WhatsAppSession rows
+    are deleted, and ALL live WhatsApp dialogs + auto-synced WhatsApp leads
+    of the tenant are wiped — including unclaimed rows. The next "QR ile
+    bağla" therefore always starts from a fresh QR code.
     """
     try:
-        await WhatsAppNumberService.remove_number(
+        result = await WhatsAppNumberService.remove_number(
             db=db,
             number_id=number_id,
             user_id=current_user.id,
             hard_delete=True,
         )
         await db.commit()
-        return {"success": True, "message": "WhatsApp hattı güvenli şekilde kaldırıldı. CRM ve mesaj geçmişi korundu."}
+        await ws_manager.broadcast({
+            "event": "conversations_cleared",
+            "user_id": str(current_user.id) if current_user.id else None,
+            "purged_session_names": (result or {}).get("purged_session_names", []),
+        })
+        return {"success": True, "message": "WhatsApp hattı ve canlı diyaloglar silindi."}
     except WhatsAppNumberNotFoundError:
         await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"WhatsApp hattı (ID: {number_id}) bulunamadı veya erişim yetkiniz yok.",
         )
+    except WhatsAppNumberGatewayError as e:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(e),
+        )
     except Exception as e:
         await db.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+        logger.error(f"[WhatsAppNumbersAPI] Remove failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="WhatsApp hattı silinirken beklenmeyen bir hata oluştu.",
+        )
