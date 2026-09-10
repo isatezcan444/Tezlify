@@ -1,7 +1,7 @@
 import enum
 from datetime import datetime
 from sqlalchemy import Column, Integer, String, DateTime, Text, Enum, ForeignKey, Index, Uuid
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, synonym
 from backend.app.core.database import Base
 
 
@@ -16,50 +16,70 @@ class MessageType(str, enum.Enum):
     DOCUMENT = "DOCUMENT"
     AUDIO = "AUDIO"
     VIDEO = "VIDEO"
+    STICKER = "STICKER"
+    LOCATION = "LOCATION"
+    CONTACT = "CONTACT"
     TEMPLATE = "TEMPLATE"
+    UNKNOWN = "UNKNOWN"
     OTHER = "OTHER"
 
 
 class ConversationMessageStatus(str, enum.Enum):
-    RECEIVED = "RECEIVED"
+    PENDING = "PENDING"
     SENT = "SENT"
     DELIVERED = "DELIVERED"
     READ = "READ"
     FAILED = "FAILED"
+    RECEIVED = "RECEIVED"
 
 
 class Message(Base):
     """
     Represents an individual message exchanged within a Conversation.
-    Maintains a strict UNIQUE constraint on wa_message_id to enforce idempotency.
+    Enforces idempotency via unique external_message_id (wamid) and client_message_id.
     """
     __tablename__ = "messages"
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     user_id = Column(Uuid(as_uuid=False), nullable=True, index=True)
     conversation_id = Column(Integer, ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False, index=True)
-    
+
     direction = Column(Enum(MessageDirection), nullable=False, index=True)
     message_type = Column(Enum(MessageType), default=MessageType.TEXT, nullable=False)
     body = Column(Text, nullable=True)
-    
+
     # Meta WhatsApp Message ID (e.g. wamid.HBgM...) with strict UNIQUE constraint
     wa_message_id = Column(String(150), unique=True, index=True, nullable=True)
+    external_message_id = synonym("wa_message_id")
+
+    # Outbound Client Request Idempotency Key (UUID from Frontend)
+    client_message_id = Column(String(100), unique=True, index=True, nullable=True)
 
     # Media metadata (for IMAGE, DOCUMENT, AUDIO, VIDEO, STICKER)
     media_id = Column(String(255), nullable=True, index=True)
     media_mime_type = Column(String(100), nullable=True)
     media_filename = Column(String(255), nullable=True)
     media_caption = Column(Text, nullable=True)
-    
+
     sender_phone = Column(String(50), nullable=False, index=True)
     recipient_phone = Column(String(50), nullable=False, index=True)
     sender_name = Column(String(100), nullable=True)
-    
-    status = Column(Enum(ConversationMessageStatus), default=ConversationMessageStatus.RECEIVED, nullable=False, index=True)
+
+    status = Column(
+        Enum(ConversationMessageStatus),
+        default=ConversationMessageStatus.RECEIVED,
+        nullable=False,
+        index=True,
+    )
     error_code = Column(Integer, nullable=True)
     error_message = Column(Text, nullable=True)
-    
+
+    # Granular message delivery lifecycle timestamps
+    sent_at = Column(DateTime, nullable=True)
+    delivered_at = Column(DateTime, nullable=True)
+    read_at = Column(DateTime, nullable=True)
+    failed_at = Column(DateTime, nullable=True)
+
     external_timestamp = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
@@ -70,4 +90,5 @@ class Message(Base):
     __table_args__ = (
         Index("idx_msg_conv_created", "conversation_id", "created_at"),
         Index("idx_msg_conv_id", "conversation_id", "id"),
+        Index("idx_msg_client_id", "client_message_id"),
     )

@@ -98,7 +98,7 @@ class WhatsAppCloudApiClient:
     ):
         self.access_token = access_token or settings.WHATSAPP_CLOUD_ACCESS_TOKEN
         self.phone_number_id = phone_number_id or settings.WHATSAPP_CLOUD_PHONE_NUMBER_ID
-        self.api_version = api_version or settings.WHATSAPP_CLOUD_API_VERSION
+        self.api_version = api_version or settings.effective_meta_api_version
         self.base_url = (base_url or settings.WHATSAPP_CLOUD_GRAPH_API_BASE_URL).rstrip("/")
         self.timeout = timeout
 

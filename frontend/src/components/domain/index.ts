@@ -10,3 +10,7 @@ export * from './ConversationList';
 export * from './TemplateSelectModal';
 export * from './CampaignGroupCard';
 export * from './NewChatModal';
+export * from './WhatsAppNumberCard';
+export * from './NewWhatsAppNumberModal';
+export * from './EditWhatsAppNumberModal';
+export * from './WhatsAppQrConnectModal';

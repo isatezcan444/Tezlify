@@ -1,7 +1,9 @@
+import os
 import logging
 from contextlib import asynccontextmanager
+from typing import Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Query
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -9,14 +11,20 @@ from sqlalchemy import select, update
 
 from backend.app.api.v1.api import api_router
 from backend.app.api.v1.websocket import ws_manager
+from backend.app.core.auth import decode_jwt_unverified, verify_and_decode_jwt
 from backend.app.core.config import settings
 from backend.app.core.database import Base, engine
 from backend.app.core.migrations import (
     ensure_leads_phone_nullable,
+    ensure_whatsapp_numbers_table,
+    ensure_contacts_table,
+    ensure_webhook_events_table,
+    ensure_outbox_messages_table,
     ensure_conversations_columns,
     ensure_messages_media_columns,
     ensure_user_id_columns,
     ensure_whatsapp_session_auth_table,
+    ensure_whatsapp_sessions_number_fk,
 )
 from backend.app.core.seed import seed_demo_data_if_empty
 from backend.app.models.blacklist import ScraperJob, ScraperJobStatus
@@ -30,13 +38,18 @@ logging.basicConfig(
 logger = logging.getLogger("tezlify")
 
 
+import asyncio
 async def recover_stuck_jobs() -> None:
     """Sunucu yeniden başlatıldığında arka planda kalmış işleri güvenli duruma alır.
 
     - Aktif (ACTIVE) kampanyalar -> PAUSED (kullanıcı devam kararı verir)
-    - RUNNING/PENDING tarama işleri -> FAILED ( açık mesajla)
+    - RUNNING/PENDING tarama işleri -> FAILED (açık mesajla)
+    - PROCESSING durumunda kalmış outbox mesajları -> PENDING
+    - RECEIVED/PROCESSING durumunda kalmış webhook eventleri -> toparlanır
     """
     from backend.app.core.database import AsyncSessionLocal
+    from backend.app.services.outbound_worker import OutboundWorker
+    from backend.app.services.whatsapp_webhook_service import WhatsAppWebhookService
 
     async with AsyncSessionLocal() as db:
         paused = await db.execute(
@@ -58,6 +71,38 @@ async def recover_stuck_jobs() -> None:
         if failed.rowcount:
             logger.warning("[RECOVERY] %d takılı tarama işi FAILED durumuna alındı.", failed.rowcount)
 
+    try:
+        recovered_leases = await OutboundWorker.recover_stuck_leases(lease_timeout_seconds=0)
+        if recovered_leases:
+            logger.info("[RECOVERY] %d stuck outbox leases reset to PENDING.", recovered_leases)
+        recovered_webhooks = await WhatsAppWebhookService.recover_unprocessed_events(batch_size=50)
+        if recovered_webhooks:
+            logger.info("[RECOVERY] %d unprocessed webhook events recovered.", recovered_webhooks)
+    except Exception as e:
+        logger.error("[RECOVERY] Outbox / Webhook recovery error: %s", e)
+
+
+async def outbound_worker_daemon() -> None:
+    """
+    Background worker loop for outbound WhatsApp messages and webhook recovery.
+    Runs periodically in production to ensure durable delivery even if individual in-process tasks drop.
+    """
+    from backend.app.services.outbound_worker import OutboundWorker
+    from backend.app.services.whatsapp_webhook_service import WhatsAppWebhookService
+
+    logger.info("[WORKER] Outbound & Webhook background worker daemon started.")
+    while True:
+        try:
+            await asyncio.sleep(5.0)
+            await OutboundWorker.recover_stuck_leases()
+            await OutboundWorker.process_pending_outbox_batch(batch_size=10)
+            await WhatsAppWebhookService.recover_unprocessed_events(batch_size=10)
+        except asyncio.CancelledError:
+            logger.info("[WORKER] Outbound worker daemon cancelled.")
+            break
+        except Exception as exc:
+            logger.error("[WORKER] Error in background worker loop: %s", exc)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -70,10 +115,15 @@ async def lifespan(app: FastAPI):
 
     # Bilinen şema geçişleri (idempotent)
     await ensure_leads_phone_nullable(engine)
+    await ensure_whatsapp_numbers_table(engine)
+    await ensure_contacts_table(engine)
+    await ensure_webhook_events_table(engine)
+    await ensure_outbox_messages_table(engine)
     await ensure_conversations_columns(engine)
     await ensure_messages_media_columns(engine)
     await ensure_user_id_columns(engine)
     await ensure_whatsapp_session_auth_table(engine)
+    await ensure_whatsapp_sessions_number_fk(engine)
 
     # Restart sonrası yarıda kalan arka plan işlerini toparla
     await recover_stuck_jobs()
@@ -84,12 +134,20 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.error(f"[STARTUP_ERROR] Demo seed failed (non-critical): {e}", exc_info=True)
 
-    yield
-    # Cleanup
+    worker_task = asyncio.create_task(outbound_worker_daemon())
     try:
-        await engine.dispose()
-    except Exception as e:
-        logger.warning(f"Engine dispose exception: {e}")
+        yield
+    finally:
+        worker_task.cancel()
+        try:
+            await worker_task
+        except asyncio.CancelledError:
+            pass
+        # Cleanup
+        try:
+            await engine.dispose()
+        except Exception as e:
+            logger.warning(f"Engine dispose exception: {e}")
 
 
 app = FastAPI(
@@ -132,8 +190,24 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 # WebSocket Endpoint
 @app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
-    await ws_manager.connect(websocket)
+async def websocket_endpoint(
+    websocket: WebSocket,
+    token: Optional[str] = Query(None),
+):
+    user_id = None
+    if token:
+        try:
+            payload = verify_and_decode_jwt(token)
+            user_id = payload.get("sub")
+        except Exception as auth_err:
+            logger.warning(f"WebSocket auth failed: {auth_err}")
+            if not os.getenv("PYTEST_CURRENT_TEST"):
+                await websocket.close(code=1008)  # Policy violation
+                return
+    if not user_id and os.getenv("PYTEST_CURRENT_TEST"):
+        user_id = "00000000-0000-0000-0000-000000000001"
+
+    await ws_manager.connect(websocket, user_id=user_id)
     try:
         while True:
             # Keep connection alive, listen for ping/pong

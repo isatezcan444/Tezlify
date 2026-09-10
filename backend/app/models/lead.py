@@ -101,7 +101,7 @@ class Lead(Base):
     last_contacted_at = Column(DateTime, nullable=True)
 
     # Relationships
-    conversations = relationship("Conversation", back_populates="lead", cascade="all, delete-orphan", passive_deletes=True)
+    conversations = relationship("Conversation", back_populates="lead", passive_deletes=True)
 
     __table_args__ = (
         Index("idx_lead_city_category", "city", "category"),

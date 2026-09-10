@@ -11,7 +11,8 @@ import {
   Download,
   Eye,
   RotateCcw,
-  Loader2
+  Loader2,
+  Clock
 } from 'lucide-react';
 import { Message } from '../../types';
 import { Tooltip } from '../ui/Tooltip';
@@ -50,6 +51,12 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({ message, onRetry }) => {
   const renderStatusIcon = () => {
     if (isInbound) return null;
     switch (message.status) {
+      case 'PENDING':
+        return (
+          <Tooltip content={t('whatsapp.msgPending') || 'Kuyrukta / Gönderiliyor'}>
+            <Clock className="w-3.5 h-3.5 text-white/60 animate-pulse" />
+          </Tooltip>
+        );
       case 'SENT':
         return (
           <Tooltip content={t('leads.msgSent') || 'Gönderildi'}>

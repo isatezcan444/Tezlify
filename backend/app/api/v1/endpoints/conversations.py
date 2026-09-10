@@ -1,9 +1,11 @@
 import logging
 import os
+import uuid
+import json
 import hashlib
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Query, Header
+from fastapi import APIRouter, Depends, HTTPException, Query, Header, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, or_, and_, func
 from sqlalchemy.orm import selectinload
@@ -13,14 +15,19 @@ from backend.app.core.search_utils import escape_like_literal
 from backend.app.core.auth import AuthUser, get_current_user, get_user_filter
 from backend.app.api.v1.websocket import ws_manager
 from backend.app.models.conversation import Conversation, ConversationStatus
-from backend.app.models.message import Message, MessageDirection
+from backend.app.models.message import Message, MessageDirection, MessageType, ConversationMessageStatus
+from backend.app.models.whatsapp_number import WhatsAppNumber, WhatsAppNumberStatus, WhatsAppNumberProvider
+from backend.app.models.outbox_message import OutboxMessage, OutboxMessageStatus
 from backend.app.models.lead import Lead
+from backend.app.models.contact import Contact
 from backend.app.models.whatsapp_session import WhatsAppSession, SessionStatus
 from backend.app.services.whatsapp_outbound_service import WhatsAppOutboundService
 from backend.app.services.whatsapp_template_service import WhatsAppTemplateService
 from backend.app.services.whatsapp_gateway_client import gateway_client
 from backend.app.services.whatsapp_chat_sync_service import WhatsAppChatSyncService
 from backend.app.services.phone_service import PhoneService
+from backend.app.services.customer_window_service import CustomerWindowService
+from backend.app.services.outbound_worker import OutboundWorker
 
 def _conversation_phone_key(phone_e164: Optional[str], phone: Optional[str]) -> Optional[str]:
     if phone and "@g.us" in phone:
@@ -95,8 +102,9 @@ async def _fetch_paginated_messages(
 @router.get("", response_model=List[ConversationResponse])
 async def list_conversations(
     status: Optional[ConversationStatus] = None,
+    whatsapp_number_id: Optional[int] = Query(None, description="Filter by WhatsApp Number ID"),
     unread_only: bool = Query(False, description="Filter conversations with unread_count > 0"),
-    search: Optional[str] = Query(None, description="Search lead name or phone number"),
+    search: Optional[str] = Query(None, description="Search contact/lead name or phone number"),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_db),
@@ -105,6 +113,7 @@ async def list_conversations(
     """
     High-performance conversation list query.
     Direct indexed sort by last_message_at without heavy correlated subqueries.
+    Enriched with multi-number and Contact/Lead associations and 24h window state.
     """
     effective_last_at = func.coalesce(Conversation.last_message_at, Conversation.created_at)
 
@@ -119,8 +128,13 @@ async def list_conversations(
 
     stmt = (
         select(Conversation)
-        .join(Conversation.lead)
-        .options(selectinload(Conversation.lead))
+        .outerjoin(Conversation.lead)
+        .outerjoin(Conversation.contact)
+        .options(
+            selectinload(Conversation.lead),
+            selectinload(Conversation.contact),
+            selectinload(Conversation.whatsapp_number),
+        )
         .where(or_(get_user_filter(Conversation.user_id, current_user.id), Conversation.user_id.is_(None)))
         .order_by(effective_last_at.desc().nullslast(), Conversation.id.desc())
         .offset(offset)
@@ -129,6 +143,9 @@ async def list_conversations(
 
     if status:
         stmt = stmt.where(Conversation.status == status)
+
+    if whatsapp_number_id is not None:
+        stmt = stmt.where(Conversation.whatsapp_number_id == whatsapp_number_id)
 
     if unread_only:
         stmt = stmt.where(Conversation.unread_count > 0)
@@ -139,6 +156,8 @@ async def list_conversations(
             Lead.name.ilike(f"%{q_clean}%", escape="\\"),
             Lead.phone_e164.ilike(f"%{q_clean}%", escape="\\"),
             Lead.phone.ilike(f"%{q_clean}%", escape="\\"),
+            Contact.display_name.ilike(f"%{q_clean}%", escape="\\"),
+            Contact.phone_e164.ilike(f"%{q_clean}%", escape="\\"),
         )
         stmt = stmt.where(search_filter)
 
@@ -164,27 +183,55 @@ async def list_conversations(
         lead_key = None
         if conv.lead is not None:
             owner_session = (conv.lead.custom_data or {}).get("whatsapp_session_name")
-            if owner_session and owner_session not in active_session_names:
+            if conv.whatsapp_number_id is None and owner_session and owner_session not in active_session_names:
                 continue
             lead_key = _conversation_phone_key(conv.lead.phone_e164, conv.lead.phone)
-        if lead_key is None:
-            lead_key = f"lead:{conv.lead_id}"
-        if lead_key in seen_keys:
-            continue
-        seen_keys.add(lead_key)
+        elif conv.contact is not None:
+            lead_key = _conversation_phone_key(conv.contact.phone_e164, conv.contact.phone_e164)
 
-        lead_custom = conv.lead.custom_data or {} if conv.lead else {}
-        is_group = bool(
-            (conv.lead and (conv.lead.phone.endswith("@g.us") or conv.lead.category == "WhatsApp Grubu"))
-            or lead_custom.get("is_group")
-        )
-        lead_avatar = lead_custom.get("avatar_url")
-        lead_phone_display = (conv.lead.phone if is_group else conv.lead.phone_e164) if conv.lead else None
+        if lead_key is None:
+            lead_key = f"conv:{conv.id}"
+
+        # Distinct identity by WhatsApp number + lead key to avoid conflating different business numbers
+        full_identity = f"wnum_{conv.whatsapp_number_id}_{lead_key}" if conv.whatsapp_number_id else f"lead_{lead_key}"
+        if full_identity in seen_keys:
+            continue
+        seen_keys.add(full_identity)
+
+        # Resolve Contact / Lead display data
+        lead_name = None
+        lead_phone_display = None
+        lead_avatar = None
+        is_group = False
+
+        if conv.lead is not None:
+            lead_name = conv.lead.name
+            lead_custom = conv.lead.custom_data or {}
+            is_group = bool(
+                (conv.lead.phone and (conv.lead.phone.endswith("@g.us") or conv.lead.category == "WhatsApp Grubu"))
+                or lead_custom.get("is_group")
+            )
+            lead_avatar = lead_custom.get("avatar_url")
+            lead_phone_display = (conv.lead.phone if is_group else conv.lead.phone_e164)
+
+        if not lead_name and conv.contact is not None:
+            lead_name = conv.contact.display_name or conv.contact.phone_e164
+            lead_phone_display = conv.contact.phone_e164
+            lead_avatar = (conv.contact.custom_attributes or {}).get("avatar_url")
+        elif conv.contact is not None and not lead_phone_display:
+            lead_phone_display = conv.contact.phone_e164
+
         preview = conv.last_message_preview or fallback_previews.get(conv.id)
+        is_baileys_conv = bool(conv.whatsapp_number and conv.whatsapp_number.provider == WhatsAppNumberProvider.BAILEYS_QR)
+        window_status = CustomerWindowService.check_window(conv)
+        if is_baileys_conv:
+            window_status["is_open"] = True
 
         item = ConversationResponse(
             id=conv.id,
             lead_id=conv.lead_id,
+            whatsapp_number_id=conv.whatsapp_number_id,
+            contact_id=conv.contact_id,
             channel=conv.channel,
             status=conv.status,
             last_message_at=conv.last_message_at or conv.created_at,
@@ -192,11 +239,14 @@ async def list_conversations(
             last_read_at=conv.last_read_at,
             created_at=conv.created_at,
             updated_at=conv.updated_at,
-            lead_name=conv.lead.name if conv.lead else None,
+            lead_name=lead_name,
             lead_phone=lead_phone_display,
             lead_avatar_url=lead_avatar,
             is_group=is_group,
             last_message_preview=preview,
+            is_window_open=window_status["is_open"],
+            last_inbound_at=conv.last_customer_message_at,
+            seconds_remaining=window_status["seconds_remaining"],
         )
         result.append(item)
 
@@ -231,7 +281,11 @@ async def get_conversation(
                 Conversation.user_id.is_(None),
             ),
         )
-        .options(selectinload(Conversation.lead))
+        .options(
+            selectinload(Conversation.lead),
+            selectinload(Conversation.contact),
+            selectinload(Conversation.whatsapp_number),
+        )
     )
     res = await db.execute(stmt)
     conv = res.scalar_one_or_none()
@@ -243,21 +297,48 @@ async def get_conversation(
         db=db, conversation_id=conv.id, limit=limit, before=before
     )
 
-
     latest_msg_body = messages_dto[-1].body if messages_dto else None
-    window_info = await WhatsAppOutboundService.check_24h_window(conv.id, db)
+    if conv.customer_service_window_expires_at is not None:
+        window_status = CustomerWindowService.check_window(conv)
+        window_info = {
+            "is_window_open": window_status["is_open"],
+            "last_inbound_at": conv.last_customer_message_at,
+            "seconds_remaining": window_status["seconds_remaining"],
+        }
+    else:
+        window_info = await WhatsAppOutboundService.check_24h_window(conv.id, db)
 
-    lead_custom = conv.lead.custom_data or {} if conv.lead else {}
-    is_group = bool(
-        (conv.lead and (conv.lead.phone.endswith("@g.us") or conv.lead.category == "WhatsApp Grubu"))
-        or lead_custom.get("is_group")
-    )
-    lead_avatar = lead_custom.get("avatar_url")
-    lead_phone_display = (conv.lead.phone if is_group else conv.lead.phone_e164) if conv.lead else None
+    is_baileys_conv = bool(conv.whatsapp_number and conv.whatsapp_number.provider == WhatsAppNumberProvider.BAILEYS_QR)
+    if is_baileys_conv:
+        window_info["is_window_open"] = True
+
+    lead_name = None
+    lead_phone_display = None
+    lead_avatar = None
+    is_group = False
+
+    if conv.lead is not None:
+        lead_name = conv.lead.name
+        lead_custom = conv.lead.custom_data or {}
+        is_group = bool(
+            (conv.lead.phone and (conv.lead.phone.endswith("@g.us") or conv.lead.category == "WhatsApp Grubu"))
+            or lead_custom.get("is_group")
+        )
+        lead_avatar = lead_custom.get("avatar_url")
+        lead_phone_display = (conv.lead.phone if is_group else conv.lead.phone_e164)
+
+    if not lead_name and conv.contact is not None:
+        lead_name = conv.contact.display_name or conv.contact.phone_e164
+        lead_phone_display = conv.contact.phone_e164
+        lead_avatar = (conv.contact.custom_attributes or {}).get("avatar_url")
+    elif conv.contact is not None and not lead_phone_display:
+        lead_phone_display = conv.contact.phone_e164
 
     return ConversationDetailResponse(
         id=conv.id,
         lead_id=conv.lead_id,
+        whatsapp_number_id=conv.whatsapp_number_id,
+        contact_id=conv.contact_id,
         channel=conv.channel,
         status=conv.status,
         last_message_at=conv.last_message_at,
@@ -265,7 +346,7 @@ async def get_conversation(
         last_read_at=conv.last_read_at,
         created_at=conv.created_at,
         updated_at=conv.updated_at,
-        lead_name=conv.lead.name if conv.lead else None,
+        lead_name=lead_name,
         lead_phone=lead_phone_display,
         lead_avatar_url=lead_avatar,
         is_group=is_group,
@@ -309,26 +390,233 @@ async def get_conversation_messages(
 async def send_message_to_conversation(
     conversation_id: int,
     payload: MessageSendRequest,
+    background_tasks: BackgroundTasks,
     idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key"),
     db: AsyncSession = Depends(get_db),
     current_user: AuthUser = Depends(get_current_user),
 ):
     """
-    Sends an outbound WhatsApp message to the lead within the specified conversation.
-    Validates conversation state, dispatches via Meta Cloud API or simulation,
-    persists OUTBOUND Message entity, and broadcasts WebSocket event.
+    Sends an outbound WhatsApp message (Text or Template) with durable outbox,
+    24h customer window enforcement, and strict multi-tenant isolation.
     """
-    conv = await db.get(Conversation, conversation_id)
-    if not conv or (os.getenv("PYTEST_CURRENT_TEST") is None and conv.user_id != current_user.id):
-        raise HTTPException(status_code=404, detail="Conversation not found")
-
-    msg = await WhatsAppOutboundService.send_conversation_message(
-        db=db,
-        conversation_id=conversation_id,
-        text=payload.body,
-        idempotency_key=idempotency_key,
+    # 1. Fetch Conversation with relations
+    stmt = (
+        select(Conversation)
+        .where(Conversation.id == conversation_id)
+        .options(
+            selectinload(Conversation.whatsapp_number),
+            selectinload(Conversation.contact),
+            selectinload(Conversation.lead),
+        )
     )
-    return MessageResponse.model_validate(msg)
+    conv = (await db.execute(stmt)).scalar_one_or_none()
+    if not conv:
+        raise HTTPException(status_code=404, detail="Diyalog bulunamadı.")
+
+    # 2. Tenant Isolation Boundary
+    if conv.user_id is not None and current_user.id is not None and conv.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Diyalog bulunamadı.")
+
+    # 3. Legacy CRM Lead fallback (for pre-Phase-4 tests without WhatsAppNumber)
+    if conv.whatsapp_number_id is None and conv.lead_id is not None and conv.user_id is None:
+        msg = await WhatsAppOutboundService.send_conversation_message(
+            db=db,
+            conversation_id=conversation_id,
+            text=payload.body,
+            idempotency_key=idempotency_key or payload.client_message_id,
+        )
+        return MessageResponse.model_validate(msg)
+
+    # 4. Conversation State Validation
+    if conv.status == ConversationStatus.CLOSED:
+        raise HTTPException(
+            status_code=400,
+            detail="Kapalı bir diyaloğa mesaj gönderilemez. Lütfen önce diyaloğu yeniden açın.",
+        )
+
+    # 5. WhatsApp Number Validation
+    if not conv.whatsapp_number_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Bağlı bir WhatsApp hattı bulunamadı. Lütfen 'Aktif Numaralar' sekmesinden bir WhatsApp hattı bağlayın.",
+        )
+
+    wanum = conv.whatsapp_number
+    if not wanum:
+        wanum = await db.get(WhatsAppNumber, conv.whatsapp_number_id)
+
+    if not wanum:
+        raise HTTPException(
+            status_code=400,
+            detail="Bağlı bir WhatsApp hattı bulunamadı. Lütfen 'Aktif Numaralar' sekmesinden bir WhatsApp hattı bağlayın.",
+        )
+
+    # Tenant isolation check on the WhatsApp number
+    if wanum.user_id is not None and current_user.id is not None and wanum.user_id != current_user.id:
+        raise HTTPException(
+            status_code=403,
+            detail="Bu WhatsApp hattına erişim yetkiniz yok.",
+        )
+
+    if wanum.status != WhatsAppNumberStatus.ACTIVE or wanum.deleted_at is not None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"WhatsApp hattı aktif değil (Durum: {wanum.status.value}).",
+        )
+
+    is_baileys = (wanum.provider == WhatsAppNumberProvider.BAILEYS_QR)
+
+    if not is_baileys and not wanum.encrypted_access_token:
+        raise HTTPException(
+            status_code=400,
+            detail="WhatsApp hattı için geçerli bir erişim anahtarı bulunamadı.",
+        )
+
+    # For BAILEYS_QR, ensure active connected session exists
+    if is_baileys:
+        sess = wanum.session
+        if not sess:
+            sess_stmt = select(WhatsAppSession).where(WhatsAppSession.whatsapp_number_id == wanum.id)
+            sess = (await db.execute(sess_stmt)).scalar_one_or_none()
+        if not sess:
+            raise HTTPException(
+                status_code=400,
+                detail="WhatsApp QR oturumu bulunamadı. Lütfen hattı bağlayın.",
+            )
+        if sess.status != SessionStatus.CONNECTED:
+            raise HTTPException(
+                status_code=400,
+                detail=f"WhatsApp hattı bağlı değil (Oturum: {sess.session_name}, Durum: {sess.status.value}).",
+            )
+
+    # 6. Recipient Phone Resolution (Conversation -> Contact -> phone_e164)
+    recipient_raw = None
+    if conv.contact and conv.contact.phone_e164:
+        recipient_raw = conv.contact.phone_e164
+    elif conv.lead and (conv.lead.phone_e164 or conv.lead.phone):
+        recipient_raw = conv.lead.phone_e164 or conv.lead.phone
+
+    if not recipient_raw:
+        raise HTTPException(
+            status_code=400,
+            detail="Diyalog ile ilişkili geçerli bir alıcı telefon numarası bulunamadı.",
+        )
+
+    norm_data = PhoneService.normalize_to_e164(recipient_raw)
+    recipient_e164 = norm_data["e164"] if (norm_data and norm_data.get("is_valid")) else recipient_raw
+
+    # Group messaging check (rejected in this phase)
+    if is_baileys and (recipient_raw.endswith("@g.us") or (recipient_e164 and recipient_e164.endswith("@g.us"))):
+        raise HTTPException(
+            status_code=400,
+            detail="Grup mesajları bu fazda desteklenmemektedir.",
+        )
+
+    # 7. Message Type & 24-Hour Customer Window Enforcement
+    msg_type_str = (payload.message_type or payload.type or "text").strip().lower()
+    is_template = msg_type_str == "template"
+
+    # Enforce 24h customer window only for META_CLOUD (Baileys is not restricted to 24h window)
+    if not is_baileys:
+        is_window_open = CustomerWindowService.is_within_24h_window(conv)
+        if not is_window_open and not is_template:
+            raise HTTPException(
+                status_code=422,
+                detail="CUSTOMER_SERVICE_WINDOW_EXPIRED: 24 saatlik müşteri iletişim penceresi kapandı. Yalnızca onaylı bir Meta şablonu (template) gönderilebilir.",
+            )
+
+    if is_template:
+        if not payload.template_name or not payload.template_name.strip():
+            raise HTTPException(
+                status_code=422,
+                detail="Şablon adı (template_name) zorunludur.",
+            )
+        if not payload.template_language or not payload.template_language.strip():
+            raise HTTPException(
+                status_code=422,
+                detail="Şablon dili (template_language) zorunludur.",
+            )
+        body_content = payload.body or f"[Template: {payload.template_name.strip()}]"
+    else:
+        clean_body = (payload.body or "").strip()
+        if not clean_body:
+            raise HTTPException(status_code=422, detail="Mesaj metni boş olamaz.")
+        if len(clean_body) > 4096:
+            raise HTTPException(status_code=422, detail="Mesaj metni 4096 karakterden uzun olamaz.")
+        body_content = clean_body
+
+    # 8. Idempotency Check (client_message_id)
+    client_mid = payload.client_message_id or idempotency_key
+    if client_mid:
+        existing_stmt = select(Message).where(Message.client_message_id == client_mid)
+        existing_msg = (await db.execute(existing_stmt)).scalar_one_or_none()
+        if existing_msg:
+            return MessageResponse.model_validate(existing_msg)
+    else:
+        client_mid = f"cmsg_{uuid.uuid4().hex}"
+
+    # 9. Atomic Message PENDING + Outbox Creation in Single DB Transaction
+    now_ts = datetime.now(timezone.utc).replace(tzinfo=None)
+    effective_user_id = conv.user_id or current_user.id
+    msg_type_enum = MessageType.TEMPLATE if is_template else MessageType.TEXT
+
+    new_msg = Message(
+        user_id=effective_user_id,
+        conversation_id=conv.id,
+        direction=MessageDirection.OUTBOUND,
+        message_type=msg_type_enum,
+        body=body_content,
+        sender_phone=wanum.phone_number_e164 or wanum.display_phone_number,
+        recipient_phone=recipient_e164,
+        client_message_id=client_mid,
+        status=ConversationMessageStatus.PENDING,
+        wa_message_id=None,
+        created_at=now_ts,
+        updated_at=now_ts,
+    )
+    db.add(new_msg)
+    await db.flush()  # Populates new_msg.id
+
+    outbox_payload = None
+    if is_template:
+        outbox_payload = json.dumps({
+            "message_type": "template",
+            "provider": "META_CLOUD",
+            "template_name": payload.template_name.strip(),
+            "template_language": payload.template_language.strip(),
+            "template_parameters": payload.template_parameters,
+        })
+    else:
+        outbox_payload = json.dumps({
+            "message_type": "text",
+            "provider": "BAILEYS_QR" if is_baileys else "META_CLOUD",
+        })
+
+    outbox_job = OutboxMessage(
+        user_id=effective_user_id,
+        message_id=new_msg.id,
+        whatsapp_number_id=wanum.id,
+        event_type="SEND_MESSAGE",
+        payload_json=outbox_payload,
+        status=OutboxMessageStatus.PENDING,
+        available_at=now_ts,
+        created_at=now_ts,
+    )
+    db.add(outbox_job)
+
+    if conv.status == ConversationStatus.ARCHIVED:
+        conv.status = ConversationStatus.ACTIVE
+    conv.last_message_at = now_ts
+    conv.last_message_preview = body_content
+    conv.updated_at = now_ts
+
+    await db.commit()
+    await db.refresh(new_msg)
+
+    # 10. Queue worker task in background
+    background_tasks.add_task(OutboundWorker.process_outbox_message_by_id, outbox_job.id)
+
+    return MessageResponse.model_validate(new_msg)
 
 
 @router.post("/{conversation_id}/templates/send", response_model=MessageResponse, status_code=201)
@@ -458,7 +746,19 @@ async def get_lead_conversation(
         db=db, conversation_id=conv.id, limit=limit, before=before
     )
     latest_msg_body = messages_dto[-1].body if messages_dto else None
-    window_info = await WhatsAppOutboundService.check_24h_window(conv.id, db)
+    if conv.customer_service_window_expires_at is not None:
+        window_status = CustomerWindowService.check_window(conv)
+        window_info = {
+            "is_window_open": window_status["is_open"],
+            "last_inbound_at": conv.last_customer_message_at,
+            "seconds_remaining": window_status["seconds_remaining"],
+        }
+    else:
+        window_info = await WhatsAppOutboundService.check_24h_window(conv.id, db)
+
+    is_baileys_conv = bool(conv.whatsapp_number and conv.whatsapp_number.provider == WhatsAppNumberProvider.BAILEYS_QR)
+    if is_baileys_conv:
+        window_info["is_window_open"] = True
 
     return ConversationDetailResponse(
         id=conv.id,
@@ -520,6 +820,7 @@ async def update_conversation_status(
     if old_status != conv.status:
         await ws_manager.broadcast({
             "event": "conversation_status_updated",
+            "user_id": str(conv.user_id) if conv.user_id else None,
             "conversation_id": conv.id,
             "lead_id": conv.lead_id,
             "status": conv.status.value,
@@ -572,6 +873,7 @@ async def mark_conversation_as_read(
     # Broadcast conversation_read event to WebSocket
     await ws_manager.broadcast({
         "event": "conversation_read",
+        "user_id": str(conv.user_id) if conv.user_id else None,
         "conversation_id": conv.id,
         "lead_id": conv.lead_id,
         "unread_count": 0,
@@ -732,20 +1034,53 @@ async def start_conversation(
         ),
     )
     conv = (await db.execute(conv_stmt)).scalars().first()
+
+    # Resolve or create Contact for robust identity
+    contact_stmt = select(Contact).where(
+        get_user_filter(Contact.user_id, current_user.id),
+        Contact.phone_e164 == e164,
+    )
+    contact = (await db.execute(contact_stmt)).scalars().first()
+    if not contact:
+        contact = Contact(
+            user_id=current_user.id,
+            lead_id=lead.id,
+            phone_e164=e164,
+            display_name=req.name.strip() if req.name else None,
+        )
+        db.add(contact)
+        await db.flush()
+
+    # Find active WhatsAppNumber for this tenant
+    wanum_stmt = select(WhatsAppNumber).where(
+        get_user_filter(WhatsAppNumber.user_id, current_user.id),
+        WhatsAppNumber.status == WhatsAppNumberStatus.ACTIVE,
+        WhatsAppNumber.deleted_at.is_(None),
+    ).order_by(WhatsAppNumber.id.asc()).limit(1)
+    wanum = (await db.execute(wanum_stmt)).scalars().first()
+
     if not conv:
         conv = Conversation(
             user_id=current_user.id,
             lead_id=lead.id,
+            contact_id=contact.id if contact else None,
+            whatsapp_number_id=wanum.id if wanum else None,
             channel="WHATSAPP",
             status=ConversationStatus.ACTIVE,
         )
         db.add(conv)
         await db.flush()
+    else:
+        if not conv.contact_id and contact:
+            conv.contact_id = contact.id
+        if not conv.whatsapp_number_id and wanum:
+            conv.whatsapp_number_id = wanum.id
+
     await db.commit()
     await db.refresh(lead)
     await db.refresh(conv)
 
-    # If initial message provided, dispatch it through active WhatsApp session
+    # If initial message provided, dispatch it
     if req.message and req.message.strip():
         sess_stmt = select(WhatsAppSession).where(
             or_(
@@ -778,7 +1113,9 @@ async def start_conversation(
     # Broadcast conversation list update
     await ws_manager.broadcast({
         "event": "new_conversation",
+        "user_id": str(current_user.id) if current_user.id else None,
         "conversation_id": conv.id,
+        "whatsapp_number_id": conv.whatsapp_number_id,
         "lead_id": lead.id,
         "lead_name": lead.name,
         "lead_phone": lead.phone_e164,
@@ -787,6 +1124,8 @@ async def start_conversation(
     return ConversationDetailResponse(
         id=conv.id,
         lead_id=lead.id,
+        whatsapp_number_id=conv.whatsapp_number_id,
+        contact_id=conv.contact_id,
         channel=conv.channel,
         status=conv.status,
         last_message_at=conv.last_message_at,

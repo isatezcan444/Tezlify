@@ -21,6 +21,12 @@ import {
   CampaignGroupCreatePayload,
   AddLeadsToGroupResponse,
   UserProfile,
+  WhatsAppNumber,
+  WhatsAppNumberValidatePayload,
+  WhatsAppNumberValidateResult,
+  WhatsAppNumberConnectPayload,
+  WhatsAppNumberUpdatePayload,
+  WhatsAppNumberVerifyResult,
 } from '../types';
 
 const isHttps = typeof window !== 'undefined' && window.location.protocol === 'https:';
@@ -503,7 +509,86 @@ export class ApiClient {
     return res.json();
   }
 
-  // --- WhatsApp ---
+  // --- WhatsApp Cloud API Numbers ---
+  static async getWhatsAppNumbers(): Promise<WhatsAppNumber[]> {
+    const res = await authFetch(`${API_BASE}/whatsapp/numbers`);
+    if (!res.ok) throw new Error('Failed to fetch WhatsApp numbers');
+    return res.json();
+  }
+
+  static async validateWhatsAppNumber(payload: WhatsAppNumberValidatePayload): Promise<WhatsAppNumberValidateResult> {
+    const res = await authFetch(`${API_BASE}/whatsapp/numbers/validate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (!res.ok) {
+      const msg = await parseError(res, 'Numara doğrulanamadı');
+      throw new Error(msg);
+    }
+    return res.json();
+  }
+
+  static async connectWhatsAppNumber(payload: WhatsAppNumberConnectPayload): Promise<WhatsAppNumber> {
+    const res = await authFetch(`${API_BASE}/whatsapp/numbers`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (!res.ok) {
+      const msg = await parseError(res, 'Numara bağlanamadı');
+      throw new Error(msg);
+    }
+    return res.json();
+  }
+
+  static async updateWhatsAppNumber(numberId: number, payload: WhatsAppNumberUpdatePayload): Promise<WhatsAppNumber> {
+    const res = await authFetch(`${API_BASE}/whatsapp/numbers/${numberId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (!res.ok) {
+      const msg = await parseError(res, 'Numara güncellenemedi');
+      throw new Error(msg);
+    }
+    return res.json();
+  }
+
+  static async verifyWhatsAppNumber(numberId: number): Promise<WhatsAppNumberVerifyResult> {
+    const res = await authFetch(`${API_BASE}/whatsapp/numbers/${numberId}/verify`, {
+      method: 'POST'
+    });
+    if (!res.ok) {
+      const msg = await parseError(res, 'Bağlantı doğrulanamadı');
+      throw new Error(msg);
+    }
+    return res.json();
+  }
+
+  static async disconnectWhatsAppNumber(numberId: number): Promise<WhatsAppNumber> {
+    const res = await authFetch(`${API_BASE}/whatsapp/numbers/${numberId}/disconnect`, {
+      method: 'POST'
+    });
+    if (!res.ok) {
+      const msg = await parseError(res, 'Bağlantı kesilemedi');
+      throw new Error(msg);
+    }
+    return res.json();
+  }
+
+  static async deleteWhatsAppNumber(numberId: number): Promise<{ success: boolean; message: string }> {
+    const res = await authFetch(`${API_BASE}/whatsapp/numbers/${numberId}`, {
+      method: 'DELETE'
+    });
+    if (!res.ok) {
+      const msg = await parseError(res, 'Numara silinemedi');
+      throw new Error(msg);
+    }
+    return res.json();
+  }
+
+  // --- WhatsApp Legacy Sessions ---
   static async getWhatsAppSessions(): Promise<WhatsAppSession[]> {
     const res = await authFetch(`${API_BASE}/whatsapp/sessions`);
     if (!res.ok) throw new Error('Failed to fetch WhatsApp sessions');
@@ -667,6 +752,7 @@ export class ApiClient {
   // --- Conversations & WhatsApp Chat ---
   static async getConversations(params?: {
     status?: ConversationStatus;
+    whatsapp_number_id?: number;
     unread_only?: boolean;
     search?: string;
     limit?: number;
@@ -674,6 +760,9 @@ export class ApiClient {
   }): Promise<Conversation[]> {
     const query = new URLSearchParams();
     if (params?.status) query.set('status', params.status);
+    if (params?.whatsapp_number_id !== undefined && params?.whatsapp_number_id !== null) {
+      query.set('whatsapp_number_id', params.whatsapp_number_id.toString());
+    }
     if (params?.unread_only) query.set('unread_only', 'true');
     if (params?.search) query.set('search', params.search);
     if (params?.limit) query.set('limit', params.limit.toString());

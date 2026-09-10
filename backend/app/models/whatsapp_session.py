@@ -1,6 +1,7 @@
 import enum
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, Enum, Text, Uuid
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, Enum, Text, Uuid, ForeignKey
+from sqlalchemy.orm import relationship
 from backend.app.core.database import Base
 
 class SessionStatus(str, enum.Enum):
@@ -15,6 +16,16 @@ class WhatsAppSession(Base):
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     user_id = Column(Uuid(as_uuid=False), nullable=True, index=True)
+
+    # 1:1 Link to Domain Root WhatsAppNumber
+    whatsapp_number_id = Column(
+        Integer,
+        ForeignKey("whatsapp_numbers.id", ondelete="SET NULL"),
+        nullable=True,
+        unique=True,
+        index=True,
+    )
+
     session_name = Column(String(100), unique=True, nullable=False, index=True) # e.g. "Hat-1-Satis"
     phone_number = Column(String(50), nullable=True) # Connected WhatsApp Phone Number
     
@@ -37,6 +48,9 @@ class WhatsAppSession(Base):
     
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    # 1:1 Relationship back to WhatsAppNumber
+    whatsapp_number = relationship("WhatsAppNumber", back_populates="session", lazy="selectin")
 
 
 class WhatsAppSessionAuth(Base):

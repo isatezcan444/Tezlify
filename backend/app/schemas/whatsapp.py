@@ -7,6 +7,7 @@ from backend.app.models.message_log import MessageStatus
 class WhatsAppSessionBase(BaseModel):
     session_name: str
     phone_number: Optional[str] = None
+    whatsapp_number_id: Optional[int] = None
     max_daily_limit: int = 50
 
 class WhatsAppSessionCreate(WhatsAppSessionBase):

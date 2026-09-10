@@ -32,14 +32,25 @@ import {
   Users
 } from 'lucide-react';
 import { ApiClient } from '../api/client';
-import { WhatsAppSession, MessageLog, Conversation, ConversationStatus, Lead, Message } from '../types';
+import { WhatsAppNumber, MessageLog, Conversation, ConversationStatus, ConversationMessageStatus, Lead, Message } from '../types';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 import { Card } from '../components/ui/card';
 import { EmptyState } from '../components/ui/EmptyState';
 import { Avatar } from '../components/ui/Avatar';
 import { WhatsAppIcon } from '../components/ui/whatsapp-icon';
-import { SessionCard, ConversationList, ChatThread, ChatComposer, LeadDetailDrawer, TemplateSelectModal, NewChatModal } from '../components/domain';
+import { 
+  WhatsAppNumberCard, 
+  NewWhatsAppNumberModal, 
+  EditWhatsAppNumberModal, 
+  WhatsAppQrConnectModal,
+  ConversationList, 
+  ChatThread, 
+  ChatComposer, 
+  LeadDetailDrawer, 
+  TemplateSelectModal, 
+  NewChatModal 
+} from '../components/domain';
 import { FilterTab } from '../components/domain/ConversationList';
 import { Slider, Switch } from '../components/forms';
 import { 
@@ -63,7 +74,14 @@ interface WhatsAppHubPageProps {
 export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats }) => {
   const toast = useToast();
   const { t } = useI18n();
-  const [sessions, setSessions] = useState<WhatsAppSession[]>([]);
+  const [whatsAppNumbers, setWhatsAppNumbers] = useState<WhatsAppNumber[]>([]);
+  const [isNewNumberModalOpen, setIsNewNumberModalOpen] = useState(false);
+  const [isQrConnectModalOpen, setIsQrConnectModalOpen] = useState<boolean>(false);
+  const [reconnectSessionId, setReconnectSessionId] = useState<number | undefined>(undefined);
+  const [editingNumber, setEditingNumber] = useState<WhatsAppNumber | null>(null);
+  const [verifyingNumberId, setVerifyingNumberId] = useState<number | null>(null);
+  const [disconnectingNumberId, setDisconnectingNumberId] = useState<number | null>(null);
+  const [deletingNumberId, setDeletingNumberId] = useState<number | null>(null);
   const [, setLogs] = useState<MessageLog[]>([]);
   const [, setLoading] = useState(false);
 
@@ -128,34 +146,67 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     return () => clearTimeout(timer);
   }, [loadConversations, convSearch]);
 
-  // Load messages whenever selected conversation changes
+  // Load messages whenever selected conversation changes (with race condition mitigation)
   useEffect(() => {
     if (!selectedConv?.id) return;
     let isMounted = true;
-    ApiClient.getConversationMessages(selectedConv.id, { limit: 50 })
+    const convId = selectedConv.id;
+
+    ApiClient.getConversationMessages(convId, { limit: 50 })
       .then((res) => {
         if (isMounted && res?.messages) {
-          setMessagesMap((prev) => ({
-            ...prev,
-            [selectedConv.id]: res.messages,
-          }));
+          setMessagesMap((prev) => {
+            const existing = prev[convId] || [];
+            // Merge strategy: prevent wiping messages received via realtime while GET was in flight
+            const fetchedIds = new Set(res.messages.map((m) => m.id));
+            const fetchedWaIds = new Set(res.messages.map((m) => m.wa_message_id).filter(Boolean));
+            const fetchedClientIds = new Set(res.messages.map((m) => m.client_message_id).filter(Boolean));
+
+            const inFlightOrRealtime = existing.filter((m) => {
+              if (m.id && fetchedIds.has(m.id)) return false;
+              if (m.wa_message_id && fetchedWaIds.has(m.wa_message_id)) return false;
+              if (m.client_message_id && fetchedClientIds.has(m.client_message_id)) return false;
+              return true;
+            });
+
+            const merged = [...res.messages, ...inFlightOrRealtime].sort((a, b) => {
+              const tA = new Date(a.created_at || a.external_timestamp || 0).getTime();
+              const tB = new Date(b.created_at || b.external_timestamp || 0).getTime();
+              if (tA !== tB) return tA - tB;
+              return (a.id || 0) - (b.id || 0);
+            });
+
+            return {
+              ...prev,
+              [convId]: merged,
+            };
+          });
         }
       })
       .catch((err) => {
-        console.error('Failed to fetch messages for conversation', selectedConv.id, err);
+        console.error('Failed to fetch messages for conversation', convId, err);
       });
     return () => {
       isMounted = false;
     };
   }, [selectedConv?.id]);
 
+  // Authoritative sync: refresh conversation list & active thread from Tezlify backend
   const handleSyncChats = async () => {
     setIsSyncingChats(true);
     try {
-      const res = await ApiClient.syncWhatsAppChats();
       await loadConversations(true);
+      if (selectedConv?.id) {
+        const res = await ApiClient.getConversationMessages(selectedConv.id, { limit: 50 });
+        if (res?.messages) {
+          setMessagesMap((prev) => ({
+            ...prev,
+            [selectedConv.id]: res.messages,
+          }));
+        }
+      }
       toast.success(
-        t('whatsapp.syncSuccess', { count: res.synced_count }) || `${res.synced_count} sohbet eşitlendi`,
+        t('whatsapp.syncSuccess', { count: conversations.length }) || 'Sohbetler eşitlendi',
         t('common.success')
       );
     } catch (err: any) {
@@ -164,43 +215,6 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       setIsSyncingChats(false);
     }
   };
-
-  // Zero-lag live list: cheap delta reconcile while the conversations tab is
-  // mounted (WhatsApp-Web behavior). Skips silently when the tab is hidden,
-  // when a full sync is already running, or when nothing changed on gateway.
-  const isSyncingChatsRef = useRef(false);
-  useEffect(() => {
-    isSyncingChatsRef.current = isSyncingChats;
-  }, [isSyncingChats]);
-
-  useEffect(() => {
-    if (hubTab !== 'conversations') return;
-    let cancelled = false;
-    let inFlight = false;
-
-    const poll = async () => {
-      if (cancelled || inFlight || isSyncingChatsRef.current) return;
-      if (typeof document !== 'undefined' && document.hidden) return;
-      inFlight = true;
-      try {
-        const res = await ApiClient.syncWhatsAppChatsDelta();
-        if (!cancelled && res.synced_count > 0) {
-          await loadConversations(true);
-        }
-      } catch {
-        // Session offline or transient error: silent retry on next tick.
-      } finally {
-        inFlight = false;
-      }
-    };
-
-    const interval = setInterval(poll, 4000);
-    poll();
-    return () => {
-      cancelled = true;
-      clearInterval(interval);
-    };
-  }, [hubTab, loadConversations]);
 
   const handleOpenLead = async (leadId: number) => {
     setDrawerLead({
@@ -226,97 +240,195 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   const activeSendMessage = async (text: string) => {
     if (!selectedConv || !text.trim()) return;
     const trimmed = text.trim();
-    const tempId = Date.now();
-    const newMsg: Message = {
+    const tempId = -Date.now();
+    const tempClientMid = `cmsg_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+    const nowIso = new Date().toISOString();
+
+    const optimisticMsg: Message = {
       id: tempId,
       conversation_id: selectedConv.id,
       direction: 'OUTBOUND',
       message_type: 'TEXT',
-      status: 'SENT',
+      status: 'PENDING',
       body: trimmed,
+      client_message_id: tempClientMid,
       sender_name: 'Siz',
-      created_at: new Date().toISOString(),
+      created_at: nowIso,
     };
-    // Optimistic zero-lag UI feedback
+
+    // Optimistic UI feedback (0ms perceived delay)
     setMessagesMap((prev) => ({
       ...prev,
-      [selectedConv.id]: [...(prev[selectedConv.id] || []), newMsg],
+      [selectedConv.id]: [...(prev[selectedConv.id] || []), optimisticMsg],
     }));
     setConversations((prev) =>
       prev.map((c) =>
         c.id === selectedConv.id
-          ? { ...c, last_message_preview: trimmed, last_message_at: new Date().toISOString() }
+          ? { ...c, last_message_preview: trimmed, last_message_at: nowIso }
           : c
       )
     );
 
     try {
-      const res = await ApiClient.sendMessage(selectedConv.id, trimmed);
+      const res = await ApiClient.sendMessage(selectedConv.id, trimmed, tempClientMid);
+      // Reconcile temporary message with backend response (which has status 'PENDING', real id, client_message_id)
       setMessagesMap((prev) => ({
         ...prev,
         [selectedConv.id]: (prev[selectedConv.id] || []).map((m) =>
-          m.id === tempId ? { ...m, id: res.id, status: 'SENT' } : m
+          m.id === tempId || m.client_message_id === tempClientMid
+            ? { ...m, id: res.id, client_message_id: res.client_message_id || tempClientMid, status: res.status }
+            : m
         ),
       }));
     } catch (err: any) {
       setMessagesMap((prev) => ({
         ...prev,
         [selectedConv.id]: (prev[selectedConv.id] || []).map((m) =>
-          m.id === tempId ? { ...m, status: 'FAILED' } : m
+          m.id === tempId || m.client_message_id === tempClientMid
+            ? { ...m, status: 'FAILED', error_message: err.message || 'Gönderilemedi' }
+            : m
         ),
       }));
-      toast.error(err.message || 'Mesaj gönderilemedi', t('common.error'));
+      const msg = (err?.message || '').toLowerCase();
+      if (msg.includes('24 saat') || msg.includes('window') || msg.includes('expired')) {
+        toast.error(t('whatsapp.windowExpiredNotice') || 'Bu konuşmaya devam etmek için bir WhatsApp şablonu kullanın.', t('common.error'));
+      } else {
+        toast.error(err?.message || t('whatsapp.msgFailed') || 'Mesaj gönderilemedi', t('common.error'));
+      }
+      throw err;
     }
   };
 
   const activeRetryMessage = async (msgId: number) => {
     if (!selectedConv) return;
-    setMessagesMap((prev) => ({
-      ...prev,
-      [selectedConv.id]: (prev[selectedConv.id] || []).map((m) =>
-        m.id === msgId ? { ...m, status: 'SENT' } : m
-      ),
-    }));
+    try {
+      const res = await ApiClient.retryMessage(selectedConv.id, msgId);
+      setMessagesMap((prev) => ({
+        ...prev,
+        [selectedConv.id]: (prev[selectedConv.id] || []).map((m) =>
+          m.id === msgId ? { ...m, status: res.status, error_message: undefined } : m
+        ),
+      }));
+      toast.success(t('whatsapp.messageSent') || 'Mesaj tekrar gönderildi', t('common.success'));
+    } catch (err: any) {
+      toast.error(err?.message || t('whatsapp.msgFailed') || 'Tekrar gönderim başarısız', t('common.error'));
+      throw err;
+    }
   };
 
   const activeSendMedia = async (type: string, url: string, caption?: string, filename?: string) => {
     if (!selectedConv) return;
+    const tempId = -Date.now();
+    const tempClientMid = `media_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+    const nowIso = new Date().toISOString();
+
     const newMsg: Message = {
-      id: Date.now(),
+      id: tempId,
       conversation_id: selectedConv.id,
       direction: 'OUTBOUND',
-      message_type: 'DOCUMENT',
-      status: 'SENT',
+      message_type: (type === 'IMAGE' ? 'IMAGE' : 'DOCUMENT') as any,
+      status: 'PENDING',
       body: caption || filename || url || `[${type}]`,
+      client_message_id: tempClientMid,
+      media_url: url,
+      media_filename: filename,
+      media_caption: caption,
       sender_name: 'Siz',
-      created_at: new Date().toISOString(),
+      created_at: nowIso,
     };
     setMessagesMap((prev) => ({
       ...prev,
       [selectedConv.id]: [...(prev[selectedConv.id] || []), newMsg],
     }));
+
+    try {
+      const res = await ApiClient.sendMedia(
+        selectedConv.id,
+        {
+          media_type: type.toLowerCase(),
+          media_url: url,
+          caption,
+          filename,
+        },
+        tempClientMid
+      );
+      setMessagesMap((prev) => ({
+        ...prev,
+        [selectedConv.id]: (prev[selectedConv.id] || []).map((m) =>
+          m.id === tempId || m.client_message_id === tempClientMid
+            ? { ...m, id: res.id, client_message_id: res.client_message_id || tempClientMid, status: res.status }
+            : m
+        ),
+      }));
+    } catch (err: any) {
+      setMessagesMap((prev) => ({
+        ...prev,
+        [selectedConv.id]: (prev[selectedConv.id] || []).map((m) =>
+          m.id === tempId || m.client_message_id === tempClientMid
+            ? { ...m, status: 'FAILED', error_message: err.message }
+            : m
+        ),
+      }));
+      throw err;
+    }
   };
 
-  const activeSendTemplate = async (templateName: string, _variables?: any) => {
+  const activeSendTemplate = async (templateKey: string, variables: Record<string, string> = {}) => {
     if (!selectedConv) return;
-    const newMsg: Message = {
-      id: Date.now(),
+    const tempId = -Date.now();
+    const tempClientMid = `tmpl_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+    const nowIso = new Date().toISOString();
+
+    const optimisticMsg: Message = {
+      id: tempId,
       conversation_id: selectedConv.id,
       direction: 'OUTBOUND',
       message_type: 'TEMPLATE',
-      status: 'SENT',
-      body: `[Şablon: ${templateName}]`,
+      status: 'PENDING',
+      body: `[Şablon: ${templateKey}]`,
+      client_message_id: tempClientMid,
       sender_name: 'Siz',
-      created_at: new Date().toISOString(),
+      created_at: nowIso,
     };
+
     setMessagesMap((prev) => ({
       ...prev,
-      [selectedConv.id]: [...(prev[selectedConv.id] || []), newMsg],
+      [selectedConv.id]: [...(prev[selectedConv.id] || []), optimisticMsg],
     }));
+
+    try {
+      const res = await ApiClient.sendTemplate(selectedConv.id, templateKey, variables, tempClientMid);
+      setMessagesMap((prev) => ({
+        ...prev,
+        [selectedConv.id]: (prev[selectedConv.id] || []).map((m) =>
+          m.id === tempId || m.client_message_id === tempClientMid
+            ? { ...m, id: res.id, body: res.body || m.body, status: res.status }
+            : m
+        ),
+      }));
+      setConversations((prev) =>
+        prev.map((c) =>
+          c.id === selectedConv.id
+            ? { ...c, last_message_preview: res.body || optimisticMsg.body, last_message_at: nowIso }
+            : c
+        )
+      );
+    } catch (err: any) {
+      setMessagesMap((prev) => ({
+        ...prev,
+        [selectedConv.id]: (prev[selectedConv.id] || []).map((m) =>
+          m.id === tempId || m.client_message_id === tempClientMid
+            ? { ...m, status: 'FAILED', error_message: err.message || 'Şablon gönderilemedi' }
+            : m
+        ),
+      }));
+      toast.error(err?.message || t('whatsapp.templateFailed') || 'Şablon gönderilemedi', t('common.error'));
+      throw err;
+    }
   };
 
   const fetchConversations = () => {
-    // Pure UI design / zero backend network calls
+    loadConversations(true);
   };
 
   // Real-time listener for conversation list unread, status and preview updates
@@ -326,30 +438,30 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       const eventData = customEvent.detail;
       if (!eventData) return;
 
+      // 1. INBOUND MESSAGE & OUTBOUND CONFIRMATION
       if (
-        eventData.event === 'new_message' ||
         eventData.event === 'inbound_reply' ||
+        eventData.event === 'new_message' ||
         eventData.event === 'outbound_message_sent'
       ) {
         const convId = eventData.conversation_id;
         const rawPhone = eventData.lead_phone || eventData.phone || eventData.recipient_phone || eventData.sender_phone || '';
         const eventDigits = rawPhone.replace(/\D/g, '').slice(-10);
 
-        const msgText = eventData.message?.body || (typeof eventData.message === 'string' ? eventData.message : '') || '';
+        const msgText = eventData.message?.body || (typeof eventData.message === 'string' ? eventData.message : '') || eventData.body || '';
         const msgTime = eventData.message?.created_at || eventData.created_at || eventData.timestamp || new Date().toISOString();
         const isOutbound =
           eventData.event === 'outbound_message_sent' ||
           eventData.message?.direction === 'OUTBOUND' ||
           eventData.direction === 'OUTBOUND';
 
-        let found = false;
+        // Update Conversation in list
         setConversations((prev) => {
           const idx = prev.findIndex(
             (c) => c.id === convId || (eventDigits && c.lead_phone && c.lead_phone.replace(/\D/g, '').slice(-10) === eventDigits)
           );
 
           if (idx !== -1) {
-            found = true;
             const existing = prev[idx];
             const isCurrentSelected = selectedConv && (selectedConv.id === existing.id || selectedConv.id === convId);
             const updated: Conversation = {
@@ -358,6 +470,8 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
               last_message_preview: typeof msgText === 'string' && msgText ? msgText : existing.last_message_preview,
               last_message_at: msgTime,
               unread_count: isCurrentSelected || isOutbound ? 0 : (existing.unread_count || 0) + 1,
+              is_window_open: true, // Inbound message opens the 24h customer window!
+              last_inbound_at: !isOutbound ? msgTime : existing.last_inbound_at,
             };
             if (isCurrentSelected) {
               setSelectedConv(updated);
@@ -365,17 +479,102 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
             // Move updated conversation to top of list
             const rest = prev.filter((_, i) => i !== idx);
             return [updated, ...rest];
+          } else {
+            loadConversations(true);
+            return prev;
           }
-          return prev;
         });
 
-        // If not found in existing list
+        // If active conversation matches, append message to thread with deduplication
+        if (convId && selectedConv && (selectedConv.id === convId || (eventDigits && selectedConv.lead_phone && selectedConv.lead_phone.replace(/\D/g, '').slice(-10) === eventDigits))) {
+          const msgObj = eventData.message && typeof eventData.message === 'object' ? eventData.message : null;
+          const waId = msgObj?.wa_message_id || eventData.wa_message_id || eventData.message_id;
+          const clientMid = msgObj?.client_message_id || eventData.client_message_id;
+          const msgId = msgObj?.id || eventData.id;
+
+          const newMsg: Message = {
+            id: msgId || Date.now(),
+            conversation_id: convId,
+            direction: isOutbound ? 'OUTBOUND' : 'INBOUND',
+            message_type: (msgObj?.message_type || eventData.message_type || 'TEXT').toUpperCase() as any,
+            status: isOutbound ? 'SENT' : 'RECEIVED',
+            body: typeof msgText === 'string' ? msgText : '',
+            wa_message_id: waId,
+            client_message_id: clientMid,
+            sender_name: msgObj?.sender_name || eventData.sender_name || (isOutbound ? 'Siz' : undefined),
+            sender_phone: msgObj?.sender_phone || eventData.phone || '',
+            media_id: msgObj?.media_id || eventData.media_id,
+            media_mime_type: msgObj?.media_mime_type || eventData.media_mime_type,
+            media_filename: msgObj?.media_filename || eventData.media_filename,
+            media_caption: msgObj?.media_caption || eventData.media_caption,
+            created_at: msgTime,
+          };
+
+          setMessagesMap((prev) => {
+            const list = prev[convId] || [];
+            // Check for duplicate by wa_message_id, client_message_id, or id
+            const existingIdx = list.findIndex((m) =>
+              (waId && m.wa_message_id === waId) ||
+              (clientMid && m.client_message_id === clientMid) ||
+              (msgId && m.id === msgId)
+            );
+            if (existingIdx !== -1) {
+              const updatedList = [...list];
+              updatedList[existingIdx] = { ...updatedList[existingIdx], ...newMsg };
+              return { ...prev, [convId]: updatedList };
+            }
+            return {
+              ...prev,
+              [convId]: [...list, newMsg].sort((a, b) => {
+                const tA = new Date(a.created_at || a.external_timestamp || 0).getTime();
+                const tB = new Date(b.created_at || b.external_timestamp || 0).getTime();
+                if (tA !== tB) return tA - tB;
+                return (a.id || 0) - (b.id || 0);
+              }),
+            };
+          });
+
+          // Auto-mark conversation as read on backend if user is actively viewing it
+          if (!isOutbound) {
+            ApiClient.markConversationAsRead(convId).catch(() => {});
+          }
+        }
       }
 
-      if (eventData.event === 'conversations_updated' || eventData.event === 'session_connected') {
-        loadConversations(true);
+      // 2. MESSAGE STATUS UPDATE (SENT -> DELIVERED -> READ -> FAILED)
+      if (eventData.event === 'message_status_updated') {
+        const convId = eventData.conversation_id;
+        const waId = eventData.wa_message_id || eventData.message_id;
+        const clientMid = eventData.client_message_id;
+        const newStatus = eventData.status as ConversationMessageStatus;
+        const errorMsg = eventData.error_message;
+
+        if (convId) {
+          setMessagesMap((prev) => {
+            const list = prev[convId];
+            if (!list) return prev;
+            let changed = false;
+            const updated = list.map((m) => {
+              const matchesWaId = waId && m.wa_message_id === waId;
+              const matchesClientMid = clientMid && m.client_message_id === clientMid;
+              if (matchesWaId || matchesClientMid) {
+                changed = true;
+                return {
+                  ...m,
+                  wa_message_id: waId || m.wa_message_id,
+                  status: newStatus,
+                  error_message: errorMsg || m.error_message,
+                };
+              }
+              return m;
+            });
+            if (!changed) return prev;
+            return { ...prev, [convId]: updated };
+          });
+        }
       }
 
+      // 3. CONVERSATION STATUS / READ EVENTS
       if (eventData.event === 'conversation_status_updated') {
         const convId = eventData.conversation_id;
         const newStatus = eventData.status;
@@ -392,12 +591,39 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         setConversations((prev) =>
           prev.map((c) => (c.id === convId ? { ...c, unread_count: 0 } : c))
         );
+        if (selectedConv && selectedConv.id === convId) {
+          setSelectedConv((prev) => (prev ? { ...prev, unread_count: 0 } : prev));
+        }
+      }
+
+      if (eventData.event === 'new_conversation' || eventData.event === 'conversations_updated') {
+        loadConversations(true);
+      }
+    };
+
+    // Reconnect Recovery: silently refresh active conversation if connection drops and recovers
+    const handleReconnect = () => {
+      console.log('[WhatsAppHubPage] WebSocket reconnected. Performing silent reconciliation...');
+      loadConversations(true);
+      if (selectedConv?.id) {
+        ApiClient.getConversationMessages(selectedConv.id, { limit: 50 })
+          .then((res) => {
+            if (res?.messages) {
+              setMessagesMap((prev) => ({
+                ...prev,
+                [selectedConv.id]: res.messages,
+              }));
+            }
+          })
+          .catch(() => {});
       }
     };
 
     window.addEventListener('tezlify:ws_event', handleWsEvent);
+    window.addEventListener('tezlify:ws_connected', handleReconnect);
     return () => {
       window.removeEventListener('tezlify:ws_event', handleWsEvent);
+      window.removeEventListener('tezlify:ws_connected', handleReconnect);
     };
   }, [selectedConv, loadConversations]);
 
@@ -407,97 +633,6 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   const [isSavingAntiBan, setIsSavingAntiBan] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
 
-  // New Line / QR & Pairing Code Modal
-  const [isQRModalOpen, setIsQRModalOpen] = useState(false);
-  const isQRModalOpenRef = useRef(false);
-  const pairingSuccessTriggeredRef = useRef(false);
-  useEffect(() => {
-    isQRModalOpenRef.current = isQRModalOpen;
-    if (isQRModalOpen) {
-      pairingSuccessTriggeredRef.current = false;
-    }
-  }, [isQRModalOpen]);
-
-  const notifyPairingSuccess = () => {
-    if (pairingSuccessTriggeredRef.current) return;
-    pairingSuccessTriggeredRef.current = true;
-    setIsPairingSuccess(true);
-    toast.success(t('whatsapp.qrPairSuccess'), t('common.success'));
-    fetchSessionsAndLogs(true);
-    onRefreshStats();
-    // Auto-sync WhatsApp chats immediately upon connection
-    ApiClient.syncWhatsAppChats()
-      .then(() => {
-        loadConversations(true);
-      })
-      .catch((e) => {
-        console.warn('Auto sync after pairing failed:', e);
-      });
-    setTimeout(() => {
-      setIsQRModalOpen(false);
-    }, 1500);
-  };
-
-  const [isCreatingSession, setIsCreatingSession] = useState(false);
-  const [pairingSessionId, setPairingSessionId] = useState<number | null>(null);
-  const [isPairingSuccess, setIsPairingSuccess] = useState(false);
-  const [pairingMode, setPairingMode] = useState<'qr' | 'code'>('qr');
-  const [pairingPhone, setPairingPhone] = useState('');
-  const [pairingCode, setPairingCode] = useState<string | null>(null);
-  const [isRequestingCode, setIsRequestingCode] = useState(false);
-  const [isCopiedCode, setIsCopiedCode] = useState(false);
-  const [isRefreshingQr, setIsRefreshingQr] = useState(false);
-  const [qrSecondsLeft, setQrSecondsLeft] = useState(25);
-
-  const handleRefreshQr = async (sessionId?: number) => {
-    const targetId = sessionId || pairingSessionId;
-    if (!targetId || isRefreshingQr) return;
-    setIsRefreshingQr(true);
-    try {
-      const res = await ApiClient.refreshSessionQr(targetId);
-      if (res.qr_code) {
-        setSessions((prev) =>
-          prev.map((s) => (s.id === targetId ? { ...s, qr_code: res.qr_code } : s))
-        );
-        setQrSecondsLeft(25);
-      }
-      if (res.status === 'CONNECTED') {
-        notifyPairingSuccess();
-      }
-    } catch (e: any) {
-      toast.error(e.message || 'QR kod yenilenemedi');
-    } finally {
-      setIsRefreshingQr(false);
-    }
-  };
-
-  const handleRequestPairingCode = async () => {
-    if (!pairingSessionId || !pairingPhone.trim()) {
-      toast.error('Lütfen geçerli bir telefon numarası girin.');
-      return;
-    }
-    setIsRequestingCode(true);
-    try {
-      const res = await ApiClient.getSessionPairingCode(pairingSessionId, pairingPhone.trim());
-      if (res.pairing_code) {
-        setPairingCode(res.pairing_code);
-        toast.success(t('whatsapp.pairingCodeTitle'));
-      }
-    } catch (err: any) {
-      toast.error(err.message || 'Eşleştirme kodu alınamadı.');
-    } finally {
-      setIsRequestingCode(false);
-    }
-  };
-
-  const handleCopyPairingCode = () => {
-    if (!pairingCode) return;
-    navigator.clipboard.writeText(pairingCode);
-    setIsCopiedCode(true);
-    toast.success(t('whatsapp.codeCopied'));
-    setTimeout(() => setIsCopiedCode(false), 2500);
-  };
-
   // Test Sandbox State
   const [testPhone, setTestPhone] = useState('0532 100 20 30');
   const [testMsg, setTestMsg] = useState('Tezlify WhatsApp Gateway test message.');
@@ -505,44 +640,37 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   const [testSending, setTestSending] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
 
-  const fetchSessionsAndLogs = async (silent = false) => {
+  const fetchNumbersAndLogs = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
     try {
-      const [sessData, logsData] = await Promise.all([
-        ApiClient.getWhatsAppSessions(),
+      const [numbersData, logsData] = await Promise.all([
+        ApiClient.getWhatsAppNumbers(),
         ApiClient.getMessageLogs()
       ]);
-      setSessions(sessData);
+      setWhatsAppNumbers(numbersData);
       setLogs(logsData);
     } catch (err: any) {
-      toast.error(err.message, t('common.error'));
+      toast.error(err?.message || t('common.error'), t('common.error'));
     } finally {
       if (!silent) setLoading(false);
     }
-  };
+  }, [t, toast]);
 
   useEffect(() => {
-    fetchSessionsAndLogs();
+    fetchNumbersAndLogs();
 
     // Listen to real-time inbound messages and WhatsApp session events
     const handleWs = (e: Event) => {
       const eventData = (e as CustomEvent<any>).detail;
       if (eventData?.event === 'inbound_reply') {
         // Handled locally
-      } else if (eventData?.event === 'session_connected') {
-        fetchSessionsAndLogs(true);
+      } else if (
+        eventData?.event === 'session_connected' ||
+        eventData?.event === 'session_disconnected' ||
+        eventData?.event === 'number_updated'
+      ) {
+        fetchNumbersAndLogs(true);
         onRefreshStats();
-        if (isQRModalOpenRef.current) {
-          notifyPairingSuccess();
-        }
-      } else if (eventData?.event === 'session_disconnected') {
-        fetchSessionsAndLogs(true);
-        onRefreshStats();
-      } else if (eventData?.event === 'session_qr_updated') {
-        setSessions((prev) =>
-          prev.map((s) => (s.id === eventData.session_id ? { ...s, qr_code: eventData.qr_code } : s))
-        );
-        setQrSecondsLeft(25);
       } else if (eventData?.event === 'conversations_cleared') {
         conversationsGenerationRef.current += 1;
         setConversations([]);
@@ -570,55 +698,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     return () => {
       window.removeEventListener('tezlify:ws_event', handleWs);
     };
-  }, []);
-
-  // Countdown timer for QR code validity
-  useEffect(() => {
-    if (!isQRModalOpen || pairingMode !== 'qr' || isPairingSuccess) return;
-
-    const timer = setInterval(() => {
-      setQrSecondsLeft((prev) => {
-        if (prev <= 1) return 0;
-        return prev - 1;
-      });
-    }, 1000);
-
-    return () => clearInterval(timer);
-  }, [isQRModalOpen, pairingMode, isPairingSuccess]);
-
-  // Polling fallback to guarantee state progression when QR modal is open
-  useEffect(() => {
-    if (!isQRModalOpen || !pairingSessionId || isPairingSuccess) return;
-
-    let isMounted = true;
-    let pollTimer: ReturnType<typeof setInterval> | null = null;
-
-    pollTimer = setInterval(async () => {
-      try {
-        const res = await ApiClient.getSessionQr(pairingSessionId);
-        if (!isMounted) return;
-        if (res.status === 'CONNECTED') {
-          if (pollTimer) clearInterval(pollTimer);
-          notifyPairingSuccess();
-        } else if (res.qr_code) {
-          setSessions((prev) => {
-            const current = prev.find((s) => s.id === pairingSessionId);
-            if (current && current.qr_code !== res.qr_code) {
-              setQrSecondsLeft(25);
-            }
-            return prev.map((s) => (s.id === pairingSessionId ? { ...s, qr_code: res.qr_code } : s));
-          });
-        }
-      } catch (e) {
-        // ignore transient poll error
-      }
-    }, 900);
-
-    return () => {
-      isMounted = false;
-      if (pollTimer) clearInterval(pollTimer);
-    };
-  }, [isQRModalOpen, pairingSessionId, isPairingSuccess]);
+  }, [fetchNumbersAndLogs, onRefreshStats]);
 
   const handlePresetSelect = (presetKey: 'ultra_safe' | 'standard_balanced' | 'fast_warmed') => {
     const presetData = ANTI_BAN_PRESETS[presetKey];
@@ -691,115 +771,86 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   const hasUnsavedChanges = !isConfigEqual(config, savedConfig);
   const riskInfo = calculateRiskLevel(config.min_delay_seconds, config.daily_message_limit);
 
-  const handleCreateSession = async () => {
-    if (isCreatingSession) return;
-    setIsCreatingSession(true);
-
-    // Auto-generate unique sequential session name (Line 1, Line 2...)
-    const existingNames = new Set(sessions.map((s) => s.session_name));
-    let nextIdx = sessions.length + 1;
-    let targetName = `Line ${nextIdx}`;
-    while (existingNames.has(targetName)) {
-      nextIdx++;
-      targetName = `Line ${nextIdx}`;
-    }
-
+  const handleVerifyNumber = async (numberId: number) => {
+    if (verifyingNumberId) return;
+    setVerifyingNumberId(numberId);
     try {
-      const session = await ApiClient.createWhatsAppSession(targetName);
-      setPairingSessionId(session.id);
-      setIsQRModalOpen(true);
-      setIsPairingSuccess(false);
-      setPairingMode('qr');
-      setPairingCode(null);
-      setPairingPhone('');
-      setQrSecondsLeft(25);
-      // Optimistically add session to state so it shows up instantly
-      setSessions((prev) => [session, ...prev.filter((s) => s.id !== session.id)]);
-      fetchSessionsAndLogs(true);
-      onRefreshStats();
-      if (!session.qr_code && session.status !== 'CONNECTED') {
-        handleRefreshQr(session.id);
+      const result = await ApiClient.verifyWhatsAppNumber(numberId);
+      if (result.verified) {
+        toast.success(t('whatsapp.verifiedSuccess'), t('common.success'));
+        setWhatsAppNumbers((prev) =>
+          prev.map((n) =>
+            n.id === numberId
+              ? {
+                  ...n,
+                  status: result.status,
+                  verified_name: result.verified_name ?? n.verified_name,
+                  quality_rating: result.quality_rating ?? n.quality_rating,
+                  last_verified_at: result.last_verified_at ?? n.last_verified_at,
+                }
+              : n
+          )
+        );
+      } else {
+        toast.error(result.error || t('whatsapp.verifyFailed'), t('common.error'));
+        const refreshed = await ApiClient.getWhatsAppNumbers();
+        setWhatsAppNumbers(refreshed);
       }
-    } catch (err: any) {
-      toast.error(err.message || t('common.error'), t('common.error'));
-    } finally {
-      setIsCreatingSession(false);
-    }
-  };
-
-  const handleSimulateScan = async () => {
-    if (!pairingSessionId) return;
-    try {
-      await ApiClient.simulateConnectSession(pairingSessionId);
-      notifyPairingSuccess();
-    } catch (err: any) {
-      toast.error(err.message, t('common.error'));
-    }
-  };
-
-  const handleDisconnect = async (sessionId: number) => {
-    // 1. Instant optimistic state update (0ms perceived latency)
-    setSessions((prev) =>
-      prev.map((s) =>
-        s.id === sessionId
-          ? { ...s, status: 'DISCONNECTED', is_phone_online: false, qr_code: null }
-          : s
-      )
-    );
-    toast.info(t('whatsapp.statusDisconnected'), t('common.info'));
-
-    try {
-      await ApiClient.disconnectSession(sessionId);
-      fetchSessionsAndLogs(true);
       onRefreshStats();
     } catch (err: any) {
-      toast.error(err.message || t('common.error'), t('common.error'));
-      fetchSessionsAndLogs(true);
+      toast.error(err?.message || t('whatsapp.verifyFailed'), t('common.error'));
+    } finally {
+      setVerifyingNumberId(null);
     }
   };
 
-  const handleDelete = async (sessionId: number) => {
+  const handleDisconnectNumber = async (numberId: number) => {
+    if (disconnectingNumberId) return;
     const ok = await toast.confirm({
-      title: t('whatsapp.deleteSession'),
-      message: t('whatsapp.confirmDeleteSession'),
+      title: t('whatsapp.disconnect'),
+      message: t('whatsapp.disconnectConfirm'),
+      confirmText: t('whatsapp.disconnect'),
+      cancelText: t('common.cancel'),
+      variant: 'warning',
+    });
+    if (!ok) return;
+
+    setDisconnectingNumberId(numberId);
+    try {
+      const disconnected = await ApiClient.disconnectWhatsAppNumber(numberId);
+      setWhatsAppNumbers((prev) =>
+        prev.map((n) => (n.id === numberId ? disconnected : n))
+      );
+      toast.success(t('whatsapp.disconnectedSuccess'), t('common.success'));
+      onRefreshStats();
+    } catch (err: any) {
+      toast.error(err?.message || t('common.error'), t('common.error'));
+    } finally {
+      setDisconnectingNumberId(null);
+    }
+  };
+
+  const handleDeleteNumber = async (numberId: number) => {
+    if (deletingNumberId) return;
+    const ok = await toast.confirm({
+      title: t('whatsapp.deleteNumber'),
+      message: t('whatsapp.deleteNumberConfirm'),
       confirmText: t('common.delete'),
       cancelText: t('common.cancel'),
       variant: 'danger',
     });
     if (!ok) return;
 
-    // 1. Instant optimistic removal of session and live conversations
-    const previousSessions = [...sessions];
-    const previousConversations = [...conversations];
-    const previousSelected = selectedConv;
-    const previousMessages = messagesMap;
-
-    conversationsGenerationRef.current += 1;
-    setSessions((prev) => prev.filter((s) => s.id !== sessionId));
-    setConversations([]);
-    setSelectedConv(null);
-    setMessagesMap({});
-
+    setDeletingNumberId(numberId);
     try {
-      await ApiClient.deleteSession(sessionId);
-      toast.success(t('common.success'), t('whatsapp.deleteSession'));
-      setSessions((prev) => prev.filter((s) => s.id !== sessionId));
-      await fetchSessionsAndLogs(true);
+      await ApiClient.deleteWhatsAppNumber(numberId);
+      setWhatsAppNumbers((prev) => prev.filter((n) => n.id !== numberId));
+      toast.success(t('whatsapp.deletedSuccess'), t('common.success'));
       onRefreshStats();
     } catch (err: any) {
-      const msg = String(err?.message || '');
-      if (err?.status === 404 || /404|bulunamadı|not found/i.test(msg)) {
-        toast.success(t('common.success'), t('whatsapp.deleteSession'));
-        setSessions((prev) => prev.filter((s) => s.id !== sessionId));
-        onRefreshStats();
-        return;
-      }
-      // Revert if API failed
-      setSessions(previousSessions);
-      setConversations(previousConversations);
-      setSelectedConv(previousSelected);
-      setMessagesMap(previousMessages);
-      toast.error(err.message || t('common.error'), t('common.error'));
+      toast.error(err?.message || t('common.error'), t('common.error'));
+    } finally {
+      setDeletingNumberId(null);
     }
   };
 
@@ -812,7 +863,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     try {
       const res = await ApiClient.sendTestMessage(testPhone, testMsg, selectedSessionForTest);
       setTestResult({ ok: true, message: res.message });
-      fetchSessionsAndLogs();
+      fetchNumbersAndLogs();
       onRefreshStats();
     } catch (err: any) {
       setTestResult({ ok: false, message: `${t('common.error')}: ${err.message}` });
@@ -1121,52 +1172,67 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       )}
 
       {/* ========================================================================= */}
-      {/* 2. HAT VE OTURUM YÖNETİMİ */}
+      {/* 2. HAT VE NUMARA YÖNETİMİ (META CLOUD API) */}
       {/* ========================================================================= */}
       {hubTab === 'sessions' && (
         <div className="space-y-6">
-          <div className="flex justify-end">
+          <div className="flex items-center gap-3 justify-end flex-wrap">
             <Button
-              onClick={handleCreateSession}
-              disabled={isCreatingSession}
+              onClick={() => {
+                setReconnectSessionId(undefined);
+                setIsQrConnectModalOpen(true);
+              }}
               size="sm"
-              className="space-x-2 font-bold shadow-md shadow-[#7367F0]/30 cursor-pointer"
+              className="space-x-2 font-bold shadow-md shadow-[#28C76F]/20 cursor-pointer bg-[#28C76F] hover:bg-[#24B263] text-white"
             >
-              {isCreatingSession ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
-              ) : (
-                <QrCode className="w-4 h-4" />
-              )}
-              <span>{t('whatsapp.addSession')}</span>
+              <QrCode className="w-4 h-4" />
+              <span>{t('whatsapp.connectWithQr') || 'QR ile Bağla'}</span>
+            </Button>
+
+            <Button
+              onClick={() => setIsNewNumberModalOpen(true)}
+              size="sm"
+              variant="outline"
+              className="space-x-2 font-bold cursor-pointer border-slate-200 dark:border-white/[0.1] text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-white/[0.06]"
+            >
+              <Smartphone className="w-4 h-4" />
+              <span>{t('whatsapp.addMetaNumber')}</span>
             </Button>
           </div>
 
-          {sessions.length === 0 ? (
+          {whatsAppNumbers.length === 0 ? (
             <Card className="p-8">
               <EmptyState
-                icon={QrCode}
+                icon={Smartphone}
                 title={t('whatsapp.noSessions')}
                 description={t('whatsapp.noSessionsDesc')}
+                action={{
+                  label: t('whatsapp.connectWithQr') || 'QR ile Bağla',
+                  onClick: () => {
+                    setReconnectSessionId(undefined);
+                    setIsQrConnectModalOpen(true);
+                  },
+                  icon: QrCode,
+                }}
               />
             </Card>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-              {sessions.map((sess) => (
-                <SessionCard
-                  key={sess.id}
-                  session={sess}
-                  onDisconnect={handleDisconnect}
-                  onScanQR={(id) => {
-                    setPairingSessionId(id);
-                    setIsQRModalOpen(true);
-                    setIsPairingSuccess(false);
-                    setPairingMode('qr');
-                    setPairingCode(null);
-                    setPairingPhone('');
-                    setQrSecondsLeft(25);
-                    handleRefreshQr(id);
+              {whatsAppNumbers.map((num) => (
+                <WhatsAppNumberCard
+                  key={num.id}
+                  number={num}
+                  onVerify={handleVerifyNumber}
+                  onEdit={(selected) => setEditingNumber(selected)}
+                  onDisconnect={handleDisconnectNumber}
+                  onDelete={handleDeleteNumber}
+                  onScanQR={(selectedNum) => {
+                    setReconnectSessionId(selectedNum.id);
+                    setIsQrConnectModalOpen(true);
                   }}
-                  onDelete={handleDelete}
+                  isVerifying={verifyingNumberId === num.id}
+                  isDisconnecting={disconnectingNumberId === num.id}
+                  isDeleting={deletingNumberId === num.id}
                 />
               ))}
             </div>
@@ -1684,221 +1750,30 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       </div>
       )}
 
-      {/* QR Pairing Modal */}
-      {isQRModalOpen && typeof document !== 'undefined' && createPortal(
-        <div 
-          className="fixed inset-0 z-[99999] bg-slate-900/60 flex items-center justify-center p-4 animate-fade-in select-none"
-          onClick={() => setIsQRModalOpen(false)}
-        >
-          <div 
-            className="w-full max-w-sm rounded-2xl bg-white dark:bg-[#2F3349] p-6 text-center space-y-4 shadow-2xl border border-slate-200/80 dark:border-white/[0.1] animate-scale-in"
-            onClick={(e) => e.stopPropagation()}
-          >
-            {/* Header */}
-            <div className="flex items-center justify-between pb-1">
-              <div className="flex items-center space-x-2">
-                <div className="w-8 h-8 rounded-lg bg-[#28C76F]/15 text-[#28C76F] flex items-center justify-center font-bold">
-                  <Smartphone className="w-4 h-4" />
-                </div>
-                <h3 className="text-base font-extrabold text-slate-800 dark:text-white">{t('whatsapp.qrModalTitle')}</h3>
-              </div>
-              <button
-                type="button"
-                onClick={() => setIsQRModalOpen(false)}
-                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/[0.06] transition-colors cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
+      {/* New WhatsApp Number Modal */}
+      <NewWhatsAppNumberModal
+        isOpen={isNewNumberModalOpen}
+        onClose={() => setIsNewNumberModalOpen(false)}
+        onSuccess={(created) => {
+          setWhatsAppNumbers((prev) => [created, ...prev]);
+          toast.success(t('whatsapp.numberAddedSuccess'), t('common.success'));
+          onRefreshStats();
+        }}
+      />
 
-            {/* Mode Switcher Tabs */}
-            <div className="flex rounded-xl bg-slate-100 dark:bg-[#25293C] p-1 text-xs font-semibold gap-1">
-              <button
-                type="button"
-                onClick={() => setPairingMode('qr')}
-                className={`flex-1 py-1.5 rounded-lg flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
-                  pairingMode === 'qr'
-                    ? 'bg-white dark:bg-[#2F3349] text-[#7367F0] shadow-sm font-bold'
-                    : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'
-                }`}
-              >
-                <QrCode className="w-3.5 h-3.5" />
-                <span>{t('whatsapp.tabQrCode')}</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setPairingMode('code')}
-                className={`flex-1 py-1.5 rounded-lg flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
-                  pairingMode === 'code'
-                    ? 'bg-white dark:bg-[#2F3349] text-[#7367F0] shadow-sm font-bold'
-                    : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'
-                }`}
-              >
-                <Smartphone className="w-3.5 h-3.5" />
-                <span>{t('whatsapp.tabPairingCode')}</span>
-              </button>
-            </div>
-
-            {pairingMode === 'qr' ? (
-              <>
-                {/* 3-Step Instruction Box for QR */}
-                <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#25293C] border border-slate-200/60 dark:border-white/[0.05] text-left text-xs space-y-1.5">
-                  <div className="flex items-center gap-2 text-slate-700 dark:text-slate-200 font-semibold">
-                    <span className="w-4 h-4 rounded-full bg-[#7367F0]/15 text-[#7367F0] text-[10px] flex items-center justify-center font-bold shrink-0">1</span>
-                    <span>{t('whatsapp.qrModalStep1')}</span>
-                  </div>
-                  <div className="flex items-center gap-2 text-slate-700 dark:text-slate-200 font-semibold">
-                    <span className="w-4 h-4 rounded-full bg-[#7367F0]/15 text-[#7367F0] text-[10px] flex items-center justify-center font-bold shrink-0">2</span>
-                    <span>{t('whatsapp.qrModalStep2')}</span>
-                  </div>
-                  <div className="flex items-center gap-2 text-slate-700 dark:text-slate-200 font-semibold">
-                    <span className="w-4 h-4 rounded-full bg-[#7367F0]/15 text-[#7367F0] text-[10px] flex items-center justify-center font-bold shrink-0">3</span>
-                    <span>{t('whatsapp.qrModalStep3')}</span>
-                  </div>
-                </div>
-
-                {/* QR Code Presentation */}
-                <div className="relative p-3.5 bg-white rounded-2xl mx-auto flex flex-col items-center justify-center shadow-lg border border-slate-200/90 w-full max-w-[280px]">
-                  {/* Active / Expiration Status Badge */}
-                  <div className="w-full flex items-center justify-between mb-2 px-1 text-[11px] font-semibold">
-                    <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-600 border border-emerald-200/60">
-                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                      {t('whatsapp.qrLiveBadge')}
-                    </span>
-                    <span className={`tabular-nums ${qrSecondsLeft <= 5 ? 'text-rose-500 font-bold animate-pulse' : 'text-slate-400'}`}>
-                      {qrSecondsLeft} {t('whatsapp.qrSecLeft')}
-                    </span>
-                  </div>
-
-                  {(() => {
-                    const pairingSession = sessions.find((s) => s.id === pairingSessionId);
-                    const activeQr = pairingSession?.qr_code;
-                    if (activeQr) {
-                      const qrSrc = activeQr.startsWith('data:image') || activeQr.startsWith('http')
-                        ? activeQr
-                        : `https://api.qrserver.com/v1/create-qr-code/?size=260x260&margin=4&data=${encodeURIComponent(activeQr)}`;
-                      return (
-                        <div className="relative w-56 h-56 flex items-center justify-center bg-white">
-                          <img
-                            src={qrSrc}
-                            alt="WhatsApp QR Code"
-                            className="w-full h-full object-contain select-none rounded-none"
-                            style={{ imageRendering: 'pixelated' }}
-                          />
-                          {/* Expired Overlay if qrSecondsLeft === 0 */}
-                          {qrSecondsLeft === 0 && (
-                            <div 
-                              onClick={() => handleRefreshQr()}
-                              className="absolute inset-0 bg-slate-900/80 backdrop-blur-[2px] rounded-lg flex flex-col items-center justify-center p-3 text-white text-center cursor-pointer transition-all hover:bg-slate-900/85 group"
-                            >
-                              <RefreshCw className="w-8 h-8 mb-2 text-emerald-400 group-hover:rotate-180 transition-transform duration-500" />
-                              <span className="text-xs font-bold">{t('whatsapp.qrExpired')}</span>
-                              <span className="text-[10px] text-slate-300 mt-1">{t('whatsapp.qrExpiredDesc')}</span>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    }
-                    return (
-                      <div className="w-56 h-56 flex flex-col items-center justify-center text-slate-400 gap-3">
-                        <Loader2 className="w-8 h-8 animate-spin text-[#7367F0]" />
-                        <span className="text-xs font-medium text-slate-500 text-center px-2">
-                          {t('whatsapp.qrPreparing')}
-                        </span>
-                      </div>
-                    );
-                  })()}
-
-                  {/* Manual Refresh Button */}
-                  <button
-                    type="button"
-                    onClick={() => handleRefreshQr()}
-                    disabled={isRefreshingQr}
-                    className="mt-2.5 w-full py-1.5 px-3 rounded-lg text-xs font-semibold text-slate-600 dark:text-slate-700 bg-slate-100 hover:bg-slate-200 flex items-center justify-center gap-1.5 transition-all cursor-pointer disabled:opacity-50"
-                  >
-                    <RefreshCw className={`w-3.5 h-3.5 ${isRefreshingQr ? 'animate-spin text-[#7367F0]' : ''}`} />
-                    <span>{isRefreshingQr ? t('whatsapp.refreshingQr') : t('whatsapp.refreshQr')}</span>
-                  </button>
-                </div>
-              </>
-            ) : (
-              /* Pairing Code Mode */
-              <div className="space-y-3 text-left">
-                <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#25293C] border border-slate-200/60 dark:border-white/[0.05] text-xs space-y-1.5">
-                  <div className="flex items-center gap-2 text-slate-700 dark:text-slate-200 font-semibold">
-                    <span className="w-4 h-4 rounded-full bg-[#7367F0]/15 text-[#7367F0] text-[10px] flex items-center justify-center font-bold shrink-0">1</span>
-                    <span>{t('whatsapp.pairingCodeStep1')}</span>
-                  </div>
-                  <div className="flex items-center gap-2 text-slate-700 dark:text-slate-200 font-semibold">
-                    <span className="w-4 h-4 rounded-full bg-[#7367F0]/15 text-[#7367F0] text-[10px] flex items-center justify-center font-bold shrink-0">2</span>
-                    <span>{t('whatsapp.pairingCodeStep2')}</span>
-                  </div>
-                  <div className="flex items-center gap-2 text-slate-700 dark:text-slate-200 font-semibold">
-                    <span className="w-4 h-4 rounded-full bg-[#7367F0]/15 text-[#7367F0] text-[10px] flex items-center justify-center font-bold shrink-0">3</span>
-                    <span>{t('whatsapp.pairingCodeStep3')}</span>
-                  </div>
-                </div>
-
-                {!pairingCode ? (
-                  <div className="space-y-2.5">
-                    <label className="text-xs font-semibold text-slate-600 dark:text-slate-300">
-                      {t('whatsapp.pairingCodeInputLabel')}
-                    </label>
-                    <input
-                      type="tel"
-                      value={pairingPhone}
-                      onChange={(e) => setPairingPhone(e.target.value)}
-                      placeholder={t('whatsapp.pairingCodeInputPlaceholder')}
-                      className="w-full px-3.5 py-2.5 rounded-xl text-sm bg-slate-50 dark:bg-[#25293C] border border-slate-200 dark:border-white/[0.1] text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-[#7367F0]/40 font-medium"
-                    />
-                    <Button
-                      onClick={handleRequestPairingCode}
-                      disabled={isRequestingCode || !pairingPhone.trim()}
-                      className="w-full font-bold cursor-pointer"
-                    >
-                      {isRequestingCode ? (
-                        <>
-                          <Loader2 className="w-4 h-4 animate-spin mr-2" />
-                          {t('whatsapp.gettingPairingCode')}
-                        </>
-                      ) : (
-                        t('whatsapp.getPairingCodeBtn')
-                      )}
-                    </Button>
-                  </div>
-                ) : (
-                  <div className="p-4 rounded-2xl bg-[#7367F0]/10 border border-[#7367F0]/30 text-center space-y-2.5 animate-scale-in">
-                    <span className="text-xs font-bold text-[#7367F0] uppercase tracking-wider block">
-                      {t('whatsapp.pairingCodeStep4')}
-                    </span>
-                    <div className="flex items-center justify-center gap-2">
-                      <span className="font-mono text-2xl font-black text-slate-900 dark:text-white tracking-widest bg-white dark:bg-[#2F3349] px-4 py-2.5 rounded-xl shadow-inner border border-slate-200 dark:border-white/[0.1]">
-                        {pairingCode}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={handleCopyPairingCode}
-                        className="p-3 rounded-xl bg-white dark:bg-[#2F3349] text-slate-600 dark:text-slate-300 hover:text-[#7367F0] shadow-sm border border-slate-200 dark:border-white/[0.1] transition-colors cursor-pointer"
-                        title={t('common.copy')}
-                      >
-                        {isCopiedCode ? <Check className="w-5 h-5 text-[#28C76F]" /> : <Copy className="w-5 h-5" />}
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {isPairingSuccess && (
-              <div className="p-3 rounded-xl bg-[#28C76F]/15 border border-[#28C76F]/30 text-[#28C76F] text-xs font-bold flex items-center justify-center gap-2 animate-fade-in">
-                <CheckCircle2 className="w-4 h-4" />
-                <span>{t('whatsapp.qrPairSuccess')}</span>
-              </div>
-            )}
-          </div>
-        </div>,
-        document.body
-      )}
+      {/* Edit WhatsApp Number Modal */}
+      <EditWhatsAppNumberModal
+        number={editingNumber}
+        isOpen={!!editingNumber}
+        onClose={() => setEditingNumber(null)}
+        onSuccess={(updated) => {
+          setWhatsAppNumbers((prev) =>
+            prev.map((n) => (n.id === updated.id ? updated : n))
+          );
+          toast.success(t('whatsapp.numberUpdatedSuccess'), t('common.success'));
+          onRefreshStats();
+        }}
+      />
 
       {/* Lead Detail Drawer for Conversation -> Lead Navigation */}
       <LeadDetailDrawer
@@ -1924,6 +1799,20 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
             return [newConv, ...prev];
           });
           setSelectedConv(newConv);
+        }}
+      />
+
+      {/* WhatsApp QR Connect & Pairing Modal */}
+      <WhatsAppQrConnectModal
+        isOpen={isQrConnectModalOpen}
+        onClose={() => {
+          setIsQrConnectModalOpen(false);
+          setReconnectSessionId(undefined);
+        }}
+        existingSessionId={reconnectSessionId}
+        onSuccess={() => {
+          fetchNumbersAndLogs(true);
+          onRefreshStats();
         }}
       />
     </div>

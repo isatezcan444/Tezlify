@@ -58,15 +58,29 @@ class WhatsAppGatewayClient:
             self._last_unreachable_time = time.monotonic()
             return False
 
-    async def create_session(self, session_name: str) -> Dict[str, Any]:
+    async def create_session(
+        self,
+        session_name: str,
+        tenant_id: Optional[str] = None,
+        session_id: Optional[Any] = None,
+    ) -> Dict[str, Any]:
         """
         Initializes a WhatsApp Web session on wa-gateway and requests a pairing QR code.
+        Supports both legacy sessionName and canonical tenant_id + session_id.
         """
         if self.is_recently_offline() and not settings.SIMULATION_MODE:
             return {"success": False, "error": "Gateway offline (cached)"}
 
-        url = f"{self.gateway_url}/api/sessions/create"
-        payload = {"sessionName": session_name}
+        if tenant_id and session_id:
+            url = f"{self.gateway_url}/api/tenants/{tenant_id}/sessions/{session_id}/init"
+            payload = {"sessionName": session_name}
+        else:
+            url = f"{self.gateway_url}/api/sessions/create"
+            payload = {"sessionName": session_name}
+            if tenant_id:
+                payload["tenantId"] = tenant_id
+            if session_id:
+                payload["sessionId"] = session_id
 
         try:
             async with httpx.AsyncClient(timeout=self._get_timeout(3.5)) as client:
@@ -96,12 +110,20 @@ class WhatsAppGatewayClient:
                 }
             return {"success": False, "error": f"Gateway unreachable: {str(e)}"}
 
-    async def refresh_session_qr(self, session_name: str) -> Dict[str, Any]:
+    async def refresh_session_qr(
+        self,
+        session_name: str,
+        tenant_id: Optional[str] = None,
+        session_id: Optional[Any] = None,
+    ) -> Dict[str, Any]:
         """Requests a forced fresh QR code regeneration on wa-gateway."""
         if self.is_recently_offline() and not settings.SIMULATION_MODE:
             return {"success": False, "error": "Gateway offline"}
-        encoded_name = quote(session_name, safe="")
-        url = f"{self.gateway_url}/api/sessions/{encoded_name}/refresh-qr"
+        if tenant_id and session_id:
+            url = f"{self.gateway_url}/api/tenants/{tenant_id}/sessions/{session_id}/refresh-qr"
+        else:
+            encoded_name = quote(session_name, safe="")
+            url = f"{self.gateway_url}/api/sessions/{encoded_name}/refresh-qr"
         try:
             async with httpx.AsyncClient(timeout=self._get_timeout(7.0)) as client:
                 res = await client.post(url, headers=self._headers())
@@ -119,12 +141,20 @@ class WhatsAppGatewayClient:
             logger.warning(f"[GatewayClient] refresh_session_qr error: {e}")
         return {"success": False, "qr_code": None}
 
-    async def get_session_qr(self, session_name: str) -> Optional[str]:
+    async def get_session_qr(
+        self,
+        session_name: str,
+        tenant_id: Optional[str] = None,
+        session_id: Optional[Any] = None,
+    ) -> Optional[str]:
         """Fetches the latest generated QR code for the session."""
         if self.is_recently_offline():
             return None
-        encoded_name = quote(session_name, safe="")
-        url = f"{self.gateway_url}/api/sessions/{encoded_name}/qr"
+        if tenant_id and session_id:
+            url = f"{self.gateway_url}/api/tenants/{tenant_id}/sessions/{session_id}/qr"
+        else:
+            encoded_name = quote(session_name, safe="")
+            url = f"{self.gateway_url}/api/sessions/{encoded_name}/qr"
         try:
             async with httpx.AsyncClient(timeout=self._get_timeout(2.0)) as client:
                 res = await client.get(url, headers=self._headers())
@@ -137,12 +167,20 @@ class WhatsAppGatewayClient:
             logger.debug(f"[GatewayClient] get_session_qr error: {e}")
         return None
 
-    async def get_session_status(self, session_name: str) -> Dict[str, Any]:
+    async def get_session_status(
+        self,
+        session_name: str,
+        tenant_id: Optional[str] = None,
+        session_id: Optional[Any] = None,
+    ) -> Dict[str, Any]:
         """Fetches the live status of the session from wa-gateway."""
         if self.is_recently_offline():
             return {"status": "DISCONNECTED", "phone": None}
-        encoded_name = quote(session_name, safe="")
-        url = f"{self.gateway_url}/api/sessions/{encoded_name}/status"
+        if tenant_id and session_id:
+            url = f"{self.gateway_url}/api/tenants/{tenant_id}/sessions/{session_id}/status"
+        else:
+            encoded_name = quote(session_name, safe="")
+            url = f"{self.gateway_url}/api/sessions/{encoded_name}/status"
         try:
             async with httpx.AsyncClient(timeout=self._get_timeout(1.0)) as client:
                 res = await client.get(url, headers=self._headers())
@@ -219,12 +257,20 @@ class WhatsAppGatewayClient:
             logger.debug(f"[GatewayClient] get_session_chats_delta error for {session_name}: {e}")
         return {"revision": since_revision, "changed": []}
 
-    async def disconnect_session(self, session_name: str) -> bool:
+    async def disconnect_session(
+        self,
+        session_name: str,
+        tenant_id: Optional[str] = None,
+        session_id: Optional[Any] = None,
+    ) -> bool:
         """Disconnects and logs out the session on wa-gateway."""
         if self.is_recently_offline():
             return False
-        encoded_name = quote(session_name, safe="")
-        url = f"{self.gateway_url}/api/sessions/{encoded_name}/disconnect"
+        if tenant_id and session_id:
+            url = f"{self.gateway_url}/api/tenants/{tenant_id}/sessions/{session_id}/disconnect"
+        else:
+            encoded_name = quote(session_name, safe="")
+            url = f"{self.gateway_url}/api/sessions/{encoded_name}/disconnect"
         try:
             async with httpx.AsyncClient(timeout=self._get_timeout(1.0)) as client:
                 res = await client.post(url, headers=self._headers())
@@ -233,7 +279,12 @@ class WhatsAppGatewayClient:
             logger.warning(f"[GatewayClient] disconnect_session error: {e}")
             return False
 
-    async def delete_session(self, session_name: str) -> bool:
+    async def delete_session(
+        self,
+        session_name: str,
+        tenant_id: Optional[str] = None,
+        session_id: Optional[Any] = None,
+    ) -> bool:
         """Deletes session credentials and auth data on wa-gateway.
 
         Runs in background (non-blocking), but with a generous timeout:
@@ -243,8 +294,11 @@ class WhatsAppGatewayClient:
         """
         if self.is_recently_offline():
             return False
-        encoded_name = quote(session_name, safe="")
-        url = f"{self.gateway_url}/api/sessions/{encoded_name}"
+        if tenant_id and session_id:
+            url = f"{self.gateway_url}/api/tenants/{tenant_id}/sessions/{session_id}"
+        else:
+            encoded_name = quote(session_name, safe="")
+            url = f"{self.gateway_url}/api/sessions/{encoded_name}"
         try:
             async with httpx.AsyncClient(timeout=self._get_timeout(10.0)) as client:
                 res = await client.delete(url, headers=self._headers())
@@ -263,16 +317,30 @@ class WhatsAppGatewayClient:
         session_name: str,
         phone: str,
         message: str,
-        typing_delay_ms: int = 0
+        typing_delay_ms: int = 0,
+        tenant_id: Optional[str] = None,
+        session_id: Optional[Any] = None,
+        client_message_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Dispatches an outbound message through an active Baileys session on wa-gateway."""
-        url = f"{self.gateway_url}/api/send"
-        payload = {
-            "session": session_name,
-            "phone": phone,
-            "message": message,
-            "typingDelayMs": typing_delay_ms,
-        }
+        if tenant_id and session_id:
+            url = f"{self.gateway_url}/api/tenants/{tenant_id}/sessions/{session_id}/messages/send"
+            payload = {
+                "phone": phone,
+                "message": message,
+                "typingDelayMs": typing_delay_ms,
+                "clientMessageId": client_message_id,
+            }
+        else:
+            url = f"{self.gateway_url}/api/send"
+            payload = {
+                "session": session_name,
+                "phone": phone,
+                "message": message,
+                "typingDelayMs": typing_delay_ms,
+                "clientMessageId": client_message_id,
+            }
+
         try:
             async with httpx.AsyncClient(timeout=self._get_timeout(25.0)) as client:
                 res = await client.post(url, json=payload, headers=self._headers())
@@ -280,7 +348,18 @@ class WhatsAppGatewayClient:
                     self._last_unreachable_time = 0.0
                     return res.json()
                 else:
-                    return {"success": False, "error": f"Gateway HTTP {res.status_code}: {res.text}"}
+                    return {
+                        "success": False,
+                        "error": f"Gateway HTTP {res.status_code}: {res.text}",
+                        "status_code": res.status_code,
+                    }
+        except httpx.ReadTimeout as e:
+            self._last_unreachable_time = time.monotonic()
+            return {
+                "success": False,
+                "error": f"Gateway ReadTimeout: {str(e)}",
+                "is_ambiguous": True,
+            }
         except Exception as e:
             self._last_unreachable_time = time.monotonic()
             return {"success": False, "error": f"Gateway unreachable: {str(e)}"}

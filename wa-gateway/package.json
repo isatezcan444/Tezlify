@@ -5,7 +5,11 @@
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
-    "test": "node test/sessionManager.test.js"
+    "test": "node test/sessionManager.test.js && node test/phase2_session_lifecycle.test.js && node test/phase3_frontend_qr_flow.test.js && node test/phase4_inbound_bridge.test.js && node test/phase5_outbound_messaging.test.js",
+    "test:phase2": "node test/phase2_session_lifecycle.test.js",
+    "test:phase3": "node test/phase3_frontend_qr_flow.test.js",
+    "test:phase4": "node test/phase4_inbound_bridge.test.js",
+    "test:phase5": "node test/phase5_outbound_messaging.test.js"
   },
   "dependencies": {
     "@whiskeysockets/baileys": "^7.0.0-rc14",

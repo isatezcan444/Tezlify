@@ -134,6 +134,7 @@ export type SessionStatus = 'DISCONNECTED' | 'SCAN_QR' | 'CONNECTING' | 'CONNECT
 
 export interface WhatsAppSession {
   id: number;
+  whatsapp_number_id?: number | null;
   session_name: string;
   phone_number?: string;
   status: SessionStatus;
@@ -147,6 +148,67 @@ export interface WhatsAppSession {
   error_message?: string;
   created_at: string;
   updated_at: string;
+}
+
+export type WhatsAppNumberStatus = 'ACTIVE' | 'INACTIVE' | 'DISCONNECTED' | 'ERROR';
+export type WhatsAppNumberProvider = 'META_CLOUD' | 'BAILEYS_QR';
+
+export interface WhatsAppNumber {
+  id: number;
+  user_id?: string;
+  provider?: WhatsAppNumberProvider;
+  name: string;
+  display_phone_number?: string;
+  phone_number_e164?: string;
+  phone_number_id?: string | null;
+  waba_id?: string;
+  business_account_id?: string;
+  status: WhatsAppNumberStatus;
+  quality_rating?: string;
+  verified_name?: string;
+  last_verified_at?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WhatsAppNumberValidatePayload {
+  name?: string;
+  waba_id: string;
+  phone_number_id: string;
+  access_token: string;
+}
+
+export interface WhatsAppNumberValidateResult {
+  is_valid: boolean;
+  phone_number_id: string;
+  display_phone_number?: string;
+  verified_name?: string;
+  quality_rating?: string;
+  waba_id?: string;
+  error?: string;
+}
+
+export interface WhatsAppNumberConnectPayload {
+  name: string;
+  waba_id: string;
+  phone_number_id: string;
+  access_token: string;
+  business_account_id?: string;
+}
+
+export interface WhatsAppNumberUpdatePayload {
+  name?: string;
+  access_token?: string;
+}
+
+export interface WhatsAppNumberVerifyResult {
+  id: number;
+  status: WhatsAppNumberStatus;
+  verified: boolean;
+  verified_name?: string;
+  quality_rating?: string;
+  last_verified_at?: string;
+  error?: string;
 }
 
 export interface DashboardStats {
@@ -251,7 +313,7 @@ export interface BlacklistPaginationResponse {
 export type ConversationStatus = 'ACTIVE' | 'ARCHIVED' | 'CLOSED';
 export type MessageDirection = 'INBOUND' | 'OUTBOUND';
 export type MessageType = 'TEXT' | 'IMAGE' | 'DOCUMENT' | 'AUDIO' | 'VIDEO' | 'TEMPLATE' | 'OTHER';
-export type ConversationMessageStatus = 'RECEIVED' | 'SENT' | 'DELIVERED' | 'READ' | 'FAILED';
+export type ConversationMessageStatus = 'PENDING' | 'RECEIVED' | 'SENT' | 'DELIVERED' | 'READ' | 'FAILED';
 
 export interface Message {
   id: number;
@@ -266,6 +328,7 @@ export interface Message {
   media_caption?: string | null;
   media_url?: string;
   wa_message_id?: string;
+  client_message_id?: string;
   sender_phone?: string;
   sender_name?: string | null;
   recipient_phone?: string;
@@ -293,7 +356,9 @@ export interface WhatsAppTemplate {
 
 export interface Conversation {
   id: number;
-  lead_id: number;
+  lead_id?: number | null;
+  whatsapp_number_id?: number | null;
+  contact_id?: number | null;
   channel: string;
   status: ConversationStatus;
   last_message_at?: string;

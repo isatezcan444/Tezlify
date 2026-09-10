@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Any
 from pydantic import BaseModel, ConfigDict
 from backend.app.models.conversation import ConversationStatus
 from backend.app.models.message import MessageDirection, MessageType, ConversationMessageStatus
@@ -14,12 +14,17 @@ class MessageBase(BaseModel):
     sender_name: Optional[str] = None
     status: ConversationMessageStatus = ConversationMessageStatus.RECEIVED
     wa_message_id: Optional[str] = None
+    client_message_id: Optional[str] = None
     media_id: Optional[str] = None
     media_mime_type: Optional[str] = None
     media_filename: Optional[str] = None
     media_caption: Optional[str] = None
     error_code: Optional[int] = None
     error_message: Optional[str] = None
+    sent_at: Optional[datetime] = None
+    delivered_at: Optional[datetime] = None
+    read_at: Optional[datetime] = None
+    failed_at: Optional[datetime] = None
     external_timestamp: Optional[datetime] = None
 
 
@@ -37,7 +42,9 @@ class MessageResponse(MessageBase):
 
 
 class ConversationBase(BaseModel):
-    lead_id: int
+    lead_id: Optional[int] = None
+    whatsapp_number_id: Optional[int] = None
+    contact_id: Optional[int] = None
     channel: str = "WHATSAPP"
     status: ConversationStatus = ConversationStatus.ACTIVE
 
@@ -47,8 +54,13 @@ class ConversationStatusUpdateRequest(BaseModel):
 
 
 class MessageSendRequest(BaseModel):
-    body: str
-    type: str = "text"
+    body: Optional[str] = None
+    type: Optional[str] = None
+    message_type: Optional[str] = "text"
+    template_name: Optional[str] = None
+    template_language: Optional[str] = "tr"
+    template_parameters: Optional[List[Any]] = None
+    client_message_id: Optional[str] = None
 
 
 class TemplateSendRequest(BaseModel):

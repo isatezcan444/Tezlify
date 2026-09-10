@@ -19,8 +19,162 @@ if (!fs.existsSync(SESSIONS_DIR)) {
     fs.mkdirSync(SESSIONS_DIR, { recursive: true });
 }
 
-// Global active sessions map: sessionName -> sessionData
+// Global active sessions map: sessionKey / sessionName -> sessionData
 const activeSessions = new Map();
+
+/**
+ * Formats a tenant identifier into the canonical folder name 'tenant_{user_id}'.
+ */
+function formatTenantDir(tenantId) {
+    if (!tenantId) return 'tenant_default';
+    const raw = String(tenantId).trim();
+    return raw.startsWith('tenant_') ? raw : `tenant_${raw}`;
+}
+
+/**
+ * Formats a session identifier into the canonical folder name 'session_{session_id}'.
+ */
+function formatSessionDir(sessionId) {
+    if (!sessionId) return 'session_default';
+    const raw = String(sessionId).trim();
+    return raw.startsWith('session_') ? raw : `session_${raw}`;
+}
+
+/**
+ * Returns the immutable canonical filesystem path:
+ * sessions/tenant_{user_id}/session_{session_id}/
+ */
+function getCanonicalSessionPath(tenantId, sessionId) {
+    const tDir = formatTenantDir(tenantId);
+    const sDir = formatSessionDir(sessionId);
+    return path.join(SESSIONS_DIR, tDir, sDir);
+}
+
+/**
+ * Generates an in-memory composite unique session key:
+ * 'tenant_{user_id}:session_{session_id}'
+ */
+function makeSessionKey(tenantId, sessionId) {
+    return `${formatTenantDir(tenantId)}:${formatSessionDir(sessionId)}`;
+}
+
+/**
+ * Classifies Baileys disconnect status code into actionable lifecycle decisions.
+ */
+function classifyDisconnectReason(statusCode) {
+    const code = Number(statusCode);
+    if (code === DisconnectReason.loggedOut) {
+        return {
+            isLoggedOut: true,
+            canReconnect: false,
+            reason: 'LOGGED_OUT',
+            code: 401,
+            description: 'WhatsApp session logged out from device'
+        };
+    }
+    if (code === DisconnectReason.restartRequired) {
+        return {
+            isLoggedOut: false,
+            canReconnect: true,
+            reason: 'RESTART_REQUIRED',
+            delayMs: 150,
+            code: 515,
+            description: 'Baileys stream restart required'
+        };
+    }
+    if (code === DisconnectReason.timedOut || code === DisconnectReason.connectionLost) {
+        return {
+            isLoggedOut: false,
+            canReconnect: true,
+            reason: 'TIMED_OUT',
+            delayMs: 2000,
+            code: 408,
+            description: 'Connection timed out or lost'
+        };
+    }
+    if (code === DisconnectReason.connectionClosed) {
+        return {
+            isLoggedOut: false,
+            canReconnect: true,
+            reason: 'CONNECTION_CLOSED',
+            delayMs: 2000,
+            code: 428,
+            description: 'Connection closed by remote'
+        };
+    }
+    if (code === DisconnectReason.connectionReplaced) {
+        return {
+            isLoggedOut: true,
+            canReconnect: false,
+            reason: 'CONNECTION_REPLACED',
+            code: 440,
+            description: 'Connection replaced by another session'
+        };
+    }
+    if (code === DisconnectReason.badSession) {
+        return {
+            isLoggedOut: false,
+            canReconnect: false,
+            reason: 'BAD_SESSION',
+            delayMs: 5000,
+            code: 500,
+            description: 'Session corrupted or invalid'
+        };
+    }
+    // Default network or unknown disconnect
+    return {
+        isLoggedOut: false,
+        canReconnect: true,
+        reason: 'NETWORK_DISCONNECT',
+        delayMs: 2000,
+        code: isNaN(code) ? 0 : code,
+        description: 'Network disconnect or transport error'
+    };
+}
+
+/**
+ * Dual lookup: finds a session by composite key, tenant+session, or legacy name.
+ */
+function getSession(identifier) {
+    if (!identifier) return null;
+    if (typeof identifier === 'object') {
+        const tenantId = identifier.tenantId;
+        const sessionId = identifier.sessionId;
+        const sessionName = identifier.sessionName || identifier.name;
+        if (tenantId && sessionId) {
+            const key = makeSessionKey(tenantId, sessionId);
+            if (activeSessions.has(key)) return activeSessions.get(key);
+        }
+        if (sessionName && activeSessions.has(sessionName)) {
+            return activeSessions.get(sessionName);
+        }
+    }
+    if (typeof identifier === 'string') {
+        if (activeSessions.has(identifier)) return activeSessions.get(identifier);
+        const clean = identifier.trim().toLowerCase();
+        for (const [k, v] of activeSessions.entries()) {
+            if (k.toLowerCase() === clean || decodeURIComponent(k).trim().toLowerCase() === clean) {
+                return v;
+            }
+            if (v.name && v.name.toLowerCase() === clean) {
+                return v;
+            }
+            if (v.sessionId && String(v.sessionId).toLowerCase() === clean) {
+                return v;
+            }
+        }
+    }
+    return null;
+}
+
+/**
+ * Strictly finds a session belonging to a specific tenant.
+ */
+function findSession(tenantId, sessionId) {
+    const key = makeSessionKey(tenantId, sessionId);
+    return activeSessions.get(key) || null;
+}
+
 
 /**
  * Safely converts protobuf Long, number, or string timestamps to unix seconds.
@@ -281,20 +435,76 @@ async function notifyBackend(sessionName, endpoint, payload) {
     }
 }
 
+/**
+ * Dispatches session lifecycle events to FastAPI backend without leaking credentials.
+ */
+async function notifyLifecycleEvent(sessionData, eventType, extra = {}) {
+    const backendUrl = (process.env.BACKEND_URL || 'http://localhost:8000').replace(/\/$/, '');
+    const webhookSecret = process.env.WA_GATEWAY_WEBHOOK_SECRET || 'dev-webhook-secret';
+
+    const payload = {
+        event: eventType, // SESSION_CREATED, QR_UPDATED, CONNECTED, DISCONNECTED, LOGGED_OUT, CONNECTION_ERROR
+        tenant_id: sessionData?.tenantId ? String(sessionData.tenantId) : null,
+        session_id: sessionData?.sessionId ? String(sessionData.sessionId) : null,
+        session_name: sessionData?.name || null,
+        status: sessionData?.status || 'DISCONNECTED',
+        phone_number_e164: sessionData?.phone || null,
+        qr_code: (eventType === 'QR_UPDATED') ? (sessionData?.qrImage || sessionData?.qr || null) : null,
+        error_code: extra?.errorCode ?? null,
+        error_message: extra?.errorMessage ?? null,
+        timestamp: new Date().toISOString()
+    };
+
+    // Strict security invariant: Never leak credentials or auth bundle
+    delete payload.auth;
+    delete payload.creds;
+    delete payload.keys;
+    delete payload.auth_bundle;
+    delete payload.sock;
+
+    try {
+        await axios.post(`${backendUrl}/api/v1/whatsapp/webhook/session-lifecycle`, payload, {
+            headers: {
+                'X-Webhook-Secret': webhookSecret,
+                'Content-Type': 'application/json'
+            },
+            timeout: 10000
+        });
+        console.log(`[WA-Gateway] Lifecycle event ${eventType} dispatched for ${sessionData?.name || sessionData?.key}`);
+    } catch (err) {
+        console.warn(`[WA-Gateway] Lifecycle webhook ${eventType} failed for ${sessionData?.name || sessionData?.key}:`, err.message);
+    }
+
+    // Keep legacy webhooks synchronized for zero-breakage with existing backend/frontend
+    const sName = sessionData?.name || sessionData?.key;
+    if (sName) {
+        if (eventType === 'QR_UPDATED' && sessionData.qrImage) {
+            notifyBackend(sName, 'session-qr', { qr_code: sessionData.qrImage }).catch(() => {});
+        } else if (eventType === 'CONNECTED') {
+            notifyBackend(sName, 'session-status', { status: 'CONNECTED', phone: sessionData.phone }).catch(() => {});
+        } else if (eventType === 'DISCONNECTED' || eventType === 'LOGGED_OUT') {
+            notifyBackend(sName, 'session-status', { status: 'DISCONNECTED', phone: null }).catch(() => {});
+        }
+    }
+}
+
 // Map of debounce timers for backing up auth files to DB
 const backupDebounceTimers = new Map();
 
 /**
  * Backs up all session credentials and keys to the database via webhook.
  */
-function backupSessionAuth(sessionName) {
-    if (backupDebounceTimers.has(sessionName)) {
-        clearTimeout(backupDebounceTimers.get(sessionName));
+function backupSessionAuth(sessionIdentifier) {
+    const sName = typeof sessionIdentifier === 'string' ? sessionIdentifier : (sessionIdentifier?.name || sessionIdentifier?.key);
+    if (!sName) return;
+    if (backupDebounceTimers.has(sName)) {
+        clearTimeout(backupDebounceTimers.get(sName));
     }
     const timer = setTimeout(async () => {
-        backupDebounceTimers.delete(sessionName);
+        backupDebounceTimers.delete(sName);
         try {
-            const sessionAuthDir = path.join(SESSIONS_DIR, sessionName);
+            const session = getSession(sessionIdentifier);
+            const sessionAuthDir = session?.authDir || path.join(SESSIONS_DIR, sName);
             if (!fs.existsSync(sessionAuthDir)) return;
             const files = fs.readdirSync(sessionAuthDir);
             const authBundle = {};
@@ -307,14 +517,14 @@ function backupSessionAuth(sessionName) {
                 }
             }
             if (authBundle['creds.json']) {
-                await notifyBackend(sessionName, 'session-backup', { auth_bundle: authBundle });
-                console.log(`[WA-Gateway] Backed up ${Object.keys(authBundle).length} auth files to database for ${sessionName}`);
+                await notifyBackend(sName, 'session-backup', { auth_bundle: authBundle });
+                console.log(`[WA-Gateway] Backed up ${Object.keys(authBundle).length} auth files to database for ${sName}`);
             }
         } catch (e) {
-            console.warn(`[WA-Gateway] Auth backup failed for ${sessionName}:`, e.message);
+            console.warn(`[WA-Gateway] Auth backup failed for ${sName}:`, e.message);
         }
     }, 800);
-    backupDebounceTimers.set(sessionName, timer);
+    backupDebounceTimers.set(sName, timer);
 }
 
 // Map of debounce timers for saving chats/contacts store to disk
@@ -323,16 +533,18 @@ const storeDebounceTimers = new Map();
 /**
  * Persists in-memory synced chats and contacts to disk and triggers DB backup.
  */
-function saveSessionStore(sessionName) {
-    if (storeDebounceTimers.has(sessionName)) {
-        clearTimeout(storeDebounceTimers.get(sessionName));
+function saveSessionStore(sessionIdentifier) {
+    const sName = typeof sessionIdentifier === 'string' ? sessionIdentifier : (sessionIdentifier?.name || sessionIdentifier?.key);
+    if (!sName) return;
+    if (storeDebounceTimers.has(sName)) {
+        clearTimeout(storeDebounceTimers.get(sName));
     }
     const timer = setTimeout(() => {
-        storeDebounceTimers.delete(sessionName);
+        storeDebounceTimers.delete(sName);
         try {
-            const session = activeSessions.get(sessionName);
+            const session = getSession(sessionIdentifier);
             if (!session) return;
-            const sessionAuthDir = path.join(SESSIONS_DIR, sessionName);
+            const sessionAuthDir = session.authDir || path.join(SESSIONS_DIR, sName);
             if (!fs.existsSync(sessionAuthDir)) {
                 fs.mkdirSync(sessionAuthDir, { recursive: true });
             }
@@ -346,26 +558,27 @@ function saveSessionStore(sessionName) {
             };
             fs.writeFileSync(storePath, JSON.stringify(data), 'utf8');
             // Trigger DB backup so chats_store.json is mirrored in database
-            backupSessionAuth(sessionName);
+            backupSessionAuth(sessionIdentifier);
         } catch (e) {
-            console.warn(`[WA-Gateway] Failed to save chats_store for ${sessionName}:`, e.message);
+            console.warn(`[WA-Gateway] Failed to save chats_store for ${sName}:`, e.message);
         }
     }, 500);
-    storeDebounceTimers.set(sessionName, timer);
+    storeDebounceTimers.set(sName, timer);
 }
 
 /**
  * Loads chats and contacts from disk for the session if available.
  */
-function loadSessionStore(sessionName) {
-    const session = activeSessions.get(sessionName);
+function loadSessionStore(sessionIdentifier) {
+    const session = getSession(sessionIdentifier);
     if (!session) return;
     if (!session.chats) session.chats = new Map();
     if (!session.contacts) session.contacts = new Map();
     if (!session.lidToPnMap) session.lidToPnMap = new Map();
     if (!session.pnToLidMap) session.pnToLidMap = new Map();
 
-    const sessionAuthDir = path.join(SESSIONS_DIR, sessionName);
+    const sName = session.name || session.key;
+    const sessionAuthDir = session.authDir || path.join(SESSIONS_DIR, sName);
     const storePath = path.join(sessionAuthDir, 'chats_store.json');
     if (!fs.existsSync(storePath)) return;
 
@@ -400,9 +613,9 @@ function loadSessionStore(sessionName) {
                 }
             }
         }
-        console.log(`[WA-Gateway] Restored ${session.chats.size} chats, ${session.contacts.size} contacts, ${session.lidToPnMap.size} LID mappings from disk for ${sessionName}`);
+        console.log(`[WA-Gateway] Restored ${session.chats.size} chats, ${session.contacts.size} contacts, ${session.lidToPnMap.size} LID mappings from disk for ${sName}`);
     } catch (e) {
-        console.warn(`[WA-Gateway] Failed to load chats_store for ${sessionName}:`, e.message);
+        console.warn(`[WA-Gateway] Failed to load chats_store for ${sName}:`, e.message);
     }
 }
 
@@ -471,8 +684,13 @@ async function restoreAllSessionsFromDatabase() {
  * Initializes or re-initializes the underlying Baileys WhatsApp socket and its listeners.
  */
 async function initSessionSocket(sessionData) {
-    const sessionName = sessionData.name;
-    const sessionAuthDir = path.join(SESSIONS_DIR, sessionName);
+    const sessionName = sessionData.name || sessionData.key;
+    const sessionAuthDir = sessionData.authDir || (
+        sessionData.tenantId && sessionData.sessionId
+            ? getCanonicalSessionPath(sessionData.tenantId, sessionData.sessionId)
+            : path.join(SESSIONS_DIR, sessionName)
+    );
+    sessionData.authDir = sessionAuthDir;
     if (!fs.existsSync(sessionAuthDir)) {
         fs.mkdirSync(sessionAuthDir, { recursive: true });
     }
@@ -518,12 +736,16 @@ async function initSessionSocket(sessionData) {
 
     if (!sessionData.chats) sessionData.chats = new Map();
     if (!sessionData.contacts) sessionData.contacts = new Map();
-    loadSessionStore(sessionName);
+    loadSessionStore(sessionData);
 
     // Listen to credentials update
     sock.ev.on('creds.update', async () => {
-        await saveCreds();
-        backupSessionAuth(sessionName);
+        try {
+            await saveCreds();
+            backupSessionAuth(sessionData);
+        } catch (e) {
+            console.warn(`[WA-Gateway] Failed to save creds for ${sessionName}:`, e.message);
+        }
     });
 
     // 1. Initial bootstrap & history sync: captures all active chats and phonebook contacts
@@ -716,7 +938,7 @@ async function initSessionSocket(sessionData) {
         const { connection, lastDisconnect, qr } = update;
 
         if (qr) {
-            sessionData.status = 'SCAN_QR';
+            sessionData.status = 'QR_READY';
             sessionData.qr = qr;
             try {
                 sessionData.qrImage = await QRCode.toDataURL(qr, {
@@ -728,9 +950,7 @@ async function initSessionSocket(sessionData) {
                         light: '#FFFFFF'
                     }
                 });
-                await notifyBackend(sessionName, 'session-qr', {
-                    qr_code: sessionData.qrImage
-                });
+                await notifyLifecycleEvent(sessionData, 'QR_UPDATED');
             } catch (err) {
                 console.error(`[WA-Gateway] Failed to generate QR data URL for ${sessionName}:`, err);
             }
@@ -745,7 +965,7 @@ async function initSessionSocket(sessionData) {
             // Extract phone number from JID (e.g. "905321002030:1@s.whatsapp.net" -> "+905321002030")
             const userJid = sock.user?.id || '';
             const rawPhone = userJid.split(':')[0].split('@')[0];
-            sessionData.phone = rawPhone ? `+${rawPhone}` : null;
+            sessionData.phone = rawPhone ? (rawPhone.startsWith('+') ? rawPhone : `+${rawPhone}`) : null;
 
             console.log(`[WA-Gateway] Session ${sessionName} connected as ${sessionData.phone}`);
 
@@ -779,17 +999,14 @@ async function initSessionSocket(sessionData) {
                 console.warn(`[WA-Gateway] resyncAppState warning for ${sessionName}:`, appStateErr.message);
             }
 
-            saveSessionStore(sessionName);
+            saveSessionStore(sessionData);
             bumpChatRevision(sessionName);
 
             if (!alreadyConnected) {
-                await notifyBackend(sessionName, 'session-status', {
-                    status: 'CONNECTED',
-                    phone: sessionData.phone
-                });
+                await notifyLifecycleEvent(sessionData, 'CONNECTED');
             }
 
-            backupSessionAuth(sessionName);
+            backupSessionAuth(sessionData);
 
             await notifyBackend(sessionName, 'chats-synced', {
                 total_chats: sessionData.chats.size,
@@ -799,81 +1016,141 @@ async function initSessionSocket(sessionData) {
 
         if (connection === 'close') {
             const statusCode = lastDisconnect?.error?.output?.statusCode;
-            const isLoggedOut = statusCode === DisconnectReason.loggedOut;
-            const isRestartRequired = statusCode === DisconnectReason.restartRequired;
+            const classification = classifyDisconnectReason(statusCode);
 
-            console.log(`[WA-Gateway] Session ${sessionName} closed. Status code: ${statusCode}, LoggedOut: ${isLoggedOut}, RestartRequired: ${isRestartRequired}`);
-
-            // Ensure any keys generated during handshake are saved immediately before reconnect
-            try {
-                await saveCreds();
-                backupSessionAuth(sessionName);
-            } catch (e) {}
+            console.log(`[WA-Gateway] Session ${sessionName} closed. Status code: ${statusCode}, Reason: ${classification.reason}`);
 
             // Detach listeners from closed socket to avoid memory leak / ghost events
             try {
                 sock?.ev?.removeAllListeners();
             } catch (e) {}
 
-            if (isLoggedOut) {
-                sessionData.status = 'DISCONNECTED';
+            if (classification.isLoggedOut) {
+                sessionData.status = 'LOGGED_OUT';
                 sessionData.phone = null;
                 sessionData.qr = null;
                 sessionData.qrImage = null;
                 sessionData.sock = null;
 
+                if (sessionData.reconnectTimer) {
+                    clearTimeout(sessionData.reconnectTimer);
+                    sessionData.reconnectTimer = null;
+                }
+
                 try {
-                    fs.rmSync(sessionAuthDir, { recursive: true, force: true });
+                    if (fs.existsSync(sessionAuthDir)) {
+                        fs.rmSync(sessionAuthDir, { recursive: true, force: true });
+                    }
                 } catch (e) {
                     console.warn(`[WA-Gateway] Could not delete auth dir for ${sessionName}:`, e);
                 }
 
-                activeSessions.delete(sessionName);
+                if (sessionData.key) activeSessions.delete(sessionData.key);
+                if (sessionData.name && sessionData.name !== sessionData.key) {
+                    activeSessions.delete(sessionData.name);
+                }
 
-                await notifyBackend(sessionName, 'session-status', {
-                    status: 'DISCONNECTED',
-                    phone: null
+                await notifyLifecycleEvent(sessionData, 'LOGGED_OUT', {
+                    errorCode: statusCode || 401,
+                    errorMessage: classification.description
                 });
             } else {
-                const wasPairing = sessionData.status === 'SCAN_QR' || !sessionData.phone;
-                // Fast 150ms reconnect on restartRequired to ensure mobile WhatsApp completes pairing on first attempt
-                const reconnectDelay = isRestartRequired ? 150 : (wasPairing ? 250 : 2000);
-                console.log(`[WA-Gateway] Reconnecting session ${sessionName} in ${reconnectDelay}ms (status: ${statusCode}, restartRequired: ${isRestartRequired}, wasPairing: ${wasPairing})...`);
+                // Ensure any keys generated during handshake are saved immediately before reconnect
+                try {
+                    await saveCreds();
+                    backupSessionAuth(sessionData);
+                } catch (e) {}
 
-                sessionData.status = 'CONNECTING';
+                sessionData.status = 'DISCONNECTED';
 
-                if (sessionData.reconnectTimer) {
-                    clearTimeout(sessionData.reconnectTimer);
+                await notifyLifecycleEvent(sessionData, 'DISCONNECTED', {
+                    errorCode: statusCode || 0,
+                    errorMessage: classification.description
+                });
+
+                if (classification.canReconnect) {
+                    const wasPairing = !sessionData.phone;
+                    const reconnectDelay = classification.delayMs || (wasPairing ? 250 : 2000);
+                    console.log(`[WA-Gateway] Reconnecting session ${sessionName} in ${reconnectDelay}ms (reason: ${classification.reason})...`);
+
+                    if (sessionData.reconnectTimer) {
+                        clearTimeout(sessionData.reconnectTimer);
+                    }
+                    sessionData.reconnectTimer = setTimeout(() => {
+                        sessionData.reconnectTimer = null;
+                        sessionData.status = 'CONNECTING';
+                        initSessionSocket(sessionData).catch(err => {
+                            console.error(`[WA-Gateway] Reconnect failed for ${sessionName}:`, err.message);
+                            notifyLifecycleEvent(sessionData, 'CONNECTION_ERROR', {
+                                errorCode: 500,
+                                errorMessage: err.message
+                            }).catch(() => {});
+                        });
+                    }, reconnectDelay);
                 }
-                sessionData.reconnectTimer = setTimeout(() => {
-                    sessionData.reconnectTimer = null;
-                    initSessionSocket(sessionData).catch(err => {
-                        console.error(`[WA-Gateway] Reconnect failed for ${sessionName}:`, err.message);
-                    });
-                }, reconnectDelay);
             }
         }
     });
 
     // Inbound & outbound messages (updates chat preview, unread count & timestamp instantly)
-    sock.ev.on('messages.upsert', async ({ messages }) => {
+    sock.ev.on('messages.upsert', async ({ messages, type }) => {
         if (!messages || messages.length === 0) return;
+        if (!sessionData.processedMsgIds) sessionData.processedMsgIds = new Set();
 
         for (const msg of messages) {
+            if (!msg || typeof msg !== 'object') continue;
             const { canonicalJid: remoteJid, aliasJid } = await resolveMessageJidsAsync(msg, sessionData);
             if (!remoteJid || remoteJid === 'status@broadcast') continue;
             mergeJidAlias(sessionData, remoteJid, aliasJid);
 
             const isGroup = remoteJid.endsWith('@g.us');
             const fromMe = !!msg.key?.fromMe;
+            const msgId = msg.key?.id;
 
-            const text = msg.message?.conversation ||
-                msg.message?.extendedTextMessage?.text ||
-                msg.message?.imageMessage?.caption ||
-                (msg.message?.imageMessage ? '📷 Fotoğraf' : '') ||
-                (msg.message?.documentMessage ? '📄 Belge' : '') ||
-                (msg.message?.audioMessage ? '🎵 Ses' : '') ||
-                '';
+            // Unwrap message containers (ephemeral, viewOnce, documentWithCaption, etc.)
+            const actualMessage = msg.message?.ephemeralMessage?.message ||
+                msg.message?.viewOnceMessage?.message ||
+                msg.message?.viewOnceMessageV2?.message ||
+                msg.message?.documentWithCaptionMessage?.message ||
+                msg.message;
+
+            let text = '';
+            let messageType = 'TEXT';
+
+            if (actualMessage?.conversation) {
+                text = actualMessage.conversation;
+                messageType = 'TEXT';
+            } else if (actualMessage?.extendedTextMessage?.text) {
+                text = actualMessage.extendedTextMessage.text;
+                messageType = 'TEXT';
+            } else if (actualMessage?.imageMessage) {
+                text = actualMessage.imageMessage.caption || '📷 Fotoğraf';
+                messageType = 'IMAGE';
+            } else if (actualMessage?.videoMessage) {
+                text = actualMessage.videoMessage.caption || '🎥 Video';
+                messageType = 'VIDEO';
+            } else if (actualMessage?.audioMessage) {
+                text = '🎵 Ses';
+                messageType = 'AUDIO';
+            } else if (actualMessage?.documentMessage) {
+                text = actualMessage.documentMessage.caption || actualMessage.documentMessage.fileName || '📄 Belge';
+                messageType = 'DOCUMENT';
+            } else if (actualMessage?.stickerMessage) {
+                text = '🏷️ Çıkartma';
+                messageType = 'STICKER';
+            } else if (actualMessage?.locationMessage) {
+                text = '📍 Konum';
+                messageType = 'LOCATION';
+            } else if (actualMessage?.contactMessage || actualMessage?.contactsArrayMessage) {
+                text = '👤 Kişi Kartı';
+                messageType = 'CONTACT';
+            } else if (actualMessage?.reactionMessage) {
+                // Ignore reaction events here
+                continue;
+            } else if (actualMessage) {
+                messageType = 'OTHER';
+                text = '';
+            }
 
             const ts = typeof msg.messageTimestamp === 'number'
                 ? msg.messageTimestamp
@@ -904,16 +1181,38 @@ async function initSessionSocket(sessionData) {
                 bumpChatRevision(sessionName);
             }
 
-            if (!fromMe && !isGroup && text) {
+            // Only notify backend for live incoming customer messages:
+            // 1. Not from me (never treat our sent messages as customer inbound)
+            // 2. Not group chats (1:1 personal chats)
+            // 3. Either type is 'notify' or unspecified (skip 'append' background history sync)
+            // 4. Must not have already been processed in this session lifecycle
+            const isLiveInbound = !fromMe && !isGroup && (type === 'notify' || !type);
+            if (isLiveInbound && (text || messageType !== 'OTHER')) {
+                if (msgId && sessionData.processedMsgIds.has(msgId)) {
+                    continue;
+                }
+                if (msgId) {
+                    sessionData.processedMsgIds.add(msgId);
+                    if (sessionData.processedMsgIds.size > 1000) {
+                        const oldest = sessionData.processedMsgIds.values().next().value;
+                        sessionData.processedMsgIds.delete(oldest);
+                    }
+                }
+
                 const isLid = remoteJid.endsWith('@lid');
                 const rawUser = remoteJid.split('@')[0];
                 const contactPhone = isLid ? null : (rawUser.startsWith('+') ? rawUser : `+${rawUser}`);
+
                 await notifyBackend(sessionName, 'inbound', {
+                    tenant_id: sessionData?.tenantId ? String(sessionData.tenantId) : null,
+                    session_id: sessionData?.sessionId ? String(sessionData.sessionId) : null,
+                    session_name: sessionData?.name || sessionName,
                     phone: contactPhone,
                     wa_jid: remoteJid,
                     lid: aliasJid || (isLid ? remoteJid : null),
                     message: text,
-                    wa_message_id: msg.key?.id,
+                    message_type: messageType,
+                    wa_message_id: msgId,
                     timestamp: ts,
                     push_name: msg.pushName || null,
                 });
@@ -926,53 +1225,147 @@ async function initSessionSocket(sessionData) {
 
 /**
  * Initializes or retrieves an active Baileys WhatsApp socket session.
+ * Supports both legacy (sessionName) and canonical ({ tenantId, sessionId, sessionName }) calls.
+ * Ensures duplicate connect calls are idempotent and prevents parallel duplicate sockets.
  */
-async function getOrCreateSession(sessionName, forceNewSocket = false) {
-    let sessionData = activeSessions.get(sessionName);
+async function getOrCreateSession(param, forceNewSocket = false) {
+    let tenantId = null;
+    let sessionId = null;
+    let sessionName = null;
+    let force = forceNewSocket;
+
+    if (typeof param === 'object' && param !== null) {
+        tenantId = param.tenantId || null;
+        sessionId = param.sessionId || null;
+        sessionName = param.sessionName || param.name || null;
+        if (param.forceNewSocket !== undefined) {
+            force = param.forceNewSocket;
+        }
+    } else {
+        sessionName = String(param);
+        if (sessionName.includes(':')) {
+            const parts = sessionName.split(':');
+            tenantId = parts[0];
+            sessionId = parts[1];
+        }
+    }
+
+    if (!sessionName && sessionId) {
+        sessionName = `session_${sessionId}`;
+    }
+
+    const sessionKey = (tenantId && sessionId)
+        ? makeSessionKey(tenantId, sessionId)
+        : (sessionName || 'default');
+
+    // Concurrency lock: Return existing in-flight initialization promise
+    if (pendingInitializations.has(sessionKey)) {
+        return await pendingInitializations.get(sessionKey);
+    }
+
+    // Check existing in-memory active session
+    let sessionData = activeSessions.get(sessionKey) || (sessionName ? activeSessions.get(sessionName) : null);
 
     if (sessionData) {
-        if (!forceNewSocket && sessionData.sock && sessionData.status === 'CONNECTED') {
+        if (!force && sessionData.sock && sessionData.status === 'CONNECTED') {
             return sessionData;
         }
-        if (!forceNewSocket && sessionData.status === 'CONNECTING' && sessionData.reconnectTimer) {
+        if (!force && sessionData.status === 'CONNECTING' && sessionData.reconnectTimer) {
             return sessionData;
         }
         await initSessionSocket(sessionData);
         return sessionData;
     }
 
+    const canonicalAuthDir = (tenantId && sessionId)
+        ? getCanonicalSessionPath(tenantId, sessionId)
+        : path.join(SESSIONS_DIR, sessionName);
+
     sessionData = {
+        key: sessionKey,
+        tenantId: tenantId ? String(tenantId).replace(/^tenant_/, '') : null,
+        sessionId: sessionId ? String(sessionId).replace(/^session_/, '') : null,
         name: sessionName,
-        status: 'INITIALIZING',
+        authDir: canonicalAuthDir,
+        status: 'CREATED',
         phone: null,
         qr: null,
         qrImage: null,
         sock: null,
         chats: new Map(),
         contacts: new Map(),
+        lidToPnMap: new Map(),
+        pnToLidMap: new Map(),
         createdAt: new Date().toISOString(),
         messagesSent: 0,
         reconnectTimer: null
     };
 
-    activeSessions.set(sessionName, sessionData);
-    await initSessionSocket(sessionData);
-    return sessionData;
+    activeSessions.set(sessionKey, sessionData);
+    if (sessionName && sessionName !== sessionKey) {
+        activeSessions.set(sessionName, sessionData);
+    }
+
+    const initPromise = (async () => {
+        try {
+            await notifyLifecycleEvent(sessionData, 'SESSION_CREATED');
+            sessionData.status = 'CONNECTING';
+            await initSessionSocket(sessionData);
+            return sessionData;
+        } finally {
+            pendingInitializations.delete(sessionKey);
+        }
+    })();
+
+    pendingInitializations.set(sessionKey, initPromise);
+    return await initPromise;
 }
+
+// Bounded LRU-style idempotency cache for outbound messages
+const sentMessagesIdempotencyCache = new Map();
+const MAX_SENT_CACHE_SIZE = 2000;
 
 /**
  * Dispatches an outbound WhatsApp message through an active session socket.
+ * Supports composite tenant+session identifiers, rejects group messages fail-closed,
+ * validates payload, and provides client_message_id idempotency.
  */
-async function sendMessage(sessionName, phone, messageText, typingDelayMs = 0) {
-    let session = activeSessions.get(sessionName);
+async function sendMessage(sessionIdentifier, phone, messageText, typingDelayMs = 0, clientMessageId = null) {
+    if (clientMessageId && sentMessagesIdempotencyCache.has(clientMessageId)) {
+        return sentMessagesIdempotencyCache.get(clientMessageId);
+    }
+
+    if (!phone || typeof phone !== 'string' || !phone.trim()) {
+        throw new Error('Alıcı telefon numarası zorunludur.');
+    }
+
+    if (phone.endsWith('@g.us')) {
+        throw new Error('Grup mesajları bu fazda desteklenmemektedir.');
+    }
+
+    const cleanDigits = phone.replace(/[^\d]/g, '');
+    if (!cleanDigits || cleanDigits.length < 7) {
+        throw new Error('Geçersiz alıcı telefon numarası.');
+    }
+
+    if (!messageText || typeof messageText !== 'string' || !messageText.trim()) {
+        throw new Error('Mesaj metni boş olamaz.');
+    }
+
+    let session = getSession(sessionIdentifier);
+    const displayName = typeof sessionIdentifier === 'object' && sessionIdentifier !== null
+        ? (sessionIdentifier.sessionName || `tenant_${sessionIdentifier.tenantId}:session_${sessionIdentifier.sessionId}`)
+        : String(sessionIdentifier);
+
     if (!session || session.status !== 'CONNECTED' || !session.sock) {
-        const credsPath = path.join(SESSIONS_DIR, sessionName, 'creds.json');
+        const sDir = session?.authDir || path.join(SESSIONS_DIR, displayName);
+        const credsPath = path.join(sDir, 'creds.json');
         let hasCreds = fs.existsSync(credsPath);
-        if (!hasCreds) {
-            hasCreds = await restoreSessionFromDatabase(sessionName);
+        if (!hasCreds && typeof sessionIdentifier === 'string') {
+            hasCreds = await restoreSessionFromDatabase(sessionIdentifier);
         }
         if (hasCreds) {
-            session = await getOrCreateSession(sessionName);
+            session = await getOrCreateSession(sessionIdentifier);
             if (session.status !== 'CONNECTED') {
                 await new Promise((resolve) => {
                     const timeout = setTimeout(resolve, 3500);
@@ -990,11 +1383,10 @@ async function sendMessage(sessionName, phone, messageText, typingDelayMs = 0) {
     }
 
     if (!session || session.status !== 'CONNECTED' || !session.sock) {
-        throw new Error(`WhatsApp hattı bağlı değil (Oturum: ${sessionName}, Durum: ${session ? session.status : 'BULUNAMADI'})`);
+        throw new Error(`WhatsApp hattı bağlı değil (Oturum: ${displayName}, Durum: ${session ? session.status : 'BULUNAMADI'})`);
     }
 
-    const isGroup = phone.endsWith('@g.us');
-    const jid = isGroup ? phone : `${phone.replace(/[^\d]/g, '')}@s.whatsapp.net`;
+    const jid = `${cleanDigits}@s.whatsapp.net`;
 
     if (typingDelayMs > 0) {
         try {
@@ -1005,16 +1397,26 @@ async function sendMessage(sessionName, phone, messageText, typingDelayMs = 0) {
         } catch (e) {}
     }
 
-    const sent = await session.sock.sendMessage(jid, { text: messageText });
+    const sent = await session.sock.sendMessage(jid, { text: messageText.trim() });
     session.messagesSent = (session.messagesSent || 0) + 1;
 
-    return {
+    const result = {
         success: true,
         messageId: sent.key.id,
         phone: phone,
         status: 'SENT',
         timestamp: new Date().toISOString()
     };
+
+    if (clientMessageId) {
+        if (sentMessagesIdempotencyCache.size >= MAX_SENT_CACHE_SIZE) {
+            const firstKey = sentMessagesIdempotencyCache.keys().next().value;
+            sentMessagesIdempotencyCache.delete(firstKey);
+        }
+        sentMessagesIdempotencyCache.set(clientMessageId, result);
+    }
+
+    return result;
 }
 
 /**
@@ -1045,22 +1447,32 @@ async function requestPairingCode(sessionName, phoneNumber) {
 }
 
 /**
- * Disconnects and deletes a session cleanly.
+ * Disconnects and purges a session cleanly.
+ * Invariant: LOGGED_OUT purges credentials and stops reconnect.
  */
-async function disconnectSession(sessionName) {
-    let pendingSession = null;
-    const pendingInit = pendingInitializations.get(sessionName);
-    pendingInitializations.delete(sessionName);
-    if (pendingInit) {
-        try {
-            pendingSession = await Promise.race([
-                pendingInit,
-                new Promise(resolve => setTimeout(() => resolve(null), 1000))
-            ]);
-        } catch (e) {}
+async function disconnectSession(identifier) {
+    let session = getSession(identifier);
+    let sessionKey = typeof identifier === 'string' ? identifier : null;
+
+    if (!session && typeof identifier === 'object' && identifier !== null) {
+        if (identifier.tenantId && identifier.sessionId) {
+            sessionKey = makeSessionKey(identifier.tenantId, identifier.sessionId);
+        } else {
+            sessionKey = identifier.sessionName || identifier.name;
+        }
+        session = activeSessions.get(sessionKey);
     }
 
-    const session = activeSessions.get(sessionName) || pendingSession;
+    if (sessionKey && pendingInitializations.has(sessionKey)) {
+        try {
+            await Promise.race([
+                pendingInitializations.get(sessionKey),
+                new Promise(resolve => setTimeout(resolve, 1000))
+            ]);
+        } catch (e) {}
+        pendingInitializations.delete(sessionKey);
+    }
+
     if (session) {
         if (session.reconnectTimer) {
             clearTimeout(session.reconnectTimer);
@@ -1073,39 +1485,80 @@ async function disconnectSession(sessionName) {
             try {
                 await Promise.race([
                     session.sock.logout(),
-                    new Promise((_, reject) => setTimeout(() => reject(new Error('Logout timeout')), 500))
+                    new Promise((_, reject) => setTimeout(() => reject(new Error('Logout timeout')), 1000))
                 ]);
             } catch (e) {
                 try {
-                    session.sock.end();
+                    session.sock.end(undefined);
                 } catch (err) {}
+            }
+            session.sock = null;
+        }
+
+        session.status = 'LOGGED_OUT';
+        session.phone = null;
+        session.qr = null;
+        session.qrImage = null;
+
+        await notifyLifecycleEvent(session, 'LOGGED_OUT', {
+            errorCode: 401,
+            errorMessage: 'Session manually disconnected'
+        });
+
+        const sKey = session.key;
+        const sName = session.name;
+
+        if (sKey) {
+            const bTimer = backupDebounceTimers.get(sKey);
+            if (bTimer) clearTimeout(bTimer);
+            backupDebounceTimers.delete(sKey);
+            const stTimer = storeDebounceTimers.get(sKey);
+            if (stTimer) clearTimeout(stTimer);
+            storeDebounceTimers.delete(sKey);
+            activeSessions.delete(sKey);
+        }
+        if (sName && sName !== sKey) {
+            const bTimer = backupDebounceTimers.get(sName);
+            if (bTimer) clearTimeout(bTimer);
+            backupDebounceTimers.delete(sName);
+            const stTimer = storeDebounceTimers.get(sName);
+            if (stTimer) clearTimeout(stTimer);
+            storeDebounceTimers.delete(sName);
+            activeSessions.delete(sName);
+        }
+
+        const authDir = session.authDir;
+        if (authDir && fs.existsSync(authDir)) {
+            try {
+                fs.rmSync(authDir, { recursive: true, force: true });
+            } catch (e) {
+                console.warn(`[WA-Gateway] Could not delete auth dir for ${sName || sKey}:`, e.message);
+            }
+        }
+
+        return { success: true, message: `Session ${sName || sKey} disconnected and purged` };
+    }
+
+    // Fallback: If session not in memory, try to purge directory if path exists
+    if (typeof identifier === 'string') {
+        const legacyDir = path.join(SESSIONS_DIR, identifier);
+        if (fs.existsSync(legacyDir)) {
+            try {
+                fs.rmSync(legacyDir, { recursive: true, force: true });
+                return { success: true, message: `Session directory ${identifier} deleted` };
+            } catch (e) {
+                throw new Error(`Session files could not be deleted: ${e.message}`);
             }
         }
     }
 
-    const backupTimer = backupDebounceTimers.get(sessionName);
-    if (backupTimer) clearTimeout(backupTimer);
-    backupDebounceTimers.delete(sessionName);
-    const storeTimer = storeDebounceTimers.get(sessionName);
-    if (storeTimer) clearTimeout(storeTimer);
-    storeDebounceTimers.delete(sessionName);
-
-    activeSessions.delete(sessionName);
-
-    const sessionAuthDir = path.join(SESSIONS_DIR, sessionName);
-    try {
-        if (fs.existsSync(sessionAuthDir)) {
-            fs.rmSync(sessionAuthDir, { recursive: true, force: true });
-        }
-    } catch (e) {
-        throw new Error(`Session files could not be deleted: ${e.message}`);
-    }
-
-    return { success: true, message: `Session ${sessionName} disconnected` };
+    return { success: true, message: 'Session already disconnected or not found' };
 }
 
 /**
  * Restores previously paired sessions on server startup from database backup and local disk.
+ * Canonical path: sessions/tenant_{user_id}/session_{session_id}/creds.json
+ * Legacy path: sessions/{sessionName}/creds.json
  */
 async function restoreSavedSessions() {
     // Pre-warm version cache in background
@@ -1115,35 +1568,153 @@ async function restoreSavedSessions() {
 
     if (!fs.existsSync(SESSIONS_DIR)) return;
 
-    const dirs = fs.readdirSync(SESSIONS_DIR, { withFileTypes: true })
-        .filter(dirent => dirent.isDirectory())
-        .map(dirent => dirent.name);
+    let topEntries = [];
+    try {
+        topEntries = fs.readdirSync(SESSIONS_DIR, { withFileTypes: true })
+            .filter(dirent => dirent.isDirectory());
+    } catch (e) {
+        return;
+    }
 
-    for (const sessionName of dirs) {
-        if (activeSessions.has(sessionName)) continue;
-        const credsPath = path.join(SESSIONS_DIR, sessionName, 'creds.json');
-        if (fs.existsSync(credsPath)) {
-            console.log(`[WA-Gateway] Auto-restoring saved session: ${sessionName}`);
+    for (const entry of topEntries) {
+        const topName = entry.name;
+        const topPath = path.join(SESSIONS_DIR, topName);
+
+        if (topName.startsWith('tenant_')) {
+            const tenantId = topName.replace(/^tenant_/, '');
+            let subEntries = [];
             try {
-                await getOrCreateSession(sessionName, false);
-            } catch (e) {
-                console.error(`[WA-Gateway] Failed to restore session ${sessionName}:`, e.message);
+                subEntries = fs.readdirSync(topPath, { withFileTypes: true })
+                    .filter(dirent => dirent.isDirectory());
+            } catch (e) {}
+
+            for (const sub of subEntries) {
+                const subName = sub.name;
+                const sessionId = subName.replace(/^session_/, '');
+                const sessionDir = path.join(topPath, subName);
+                const credsPath = path.join(sessionDir, 'creds.json');
+
+                const sessionKey = makeSessionKey(tenantId, sessionId);
+                if (activeSessions.has(sessionKey)) continue;
+
+                if (fs.existsSync(credsPath)) {
+                    let isValidCreds = false;
+                    try {
+                        const raw = fs.readFileSync(credsPath, 'utf8');
+                        const parsed = JSON.parse(raw);
+                        isValidCreds = Boolean(parsed && (parsed.registered || parsed.me || parsed.noiseKey));
+                    } catch (err) {
+                        console.warn(`[WA-Gateway] Corrupted creds.json found at ${sessionDir}, skipping restore:`, err.message);
+                        continue;
+                    }
+
+                    if (isValidCreds) {
+                        console.log(`[WA-Gateway] Auto-restoring saved session: ${sessionKey}`);
+                        try {
+                            await getOrCreateSession({
+                                tenantId,
+                                sessionId,
+                                sessionName: `session_${sessionId}`,
+                                forceNewSocket: false
+                            });
+                        } catch (e) {
+                            console.error(`[WA-Gateway] Failed to restore session ${sessionKey}:`, e.message);
+                        }
+                    }
+                }
+            }
+        } else {
+            // Legacy flat directory (e.g. sessions/Line 1/creds.json)
+            const sessionName = topName;
+            if (activeSessions.has(sessionName)) continue;
+            const credsPath = path.join(topPath, 'creds.json');
+            if (fs.existsSync(credsPath)) {
+                let isValidCreds = false;
+                try {
+                    const raw = fs.readFileSync(credsPath, 'utf8');
+                    const parsed = JSON.parse(raw);
+                    isValidCreds = Boolean(parsed && (parsed.registered || parsed.me || parsed.noiseKey));
+                } catch (err) {
+                    console.warn(`[WA-Gateway] Corrupted legacy creds.json found at ${topPath}, skipping restore:`, err.message);
+                    continue;
+                }
+
+                if (isValidCreds) {
+                    console.log(`[WA-Gateway] Auto-restoring legacy saved session: ${sessionName}`);
+                    try {
+                        await getOrCreateSession(sessionName, false);
+                    } catch (e) {
+                        console.error(`[WA-Gateway] Failed to restore legacy session ${sessionName}:`, e.message);
+                    }
+                }
             }
         }
     }
 }
 
 /**
- * Forces a clean refresh of an un-connected session to provide a brand new QR code.
+ * Gracefully shuts down all active sessions, canceling reconnect timers and socket connections.
  */
-async function refreshSessionQR(sessionName) {
-    if (pendingInitializations.has(sessionName)) {
-        return await pendingInitializations.get(sessionName);
+async function shutdownAllSessions() {
+    console.log(`[WA-Gateway] Gracefully shutting down ${activeSessions.size} active sessions...`);
+    for (const [key, session] of activeSessions.entries()) {
+        try {
+            if (session.reconnectTimer) {
+                clearTimeout(session.reconnectTimer);
+                session.reconnectTimer = null;
+            }
+            if (session.sock) {
+                try {
+                    session.sock.ev?.removeAllListeners();
+                } catch (e) {}
+                try {
+                    session.sock.end(undefined);
+                } catch (e) {}
+                session.sock = null;
+            }
+            session.status = 'DISCONNECTED';
+        } catch (err) {
+            console.warn(`[WA-Gateway] Error shutting down session ${key}:`, err.message);
+        }
+    }
+    activeSessions.clear();
+    pendingInitializations.clear();
+    console.log('[WA-Gateway] All sessions shut down cleanly.');
+}
+
+/**
+ * Forces a clean refresh of an un-connected session to provide a brand new QR code.
+ * Replaces old QR without changing the session identity or storage path.
+ */
+async function refreshSessionQR(param) {
+    let tenantId = null;
+    let sessionId = null;
+    let sessionName = null;
+
+    if (typeof param === 'object' && param !== null) {
+        tenantId = param.tenantId || null;
+        sessionId = param.sessionId || null;
+        sessionName = param.sessionName || param.name || null;
+    } else {
+        sessionName = String(param);
+        if (sessionName.includes(':')) {
+            const parts = sessionName.split(':');
+            tenantId = parts[0];
+            sessionId = parts[1];
+        }
+    }
+
+    const sessionKey = (tenantId && sessionId)
+        ? makeSessionKey(tenantId, sessionId)
+        : (sessionName || 'default');
+
+    if (pendingInitializations.has(sessionKey)) {
+        return await pendingInitializations.get(sessionKey);
     }
 
     const initPromise = (async () => {
         try {
-            const existing = activeSessions.get(sessionName);
+            const existing = activeSessions.get(sessionKey) || (sessionName ? activeSessions.get(sessionName) : null);
             if (existing) {
                 if (existing.reconnectTimer) {
                     clearTimeout(existing.reconnectTimer);
@@ -1155,7 +1726,12 @@ async function refreshSessionQR(sessionName) {
                 } catch (e) {}
             }
 
-            const sessionAuthDir = path.join(SESSIONS_DIR, sessionName);
+            const sessionAuthDir = existing?.authDir || (
+                (tenantId && sessionId)
+                    ? getCanonicalSessionPath(tenantId, sessionId)
+                    : path.join(SESSIONS_DIR, sessionName || sessionKey)
+            );
+
             const credsPath = path.join(sessionAuthDir, 'creds.json');
             let hasPairedCreds = false;
             if (fs.existsSync(credsPath)) {
@@ -1165,20 +1741,26 @@ async function refreshSessionQR(sessionName) {
                 } catch (e) {}
             }
 
+            // If not yet paired, wipe un-paired handshake keys to get a fresh QR
             if (!hasPairedCreds && fs.existsSync(sessionAuthDir)) {
                 try {
                     fs.rmSync(sessionAuthDir, { recursive: true, force: true });
                 } catch (e) {}
             }
 
-            const session = await getOrCreateSession(sessionName, true);
+            const session = await getOrCreateSession({
+                tenantId,
+                sessionId,
+                sessionName,
+                forceNewSocket: true
+            });
 
             if (!session.qrImage && session.status !== 'CONNECTED') {
                 await new Promise((resolve) => {
-                    const timeout = setTimeout(resolve, 5000);
+                    const timeout = setTimeout(resolve, 6000);
                     const onUpdate = async (update) => {
                         if (update.qr) {
-                            session.status = 'SCAN_QR';
+                            session.status = 'QR_READY';
                             session.qr = update.qr;
                             if (!session.qrImage) {
                                 try {
@@ -1205,11 +1787,11 @@ async function refreshSessionQR(sessionName) {
 
             return session;
         } finally {
-            pendingInitializations.delete(sessionName);
+            pendingInitializations.delete(sessionKey);
         }
     })();
 
-    pendingInitializations.set(sessionName, initPromise);
+    pendingInitializations.set(sessionKey, initPromise);
     return await initPromise;
 }
 
@@ -1457,12 +2039,21 @@ function getSessionChatsDelta(sessionName, sinceRevision) {
 
 module.exports = {
     activeSessions,
+    formatTenantDir,
+    formatSessionDir,
+    getCanonicalSessionPath,
+    makeSessionKey,
+    classifyDisconnectReason,
+    notifyLifecycleEvent,
+    findSession,
+    getSession,
     getOrCreateSession,
     refreshSessionQR,
     requestPairingCode,
     sendMessage,
     disconnectSession,
     restoreSavedSessions,
+    shutdownAllSessions,
     getSessionChats,
     getSessionChatsDelta,
     bumpChatRevision,

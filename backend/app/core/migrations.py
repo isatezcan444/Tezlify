@@ -87,53 +87,260 @@ async def ensure_leads_phone_nullable(engine: AsyncEngine) -> None:
         logger.info("[MIGRATION] leads.phone_e164 -> NULLABLE (sqlite rebuild, %d kolon taşındı)", len(shared_sorted))
 
 
+def _create_leads_only(sync_conn: Any) -> None:
+    """Yalnızca `leads` tablosunu model metadata'sından oluşturur."""
+    from backend.app.models.lead import Lead
+
+    Lead.__table__.create(sync_conn, checkfirst=True)
+
+
+def _create_conversations_only(sync_conn: Any) -> None:
+    """Yalnızca `conversations` tablosunu model metadata'sından oluşturur."""
+    from backend.app.models.conversation import Conversation
+
+    Conversation.__table__.create(sync_conn, checkfirst=True)
+
+
+def _create_whatsapp_numbers_only(sync_conn: Any) -> None:
+    """Yalnızca `whatsapp_numbers` tablosunu model metadata'sından oluşturur."""
+    from backend.app.models.whatsapp_number import WhatsAppNumber
+
+    WhatsAppNumber.__table__.create(sync_conn, checkfirst=True)
+
+
+async def ensure_whatsapp_numbers_table(engine: AsyncEngine) -> None:
+    """Idempotently guarantees whatsapp_numbers table, provider, encrypted_access_token, nullable phone fields and indexes exist."""
+    from backend.app.models.whatsapp_number import WhatsAppNumber
+
+    async with engine.begin() as conn:
+        await conn.run_sync(WhatsAppNumber.__table__.create, checkfirst=True)
+
+        if engine.dialect.name == "sqlite":
+            info_rows = (await conn.execute(text("PRAGMA table_info(whatsapp_numbers)"))).fetchall()
+            cols = _sqlite_columns(info_rows)
+            if "encrypted_access_token" not in cols:
+                await conn.execute(text("ALTER TABLE whatsapp_numbers ADD COLUMN encrypted_access_token TEXT"))
+                logger.info("[MIGRATION] Added whatsapp_numbers.encrypted_access_token")
+
+            # Check if phone_number_id is NOT NULL (requires rebuild to allow NULL for BAILEYS_QR)
+            phone_id_not_null = cols.get("phone_number_id", False)
+            if phone_id_not_null:
+                logger.info("[MIGRATION] Rebuilding SQLite whatsapp_numbers table to make phone_number_id nullable...")
+                await conn.execute(text("PRAGMA foreign_keys = OFF"))
+                await conn.execute(text("DROP TABLE IF EXISTS _wanum_migrate_backup"))
+                await conn.execute(text("CREATE TABLE _wanum_migrate_backup AS SELECT * FROM whatsapp_numbers"))
+                await conn.execute(text("DROP TABLE whatsapp_numbers"))
+
+                await conn.run_sync(_create_whatsapp_numbers_only)
+
+                backup_info = (await conn.execute(text("PRAGMA table_info(_wanum_migrate_backup)"))).fetchall()
+                backup_cols = {row[1] for row in backup_info}
+
+                new_info = (await conn.execute(text("PRAGMA table_info(whatsapp_numbers)"))).fetchall()
+                new_cols = {row[1] for row in new_info}
+
+                shared = sorted(backup_cols.intersection(new_cols))
+                if "provider" in new_cols and "provider" not in backup_cols:
+                    col_list = ", ".join(shared + ["provider"])
+                    val_list = ", ".join(shared + ["'META_CLOUD'"])
+                    await conn.execute(
+                        text(f"INSERT INTO whatsapp_numbers ({col_list}) SELECT {val_list} FROM _wanum_migrate_backup")
+                    )
+                else:
+                    col_list = ", ".join(shared)
+                    await conn.execute(
+                        text(f"INSERT INTO whatsapp_numbers ({col_list}) SELECT {col_list} FROM _wanum_migrate_backup")
+                    )
+                await conn.execute(text("DROP TABLE _wanum_migrate_backup"))
+                await conn.execute(text("PRAGMA foreign_keys = ON"))
+                logger.info("[MIGRATION] whatsapp_numbers.phone_number_id -> NULLABLE (sqlite rebuild, %d cols preserved)", len(shared))
+            else:
+                if "provider" not in cols:
+                    await conn.execute(text("ALTER TABLE whatsapp_numbers ADD COLUMN provider VARCHAR(30) NOT NULL DEFAULT 'META_CLOUD'"))
+                    logger.info("[MIGRATION] Added whatsapp_numbers.provider")
+
+            await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_wanum_provider ON whatsapp_numbers (provider)"))
+
+        elif engine.dialect.name == "postgresql":
+            try:
+                await conn.execute(text("SET LOCAL lock_timeout = '3s'"))
+                await conn.execute(text("ALTER TABLE whatsapp_numbers ADD COLUMN IF NOT EXISTS encrypted_access_token TEXT"))
+                await conn.execute(text("ALTER TABLE whatsapp_numbers ADD COLUMN IF NOT EXISTS provider VARCHAR(30) NOT NULL DEFAULT 'META_CLOUD'"))
+                await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_wanum_provider ON whatsapp_numbers (provider)"))
+                await conn.execute(text("ALTER TABLE whatsapp_numbers ALTER COLUMN phone_number_id DROP NOT NULL"))
+                await conn.execute(text("ALTER TABLE whatsapp_numbers ALTER COLUMN display_phone_number DROP NOT NULL"))
+                await conn.execute(text("ALTER TABLE whatsapp_numbers ALTER COLUMN phone_number_e164 DROP NOT NULL"))
+            except Exception as e:
+                logger.warning("[MIGRATION] PostgreSQL whatsapp_numbers: %s", e)
+
+    logger.info("[MIGRATION] ensure_whatsapp_numbers_table verified")
+
+
+async def ensure_contacts_table(engine: AsyncEngine) -> None:
+    """Idempotently guarantees contacts table and indexes exist."""
+    from backend.app.models.contact import Contact
+
+    async with engine.begin() as conn:
+        await conn.run_sync(Contact.__table__.create, checkfirst=True)
+    logger.info("[MIGRATION] ensure_contacts_table verified")
+
+
+async def ensure_webhook_events_table(engine: AsyncEngine) -> None:
+    """Idempotently guarantees webhook_events table and indexes exist."""
+    from backend.app.models.webhook_event import WebhookEvent
+
+    async with engine.begin() as conn:
+        await conn.run_sync(WebhookEvent.__table__.create, checkfirst=True)
+    logger.info("[MIGRATION] ensure_webhook_events_table verified")
+
+
+async def ensure_outbox_messages_table(engine: AsyncEngine) -> None:
+    """Idempotently guarantees outbox_messages table and indexes exist."""
+    from backend.app.models.outbox_message import OutboxMessage
+
+    async with engine.begin() as conn:
+        await conn.run_sync(OutboxMessage.__table__.create, checkfirst=True)
+    logger.info("[MIGRATION] ensure_outbox_messages_table verified")
+
+
 async def ensure_conversations_columns(engine: AsyncEngine) -> None:
-    """Adds unread_count and last_read_at to conversations if missing."""
+    """
+    Ensures conversations table supports multi-number WhatsApp architecture:
+    - Makes `lead_id` nullable (conversations can exist without a CRM lead).
+    - Adds `whatsapp_number_id`, `contact_id`, 24h customer window fields.
+    - Idempotent across PostgreSQL and SQLite.
+    """
+    # 1. PostgreSQL implementation
+    if engine.dialect.name == "postgresql":
+        try:
+            async with engine.connect() as conn:
+                res = await conn.execute(
+                    text("SELECT is_nullable FROM information_schema.columns WHERE table_name = 'conversations' AND column_name = 'lead_id'")
+                )
+                row = res.first()
+                if row and row[0] == "NO":
+                    async with engine.begin() as write_conn:
+                        await write_conn.execute(text("SET LOCAL lock_timeout = '3s'"))
+                        await write_conn.execute(text("ALTER TABLE conversations ALTER COLUMN lead_id DROP NOT NULL"))
+                        logger.info("[MIGRATION] conversations.lead_id -> NULLABLE (postgresql)")
+
+            # Add missing columns
+            async with engine.begin() as conn:
+                await conn.execute(text("SET LOCAL lock_timeout = '3s'"))
+                await conn.execute(text("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS whatsapp_number_id INTEGER REFERENCES whatsapp_numbers(id) ON DELETE SET NULL"))
+                await conn.execute(text("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS contact_id INTEGER REFERENCES contacts(id) ON DELETE SET NULL"))
+                await conn.execute(text("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS last_customer_message_at TIMESTAMP"))
+                await conn.execute(text("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS customer_service_window_expires_at TIMESTAMP"))
+                await conn.execute(text("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS archived_at TIMESTAMP"))
+                await conn.execute(text("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS closed_at TIMESTAMP"))
+                await conn.execute(text("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS unread_count INTEGER NOT NULL DEFAULT 0"))
+                await conn.execute(text("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS last_read_at TIMESTAMP"))
+                await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_conv_user_number ON conversations (user_id, whatsapp_number_id)"))
+                await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_conv_user_contact ON conversations (user_id, contact_id)"))
+                await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_conv_number_contact ON conversations (whatsapp_number_id, contact_id)"))
+                await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_conv_cust_window ON conversations (customer_service_window_expires_at)"))
+        except Exception as e:
+            logger.warning("[MIGRATION] PostgreSQL conversations columns migration: %s", e)
+        await ensure_messages_media_columns(engine)
+        return
+
     if engine.dialect.name != "sqlite":
         return
 
+    # 2. SQLite implementation
     async with engine.begin() as conn:
         exists = await conn.execute(
             text("SELECT name FROM sqlite_master WHERE type='table' AND name='conversations'")
         )
         if exists.first() is None:
+            # Table doesn't exist yet; create_all will build it with latest schema
             return
 
         info_rows = (await conn.execute(text("PRAGMA table_info(conversations)"))).fetchall()
         columns = _sqlite_columns(info_rows)
-        if "unread_count" not in columns:
-            await conn.execute(text("ALTER TABLE conversations ADD COLUMN unread_count INTEGER NOT NULL DEFAULT 0"))
-            logger.info("[MIGRATION] Added conversations.unread_count")
-        if "last_read_at" not in columns:
-            await conn.execute(text("ALTER TABLE conversations ADD COLUMN last_read_at DATETIME"))
-            logger.info("[MIGRATION] Added conversations.last_read_at")
+
+        # Check if lead_id is NOT NULL (requires rebuild to make nullable)
+        lead_id_not_null = columns.get("lead_id", False)
+        if lead_id_not_null:
+            logger.info("[MIGRATION] Rebuilding SQLite conversations table to make lead_id nullable...")
+            await conn.execute(text("PRAGMA foreign_keys = OFF"))
+            await conn.execute(text("DROP TABLE IF EXISTS _conversations_migrate_backup"))
+            await conn.execute(text("CREATE TABLE _conversations_migrate_backup AS SELECT * FROM conversations"))
+            await conn.execute(text("DROP TABLE conversations"))
+
+            await conn.run_sync(_create_conversations_only)
+
+            backup_info = (await conn.execute(text("PRAGMA table_info(_conversations_migrate_backup)"))).fetchall()
+            backup_cols = {row[1] for row in backup_info}
+
+            new_info = (await conn.execute(text("PRAGMA table_info(conversations)"))).fetchall()
+            new_cols = {row[1] for row in new_info}
+
+            shared = sorted(backup_cols.intersection(new_cols))
+            col_list = ", ".join(shared)
+            await conn.execute(
+                text(f"INSERT INTO conversations ({col_list}) SELECT {col_list} FROM _conversations_migrate_backup")
+            )
+            await conn.execute(text("DROP TABLE _conversations_migrate_backup"))
+            await conn.execute(text("PRAGMA foreign_keys = ON"))
+            logger.info("[MIGRATION] conversations.lead_id -> NULLABLE (sqlite rebuild, %d cols preserved)", len(shared))
+        else:
+            # Table already has nullable lead_id; just add missing columns
+            if "whatsapp_number_id" not in columns:
+                await conn.execute(text("ALTER TABLE conversations ADD COLUMN whatsapp_number_id INTEGER REFERENCES whatsapp_numbers(id)"))
+                logger.info("[MIGRATION] Added conversations.whatsapp_number_id")
+            if "contact_id" not in columns:
+                await conn.execute(text("ALTER TABLE conversations ADD COLUMN contact_id INTEGER REFERENCES contacts(id)"))
+                logger.info("[MIGRATION] Added conversations.contact_id")
+            if "last_customer_message_at" not in columns:
+                await conn.execute(text("ALTER TABLE conversations ADD COLUMN last_customer_message_at DATETIME"))
+                logger.info("[MIGRATION] Added conversations.last_customer_message_at")
+            if "customer_service_window_expires_at" not in columns:
+                await conn.execute(text("ALTER TABLE conversations ADD COLUMN customer_service_window_expires_at DATETIME"))
+                logger.info("[MIGRATION] Added conversations.customer_service_window_expires_at")
+            if "unread_count" not in columns:
+                await conn.execute(text("ALTER TABLE conversations ADD COLUMN unread_count INTEGER NOT NULL DEFAULT 0"))
+                logger.info("[MIGRATION] Added conversations.unread_count")
+            if "last_read_at" not in columns:
+                await conn.execute(text("ALTER TABLE conversations ADD COLUMN last_read_at DATETIME"))
+                logger.info("[MIGRATION] Added conversations.last_read_at")
+            if "archived_at" not in columns:
+                await conn.execute(text("ALTER TABLE conversations ADD COLUMN archived_at DATETIME"))
+                logger.info("[MIGRATION] Added conversations.archived_at")
+            if "closed_at" not in columns:
+                await conn.execute(text("ALTER TABLE conversations ADD COLUMN closed_at DATETIME"))
+                logger.info("[MIGRATION] Added conversations.closed_at")
+
+        # Ensure multi-number and performance indexes
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_conv_user_number ON conversations (user_id, whatsapp_number_id)"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_conv_user_contact ON conversations (user_id, contact_id)"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_conv_number_contact ON conversations (whatsapp_number_id, contact_id)"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_conv_cust_window ON conversations (customer_service_window_expires_at)"))
 
     await ensure_messages_media_columns(engine)
 
 
 async def ensure_messages_media_columns(engine: AsyncEngine) -> None:
-    """Adds media_id, media_mime_type, media_filename, media_caption to messages if missing, and ensures indexes."""
+    """Adds media_id, client_message_id, and lifecycle timestamps to messages if missing, and ensures indexes."""
     if engine.dialect.name == "postgresql":
         try:
-            async with engine.connect() as conn:
-                res = await conn.execute(
-                    text("SELECT 1 FROM information_schema.columns WHERE table_name = 'messages' AND column_name = 'sender_name'")
-                )
-                if res.first() is not None:
-                    return  # Kolon zaten mevcut, kilit alarak tabloyu dondurma
-
             async with engine.begin() as conn:
                 await conn.execute(text("SET LOCAL lock_timeout = '3s'"))
                 await conn.execute(text("ALTER TABLE messages ADD COLUMN IF NOT EXISTS sender_name VARCHAR(100)"))
+                await conn.execute(text("ALTER TABLE messages ADD COLUMN IF NOT EXISTS client_message_id VARCHAR(100)"))
+                await conn.execute(text("ALTER TABLE messages ADD COLUMN IF NOT EXISTS sent_at TIMESTAMP"))
+                await conn.execute(text("ALTER TABLE messages ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMP"))
+                await conn.execute(text("ALTER TABLE messages ADD COLUMN IF NOT EXISTS read_at TIMESTAMP"))
+                await conn.execute(text("ALTER TABLE messages ADD COLUMN IF NOT EXISTS failed_at TIMESTAMP"))
+                await conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS idx_msg_client_id ON messages (client_message_id)"))
         except Exception as e:
-            logger.warning("[MIGRATION] messages.sender_name kontrolü/geçişi atlandı: %s", e)
+            logger.warning("[MIGRATION] messages PostgreSQL columns: %s", e)
         return
 
     if engine.dialect.name != "sqlite":
         return
 
     async with engine.begin() as conn:
-        # 1. Message media & sender columns
         exists_msgs = await conn.execute(
             text("SELECT name FROM sqlite_master WHERE type='table' AND name='messages'")
         )
@@ -155,20 +362,36 @@ async def ensure_messages_media_columns(engine: AsyncEngine) -> None:
             if "media_caption" not in columns:
                 await conn.execute(text("ALTER TABLE messages ADD COLUMN media_caption TEXT"))
                 logger.info("[MIGRATION] Added messages.media_caption")
+            if "client_message_id" not in columns:
+                await conn.execute(text("ALTER TABLE messages ADD COLUMN client_message_id VARCHAR(100)"))
+                logger.info("[MIGRATION] Added messages.client_message_id")
+            if "sent_at" not in columns:
+                await conn.execute(text("ALTER TABLE messages ADD COLUMN sent_at DATETIME"))
+                logger.info("[MIGRATION] Added messages.sent_at")
+            if "delivered_at" not in columns:
+                await conn.execute(text("ALTER TABLE messages ADD COLUMN delivered_at DATETIME"))
+                logger.info("[MIGRATION] Added messages.delivered_at")
+            if "read_at" not in columns:
+                await conn.execute(text("ALTER TABLE messages ADD COLUMN read_at DATETIME"))
+                logger.info("[MIGRATION] Added messages.read_at")
+            if "failed_at" not in columns:
+                await conn.execute(text("ALTER TABLE messages ADD COLUMN failed_at DATETIME"))
+                logger.info("[MIGRATION] Added messages.failed_at")
 
-            # Composite cursor index
+            # Composite cursor index and client_message_id unique index
             await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_msg_conv_id ON messages (conversation_id, id)"))
+            await conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS idx_msg_client_id ON messages (client_message_id)"))
 
-        # 2. Unique partial index on active conversations to prevent race condition duplicates
+        # Unique partial index on active conversations to prevent race condition duplicates
         exists_convs = await conn.execute(
             text("SELECT name FROM sqlite_master WHERE type='table' AND name='conversations'")
         )
         if exists_convs.first() is not None:
             await conn.execute(
-                text("CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_active_conv ON conversations (lead_id, channel) WHERE status = 'ACTIVE'")
+                text("CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_active_conv ON conversations (lead_id, channel) WHERE status = 'ACTIVE' AND lead_id IS NOT NULL")
             )
 
-        # 3. Campaign group_id column
+        # Campaign group_id column
         exists_camps = await conn.execute(
             text("SELECT name FROM sqlite_master WHERE type='table' AND name='campaigns'")
         )
@@ -184,7 +407,8 @@ async def ensure_user_id_columns(engine: AsyncEngine) -> None:
     """Ensures user_id column exists on all domain tables and profiles table is created."""
     tables = [
         "leads", "discovery_runs", "campaign_groups", "campaigns", 
-        "conversations", "messages", "scraper_jobs", "whatsapp_sessions", "blacklist", "message_logs"
+        "conversations", "messages", "scraper_jobs", "whatsapp_sessions", "blacklist", "message_logs",
+        "whatsapp_numbers", "contacts", "webhook_events"
     ]
     if engine.dialect.name == "sqlite":
         async with engine.begin() as conn:
@@ -235,14 +459,6 @@ async def ensure_user_id_columns(engine: AsyncEngine) -> None:
             logger.warning("[MIGRATION] ensure_user_id_columns postgres kontrolü/geçişi atlandı: %s", e)
 
 
-def _create_leads_only(sync_conn: Any) -> None:
-    """Yalnızca `leads` tablosunu model metadata'sından oluşturur."""
-    from backend.app.core.database import Base
-    from backend.app.models.lead import Lead  # noqa: F401 — metadata'ya kayıt için
-
-    Lead.__table__.create(sync_conn, checkfirst=True)
-
-
 async def ensure_whatsapp_session_auth_table(engine: AsyncEngine) -> None:
     """whatsapp_session_auth tablosunun varlığını garanti eder."""
     if engine.dialect.name == "sqlite":
@@ -275,4 +491,31 @@ async def ensure_whatsapp_session_auth_table(engine: AsyncEngine) -> None:
         except Exception as e:
             logger.warning("[MIGRATION] ensure_whatsapp_session_auth_table atlandı: %s", e)
     logger.info("[MIGRATION] ensure_whatsapp_session_auth_table verified")
+
+
+async def ensure_whatsapp_sessions_number_fk(engine: AsyncEngine) -> None:
+    """Guarantees 1:1 foreign key and unique index from whatsapp_sessions to whatsapp_numbers."""
+    from backend.app.models.whatsapp_session import WhatsAppSession
+
+    async with engine.begin() as conn:
+        await conn.run_sync(WhatsAppSession.__table__.create, checkfirst=True)
+
+        if engine.dialect.name == "sqlite":
+            info_rows = (await conn.execute(text("PRAGMA table_info(whatsapp_sessions)"))).fetchall()
+            cols = _sqlite_columns(info_rows)
+            if "whatsapp_number_id" not in cols:
+                await conn.execute(text("ALTER TABLE whatsapp_sessions ADD COLUMN whatsapp_number_id INTEGER REFERENCES whatsapp_numbers(id) ON DELETE SET NULL"))
+                logger.info("[MIGRATION] Added whatsapp_sessions.whatsapp_number_id")
+
+            await conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_whatsapp_sessions_number_id ON whatsapp_sessions (whatsapp_number_id)"))
+
+        elif engine.dialect.name == "postgresql":
+            try:
+                await conn.execute(text("SET LOCAL lock_timeout = '3s'"))
+                await conn.execute(text("ALTER TABLE whatsapp_sessions ADD COLUMN IF NOT EXISTS whatsapp_number_id INTEGER REFERENCES whatsapp_numbers(id) ON DELETE SET NULL"))
+                await conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_whatsapp_sessions_number_id ON whatsapp_sessions (whatsapp_number_id)"))
+            except Exception as e:
+                logger.warning("[MIGRATION] PostgreSQL whatsapp_sessions whatsapp_number_id: %s", e)
+
+    logger.info("[MIGRATION] ensure_whatsapp_sessions_number_fk verified")
 
