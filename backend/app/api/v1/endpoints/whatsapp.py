@@ -587,46 +587,79 @@ async def handle_inbound_webhook(
 
     phone = payload.get("phone")
     message_text = payload.get("message", "")
-    
-    if not phone:
-        return {"status": "ignored", "reason": "No phone"}
-
-    phone_data = PhoneService.normalize_to_e164(phone)
-    if not phone_data:
-        return {"status": "ignored", "reason": "Invalid phone"}
-        
-    e164 = phone_data["e164"]
-
-    stmt = select(Lead).where(Lead.phone_e164 == e164)
-    res = await db.execute(stmt)
-    lead = res.scalar_one_or_none()
-
+    wa_jid = payload.get("wa_jid")
+    lid = payload.get("lid")
     session_name = payload.get("session_name")
+    push_name = payload.get("push_name")
+
+    if not phone and not wa_jid and not lid:
+        return {"status": "ignored", "reason": "No phone or JID"}
+
+    e164 = None
+    if phone:
+        phone_data = PhoneService.normalize_to_e164(phone)
+        if phone_data:
+            e164 = phone_data["e164"]
+
     session = None
     if session_name:
         s_res = await db.execute(select(WhatsAppSession).where(WhatsAppSession.session_name == session_name))
         session = s_res.scalar_one_or_none()
 
-    push_name = payload.get("push_name")
+    lead = None
+    if e164:
+        stmt = select(Lead).where(Lead.phone_e164 == e164)
+        if session:
+            stmt = stmt.where(Lead.user_id == session.user_id)
+        res = await db.execute(stmt)
+        lead = res.scalar_one_or_none()
+
+    # If not found by E.164, search by LID or JID aliases
+    if not lead and (lid or wa_jid):
+        candidates = [k for k in [lid, wa_jid] if k]
+        lead_stmt = select(Lead)
+        if session:
+            lead_stmt = lead_stmt.where(Lead.user_id == session.user_id)
+        candidate_leads = (await db.execute(lead_stmt)).scalars().all()
+        for l in candidate_leads:
+            c_data = l.custom_data or {}
+            if c_data.get("whatsapp_jid") in candidates:
+                lead = l
+                break
+            aliases = c_data.get("whatsapp_jid_aliases") or []
+            if any(cand in aliases for cand in candidates):
+                lead = l
+                break
+
     user_id = lead.user_id if lead else (session.user_id if session else None)
 
     if not lead and user_id:
-        place_id = f"wa_{hashlib.sha256(f'{user_id}_{e164}'.encode()).hexdigest()[:16]}"
+        target_jid = wa_jid or lid or phone
+        place_id = f"wa_{hashlib.sha256(f'{user_id}_{target_jid}'.encode()).hexdigest()[:16]}"
         lead = Lead(
             user_id=user_id,
-            name=push_name or e164,
-            phone=phone,
+            name=push_name or (e164 or "WhatsApp Kişisi"),
+            phone=phone if e164 else None,
             phone_e164=e164,
             category="WhatsApp Kişisi",
             status=LeadStatus.REPLIED,
             place_id=place_id,
-            is_whatsapp_eligible=True,
+            is_whatsapp_eligible=bool(e164),
+            custom_data={
+                "whatsapp_jid": target_jid,
+                "whatsapp_jid_aliases": [lid] if (lid and lid != target_jid) else [],
+                "push_name": push_name,
+                "whatsapp_session_name": session.session_name if session else None,
+            }
         )
         db.add(lead)
         await db.flush()
     elif lead:
         lead.status = LeadStatus.REPLIED
-        if push_name and (not lead.name or lead.name == e164 or lead.name == "Bilinmeyen"):
+        if e164 and not lead.phone_e164:
+            lead.phone_e164 = e164
+            lead.is_whatsapp_eligible = True
+        if push_name and (not lead.name or lead.name == e164 or lead.name == "Bilinmeyen" or lead.name.startswith("+")):
             lead.name = push_name
         new_note = f"Son yanıt ({datetime.utcnow().strftime('%Y-%m-%d %H:%M')}): {message_text}"
         lead.notes = f"{lead.notes}\n{new_note}" if lead.notes else new_note
@@ -634,6 +667,10 @@ async def handle_inbound_webhook(
     if lead and session:
         custom = dict(lead.custom_data or {})
         custom["whatsapp_session_name"] = session.session_name
+        if lid:
+            existing_aliases = set(custom.get("whatsapp_jid_aliases") or [])
+            existing_aliases.add(lid)
+            custom["whatsapp_jid_aliases"] = sorted(existing_aliases)
         lead.custom_data = custom
 
     conv_id = None
@@ -668,9 +705,9 @@ async def handle_inbound_webhook(
             conversation_id=conv.id,
             direction=MessageDirection.INBOUND,
             body=message_text,
-            sender_phone=e164,
+            sender_phone=e164 or (lid or phone or "INBOUND"),
             recipient_phone=session.phone_number if session else "BUSINESS",
-            sender_name=lead.name or push_name or e164,
+            sender_name=lead.name or push_name or (e164 or "Müşteri"),
             created_at=datetime.utcnow(),
         )
         db.add(new_msg)

@@ -63,66 +63,176 @@ function isPhoneJid(jid) {
     return typeof jid === 'string' && jid.endsWith('@s.whatsapp.net');
 }
 
-function resolveMessageJids(msg) {
+function isLidJid(jid) {
+    return typeof jid === 'string' && jid.endsWith('@lid');
+}
+
+function recordLidPnMapping(sessionData, lid, pn) {
+    if (!sessionData || !lid || !pn || lid === pn) return;
+    const cleanLid = typeof lid === 'string' && lid.includes('@')
+        ? (lid.endsWith('@lid') ? lid : `${lid.split('@')[0]}@lid`)
+        : `${lid}@lid`;
+    let cleanPn = typeof pn === 'string' && pn.includes('@')
+        ? pn
+        : `${String(pn).replace(/[^\d]/g, '')}@s.whatsapp.net`;
+    if (cleanPn.includes(':')) {
+        const user = cleanPn.split(':')[0];
+        const domain = cleanPn.split('@')[1] || 's.whatsapp.net';
+        cleanPn = `${user}@${domain}`;
+    }
+    if (!cleanPn.endsWith('@s.whatsapp.net') && !cleanPn.endsWith('@hosted')) return;
+
+    if (!sessionData.lidToPnMap) sessionData.lidToPnMap = new Map();
+    if (!sessionData.pnToLidMap) sessionData.pnToLidMap = new Map();
+
+    sessionData.lidToPnMap.set(cleanLid, cleanPn);
+    sessionData.pnToLidMap.set(cleanPn, cleanLid);
+}
+
+function findPnForLid(sessionData, lid) {
+    if (!sessionData || !lid) return null;
+    const cleanLid = lid.endsWith('@lid') ? lid : `${lid.split('@')[0]}@lid`;
+    if (sessionData.lidToPnMap?.has(cleanLid)) {
+        return sessionData.lidToPnMap.get(cleanLid);
+    }
+    if (sessionData.contacts) {
+        for (const [cId, contact] of sessionData.contacts.entries()) {
+            if (contact.lid === cleanLid || contact.id === cleanLid) {
+                if (contact.phoneNumber) {
+                    const pn = isPhoneJid(contact.phoneNumber)
+                        ? contact.phoneNumber
+                        : `${contact.phoneNumber.replace(/[^\d]/g, '')}@s.whatsapp.net`;
+                    recordLidPnMapping(sessionData, cleanLid, pn);
+                    return pn;
+                }
+                if (isPhoneJid(cId)) {
+                    recordLidPnMapping(sessionData, cleanLid, cId);
+                    return cId;
+                }
+            }
+            if (contact.jidAliases && Array.isArray(contact.jidAliases) && contact.jidAliases.includes(cleanLid)) {
+                if (isPhoneJid(cId)) {
+                    recordLidPnMapping(sessionData, cleanLid, cId);
+                    return cId;
+                }
+            }
+        }
+    }
+    if (sessionData.chats) {
+        for (const [chatId, chat] of sessionData.chats.entries()) {
+            if (chat.jidAliases && Array.isArray(chat.jidAliases) && chat.jidAliases.includes(cleanLid)) {
+                if (isPhoneJid(chatId)) {
+                    recordLidPnMapping(sessionData, cleanLid, chatId);
+                    return chatId;
+                }
+            }
+        }
+    }
+    return null;
+}
+
+function resolveMessageJids(msg, sessionData = null) {
     const primary = msg?.key?.remoteJid || '';
     const alternate = msg?.key?.remoteJidAlt || '';
     if (primary.endsWith('@g.us')) {
         return { canonicalJid: primary, aliasJid: null };
     }
     if (isPhoneJid(primary)) {
-        return { canonicalJid: primary, aliasJid: alternate || null };
+        if (sessionData && alternate && alternate.endsWith('@lid')) {
+            recordLidPnMapping(sessionData, alternate, primary);
+        }
+        const mappedLid = sessionData?.pnToLidMap?.get(primary);
+        return { canonicalJid: primary, aliasJid: alternate || mappedLid || null };
     }
     if (isPhoneJid(alternate)) {
+        if (sessionData && primary && primary.endsWith('@lid')) {
+            recordLidPnMapping(sessionData, primary, alternate);
+        }
         return { canonicalJid: alternate, aliasJid: primary || null };
+    }
+    if (primary.endsWith('@lid')) {
+        const pn = sessionData ? findPnForLid(sessionData, primary) : null;
+        if (pn) {
+            return { canonicalJid: pn, aliasJid: primary };
+        }
+        return { canonicalJid: primary, aliasJid: alternate || null };
     }
     return { canonicalJid: primary, aliasJid: alternate || null };
 }
 
+async function resolveMessageJidsAsync(msg, sessionData = null) {
+    const syncRes = resolveMessageJids(msg, sessionData);
+    if (syncRes.canonicalJid.endsWith('@lid') && sessionData?.sock?.signalRepository?.lidMapping?.getPNForLID) {
+        try {
+            const rawPn = await sessionData.sock.signalRepository.lidMapping.getPNForLID(syncRes.canonicalJid);
+            if (rawPn) {
+                const user = rawPn.split(':')[0].split('@')[0];
+                if (user && /^\d+$/.test(user)) {
+                    const pn = `${user}@s.whatsapp.net`;
+                    recordLidPnMapping(sessionData, syncRes.canonicalJid, pn);
+                    return { canonicalJid: pn, aliasJid: syncRes.canonicalJid };
+                }
+            }
+        } catch (e) {}
+    }
+    return syncRes;
+}
+
 function mergeJidAlias(sessionData, canonicalJid, aliasJid) {
     if (!canonicalJid || !aliasJid || canonicalJid === aliasJid) return;
+    if (!sessionData) return;
 
+    if (aliasJid.endsWith('@lid') && isPhoneJid(canonicalJid)) {
+        recordLidPnMapping(sessionData, aliasJid, canonicalJid);
+    } else if (canonicalJid.endsWith('@lid') && isPhoneJid(aliasJid)) {
+        recordLidPnMapping(sessionData, canonicalJid, aliasJid);
+    }
+
+    if (!sessionData.chats) sessionData.chats = new Map();
     const canonicalChat = sessionData.chats.get(canonicalJid) || {};
     const aliasChat = sessionData.chats.get(aliasJid) || {};
-    if (sessionData.chats.has(aliasJid)) {
-        const canonicalTs = canonicalChat.timestamp || 0;
-        const aliasTs = aliasChat.timestamp || 0;
-        sessionData.chats.set(canonicalJid, {
-            ...aliasChat,
-            ...canonicalChat,
-            id: canonicalJid,
-            name: canonicalChat.name || aliasChat.name,
-            lastMessage: canonicalTs >= aliasTs
-                ? (canonicalChat.lastMessage || aliasChat.lastMessage || '')
-                : (aliasChat.lastMessage || canonicalChat.lastMessage || ''),
-            timestamp: Math.max(canonicalTs, aliasTs),
-            unreadCount: Math.max(canonicalChat.unreadCount || 0, aliasChat.unreadCount || 0),
-            jidAliases: Array.from(new Set([
-                ...(canonicalChat.jidAliases || []),
-                ...(aliasChat.jidAliases || []),
-                aliasJid,
-            ])),
-        });
-        sessionData.chats.delete(aliasJid);
-    }
 
+    const canonicalTs = canonicalChat.timestamp || 0;
+    const aliasTs = aliasChat.timestamp || 0;
+
+    const mergedAliases = Array.from(new Set([
+        ...(canonicalChat.jidAliases || []),
+        ...(aliasChat.jidAliases || []),
+        aliasJid,
+    ]));
+
+    sessionData.chats.set(canonicalJid, {
+        ...aliasChat,
+        ...canonicalChat,
+        id: canonicalJid,
+        name: canonicalChat.name || aliasChat.name,
+        lastMessage: canonicalTs >= aliasTs
+            ? (canonicalChat.lastMessage || aliasChat.lastMessage || '')
+            : (aliasChat.lastMessage || canonicalChat.lastMessage || ''),
+        timestamp: Math.max(canonicalTs, aliasTs),
+        unreadCount: Math.max(canonicalChat.unreadCount || 0, aliasChat.unreadCount || 0),
+        jidAliases: mergedAliases,
+    });
+    sessionData.chats.delete(aliasJid);
+
+    if (!sessionData.contacts) sessionData.contacts = new Map();
     const canonicalContact = sessionData.contacts.get(canonicalJid) || {};
     const aliasContact = sessionData.contacts.get(aliasJid) || {};
-    if (sessionData.contacts.has(aliasJid)) {
-        sessionData.contacts.set(canonicalJid, {
-            ...aliasContact,
-            ...canonicalContact,
-            id: canonicalJid,
-            name: canonicalContact.name || aliasContact.name,
-            notify: canonicalContact.notify || aliasContact.notify,
-            verifiedName: canonicalContact.verifiedName || aliasContact.verifiedName,
-            jidAliases: Array.from(new Set([
-                ...(canonicalContact.jidAliases || []),
-                ...(aliasContact.jidAliases || []),
-                aliasJid,
-            ])),
-        });
-        sessionData.contacts.delete(aliasJid);
-    }
+
+    sessionData.contacts.set(canonicalJid, {
+        ...aliasContact,
+        ...canonicalContact,
+        id: canonicalJid,
+        name: canonicalContact.name || aliasContact.name,
+        notify: canonicalContact.notify || aliasContact.notify,
+        verifiedName: canonicalContact.verifiedName || aliasContact.verifiedName,
+        jidAliases: Array.from(new Set([
+            ...(canonicalContact.jidAliases || []),
+            ...(aliasContact.jidAliases || []),
+            aliasJid,
+        ])),
+    });
+    sessionData.contacts.delete(aliasJid);
 }
 
 // In-flight initialization promises to avoid race conditions and double-socket creation
@@ -230,6 +340,8 @@ function saveSessionStore(sessionName) {
             const data = {
                 chats: Array.from((session.chats || new Map()).entries()),
                 contacts: Array.from((session.contacts || new Map()).entries()),
+                lidToPn: Array.from((session.lidToPnMap || new Map()).entries()),
+                pnToLid: Array.from((session.pnToLidMap || new Map()).entries()),
                 updatedAt: Date.now()
             };
             fs.writeFileSync(storePath, JSON.stringify(data), 'utf8');
@@ -250,6 +362,8 @@ function loadSessionStore(sessionName) {
     if (!session) return;
     if (!session.chats) session.chats = new Map();
     if (!session.contacts) session.contacts = new Map();
+    if (!session.lidToPnMap) session.lidToPnMap = new Map();
+    if (!session.pnToLidMap) session.pnToLidMap = new Map();
 
     const sessionAuthDir = path.join(SESSIONS_DIR, sessionName);
     const storePath = path.join(sessionAuthDir, 'chats_store.json');
@@ -272,7 +386,21 @@ function loadSessionStore(sessionName) {
                 }
             }
         }
-        console.log(`[WA-Gateway] Restored ${session.chats.size} chats and ${session.contacts.size} contacts from disk for ${sessionName}`);
+        if (data.lidToPn && Array.isArray(data.lidToPn)) {
+            for (const [k, v] of data.lidToPn) {
+                if (!session.lidToPnMap.has(k)) {
+                    session.lidToPnMap.set(k, v);
+                }
+            }
+        }
+        if (data.pnToLid && Array.isArray(data.pnToLid)) {
+            for (const [k, v] of data.pnToLid) {
+                if (!session.pnToLidMap.has(k)) {
+                    session.pnToLidMap.set(k, v);
+                }
+            }
+        }
+        console.log(`[WA-Gateway] Restored ${session.chats.size} chats, ${session.contacts.size} contacts, ${session.lidToPnMap.size} LID mappings from disk for ${sessionName}`);
     } catch (e) {
         console.warn(`[WA-Gateway] Failed to load chats_store for ${sessionName}:`, e.message);
     }
@@ -399,10 +527,26 @@ async function initSessionSocket(sessionData) {
     });
 
     // 1. Initial bootstrap & history sync: captures all active chats and phonebook contacts
-    sock.ev.on('messaging-history.set', async ({ chats, contacts, messages }) => {
+    sock.ev.on('messaging-history.set', async ({ chats, contacts, messages, lidPnMappings }) => {
+        if (lidPnMappings && Array.isArray(lidPnMappings)) {
+            for (const m of lidPnMappings) {
+                if (m?.lid && m?.pn) {
+                    recordLidPnMapping(sessionData, m.lid, m.pn);
+                }
+            }
+        }
+
         if (contacts && Array.isArray(contacts)) {
             for (const c of contacts) {
                 if (!c.id) continue;
+                if (c.lid && c.phoneNumber) {
+                    recordLidPnMapping(sessionData, c.lid, c.phoneNumber);
+                } else if (c.lid && isPhoneJid(c.id)) {
+                    recordLidPnMapping(sessionData, c.lid, c.id);
+                } else if (c.phoneNumber && c.id.endsWith('@lid')) {
+                    recordLidPnMapping(sessionData, c.id, c.phoneNumber);
+                }
+
                 const existing = sessionData.contacts.get(c.id) || {};
                 sessionData.contacts.set(c.id, {
                     ...existing,
@@ -437,7 +581,7 @@ async function initSessionSocket(sessionData) {
         }
         if (messages && Array.isArray(messages)) {
             for (const msg of messages) {
-                const { canonicalJid: remoteJid, aliasJid } = resolveMessageJids(msg);
+                const { canonicalJid: remoteJid, aliasJid } = await resolveMessageJidsAsync(msg, sessionData);
                 if (!remoteJid || remoteJid === 'status@broadcast') continue;
                 mergeJidAlias(sessionData, remoteJid, aliasJid);
 
@@ -476,10 +620,31 @@ async function initSessionSocket(sessionData) {
         });
     });
 
-    // 2. Real-time contacts updates
+    // 2. Real-time LID-PN mapping updates
+    sock.ev.on('lid-mapping.update', (mapping) => {
+        if (mapping?.lid && mapping?.pn) {
+            recordLidPnMapping(sessionData, mapping.lid, mapping.pn);
+            const canonical = isPhoneJid(mapping.pn) ? mapping.pn : (isPhoneJid(mapping.lid) ? mapping.lid : null);
+            const alias = canonical === mapping.pn ? mapping.lid : mapping.pn;
+            if (canonical && alias) {
+                mergeJidAlias(sessionData, canonical, alias);
+            }
+            bumpChatRevision(sessionName);
+            saveSessionStore(sessionName);
+        }
+    });
+
+    // 3. Real-time contacts updates
     sock.ev.on('contacts.upsert', (newContacts) => {
         for (const c of newContacts) {
             if (!c.id) continue;
+            if (c.lid && c.phoneNumber) {
+                recordLidPnMapping(sessionData, c.lid, c.phoneNumber);
+            } else if (c.lid && isPhoneJid(c.id)) {
+                recordLidPnMapping(sessionData, c.lid, c.id);
+            } else if (c.phoneNumber && c.id.endsWith('@lid')) {
+                recordLidPnMapping(sessionData, c.id, c.phoneNumber);
+            }
             const existing = sessionData.contacts.get(c.id) || {};
             sessionData.contacts.set(c.id, {
                 ...existing,
@@ -496,6 +661,9 @@ async function initSessionSocket(sessionData) {
     sock.ev.on('contacts.update', (updates) => {
         for (const update of updates) {
             if (!update.id) continue;
+            if (update.lid && update.phoneNumber) {
+                recordLidPnMapping(sessionData, update.lid, update.phoneNumber);
+            }
             const existing = sessionData.contacts.get(update.id) || {};
             sessionData.contacts.set(update.id, {
                 ...existing,
@@ -692,7 +860,7 @@ async function initSessionSocket(sessionData) {
         if (!messages || messages.length === 0) return;
 
         for (const msg of messages) {
-            const { canonicalJid: remoteJid, aliasJid } = resolveMessageJids(msg);
+            const { canonicalJid: remoteJid, aliasJid } = await resolveMessageJidsAsync(msg, sessionData);
             if (!remoteJid || remoteJid === 'status@broadcast') continue;
             mergeJidAlias(sessionData, remoteJid, aliasJid);
 
@@ -737,9 +905,13 @@ async function initSessionSocket(sessionData) {
             }
 
             if (!fromMe && !isGroup && text) {
-                const contactPhone = `+${remoteJid.split('@')[0]}`;
+                const isLid = remoteJid.endsWith('@lid');
+                const rawUser = remoteJid.split('@')[0];
+                const contactPhone = isLid ? null : (rawUser.startsWith('+') ? rawUser : `+${rawUser}`);
                 await notifyBackend(sessionName, 'inbound', {
                     phone: contactPhone,
+                    wa_jid: remoteJid,
+                    lid: aliasJid || (isLid ? remoteJid : null),
                     message: text,
                     wa_message_id: msg.key?.id,
                     timestamp: ts,
@@ -1112,36 +1284,77 @@ async function getSessionChats(sessionName) {
         saveSessionStore(sessionName);
     }
 
+    // First, consolidate any pending LID chats that now have PN mappings
+    for (const [jid, chat] of Array.from((session.chats || new Map()).entries())) {
+        if (jid.endsWith('@lid')) {
+            let pn = findPnForLid(session, jid);
+            if (!pn && session.sock?.signalRepository?.lidMapping?.getPNForLID) {
+                try {
+                    const rawPn = await session.sock.signalRepository.lidMapping.getPNForLID(jid);
+                    if (rawPn) {
+                        const user = rawPn.split(':')[0].split('@')[0];
+                        if (user && /^\d+$/.test(user)) {
+                            pn = `${user}@s.whatsapp.net`;
+                            recordLidPnMapping(session, jid, pn);
+                        }
+                    }
+                } catch (e) {}
+            }
+            if (pn) {
+                mergeJidAlias(session, pn, jid);
+            }
+        }
+    }
+
     const chatsMap = session.chats || new Map();
     const contactsMap = session.contacts || new Map();
 
-    // Union of all known chat JIDs and phonebook contacts
-    const allJids = new Set([...chatsMap.keys(), ...contactsMap.keys()]);
+    // Union of all known chat JIDs and phonebook contacts, skipping LIDs aliased to existing phone chats
+    const allJids = new Set();
+    for (const jid of [...chatsMap.keys(), ...contactsMap.keys()]) {
+        if (!jid || jid === 'status@broadcast' || jid.endsWith('@newsletter')) continue;
+        if (jid.endsWith('@lid')) {
+            const mappedPn = findPnForLid(session, jid);
+            if (mappedPn && (chatsMap.has(mappedPn) || contactsMap.has(mappedPn))) {
+                continue;
+            }
+        }
+        allJids.add(jid);
+    }
+
     const result = [];
 
     for (const jid of allJids) {
-        if (!jid || jid === 'status@broadcast' || jid.endsWith('@newsletter')) continue;
-
         const isGroup = jid.endsWith('@g.us');
+        const isLid = jid.endsWith('@lid');
         const chat = chatsMap.get(jid) || {};
         const contact = contactsMap.get(jid) || {};
         const rawPhone = jid.split('@')[0];
-        const formattedPhone = isGroup ? jid : (rawPhone.startsWith('+') ? rawPhone : `+${rawPhone}`);
+        const formattedPhone = isGroup ? jid : (isLid ? null : (rawPhone.startsWith('+') ? rawPhone : `+${rawPhone}`));
 
-        // Resolve display name: Phonebook name -> Group subject -> Contact push name -> Formatted phone
+        // Resolve display name: Phonebook name -> Group subject -> Contact push name -> Formatted phone / Fallback
         const resolvedName = contact.name ||
                              chat.name ||
                              contact.notify ||
                              contact.verifiedName ||
-                             (isGroup ? 'WhatsApp Grubu' : formattedPhone);
+                             (isGroup ? 'WhatsApp Grubu' : (formattedPhone || contact.notify || 'WhatsApp Kişisi'));
 
         const lastMsg = typeof chat.lastMessage === 'string' ? chat.lastMessage : (chat.lastMessage?.text || '');
         const ts = chat.timestamp || (chat.conversationTimestamp ? extractTimestamp(chat.conversationTimestamp) : 0);
+
+        const aliases = new Set([
+            ...(chat.jidAliases || []),
+            ...(contact.jidAliases || []),
+        ]);
+        const mappedLid = session.pnToLidMap?.get(jid);
+        if (mappedLid) aliases.add(mappedLid);
+        if (contact.lid) aliases.add(contact.lid);
 
         result.push({
             id: jid,
             jid,
             phone: formattedPhone,
+            is_lid: isLid,
             name: resolvedName,
             push_name: contact.notify || null,
             pushName: contact.notify || null,
@@ -1152,10 +1365,8 @@ async function getSessionChats(sessionName) {
             last_message: lastMsg,
             lastMessage: lastMsg,
             timestamp: ts || 0,
-            jid_aliases: Array.from(new Set([
-                ...(chat.jidAliases || []),
-                ...(contact.jidAliases || []),
-            ])),
+            jid_aliases: Array.from(aliases),
+            jidAliases: Array.from(aliases),
         });
     }
 
@@ -1201,23 +1412,42 @@ function getSessionChatsDelta(sessionName, sinceRevision) {
 
     for (const jid of chatsMap.keys()) {
         if (!jid || jid === 'status@broadcast' || jid.endsWith('@newsletter')) continue;
+        if (jid.endsWith('@lid')) {
+            const mappedPn = findPnForLid(session, jid);
+            if (mappedPn && chatsMap.has(mappedPn)) {
+                continue;
+            }
+        }
         const chat = chatsMap.get(jid) || {};
+        const contact = contactsMap.get(jid) || {};
         const isGroup = jid.endsWith('@g.us');
+        const isLid = jid.endsWith('@lid');
         const rawPhone = jid.split('@')[0];
-        const formattedPhone = isGroup ? jid : (rawPhone.startsWith('+') ? rawPhone : `+${rawPhone}`);
-        const resolvedName = chat.name ||
-            (contactsMap.get(jid) || {}).notify ||
-            (isGroup ? 'WhatsApp Grubu' : formattedPhone);
+        const formattedPhone = isGroup ? jid : (isLid ? null : (rawPhone.startsWith('+') ? rawPhone : `+${rawPhone}`));
+        const resolvedName = contact.name ||
+            chat.name ||
+            contact.notify ||
+            (isGroup ? 'WhatsApp Grubu' : (formattedPhone || contact.notify || 'WhatsApp Kişisi'));
+
+        const aliases = new Set([
+            ...(chat.jidAliases || []),
+            ...(contact.jidAliases || []),
+        ]);
+        const mappedLid = session.pnToLidMap?.get(jid);
+        if (mappedLid) aliases.add(mappedLid);
+        if (contact.lid) aliases.add(contact.lid);
+
         changed.push({
             id: jid,
             jid,
             phone: formattedPhone,
+            is_lid: isLid,
             name: resolvedName,
             is_group: isGroup,
             unread_count: chat.unreadCount || 0,
             last_message: typeof chat.lastMessage === 'string' ? chat.lastMessage : (chat.lastMessage?.text || ''),
             timestamp: chat.timestamp || 0,
-            jid_aliases: chat.jidAliases || [],
+            jid_aliases: Array.from(aliases),
         });
     }
 
@@ -1237,5 +1467,8 @@ module.exports = {
     getSessionChatsDelta,
     bumpChatRevision,
     resolveMessageJids,
-    mergeJidAlias
+    resolveMessageJidsAsync,
+    mergeJidAlias,
+    recordLidPnMapping,
+    findPnForLid
 };

@@ -314,3 +314,233 @@ async def test_delta_endpoint_up_to_date_and_changed():
                 assert data["synced_count"] == 1
     finally:
         app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_cevat_aydin_lazury_lid_deduplication_and_merge():
+    """
+    Tests the real-world scenario reported by user:
+    1. Lead 'Cevat Aydın' exists with phone and outbound message 'selam'.
+    2. A duplicate lead 'Lazury' with LID/phone exists with inbound message 'aleykumselam tatlım'.
+    3. Bulk sync receives consolidated chat from gateway with canonical phone JID and jid_aliases=[lazury_lid].
+    4. Assert: 'Lazury' lead and conversation are cleanly merged and deleted.
+    5. 'Cevat Aydın' conversation retains both messages in unified thread and updates preview.
+    """
+    test_user = str(uuid.uuid4())
+    test_sess = f"sess_cevat_{uuid.uuid4().hex[:8]}"
+
+    cevat_phone = f"+90507{uuid.uuid4().int % 10000000:07d}"
+    phone_jid = f"{cevat_phone.lstrip('+')}@s.whatsapp.net"
+    lazury_lid = f"{uuid.uuid4().int % 1000000000000000:015d}@lid"
+    lazury_fake_phone = f"+{lazury_lid.split('@')[0]}"
+
+    async with AsyncSessionLocal() as db:
+        session = WhatsAppSession(
+            user_id=test_user,
+            session_name=test_sess,
+            phone_number="+905551112233",
+            status=SessionStatus.CONNECTED,
+        )
+        db.add(session)
+        await db.flush()
+
+        # 1. Cevat Aydın lead and conversation
+        cevat_lead = Lead(
+            user_id=test_user,
+            name="Cevat Aydın",
+            phone=cevat_phone,
+            phone_e164=cevat_phone,
+            place_id=f"wa_{uuid.uuid4().hex[:12]}",
+            category="WhatsApp Kişisi",
+            custom_data={"whatsapp_session_name": test_sess}
+        )
+        db.add(cevat_lead)
+        await db.flush()
+
+        cevat_conv = Conversation(
+            user_id=test_user,
+            lead_id=cevat_lead.id,
+            channel="WHATSAPP",
+            last_message_preview="selam",
+            unread_count=0
+        )
+        db.add(cevat_conv)
+        await db.flush()
+
+        cevat_msg = Message(
+            user_id=test_user,
+            conversation_id=cevat_conv.id,
+            direction=MessageDirection.OUTBOUND,
+            body="selam",
+            sender_phone="+905551112233",
+            recipient_phone=cevat_phone,
+            sender_name="Tezlify User"
+        )
+        db.add(cevat_msg)
+
+        # 2. Duplicate Lazury lead and conversation
+        lazury_lead = Lead(
+            user_id=test_user,
+            name="Lazury",
+            phone=lazury_fake_phone,
+            phone_e164=lazury_fake_phone,
+            place_id=f"wa_{uuid.uuid4().hex[:12]}",
+            category="WhatsApp Kişisi",
+            custom_data={"whatsapp_jid": lazury_lid, "whatsapp_session_name": test_sess}
+        )
+        db.add(lazury_lead)
+        await db.flush()
+
+        lazury_conv = Conversation(
+            user_id=test_user,
+            lead_id=lazury_lead.id,
+            channel="WHATSAPP",
+            last_message_preview="aleykumselam tatlım",
+            unread_count=1
+        )
+        db.add(lazury_conv)
+        await db.flush()
+
+        lazury_msg1 = Message(
+            user_id=test_user,
+            conversation_id=lazury_conv.id,
+            direction=MessageDirection.INBOUND,
+            body="İbinalık yapma",
+            sender_phone=lazury_lid,
+            recipient_phone="+905551112233",
+            sender_name="Lazury"
+        )
+        lazury_msg2 = Message(
+            user_id=test_user,
+            conversation_id=lazury_conv.id,
+            direction=MessageDirection.INBOUND,
+            body="aleykumselam tatlım",
+            sender_phone=lazury_lid,
+            recipient_phone="+905551112233",
+            sender_name="Lazury"
+        )
+        db.add_all([lazury_msg1, lazury_msg2])
+        await db.commit()
+
+        cevat_lead_id = cevat_lead.id
+        lazury_lead_id = lazury_lead.id
+        cevat_conv_id = cevat_conv.id
+        lazury_conv_id = lazury_conv.id
+
+    # 3. Gateway sync arrives with consolidated Cevat Aydın chat and jid_aliases=[lazury_lid]
+    consolidated_chat = {
+        "id": phone_jid,
+        "jid": phone_jid,
+        "phone": cevat_phone,
+        "name": "Cevat Aydın",
+        "push_name": "Lazury",
+        "last_message": "aleykumselam tatlım",
+        "timestamp": 1720000000,
+        "unread_count": 1,
+        "jid_aliases": [lazury_lid],
+    }
+
+    async with AsyncSessionLocal() as db:
+        session = await db.get(WhatsAppSession, session.id)
+        report = await WhatsAppChatSyncService.sync_chats(db, session, [consolidated_chat])
+        assert not report.errors, report.errors
+
+    # 4. Verify that duplicate Lazury lead and conv were deleted and merged
+    async with AsyncSessionLocal() as db:
+        assert await db.get(Lead, lazury_lead_id) is None, "Duplicate Lazury lead must be deleted"
+        assert await db.get(Conversation, lazury_conv_id) is None, "Duplicate Lazury conversation must be deleted"
+
+        cevat_lead_after = await db.get(Lead, cevat_lead_id)
+        assert cevat_lead_after is not None
+        assert cevat_lead_after.name == "Cevat Aydın"
+        assert cevat_lead_after.phone_e164 == cevat_phone
+        aliases = (cevat_lead_after.custom_data or {}).get("whatsapp_jid_aliases", [])
+        assert lazury_lid in aliases, f"Expected {lazury_lid} in aliases: {aliases}"
+
+        cevat_conv_after = await db.get(Conversation, cevat_conv_id)
+        assert cevat_conv_after is not None
+        assert cevat_conv_after.last_message_preview == "aleykumselam tatlım"
+        assert cevat_conv_after.unread_count == 1
+
+        # Verify all 3 messages are now in Cevat Aydın's conversation!
+        msgs = (
+            await db.execute(
+                select(Message).where(Message.conversation_id == cevat_conv_id).order_by(Message.id.asc())
+            )
+        ).scalars().all()
+        bodies = [m.body for m in msgs]
+        assert "selam" in bodies
+        assert "İbinalık yapma" in bodies
+        assert "aleykumselam tatlım" in bodies
+        assert len(msgs) == 3
+
+
+@pytest.mark.asyncio
+async def test_webhook_inbound_routes_lid_alias_to_existing_contact():
+    """
+    Tests that when an inbound webhook arrives with an LID (whether phone is provided or None),
+    it routes directly to the saved contact (Cevat Aydın) without creating a fake Lazury lead.
+    """
+    test_user = str(uuid.uuid4())
+    test_sess = f"sess_hook_{uuid.uuid4().hex[:8]}"
+    cevat_phone = f"+90507{uuid.uuid4().int % 10000000:07d}"
+    phone_jid = f"{cevat_phone.lstrip('+')}@s.whatsapp.net"
+    lazury_lid = f"{uuid.uuid4().int % 1000000000000000:015d}@lid"
+
+    async with AsyncSessionLocal() as db:
+        session = WhatsAppSession(
+            user_id=test_user,
+            session_name=test_sess,
+            phone_number="+905551112233",
+            status=SessionStatus.CONNECTED,
+        )
+        db.add(session)
+        await db.flush()
+
+        lead = Lead(
+            user_id=test_user,
+            name="Cevat Aydın",
+            phone=cevat_phone,
+            phone_e164=cevat_phone,
+            place_id=f"wa_{uuid.uuid4().hex[:12]}",
+            category="WhatsApp Kişisi",
+            custom_data={
+                "whatsapp_session_name": test_sess,
+                "whatsapp_jid": phone_jid,
+                "whatsapp_jid_aliases": [lazury_lid],
+            }
+        )
+        db.add(lead)
+        await db.commit()
+        lead_id = lead.id
+
+    webhook_payload = {
+        "session_name": test_sess,
+        "phone": None,  # Phone was hidden/LID
+        "wa_jid": phone_jid,
+        "lid": lazury_lid,
+        "message": "Canlı cevap",
+        "push_name": "Lazury"
+    }
+
+    from backend.app.core.config import settings
+    headers = {"X-Webhook-Secret": settings.WA_GATEWAY_WEBHOOK_SECRET}
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        res = await ac.post("/api/v1/whatsapp/webhook/inbound", json=webhook_payload, headers=headers)
+        assert res.status_code == 200, res.text
+
+    async with AsyncSessionLocal() as db:
+        conv = (
+            await db.execute(select(Conversation).where(Conversation.lead_id == lead_id))
+        ).scalar_one_or_none()
+        assert conv is not None
+        assert conv.last_message_preview == "Canlı cevap"
+
+        msg = (
+            await db.execute(select(Message).where(Message.conversation_id == conv.id))
+        ).scalar_one_or_none()
+        assert msg is not None
+        assert msg.body == "Canlı cevap"
+        assert msg.direction == MessageDirection.INBOUND
+

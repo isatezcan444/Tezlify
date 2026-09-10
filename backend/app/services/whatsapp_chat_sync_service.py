@@ -112,16 +112,24 @@ class WhatsAppChatSyncService:
             ) or jid.endswith("@g.us")
 
             raw_phone = c.get("phone")
-            if raw_phone and not is_group:
-                raw_phone = str(raw_phone)
-                phone_e164: Optional[str] = None
-                parsed = PhoneService.normalize_to_e164(raw_phone)
+            is_lid = bool(c.get("is_lid") or jid.endswith("@lid"))
+            phone_e164: Optional[str] = None
+            if raw_phone and not is_group and not is_lid:
+                raw_phone_str = str(raw_phone).strip()
+                parsed = PhoneService.normalize_to_e164(raw_phone_str)
                 if parsed:
                     phone_e164 = parsed["e164"]
-                elif raw_phone.startswith("+"):
-                    # International non-TR number: keep E.164-ish literal,
-                    # never invent digits (AGENTS.md 1.3 fail-closed).
-                    phone_e164 = raw_phone
+                elif raw_phone_str.startswith("+"):
+                    digits = "".join(ch for ch in raw_phone_str if ch.isdigit())
+                    # Disallow LID pseudo numbers (typically 14-16 digits starting with +1 without valid NANP)
+                    if not (digits.startswith("1") and len(digits) >= 14):
+                        try:
+                            import phonenumbers
+                            p = phonenumbers.parse(raw_phone_str)
+                            if phonenumbers.is_valid_number(p):
+                                phone_e164 = phonenumbers.format_number(p, phonenumbers.PhoneNumberFormat.E164)
+                        except Exception:
+                            phone_e164 = None
             else:
                 phone_e164 = None
 
@@ -238,20 +246,58 @@ class WhatsAppChatSyncService:
         if not alias_jids:
             return
 
+        alias_numbers = {
+            f"+{alias.split('@')[0]}"
+            for alias in alias_jids
+            if "@" in alias and alias.split("@")[0].isdigit()
+        }
+        raw_alias_numbers = {
+            alias.split("@")[0]
+            for alias in alias_jids
+            if "@" in alias and alias.split("@")[0].isdigit()
+        }
+
         alias_leads = (
             await db.execute(select(Lead).where(Lead.user_id == session.user_id))
         ).scalars().all()
-        alias_by_jid = {
-            str((lead.custom_data or {}).get("whatsapp_jid")): lead
-            for lead in alias_leads
-            if (lead.custom_data or {}).get("whatsapp_jid") in alias_jids
-            and (lead.custom_data or {}).get("whatsapp_session_name") == session.session_name
-        }
+
+        alias_by_jid: Dict[str, Lead] = {}
+        for lead in alias_leads:
+            c_data = lead.custom_data or {}
+            w_jid = str(c_data.get("whatsapp_jid") or "")
+            if w_jid in alias_jids:
+                alias_by_jid[w_jid] = lead
+            for a in c_data.get("whatsapp_jid_aliases") or []:
+                if a in alias_jids:
+                    alias_by_jid[a] = lead
+            for a_num in alias_numbers:
+                if lead.phone_e164 == a_num or lead.phone == a_num:
+                    alias_by_jid[a_num] = lead
+                    for a_jid in alias_jids:
+                        if a_jid.startswith(a_num.lstrip("+")):
+                            alias_by_jid[a_jid] = lead
+            for a_raw in raw_alias_numbers:
+                if lead.phone == a_raw:
+                    alias_by_jid[a_raw] = lead
+                    for a_jid in alias_jids:
+                        if a_jid.startswith(a_raw):
+                            alias_by_jid[a_jid] = lead
 
         for chat in chats:
             target_lead = leads_by_key.get(cls._chat_key(chat))
             if target_lead is None:
                 continue
+
+            # Update target_lead with aliases and resolved phonebook name
+            custom = dict(target_lead.custom_data or {})
+            current_aliases = set(custom.get("whatsapp_jid_aliases") or [])
+            current_aliases.update(chat.jid_aliases)
+            custom["whatsapp_jid_aliases"] = sorted(current_aliases)
+            target_lead.custom_data = custom
+
+            if chat.name and (not target_lead.name or target_lead.name.startswith("+") or target_lead.name == "Bilinmeyen"):
+                target_lead.name = chat.name
+
             for alias_jid in chat.jid_aliases:
                 alias_lead = alias_by_jid.get(alias_jid)
                 if alias_lead is None or alias_lead.id == target_lead.id:
@@ -331,6 +377,11 @@ class WhatsAppChatSyncService:
                         found.setdefault(f"tel:{digits[-10:]}", lead)
                 if lead.place_id:
                     found.setdefault(f"pid:{lead.place_id}", lead)
+                c_data = lead.custom_data or {}
+                if c_data.get("whatsapp_jid"):
+                    found.setdefault(f"jid:{c_data['whatsapp_jid']}", lead)
+                for a in c_data.get("whatsapp_jid_aliases") or []:
+                    found.setdefault(f"jid:{a}", lead)
 
         result: Dict[str, Lead] = {}
         for chat in chats:
@@ -338,6 +389,13 @@ class WhatsAppChatSyncService:
             if lead is None and not chat.is_group and chat.phone_e164:
                 digits = "".join(ch for ch in chat.phone_e164 if ch.isdigit())
                 lead = found.get(f"tel:{digits[-10:]}") if len(digits) >= 10 else None
+            if lead is None:
+                lead = found.get(f"jid:{chat.jid}")
+            if lead is None and chat.jid_aliases:
+                for a in chat.jid_aliases:
+                    lead = found.get(f"jid:{a}")
+                    if lead:
+                        break
 
             if lead is None:
                 lead = Lead(
@@ -348,7 +406,11 @@ class WhatsAppChatSyncService:
                     is_whatsapp_eligible=bool(chat.phone_e164),
                     place_id=chat.place_id,
                     category="WhatsApp Grubu" if chat.is_group else "WhatsApp Kişisi",
-                    custom_data={"is_group": chat.is_group, "whatsapp_jid": chat.jid},
+                    custom_data={
+                        "is_group": chat.is_group,
+                        "whatsapp_jid": chat.jid,
+                        "whatsapp_jid_aliases": list(chat.jid_aliases),
+                    },
                 )
                 report.created_leads += 1
                 # Intra-batch dedup: register immediately so repeated chats reuse this new instance
@@ -358,6 +420,9 @@ class WhatsAppChatSyncService:
                     digits = "".join(ch for ch in chat.phone_e164 if ch.isdigit())
                     if len(digits) >= 10:
                         found[f"tel:{digits[-10:]}"] = lead
+                found[f"jid:{chat.jid}"] = lead
+                for a in chat.jid_aliases:
+                    found[f"jid:{a}"] = lead
 
             # WhatsApp chats are personal to the session owner: transfer if owned by another user
             if session.user_id and str(lead.user_id or "") != str(session.user_id):
