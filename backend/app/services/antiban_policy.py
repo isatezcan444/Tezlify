@@ -8,6 +8,7 @@ Kurallar:
 import random
 from dataclasses import dataclass
 from datetime import datetime, time
+from typing import Optional
 
 from backend.app.core.config import settings
 
