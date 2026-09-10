@@ -190,7 +190,7 @@ components/
 - **Import**: `import { LeadDetailDrawer } from '@/components/domain';`
 
 ### `SessionCard`
-- **Purpose**: Reusable WhatsApp account card with warmup day indicator, battery level, daily quota, and disconnect/scan triggers.
+- **Purpose**: Reusable account card with warmup day indicator, battery level, daily quota, and disconnect/scan triggers.
 - **Props**: `session: WhatsAppSession`, `onDisconnect`, `onScanQR`, `onDelete`.
 - **Import**: `import { SessionCard } from '@/components/domain';`
 

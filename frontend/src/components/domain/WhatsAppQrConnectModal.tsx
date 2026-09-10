@@ -10,7 +10,7 @@ import {
   AlertTriangle,
   RotateCcw
 } from 'lucide-react';
-import { ApiClient } from '../../api/client';
+import { WhatsAppRepository } from '../../data/whatsapp/whatsappRepository';
 import { WhatsAppSession } from '../../types';
 import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
@@ -120,7 +120,7 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
         // Reusing existing known session - READ ONLY, NEVER CREATE
         setSessionId(targetSessionId);
         activeSessionIdRef.current = targetSessionId;
-        const qrRes = await ApiClient.getSessionQr(targetSessionId);
+        const qrRes = await WhatsAppRepository.getSessionQr(targetSessionId);
         if (!isMountedRef.current) return;
 
         if (qrRes.status === 'CONNECTED') {
@@ -137,7 +137,7 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
           resetCountdown();
         } else {
           // Trigger refresh to get active QR for this session
-          const refreshRes = await ApiClient.refreshSessionQr(targetSessionId);
+          const refreshRes = await WhatsAppRepository.refreshSessionQr(targetSessionId);
           if (!isMountedRef.current) return;
           if (refreshRes.qr_code) {
             setQrCode(refreshRes.qr_code);
@@ -150,7 +150,7 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
         const nameToUse = initialSessionName?.trim() || 'Hat 1';
         setSessionName(nameToUse);
 
-        const newSession = await ApiClient.createWhatsAppSession(nameToUse, 50);
+        const newSession = await WhatsAppRepository.createWhatsAppSession(nameToUse, 50);
         if (!isMountedRef.current) return;
 
         activeSessionIdRef.current = newSession.id;
@@ -189,7 +189,7 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
     if (!targetSessionId || isRefreshing) return;
     setIsRefreshing(true);
     try {
-      const res = await ApiClient.refreshSessionQr(targetSessionId);
+      const res = await WhatsAppRepository.refreshSessionQr(targetSessionId);
       if (!isMountedRef.current) return;
 
       if (res.status === 'CONNECTED') {
@@ -314,7 +314,7 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
     if (modalState === 'INITIALIZING' && !qrCode) {
       fallbackPollRef.current = setInterval(async () => {
         try {
-          const res = await ApiClient.getSessionQr(sessionId);
+          const res = await WhatsAppRepository.getSessionQr(sessionId);
           if (!isMountedRef.current) return;
           if (res.status === 'CONNECTED') {
             setConnectedPhone(res.phone);

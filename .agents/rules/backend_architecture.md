@@ -8,7 +8,6 @@
   - `CampaignRunner`: Asynchronous outreach execution, idempotency, and lifecycle.
   - `OutreachManager`: Single lead dispatching with Spintax rendering and logging.
   - `AntibanPolicy`: Single source of truth for timing, jitter, and working hours.
-  - `WhatsAppSender`: Protocol and sender implementations (`SimulatedSender`, `GatewaySender`).
   - `PhoneService`: Turkish & international phone normalization (E.164, mobile detection).
   - `SpintaxService`: Template variable substitution and Spintax permutation evaluator.
   - `ExportService`: In-memory streaming CSV and Excel generator.

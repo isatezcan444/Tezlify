@@ -4,8 +4,6 @@ DO 8838 BEGIN IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'leadstatus')
 
 DO 8838 BEGIN IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'scraperjobstatus') THEN CREATE TYPE scraperjobstatus AS ENUM ('PENDING', 'RUNNING', 'COMPLETED', 'FAILED', 'CANCELLED'); END IF; END 8838;
 
-DO 8838 BEGIN IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'sessionstatus') THEN CREATE TYPE sessionstatus AS ENUM ('DISCONNECTED', 'SCAN_QR', 'CONNECTING', 'CONNECTED', 'BANNED'); END IF; END 8838;
-
 DO 8838 BEGIN IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'campaignstatus') THEN CREATE TYPE campaignstatus AS ENUM ('DRAFT', 'ACTIVE', 'PAUSED', 'COMPLETED', 'ARCHIVED'); END IF; END 8838;
 
 DO 8838 BEGIN IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'conversationstatus') THEN CREATE TYPE conversationstatus AS ENUM ('ACTIVE', 'ARCHIVED', 'CLOSED'); END IF; END 8838;
@@ -157,6 +155,27 @@ CREATE UNIQUE INDEX ix_leads_place_id ON leads (place_id);
 
 CREATE UNIQUE INDEX ix_leads_phone_e164 ON leads (phone_e164);
 
+CREATE TABLE contacts (
+	id SERIAL NOT NULL, 
+	user_id UUID, 
+	phone_e164 VARCHAR(50) NOT NULL, 
+	display_name VARCHAR(150), 
+	lead_id INTEGER, 
+	custom_attributes JSON, 
+	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	PRIMARY KEY (id), 
+	FOREIGN KEY(lead_id) REFERENCES leads (id) ON DELETE SET NULL
+);
+
+CREATE INDEX ix_contacts_id ON contacts (id);
+
+CREATE INDEX ix_contacts_phone_e164 ON contacts (phone_e164);
+
+CREATE INDEX ix_contacts_user_id ON contacts (user_id);
+
+CREATE INDEX idx_contact_user_phone ON contacts (user_id, phone_e164);
+
 CREATE TABLE raw_candidates (
 	id SERIAL NOT NULL, 
 	discovery_run_id INTEGER, 
@@ -247,32 +266,6 @@ CREATE TABLE system_settings (
 
 CREATE UNIQUE INDEX ix_system_settings_key ON system_settings (key);
 
-CREATE TABLE whatsapp_sessions (
-	id SERIAL NOT NULL, 
-	session_name VARCHAR(100) NOT NULL, 
-	phone_number VARCHAR(50), 
-	status sessionstatus, 
-	qr_code TEXT, 
-	is_active BOOLEAN, 
-	warm_up_day INTEGER, 
-	daily_sent_count INTEGER, 
-	max_daily_limit INTEGER, 
-	last_sent_at TIMESTAMP WITHOUT TIME ZONE, 
-	last_reset_date TIMESTAMP WITHOUT TIME ZONE, 
-	battery_level INTEGER, 
-	is_phone_online BOOLEAN, 
-	error_message TEXT, 
-	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
-	updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
-	PRIMARY KEY (id)
-);
-
-CREATE INDEX ix_whatsapp_sessions_id ON whatsapp_sessions (id);
-
-CREATE UNIQUE INDEX ix_whatsapp_sessions_session_name ON whatsapp_sessions (session_name);
-
-CREATE INDEX ix_whatsapp_sessions_status ON whatsapp_sessions (status);
-
 CREATE TABLE campaign_group_leads (
 	group_id INTEGER NOT NULL, 
 	lead_id INTEGER NOT NULL, 
@@ -294,7 +287,6 @@ CREATE TABLE campaigns (
 	working_hours_enabled BOOLEAN, 
 	working_hours_start VARCHAR(10), 
 	working_hours_end VARCHAR(10), 
-	session_id INTEGER, 
 	group_id INTEGER, 
 	total_leads_target INTEGER, 
 	sent_count INTEGER, 
@@ -304,7 +296,6 @@ CREATE TABLE campaigns (
 	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	PRIMARY KEY (id), 
-	FOREIGN KEY(session_id) REFERENCES whatsapp_sessions (id) ON DELETE SET NULL, 
 	FOREIGN KEY(group_id) REFERENCES campaign_groups (id) ON DELETE SET NULL
 );
 
@@ -314,16 +305,21 @@ CREATE INDEX ix_campaigns_status ON campaigns (status);
 
 CREATE TABLE conversations (
 	id SERIAL NOT NULL, 
-	lead_id INTEGER NOT NULL, 
+	user_id UUID, 
+	lead_id INTEGER, 
+	contact_id INTEGER, 
 	channel VARCHAR(30) NOT NULL, 
 	status conversationstatus NOT NULL, 
 	last_message_at TIMESTAMP WITHOUT TIME ZONE, 
 	unread_count INTEGER NOT NULL, 
 	last_read_at TIMESTAMP WITHOUT TIME ZONE, 
+	archived_at TIMESTAMP WITHOUT TIME ZONE, 
+	closed_at TIMESTAMP WITHOUT TIME ZONE, 
 	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	PRIMARY KEY (id), 
-	FOREIGN KEY(lead_id) REFERENCES leads (id) ON DELETE CASCADE
+	FOREIGN KEY(lead_id) REFERENCES leads (id) ON DELETE SET NULL, 
+	FOREIGN KEY(contact_id) REFERENCES contacts (id) ON DELETE SET NULL
 );
 
 CREATE INDEX ix_conversations_channel ON conversations (channel);
@@ -340,16 +336,12 @@ CREATE INDEX ix_conversations_last_message_at ON conversations (last_message_at)
 
 CREATE TABLE message_logs (
 	id SERIAL NOT NULL, 
+	user_id UUID, 
 	lead_id INTEGER NOT NULL, 
 	campaign_id INTEGER, 
-	session_id INTEGER, 
 	target_phone VARCHAR(50) NOT NULL, 
 	rendered_message TEXT NOT NULL, 
 	status messagestatus, 
-	wa_message_id VARCHAR(100), 
-	reply_received BOOLEAN, 
-	reply_text TEXT, 
-	replied_at TIMESTAMP WITHOUT TIME ZONE, 
 	scheduled_for TIMESTAMP WITHOUT TIME ZONE, 
 	sent_at TIMESTAMP WITHOUT TIME ZONE, 
 	error_reason TEXT, 
@@ -358,8 +350,7 @@ CREATE TABLE message_logs (
 	updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(lead_id) REFERENCES leads (id) ON DELETE CASCADE, 
-	FOREIGN KEY(campaign_id) REFERENCES campaigns (id) ON DELETE SET NULL, 
-	FOREIGN KEY(session_id) REFERENCES whatsapp_sessions (id) ON DELETE SET NULL
+	FOREIGN KEY(campaign_id) REFERENCES campaigns (id) ON DELETE SET NULL
 );
 
 CREATE INDEX idx_msg_status_sched ON message_logs (status, scheduled_for);
@@ -372,21 +363,17 @@ CREATE INDEX ix_message_logs_id ON message_logs (id);
 
 CREATE INDEX ix_message_logs_campaign_id ON message_logs (campaign_id);
 
-CREATE INDEX ix_message_logs_wa_message_id ON message_logs (wa_message_id);
-
 CREATE INDEX ix_message_logs_lead_id ON message_logs (lead_id);
-
-CREATE INDEX ix_message_logs_session_id ON message_logs (session_id);
 
 CREATE INDEX ix_message_logs_scheduled_for ON message_logs (scheduled_for);
 
 CREATE TABLE messages (
 	id SERIAL NOT NULL, 
+	user_id UUID, 
 	conversation_id INTEGER NOT NULL, 
 	direction messagedirection NOT NULL, 
 	message_type messagetype NOT NULL, 
 	body TEXT, 
-	wa_message_id VARCHAR(150), 
 	media_id VARCHAR(255), 
 	media_mime_type VARCHAR(100), 
 	media_filename VARCHAR(255), 
@@ -416,8 +403,6 @@ CREATE INDEX ix_messages_sender_phone ON messages (sender_phone);
 CREATE INDEX idx_msg_conv_created ON messages (conversation_id, created_at);
 
 CREATE INDEX ix_messages_conversation_id ON messages (conversation_id);
-
-CREATE UNIQUE INDEX ix_messages_wa_message_id ON messages (wa_message_id);
 
 CREATE INDEX ix_messages_recipient_phone ON messages (recipient_phone);
 

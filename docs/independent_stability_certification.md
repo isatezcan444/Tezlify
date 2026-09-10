@@ -49,8 +49,8 @@ A controlled fault injection runner (`scratch/test_mutation_runner.py`) introduc
 | :--- | :--- | :--- | :--- |
 | `MUT-01` | `phone_service.py` | Disabled E.164 normalization | **KILLED** |
 | `MUT-02` | `antiban_policy.py` | Inverted working hours to fail-open | **KILLED** |
-| `MUT-03` | `whatsapp_sender.py` | Bypassed SIMULATION_MODE priority | **KILLED** |
-| `MUT-04` | `whatsapp_cloud_webhook.py` | Bypassed HMAC-SHA256 verification | **KILLED** |
+| ~~`MUT-03`~~ | ~~`whatsapp_sender.py`~~ | ~~Bypassed SIMULATION_MODE priority~~ | **REMOVED** |
+| ~~`MUT-04`~~ | ~~`whatsapp_cloud_webhook.py`~~ | ~~Bypassed HMAC-SHA256 verification~~ | **REMOVED** |
 | `MUT-05` | `campaigns.py` | Removed active campaign launch guard | **KILLED** |
 | `MUT-06` | `antiban_policy.py` | Corrupted Gaussian jitter bounds | **KILLED** |
 | `MUT-07` | `tr.ts` | Deleted key `'common.save'` | **KILLED** |
@@ -66,8 +66,8 @@ A controlled fault injection runner (`scratch/test_mutation_runner.py`) introduc
 - **Discovery (`test_discovery_adversarial.py`):** 1,000-pass deterministic SHA-256 place hashing and polar-opposite smart matching risk scoring passed.
 - **Campaign State Machine (`test_campaign_state_machine.py`):** State transitions (`DRAFT` ➔ `PAUSED` ➔ `ACTIVE` ➔ `ARCHIVED`), 422 on invalid strings, 409 on launch conflicts, and worker cancellation verified.
 - **Campaign Groups (`test_campaign_group_adversarial.py`):** 10x duplicate input arrays deduplicated to 1 DB row; group deletion strictly preserved 100% of leads in CRM.
-- **WhatsApp Safety (`test_whatsapp_adversarial.py`):** Pathological Spintax grammar, complete sender routing matrix, and comprehensive Zero Early Send verified (0 dispatcher calls).
-- **Webhook Security (`test_webhook_adversarial.py`):** Single-byte tampered payload returned 401; 10x burst deliveries for unknown senders created strictly 1 Lead, 1 Conversation, and 1 Message.
+- ~~**WhatsApp Safety**~~ — WhatsApp backend removed.
+- ~~**Webhook Security**~~ — WhatsApp backend removed.
 - **Anti-Ban Policy (`test_antiban_adversarial.py`):** Fail-closed policy verified on 10 corrupted time formats; 1,000 continuous Gaussian jitter samples strictly clamped.
 - **API Fuzzing (`test_api_fuzzing.py`):** SQLi, XSS, and type confusion payloads across public endpoints produced structured 4xx client responses with **0 HTTP 500 errors**.
 - **Idempotency (`test_idempotency.py`):** 5x repeated PATCH operations on Leads and Anti-Ban settings preserved single setting rows with 0 state drift.

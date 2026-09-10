@@ -18,7 +18,7 @@ def test_antiban_working_hours_fail_closed():
         working_hours_enabled=True,
         working_hours_start="corrupted_start",
         working_hours_end="corrupted_end",
-        simulation_mode=True
+        # simulation mode removed with the WhatsApp backend
     )
     assert corrupted_policy.is_within_working_hours(now=time(12, 0)) is False
 
@@ -30,7 +30,7 @@ def test_antiban_working_hours_fail_closed():
         working_hours_enabled=True,
         working_hours_start="09:00",
         working_hours_end="18:00",
-        simulation_mode=True
+        # simulation mode removed with the WhatsApp backend
     )
     assert valid_policy.is_within_working_hours(now=time(14, 30)) is True
     assert valid_policy.is_within_working_hours(now=time(20, 0)) is False
@@ -44,7 +44,7 @@ def test_antiban_working_hours_fail_closed():
         working_hours_enabled=False,
         working_hours_start="09:00",
         working_hours_end="18:00",
-        simulation_mode=True
+        # simulation mode removed with the WhatsApp backend
     )
     assert disabled_policy.is_within_working_hours(now=time(23, 59)) is True
 

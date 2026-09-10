@@ -1,7 +1,7 @@
 import enum
 from datetime import datetime
 from sqlalchemy import Column, Integer, String, DateTime, Text, Enum, ForeignKey, Index, Uuid
-from sqlalchemy.orm import relationship, synonym
+from sqlalchemy.orm import relationship
 from backend.app.core.database import Base
 
 
@@ -36,7 +36,7 @@ class ConversationMessageStatus(str, enum.Enum):
 class Message(Base):
     """
     Represents an individual message exchanged within a Conversation.
-    Enforces idempotency via unique external_message_id (wamid) and client_message_id.
+    Enforces idempotency via a unique client_message_id.
     """
     __tablename__ = "messages"
 
@@ -47,10 +47,6 @@ class Message(Base):
     direction = Column(Enum(MessageDirection), nullable=False, index=True)
     message_type = Column(Enum(MessageType), default=MessageType.TEXT, nullable=False)
     body = Column(Text, nullable=True)
-
-    # Meta WhatsApp Message ID (e.g. wamid.HBgM...) with strict UNIQUE constraint
-    wa_message_id = Column(String(150), unique=True, index=True, nullable=True)
-    external_message_id = synonym("wa_message_id")
 
     # Outbound Client Request Idempotency Key (UUID from Frontend)
     client_message_id = Column(String(100), unique=True, index=True, nullable=True)

@@ -1,18 +1,15 @@
 # Tezlify - AI Agent Development & System Rules
 
-Tezlify is an AI-assisted, production-grade B2B Lead Generation & Automated WhatsApp Outreach Platform.
+Tezlify is an AI-assisted, production-grade B2B Lead Generation & Outreach Platform.
 This document defines the core architecture, non-negotiable rules, invariants, and guidelines for any AI agent or engineer extending the codebase.
 
 ---
 
 ## 1. Core Architectural Invariants
 
-### 1.1 Truthfulness & WhatsApp Simulation Layer
-- **No False Positives**: Never mask exceptions or failures as `{"success": True}`. If an outreach fails or gateway is unreachable, it MUST be reported as failed (`success: False`, `MessageStatus.FAILED`).
-- **SimulatedSender vs GatewaySender**:
-  - `settings.SIMULATION_MODE = True` -> Uses `SimulatedSender`. Dispatches are explicitly marked with `is_simulated: True` and labeled as DEMO.
-  - `settings.SIMULATION_MODE = False` -> Uses `GatewaySender` calling `wa-gateway`.
-- All message dispatching goes through the `WhatsAppSender` protocol.
+### 1.1 Truthfulness
+- **No False Positives**: Never mask exceptions or failures as `{"success": True}`. If an outreach dispatch cannot happen, it MUST be reported as failed, never as sent.
+- There is **no WhatsApp backend** in this build: no gateway, no Meta Cloud API, no Baileys, no webhooks, no sessions. The WhatsApp frontend UI is a product shell backed by a frontend-only data layer (`frontend/src/data/whatsapp/`).
 
 ### 1.2 Single Source of Truth for Anti-Ban Policy
 - All jitter delays, mesai (working hours) limits, and humanized delays MUST be resolved via `AntibanPolicy`.
@@ -24,6 +21,9 @@ This document defines the core architecture, non-negotiable rules, invariants, a
 - Places without a phone number are saved with `phone_e164 = None` and `is_whatsapp_eligible = False`.
 - `place_id` must use deterministic hashing: `hashlib.sha256(url.encode()).hexdigest()[:16]` (never process-local `hash()`).
 - Ingestion and deduplication are handled centrally by `LeadIngestService`.
+
+### 1.3.1 WebSocket
+- The `/ws` WebSocket endpoint and `ws_manager` are shared infrastructure used by scraper progress and campaign progress broadcasts. They must be preserved.
 
 ### 1.4 Scraper Pipeline Integrity ("İşletme Ara")
 - The Google Maps / Places scraper with Playwright and streaming HTTP extraction must NEVER be degraded.
@@ -38,9 +38,8 @@ This document defines the core architecture, non-negotiable rules, invariants, a
 - **Strict Typing**: All service methods and endpoints must have complete type hints.
 - **Thin Routers / Fat Services (SRP)**: Endpoints in `backend/app/api/v1/endpoints/` handle HTTP validation, query parsing, and delegating to domain services (`LeadIngestService`, `CampaignRunner`, `OutreachManager`, `ExportService`).
 - **Security**:
-  - Webhooks require `X-Webhook-Secret` verification matching `settings.WA_GATEWAY_WEBHOOK_SECRET`.
   - CORS origins are loaded from `settings.BACKEND_CORS_ORIGINS`.
-  - Opt-out detection uses regex word-boundaries (`\b(istemiyorum|iptal|sil|stop|unsubscribe)\b`).
+  - Credentials/tokens must never be committed; the WhatsApp backend (and its credential vault) no longer exists.
 
 ---
 

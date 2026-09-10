@@ -12,7 +12,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.core.database import AsyncSessionLocal
 from backend.app.models.campaign import Campaign, CampaignStatus
 from backend.app.models.lead import Lead, LeadStatus
-from backend.app.models.whatsapp_session import WhatsAppSession, SessionStatus
 
 logger = logging.getLogger(__name__)
 
@@ -98,13 +97,11 @@ SEED_CAMPAIGN_TEMPLATE = (
 
 
 async def should_seed_demo_data(db: AsyncSession) -> bool:
-    """True only on a truly fresh database: no sessions, leads, or campaigns.
+    """True only on a truly fresh database: no leads or campaigns.
 
-    A sessions-only check resurrects the demo line after the user deletes
-    their last session (every Render restart re-seeds it). User data in ANY
-    of the three tables proves this is not a fresh install.
+    User data in ANY core table proves this is not a fresh install.
     """
-    for model in (WhatsAppSession, Lead, Campaign):
+    for model in (Lead, Campaign):
         count = await db.execute(select(func.count(model.id)))
         if count.scalar_one() > 0:
             return False
@@ -112,23 +109,10 @@ async def should_seed_demo_data(db: AsyncSession) -> bool:
 
 
 async def seed_demo_data_if_empty() -> None:
-    """Veritabanı boşsa örnek oturum + kampanya + lead kayıtları oluşturur."""
+    """Veritabanı boşsa örnek kampanya + lead kayıtları oluşturur."""
     async with AsyncSessionLocal() as db:  # type: AsyncSession
         if not await should_seed_demo_data(db):
             return
-
-        default_session = WhatsAppSession(
-            session_name="Ana Hat (Satış)",
-            phone_number="+905321002030",
-            status=SessionStatus.CONNECTED,
-            warm_up_day=3,
-            daily_sent_count=12,
-            max_daily_limit=60,
-            is_phone_online=True,
-            battery_level=88,
-        )
-        db.add(default_session)
-        await db.flush()
 
         db.add(
             Campaign(
@@ -141,7 +125,6 @@ async def seed_demo_data_if_empty() -> None:
                 min_delay_seconds=45,
                 max_delay_seconds=110,
                 typing_delay_seconds=5,
-                session_id=default_session.id,
                 total_leads_target=25,
                 sent_count=12,
                 delivered_count=12,

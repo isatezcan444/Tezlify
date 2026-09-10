@@ -32,6 +32,7 @@ import {
   Users
 } from 'lucide-react';
 import { ApiClient } from '../api/client';
+import { WhatsAppRepository } from '../data/whatsapp/whatsappRepository';
 import { WhatsAppNumber, MessageLog, Conversation, ConversationStatus, ConversationMessageStatus, Lead, Message } from '../types';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
@@ -117,7 +118,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     const generation = conversationsGenerationRef.current;
     if (!isSilent) setConvsLoading(true);
     try {
-      const list = await ApiClient.getConversations({
+      const list = await WhatsAppRepository.getConversations({
         status: convFilter === 'ALL' ? undefined : (convFilter as ConversationStatus),
         unread_only: convFilter === 'UNREAD',
         search: convSearch.trim() || undefined,
@@ -152,7 +153,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     let isMounted = true;
     const convId = selectedConv.id;
 
-    ApiClient.getConversationMessages(convId, { limit: 50 })
+    WhatsAppRepository.getConversationMessages(convId, { limit: 50 })
       .then((res) => {
         if (isMounted && res?.messages) {
           setMessagesMap((prev) => {
@@ -199,7 +200,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     try {
       await loadConversations(true);
       if (selectedConv?.id) {
-        const res = await ApiClient.getConversationMessages(selectedConv.id, { limit: 50 });
+        const res = await WhatsAppRepository.getConversationMessages(selectedConv.id, { limit: 50 });
         if (res?.messages) {
           setMessagesMap((prev) => ({
             ...prev,
@@ -272,7 +273,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     );
 
     try {
-      const res = await ApiClient.sendMessage(selectedConv.id, trimmed, tempClientMid);
+      const res = await WhatsAppRepository.sendMessage(selectedConv.id, trimmed, tempClientMid);
       // Reconcile temporary message with backend response (which has status 'PENDING', real id, client_message_id)
       setMessagesMap((prev) => ({
         ...prev,
@@ -318,7 +319,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
               'Mesaj henüz sunucuya kaydedilmedi. Lütfen önce gönderimin tamamlanmasını bekleyin.'
           );
         }
-        const res = await ApiClient.sendMessage(convId, target.body, clientMid);
+        const res = await WhatsAppRepository.sendMessage(convId, target.body, clientMid);
         setMessagesMap((prev) => ({
           ...prev,
           [convId]: (prev[convId] || []).map((m) =>
@@ -337,7 +338,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         toast.success(t('whatsapp.messageSent') || 'Mesaj tekrar gönderildi', t('common.success'));
         return;
       }
-      const res = await ApiClient.retryMessage(convId, msgId);
+      const res = await WhatsAppRepository.retryMessage(convId, msgId);
       setMessagesMap((prev) => ({
         ...prev,
         [convId]: (prev[convId] || []).map((m) =>
@@ -377,7 +378,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     }));
 
     try {
-      const res = await ApiClient.sendMedia(
+      const res = await WhatsAppRepository.sendMedia(
         selectedConv.id,
         {
           media_type: type.toLowerCase(),
@@ -432,7 +433,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     }));
 
     try {
-      const res = await ApiClient.sendTemplate(selectedConv.id, templateKey, variables, tempClientMid);
+      const res = await WhatsAppRepository.sendTemplate(selectedConv.id, templateKey, variables, tempClientMid);
       setMessagesMap((prev) => ({
         ...prev,
         [selectedConv.id]: (prev[selectedConv.id] || []).map((m) =>
@@ -571,9 +572,9 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
             };
           });
 
-          // Auto-mark conversation as read on backend if user is actively viewing it
+          // Auto-mark conversation as read if user is actively viewing it
           if (!isOutbound) {
-            ApiClient.markConversationAsRead(convId).catch(() => {});
+            WhatsAppRepository.markConversationAsRead(convId).catch(() => {});
           }
         }
       }
@@ -652,7 +653,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       console.log('[WhatsAppHubPage] WebSocket reconnected. Performing silent reconciliation...');
       loadConversations(true);
       if (selectedConv?.id) {
-        ApiClient.getConversationMessages(selectedConv.id, { limit: 50 })
+        WhatsAppRepository.getConversationMessages(selectedConv.id, { limit: 50 })
           .then((res) => {
             if (res?.messages) {
               setMessagesMap((prev) => ({
@@ -690,8 +691,8 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     if (!silent) setLoading(true);
     try {
       const [numbersData, logsData] = await Promise.all([
-        ApiClient.getWhatsAppNumbers(),
-        ApiClient.getMessageLogs()
+        WhatsAppRepository.getWhatsAppNumbers(),
+        WhatsAppRepository.getMessageLogs()
       ]);
       setWhatsAppNumbers(numbersData);
       setLogs(logsData);
@@ -832,7 +833,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     if (verifyingNumberId) return;
     setVerifyingNumberId(numberId);
     try {
-      const result = await ApiClient.verifyWhatsAppNumber(numberId);
+      const result = await WhatsAppRepository.verifyWhatsAppNumber(numberId);
       if (result.verified) {
         toast.success(t('whatsapp.verifiedSuccess'), t('common.success'));
         setWhatsAppNumbers((prev) =>
@@ -850,7 +851,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         );
       } else {
         toast.error(result.error || t('whatsapp.verifyFailed'), t('common.error'));
-        const refreshed = await ApiClient.getWhatsAppNumbers();
+        const refreshed = await WhatsAppRepository.getWhatsAppNumbers();
         setWhatsAppNumbers(refreshed);
       }
       onRefreshStats();
@@ -874,7 +875,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
 
     setDisconnectingNumberId(numberId);
     try {
-      const disconnected = await ApiClient.disconnectWhatsAppNumber(numberId);
+      const disconnected = await WhatsAppRepository.disconnectWhatsAppNumber(numberId);
       setWhatsAppNumbers((prev) =>
         prev.map((n) => (n.id === numberId ? disconnected : n))
       );
@@ -900,7 +901,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
 
     setDeletingNumberId(numberId);
     try {
-      await ApiClient.deleteWhatsAppNumber(numberId);
+      await WhatsAppRepository.deleteWhatsAppNumber(numberId);
       setWhatsAppNumbers((prev) => prev.filter((n) => n.id !== numberId));
       // Product rule: deleting a line wipes live dialogs. Clear immediately
       // and reload from the server instead of relying solely on the realtime
@@ -926,7 +927,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     setTestResult(null);
 
     try {
-      const res = await ApiClient.sendTestMessage(testPhone, testMsg, selectedSessionForTest);
+      const res = await WhatsAppRepository.sendTestMessage(testPhone, testMsg, selectedSessionForTest);
       setTestResult({ ok: true, message: res.message });
       fetchNumbersAndLogs();
       onRefreshStats();
@@ -1041,7 +1042,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
               onSelect={(c) => {
                 setSelectedConv(c);
                 if (c.unread_count > 0) {
-                  ApiClient.markConversationAsRead(c.id).catch(() => {});
+                  WhatsAppRepository.markConversationAsRead(c.id).catch(() => {});
                   setConversations((prev) =>
                     prev.map((item) => (item.id === c.id ? { ...item, unread_count: 0 } : item))
                   );

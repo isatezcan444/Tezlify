@@ -41,16 +41,7 @@ class Settings(BaseSettings):
                 return v.replace("postgresql://", "postgresql+asyncpg://", 1)
         return v
 
-    # Çalışma modu
-    # True  -> WhatsApp gönderim zinciri SimulatedSender ile çalışır (hiçbir
-    #          gerçek mesaj gitmez; loglar ve API yanıtları "simulated" işaretlenir).
-    # False -> GatewaySender gerçek wa-gateway servisine HTTP çağrısı yapar.
-    #          wa-gateway şu an Baileys içermeyen bir simülatördür; False yapmadan
-    # önce gerçek gönderici entegrasyonunun tamamlandığından emin olun.
-    SIMULATION_MODE: bool = True
-
-    # Demo verisi: boş veritabanına örnek oturum/kampanya/lead ekler.
-    # Üretimde kapatın.
+    # Demo verisi: boş veritabanına örnek kampanya/lead ekler. Üretimde kapatın.
     SEED_DEMO_DATA: bool = False
 
     # Security / CORS
@@ -82,120 +73,6 @@ class Settings(BaseSettings):
             "http://localhost:8000",
             "http://127.0.0.1:8000",
         ]
-
-    # WhatsApp Gateway Settings
-    WA_GATEWAY_URL: str = "http://localhost:3001"
-    # Gateway'in /api/v1/whatsapp/webhook/inbound çağrılarında göndermesi
-    # zorunlu olan gizli anahtar (header: X-Webhook-Secret).
-    WA_GATEWAY_WEBHOOK_SECRET: str = Field(
-        default="dev-webhook-secret",
-        description="Üretimde .env ile değiştirilmelidir; webhook bu değerle doğrulanır.",
-    )
-    # wa-gateway /api/send çağrıları için opsiyonel Bearer token.
-    # Boş bırakılırsa gateway auth istemez (yalnızca güvenli ağda çalıştırın).
-    WA_GATEWAY_AUTH_TOKEN: str = ""
-
-    # WhatsApp Cloud API (Meta Graph API) Settings
-    META_GRAPH_API_VERSION: str = Field(
-        default="v21.0",
-        description="Centralized Meta Graph API Version (e.g. v21.0).",
-    )
-    WHATSAPP_CLOUD_API_VERSION: str = Field(
-        default="v21.0",
-        description="Meta Graph API Version (synonym for META_GRAPH_API_VERSION).",
-    )
-    WHATSAPP_CLOUD_ACCESS_TOKEN: str = Field(
-        default="",
-        description="Meta System User or User Permanent Access Token with whatsapp_business_messaging scope.",
-    )
-    WHATSAPP_CLOUD_PHONE_NUMBER_ID: str = Field(
-        default="",
-        description="Meta Phone Number ID from WhatsApp App Dashboard.",
-    )
-    WHATSAPP_CLOUD_BUSINESS_ACCOUNT_ID: str = Field(
-        default="",
-        description="Meta WhatsApp Business Account ID (WABA ID).",
-    )
-    WHATSAPP_CLOUD_GRAPH_API_BASE_URL: str = Field(
-        default="https://graph.facebook.com",
-        description="Base URL for Meta Graph API calls.",
-    )
-    META_WEBHOOK_VERIFY_TOKEN: str = Field(
-        default="",
-        description="Custom verification token configured in Meta App Dashboard for webhook handshake.",
-    )
-    WHATSAPP_CLOUD_WEBHOOK_VERIFY_TOKEN: str = Field(
-        default="",
-        description="Custom verification token (synonym for META_WEBHOOK_VERIFY_TOKEN).",
-    )
-    META_APP_SECRET: str = Field(
-        default="",
-        description="Meta App Secret used to verify X-Hub-Signature-256 HMAC on incoming webhooks.",
-    )
-    WHATSAPP_CLOUD_APP_SECRET: str = Field(
-        default="",
-        description="Meta App Secret (synonym for META_APP_SECRET).",
-    )
-    META_WEBHOOK_ENABLED: bool = Field(
-        default=True,
-        description="Flag to enable or disable Meta Webhook ingestion.",
-    )
-    META_WEBHOOK_PATH: str = Field(
-        default="/api/v1/whatsapp/webhook",
-        description="Canonical Meta Webhook endpoint path.",
-    )
-    WHATSAPP_CLOUD_ENABLED: bool = Field(
-        default=False,
-        description="Set to True to route live WhatsApp outreach via Meta Cloud API.",
-    )
-    TEZLIFY_CREDENTIAL_ENCRYPTION_KEY: str = Field(
-        default="",
-        description="Central symmetric encryption key for Meta credentials (Fernet base64 32-bytes).",
-    )
-    META_CLOUD_ACCESS_TOKEN: str = Field(
-        default="",
-        description="Synonym for WHATSAPP_CLOUD_ACCESS_TOKEN.",
-    )
-    META_PHONE_NUMBER_ID: str = Field(
-        default="",
-        description="Synonym for WHATSAPP_CLOUD_PHONE_NUMBER_ID.",
-    )
-    META_WABA_ID: str = Field(
-        default="",
-        description="Synonym for WHATSAPP_CLOUD_BUSINESS_ACCOUNT_ID.",
-    )
-    REAL_META_TEST_RECIPIENT: str = Field(
-        default="",
-        description="Explicit test recipient phone in E.164 format for live Meta E2E.",
-    )
-    REAL_META_E2E: bool = Field(
-        default=False,
-        description="Explicit opt-in flag to run live Meta Graph API E2E tests against real Meta Cloud.",
-    )
-
-    @property
-    def effective_meta_access_token(self) -> str:
-        return self.META_CLOUD_ACCESS_TOKEN or self.WHATSAPP_CLOUD_ACCESS_TOKEN or ""
-
-    @property
-    def effective_meta_phone_number_id(self) -> str:
-        return self.META_PHONE_NUMBER_ID or self.WHATSAPP_CLOUD_PHONE_NUMBER_ID or ""
-
-    @property
-    def effective_meta_waba_id(self) -> str:
-        return self.META_WABA_ID or self.WHATSAPP_CLOUD_BUSINESS_ACCOUNT_ID or ""
-
-    @property
-    def effective_meta_verify_token(self) -> str:
-        return self.META_WEBHOOK_VERIFY_TOKEN or self.WHATSAPP_CLOUD_WEBHOOK_VERIFY_TOKEN or ""
-
-    @property
-    def effective_meta_app_secret(self) -> str:
-        return self.META_APP_SECRET or self.WHATSAPP_CLOUD_APP_SECRET or ""
-
-    @property
-    def effective_meta_api_version(self) -> str:
-        return self.META_GRAPH_API_VERSION or self.WHATSAPP_CLOUD_API_VERSION or "v21.0"
 
     # Default Outreach Anti-Ban Thresholds
     # Tek doğruluk kaynağı burasıdır; Campaign model varsayılanları ve

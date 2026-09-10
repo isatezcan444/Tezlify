@@ -1,6 +1,5 @@
 import os
 import sys
-import subprocess
 import traceback
 import uvicorn
 from fastapi import FastAPI
@@ -13,19 +12,6 @@ except ValueError:
     port = 10000
 
 print(f"[TEZLIFY_BOOT] Starting initialization on port {port}...", flush=True)
-
-# Launch embedded WA-Gateway on port 3001 if available
-wa_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wa-gateway")
-gw_proc = None
-if os.path.exists(os.path.join(wa_dir, "src", "index.js")):
-    try:
-        print("[TEZLIFY_BOOT] Launching embedded WA-Gateway on port 3001...", flush=True)
-        gw_env = os.environ.copy()
-        gw_env["PORT"] = "3001"
-        gw_env["BACKEND_URL"] = f"http://localhost:{port}"
-        gw_proc = subprocess.Popen(["node", "src/index.js"], cwd=wa_dir, env=gw_env)
-    except Exception as gw_err:
-        print(f"[TEZLIFY_BOOT] WA-Gateway startup warning: {gw_err}", flush=True)
 
 try:
     # Try importing the real FastAPI app

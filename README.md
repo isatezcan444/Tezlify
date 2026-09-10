@@ -1,6 +1,8 @@
-# 🚀 Tezlify - B2B Lead Generation & Automated WhatsApp Outreach Platform
+# 🚀 Tezlify - B2B Lead Generation & Outreach Platform
 
-**Tezlify**, B2B işletmelerin (Ajanslar, Yazılım Şirketleri, Danışmanlar, Satış Ekipleri) Google Maps ve web dizinlerinden otomatik olarak müşteri adayı (Lead) toplamalarını, telefon numaralarını uluslararası E.164 standartlarında doğrulayıp WhatsApp uyumluluklarını filtrelemelerini ve **ban riski oluşturmadan (Anti-Ban Kalkanı)** Spintax ile kişiselleştirilmiş otomatik WhatsApp mesajları göndermelerini sağlayan modern bir SaaS platformudur.
+**Tezlify**, B2B işletmelerin (Ajanslar, Yazılım Şirketleri, Danışmanlar, Satış Ekipleri) Google Maps ve web dizinlerinden otomatik olarak müşteri adayı (Lead) toplamalarını, telefon numaralarını uluslararası E.164 standartlarında doğrulayıp WhatsApp uyumluluklarını filtrelemelerini ve **Anti-Ban politikası** ile kişiselleştirilmiş Spintax mesaj kampanyaları yönetmelerini sağlayan modern bir SaaS platformudur.
+
+> **Not:** Bu sürümde WhatsApp **frontend/UI katmanı** korunmuştur; WhatsApp **backend** altyapısı (gateway, Meta Cloud API, Baileys, webhook, oturum, gönderim işçileri) tamamen kaldırılmıştır. WhatsApp ekranları ön yüz veri katmanı (`frontend/src/data/whatsapp/`) üzerinden çalışır.
 
 ---
 
@@ -8,19 +10,15 @@
 
 - 🔍 **Google Maps & B2B Lead Scraper**: Sektör (Örn: *Diş Klinikleri*) ve Lokasyon (Örn: *İstanbul Ümraniye*) girilerek işletme adı, telefon, adres, Google puanı, yorum sayısı ve web sitelerini otomatik tarar.
 - 📱 **Akıllı Telefon Normalizasyonu (E.164)**: Tüm telefon numaralarını uluslararası formata (`+90532...`) dönüştürür, sabit hatları ayırt eder ve WhatsApp mobile uygunluğunu doğrular.
-- 🛡️ **Anti-Ban Koruma Kalkanı (Anti-Spam Engine)**:
-  - **Humanized Gaussian Jitter:** Her mesaj arasına 45 ile 120 saniye arasında rastgele değişen insansı gecikme ekler.
-  - **Typing & Online Simülasyonu:** Mesaj iletilmeden hemen önce 3-7 saniye boyunca WhatsApp'ta *"Yazıyor..."* ve *"Çevrimiçi"* durumu simüle edilir.
-  - **Kademeli Isınma (Warm-up Schedule):** Yeni bağlanan hatlarda günlük limitler kademeli artırılır (Gün 1: 15 mesaj, Gün 3: 35 mesaj, Gün 5: 60 mesaj).
-  - **Çoklu Hat / Oturum Rotasyonu:** Kuyruktaki mesajlar panele eklenen WhatsApp hatları arasında dengelenir (Round-Robin).
-  - **Mesai Saatleri Kilidi:** Sadece 09:30 - 18:30 saatleri arasında gönderim yapılır.
+- 🛡️ **Anti-Ban Koruma Politikası (UI + Ayarlar)**:
+  - **Humanized Gaussian Jitter:** Mesajlar arası insansı gecikme politikası (45-120 saniye).
+  - **Kademeli Isınma (Warm-up Schedule):** Günlük limit kademelendirme ayarları.
+  - **Mesai Saatleri Kilidi:** 09:00 - 18:30 gönderim penceresi ayarları.
 - ✨ **Spintax Studio & Dinamik Şablonlar**:
   - `{Merhaba|Selamlar|İyi günler} {name} Yetkilisi, {city} bölgesindeki {category} profilinizi gördüm...` formatında sınırsız varyasyon üretimi.
-  - Anlık kombinasyon sayısı hesaplama ve canlı 4 farklı varyasyon önizlemesi.
-- ⚡ **Gelen Yanıt & Kara Liste (Opt-Out) Algoritması**:
-  - Müşteri adayı WhatsApp'tan yanıt verdiğinde lead durumu anında `REPLIED` olarak güncellenir ve o lead için otomatik kampanya durdurulur.
-  - *"İstemiyorum / Silin"* yanıtlarında otomatik Kara Liste (Blacklist) devreye girer.
-- 📊 **Canlı Dönüşüm Hunisi & Dashboard**: Taranan Lead -> WhatsApp Uyumlu -> Mesaj İletilen -> Yanıt Veren metrikleri ve anlık WebSocket olay akışı.
+  - Anlık kombinasyon sayısı hesaplama ve canlı varyasyon önizlemesi.
+- 🖥️ **WhatsApp Hub (Ön Yüz)**: Canlı Konuşmalar, Aktif Numaralar, QR bağlantı modalı, Yeni Sohbet, sohbet listesi, mesaj balonları, arama/filtreler ve test kutusu — tümü tasarımı korunarak frontend-only veri katmanıyla çalışır.
+- 📊 **Canlı Dönüşüm Hunisi & Dashboard**: Taranan Lead -> WhatsApp Uyumlu -> İletişime Geçilen -> Yanıt Veren metrikleri ve WebSocket olay akışı.
 - 📥 **CSV ve Excel (.xlsx) Dışa Aktarma**: Filtrelenmiş lead veritabanını tek tıkla Excel/CSV formatında indirme.
 
 ---
@@ -31,25 +29,23 @@
 Tezlify/
 ├── backend/                  # FastAPI Core (Python 3.11+)
 │   ├── app/
-│   │   ├── api/v1/          # REST & WebSocket Gateway
-│   │   ├── core/            # Config, Database (SQLAlchemy 2.0 Async)
-│   │   ├── models/          # Lead, Campaign, WhatsAppSession, MessageLog, Blacklist
+│   │   ├── api/v1/          # REST & WebSocket
+│   │   ├── core/            # Config, Database (SQLAlchemy 2.0 Async), Migrations
+│   │   ├── models/          # Lead, Campaign, Conversation, Message, Contact, Blacklist
 │   │   ├── schemas/         # Pydantic v2 DTO Şemaları
 │   │   ├── services/        # Spintax, Phone E.164 Normalizer, OutreachManager, Exporter
 │   │   ├── scrapers/        # Google Maps & Directory Scrapers
 │   │   └── main.py          # FastAPI Lifespan & Seed Initializer
 │   └── requirements.txt
-├── wa-gateway/               # WhatsApp Socket/Session Servisi (Node.js Express / Baileys)
-│   ├── src/index.js         # QR Auth, Session Manager, Message Dispatcher
-│   └── package.json
 ├── frontend/                 # React 18 + Vite + TailwindCSS Admin Dashboard
 │   ├── src/
-│   │   ├── components/      # Sidebar, TopHeader, UI Elements
+│   │   ├── components/      # Sidebar, TopHeader, UI Elements, WhatsApp domain components
 │   │   ├── pages/           # Dashboard, LeadFinder, LeadCRM, Campaigns, WhatsAppHub, Blacklist, Settings
+│   │   ├── data/whatsapp/   # Frontend-only WhatsApp veri katmanı (repository + mock)
 │   │   ├── api/client.ts    # REST API & WebSocket Client Wrapper
 │   │   └── types/           # TypeScript Types
 │   └── package.json
-└── docker-compose.yml        # PostgreSQL, Redis, Backend, Gateway & Frontend Orchestration
+└── start.py                  # Uvicorn başlatıcı
 ```
 
 ---
@@ -59,7 +55,6 @@ Tezlify/
 ### Gereksinimler
 - Python 3.10+
 - Node.js 18+ & npm
-- (Opsiyonel) Docker & Docker Compose
 
 ---
 
@@ -81,18 +76,7 @@ PYTHONPATH=. uvicorn backend.app.main:app --host 127.0.0.1 --port 8000 --reload
 
 ---
 
-### 2. WhatsApp Gateway Servisini Başlatma (Node.js)
-
-```bash
-cd wa-gateway
-npm install
-node src/index.js
-```
-* Gateway URL: `http://localhost:3001`
-
----
-
-### 3. Frontend Admin Dashboard'u Başlatma (React + Vite)
+### 2. Frontend Admin Dashboard'u Başlatma (React + Vite)
 
 ```bash
 cd frontend
@@ -111,6 +95,10 @@ source venv/bin/activate
 PYTHONPATH=. pytest backend/tests
 ```
 
+```bash
+cd frontend && npm run build
+```
+
 ---
 
 ## 🛡️ Anti-Ban Stratejisi Özeti
@@ -118,11 +106,9 @@ PYTHONPATH=. pytest backend/tests
 | Kural | Açıklama |
 | :--- | :--- |
 | **Gaussian Jitter** | Mesajlar 45-120 saniye arasında değişen doğal bir eğriyle gönderilir. |
-| **Typing Simülasyonu** | Gönderim öncesinde 3-7 saniye WhatsApp'ta "yazıyor..." durumu üretilir. |
 | **Spintax Varyasyonları** | Her mesajın hash ve kelime kombinasyonu tekilleştirilir. |
-| **Warm-up Kotaları** | Yeni hatlar 15 mesaj/gün ile başlar, 60-80 mesaj/gün seviyesine kademeli çıkar. |
+| **Warm-up Kotaları** | Yeni hatlar düşük günlük limitlerle başlar, kademeli artar. |
 | **Mesai Kilidi** | Gece saatlerinde gönderim otomatik kilitlenir. |
-| **Auto-Stop on Reply** | Müşteri yanıt verdiğinde o numara için tüm otomatik akış durur. |
 
 ---
 

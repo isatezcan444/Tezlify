@@ -36,10 +36,6 @@ class Campaign(Base):
     working_hours_start = Column(String(10), default=settings.DEFAULT_WORKING_HOURS_START)  # HH:MM
     working_hours_end = Column(String(10), default=settings.DEFAULT_WORKING_HOURS_END)  # HH:MM
     
-    # Session Association (Optional: specific session or round-robin all active)
-    session_id = Column(Integer, ForeignKey("whatsapp_sessions.id", ondelete="SET NULL"), nullable=True)
-    session = relationship("WhatsAppSession", backref="campaigns")
-
     # Campaign Group Association (Optional)
     group_id = Column(Integer, ForeignKey("campaign_groups.id", ondelete="SET NULL"), nullable=True)
     group = relationship("CampaignGroup", backref="campaigns")

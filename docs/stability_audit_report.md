@@ -14,7 +14,7 @@ A comprehensive, multi-layered **Stability Harness, Remediation & Forensic Certi
 1. **Total Automated Tests:** 275 backend pytest tests (239 existing regression tests + 36 stability & concurrency tests) — **100% PASS**.
 2. **User Journeys (A through J):** 100% of critical lifecycle flows verified end-to-end (Discovery Ingest ➔ CRM ➔ Campaign Groups ➔ Delta Deduplication ➔ Campaign Builder ➔ Dispatch Safety).
 3. **Database Integrity:** Zero orphan records, zero duplicate membership pairs, zero foreign key violations, and zero synthesized/fake phone numbers.
-4. **Safety & Security Invariants:** WhatsApp Zero Early Send Invariant proven mathematically (0 calls on non-launch actions). HMAC-SHA256 signature verification and event idempotency verified.
+4. **Safety & Security Invariants:** WhatsApp backend removed. Zero Early Send, HMAC-SHA256, and event idempotency invariants no longer applicable.
 5. **Localization (i18n):** 100% dictionary parity between `tr.ts` (684 keys) and `en.ts` (684 keys) with 0 missing translations.
 6. **Frontend E2E:** 8/8 headless Playwright browser tests passed across all major navigation routes, modals, and tables.
 7. **Production Build:** Vite TypeScript build succeeded cleanly in 1.90s.
@@ -23,17 +23,8 @@ A comprehensive, multi-layered **Stability Harness, Remediation & Forensic Certi
 
 ## 2. Previous Findings Remediation
 
-### HIGH-01 — Unknown Phone Webhook `UnboundLocalError`
-- **Previous Status:** `HIGH RISK`
-- **Final Status:** `RESOLVED`
-- **Finding:** In `whatsapp_cloud_service.py`, if an inbound WhatsApp message was received from a phone number not yet registered in the `leads` table, `conversation` and `message_entity` remained unassigned, causing an `UnboundLocalError` when accessing `conversation.unread_count` on line 235 and returning an internal server error on incoming customer inquiries.
-- **Root Cause:** Line 111 `if lead:` conditionally created `conversation`, but line 235 accessed `conversation` without pre-initialization. Additionally, because the `Conversation` relational table has a non-nullable foreign key `lead_id`, incoming messages from new prospects had no associated `Lead` entity to link to.
-- **Fix:** In `WhatsAppCloudService.process_incoming_message`:
-  1. If no lead exists for `e164`, auto-provision a `Lead` entity (`name = msg.sender_name or f"WhatsApp İletişim ({e164})"`, `phone = e164`, `phone_e164 = e164`, `is_whatsapp_eligible = True`, `status = LeadStatus.NEW`).
-  2. With `lead` guaranteed, look up or create the `Conversation` (marking it `ACTIVE`, updating `unread_count`, `last_message_at`).
-  3. Create and persist the `Message` entity linked to `conversation.id`.
-  4. Ensure idempotent deduplication on `wa_message_id` skips already persisted messages.
-- **Regression Proof:** `backend/tests/stability/test_webhook_integrity.py::test_unknown_phone_webhook_creates_lead_and_conversation` (`PASS`).
+### HIGH-01 — ~~Unknown Phone Webhook `UnboundLocalError`~~
+- **Status:** ~~RESOLVED~~ — WhatsApp backend removed.
 
 ---
 
@@ -113,24 +104,19 @@ TOTAL VERIFICATIONS: 15 / 15 STAGES PASSED (100%)
 - **Status:** `PASS`
 - **Proof:** Spintax variations (`{Merhaba|Selamlar|İyi günler}`) expand into clean Turkish greetings. Lead variables `{name}`, `{city}`, `{category}` substitute seamlessly without unparsed braces.
 
-### Journey I — Zero Early Send Invariant
-- **Status:** `PASS`
-- **Proof:** Across campaign creation, updates, deletes, group mutations, template synthesis, and preview renderings, `WhatsAppSpy.call_count` was strictly verified to equal `0`.
+### ~~Journey I — Zero Early Send Invariant~~
+- **Status:** ~~REMOVED~~ — WhatsApp backend removed.
 
-### Journey J — WhatsApp Sender Routing Matrix
-- **Status:** `PASS`
-- **Proof:**
-  - `SIMULATION_MODE=True` ➔ Resolves `SimulatedSender` (outputs `is_simulated: True`).
-  - `SIMULATION_MODE=False, WHATSAPP_CLOUD_ENABLED=True` ➔ Resolves `CloudApiSender`.
-  - `SIMULATION_MODE=False, WHATSAPP_CLOUD_ENABLED=False` ➔ Resolves `GatewaySender`.
+### ~~Journey J — WhatsApp Sender Routing Matrix~~
+- **Status:** ~~REMOVED~~ — WhatsApp backend removed.
 
 ---
 
 ## 5. Security, Safety & Idempotency Audit
 
-1. **Webhook GET Handshake Challenge:** Valid verify token + `hub.mode=subscribe` returns plain text challenge (`200 OK`). Invalid token returns `403 Forbidden`.
-2. **HMAC-SHA256 Signature Verification:** Correctly signed payloads via `X-Hub-Signature-256` pass (`200 OK`). Forged or missing signatures return `401 Unauthorized`.
-3. **Idempotency Guarantee:** Duplicate delivery of identical `wamid` messages results in exactly 1 `Message` record in DB with zero state corruption.
+1. ~~**Webhook GET Handshake Challenge**~~ — WhatsApp backend removed.
+2. ~~**HMAC-SHA256 Signature Verification**~~ — WhatsApp backend removed.
+3. ~~**Idempotency Guarantee**~~ — WhatsApp backend removed.
 4. **Anti-Ban Fail-Closed Policy:** Corrupted or invalid working hours formats immediately return `False`, preventing outreach outside mesai. Gaussian jitter distributions strictly bound delays within `[min_delay, max_delay]`.
 
 ---

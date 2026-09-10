@@ -69,35 +69,13 @@
 
 ---
 
-## 5. WhatsApp Dispatch & Safety Invariants
-
-### INV-WA-001: Zero Early Send Invariant
-- **Description:** Non-launch actions (Lead Discovery, Group Creation/Update, Campaign Draft Creation, Spintax Preview, Template Regeneration) must strictly record `sender invocation count = 0`.
-- **Production Location:** Entire Backend Service Layer
-- **Verification Test:** `backend/tests/adversarial/test_whatsapp_adversarial.py::test_zero_early_send_comprehensive_suite`
-- **Status:** `VERIFIED / PASS`
-
-### INV-WA-002: Sender Routing Priority Matrix
-- **Description:** `SIMULATION_MODE = True` unconditionally routes to `SimulatedSender`. When `SIMULATION_MODE = False`, `WHATSAPP_CLOUD_ENABLED = True` routes to `CloudApiSender` and `False` routes to `GatewaySender`.
-- **Production Location:** `backend/app/services/whatsapp_sender.py:158`
-- **Verification Test:** `backend/tests/adversarial/test_whatsapp_adversarial.py::test_adversarial_sender_routing_matrix_completeness`
-- **Status:** `VERIFIED / PASS`
+## 5. ~~WhatsApp Dispatch & Safety Invariants~~
+- **Status:** ~~REMOVED~~ — WhatsApp backend removed.
 
 ---
 
-## 6. Webhook Security & Idempotency Invariants
-
-### INV-WEB-001: Cryptographic Signature Integrity
-- **Description:** Incoming webhook POST payloads must validate against `X-Hub-Signature-256` HMAC-SHA256. Tampered or unsigned payloads return 401 Unauthorized and are never processed.
-- **Production Location:** `backend/app/api/v1/endpoints/whatsapp_cloud_webhook.py:25`
-- **Verification Test:** `backend/tests/adversarial/test_webhook_adversarial.py::test_adversarial_webhook_tampered_payload_rejection`
-- **Status:** `VERIFIED / PASS`
-
-### INV-WEB-002: Event Idempotency & Unknown Sender Provisioning
-- **Description:** Duplicate deliveries of the same `wamid` must never produce duplicate `Message` records. Webhooks from unknown senders must auto-provision a `Lead` (status `NEW`), active `Conversation`, and `Message` (`unread_count = 1`).
-- **Production Location:** `backend/app/services/whatsapp_cloud_service.py:82`
-- **Verification Test:** `backend/tests/adversarial/test_webhook_adversarial.py::test_adversarial_unknown_sender_10x_burst_idempotency`
-- **Status:** `VERIFIED / PASS`
+## 6. ~~Webhook Security & Idempotency Invariants~~
+- **Status:** ~~REMOVED~~ — WhatsApp backend removed.
 
 ---
 

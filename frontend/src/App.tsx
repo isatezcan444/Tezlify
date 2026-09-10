@@ -56,14 +56,8 @@ const AppContent: React.FC = () => {
           // Broadcast to hooks/subscribers
           window.dispatchEvent(new CustomEvent('tezlify:ws_event', { detail: eventData }));
 
-          // Handle Inbound Reply Event
-          if (eventData.event === 'inbound_reply') {
-            toast.reply(
-              `${eventData.lead_name} (${eventData.phone}): "${eventData.message}"`,
-              t('toast.newReplyTitle')
-            );
-            refreshStats();
-          } else if (eventData.event === 'message_sent') {
+          // Handle campaign message progress & scraper completion events
+          if (eventData.event === 'message_sent') {
             toast.success(
               `${eventData.lead_name} (${eventData.phone})`,
               t('toast.messageSentTitle')

@@ -6,9 +6,8 @@ from backend.app.core.database import Base
 
 class Contact(Base):
     """
-    Canonical Contact entity for WhatsApp conversations.
-    Decoupled from B2B CRM Lead: Any person messaging or being messaged on WhatsApp is a Contact.
-    A Contact may optionally link to a CRM Lead (lead_id is nullable).
+    Canonical Contact entity for conversational threads.
+    Decoupled from B2B CRM Lead: a Contact may optionally link to a CRM Lead (lead_id is nullable).
     """
     __tablename__ = "contacts"
 
@@ -18,7 +17,6 @@ class Contact(Base):
     # Normalized E.164 phone number
     phone_e164 = Column(String(50), nullable=False, index=True)
     display_name = Column(String(150), nullable=True)
-    whatsapp_profile_name = Column(String(150), nullable=True)  # pushName from WhatsApp
 
     # Optional connection to CRM Lead
     lead_id = Column(Integer, ForeignKey("leads.id", ondelete="SET NULL"), nullable=True, index=True)
@@ -29,7 +27,7 @@ class Contact(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
     # Relationships
-    lead = relationship("Lead", backref="whatsapp_contacts")
+    lead = relationship("Lead", backref="contacts")
     conversations = relationship("Conversation", back_populates="contact")
 
     __table_args__ = (

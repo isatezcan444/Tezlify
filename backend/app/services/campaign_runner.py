@@ -3,6 +3,7 @@ Campaign Runner & Lifecycle Management Service.
 Coordinates background dispatch, concurrency locks, paused/completed state integrity,
 and real-time WebSocket progress broadcasts.
 """
+
 import asyncio
 import logging
 from typing import List, Optional
@@ -151,7 +152,6 @@ class CampaignRunner:
                         db=db,
                         lead_id=lead.id,
                         campaign_id=campaign.id,
-                        session_id=campaign.session_id
                     )
 
                     # Broadcast progress

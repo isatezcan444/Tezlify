@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { LayoutTemplate, Send, CheckCircle2, Loader2, Sparkles } from 'lucide-react';
 import { WhatsAppTemplate } from '../../types';
-import { ApiClient } from '../../api/client';
+import { WhatsAppRepository } from '../../data/whatsapp/whatsappRepository';
 import { Modal } from '../ui/Modal';
 import { Button } from '../ui/button';
 import { useI18n } from '../../context/I18nContext';
@@ -29,7 +29,7 @@ export const TemplateSelectModal: React.FC<TemplateSelectModalProps> = ({
   useEffect(() => {
     if (isOpen) {
       setLoading(true);
-      ApiClient.getTemplates()
+      WhatsAppRepository.getTemplates()
         .then((data) => {
           setTemplates(data);
           if (data.length > 0) {

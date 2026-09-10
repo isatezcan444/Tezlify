@@ -39,15 +39,16 @@ async def test_core_settings_invariants():
 @pytest.mark.asyncio
 async def test_critical_endpoint_smoke_matrix(client: AsyncClient):
     """Proves all critical API endpoints are alive, respond within contract, and do not raise 500s."""
+    # WhatsApp backend endpoints (/conversations, /whatsapp/*) were removed
+    # together with the WhatsApp backend; the smoke matrix covers the remaining
+    # generic API surface.
     endpoints = [
         ("/api/v1/leads", 200),
         ("/api/v1/campaigns", 200),
         ("/api/v1/campaign-groups", 200),
         ("/api/v1/blacklist", 200),
-        ("/api/v1/conversations", 200),
         ("/api/v1/analytics/dashboard", 200),
         ("/api/v1/settings/antiban", 200),
-        ("/api/v1/whatsapp/sessions", 200),
         ("/api/v1/leads/categories", 200),
     ]
     for path, expected_status in endpoints:

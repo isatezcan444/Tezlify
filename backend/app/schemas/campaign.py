@@ -14,7 +14,6 @@ class CampaignBase(BaseModel):
     working_hours_enabled: bool = True
     working_hours_start: str = settings.DEFAULT_WORKING_HOURS_START
     working_hours_end: str = settings.DEFAULT_WORKING_HOURS_END
-    session_id: Optional[int] = None
     group_id: Optional[int] = None
 
 class CampaignCreate(CampaignBase):
@@ -31,7 +30,6 @@ class CampaignUpdate(BaseModel):
     working_hours_enabled: Optional[bool] = None
     working_hours_start: Optional[str] = None
     working_hours_end: Optional[str] = None
-    session_id: Optional[int] = None
     group_id: Optional[int] = None
 
 class CampaignBulkDeleteRequest(BaseModel):

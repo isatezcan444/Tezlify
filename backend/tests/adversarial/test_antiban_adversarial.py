@@ -35,7 +35,7 @@ def test_adversarial_working_hours_fail_closed_on_corrupt_data():
             working_hours_enabled=True,
             working_hours_start=start_str,
             working_hours_end=end_str,
-            simulation_mode=False
+            # simulation mode removed with the WhatsApp backend
         )
         result = policy.is_within_working_hours(now=target_time)
         assert result is False, f"Fail-closed policy breached for ({start_str}, {end_str})! Returned: {result}"
@@ -56,7 +56,7 @@ def test_adversarial_working_hours_exact_boundaries():
         working_hours_enabled=True,
         working_hours_start="09:00",
         working_hours_end="18:00",
-        simulation_mode=False
+        # simulation mode removed with the WhatsApp backend
     )
 
     # Exact start

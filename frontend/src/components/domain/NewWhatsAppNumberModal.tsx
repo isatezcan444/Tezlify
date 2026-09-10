@@ -16,7 +16,7 @@ import { Button } from '../ui/button';
 import { TextInput } from '../forms/TextInput';
 import { Badge } from '../ui/badge';
 import { useI18n } from '../../context/I18nContext';
-import { ApiClient } from '../../api/client';
+import { WhatsAppRepository } from '../../data/whatsapp/whatsappRepository';
 import { WhatsAppNumber, WhatsAppNumberValidateResult } from '../../types';
 
 export interface NewWhatsAppNumberModalProps {
@@ -55,7 +55,7 @@ export const NewWhatsAppNumberModal: React.FC<NewWhatsAppNumberModalProps> = ({
     setValidationResult(null);
 
     try {
-      const res = await ApiClient.validateWhatsAppNumber({
+      const res = await WhatsAppRepository.validateWhatsAppNumber({
         name: name.trim(),
         waba_id: wabaId.trim(),
         phone_number_id: phoneNumberId.trim(),
@@ -85,7 +85,7 @@ export const NewWhatsAppNumberModal: React.FC<NewWhatsAppNumberModalProps> = ({
     setValidationError(null);
 
     try {
-      const created = await ApiClient.connectWhatsAppNumber({
+      const created = await WhatsAppRepository.connectWhatsAppNumber({
         name: (name.trim() || validationResult.verified_name || 'WhatsApp Hattı'),
         waba_id: wabaId.trim(),
         phone_number_id: phoneNumberId.trim(),

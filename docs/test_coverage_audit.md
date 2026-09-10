@@ -29,12 +29,12 @@ A comprehensive code coverage analysis was performed using `pytest-cov` across t
 | `backend/app/services/taxonomy_registry.py` | 89 | 3 | **97%** | Low Risk |
 | `backend/app/services/intent_resolver.py` | 51 | 2 | **96%** | Low Risk |
 | `backend/app/services/smart_matching_service.py` | 116 | 7 | **94%** | Low Risk |
-| `backend/app/services/whatsapp_cloud_service.py` | 111 | 7 | **94%** | Low Risk |
+| ~~`backend/app/services/whatsapp_cloud_service.py`~~ | ~~111~~ | ~~7~~ | ~~REMOVED~~ | WhatsApp backend removed |
 | `backend/app/services/query_expander.py` | 113 | 10 | **91%** | Low Risk |
 | `backend/app/services/lead_ingest_service.py` | 102 | 10 | **90%** | Low Risk |
 | `backend/app/services/phone_service.py` | 60 | 6 | **90%** | Low Risk |
 | `backend/app/services/antiban_policy.py` | 39 | 5 | **87%** | Low Risk |
-| `backend/app/services/whatsapp_sender.py` | 54 | 7 | **87%** | Low Risk |
+| ~~`backend/app/services/whatsapp_sender.py`~~ | ~~54~~ | ~~7~~ | ~~REMOVED~~ | WhatsApp backend removed |
 
 ### 2.2 REST Endpoints & API Layer (70% - 100% Coverage)
 | Module | Total Statements | Missed | Coverage | Risk Assessment |
@@ -42,9 +42,9 @@ A comprehensive code coverage analysis was performed using `pytest-cov` across t
 | `backend/app/api/v1/endpoints/analytics.py` | 53 | 0 | **100%** | Zero Risk |
 | `backend/app/api/v1/endpoints/settings.py` | 42 | 4 | **90%** | Low Risk |
 | `backend/app/api/v1/endpoints/smart_outreach.py` | 55 | 7 | **87%** | Low Risk |
-| `backend/app/api/v1/endpoints/conversations.py` | 157 | 22 | **86%** | Low Risk |
+| ~~`backend/app/api/v1/endpoints/conversations.py`~~ | ~~157~~ | ~~22~~ | ~~REMOVED~~ | WhatsApp backend removed |
 | `backend/app/api/v1/endpoints/campaign_groups.py` | 155 | 23 | **85%** | Low Risk |
-| `backend/app/api/v1/endpoints/whatsapp_cloud_webhook.py` | 52 | 9 | **83%** | Low Risk |
+| ~~`backend/app/api/v1/endpoints/whatsapp_cloud_webhook.py`~~ | ~~52~~ | ~~9~~ | ~~REMOVED~~ | WhatsApp backend removed |
 | `backend/app/api/v1/endpoints/campaigns.py` | 123 | 25 | **80%** | Low Risk |
 | `backend/app/api/v1/endpoints/blacklist.py` | 91 | 28 | **69%** | Low Risk |
 | `backend/app/api/v1/endpoints/leads.py` | 213 | 103 | **52%** | Medium Risk (Filter combinations) |

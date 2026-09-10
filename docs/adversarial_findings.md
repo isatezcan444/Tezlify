@@ -10,7 +10,7 @@
 | Finding ID | Severity | Component | Status | Summary |
 | :--- | :--- | :--- | :--- | :--- |
 | `ADV-CONC-01` | **MEDIUM** | Campaign Groups & Database Concurrency | **DISCOVERED & DOCUMENTED** | Concurrent `DELETE /groups/{id}` + `POST /groups/{id}/leads` race condition can leave orphaned junction row when SQLite foreign keys are not enforced per async connection. |
-| `ADV-SEC-01` | **LOW** | Webhook App Secret Configuration | **DOCUMENTED** | `WHATSAPP_CLOUD_APP_SECRET` defaults to empty string in development mode, logging a warning rather than enforcing HMAC validation. |
+| `ADV-SEC-01` | **LOW** | ~~Webhook App Secret Configuration~~ | **REMOVED** | ~~`WHATSAPP_CLOUD_APP_SECRET` defaults to empty string in development mode~~ — WhatsApp backend removed. |
 | `ADV-UX-01` | **INFO** | Leads Table Dynamic Filtering | **DOCUMENTED** | Complex multi-param lead filtering in `/api/v1/leads` contains some untested edge filter branches. |
 
 ---
@@ -39,13 +39,7 @@
 ---
 
 ### Finding: `ADV-SEC-01`
-- **Severity:** `LOW`
-- **Component:** `backend/app/api/v1/endpoints/whatsapp_cloud_webhook.py:30`
-- **Description:** If `WHATSAPP_CLOUD_APP_SECRET` is not set in environment (defaulting to empty string `""`), `verify_meta_signature` returns `True` and logs a warning to allow local offline development.
-- **Root Cause:** Development convenience fallback in `verify_meta_signature`.
-- **Impact:** If deployed to public production without configuring `WHATSAPP_CLOUD_APP_SECRET`, HMAC signature verification would be bypassed.
-- **Recommended Fix:** In production mode (`settings.ENVIRONMENT == "production"`), enforce that `WHATSAPP_CLOUD_APP_SECRET` is mandatory and raise a startup validation error if missing.
-- **Regression Test:** `backend/tests/adversarial/test_webhook_adversarial.py::test_adversarial_webhook_tampered_payload_rejection`.
+- **Status:** ~~DELETED~~ — WhatsApp backend infrastructure removed. This finding no longer applies.
 
 ---
 

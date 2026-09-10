@@ -5,7 +5,7 @@ from phonenumbers import NumberParseException, PhoneNumberType
 
 class PhoneService:
     """
-    Phone number normalization, validation and WhatsApp JID formatting.
+    Phone number normalization and validation.
     Defaults to Turkey (TR) region if no international country code is specified.
     """
 
@@ -91,8 +91,7 @@ class PhoneService:
             "country_code": 90,
             "is_valid": True,
             "is_mobile": True,
-            "is_whatsapp_eligible": True,
-            "wa_jid": "905321234567@s.whatsapp.net"
+            "is_whatsapp_eligible": True
         }
         """
         if not raw_phone:
@@ -138,17 +137,13 @@ class PhoneService:
             if parsed.country_code == 90 and national_str.startswith("5"):
                 is_mobile = True
 
-            digits_only = re.sub(r'\D', '', e164)
-            wa_jid = f"{digits_only}@s.whatsapp.net"
-
             return {
                 "e164": e164,
                 "national_number": national_str,
                 "country_code": parsed.country_code,
                 "is_valid": True,
                 "is_mobile": is_mobile,
-                "is_whatsapp_eligible": is_mobile,
-                "wa_jid": wa_jid
+                "is_whatsapp_eligible": is_mobile
             }
 
         except NumberParseException:

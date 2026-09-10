@@ -9,7 +9,6 @@ from backend.app.core.database import get_db
 from backend.app.core.auth import AuthUser, get_current_user, get_user_filter
 from backend.app.models.lead import Lead, LeadStatus
 from backend.app.models.campaign import Campaign, CampaignStatus
-from backend.app.models.whatsapp_session import WhatsAppSession, SessionStatus
 from backend.app.models.message_log import MessageLog, MessageStatus
 from backend.app.schemas.analytics import DashboardStatsResponse
 
@@ -22,12 +21,8 @@ async def get_dashboard_stats(
     current_user: AuthUser = Depends(get_current_user),
 ):
     lead_filter = get_user_filter(Lead.user_id, current_user.id)
-    session_filter = get_user_filter(WhatsAppSession.user_id, current_user.id)
     camp_filter = get_user_filter(Campaign.user_id, current_user.id)
-    msg_filter = or_(
-        get_user_filter(MessageLog.user_id, current_user.id),
-        MessageLog.session_id.in_(select(WhatsAppSession.id).where(session_filter)),
-    )
+    msg_filter = get_user_filter(MessageLog.user_id, current_user.id)
 
     # 1. Total Leads Count
     total_leads_res = await db.execute(select(func.count(Lead.id)).where(lead_filter))
@@ -65,11 +60,9 @@ async def get_dashboard_stats(
     active_camp_res = await db.execute(select(func.count(Campaign.id)).where(camp_filter, Campaign.status == CampaignStatus.ACTIVE))
     active_campaigns = active_camp_res.scalar_one()
 
-    # 6. Connected WhatsApp Sessions
-    connected_sess_res = await db.execute(
-        select(func.count(WhatsAppSession.id)).where(session_filter, WhatsAppSession.status == SessionStatus.CONNECTED)
-    )
-    connected_sessions = connected_sess_res.scalar_one()
+    # 6. Connected WhatsApp Sessions: WhatsApp backend removed — always 0.
+    #    Field kept for dashboard contract compatibility.
+    connected_sessions = 0
 
     # 7. Messages Sent Metrics
     total_sent_res = await db.execute(

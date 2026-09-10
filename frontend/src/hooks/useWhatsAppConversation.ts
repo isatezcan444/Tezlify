@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { ApiClient } from '../api/client';
+import { WhatsAppRepository } from '../data/whatsapp/whatsappRepository';
 import { ConversationDetail, Message, ConversationStatus } from '../types';
 
 const numericId = (id: number | string | undefined): number => (typeof id === 'number' && Number.isFinite(id) ? id : 0);
@@ -45,9 +45,9 @@ export function useWhatsAppConversation({
     try {
       let data: ConversationDetail;
       if (leadId) {
-        data = await ApiClient.getLeadConversation(leadId, { limit: initialLimit });
+        data = await WhatsAppRepository.getLeadConversation(leadId);
       } else if (conversationId) {
-        data = await ApiClient.getConversation(conversationId, { limit: initialLimit });
+        data = await WhatsAppRepository.getConversation(conversationId);
       } else {
         return;
       }
@@ -57,7 +57,7 @@ export function useWhatsAppConversation({
       // Auto mark as read when opened if there are unread messages
       if (autoMarkAsRead && data.unread_count > 0) {
         try {
-          await ApiClient.markConversationAsRead(data.id);
+          await WhatsAppRepository.markConversationAsRead(data.id);
           setConversation((prev) => (prev ? { ...prev, unread_count: 0 } : null));
         } catch (e) {
           console.warn('[useWhatsAppConversation] Mark as read failed:', e);
@@ -91,7 +91,7 @@ export function useWhatsAppConversation({
     setLoadingOlder(true);
 
     try {
-      const res = await ApiClient.getConversationMessages(conversation.id, {
+      const res = await WhatsAppRepository.getConversationMessages(conversation.id, {
         limit: 30,
         before: oldestId,
       });
@@ -132,7 +132,7 @@ export function useWhatsAppConversation({
   const markAsRead = useCallback(async () => {
     if (!conversation) return;
     try {
-      await ApiClient.markConversationAsRead(conversation.id);
+      await WhatsAppRepository.markConversationAsRead(conversation.id);
       setConversation((prev) => (prev ? { ...prev, unread_count: 0 } : null));
     } catch (e) {
       console.warn('[useWhatsAppConversation] Mark as read failed:', e);
@@ -143,7 +143,7 @@ export function useWhatsAppConversation({
   const updateStatus = useCallback(async (status: ConversationStatus) => {
     if (!conversation) return;
     try {
-      await ApiClient.updateConversationStatus(conversation.id, status);
+      await WhatsAppRepository.updateConversationStatus(conversation.id, status);
       setConversation((prev) => (prev ? { ...prev, status } : null));
     } catch (e) {
       console.warn('[useWhatsAppConversation] Update status failed:', e);
@@ -186,8 +186,8 @@ export function useWhatsAppConversation({
     });
 
     try {
-      // 2. Dispatch to backend & gateway (idempotent via clientMid)
-      const resMsg = await ApiClient.sendMessage(conversation.id, text, clientMid);
+      // 2. Dispatch through the frontend-only repository (idempotent via clientMid)
+      const resMsg = await WhatsAppRepository.sendMessage(conversation.id, text, clientMid);
 
       // 3. Reconcile temporary message with real database message
       setConversation((prev) => {
@@ -225,7 +225,7 @@ export function useWhatsAppConversation({
   // Send template helper
   const sendTemplate = useCallback(async (templateKey: string, variables: Record<string, string> = {}) => {
     if (!conversation) return;
-    const resMsg = await ApiClient.sendTemplate(conversation.id, templateKey, variables);
+    const resMsg = await WhatsAppRepository.sendTemplate(conversation.id, templateKey, variables);
     setConversation((prev) => {
       if (!prev) return prev;
       const isDuplicate = prev.messages.some(
@@ -255,7 +255,7 @@ export function useWhatsAppConversation({
       if (!target || !targetClientMid || !target.body) {
         throw new Error('Mesaj henüz sunucuya kaydedilmedi. Lütfen önce gönderimin tamamlanmasını bekleyin.');
       }
-      const resMsg = await ApiClient.sendMessage(conversation.id, target.body, targetClientMid);
+      const resMsg = await WhatsAppRepository.sendMessage(conversation.id, target.body, targetClientMid);
       setConversation((prev) => {
         if (!prev) return prev;
         return {
@@ -269,7 +269,7 @@ export function useWhatsAppConversation({
       });
       return resMsg;
     }
-    const resMsg = await ApiClient.retryMessage(conversation.id, messageId);
+    const resMsg = await WhatsAppRepository.retryMessage(conversation.id, messageId);
     setConversation((prev) => {
       if (!prev) return prev;
       return {
@@ -283,7 +283,7 @@ export function useWhatsAppConversation({
   // Send outbound media helper
   const sendMedia = useCallback(async (mediaType: 'IMAGE' | 'DOCUMENT', mediaUrl: string, caption?: string, filename?: string) => {
     if (!conversation) return;
-    const resMsg = await ApiClient.sendMedia(conversation.id, {
+    const resMsg = await WhatsAppRepository.sendMedia(conversation.id, {
       media_type: mediaType,
       media_url: mediaUrl,
       caption,
@@ -306,141 +306,23 @@ export function useWhatsAppConversation({
     return resMsg;
   }, [conversation]);
 
-  // Real-time Event Listener via CustomEvent bus
+  // Event Listener via CustomEvent bus (frontend-only repository events:
+  // message_status_updated, conversation_status_updated, conversation_read)
   useEffect(() => {
     const handleWsEvent = (e: Event) => {
       const customEvent = e as CustomEvent<any>;
       const eventData = customEvent.detail;
       if (!eventData) return;
 
-      // Helper for phone normalization matching
-      const normDigits = (p?: string | null) => (p ? p.replace(/\D/g, '').slice(-10) : '');
-
-      // Handle outbound message sent event
-      if (eventData.event === 'outbound_message_sent') {
-        const eventPhoneDigits = normDigits(eventData.recipient_phone || eventData.phone);
-        const currentPhoneDigits = normDigits(conversation?.lead_phone);
-        const matchesPhone = Boolean(eventPhoneDigits && currentPhoneDigits && eventPhoneDigits === currentPhoneDigits);
-
-        const matchesConv =
-          (conversationId && eventData.conversation_id === conversationId) ||
-          (conversation && eventData.conversation_id === conversation.id) ||
-          matchesPhone;
-
-        if (matchesConv) {
-          setConversation((prev) => {
-            if (!prev) return prev;
-            const msgId = eventData.message_id;
-            const waId = eventData.wa_message_id;
-            const isDuplicate = prev.messages.some(
-              (m) => (waId && m.wa_message_id === waId) || (msgId && m.id === msgId)
-            );
-            if (isDuplicate) return prev;
-
-            const newMsg: Message = {
-              id: eventData.message_id || Date.now(),
-              conversation_id: prev.id,
-              direction: 'OUTBOUND',
-              message_type: 'TEXT',
-              status: 'SENT',
-              body: eventData.message,
-              wa_message_id: eventData.wa_message_id,
-              sender_phone: 'BUSINESS',
-              recipient_phone: eventData.recipient_phone,
-              created_at: eventData.created_at || new Date().toISOString(),
-            };
-
-            return {
-              ...prev,
-              status: 'ACTIVE',
-              last_message_at: newMsg.created_at,
-              last_message_preview: newMsg.body,
-              messages: sortMessagesChronologically([...prev.messages, newMsg]),
-            };
-          });
-        }
-      }
-
-      // Handle incoming message or mirrored outbound message (TEXT or RICH MEDIA)
-      if (eventData.event === 'new_message' || eventData.event === 'inbound_reply') {
-        const eventPhoneDigits = normDigits(eventData.lead_phone || eventData.phone || eventData.sender_phone);
-        const currentPhoneDigits = normDigits(conversation?.lead_phone);
-        const matchesPhone = Boolean(eventPhoneDigits && currentPhoneDigits && eventPhoneDigits === currentPhoneDigits);
-
-        const matchesLead = leadId && eventData.lead_id === leadId;
-        const matchesConvId = conversationId && eventData.conversation_id === conversationId;
-        const matchesCurrentConv =
-          conversation && (eventData.conversation_id === conversation.id || eventData.lead_id === conversation.lead_id);
-
-        if (matchesLead || matchesConvId || matchesCurrentConv || matchesPhone) {
-          setConversation((prev) => {
-            if (!prev) return prev;
-
-            const msgObj = eventData.message && typeof eventData.message === 'object' ? eventData.message : null;
-            const msgId = msgObj ? msgObj.id : eventData.message_id;
-            const waId = msgObj ? msgObj.wa_message_id : eventData.wa_message_id;
-
-            // Idempotency: check if message with this wa_message_id or id already exists
-            const isDuplicate = prev.messages.some(
-              (m) => (waId && m.wa_message_id === waId) || (msgId && m.id === msgId)
-            );
-
-            if (isDuplicate) return prev;
-
-            const newMsg: Message = msgObj ? {
-              id: msgObj.id || Date.now(),
-              conversation_id: prev.id,
-              direction: msgObj.direction || 'INBOUND',
-              message_type: msgObj.message_type || 'TEXT',
-              status: msgObj.status || 'RECEIVED',
-              body: msgObj.body,
-              sender_name: msgObj.sender_name || eventData.sender_name || null,
-              wa_message_id: msgObj.wa_message_id,
-              sender_phone: msgObj.sender_phone || eventData.sender_phone || eventData.phone || eventData.lead_phone || '',
-              media_id: msgObj.media_id || eventData.media_id,
-              media_mime_type: msgObj.media_mime_type || eventData.media_mime_type,
-              media_filename: msgObj.media_filename || eventData.media_filename,
-              media_caption: msgObj.media_caption || eventData.media_caption,
-              created_at: msgObj.created_at || new Date().toISOString(),
-            } : {
-              id: eventData.message_id || Date.now(),
-              conversation_id: prev.id,
-              direction: eventData.direction || 'INBOUND',
-              message_type: eventData.message_type || 'TEXT',
-              status: eventData.status || 'RECEIVED',
-              body: eventData.message,
-              sender_name: eventData.sender_name || null,
-              media_id: eventData.media_id,
-              media_mime_type: eventData.media_mime_type,
-              media_filename: eventData.media_filename,
-              media_caption: eventData.media_caption,
-              wa_message_id: eventData.wa_message_id,
-              sender_phone: eventData.sender_phone || eventData.phone || eventData.lead_phone || '',
-              created_at: eventData.created_at || new Date().toISOString(),
-            };
-
-            return {
-              ...prev,
-              status: 'ACTIVE',
-              last_message_at: newMsg.created_at,
-              last_message_preview: newMsg.body,
-              unread_count: autoMarkAsRead || newMsg.direction === 'OUTBOUND' ? 0 : (prev.unread_count || 0) + 1,
-              messages: sortMessagesChronologically([...prev.messages, newMsg]),
-            };
-          });
-
-          if (autoMarkAsRead && conversation) {
-            ApiClient.markConversationAsRead(conversation.id).catch(() => {});
-          }
-        }
-      }
+      const matchesConv =
+        (conversationId && eventData.conversation_id === conversationId) ||
+        (conversation && eventData.conversation_id === conversation.id);
 
       // Handle message status updates (PENDING -> SENT -> DELIVERED -> READ / FAILED).
       // Reconcile by client_message_id first (survives the optimistic phase),
-      // then wa_message_id, then numeric DB id. Merge the real server id and
-      // wa_message_id into the optimistic row instead of appending a duplicate.
-      if (eventData.event === 'message_status_updated') {
-        const waId = eventData.wa_message_id || eventData.message_id;
+      // then numeric DB id. Merge the real id into the optimistic row instead
+      // of appending a duplicate.
+      if (eventData.event === 'message_status_updated' && matchesConv) {
         const clientMid = eventData.client_message_id;
         const serverId = eventData.id;
         const numericServerId =
@@ -456,14 +338,12 @@ export function useWhatsAppConversation({
           let changed = false;
           const updatedMessages = prev.messages.map((m) => {
             const matchesClientMid = clientMid && m.client_message_id === clientMid;
-            const matchesWa = waId && m.wa_message_id === waId;
             const matchesId = numericServerId && m.id === numericServerId;
-            if (matchesClientMid || matchesWa || matchesId) {
+            if (matchesClientMid || matchesId) {
               changed = true;
               return {
                 ...m,
                 id: numericServerId ?? m.id,
-                wa_message_id: (typeof waId === 'string' && waId ? waId : m.wa_message_id) as any,
                 status: newStatus,
                 error_message: eventData.error_message,
               };
@@ -477,43 +357,21 @@ export function useWhatsAppConversation({
       }
 
       // Handle conversation lifecycle status updates
-      if (eventData.event === 'conversation_status_updated') {
-        const matchesConv =
-          (conversationId && eventData.conversation_id === conversationId) ||
-          (conversation && eventData.conversation_id === conversation.id);
-
-        if (matchesConv) {
-          setConversation((prev) => (prev ? { ...prev, status: eventData.status } : null));
-        }
+      if (eventData.event === 'conversation_status_updated' && matchesConv) {
+        setConversation((prev) => (prev ? { ...prev, status: eventData.status } : null));
       }
 
       // Handle conversation read event
-      if (eventData.event === 'conversation_read') {
-        const matchesConv =
-          (conversationId && eventData.conversation_id === conversationId) ||
-          (conversation && eventData.conversation_id === conversation.id);
-
-        if (matchesConv) {
-          setConversation((prev) => (prev ? { ...prev, unread_count: 0 } : null));
-        }
-      }
-    };
-
-    // Reconnect Recovery: silently refresh active conversation if connection drops and recovers
-    const handleReconnect = () => {
-      if (enabled && (leadId || conversationId)) {
-        console.log('[useWhatsAppConversation] WebSocket reconnected. Performing silent sync recovery...');
-        fetchConversation();
+      if (eventData.event === 'conversation_read' && matchesConv) {
+        setConversation((prev) => (prev ? { ...prev, unread_count: 0 } : null));
       }
     };
 
     window.addEventListener('tezlify:ws_event', handleWsEvent);
-    window.addEventListener('tezlify:ws_connected', handleReconnect);
     return () => {
       window.removeEventListener('tezlify:ws_event', handleWsEvent);
-      window.removeEventListener('tezlify:ws_connected', handleReconnect);
     };
-  }, [leadId, conversationId, conversation, autoMarkAsRead, enabled, fetchConversation]);
+  }, [leadId, conversationId, conversation, fetchConversation]);
 
   return {
     conversation,

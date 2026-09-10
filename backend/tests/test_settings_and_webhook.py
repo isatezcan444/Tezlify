@@ -1,7 +1,6 @@
 import pytest
 from httpx import AsyncClient, ASGITransport
 from backend.app.main import app
-from backend.app.core.config import settings
 
 
 @pytest.mark.asyncio
@@ -47,25 +46,3 @@ async def test_get_and_patch_antiban_settings():
         restore_res = await client.patch("/api/v1/settings/antiban", json=restore_payload)
         assert restore_res.status_code == 200
         assert restore_res.json()["preset"] == "standard_balanced"
-
-
-@pytest.mark.asyncio
-async def test_webhook_secret_authorization():
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        # Request with invalid secret should return 401
-        invalid_res = await client.post(
-            "/api/v1/whatsapp/webhook/inbound",
-            headers={"X-Webhook-Secret": "wrong-secret"},
-            json={"phone": "+905321112233", "message": "Merhaba"}
-        )
-        assert invalid_res.status_code == 401
-
-        # Request with valid secret
-        valid_res = await client.post(
-            "/api/v1/whatsapp/webhook/inbound",
-            headers={"X-Webhook-Secret": settings.WA_GATEWAY_WEBHOOK_SECRET},
-            json={"phone": "+905321112233", "message": "Teşekkürler bilgi aldım"}
-        )
-        assert valid_res.status_code == 200
-        assert valid_res.json()["status"] == "success"

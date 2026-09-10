@@ -1,6 +1,6 @@
 import enum
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text, Enum, ForeignKey, Index, Uuid
+from sqlalchemy import Column, Integer, String, DateTime, Text, Enum, ForeignKey, Index, Uuid
 from sqlalchemy.orm import relationship
 from backend.app.core.database import Base
 
@@ -24,12 +24,10 @@ class MessageLog(Base):
     user_id = Column(Uuid(as_uuid=False), nullable=True, index=True)
     lead_id = Column(Integer, ForeignKey("leads.id", ondelete="CASCADE"), nullable=False, index=True)
     campaign_id = Column(Integer, ForeignKey("campaigns.id", ondelete="SET NULL"), nullable=True, index=True)
-    session_id = Column(Integer, ForeignKey("whatsapp_sessions.id", ondelete="SET NULL"), nullable=True, index=True)
     
     # Relationships
     lead = relationship("Lead", backref="message_logs")
     campaign = relationship("Campaign", backref="message_logs")
-    session = relationship("WhatsAppSession", backref="message_logs")
     
     # Message Content (Actual evaluated spintax sent)
     target_phone = Column(String(50), nullable=False, index=True)
@@ -37,12 +35,6 @@ class MessageLog(Base):
     
     # Status & Progress
     status = Column(Enum(MessageStatus), default=MessageStatus.PENDING, index=True)
-    wa_message_id = Column(String(100), nullable=True, index=True) # WhatsApp Message JID/ID
-    
-    # Inbound Reply
-    reply_received = Column(Boolean, default=False)
-    reply_text = Column(Text, nullable=True)
-    replied_at = Column(DateTime, nullable=True)
     
     # Error & Scheduling
     scheduled_for = Column(DateTime, nullable=True, index=True)

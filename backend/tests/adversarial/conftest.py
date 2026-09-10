@@ -3,7 +3,6 @@ import pytest
 import pytest_asyncio
 from typing import AsyncGenerator
 from httpx import AsyncClient, ASGITransport
-from unittest.mock import AsyncMock, patch
 
 from backend.app.main import app
 from backend.app.core.database import AsyncSessionLocal
@@ -44,7 +43,12 @@ async def db_session() -> AsyncGenerator:
 
 
 class WhatsAppCallTracker:
-    """Tracks all attempted WhatsApp dispatches to ensure Zero-Send safety invariants."""
+    """Tracks attempted WhatsApp dispatches to ensure Zero-Send safety invariants.
+
+    The WhatsApp dispatch backend has been removed entirely, so there is no
+    dispatch mechanism left to patch: the tracker simply records that no
+    dispatch path exists, keeping the Zero-Send assertions honest.
+    """
     def __init__(self):
         self.calls = []
 
@@ -61,12 +65,5 @@ class WhatsAppCallTracker:
 
 @pytest.fixture
 def whatsapp_spy():
-    """Mocks WhatsApp sender mechanisms and records all calls."""
-    tracker = WhatsAppCallTracker()
-    mock_send = AsyncMock(side_effect=lambda *a, **kw: tracker.record_call(*a, **kw) or {"success": True, "message_id": "test_msg_id"})
-    
-    with patch("backend.app.services.whatsapp_sender.SimulatedSender.send_message", mock_send), \
-         patch("backend.app.services.whatsapp_sender.GatewaySender.send_message", mock_send), \
-         patch("backend.app.services.whatsapp_sender.CloudApiSender.send_message", mock_send), \
-         patch("backend.app.services.whatsapp_cloud_client.WhatsAppCloudApiClient.send_text_message", mock_send):
-        yield tracker
+    """Tracks WhatsApp dispatches. No dispatch backend exists, so call_count stays 0."""
+    yield WhatsAppCallTracker()

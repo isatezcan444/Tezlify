@@ -5,7 +5,7 @@ import { Button } from '../ui/button';
 import { TextInput } from '../forms/TextInput';
 import { useI18n } from '../../context/I18nContext';
 import { useToast } from '../../context/ToastContext';
-import { ApiClient } from '../../api/client';
+import { WhatsAppRepository } from '../../data/whatsapp/whatsappRepository';
 import { ConversationDetail } from '../../types';
 
 export interface NewChatModalProps {
@@ -37,7 +37,7 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({
 
     setLoading(true);
     try {
-      const newConv = await ApiClient.startConversation({
+      const newConv = await WhatsAppRepository.startConversation({
         phone: cleanPhone,
         name: name.trim() || undefined,
         message: message.trim() || undefined,

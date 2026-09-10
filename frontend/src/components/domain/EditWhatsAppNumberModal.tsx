@@ -13,7 +13,7 @@ import {
 import { Button } from '../ui/button';
 import { TextInput } from '../forms/TextInput';
 import { useI18n } from '../../context/I18nContext';
-import { ApiClient } from '../../api/client';
+import { WhatsAppRepository } from '../../data/whatsapp/whatsappRepository';
 import { WhatsAppNumber } from '../../types';
 
 export interface EditWhatsAppNumberModalProps {
@@ -63,7 +63,7 @@ export const EditWhatsAppNumberModal: React.FC<EditWhatsAppNumberModalProps> = (
         payload.access_token = newToken.trim();
       }
 
-      const updated = await ApiClient.updateWhatsAppNumber(number.id, payload);
+      const updated = await WhatsAppRepository.updateWhatsAppNumber(number.id, payload);
       onSuccess(updated);
       onClose();
     } catch (err: any) {
