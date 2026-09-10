@@ -13,6 +13,8 @@ from backend.app.main import app
 from backend.app.core.database import AsyncSessionLocal
 from backend.app.models.whatsapp_session import WhatsAppSession, SessionStatus
 from backend.app.models.lead import Lead
+from backend.app.models.conversation import Conversation
+from backend.app.models.message import Message, MessageDirection
 from backend.app.services.whatsapp_chat_sync_service import (
     WhatsAppChatSyncService,
     NormalizedChat,
@@ -158,6 +160,103 @@ async def test_sync_chats_upserts_existing_lead_by_phone():
         assert not report.errors
         assert report.created_leads == 0  # matched by phone, not duplicated
         assert report.created_conversations == 1
+
+
+@pytest.mark.asyncio
+async def test_sync_chats_merges_verified_lid_alias_conversation():
+    test_user = str(uuid.uuid4())
+    test_sess = f"lid_{uuid.uuid4().hex[:8]}"
+    phone = f"+9053{uuid.uuid4().int % 100000000:08d}"
+    phone_jid = f"{phone[1:]}@s.whatsapp.net"
+    lid_jid = f"{uuid.uuid4().int % 10**15}@lid"
+
+    async with AsyncSessionLocal() as db:
+        session = WhatsAppSession(
+            user_id=test_user,
+            session_name=test_sess,
+            phone_number="+905551234567",
+            status=SessionStatus.CONNECTED,
+        )
+        canonical_lead = Lead(
+            user_id=test_user,
+            name="Cevat Aydin",
+            phone=phone,
+            phone_e164=phone,
+            place_id=f"phone_{uuid.uuid4().hex}",
+            custom_data={
+                "whatsapp_jid": phone_jid,
+                "whatsapp_session_name": test_sess,
+            },
+        )
+        alias_lead = Lead(
+            user_id=test_user,
+            name="lazury",
+            phone=lid_jid,
+            phone_e164=None,
+            place_id=f"lid_{uuid.uuid4().hex}",
+            custom_data={
+                "whatsapp_jid": lid_jid,
+                "whatsapp_session_name": test_sess,
+            },
+        )
+        db.add_all([session, canonical_lead, alias_lead])
+        await db.flush()
+        canonical_conv = Conversation(
+            user_id=test_user, lead_id=canonical_lead.id, channel="WHATSAPP"
+        )
+        alias_conv = Conversation(
+            user_id=test_user, lead_id=alias_lead.id, channel="WHATSAPP", unread_count=1
+        )
+        db.add_all([canonical_conv, alias_conv])
+        await db.flush()
+        db.add_all([
+            Message(
+                user_id=test_user,
+                conversation_id=canonical_conv.id,
+                direction=MessageDirection.OUTBOUND,
+                body="Giden mesaj",
+                sender_phone=session.phone_number,
+                recipient_phone=phone,
+            ),
+            Message(
+                user_id=test_user,
+                conversation_id=alias_conv.id,
+                direction=MessageDirection.INBOUND,
+                body="Gelen mesaj",
+                sender_phone=phone,
+                recipient_phone=session.phone_number,
+            ),
+        ])
+        await db.commit()
+
+        report = await WhatsAppChatSyncService.sync_chats(
+            db=db,
+            session=session,
+            chats=[
+                _make_chat(
+                    phone_jid,
+                    "Cevat Aydin",
+                    phone=phone,
+                    jid_aliases=[lid_jid],
+                    last_message="Gelen mesaj",
+                )
+            ],
+        )
+
+        assert not report.errors
+        conversations = (
+            await db.execute(
+                select(Conversation).where(Conversation.lead_id == canonical_lead.id)
+            )
+        ).scalars().all()
+        assert len(conversations) == 1
+        bodies = (
+            await db.execute(
+                select(Message.body).where(Message.conversation_id == conversations[0].id)
+            )
+        ).scalars().all()
+        assert set(bodies) == {"Giden mesaj", "Gelen mesaj"}
+        assert await db.get(Lead, alias_lead.id) is None
 
 
 @pytest.mark.asyncio

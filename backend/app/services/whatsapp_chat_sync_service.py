@@ -44,6 +44,7 @@ class NormalizedChat:
     last_message_text: str
     last_message_from_me: bool
     timestamp_seconds: int
+    jid_aliases: Tuple[str, ...] = ()
 
     @property
     def place_id(self) -> str:
@@ -144,6 +145,13 @@ class WhatsAppChatSyncService:
             except (TypeError, ValueError):
                 timestamp_seconds = 0
 
+            aliases_raw = c.get("jid_aliases") or c.get("jidAliases") or []
+            jid_aliases = tuple(
+                str(alias).strip()
+                for alias in aliases_raw
+                if alias and str(alias).strip() != jid
+            ) if isinstance(aliases_raw, list) else ()
+
             raw_name = str(c.get("name") or "").strip()
             resolved_name = raw_name or phone_e164 or ("WhatsApp Grubu" if is_group else (jid.split("@")[0] or "Bilinmeyen"))
 
@@ -158,6 +166,7 @@ class WhatsAppChatSyncService:
                     last_message_text=last_text,
                     last_message_from_me=from_me,
                     timestamp_seconds=timestamp_seconds,
+                    jid_aliases=jid_aliases,
                 )
             )
         return normalized
@@ -186,6 +195,7 @@ class WhatsAppChatSyncService:
 
         try:
             leads_by_key = await cls._upsert_leads_bulk(db, normalized, session, report)
+            await cls._merge_alias_conversations(db, normalized, leads_by_key, session)
             convs_by_key = await cls._upsert_conversations_bulk(
                 db, normalized, leads_by_key, session, report
             )
@@ -215,6 +225,82 @@ class WhatsAppChatSyncService:
         digits = (chat.phone_e164 or chat.raw_phone or chat.jid.split("@")[0] or "")
         digits = "".join(ch for ch in digits if ch.isdigit())
         return f"tel:{digits[-10:]}" if len(digits) >= 10 else f"jid:{chat.jid}"
+
+    @classmethod
+    async def _merge_alias_conversations(
+        cls,
+        db: AsyncSession,
+        chats: List[NormalizedChat],
+        leads_by_key: Dict[str, Lead],
+        session: WhatsAppSession,
+    ) -> None:
+        alias_jids = {alias for chat in chats for alias in chat.jid_aliases}
+        if not alias_jids:
+            return
+
+        alias_leads = (
+            await db.execute(select(Lead).where(Lead.user_id == session.user_id))
+        ).scalars().all()
+        alias_by_jid = {
+            str((lead.custom_data or {}).get("whatsapp_jid")): lead
+            for lead in alias_leads
+            if (lead.custom_data or {}).get("whatsapp_jid") in alias_jids
+            and (lead.custom_data or {}).get("whatsapp_session_name") == session.session_name
+        }
+
+        for chat in chats:
+            target_lead = leads_by_key.get(cls._chat_key(chat))
+            if target_lead is None:
+                continue
+            for alias_jid in chat.jid_aliases:
+                alias_lead = alias_by_jid.get(alias_jid)
+                if alias_lead is None or alias_lead.id == target_lead.id:
+                    continue
+
+                conversations = (
+                    await db.execute(
+                        select(Conversation).where(
+                            Conversation.lead_id.in_([target_lead.id, alias_lead.id]),
+                            Conversation.channel == "WHATSAPP",
+                        )
+                    )
+                ).scalars().all()
+                target_conv = next((c for c in conversations if c.lead_id == target_lead.id), None)
+                alias_conv = next((c for c in conversations if c.lead_id == alias_lead.id), None)
+
+                if alias_conv and target_conv:
+                    await db.execute(
+                        Message.__table__.update()
+                        .where(Message.conversation_id == alias_conv.id)
+                        .values(conversation_id=target_conv.id, user_id=session.user_id)
+                    )
+                    target_conv.unread_count = max(
+                        target_conv.unread_count or 0, alias_conv.unread_count or 0
+                    )
+                    if (
+                        alias_conv.last_message_at
+                        and (
+                            not target_conv.last_message_at
+                            or alias_conv.last_message_at > target_conv.last_message_at
+                        )
+                    ):
+                        target_conv.last_message_at = alias_conv.last_message_at
+                        target_conv.last_message_preview = alias_conv.last_message_preview
+                    await db.delete(alias_conv)
+                elif alias_conv:
+                    alias_conv.lead_id = target_lead.id
+                    alias_conv.user_id = session.user_id
+
+                await db.flush()
+                remaining = (
+                    await db.execute(
+                        select(Conversation.id).where(Conversation.lead_id == alias_lead.id).limit(1)
+                    )
+                ).scalar_one_or_none()
+                if remaining is None:
+                    await db.delete(alias_lead)
+
+        await db.flush()
 
     @classmethod
     async def _upsert_leads_bulk(
@@ -285,10 +371,12 @@ class WhatsAppChatSyncService:
                 lead.is_whatsapp_eligible = True
 
             custom = dict(lead.custom_data or {})
+            existing_aliases = custom.get("whatsapp_jid_aliases") or []
             custom.update({
                 "is_group": chat.is_group,
                 "whatsapp_jid": chat.jid,
                 "whatsapp_session_name": session.session_name,
+                "whatsapp_jid_aliases": sorted(set(existing_aliases) | set(chat.jid_aliases)),
             })
             lead.custom_data = custom
             result[cls._chat_key(chat)] = lead

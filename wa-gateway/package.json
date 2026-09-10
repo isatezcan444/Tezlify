@@ -4,7 +4,8 @@
   "description": "Tezlify WhatsApp Web Multi-Session Gateway Service",
   "main": "src/index.js",
   "scripts": {
-    "start": "node src/index.js"
+    "start": "node src/index.js",
+    "test": "node test/sessionManager.test.js"
   },
   "dependencies": {
     "@whiskeysockets/baileys": "^7.0.0-rc14",

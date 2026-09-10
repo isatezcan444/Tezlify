@@ -59,6 +59,72 @@ function extractMessageText(msg) {
         '';
 }
 
+function isPhoneJid(jid) {
+    return typeof jid === 'string' && jid.endsWith('@s.whatsapp.net');
+}
+
+function resolveMessageJids(msg) {
+    const primary = msg?.key?.remoteJid || '';
+    const alternate = msg?.key?.remoteJidAlt || '';
+    if (primary.endsWith('@g.us')) {
+        return { canonicalJid: primary, aliasJid: null };
+    }
+    if (isPhoneJid(primary)) {
+        return { canonicalJid: primary, aliasJid: alternate || null };
+    }
+    if (isPhoneJid(alternate)) {
+        return { canonicalJid: alternate, aliasJid: primary || null };
+    }
+    return { canonicalJid: primary, aliasJid: alternate || null };
+}
+
+function mergeJidAlias(sessionData, canonicalJid, aliasJid) {
+    if (!canonicalJid || !aliasJid || canonicalJid === aliasJid) return;
+
+    const canonicalChat = sessionData.chats.get(canonicalJid) || {};
+    const aliasChat = sessionData.chats.get(aliasJid) || {};
+    if (sessionData.chats.has(aliasJid)) {
+        const canonicalTs = canonicalChat.timestamp || 0;
+        const aliasTs = aliasChat.timestamp || 0;
+        sessionData.chats.set(canonicalJid, {
+            ...aliasChat,
+            ...canonicalChat,
+            id: canonicalJid,
+            name: canonicalChat.name || aliasChat.name,
+            lastMessage: canonicalTs >= aliasTs
+                ? (canonicalChat.lastMessage || aliasChat.lastMessage || '')
+                : (aliasChat.lastMessage || canonicalChat.lastMessage || ''),
+            timestamp: Math.max(canonicalTs, aliasTs),
+            unreadCount: Math.max(canonicalChat.unreadCount || 0, aliasChat.unreadCount || 0),
+            jidAliases: Array.from(new Set([
+                ...(canonicalChat.jidAliases || []),
+                ...(aliasChat.jidAliases || []),
+                aliasJid,
+            ])),
+        });
+        sessionData.chats.delete(aliasJid);
+    }
+
+    const canonicalContact = sessionData.contacts.get(canonicalJid) || {};
+    const aliasContact = sessionData.contacts.get(aliasJid) || {};
+    if (sessionData.contacts.has(aliasJid)) {
+        sessionData.contacts.set(canonicalJid, {
+            ...aliasContact,
+            ...canonicalContact,
+            id: canonicalJid,
+            name: canonicalContact.name || aliasContact.name,
+            notify: canonicalContact.notify || aliasContact.notify,
+            verifiedName: canonicalContact.verifiedName || aliasContact.verifiedName,
+            jidAliases: Array.from(new Set([
+                ...(canonicalContact.jidAliases || []),
+                ...(aliasContact.jidAliases || []),
+                aliasJid,
+            ])),
+        });
+        sessionData.contacts.delete(aliasJid);
+    }
+}
+
 // In-flight initialization promises to avoid race conditions and double-socket creation
 const pendingInitializations = new Map();
 
@@ -371,8 +437,9 @@ async function initSessionSocket(sessionData) {
         }
         if (messages && Array.isArray(messages)) {
             for (const msg of messages) {
-                const remoteJid = msg.key?.remoteJid;
+                const { canonicalJid: remoteJid, aliasJid } = resolveMessageJids(msg);
                 if (!remoteJid || remoteJid === 'status@broadcast') continue;
+                mergeJidAlias(sessionData, remoteJid, aliasJid);
 
                 const text = extractMessageText(msg);
                 const ts = extractTimestamp(msg.messageTimestamp) || 0;
@@ -625,8 +692,9 @@ async function initSessionSocket(sessionData) {
         if (!messages || messages.length === 0) return;
 
         for (const msg of messages) {
-            const remoteJid = msg.key?.remoteJid || '';
+            const { canonicalJid: remoteJid, aliasJid } = resolveMessageJids(msg);
             if (!remoteJid || remoteJid === 'status@broadcast') continue;
+            mergeJidAlias(sessionData, remoteJid, aliasJid);
 
             const isGroup = remoteJid.endsWith('@g.us');
             const fromMe = !!msg.key?.fromMe;
@@ -1084,6 +1152,10 @@ async function getSessionChats(sessionName) {
             last_message: lastMsg,
             lastMessage: lastMsg,
             timestamp: ts || 0,
+            jid_aliases: Array.from(new Set([
+                ...(chat.jidAliases || []),
+                ...(contact.jidAliases || []),
+            ])),
         });
     }
 
@@ -1145,6 +1217,7 @@ function getSessionChatsDelta(sessionName, sinceRevision) {
             unread_count: chat.unreadCount || 0,
             last_message: typeof chat.lastMessage === 'string' ? chat.lastMessage : (chat.lastMessage?.text || ''),
             timestamp: chat.timestamp || 0,
+            jid_aliases: chat.jidAliases || [],
         });
     }
 
@@ -1162,5 +1235,7 @@ module.exports = {
     restoreSavedSessions,
     getSessionChats,
     getSessionChatsDelta,
-    bumpChatRevision
+    bumpChatRevision,
+    resolveMessageJids,
+    mergeJidAlias
 };
