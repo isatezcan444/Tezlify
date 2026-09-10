@@ -1,5 +1,6 @@
 import enum
 from datetime import datetime
+from typing import Optional
 from sqlalchemy import Column, Integer, String, DateTime, Enum, Index, Uuid, Text
 from sqlalchemy.orm import relationship
 from backend.app.core.database import Base
