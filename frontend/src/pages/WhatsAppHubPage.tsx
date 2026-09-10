@@ -173,7 +173,9 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
               const tA = new Date(a.created_at || a.external_timestamp || 0).getTime();
               const tB = new Date(b.created_at || b.external_timestamp || 0).getTime();
               if (tA !== tB) return tA - tB;
-              return (a.id || 0) - (b.id || 0);
+              const nA = typeof a.id === 'number' ? a.id : 0;
+              const nB = typeof b.id === 'number' ? b.id : 0;
+              return nA - nB;
             });
 
             return {
@@ -240,8 +242,8 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   const activeSendMessage = async (text: string) => {
     if (!selectedConv || !text.trim()) return;
     const trimmed = text.trim();
-    const tempId = -Date.now();
     const tempClientMid = `cmsg_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+    const tempId = `optimistic_${tempClientMid}`;
     const nowIso = new Date().toISOString();
 
     const optimisticMsg: Message = {
@@ -299,13 +301,46 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     }
   };
 
-  const activeRetryMessage = async (msgId: number) => {
+  const activeRetryMessage = async (msgId: number | string) => {
     if (!selectedConv) return;
+    // Optimistic rows (client-only string ids) must never hit /retry. Re-POST
+    // with the existing client_message_id so idempotency holds and the row is
+    // reconciled with the real numeric DB id.
+    const convId = selectedConv.id;
+    const target = (messagesMap[convId] || []).find((m) => m.id === msgId);
+    const isRealDbId = typeof msgId === 'number' && Number.isInteger(msgId) && msgId > 0;
     try {
-      const res = await ApiClient.retryMessage(selectedConv.id, msgId);
+      if (!isRealDbId) {
+        const clientMid = target?.client_message_id;
+        if (!target || !clientMid || !target.body) {
+          throw new Error(
+            t('whatsapp.msgNotPersisted') ||
+              'Mesaj henüz sunucuya kaydedilmedi. Lütfen önce gönderimin tamamlanmasını bekleyin.'
+          );
+        }
+        const res = await ApiClient.sendMessage(convId, target.body, clientMid);
+        setMessagesMap((prev) => ({
+          ...prev,
+          [convId]: (prev[convId] || []).map((m) =>
+            m.id === msgId || (clientMid && m.client_message_id === clientMid)
+              ? {
+                  ...m,
+                  id: res.id,
+                  client_message_id: res.client_message_id || clientMid,
+                  wa_message_id: (res as any).wa_message_id ?? m.wa_message_id,
+                  status: res.status,
+                  error_message: undefined,
+                }
+              : m
+          ),
+        }));
+        toast.success(t('whatsapp.messageSent') || 'Mesaj tekrar gönderildi', t('common.success'));
+        return;
+      }
+      const res = await ApiClient.retryMessage(convId, msgId);
       setMessagesMap((prev) => ({
         ...prev,
-        [selectedConv.id]: (prev[selectedConv.id] || []).map((m) =>
+        [convId]: (prev[convId] || []).map((m) =>
           m.id === msgId ? { ...m, status: res.status, error_message: undefined } : m
         ),
       }));
@@ -318,8 +353,8 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
 
   const activeSendMedia = async (type: string, url: string, caption?: string, filename?: string) => {
     if (!selectedConv) return;
-    const tempId = -Date.now();
     const tempClientMid = `media_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+    const tempId = `optimistic_${tempClientMid}`;
     const nowIso = new Date().toISOString();
 
     const newMsg: Message = {
@@ -375,8 +410,8 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
 
   const activeSendTemplate = async (templateKey: string, variables: Record<string, string> = {}) => {
     if (!selectedConv) return;
-    const tempId = -Date.now();
     const tempClientMid = `tmpl_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+    const tempId = `optimistic_${tempClientMid}`;
     const nowIso = new Date().toISOString();
 
     const optimisticMsg: Message = {
@@ -529,7 +564,9 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                 const tA = new Date(a.created_at || a.external_timestamp || 0).getTime();
                 const tB = new Date(b.created_at || b.external_timestamp || 0).getTime();
                 if (tA !== tB) return tA - tB;
-                return (a.id || 0) - (b.id || 0);
+                const nA = typeof a.id === 'number' ? a.id : 0;
+                const nB = typeof b.id === 'number' ? b.id : 0;
+                return nA - nB;
               }),
             };
           });
@@ -541,11 +578,18 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         }
       }
 
-      // 2. MESSAGE STATUS UPDATE (SENT -> DELIVERED -> READ -> FAILED)
+      // 2. MESSAGE STATUS UPDATE (PENDING -> SENT -> DELIVERED -> READ / FAILED)
       if (eventData.event === 'message_status_updated') {
         const convId = eventData.conversation_id;
-        const waId = eventData.wa_message_id || eventData.message_id;
+        const waId = eventData.wa_message_id;
         const clientMid = eventData.client_message_id;
+        const serverId = eventData.id;
+        const numericServerId =
+          typeof eventData.message_id === 'number' && eventData.message_id > 0
+            ? eventData.message_id
+            : typeof serverId === 'number' && serverId > 0
+              ? serverId
+              : undefined;
         const newStatus = eventData.status as ConversationMessageStatus;
         const errorMsg = eventData.error_message;
 
@@ -557,10 +601,12 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
             const updated = list.map((m) => {
               const matchesWaId = waId && m.wa_message_id === waId;
               const matchesClientMid = clientMid && m.client_message_id === clientMid;
-              if (matchesWaId || matchesClientMid) {
+              const matchesId = numericServerId && m.id === numericServerId;
+              if (matchesWaId || matchesClientMid || matchesId) {
                 changed = true;
                 return {
                   ...m,
+                  id: numericServerId ?? m.id,
                   wa_message_id: waId || m.wa_message_id,
                   status: newStatus,
                   error_message: errorMsg || m.error_message,

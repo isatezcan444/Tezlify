@@ -48,7 +48,14 @@ class MessageStateMachine:
             ConversationMessageStatus.READ,
         },
         ConversationMessageStatus.READ: set(),  # Terminal state: cannot transition to anything
-        ConversationMessageStatus.FAILED: set(),  # Terminal state: retries create a new message
+        # FAILED -> PENDING is the single intentional re-queue edge: the unified
+        # POST /messages/{id}/retry endpoint moves a FAILED outbox message back
+        # to PENDING and enqueues a fresh OutboxMessage; the worker then performs
+        # the normal PENDING -> SENT / FAILED progression. Direct FAILED -> SENT
+        # remains forbidden so every dispatch passes through the outbox.
+        ConversationMessageStatus.FAILED: {
+            ConversationMessageStatus.PENDING,
+        },
     }
 
     # Numeric rank for monotonic inequality checks

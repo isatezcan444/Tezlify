@@ -885,7 +885,9 @@ export class ApiClient {
     const res = await authFetch(`${API_BASE}/conversations/${conversationId}/messages`, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ body, type: 'text' }),
+      body: JSON.stringify(
+        idempotencyKey ? { body, type: 'text', client_message_id: idempotencyKey } : { body, type: 'text' }
+      ),
     });
     if (!res.ok) {
       const errData = await res.json().catch(() => ({}));
@@ -937,8 +939,14 @@ export class ApiClient {
 
   static async retryMessage(
     conversationId: number,
-    messageId: number
+    messageId: number | string
   ): Promise<Message> {
+    // Client-side identity guard: optimistic / timestamp-derived IDs must
+    // never reach the backend. Only real numeric DB IDs are retryable via
+    // this endpoint; otherwise re-POST with the existing client_message_id.
+    if (typeof messageId !== 'number' || !Number.isInteger(messageId) || messageId <= 0) {
+      throw new Error('Mesaj henüz sunucuya kaydedilmedi. Lütfen önce gönderimin tamamlanmasını bekleyin.');
+    }
     const res = await authFetch(`${API_BASE}/conversations/${conversationId}/messages/${messageId}/retry`, {
       method: 'POST',
     });

@@ -317,7 +317,10 @@ export type MessageType = 'TEXT' | 'IMAGE' | 'DOCUMENT' | 'AUDIO' | 'VIDEO' | 'T
 export type ConversationMessageStatus = 'PENDING' | 'RECEIVED' | 'SENT' | 'DELIVERED' | 'READ' | 'FAILED';
 
 export interface Message {
-  id: number;
+  // Server messages carry a numeric DB primary key. Optimistic (not yet
+  // persisted) messages carry a client-only string such as
+  // `optimistic_cmsg_...` which must NEVER be sent to /retry.
+  id: number | string;
   conversation_id: number;
   direction: MessageDirection;
   message_type: MessageType;

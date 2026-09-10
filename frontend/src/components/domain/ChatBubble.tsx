@@ -22,7 +22,7 @@ import { parseServerTime, formatMessageTime } from '../../lib/utils';
 
 export interface ChatBubbleProps {
   message: Message;
-  onRetry?: (messageId: number) => Promise<void> | void;
+  onRetry?: (messageId: number | string) => Promise<void> | void;
 }
 
 export const ChatBubble: React.FC<ChatBubbleProps> = ({ message, onRetry }) => {

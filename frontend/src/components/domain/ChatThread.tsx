@@ -16,7 +16,7 @@ export interface ChatThreadProps {
   onLoadOlder?: () => void;
   leadName?: string;
   leadPhone?: string;
-  onRetry?: (messageId: number) => Promise<void> | void;
+  onRetry?: (messageId: number | string) => Promise<void> | void;
 }
 
 export const ChatThread: React.FC<ChatThreadProps> = ({
@@ -45,7 +45,9 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
       const tA = new Date(a.created_at || a.external_timestamp || 0).getTime();
       const tB = new Date(b.created_at || b.external_timestamp || 0).getTime();
       if (tA !== tB) return tA - tB;
-      return (a.id || 0) - (b.id || 0);
+      const nA = typeof a.id === 'number' ? a.id : 0;
+      const nB = typeof b.id === 'number' ? b.id : 0;
+      return nA - nB;
     });
   }, [messages]);
 

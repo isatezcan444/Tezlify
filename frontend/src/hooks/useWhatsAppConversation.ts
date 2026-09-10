@@ -2,12 +2,14 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { ApiClient } from '../api/client';
 import { ConversationDetail, Message, ConversationStatus } from '../types';
 
+const numericId = (id: number | string | undefined): number => (typeof id === 'number' && Number.isFinite(id) ? id : 0);
+
 export const sortMessagesChronologically = (list: Message[]): Message[] => {
   return [...list].sort((a, b) => {
     const tA = new Date(a.created_at || a.external_timestamp || 0).getTime();
     const tB = new Date(b.created_at || b.external_timestamp || 0).getTime();
     if (tA !== tB) return tA - tB;
-    return (a.id || 0) - (b.id || 0);
+    return numericId(a.id) - numericId(b.id);
   });
 };
 
@@ -79,8 +81,11 @@ export function useWhatsAppConversation({
       return;
     }
 
-    const oldestId = conversation.oldest_message_id || conversation.messages[0]?.id;
-    if (!oldestId) return;
+    // Pagination cursors are always real numeric DB ids; optimistic string
+    // rows must never be sent as `before`.
+    const firstNumericId = conversation.messages.find((m) => typeof m.id === 'number' && m.id > 0)?.id;
+    const oldestId = conversation.oldest_message_id || firstNumericId;
+    if (typeof oldestId !== 'number' || oldestId <= 0) return;
 
     isFetchingOlderRef.current = true;
     setLoadingOlder(true);
@@ -102,10 +107,13 @@ export function useWhatsAppConversation({
           );
 
           const merged = sortMessagesChronologically([...uniqueNew, ...prev.messages]);
+          const mergedOldest = merged.find((m) => typeof m.id === 'number' && m.id > 0)?.id;
           return {
             ...prev,
             has_more: res.has_more,
-            oldest_message_id: res.oldest_message_id || (merged[0]?.id ?? prev.oldest_message_id),
+            oldest_message_id:
+              res.oldest_message_id ??
+              (typeof mergedOldest === 'number' ? mergedOldest : prev.oldest_message_id),
             messages: merged,
           };
         });
@@ -143,9 +151,14 @@ export function useWhatsAppConversation({
   }, [conversation]);
 
   // Send message helper with optimistic instant UI feedback (WhatsApp Web snappy experience)
+  // Identity model: optimistic rows carry a client-only string id
+  // (`optimistic_cmsg_...`) plus a `client_message_id` idempotency key. The
+  // server response carries the REAL numeric DB id, which replaces the
+  // optimistic row via client_message_id reconciliation.
   const sendMessage = useCallback(async (text: string) => {
     if (!conversation) return;
-    const tempId = -Date.now();
+    const clientMid = `cmsg_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+    const tempId = `optimistic_${clientMid}`;
     const tempCreatedAt = new Date().toISOString();
     const optimisticMsg: Message = {
       id: tempId,
@@ -153,7 +166,8 @@ export function useWhatsAppConversation({
       direction: 'OUTBOUND',
       message_type: 'TEXT',
       body: text,
-      status: 'SENT',
+      status: 'PENDING',
+      client_message_id: clientMid,
       created_at: tempCreatedAt,
       sender_phone: 'ME',
       recipient_phone: conversation.lead_phone || '',
@@ -172,8 +186,8 @@ export function useWhatsAppConversation({
     });
 
     try {
-      // 2. Dispatch to backend & gateway
-      const resMsg = await ApiClient.sendMessage(conversation.id, text);
+      // 2. Dispatch to backend & gateway (idempotent via clientMid)
+      const resMsg = await ApiClient.sendMessage(conversation.id, text, clientMid);
 
       // 3. Reconcile temporary message with real database message
       setConversation((prev) => {
@@ -183,12 +197,16 @@ export function useWhatsAppConversation({
           status: 'ACTIVE',
           last_message_at: resMsg.created_at,
           last_message_preview: resMsg.body,
-          messages: sortMessagesChronologically(prev.messages.map((m) => (m.id === tempId ? resMsg : m))),
+          messages: sortMessagesChronologically(
+            prev.messages.map((m) =>
+              m.id === tempId || (clientMid && m.client_message_id === clientMid) ? resMsg : m
+            )
+          ),
         };
       });
       return resMsg;
     } catch (err: any) {
-      // 4. Mark optimistic message as failed on error
+      // 4. Mark optimistic message as failed on error (keeps clientMid for resend)
       setConversation((prev) => {
         if (!prev) return prev;
         return {
@@ -225,9 +243,32 @@ export function useWhatsAppConversation({
     return resMsg;
   }, [conversation]);
 
-  // Retry failed message helper
-  const retryMessage = useCallback(async (messageId: number) => {
+  // Retry failed message helper. Optimistic rows (string ids) are never sent
+  // to /retry; they are re-POSTed with their existing client_message_id so
+  // idempotency is preserved and no fake DB id reaches the backend.
+  const retryMessage = useCallback(async (messageId: number | string) => {
     if (!conversation) return;
+    const target = conversation.messages.find((m) => m.id === messageId);
+    const targetClientMid = target?.client_message_id;
+    const isRealDbId = typeof messageId === 'number' && Number.isInteger(messageId) && messageId > 0;
+    if (!isRealDbId) {
+      if (!target || !targetClientMid || !target.body) {
+        throw new Error('Mesaj henüz sunucuya kaydedilmedi. Lütfen önce gönderimin tamamlanmasını bekleyin.');
+      }
+      const resMsg = await ApiClient.sendMessage(conversation.id, target.body, targetClientMid);
+      setConversation((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          messages: sortMessagesChronologically(
+            prev.messages.map((m) =>
+              m.id === messageId || (targetClientMid && m.client_message_id === targetClientMid) ? resMsg : m
+            )
+          ),
+        };
+      });
+      return resMsg;
+    }
     const resMsg = await ApiClient.retryMessage(conversation.id, messageId);
     setConversation((prev) => {
       if (!prev) return prev;
@@ -394,18 +435,38 @@ export function useWhatsAppConversation({
         }
       }
 
-      // Handle message status updates (SENT -> DELIVERED -> READ)
+      // Handle message status updates (PENDING -> SENT -> DELIVERED -> READ / FAILED).
+      // Reconcile by client_message_id first (survives the optimistic phase),
+      // then wa_message_id, then numeric DB id. Merge the real server id and
+      // wa_message_id into the optimistic row instead of appending a duplicate.
       if (eventData.event === 'message_status_updated') {
-        const waId = eventData.message_id;
+        const waId = eventData.wa_message_id || eventData.message_id;
+        const clientMid = eventData.client_message_id;
+        const serverId = eventData.id;
+        const numericServerId =
+          typeof eventData.message_id === 'number' && eventData.message_id > 0
+            ? eventData.message_id
+            : typeof serverId === 'number' && serverId > 0
+              ? serverId
+              : undefined;
         const newStatus = eventData.status;
 
         setConversation((prev) => {
           if (!prev) return prev;
           let changed = false;
           const updatedMessages = prev.messages.map((m) => {
-            if (m.wa_message_id === waId) {
+            const matchesClientMid = clientMid && m.client_message_id === clientMid;
+            const matchesWa = waId && m.wa_message_id === waId;
+            const matchesId = numericServerId && m.id === numericServerId;
+            if (matchesClientMid || matchesWa || matchesId) {
               changed = true;
-              return { ...m, status: newStatus, error_message: eventData.error_message };
+              return {
+                ...m,
+                id: numericServerId ?? m.id,
+                wa_message_id: (typeof waId === 'string' && waId ? waId : m.wa_message_id) as any,
+                status: newStatus,
+                error_message: eventData.error_message,
+              };
             }
             return m;
           });

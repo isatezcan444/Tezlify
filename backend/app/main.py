@@ -22,6 +22,7 @@ from backend.app.core.migrations import (
     ensure_outbox_messages_table,
     ensure_conversations_columns,
     ensure_messages_media_columns,
+    ensure_message_status_enum,
     ensure_user_id_columns,
     ensure_whatsapp_session_auth_table,
     ensure_whatsapp_sessions_number_fk,
@@ -121,6 +122,7 @@ async def lifespan(app: FastAPI):
     await ensure_outbox_messages_table(engine)
     await ensure_conversations_columns(engine)
     await ensure_messages_media_columns(engine)
+    await ensure_message_status_enum(engine)
     await ensure_user_id_columns(engine)
     await ensure_whatsapp_session_auth_table(engine)
     await ensure_whatsapp_sessions_number_fk(engine)

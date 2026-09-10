@@ -403,6 +403,73 @@ async def ensure_messages_media_columns(engine: AsyncEngine) -> None:
                 logger.info("[MIGRATION] Added campaigns.group_id")
 
 
+async def ensure_message_status_enum(engine: AsyncEngine) -> None:
+    """Brings PostgreSQL enum types in line with the SQLAlchemy model.
+
+    Canonical lifecycle (message_state_machine.py + Phase 4/5 tests):
+        PENDING -> SENT -> DELIVERED -> READ, plus FAILED / RECEIVED.
+
+    Production databases created before Phase 1-5 still carry a
+    `conversationmessagestatus` enum WITHOUT `PENDING`, so every
+    `POST /conversations/{id}/messages` fails with
+    `invalid input value for enum conversationmessagestatus: "PENDING"`.
+    SQLite never enforces enums, which is why the test suite stayed green.
+
+    This migration is idempotent and zero-downtime:
+    - reads existing labels from pg_enum (no table lock),
+    - adds only missing values via ALTER TYPE ... ADD VALUE IF NOT EXISTS,
+    - runs outside a transaction block (AUTOCOMMIT) because PostgreSQL
+      forbids enum value additions inside a transaction,
+    - never touches Meta Cloud business rules.
+    """
+    if engine.dialect.name != "postgresql":
+        return
+
+    from backend.app.models.message import ConversationMessageStatus, MessageType
+    from backend.app.models.outbox_message import OutboxMessageStatus
+
+    targets = {
+        "conversationmessagestatus": [e.value for e in ConversationMessageStatus],
+        "messagetype": [e.value for e in MessageType],
+        "outboxmessagestatus": [e.value for e in OutboxMessageStatus],
+    }
+
+    try:
+        async with engine.connect() as conn:
+            for typname, wanted in targets.items():
+                type_exists = (
+                    await conn.execute(
+                        text("SELECT 1 FROM pg_type WHERE typname = :t"),
+                        {"t": typname},
+                    )
+                ).first()
+                if type_exists is None:
+                    continue  # Fresh DB: create_all() builds the type with all values.
+                have_rows = await conn.execute(
+                    text(
+                        "SELECT enumlabel FROM pg_enum "
+                        "JOIN pg_type ON pg_enum.enumtypid = pg_type.oid "
+                        "WHERE pg_type.typname = :t"
+                    ),
+                    {"t": typname},
+                )
+                have = {r[0] for r in have_rows.fetchall()}
+                missing = [v for v in wanted if v not in have]
+                if not missing:
+                    continue
+                # ALTER TYPE ... ADD VALUE cannot run inside a transaction
+                # block, so use a dedicated AUTOCOMMIT connection.
+                autocommit_engine = engine.execution_options(isolation_level="AUTOCOMMIT")
+                async with autocommit_engine.connect() as ac_conn:
+                    for value in missing:
+                        await ac_conn.execute(
+                            text(f"ALTER TYPE {typname} ADD VALUE IF NOT EXISTS '{value}'")
+                        )
+                        logger.info("[MIGRATION] Added enum value %s to %s (postgresql)", value, typname)
+    except Exception as e:
+        logger.warning("[MIGRATION] ensure_message_status_enum atlandı: %s", e)
+
+
 async def ensure_user_id_columns(engine: AsyncEngine) -> None:
     """Ensures user_id column exists on all domain tables and profiles table is created."""
     tables = [

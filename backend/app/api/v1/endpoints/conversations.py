@@ -8,6 +8,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Header, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, or_, and_, func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
 from backend.app.core.database import get_db
@@ -27,6 +28,7 @@ from backend.app.services.whatsapp_gateway_client import gateway_client
 from backend.app.services.whatsapp_chat_sync_service import WhatsAppChatSyncService
 from backend.app.services.phone_service import PhoneService
 from backend.app.services.customer_window_service import CustomerWindowService
+from backend.app.services.message_state_machine import MessageStateMachine
 from backend.app.services.outbound_worker import OutboundWorker
 
 def _conversation_phone_key(phone_e164: Optional[str], phone: Optional[str]) -> Optional[str]:
@@ -610,7 +612,23 @@ async def send_message_to_conversation(
     conv.last_message_preview = body_content
     conv.updated_at = now_ts
 
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        # Lost a same-client_message_id race: return the winner instead of
+        # creating a duplicate outbound WhatsApp message.
+        await db.rollback()
+        winner = (
+            await db.execute(select(Message).where(Message.client_message_id == client_mid))
+        ).scalar_one_or_none()
+        if winner is not None:
+            logger.info("[Conversations] Idempotency race resolved for key %s", client_mid)
+            return MessageResponse.model_validate(winner)
+        raise HTTPException(status_code=409, detail="Bu mesaj zaten gönderimde.")
+    except Exception:
+        await db.rollback()
+        logger.exception("[Conversations] Outbound message persistence failed")
+        raise HTTPException(status_code=500, detail="Mesaj kaydedilemedi, lütfen tekrar deneyin.")
     await db.refresh(new_msg)
 
     # 10. Queue worker task in background
@@ -649,21 +667,92 @@ async def send_template_to_conversation(
 async def retry_failed_message(
     conversation_id: int,
     message_id: int,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     current_user: AuthUser = Depends(get_current_user),
 ):
     """
-    Retries sending a FAILED message with complete audit preservation and idempotency.
+    Retries a FAILED outbound message with complete audit preservation.
+
+    Identity contract (strict):
+    - `message_id` MUST be a real database Message.id (positive integer).
+      Optimistic client-only IDs (negative / timestamp-derived) are rejected
+      with 422 and must never reach the database.
+    - Legacy CRM conversations (no WhatsAppNumber) keep the existing
+      synchronous Meta Cloud retry behavior unchanged.
+    - Unified outbox conversations re-queue via FAILED -> PENDING plus a fresh
+      OutboxMessage; the worker performs the actual dispatch, so a retry can
+      never double-send outside the outbox lease.
     """
+    if not isinstance(message_id, int) or message_id <= 0:
+        raise HTTPException(
+            status_code=422,
+            detail="Geçersiz mesaj kimliği. Lütfen önce mesajın sunucuya kaydedilmesini bekleyin.",
+        )
+
     conv = await db.get(Conversation, conversation_id)
-    if not conv or (os.getenv("PYTEST_CURRENT_TEST") is None and conv.user_id != current_user.id):
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    if conv.user_id is not None and current_user.id is not None and conv.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
-    msg = await WhatsAppOutboundService.retry_failed_message(
-        db=db,
-        conversation_id=conversation_id,
-        message_id=message_id,
+    msg = await db.get(Message, message_id)
+    if not msg or msg.conversation_id != conversation_id:
+        raise HTTPException(status_code=404, detail="Mesaj bulunamadı.")
+    if msg.direction != MessageDirection.OUTBOUND:
+        raise HTTPException(status_code=400, detail="Yalnızca giden mesajlar tekrar denenebilir.")
+    if msg.status != ConversationMessageStatus.FAILED:
+        raise HTTPException(
+            status_code=409,
+            detail="Yalnızca gönderimi başarısız olmuş (FAILED) mesajlar tekrar denenebilir.",
+        )
+
+    # Legacy path (pre-Phase-4 CRM conversations): preserve Meta behavior.
+    if conv.whatsapp_number_id is None:
+        retried = await WhatsAppOutboundService.retry_failed_message(
+            db=db,
+            conversation_id=conversation_id,
+            message_id=message_id,
+        )
+        return MessageResponse.model_validate(retried)
+
+    wanum = await db.get(WhatsAppNumber, conv.whatsapp_number_id)
+    if not wanum or wanum.status != WhatsAppNumberStatus.ACTIVE or wanum.deleted_at is not None:
+        raise HTTPException(status_code=400, detail="WhatsApp hattı aktif değil.")
+
+    if wanum.provider == WhatsAppNumberProvider.BAILEYS_QR:
+        sess_stmt = select(WhatsAppSession).where(WhatsAppSession.whatsapp_number_id == wanum.id)
+        sess = (await db.execute(sess_stmt)).scalar_one_or_none()
+        if not sess or sess.status != SessionStatus.CONNECTED:
+            raise HTTPException(status_code=400, detail="WhatsApp hattı bağlı değil.")
+
+    now_ts = datetime.now(timezone.utc).replace(tzinfo=None)
+    MessageStateMachine.transition(msg, ConversationMessageStatus.PENDING, event_time=now_ts)
+    msg.error_code = None
+    msg.error_message = None
+    msg.updated_at = now_ts
+
+    provider = "BAILEYS_QR" if wanum.provider == WhatsAppNumberProvider.BAILEYS_QR else "META_CLOUD"
+    retry_job = OutboxMessage(
+        user_id=msg.user_id or conv.user_id or current_user.id,
+        message_id=msg.id,
+        whatsapp_number_id=wanum.id,
+        event_type="SEND_MESSAGE",
+        payload_json=json.dumps({"message_type": "text", "provider": provider, "is_retry": True}),
+        status=OutboxMessageStatus.PENDING,
+        available_at=now_ts,
+        created_at=now_ts,
     )
+    db.add(retry_job)
+    try:
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        logger.exception("[Conversations] Retry re-queue failed")
+        raise HTTPException(status_code=500, detail="Tekrar gönderim kuyruğa alınamadı.")
+    await db.refresh(msg)
+
+    background_tasks.add_task(OutboundWorker.process_outbox_message_by_id, retry_job.id)
     return MessageResponse.model_validate(msg)
 
 
