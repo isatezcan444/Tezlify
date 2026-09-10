@@ -123,5 +123,13 @@ class Settings(BaseSettings):
     SCRAPER_HTTP_MAX_PAGES_PER_QUERY: int = 10
     SCRAPER_HTTP_TIMEOUT_SECONDS: float = 12.0
 
+    # WhatsApp Baileys Gateway (Aşama 2)
+    # whatsapp-gateway servisinin REST + WS adresi. Varsayılan localhost'tur;
+    # üretimde özel ağ / aynı host üzerinde çalıştırılmalıdır.
+    WHATSAPP_GATEWAY_URL: str = "http://127.0.0.1:8787"
+    WHATSAPP_GATEWAY_TIMEOUT: float = 30.0
+    # /ws/gateway uç noktası için opsiyonel paylaşılan sır (boşsa açık kalır)
+    WHATSAPP_GATEWAY_SECRET: str = ""
+
 
 settings = Settings()

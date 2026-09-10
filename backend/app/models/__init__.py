@@ -1,4 +1,5 @@
 from backend.app.core.database import Base
+
 from backend.app.models.lead import Lead, LeadStatus, EntityType, VerificationStatus, ConfidenceLevel
 from backend.app.models.contact import Contact
 from backend.app.models.campaign import Campaign, CampaignStatus
@@ -12,6 +13,7 @@ from backend.app.models.system_settings import SystemSetting
 from backend.app.models.conversation import Conversation, ConversationStatus
 from backend.app.models.message import Message, MessageDirection, MessageType, ConversationMessageStatus
 from backend.app.models.profile import Profile
+from backend.app.models.whatsapp_session import WhatsAppSession, SessionStatus
 
 __all__ = [
     "Base",
@@ -39,4 +41,6 @@ __all__ = [
     "MessageType",
     "ConversationMessageStatus",
     "Profile",
+    "WhatsAppSession",
+    "SessionStatus",
 ]

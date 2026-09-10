@@ -51,6 +51,10 @@ class Message(Base):
     # Outbound Client Request Idempotency Key (UUID from Frontend)
     client_message_id = Column(String(100), unique=True, index=True, nullable=True)
 
+    # WhatsApp Web mesaj kimliği (Baileys gateway): inbound/outbound dedup ve
+    # status güncelleme eşleştirmesi için.
+    wa_message_id = Column(String(255), index=True, nullable=True)
+
     # Media metadata (for IMAGE, DOCUMENT, AUDIO, VIDEO, STICKER)
     media_id = Column(String(255), nullable=True, index=True)
     media_mime_type = Column(String(100), nullable=True)

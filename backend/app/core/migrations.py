@@ -20,11 +20,13 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 logger = logging.getLogger(__name__)
 
-# WhatsApp'a özel, tamamen kaldırılacak tablolar
+# WhatsApp'a özel kalıcı olarak kaldırılacak legacy tablolar.
+# NOT: `whatsapp_sessions` bilinçli olarak listede DEĞİLDİR — Baileys gateway
+# entegrasyonu (Aşama 2) bu tabloyu yeni şemayla yeniden tanımlamıştır ve her
+# boot'ta düşürülmesi oturum kayıtlarını siler.
 _WHATSAPP_TABLES = [
     "outbox_messages",
     "whatsapp_session_auth",
-    "whatsapp_sessions",
     "whatsapp_numbers",
     "webhook_events",
 ]
@@ -110,7 +112,7 @@ async def purge_whatsapp_schema(engine: AsyncEngine) -> None:
                 await conn.execute(text("ALTER TABLE message_logs DROP COLUMN IF EXISTS reply_received"))
                 await conn.execute(text("ALTER TABLE message_logs DROP COLUMN IF EXISTS reply_text"))
                 await conn.execute(text("ALTER TABLE message_logs DROP COLUMN IF EXISTS replied_at"))
-                await conn.execute(text("ALTER TABLE messages DROP COLUMN IF EXISTS wa_message_id"))
+                # NOT: messages.wa_message_id korunur (Baileys gateway idempotency/dedup)
                 await conn.execute(text("ALTER TABLE contacts DROP COLUMN IF EXISTS whatsapp_profile_name"))
 
                 # 2. WhatsApp indeksleri (yalnızca WhatsApp kolonlarına ait olanlar)
@@ -121,7 +123,7 @@ async def purge_whatsapp_schema(engine: AsyncEngine) -> None:
                 await conn.execute(text("DROP INDEX IF EXISTS ix_message_logs_wa_message_id"))
                 await conn.execute(text("DROP INDEX IF EXISTS ix_message_logs_session_id"))
 
-                # 3. WhatsApp tabloları
+                # 3. WhatsApp tabloları (whatsapp_sessions HARİÇ: yeni gateway şeması)
                 for tbl in _WHATSAPP_TABLES:
                     await conn.execute(text(f"DROP TABLE IF EXISTS {tbl}"))
 
@@ -156,8 +158,8 @@ async def purge_whatsapp_schema(engine: AsyncEngine) -> None:
                 continue
             await conn.run_sync(_sqlite_drop_columns, table_name, model, backup)
 
-        # 3. WhatsApp tabloları (sıra önemli: önce FK taşıyanlar)
-        for tbl in ["whatsapp_sessions", "whatsapp_session_auth", "whatsapp_numbers", "webhook_events"]:
+        # 3. WhatsApp tabloları (whatsapp_sessions HARİÇ: yeni gateway şeması)
+        for tbl in ["whatsapp_session_auth", "whatsapp_numbers", "webhook_events"]:
             await conn.execute(text(f"DROP TABLE IF EXISTS {tbl}"))
 
         # 4. Konuşma/indeks temizliği: genel indeksler yeniden oluşturuldu; WhatsApp'a
@@ -556,3 +558,55 @@ async def ensure_user_id_columns(engine: AsyncEngine) -> None:
                         await conn.execute(text(f"CREATE INDEX IF NOT EXISTS ix_{tbl}_user_id ON {tbl} (user_id)"))
         except Exception as e:
             logger.warning("[MIGRATION] ensure_user_id_columns postgres kontrolü/geçişi atlandı: %s", e)
+async def ensure_whatsapp_sessions_table(engine: AsyncEngine) -> None:
+    """Baileys gateway oturum kayıtları için whatsapp_sessions tablosunu güvence altına alır.
+
+    Legacy purge bu tabloyu artık düşürmediği için create_all ile birlikte
+    idempotent şekilde kurulur; yalnızca tablo yoksa oluşturur.
+    """
+    from backend.app.models.whatsapp_session import WhatsAppSession
+    from backend.app.models import Message  # noqa: F401 (metadata'ya kayıt)
+
+    async with engine.begin() as conn:
+        await conn.run_sync(WhatsAppSession.__table__.create, checkfirst=True)
+    logger.info("[MIGRATION] ensure_whatsapp_sessions_table verified")
+
+
+async def ensure_messages_wa_message_id(engine: AsyncEngine) -> None:
+    """messages.wa_message_id kolonunu (varsa) güvence altına alır.
+
+    Baileys gateway inbound/outbound dedup ve status eşleştirmesi bu kolonu
+    kullanır; legacy purge artık düşürmediği için eksikse eklenir.
+    """
+    if engine.dialect.name == "postgresql":
+        try:
+            async with engine.connect() as conn:
+                res = await conn.execute(
+                    text("SELECT 1 FROM information_schema.columns WHERE table_name = 'messages' AND column_name = 'wa_message_id'")
+                )
+                if res.first() is None:
+                    async with engine.begin() as conn2:
+                        await conn2.execute(text("ALTER TABLE messages ADD COLUMN IF NOT EXISTS wa_message_id VARCHAR(255)"))
+                    logger.info("[MIGRATION] messages.wa_message_id eklendi (postgresql)")
+                async with engine.begin() as conn3:
+                    await conn3.execute(text("CREATE INDEX IF NOT EXISTS ix_messages_wa_message_id ON messages (wa_message_id)"))
+        except Exception as e:
+            logger.warning("[MIGRATION] ensure_messages_wa_message_id postgres atlandı: %s", e)
+        return
+
+    if engine.dialect.name != "sqlite":
+        logger.warning("[MIGRATION] ensure_messages_wa_message_id bilinmeyen dialect %r", engine.dialect.name)
+        return
+
+    async with engine.begin() as conn:
+        exists = await conn.execute(
+            text("SELECT name FROM sqlite_master WHERE type='table' AND name='messages'")
+        )
+        if exists.first() is None:
+            return
+        info_rows = (await conn.execute(text("PRAGMA table_info(messages)"))).fetchall()
+        columns = _sqlite_columns_legacy(info_rows)
+        if "wa_message_id" not in columns:
+            await conn.execute(text("ALTER TABLE messages ADD COLUMN wa_message_id VARCHAR(255)"))
+            logger.info("[MIGRATION] messages.wa_message_id eklendi (sqlite)")
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_messages_wa_message_id ON messages (wa_message_id)"))

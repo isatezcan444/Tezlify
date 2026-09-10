@@ -1,4 +1,5 @@
 import os
+import json
 import logging
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -23,6 +24,8 @@ from backend.app.core.migrations import (
     ensure_messages_media_columns,
     ensure_message_status_enum,
     ensure_user_id_columns,
+    ensure_whatsapp_sessions_table,
+    ensure_messages_wa_message_id,
 )
 from backend.app.core.seed import seed_demo_data_if_empty
 from backend.app.models.blacklist import ScraperJob, ScraperJobStatus
@@ -74,7 +77,7 @@ async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-    # WhatsApp backend temizliği (kalıcı) + bilinen şema geçişleri (idempotent)
+    # WhatsApp backend temizliği (legacy) + bilinen şema geçişleri (idempotent)
     await purge_whatsapp_schema(engine)
     await ensure_leads_phone_nullable(engine)
     await ensure_contacts_table(engine)
@@ -82,6 +85,8 @@ async def lifespan(app: FastAPI):
     await ensure_messages_media_columns(engine)
     await ensure_message_status_enum(engine)
     await ensure_user_id_columns(engine)
+    await ensure_whatsapp_sessions_table(engine)
+    await ensure_messages_wa_message_id(engine)
 
     # Restart sonrası yarıda kalan arka plan işlerini toparla
     await recover_stuck_jobs()
@@ -175,6 +180,50 @@ async def websocket_endpoint(
 
 
 
+@app.websocket("/ws/gateway")
+async def gateway_websocket_endpoint(
+    websocket: WebSocket,
+    token: Optional[str] = Query(None),
+):
+    """Baileys gateway (whatsapp-gateway) olaylarının giriş noktası.
+
+    Gateway, gerçek zamanlı WhatsApp olaylarını bu uç noktaya iletir;
+    olaylar persist edilir ve ws_manager üzerinden tüm UI /ws istemcilerine
+    broadcast edilir. WHATSAPP_GATEWAY_SECRET yapılandırıldıysa `?token=`
+    ile doğrulanır (fail-closed).
+    """
+    from backend.app.services.whatsapp_service import ingest_gateway_event
+
+    gateway_secret = getattr(settings, "WHATSAPP_GATEWAY_SECRET", "") or ""
+    if gateway_secret:
+        if not token or token != gateway_secret:
+            logger.warning("[WS-GATEWAY] Reddedilen bağlantı: geçersiz/eksik token")
+            await websocket.close(code=1008)
+            return
+
+    await websocket.accept()
+    logger.info("[WS-GATEWAY] Baileys gateway bağlandı.")
+    try:
+        while True:
+            raw = await websocket.receive_text()
+            try:
+                event_data = json.loads(raw)
+            except Exception as parse_err:
+                logger.warning(f"[WS-GATEWAY] Geçersiz JSON atlandı: {parse_err}")
+                continue
+            if not isinstance(event_data, dict):
+                continue
+            try:
+                event_data = await ingest_gateway_event(event_data)
+            except Exception as ingest_err:
+                logger.warning(f"[WS-GATEWAY] Olay persist edilirken hata (yine de broadcast): {ingest_err}")
+            await ws_manager.broadcast(event_data)
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        logger.warning(f"[WS-GATEWAY] Bağlantı hatası: {e}")
+    finally:
+        logger.info("[WS-GATEWAY] Baileys gateway bağlantısı kapandı.")
 # Include API Router
 app.include_router(api_router, prefix=settings.API_V1_STR)
 
