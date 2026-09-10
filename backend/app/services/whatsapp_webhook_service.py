@@ -477,7 +477,13 @@ class WhatsAppWebhookService:
         )
         conv = (await db.execute(conv_stmt)).scalar_one_or_none()
 
-        msg_time = msg.timestamp or datetime.now(timezone.utc).replace(tzinfo=None)
+        # TIMESTAMP WITHOUT TIME ZONE columns: asyncpg rejects tz-aware values.
+        _raw_ts = msg.timestamp or datetime.now(timezone.utc).replace(tzinfo=None)
+        msg_time = (
+            _raw_ts.astimezone(timezone.utc).replace(tzinfo=None)
+            if _raw_ts.tzinfo is not None
+            else _raw_ts
+        )
 
         if not conv:
             conv = Conversation(

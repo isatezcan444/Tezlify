@@ -107,7 +107,9 @@ class MessageStateMachine:
                 raise InvalidMessageStatusTransitionError(curr, target_status)
 
             msg.status = target_status
-            ts = event_time or datetime.now(timezone.utc)
+            # TIMESTAMP WITHOUT TIME ZONE columns: asyncpg rejects tz-aware
+            # values, so the default event time must be naive UTC.
+            ts = event_time if event_time is not None else datetime.now(timezone.utc).replace(tzinfo=None)
             if target_status == ConversationMessageStatus.SENT:
                 msg.sent_at = ts
             elif target_status == ConversationMessageStatus.DELIVERED:

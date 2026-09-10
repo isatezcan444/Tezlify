@@ -230,7 +230,9 @@ class WhatsAppTemplateService:
 
             wa_message_id = dispatch_res.get("message_id")
 
-        now_utc = datetime.now(timezone.utc)
+        # TIMESTAMP WITHOUT TIME ZONE columns: asyncpg rejects tz-aware values,
+        # so always persist naive UTC here.
+        now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
 
         # 6. Persist Message
         outbound_msg = Message(
@@ -255,7 +257,12 @@ class WhatsAppTemplateService:
         if conv.status == ConversationStatus.ARCHIVED:
             conv.status = ConversationStatus.ACTIVE
 
-        await db.commit()
+        try:
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            logger.exception("[WhatsAppTemplateService] Template message persistence failed")
+            raise HTTPException(status_code=500, detail="Şablon mesajı kaydedilemedi, lütfen tekrar deneyin.")
         await db.refresh(outbound_msg)
 
         if idempotency_key:

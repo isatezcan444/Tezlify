@@ -375,7 +375,8 @@ class WhatsAppOutboundService:
 
             wa_message_id = dispatch_res.get("message_id")
 
-        now_utc = datetime.now(timezone.utc)
+        # TIMESTAMP WITHOUT TIME ZONE columns: asyncpg rejects tz-aware values.
+        now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
         msg.wa_message_id = wa_message_id
         msg.status = ConversationMessageStatus.SENT
         msg.error_code = None
@@ -461,7 +462,8 @@ class WhatsAppOutboundService:
                 raise HTTPException(status_code=502, detail=f"Medya gönderilemedi: {error_msg}")
             wa_message_id = dispatch_res.get("message_id")
 
-        now_utc = datetime.now(timezone.utc)
+        # TIMESTAMP WITHOUT TIME ZONE columns: asyncpg rejects tz-aware values.
+        now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
         m_type_enum = MessageType.IMAGE if clean_type == "IMAGE" else MessageType.DOCUMENT
 
         outbound_msg = Message(

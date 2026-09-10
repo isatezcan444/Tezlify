@@ -466,3 +466,165 @@ async def test_09_tenant_isolation_on_retry():
             headers={"Authorization": f"Bearer {token_a}"},
         )
     assert res.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_10_delete_session_clears_all_live_dialogs():
+    """Product rule: deleting a line wipes the whole live-dialog list."""
+    from backend.app.models.lead import Lead
+
+    user_id = str(uuid.uuid4())
+    async with AsyncSessionLocal() as db:
+        wanum_a, sess_a, _, conv_a = await _create_baileys_setup(db, user_id)
+        # Second line + second synced chat for the same user.
+        wanum_b, sess_b, _, conv_b = await _create_baileys_setup(db, user_id)
+        lead = Lead(
+            user_id=user_id,
+            name="Synced Chat",
+            phone=_dyn_phone("+9054"),
+            phone_e164=_dyn_phone("+9054"),
+            place_id=f"wa_{uuid.uuid4().hex[:16]}",
+            category="WhatsApp Sohbeti",
+        )
+        db.add(lead)
+        await db.commit()
+        sess_a_id = sess_a.id
+        conv_ids = [conv_a.id, conv_b.id]
+
+    token = _make_jwt(user_id)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        res = await client.delete(
+            f"/api/v1/whatsapp/sessions/{sess_a_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    assert res.status_code == 204, res.text
+
+    async with AsyncSessionLocal() as db:
+        remaining_convs = (
+            await db.execute(select(Conversation).where(Conversation.id.in_(conv_ids)))
+        ).scalars().all()
+        assert remaining_convs == []
+        remaining_synced = (
+            await db.execute(
+                select(Lead).where(
+                    Lead.user_id == user_id,
+                    Lead.category.in_(["WhatsApp Grubu", "WhatsApp Sohbeti", "WhatsApp Kişisi"]),
+                )
+            )
+        ).scalars().all()
+        assert remaining_synced == []
+
+
+@pytest.mark.asyncio
+async def test_11_template_send_persists_naive_datetimes():
+    """Regression: template send must not write tz-aware datetimes to PG."""
+    from backend.app.models.lead import Lead, LeadStatus
+    from backend.app.services.whatsapp_template_service import WhatsAppTemplateService
+
+    user_id = str(uuid.uuid4())
+    async with AsyncSessionLocal() as db:
+        lead = Lead(
+            user_id=user_id,
+            name="Template Lead",
+            phone=_dyn_phone("+9054"),
+            phone_e164=_dyn_phone("+9054"),
+            place_id=f"tmpl_{uuid.uuid4().hex[:16]}",
+            status=LeadStatus.NEW,
+        )
+        db.add(lead)
+        await db.flush()
+        conv = Conversation(
+            user_id=user_id,
+            lead_id=lead.id,
+            channel="WHATSAPP",
+            status=ConversationStatus.ACTIVE,
+        )
+        db.add(conv)
+        await db.commit()
+        await db.refresh(conv)
+        conv_id = conv.id
+
+    async with AsyncSessionLocal() as db:
+        msg = await WhatsAppTemplateService.send_template_message(
+            db=db,
+            conversation_id=conv_id,
+            template_key="welcome_intro",
+            variables={},
+            force_simulation=True,
+        )
+        assert msg.status == ConversationMessageStatus.SENT
+        for value in (msg.created_at, msg.updated_at, msg.external_timestamp):
+            assert value is not None and value.tzinfo is None
+        refreshed = await db.get(Conversation, conv_id)
+        assert refreshed.last_message_at is not None and refreshed.last_message_at.tzinfo is None
+
+
+@pytest.mark.asyncio
+async def test_12_legacy_chat_window_open_with_connected_line():
+    """Baileys hattı bağlıyken lead-bazlı sohbette şablonsuz yazışma açık görünür."""
+    from backend.app.models.lead import Lead, LeadStatus
+
+    user_id = str(uuid.uuid4())
+    async with AsyncSessionLocal() as db:
+        wanum, sess, _, _ = await _create_baileys_setup(db, user_id)
+        old_inbound_at = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=30)
+        lead = Lead(
+            user_id=user_id,
+            name="Legacy Chat",
+            phone=_dyn_phone("+9054"),
+            phone_e164=_dyn_phone("+9054"),
+            place_id=f"legacy_{uuid.uuid4().hex[:16]}",
+            status=LeadStatus.NEW,
+        )
+        db.add(lead)
+        await db.flush()
+        conv = Conversation(
+            user_id=user_id,
+            lead_id=lead.id,
+            channel="WHATSAPP",
+            status=ConversationStatus.ACTIVE,
+        )
+        db.add(conv)
+        await db.flush()
+        db.add(
+            Message(
+                user_id=user_id,
+                conversation_id=conv.id,
+                direction=MessageDirection.INBOUND,
+                message_type=MessageType.TEXT,
+                body="eski mesaj",
+                sender_phone=lead.phone_e164,
+                recipient_phone=wanum.phone_number_e164,
+                status=ConversationMessageStatus.RECEIVED,
+                created_at=old_inbound_at,
+                updated_at=old_inbound_at,
+            )
+        )
+        await db.commit()
+        conv_id = conv.id
+
+    token = _make_jwt(user_id)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        res = await client.get(
+            f"/api/v1/conversations/{conv_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    assert res.status_code == 200, res.text
+    assert res.json()["is_window_open"] is True
+
+
+def test_13_state_machine_default_event_time_is_naive():
+    """MessageStateMachine default timestamps must survive asyncpg TIMESTAMP."""
+    from backend.app.services.message_state_machine import MessageStateMachine
+
+    msg = Message(
+        conversation_id=1,
+        direction=MessageDirection.OUTBOUND,
+        message_type=MessageType.TEXT,
+        body="selam",
+        sender_phone="+905300000001",
+        recipient_phone="+905400000001",
+        status=ConversationMessageStatus.PENDING,
+    )
+    MessageStateMachine.transition(msg, ConversationMessageStatus.SENT)
+    assert msg.sent_at is not None and msg.sent_at.tzinfo is None

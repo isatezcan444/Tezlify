@@ -228,6 +228,11 @@ async def list_conversations(
         window_status = CustomerWindowService.check_window(conv)
         if is_baileys_conv:
             window_status["is_open"] = True
+        elif conv.whatsapp_number_id is None and active_session_names:
+            # Legacy lead-based chat but the user has a connected Baileys line:
+            # outbound POST resolves that live session and sends freeform via
+            # the gateway, so the composer must not force a template.
+            window_status["is_open"] = True
 
         item = ConversationResponse(
             id=conv.id,
@@ -313,6 +318,21 @@ async def get_conversation(
     is_baileys_conv = bool(conv.whatsapp_number and conv.whatsapp_number.provider == WhatsAppNumberProvider.BAILEYS_QR)
     if is_baileys_conv:
         window_info["is_window_open"] = True
+    elif conv.whatsapp_number_id is None:
+        # Legacy lead-based chat: freeform is allowed whenever the user has a
+        # connected Baileys line (POST resolves it and sends via gateway).
+        has_connected_session = (
+            await db.execute(
+                select(WhatsAppSession.id)
+                .where(
+                    get_user_filter(WhatsAppSession.user_id, current_user.id),
+                    WhatsAppSession.status == SessionStatus.CONNECTED,
+                )
+                .limit(1)
+            )
+        ).scalar_one_or_none() is not None
+        if has_connected_session:
+            window_info["is_window_open"] = True
 
     lead_name = None
     lead_phone_display = None

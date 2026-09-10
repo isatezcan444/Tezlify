@@ -515,25 +515,14 @@ async def delete_session(
     except Exception as e:
         logger.warning(f"[WhatsApp] Failed to unlink campaigns/logs for session {session_id}: {e}")
 
-    # 2. Delete conversations materialized from this session (cascades to messages).
-    # Legacy rows have no session marker, so only clear all user conversations
-    # when deleting the user's last line, which preserves multi-line isolation.
+    # 2. Delete ALL live-dialog conversations of this user (cascades to messages).
+    # Product rule: removing a WhatsApp line wipes the entire live dialog list,
+    # so no orphaned chat from a disconnected line stays visible.
     try:
-        other_sessions = await db.execute(
-            select(WhatsAppSession.id).where(
-                WhatsAppSession.id != session.id,
-                get_user_filter(WhatsAppSession.user_id, sess_user_id),
-            ).limit(1)
-        )
-        is_last_session = other_sessions.scalar_one_or_none() is None
         conv_stmt = select(Conversation).where(
             Conversation.channel == "WHATSAPP",
             get_user_filter(Conversation.user_id, sess_user_id),
         )
-        if not is_last_session:
-            conv_stmt = conv_stmt.join(Lead).where(
-                Lead.custom_data["whatsapp_session_name"].as_string() == session_name
-            )
         convs_res = await db.execute(conv_stmt)
         convs = convs_res.scalars().all()
         for conv in convs:
@@ -541,16 +530,12 @@ async def delete_session(
     except Exception as e:
         logger.warning(f"[WhatsApp] Failed to delete conversations for session {session_id}: {e}")
 
-    # 3. Delete orphaned auto-synced leads owned by this session.
+    # 3. Delete all auto-synced WhatsApp leads of this user (groups/chats/contacts).
     try:
         lead_stmt = select(Lead).where(
             Lead.category.in_(["WhatsApp Grubu", "WhatsApp Sohbeti", "WhatsApp Kişisi"]),
             get_user_filter(Lead.user_id, sess_user_id),
         )
-        if not is_last_session:
-            lead_stmt = lead_stmt.where(
-                Lead.custom_data["whatsapp_session_name"].as_string() == session_name
-            )
         leads_res = await db.execute(lead_stmt)
         leads = leads_res.scalars().all()
         for lead in leads:

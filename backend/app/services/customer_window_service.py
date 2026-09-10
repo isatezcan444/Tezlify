@@ -36,7 +36,9 @@ class CustomerWindowService:
     def update_conversation_window(cls, conversation, customer_message_time: Optional[datetime] = None) -> None:
         """Updates last_customer_message_at and calculates customer_service_window_expires_at."""
         if customer_message_time is None:
-            customer_message_time = datetime.now(timezone.utc)
+            customer_message_time = datetime.now(timezone.utc).replace(tzinfo=None)
+        elif customer_message_time.tzinfo is not None:
+            customer_message_time = customer_message_time.astimezone(timezone.utc).replace(tzinfo=None)
         conversation.last_customer_message_at = customer_message_time
         conversation.customer_service_window_expires_at = cls.calculate_expiration(customer_message_time)
 
