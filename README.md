@@ -122,6 +122,14 @@ Kurulum (Render dashboard veya API):
 > persistent disk ile çalıştırmak ya da ücretli planda private service kurmak
 > gerekir.
 
+> ⚠️ WhatsApp IP engeli (doğrulanmış): WhatsApp, Render datacenter IP'lerinden
+> gelen Baileys kayıt isteklerini QR üretilmeden kapatıyor (`statusCode=428`).
+> Gateway bu durumda 3 denemeden sonra sonsuz `CONNECTING` yerine gerçek hata
+> mesajını (`error_message`) UI'a yansıtır (fail-loudly, AGENTS.md truthfulness).
+> QR eşleşmesinin gerçekten çalışması için gateway'i residential/erişilebilir
+> bir ağda (yerel makine veya VPS) çalıştırıp backend'i o gateway'e
+> yönlendirmek (`WHATSAPP_GATEWAY_URL`) gerekir.
+
 ---
 
 ## 🧪 Testleri Çalıştırma
