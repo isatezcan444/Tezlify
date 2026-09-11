@@ -24,6 +24,33 @@ cp .env.example .env
 npm run start
 ```
 
+## Docker
+
+```bash
+# Gateway only
+docker build -f whatsapp-gateway/Dockerfile -t tezlify-gateway .
+docker run -p 8787:8787 --env-file whatsapp-gateway/.env tezlify-gateway
+
+# Full stack
+docker-compose up -d
+```
+
+## Production Deployment
+
+| Açıklama | Port | Not |
+|---|---|---|
+| Gateway REST + WS | 8787 | `GATEWAY_HOST=0.0.0.0` yapın |
+| Backend (FastAPI) | 8000 | `BACKEND_WS_URL` Gateway'in WS URL'ini gösterir |
+| Frontend | 80/3000 | `VITE_API_URL` ile Backend'i hedef gösterin |
+
+### Health Check
+
+`GET /health` döndürür:
+```json
+{"status":"ok","service":"tezlify-whatsapp-gateway","sessions":{"total":1,"connected":1,"pending_qr":0}}
+```
+Docker `HEALTHCHECK` bu endpoint'i 30s aralıklarla kontrol eder.
+
 ## REST API Özeti
 
 | Metod | Path | Açıklama |

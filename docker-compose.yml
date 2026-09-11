@@ -1,0 +1,79 @@
+version: "3.8"
+
+services:
+  # ---------------------------------------------------------------------------
+  # WhatsApp Gateway — Node.js Baileys service
+  # ---------------------------------------------------------------------------
+  whatsapp-gateway:
+    build:
+      context: .
+      dockerfile: whatsapp-gateway/Dockerfile
+    container_name: tezlify-whatsapp-gateway
+    restart: unless-stopped
+    expose:
+      - "8787"
+    environment:
+      - GATEWAY_PORT=8787
+      - GATEWAY_HOST=0.0.0.0
+      - BACKEND_WS_URL=ws://backend:8000/ws/gateway
+      - GATEWAY_ENCRYPTION_KEY=${GATEWAY_ENCRYPTION_KEY}
+      - LOG_LEVEL=warn
+    volumes:
+      - whatsapp_sessions:/app/sessions
+      - whatsapp_media:/app/media
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - tezlify
+
+  # ---------------------------------------------------------------------------
+  # FastAPI Backend
+  # ---------------------------------------------------------------------------
+  backend:
+    image: ghcr.io/isatezcan444/tezlify-backend:latest
+    container_name: tezlify-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env.backend
+    volumes:
+      - tezlify_db:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - tezlify
+
+  # ---------------------------------------------------------------------------
+  # Frontend (Vercel or self-hosted)
+  # ---------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: tezlify-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    environment:
+      - VITE_API_URL=http://localhost:8000
+      - VITE_WS_URL=wss://localhost:8000/ws
+      - VITE_WHATSAPP_API_URL=http://whatsapp-gateway:8787
+    depends_on:
+      - backend
+    networks:
+      - tezlify
+
+networks:
+  tezlify:
+    driver: bridge
+
+volumes:
+  whatsapp_sessions:
+  whatsapp_media:
+  tezlify_db:

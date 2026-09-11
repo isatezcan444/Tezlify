@@ -69,7 +69,14 @@ const eventBridge = createEventBridge({
 
 // Health check
 app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', service: 'tezlify-whatsapp-gateway', sessions: sessionManager.listSessions().length });
+  const sessions = sessionManager.listSessions();
+  const connected = sessions.filter((s) => s.status === 'CONNECTED').length;
+  const pending = sessions.filter((s) => s.status === 'SCAN_QR').length;
+  res.json({
+    status: 'ok',
+    service: 'tezlify-whatsapp-gateway',
+    sessions: { total: sessions.length, connected, pending_qr: pending },
+  });
 });
 
 // List sessions
