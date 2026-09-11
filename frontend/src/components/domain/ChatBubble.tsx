@@ -22,10 +22,14 @@ import { parseServerTime, formatMessageTime } from '../../lib/utils';
 
 export interface ChatBubbleProps {
   message: Message;
+  /** Faz 6a: grup sohbetlerinde balon ustunde gonderen adi gosterilir. */
+  isGroup?: boolean;
+  /** Sohbet basligi — gonderen adi sohbet adiyla aynissa tekrar edilmez. */
+  chatTitle?: string;
   onRetry?: (messageId: number | string) => Promise<void> | void;
 }
 
-export const ChatBubble: React.FC<ChatBubbleProps> = ({ message, onRetry }) => {
+export const ChatBubble: React.FC<ChatBubbleProps> = ({ message, isGroup = false, chatTitle, onRetry }) => {
   const { t, language } = useI18n();
   const isInbound = message.direction === 'INBOUND';
   const [isLightboxOpen, setIsLightboxOpen] = useState(false);
@@ -238,8 +242,9 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({ message, onRetry }) => {
               : 'bg-[#7367F0] text-white rounded-2xl rounded-tr-sm shadow-[#7367F0]/20'
           }`}
         >
-          {/* Sender name for inbound messages (especially in group chats) */}
-          {isInbound && message.sender_name && (
+          {/* Faz 6a: gonderen yalnizca grup sohbetlerinde, sohbet adiyla ayni
+              degilse gosterilir (WhatsApp Web paritesi). */}
+          {isInbound && isGroup && message.sender_name && message.sender_name !== chatTitle && (
             <div className="text-[11px] font-bold text-[#7367F0] dark:text-[#a59bf5] mb-1 select-none flex items-center gap-1">
               <span>{message.sender_name}</span>
             </div>

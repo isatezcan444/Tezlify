@@ -1258,6 +1258,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                   onLoadOlder={activeLoadOlder}
                   leadName={selectedConv.lead_name}
                   leadPhone={selectedConv.lead_phone}
+                  isGroup={Boolean(selectedConv.is_group)}
                   peerTyping={!!peerTypingMap[selectedConv.id]}
                   onRetry={async (msgId) => {
                     try {

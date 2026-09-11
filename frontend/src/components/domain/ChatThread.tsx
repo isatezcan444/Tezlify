@@ -32,6 +32,8 @@ export interface ChatThreadProps {
   onLoadOlder?: () => void;
   leadName?: string;
   leadPhone?: string;
+  /** Faz 6a: grup sohbetinde balonlarda katilimci adlari gosterilir. */
+  isGroup?: boolean;
   onRetry?: (messageId: number | string) => Promise<void> | void;
   peerTyping?: boolean;
 }
@@ -42,6 +44,8 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
   hasMore = false,
   loadingOlder = false,
   onLoadOlder,
+  leadName,
+  isGroup = false,
   onRetry,
   peerTyping = false,
 }) => {
@@ -214,7 +218,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
                   </span>
                 </div>
               )}
-              <ChatBubble message={msg} onRetry={onRetry} />
+              <ChatBubble message={msg} isGroup={isGroup} chatTitle={leadName} onRetry={onRetry} />
             </React.Fragment>
           );
         })}

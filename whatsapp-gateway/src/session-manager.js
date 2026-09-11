@@ -9,7 +9,7 @@
  * - Media download & storage
  * - Realtime event emission to the event bridge
  */
-import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, BROWSERS, downloadMediaMessage } from '@whiskeysockets/baileys';
+import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, Browsers, downloadMediaMessage } from '@whiskeysockets/baileys';
 import QRCode from 'qrcode';
 import fs from 'fs';
 import path from 'path';
@@ -503,8 +503,7 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
         sender_phone: msg.key?.fromMe ? 'ME' : (jidToPhone(msg.key?.participant || key) || key),
         recipient_phone: msg.key?.fromMe ? (jidToPhone(key) || key) : 'ME',
         sender_name: msg.pushName || (msg.key?.fromMe ? 'ME' : null),
-        participant_jid: msg.key?.participant || null,
-        created_at: new Date(Number.isFinite(ts) ? ts : Date.now()).toISOString(),
+        participant_jid: msg.key?.participant || null,      participant_name: msg.key?.participant ? msg.pushName || null : null,        created_at: new Date(Number.isFinite(ts) ? ts : Date.now()).toISOString(),
       };
     },
 
@@ -544,7 +543,7 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       const sock = makeWASocket({
         version,
         logger,
-        browser: BROWSERS.macOS('Desktop'),
+        browser: Browsers.macOS('Desktop'),
         auth: state,
         markOnlineOnConnect: true,
         // NOT: syncFullHistory: true WhatsApp tarafından statusCode=428 ile
@@ -671,6 +670,7 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
             recipient_phone: 'ME',
             sender_name: contact?.name || jidToPhone(jid) || key,
             participant_jid: msg.key?.participant || null,
+            participant_name: isGroup ? msg.pushName || null : null,
             created_at: new Date((msg.messageTimestamp || Date.now()) * 1000).toISOString(),
           };
           if (!messagesByChat.has(key)) messagesByChat.set(key, []);

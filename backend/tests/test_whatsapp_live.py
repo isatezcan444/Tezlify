@@ -1172,3 +1172,108 @@ async def test_ingest_conversation_updated_persists_avatar():
         )).scalar_one()
         assert contact.display_name == "Fatma Sel"
         assert contact.custom_attributes.get("avatar_url") == "https://cdn/f.jpg"
+
+
+@pytest.mark.asyncio
+async def test_ingest_group_message_persists_participant_name():
+    """Faz 6a: live group message_new with participant_name stores the pushname
+    as the message sender_name (bubble shows the real sender, not the group)."""
+    async with AsyncSessionLocal() as db:
+        session = WhatsAppSession(
+            user_id=TEST_USER, gateway_id=str(_uuid.uuid4()),
+            session_name="Connected", status=SessionStatus.CONNECTED, is_active=True,
+        )
+        db.add(session)
+        await db.commit()
+
+    await ingest_gateway_event({
+        "event": "message_new",
+        "conversation_id": GROUP_JID,
+        "message": {
+            "body": "Fiyat listesi geldi",
+            "direction": "INBOUND",
+            "message_type": "TEXT",
+            "wa_message_id": "wamid_grp_1",
+            "sender_name": GROUP_JID,
+            "participant_jid": "905321002030@s.whatsapp.net",
+            "participant_name": "Mehmet Satici",
+            "created_at": "2025-01-15T10:00:00Z",
+        },
+    })
+
+    async with AsyncSessionLocal() as db:
+        msg = (await db.execute(
+            select(Message).where(Message.wa_message_id == "wamid_grp_1")
+        )).scalar_one()
+        assert msg.sender_name == "Mehmet Satici"
+
+
+@pytest.mark.asyncio
+async def test_ingest_direct_message_keeps_contact_name():
+    """Faz 6a: 1:1 messages without participant_name keep the contact display name."""
+    async with AsyncSessionLocal() as db:
+        contact = Contact(user_id=TEST_USER, phone_e164=MOCK_PHONE, display_name="Test Lead")
+        db.add(contact)
+        await db.flush()
+        session = WhatsAppSession(
+            user_id=TEST_USER, gateway_id=str(_uuid.uuid4()),
+            session_name="Connected", status=SessionStatus.CONNECTED, is_active=True,
+        )
+        db.add(session)
+        await db.commit()
+
+    await ingest_gateway_event({
+        "event": "message_new",
+        "conversation_id": MOCK_JID,
+        "message": {
+            "body": "Merhaba",
+            "direction": "INBOUND",
+            "message_type": "TEXT",
+            "wa_message_id": "wamid_direct_1",
+            "sender_name": "Test Lead",
+            "created_at": "2025-01-15T10:00:00Z",
+        },
+    })
+
+    async with AsyncSessionLocal() as db:
+        msg = (await db.execute(
+            select(Message).where(Message.wa_message_id == "wamid_direct_1")
+        )).scalar_one()
+        assert msg.sender_name == "Test Lead"
+
+
+@pytest.mark.asyncio
+async def test_sync_group_history_prefers_participant_name(auth_headers, mock_gateway):
+    """Faz 6a: history-synced group messages persist participant_name over the
+    chat-level sender_name."""
+    mock_gateway.list_conversations.return_value = {
+        "items": [{"jid": GROUP_JID, "id": GROUP_JID, "name": "Satici Ekip",
+                   "is_group": True, "last_message_at": "2025-01-15T10:00:00.000Z",
+                   "unread_count": 0}],
+        "total": 1,
+    }
+    mock_gateway.get_messages.return_value = {
+        "messages": [
+            {"conversation_id": GROUP_JID, "wa_message_id": "wamid_hist_g1",
+             "direction": "INBOUND", "message_type": "TEXT", "body": "Gunluk rapor",
+             "sender_name": "Satici Ekip", "participant_jid": "905001112233@s.whatsapp.net",
+             "participant_name": "Zeynep", "status": "RECEIVED",
+             "created_at": "2025-01-15T09:00:00Z"},
+            {"conversation_id": GROUP_JID, "wa_message_id": "wamid_hist_g2",
+             "direction": "INBOUND", "message_type": "TEXT", "body": "Anlasildi",
+             "sender_name": "Satici Ekip", "status": "RECEIVED",
+             "created_at": "2025-01-15T09:01:00Z"},
+        ],
+        "has_more": False,
+    }
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        sync = await client.get("/api/v1/whatsapp/conversations?sync=true", headers=auth_headers)
+        assert sync.status_code == 200
+        grp = next(i for i in sync.json()["items"] if i.get("is_group"))
+        msgs = await client.get(f"/api/v1/whatsapp/conversations/{grp['id']}/messages", headers=auth_headers)
+        assert msgs.status_code == 200
+        by_wa = {m["wa_message_id"]: m for m in msgs.json()["messages"]}
+        assert by_wa["wamid_hist_g1"]["sender_name"] == "Zeynep"
+        # No participant info → falls back to the chat-level sender name.
+        assert by_wa["wamid_hist_g2"]["sender_name"] == "Satici Ekip"
