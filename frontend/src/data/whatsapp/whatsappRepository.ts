@@ -79,6 +79,11 @@ export class WhatsAppRepository {
     return WhatsAppApi.refreshSessionQr(sessionId);
   }
 
+  static async requestPairingCode(sessionId: number, phone: string): Promise<{ success: boolean; pairing_code: string; phone: string | null }> {
+    await requireLive();
+    return WhatsAppApi.requestPairingCode(sessionId, phone);
+  }
+
   static async disconnectSession(sessionId: number): Promise<any> {
     await requireLive();
     return WhatsAppApi.logoutSession(sessionId);

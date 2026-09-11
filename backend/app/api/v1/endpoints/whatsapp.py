@@ -14,6 +14,8 @@ from backend.app.schemas.whatsapp import (
     WhatsAppContactListResponse,
     WhatsAppConversationListResponse,
     WhatsAppMessagesResponse,
+    WhatsAppPairingCodeRequest,
+    WhatsAppPairingCodeResponse,
     WhatsAppQrResponse,
     WhatsAppReadResult,
     WhatsAppSendMediaRequest,
@@ -92,6 +94,22 @@ async def refresh_session_qr(
         raise _not_found(exc) from exc
     except Exception as exc:
         raise _bad_gateway(exc) from exc
+
+
+@router.post("/sessions/{session_id}/pair", response_model=WhatsAppPairingCodeResponse)
+async def request_pairing_code(
+    session_id: int,
+    payload: WhatsAppPairingCodeRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+) -> WhatsAppPairingCodeResponse:
+    try:
+        result = await whatsapp_service.request_pairing_code(db, current_user.id, session_id, payload.phone)
+    except LookupError as exc:
+        raise _not_found(exc) from exc
+    except Exception as exc:
+        raise _bad_gateway(exc) from exc
+    return WhatsAppPairingCodeResponse(**result)
 
 
 @router.post("/sessions/{session_id}/logout", response_model=WhatsAppStatusResult)

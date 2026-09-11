@@ -280,6 +280,21 @@ export const WhatsAppApi = {
     return { success: true, status: data.status, qr_code: data.qr_code ?? null, error_message: data.error_message ?? null };
   },
 
+  async requestPairingCode(
+    sessionId: number,
+    phone: string
+  ): Promise<{ success: boolean; pairing_code: string; phone: string | null }> {
+    const data = await apiSend<{ success: boolean; pairing_code: string | null; phone?: string | null }>(
+      `/whatsapp/sessions/${sessionId}/pair`,
+      'POST',
+      { phone }
+    );
+    if (!data.pairing_code) {
+      throw new WhatsAppApiError('Gateway eşleştirme kodu döndürmedi.');
+    }
+    return { success: true, pairing_code: data.pairing_code, phone: data.phone ?? null };
+  },
+
   async logoutSession(sessionId: number): Promise<{ success: boolean; status: string }> {
     return apiSend<{ success: boolean; status: string }>(`/whatsapp/sessions/${sessionId}/logout`, 'POST');
   },

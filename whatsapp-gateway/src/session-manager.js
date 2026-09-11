@@ -171,6 +171,58 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       return this.getSession(id);
     },
 
+    // -----------------------------------------------------------------------
+    // Pairing code ("Telefon Numarası ile Bağlan") — Baileys
+    // sock.requestPairingCode(digits) ile 8 haneli kod üretir; kullanıcı bu
+    // kodu WhatsApp > Ayarlar > Bağlı Cihazlar > "Telefon numarasıyla bağla"
+    // ekranına girer. Hata durumları fail-closed olarak yukarı fırlatılır
+    // (AGENTS.md Truthfulness) — asla sahte başarı döndürülmez.
+    // -----------------------------------------------------------------------
+    async requestPairingCode(id, phone) {
+      const session = sessions.get(id);
+      if (!session) throw new Error('Session not found');
+      if (session.status === 'CONNECTED') {
+        throw new Error('Bu oturum zaten bağlı. Kod istemek için önce oturumu ayırın.');
+      }
+
+      // Telefonu normalize et: yalnızca rakam (ülke kodu dahil, "+" yok).
+      let digits = String(phone || '').replace(/\D/g, '');
+      if (digits.startsWith('00')) digits = digits.slice(2);
+      // TR formatı "05XX..." olarak girilirse ülke kodunu otomatik tamamla.
+      if (/^0\d{10}$/.test(digits)) digits = `90${digits.slice(1)}`;
+      if (digits.length < 10 || digits.length > 15) {
+        throw new Error('Geçersiz telefon numarası. Ülke kodu ile birlikte girin (örn. +90 5XX XXX XX XX).');
+      }
+
+      // Socket henüz hazırsa pairing çağrısı yapılamaz — kısa bir bekleme ile
+      // socket açılışını karşıla (fail-fast değil, fail-closed: süreyi aşarsa hata).
+      if (!session.sock) {
+        this._startSocket(id);
+      }
+      const deadline = Date.now() + 15000;
+      // requestPairingCode bağlantı AÇIK olmadan gönderilemez; QR üretimi
+      // (status=SCAN_QR) bağlantının açıldığının kanıtıdır.
+      while ((!session.sock || session.status !== 'SCAN_QR') && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 300));
+      }
+      if (!session.sock) {
+        throw new Error('WhatsApp soketi hazırlanamadı. "QR\'ı Yenile" ile tekrar deneyin.');
+      }
+      if (session.status !== 'SCAN_QR') {
+        throw new Error(
+          session.error_message ||
+          'WhatsApp bağlantısı henüz kurulamadı. Birkaç saniye sonra tekrar deneyin.'
+        );
+      }
+
+      const pairingCode = await session.sock.requestPairingCode(digits);
+      // Bağlantı tamamlandığında telefonun görünmesi için oturuma işle.
+      session.phone_number = `+${digits}`;
+      session.updated_at = new Date().toISOString();
+      logger.info({ id, pairingCode }, 'Pairing code generated');
+      return { pairing_code: pairingCode, phone: session.phone_number };
+    },
+
     async logoutSession(id) {
       const session = sessions.get(id);
       if (!session) throw new Error('Session not found');

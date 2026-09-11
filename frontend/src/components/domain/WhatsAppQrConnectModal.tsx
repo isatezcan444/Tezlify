@@ -8,7 +8,10 @@ import {
   X, 
   CheckCircle2, 
   AlertTriangle,
-  RotateCcw
+  RotateCcw,
+  Phone,
+  KeyRound,
+  Copy
 } from 'lucide-react';
 import { WhatsAppRepository } from '../../data/whatsapp/whatsappRepository';
 import { WhatsAppSession } from '../../types';
@@ -55,6 +58,14 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
   // QR Expiry Countdown (25 seconds)
   const [secondsLeft, setSecondsLeft] = useState<number>(25);
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
+
+  // Pairing-tab state ("Telefon No ile Bağlan")
+  const [activeTab, setActiveTab] = useState<'qr' | 'pair'>('qr');
+  const [pairingPhone, setPairingPhone] = useState<string>('');
+  const [pairingCode, setPairingCode] = useState<string | null>(null);
+  const [isPairingLoading, setIsPairingLoading] = useState<boolean>(false);
+  const [pairingError, setPairingError] = useState<string | null>(null);
+  const [pairingCopied, setPairingCopied] = useState<boolean>(false);
 
   const timerRef = useRef<any>(null);
   const fallbackPollRef = useRef<any>(null);
@@ -220,6 +231,51 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
     }
   }, [sessionId, isRefreshing, resetCountdown, clearTimers, toast, t]);
 
+  // Pairing code — "Telefon No ile Bağlan" tabisi. Fail-closed: hata gerçek
+  // mesajla gösterilir, sahte kod/sahte başarı asla üretilmez (AGENTS.md).
+  const handleGetPairingCode = useCallback(async () => {
+    const digits = pairingPhone.replace(/\D/g, '');
+    if (digits.length < 10 || digits.length > 15) {
+      setPairingError(t('whatsapp.pairingInvalidPhone'));
+      return;
+    }
+    const targetSessionId = activeSessionIdRef.current || sessionId;
+    if (!targetSessionId) {
+      // Oturum henüz hazırlanamadı — QR akışıyla aynı init tekrar denenir.
+      await initSession();
+      if (!activeSessionIdRef.current) return;
+    }
+    const sid = activeSessionIdRef.current || sessionId;
+    if (!sid) return;
+
+    setIsPairingLoading(true);
+    setPairingError(null);
+    setPairingCode(null);
+    setPairingCopied(false);
+    try {
+      const res = await WhatsAppRepository.requestPairingCode(sid, pairingPhone.trim());
+      if (!isMountedRef.current) return;
+      setPairingCode(res.pairing_code);
+    } catch (err: any) {
+      if (!isMountedRef.current) return;
+      setPairingError(err?.message || t('whatsapp.pairingCodeErrorTitle'));
+    } finally {
+      if (isMountedRef.current) setIsPairingLoading(false);
+    }
+  }, [pairingPhone, sessionId, initSession, t]);
+
+  const handleCopyPairingCode = useCallback(async () => {
+    if (!pairingCode) return;
+    try {
+      await navigator.clipboard.writeText(pairingCode);
+      setPairingCopied(true);
+      toast.success(t('whatsapp.codeCopied'), t('common.success'));
+      setTimeout(() => setPairingCopied(false), 2500);
+    } catch {
+      // Clipboard erişilemezse kullanıcı kodu elle seçip kopyalayabilir.
+    }
+  }, [pairingCode, toast, t]);
+
   // Mount & Modal Lifecycle effect - runs initSession EXACTLY ONCE per open cycle
   useEffect(() => {
     isMountedRef.current = true;
@@ -238,6 +294,11 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
       setQrCode(null);
       setConnectedPhone(null);
       setErrorMessage(null);
+      setActiveTab('qr');
+      setPairingPhone('');
+      setPairingCode(null);
+      setPairingError(null);
+      setIsPairingLoading(false);
     }
     return () => {
       isMountedRef.current = false;
@@ -418,8 +479,42 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
           </button>
         </div>
 
+        {/* Tab switcher — QR Kod ile Tara | Telefon No ile Bağlan */}
+        {modalState !== 'CONNECTED' && (
+          <div className="grid grid-cols-2 gap-1 p-1 rounded-xl bg-slate-100 dark:bg-white/[0.06]" role="tablist" aria-label={t('whatsapp.qrModalTitle')}>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === 'qr'}
+              onClick={() => setActiveTab('qr')}
+              className={`flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-[11px] font-bold transition-all cursor-pointer ${
+                activeTab === 'qr'
+                  ? 'bg-white dark:bg-[#2F3349] text-[#7367F0] shadow-sm'
+                  : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
+              }`}
+            >
+              <QrCode className="w-3.5 h-3.5" />
+              <span>{t('whatsapp.tabQrCode')}</span>
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === 'pair'}
+              onClick={() => setActiveTab('pair')}
+              className={`flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-[11px] font-bold transition-all cursor-pointer ${
+                activeTab === 'pair'
+                  ? 'bg-white dark:bg-[#2F3349] text-[#28C76F] shadow-sm'
+                  : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
+              }`}
+            >
+              <Phone className="w-3.5 h-3.5" />
+              <span>{t('whatsapp.tabPairingCode')}</span>
+            </button>
+          </div>
+        )}
+
         {/* State A: INITIALIZING */}
-        {modalState === 'INITIALIZING' && (
+        {activeTab === 'qr' && modalState === 'INITIALIZING' && (
           <div className="py-12 flex flex-col items-center justify-center space-y-3">
             <Loader2 className="w-10 h-10 animate-spin text-[#7367F0]" />
             <p className="text-xs font-bold text-slate-700 dark:text-slate-200">
@@ -432,7 +527,7 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
         )}
 
         {/* State B: QR_READY */}
-        {modalState === 'QR_READY' && (
+        {activeTab === 'qr' && modalState === 'QR_READY' && (
           <div className="space-y-3.5 animate-fade-in">
             {/* 3-Step Instruction Box */}
             <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#25293C] border border-slate-200/60 dark:border-white/[0.05] text-left text-xs space-y-1.5">
@@ -504,8 +599,106 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
           </div>
         )}
 
+        {/* Pairing tab: Telefon No ile Bağlan */}
+        {activeTab === 'pair' && modalState !== 'CONNECTED' && (
+          <div className="space-y-3.5 animate-fade-in text-left">
+            {!pairingCode ? (
+              <div className="space-y-3">
+                <div>
+                  <label htmlFor="pairing-phone-input" className="block text-[11px] font-bold text-slate-600 dark:text-slate-300 mb-1">
+                    {t('whatsapp.pairingCodeInputLabel')}
+                  </label>
+                  <div className="relative">
+                    <Phone className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                    <input
+                      id="pairing-phone-input"
+                      type="tel"
+                      inputMode="tel"
+                      value={pairingPhone}
+                      onChange={(e) => { setPairingPhone(e.target.value); setPairingError(null); }}
+                      onKeyDown={(e) => { if (e.key === 'Enter' && !isPairingLoading) handleGetPairingCode(); }}
+                      placeholder={t('whatsapp.pairingCodeInputPlaceholder')}
+                      className="w-full pl-8 pr-3 py-2 rounded-xl border border-slate-200 dark:border-white/[0.12] bg-white dark:bg-[#25293C] text-sm font-semibold text-slate-800 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[#28C76F]/40 focus:border-[#28C76F] transition-all"
+                    />
+                  </div>
+                  {pairingError && (
+                    <p className="mt-1.5 text-[11px] font-semibold text-[#EA5455]">{pairingError}</p>
+                  )}
+                </div>
+                <Button
+                  onClick={handleGetPairingCode}
+                  disabled={isPairingLoading}
+                  className="w-full font-bold bg-[#28C76F] hover:bg-[#24B263] text-white shadow-md shadow-[#28C76F]/30 cursor-pointer disabled:opacity-60"
+                >
+                  {isPairingLoading ? (
+                    <><Loader2 className="w-4 h-4 mr-1.5 animate-spin" />{t('whatsapp.gettingPairingCode')}</>
+                  ) : (
+                    <><KeyRound className="w-4 h-4 mr-1.5" />{t('whatsapp.getPairingCodeBtn')}</>
+                  )}
+                </Button>
+                <p className="text-[10px] text-slate-400 leading-relaxed">
+                  {t('whatsapp.pairingCodeValidNote')}
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {/* 4-Step Instruction Box */}
+                <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#25293C] border border-slate-200/60 dark:border-white/[0.05] text-xs space-y-1.5">
+                  <h4 className="text-[11px] font-extrabold text-slate-700 dark:text-white mb-1">
+                    {t('whatsapp.pairingCodeTitle')}
+                  </h4>
+                  {[1, 2, 3, 4].map((n) => (
+                    <div key={n} className="flex items-center gap-2 text-slate-700 dark:text-slate-200 font-semibold">
+                      <span className="w-4 h-4 rounded-full bg-[#28C76F]/15 text-[#28C76F] text-[10px] flex items-center justify-center font-bold shrink-0">{n}</span>
+                      <span>{t(`whatsapp.pairingCodeStep${n}`)}</span>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Big mono code + copy */}
+                <div className="p-4 bg-white dark:bg-[#25293C] rounded-2xl mx-auto flex flex-col items-center shadow-md border border-slate-200/90 dark:border-white/[0.08]">
+                  <div className="flex items-center gap-1.5">
+                    {pairingCode.split('').map((ch, i) => (
+                      <span
+                        key={i}
+                        className="w-8 h-10 flex items-center justify-center rounded-lg bg-slate-100 dark:bg-white/[0.06] border border-slate-200 dark:border-white/[0.1] font-mono text-lg font-extrabold text-slate-800 dark:text-white"
+                      >
+                        {ch}
+                      </span>
+                    ))}
+                  </div>
+                  <div className="flex items-center gap-2 mt-3 w-full">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={handleCopyPairingCode}
+                      className="flex-1 text-xs font-bold cursor-pointer"
+                    >
+                      {pairingCopied ? <CheckCircle2 className="w-3.5 h-3.5 mr-1 text-[#28C76F]" /> : <Copy className="w-3.5 h-3.5 mr-1" />}
+                      {pairingCopied ? t('whatsapp.codeCopied') : t('whatsapp.copyCodeBtn')}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={handleGetPairingCode}
+                      disabled={isPairingLoading}
+                      className="text-xs font-bold cursor-pointer"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 mr-1 ${isPairingLoading ? 'animate-spin' : ''}`} />
+                      {t('whatsapp.pairingCodeAgainBtn')}
+                    </Button>
+                  </div>
+                </div>
+                <p className="text-center text-[11px] text-slate-400 animate-pulse">
+                  {t('whatsapp.awaitingQrScan')}
+                </p>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* State C: CONNECTING */}
-        {modalState === 'CONNECTING' && (
+        {activeTab === 'qr' && modalState === 'CONNECTING' && (
           <div className="py-10 flex flex-col items-center justify-center space-y-3 animate-fade-in">
             <Loader2 className="w-10 h-10 animate-spin text-[#28C76F]" />
             <h4 className="text-sm font-extrabold text-slate-800 dark:text-white">

@@ -71,6 +71,11 @@ async def refresh_session_qr(session_id: str) -> Dict[str, Any]:
     return await _request("POST", f"/sessions/{session_id}/qr/refresh")
 
 
+async def request_pairing_code(session_id: str, phone: str) -> Dict[str, Any]:
+    """'Telefon numarası ile bağlan' — gateway'den 8 haneli pairing kodu ister."""
+    return await _request("POST", f"/sessions/{session_id}/pair", json={"phone": phone})
+
+
 async def logout_session(session_id: str) -> Dict[str, Any]:
     return await _request("POST", f"/sessions/{session_id}/logout")
 

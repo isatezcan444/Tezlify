@@ -131,6 +131,7 @@ def mock_gateway():
     gw_status = _patch("get_session_status", {"status": "CONNECTED", "phone_number": MOCK_PHONE, "is_phone_online": True, "battery_level": 95})
     qr = _patch("get_session_qr", {"status": "SCAN_QR", "qr_code": "data:image/png;base64,TESTQR==", "phone": None})
     refresh = _patch("refresh_session_qr", {"status": "SCAN_QR", "qr_code": "data:image/png;base64,NEWQR=="})
+    pair = _patch("request_pairing_code", {"success": True, "pairing_code": "ABCD1234", "phone": MOCK_PHONE})
     logout = _patch("logout_session", {"success": True})
     delete = _patch("delete_session", {"success": True})
     contacts = _patch("list_contacts", [{"id": MOCK_JID, "phone": MOCK_PHONE, "name": "Test Lead", "avatar_url": None}])
@@ -155,6 +156,7 @@ def mock_gateway():
         "get_session_status": gw_status,
         "get_session_qr": qr,
         "refresh_session_qr": refresh,
+        "request_pairing_code": pair,
         "logout_session": logout,
         "delete_session": delete,
         "list_contacts": contacts,
@@ -323,6 +325,73 @@ async def test_session_not_found_returns_404(auth_headers):
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         res = await client.get("/api/v1/whatsapp/sessions/99999/qr", headers=auth_headers)
         assert res.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_pairing_code_returns_gateway_code(auth_headers, mock_gateway):
+    """POST /sessions/{id}/pair must pass through the gateway pairing code."""
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        create_res = await client.post("/api/v1/whatsapp/sessions", json={"name": "Pair Test"}, headers=auth_headers)
+        session_id = create_res.json()["id"]
+
+        res = await client.post(
+            f"/api/v1/whatsapp/sessions/{session_id}/pair",
+            json={"phone": "+90 532 123 45 67"},
+            headers=auth_headers,
+        )
+        assert res.status_code == 200
+        data = res.json()
+        assert data["success"] is True
+        assert data["pairing_code"] == "ABCD1234"
+    mock_gateway.request_pairing_code.assert_called_once()
+    # Gateway'e giden telefon, kullanıcının girdiği ham değerdir (normalizasyon gateway'de).
+    called_args = mock_gateway.request_pairing_code.call_args.args
+    assert called_args[1] == "+90 532 123 45 67"
+
+
+@pytest.mark.asyncio
+async def test_pairing_code_gateway_error_returns_502(auth_headers, mock_gateway):
+    """Gateway pairing hatası 502 olarak yüzeyleştirilmeli — sahte kod yok (fail-closed)."""
+    mock_gateway.request_pairing_code.side_effect = gw.WhatsAppGatewayError("WhatsApp soketi hazırlanamadı")
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        create_res = await client.post("/api/v1/whatsapp/sessions", json={"name": "Pair Fail Test"}, headers=auth_headers)
+        session_id = create_res.json()["id"]
+
+        res = await client.post(
+            f"/api/v1/whatsapp/sessions/{session_id}/pair",
+            json={"phone": "+905321234567"},
+            headers=auth_headers,
+        )
+        assert res.status_code == 502
+        assert "gateway" in res.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_pairing_code_session_not_found_returns_404(auth_headers, mock_gateway):
+    """POST /sessions/{nonexistent}/pair returns 404."""
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        res = await client.post(
+            "/api/v1/whatsapp/sessions/99999/pair",
+            json={"phone": "+905321234567"},
+            headers=auth_headers,
+        )
+        assert res.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_pairing_code_invalid_phone_returns_422(auth_headers, mock_gateway):
+    """Çok kısa telefon şema doğrulamasında reddedilmeli (min_length=7)."""
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        res = await client.post(
+            "/api/v1/whatsapp/sessions/1/pair",
+            json={"phone": "123"},
+            headers=auth_headers,
+        )
+        assert res.status_code == 422
 
 
 # ---------------------------------------------------------------------------

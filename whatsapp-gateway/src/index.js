@@ -124,6 +124,20 @@ app.post('/sessions/:id/qr/refresh', async (req, res) => {
   }
 });
 
+// Pairing code — "Telefon Numarası ile Bağlan" (8 haneli kod üretir)
+app.post('/sessions/:id/pair', async (req, res) => {
+  try {
+    const { phone } = req.body || {};
+    if (!phone || !String(phone).trim()) {
+      return res.status(400).json({ error: 'Telefon numarası zorunludur.' });
+    }
+    const result = await sessionManager.requestPairingCode(req.params.id, phone);
+    res.json({ success: true, ...result });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Disconnect / logout a session
 app.post('/sessions/:id/logout', async (req, res) => {
   try {

@@ -204,6 +204,27 @@ async def refresh_session_qr(db: AsyncSession, user_id: str, session_id: int) ->
     }
 
 
+async def request_pairing_code(db: AsyncSession, user_id: str, session_id: int, phone: str) -> Dict[str, Any]:
+    """'Telefon numarası ile bağlan' — gateway'den 8 haneli pairing kodu ister.
+
+    Hata durumunda WhatsAppGatewayError yukarı fırlar (fail-closed); asla
+    sahte kod/sahte başarı döndürülmez (AGENTS.md Truthfulness).
+    """
+    row = await _get_session_or_404(db, user_id, session_id)
+    data = await gw.request_pairing_code(row.gateway_id, phone)
+    pairing_code = data.get("pairing_code")
+    if not pairing_code:
+        raise gw.WhatsAppGatewayError("Gateway pairing kodu döndürmedi.")
+    if data.get("phone") and not row.phone_number:
+        row.phone_number = data["phone"]
+        await db.commit()
+    return {
+        "success": True,
+        "pairing_code": str(pairing_code),
+        "phone": data.get("phone") or row.phone_number,
+    }
+
+
 async def logout_session(db: AsyncSession, user_id: str, session_id: int) -> Dict[str, Any]:
     row = await _get_session_or_404(db, user_id, session_id)
     await gw.logout_session(row.gateway_id)

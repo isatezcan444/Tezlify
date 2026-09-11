@@ -38,6 +38,17 @@ class WhatsAppQrResponse(BaseModel):
     error_message: Optional[str] = None
 
 
+class WhatsAppPairingCodeRequest(BaseModel):
+    phone: str = Field(min_length=7, max_length=24, description="Ülke kodu dahil telefon (örn. +90 5XX XXX XX XX)")
+
+
+class WhatsAppPairingCodeResponse(BaseModel):
+    success: bool = True
+    pairing_code: Optional[str] = None
+    phone: Optional[str] = None
+    error_message: Optional[str] = None
+
+
 class WhatsAppContact(BaseModel):
     id: str
     phone: Optional[str] = None
