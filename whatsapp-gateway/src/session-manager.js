@@ -484,9 +484,8 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
               session.error_message =
                 `WhatsApp sunucusu QR kodu oluşturulmadan bağlantıyı kapattı ` +
                 `(statusCode=${statusCode ?? 'bilinmiyor'}, ${session._connFailures} deneme). ` +
-                `Bu sunucunun IP adresi WhatsApp tarafından engelleniyor olabilir. ` +
-                `Birkaç dakika sonra "QR'ı Yenile" ile tekrar deneyin veya gateway'i ` +
-                `farklı bir ağda (ör. yerel makine) çalıştırın.`;
+                `Bu geçici bir WhatsApp reddi olabilir; birkaç dakika sonra ` +
+                `"QR'ı Yenile" ile tekrar deneyin.`;
               session.updated_at = new Date().toISOString();
               logger.error({ statusCode, failures: session._connFailures }, 'Baileys kept being terminated before QR — surfacing error');
               emitEvent({

@@ -122,13 +122,14 @@ Kurulum (Render dashboard veya API):
 > persistent disk ile çalıştırmak ya da ücretli planda private service kurmak
 > gerekir.
 
-> ⚠️ WhatsApp IP engeli (doğrulanmış): WhatsApp, Render datacenter IP'lerinden
-> gelen Baileys kayıt isteklerini QR üretilmeden kapatıyor (`statusCode=428`).
-> Gateway bu durumda 3 denemeden sonra sonsuz `CONNECTING` yerine gerçek hata
-> mesajını (`error_message`) UI'a yansıtır (fail-loudly, AGENTS.md truthfulness).
-> QR eşleşmesinin gerçekten çalışması için gateway'i residential/erişilebilir
-> bir ağda (yerel makine veya VPS) çalıştırıp backend'i o gateway'e
-> yönlendirmek (`WHATSAPP_GATEWAY_URL`) gerekir.
+> ✅ statusCode=428 kök nedeni (doğrulanmış): QR üretilmeden bağlantıyı kapatan
+> şey datacenter IP engeli değil, Baileys'in `syncFullHistory: true` seçeneğiydi.
+> WhatsApp bu kayıt isteğini `428 Precondition Required` ile reddediyor (hem
+> residential hem Render IP'sinde aynı davranış ölçüldü). Seçenek kaldırıldıktan
+> sonra Render FREE üzerinde QR normal şekilde üretiliyor (`SCAN_QR`).
+> Yine de beklenmedik bir erken kopmada gateway 3 denemeden sonra sonsuz
+> `CONNECTING` yerine gerçek hata mesajını (`error_message`) UI'a yansıtır
+> (fail-loudly, AGENTS.md truthfulness).
 
 ---
 
