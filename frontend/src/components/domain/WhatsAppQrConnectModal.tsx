@@ -330,6 +330,24 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
         }
       }
 
+      // 1b. Pairing code re-issued by the gateway after a socket restart.
+      // The old 8-digit code dies with the expired QR; swap it for the fresh
+      // one automatically so the user never enters a dead code
+      // ("Cihaza bağlanamadı" fix — fail-closed: gateway error clears code).
+      if (detail.event === 'session_pairing_code_updated') {
+        if (detail.pairing_code) {
+          setPairingCode(String(detail.pairing_code));
+          setPairingError(null);
+          setPairingCopied(false);
+          setIsPairingLoading(false);
+          toast.info(t('whatsapp.pairingCodeRefreshed'), t('common.info'));
+        } else if (detail.error) {
+          setPairingCode(null);
+          setPairingError(String(detail.error));
+          setIsPairingLoading(false);
+        }
+      }
+
       // 2. Session Connected
       if (detail.event === 'session_connected' || detail.event_type === 'CONNECTED') {
         const phone = detail.phone || detail.phone_number;

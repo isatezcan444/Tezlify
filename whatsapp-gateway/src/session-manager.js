@@ -142,6 +142,8 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
         error_reason: null,
         _connFailures: 0,
         _qrSeenForAttempt: false,
+        _pairingPhone: null,
+        _pairingRequestedAt: 0,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
         sock: null,
@@ -218,8 +220,15 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       const pairingCode = await session.sock.requestPairingCode(digits);
       // Bağlantı tamamlandığında telefonun görünmesi için oturuma işle.
       session.phone_number = `+${digits}`;
+      // Pairing niyetini sakla: QR süresi dolup soket yeniden başlayınca kod
+      // geçersiz olur (WhatsApp "Cihaza bağlanamadı" verir) — _connectSocket
+      // içindeki yeni QR kolonu bu sayede taze kod üretip UI'a itebilir.
+      session._pairingPhone = digits;
+      session._pairingRequestedAt = Date.now();
       session.updated_at = new Date().toISOString();
-      logger.info({ id, pairingCode }, 'Pairing code generated');
+      // logger.warn: prod'da pino seviyesi 'warn' — pairing yaşam döngüsü
+      // olayları görünür kalmalı (aksi halde teşhis için log yok).
+      logger.warn({ id, pairingCode }, 'Pairing code generated');
       return { pairing_code: pairingCode, phone: session.phone_number };
     },
 
@@ -237,6 +246,8 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       session.status = 'DISCONNECTED';
       session.is_active = false;
       session.is_phone_online = false;
+      session._pairingPhone = null;
+      session._pairingRequestedAt = 0;
       session.updated_at = new Date().toISOString();
       // Remove persisted auth state
       const dir = getSessionDir(sessionsDir, id);
@@ -624,6 +635,36 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
           session.qr_code = await QRCode.toDataURL(qr);
           session.updated_at = new Date().toISOString();
           emitEvent({ event: 'session_qr_updated', session_id: id, qr_code: session.qr_code });
+          // --- Faz 6b fix: pairing kodu sokete bağlıdır ve QR ile birlikte
+          // (~60 sn) geçerliliğini yitirir. Soket yeniden başlayıp yeni QR
+          // üretildiğinde, ekrandaki eski kod WhatsApp'ta "Cihaza
+          // bağlanamadı / kodu tekrar girin" hatası verir. Bekleyen bir
+          // pairing isteği varsa taze kodu otomatik üretip UI'a it.
+          if (session._pairingPhone) {
+            const PAIRING_TTL_MS = 10 * 60 * 1000;
+            if (Date.now() - (session._pairingRequestedAt || 0) > PAIRING_TTL_MS) {
+              session._pairingPhone = null;
+            } else {
+              try {
+                const freshCode = await sock.requestPairingCode(session._pairingPhone);
+                session.updated_at = new Date().toISOString();
+                logger.warn({ id, pairingCode: freshCode }, 'Pairing code re-issued after socket restart');
+                emitEvent({
+                  event: 'session_pairing_code_updated',
+                  session_id: id,
+                  pairing_code: freshCode,
+                  phone: session.phone_number || null,
+                });
+              } catch (err) {
+                logger.warn({ err, id }, 'Pairing code re-issue failed');
+                emitEvent({
+                  event: 'session_pairing_code_updated',
+                  session_id: id,
+                  error: String(err?.message || err),
+                });
+              }
+            }
+          }
         }
         if (connection === 'open') {
           session.status = 'CONNECTED';
@@ -631,6 +672,8 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
           session.error_message = null;
           session.error_reason = null;
           session._connFailures = 0;
+          session._pairingPhone = null;
+          session._pairingRequestedAt = 0;
           session.is_phone_online = true;
           session.updated_at = new Date().toISOString();
           // Persist encrypted auth state
