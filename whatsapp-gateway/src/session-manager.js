@@ -417,9 +417,10 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
         logger,
         browser: Browsers.macOS('Desktop'),
         auth: state,
-        printQRInTerminal: false,
         markOnlineOnConnect: true,
-        syncFullHistory: true,
+        // NOT: syncFullHistory: true WhatsApp tarafından statusCode=428 ile
+        // bağlantı kırılarak reddediliyor (QR hiç oluşmuyor). Sohbet geçmişi
+        // yine de messages.upsert olaylarıyla canlı olarak toplanır.
       });
 
       session.sock = sock;
