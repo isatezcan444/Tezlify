@@ -153,6 +153,12 @@ export interface WhatsAppSession {
 export type WhatsAppNumberStatus = 'ACTIVE' | 'INACTIVE' | 'DISCONNECTED' | 'ERROR';
 export type WhatsAppNumberProvider = 'META_CLOUD' | 'BAILEYS_QR';
 
+export enum LiveModeStatus {
+  LIVE_DISCONNECTED = 'LIVE_DISCONNECTED',
+  LIVE_CONNECTING = 'LIVE_CONNECTING',
+  LIVE_CONNECTED = 'LIVE_CONNECTED',
+}
+
 export interface WhatsAppNumber {
   id: number;
   user_id?: string;

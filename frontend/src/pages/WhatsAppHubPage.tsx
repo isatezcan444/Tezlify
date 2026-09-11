@@ -33,7 +33,8 @@ import {
 } from 'lucide-react';
 import { ApiClient } from '../api/client';
 import { WhatsAppRepository } from '../data/whatsapp/whatsappRepository';
-import { WhatsAppNumber, MessageLog, Conversation, ConversationStatus, ConversationMessageStatus, Lead, Message } from '../types';
+import { WhatsAppNumber, MessageLog, Conversation, ConversationStatus, ConversationMessageStatus, Lead, Message, LiveModeStatus } from '../types';
+import { WhatsAppApi, useLiveMode, probeLive, invalidateLiveProbe, isLiveCached } from '../api/whatsappApi';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 import { Card } from '../components/ui/card';
@@ -105,6 +106,10 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   const [isNewChatModalOpen, setIsNewChatModalOpen] = useState<boolean>(false);
   const [isSyncingChats, setIsSyncingChats] = useState<boolean>(false);
   const conversationsGenerationRef = useRef(0);
+
+  // Live mode: probes backend WhatsApp gateway health on mount & periodically
+  const { status: liveStatus, probe: probeLiveMode } = useLiveMode();
+  const isLive = liveStatus === LiveModeStatus.LIVE_CONNECTED;
 
   const activeMessages = selectedConv ? (messagesMap[selectedConv.id] || []) : [];
   const activeChatLoading = false;
@@ -968,6 +973,25 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
               ? t('whatsapp.sessionsSubtitle')
               : t('whatsapp.antiBanSubtitle')}
           </p>
+        </div>
+
+        {/* Live Gateway Status Badge */}
+        <div className="shrink-0">
+          <Badge
+            className={`text-[10px] font-extrabold px-2.5 py-1 rounded-xl transition-all ${
+              liveStatus === LiveModeStatus.LIVE_CONNECTED
+                ? 'bg-[#25D366]/20 text-[#25D366] dark:bg-[#25D366]/15'
+                : liveStatus === LiveModeStatus.LIVE_CONNECTING
+                ? 'bg-amber-400/20 text-amber-600 dark:bg-amber-400/15'
+                : 'bg-slate-400/20 text-slate-500 dark:bg-slate-400/15'
+            }`}
+          >
+            {liveStatus === LiveModeStatus.LIVE_CONNECTED
+              ? t('whatsapp.liveBadgeConnected')
+              : liveStatus === LiveModeStatus.LIVE_CONNECTING
+              ? t('whatsapp.liveBadgeConnecting')
+              : t('whatsapp.liveBadgeDisconnected')}
+          </Badge>
         </div>
 
         {/* Segmented Tab Switcher */}

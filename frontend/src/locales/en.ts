@@ -568,6 +568,13 @@ export const en = {
     confirmDeleteSession: 'Are you sure you want to delete this WhatsApp session? This action cannot be undone.',
     socketLive: 'Live Socket',
     offline: 'Offline',
+    liveMode: 'Live Gateway',
+    liveConnected: 'Connected to WhatsApp Gateway',
+    liveConnecting: 'Connecting to Gateway...',
+    liveDisconnected: 'Gateway Unavailable — demo mode',
+    liveBadgeConnected: 'LIVE',
+    liveBadgeConnecting: 'CONNECTING',
+    liveBadgeDisconnected: 'DEMO',
   },
   campaigns: {
     title: 'WhatsApp Campaigns',

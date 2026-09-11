@@ -568,6 +568,13 @@ export const tr = {
     confirmDeleteSession: 'Bu WhatsApp hattını silmek istediğinize emin misiniz? Bu işlem geri alınamaz.',
     socketLive: 'Canlı Soket',
     offline: 'Çevrimdışı',
+    liveMode: 'Canlı Gateway',
+    liveConnected: 'WhatsApp Gateway\'e bağlı',
+    liveConnecting: 'Gateway\'e bağlanıyor...',
+    liveDisconnected: 'Gateway kullanılamıyor — demo modu',
+    liveBadgeConnected: 'CANLI',
+    liveBadgeConnecting: 'BAĞLANIYOR',
+    liveBadgeDisconnected: 'DEMO',
   },
   campaigns: {
     title: 'WhatsApp Kampanyaları',

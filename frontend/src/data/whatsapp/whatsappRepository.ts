@@ -42,6 +42,22 @@ import {
   initialMessageLogs,
 } from './mockData';
 import { generateFakeQrDataUri } from './fakeQr';
+import { WhatsAppApi, probeLive, invalidateLiveProbe } from '../../api/whatsappApi';
+
+// ---------------------------------------------------------------------------
+// Canlı backend delegasyonu (Aşama 3)
+//
+// WhatsApp UI varsayılan olarak gerçek `/api/v1/whatsapp/*` API'sini kullanır.
+// Gateway kapalıysa (probeLive false ya da canlı çağrı hata verirse) metod
+// şeffaf şekilde aşağıdaki in-memory demo katmanına düşer. Böylece UI hem
+// gerçek Baileys gateway'e bağlanır hem de gateway'siz ortamda demo verisiyle
+// çalışmaya devam eder — asla sahte başarı üretilmez (canlı çağrı hatası
+// yutulmaz, demo katmanı açıkça devreye girer).
+// ---------------------------------------------------------------------------
+
+async function liveOrThrow(): Promise<boolean> {
+  return probeLive();
+}
 
 // ---------------------------------------------------------------------------
 // Module-level in-memory state (single source of truth for the WhatsApp UI)
@@ -249,13 +265,50 @@ export class WhatsAppRepository {
   }
 
   // -------------------------------------------------------------------------
+  // Contacts (live-delegated or frontend-only fallback)
+  // -------------------------------------------------------------------------
+  static async getWhatsAppContacts(): Promise<any[]> {
+    if (await liveOrThrow()) {
+      try {
+        return await WhatsAppApi.getContacts();
+      } catch {
+        invalidateLiveProbe(); // canlı katman erişilemez -> demo'ya düş
+      }
+    }
+    // Frontend-only fallback: derive from existing mock conversations
+    return conversations.map((c) => ({
+      id: c.lead_id || c.id,
+      name: c.lead_name || 'Bilinmeyen',
+      phone: c.lead_phone || '',
+      status: c.unread_count > 0 ? 'UNREAD' : 'READ',
+      unread_count: c.unread_count,
+      last_message_preview: c.last_message_preview,
+      updated_at: c.updated_at,
+    }));
+  }
+
+  // -------------------------------------------------------------------------
   // Sessions & QR (frontend-only simulation)
   // -------------------------------------------------------------------------
   static async getWhatsAppSessions(): Promise<WhatsAppSession[]> {
+    if (await liveOrThrow()) {
+      try {
+        return await WhatsAppApi.listSessions();
+      } catch {
+        invalidateLiveProbe(); // canlı katman erişilemez -> demo'ya düş
+      }
+    }
     return sessions.map((s) => ({ ...s }));
   }
 
   static async createWhatsAppSession(name: string, maxDailyLimit: number = 50): Promise<WhatsAppSession> {
+    if (await liveOrThrow()) {
+      try {
+        return await WhatsAppApi.createSession(name);
+      } catch {
+        invalidateLiveProbe();
+      }
+    }
     const sessionName = name.trim() || 'Hat 1';
     const session: WhatsAppSession = {
       id: nextSessionId++,
@@ -311,12 +364,26 @@ export class WhatsAppRepository {
   }
 
   static async getSessionQr(sessionId: number): Promise<{ status: string; qr_code: string | null; phone: string | null }> {
+    if (await liveOrThrow()) {
+      try {
+        return await WhatsAppApi.getSessionQr(sessionId);
+      } catch {
+        invalidateLiveProbe();
+      }
+    }
     const session = sessions.find((s) => s.id === sessionId);
     if (!session) throw new Error('Oturum bulunamadı.');
     return { status: session.status, qr_code: session.qr_code, phone: session.phone_number || null };
   }
 
   static async refreshSessionQr(sessionId: number): Promise<{ success: boolean; status: string; qr_code: string | null }> {
+    if (await liveOrThrow()) {
+      try {
+        return await WhatsAppApi.refreshSessionQr(sessionId);
+      } catch {
+        invalidateLiveProbe();
+      }
+    }
     const session = sessions.find((s) => s.id === sessionId);
     if (!session) throw new Error('Oturum bulunamadı.');
     if (session.status === 'CONNECTED') {
@@ -330,6 +397,13 @@ export class WhatsAppRepository {
   }
 
   static async disconnectSession(sessionId: number): Promise<any> {
+    if (await liveOrThrow()) {
+      try {
+        return await WhatsAppApi.logoutSession(sessionId);
+      } catch {
+        invalidateLiveProbe();
+      }
+    }
     const session = sessions.find((s) => s.id === sessionId);
     if (!session) throw new Error('Oturum bulunamadı.');
     session.status = 'DISCONNECTED';
@@ -339,6 +413,14 @@ export class WhatsAppRepository {
   }
 
   static async deleteSession(sessionId: number): Promise<void> {
+    if (await liveOrThrow()) {
+      try {
+        await WhatsAppApi.deleteSession(sessionId);
+        return;
+      } catch {
+        invalidateLiveProbe();
+      }
+    }
     const idx = sessions.findIndex((s) => s.id === sessionId);
     if (idx === -1) return;
     sessions.splice(idx, 1);
@@ -356,6 +438,19 @@ export class WhatsAppRepository {
     limit?: number;
     offset?: number;
   }): Promise<Conversation[]> {
+    if (await liveOrThrow()) {
+      try {
+        return await WhatsAppApi.getConversations({
+          status: params?.status,
+          unread_only: params?.unread_only,
+          search: params?.search,
+          limit: params?.limit,
+          offset: params?.offset,
+        });
+      } catch {
+        invalidateLiveProbe();
+      }
+    }
     let list = [...conversations];
     if (params?.status) list = list.filter((c) => c.status === params.status);
     if (params?.whatsapp_number_id !== undefined && params.whatsapp_number_id !== null) {
@@ -387,6 +482,13 @@ export class WhatsAppRepository {
     conversationId: number,
     _params?: { limit?: number; before?: number }
   ): Promise<ConversationMessagesResponse> {
+    if (await liveOrThrow()) {
+      try {
+        return await WhatsAppApi.getMessages(conversationId, _params);
+      } catch {
+        invalidateLiveProbe();
+      }
+    }
     const conv = findConversationOrThrow(conversationId);
     const messages = sortMessages(messagesByConversation[conv.id] || []);
     return {
@@ -462,6 +564,13 @@ export class WhatsAppRepository {
   }
 
   static async markConversationAsRead(conversationId: number): Promise<Conversation> {
+    if (await liveOrThrow()) {
+      try {
+        return await WhatsAppApi.markConversationRead(conversationId);
+      } catch {
+        invalidateLiveProbe();
+      }
+    }
     const conv = findConversationOrThrow(conversationId);
     conv.unread_count = 0;
     conv.last_read_at = nowIso();
@@ -476,6 +585,13 @@ export class WhatsAppRepository {
   }
 
   static async sendMessage(conversationId: number, body: string, idempotencyKey?: string): Promise<Message> {
+    if (await liveOrThrow()) {
+      try {
+        return await WhatsAppApi.sendMessage(conversationId, body, idempotencyKey);
+      } catch {
+        invalidateLiveProbe();
+      }
+    }
     const conv = findConversationOrThrow(conversationId);
     const clean = (body || '').trim();
     if (!clean) throw new Error('Mesaj metni boş olamaz.');

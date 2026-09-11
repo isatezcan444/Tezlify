@@ -9,7 +9,11 @@ This document defines the core architecture, non-negotiable rules, invariants, a
 
 ### 1.1 Truthfulness
 - **No False Positives**: Never mask exceptions or failures as `{"success": True}`. If an outreach dispatch cannot happen, it MUST be reported as failed, never as sent.
-- There is **no WhatsApp backend** in this build: no gateway, no Meta Cloud API, no Baileys, no webhooks, no sessions. The WhatsApp frontend UI is a product shell backed by a frontend-only data layer (`frontend/src/data/whatsapp/`).
+- **WhatsApp Live Integration**: The project ships a three-tier WhatsApp live integration:
+  1. **Gateway** (`whatsapp-gateway/`): Node.js + `@whiskeysockets/baileys` service (QR pairing, session lifecycle, encrypted auth state, event bridge).
+  2. **Backend** (`backend/`): FastAPI proxy endpoints (`/api/v1/whatsapp/*`), `/ws/gateway` WebSocket for inbound gateway events, `WhatsAppSession` model.
+  3. **Frontend** (`frontend/`): `WhatsAppApi` live client, `WhatsAppRepository` live+mock fallback, `WhatsAppHubPage` live mode.
+  - When the gateway/backend is unreachable, the frontend degrades gracefully to the in-memory demo data layer (`frontend/src/data/whatsapp/`). No false-positive success is returned.
 
 ### 1.2 Single Source of Truth for Anti-Ban Policy
 - All jitter delays, mesai (working hours) limits, and humanized delays MUST be resolved via `AntibanPolicy`.
@@ -23,7 +27,8 @@ This document defines the core architecture, non-negotiable rules, invariants, a
 - Ingestion and deduplication are handled centrally by `LeadIngestService`.
 
 ### 1.3.1 WebSocket
-- The `/ws` WebSocket endpoint and `ws_manager` are shared infrastructure used by scraper progress and campaign progress broadcasts. They must be preserved.
+- The `/ws` WebSocket endpoint and `ws_manager` are shared infrastructure used by scraper progress, campaign progress broadcasts, and WhatsApp gateway event bridging (`/ws/gateway`). They must be preserved.
+- The `/ws/gateway` endpoint is the inbound bridge for Baileys gateway events (fail-closed token auth via `WHATSAPP_GATEWAY_SECRET`). Gateway events are persisted and broadcast to connected frontend clients via the shared `ws_manager`.
 
 ### 1.4 Scraper Pipeline Integrity ("İşletme Ara")
 - The Google Maps / Places scraper with Playwright and streaming HTTP extraction must NEVER be degraded.
@@ -39,7 +44,7 @@ This document defines the core architecture, non-negotiable rules, invariants, a
 - **Thin Routers / Fat Services (SRP)**: Endpoints in `backend/app/api/v1/endpoints/` handle HTTP validation, query parsing, and delegating to domain services (`LeadIngestService`, `CampaignRunner`, `OutreachManager`, `ExportService`).
 - **Security**:
   - CORS origins are loaded from `settings.BACKEND_CORS_ORIGINS`.
-  - Credentials/tokens must never be committed; the WhatsApp backend (and its credential vault) no longer exists.
+  - Credentials/tokens must never be committed; the WhatsApp gateway encrypts session auth state at rest via `GATEWAY_ENCRYPTION_KEY` (AES-256).
 
 ---
 
