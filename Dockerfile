@@ -8,6 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
     gnupg \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Node.js 20 (required by the bundled WhatsApp gateway / Baileys)
