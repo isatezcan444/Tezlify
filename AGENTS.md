@@ -13,7 +13,7 @@ This document defines the core architecture, non-negotiable rules, invariants, a
   1. **Gateway** (`whatsapp-gateway/`): Node.js + `@whiskeysockets/baileys` service (QR pairing, session lifecycle, encrypted auth state, event bridge).
   2. **Backend** (`backend/`): FastAPI proxy endpoints (`/api/v1/whatsapp/*`), `/ws/gateway` WebSocket for inbound gateway events, `WhatsAppSession` model.
   3. **Frontend** (`frontend/`): `WhatsAppApi` live client, `WhatsAppRepository` live+mock fallback, `WhatsAppHubPage` live mode.
-  - When the gateway/backend is unreachable, the frontend degrades gracefully to the in-memory demo data layer (`frontend/src/data/whatsapp/`). No false-positive success is returned.
+  - When the gateway/backend is unreachable, all WhatsApp operations **fail closed** — no mock data, no simulations, no false-positive success. The UI surfaces the error to the user.
 
 ### 1.2 Single Source of Truth for Anti-Ban Policy
 - All jitter delays, mesai (working hours) limits, and humanized delays MUST be resolved via `AntibanPolicy`.
