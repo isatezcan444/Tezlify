@@ -143,6 +143,9 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
             setQrCode(refreshRes.qr_code);
             setModalState('QR_READY');
             resetCountdown();
+          } else if (refreshRes.error_message) {
+            setModalState('ERROR');
+            setErrorMessage(refreshRes.error_message);
           }
         }
       } else {
@@ -204,6 +207,9 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
         setQrCode(res.qr_code);
         setModalState('QR_READY');
         resetCountdown();
+      } else if (res.error_message) {
+        setModalState('ERROR');
+        setErrorMessage(res.error_message);
       }
     } catch (err: any) {
       toast.error(err?.message || t('whatsapp.refreshingQr') || 'QR kod yenilenemedi', t('common.error'));
@@ -325,6 +331,12 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
             setQrCode(res.qr_code);
             setModalState('QR_READY');
             resetCountdown();
+            if (fallbackPollRef.current) clearInterval(fallbackPollRef.current);
+          } else if (res.error_message) {
+            // Gateway failed permanently (e.g. WhatsApp terminated the
+            // connection before issuing a QR) — surface the real reason.
+            setErrorMessage(res.error_message);
+            setModalState('ERROR');
             if (fallbackPollRef.current) clearInterval(fallbackPollRef.current);
           }
         } catch {

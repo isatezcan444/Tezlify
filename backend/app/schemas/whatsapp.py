@@ -35,6 +35,7 @@ class WhatsAppQrResponse(BaseModel):
     status: str
     qr_code: Optional[str] = None
     phone: Optional[str] = None
+    error_message: Optional[str] = None
 
 
 class WhatsAppContact(BaseModel):

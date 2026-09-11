@@ -69,12 +69,12 @@ export class WhatsAppRepository {
     return WhatsAppApi.createSession(name);
   }
 
-  static async getSessionQr(sessionId: number): Promise<{ status: string; qr_code: string | null; phone: string | null }> {
+  static async getSessionQr(sessionId: number): Promise<{ status: string; qr_code: string | null; phone: string | null; error_message: string | null }> {
     await requireLive();
     return WhatsAppApi.getSessionQr(sessionId);
   }
 
-  static async refreshSessionQr(sessionId: number): Promise<{ success: boolean; status: string; qr_code: string | null }> {
+  static async refreshSessionQr(sessionId: number): Promise<{ success: boolean; status: string; qr_code: string | null; error_message: string | null }> {
     await requireLive();
     return WhatsAppApi.refreshSessionQr(sessionId);
   }

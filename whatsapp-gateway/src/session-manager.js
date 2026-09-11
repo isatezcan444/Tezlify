@@ -108,6 +108,7 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
         is_active: s.is_active,
         is_phone_online: s.is_phone_online || false,
         battery_level: s.battery_level ?? null,
+        error_message: s.error_message || null,
         qr_code: s.status === 'SCAN_QR' ? s.qr_code : null,
         created_at: s.created_at,
         updated_at: s.updated_at,
@@ -129,6 +130,10 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
         is_active: true,
         is_phone_online: false,
         battery_level: null,
+        error_message: null,
+        error_reason: null,
+        _connFailures: 0,
+        _qrSeenForAttempt: false,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
         sock: null,
@@ -144,6 +149,10 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       if (session.status === 'CONNECTED') return this.getSession(id);
       session.status = 'SCAN_QR';
       session.qr_code = null;
+      session.error_message = null;
+      session.error_reason = null;
+      session._connFailures = 0;
+      session._qrSeenForAttempt = false;
       session.updated_at = new Date().toISOString();
       // Force a fresh QR by restarting the socket
       if (session.sock) {
@@ -422,6 +431,10 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
         const { connection, lastDisconnect, qr } = update;
         if (qr) {
           session.status = 'SCAN_QR';
+          session.error_message = null;
+          session.error_reason = null;
+          session._connFailures = 0;
+          session._qrSeenForAttempt = true;
           session.qr_code = await QRCode.toDataURL(qr);
           session.updated_at = new Date().toISOString();
           emitEvent({ event: 'session_qr_updated', session_id: id, qr_code: session.qr_code });
@@ -429,6 +442,9 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
         if (connection === 'open') {
           session.status = 'CONNECTED';
           session.qr_code = null;
+          session.error_message = null;
+          session.error_reason = null;
+          session._connFailures = 0;
           session.is_phone_online = true;
           session.updated_at = new Date().toISOString();
           // Persist encrypted auth state
@@ -443,10 +459,44 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
             session.status = isBanned ? 'BANNED' : 'DISCONNECTED';
             session.is_active = false;
             session.is_phone_online = false;
+            session.error_message = isBanned
+              ? 'WhatsApp bu oturumu engelledi (badSession). Oturumu silip yeniden QR ile bağlanın.'
+              : null;
+            session.error_reason = isBanned ? 'BANNED' : 'LOGGED_OUT';
             session.updated_at = new Date().toISOString();
             emitEvent({ event: 'session_disconnected', session_id: id, session_name: session.session_name, reason: isBanned ? 'BANNED' : 'LOGGED_OUT' });
           } else {
-            // Transient disconnect — retry with backoff
+            // Transient disconnect — retry with a bounded number of attempts.
+            // If WhatsApp keeps terminating the socket BEFORE ever sending a
+            // QR (typical when the host IP is blocked by WhatsApp), fail
+            // loudly instead of retrying forever (AGENTS.md truthfulness).
+            session._connFailures = (session._connFailures || 0) + 1;
+            const sawQrThisAttempt = session._qrSeenForAttempt;
+            session._qrSeenForAttempt = false;
+            const maxAttempts = 3;
+            if (!sawQrThisAttempt && session._connFailures >= maxAttempts) {
+              session.status = 'DISCONNECTED';
+              session.is_active = false;
+              session.is_phone_online = false;
+              session.qr_code = null;
+              session.error_reason = 'WA_CONNECTION_TERMINATED';
+              session.error_message =
+                `WhatsApp sunucusu QR kodu oluşturulmadan bağlantıyı kapattı ` +
+                `(statusCode=${statusCode ?? 'bilinmiyor'}, ${session._connFailures} deneme). ` +
+                `Bu sunucunun IP adresi WhatsApp tarafından engelleniyor olabilir. ` +
+                `Birkaç dakika sonra "QR'ı Yenile" ile tekrar deneyin veya gateway'i ` +
+                `farklı bir ağda (ör. yerel makine) çalıştırın.`;
+              session.updated_at = new Date().toISOString();
+              logger.error({ statusCode, failures: session._connFailures }, 'Baileys kept being terminated before QR — surfacing error');
+              emitEvent({
+                event: 'connection_error',
+                session_id: id,
+                session_name: session.session_name,
+                error: session.error_message,
+                error_message: session.error_message,
+              });
+              return;
+            }
             session.status = 'CONNECTING';
             session.is_phone_online = false;
             session.updated_at = new Date().toISOString();

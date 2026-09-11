@@ -105,6 +105,11 @@ def _apply_gateway_live(row: WhatsAppSession, data: Dict[str, Any]) -> None:
         row.status = _parse_status(status)
     if data.get("phone"):
         row.phone_number = data["phone"]
+    gw_error = data.get("error_message")
+    if gw_error is not None:
+        row.error_message = str(gw_error)[:1000] or None
+    if status in ("CONNECTED", "SCAN_QR"):
+        row.error_message = None
     row.updated_at = datetime.utcnow()
 # ---------------------------------------------------------------------------
 # Session yonetimi
@@ -172,6 +177,7 @@ async def get_session_qr(db: AsyncSession, user_id: str, session_id: int) -> Dic
         "status": row.status.value if hasattr(row.status, "value") else str(row.status),
         "qr_code": data.get("qr_code") or row.qr_code,
         "phone": data.get("phone") or row.phone_number,
+        "error_message": data.get("error_message") or row.error_message,
     }
 
 
@@ -183,6 +189,7 @@ async def refresh_session_qr(db: AsyncSession, user_id: str, session_id: int) ->
     return {
         "status": row.status.value if hasattr(row.status, "value") else str(row.status),
         "qr_code": data.get("qr_code") or row.qr_code,
+        "error_message": data.get("error_message") or row.error_message,
     }
 
 
@@ -510,7 +517,7 @@ async def ingest_gateway_event(event: Dict[str, Any]) -> Dict[str, Any]:
                 result = await _ingest_message(db, event)
             elif evt in ("conversation_updated", "conversation_read", "message_status_updated"):
                 result = await _map_conversation_event(db, event)
-            elif str(evt).startswith("session_"):
+            elif evt == "connection_error" or str(evt).startswith("session_"):
                 result = await _map_session_event(db, event)
             else:
                 result = event
@@ -616,10 +623,20 @@ async def _map_session_event(db: AsyncSession, event: Dict[str, Any]) -> Dict[st
     gw_session_id = event.get("session_id")
     if not gw_session_id:
         return event
+    evt = event.get("event") or event.get("event_type") or ""
     res = await db.execute(select(WhatsAppSession).where(WhatsAppSession.gateway_id == str(gw_session_id)))
     row = res.scalar_one_or_none()
     if row:
         event["session_id"] = row.id
         event["session_name"] = event.get("session_name") or row.session_name
         event["user_id"] = str(row.user_id) if row.user_id else None
+        # Kalici hata yuzeyi: gateway'in gercek baglanti hatasini DB'ye yaz.
+        err = event.get("error") or event.get("error_message")
+        if evt == "connection_error" and err:
+            row.error_message = str(err)[:1000]
+            row.status = SessionStatus.DISCONNECTED
+            row.is_phone_online = False
+            row.updated_at = datetime.utcnow()
+        elif evt in ("session_connected", "session_qr_updated"):
+            row.error_message = None
     return event

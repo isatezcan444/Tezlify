@@ -104,9 +104,14 @@ app.get('/sessions/:id/qr', (req, res) => {
   const session = sessionManager.getSession(req.params.id);
   if (!session) return res.status(404).json({ error: 'Session not found' });
   if (session.status === 'CONNECTED') {
-    return res.json({ status: session.status, qr_code: null, phone: session.phone_number || null });
+    return res.json({ status: session.status, qr_code: null, phone: session.phone_number || null, error_message: null });
   }
-  res.json({ status: session.status, qr_code: session.qr_code || null, phone: session.phone_number || null });
+  res.json({
+    status: session.status,
+    qr_code: session.qr_code || null,
+    phone: session.phone_number || null,
+    error_message: session.error_message || null,
+  });
 });
 
 // Refresh QR code

@@ -215,21 +215,26 @@ export const WhatsAppApi = {
     return mapSession(s);
   },
 
-  async getSessionQr(sessionId: number): Promise<{ status: string; qr_code: string | null; phone: string | null }> {
-    const data = await apiGet<{ status: string; qr_code: string | null; phone: string | null }>(
+  async getSessionQr(sessionId: number): Promise<{ status: string; qr_code: string | null; phone: string | null; error_message: string | null }> {
+    const data = await apiGet<{ status: string; qr_code: string | null; phone: string | null; error_message?: string | null }>(
       `/whatsapp/sessions/${sessionId}/qr`
     );
-    return { status: data.status, qr_code: data.qr_code ?? null, phone: data.phone ?? null };
+    return {
+      status: data.status,
+      qr_code: data.qr_code ?? null,
+      phone: data.phone ?? null,
+      error_message: data.error_message ?? null,
+    };
   },
 
   async refreshSessionQr(
     sessionId: number
-  ): Promise<{ success: boolean; status: string; qr_code: string | null }> {
-    const data = await apiSend<{ status: string; qr_code: string | null }>(
+  ): Promise<{ success: boolean; status: string; qr_code: string | null; error_message: string | null }> {
+    const data = await apiSend<{ status: string; qr_code: string | null; error_message?: string | null }>(
       `/whatsapp/sessions/${sessionId}/qr/refresh`,
       'POST'
     );
-    return { success: true, status: data.status, qr_code: data.qr_code ?? null };
+    return { success: true, status: data.status, qr_code: data.qr_code ?? null, error_message: data.error_message ?? null };
   },
 
   async logoutSession(sessionId: number): Promise<{ success: boolean; status: string }> {
