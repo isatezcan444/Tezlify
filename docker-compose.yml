@@ -24,6 +24,12 @@ services:
     depends_on:
       backend:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('node:http').get('http://127.0.0.1:8787/health', res => process.exit(res.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     networks:
       - tezlify
 
@@ -38,6 +44,10 @@ services:
       - "8000:8000"
     env_file:
       - .env.backend
+    environment:
+      # Docker networking: 127.0.0.1 would point to this backend container,
+      # not the separate Baileys gateway container.
+      WHATSAPP_GATEWAY_URL: http://whatsapp-gateway:8787
     volumes:
       - tezlify_db:/app/data
     healthcheck:

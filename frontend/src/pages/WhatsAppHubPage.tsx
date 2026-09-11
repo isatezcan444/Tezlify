@@ -4,14 +4,9 @@ import {
   Smartphone, 
   QrCode, 
   ShieldCheck, 
-  BatteryCharging, 
-  Send, 
   Flame, 
   CheckCircle2, 
-  Trash2, 
-  PowerOff, 
   Loader2, 
-  X, 
   Zap,
   Clock,
   Sliders,
@@ -26,14 +21,12 @@ import {
   Archive,
   ExternalLink,
   Copy,
-  KeyRound,
-  RefreshCw,
   MessageSquarePlus,
   Users
 } from 'lucide-react';
 import { ApiClient } from '../api/client';
 import { WhatsAppRepository } from '../data/whatsapp/whatsappRepository';
-import { WhatsAppNumber, MessageLog, Conversation, ConversationStatus, ConversationMessageStatus, Lead, Message, LiveModeStatus } from '../types';
+import { WhatsAppSession, Conversation, ConversationStatus, ConversationMessageStatus, Lead, Message, LiveModeStatus } from '../types';
 import { WhatsAppApi, useLiveMode, probeLive, invalidateLiveProbe, isLiveCached } from '../api/whatsappApi';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
@@ -42,9 +35,7 @@ import { EmptyState } from '../components/ui/EmptyState';
 import { Avatar } from '../components/ui/Avatar';
 import { WhatsAppIcon } from '../components/ui/whatsapp-icon';
 import { 
-  WhatsAppNumberCard, 
-  NewWhatsAppNumberModal, 
-  EditWhatsAppNumberModal, 
+  SessionCard,
   WhatsAppQrConnectModal,
   ConversationList, 
   ChatThread, 
@@ -76,16 +67,11 @@ interface WhatsAppHubPageProps {
 export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats }) => {
   const toast = useToast();
   const { t } = useI18n();
-  const [whatsAppNumbers, setWhatsAppNumbers] = useState<WhatsAppNumber[]>([]);
-  const [isNewNumberModalOpen, setIsNewNumberModalOpen] = useState(false);
+  const [sessions, setSessions] = useState<WhatsAppSession[]>([]);
   const [isQrConnectModalOpen, setIsQrConnectModalOpen] = useState<boolean>(false);
   const [reconnectSessionId, setReconnectSessionId] = useState<number | undefined>(undefined);
-  const [editingNumber, setEditingNumber] = useState<WhatsAppNumber | null>(null);
-  const [verifyingNumberId, setVerifyingNumberId] = useState<number | null>(null);
-  const [disconnectingNumberId, setDisconnectingNumberId] = useState<number | null>(null);
-  const [deletingNumberId, setDeletingNumberId] = useState<number | null>(null);
-  const [, setLogs] = useState<MessageLog[]>([]);
-  const [, setLoading] = useState(false);
+  const [disconnectingSessionId, setDisconnectingSessionId] = useState<number | null>(null);
+  const [deletingSessionId, setDeletingSessionId] = useState<number | null>(null);
 
   // Tab State: 'conversations' | 'sessions' | 'antiban'
   const [hubTab, setHubTab] = useState<'conversations' | 'sessions' | 'antiban'>('conversations');
@@ -685,42 +671,26 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   const [isSavingAntiBan, setIsSavingAntiBan] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
 
-  // Test Sandbox State
-  const [testPhone, setTestPhone] = useState('0532 100 20 30');
-  const [testMsg, setTestMsg] = useState('Tezlify WhatsApp Gateway test message.');
-  const [selectedSessionForTest] = useState<number | undefined>(undefined);
-  const [testSending, setTestSending] = useState(false);
-  const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
-
-  const fetchNumbersAndLogs = useCallback(async (silent = false) => {
-    if (!silent) setLoading(true);
+  const fetchSessions = useCallback(async (silent = false) => {
     try {
-      const [numbersData, logsData] = await Promise.all([
-        WhatsAppRepository.getWhatsAppNumbers(),
-        WhatsAppRepository.getMessageLogs()
-      ]);
-      setWhatsAppNumbers(numbersData);
-      setLogs(logsData);
+      setSessions(await WhatsAppRepository.getWhatsAppSessions());
     } catch (err: any) {
-      toast.error(err?.message || t('common.error'), t('common.error'));
-    } finally {
-      if (!silent) setLoading(false);
+      if (!silent) toast.error(err?.message || t('common.error'), t('common.error'));
     }
   }, [t, toast]);
 
   const handleQrSuccess = useCallback(() => {
-    fetchNumbersAndLogs(true);
+    fetchSessions(true);
     onRefreshStats();
-  }, [fetchNumbersAndLogs, onRefreshStats]);
+  }, [fetchSessions, onRefreshStats]);
 
   const handleOpenQrConnect = useCallback(() => {
-    const existingQrNumber = whatsAppNumbers.find((n) => n.provider === 'BAILEYS_QR');
-    setReconnectSessionId(existingQrNumber?.session_id);
+    setReconnectSessionId(undefined);
     setIsQrConnectModalOpen(true);
-  }, [whatsAppNumbers]);
+  }, []);
 
   useEffect(() => {
-    fetchNumbersAndLogs();
+    fetchSessions();
 
     // Listen to real-time inbound messages and WhatsApp session events
     const handleWs = (e: Event) => {
@@ -732,7 +702,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         eventData?.event === 'session_disconnected' ||
         eventData?.event === 'number_updated'
       ) {
-        fetchNumbersAndLogs(true);
+        fetchSessions(true);
         onRefreshStats();
       } else if (eventData?.event === 'conversations_cleared') {
         conversationsGenerationRef.current += 1;
@@ -761,7 +731,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     return () => {
       window.removeEventListener('tezlify:ws_event', handleWs);
     };
-  }, [fetchNumbersAndLogs, onRefreshStats]);
+  }, [fetchSessions, onRefreshStats]);
 
   const handlePresetSelect = (presetKey: 'ultra_safe' | 'standard_balanced' | 'fast_warmed') => {
     const presetData = ANTI_BAN_PRESETS[presetKey];
@@ -834,41 +804,8 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   const hasUnsavedChanges = !isConfigEqual(config, savedConfig);
   const riskInfo = calculateRiskLevel(config.min_delay_seconds, config.daily_message_limit);
 
-  const handleVerifyNumber = async (numberId: number) => {
-    if (verifyingNumberId) return;
-    setVerifyingNumberId(numberId);
-    try {
-      const result = await WhatsAppRepository.verifyWhatsAppNumber(numberId);
-      if (result.verified) {
-        toast.success(t('whatsapp.verifiedSuccess'), t('common.success'));
-        setWhatsAppNumbers((prev) =>
-          prev.map((n) =>
-            n.id === numberId
-              ? {
-                  ...n,
-                  status: result.status,
-                  verified_name: result.verified_name ?? n.verified_name,
-                  quality_rating: result.quality_rating ?? n.quality_rating,
-                  last_verified_at: result.last_verified_at ?? n.last_verified_at,
-                }
-              : n
-          )
-        );
-      } else {
-        toast.error(result.error || t('whatsapp.verifyFailed'), t('common.error'));
-        const refreshed = await WhatsAppRepository.getWhatsAppNumbers();
-        setWhatsAppNumbers(refreshed);
-      }
-      onRefreshStats();
-    } catch (err: any) {
-      toast.error(err?.message || t('whatsapp.verifyFailed'), t('common.error'));
-    } finally {
-      setVerifyingNumberId(null);
-    }
-  };
-
-  const handleDisconnectNumber = async (numberId: number) => {
-    if (disconnectingNumberId) return;
+  const handleDisconnectSession = async (sessionId: number) => {
+    if (disconnectingSessionId) return;
     const ok = await toast.confirm({
       title: t('whatsapp.disconnect'),
       message: t('whatsapp.disconnectConfirm'),
@@ -878,36 +815,34 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     });
     if (!ok) return;
 
-    setDisconnectingNumberId(numberId);
+    setDisconnectingSessionId(sessionId);
     try {
-      const disconnected = await WhatsAppRepository.disconnectWhatsAppNumber(numberId);
-      setWhatsAppNumbers((prev) =>
-        prev.map((n) => (n.id === numberId ? disconnected : n))
-      );
+      await WhatsAppRepository.disconnectSession(sessionId);
+      await fetchSessions(true);
       toast.success(t('whatsapp.disconnectedSuccess'), t('common.success'));
       onRefreshStats();
     } catch (err: any) {
       toast.error(err?.message || t('common.error'), t('common.error'));
     } finally {
-      setDisconnectingNumberId(null);
+      setDisconnectingSessionId(null);
     }
   };
 
-  const handleDeleteNumber = async (numberId: number) => {
-    if (deletingNumberId) return;
+  const handleDeleteSession = async (sessionId: number) => {
+    if (deletingSessionId) return;
     const ok = await toast.confirm({
-      title: t('whatsapp.deleteNumber'),
-      message: t('whatsapp.deleteNumberConfirm'),
+      title: t('whatsapp.deleteSession'),
+      message: t('whatsapp.deleteSessionConfirm'),
       confirmText: t('common.delete'),
       cancelText: t('common.cancel'),
       variant: 'danger',
     });
     if (!ok) return;
 
-    setDeletingNumberId(numberId);
+    setDeletingSessionId(sessionId);
     try {
-      await WhatsAppRepository.deleteWhatsAppNumber(numberId);
-      setWhatsAppNumbers((prev) => prev.filter((n) => n.id !== numberId));
+      await WhatsAppRepository.deleteSession(sessionId);
+      setSessions((prev) => prev.filter((session) => session.id !== sessionId));
       // Product rule: deleting a line wipes live dialogs. Clear immediately
       // and reload from the server instead of relying solely on the realtime
       // event (which can be missed on a reconnecting socket).
@@ -921,25 +856,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       toast.error(err?.message || t('common.error'), t('common.error'));
       await loadConversations(true);
     } finally {
-      setDeletingNumberId(null);
-    }
-  };
-
-  const handleSendTest = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!testPhone || !testMsg) return;
-    setTestSending(true);
-    setTestResult(null);
-
-    try {
-      const res = await WhatsAppRepository.sendTestMessage(testPhone, testMsg, selectedSessionForTest);
-      setTestResult({ ok: true, message: res.message });
-      fetchNumbersAndLogs();
-      onRefreshStats();
-    } catch (err: any) {
-      setTestResult({ ok: false, message: `${t('common.error')}: ${err.message}` });
-    } finally {
-      setTestSending(false);
+      setDeletingSessionId(null);
     }
   };
 
@@ -1262,7 +1179,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       )}
 
       {/* ========================================================================= */}
-      {/* 2. HAT VE NUMARA YÖNETİMİ (META CLOUD API) */}
+      {/* 2. BAILEYS QR OTURUM YÖNETİMİ */}
       {/* ========================================================================= */}
       {hubTab === 'sessions' && (
         <div className="space-y-6">
@@ -1276,18 +1193,9 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
               <span>{t('whatsapp.connectWithQr') || 'QR ile Bağla'}</span>
             </Button>
 
-            <Button
-              onClick={() => setIsNewNumberModalOpen(true)}
-              size="sm"
-              variant="outline"
-              className="space-x-2 font-bold cursor-pointer border-slate-200 dark:border-white/[0.1] text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-white/[0.06]"
-            >
-              <Smartphone className="w-4 h-4" />
-              <span>{t('whatsapp.addMetaNumber')}</span>
-            </Button>
           </div>
 
-          {whatsAppNumbers.length === 0 ? (
+          {sessions.length === 0 ? (
             <Card className="p-8">
               <EmptyState
                 icon={Smartphone}
@@ -1302,21 +1210,16 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
             </Card>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-              {whatsAppNumbers.map((num) => (
-                <WhatsAppNumberCard
-                  key={num.id}
-                  number={num}
-                  onVerify={handleVerifyNumber}
-                  onEdit={(selected) => setEditingNumber(selected)}
-                  onDisconnect={handleDisconnectNumber}
-                  onDelete={handleDeleteNumber}
-                  onScanQR={(selectedNum) => {
-                    setReconnectSessionId(selectedNum.session_id || selectedNum.id);
+              {sessions.map((session) => (
+                <SessionCard
+                  key={session.id}
+                  session={session}
+                  onDisconnect={handleDisconnectSession}
+                  onDelete={handleDeleteSession}
+                  onScanQR={(sessionId) => {
+                    setReconnectSessionId(sessionId);
                     setIsQrConnectModalOpen(true);
                   }}
-                  isVerifying={verifyingNumberId === num.id}
-                  isDisconnecting={disconnectingNumberId === num.id}
-                  isDeleting={deletingNumberId === num.id}
                 />
               ))}
             </div>
@@ -1721,85 +1624,9 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         </div>
       </Card>
 
-      {/* Two-Column: Test Sandbox & Anti-Ban Protocols */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* Direct Test Sandbox */}
-        <div className="lg:col-span-6">
-          <Card className="p-6 space-y-4">
-            <div className="flex items-center justify-between">
-              <h3 className="text-base font-bold text-slate-800 dark:text-white flex items-center gap-2">
-                <Zap className="w-4 h-4 text-[#FF9F43]" />
-                {t('whatsapp.testSandboxTitle')}
-              </h3>
-              <Badge variant="warning" className="font-mono text-[9px]">SANDBOX</Badge>
-            </div>
-            <p className="text-xs text-slate-500 dark:text-[#7E7F96] font-medium">
-              {t('whatsapp.testSandboxSubtitle')}
-            </p>
-
-            <form onSubmit={handleSendTest} className="space-y-3 text-xs">
-              <div>
-                <label className="text-slate-700 dark:text-slate-300 font-bold block mb-1">
-                  {t('whatsapp.testRecipient')}
-                </label>
-                <input
-                  type="text"
-                  value={testPhone}
-                  onChange={(e) => setTestPhone(e.target.value)}
-                  placeholder={t('whatsapp.testPhonePlaceholder')}
-                  className="w-full px-3 py-2 rounded-lg vuexy-input text-xs font-mono font-bold"
-                  required
-                />
-              </div>
-
-              <div>
-                <label className="text-slate-700 dark:text-slate-300 font-bold block mb-1">{t('whatsapp.testMessageText')}</label>
-                <textarea
-                  value={testMsg}
-                  onChange={(e) => setTestMsg(e.target.value)}
-                  rows={3}
-                  className="w-full p-3 rounded-lg vuexy-input text-xs leading-relaxed font-medium"
-                  placeholder={t('whatsapp.testMessagePlaceholder')}
-                  required
-                />
-              </div>
-
-              {testResult && (
-                <div
-                  className={`p-3 rounded-lg text-xs font-bold ${
-                    testResult.ok
-                      ? 'bg-[#28C76F]/15 border border-[#28C76F]/30 text-[#28C76F]'
-                      : 'bg-[#EA5455]/15 border border-[#EA5455]/30 text-[#EA5455]'
-                  }`}
-                >
-                  {testResult.message}
-                </div>
-              )}
-
-              <Button
-                type="submit"
-                disabled={testSending || !testPhone || !testMsg}
-                size="lg"
-                className="w-full font-bold shadow-md shadow-[#7367F0]/30 space-x-2 cursor-pointer"
-              >
-                {testSending ? (
-                  <>
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    <span>{t('whatsapp.testSending')}</span>
-                  </>
-                ) : (
-                  <>
-                    <Send className="w-3.5 h-3.5" />
-                    <span>{t('whatsapp.sendTestMessage')}</span>
-                  </>
-                )}
-              </Button>
-            </form>
-          </Card>
-        </div>
-
-        {/* Anti-Ban Safeguard Guidelines */}
-        <div className="lg:col-span-6">
+      {/* Anti-Ban Safeguard Guidelines */}
+      <div className="grid grid-cols-1">
+        <div>
           <Card className="p-6 space-y-4">
             <h3 className="text-base font-bold text-slate-800 dark:text-white flex items-center gap-2">
               <ShieldCheck className="w-4 h-4 text-[#28C76F]" />
@@ -1833,31 +1660,6 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       </div>
       </div>
       )}
-
-      {/* New WhatsApp Number Modal */}
-      <NewWhatsAppNumberModal
-        isOpen={isNewNumberModalOpen}
-        onClose={() => setIsNewNumberModalOpen(false)}
-        onSuccess={(created) => {
-          setWhatsAppNumbers((prev) => [created, ...prev]);
-          toast.success(t('whatsapp.numberAddedSuccess'), t('common.success'));
-          onRefreshStats();
-        }}
-      />
-
-      {/* Edit WhatsApp Number Modal */}
-      <EditWhatsAppNumberModal
-        number={editingNumber}
-        isOpen={!!editingNumber}
-        onClose={() => setEditingNumber(null)}
-        onSuccess={(updated) => {
-          setWhatsAppNumbers((prev) =>
-            prev.map((n) => (n.id === updated.id ? updated : n))
-          );
-          toast.success(t('whatsapp.numberUpdatedSuccess'), t('common.success'));
-          onRefreshStats();
-        }}
-      />
 
       {/* Lead Detail Drawer for Conversation -> Lead Navigation */}
       <LeadDetailDrawer

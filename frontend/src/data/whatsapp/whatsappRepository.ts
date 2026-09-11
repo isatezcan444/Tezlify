@@ -17,14 +17,7 @@ import {
   ConversationDetail,
   ConversationMessagesResponse,
   WhatsAppSession,
-  WhatsAppNumber,
-  WhatsAppNumberValidatePayload,
-  WhatsAppNumberValidateResult,
-  WhatsAppNumberConnectPayload,
-  WhatsAppNumberUpdatePayload,
-  WhatsAppNumberVerifyResult,
   WhatsAppTemplate,
-  MessageLog,
   ConversationStatus,
 } from '../../types';
 
@@ -61,57 +54,13 @@ async function requireLive(): Promise<void> {
 
 export class WhatsAppRepository {
   // -------------------------------------------------------------------------
-  // Numbers (Meta Cloud) — no backend equivalent, throws
-  // -------------------------------------------------------------------------
-
-  static async getWhatsAppNumbers(): Promise<WhatsAppNumber[]> {
-    throw new WhatsAppApiError(
-      'Telefon numaralar\u0131 y\u00f6netimi Meta Cloud API i\u00e7in gereklidir. Bu \u00f6zellik kald\u0131r\u0131ld\u0131.',
-    );
-  }
-
-  static async validateWhatsAppNumber(_payload: WhatsAppNumberValidatePayload): Promise<WhatsAppNumberValidateResult> {
-    throw new WhatsAppApiError(
-      'WhatsApp numaras\u0131 do\u011frusundlama Meta Cloud API i\u00e7in gereklidir. Bu \u00f6zellik kald\u0131r\u0131ld\u0131.',
-    );
-  }
-
-  static async connectWhatsAppNumber(_payload: WhatsAppNumberConnectPayload): Promise<WhatsAppNumber> {
-    throw new WhatsAppApiError(
-      'WhatsApp numaras\u0131 ba\u011fland\u0131\u015f\u0131 Meta Cloud API i\u00e7in gereklidir. Baileys QR oturumu kullan\u0131n.',
-    );
-  }
-
-  static async updateWhatsAppNumber(_numberId: number, _payload: WhatsAppNumberUpdatePayload): Promise<WhatsAppNumber> {
-    throw new WhatsAppApiError('Bu \u00f6zellik kald\u0131r\u0131ld\u0131.');
-  }
-
-  static async verifyWhatsAppNumber(_numberId: number): Promise<WhatsAppNumberVerifyResult> {
-    throw new WhatsAppApiError('Bu \u00f6zellik kald\u0131r\u0131ld\u0131.');
-  }
-
-  static async disconnectWhatsAppNumber(_numberId: number): Promise<WhatsAppNumber> {
-    throw new WhatsAppApiError('Bu \u00f6zellik kald\u0131r\u0131ld\u0131.');
-  }
-
-  static async deleteWhatsAppNumber(_numberId: number): Promise<{ success: boolean; message: string }> {
-    throw new WhatsAppApiError('Bu \u00f6zellik kald\u0131r\u0131ld\u0130.');
-  }
-
-  static async sendTestMessage(_phone: string, _message: string, _sessionId?: number): Promise<any> {
-    throw new WhatsAppApiError('Test mesaj\u0131 g\u00f6ndermek i\u00e7in canl\u0131 bir oturum ba\u011flan\u0131n.');
-  }
-
-  static async getMessageLogs(): Promise<MessageLog[]> {
-    throw new WhatsAppApiError('Mesaj loglar\u0131 \u00e7\u00edn y\u00f6netici gateway gereklidir.');
-  }
-
-  // -------------------------------------------------------------------------
   // Sessions & QR (live-only)
   // -------------------------------------------------------------------------
 
   static async getWhatsAppSessions(): Promise<WhatsAppSession[]> {
-    await requireLive();
+    // Session records are persisted by the backend. Listing them stays useful
+    // during a transient gateway outage; actions still fail closed via
+    // `requireLive` below and never claim a successful connection.
     return WhatsAppApi.listSessions();
   }
 

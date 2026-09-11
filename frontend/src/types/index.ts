@@ -150,72 +150,10 @@ export interface WhatsAppSession {
   updated_at: string;
 }
 
-export type WhatsAppNumberStatus = 'ACTIVE' | 'INACTIVE' | 'DISCONNECTED' | 'ERROR';
-export type WhatsAppNumberProvider = 'META_CLOUD' | 'BAILEYS_QR';
-
 export enum LiveModeStatus {
   LIVE_DISCONNECTED = 'LIVE_DISCONNECTED',
   LIVE_CONNECTING = 'LIVE_CONNECTING',
   LIVE_CONNECTED = 'LIVE_CONNECTED',
-}
-
-export interface WhatsAppNumber {
-  id: number;
-  user_id?: string;
-  provider?: WhatsAppNumberProvider;
-  name: string;
-  display_phone_number?: string;
-  phone_number_e164?: string;
-  phone_number_id?: string | null;
-  waba_id?: string;
-  business_account_id?: string;
-  status: WhatsAppNumberStatus;
-  session_id?: number;
-  quality_rating?: string;
-  verified_name?: string;
-  last_verified_at?: string;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface WhatsAppNumberValidatePayload {
-  name?: string;
-  waba_id: string;
-  phone_number_id: string;
-  access_token: string;
-}
-
-export interface WhatsAppNumberValidateResult {
-  is_valid: boolean;
-  phone_number_id: string;
-  display_phone_number?: string;
-  verified_name?: string;
-  quality_rating?: string;
-  waba_id?: string;
-  error?: string;
-}
-
-export interface WhatsAppNumberConnectPayload {
-  name: string;
-  waba_id: string;
-  phone_number_id: string;
-  access_token: string;
-  business_account_id?: string;
-}
-
-export interface WhatsAppNumberUpdatePayload {
-  name?: string;
-  access_token?: string;
-}
-
-export interface WhatsAppNumberVerifyResult {
-  id: number;
-  status: WhatsAppNumberStatus;
-  verified: boolean;
-  verified_name?: string;
-  quality_rating?: string;
-  last_verified_at?: string;
-  error?: string;
 }
 
 export interface DashboardStats {
@@ -274,22 +212,6 @@ export interface ScraperJob {
   duration_seconds: number;
   error_message?: string;
   completed_at?: string;
-  created_at: string;
-}
-
-export interface MessageLog {
-  id: number;
-  lead_id: number;
-  campaign_id?: number;
-  session_id?: number;
-  target_phone: string;
-  rendered_message: string;
-  status: string;
-  wa_message_id?: string;
-  reply_received: boolean;
-  reply_text?: string;
-  delay_applied_seconds?: number;
-  sent_at?: string;
   created_at: string;
 }
 
@@ -479,4 +401,3 @@ export interface UserProfile {
   messages_daily_limit: number;
   created_at: string;
 }
-

@@ -334,14 +334,11 @@ export const tr = {
     documentFallbackName: 'Belge.pdf',
   },
   whatsapp: {
-    sessionsTitle: 'WhatsApp Numaraları ve Hat Yönetimi',
-    sessionsSubtitle: 'Meta WhatsApp Cloud API v21+ bağlantıları, çoklu hat yönetimi ve doğrulanmış kimlikler',
-    addSession: 'Yeni WhatsApp Hattı Bağla (Meta API)',
-    addMetaNumber: 'Yeni WhatsApp Hattı Bağla',
-    addMetaNumberTitle: 'Yeni WhatsApp Business Hattı Bağla',
-    addMetaNumberSubtitle: 'Meta Cloud API v21+ resmi entegrasyonu',
+    sessionsTitle: 'WhatsApp QR Oturumları',
+    sessionsSubtitle: 'QR eşleştirme ile WhatsApp çoklu cihaz oturumlarını bağlayın ve yönetin',
+    addSession: 'Yeni WhatsApp Hattı Bağla',
     noSessions: 'Bağlı WhatsApp Hattı Bulunmuyor',
-    noSessionsDesc: 'Henüz sisteme bağlı aktif bir Meta WhatsApp Cloud API hattınız yok. Müşteri iletişimi için yeni bir hat bağlayabilirsiniz.',
+    noSessionsDesc: 'Henüz aktif bir WhatsApp QR oturumunuz yok. Müşteri iletişimi için yeni bir hat bağlayabilirsiniz.',
     lineName: 'Hat Adı',
     verifiedName: 'Onaylı İsim',
     qualityRating: 'Hat Kalitesi',
@@ -371,7 +368,7 @@ export const tr = {
     numberUpdatedSuccess: 'WhatsApp hattı başarıyla güncellendi.',
     antiBanTitle: 'WhatsApp Anti-Ban Yapılandırması',
     antiBanSubtitle: 'Mesajlar arası bekleme süreleri (Gaussian Jitter), insan taklidi ve kurumsal mesai saatleri koruması',
-    tabSessions: 'Aktif Numaralar',
+    tabSessions: 'QR Oturumları',
     tabConversations: 'Canlı Diyaloglar',
     tabAntiBan: 'Anti-Ban Politikası',
     tabWarmup: 'Isınma Takvimi',
@@ -461,6 +458,7 @@ export const tr = {
     statusBanned: 'Engellendi / Kısıtlandı',
     disconnect: 'Bağlantıyı Kes',
     deleteSession: 'Oturumu Sil',
+    deleteSessionConfirm: 'Bu WhatsApp oturumunu silmek istediğinize emin misiniz? Önceki konuşmalar korunur.',
     antiBanPresetLabel: 'Güvenlik Ön Ayar Modu (Preset)',
     presetUltraSafe: 'Ultra Güvenli',
     presetUltraSafeTag: 'Yeni Hatlar',
@@ -950,5 +948,4 @@ export const tr = {
     pillAutomation: 'Otomatik WhatsApp',
   }
 };
-
 

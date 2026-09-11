@@ -205,6 +205,24 @@ async def test_list_sessions_returns_db_rows(auth_headers, mock_gateway):
 
 
 @pytest.mark.asyncio
+async def test_list_sessions_returns_persisted_rows_when_gateway_is_unreachable(auth_headers, mock_gateway):
+    """A gateway outage must not turn the session list into a 502 response."""
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        create_res = await client.post("/api/v1/whatsapp/sessions", json={"name": "Offline List Test"}, headers=auth_headers)
+        session_id = create_res.json()["id"]
+        with patch(
+            "backend.app.services.whatsapp_gateway.list_sessions",
+            new_callable=AsyncMock,
+            side_effect=gw.WhatsAppGatewayError("Gateway unreachable"),
+        ):
+            res = await client.get("/api/v1/whatsapp/sessions", headers=auth_headers)
+
+    assert res.status_code == 200
+    assert any(session["id"] == session_id for session in res.json()["sessions"])
+
+
+@pytest.mark.asyncio
 async def test_get_session_qr_returns_status_and_phone(auth_headers, mock_gateway):
     """GET /sessions/{id}/qr returns {status, qr_code, phone}."""
     transport = ASGITransport(app=app)

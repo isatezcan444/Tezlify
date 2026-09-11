@@ -334,14 +334,11 @@ export const en = {
     documentFallbackName: 'Document.pdf',
   },
   whatsapp: {
-    sessionsTitle: 'WhatsApp Numbers & Line Management',
-    sessionsSubtitle: 'Meta WhatsApp Cloud API v21+ connections, multi-line routing and verified identities',
-    addSession: 'Connect WhatsApp Line (Meta API)',
-    addMetaNumber: 'Connect WhatsApp Line',
-    addMetaNumberTitle: 'Connect New WhatsApp Business Line',
-    addMetaNumberSubtitle: 'Official Meta Cloud API v21+ integration',
+    sessionsTitle: 'WhatsApp QR Sessions',
+    sessionsSubtitle: 'Connect and manage WhatsApp multi-device sessions with QR pairing',
+    addSession: 'Connect WhatsApp Line',
     noSessions: 'No WhatsApp Lines Connected',
-    noSessionsDesc: 'You do not have any active Meta WhatsApp Cloud API lines connected yet. Connect a new line to start outreach.',
+    noSessionsDesc: 'You do not have an active WhatsApp QR session yet. Connect a line to start outreach.',
     lineName: 'Line Name',
     verifiedName: 'Verified Name',
     qualityRating: 'Quality Rating',
@@ -371,7 +368,7 @@ export const en = {
     numberUpdatedSuccess: 'WhatsApp line updated successfully.',
     antiBanTitle: 'WhatsApp Anti-Ban Configuration',
     antiBanSubtitle: 'Randomized Gaussian delay intervals, human typing emulation, and business hours protection',
-    tabSessions: 'Active Numbers',
+    tabSessions: 'QR Sessions',
     tabConversations: 'Live Conversations',
     tabAntiBan: 'Anti-Ban Policy',
     tabWarmup: 'Warm-up Schedule',
@@ -461,6 +458,7 @@ export const en = {
     statusBanned: 'Flagged / Banned',
     disconnect: 'Disconnect',
     deleteSession: 'Delete Session',
+    deleteSessionConfirm: 'Are you sure you want to delete this WhatsApp session? Historical conversations are preserved.',
     antiBanPresetLabel: 'Security Preset Mode',
     presetUltraSafe: 'Ultra Safe',
     presetUltraSafeTag: 'New Numbers',
@@ -950,5 +948,4 @@ export const en = {
     pillAutomation: 'Automated WhatsApp',
   }
 };
-
 
