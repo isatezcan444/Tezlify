@@ -121,3 +121,4 @@ class WhatsAppReadResult(BaseModel):
 class WhatsAppStatusResult(BaseModel):
     success: bool = True
     message: Optional[str] = None
+    status: Optional[str] = None

@@ -181,7 +181,6 @@ async def refresh_session_qr(db: AsyncSession, user_id: str, session_id: int) ->
     _apply_gateway_live(row, data)
     await db.commit()
     return {
-        "success": True,
         "status": row.status.value if hasattr(row.status, "value") else str(row.status),
         "qr_code": data.get("qr_code") or row.qr_code,
     }
@@ -582,14 +581,22 @@ async def _ingest_message(db: AsyncSession, event: Dict[str, Any]) -> Dict[str, 
     return event
 
 
+# Sentinel user_id for events that arrive before any session is connected.
+# Must be a valid UUID string since user_id columns are Uuid(as_uuid=False).
+SYSTEM_USER_ID = "00000000-0000-0000-0000-000000000000"
+
+
 async def _resolve_event_owner(db: AsyncSession, jid: str) -> str:
     """Gateway olayinin kime ait oldugunu (oturum sahibi) cozmeye calisir."""
     stmt = select(WhatsAppSession).where(WhatsAppSession.status == SessionStatus.CONNECTED)
-    res = await db.execute(stmt)
-    row = res.scalar_one_or_none()
-    if row and row.user_id:
-        return str(row.user_id)
-    return "system"
+    try:
+        res = await db.execute(stmt)
+        row = res.scalar_one_or_none()
+        if row and row.user_id:
+            return str(row.user_id)
+    except Exception:
+        pass
+    return SYSTEM_USER_ID
 
 
 async def _map_conversation_event(db: AsyncSession, event: Dict[str, Any]) -> Dict[str, Any]:
@@ -599,6 +606,9 @@ async def _map_conversation_event(db: AsyncSession, event: Dict[str, Any]) -> Di
     owner = await _resolve_event_owner(db, str(jid))
     conv = await _ensure_conversation(db, owner, str(jid))
     event["conversation_id"] = conv.id
+    if event.get("event") == "conversation_read":
+        conv.unread_count = 0
+        await db.commit()
     return event
 
 
@@ -613,4 +623,3 @@ async def _map_session_event(db: AsyncSession, event: Dict[str, Any]) -> Dict[st
         event["session_name"] = event.get("session_name") or row.session_name
         event["user_id"] = str(row.user_id) if row.user_id else None
     return event
-    return {"success": True}

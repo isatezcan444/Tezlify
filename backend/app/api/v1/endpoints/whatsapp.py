@@ -101,7 +101,7 @@ async def logout_session(
 ) -> WhatsAppStatusResult:
     try:
         result = await whatsapp_service.logout_session(db, current_user.id, session_id)
-        return WhatsAppStatusResult(success=True, message=result.get("status"))
+        return WhatsAppStatusResult(success=True, message=result.get("status"), status=result.get("status"))
     except LookupError as exc:
         raise _not_found(exc) from exc
     except Exception as exc:
@@ -116,7 +116,7 @@ async def delete_session(
 ) -> WhatsAppStatusResult:
     try:
         await whatsapp_service.delete_session(db, current_user.id, session_id)
-        return WhatsAppStatusResult(success=True, message="Oturum silindi")
+        return WhatsAppStatusResult(success=True, message="Oturum silindi", status="DISCONNECTED")
     except LookupError as exc:
         raise _not_found(exc) from exc
     except Exception as exc:
