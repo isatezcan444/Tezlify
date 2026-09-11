@@ -7,7 +7,7 @@
  * demo katmanına düşer — asla sahte başarı üretilmez.
  */
 import { useCallback, useEffect, useState } from 'react';
-import { authFetch, API_BASE, parseError } from './client';
+import { authFetch, API_BASE, parseError, ApiClient } from './client';
 import {
   Conversation,
   ConversationMessagesResponse,
@@ -183,6 +183,16 @@ interface BackendMessage {
 }
 
 function mapMessage(m: BackendMessage, convId: number): Message {
+  // Medya proxy'si auth korumalıdır: <img>/<audio> etiketleri Authorization
+  // başlığı taşıyamaz, bu yüzden backend'in kabul ettiği ?token= sorgu
+  // parametresi eklenir.
+  const mediaUrl = m.media_id
+    ? (() => {
+        const base = `${API_BASE}/whatsapp/media/${m.media_id}`;
+        const tok = ApiClient.getAuthToken();
+        return tok ? `${base}?token=${encodeURIComponent(tok)}` : base;
+      })()
+    : undefined;
   return {
     id: m.id ?? `srv_${Date.now()}`,
     conversation_id: (m.conversation_id as number) ?? convId,

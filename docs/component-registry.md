@@ -215,18 +215,18 @@ components/
 - **Import**: `import { VerificationBadge } from '@/components/domain';`
 
 ### `ChatBubble`
-- **Purpose**: WhatsApp message bubble primitive with inbound/outbound styling, timestamps, delivery/read checkmarks, and inline retry button for FAILED messages.
+- **Purpose**: WhatsApp message bubble primitive with inbound/outbound styling, timestamps, delivery/read checkmarks (✓ / ✓✓ / mavi ✓✓), inline media previews (image lightbox, native audio/video players, downloadable documents), and retry button for FAILED messages.
 - **Props**: `message: Message`, `onRetry?: (messageId: number) => Promise<void> | void`.
 - **Import**: `import { ChatBubble } from '@/components/domain';`
 
 ### `ChatThread`
-- **Purpose**: Interactive scrollable message timeline with date separators, loading skeletons, empty state, smart auto-scroll, and failure retry dispatching.
-- **Props**: `messages: Message[]`, `loading?: boolean`, `hasMore?: boolean`, `loadingOlder?: boolean`, `onLoadOlder?: () => void`, `leadName?: string`, `leadPhone?: string`, `onRetry?: (messageId: number) => Promise<void> | void`.
+- **Purpose**: Interactive scrollable message timeline with date separators, loading skeletons, empty state, smart auto-scroll, peer "typing..." bubble (WhatsApp Web parity), and failure retry dispatching.
+- **Props**: `messages: Message[]`, `loading?: boolean`, `hasMore?: boolean`, `loadingOlder?: boolean`, `onLoadOlder?: () => void`, `leadName?: string`, `leadPhone?: string`, `onRetry?: (messageId: number) => Promise<void> | void`, `peerTyping?: boolean`.
 - **Import**: `import { ChatThread } from '@/components/domain';`
 
 ### `ChatComposer`
-- **Purpose**: Bottom message composer bar with 24-hour window status alerts, closed conversation notice with one-click reopen, attachment popover (Photo/Document), and template shortcuts.
-- **Props**: `onSend?: (text: string) => Promise<void> | void`, `onSendTemplate?: () => void`, `onSendMedia?: (mediaType: 'IMAGE' | 'DOCUMENT', mediaUrl: string, caption?: string, filename?: string) => Promise<void>`, `onReopenConversation?: () => void`, `disabled?: boolean`, `isClosed?: boolean`, `isWindowOpen?: boolean`, `placeholder?: string`.
+- **Purpose**: Bottom message composer bar with 24-hour window status alerts, closed conversation notice with one-click reopen, attachment popover (native file picker with base64 upload + legacy URL modal), outgoing "typing..." presence signals (throttled composing/paused), and template shortcuts.
+- **Props**: `onSend?: (text: string) => Promise<void> | void`, `onSendTemplate?: () => void`, `onSendMedia?: (mediaType: 'IMAGE' | 'DOCUMENT', mediaUrl: string, caption?: string, filename?: string) => Promise<void>`, `onSendMediaFile?: (file: File, caption?: string) => Promise<void>`, `onTyping?: (typing: boolean) => void`, `onReopenConversation?: () => void`, `disabled?: boolean`, `isClosed?: boolean`, `isWindowOpen?: boolean`, `placeholder?: string`.
 - **Import**: `import { ChatComposer } from '@/components/domain';`
 
 ### `TemplateSelectModal`

@@ -8,6 +8,22 @@ import { WhatsAppIcon } from '../ui/whatsapp-icon';
 import { useI18n } from '../../context/I18nContext';
 import { parseServerTime, formatMessageDate } from '../../lib/utils';
 
+/** WhatsApp Web tarzı 'yazıyor...' balonu (üç zıplayan nokta). */
+const TypingBubble: React.FC<{ label: string }> = ({ label }) => (
+  <div
+    className="inline-flex items-center space-x-1.5 px-3.5 py-2.5 rounded-2xl rounded-tl-sm bg-white dark:bg-[#1E2333] shadow-sm border border-slate-200/80 dark:border-white/[0.08]"
+    aria-label={label}
+  >
+    {[0, 1, 2].map((i) => (
+      <span
+        key={i}
+        className="w-1.5 h-1.5 rounded-full bg-slate-400 dark:bg-slate-500 animate-bounce"
+        style={{ animationDelay: `${i * 0.15}s`, animationDuration: '0.9s' }}
+      />
+    ))}
+  </div>
+);
+
 export interface ChatThreadProps {
   messages: Message[];
   loading?: boolean;
@@ -17,6 +33,7 @@ export interface ChatThreadProps {
   leadName?: string;
   leadPhone?: string;
   onRetry?: (messageId: number | string) => Promise<void> | void;
+  peerTyping?: boolean;
 }
 
 export const ChatThread: React.FC<ChatThreadProps> = ({
@@ -26,6 +43,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
   loadingOlder = false,
   onLoadOlder,
   onRetry,
+  peerTyping = false,
 }) => {
   const { t, language } = useI18n();
   const containerRef = useRef<HTMLDivElement>(null);
@@ -132,12 +150,17 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
 
   if (!sortedMessages || sortedMessages.length === 0) {
     return (
-      <div className="flex-1 flex items-center justify-center p-6">
+      <div className="relative flex-1 flex flex-col items-center justify-center p-6 min-h-0">
         <EmptyState
           icon={WhatsAppIcon}
           title={t('leads.noMessagesTitle')}
           description={t('leads.noMessagesDesc')}
         />
+        {peerTyping && (
+          <div className="absolute bottom-3 left-4">
+            <TypingBubble label={t('whatsapp.peerTyping') || 'yazıyor...'} />
+          </div>
+        )}
       </div>
     );
   }
@@ -195,6 +218,11 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
             </React.Fragment>
           );
         })}
+        {peerTyping && (
+          <div className="flex justify-start pt-1">
+            <TypingBubble label={t('whatsapp.peerTyping') || 'yazıyor...'} />
+          </div>
+        )}
         <div ref={bottomRef} className="h-1" />
       </div>
 

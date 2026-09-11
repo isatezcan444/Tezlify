@@ -159,11 +159,38 @@ export class WhatsAppRepository {
 
   static async sendMedia(
     conversationId: number,
-    mediaData: { media_type: string; media_url: string; caption?: string; filename?: string },
+    mediaData: {
+      media_type: string;
+      media_url?: string;
+      media_base64?: string;
+      mime_type?: string;
+      caption?: string;
+      filename?: string;
+    },
     idempotencyKey?: string,
   ): Promise<any> {
     await requireLive();
     return WhatsAppApi.sendMedia(conversationId, mediaData, idempotencyKey);
+  }
+
+  /** WhatsApp Web tarzı dosya secimi: yerel dosyayi base64 olarak gonderir. */
+  static async sendMediaFile(
+    conversationId: number,
+    file: File,
+    caption?: string,
+    idempotencyKey?: string,
+  ): Promise<any> {
+    await requireLive();
+    return WhatsAppApi.sendMediaFile(conversationId, file, caption, idempotencyKey);
+  }
+
+  /** Karsı tarafa 'yazıyor...' göstergesi gönderir (fail-soft: UI gürültüsü). */
+  static async sendTyping(conversationId: number, typing: boolean = true): Promise<void> {
+    try {
+      await WhatsAppApi.sendTyping(conversationId, typing);
+    } catch {
+      // Yazıyor göstergesi kritik değildir; sessizce yut.
+    }
   }
 
   static async getTemplates(): Promise<WhatsAppTemplate[]> {

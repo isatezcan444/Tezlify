@@ -93,6 +93,10 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   const [isSyncingChats, setIsSyncingChats] = useState<boolean>(false);
   const conversationsGenerationRef = useRef(0);
 
+  // 'yazıyor...' durumu: conversation_id -> bool (gateway presence_updated ile)
+  const [peerTypingMap, setPeerTypingMap] = useState<Record<number, boolean>>({});
+  const peerTypingTimersRef = useRef<Record<number, ReturnType<typeof setTimeout>>>({});
+
   // Live mode: probes backend WhatsApp gateway health on mount & periodically
   const { status: liveStatus, probe: probeLiveMode } = useLiveMode();
   const isLive = liveStatus === LiveModeStatus.LIVE_CONNECTED;
@@ -270,7 +274,13 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         ...prev,
         [selectedConv.id]: (prev[selectedConv.id] || []).map((m) =>
           m.id === tempId || m.client_message_id === tempClientMid
-            ? { ...m, id: res.id, client_message_id: res.client_message_id || tempClientMid, status: res.status }
+            ? {
+                ...m,
+                id: res.id,
+                client_message_id: res.client_message_id || tempClientMid,
+                wa_message_id: res.wa_message_id ?? m.wa_message_id,
+                status: res.status,
+              }
             : m
         ),
       }));
@@ -384,6 +394,68 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         [selectedConv.id]: (prev[selectedConv.id] || []).map((m) =>
           m.id === tempId || m.client_message_id === tempClientMid
             ? { ...m, id: res.id, client_message_id: res.client_message_id || tempClientMid, status: res.status }
+            : m
+        ),
+      }));
+    } catch (err: any) {
+      setMessagesMap((prev) => ({
+        ...prev,
+        [selectedConv.id]: (prev[selectedConv.id] || []).map((m) =>
+          m.id === tempId || m.client_message_id === tempClientMid
+            ? { ...m, status: 'FAILED', error_message: err.message }
+            : m
+        ),
+      }));
+      throw err;
+    }
+  };
+
+  const activeSendMediaFile = async (file: File, caption?: string) => {
+    if (!selectedConv) return;
+    const ext = (file.name.split('.').pop() || '').toLowerCase();
+    const mt = file.type || '';
+    let msgType: Message['message_type'] = 'DOCUMENT';
+    if (mt.startsWith('image/') || ['png', 'jpg', 'jpeg', 'gif', 'webp'].includes(ext)) msgType = 'IMAGE';
+    else if (mt.startsWith('video/') || ['mp4', 'mov', 'webm'].includes(ext)) msgType = 'VIDEO';
+    else if (mt.startsWith('audio/') || ['mp3', 'ogg', 'wav', 'm4a'].includes(ext)) msgType = 'AUDIO';
+
+    const tempClientMid = `file_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+    const tempId = `optimistic_${tempClientMid}`;
+    const nowIso = new Date().toISOString();
+
+    const newMsg: Message = {
+      id: tempId,
+      conversation_id: selectedConv.id,
+      direction: 'OUTBOUND',
+      message_type: msgType,
+      status: 'PENDING',
+      body: caption || file.name,
+      client_message_id: tempClientMid,
+      media_filename: file.name,
+      media_mime_type: file.type || undefined,
+      media_caption: caption,
+      sender_name: 'Siz',
+      created_at: nowIso,
+    };
+    setMessagesMap((prev) => ({
+      ...prev,
+      [selectedConv.id]: [...(prev[selectedConv.id] || []), newMsg],
+    }));
+
+    try {
+      const res = await WhatsAppRepository.sendMediaFile(selectedConv.id, file, caption, tempClientMid);
+      setMessagesMap((prev) => ({
+        ...prev,
+        [selectedConv.id]: (prev[selectedConv.id] || []).map((m) =>
+          m.id === tempId || m.client_message_id === tempClientMid
+            ? {
+                ...m,
+                id: res.id,
+                client_message_id: res.client_message_id || tempClientMid,
+                wa_message_id: res.wa_message_id ?? m.wa_message_id,
+                media_url: res.media_url ?? m.media_url,
+                status: res.status,
+              }
             : m
         ),
       }));
@@ -565,6 +637,14 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
 
           // Auto-mark conversation as read if user is actively viewing it
           if (!isOutbound) {
+            // Mesaj geldi → 'yazıyor...' göstergesini kapat
+            setPeerTypingMap((prev) => {
+              if (!(convId in prev)) return prev;
+              const n = { ...prev };
+              delete n[convId];
+              return n;
+            });
+            clearTimeout(peerTypingTimersRef.current[convId as number]);
             WhatsAppRepository.markConversationAsRead(convId).catch(() => {});
           }
         }
@@ -636,6 +716,35 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
 
       if (eventData.event === 'new_conversation' || eventData.event === 'conversations_updated') {
         loadConversations(true);
+      }
+
+      // 4. PRESENCE UPDATE ('yazıyor...' göstergesi) — backend jid'yi sayısal
+      // conversation_id'ye çevirip `typing` boolean'ı ekler.
+      if (eventData.event === 'presence_updated') {
+        const rawId = eventData.conversation_id;
+        const convId = typeof rawId === 'number' ? rawId : parseInt(String(rawId), 10);
+        if (!Number.isNaN(convId)) {
+          const typing = !!eventData.typing;
+          setPeerTypingMap((prev) => {
+            const next = { ...prev };
+            if (typing) {
+              next[convId] = true;
+              // Güvenlik ağı: paused kaybolursa 10 sn sonra kendiliğinden sönsün
+              clearTimeout(peerTypingTimersRef.current[convId]);
+              peerTypingTimersRef.current[convId] = setTimeout(() => {
+                setPeerTypingMap((p) => {
+                  const n = { ...p };
+                  delete n[convId];
+                  return n;
+                });
+              }, 10000);
+            } else {
+              delete next[convId];
+              clearTimeout(peerTypingTimersRef.current[convId]);
+            }
+            return next;
+          });
+        }
       }
     };
 
@@ -1090,6 +1199,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                   onLoadOlder={activeLoadOlder}
                   leadName={selectedConv.lead_name}
                   leadPhone={selectedConv.lead_phone}
+                  peerTyping={!!peerTypingMap[selectedConv.id]}
                   onRetry={async (msgId) => {
                     try {
                       await activeRetryMessage(msgId);
@@ -1118,6 +1228,20 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                     }
                   }}
                   onSendTemplate={() => setIsTemplateModalOpen(true)}
+                  onSendMediaFile={async (file, caption) => {
+                    try {
+                      await activeSendMediaFile(file, caption);
+                      toast.success(t('whatsapp.mediaSent') || 'Medya başarıyla gönderildi', t('common.success'));
+                    } catch (err: any) {
+                      toast.error(err?.message || t('whatsapp.mediaFailed') || 'Medya gönderilemedi', t('common.error'));
+                      throw err;
+                    }
+                  }}
+                  onTyping={(typing) => {
+                    if (selectedConv) {
+                      WhatsAppRepository.sendTyping(selectedConv.id, typing);
+                    }
+                  }}
                   onSendMedia={async (type, url, caption, filename) => {
                     try {
                       await activeSendMedia(type, url, caption, filename);

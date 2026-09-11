@@ -136,9 +136,19 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({ message, onRetry }) => {
                 </p>
               </div>
               <Tooltip content={t('leads.documentReady') || 'Belge hazır'}>
-                <div className="p-1.5 rounded-lg bg-black/5 dark:bg-white/5 text-slate-500 dark:text-slate-400">
-                  <Download className="w-4 h-4" />
-                </div>
+                {message.media_url ? (
+                  <a
+                    href={message.media_url}
+                    download={message.media_filename || true}
+                    className="p-1.5 rounded-lg bg-black/5 dark:bg-white/5 text-slate-500 dark:text-slate-400 hover:text-[#7367F0] transition-colors cursor-pointer"
+                  >
+                    <Download className="w-4 h-4" />
+                  </a>
+                ) : (
+                  <div className="p-1.5 rounded-lg bg-black/5 dark:bg-white/5 text-slate-500 dark:text-slate-400">
+                    <Download className="w-4 h-4" />
+                  </div>
+                )}
               </Tooltip>
             </div>
             {message.media_caption && (
@@ -152,26 +162,39 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({ message, onRetry }) => {
       case 'AUDIO':
         return (
           <div className="space-y-1.5 min-w-[220px]">
-            <div className="flex items-center space-x-2 p-2 rounded-xl bg-slate-200/60 dark:bg-white/[0.06]">
-              <div className="w-8 h-8 rounded-full bg-[#28C76F]/20 text-[#28C76F] flex items-center justify-center shrink-0">
-                <Music className="w-4 h-4" />
+            {message.media_url ? (
+              <audio controls preload="metadata" src={message.media_url} className="w-full h-9 max-w-[260px]" />
+            ) : (
+              <div className="flex items-center space-x-2 p-2 rounded-xl bg-slate-200/60 dark:bg-white/[0.06]">
+                <div className="w-8 h-8 rounded-full bg-[#28C76F]/20 text-[#28C76F] flex items-center justify-center shrink-0">
+                  <Music className="w-4 h-4" />
+                </div>
+                <div className="flex-1">
+                  <span className="text-[11px] font-bold block">{t('leads.voiceMessage') || 'Sesli Mesaj'}</span>
+                  <span className="text-[9px] font-mono text-slate-400">{message.media_mime_type || 'audio/ogg'}</span>
+                </div>
               </div>
-              <div className="flex-1">
-                <span className="text-[11px] font-bold block">{t('leads.voiceMessage') || 'Sesli Mesaj'}</span>
-                <span className="text-[9px] font-mono text-slate-400">{message.media_mime_type || 'audio/ogg'}</span>
-              </div>
-            </div>
+            )}
           </div>
         );
 
       case 'VIDEO':
         return (
           <div className="space-y-2 max-w-[280px]">
-            <div className="rounded-xl overflow-hidden bg-slate-950/20 border border-black/5 dark:border-white/10 p-4 text-center">
-              <Video className="w-8 h-8 mx-auto text-[#7367F0] mb-1.5" />
-              <span className="text-xs font-bold block">{t('leads.videoMessage') || 'Video Eki'}</span>
-              <span className="text-[10px] text-slate-400 font-mono">{message.media_mime_type || 'video/mp4'}</span>
-            </div>
+            {message.media_url ? (
+              <video
+                controls
+                preload="metadata"
+                src={message.media_url}
+                className="w-full max-h-60 rounded-xl border border-black/5 dark:border-white/10 bg-black"
+              />
+            ) : (
+              <div className="rounded-xl overflow-hidden bg-slate-950/20 border border-black/5 dark:border-white/10 p-4 text-center">
+                <Video className="w-8 h-8 mx-auto text-[#7367F0] mb-1.5" />
+                <span className="text-xs font-bold block">{t('leads.videoMessage') || 'Video Eki'}</span>
+                <span className="text-[10px] text-slate-400 font-mono">{message.media_mime_type || 'video/mp4'}</span>
+              </div>
+            )}
             {message.media_caption && (
               <p className="whitespace-pre-wrap break-words font-medium text-xs">
                 {message.media_caption}

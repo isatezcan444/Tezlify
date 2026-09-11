@@ -542,7 +542,7 @@ async def ingest_gateway_event(event: Dict[str, Any]) -> Dict[str, Any]:
         try:
             if evt == "message_new":
                 result = await _ingest_message(db, event)
-            elif evt in ("conversation_updated", "conversation_read", "message_status_updated"):
+            elif evt in ("conversation_updated", "conversation_read", "message_status_updated", "presence_updated"):
                 result = await _map_conversation_event(db, event)
             elif evt == "connection_error" or str(evt).startswith("session_"):
                 result = await _map_session_event(db, event)
@@ -640,6 +640,11 @@ async def _map_conversation_event(db: AsyncSession, event: Dict[str, Any]) -> Di
     owner = await _resolve_event_owner(db, str(jid))
     conv = await _ensure_conversation(db, owner, str(jid))
     event["conversation_id"] = conv.id
+    if event.get("event") == "presence_updated":
+        # Baileys presence: composing / paused / available / recording ...
+        presence = str(event.get("presence") or "").lower()
+        event["typing"] = presence in ("composing", "recording")
+        return event
     if event.get("event") == "conversation_read":
         conv.unread_count = 0
         await db.commit()

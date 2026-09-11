@@ -791,3 +791,47 @@ async def test_ingest_message_status_updated_persists_acks():
     async with AsyncSessionLocal() as db:
         row = (await db.execute(select(Message).where(Message.wa_message_id == "wamid_ack_1"))).scalar_one()
         assert row.status == ConversationMessageStatus.READ
+
+
+@pytest.mark.asyncio
+async def test_ingest_presence_updated_maps_jid_and_types():
+    """ingest_gateway_event('presence_updated') maps jid → numeric id and adds typing flag."""
+    import uuid as _uuid2
+
+    async with AsyncSessionLocal() as db:
+        contact = Contact(user_id=TEST_USER, phone_e164=MOCK_PHONE, display_name="Test Lead")
+        db.add(contact)
+        await db.flush()
+        conv = Conversation(
+            user_id=TEST_USER, contact_id=contact.id, channel="WHATSAPP",
+            status=ConversationStatus.ACTIVE, unread_count=2,
+        )
+        db.add(conv)
+        session = WhatsAppSession(
+            user_id=TEST_USER, gateway_id=str(_uuid2.uuid4()),
+            session_name="Connected", status=SessionStatus.CONNECTED, is_active=True,
+        )
+        db.add(session)
+        await db.commit()
+        conv_id = conv.id
+
+    result = await ingest_gateway_event({
+        "event": "presence_updated",
+        "conversation_id": MOCK_JID,
+        "presence": "composing",
+    })
+    assert result["conversation_id"] == conv_id
+    assert result["typing"] is True
+
+    result_paused = await ingest_gateway_event({
+        "event": "presence_updated",
+        "conversation_id": MOCK_JID,
+        "presence": "paused",
+    })
+    assert result_paused["conversation_id"] == conv_id
+    assert result_paused["typing"] is False
+
+    # Presence must not touch unread counts
+    async with AsyncSessionLocal() as db:
+        c = (await db.execute(select(Conversation).where(Conversation.id == conv_id))).scalar_one()
+        assert c.unread_count == 2
