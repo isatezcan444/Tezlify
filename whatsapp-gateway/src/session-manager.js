@@ -556,5 +556,9 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
     },
   };
 
+  // Helper used throughout the manager to broadcast events to listeners
+  // (event bridge -> backend) without leaking the listener set.
+  const emitEvent = (event) => sessionManager._emit(event);
+
   return sessionManager;
 }
