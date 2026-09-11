@@ -138,6 +138,8 @@ interface BackendConversation {
   lead_id?: number | null;
   name?: string | null;
   phone?: string | null;
+  is_group?: boolean;
+  avatar_url?: string | null;
   last_message_preview?: string | null;
   last_message_at?: string | null;
   unread_count?: number;
@@ -146,6 +148,7 @@ interface BackendConversation {
 
 function mapConversation(c: BackendConversation): Conversation {
   const last = c.last_message_at || new Date().toISOString();
+  const isGroup = Boolean(c.is_group) || Boolean(c.phone?.endsWith('@g.us'));
   return {
     id: c.id,
     lead_id: c.lead_id ?? null,
@@ -155,6 +158,8 @@ function mapConversation(c: BackendConversation): Conversation {
     unread_count: c.unread_count ?? 0,
     lead_name: c.name || undefined,
     lead_phone: c.phone || undefined,
+    is_group: isGroup,
+    lead_avatar_url: c.avatar_url || undefined,
     last_message_preview: c.last_message_preview || undefined,
     last_message_at: last,
     created_at: last,

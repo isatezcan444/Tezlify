@@ -227,6 +227,26 @@ async def delete_session(db: AsyncSession, user_id: str, session_id: int) -> Dic
 # Kisiler (contacts)
 # ---------------------------------------------------------------------------
 
+def _set_contact_avatar(contact: Contact, avatar_url: Optional[str]) -> None:
+    """Contact avatarini custom_attributes icina yazar (SQLite JSON degisim
+    algisi icin sozlugu yeniden atamali guncelle)."""
+    if not avatar_url:
+        return
+    attrs = dict(contact.custom_attributes or {})
+    if attrs.get("avatar_url") == avatar_url:
+        return
+    attrs["avatar_url"] = avatar_url
+    contact.custom_attributes = attrs
+
+
+def _get_contact_avatar(contact: Optional[Contact]) -> Optional[str]:
+    if contact is None:
+        return None
+    attrs = contact.custom_attributes or {}
+    value = attrs.get("avatar_url") if isinstance(attrs, dict) else None
+    return str(value) if value else None
+
+
 async def sync_contacts(db: AsyncSession, user_id: str) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     gw_contacts = await gw.list_contacts()
@@ -236,21 +256,47 @@ async def sync_contacts(db: AsyncSession, user_id: str) -> List[Dict[str, Any]]:
             continue
         name = item.get("name") or item.get("notify") or None
         contact = await _upsert_contact(db, user_id, jid, name)
-        out.append({"id": jid, "phone": contact.phone_e164, "name": contact.display_name, "avatar_url": None})
+        _set_contact_avatar(contact, item.get("avatar_url"))
+        out.append({
+            "id": jid,
+            "phone": contact.phone_e164,
+            "name": contact.display_name,
+            "avatar_url": _get_contact_avatar(contact),
+        })
     await db.commit()
     return out
 
 
 async def _upsert_contact(db: AsyncSession, user_id: str, jid: str, display_name: Optional[str]) -> Contact:
-    phone_e164 = jid_to_phone(jid)
-    if not phone_e164:
+    # Grup JID'leri ("...@g.us") telefon numarasina cevrilemez; jid: sentinel'i
+    # ile saklanır — _resolve_jid ve is_group bu sentinel'e guvenir.
+    if "@g.us" in str(jid):
         phone_e164 = f"jid:{jid}"
+    else:
+        phone_e164 = jid_to_phone(jid)
+        if not phone_e164:
+            phone_e164 = f"jid:{jid}"
     stmt = select(Contact).where(
         Contact.phone_e164 == phone_e164,
         get_user_filter(Contact.user_id, user_id),
     )
     res = await db.execute(stmt)
     contact = res.scalar_one_or_none()
+    if contact is None and phone_e164.startswith("jid:"):
+        # Eski kayitlar: grup JID'i yanlislikla "+rakam" telefon gibi saklanmis
+        # olabilir (jid_to_phone rakamlari topluyordu). Bulursak sentinel'e tasi.
+        legacy = jid_to_phone(jid)
+        if legacy:
+            lres = await db.execute(
+                select(Contact).where(
+                    Contact.phone_e164 == legacy,
+                    get_user_filter(Contact.user_id, user_id),
+                )
+            )
+            contact = lres.scalar_one_or_none()
+            if contact is not None:
+                contact.phone_e164 = phone_e164
+                await db.flush()
     if not contact:
         contact = Contact(
             user_id=user_id,
@@ -368,6 +414,8 @@ async def sync_conversations(db: AsyncSession, user_id: str) -> List[Dict[str, A
         if chat_name and (not contact.display_name or contact.display_name.startswith("+")):
             contact.display_name = chat_name
             await db.flush()
+        # Faz 5: sohbet avatarunu (profil/grup resmi) contact'a tasi.
+        _set_contact_avatar(contact, item.get("avatar_url"))
         stmt = select(Conversation).where(
             Conversation.contact_id == contact.id,
             Conversation.channel == "WHATSAPP",
@@ -450,13 +498,17 @@ async def list_conversations(
     out: List[Dict[str, Any]] = []
     for r in rows:
         contact = contacts_map.get(r.contact_id)
+        phone = contact.phone_e164 if contact else None
         out.append(
             {
                 "id": r.id,
                 "contact_id": r.contact_id,
                 "lead_id": r.lead_id,
                 "name": contact.display_name if contact else None,
-                "phone": contact.phone_e164 if contact else None,
+                "phone": phone,
+                # Grup JID'i ("jid:...@g.us" sentinel veya ham jid) her zaman @g.us icerir.
+                "is_group": bool(phone and "@g.us" in phone),
+                "avatar_url": _get_contact_avatar(contact),
                 "last_message_preview": r.last_message_preview,
                 "last_message_at": r.last_message_at.isoformat() if r.last_message_at else None,
                 "unread_count": r.unread_count,
@@ -636,6 +688,8 @@ async def ingest_gateway_event(event: Dict[str, Any]) -> Dict[str, Any]:
                 result = await _ingest_message(db, event)
             elif evt in ("conversation_updated", "conversation_read", "message_status_updated", "presence_updated"):
                 result = await _map_conversation_event(db, event)
+            elif evt == "contact_synced":
+                result = await _ingest_contact_synced(db, event)
             elif evt == "connection_error" or str(evt).startswith("session_"):
                 result = await _map_session_event(db, event)
             else:
@@ -725,10 +779,47 @@ async def _resolve_event_owner(db: AsyncSession, jid: str) -> str:
     return SYSTEM_USER_ID
 
 
+async def _ingest_contact_synced(db: AsyncSession, event: Dict[str, Any]) -> Dict[str, Any]:
+    """Gateway `contact_synced` olayi: kisi adi/avatar'ini DB'ye kalici yaz.
+
+    Yalnizca mevcut kisi guncellenir (sohbeti olmayan kisiler icin satir
+    uretilmez — contacts.update her pushname degisiminde tetiklenir).
+    """
+    contact_payload = event.get("contact") or {}
+    jid = contact_payload.get("id") or contact_payload.get("jid")
+    if not jid or "@" not in str(jid):
+        return event
+    phone_e164 = jid_to_phone(str(jid)) or f"jid:{jid}"
+    owner = await _resolve_event_owner(db, str(jid))
+    res = await db.execute(
+        select(Contact).where(
+            Contact.phone_e164 == phone_e164,
+            get_user_filter(Contact.user_id, owner),
+        )
+    )
+    contact = res.scalar_one_or_none()
+    if contact is None:
+        return event
+    name = contact_payload.get("name")
+    if name and (not contact.display_name or contact.display_name.startswith("+")):
+        contact.display_name = name
+    _set_contact_avatar(contact, contact_payload.get("avatar_url"))
+    await db.commit()
+    return event
+
+
 async def _map_conversation_event(db: AsyncSession, event: Dict[str, Any]) -> Dict[str, Any]:
     jid = event.get("conversation_id")
     if not jid or "@" not in str(jid):
-        return event
+        # Gateway `conversation_updated` olayini ust seviye id olmadan
+        # yayarlar (chats.update / history sync); jid'yi conversation nesnesinden
+        # topla.
+        conv_payload = event.get("conversation") or {}
+        candidate = conv_payload.get("id") or conv_payload.get("jid")
+        if candidate and "@" in str(candidate):
+            jid = candidate
+        else:
+            return event
     owner = await _resolve_event_owner(db, str(jid))
     conv = await _ensure_conversation(db, owner, str(jid))
     event["conversation_id"] = conv.id
@@ -741,11 +832,13 @@ async def _map_conversation_event(db: AsyncSession, event: Dict[str, Any]) -> Di
         # Faz 4: history sync / chats.update alanlarini DB'ye kalici yaz.
         payload = event.get("conversation") or {}
         name = payload.get("name")
-        if name:
+        if name or payload.get("avatar_url"):
             contact = await _upsert_contact(db, owner, str(jid), None)
-            if not contact.display_name or contact.display_name.startswith("+"):
+            if name and (not contact.display_name or contact.display_name.startswith("+")):
                 contact.display_name = name
-                await db.flush()
+            # Faz 5: grup/profil sohbet avatarunu kalici yaz.
+            _set_contact_avatar(contact, payload.get("avatar_url"))
+            await db.flush()
         preview = payload.get("last_message_preview")
         if preview:
             conv.last_message_preview = str(preview)[:500]

@@ -103,6 +103,10 @@ async def _cleanup_whatsapp_tables():
                 text("DELETE FROM contacts WHERE (user_id IN (:h1, :h2, :l1, :l2)) AND phone_e164 = :phone"),
                 {"h1": TEST_USER_HEX, "h2": SYS_USER_HEX, "l1": "testuserwa", "l2": "system", "phone": MOCK_PHONE},
             )
+            await db.execute(
+                text("DELETE FROM contacts WHERE (user_id IN (:h1, :h2)) AND phone_e164 LIKE 'jid:%@g.us'"),
+                {"h1": TEST_USER_HEX, "h2": SYS_USER_HEX},
+            )
             await db.commit()
 
     await _wipe()
@@ -991,3 +995,180 @@ async def test_sync_conversations_survives_history_pull_failure(auth_headers, mo
         assert res.status_code == 200
         assert res.json()["total"] >= 1
         assert res.json()["items"][0]["name"] == "Kismen"
+
+
+# ---------------------------------------------------------------------------
+# Faz 5 — okundu çentikleri, grup sohbetleri ve avatar/parite
+# ---------------------------------------------------------------------------
+
+GROUP_JID = "120363000000000000@g.us"
+
+
+@pytest.mark.asyncio
+async def test_mark_conversation_read_endpoint(auth_headers, mock_gateway):
+    """POST /conversations/{id}/read delegates to gateway and zeroes unread."""
+    async with AsyncSessionLocal() as db:
+        contact = Contact(user_id=TEST_USER, phone_e164=MOCK_PHONE, display_name="Test Lead")
+        db.add(contact)
+        await db.flush()
+        conv = Conversation(
+            user_id=TEST_USER, contact_id=contact.id, channel="WHATSAPP",
+            status=ConversationStatus.ACTIVE, unread_count=7,
+        )
+        db.add(conv)
+        await db.flush()
+        conv_id = conv.id
+        await db.commit()
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        res = await client.post(
+            f"/api/v1/whatsapp/conversations/{conv_id}/read", headers=auth_headers
+        )
+        assert res.status_code == 200
+        assert res.json()["success"] is True
+    mock_gateway.mark_conversation_read.assert_awaited()
+    # gateway'e jid gonderildi
+    called_jid = mock_gateway.mark_conversation_read.await_args.args[0]
+    assert called_jid == MOCK_JID
+
+    async with AsyncSessionLocal() as db:
+        conv = (await db.execute(
+            select(Conversation).where(Conversation.id == conv_id)
+        )).scalar_one()
+        assert conv.unread_count == 0
+
+
+@pytest.mark.asyncio
+async def test_mark_conversation_read_survives_gateway_failure(auth_headers, mock_gateway):
+    """If the gateway is unreachable, read still clears DB unread (fail-soft) and returns success."""
+    conv_id = await _make_conv()
+    mock_gateway.mark_conversation_read.side_effect = Exception("gateway down")
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        res = await client.post(
+            f"/api/v1/whatsapp/conversations/{conv_id}/read", headers=auth_headers
+        )
+        assert res.status_code == 200
+        assert res.json()["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_group_conversation_sync_sets_is_group_and_name(auth_headers, mock_gateway):
+    """A group chat syncs with is_group=True, its subject name, and a jid: sentinel phone."""
+    mock_gateway.list_conversations.return_value = {
+        "items": [{
+            "jid": GROUP_JID, "id": GROUP_JID, "name": "Satici Ekip",
+            "is_group": True, "avatar_url": "https://mmg.whatsapp.net/g1.jpg",
+            "last_message_preview": "Toplanti 15:00", "last_message_at": "2025-01-15T10:00:00.000Z",
+            "unread_count": 2,
+        }],
+        "total": 1,
+    }
+    mock_gateway.get_messages.return_value = {"messages": [], "has_more": False}
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        res = await client.get("/api/v1/whatsapp/conversations?sync=true", headers=auth_headers)
+        assert res.status_code == 200
+        items = res.json()["items"]
+        grp = next((i for i in items if i.get("is_group")), None)
+        assert grp is not None, "group conversation should be present with is_group=True"
+        assert grp["name"] == "Satici Ekip"
+        assert grp["avatar_url"] == "https://mmg.whatsapp.net/g1.jpg"
+        assert "@g.us" in grp["phone"]
+
+    # Contact phone_e164 should use the jid: sentinel (groups have no E.164 phone)
+    async with AsyncSessionLocal() as db:
+        contact = (await db.execute(
+            select(Contact).where(
+                Contact.user_id == TEST_USER, Contact.phone_e164 == f"jid:{GROUP_JID}"
+            )
+        )).scalar_one()
+        assert contact.display_name == "Satici Ekip"
+        assert contact.custom_attributes and contact.custom_attributes.get("avatar_url") == "https://mmg.whatsapp.net/g1.jpg"
+
+
+@pytest.mark.asyncio
+async def test_resolve_jid_for_group_returns_group_jid(auth_headers, mock_gateway):
+    """Read on a group conversation resolves back to the @g.us JID (via jid: sentinel)."""
+    mock_gateway.list_conversations.return_value = {
+        "items": [{"jid": GROUP_JID, "id": GROUP_JID, "name": "G", "is_group": True,
+                   "last_message_at": "2025-01-15T10:00:00.000Z", "unread_count": 1}],
+        "total": 1,
+    }
+    mock_gateway.get_messages.return_value = {"messages": [], "has_more": False}
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        sync = await client.get("/api/v1/whatsapp/conversations?sync=true", headers=auth_headers)
+        grp = next(i for i in sync.json()["items"] if i.get("is_group"))
+        res = await client.post(f"/api/v1/whatsapp/conversations/{grp['id']}/read", headers=auth_headers)
+        assert res.status_code == 200
+    called_jid = mock_gateway.mark_conversation_read.await_args.args[0]
+    assert called_jid == GROUP_JID
+
+
+@pytest.mark.asyncio
+async def test_ingest_contact_synced_persists_avatar():
+    """ingest_gateway_event('contact_synced') writes name + avatar onto an existing contact."""
+    import uuid as _uuid4
+
+    async with AsyncSessionLocal() as db:
+        session = WhatsAppSession(
+            user_id=TEST_USER, gateway_id=str(_uuid4.uuid4()),
+            session_name="Connected", status=SessionStatus.CONNECTED, is_active=True,
+        )
+        db.add(session)
+        # Pre-existing contact (phone-like display name to be upgraded)
+        contact = Contact(user_id=TEST_USER, phone_e164=MOCK_PHONE, display_name="+905321002030")
+        db.add(contact)
+        await db.commit()
+
+    await ingest_gateway_event({
+        "event": "contact_synced",
+        "contact": {"id": MOCK_JID, "name": "Ayse Kaya", "avatar_url": "https://cdn/a.jpg"},
+    })
+
+    async with AsyncSessionLocal() as db:
+        contact = (await db.execute(
+            select(Contact).where(Contact.user_id == TEST_USER, Contact.phone_e164 == MOCK_PHONE)
+        )).scalar_one()
+        assert contact.display_name == "Ayse Kaya"
+        assert contact.custom_attributes.get("avatar_url") == "https://cdn/a.jpg"
+
+
+@pytest.mark.asyncio
+async def test_ingest_conversation_updated_persists_avatar():
+    """conversation_updated with avatar_url persists it to the contact for live UI updates."""
+    import uuid as _uuid5
+
+    async with AsyncSessionLocal() as db:
+        session = WhatsAppSession(
+            user_id=TEST_USER, gateway_id=str(_uuid5.uuid4()),
+            session_name="Connected", status=SessionStatus.CONNECTED, is_active=True,
+        )
+        db.add(session)
+        await db.commit()
+
+    # jid lives only inside the conversation object (gateway omits top-level id)
+    event = await ingest_gateway_event({
+        "event": "conversation_updated",
+        "conversation": {
+            "id": MOCK_JID, "jid": MOCK_JID,
+            "name": "Fatma Sel",
+            "avatar_url": "https://cdn/f.jpg",
+            "unread_count": 3,
+        },
+    })
+    assert isinstance(event["conversation_id"], int)
+
+    async with AsyncSessionLocal() as db:
+        conv = (await db.execute(
+            select(Conversation).where(Conversation.id == event["conversation_id"])
+        )).scalar_one()
+        contact = (await db.execute(
+            select(Contact).where(Contact.id == conv.contact_id)
+        )).scalar_one()
+        assert contact.display_name == "Fatma Sel"
+        assert contact.custom_attributes.get("avatar_url") == "https://cdn/f.jpg"

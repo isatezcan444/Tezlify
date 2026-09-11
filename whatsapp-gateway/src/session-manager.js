@@ -25,6 +25,9 @@ const logger = pino({ level: process.env.LOG_LEVEL || 'warn' });
 const sessions = new Map(); // id -> session record
 const contacts = new Map(); // jid -> contact
 const chats = new Map(); // jid -> chat summary
+// Faz 5: profil/grup resmi fetch durum takibi (retry storm önleme)
+const avatarFetchInFlight = new Set();
+const avatarFetchAttemptedAt = new Map(); // jid -> ms timestamp
 const messagesByChat = new Map(); // jid -> Message[]
 const mediaIndex = new Map(); // media_id -> { filePath, mimeType, filename, sizeBytes }
 
@@ -290,11 +293,44 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       return msg;
     },
 
-    async markConversationRead(jid) {
+    // Faz 5: 'yazıyor…' presence güncellemesi (WhatsApp Web paritesi).
+    async sendTyping(jid, typing = true, durationMs = 4000) {
       const session = this._getConnectedSession();
       const key = normalizeJid(jid);
       try {
-        await session.sock.readMessages([{ remoteJid: key, id: undefined }]);
+        await session.sock.sendPresenceUpdate(typing ? 'composing' : 'paused', key);
+      } catch (err) {
+        logger.warn({ err }, 'Send typing presence error');
+      }
+      return { success: true };
+    },
+
+    async markConversationRead(jid) {
+      const session = this._getConnectedSession();
+      const key = normalizeJid(jid);
+      const isGroup = key.includes('@g.us');
+      try {
+        const list = messagesByChat.get(key) || [];
+        const inbound = list.filter((m) => m.direction === 'INBOUND' && m.wa_message_id);
+        if (isGroup) {
+          // Grup okundu çentikleri mesaj anahtarı gerektirir: en yeni okunmuş
+          // inbound mesajların anahtarlarını gönder (Baileys participant'a
+          // key.participant üzerinden karar verir).
+          const keys = inbound.slice(-5).map((m) => ({
+            remoteJid: key,
+            id: m.wa_message_id,
+            fromMe: false,
+            participant: m.participant_jid || undefined,
+          }));
+          if (keys.length) {
+            await session.sock.readMessages(keys);
+          } else {
+            await session.sock.readMessages([{ remoteJid: key, id: undefined, fromMe: false }]);
+          }
+        } else {
+          const newest = inbound[inbound.length - 1];
+          await session.sock.readMessages([{ remoteJid: key, id: newest?.wa_message_id, fromMe: false }]);
+        }
       } catch (err) {
         logger.warn({ err }, 'Mark read error');
       }
@@ -381,12 +417,50 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
         jid: key,
         name: contact?.name || existing.name || jidToPhone(key) || key,
         phone: jidToPhone(key) || existing.phone || '',
+        is_group: key.includes('@g.us'),
         last_message_at: timestamp || new Date().toISOString(),
         last_message_preview: preview || existing.last_message_preview || '',
         unread_count: existing.unread_count || 0,
         created_at: existing.created_at || new Date().toISOString(),
         updated_at: new Date().toISOString(),
       });
+      // Faz 5: sohbetin profil/grup resmi henüz yoksa arka planda çek.
+      if (!chats.get(key)?.avatar_url) void this._ensureChatAvatar(key);
+    },
+
+    // Faz 5: profil (veya grup) resmini Baileys'ten tembel tembel çekip
+    // sohbet ve kişi kayıtlarına yazar; conversation_updated olayı yayınlar.
+    // Resmi olmayan kişilerde profilePictureUrl hata fırlatır — sessizce geçilir
+    // ve 10 dk boyunca yeniden denenmez (retry storm yok).
+    async _ensureChatAvatar(key) {
+      if (avatarFetchInFlight.has(key)) return;
+      const lastAttempt = avatarFetchAttemptedAt.get(key) || 0;
+      if (Date.now() - lastAttempt < 10 * 60 * 1000) return;
+      avatarFetchInFlight.add(key);
+      avatarFetchAttemptedAt.set(key, Date.now());
+      try {
+        const session = [...sessions.values()].find((s) => s.status === 'CONNECTED' && s.sock);
+        if (!session) return;
+        const url = await session.sock.profilePictureUrl(key, 'preview');
+        if (url) {
+          const chat = chats.get(key);
+          if (chat && chat.avatar_url !== url) {
+            chat.avatar_url = url;
+            chat.updated_at = new Date().toISOString();
+            emitEvent({ event: 'conversation_updated', conversation: { ...chat } });
+          }
+          const contact = contacts.get(key);
+          if (contact && contact.avatar_url !== url) {
+            contact.avatar_url = url;
+            contact.updated_at = new Date().toISOString();
+            emitEvent({ event: 'contact_synced', contact: { ...contact } });
+          }
+        }
+      } catch {
+        // Resim yok/erişilemiyor — normal durum, sessiz geç.
+      } finally {
+        avatarFetchInFlight.delete(key);
+      }
     },
 
     // History sync mesajlarini (WAMessage) gateway Message kaydina cevirir.
@@ -429,6 +503,7 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
         sender_phone: msg.key?.fromMe ? 'ME' : (jidToPhone(msg.key?.participant || key) || key),
         recipient_phone: msg.key?.fromMe ? (jidToPhone(key) || key) : 'ME',
         sender_name: msg.pushName || (msg.key?.fromMe ? 'ME' : null),
+        participant_jid: msg.key?.participant || null,
         created_at: new Date(Number.isFinite(ts) ? ts : Date.now()).toISOString(),
       };
     },
@@ -595,6 +670,7 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
             sender_phone: jidToPhone(jid) || key,
             recipient_phone: 'ME',
             sender_name: contact?.name || jidToPhone(jid) || key,
+            participant_jid: msg.key?.participant || null,
             created_at: new Date((msg.messageTimestamp || Date.now()) * 1000).toISOString(),
           };
           if (!messagesByChat.has(key)) messagesByChat.set(key, []);
@@ -643,12 +719,14 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
             jid: key,
             name: contact?.name || existing.name || jidToPhone(key) || key,
             phone: jidToPhone(key) || existing.phone || '',
+            is_group: key.includes('@g.us'),
             last_message_at: update.lastMessage?.messageTimestamp ? new Date(update.lastMessage.messageTimestamp * 1000).toISOString() : existing.last_message_at,
             last_message_preview: update.lastMessage?.message?.conversation || existing.last_message_preview || '',
             unread_count: update.unreadCount ?? existing.unread_count ?? 0,
             created_at: existing.created_at || new Date().toISOString(),
             updated_at: new Date().toISOString(),
           });
+          if (!chats.get(key)?.avatar_url) void sessionManager._ensureChatAvatar(key);
           emitEvent({ event: 'conversation_updated', conversation: chats.get(key) });
         }
       });
@@ -705,6 +783,8 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
               jid: key,
               name: chat.name || contact?.name || existing.name || jidToPhone(key) || key,
               phone: jidToPhone(key) || existing.phone || '',
+              is_group: key.includes('@g.us'),
+              avatar_url: chat.avatar_url || contact?.avatar_url || existing.avatar_url || null,
               last_message_at: ts ? new Date(Number(ts) * 1000).toISOString() : (newest?.created_at || existing.last_message_at),
               last_message_preview: newest?.body || existing.last_message_preview || '',
               unread_count: chat.unreadCount ?? existing.unread_count ?? 0,
@@ -713,6 +793,7 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
             };
             chats.set(key, merged);
             storedChats += 1;
+            if (!merged.avatar_url) void sessionManager._ensureChatAvatar(key);
             emitEvent({ event: 'conversation_updated', conversation: merged });
           }
           emitEvent({

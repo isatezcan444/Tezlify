@@ -148,6 +148,16 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     let isMounted = true;
     const convId = selectedConv.id;
 
+    // Faz 5: secilen sohbeti acmak okundu sayilir (WhatsApp Web paritesi) —
+    // tiklama ya da otomatik secim yoluyla gelmesi farketmez; okundu boylece
+    // telefona da geri yazilir.
+    if ((selectedConv.unread_count ?? 0) > 0) {
+      WhatsAppRepository.markConversationAsRead(convId).catch(() => {});
+      setConversations((prev) =>
+        prev.map((item) => (item.id === convId ? { ...item, unread_count: 0 } : item))
+      );
+    }
+
     WhatsAppRepository.getConversationMessages(convId, { limit: 50 })
       .then((res) => {
         if (isMounted && res?.messages) {
@@ -725,6 +735,26 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         );
         if (selectedConv && selectedConv.id === convId) {
           setSelectedConv((prev) => (prev ? { ...prev, unread_count: 0 } : prev));
+        }
+      }
+
+      // Faz 5: gateway'den canlı sohbet metadata'sı (isim/avatar/preview/unread)
+      // — backend jid'yi sayısal conversation_id'ye çevirerek ileri iletir.
+      if (eventData.event === 'conversation_updated') {
+        const convId = eventData.conversation_id;
+        const payload = eventData.conversation || {};
+        if (typeof convId === 'number') {
+          const patch = (c: Conversation): Conversation => ({
+            ...c,
+            lead_name: payload.name || c.lead_name,
+            lead_avatar_url: payload.avatar_url || c.lead_avatar_url,
+            last_message_preview: payload.last_message_preview || c.last_message_preview,
+            last_message_at: payload.last_message_at || c.last_message_at,
+            unread_count:
+              payload.unread_count != null ? Math.max(c.unread_count || 0, payload.unread_count) : c.unread_count,
+          });
+          setConversations((prev) => prev.map((c) => (c.id === convId ? patch(c) : c)));
+          setSelectedConv((prev) => (prev && prev.id === convId ? patch(prev) : prev));
         }
       }
 

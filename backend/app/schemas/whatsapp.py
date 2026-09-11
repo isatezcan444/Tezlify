@@ -55,6 +55,8 @@ class WhatsAppConversationItem(BaseModel):
     lead_id: Optional[int] = None
     name: Optional[str] = None
     phone: Optional[str] = None
+    is_group: bool = False
+    avatar_url: Optional[str] = None
     last_message_preview: Optional[str] = None
     last_message_at: Optional[str] = None
     unread_count: int = 0
