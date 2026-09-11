@@ -13,6 +13,13 @@ export function createEventBridge({ backendWsUrl, sessionManager }) {
   const buffer = []; // events queued while backend is disconnected
   const MAX_BUFFER = 500;
 
+  // When the backend protects /ws/gateway with WHATSAPP_GATEWAY_SECRET,
+  // the gateway must present the same secret via ?token= (fail-closed auth).
+  const bridgeSecret = process.env.WHATSAPP_GATEWAY_SECRET || '';
+  const authedBackendWsUrl = bridgeSecret
+    ? `${backendWsUrl}${backendWsUrl.includes('?') ? '&' : '?'}token=${encodeURIComponent(bridgeSecret)}`
+    : backendWsUrl;
+
   let backendSocket = null;
   let reconnectTimer = null;
   let isManuallyClosed = false;
@@ -20,7 +27,7 @@ export function createEventBridge({ backendWsUrl, sessionManager }) {
   function connectToBackend() {
     if (isManuallyClosed || backendSocket) return;
     try {
-      const ws = new WebSocket(backendWsUrl);
+      const ws = new WebSocket(authedBackendWsUrl);
       backendSocket = ws;
 
       ws.on('open', () => {

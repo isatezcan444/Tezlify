@@ -2,7 +2,7 @@
 
 **Tezlify**, B2B işletmelerin (Ajanslar, Yazılım Şirketleri, Danışmanlar, Satış Ekipleri) Google Maps ve web dizinlerinden otomatik olarak müşteri adayı (Lead) toplamalarını, telefon numaralarını uluslararası E.164 standartlarında doğrulayıp WhatsApp uyumluluklarını filtrelemelerini ve **Anti-Ban politikası** ile kişiselleştirilmiş Spintax mesaj kampanyaları yönetmelerini sağlayan modern bir SaaS platformudur.
 
-> **Not:** Bu sürümde WhatsApp **frontend/UI katmanı** korunmuştur; WhatsApp **backend** altyapısı (gateway, Meta Cloud API, Baileys, webhook, oturum, gönderim işçileri) tamamen kaldırılmıştır. WhatsApp ekranları ön yüz veri katmanı (`frontend/src/data/whatsapp/`) üzerinden çalışır.
+> **Not:** WhatsApp entegrasyonu Baileys gateway üzerinden çalışır. QR ile bağlantı kurmadan önce gateway servisini başlatın: `npm run gateway:start`.
 
 ---
 
@@ -85,6 +85,42 @@ npm run dev
 ```
 
 * Web Paneli: [http://localhost:5173](http://localhost:5173)
+
+### 3. WhatsApp Gateway'i Başlatma (QR bağlantısı için gerekli)
+
+```bash
+# İlk seferde whatsapp-gateway/.env içindeki GATEWAY_ENCRYPTION_KEY değerini
+# güçlü ve kalıcı bir gizli anahtarla ayarlayın.
+npm run gateway:start
+```
+
+* Health Check: [http://127.0.0.1:8787/health](http://127.0.0.1:8787/health)
+
+### Render Production Dağıtımı
+
+Render **free plan** hizmetler arası özel ağa (private network) izin vermediği
+için WhatsApp gateway, backend ile **aynı container içinde bir sidecar proses**
+olarak çalışır. Kök `Dockerfile` Node.js 20'yi kurar, `whatsapp-gateway`
+bağımlılıklarını yükler ve `docker-entrypoint.sh` ile gateway'i
+`127.0.0.1:8787` üzerinde başlatır; backend `WHATSAPP_GATEWAY_URL`
+varsayılanı olan bu adrese erişir.
+
+Kurulum (Render dashboard veya API):
+
+1. `tezlify` web servisine şu environment değişkenini ekleyin:
+   - `GATEWAY_ENCRYPTION_KEY`: en az 32 karakterlik kalıcı bir gizli anahtar
+     (üretilmiş bir değer girin; her dağıtımda aynı kalmalı).
+2. İsteğe bağlı: `WHATSAPP_GATEWAY_SECRET` belirleyin; gateway/backend WS
+   köprüsü `?token=` ile fail-closed doğrulanır.
+3. Servisi yeniden dağıtın. Build loglarında `[entrypoint] Starting WhatsApp
+   gateway` ve backend loglarında `[WS-GATEWAY] Baileys gateway bağlandı.`
+   satırlarını görmelisiniz. `GATEWAY_ENCRYPTION_KEY` yoksa backend yine
+   başlar ve WhatsApp işlemleri açık hata ile fail-closed olur.
+
+> Not: Free plan'da dosya sistemi ephemeral'dır; yeniden dağıtımda QR oturumu
+> sıfırlanır ve yeniden tarama gerekir. Kalıcı oturum için gateway'i ayrı bir
+> persistent disk ile çalıştırmak ya da ücretli planda private service kurmak
+> gerekir.
 
 ---
 

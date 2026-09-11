@@ -30,7 +30,11 @@ const HOST = process.env.GATEWAY_HOST || '127.0.0.1';
 const BACKEND_WS_URL = process.env.BACKEND_WS_URL || 'ws://127.0.0.1:8000/ws/gateway';
 const SESSIONS_DIR = process.env.SESSIONS_DIR || path.join(__dirname, '..', 'sessions');
 const MEDIA_DIR = process.env.MEDIA_DIR || path.join(__dirname, '..', 'media');
-const ENCRYPTION_KEY = process.env.GATEWAY_ENCRYPTION_KEY || 'dev-only-insecure-gateway-key';
+const ENCRYPTION_KEY = process.env.GATEWAY_ENCRYPTION_KEY;
+
+if (!ENCRYPTION_KEY || ENCRYPTION_KEY.length < 32) {
+  throw new Error('GATEWAY_ENCRYPTION_KEY must be set to a secret of at least 32 characters.');
+}
 
 // Ensure directories exist
 fs.mkdirSync(SESSIONS_DIR, { recursive: true });
