@@ -181,19 +181,32 @@ app.post('/conversations/:jid/messages', async (req, res) => {
   }
 });
 
-// Send media (multipart upload)
+// Send media (URL or base64 payload from the backend/frontend uploader)
 app.post('/conversations/:jid/media', async (req, res) => {
   try {
-    const { media_type, media_url, caption, filename, client_message_id } = req.body || {};
-    if (!media_url) return res.status(400).json({ error: 'media_url is required' });
+    const { media_type, media_url, media_base64, mime_type, caption, filename, client_message_id } = req.body || {};
+    if (!media_url && !media_base64) return res.status(400).json({ error: 'media_url or media_base64 is required' });
     const result = await sessionManager.sendMediaMessage(req.params.jid, {
       media_type,
       media_url,
+      media_base64,
+      mime_type,
       caption,
       filename,
       client_message_id,
     });
     res.status(201).json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Typing indicator ("yazıyor…")
+app.post('/conversations/:jid/typing', async (req, res) => {
+  try {
+    const { typing = true, duration_ms = 4000 } = req.body || {};
+    const result = await sessionManager.sendTyping(req.params.jid, !!typing, parseInt(duration_ms, 10) || 4000);
+    res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

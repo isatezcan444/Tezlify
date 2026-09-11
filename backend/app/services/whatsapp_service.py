@@ -43,6 +43,8 @@ def phone_to_jid(phone_e164: str) -> str:
 
 
 def _serialize_message(row: Message) -> Dict[str, Any]:
+    # Gelen medya gateway'de durur; frontend kimlik doğrulamalı proxy üzerinden çeker.
+    media_url = f"/api/v1/whatsapp/media/{row.media_id}" if row.media_id else None
     return {
         "id": row.id,
         "conversation_id": row.conversation_id,
@@ -54,7 +56,7 @@ def _serialize_message(row: Message) -> Dict[str, Any]:
         "media_mime_type": row.media_mime_type,
         "media_filename": row.media_filename,
         "media_caption": row.media_caption,
-        "media_url": None,
+        "media_url": media_url,
         "wa_message_id": row.wa_message_id,
         "client_message_id": row.client_message_id,
         "sender_phone": row.sender_phone,
@@ -498,6 +500,31 @@ async def mark_conversation_read(db: AsyncSession, user_id: str, conversation_id
     conv.last_read_at = datetime.utcnow()
     await db.commit()
     return {"success": True}
+
+
+async def send_typing(db: AsyncSession, user_id: str, conversation_id: int, typing: bool = True) -> Dict[str, Any]:
+    """Karsı tarafa 'yazıyor...' gostermesi gonderir (WhatsApp Web paritesi)."""
+    conv, jid = await _resolve_jid(db, user_id, conversation_id)
+    await gw.send_typing(jid, typing=typing)
+    return {"success": True}
+
+
+async def get_media_bytes(db: AsyncSession, user_id: str, media_id: str) -> Tuple[bytes, Optional[str], Optional[str]]:
+    """Kullaniciya ait bir mesaja ait medyayi gateway'den proxy'ler.
+
+    Doner: (baytlar, mime_type, filename). Medya kaydi yoksa/erisim yoksa LookupError.
+    """
+    res = await db.execute(
+        select(Message).where(
+            Message.media_id == media_id,
+            get_user_filter(Message.user_id, user_id),
+        )
+    )
+    row = res.scalars().first()
+    if row is None:
+        raise LookupError(f"Medya bulunamadi: {media_id}")
+    data = await gw.fetch_media(media_id)
+    return data, row.media_mime_type, row.media_filename
 # ---------------------------------------------------------------------------
 # Gateway olaylarini veritabanina isleme (inbound)
 # ---------------------------------------------------------------------------
@@ -616,6 +643,40 @@ async def _map_conversation_event(db: AsyncSession, event: Dict[str, Any]) -> Di
     if event.get("event") == "conversation_read":
         conv.unread_count = 0
         await db.commit()
+    elif event.get("event") == "message_status_updated":
+        # Outbound ack (✓ / ✓✓ / mavi ✓✓) → persist on the matching message.
+        wa_id = event.get("wa_message_id")
+        new_status = (event.get("status") or "").upper()
+        if wa_id and new_status in ConversationMessageStatus.__members__:
+            res = await db.execute(
+                select(Message).where(
+                    Message.wa_message_id == wa_id,
+                    Message.conversation_id == conv.id,
+                )
+            )
+            row = res.scalars().first()
+            if row is not None:
+                target = ConversationMessageStatus[new_status]
+                rank = {
+                    ConversationMessageStatus.PENDING: 0,
+                    ConversationMessageStatus.SENT: 1,
+                    ConversationMessageStatus.DELIVERED: 2,
+                    ConversationMessageStatus.READ: 3,
+                    ConversationMessageStatus.RECEIVED: 3,
+                    ConversationMessageStatus.FAILED: 4,
+                }
+                cur_rank = rank.get(row.status, 0)
+                new_rank = rank.get(target, 0)
+                # Acks only move forward; never downgrade an existing status.
+                if new_rank > cur_rank:
+                    row.status = target
+                    if target == ConversationMessageStatus.READ:
+                        row.delivered_at = row.delivered_at or datetime.utcnow()
+                        row.read_at = datetime.utcnow()
+                    elif target == ConversationMessageStatus.DELIVERED:
+                        row.delivered_at = row.delivered_at or datetime.utcnow()
+                    await db.commit()
+                    event["message_id"] = row.id
     return event
 
 

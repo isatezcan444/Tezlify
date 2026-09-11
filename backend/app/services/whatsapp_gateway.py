@@ -127,6 +127,12 @@ async def mark_conversation_read(jid: str) -> Dict[str, Any]:
     return await _request("POST", f"/conversations/{jid}/read")
 
 
+async def send_typing(jid: str, typing: bool = True, duration_ms: int = 4000) -> Dict[str, Any]:
+    return await _request(
+        "POST", f"/conversations/{jid}/typing", json={"typing": typing, "duration_ms": duration_ms}
+    )
+
+
 # ---------------------------------------------------------------------------
 # Media
 # ---------------------------------------------------------------------------

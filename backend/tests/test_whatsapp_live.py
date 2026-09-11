@@ -141,6 +141,8 @@ def mock_gateway():
         "status": "SENT", "body": "Test caption",
     })
     mark_read = _patch("mark_conversation_read", {"success": True})
+    typing = _patch("send_typing", {"success": True})
+    fetch_media = _patch("fetch_media", b"FAKE_MEDIA_BYTES")
 
     yield type("MockGW", (), {
         "health": gateway,
@@ -157,6 +159,8 @@ def mock_gateway():
         "send_text_message": send_text,
         "send_media_message": send_media,
         "mark_conversation_read": mark_read,
+        "send_typing": typing,
+        "fetch_media": fetch_media,
         "_gateway_id": gw_id,
     })()
 
@@ -611,3 +615,179 @@ async def test_whatsapp_status_result_has_status_field():
     assert result.status == "DISCONNECTED"
     json_data = result.model_dump()
     assert "status" in json_data
+
+
+# ---------------------------------------------------------------------------
+# Faz 2 — WhatsApp Web parity: typing, base64 media, media proxy, acks
+# ---------------------------------------------------------------------------
+
+async def _make_conv() -> int:
+    async with AsyncSessionLocal() as db:
+        contact = Contact(user_id=TEST_USER, phone_e164=MOCK_PHONE, display_name="Test Lead")
+        db.add(contact)
+        await db.flush()
+        conv = Conversation(
+            user_id=TEST_USER, contact_id=contact.id, channel="WHATSAPP",
+            status=ConversationStatus.ACTIVE, unread_count=0,
+        )
+        db.add(conv)
+        await db.flush()
+        conv_id = conv.id
+        await db.commit()
+    return conv_id
+
+
+@pytest.mark.asyncio
+async def test_send_typing_endpoint(auth_headers, mock_gateway):
+    """POST /conversations/{id}/typing delegates to gateway send_typing."""
+    conv_id = await _make_conv()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        res = await client.post(
+            f"/api/v1/whatsapp/conversations/{conv_id}/typing",
+            json={"typing": True},
+            headers=auth_headers,
+        )
+        assert res.status_code == 200
+        assert res.json()["success"] is True
+    mock_gateway.send_typing.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_send_media_requires_url_or_base64(auth_headers, mock_gateway):
+    """POST /conversations/{id}/media without media_url and media_base64 → 400."""
+    conv_id = await _make_conv()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        res = await client.post(
+            f"/api/v1/whatsapp/conversations/{conv_id}/media",
+            json={"media_type": "image"},
+            headers=auth_headers,
+        )
+        assert res.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_send_media_base64_forwards_to_gateway(auth_headers, mock_gateway):
+    """POST /conversations/{id}/media with media_base64 forwards payload to gateway."""
+    conv_id = await _make_conv()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        res = await client.post(
+            f"/api/v1/whatsapp/conversations/{conv_id}/media",
+            json={
+                "media_type": "image",
+                "media_base64": "aW1hZ2U=",
+                "mime_type": "image/png",
+                "filename": "test.png",
+                "caption": "merhaba",
+            },
+            headers=auth_headers,
+        )
+        assert res.status_code == 200
+        assert res.json()["status"] == "SENT"
+    mock_gateway.send_media_message.assert_awaited()
+    kwargs = mock_gateway.send_media_message.await_args.args[1]
+    assert kwargs["media_base64"] == "aW1hZ2U="
+    assert kwargs["mime_type"] == "image/png"
+
+
+@pytest.mark.asyncio
+async def test_media_proxy_endpoint(auth_headers, mock_gateway):
+    """GET /media/{media_id} proxies gateway bytes for the owner's message."""
+    conv_id = await _make_conv()
+    async with AsyncSessionLocal() as db:
+        msg = Message(
+            user_id=TEST_USER, conversation_id=conv_id,
+            direction=MessageDirection.INBOUND, message_type=MessageType.IMAGE,
+            status=ConversationMessageStatus.RECEIVED,
+            media_id="media-abc-123", media_mime_type="image/png",
+            media_filename="photo.png", sender_phone=MOCK_PHONE, recipient_phone="ME",
+        )
+        db.add(msg)
+        await db.commit()
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        res = await client.get("/api/v1/whatsapp/media/media-abc-123", headers=auth_headers)
+        assert res.status_code == 200
+        assert res.content == b"FAKE_MEDIA_BYTES"
+        assert res.headers["content-type"] == "image/png"
+        # Unknown media id → 404 (fail closed, no fake data)
+        res404 = await client.get("/api/v1/whatsapp/media/does-not-exist", headers=auth_headers)
+        assert res404.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_serialize_message_exposes_media_proxy_url():
+    """Incoming media messages serialize with a /api/v1/whatsapp/media/{id} URL."""
+    conv_id = await _make_conv()
+    async with AsyncSessionLocal() as db:
+        msg = Message(
+            user_id=TEST_USER, conversation_id=conv_id,
+            direction=MessageDirection.INBOUND, message_type=MessageType.IMAGE,
+            status=ConversationMessageStatus.RECEIVED,
+            media_id="media-url-1", media_mime_type="image/jpeg",
+            sender_phone=MOCK_PHONE, recipient_phone="ME",
+        )
+        db.add(msg)
+        await db.commit()
+        from backend.app.services.whatsapp_service import _serialize_message
+        serialized = _serialize_message(msg)
+    assert serialized["media_url"] == "/api/v1/whatsapp/media/media-url-1"
+
+
+@pytest.mark.asyncio
+async def test_ingest_message_status_updated_persists_acks():
+    """message_status_updated events move outbound status forward: SENT→DELIVERED→READ."""
+    async with AsyncSessionLocal() as db:
+        contact = Contact(user_id=TEST_USER, phone_e164=MOCK_PHONE, display_name="Test Lead")
+        db.add(contact)
+        await db.flush()
+        conv = Conversation(
+            user_id=TEST_USER, contact_id=contact.id, channel="WHATSAPP",
+            status=ConversationStatus.ACTIVE, unread_count=0,
+        )
+        db.add(conv)
+        await db.flush()
+        session = WhatsAppSession(
+            user_id=TEST_USER, gateway_id=str(_uuid.uuid4()),
+            session_name="Connected", status=SessionStatus.CONNECTED, is_active=True,
+        )
+        db.add(session)
+        msg = Message(
+            user_id=TEST_USER, conversation_id=conv.id,
+            direction=MessageDirection.OUTBOUND, message_type=MessageType.TEXT,
+            status=ConversationMessageStatus.SENT, wa_message_id="wamid_ack_1",
+            body="hi", sender_phone="ME", recipient_phone=MOCK_PHONE,
+        )
+        db.add(msg)
+        await db.commit()
+        conv_id = conv.id
+
+    async def _ingest(status: str):
+        return await ingest_gateway_event({
+            "event": "message_status_updated",
+            "conversation_id": MOCK_JID,
+            "wa_message_id": "wamid_ack_1",
+            "status": status,
+        })
+
+    result = await _ingest("DELIVERED")
+    assert result["conversation_id"] == conv_id
+    async with AsyncSessionLocal() as db:
+        row = (await db.execute(select(Message).where(Message.wa_message_id == "wamid_ack_1"))).scalar_one()
+        assert row.status == ConversationMessageStatus.DELIVERED
+        assert row.delivered_at is not None
+
+    await _ingest("READ")
+    async with AsyncSessionLocal() as db:
+        row = (await db.execute(select(Message).where(Message.wa_message_id == "wamid_ack_1"))).scalar_one()
+        assert row.status == ConversationMessageStatus.READ
+        assert row.read_at is not None
+
+    # Acks never move backwards (READ must not downgrade to SENT)
+    await _ingest("SENT")
+    async with AsyncSessionLocal() as db:
+        row = (await db.execute(select(Message).where(Message.wa_message_id == "wamid_ack_1"))).scalar_one()
+        assert row.status == ConversationMessageStatus.READ

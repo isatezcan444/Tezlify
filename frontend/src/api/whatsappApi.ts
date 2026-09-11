@@ -69,6 +69,34 @@ async function apiSend<T>(path: string, method: 'POST' | 'DELETE', body?: unknow
 }
 
 // ---------------------------------------------------------------------------
+// Dosya -> base64 yardimcilari (medya yukleme)
+// ---------------------------------------------------------------------------
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = typeof reader.result === 'string' ? reader.result : '';
+      // "data:<mime>;base64,XXXX" -> "XXXX"
+      const comma = result.indexOf(',');
+      resolve(comma >= 0 ? result.slice(comma + 1) : result);
+    };
+    reader.onerror = () => reject(new WhatsAppApiError('Dosya okunamadi'));
+    reader.readAsDataURL(file);
+  });
+}
+
+function mediaTypeFromFile(mime: string, name: string): string {
+  const ext = (name.split('.').pop() || '').toLowerCase();
+  if (mime.startsWith('image/')) return 'image';
+  if (mime.startsWith('video/')) return 'video';
+  if (mime.startsWith('audio/')) return 'audio';
+  if (['png', 'jpg', 'jpeg', 'gif', 'webp'].includes(ext)) return 'image';
+  if (['mp4', 'mov', 'avi', 'mkv', 'webm'].includes(ext)) return 'video';
+  if (['mp3', 'ogg', 'wav', 'm4a', 'aac'].includes(ext)) return 'audio';
+  return 'document';
+}
+
+// ---------------------------------------------------------------------------
 // Backend -> Frontend tip eşleyicileri
 // ---------------------------------------------------------------------------
 interface BackendSession {
@@ -317,9 +345,12 @@ export const WhatsAppApi = {
 
   async sendMedia(
     conversationId: number,
-    media: { media_type: string; media_url: string; caption?: string; filename?: string },
+    media: { media_type: string; media_url?: string; media_base64?: string; mime_type?: string; caption?: string; filename?: string },
     clientMessageId?: string
   ): Promise<Message> {
+    if (!media.media_url && !media.media_base64) {
+      throw new WhatsAppApiError('media_url veya media_base64 zorunludur');
+    }
     const data = await apiSend<{
       id?: number | string | null;
       wa_message_id?: string | null;
@@ -329,6 +360,8 @@ export const WhatsAppApi = {
     }>(`/whatsapp/conversations/${conversationId}/media`, 'POST', {
       media_type: media.media_type.toLowerCase(),
       media_url: media.media_url,
+      media_base64: media.media_base64,
+      mime_type: media.mime_type,
       caption: media.caption,
       filename: media.filename,
       client_message_id: clientMessageId,
@@ -350,6 +383,33 @@ export const WhatsAppApi = {
       },
       conversationId
     );
+  },
+
+  /** Bir dosyayi okuyup base64 medya mesaji olarak gonderir (WhatsApp Web dosya secimi). */
+  async sendMediaFile(
+    conversationId: number,
+    file: File,
+    caption?: string,
+    clientMessageId?: string
+  ): Promise<Message> {
+    const base64 = await fileToBase64(file);
+    const type = mediaTypeFromFile(file.type, file.name);
+    return WhatsAppApi.sendMedia(
+      conversationId,
+      {
+        media_type: type,
+        media_base64: base64,
+        mime_type: file.type || 'application/octet-stream',
+        caption,
+        filename: file.name,
+      },
+      clientMessageId
+    );
+  },
+
+  /** Karsı tarafa 'yazıyor...' gostermesi gonderir. */
+  async sendTyping(conversationId: number, typing: boolean = true): Promise<void> {
+    await apiSend<{ success: boolean }>(`/whatsapp/conversations/${conversationId}/typing`, 'POST', { typing });
   },
 
   async markConversationRead(conversationId: number): Promise<Conversation> {

@@ -9,7 +9,7 @@
  * - Media download & storage
  * - Realtime event emission to the event bridge
  */
-import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, Browsers, downloadMediaMessage } from '@whiskeysockets/baileys';
+import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, BROWSERS, downloadMediaMessage } from '@whiskeysockets/baileys';
 import QRCode from 'qrcode';
 import fs from 'fs';
 import path from 'path';
@@ -27,6 +27,11 @@ const contacts = new Map(); // jid -> contact
 const chats = new Map(); // jid -> chat summary
 const messagesByChat = new Map(); // jid -> Message[]
 const mediaIndex = new Map(); // media_id -> { filePath, mimeType, filename, sizeBytes }
+
+// Baileys/WA ack seviyeleri → WhatsApp Web tik anlamları.
+// proto.WebMessageInfo.Status: 1=SERVER_ACK(✓) 2=DELIVERY_ACK(✓✓) 3=READ(✓✓ mavi) 4=PLAYED
+const ACK_RANK = { 1: 'SENT', 2: 'DELIVERED', 3: 'READ', 4: 'READ' };
+const ACK_ORDER = { PENDING: 0, SENT: 1, DELIVERED: 2, READ: 3, FAILED: 4 };
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -252,25 +257,30 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       return msg;
     },
 
-    async sendMediaMessage(jid, { media_type, media_url, caption, filename, client_message_id }) {
+    async sendMediaMessage(jid, { media_type, media_url, media_base64, mime_type, caption, filename, client_message_id }) {
       const session = this._getConnectedSession();
       const key = normalizeJid(jid);
       const type = (media_type || 'document').toLowerCase();
+      // Base64 payload (frontend upload) wins over URL; Baileys accepts Buffers.
+      const buffer = media_base64 ? Buffer.from(media_base64, 'base64') : null;
+      const source = buffer
+        ? { url: buffer, mimetype: mime_type || undefined }
+        : { url: media_url };
       let content;
       if (type === 'image') {
-        content = { image: { url: media_url }, caption: caption || '' };
+        content = { image: source, caption: caption || '' };
       } else if (type === 'audio') {
-        content = { audio: { url: media_url } };
+        content = { audio: source, mimetype: mime_type || 'audio/mpeg', ptt: false };
       } else if (type === 'video') {
-        content = { video: { url: media_url }, caption: caption || '' };
+        content = { video: source, caption: caption || '' };
       } else {
-        content = { document: { url: media_url }, filename: filename || 'belge.pdf', caption: caption || '' };
+        content = { document: source, mimetype: mime_type || 'application/octet-stream', fileName: filename || 'belge.bin', caption: caption || '' };
       }
       const result = await session.sock.sendMessage(key, content);
       const msg = this._recordOutbound(key, {
-        body: caption || filename || media_url || '',
+        body: caption || filename || media_url || `[${type.toUpperCase()}]`,
         message_type: type.toUpperCase(),
-        media_url,
+        media_url: media_url || null,
         media_filename: filename,
         media_caption: caption,
         client_message_id: client_message_id || `media_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
@@ -415,7 +425,7 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       const sock = makeWASocket({
         version,
         logger,
-        browser: Browsers.macOS('Desktop'),
+        browser: BROWSERS.macOS('Desktop'),
         auth: state,
         markOnlineOnConnect: true,
         // NOT: syncFullHistory: true WhatsApp tarafından statusCode=428 ile
@@ -601,6 +611,37 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
         if (chat) {
           chat.presence = presences?.[0]?.presence || null;
           emitEvent({ event: 'presence_updated', conversation_id: key, presence: chat.presence });
+        }
+      });
+
+      // --- Message acks (✓ / ✓✓ / mavi ✓✓) — WhatsApp Web parity ---
+      // Baileys emits messages.update with key.status transitions for our own
+      // (fromMe) messages: SERVER_ACK → DELIVERY_ACK → READ. We translate these
+      // into message_status_updated events so the backend can persist them.
+      sock.ev.on('messages.update', (updates) => {
+        for (const { key, update } of updates || []) {
+          if (!key?.fromMe || !key?.id) continue;
+          const statusNum = update?.status;
+          const newStatus = ACK_RANK[statusNum];
+          if (!newStatus) continue;
+          const remoteJid = key.remoteJid;
+          if (!remoteJid) continue;
+          const k = normalizeJid(remoteJid);
+          const list = messagesByChat.get(k) || [];
+          const msg = list.find((m) => m.wa_message_id === key.id);
+          if (!msg) continue;
+          const currentRank = ACK_ORDER[msg.status] ?? 0;
+          const nextRank = ACK_ORDER[newStatus] ?? 0;
+          // Acks only move forward; never downgrade READ → DELIVERED.
+          if (nextRank <= currentRank) continue;
+          msg.status = newStatus;
+          emitEvent({
+            event: 'message_status_updated',
+            conversation_id: k,
+            wa_message_id: key.id,
+            status: newStatus,
+            timestamp: new Date().toISOString(),
+          });
         }
       });
     },

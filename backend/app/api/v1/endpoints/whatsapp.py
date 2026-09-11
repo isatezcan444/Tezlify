@@ -5,7 +5,7 @@ Tüm uç noktalar kimlik doğrulamalı ve çok kiracılı (user_id filtresi) ça
 """
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.auth import AuthUser, get_current_user
@@ -23,6 +23,7 @@ from backend.app.schemas.whatsapp import (
     WhatsAppSessionListResponse,
     WhatsAppSessionResponse,
     WhatsAppStatusResult,
+    WhatsAppTypingRequest,
 )
 from backend.app.services import whatsapp_service
 
@@ -212,9 +213,16 @@ async def send_media(
     db: AsyncSession = Depends(get_db),
     current_user: AuthUser = Depends(get_current_user),
 ) -> WhatsAppSendResult:
+    if not payload.media_url and not payload.media_base64:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="media_url veya media_base64 zorunludur.",
+        )
     media = {
         "media_type": payload.media_type,
         "media_url": payload.media_url,
+        "media_base64": payload.media_base64,
+        "mime_type": payload.mime_type,
         "caption": payload.caption,
         "filename": payload.filename,
         "client_message_id": payload.client_message_id,
@@ -245,4 +253,39 @@ async def mark_conversation_read(
     except LookupError as exc:
         raise _not_found(exc) from exc
     return WhatsAppReadResult(success=bool(result.get("success", True)))
+
+
+@router.post("/conversations/{conversation_id}/typing", response_model=WhatsAppReadResult)
+async def send_typing(
+    conversation_id: int,
+    payload: WhatsAppTypingRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+) -> WhatsAppReadResult:
+    try:
+        result = await whatsapp_service.send_typing(db, current_user.id, conversation_id, typing=payload.typing)
+    except LookupError as exc:
+        raise _not_found(exc) from exc
+    except Exception as exc:
+        raise _bad_gateway(exc) from exc
+    return WhatsAppReadResult(success=bool(result.get("success", True)))
+
+
+@router.get("/media/{media_id}")
+async def get_media(
+    media_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+) -> Response:
+    """Kimlik dogrulamali medya proxy'si — gateway'deki gelen medyayi sunar."""
+    try:
+        data, mime, filename = await whatsapp_service.get_media_bytes(db, current_user.id, media_id)
+    except LookupError as exc:
+        raise _not_found(exc) from exc
+    except Exception as exc:
+        raise _bad_gateway(exc) from exc
+    headers = {}
+    if filename:
+        headers["Content-Disposition"] = f'inline; filename="{filename}"'
+    return Response(content=data, media_type=mime or "application/octet-stream", headers=headers)
 

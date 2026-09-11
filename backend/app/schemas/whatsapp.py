@@ -101,10 +101,16 @@ class WhatsAppSendTextRequest(BaseModel):
 
 class WhatsAppSendMediaRequest(BaseModel):
     media_type: str = Field(..., description="image|document|audio|video")
-    media_url: str = Field(..., description="authFetch uyumlu, kimlik doğrulamalı medya URL'si veya gateway URL")
+    media_url: Optional[str] = Field(None, description="authFetch uyumlu, kimlik doğrulamalı medya URL'si veya gateway URL")
+    media_base64: Optional[str] = Field(None, description="Dosya yuklemesi icin base64 icerik (media_url ile en az biri)")
+    mime_type: Optional[str] = Field(None, description="base64 yuklemede MIME tipi")
     caption: Optional[str] = None
     filename: Optional[str] = None
     client_message_id: Optional[str] = None
+
+
+class WhatsAppTypingRequest(BaseModel):
+    typing: bool = Field(default=True, description="True='yazıyor', False='duraklat'")
 
 
 class WhatsAppSendResult(BaseModel):
