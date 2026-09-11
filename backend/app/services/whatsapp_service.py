@@ -7,7 +7,7 @@ konusur. Gateway olaylari (/ws/gateway) bu servis araciligiyla persist
 edilir ve broadcast icin sayisal kimliklere cevrilir.
 """
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import select, func, or_
@@ -99,6 +99,15 @@ def _parse_dt(value: Optional[str]) -> Optional[datetime]:
         return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
     except Exception:
         return None
+
+
+def _as_naive_utc(value: Optional[datetime]) -> Optional[datetime]:
+    """DB kolonlari naive UTC; aware datetime'lari karsilastirilabilir hale getirir."""
+    if value is None:
+        return None
+    if value.tzinfo is not None:
+        return value.astimezone(timezone.utc).replace(tzinfo=None)
+    return value
 
 
 def _apply_gateway_live(row: WhatsAppSession, data: Dict[str, Any]) -> None:
@@ -285,19 +294,92 @@ async def _ensure_conversation(
     return conv
 
 
+async def _persist_gateway_message(db: AsyncSession, owner: str, msg: Dict[str, Any]) -> bool:
+    """Gateway mesaj kaydini (history sync veya sync sirasinda cekilen) DB'ye yazar.
+
+    wa_message_id ile dedup eder; yeni satir yazildiysa True doner.
+    """
+    jid = msg.get("conversation_id")
+    if not jid or "@" not in str(jid):
+        return False
+    jid_str = str(jid)
+    wa_id = msg.get("wa_message_id")
+    conv = await _ensure_conversation(db, owner, jid_str)
+    if wa_id:
+        existing = await db.execute(
+            select(Message).where(Message.wa_message_id == wa_id, Message.conversation_id == conv.id)
+        )
+        if existing.scalar_one_or_none() is not None:
+            return False  # dedup
+    mtype_str = (msg.get("message_type") or "TEXT").upper()
+    try:
+        mtype = MessageType[mtype_str] if mtype_str in MessageType.__members__ else MessageType.TEXT
+    except Exception:
+        mtype = MessageType.TEXT
+    direction = MessageDirection.INBOUND if str(msg.get("direction", "INBOUND")).upper() == "INBOUND" else MessageDirection.OUTBOUND
+    body = msg.get("body") or ""
+    ts = _parse_dt(msg.get("created_at"))
+    status_str = str(msg.get("status") or ("RECEIVED" if direction == MessageDirection.INBOUND else "SENT")).upper()
+    try:
+        status = ConversationMessageStatus[status_str]
+    except Exception:
+        status = ConversationMessageStatus.RECEIVED if direction == MessageDirection.INBOUND else ConversationMessageStatus.SENT
+    row = Message(
+        user_id=owner,
+        conversation_id=conv.id,
+        direction=direction,
+        message_type=mtype,
+        body=body[:4000] if body else None,
+        media_id=msg.get("media_id"),
+        media_mime_type=msg.get("media_mime_type"),
+        media_filename=msg.get("media_filename"),
+        media_caption=msg.get("media_caption"),
+        wa_message_id=wa_id,
+        client_message_id=msg.get("client_message_id"),
+        sender_phone=msg.get("sender_phone") or jid_to_phone(jid_str) or "unknown",
+        sender_name=msg.get("sender_name"),
+        recipient_phone=msg.get("recipient_phone") or "ME",
+        status=status,
+        external_timestamp=_as_naive_utc(ts),
+    )
+    db.add(row)
+    ts_naive = _as_naive_utc(ts)
+    if ts_naive and (conv.last_message_at is None or ts_naive > conv.last_message_at):
+        conv.last_message_at = ts_naive
+        conv.last_message_preview = (body or f"[{mtype_str}]")[:500]
+    await db.flush()
+    return True
+
+
 async def sync_conversations(db: AsyncSession, user_id: str) -> List[Dict[str, Any]]:
     data = await gw.list_conversations(limit=200)
     items = data.get("items", []) if isinstance(data, dict) else []
+    owner = user_id
     for item in items:
         jid = item.get("jid") or item.get("id")
         if not jid or "@" not in str(jid):
             continue
         jid_str = str(jid)
         preview = item.get("last_message_preview") or ""
-        conv = await _ensure_conversation(db, user_id, jid_str, preview)
+        # Sohbet adini (history sync'ten gelir) contact'a tasi — isim bos ya da
+        # telefon numarasi gorunumunde ise gercek adla guncelle.
+        chat_name = item.get("name")
+        contact = await _upsert_contact(db, user_id, jid_str, chat_name)
+        if chat_name and (not contact.display_name or contact.display_name.startswith("+")):
+            contact.display_name = chat_name
+            await db.flush()
+        stmt = select(Conversation).where(
+            Conversation.contact_id == contact.id,
+            Conversation.channel == "WHATSAPP",
+            get_user_filter(Conversation.user_id, user_id),
+        )
+        res = await db.execute(stmt)
+        conv = res.scalar_one_or_none()
+        if conv is None:
+            conv = await _ensure_conversation(db, user_id, jid_str, preview)
         last_at = item.get("last_message_at")
         if last_at:
-            parsed = _parse_dt(str(last_at))
+            parsed = _as_naive_utc(_parse_dt(str(last_at)))
             if parsed:
                 conv.last_message_at = parsed
         if preview:
@@ -305,6 +387,16 @@ async def sync_conversations(db: AsyncSession, user_id: str) -> List[Dict[str, A
         unread = int(item.get("unread_count") or 0)
         conv.unread_count = max(conv.unread_count or 0, unread)
         await db.flush()
+        # Faz 4: sohbet gecmisini de cek (history sync gateway belleğinde tuttu).
+        try:
+            msg_data = await gw.get_messages(jid_str, limit=100)
+            gw_messages = msg_data.get("messages", []) if isinstance(msg_data, dict) else []
+            for gm in gw_messages:
+                gm = dict(gm)
+                gm.setdefault("conversation_id", jid_str)
+                await _persist_gateway_message(db, owner, gm)
+        except Exception as exc:
+            logger.warning("Sohbet gecmisi cekilemedi (%s): %s", jid_str, exc)
     await db.commit()
     result, _total = await list_conversations(db, user_id)
     return result
@@ -644,6 +736,28 @@ async def _map_conversation_event(db: AsyncSession, event: Dict[str, Any]) -> Di
         # Baileys presence: composing / paused / available / recording ...
         presence = str(event.get("presence") or "").lower()
         event["typing"] = presence in ("composing", "recording")
+        return event
+    if event.get("event") == "conversation_updated":
+        # Faz 4: history sync / chats.update alanlarini DB'ye kalici yaz.
+        payload = event.get("conversation") or {}
+        name = payload.get("name")
+        if name:
+            contact = await _upsert_contact(db, owner, str(jid), None)
+            if not contact.display_name or contact.display_name.startswith("+"):
+                contact.display_name = name
+                await db.flush()
+        preview = payload.get("last_message_preview")
+        if preview:
+            conv.last_message_preview = str(preview)[:500]
+        last_at = _as_naive_utc(_parse_dt(payload.get("last_message_at")))
+        if last_at and (conv.last_message_at is None or last_at > conv.last_message_at):
+            conv.last_message_at = last_at
+        try:
+            if payload.get("unread_count") is not None:
+                conv.unread_count = max(conv.unread_count or 0, int(payload["unread_count"]))
+        except Exception:
+            pass
+        await db.commit()
         return event
     if event.get("event") == "conversation_read":
         conv.unread_count = 0

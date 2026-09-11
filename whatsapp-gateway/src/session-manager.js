@@ -389,6 +389,50 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       });
     },
 
+    // History sync mesajlarini (WAMessage) gateway Message kaydina cevirir.
+    // Medya indirmesi yapilmaz (gizemli/sifreli history medyasi): tip + caption
+    // kaydedilir, media_id bos kalir.
+    _historyMessageToRecord(msg, key) {
+      const content = msg.message || {};
+      const text =
+        content.conversation ||
+        content.extendedTextMessage?.text ||
+        content.imageMessage?.caption ||
+        content.videoMessage?.caption ||
+        content.documentMessage?.caption ||
+        '';
+      const mediaType = content.imageMessage ? 'IMAGE'
+        : content.documentMessage ? 'DOCUMENT'
+        : content.audioMessage ? 'AUDIO'
+        : content.videoMessage ? 'VIDEO'
+        : content.stickerMessage ? 'STICKER'
+        : content.locationMessage ? 'LOCATION'
+        : content.contactMessage ? 'CONTACT'
+        : content.extendedTextMessage ? 'TEXT'
+        : content.conversation ? 'TEXT'
+        : null;
+      if (!mediaType && !text) return null; // stub/unsupported message — skip
+      const ts = Number(msg.messageTimestamp) * 1000;
+      return {
+        id: Number.isFinite(ts) ? ts : Date.now(),
+        timestamp_s: Number(msg.messageTimestamp) || null,
+        conversation_id: key,
+        direction: msg.key?.fromMe ? 'OUTBOUND' : 'INBOUND',
+        message_type: mediaType || 'TEXT',
+        status: msg.key?.fromMe ? 'SENT' : 'RECEIVED',
+        body: text || '',
+        media_id: null,
+        media_mime_type: null,
+        media_filename: content.documentMessage?.fileName || null,
+        media_caption: text || null,
+        wa_message_id: msg.key?.id || null,
+        sender_phone: msg.key?.fromMe ? 'ME' : (jidToPhone(msg.key?.participant || key) || key),
+        recipient_phone: msg.key?.fromMe ? (jidToPhone(key) || key) : 'ME',
+        sender_name: msg.pushName || (msg.key?.fromMe ? 'ME' : null),
+        created_at: new Date(Number.isFinite(ts) ? ts : Date.now()).toISOString(),
+      };
+    },
+
     _startSocket(id) {
       const session = sessions.get(id);
       if (!session) return;
@@ -429,8 +473,13 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
         auth: state,
         markOnlineOnConnect: true,
         // NOT: syncFullHistory: true WhatsApp tarafından statusCode=428 ile
-        // bağlantı kırılarak reddediliyor (QR hiç oluşmuyor). Sohbet geçmişi
-        // yine de messages.upsert olaylarıyla canlı olarak toplanır.
+        // bağlantı kırılarak reddediliyor (QR hiç oluşmuyor) — registration
+        // payload'ını (requireFullSync) DEĞİŞTİRMEDEN, yalnızca telefonun
+        // bağlantı sırasında PASİF olarak gönderdiği RECENT history sync
+        // bildirimini işlemek için shouldSyncHistoryMessage kullanılır.
+        // Bu, QR eşleşmesi sonrası sohbet listesinin boş kalmasını (Faz 4
+        // hatası) çözer: 'messaging-history.set' olayı aşağıda dinlenir.
+        shouldSyncHistoryMessage: () => true,
       });
 
       session.sock = sock;
@@ -601,6 +650,81 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
             updated_at: new Date().toISOString(),
           });
           emitEvent({ event: 'conversation_updated', conversation: chats.get(key) });
+        }
+      });
+
+      // --- History sync (Faz 4): telefonun baglantı sirasinda pasif olarak
+      // gonderdigi RECENT gecmisi isler. syncFullHistory (428 riski) KULLANILMAZ;
+      // yalnizca shouldSyncHistoryMessage ile bildirim kabul edilir. ---
+      sock.ev.on('messaging-history.set', async ({ chats: historyChats, contacts: historyContacts, messages: historyMessages, progress, isLatest }) => {
+        try {
+          // 1. Kisiler
+          for (const c of historyContacts || []) {
+            if (!c?.id) continue;
+            const existing = contacts.get(c.id) || {};
+            contacts.set(c.id, {
+              id: c.id,
+              jid: c.id,
+              name: c.notify || c.name || existing.name || jidToPhone(c.id) || c.id,
+              phone: jidToPhone(c.id) || existing.phone || '',
+              avatar_url: c.imgUrl || existing.avatar_url || null,
+              updated_at: new Date().toISOString(),
+            });
+          }
+          // 2. Mesajlar (chat bazinda, wa_message_id ile dedup)
+          let storedMessages = 0;
+          for (const msg of historyMessages || []) {
+            const jid = msg.key?.remoteJid;
+            if (!jid || msg.key?.id === '__history__') continue;
+            if (msg.message?.protocolMessage) continue; // revoke/ephemeral vb. — atla
+            const key = normalizeJid(jid);
+            const list = messagesByChat.get(key) || [];
+            if (msg.key.id && list.some((m) => m.wa_message_id === msg.key.id)) continue;
+            const record = this._historyMessageToRecord(msg, key);
+            if (!record) continue;
+            list.push(record);
+            // Bellek koruması: sohbet başına en yeni 500 mesaj
+            if (list.length > 500) list.splice(0, list.length - 500);
+            messagesByChat.set(key, list);
+            storedMessages += 1;
+          }
+          // 3. Sohbetler
+          let storedChats = 0;
+          for (const chat of historyChats || []) {
+            const jid = chat.id || chat.jid;
+            if (!jid) continue;
+            const key = normalizeJid(jid);
+            const contact = contacts.get(key);
+            const list = messagesByChat.get(key) || [];
+            const newest = list[list.length - 1];
+            const ts = chat.lastMessageRecvTimestamp || newest?.timestamp_s;
+            const existing = chats.get(key) || {};
+            const merged = {
+              ...existing,
+              id: key,
+              jid: key,
+              name: chat.name || contact?.name || existing.name || jidToPhone(key) || key,
+              phone: jidToPhone(key) || existing.phone || '',
+              last_message_at: ts ? new Date(Number(ts) * 1000).toISOString() : (newest?.created_at || existing.last_message_at),
+              last_message_preview: newest?.body || existing.last_message_preview || '',
+              unread_count: chat.unreadCount ?? existing.unread_count ?? 0,
+              created_at: existing.created_at || new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+            };
+            chats.set(key, merged);
+            storedChats += 1;
+            emitEvent({ event: 'conversation_updated', conversation: merged });
+          }
+          emitEvent({
+            event: 'history_sync_completed',
+            progress: progress ?? null,
+            is_latest: !!isLatest,
+            chats_synced: storedChats,
+            messages_synced: storedMessages,
+          });
+          logger.info({ storedChats, storedMessages, progress, isLatest }, 'History sync ingested');
+        } catch (err) {
+          logger.warn({ err }, 'History sync ingestion failed');
         }
       });
 

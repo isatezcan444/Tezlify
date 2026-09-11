@@ -189,11 +189,18 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     };
   }, [selectedConv?.id]);
 
-  // Authoritative sync: refresh conversation list & active thread from Tezlify backend
+  // Authoritative sync: pull chats & history from the WhatsApp gateway via the
+  // Tezlify backend (sync=true), then refresh the list and active thread.
   const handleSyncChats = async () => {
     setIsSyncingChats(true);
     try {
-      await loadConversations(true);
+      const list = await WhatsAppRepository.getConversations({
+        status: convFilter === 'ALL' ? undefined : (convFilter as ConversationStatus),
+        unread_only: convFilter === 'UNREAD',
+        search: convSearch.trim() || undefined,
+        sync: true,
+      });
+      setConversations(list);
       if (selectedConv?.id) {
         const res = await WhatsAppRepository.getConversationMessages(selectedConv.id, { limit: 50 });
         if (res?.messages) {
@@ -203,10 +210,17 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
           }));
         }
       }
-      toast.success(
-        t('whatsapp.syncSuccess', { count: conversations.length }) || 'Sohbetler eşitlendi',
-        t('common.success')
-      );
+      if (list.length === 0) {
+        toast.info(
+          t('whatsapp.syncEmpty') || 'Eşitlenecek yeni sohbet yok.',
+          t('common.success')
+        );
+      } else {
+        toast.success(
+          t('whatsapp.syncSuccess', { count: list.length }) || 'Sohbetler eşitlendi',
+          t('common.success')
+        );
+      }
     } catch (err: any) {
       toast.error(err.message || 'Sohbetler eşitlenemedi', t('common.error'));
     } finally {
@@ -716,6 +730,21 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
 
       if (eventData.event === 'new_conversation' || eventData.event === 'conversations_updated') {
         loadConversations(true);
+      }
+
+      // Faz 4: gateway gecmis senkronunu tamamladiginda listeyi ve aktif
+      // konusmeyi sessizce tazele (telefonun RECENT history'si DB'ye yazildi).
+      if (eventData.event === 'history_sync_completed') {
+        loadConversations(true);
+        if (selectedConv?.id) {
+          WhatsAppRepository.getConversationMessages(selectedConv.id, { limit: 50 })
+            .then((res) => {
+              if (res?.messages) {
+                setMessagesMap((prev) => ({ ...prev, [selectedConv.id]: res.messages }));
+              }
+            })
+            .catch(() => {});
+        }
       }
 
       // 4. PRESENCE UPDATE ('yazıyor...' göstergesi) — backend jid'yi sayısal

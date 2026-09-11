@@ -108,6 +108,7 @@ export class WhatsAppRepository {
     search?: string;
     limit?: number;
     offset?: number;
+    sync?: boolean;
   }): Promise<Conversation[]> {
     await requireLive();
     return WhatsAppApi.getConversations({
@@ -116,6 +117,7 @@ export class WhatsAppRepository {
       search: params?.search,
       limit: params?.limit,
       offset: params?.offset,
+      sync: params?.sync,
     });
   }
 
