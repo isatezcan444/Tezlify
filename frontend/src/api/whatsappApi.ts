@@ -145,6 +145,8 @@ interface BackendConversation {
   avatar_url?: string | null;
   last_message_preview?: string | null;
   last_message_at?: string | null;
+  message_count?: number;
+  last_message_state?: string | null;
   unread_count?: number;
   status?: string;
 }
@@ -164,6 +166,8 @@ function mapConversation(c: BackendConversation): Conversation {
     is_group: isGroup,
     lead_avatar_url: c.avatar_url || undefined,
     last_message_preview: c.last_message_preview || undefined,
+    message_count: c.message_count ?? 0,
+    last_message_state: c.last_message_state || undefined,
     last_message_at: last,
     created_at: last,
     updated_at: last,

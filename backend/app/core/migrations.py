@@ -756,3 +756,129 @@ async def purge_degenerate_phone_contacts(engine: AsyncEngine) -> None:
             )
     except Exception as e:  # noqa: BLE001 - startup'ı düşürmez, loglanır
         logger.warning("[MIGRATION] purge_degenerate_phone_contacts atlandı: %s", e)
+
+
+# ---------------------------------------------------------------------------
+# Faz 10 (P2): son mesaj özetlerinin geri doldurulması (idempotent)
+# ---------------------------------------------------------------------------
+
+def _type_label_case(expr: str) -> str:
+    """verilen SQL ifadesinden (message_type degeri) tip etiketi ureten CASE.
+    CAST AS TEXT her iki dialectta da calisir (postgres native enum -> text,
+    sqlite zaten text saklar)."""
+    return f"""
+CASE UPPER(CAST(COALESCE({expr}, 'TEXT') AS TEXT))
+  WHEN 'IMAGE' THEN '📷 Fotoğraf'
+  WHEN 'VIDEO' THEN '🎥 Video'
+  WHEN 'AUDIO' THEN '🎵 Sesli mesaj'
+  WHEN 'STICKER' THEN 'Sticker'
+  WHEN 'DOCUMENT' THEN '📄 Dosya'
+  WHEN 'LOCATION' THEN '📍 Konum'
+  WHEN 'CONTACT' THEN '👤 Kişi kartı'
+  WHEN 'TEMPLATE' THEN 'Şablon mesajı'
+  WHEN 'UNKNOWN' THEN 'Mesaj'
+  WHEN 'OTHER' THEN 'Mesaj'
+  WHEN 'TEXT' THEN ''
+  ELSE 'Mesaj'
+END"""
+
+
+def _preview_expr() -> str:
+    """mesaj satiri (m) -> preview. Bos govde tip etiketine, '[Medya]' /
+    '[object Object]' gibi eski artıklar tip etiketine, duz metin govdeye
+    cevrilir. (Kose-parantezli DEGERLER sohbet tarafinda kalir ve bu sorgu
+    onlari en yeni mesajin etiketi/govdesiyle topluca DEGISTIRIR.)"""
+    label = _type_label_case("COALESCE(m.message_type, 'TEXT')")
+    return f"""
+CASE
+  WHEN COALESCE(TRIM(m.body), '') = '' THEN {label}
+  WHEN m.body IN ('[object Object]', '[Medya]') THEN {label}
+  WHEN m.body LIKE '[%]' AND LENGTH(m.body) <= 20 THEN {label}
+  ELSE m.body
+END"""
+
+
+async def backfill_whatsapp_last_message_previews(engine: AsyncEngine) -> None:
+    """Faz 10 (P2): bos/bozuk (kose-parantezli '[IMAGE]' vb.) WhatsApp sohbet
+    ozetlerini messages tablosundaki EN YENI mesaja (zaman damgasi sirasiyla)
+    gore bir kez geri doldurur.
+
+    - Sohbet basina sorgu (N+1) YOK: tek toplu UPDATE calisir.
+    - Idempotenttir: ozeti dolu ve duzgun olan sohbetlere dokunmaz.
+    - Grup gonderen on eki ('Ahmet: ...') SQL'de uretilmez — sonraki
+      senkron/onarim gecisi paylasilan kurala cevirir; buradaki amac
+      once 'mesaj var ama ozet bos' yalanini kaldirip gercek icerigi
+      (tip etiketi / govde) yazmaktir.
+    - Hata startup'i dusurmez (diger migration deseniyle ayni fail-open).
+    """
+    try:
+        dialect = engine.dialect.name
+        preview = _preview_expr()
+        broken_cond = """(
+              last_message_preview IS NULL
+              OR TRIM(last_message_preview) = ''
+              OR last_message_preview LIKE '[%]'
+            )"""
+        async with engine.begin() as conn:
+            if dialect == "postgresql":
+                res = await conn.execute(
+                    text(f"""
+                        UPDATE conversations AS c
+                        SET last_message_preview = LEFT(newest.preview, 500),
+                            last_message_at = COALESCE(newest.ts, c.last_message_at)
+                        FROM (
+                            SELECT DISTINCT ON (m.conversation_id)
+                                m.conversation_id AS cid,
+                                {preview} AS preview,
+                                COALESCE(m.external_timestamp, m.sent_at, m.created_at) AS ts
+                            FROM messages m
+                            ORDER BY m.conversation_id,
+                                     COALESCE(m.external_timestamp, m.sent_at, m.created_at) DESC
+                        ) AS newest
+                        WHERE newest.cid = c.id
+                          AND c.channel = 'WHATSAPP'
+                          AND TRIM(newest.preview) <> ''
+                          AND {broken_cond}
+                    """)
+                )
+            elif dialect == "sqlite":
+                res = await conn.execute(
+                    text(f"""
+                        UPDATE conversations
+                        SET last_message_preview = SUBSTR((
+                            SELECT {preview}
+                            FROM messages m
+                            WHERE m.conversation_id = conversations.id
+                            ORDER BY COALESCE(m.external_timestamp, m.sent_at, m.created_at) DESC
+                            LIMIT 1
+                        ), 1, 500),
+                        last_message_at = COALESCE((
+                            SELECT COALESCE(m.external_timestamp, m.sent_at, m.created_at)
+                            FROM messages m
+                            WHERE m.conversation_id = conversations.id
+                            ORDER BY COALESCE(m.external_timestamp, m.sent_at, m.created_at) DESC
+                            LIMIT 1
+                        ), last_message_at)
+                        WHERE channel = 'WHATSAPP'
+                          AND {broken_cond}
+                          AND COALESCE(TRIM((
+                            SELECT {preview}
+                            FROM messages m
+                            WHERE m.conversation_id = conversations.id
+                            ORDER BY COALESCE(m.external_timestamp, m.sent_at, m.created_at) DESC
+                            LIMIT 1
+                          )), '') <> ''
+                          AND EXISTS (
+                            SELECT 1 FROM messages m WHERE m.conversation_id = conversations.id
+                          )
+                    """)
+                )
+            else:
+                logger.warning("[MIGRATION] backfill_whatsapp_last_message_previews bilinmeyen dialect %r", dialect)
+                return
+            if res.rowcount:
+                logger.info("[MIGRATION] backfill_whatsapp_last_message_previews: %d sohbet ozeti dolduruldu.", res.rowcount)
+            else:
+                logger.debug("[MIGRATION] backfill_whatsapp_last_message_previews: doldurulacak kayit yok.")
+    except Exception as e:  # noqa: BLE001 - startup'ı düşürmez, loglanır
+        logger.warning("[MIGRATION] backfill_whatsapp_last_message_previews atlandı: %s", e)

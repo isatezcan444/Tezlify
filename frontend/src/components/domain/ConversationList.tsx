@@ -114,6 +114,27 @@ export const ConversationList: React.FC<ConversationListProps> = ({
     return found?.lead_phone ? found.lead_phone.replace(/\D/g, '').slice(-10) : '';
   }, [selectedId, conversations]);
 
+  // Faz 10 (P2): son mesaj satiri — "Henüz WhatsApp Mesajı Yok" YALNIZCA
+  // sohbetin hic mesaji olmadigi dogrulaninca (message_count===0 &&
+  // last_message_state==='NO_MESSAGES') gosterilir. Ozet henuz hesaplanmadiysa
+  // (mesaj var / senkron suruyor) yaniltici "mesaj yok" yerine bekleme
+  // metni gosterilir — kullaniciya yalan soylenemez (AGENTS.md Truthfulness).
+  const renderLastMessage = (conv: Conversation) => {
+    if (conv.last_message_preview) return conv.last_message_preview;
+    const state = conv.last_message_state;
+    const count = conv.message_count;
+    // Senkron suruyorsa hicbir sohbet icin "mesaj yok" iddiasinda bulunulmaz.
+    if (isSyncing) return t('whatsapp.lastMessageSyncing');
+    if (state === 'NO_MESSAGES' || (count === 0 && state !== 'REPAIRING' && state !== 'LOADING')) {
+      return t('leads.noMessagesTitle');
+    }
+    if (state === 'REPAIRING' || state === 'LOADING' || (typeof count === 'number' && count > 0)) {
+      return t('whatsapp.lastMessageSyncing');
+    }
+    // Eski/mock veri: state bilgisi yoksa onceki davranis (bos => mesaj yok).
+    return t('leads.noMessagesTitle');
+  };
+
   const filterTabs: { id: FilterTab; label: string; icon: React.FC<{ className?: string }> }[] = [
     { id: 'ALL', label: t('whatsapp.tabAll') || 'Tümü', icon: Inbox },
     { id: 'ACTIVE', label: t('whatsapp.tabActive') || 'Aktif', icon: MessageSquare },
@@ -273,7 +294,7 @@ export const ConversationList: React.FC<ConversationListProps> = ({
                   </div>
 
                   <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate mt-0.5">
-                    {conv.last_message_preview || t('leads.noMessagesTitle')}
+                    {renderLastMessage(conv)}
                   </p>
 
                   <div className="flex items-center justify-between mt-1.5">

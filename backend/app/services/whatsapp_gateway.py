@@ -106,11 +106,17 @@ async def list_conversations(
     return await _request("GET", "/conversations", params=params)
 
 
-async def sync_group_subjects() -> Dict[str, Any]:
+async def sync_group_subjects(force: bool = False) -> Dict[str, Any]:
     """Faz 8: gateway'den tüm katılımcı grupların subject'ini tek toplu
     istekte çözer (oturum bazında TTL gateway içinde). Hata fail-closed:
-    WhatsAppGatewayError yükselir, çağıran yutar ama isim uydurmaz."""
-    return await _request("POST", "/conversations/sync-groups")
+    WhatsAppGatewayError yükselir, çağıran yutar ama isim uydurmaz.
+
+    Faz 10 (P1): ``force=True`` gateway'deki 10 dakikalık TTL'i atlar —
+    "Eşitle" ve initial-sync böylece daha önce çözülememiş ("Grup" kalan)
+    grupları her seferinde yeniden dener.
+    """
+    payload: Dict[str, Any] = {"force": bool(force)}
+    return await _request("POST", "/conversations/sync-groups", json=payload)
 
 
 async def get_messages(jid: str, limit: int = 50, before: Optional[int] = None) -> Dict[str, Any]:

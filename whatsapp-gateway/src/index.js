@@ -171,10 +171,13 @@ app.get('/conversations', (req, res) => {
 
 // Faz 8: grup başlıklarını (subject) toplu çöz — backend sync_conversations
 // bunu çağırır (oturum başına 10 dk TTL + in-flight koruması içeride).
-app.post('/conversations/sync-groups', async (_req, res) => {
+// Faz 10 (P1): body.force=true TTL'i atlar — "Eşitle" her basışta çözülememiş
+// grupları yeniden dener (cache poisoning: "Grup" asla kalıcı değer olmaz).
+app.post('/conversations/sync-groups', async (req, res) => {
   try {
-    await sessionManager._ensureGroupSubjects();
-    res.json({ success: true });
+    const force = req.body && req.body.force === true;
+    await sessionManager._ensureGroupSubjects({ force });
+    res.json({ success: true, force });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

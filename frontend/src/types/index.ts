@@ -315,6 +315,11 @@ export interface Conversation {
   lead_avatar_url?: string;
   is_group?: boolean;
   last_message_preview?: string;
+  // Faz 10 (P2): "Henüz WhatsApp Mesajı Yok" yalnızca message_count===0 &&
+  // last_message_state==='NO_MESSAGES' iken gösterilir; LOADING/REPAIRING
+  // durumlarında senkron sürüyor mesajı gösterilir.
+  message_count?: number;
+  last_message_state?: 'RESOLVED' | 'NO_MESSAGES' | 'REPAIRING' | 'LOADING' | string;
   is_window_open?: boolean;
   last_inbound_at?: string;
   seconds_remaining?: number;

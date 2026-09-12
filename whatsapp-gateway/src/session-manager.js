@@ -176,6 +176,92 @@ function isRawIdentityName(value) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Faz 10 (P2): SON MESAJ OZETI — gateway tarafindaki tek kural (backend
+// `build_last_message_summary` ile birebir ayni semantik). Initial history,
+// chats.update ve realtime mesaj akisi AYNI yardimciyi kullanir; sohbet
+// ozeti hicbir yerde farkli hesaplanmaz.
+//  - Metinde govde; medyada tip etiketi (📷/🎥/🎵/📄/Sticker...).
+//  - Eski '[IMAGE]' tarzi degerler ayni etiketlere normalize edilir.
+//  - Grup + gelen mesajda cozulmus gonderen on eki: "Ahmet: ..."; ham JID
+//    veya telefon gorunumlu ad ASLA on ek olmaz.
+// ---------------------------------------------------------------------------
+const TYPE_PREVIEW_LABELS = {
+  IMAGE: '📷 Fotoğraf',
+  VIDEO: '🎥 Video',
+  AUDIO: '🎵 Sesli mesaj',
+  STICKER: 'Sticker',
+  DOCUMENT: '📄 Dosya',
+  LOCATION: '📍 Konum',
+  CONTACT: '👤 Kişi kartı',
+  TEMPLATE: 'Şablon mesajı',
+  UNKNOWN: 'Mesaj',
+  OTHER: 'Mesaj',
+};
+
+function isPhoneLikeName(value) {
+  if (!value || typeof value !== 'string') return false;
+  const v = value.trim();
+  return /^\+?[\d\s-()]{6,}$/.test(v) || /@\w+\.(\w+)$/.test(v);
+}
+
+function normalizePreviewText(messageType, body) {
+  const t = String(messageType || 'TEXT').toUpperCase();
+  const text = String(body || '').trim();
+  if (text) {
+    const m = /^\[([A-Za-z_]+)\]$/.exec(text);
+    if (m) {
+      const inner = m[1].toUpperCase();
+      // UI'a asla kopeli deger sizmaz: taninmayan tip -> mesajin kendi tip
+      // etiketi, o da yoksa genel 'Mesaj'.
+      return TYPE_PREVIEW_LABELS[inner] || TYPE_PREVIEW_LABELS[t] || 'Mesaj';
+    }
+    if (text === '[object Object]' || text === '[Medya]') return TYPE_PREVIEW_LABELS[t] || 'Mesaj';
+    return text;
+  }
+  if (t === 'TEXT') return '';
+  return TYPE_PREVIEW_LABELS[t] || 'Mesaj';
+}
+
+// Gateway mesaj kaydi (record) + sohbetin grup anahtari -> preview string.
+function buildChatPreview(record, isGroup) {
+  const base = normalizePreviewText(record?.message_type, record?.body);
+  if (!base) return '';
+  const name = String(record?.participant_name || '').trim();
+  if (
+    isGroup &&
+    String(record?.direction || 'INBOUND').toUpperCase() === 'INBOUND' &&
+    name &&
+    name.toUpperCase() !== 'ME' &&
+    !isRawIdentityName(name) &&
+    !isPhoneLikeName(name)
+  ) {
+    return `${name}: ${base}`;
+  }
+  return base;
+}
+
+// Baileys WAMessage -> { message_type, body } (chats.update.lastMessage icin).
+function summarizeWaMessage(waMsg) {
+  const content = waMsg?.message || {};
+  const text =
+    content.conversation ||
+    content.extendedTextMessage?.text ||
+    content.imageMessage?.caption ||
+    content.videoMessage?.caption ||
+    content.documentMessage?.caption ||
+    '';
+  const type = content.imageMessage ? 'IMAGE'
+    : content.documentMessage ? 'DOCUMENT'
+    : content.audioMessage ? 'AUDIO'
+    : content.videoMessage ? 'VIDEO'
+    : content.stickerMessage ? 'STICKER'
+    : content.locationMessage ? 'LOCATION'
+    : content.contactMessage ? 'CONTACT'
+    : 'TEXT';
+  return { message_type: type, body: text };
+}
+
 function normalizeJid(jid) {
   if (!jid) return jid;
   if (jid.includes('@g.us')) return jid; // group
@@ -248,7 +334,7 @@ function sanitizeOutboundEvent(event) {
 // Faz 8: birim testleri icin sanitizasyon yardimcilari disa aktarilir
 // (createSessionManager factory'si ayrica export edilir; index.js ikisini de
 // kullanabilir).
-export { isRawIdentityName, sanitizeChatForEmit, sanitizeOutboundEvent, mergeContactName, NAME_RANK, jidToPhone, isDegenerateJid, resolveSyncState };
+export { isRawIdentityName, sanitizeChatForEmit, sanitizeOutboundEvent, mergeContactName, NAME_RANK, jidToPhone, isDegenerateJid, resolveSyncState, normalizePreviewText, buildChatPreview, isPhoneLikeName, summarizeWaMessage };
 
 function mergeContactName(existing, name, source) {
   const base = existing || {};
@@ -673,7 +759,8 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       };
       if (!messagesByChat.has(key)) messagesByChat.set(key, []);
       messagesByChat.get(key).push(msg);
-      this._touchChat(key, msg.body || '', msg.created_at);
+      // Faz 10 (P2): govde bos olsa bile (medya) paylasilan kural tip etiketini uretir.
+      this._touchChat(key, buildChatPreview(msg, key.includes('@g.us')), msg.created_at);
       emitEvent({
         event: 'message_new',
         conversation_id: key,
@@ -782,6 +869,13 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       const key = normalizeJid(jid);
       const existing = chats.get(key) || {};
       const contact = contacts.get(key);
+      const newTs = timestamp || new Date().toISOString();
+      // Faz 10 (P2): zaman-damgali kural — daha eski mesajin ozeti daha yeni
+      // olanin uzerine yazilmaz (retry/duplicate-safe). Bos preview mevcut
+      // ozeti silmez.
+      const tsOlder = existing.last_message_at && String(newTs) < String(existing.last_message_at);
+      const nextPreview = preview && !tsOlder ? preview : existing.last_message_preview || '';
+      const nextTs = tsOlder ? existing.last_message_at : newTs;
       chats.set(key, {
         ...existing,
         id: key,
@@ -790,8 +884,8 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
         name_source: contact?.name_source || existing.name_source || null,
         phone: jidToPhone(key) || existing.phone || '',
         is_group: key.includes('@g.us'),
-        last_message_at: timestamp || new Date().toISOString(),
-        last_message_preview: preview || existing.last_message_preview || '',
+        last_message_at: nextTs,
+        last_message_preview: nextPreview,
         unread_count: existing.unread_count || 0,
         created_at: existing.created_at || new Date().toISOString(),
         updated_at: new Date().toISOString(),
@@ -1249,7 +1343,9 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
           };
           if (!messagesByChat.has(key)) messagesByChat.set(key, []);
           messagesByChat.get(key).push(record);
-          this._touchChat(key, text || `[${mediaType}]`, record.created_at);
+          // Faz 10 (P2): paylasilan kural — "[IMAGE]" yerine tip etiketi,
+          // gruplarda cozulmus gonderen on eki ("Ahmet: ...").
+          this._touchChat(key, buildChatPreview(record, isGroup), record.created_at);
           // Update unread count
           const chat = chats.get(key);
           if (chat) chat.unread_count = (chat.unread_count || 0) + 1;
@@ -1375,6 +1471,27 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
           const lidHold = isLidJid(key);
           const existing = chats.get(key) || {};
           const contact = contacts.get(key);
+          // Faz 10 (P2): chats.update.lastMessage da paylasilan kuraldan gecer
+          // (medyada govde bos → tip etiketi). Zaman damgasi daha yeni ise
+          // yazilir; eskisi mevcut ozeti ezmez.
+          const updTs = update.lastMessage?.messageTimestamp
+            ? new Date(update.lastMessage.messageTimestamp * 1000).toISOString()
+            : null;
+          const updPreview = update.lastMessage
+            ? (() => {
+                const s = summarizeWaMessage(update.lastMessage);
+                const base = normalizePreviewText(s.message_type, s.body);
+                if (!base) return null;
+                if (key.includes('@g.us') && !update.lastMessage.key?.fromMe) {
+                  const pname = this._resolveDisplayName(update.lastMessage.key?.participant, update.lastMessage.pushName);
+                  if (pname && !isRawIdentityName(pname) && !isPhoneLikeName(pname) && pname.toUpperCase() !== 'ME') {
+                    return `${pname}: ${base}`;
+                  }
+                }
+                return base;
+              })()
+            : null;
+          const tsOlder = updTs && existing.last_message_at && String(updTs) < String(existing.last_message_at);
           chats.set(key, {
             ...existing,
             id: key,
@@ -1383,8 +1500,8 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
             name_source: contact?.name_source || existing.name_source || null,
             phone: jidToPhone(key) || existing.phone || '',
             is_group: key.includes('@g.us'),
-            last_message_at: update.lastMessage?.messageTimestamp ? new Date(update.lastMessage.messageTimestamp * 1000).toISOString() : existing.last_message_at,
-            last_message_preview: update.lastMessage?.message?.conversation || existing.last_message_preview || '',
+            last_message_at: updTs && !tsOlder ? updTs : existing.last_message_at,
+            last_message_preview: updPreview && !tsOlder ? updPreview : existing.last_message_preview || '',
             unread_count: update.unreadCount ?? existing.unread_count ?? 0,
             created_at: existing.created_at || new Date().toISOString(),
             updated_at: new Date().toISOString(),
@@ -1465,7 +1582,12 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
             const key = normalizeJid(jid);
             const contact = contacts.get(key);
             const list = messagesByChat.get(key) || [];
-            const newest = list[list.length - 1];
+            // Faz 10 (P2): en yeni mesaj EKLEME SIRASINA degil ZAMAN DAMGASINA
+            // gore secilir (history chunk'lari karisik sirali gelebilir).
+            const newest = list.reduce(
+              (acc, m) => (acc && Number(acc.id) >= Number(m.id) ? acc : m),
+              null,
+            );
             const ts = chat.lastMessageRecvTimestamp || newest?.timestamp_s;
             const existing = chats.get(key) || {};
             const merged = {
@@ -1480,7 +1602,11 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
               is_group: key.includes('@g.us'),
               avatar_url: chat.avatar_url || contact?.avatar_url || existing.avatar_url || null,
               last_message_at: ts ? new Date(Number(ts) * 1000).toISOString() : (newest?.created_at || existing.last_message_at),
-              last_message_preview: newest?.body || existing.last_message_preview || '',
+              // Faz 10 (P2): paylasilan kural — tip etiketi + grup gonderen on eki.
+              last_message_preview:
+                (newest ? buildChatPreview(newest, key.includes('@g.us')) : '') ||
+                existing.last_message_preview ||
+                '',
               unread_count: chat.unreadCount ?? existing.unread_count ?? 0,
               created_at: existing.created_at || new Date().toISOString(),
               updated_at: new Date().toISOString(),

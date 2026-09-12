@@ -58,6 +58,7 @@ import {
 } from '../utils/antiBanSettings';
 import { useToast } from '../context/ToastContext';
 import { useI18n } from '../context/I18nContext';
+import { buildChatPreview, normalizePreviewText, shouldApplyPreview } from '../lib/whatsappPreview';
 
 
 interface WhatsAppHubPageProps {
@@ -666,11 +667,12 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         const rawPhone = eventData.lead_phone || eventData.phone || eventData.recipient_phone || eventData.sender_phone || '';
         const eventDigits = rawPhone.replace(/\D/g, '').slice(-10);
 
+        const msgObj0 = eventData.message && typeof eventData.message === 'object' ? eventData.message : null;
         const msgText = eventData.message?.body || (typeof eventData.message === 'string' ? eventData.message : '') || eventData.body || '';
-        const msgTime = eventData.message?.created_at || eventData.created_at || eventData.timestamp || new Date().toISOString();
+        const msgTime = msgObj0?.created_at || eventData.created_at || eventData.timestamp || new Date().toISOString();
         const isOutbound =
           eventData.event === 'outbound_message_sent' ||
-          eventData.message?.direction === 'OUTBOUND' ||
+          msgObj0?.direction === 'OUTBOUND' ||
           eventData.direction === 'OUTBOUND';
 
         // Update Conversation in list
@@ -682,11 +684,28 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
           if (idx !== -1) {
             const existing = prev[idx];
             const isCurrentSelected = selectedConv && (selectedConv.id === existing.id || selectedConv.id === convId);
+            // Faz 10 (P2): sohbet ozeti paylasilan kuraldan gecer — medyada
+            // tip etiketi (📷 Fotoğraf), gruplarda cozulmus gonderen on eki
+            // ("Ahmet: ..."), ham JID on ek ASLA; daha eski mesaj mevcut
+            // ozeti ezemez (zaman damgali siralama).
+            const summary = buildChatPreview(
+              {
+                message_type: msgObj0?.message_type || eventData.message_type || 'TEXT',
+                body: typeof msgText === 'string' ? msgText : '',
+                sender_name: msgObj0?.sender_name || eventData.sender_name,
+                direction: isOutbound ? 'OUTBOUND' : 'INBOUND',
+              },
+              Boolean(existing.is_group),
+              t,
+            );
+            const applyPreview = summary && shouldApplyPreview(msgTime, existing.last_message_at);
             const updated: Conversation = {
               ...existing,
               status: 'ACTIVE',
-              last_message_preview: typeof msgText === 'string' && msgText ? msgText : existing.last_message_preview,
-              last_message_at: msgTime,
+              last_message_preview: applyPreview ? summary : existing.last_message_preview,
+              last_message_at: applyPreview || !existing.last_message_at ? msgTime : existing.last_message_at,
+              message_count: (existing.message_count ?? 0) + 1,
+              last_message_state: applyPreview ? 'RESOLVED' : existing.last_message_state,
               unread_count: isCurrentSelected || isOutbound ? 0 : (existing.unread_count || 0) + 1,
               is_window_open: true, // Inbound message opens the 24h customer window!
               last_inbound_at: !isOutbound ? msgTime : existing.last_inbound_at,
@@ -852,15 +871,27 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
             ? rawName
             : undefined;
         if (typeof convId === 'number') {
-          const patch = (c: Conversation): Conversation => ({
-            ...c,
-            lead_name: safeName || c.lead_name,
-            lead_avatar_url: payload.avatar_url || c.lead_avatar_url,
-            last_message_preview: payload.last_message_preview || c.last_message_preview,
-            last_message_at: payload.last_message_at || c.last_message_at,
-            unread_count:
-              payload.unread_count != null ? Math.max(c.unread_count || 0, payload.unread_count) : c.unread_count,
-          });
+          const patch = (c: Conversation): Conversation => {
+            // Faz 10 (P2): gateway'den gelen gecikmeli ozet de paylasilan
+            // kuraldan gecer ('[IMAGE]' -> etiket); daha eski zaman damgali
+            // deger mevcut ozeti ezmez.
+            const gwPreview = payload.last_message_preview
+              ? normalizePreviewText(payload.message_type, String(payload.last_message_preview), t)
+              : '';
+            const gwTs = payload.last_message_at;
+            const applyGw = Boolean(gwPreview) && shouldApplyPreview(gwTs, c.last_message_at);
+            return {
+              ...c,
+              lead_name: safeName || c.lead_name,
+              lead_avatar_url: payload.avatar_url || c.lead_avatar_url,
+              last_message_preview: applyGw ? gwPreview : c.last_message_preview,
+              last_message_at: applyGw ? gwTs || c.last_message_at : c.last_message_at,
+              last_message_state:
+                (applyGw ? gwPreview : c.last_message_preview) ? 'RESOLVED' : c.last_message_state,
+              unread_count:
+                payload.unread_count != null ? Math.max(c.unread_count || 0, payload.unread_count) : c.unread_count,
+            };
+          };
           setConversations((prev) => prev.map((c) => (c.id === convId ? patch(c) : c)));
           setSelectedConv((prev) => (prev && prev.id === convId ? patch(prev) : prev));
         }

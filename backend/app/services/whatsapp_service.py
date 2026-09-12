@@ -8,6 +8,7 @@ edilir ve broadcast icin sayisal kimliklere cevrilir.
 """
 import asyncio
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -197,6 +198,111 @@ def _as_naive_utc(value: Optional[datetime]) -> Optional[datetime]:
     if value.tzinfo is not None:
         return value.astimezone(timezone.utc).replace(tzinfo=None)
     return value
+
+
+# ---------------------------------------------------------------------------
+# Faz 10 (P2): SON MESAJ OZETI — TEK PAYLASILAN KURAL.
+# Initial sync, manuel "Eşitle", realtime ingest ve gonderim yollari AYNI
+# fonksiyonlari kullanir; sohbet ozeti hicbir yerde farkli hesaplanmaz.
+# Kurallar:
+#  - Metin mesajinda govde; medyada tip etiketi (📷/🎥/🎵/📄/Sticker...).
+#  - Eski kose-parantezli degerler ([IMAGE] vb.) ayni etiketlere normalize
+#    edilir — UI'a asla '[IMAGE]' veya '[object Object]' sizmaz.
+#  - Grup sohbetinde gonderen cozulebildiyse on ek: "Ahmet: Toplantı...";
+#    cozulemiyorsa ham JID/LID on ek ASLA yazilmaz, yalans govde kalir.
+#  - Uygulama zaman-damgali siralamayadir (ekleme sirasi DEGIL): daha yeni
+#    mesaj eskisini ezemez; bos ozet mevcut ozeti silmez.
+# ---------------------------------------------------------------------------
+
+_TYPE_PREVIEW_LABELS: Dict[str, str] = {
+    "IMAGE": "📷 Fotoğraf",
+    "VIDEO": "🎥 Video",
+    "AUDIO": "🎵 Sesli mesaj",
+    "STICKER": "Sticker",
+    "DOCUMENT": "📄 Dosya",
+    "LOCATION": "📍 Konum",
+    "CONTACT": "👤 Kişi kartı",
+    "TEMPLATE": "Şablon mesajı",
+    "UNKNOWN": "Mesaj",
+    "OTHER": "Mesaj",
+}
+
+_BRACKET_TYPE_RE = re.compile(r"^\[([A-Za-z_]+)\]$")
+
+
+def _normalize_preview_text(message_type: Optional[str], body: Optional[str]) -> str:
+    """Bir mesajdan (tip + govde) yuzluk preview metnini uretir.
+
+    Bos govde + medya tipi -> tip etiketi; eski '[IMAGE]' tarzi kalici
+    degerler de ayni etikete cevrilir. Metin tipi + bos govde -> bos string
+    (ozet YAZILMAZ, mevcut korunur).
+    """
+    t = str(message_type or "TEXT").upper()
+    text = (body or "").strip()
+    if text:
+        m = _BRACKET_TYPE_RE.match(text)
+        if m:
+            inner = m.group(1).upper()
+            # UI'a asla kopeli deger sizmaz: taninmayan tip -> mesajin kendi
+            # tip etiketi, o da yoksa genel 'Mesaj'.
+            return _TYPE_PREVIEW_LABELS.get(inner, _TYPE_PREVIEW_LABELS.get(t, "Mesaj"))
+        if text in ("[object Object]", "[Medya]"):
+            return _TYPE_PREVIEW_LABELS.get(t, "Mesaj")
+        return text
+    if t == "TEXT":
+        return ""
+    return _TYPE_PREVIEW_LABELS.get(t, "Mesaj")
+
+
+def build_last_message_summary(
+    *,
+    message_type: Optional[str],
+    body: Optional[str],
+    sender_name: Optional[str] = None,
+    is_group: bool = False,
+    direction: Optional[str] = None,
+) -> str:
+    """Sohbet listesi satiri icin son-mesaj ozetini uretir (tek kural).
+
+    Grup + gelen mesajda cozulmus gonderen adi one eklenir
+    ('Ahmet: Toplantıyı yarına aldık.'). Gonderen adi ham JID/LID veya
+    telefon gorunumundeyse ya da sohbet adinin kendisiyle ayniysa on ek
+    atlanir (WhatsApp Web paritesi: 'Ahmet:' degilse yalans govde).
+    """
+    base = _normalize_preview_text(message_type, body)
+    if not base:
+        return ""
+    name = (sender_name or "").strip()
+    if (
+        is_group
+        and str(direction or "INBOUND").upper() == "INBOUND"
+        and name
+        and name.upper() != "ME"
+        and not _is_raw_jid_name(name)
+        and not _is_phone_like(name)
+    ):
+        return f"{name}: {base}"
+    return base
+
+
+def _apply_last_message(conv: Conversation, ts: Optional[datetime], summary: str) -> bool:
+    """Sohbetin son mesaj alanlarini ZAMAN DAMGALI kurala gore gunceller.
+
+    - summary bos ise hicbir sey yazilmaz (mevcut ozet silinmez).
+    - ts mevcut last_message_at'ten eski/eseit ise guncellenmez — boylece
+      gecmis mesajlarin yeniden yazimi (retry/duplicate) en yeni ozeti bozamaz.
+    - ts yoksa (realtime) yazilir — canli akista siralama gateway'de dogru.
+    Degisiklik olduysa True doner.
+    """
+    if not summary:
+        return False
+    ts = _as_naive_utc(ts)
+    if ts is not None and conv.last_message_at is not None and ts <= conv.last_message_at:
+        return False
+    conv.last_message_preview = summary[:500]
+    if ts is not None:
+        conv.last_message_at = ts
+    return True
 
 
 def _apply_gateway_live(row: WhatsAppSession, data: Dict[str, Any]) -> None:
@@ -573,7 +679,14 @@ async def _ensure_conversation(
             channel="WHATSAPP",
             status=ConversationStatus.ACTIVE,
             last_message_preview=preview,
-            last_message_at=datetime.utcnow(),
+            # Faz 10 (P2, RC-1): olustururken utcnow() ile GELECEK timestamp
+            # tohumlanmaz — gecmis mesajlarin hicbiri "daha yeni" olamaz ve
+            # preview hicbir zaman yazilamazdi (prod'da 18 sohbetin 100
+            # mesajli olmasina ragmen preview'i NULL kalmisti). Ozet artık
+            # yalnizca gercek mesaj verisiyle _apply_last_message üzerinden
+            # doldurulur; sohbetler last_message_at NULL olanlari liste
+            # sonunda konumlandirir (nullslast).
+            last_message_at=None,
         )
         db.add(conv)
         await db.flush()
@@ -630,12 +743,84 @@ async def _persist_gateway_message(db: AsyncSession, owner: str, msg: Dict[str, 
         external_timestamp=_as_naive_utc(ts),
     )
     db.add(row)
-    ts_naive = _as_naive_utc(ts)
-    if ts_naive and (conv.last_message_at is None or ts_naive > conv.last_message_at):
-        conv.last_message_at = ts_naive
-        conv.last_message_preview = (body or f"[{mtype_str}]")[:500]
+    # Faz 10 (P2): paylasilan son-mesaj kurali — tip etiketi, grup gonderen
+    # on eki ve ZAMAN DAMGASI siralamasi tek kaynaktan.
+    summary = build_last_message_summary(
+        message_type=mtype_str,
+        body=body,
+        sender_name=row.sender_name,
+        is_group="@g.us" in jid_str,
+        direction=direction.value,
+    )
+    _apply_last_message(conv, ts, summary)
     await db.flush()
     return True
+
+
+async def _repair_last_message_previews(db: AsyncSession, user_id: str) -> int:
+    """Faz 10 (P2): eksik/bozuk son-mesaj ozetlerini messages tablosundan onarir.
+
+    Senkron bittikten sonra calisir; henuz ozeti bos olan ya da eski
+    placeholder tarzi ('[IMAGE]' vb.) yazilmis sohbetler icin en yeni mesaji
+    (ZAMAN DAMGASI sirasiyla — ekleme sirasi degil) bulur ve paylasilan
+    kurala gore ozeti yazar. Iki toplu sorgu kullanilir — sohbet basina
+    sorgu (N+1) YOKTUR. Doner: duzeltilen sohbet sayisi.
+    """
+    cand_res = await db.execute(
+        select(Conversation, Contact.phone_e164)
+        .join(Contact, Contact.id == Conversation.contact_id, isouter=True)
+        .where(
+            get_user_filter(Conversation.user_id, user_id),
+            Conversation.channel == "WHATSAPP",
+            or_(
+                Conversation.last_message_preview.is_(None),
+                func.trim(Conversation.last_message_preview) == "",
+                Conversation.last_message_preview.like("[%"),
+            ),
+        )
+    )
+    candidates = cand_res.fetchall()
+    if not candidates:
+        return 0
+    conv_ids = [row[0].id for row in candidates]
+    # Bu sohbetlerin TÜM mesajlarını tek sorguda çek, Python'da zaman damgasına
+    # göre en yeniyi seç (postgres + sqlite testleri için dialect-bağımsız).
+    msg_res = await db.execute(
+        select(Message).where(Message.conversation_id.in_(conv_ids))
+    )
+    by_conv: Dict[int, List[Message]] = {}
+    for m in msg_res.scalars().all():
+        by_conv.setdefault(m.conversation_id, []).append(m)
+    fixed = 0
+    for conv, phone in candidates:
+        msgs = by_conv.get(conv.id) or []
+        if not msgs:
+            continue  # gercekten mesajsiz — onarilacak bir sey yok
+        newest = max(
+            msgs,
+            key=lambda m: _as_naive_utc(m.external_timestamp or m.sent_at or m.created_at)
+            or datetime.min,
+        )
+        mtype = newest.message_type.value if hasattr(newest.message_type, "value") else str(newest.message_type or "TEXT")
+        summary = build_last_message_summary(
+            message_type=mtype,
+            body=newest.body,
+            sender_name=newest.sender_name,
+            is_group=bool(phone and "@g.us" in phone),
+            direction=newest.direction.value if hasattr(newest.direction, "value") else str(newest.direction),
+        )
+        if not summary:
+            continue
+        # Zehirli (utcnow tohumlu) last_message_at'i de gercek mesaja cevir.
+        conv.last_message_preview = summary[:500]
+        ts = _as_naive_utc(newest.external_timestamp or newest.sent_at or newest.created_at)
+        if ts is not None:
+            conv.last_message_at = ts
+        fixed += 1
+    if fixed:
+        await db.flush()
+        logger.info("Faz 10 preview onarimi: %d sohbet guncellendi (owner=%s)", fixed, user_id)
+    return fixed
 
 
 # Faz 8 (§16/§20): owner bazında tek paylaşılmış senkron hattı — initial-sync
@@ -670,8 +855,12 @@ async def _sync_conversations_impl(db: AsyncSession, user_id: str) -> List[Dict[
     # gateway tek toplu groupFetchAllParticipating ile chats Map'lerini gunceller
     # ve conversation_updated yayar. Hata durumunda eski davranis surer
     # (fail-soft: isim uydurulmaz, ham JID zaten sanitize edilir).
+    # Faz 10 (P1): "Eşitle" ve initial-sync artik FORCE ile ister — gateway
+    # icindeki 10 dk'lik TTL, daha once cozulememis ("Grup" kalan) gruplarin
+    # yeniden denenmesini engelliyordu. Gateway'de in-flight korumasi
+    # varindan oldugu icin request storm olusmaz.
     try:
-        await gw.sync_group_subjects()
+        await gw.sync_group_subjects(force=True)
     except Exception as exc:
         logger.warning("Grup basliklari senkronu atlandi: %s", exc)
     data = await gw.list_conversations(limit=200)
@@ -685,7 +874,7 @@ async def _sync_conversations_impl(db: AsyncSession, user_id: str) -> List[Dict[
         # Faz 9 (§5): dejenere JID sohbetleri (`0@s.whatsapp.net`) DB'ye yazilmaz.
         if is_degenerate_jid(jid_str):
             continue
-        preview = item.get("last_message_preview") or ""
+        preview_raw = item.get("last_message_preview") or ""
         # Sohbet adini (history sync'ten gelir) contact'a tasi — oncelik
         # cozulumu _set_contact_name icinde (rehber adi > push > telefon).
         chat_name = item.get("name")
@@ -700,18 +889,12 @@ async def _sync_conversations_impl(db: AsyncSession, user_id: str) -> List[Dict[
         res = await db.execute(stmt)
         conv = res.scalar_one_or_none()
         if conv is None:
-            conv = await _ensure_conversation(db, user_id, jid_str, preview)
-        last_at = item.get("last_message_at")
-        if last_at:
-            parsed = _as_naive_utc(_parse_dt(str(last_at)))
-            if parsed:
-                conv.last_message_at = parsed
-        if preview:
-            conv.last_message_preview = preview[:500]
-        unread = int(item.get("unread_count") or 0)
-        conv.unread_count = max(conv.unread_count or 0, unread)
-        await db.flush()
+            conv = await _ensure_conversation(db, user_id, jid_str)
         # Faz 4: sohbet gecmisini de cek (history sync gateway belleğinde tuttu).
+        # Faz 10 (P2): gecmis ONCE çekilir ki paylasilan zaman-damgali kural
+        # en yeni mesajı dogru secsin; gateway'in sohbet bazli preview'i
+        # (medyada bos/eksik olabilir) yalnizca zaman damgasi daha yeni ise
+        # ve normalize edilmis metin uretiyorsa uygulanir.
         try:
             msg_data = await gw.get_messages(jid_str, limit=100)
             gw_messages = msg_data.get("messages", []) if isinstance(msg_data, dict) else []
@@ -721,6 +904,23 @@ async def _sync_conversations_impl(db: AsyncSession, user_id: str) -> List[Dict[
                 await _persist_gateway_message(db, owner, gm)
         except Exception as exc:
             logger.warning("Sohbet gecmisi cekilemedi (%s): %s", jid_str, exc)
+        gw_ts = _as_naive_utc(_parse_dt(str(item.get("last_message_at")))) if item.get("last_message_at") else None
+        gw_summary = _normalize_preview_text(item.get("message_type") or "TEXT", preview_raw)
+        if gw_summary:
+            # Eski zehirli degerler (utcnow tohumlu last_message_at) düzeltilsin
+            # diye gateway preview'i kendi zaman damgasiyla uygulariz;
+            # conv.last_message_at gateway'den yeni ise kural zaten yazar.
+            if conv.last_message_at is None or (gw_ts and gw_ts > conv.last_message_at):
+                _apply_last_message(conv, gw_ts or datetime.utcnow(), gw_summary)
+            elif not conv.last_message_preview:
+                # Ozet hic yoksa (mesajsiz/eksik hydrate) gateway degeriyle doldur.
+                _apply_last_message(conv, None, gw_summary)
+        unread = int(item.get("unread_count") or 0)
+        conv.unread_count = max(conv.unread_count or 0, unread)
+        await db.flush()
+    # Faz 10 (P2): onarim gecisi — hâlâ ozeti bos/eksik olan sohbetleri,
+    # mesaj tablosundan TEK agregat sorguyla (per-chat N+1 yok) hydrates et.
+    await _repair_last_message_previews(db, user_id)
     await db.commit()
     result, _total = await list_conversations(db, user_id)
     return result
@@ -771,10 +971,34 @@ async def list_conversations(
         cres = await db.execute(select(Contact).where(Contact.id.in_(contact_ids)))
         contacts_map = {c.id: c for c in cres.scalars().all()}
 
+    # Faz 10 (P2): mesaj sayilari TEK agregat sorguyla — sohbet basina N+1 yok.
+    # UI "Henüz WhatsApp Mesajı Yok" metnini yalnizca count==0 ve senkron
+    # bittiginde gosterir (last_message_state).
+    conv_ids = [r.id for r in rows]
+    counts_map: Dict[int, int] = {}
+    if conv_ids:
+        cnt_res = await db.execute(
+            select(Message.conversation_id, func.count())
+            .where(Message.conversation_id.in_(conv_ids))
+            .group_by(Message.conversation_id)
+        )
+        counts_map = {cid: int(n) for cid, n in cnt_res.fetchall()}
+
     out: List[Dict[str, Any]] = []
     for r in rows:
         contact = contacts_map.get(r.contact_id)
         phone = contact.phone_e164 if contact else None
+        # Faz 10: eski kose-parantezli degerler okuma aninda da etikete
+        # normalize edilir ('[IMAGE]' -> '📷 Fotoğraf'); normal metin aynen gecer.
+        preview = _normalize_preview_text(None, r.last_message_preview) or None
+        msg_count = counts_map.get(r.id, 0)
+        if preview:
+            lm_state = "RESOLVED"
+        elif msg_count == 0:
+            lm_state = "NO_MESSAGES"
+        else:
+            # Mesaj var ama ozet henuz hesaplanmadi (senkron/hydrate sürüyor).
+            lm_state = "REPAIRING"
         out.append(
             {
                 "id": r.id,
@@ -787,8 +1011,10 @@ async def list_conversations(
                 # Grup JID'i ("jid:...@g.us" sentinel veya ham jid) her zaman @g.us icerir.
                 "is_group": bool(phone and "@g.us" in phone),
                 "avatar_url": _get_contact_avatar(contact),
-                "last_message_preview": r.last_message_preview,
+                "last_message_preview": preview,
                 "last_message_at": r.last_message_at.isoformat() if r.last_message_at else None,
+                "message_count": msg_count,
+                "last_message_state": lm_state,
                 "unread_count": r.unread_count,
                 "status": r.status.value if hasattr(r.status, "value") else str(r.status),
             }
@@ -868,8 +1094,14 @@ async def send_text_message(
         sent_at=datetime.utcnow(),
     )
     db.add(row)
-    conv.last_message_at = datetime.utcnow()
-    conv.last_message_preview = clean[:500]
+    # Faz 10 (P2): gonderim yolu da paylasilan kurali kullanir (tek kaynak).
+    _apply_last_message(
+        conv,
+        datetime.utcnow(),
+        build_last_message_summary(
+            message_type="TEXT", body=clean, direction=MessageDirection.OUTBOUND.value
+        ),
+    )
     await db.commit()
     await db.refresh(row)
     return _serialize_message(row)
@@ -905,8 +1137,16 @@ async def send_media_message(
         sent_at=datetime.utcnow(),
     )
     db.add(row)
-    conv.last_message_at = datetime.utcnow()
-    conv.last_message_preview = (caption or filename or "[Medya]")[:500]
+    # Faz 10 (P2): "[Medya]" yerine paylasilan kuralin tip etiketi.
+    _apply_last_message(
+        conv,
+        datetime.utcnow(),
+        build_last_message_summary(
+            message_type=mtype_str,
+            body=caption or filename,
+            direction=MessageDirection.OUTBOUND.value,
+        ),
+    )
     await db.commit()
     await db.refresh(row)
     return _serialize_message(row)
@@ -1032,8 +1272,17 @@ async def _ingest_message(db: AsyncSession, event: Dict[str, Any]) -> Dict[str, 
     # MVP: gateway tenant'i bilmiyor; kayitli oturumun sahibine, yoksa system'e baglan.
     owner = await _resolve_event_owner(db, jid_str)
     conv = await _ensure_conversation(db, owner, jid_str)
+    # Faz 10 (P1, RC-4): GRUP sohbetlerinde mesajin gonderen adi (pushName —
+    # ör. bir üyenin "Ahmet"ı) GRUP contact'ine ASLA yazilmaz; grup adi
+    # yalnizca group_subject metadata'sindan guncellenir. (1:1'de mevcut
+    # davranis korunur: kisi adini mesajla tasiyabiliriz.)
+    is_group_jid = "@g.us" in jid_str
     contact = await _upsert_contact(
-        db, owner, jid_str, msg.get("sender_name"), msg.get("sender_name_source")
+        db,
+        owner,
+        jid_str,
+        None if is_group_jid else msg.get("sender_name"),
+        None if is_group_jid else msg.get("sender_name_source"),
     )
 
     wa_id = msg.get("wa_message_id")
@@ -1068,14 +1317,24 @@ async def _ingest_message(db: AsyncSession, event: Dict[str, Any]) -> Dict[str, 
         sender_phone=msg.get("sender_phone") or jid_to_phone(jid_str) or "unknown",
         # Faz 6a: grup mesajlarinda balon ustunde gercek gonderen adi gorunur
         # (WhatsApp Web paritesi); 1:1 sohbetlerde sohbet/kisi adi kalir.
-        sender_name=msg.get("participant_name") or contact.display_name,
+        # Faz 10 (P1): grup mesajinda fallback ASLA grup contact adidir —
+        # katilimci cozulemiyorsa ad None kalir (preview one eki de atlanir).
+        sender_name=msg.get("participant_name") or (None if is_group_jid else contact.display_name),
         recipient_phone=msg.get("recipient_phone") or "ME" if direction == MessageDirection.INBOUND else contact.phone_e164,
         status=ConversationMessageStatus.RECEIVED if direction == MessageDirection.INBOUND else ConversationMessageStatus.SENT,
         external_timestamp=_parse_dt(msg.get("created_at")),
     )
     db.add(row)
-    conv.last_message_at = datetime.utcnow()
-    conv.last_message_preview = (body or f"[{mtype_str}]")[:500]
+    # Faz 10 (P2): paylasilan kural — gercek mesaj zaman damgasiyla, tip
+    # etiketi ve grup gonderen on eki uretilir; utcnow() uzerinden yazilmaz.
+    summary = build_last_message_summary(
+        message_type=mtype_str,
+        body=body,
+        sender_name=row.sender_name,
+        is_group=is_group_jid,
+        direction=direction.value,
+    )
+    _apply_last_message(conv, _parse_dt(msg.get("created_at")) or datetime.utcnow(), summary)
     if direction == MessageDirection.INBOUND:
         conv.unread_count = (conv.unread_count or 0) + 1
     await db.flush()
@@ -1180,8 +1439,20 @@ async def _map_conversation_event(db: AsyncSession, event: Dict[str, Any]) -> Di
             _set_contact_avatar(contact, payload.get("avatar_url"))
             await db.flush()
         preview = payload.get("last_message_preview")
+        # Faz 10 (P2): gecikmeli gateway metadata/ozet olayinda da paylasilan
+        # kural — bos/eksik preview mevcut ozeti silmez, eski zaman damgali
+        # deger daha yeni ozetin uzerine yazmaz, '[IMAGE]' etiketlere
+        # normalize edilir.
         if preview:
-            conv.last_message_preview = str(preview)[:500]
+            gw_ts = _as_naive_utc(_parse_dt(payload.get("last_message_at")))
+            summary = _normalize_preview_text(payload.get("message_type"), str(preview))
+            if summary:
+                if conv.last_message_at is None or not conv.last_message_preview:
+                    _apply_last_message(conv, None, summary)
+                    if gw_ts and (conv.last_message_at is None or gw_ts > conv.last_message_at):
+                        conv.last_message_at = gw_ts
+                else:
+                    _apply_last_message(conv, gw_ts, summary)
         last_at = _as_naive_utc(_parse_dt(payload.get("last_message_at")))
         if last_at and (conv.last_message_at is None or last_at > conv.last_message_at):
             conv.last_message_at = last_at
