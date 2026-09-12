@@ -9,7 +9,7 @@
  * - Media download & storage
  * - Realtime event emission to the event bridge
  */
-import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, Browsers, downloadMediaMessage } from '@whiskeysockets/baileys';
+import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, Browsers, downloadMediaMessage, ALL_WA_PATCH_NAMES } from '@whiskeysockets/baileys';
 import QRCode from 'qrcode';
 import fs from 'fs';
 import path from 'path';
@@ -25,6 +25,13 @@ const logger = pino({ level: process.env.LOG_LEVEL || 'warn' });
 const sessions = new Map(); // id -> session record
 const contacts = new Map(); // jid -> contact
 const chats = new Map(); // jid -> chat summary
+// Faz 6e: WhatsApp'ın LID (Large Identity) dönemi — W:Contact app-state
+// yamaları ve bazı mesaj anahtarları artık telefon JID'i yerine
+// `xxx@lid` kimliğiyle anahtarlanır. Bu haritalar LID ↔ telefon JID
+// köprüsünü kurar; rehber adları böylece telefon-anahtarlı sohbetlere
+// işlenebilir (WhatsApp Web paritesi).
+const lidToJid = new Map(); // lid jid -> phone jid
+const jidToLid = new Map(); // phone jid -> lid jid
 // Faz 5: profil/grup resmi fetch durum takibi (retry storm önleme)
 const avatarFetchInFlight = new Set();
 const avatarFetchAttemptedAt = new Map(); // jid -> ms timestamp
@@ -70,8 +77,38 @@ function safeReadEncrypted(filePath, key) {
   }
 }
 
+function isLidJid(jid) {
+  return typeof jid === 'string' && jid.endsWith('@lid');
+}
+
+// LID/telefon JID normalizasyonu: WhatsApp ham sayı ya da tam JID gönderebilir.
+function asLid(v) {
+  if (!v || typeof v !== 'string') return null;
+  return v.includes('@') ? v : `${v}@lid`;
+}
+
+function asPn(v) {
+  if (!v || typeof v !== 'string') return null;
+  return v.includes('@') ? v : `${v}@s.whatsapp.net`;
+}
+
+// LID ↔ telefon çiftini kalıcı olarak öğren; ilk kez görülüyorsa true döner
+// (çağıran taraf bekleyen LID kayıtlarını telefona taşır).
+function rememberLidPair(lid, phoneJid) {
+  const l = asLid(lid);
+  const p = asPn(phoneJid);
+  if (!l || !p || !isLidJid(l) || isLidJid(p)) return false;
+  if (lidToJid.get(l) === p) return false;
+  lidToJid.set(l, p);
+  jidToLid.set(p, l);
+  return true;
+}
+
 function jidToPhone(jid) {
   if (!jid) return null;
+  // LID kimliği telefon numarası DEĞİLDİR — asla +rakam türetilmez
+  // (AGENTS.md: sahte telefon sentezlenmez).
+  if (isLidJid(jid)) return null;
   const match = jid.match(/^(\d+)@/);
   return match ? `+${match[1]}` : null;
 }
@@ -79,6 +116,13 @@ function jidToPhone(jid) {
 function normalizeJid(jid) {
   if (!jid) return jid;
   if (jid.includes('@g.us')) return jid; // group
+  // LID kimliği eşleşmesi biliniyorsa telefon JID'ine çöz — sohbetler,
+  // kişiler ve mesajlar her zaman telefon anahtarıyla tutulur (WhatsApp
+  // Web paritesi: rehber adı telefon-anahtarlı sohbete işlenir).
+  if (isLidJid(jid)) {
+    const phone = lidToJid.get(jid);
+    return phone || jid;
+  }
   if (jid.includes('@s.whatsapp.net')) return jid;
   if (jid.includes('@')) return jid;
   return `${jid}@s.whatsapp.net`;
@@ -290,14 +334,21 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
     // Contacts
     // -----------------------------------------------------------------------
     listContacts() {
-      return [...contacts.values()].map((c) => ({ ...c }));
+      // Telefon kimliği henüz çözülememiş LID-bekletme kayıtlarını dışarı
+      // verme — eşleşme öğrenilince _migrateLidToPhone telefona taşır.
+      return [...contacts.values()]
+        .filter((c) => !isLidJid(c.id))
+        .map((c) => ({ ...c }));
     },
 
     // -----------------------------------------------------------------------
     // Conversations
     // -----------------------------------------------------------------------
     listConversations({ search, limit, offset } = {}) {
-      let list = [...chats.values()].sort((a, b) => {
+      // Eşleşmesi henüz çözülememiş LID-anahtarlı sohbetleri dışarı verme —
+      // telefon eşleşmesi öğrenilince _applyLidMapping onları telefona taşır
+      // (WhatsApp Web'de ham `xxx@lid` başlığı görünmez).
+      let list = [...chats.values()].filter((c) => !isLidJid(c.jid)).sort((a, b) => {
         const tA = new Date(a.last_message_at || a.created_at || 0).getTime();
         const tB = new Date(b.last_message_at || b.created_at || 0).getTime();
         return tB - tA;
@@ -502,6 +553,102 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
         message: msg,
       });
       return { ...msg };
+    },
+
+    // Faz 6e: yeni bir LID ↔ telefon eşleşmesi öğrenildiğinde, LID anahtarı
+    // altında bekletilen kişi/sohbet/mesaj kayıtlarını telefon anahtarına
+    // taşır ve sidebar'ı rehber adıyla tazeler. mapping değişmediyse no-op.
+    _applyLidMapping(lid, phoneJid) {
+      if (!rememberLidPair(lid, phoneJid)) return;
+      const lidKey = asLid(lid);
+      const phoneKey = asPn(phoneJid);
+      // 1. Bekleyen LID kişisini telefona taşı (mergeContactName önceliği korur).
+      const pending = contacts.get(lidKey);
+      if (pending) {
+        contacts.delete(lidKey);
+        const merged = mergeContactName(contacts.get(phoneKey) || {}, pending.name, pending.name_source || 'addressbook');
+        const avatarMerged = {
+          ...merged,
+          avatar_url: merged.avatar_url || pending.avatar_url || null,
+          lid: lidKey,
+        };
+        contacts.set(phoneKey, {
+          ...avatarMerged,
+          id: phoneKey,
+          jid: phoneKey,
+          name: avatarMerged.name || jidToPhone(phoneKey) || phoneKey,
+          phone: jidToPhone(phoneKey) || '',
+          updated_at: new Date().toISOString(),
+        });
+        delete contacts.get(phoneKey).lid_pending;
+        emitEvent({ event: 'contact_synced', contact: contacts.get(phoneKey) });
+      }
+      // 2. LID anahtarlı sohbet varsa telefona taşı / başlığı güncelle.
+      const lidChat = chats.get(lidKey);
+      if (lidChat) {
+        chats.delete(lidKey);
+        const contact = contacts.get(phoneKey);
+        // LID sohbetinin gerçek alanları (app-state arşiv/bastırma, son mesaj)
+        // telefon stub'ını ezsın; id/jid/phone telefon kimliğine sabitlenir.
+        const existingPhone = chats.get(phoneKey) || {};
+        // LID-stub sohbetinin adı ham LID jid'si olabilir ("xxx@lid") — onu
+        // asla görüntülenen ad yapma; contact > mevcut telefon adı > telefon.
+        const lidChatName = lidChat.name && !isLidJid(lidChat.name) ? lidChat.name : null;
+        const phoneChatName = existingPhone.name && !isLidJid(existingPhone.name) ? existingPhone.name : null;
+        const mergedChat = {
+          ...existingPhone,
+          ...lidChat,
+          id: phoneKey,
+          jid: phoneKey,
+          name: contact?.name || phoneChatName || lidChatName || jidToPhone(phoneKey) || phoneKey,
+          name_source: contact?.name_source || existingPhone.name_source || lidChat.name_source || null,
+          phone: jidToPhone(phoneKey) || '',
+          is_group: false,
+          updated_at: new Date().toISOString(),
+        };
+        chats.set(phoneKey, mergedChat);
+        emitEvent({ event: 'conversation_updated', conversation: { ...mergedChat } });
+      } else if (pending) {
+        // Sohbet zaten telefon anahtarında — rehber adını öncelik sırasıyla uygula.
+        const chat = chats.get(phoneKey);
+        if (chat) {
+          const base = { name: isLidJid(chat.name) ? undefined : chat.name, name_source: chat.name_source };
+          const picked = mergeContactName(base, pending.name, pending.name_source || 'addressbook');
+          if (picked.name && picked.name !== chat.name) {
+            chat.name = picked.name;
+            chat.name_source = picked.name_source || null;
+            chat.updated_at = new Date().toISOString();
+            emitEvent({ event: 'conversation_updated', conversation: { ...chat } });
+          }
+        }
+      }
+      // 3. LID anahtarlı mesaj geçmişi varsa telefona taşı (sıra korunur).
+      // Bekletilen (yayınlanmamış) mesajlar artık telefon kimliğiyle yayına girer.
+      const lidMsgs = messagesByChat.get(lidKey);
+      if (lidMsgs) {
+        messagesByChat.delete(lidKey);
+        const phoneMsgs = messagesByChat.get(phoneKey) || [];
+        const seen = new Set(phoneMsgs.map((m) => m.wa_message_id).filter(Boolean));
+        const phoneStr = jidToPhone(phoneKey) || phoneKey;
+        const migratedContact = contacts.get(phoneKey);
+        for (const m of lidMsgs) {
+          if (m.wa_message_id && seen.has(m.wa_message_id)) continue;
+          m.conversation_id = phoneKey;
+          // LID kimliğiyle yazılmış alanları telefon kimliğine çevir.
+          if (typeof m.sender_phone === 'string' && m.sender_phone.endsWith('@lid')) m.sender_phone = phoneStr;
+          if (typeof m.recipient_phone === 'string' && m.recipient_phone.endsWith('@lid')) m.recipient_phone = phoneStr;
+          if (typeof m.sender_name === 'string' && m.sender_name.endsWith('@lid')) {
+            m.sender_name = migratedContact?.name || phoneStr;
+            m.sender_name_source = migratedContact?.name_source || m.sender_name_source || null;
+          }
+          phoneMsgs.push(m);
+          emitEvent({ event: 'message_new', conversation_id: phoneKey, message: m });
+        }
+        phoneMsgs.sort((a, b) => (a.id || 0) - (b.id || 0));
+        if (phoneMsgs.length > 500) phoneMsgs.splice(0, phoneMsgs.length - 500);
+        messagesByChat.set(phoneKey, phoneMsgs);
+      }
+      logger.warn({ lid: lidKey, jid: phoneKey }, 'LID→telefon eşleşmesi uygulandı');
     },
 
     _touchChat(jid, preview, timestamp) {
@@ -714,6 +861,36 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
           // Persist encrypted auth state
           safeWriteEncrypted(path.join(sessionDir, 'auth.json'), { creds: state.creds, keys: state.keys }, aesKey);
           emitEvent({ event: 'session_connected', session_id: id, session_name: session.session_name, phone: session.phone_number || null });
+          // Faz 6e: Baileys'in doğal W:Contact senkronu yalnızca history-sync
+          // bildirimi 20 sn içinde gelirse çalışır; gelmezse rehber adları
+          // hiçbir bağlantıda ulaşmaz (WhatsApp Web'de görünen isimler burada
+          // hiç oluşmaz). Bağlantıdan sonra gecikmeli tam app-state senkronunu
+          // zorla tetikle — idempotent: sürüm > 0 ise sunucu yalnızca yeni
+          // yamaları döner, sürüm 0 ise snapshot'la tüm rehber gelir.
+          // Doğal senkron hâlâ sürüyorsa (event buffer aktif) dokunma — o
+          // yol kendi flush'ını kendisi yapar; 5 sn sonra tekrar dene.
+          const forceAppStateResync = (attempt) => {
+            if (session.status !== 'CONNECTED' || !sock) return;
+            if (attempt > 6) return;
+            if (sock.ev.isBuffering && sock.ev.isBuffering()) {
+              setTimeout(() => forceAppStateResync(attempt + 1), 5000);
+              return;
+            }
+            try {
+              Promise.resolve(sock.resyncAppState(ALL_WA_PATCH_NAMES, true))
+                .then(() => {
+                  // resyncAppState createBufferedFunction'dır: ürettiği
+                  // contacts.upsert/chats.update olayları buffer'da kalır ve
+                  // merkezi durum makinesi Online geçişini çoktan yaptığı için
+                  // kimse flush etmez — burada elle boşalt.
+                  try { sock.ev.flush(); } catch { /* zaten boşsa önemsiz */ }
+                })
+                .catch((err) => logger.warn({ err }, 'Forced app-state resync failed'));
+            } catch (err) {
+              logger.warn({ err }, 'Forced app-state resync threw');
+            }
+          };
+          setTimeout(() => forceAppStateResync(0), 8000);
         }
         if (connection === 'close') {
           const statusCode = lastDisconnect?.error?.output?.statusCode;
@@ -774,7 +951,20 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
           if (msg.key?.fromMe) continue; // outbound handled separately
           const jid = msg.key?.remoteJid;
           if (!jid) continue;
+          // Faz 6e: LID döneminde anahtar senderLid/senderPn çifti taşıyabilir
+          // — eşleşmeyi kalıcı olarak öğren (remoteJid @lid ise sohbet de
+          // normalizeJid ile telefona çözülür).
+          if (msg.key?.senderLid && msg.key?.senderPn) {
+            this._applyLidMapping(msg.key.senderLid, msg.key.senderPn);
+          }
+          if (msg.key?.participantLid && msg.key?.participantPn) {
+            this._applyLidMapping(msg.key.participantLid, msg.key.participantPn);
+          }
           const key = normalizeJid(jid);
+          // Eşleşmesi bilinmeyen LID: mesajı bellekte beklet, backend'e yayma
+          // (hayalet `jid:@lid` sohbeti oluşmasın) — _applyLidMapping öğrendiğinde
+          // telefon kimliğiyle yayına verilir.
+          const lidHold = isLidJid(key);
           const contact = contacts.get(key);
           const isGroup = jid.includes('@g.us');
           const text = msg.message?.conversation || msg.message?.extendedTextMessage?.text || msg.message?.imageMessage?.caption || msg.message?.videoMessage?.caption || msg.message?.documentMessage?.caption || '';
@@ -796,9 +986,9 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
             media_filename: mediaInfo?.filename || null,
             media_caption: text || null,
             wa_message_id: msg.key?.id || null,
-            sender_phone: jidToPhone(jid) || key,
+            sender_phone: jidToPhone(key) || key,
             recipient_phone: 'ME',
-            sender_name: contact?.name || jidToPhone(jid) || key,
+            sender_name: contact?.name || jidToPhone(key) || key,
             sender_name_source: contact?.name_source || null,
             participant_jid: msg.key?.participant || null,
             participant_name: isGroup ? msg.pushName || null : null,
@@ -810,11 +1000,13 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
           // Update unread count
           const chat = chats.get(key);
           if (chat) chat.unread_count = (chat.unread_count || 0) + 1;
-          emitEvent({
-            event: 'message_new',
-            conversation_id: key,
-            message: record,
-          });
+          if (!lidHold) {
+            emitEvent({
+              event: 'message_new',
+              conversation_id: key,
+              message: record,
+            });
+          }
         }
       });
 
@@ -823,8 +1015,15 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       // profil adi) — rehber adini asla ezmemeli; mergeContactName onceligi korur.
       sock.ev.on('contacts.update', (updates) => {
         for (const update of updates) {
-          const jid = update.id;
+          // LID döneminde remoteJid/participant @lid olabilir — eşleşme
+          // biliniyorsa telefona çöz, değilse lid anahtarında beklet
+          // (_applyLidMapping öğrendiğinde telefona taşır).
+          const jid = normalizeJid(update.id);
           if (!jid) continue;
+          // Eşleşmesi henüz bilinmeyen LID anahtarını backend'e yayma —
+          // kayıt LID altında bekler, _applyLidMapping öğrendiğinde telefona
+          // taşır (backend'de jid:@lid hayalet satır oluşmaz).
+          const lidHold = isLidJid(jid);
           let merged = contacts.get(jid) || {};
           if (update.name) merged = mergeContactName(merged, update.name, 'addressbook');
           if (update.verifiedName) merged = mergeContactName(merged, update.verifiedName, 'verified');
@@ -838,17 +1037,40 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
             avatar_url: update.imgUrl || merged.avatar_url || null,
             updated_at: new Date().toISOString(),
           });
-          emitEvent({ event: 'contact_synced', contact: contacts.get(jid) });
+          if (!lidHold) emitEvent({ event: 'contact_synced', contact: contacts.get(jid) });
         }
       });
 
       // --- Address book (W:Contact app-state) — WhatsApp Web paritesinin asıl
       // kaynağı: kullanıcının telefonunda rehberde kayıtlı adlar. Baileys,
       // app-state senkronundaki contactAction mutasyonlarını bu olayla yayar.
+      // Faz 6e: WhatsApp artık bu yamaları `xxx@lid` kimliğiyle anahtarlıyor;
+      // payload {id, name, lid, jid} şeklindedir (jid yalnızca id telefon
+      // JID'iyse dolar). LID anahtarlı kayıtlar eşleşme öğrenilinceye kadar
+      // bekletilir, öğrenilince _applyLidMapping telefona taşır.
       sock.ev.on('contacts.upsert', (list) => {
         for (const c of list || []) {
-          const jid = c?.id;
-          if (!jid || !c.name) continue;
+          const rawId = c?.id;
+          if (!rawId || !c.name) continue;
+          // Çift bilgisi varsa eşlemeyi öğren (id telefon + lid alanı dolu).
+          if (c.lid && !isLidJid(rawId)) this._applyLidMapping(c.lid, rawId);
+          const jid = normalizeJid(rawId); // lid ise ve eşleşme biliniyorsa telefona çözülür
+          const now = new Date().toISOString();
+          if (isLidJid(jid)) {
+            // Eşleşme henüz bilinmiyor: adres defteri adını LID anahtarında
+            // beklet — mesaj/geçmiş/phone-share eşleşmeyi getirince taşınır.
+            const merged = mergeContactName(contacts.get(jid) || {}, c.name, 'addressbook');
+            contacts.set(jid, {
+              ...merged,
+              id: jid,
+              jid,
+              name: merged.name,
+              phone: '',
+              lid_pending: true,
+              updated_at: now,
+            });
+            continue;
+          }
           const merged = mergeContactName(contacts.get(jid) || {}, c.name, 'addressbook');
           contacts.set(jid, {
             ...merged,
@@ -857,7 +1079,7 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
             name: merged.name,
             phone: jidToPhone(jid) || merged.phone || '',
             avatar_url: merged.avatar_url || null,
-            updated_at: new Date().toISOString(),
+            updated_at: now,
           });
           emitEvent({ event: 'contact_synced', contact: contacts.get(jid) });
           // Rehber adı bilinen sohbetin başlığını da tazele (sidebar parity).
@@ -865,10 +1087,17 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
           const chat = chats.get(chatKey);
           if (chat && chat.name !== merged.name && merged.name_source === 'addressbook') {
             chat.name = merged.name;
-            chat.updated_at = new Date().toISOString();
+            chat.name_source = 'addressbook';
+            chat.updated_at = now;
             emitEvent({ event: 'conversation_updated', conversation: { ...chat } });
           }
         }
+      });
+
+      // --- Faz 6e: LID → telefon eşleşmesi — kişi telefon numarasını
+      // paylaştığında WhatsApp bunu lid ile birlikte bildirir; kalıcı eşleme.
+      sock.ev.on('chats.phoneNumberShare', ({ lid, jid }) => {
+        if (lid && jid) this._applyLidMapping(lid, jid);
       });
 
       // --- Chats sync ---
@@ -877,13 +1106,16 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
           const jid = update.id;
           if (!jid) continue;
           const key = normalizeJid(jid);
+          // Çözülmemiş LID anahtarı: sohbet LID altında bekler, eşleşme
+          // öğrenilince _applyLidMapping telefona taşır — backend'e yaymaz.
+          const lidHold = isLidJid(key);
           const existing = chats.get(key) || {};
           const contact = contacts.get(key);
           chats.set(key, {
             ...existing,
             id: key,
             jid: key,
-            name: contact?.name || existing.name || jidToPhone(key) || key,
+            name: contact?.name || existing.name || (lidHold ? '' : jidToPhone(key) || key),
             name_source: contact?.name_source || existing.name_source || null,
             phone: jidToPhone(key) || existing.phone || '',
             is_group: key.includes('@g.us'),
@@ -894,7 +1126,7 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
             updated_at: new Date().toISOString(),
           });
           if (!chats.get(key)?.avatar_url) void sessionManager._ensureChatAvatar(key);
-          emitEvent({ event: 'conversation_updated', conversation: chats.get(key) });
+          if (!lidHold) emitEvent({ event: 'conversation_updated', conversation: chats.get(key) });
         }
       });
 
@@ -906,6 +1138,10 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
           // 1. Kisiler
           for (const c of historyContacts || []) {
             if (!c?.id) continue;
+            // Faz 6e: gecmis kisi kaydi {id: telefon, lid} tasir — eşleşmeyi
+            // öğren (LID anahtarlı bekleyen rehber adları varsa telefona taşınır).
+            if (c.lid && !isLidJid(c.id)) this._applyLidMapping(c.lid, c.id);
+            if (isLidJid(c.id)) continue; // salt-LID kaydı: yalnızca eşleme kaynağı
             let merged = contacts.get(c.id) || {};
             // Conversation.name (senkron anındaki rehber adı) pushName'den önce gelir.
             if (c.name) merged = mergeContactName(merged, c.name, 'history');
@@ -926,6 +1162,8 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
           for (const msg of historyMessages || []) {
             const jid = msg.key?.remoteJid;
             if (!jid || msg.key?.id === '__history__') continue;
+            // Faz 6e: gecmis mesaj anahtarlari da LID↔telefon çifti tasir.
+            if (msg.key?.senderLid && msg.key?.senderPn) this._applyLidMapping(msg.key.senderLid, msg.key.senderPn);
             if (msg.message?.protocolMessage) continue; // revoke/ephemeral vb. — atla
             const key = normalizeJid(jid);
             const list = messagesByChat.get(key) || [];
@@ -943,6 +1181,10 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
           for (const chat of historyChats || []) {
             const jid = chat.id || chat.jid;
             if (!jid) continue;
+            // Faz 6e: Conversation.lidJid — sohbet telefon anahtarlıysa eşlemeyi öğren;
+            // Conversation.pnJid — sohbet LID anahtarlıysa telefonu buradan çöz.
+            if (chat.lidJid && !isLidJid(jid)) this._applyLidMapping(chat.lidJid, jid);
+            if (isLidJid(jid) && chat.pnJid) this._applyLidMapping(jid, chat.pnJid);
             const key = normalizeJid(jid);
             const contact = contacts.get(key);
             const list = messagesByChat.get(key) || [];

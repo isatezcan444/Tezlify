@@ -29,10 +29,19 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 def jid_to_phone(jid: str) -> Optional[str]:
-    """`905321002030@s.whatsapp.net` -> `+905321002030`."""
+    """`905321002030@s.whatsapp.net` -> `+905321002030`.
+
+    Faz 6e: `xxx@lid` kimlikleri WhatsApp'ın telefon-gizli LID anahtarıdır ve
+    telefon numarası DEĞİLDİR — asla `+rakam` türetilmez (AGENTS.md: sahte
+    telefon sentezlenmez). Gateway eşleşmeyi öğrenince telefona çözülmüş JID
+    gönderir; öğrenemezse hiç göndermez.
+    """
     if not jid:
         return None
-    digits = "".join(ch for ch in jid.split("@")[0] if ch.isdigit())
+    jid_str = str(jid)
+    if jid_str.endswith("@lid"):
+        return None
+    digits = "".join(ch for ch in jid_str.split("@")[0] if ch.isdigit())
     return f"+{digits}" if digits else None
 
 
