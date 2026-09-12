@@ -552,3 +552,128 @@ async def test_apply_last_message_rules():
         assert conv.last_message_preview == "Görüşürüz"
         assert conv.last_message_at == _ts(10, 1)
         await db.rollback()
+
+
+# ---------------------------------------------------------------------------
+# P3 — telefondan gönderilen mesaj (fromMe) realtime ingest: OUTBOUND 'ME'
+# ---------------------------------------------------------------------------
+
+PN_JID = "905525372434@s.whatsapp.net"  # "Ali Ekincioğlu" örneği (prod contact 244)
+PN_PHONE = "+905525372434"
+
+
+async def _seed_session_and_person(display_name="Ali Ekincioğlu"):
+    """CONNECTED session + 1:1 kişi tohumlar; (contact_id, conv_id) doner."""
+    async with AsyncSessionLocal() as db:
+        db.add(WhatsAppSession(user_id=TEST_USER, gateway_id=str(_uuid.uuid4()),
+                               session_name="S", status=SessionStatus.CONNECTED, is_active=True))
+        contact = Contact(user_id=TEST_USER, phone_e164=PN_PHONE, display_name=display_name,
+                          custom_attributes={"name_source": "addressbook"} if display_name else {})
+        db.add(contact)
+        await db.flush()
+        conv = Conversation(user_id=TEST_USER, contact_id=contact.id, channel="WHATSAPP",
+                            status=ConversationStatus.ACTIVE,
+                            last_message_preview="Küfür ediyor bide utanmadan",
+                            last_message_at=_ts(14, 25))
+        db.add(conv)
+        await db.commit()
+        return contact.id, conv.id
+
+
+def _sg_event(wa_id="SGID1", direction="OUTBOUND", body="Sg", ts="2026-02-10T18:49:00"):
+    return {
+        "event": "message_new",
+        "conversation_id": PN_JID,
+        "message": {
+            "conversation_id": PN_JID,
+            "wa_message_id": wa_id,
+            "direction": direction,
+            "message_type": "TEXT",
+            "body": body,
+            "sender_phone": "ME" if direction == "OUTBOUND" else PN_PHONE,
+            "recipient_phone": PN_PHONE if direction == "OUTBOUND" else "ME",
+            "sender_name": "ME" if direction == "OUTBOUND" else "Ali Ekincioğlu",
+            "created_at": ts,
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_fromme_outbound_ingest_persists_message_and_preview():
+    """'Sg' (telefondan gönderilen) artık DB'de: OUTBOUND/SENT/sender 'ME',
+    preview zaman damgali güncellenir, unread ARTMAZ, kişi adı 'ME' olmaz."""
+    contact_id, conv_id = await _seed_session_and_person()
+    result = await ingest_gateway_event(_sg_event())
+    assert result["conversation_id"] == conv_id
+    async with AsyncSessionLocal() as db:
+        row = (await db.execute(
+            select(Message).where(Message.wa_message_id == "SGID1")
+        )).scalar_one()
+        assert row.direction == MessageDirection.OUTBOUND
+        assert row.status.value == "SENT"
+        assert row.sender_name == "ME"          # P3: giden mesajda kişi adı DEĞİL
+        assert row.body == "Sg"
+        conv = (await db.execute(
+            select(Conversation).where(Conversation.id == conv_id)
+        )).scalar_one()
+        assert conv.last_message_preview == "Sg"  # 18:49 > 14:25 → yazar
+        assert conv.last_message_at == _ts(18, 49)
+        assert (conv.unread_count or 0) == 0      # kendi mesajımız okunmamış sayılmaz
+        contact = (await db.execute(
+            select(Contact).where(Contact.id == contact_id)
+        )).scalar_one()
+        assert contact.display_name == "Ali Ekincioğlu"  # 'ME' rehber adını EZMEZ
+
+
+@pytest.mark.asyncio
+async def test_fromme_replay_dedups_by_wa_message_id():
+    """Aynı wa_message_id ikinci kez gelirse (upsert + history çakışması) tek satır."""
+    _, conv_id = await _seed_session_and_person()
+    await ingest_gateway_event(_sg_event())
+    await ingest_gateway_event(_sg_event())  # replay
+    async with AsyncSessionLocal() as db:
+        rows = (await db.execute(
+            select(Message).where(Message.wa_message_id == "SGID1")
+        )).scalars().all()
+        assert len(rows) == 1
+        conv = (await db.execute(
+            select(Conversation).where(Conversation.id == conv_id)
+        )).scalar_one()
+        assert conv.last_message_preview == "Sg"  # eşit ts ezmesi yok
+
+
+@pytest.mark.asyncio
+async def test_fromme_older_ts_does_not_erase_newer_preview():
+    """Daha eski zaman damgalı OUTBOUND retry mevcut (yeniden) özetini bozmaz."""
+    _, conv_id = await _seed_session_and_person()
+    await ingest_gateway_event(_sg_event(wa_id="NEW1", body="Yeni mesaj", ts="2026-02-10T19:00:00"))
+    await ingest_gateway_event(_sg_event(wa_id="SGID1", ts="2026-02-10T18:49:00"))  # eski
+    async with AsyncSessionLocal() as db:
+        conv = (await db.execute(
+            select(Conversation).where(Conversation.id == conv_id)
+        )).scalar_one()
+        assert conv.last_message_preview == "Yeni mesaj"
+        assert conv.last_message_at == _ts(19, 0)
+
+
+@pytest.mark.asyncio
+async def test_inbound_regression_still_resolves_person_name():
+    """REGRESYON: 1:1 GELEN mesajda preview gövde, kişi adı korunur, unread +1."""
+    _, conv_id = await _seed_session_and_person()
+    before = None
+    async with AsyncSessionLocal() as db:
+        before = (await db.execute(
+            select(Conversation).where(Conversation.id == conv_id)
+        )).scalar_one().unread_count or 0
+    await ingest_gateway_event(_sg_event(wa_id="IN1", direction="INBOUND", body="Selam"))
+    async with AsyncSessionLocal() as db:
+        row = (await db.execute(
+            select(Message).where(Message.wa_message_id == "IN1")
+        )).scalar_one()
+        assert row.direction == MessageDirection.INBOUND
+        assert row.sender_name == "Ali Ekincioğlu"
+        conv = (await db.execute(
+            select(Conversation).where(Conversation.id == conv_id)
+        )).scalar_one()
+        assert conv.last_message_preview == "Selam"
+        assert conv.unread_count == before + 1

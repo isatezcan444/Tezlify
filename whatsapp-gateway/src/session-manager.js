@@ -739,8 +739,106 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       return connected;
     },
 
+    // Faz 10 (P3): messages.upsert olayini (gelen + telefondan gonderilen)
+    // kalici gateway kaydina cevirir, messagesByChat'e ekler, sohbeti tazeler
+    // ve `message_new` yayar. Test edilebilirlik icin handler'dan ayrildi.
+    // Doner: kaydedilen record; atlanirsa null.
+    async _ingestUpsertMessage(msg, sock) {
+      // Faz 10 (P3): telefondan (gateway API'si DIŞINDAN) gonderilen mesajlar
+      // de messages.upsert ile fromMe=true olarak gelir. Eskiden bunlar
+      // `continue` ile atiliyordu → "Sg" gibi kullanıcının kendi gonderdigi
+      // son mesajlar DB'ye hic yazilmiyordu (yalnizca chats.update preview'i
+      // guncellerdi, mesaj satiri/sayisi olusmazdi). Artik islenir; gateway
+      // API'siyle gonderilenler _recordOutbound tarafindan zaten kaydedildigi
+      // icin wa_message_id ile dedup edilir → cift kayit olmaz.
+      const fromMe = Boolean(msg.key?.fromMe);
+      const jid = msg.key?.remoteJid;
+      if (!jid) return null;
+      // Faz 6e: LID döneminde anahtar senderLid/senderPn çifti taşıyabilir
+      // — eşleşmeyi kalıcı olarak öğren (remoteJid @lid ise sohbet de
+      // normalizeJid ile telefona çözülür).
+      if (msg.key?.senderLid && msg.key?.senderPn) {
+        this._applyLidMapping(msg.key.senderLid, msg.key.senderPn);
+      }
+      if (msg.key?.participantLid && msg.key?.participantPn) {
+        this._applyLidMapping(msg.key.participantLid, msg.key.participantPn);
+      }
+      const key = normalizeJid(jid);
+      // Gateway API'siyle (sendTextMessage/sendMediaMessage) gonderilen
+      // mesaj _recordOutbound ile zaten messagesByChat'e eklendi; Baileys
+      // ayni mesaji fromMe upsert ile tekrar yayinladiginda atla.
+      if (fromMe && msg.key?.id) {
+        const dup = (messagesByChat.get(key) || []).some(
+          (m) => m.wa_message_id && m.wa_message_id === msg.key.id
+        );
+        if (dup) return null;
+      }
+      // Eşleşmesi bilinmeyen LID: mesajı bellekte beklet, backend'e yayma
+      // (hayalet `jid:@lid` sohbeti oluşmasın) — _applyLidMapping öğrendiğinde
+      // telefon kimliğiyle yayına verilir.
+      const lidHold = isLidJid(key);
+      const contact = contacts.get(key);
+      const isGroup = jid.includes('@g.us');
+      const text = msg.message?.conversation || msg.message?.extendedTextMessage?.text || msg.message?.imageMessage?.caption || msg.message?.videoMessage?.caption || msg.message?.documentMessage?.caption || '';
+      const mediaType = msg.message?.imageMessage ? 'IMAGE' : msg.message?.documentMessage ? 'DOCUMENT' : msg.message?.audioMessage ? 'AUDIO' : msg.message?.videoMessage ? 'VIDEO' : msg.message?.stickerMessage ? 'STICKER' : msg.message?.locationMessage ? 'LOCATION' : msg.message?.contactMessage ? 'CONTACT' : 'TEXT';
+      let mediaInfo = null;
+      if (!fromMe && mediaType !== 'TEXT' && mediaType !== 'LOCATION' && mediaType !== 'CONTACT' && typeof this.storeIncomingMedia === 'function' && sock) {
+        const mediaMessage = msg.message?.imageMessage || msg.message?.documentMessage || msg.message?.audioMessage || msg.message?.videoMessage || msg.message?.stickerMessage;
+        mediaInfo = await this.storeIncomingMedia(mediaMessage, sock);
+      }
+      const record = {
+        id: Date.now() + Math.floor(Math.random() * 1000),
+        conversation_id: key,
+        direction: fromMe ? 'OUTBOUND' : 'INBOUND',
+        message_type: mediaType,
+        status: fromMe ? 'SENT' : 'RECEIVED',
+        body: text || '',
+        media_id: mediaInfo?.media_id || null,
+        media_mime_type: mediaInfo?.mime_type || null,
+        media_filename: mediaInfo?.filename || null,
+        media_caption: text || null,
+        wa_message_id: msg.key?.id || null,
+        sender_phone: fromMe ? 'ME' : (jidToPhone(key) || key),
+        recipient_phone: fromMe ? (jidToPhone(key) || key) : 'ME',
+        // Faz 8 (§13): başlık kimliği de Contact çözücüsünden geçer —
+        // rehber adı > pushName > telefon; ham JID ad olarak yayılmaz.
+        // Faz 10 (P3): telefondan gonderilen mesajin gondereni 'ME'dir.
+        sender_name: fromMe ? 'ME' : sessionManager._resolveDisplayName(key, msg.pushName),
+        sender_name_source: fromMe ? null : (contact?.name_source || null),
+        participant_jid: msg.key?.participant || null,
+        // Faz 8 (§13-14): grup göndereni Contact çözücüsünden geçer —
+        // rehber/çözümlemedeki ad > pushName > telefon; ham JID asla ad olmaz.
+        participant_name: isGroup ? sessionManager._resolveDisplayName(msg.key?.participant, msg.pushName) : null,
+        created_at: new Date((msg.messageTimestamp || Date.now()) * 1000).toISOString(),
+      };
+      if (!messagesByChat.has(key)) messagesByChat.set(key, []);
+      messagesByChat.get(key).push(record);
+      // Faz 10 (P2): paylasilan kural — "[IMAGE]" yerine tip etiketi,
+      // gruplarda cozulmus gonderen on eki ("Ahmet: ...").
+      this._touchChat(key, buildChatPreview(record, isGroup), record.created_at);
+      // Update unread count (yalnizca GELEN mesajlar okunmamis sayilir)
+      const chat = chats.get(key);
+      if (chat && !fromMe) chat.unread_count = (chat.unread_count || 0) + 1;
+      if (!lidHold) {
+        emitEvent({
+          event: 'message_new',
+          conversation_id: key,
+          message: record,
+        });
+      }
+      return record;
+    },
+
     _recordOutbound(jid, data) {
       const key = normalizeJid(jid);
+      // Faz 10 (P3): messages.upsert fromMe kolu ayni mesaji (wa_message_id)
+      // zaten kaydettiyse ikinci kayit + ikinci emitEvent YAPILMAZ.
+      if (data.wa_message_id) {
+        const dup = (messagesByChat.get(key) || []).some(
+          (m) => m.wa_message_id && m.wa_message_id === data.wa_message_id
+        );
+        if (dup) return { ...messagesByChat.get(key).find((m) => m.wa_message_id === data.wa_message_id) };
+      }
       const msg = {
         id: Date.now(),
         conversation_id: key,
@@ -1288,74 +1386,10 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
         }
       });
 
-      // --- Messages (inbound) ---
+      // --- Messages (inbound + phone-sent outbound) ---
       sock.ev.on('messages.upsert', async ({ messages: newMessages, type }) => {
         for (const msg of newMessages) {
-          if (msg.key?.fromMe) continue; // outbound handled separately
-          const jid = msg.key?.remoteJid;
-          if (!jid) continue;
-          // Faz 6e: LID döneminde anahtar senderLid/senderPn çifti taşıyabilir
-          // — eşleşmeyi kalıcı olarak öğren (remoteJid @lid ise sohbet de
-          // normalizeJid ile telefona çözülür).
-          if (msg.key?.senderLid && msg.key?.senderPn) {
-            this._applyLidMapping(msg.key.senderLid, msg.key.senderPn);
-          }
-          if (msg.key?.participantLid && msg.key?.participantPn) {
-            this._applyLidMapping(msg.key.participantLid, msg.key.participantPn);
-          }
-          const key = normalizeJid(jid);
-          // Eşleşmesi bilinmeyen LID: mesajı bellekte beklet, backend'e yayma
-          // (hayalet `jid:@lid` sohbeti oluşmasın) — _applyLidMapping öğrendiğinde
-          // telefon kimliğiyle yayına verilir.
-          const lidHold = isLidJid(key);
-          const contact = contacts.get(key);
-          const isGroup = jid.includes('@g.us');
-          const text = msg.message?.conversation || msg.message?.extendedTextMessage?.text || msg.message?.imageMessage?.caption || msg.message?.videoMessage?.caption || msg.message?.documentMessage?.caption || '';
-          const mediaType = msg.message?.imageMessage ? 'IMAGE' : msg.message?.documentMessage ? 'DOCUMENT' : msg.message?.audioMessage ? 'AUDIO' : msg.message?.videoMessage ? 'VIDEO' : msg.message?.stickerMessage ? 'STICKER' : msg.message?.locationMessage ? 'LOCATION' : msg.message?.contactMessage ? 'CONTACT' : 'TEXT';
-          let mediaInfo = null;
-          if (mediaType !== 'TEXT' && mediaType !== 'LOCATION' && mediaType !== 'CONTACT') {
-            const mediaMessage = msg.message?.imageMessage || msg.message?.documentMessage || msg.message?.audioMessage || msg.message?.videoMessage || msg.message?.stickerMessage;
-            mediaInfo = await this.storeIncomingMedia(mediaMessage, sock);
-          }
-          const record = {
-            id: Date.now() + Math.floor(Math.random() * 1000),
-            conversation_id: key,
-            direction: 'INBOUND',
-            message_type: mediaType,
-            status: 'RECEIVED',
-            body: text || '',
-            media_id: mediaInfo?.media_id || null,
-            media_mime_type: mediaInfo?.mime_type || null,
-            media_filename: mediaInfo?.filename || null,
-            media_caption: text || null,
-            wa_message_id: msg.key?.id || null,
-            sender_phone: jidToPhone(key) || key,
-            recipient_phone: 'ME',
-            // Faz 8 (§13): başlık kimliği de Contact çözücüsünden geçer —
-            // rehber adı > pushName > telefon; ham JID ad olarak yayılmaz.
-            sender_name: sessionManager._resolveDisplayName(key, msg.pushName),
-            sender_name_source: contact?.name_source || null,
-            participant_jid: msg.key?.participant || null,
-            // Faz 8 (§13-14): grup göndereni Contact çözücüsünden geçer —
-            // rehber/çözümlemedeki ad > pushName > telefon; ham JID asla ad olmaz.
-            participant_name: isGroup ? sessionManager._resolveDisplayName(msg.key?.participant, msg.pushName) : null,
-            created_at: new Date((msg.messageTimestamp || Date.now()) * 1000).toISOString(),
-          };
-          if (!messagesByChat.has(key)) messagesByChat.set(key, []);
-          messagesByChat.get(key).push(record);
-          // Faz 10 (P2): paylasilan kural — "[IMAGE]" yerine tip etiketi,
-          // gruplarda cozulmus gonderen on eki ("Ahmet: ...").
-          this._touchChat(key, buildChatPreview(record, isGroup), record.created_at);
-          // Update unread count
-          const chat = chats.get(key);
-          if (chat) chat.unread_count = (chat.unread_count || 0) + 1;
-          if (!lidHold) {
-            emitEvent({
-              event: 'message_new',
-              conversation_id: key,
-              message: record,
-            });
-          }
+          await this._ingestUpsertMessage(msg, sock);
         }
       });
 
@@ -1492,6 +1526,28 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
               })()
             : null;
           const tsOlder = updTs && existing.last_message_at && String(updTs) < String(existing.last_message_at);
+          // Faz 10 (P3): chats.update.lastMessage tam bir WAMessage tasir.
+          // Telefondan gonderilen mesajlar messages.upsert ile HIC gelmezse
+          // (yaris/cihaz dongusu) sohbet gecmisi eksik kalir — son mesaji
+          // buradan sentezleyip messagesByChat'e ekleriz (wa_message_id ile
+          // dedup; backend de kendi tarafinda dedup eder).
+          if (update.lastMessage?.key?.id && !lidHold) {
+            try {
+              const list = messagesByChat.get(key) || [];
+              const known = list.some((m) => m.wa_message_id && m.wa_message_id === update.lastMessage.key.id);
+              if (!known) {
+                const synth = this._historyMessageToRecord(update.lastMessage, key);
+                if (synth) {
+                  const next = [...list, synth];
+                  if (next.length > 500) next.splice(0, next.length - 500);
+                  messagesByChat.set(key, next);
+                  emitEvent({ event: 'message_new', conversation_id: key, message: synth });
+                }
+              }
+            } catch (err) {
+              logger.warn({ err }, 'chats.update lastMessage sentezlenemedi');
+            }
+          }
           chats.set(key, {
             ...existing,
             id: key,

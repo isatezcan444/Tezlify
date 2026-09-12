@@ -1276,14 +1276,17 @@ async def _ingest_message(db: AsyncSession, event: Dict[str, Any]) -> Dict[str, 
     # ör. bir üyenin "Ahmet"ı) GRUP contact'ine ASLA yazilmaz; grup adi
     # yalnizca group_subject metadata'sindan guncellenir. (1:1'de mevcut
     # davranis korunur: kisi adini mesajla tasiyabiliriz.)
+    # Faz 10 (P3): GIDEN mesajlarda sender_name 'ME'dir — kisi adi OLAMAZ
+    # (telefondan gonderilen mesajlar artik messages.upsert ile de akıyor).
     is_group_jid = "@g.us" in jid_str
-    contact = await _upsert_contact(
-        db,
-        owner,
-        jid_str,
-        None if is_group_jid else msg.get("sender_name"),
-        None if is_group_jid else msg.get("sender_name_source"),
+    msg_direction = (
+        MessageDirection.INBOUND
+        if str(msg.get("direction", "INBOUND")).upper() == "INBOUND"
+        else MessageDirection.OUTBOUND
     )
+    name_for_contact = None if (is_group_jid or msg_direction == MessageDirection.OUTBOUND) else msg.get("sender_name")
+    source_for_contact = None if (is_group_jid or msg_direction == MessageDirection.OUTBOUND) else msg.get("sender_name_source")
+    contact = await _upsert_contact(db, owner, jid_str, name_for_contact, source_for_contact)
 
     wa_id = msg.get("wa_message_id")
     if wa_id:
@@ -1299,7 +1302,7 @@ async def _ingest_message(db: AsyncSession, event: Dict[str, Any]) -> Dict[str, 
         mtype = MessageType[mtype_str] if mtype_str in MessageType.__members__ else MessageType.TEXT
     except Exception:
         mtype = MessageType.TEXT
-    direction = MessageDirection.INBOUND if msg.get("direction", "INBOUND") == "INBOUND" else MessageDirection.OUTBOUND
+    direction = msg_direction
 
     body = msg.get("body") or ""
     row = Message(
@@ -1319,7 +1322,14 @@ async def _ingest_message(db: AsyncSession, event: Dict[str, Any]) -> Dict[str, 
         # (WhatsApp Web paritesi); 1:1 sohbetlerde sohbet/kisi adi kalir.
         # Faz 10 (P1): grup mesajinda fallback ASLA grup contact adidir —
         # katilimci cozulemiyorsa ad None kalir (preview one eki de atlanir).
-        sender_name=msg.get("participant_name") or (None if is_group_jid else contact.display_name),
+        # Faz 10 (P3): GIDEN mesajlarda gonderen her zaman 'ME'dir (history
+        # senkronundaki `_historyMessageToRecord` ile ayni sozlesme) — kisi
+        # adi one cikmaz.
+        sender_name=(
+            "ME"
+            if direction == MessageDirection.OUTBOUND
+            else (msg.get("participant_name") or (None if is_group_jid else contact.display_name))
+        ),
         recipient_phone=msg.get("recipient_phone") or "ME" if direction == MessageDirection.INBOUND else contact.phone_e164,
         status=ConversationMessageStatus.RECEIVED if direction == MessageDirection.INBOUND else ConversationMessageStatus.SENT,
         external_timestamp=_parse_dt(msg.get("created_at")),

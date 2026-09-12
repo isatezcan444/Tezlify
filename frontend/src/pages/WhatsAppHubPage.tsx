@@ -658,7 +658,11 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       if (!eventData) return;
 
       // 1. INBOUND MESSAGE & OUTBOUND CONFIRMATION
+      // Faz 10 (P3): gateway'in gercek olay adi 'message_new'tir (hem gelen hem
+      // telefondan gonderilen mesajlar icin); eskiden yalnizca mock/legacy
+      // olay adlari dinleniyordu → canli mesajlar listeye hic düsmüyordu.
       if (
+        eventData.event === 'message_new' ||
         eventData.event === 'inbound_reply' ||
         eventData.event === 'new_message' ||
         eventData.event === 'outbound_message_sent'
@@ -674,6 +678,9 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
           eventData.event === 'outbound_message_sent' ||
           msgObj0?.direction === 'OUTBOUND' ||
           eventData.direction === 'OUTBOUND';
+        // Faz 10 (P3): canli sohbette balonun gondereni — outbound'ta backend
+        // 'ME' yayinlar; balon sagda 'Siz' olarak etiketlenir.
+        const senderLabel = isOutbound ? 'Siz' : msgObj0?.sender_name || eventData.sender_name;
 
         // Update Conversation in list
         setConversations((prev) => {
@@ -738,7 +745,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
             body: typeof msgText === 'string' ? msgText : '',
             wa_message_id: waId,
             client_message_id: clientMid,
-            sender_name: msgObj?.sender_name || eventData.sender_name || (isOutbound ? 'Siz' : undefined),
+            sender_name: senderLabel || (isOutbound ? 'Siz' : undefined),
             sender_phone: msgObj?.sender_phone || eventData.phone || '',
             media_id: msgObj?.media_id || eventData.media_id,
             media_mime_type: msgObj?.media_mime_type || eventData.media_mime_type,
