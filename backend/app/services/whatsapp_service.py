@@ -10,7 +10,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
-from sqlalchemy import select, func, or_
+from sqlalchemy import select, func, or_, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.database import AsyncSessionLocal
@@ -289,14 +289,69 @@ async def logout_session(db: AsyncSession, user_id: str, session_id: int) -> Dic
     return {"success": True, "status": "DISCONNECTED"}
 
 
+async def purge_whatsapp_data(db: AsyncSession, user_id: str) -> Dict[str, int]:
+    """QR oturumu silindiğinde kullanıcının tüm WhatsApp eşitlemelerini kalıcı
+    olarak temizler: mesajlar -> sohbetler -> (artık sohbeti kalmayan) kişiler.
+
+    Kapsam: kullanıcıya ait satırlar + oturum sahibi çözümlenemeden gateway
+    olaylarıyla yazılan SYSTEM_USER_ID satırları (hayalet sohbet kalmasın).
+    Lead kayıtlarına dokunulmaz (contacts.lead_id FK'i yalnızca kişidedir,
+    leads tablosu korunur). CRM/WhatsApp-dışı sohbetler korunur.
+    """
+    conv_ids: List[int] = []
+    for owner in (str(user_id), SYSTEM_USER_ID):
+        res = await db.execute(
+            select(Conversation.id).where(
+                get_user_filter(Conversation.user_id, owner),
+                Conversation.channel == "WHATSAPP",
+            )
+        )
+        conv_ids.extend(int(r[0]) for r in res.all())
+
+    purged = {"messages": 0, "conversations": 0, "contacts": 0}
+    if not conv_ids:
+        return purged
+
+    msg_res = await db.execute(delete(Message).where(Message.conversation_id.in_(conv_ids)))
+    purged["messages"] = msg_res.rowcount or 0
+
+    con_res = await db.execute(
+        select(Conversation.contact_id).where(Conversation.id.in_(conv_ids))
+    )
+    contact_ids = [int(r[0]) for r in con_res.all() if r[0] is not None]
+
+    conv_res = await db.execute(delete(Conversation).where(Conversation.id.in_(conv_ids)))
+    purged["conversations"] = conv_res.rowcount or 0
+
+    if contact_ids:
+        # Yalnızca artık HİÇBİR sohbete bağlı olmayan kişileri sil (güvenlik
+        # payandası: başka bir kanal/sohbet referans veriyorsa koru).
+        remaining = select(Conversation.contact_id).where(Conversation.contact_id.isnot(None))
+        ct_res = await db.execute(
+            delete(Contact).where(
+                Contact.id.in_(contact_ids),
+                Contact.id.notin_(remaining),
+            )
+        )
+        purged["contacts"] = ct_res.rowcount or 0
+
+    return purged
+
+
 async def delete_session(db: AsyncSession, user_id: str, session_id: int) -> Dict[str, Any]:
     row = await _get_session_or_404(db, user_id, session_id)
     try:
         await gw.delete_session(row.gateway_id)
     except Exception as exc:
         logger.warning("Gateway oturum silinemedi (devam): %s", exc)
+    purged = await purge_whatsapp_data(db, user_id)
     await db.delete(row)
     await db.commit()
+    logger.info(
+        "WhatsApp oturumu silindi (user=%s session=%s): %s eşitleme temizlendi",
+        user_id, session_id, purged,
+    )
+    return {"success": True, "purged": purged}
 # ---------------------------------------------------------------------------
 # Kisiler (contacts)
 # ---------------------------------------------------------------------------

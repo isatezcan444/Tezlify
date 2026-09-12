@@ -16,7 +16,7 @@ from typing import Any
 import pytest
 import pytest_asyncio
 from httpx import AsyncClient, ASGITransport
-from sqlalchemy import text, select
+from sqlalchemy import text, select, func, or_
 from unittest.mock import AsyncMock, patch
 
 from backend.app.main import app
@@ -35,6 +35,7 @@ MOCK_PHONE = "+905321002030"
 MOCK_JID = "905321002030@s.whatsapp.net"
 MOCK_PHONE2 = "+905339998877"
 MOCK_JID2 = "905339998877@s.whatsapp.net"
+SYSTEM_USER = "00000000-0000-0000-0000-000000000000"
 # Legacy test user_ids from prior runs (string, not hex UUID)
 LEGACY_UIDS = ["testuserwa", "system"]
 
@@ -113,6 +114,14 @@ async def _cleanup_whatsapp_tables():
             await db.execute(
                 text("DELETE FROM contacts WHERE (user_id IN (:h1, :h2)) AND phone_e164 = :phone2"),
                 {"h1": TEST_USER_HEX, "h2": SYS_USER_HEX, "phone2": MOCK_PHONE2},
+            )
+            # Cascade test seeds a non-WhatsApp conversation + CRM contact; wipe them too.
+            await db.execute(
+                text("DELETE FROM conversations WHERE channel = 'OTHER' AND user_id IN (:h1, :h2)"),
+                {"h1": TEST_USER_HEX, "h2": SYS_USER_HEX},
+            )
+            await db.execute(
+                text("DELETE FROM contacts WHERE phone_e164 = '+905551112233'"),
             )
             await db.commit()
 
@@ -1515,3 +1524,106 @@ async def test_sync_contacts_addressbook_wins_over_legacy_pushname(auth_headers,
         assert res.status_code == 200
         item = next(i for i in res.json()["contacts"] if i["id"] == MOCK_JID)
         assert item["name"] == "Ayse Kaya"
+
+
+# ---------------------------------------------------------------------------
+# Session delete cascade — QR oturumu silinince tüm eşitlemeler temizlenmeli
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_delete_session_purges_whatsapp_data(auth_headers, mock_gateway):
+    """Deleting a session wipes user + system WhatsApp messages/conversations/
+    contacts, while non-WhatsApp conversations and their contacts survive."""
+    other_contact_id = None
+    async with AsyncSessionLocal() as db:
+        # 1) User-owned WhatsApp chat with a message.
+        wa_contact = Contact(user_id=TEST_USER, phone_e164=MOCK_PHONE,
+                             display_name="WA Lead")
+        db.add(wa_contact)
+        await db.flush()
+        wa_conv = Conversation(user_id=TEST_USER, contact_id=wa_contact.id,
+                               channel="WHATSAPP",
+                               status=ConversationStatus.ACTIVE, unread_count=0)
+        db.add(wa_conv)
+        await db.flush()
+        db.add(Message(
+            user_id=TEST_USER, conversation_id=wa_conv.id,
+            direction=MessageDirection.INBOUND, message_type=MessageType.TEXT,
+            body="Selam", sender_phone=MOCK_PHONE, recipient_phone="+900000000",
+            status=ConversationMessageStatus.RECEIVED,
+            client_message_id=f"cmsg_del_{_uuid.uuid4()}",
+        ))
+        # 2) SYSTEM-owned ghost WhatsApp chat (owner unresolved at ingest).
+        sys_contact = Contact(user_id=SYSTEM_USER, phone_e164=MOCK_PHONE2,
+                              display_name="Ghost")
+        db.add(sys_contact)
+        await db.flush()
+        sys_conv = Conversation(user_id=SYSTEM_USER, contact_id=sys_contact.id,
+                                channel="WHATSAPP",
+                                status=ConversationStatus.ACTIVE, unread_count=0)
+        db.add(sys_conv)
+        await db.flush()
+        db.add(Message(
+            user_id=SYSTEM_USER, conversation_id=sys_conv.id,
+            direction=MessageDirection.INBOUND, message_type=MessageType.TEXT,
+            body="Ghost msg", sender_phone=MOCK_PHONE2,
+            recipient_phone="+900000000",
+            status=ConversationMessageStatus.RECEIVED,
+            client_message_id=f"cmsg_del_sys_{_uuid.uuid4()}",
+        ))
+        # 3) Non-WhatsApp conversation (must survive) + its contact.
+        keep_contact = Contact(user_id=TEST_USER, phone_e164="+905551112233",
+                               display_name="CRM Contact")
+        db.add(keep_contact)
+        await db.flush()
+        other_contact_id = keep_contact.id
+        db.add(Conversation(user_id=TEST_USER, contact_id=keep_contact.id,
+                            channel="OTHER",
+                            status=ConversationStatus.ACTIVE, unread_count=0))
+        wa_conv_id, sys_conv_id = wa_conv.id, sys_conv.id
+        await db.commit()
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        create_res = await client.post("/api/v1/whatsapp/sessions",
+                                       json={"name": "Cascade Test"},
+                                       headers=auth_headers)
+        session_id = create_res.json()["id"]
+        res = await client.delete(f"/api/v1/whatsapp/sessions/{session_id}",
+                                  headers=auth_headers)
+        assert res.status_code == 200
+        assert res.json()["success"] is True
+
+    async with AsyncSessionLocal() as db:
+        # WhatsApp conversations (user + system owned) gone.
+        for cid in (wa_conv_id, sys_conv_id):
+            assert (await db.get(Conversation, cid)) is None
+        # Their messages gone.
+        msg_res = await db.execute(
+            select(func.count()).select_from(Message).where(
+                Message.conversation_id.in_([wa_conv_id, sys_conv_id]))
+        )
+        assert msg_res.scalar_one() == 0
+        # WhatsApp contacts gone (for the seeded owners).
+        for phone in (MOCK_PHONE, MOCK_PHONE2):
+            c_res = await db.execute(
+                select(func.count()).select_from(Contact).where(
+                    Contact.phone_e164 == phone,
+                    or_(Contact.user_id == TEST_USER, Contact.user_id == SYSTEM_USER),
+                )
+            )
+            assert c_res.scalar_one() == 0
+        # Session row gone.
+        s_res = await db.execute(
+            select(func.count()).select_from(WhatsAppSession).where(
+                WhatsAppSession.id == session_id)
+        )
+        assert s_res.scalar_one() == 0
+        # Non-WhatsApp conversation + contact untouched.
+        assert (await db.get(Contact, other_contact_id)) is not None
+        other_res = await db.execute(
+            select(func.count()).select_from(Conversation).where(
+                Conversation.contact_id == other_contact_id,
+                Conversation.channel == "OTHER")
+        )
+        assert other_res.scalar_one() == 1

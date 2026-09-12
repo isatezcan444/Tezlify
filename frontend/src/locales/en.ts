@@ -465,7 +465,7 @@ export const en = {
     statusBanned: 'Flagged / Banned',
     disconnect: 'Disconnect',
     deleteSession: 'Delete Session',
-    deleteSessionConfirm: 'Are you sure you want to delete this WhatsApp session? Historical conversations are preserved.',
+    deleteSessionConfirm: 'Are you sure you want to delete this WhatsApp session? All synced conversations and messages will be deleted as well. This action cannot be undone.',
     antiBanPresetLabel: 'Security Preset Mode',
     presetUltraSafe: 'Ultra Safe',
     presetUltraSafeTag: 'New Numbers',

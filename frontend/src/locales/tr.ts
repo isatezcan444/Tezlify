@@ -465,7 +465,7 @@ export const tr = {
     statusBanned: 'Engellendi / Kısıtlandı',
     disconnect: 'Bağlantıyı Kes',
     deleteSession: 'Oturumu Sil',
-    deleteSessionConfirm: 'Bu WhatsApp oturumunu silmek istediğinize emin misiniz? Önceki konuşmalar korunur.',
+    deleteSessionConfirm: 'Bu WhatsApp oturumunu silmek istediğinize emin misiniz? Eşitlenen tüm sohbetler ve mesajlar da silinecektir. Bu işlem geri alınamaz.',
     antiBanPresetLabel: 'Güvenlik Ön Ayar Modu (Preset)',
     presetUltraSafe: 'Ultra Güvenli',
     presetUltraSafeTag: 'Yeni Hatlar',
