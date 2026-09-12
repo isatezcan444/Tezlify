@@ -10,7 +10,7 @@ import asyncio
 import logging
 import re
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Set, Tuple
 
 from sqlalchemy import select, func, or_, delete
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -317,6 +317,75 @@ def _apply_gateway_live(row: WhatsAppSession, data: Dict[str, Any]) -> None:
     if status in ("CONNECTED", "SCAN_QR"):
         row.error_message = None
     row.updated_at = datetime.utcnow()
+
+
+# ---------------------------------------------------------------------------
+# Yetim gateway oturumu -> yeniden kurma (self-healing)
+#
+# Kok neden (canli probe ile kanitlandi): Render redeploy'da gateway'in
+# bellekteki `sessions` Map'i (ve ephemeral auth dizini) sifirlanir; backend
+# DB'sindeki `whatsapp_sessions` satirlari ise BAYAT `gateway_id` UUID'lerini
+# saklamaya devam eder. Bu satirla yapilan her gateway cagrisi (QR cekme,
+# QR yenileme, pairing kodu) gateway'de "Session not found" -> 500/404 ->
+# backend 502 "WhatsApp gateway'e ulasilamadi" uretir. Bu, hem QR hem de
+# "Telefon No ile Baglan" akisini kirar.
+#
+# Cozum: gateway "Session not found" derse DB satiri icin gateway'de yeni bir
+# oturum olusturulur, satirin gateway_id/durumu tazelenir ve orijinal cagri
+# bir kez tekrar denenir. Fail-closed korunur: baska hicbir hata yutulmaz ve
+# asla sahte basari/sahte kod uretilmez (AGENTS.md Truthfulness).
+# ---------------------------------------------------------------------------
+
+_GATEWAY_SESSION_MISSING = "session not found"
+
+
+def _is_gateway_session_missing(exc: Exception) -> bool:
+    """Gateway hatasinin 'yetim/bilinmeyen oturum' hatasi olup olmadigini
+    anlar. Sadece bu spesifik hata self-heal tetikler; ag/timeout/diger 500'ler
+    aynen yukselir (fail-closed)."""
+    return _GATEWAY_SESSION_MISSING in str(exc).lower()
+
+
+async def _recreate_gateway_session(db: AsyncSession, row: WhatsAppSession) -> Dict[str, Any]:
+    """Bayat `gateway_id` icin gateway'de yeni oturum kurar ve DB satirini
+    taze kimlik + SCAN_QR durumu ile gunceller. Gateway'e ulasilamazsa hata
+    aynen yukari firlar (sahte basari yok)."""
+    gw_session = await gw.create_session(row.session_name)
+    new_id = gw_session.get("id")
+    if not new_id:
+        raise gw.WhatsAppGatewayError("Gateway yeniden kurulan oturum kimligini dondurmedi.")
+    logger.warning(
+        "[WhatsApp] Yetim gateway oturumu yeniden kuruldu: DB id=%s gateway_id %s -> %s",
+        row.id, row.gateway_id, new_id,
+    )
+    row.gateway_id = str(new_id)
+    row.status = _parse_status(gw_session.get("status"))
+    row.qr_code = gw_session.get("qr_code")
+    row.error_message = None
+    row.is_active = True
+    row.updated_at = datetime.utcnow()
+    await db.commit()
+    await db.refresh(row)
+    return gw_session
+
+
+async def _gateway_op_or_recreate(
+    db: AsyncSession,
+    row: WhatsAppSession,
+    op: Callable[[str], Awaitable[Dict[str, Any]]],
+) -> Dict[str, Any]:
+    """`op(gateway_id)` cagrisini calistirir; gateway 'Session not found' derse
+    (redeploy sonrasi bellek kaybi) oturumu yeniden kurup cagriyi BIR KEZ tekrar
+    dener. Baska hata -> aynen yukselir."""
+    try:
+        return await op(row.gateway_id)
+    except gw.WhatsAppGatewayError as exc:
+        if not _is_gateway_session_missing(exc):
+            raise
+        await _recreate_gateway_session(db, row)
+        return await op(row.gateway_id)
+
+
 # ---------------------------------------------------------------------------
 # Session yonetimi
 # ---------------------------------------------------------------------------
@@ -407,7 +476,9 @@ async def _get_session_or_404(db: AsyncSession, user_id: str, session_id: int) -
 
 async def get_session_qr(db: AsyncSession, user_id: str, session_id: int) -> Dict[str, Any]:
     row = await _get_session_or_404(db, user_id, session_id)
-    data = await gw.get_session_qr(row.gateway_id)
+    # Redeploy sonrasi yetim kalan gateway oturumu varsa self-heal ile yeniden
+    # kurulur (aksi halde QR/pairing akisi kalici olarak 502 verirdi).
+    data = await _gateway_op_or_recreate(db, row, gw.get_session_qr)
     _apply_gateway_live(row, data)
     await db.commit()
     return {
@@ -420,7 +491,7 @@ async def get_session_qr(db: AsyncSession, user_id: str, session_id: int) -> Dic
 
 async def refresh_session_qr(db: AsyncSession, user_id: str, session_id: int) -> Dict[str, Any]:
     row = await _get_session_or_404(db, user_id, session_id)
-    data = await gw.refresh_session_qr(row.gateway_id)
+    data = await _gateway_op_or_recreate(db, row, gw.refresh_session_qr)
     _apply_gateway_live(row, data)
     await db.commit()
     return {
@@ -437,7 +508,11 @@ async def request_pairing_code(db: AsyncSession, user_id: str, session_id: int, 
     sahte kod/sahte başarı döndürülmez (AGENTS.md Truthfulness).
     """
     row = await _get_session_or_404(db, user_id, session_id)
-    data = await gw.request_pairing_code(row.gateway_id, phone)
+    # "Session not found" (redeploy yetimi) self-heal ile yeniden kurulur;
+    # digeri hata aynen yukselir — sahte kod asla uretilmez (fail-closed).
+    data = await _gateway_op_or_recreate(
+        db, row, lambda gid: gw.request_pairing_code(gid, phone)
+    )
     pairing_code = data.get("pairing_code")
     if not pairing_code:
         raise gw.WhatsAppGatewayError("Gateway pairing kodu döndürmedi.")
@@ -453,7 +528,18 @@ async def request_pairing_code(db: AsyncSession, user_id: str, session_id: int, 
 
 async def logout_session(db: AsyncSession, user_id: str, session_id: int) -> Dict[str, Any]:
     row = await _get_session_or_404(db, user_id, session_id)
-    await gw.logout_session(row.gateway_id)
+    try:
+        await gw.logout_session(row.gateway_id)
+    except gw.WhatsAppGatewayError as exc:
+        # Redeploy sonrasi gateway belleginde oturum kalmadiysa hedef durum
+        # (baglanti yok) zaten saglanmistir; DB satiri asagida DISCONNECTED
+        # isaretlenir. Diger hatalar aynen yukselir (fail-closed).
+        if not _is_gateway_session_missing(exc):
+            raise
+        logger.warning(
+            "[WhatsApp] Gateway oturumu zaten yok (DB id=%s gateway_id=%s): %s",
+            row.id, row.gateway_id, exc,
+        )
     row.status = SessionStatus.DISCONNECTED
     row.is_active = False
     row.is_phone_online = False
