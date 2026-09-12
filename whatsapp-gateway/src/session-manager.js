@@ -84,6 +84,25 @@ function normalizeJid(jid) {
   return `${jid}@s.whatsapp.net`;
 }
 
+// ---------------------------------------------------------------------------
+// Contact name priority (WhatsApp Web parity): kullanıcının telefon
+// rehberindeki ad (W:Contact app-state → contacts.upsert) her zaman
+// pushName'den (kişinin kendi profil adı) önce gelir.
+// ---------------------------------------------------------------------------
+const NAME_RANK = { addressbook: 5, verified: 4, history: 3, push: 2, phone: 1 };
+
+function mergeContactName(existing, name, source) {
+  const base = existing || {};
+  if (!name) return base;
+  const currentRank = NAME_RANK[base.name_source] || (base.name ? NAME_RANK.history : 0);
+  const newRank = NAME_RANK[source] || NAME_RANK.history;
+  const phoneLike = !base.name || /^\+\d+$/.test(base.name) || base.name === base.phone;
+  if (phoneLike || newRank >= currentRank) {
+    return { ...base, name, name_source: source };
+  }
+  return base;
+}
+
 function getSessionDir(sessionsDir, sessionId) {
   return path.join(sessionsDir, sessionId);
 }
@@ -293,7 +312,22 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       const total = list.length;
       if (offset) list = list.slice(offset);
       if (limit) list = list.slice(0, limit);
-      return { items: list.map((c) => ({ ...c })), total };
+      // Okuma aninda ismi contact Map'ten yeniden coz (rehber adi app-state
+      // senkronu sohbet kaydindan sonra gelmis olabilir — sidebar paritesi).
+      return {
+        items: list.map((c) => {
+          const contact = contacts.get(c.jid) || contacts.get(normalizeJid(c.jid));
+          if (contact?.name && contact.name !== c.name) {
+            const rankNew = NAME_RANK[contact.name_source] || 0;
+            const rankCur = NAME_RANK[c.name_source] || (c.name && /^\+\d+$/.test(c.name) ? 0 : NAME_RANK.history);
+            if (!c.name || /^\+\d+$/.test(c.name) || rankNew >= rankCur) {
+              return { ...c, name: contact.name, name_source: contact.name_source || null };
+            }
+          }
+          return { ...c };
+        }),
+        total,
+      };
     },
 
     async getMessages(jid, { limit = 50, before } = {}) {
@@ -479,6 +513,7 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
         id: key,
         jid: key,
         name: contact?.name || existing.name || jidToPhone(key) || key,
+        name_source: contact?.name_source || existing.name_source || null,
         phone: jidToPhone(key) || existing.phone || '',
         is_group: key.includes('@g.us'),
         last_message_at: timestamp || new Date().toISOString(),
@@ -764,6 +799,7 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
             sender_phone: jidToPhone(jid) || key,
             recipient_phone: 'ME',
             sender_name: contact?.name || jidToPhone(jid) || key,
+            sender_name_source: contact?.name_source || null,
             participant_jid: msg.key?.participant || null,
             participant_name: isGroup ? msg.pushName || null : null,
             created_at: new Date((msg.messageTimestamp || Date.now()) * 1000).toISOString(),
@@ -783,20 +819,55 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       });
 
       // --- Contacts sync ---
+      // contacts.update: Baileys bunu msg.pushName ile yayar (kişinin KENDI
+      // profil adi) — rehber adini asla ezmemeli; mergeContactName onceligi korur.
       sock.ev.on('contacts.update', (updates) => {
         for (const update of updates) {
           const jid = update.id;
           if (!jid) continue;
-          const existing = contacts.get(jid) || {};
+          let merged = contacts.get(jid) || {};
+          if (update.name) merged = mergeContactName(merged, update.name, 'addressbook');
+          if (update.verifiedName) merged = mergeContactName(merged, update.verifiedName, 'verified');
+          if (update.notify) merged = mergeContactName(merged, update.notify, 'push');
           contacts.set(jid, {
+            ...merged,
             id: jid,
             jid,
-            name: update.notify || update.name || existing.name || jidToPhone(jid) || jid,
-            phone: jidToPhone(jid) || existing.phone || '',
-            avatar_url: update.imgUrl || existing.avatar_url || null,
+            name: merged.name || jidToPhone(jid) || jid,
+            phone: jidToPhone(jid) || merged.phone || '',
+            avatar_url: update.imgUrl || merged.avatar_url || null,
             updated_at: new Date().toISOString(),
           });
           emitEvent({ event: 'contact_synced', contact: contacts.get(jid) });
+        }
+      });
+
+      // --- Address book (W:Contact app-state) — WhatsApp Web paritesinin asıl
+      // kaynağı: kullanıcının telefonunda rehberde kayıtlı adlar. Baileys,
+      // app-state senkronundaki contactAction mutasyonlarını bu olayla yayar.
+      sock.ev.on('contacts.upsert', (list) => {
+        for (const c of list || []) {
+          const jid = c?.id;
+          if (!jid || !c.name) continue;
+          const merged = mergeContactName(contacts.get(jid) || {}, c.name, 'addressbook');
+          contacts.set(jid, {
+            ...merged,
+            id: jid,
+            jid,
+            name: merged.name,
+            phone: jidToPhone(jid) || merged.phone || '',
+            avatar_url: merged.avatar_url || null,
+            updated_at: new Date().toISOString(),
+          });
+          emitEvent({ event: 'contact_synced', contact: contacts.get(jid) });
+          // Rehber adı bilinen sohbetin başlığını da tazele (sidebar parity).
+          const chatKey = normalizeJid(jid);
+          const chat = chats.get(chatKey);
+          if (chat && chat.name !== merged.name && merged.name_source === 'addressbook') {
+            chat.name = merged.name;
+            chat.updated_at = new Date().toISOString();
+            emitEvent({ event: 'conversation_updated', conversation: { ...chat } });
+          }
         }
       });
 
@@ -813,6 +884,7 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
             id: key,
             jid: key,
             name: contact?.name || existing.name || jidToPhone(key) || key,
+            name_source: contact?.name_source || existing.name_source || null,
             phone: jidToPhone(key) || existing.phone || '',
             is_group: key.includes('@g.us'),
             last_message_at: update.lastMessage?.messageTimestamp ? new Date(update.lastMessage.messageTimestamp * 1000).toISOString() : existing.last_message_at,
@@ -834,13 +906,18 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
           // 1. Kisiler
           for (const c of historyContacts || []) {
             if (!c?.id) continue;
-            const existing = contacts.get(c.id) || {};
+            let merged = contacts.get(c.id) || {};
+            // Conversation.name (senkron anındaki rehber adı) pushName'den önce gelir.
+            if (c.name) merged = mergeContactName(merged, c.name, 'history');
+            if (c.notify) merged = mergeContactName(merged, c.notify, 'push');
+            if (c.verifiedName) merged = mergeContactName(merged, c.verifiedName, 'verified');
             contacts.set(c.id, {
+              ...merged,
               id: c.id,
               jid: c.id,
-              name: c.notify || c.name || existing.name || jidToPhone(c.id) || c.id,
-              phone: jidToPhone(c.id) || existing.phone || '',
-              avatar_url: c.imgUrl || existing.avatar_url || null,
+              name: merged.name || jidToPhone(c.id) || c.id,
+              phone: jidToPhone(c.id) || merged.phone || '',
+              avatar_url: c.imgUrl || merged.avatar_url || null,
               updated_at: new Date().toISOString(),
             });
           }
@@ -876,7 +953,10 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
               ...existing,
               id: key,
               jid: key,
-              name: chat.name || contact?.name || existing.name || jidToPhone(key) || key,
+              // contact Map öncelik-çözümlemeli adı taşır (rehber > push); chat.name
+              // (Conversation.name) yalnızca yedek olarak kullanılır.
+              name: contact?.name || chat.name || existing.name || jidToPhone(key) || key,
+              name_source: contact?.name_source || existing.name_source || null,
               phone: jidToPhone(key) || existing.phone || '',
               is_group: key.includes('@g.us'),
               avatar_url: chat.avatar_url || contact?.avatar_url || existing.avatar_url || null,

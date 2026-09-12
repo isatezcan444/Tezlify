@@ -33,6 +33,8 @@ TEST_USER_HEX = "12345678123412341234123456789012"
 SYS_USER_HEX = "00000000000000000000000000000000"
 MOCK_PHONE = "+905321002030"
 MOCK_JID = "905321002030@s.whatsapp.net"
+MOCK_PHONE2 = "+905339998877"
+MOCK_JID2 = "905339998877@s.whatsapp.net"
 # Legacy test user_ids from prior runs (string, not hex UUID)
 LEGACY_UIDS = ["testuserwa", "system"]
 
@@ -106,6 +108,11 @@ async def _cleanup_whatsapp_tables():
             await db.execute(
                 text("DELETE FROM contacts WHERE (user_id IN (:h1, :h2)) AND phone_e164 LIKE 'jid:%@g.us'"),
                 {"h1": TEST_USER_HEX, "h2": SYS_USER_HEX},
+            )
+            # Name-priority tests use a second phone; wipe it too.
+            await db.execute(
+                text("DELETE FROM contacts WHERE (user_id IN (:h1, :h2)) AND phone_e164 = :phone2"),
+                {"h1": TEST_USER_HEX, "h2": SYS_USER_HEX, "phone2": MOCK_PHONE2},
             )
             await db.commit()
 
@@ -1346,3 +1353,165 @@ async def test_sync_group_history_prefers_participant_name(auth_headers, mock_ga
         assert by_wa["wamid_hist_g1"]["sender_name"] == "Zeynep"
         # No participant info → falls back to the chat-level sender name.
         assert by_wa["wamid_hist_g2"]["sender_name"] == "Satici Ekip"
+
+
+# ---------------------------------------------------------------------------
+# Faz 6c: kisi adi onceligi — WhatsApp Web paritesi (rehber adi > pushName)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_contact_synced_addressbook_upgrades_pushname():
+    """A stored pushName (rank 'push') must be upgraded by the address-book name."""
+    import uuid as _u1
+
+    async with AsyncSessionLocal() as db:
+        session = WhatsAppSession(
+            user_id=TEST_USER, gateway_id=str(_u1.uuid4()),
+            session_name="Connected", status=SessionStatus.CONNECTED, is_active=True,
+        )
+        db.add(session)
+        # Contact previously stored with the contact's own profile name (pushName).
+        contact = Contact(
+            user_id=TEST_USER, phone_e164=MOCK_PHONE, display_name="Zeynep",
+            custom_attributes={"name_source": "push"},
+        )
+        db.add(contact)
+        await db.commit()
+
+    # Gateway W:Contact app-state sync delivers the real address-book name.
+    await ingest_gateway_event({
+        "event": "contact_synced",
+        "contact": {"id": MOCK_JID, "name": "Ayse Kaya", "name_source": "addressbook"},
+    })
+
+    async with AsyncSessionLocal() as db:
+        contact = (await db.execute(
+            select(Contact).where(Contact.user_id == TEST_USER, Contact.phone_e164 == MOCK_PHONE)
+        )).scalar_one()
+        assert contact.display_name == "Ayse Kaya"
+        assert (contact.custom_attributes or {}).get("name_source") == "addressbook"
+
+
+@pytest.mark.asyncio
+async def test_contact_synced_pushname_never_clobbers_addressbook():
+    """An incoming pushName must NEVER overwrite a stored address-book name."""
+    import uuid as _u2
+
+    async with AsyncSessionLocal() as db:
+        session = WhatsAppSession(
+            user_id=TEST_USER, gateway_id=str(_u2.uuid4()),
+            session_name="Connected", status=SessionStatus.CONNECTED, is_active=True,
+        )
+        db.add(session)
+        contact = Contact(
+            user_id=TEST_USER, phone_e164=MOCK_PHONE, display_name="Ayse Kaya",
+            custom_attributes={"name_source": "addressbook"},
+        )
+        db.add(contact)
+        await db.commit()
+
+    # Later messages carry the contact's self-chosen profile name.
+    await ingest_gateway_event({
+        "event": "contact_synced",
+        "contact": {"id": MOCK_JID, "name": "Zeynep", "name_source": "push"},
+    })
+
+    async with AsyncSessionLocal() as db:
+        contact = (await db.execute(
+            select(Contact).where(Contact.user_id == TEST_USER, Contact.phone_e164 == MOCK_PHONE)
+        )).scalar_one()
+        assert contact.display_name == "Ayse Kaya"
+        assert (contact.custom_attributes or {}).get("name_source") == "addressbook"
+
+
+@pytest.mark.asyncio
+async def test_conversation_updated_phone_name_upgraded_by_addressbook():
+    """A '+90...' display name is upgraded by an address-book conversation name."""
+    import uuid as _u3
+
+    async with AsyncSessionLocal() as db:
+        session = WhatsAppSession(
+            user_id=TEST_USER, gateway_id=str(_u3.uuid4()),
+            session_name="Connected", status=SessionStatus.CONNECTED, is_active=True,
+        )
+        db.add(session)
+        await db.commit()
+
+    await ingest_gateway_event({
+        "event": "conversation_updated",
+        "conversation": {
+            "id": MOCK_JID2, "jid": MOCK_JID2,
+            "name": "Mehmet Demir", "name_source": "addressbook",
+        },
+    })
+
+    async with AsyncSessionLocal() as db:
+        conv = (await db.execute(
+            select(Conversation).where(Conversation.user_id.in_(
+                [TEST_USER, TEST_USER_HEX]))
+        )).scalars().first()
+        assert conv is not None
+        contact = (await db.execute(
+            select(Contact).where(Contact.id == conv.contact_id)
+        )).scalar_one()
+        assert contact.display_name == "Mehmet Demir"
+
+
+@pytest.mark.asyncio
+async def test_message_new_phone_like_sender_name_does_not_overwrite_real_name():
+    """A phone-like sender_name from the gateway must never overwrite a real name."""
+    import uuid as _u4
+
+    async with AsyncSessionLocal() as db:
+        contact = Contact(user_id=TEST_USER, phone_e164=MOCK_PHONE, display_name="Ayse Kaya")
+        db.add(contact)
+        await db.flush()
+        session = WhatsAppSession(
+            user_id=TEST_USER, gateway_id=str(_u4.uuid4()),
+            session_name="Connected", status=SessionStatus.CONNECTED, is_active=True,
+        )
+        db.add(session)
+        await db.commit()
+
+    await ingest_gateway_event({
+        "event": "message_new",
+        "conversation_id": MOCK_JID,
+        "message": {
+            "body": "Merhaba",
+            "direction": "INBOUND",
+            "message_type": "TEXT",
+            "wa_message_id": "wamid_name_p1",
+            "sender_name": MOCK_PHONE,
+            "sender_name_source": "phone",
+            "created_at": "2025-01-15T10:00:00Z",
+        },
+    })
+
+    async with AsyncSessionLocal() as db:
+        contact = (await db.execute(
+            select(Contact).where(Contact.user_id == TEST_USER, Contact.phone_e164 == MOCK_PHONE)
+        )).scalar_one()
+        assert contact.display_name == "Ayse Kaya"
+
+
+@pytest.mark.asyncio
+async def test_sync_contacts_addressbook_wins_over_legacy_pushname(auth_headers, mock_gateway):
+    """sync_contacts upgrades a legacy pushName row with the address-book name."""
+    mock_gateway.list_contacts.return_value = [
+        {"id": MOCK_JID, "name": "Ayse Kaya", "name_source": "addressbook",
+         "phone": MOCK_PHONE, "avatar_url": None},
+    ]
+    async with AsyncSessionLocal() as db:
+        contact = Contact(
+            user_id=TEST_USER, phone_e164=MOCK_PHONE, display_name="Zeynep",
+            custom_attributes={"name_source": "push"},
+        )
+        db.add(contact)
+        await db.commit()
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        res = await client.get("/api/v1/whatsapp/contacts", headers=auth_headers)
+        assert res.status_code == 200
+        item = next(i for i in res.json()["contacts"] if i["id"] == MOCK_JID)
+        assert item["name"] == "Ayse Kaya"

@@ -42,6 +42,59 @@ def phone_to_jid(phone_e164: str) -> str:
     return f"{digits}@s.whatsapp.net"
 
 
+# ---------------------------------------------------------------------------
+# Kisi adi onceligi (WhatsApp Web parityi): kullanıcının telefon rehberindeki
+# ad (gateway W:Contact app-state → name_source='addressbook') her zaman
+# pushName'den (kişinin kendi profil adı, 'push') ve history sync adindan
+# ('history') once gelir. Kaynak gateway'den name_source alaniyla gelir.
+# ---------------------------------------------------------------------------
+_NAME_RANK: Dict[str, int] = {"addressbook": 5, "verified": 4, "history": 3, "push": 2, "phone": 1}
+
+
+def _is_phone_like(value: Optional[str]) -> bool:
+    """Ad bos ya da telefon numarasi gorunumunde mi ('+90...', 'jid:...')."""
+    if not value:
+        return True
+    v = str(value).strip()
+    return (v.startswith("+") and v[1:].isdigit()) or v.startswith("jid:")
+
+
+def _set_contact_name(contact: Contact, name: Optional[str], source: Optional[str]) -> bool:
+    """Oncelik-cozumumlu kisi adi guncellemesi; isim degistiyse True doner.
+
+    Kural: mevcut ad telefon gorunumunde/bossa her gercek ad yazar;
+    aksi halde yalnizca rutbesi (addressbook > verified > history > push)
+    mevcut rutbeyi saglayan ad yazilir. Boylece pushName rehber adini, ya da
+    eski bir pushName yeni rehber adini asla ezemez.
+    """
+    if not name:
+        return False
+    clean = str(name).strip()[:150]
+    if not clean:
+        return False
+    # Telefon gorunumundeki bir ad (ornek '+90532...') gercek bir adin
+    # uzerine asla yazilmaz; yalnizca bos kisiye yerlestirilir.
+    if _is_phone_like(clean) and not _is_phone_like(contact.display_name):
+        return False
+    src = str(source) if str(source or "") in _NAME_RANK else "history"
+    attrs = dict(contact.custom_attributes or {})
+    stored_source = str(attrs.get("name_source") or "")
+    if stored_source in _NAME_RANK:
+        current_rank = _NAME_RANK[stored_source]
+    else:
+        # Kaynagi bilinmeyen eski kayitlar: gercek ad gibi varsay (history rutbesi).
+        current_rank = _NAME_RANK["history"] if contact.display_name else 0
+    phone_like = _is_phone_like(contact.display_name) or contact.display_name == contact.phone_e164
+    if phone_like or _NAME_RANK[src] >= current_rank:
+        changed = contact.display_name != clean
+        contact.display_name = clean
+        if attrs.get("name_source") != src:
+            attrs["name_source"] = src
+            contact.custom_attributes = attrs
+        return changed
+    return False
+
+
 def _serialize_message(row: Message) -> Dict[str, Any]:
     # Gelen medya gateway'de durur; frontend kimlik doğrulamalı proxy üzerinden çeker.
     media_url = f"/api/v1/whatsapp/media/{row.media_id}" if row.media_id else None
@@ -276,7 +329,7 @@ async def sync_contacts(db: AsyncSession, user_id: str) -> List[Dict[str, Any]]:
         if not jid:
             continue
         name = item.get("name") or item.get("notify") or None
-        contact = await _upsert_contact(db, user_id, jid, name)
+        contact = await _upsert_contact(db, user_id, jid, name, item.get("name_source"))
         _set_contact_avatar(contact, item.get("avatar_url"))
         out.append({
             "id": jid,
@@ -288,7 +341,13 @@ async def sync_contacts(db: AsyncSession, user_id: str) -> List[Dict[str, Any]]:
     return out
 
 
-async def _upsert_contact(db: AsyncSession, user_id: str, jid: str, display_name: Optional[str]) -> Contact:
+async def _upsert_contact(
+    db: AsyncSession,
+    user_id: str,
+    jid: str,
+    display_name: Optional[str],
+    name_source: Optional[str] = None,
+) -> Contact:
     # Grup JID'leri ("...@g.us") telefon numarasina cevrilemez; jid: sentinel'i
     # ile saklanır — _resolve_jid ve is_group bu sentinel'e guvenir.
     if "@g.us" in str(jid):
@@ -324,11 +383,13 @@ async def _upsert_contact(db: AsyncSession, user_id: str, jid: str, display_name
             phone_e164=phone_e164,
             display_name=display_name or jid_to_phone(jid) or jid,
         )
+        if display_name and str(name_source or "") in _NAME_RANK:
+            contact.custom_attributes = {"name_source": str(name_source)}
         db.add(contact)
         await db.flush()
-    elif display_name and not contact.display_name:
-        contact.display_name = display_name
-        await db.flush()
+    else:
+        if _set_contact_name(contact, display_name, name_source):
+            await db.flush()
     return contact
 
 
@@ -429,13 +490,10 @@ async def sync_conversations(db: AsyncSession, user_id: str) -> List[Dict[str, A
             continue
         jid_str = str(jid)
         preview = item.get("last_message_preview") or ""
-        # Sohbet adini (history sync'ten gelir) contact'a tasi — isim bos ya da
-        # telefon numarasi gorunumunde ise gercek adla guncelle.
+        # Sohbet adini (history sync'ten gelir) contact'a tasi — oncelik
+        # cozulumu _set_contact_name icinde (rehber adi > push > telefon).
         chat_name = item.get("name")
-        contact = await _upsert_contact(db, user_id, jid_str, chat_name)
-        if chat_name and (not contact.display_name or contact.display_name.startswith("+")):
-            contact.display_name = chat_name
-            await db.flush()
+        contact = await _upsert_contact(db, user_id, jid_str, chat_name, item.get("name_source"))
         # Faz 5: sohbet avatarunu (profil/grup resmi) contact'a tasi.
         _set_contact_avatar(contact, item.get("avatar_url"))
         stmt = select(Conversation).where(
@@ -733,7 +791,9 @@ async def _ingest_message(db: AsyncSession, event: Dict[str, Any]) -> Dict[str, 
     # MVP: gateway tenant'i bilmiyor; kayitli oturumun sahibine, yoksa system'e baglan.
     owner = await _resolve_event_owner(db, jid_str)
     conv = await _ensure_conversation(db, owner, jid_str)
-    contact = await _upsert_contact(db, owner, jid_str, msg.get("sender_name"))
+    contact = await _upsert_contact(
+        db, owner, jid_str, msg.get("sender_name"), msg.get("sender_name_source")
+    )
 
     wa_id = msg.get("wa_message_id")
     if wa_id:
@@ -825,8 +885,7 @@ async def _ingest_contact_synced(db: AsyncSession, event: Dict[str, Any]) -> Dic
     if contact is None:
         return event
     name = contact_payload.get("name")
-    if name and (not contact.display_name or contact.display_name.startswith("+")):
-        contact.display_name = name
+    _set_contact_name(contact, name, contact_payload.get("name_source"))
     _set_contact_avatar(contact, contact_payload.get("avatar_url"))
     await db.commit()
     return event
@@ -858,8 +917,7 @@ async def _map_conversation_event(db: AsyncSession, event: Dict[str, Any]) -> Di
         name = payload.get("name")
         if name or payload.get("avatar_url"):
             contact = await _upsert_contact(db, owner, str(jid), None)
-            if name and (not contact.display_name or contact.display_name.startswith("+")):
-                contact.display_name = name
+            _set_contact_name(contact, name, payload.get("name_source"))
             # Faz 5: grup/profil sohbet avatarunu kalici yaz.
             _set_contact_avatar(contact, payload.get("avatar_url"))
             await db.flush()
