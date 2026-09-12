@@ -25,6 +25,7 @@ from backend.app.schemas.whatsapp import (
     WhatsAppSessionListResponse,
     WhatsAppSessionResponse,
     WhatsAppStatusResult,
+    WhatsAppSyncStatusResponse,
     WhatsAppTypingRequest,
 )
 from backend.app.services import whatsapp_service
@@ -140,6 +141,23 @@ async def delete_session(
         raise _not_found(exc) from exc
     except Exception as exc:
         raise _bad_gateway(exc) from exc
+
+
+@router.get("/sync-status", response_model=WhatsAppSyncStatusResponse)
+async def get_sync_status(
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+) -> WhatsAppSyncStatusResponse:
+    """QR sonrası gerçek initial-sync aşaması/ilerlemesi (Faz 7).
+
+    Kaynak gateway belleğidir (Baileys history-sync progress) — sahte progress
+    üretilmez. Gateway'e ulaşılamazsa hata maskelenmez (502).
+    """
+    try:
+        data = await whatsapp_service.get_sync_status(db, current_user.id)
+    except Exception as exc:
+        raise _bad_gateway(exc) from exc
+    return WhatsAppSyncStatusResponse(**data)
 
 
 # ---------------------------------------------------------------------------

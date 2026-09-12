@@ -78,6 +78,10 @@ def _set_contact_name(contact: Contact, name: Optional[str], source: Optional[st
     """
     if not name:
         return False
+    # Faz 7: ham jid/lid ('6277...@lid', 'jid:...') asla gercek ad olarak
+    # yazilmaz — identity cozulumu tamamlanana kadar ad None kalir.
+    if _is_raw_jid_name(name):
+        return False
     clean = str(name).strip()[:150]
     if not clean:
         return False
@@ -192,19 +196,50 @@ async def list_sessions(db: AsyncSession, user_id: str) -> List[Dict[str, Any]]:
     stmt = select(WhatsAppSession).where(get_user_filter(WhatsAppSession.user_id, user_id))
     res = await db.execute(stmt)
     rows = res.scalars().all()
+    gw_sync: Dict[str, Any] = {}
     try:
         gw_sessions = {s["id"]: s for s in await gw.list_sessions()}
         for row in rows:
             live = gw_sessions.get(row.gateway_id)
-            if live and live.get("status") != row.status.value:
-                row.status = _parse_status(live.get("status"))
-                row.is_phone_online = bool(live.get("is_phone_online", row.is_phone_online))
-                row.battery_level = live.get("battery_level", row.battery_level)
-                row.phone_number = live.get("phone_number", row.phone_number)
+            if live:
+                gw_sync[row.id] = live.get("sync") or {"phase": "idle"}
+                if live.get("status") != row.status.value:
+                    row.status = _parse_status(live.get("status"))
+                    row.is_phone_online = bool(live.get("is_phone_online", row.is_phone_online))
+                    row.battery_level = live.get("battery_level", row.battery_level)
+                    row.phone_number = live.get("phone_number", row.phone_number)
         await db.commit()
     except Exception as exc:
         logger.warning("Gateway canli durum tazelenemedi: %s", exc)
-    return [_session_dict(r) for r in rows]
+    out: List[Dict[str, Any]] = []
+    for r in rows:
+        d = _session_dict(r)
+        # Faz 7: gercek initial-sync asaması/ilerlemesi (gateway belleğinden,
+        # sahte degil). Gateway'e ulaşılamazsa 'idle'.
+        d["sync"] = gw_sync.get(r.id, {"phase": "idle", "progress": 0})
+        out.append(d)
+    return out
+
+
+async def get_sync_status(db: AsyncSession, user_id: str) -> Dict[str, Any]:
+    """Oturumların gerçek senkron durumunu döndürür (QR sonrası initial sync).
+
+    Kaynak: gateway belleğindeki sync durumu (session_sync_* olaylarıyla aynı).
+    Gateway'e ulaşılamazsa fail-closed: phase 'unavailable', hata maskelenmez.
+    """
+    sessions = await list_sessions(db, user_id)
+    active = [s for s in sessions if s["status"] == "CONNECTED"] or sessions
+    return {
+        "sessions": [
+            {
+                "id": s["id"],
+                "session_name": s["session_name"],
+                "status": s["status"],
+                "sync": s.get("sync", {"phase": "idle", "progress": 0}),
+            }
+            for s in active
+        ]
+    }
 
 
 async def create_session(db: AsyncSession, user_id: str, name: str) -> Dict[str, Any]:
@@ -405,6 +440,32 @@ async def sync_contacts(db: AsyncSession, user_id: str) -> List[Dict[str, Any]]:
     return out
 
 
+def _is_raw_jid_name(value: Optional[str]) -> bool:
+    """Ham WhatsApp kimligi gorunumunde ad mi ('6277...@lid', '123...@c.us',
+    'jid:...') — presentation layer'a asla cikmamali (Faz 7)."""
+    if not value:
+        return False
+    v = str(value).strip()
+    return (
+        v.startswith("jid:")
+        or "@lid" in v
+        or v.endswith("@c.us")
+        or v.endswith("@s.whatsapp.net")
+        or v.endswith("@g.us")
+    )
+
+
+def _safe_display_name(contact: Optional[Contact]) -> Optional[str]:
+    """UI icin guvenli gorunen ad: ham jid/lid sizarca None'a cevrilir
+    (frontend normalize edilmis telefona duser)."""
+    if contact is None:
+        return None
+    name = contact.display_name
+    if _is_raw_jid_name(name):
+        return None
+    return name
+
+
 async def _upsert_contact(
     db: AsyncSession,
     user_id: str,
@@ -445,7 +506,9 @@ async def _upsert_contact(
         contact = Contact(
             user_id=user_id,
             phone_e164=phone_e164,
-            display_name=display_name or jid_to_phone(jid) or jid,
+            # Faz 7: ham jid/lid asla display_name olmaz — isim yoksa None
+            # birakilir; UI normalize telefon/guvenli fallback gosterir.
+            display_name=(None if _is_raw_jid_name(display_name) else display_name) or jid_to_phone(jid),
         )
         if display_name and str(name_source or "") in _NAME_RANK:
             contact.custom_attributes = {"name_source": str(name_source)}
@@ -545,6 +608,14 @@ async def _persist_gateway_message(db: AsyncSession, owner: str, msg: Dict[str, 
 
 
 async def sync_conversations(db: AsyncSession, user_id: str) -> List[Dict[str, Any]]:
+    # Faz 7: "Eşitle" = tam yenileme — once telefon rehberini (W:Contact
+    # app-state + history kisi kayitlari) DB'ye hydrate et; boylece hic
+    # sohbeti olmayan kisilerin rehber adlari da kalici olur ve identity
+    # cozumleme sohbet listesinde dogru ad uretir.
+    try:
+        await sync_contacts(db, user_id)
+    except Exception as exc:
+        logger.warning("Rehber senkronu atlandi (sohbet senkronu suruyor): %s", exc)
     data = await gw.list_conversations(limit=200)
     items = data.get("items", []) if isinstance(data, dict) else []
     owner = user_id
@@ -648,7 +719,9 @@ async def list_conversations(
                 "id": r.id,
                 "contact_id": r.contact_id,
                 "lead_id": r.lead_id,
-                "name": contact.display_name if contact else None,
+                # Faz 7: ham jid/lid sizarca UI'a None gonderilir (fallback
+                # normalize telefon) — presentation'a internal ID sizmaz.
+                "name": _safe_display_name(contact),
                 "phone": phone,
                 # Grup JID'i ("jid:...@g.us" sentinel veya ham jid) her zaman @g.us icerir.
                 "is_group": bool(phone and "@g.us" in phone),

@@ -3,7 +3,7 @@
 Kontratlar; whatsapp-gateway REST yanıtları ile frontend
 `frontend/src/types/index.ts` WhatsApp tipleriyle uyumlu tutulur.
 """
-from typing import List, Optional, Any
+from typing import Dict, List, Optional, Any
 from datetime import datetime
 
 from pydantic import BaseModel, Field
@@ -142,3 +142,15 @@ class WhatsAppStatusResult(BaseModel):
     success: bool = True
     message: Optional[str] = None
     status: Optional[str] = None
+
+
+class WhatsAppSyncSessionStatus(BaseModel):
+    id: int
+    session_name: Optional[str] = None
+    status: Optional[str] = None
+    # Faz 7: gateway belleğindeki GERÇEK initial-sync durumu (sahte değil).
+    sync: Dict[str, Any] = Field(default_factory=dict)
+
+
+class WhatsAppSyncStatusResponse(BaseModel):
+    sessions: List[WhatsAppSyncSessionStatus] = Field(default_factory=list)

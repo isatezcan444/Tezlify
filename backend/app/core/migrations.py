@@ -610,3 +610,85 @@ async def ensure_messages_wa_message_id(engine: AsyncEngine) -> None:
             await conn.execute(text("ALTER TABLE messages ADD COLUMN wa_message_id VARCHAR(255)"))
             logger.info("[MIGRATION] messages.wa_message_id eklendi (sqlite)")
         await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_messages_wa_message_id ON messages (wa_message_id)"))
+
+# ---------------------------------------------------------------------------
+# Faz 7: Ham LID/JID hayalet verilerinin temizliği (idempotent)
+# ---------------------------------------------------------------------------
+
+_RAW_JID_NAME_PATTERNS = ("%@lid%", "jid:%", "%@c.us%", "%@s.whatsapp.net%", "%@g.us%")
+
+
+async def purge_raw_jid_identity_data(engine: AsyncEngine) -> None:
+    """Faz 6e öncesi biriken ham LID/JID kimlik artıklarını temizler.
+
+    Kapsam (yalnızca WhatsApp gateway kaynaklı satırlar; kurşun/CRM
+    contact'leri etkilenmez — onlar asla 'jid:' sentinel taşımaz):
+    1. contacts.display_name içinde ham jid/lid varsa NULL'a çekilir
+       (kimlik çözümlemesi tamamlanana kadar ad gösterilmez).
+    2. messages.sender_name içinde ham jid/lid varsa NULL'a çekilir.
+    3. Çözülmemiş LID hayalet contact'leri (phone_e164='jid:xxx@lid') ve
+       bu contact'lere bağlı sohbetler silinir — gateway, LID↔phone köprüsü
+       ile aynı kişiyi telefon JID anahtarlı olarak yeniden oluşturur.
+       Gruplar (@g.us) KORUNUR: 'jid:...@g.us' meşru grup anahtarıdır.
+
+    Idempotenttir; tekrar çalıştırma hiçbir şey yapmaz. Hata durumunda
+    migration loglanır ama startup'ı düşürmez (orijinal purge deseniyle aynı
+    fail-open davranış — veri temizliği şema bütünlüğüne dokunmaz).
+    """
+    try:
+        async with engine.begin() as conn:
+            # 1. Ham jid/lid görünen adları nötrle (contact).
+            name_pred = " OR ".join(
+                f"display_name LIKE :p{i}" for i in range(len(_RAW_JID_NAME_PATTERNS))
+            )
+            name_params = {f"p{i}": pat for i, pat in enumerate(_RAW_JID_NAME_PATTERNS)}
+            res = await conn.execute(
+                text(f"UPDATE contacts SET display_name = NULL WHERE display_name IS NOT NULL AND ({name_pred})"),
+                name_params,
+            )
+            sanitized_names = res.rowcount or 0
+
+            # 2. Mesaj gönderen adlarını nötrle.
+            res = await conn.execute(
+                text("UPDATE messages SET sender_name = NULL WHERE sender_name LIKE '%@lid' OR sender_name LIKE 'jid:%'"),
+            )
+            sanitized_msgs = res.rowcount or 0
+
+            # 3. Çözülmemiş LID hayalet contact'lerinin sohbetlerini sil
+            #    (messages, conversations FK ondelete CASCADE ise birlikte gider;
+            #    değilse önce manuel silinir — her iki yol da güvenlidir).
+            ghost_ids = (
+                await conn.execute(
+                    text("SELECT id FROM contacts WHERE phone_e164 LIKE 'jid:%@lid'")
+                )
+            ).scalars().all()
+            deleted_convs = deleted_msgs = deleted_contacts = 0
+            if ghost_ids:
+                placeholders = ", ".join(f":g{i}" for i in range(len(ghost_ids)))
+                params = {f"g{i}": gid for i, gid in enumerate(ghost_ids)}
+                conv_ids = (
+                    await conn.execute(
+                        text(f"SELECT id FROM conversations WHERE contact_id IN ({placeholders})"),
+                        params,
+                    )
+                ).scalars().all()
+                if conv_ids:
+                    cph = ", ".join(f":c{i}" for i in range(len(conv_ids)))
+                    cparams = {f"c{i}": cid for i, cid in enumerate(conv_ids)}
+                    r = await conn.execute(text(f"DELETE FROM messages WHERE conversation_id IN ({cph})"), cparams)
+                    deleted_msgs = r.rowcount or 0
+                    r = await conn.execute(text(f"DELETE FROM conversations WHERE id IN ({cph})"), cparams)
+                    deleted_convs = r.rowcount or 0
+                r = await conn.execute(text(f"DELETE FROM contacts WHERE id IN ({placeholders})"), params)
+                deleted_contacts = r.rowcount or 0
+
+            if sanitized_names or sanitized_msgs or deleted_contacts or deleted_convs:
+                logger.info(
+                    "[MIGRATION] purge_raw_jid_identity_data: %d ad nötrlendi, %d mesaj adı nötrlendi, "
+                    "%d hayalet LID contact + %d sohbet + %d mesaj silindi.",
+                    sanitized_names, sanitized_msgs, deleted_contacts, deleted_convs, deleted_msgs,
+                )
+            else:
+                logger.debug("[MIGRATION] purge_raw_jid_identity_data: temizlenecek ham LID/JID verisi yok.")
+    except Exception as e:  # noqa: BLE001 - startup'ı düşürmez, loglanır
+        logger.warning("[MIGRATION] purge_raw_jid_identity_data atlandı: %s", e)

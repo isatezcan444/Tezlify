@@ -14,6 +14,7 @@ import {
   ConversationStatus,
   LiveModeStatus,
   Message,
+  SessionSyncState,
   WhatsAppSession,
 } from '../types';
 
@@ -109,6 +110,7 @@ interface BackendSession {
   battery_level?: number | null;
   qr_code?: string | null;
   error_message?: string | null;
+  sync?: SessionSyncState | null;
   created_at?: string | null;
   updated_at?: string | null;
 }
@@ -127,6 +129,7 @@ function mapSession(s: BackendSession): WhatsAppSession {
     is_phone_online: s.is_phone_online ?? false,
     battery_level: s.battery_level ?? undefined,
     error_message: s.error_message ?? undefined,
+    sync: s.sync ?? undefined,
     created_at: s.created_at || new Date().toISOString(),
     updated_at: s.updated_at || new Date().toISOString(),
   };
@@ -301,6 +304,13 @@ export const WhatsAppApi = {
 
   async deleteSession(sessionId: number): Promise<void> {
     await apiSend<{ success: boolean }>(`/whatsapp/sessions/${sessionId}`, 'DELETE');
+  },
+
+  // Faz 7: QR sonrası gerçek initial-sync durumu (gateway Baileys progress).
+  async getSyncStatus(): Promise<{ sessions: Array<{ id: number; session_name?: string; status?: string; sync: SessionSyncState }> }> {
+    return apiGet<{ sessions: Array<{ id: number; session_name?: string; status?: string; sync: SessionSyncState }> }>(
+      '/whatsapp/sync-status'
+    );
   },
 
   async getConversations(params?: {

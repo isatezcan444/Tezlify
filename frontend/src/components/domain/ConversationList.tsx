@@ -213,6 +213,12 @@ export const ConversationList: React.FC<ConversationListProps> = ({
           deduplicated.map((conv) => {
             const convDigits = conv.lead_phone ? conv.lead_phone.replace(/\D/g, '').slice(-10) : '';
             const isSelected = selectedId === conv.id || Boolean(selectedConvDigits && convDigits && selectedConvDigits === convDigits);
+            // Faz 7: internal JID/LID sentinel'leri ('jid:...@lid' vb.)
+            // kullanıcıya ASLA gösterilmez — kimlik çözülene kadar güvenli
+            // fallback kullanılır.
+            const isRawJid = Boolean(conv.lead_phone && (conv.lead_phone.startsWith('jid:') || conv.lead_phone.includes('@lid')));
+            const safePhone = isRawJid ? null : conv.lead_phone;
+            const displayName = conv.lead_name || safePhone || (t('whatsapp.pendingIdentity') || 'Kişi kimliği çözülüyor…');
             return (
               <button
                 key={conv.id}
@@ -225,7 +231,7 @@ export const ConversationList: React.FC<ConversationListProps> = ({
                 }`}
               >
                 <Avatar
-                  name={conv.lead_name || conv.lead_phone || 'Lead'}
+                  name={displayName}
                   image={conv.lead_avatar_url}
                   size="md"
                   shape="rounded"
@@ -241,7 +247,7 @@ export const ConversationList: React.FC<ConversationListProps> = ({
                         </span>
                       )}
                       <h4 className="font-bold text-xs text-slate-800 dark:text-slate-100 truncate">
-                        {conv.lead_name || conv.lead_phone || t('common.unnamedLead') || 'İsimsiz Müşteri'}
+                        {displayName}
                       </h4>
                     </div>
                     <span className="text-[10px] text-slate-400 font-medium shrink-0 ml-1">
@@ -255,7 +261,7 @@ export const ConversationList: React.FC<ConversationListProps> = ({
 
                   <div className="flex items-center justify-between mt-1.5">
                     <span className="text-[10px] font-mono text-slate-400">
-                      {conv.lead_phone}
+                      {safePhone || ''}
                     </span>
                     <div className="flex items-center space-x-1.5">
                       {conv.status !== 'ACTIVE' && (

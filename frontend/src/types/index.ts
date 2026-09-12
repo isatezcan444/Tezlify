@@ -132,6 +132,17 @@ export interface GenerateMessageResponse {
 
 export type SessionStatus = 'DISCONNECTED' | 'SCAN_QR' | 'CONNECTING' | 'CONNECTED' | 'BANNED';
 
+export interface SessionSyncState {
+  // Faz 7: gateway'deki GERÇEK initial-sync durumu (Baileys history progress).
+  phase: 'idle' | 'syncing' | 'ready' | string;
+  progress?: number;
+  chats_synced?: number;
+  contacts_synced?: number;
+  messages_synced?: number;
+  started_at?: string | null;
+  completed_at?: string | null;
+}
+
 export interface WhatsAppSession {
   id: number;
   whatsapp_number_id?: number | null;
@@ -146,6 +157,7 @@ export interface WhatsAppSession {
   is_phone_online: boolean;
   battery_level?: number;
   error_message?: string;
+  sync?: SessionSyncState;
   created_at: string;
   updated_at: string;
 }

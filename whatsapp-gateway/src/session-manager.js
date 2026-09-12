@@ -181,6 +181,10 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
         battery_level: s.battery_level ?? null,
         error_message: s.error_message || null,
         qr_code: s.status === 'SCAN_QR' ? s.qr_code : null,
+        // Faz 7: WhatsApp Web benzeri initial-sync lifecycle durumu.
+        // phase: idle | syncing | ready — progress yalnızca GERÇEK
+        // messaging-history.set yüzdesidir (sahte progress yok).
+        sync: s.sync || { phase: 'idle' },
         created_at: s.created_at,
         updated_at: s.updated_at,
       }));
@@ -207,6 +211,7 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
         _qrSeenForAttempt: false,
         _pairingPhone: null,
         _pairingRequestedAt: 0,
+        sync: { phase: 'idle', progress: 0, chats_synced: 0, contacts_synced: 0, messages_synced: 0, started_at: null, completed_at: null },
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
         sock: null,
@@ -861,6 +866,12 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
           // Persist encrypted auth state
           safeWriteEncrypted(path.join(sessionDir, 'auth.json'), { creds: state.creds, keys: state.keys }, aesKey);
           emitEvent({ event: 'session_connected', session_id: id, session_name: session.session_name, phone: session.phone_number || null });
+          // Faz 7: WhatsApp Web paritesi — bağlantı kuruldu, INITIAL SYNC
+          // başlıyor. Frontend bu event'le "Sohbetleriniz yükleniyor…"
+          // ekranına geçer; progress yalnızca gerçek messaging-history.set
+          // yüzdesidir (sahte progress üretilmez).
+          session.sync = { phase: 'syncing', progress: 0, chats_synced: 0, contacts_synced: 0, messages_synced: 0, started_at: new Date().toISOString(), completed_at: null };
+          emitEvent({ event: 'session_sync_started', session_id: id, session_name: session.session_name, sync: session.sync });
           // Faz 6e: Baileys'in doğal W:Contact senkronu yalnızca history-sync
           // bildirimi 20 sn içinde gelirse çalışır; gelmezse rehber adları
           // hiçbir bağlantıda ulaşmaz (WhatsApp Web'de görünen isimler burada
@@ -893,6 +904,11 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
           setTimeout(() => forceAppStateResync(0), 8000);
         }
         if (connection === 'close') {
+          // Faz 7: bağlantı koptu — sync lifecycle sıfırlanır (yeniden
+          // bağlanınca tekrar 'syncing' olur), UI 'ready' sanmaya devam etmesin.
+          if (session.sync && session.sync.phase !== 'ready') {
+            session.sync = { phase: 'idle' };
+          }
           const statusCode = lastDisconnect?.error?.output?.statusCode;
           const isLoggedOut = statusCode === DisconnectReason.loggedOut;
           const isBanned = statusCode === DisconnectReason.badSession;
@@ -1220,6 +1236,24 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
             chats_synced: storedChats,
             messages_synced: storedMessages,
           });
+          // Faz 7: gerçek initial-sync ilerlemesi — messaging-history.set
+          // yüzdesi + toplanan sayaçlar. isLatest geldiğinde rehber/sohbet
+          // hydrate tamamlanmış sayılır → phase 'ready' (UI READY durumu).
+          if (session.sync) {
+            session.sync = {
+              ...session.sync,
+              phase: isLatest ? 'ready' : 'syncing',
+              progress: typeof progress === 'number' ? Math.max(session.sync.progress || 0, Math.min(100, Math.round(progress))) : (isLatest ? 100 : session.sync.progress || 0),
+              chats_synced: (session.sync.chats_synced || 0) + storedChats,
+              messages_synced: (session.sync.messages_synced || 0) + storedMessages,
+              contacts_synced: contacts.size,
+              completed_at: isLatest ? new Date().toISOString() : session.sync.completed_at,
+            };
+            emitEvent({ event: 'session_sync_progress', session_id: id, session_name: session.session_name, sync: session.sync });
+            if (isLatest) {
+              emitEvent({ event: 'session_sync_completed', session_id: id, session_name: session.session_name, sync: session.sync });
+            }
+          }
           logger.info({ storedChats, storedMessages, progress, isLatest }, 'History sync ingested');
         } catch (err) {
           logger.warn({ err }, 'History sync ingestion failed');

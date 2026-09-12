@@ -26,6 +26,7 @@ from backend.app.core.migrations import (
     ensure_user_id_columns,
     ensure_whatsapp_sessions_table,
     ensure_messages_wa_message_id,
+    purge_raw_jid_identity_data,
 )
 from backend.app.core.seed import seed_demo_data_if_empty
 from backend.app.models.blacklist import ScraperJob, ScraperJobStatus
@@ -87,6 +88,7 @@ async def lifespan(app: FastAPI):
     await ensure_user_id_columns(engine)
     await ensure_whatsapp_sessions_table(engine)
     await ensure_messages_wa_message_id(engine)
+    await purge_raw_jid_identity_data(engine)
 
     # Restart sonrası yarıda kalan arka plan işlerini toparla
     await recover_stuck_jobs()

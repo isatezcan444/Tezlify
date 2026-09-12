@@ -26,7 +26,7 @@ import {
 } from 'lucide-react';
 import { ApiClient } from '../api/client';
 import { WhatsAppRepository } from '../data/whatsapp/whatsappRepository';
-import { WhatsAppSession, Conversation, ConversationStatus, ConversationMessageStatus, Lead, Message, LiveModeStatus } from '../types';
+import { WhatsAppSession, Conversation, ConversationStatus, ConversationMessageStatus, Lead, Message, LiveModeStatus, SessionSyncState } from '../types';
 import { WhatsAppApi, useLiveMode, probeLive, invalidateLiveProbe, isLiveCached } from '../api/whatsappApi';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
@@ -93,6 +93,17 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   const [isSyncingChats, setIsSyncingChats] = useState<boolean>(false);
   const conversationsGenerationRef = useRef(0);
 
+  // Faz 7: QR sonrasi GERCEK initial-sync durumu (gateway Baileys progress).
+  // Sahte progress uretilmez — yalnızca backend/gateway'den gelen veri gösterilir.
+  const [sessionSync, setSessionSync] = useState<SessionSyncState | null>(null);
+  const syncPollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (syncPollTimerRef.current) clearInterval(syncPollTimerRef.current);
+    };
+  }, []);
+
   // 'yazıyor...' durumu: conversation_id -> bool (gateway presence_updated ile)
   const [peerTypingMap, setPeerTypingMap] = useState<Record<number, boolean>>({});
   const peerTypingTimersRef = useRef<Record<number, ReturnType<typeof setTimeout>>>({});
@@ -134,6 +145,42 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       if (!isSilent && generation === conversationsGenerationRef.current) setConvsLoading(false);
     }
   }, [convFilter, convSearch]);
+
+  const startSyncPolling = useCallback(() => {
+    if (syncPollTimerRef.current) return;
+    syncPollTimerRef.current = setInterval(async () => {
+      try {
+        const data = await WhatsAppApi.getSyncStatus();
+        const connected = data.sessions.find((s) => s.status === 'CONNECTED') || data.sessions[0];
+        const sync = connected?.sync || null;
+        setSessionSync(sync);
+        if (!sync || sync.phase !== 'syncing') {
+          if (syncPollTimerRef.current) {
+            clearInterval(syncPollTimerRef.current);
+            syncPollTimerRef.current = null;
+          }
+          if (sync?.phase === 'ready') loadConversations(true);
+        }
+      } catch {
+        if (syncPollTimerRef.current) {
+          clearInterval(syncPollTimerRef.current);
+          syncPollTimerRef.current = null;
+        }
+      }
+    }, 4000);
+  }, [loadConversations]);
+
+  const refreshSyncStatus = useCallback(async () => {
+    try {
+      const data = await WhatsAppApi.getSyncStatus();
+      const connected = data.sessions.find((s) => s.status === 'CONNECTED') || data.sessions[0];
+      const sync = connected?.sync || null;
+      setSessionSync(sync);
+      if (sync?.phase === 'syncing') startSyncPolling();
+    } catch {
+      /* gateway yoksa banner gösterilmez; hata maskelenmez ama startup'i kirmez */
+    }
+  }, [startSyncPolling]);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -777,6 +824,34 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         }
       }
 
+      // Faz 7: gateway initial-sync yasam dongusu (QR sonrasi GERCEK ilerleme).
+      if (eventData.event === 'session_sync_started' || eventData.event === 'session_sync_progress') {
+        const sync = (eventData.sync || null) as SessionSyncState | null;
+        if (sync) {
+          setSessionSync(sync);
+          if (sync.phase === 'syncing') startSyncPolling();
+        }
+      }
+      if (eventData.event === 'session_sync_completed') {
+        const sync = (eventData.sync || null) as SessionSyncState | null;
+        if (sync) setSessionSync({ ...sync, phase: 'ready', progress: 100 });
+        if (syncPollTimerRef.current) {
+          clearInterval(syncPollTimerRef.current);
+          syncPollTimerRef.current = null;
+        }
+        // Senkron bitince listeyi gercek rehber/sihbet verisiyle tazele
+        loadConversations(true);
+        if (selectedConv?.id) {
+          WhatsAppRepository.getConversationMessages(selectedConv.id, { limit: 50 })
+            .then((res) => {
+              if (res?.messages) {
+                setMessagesMap((prev) => ({ ...prev, [selectedConv.id]: res.messages }));
+              }
+            })
+            .catch(() => {});
+        }
+      }
+
       // 4. PRESENCE UPDATE ('yazıyor...' göstergesi) — backend jid'yi sayısal
       // conversation_id'ye çevirip `typing` boolean'ı ekler.
       if (eventData.event === 'presence_updated') {
@@ -831,7 +906,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       window.removeEventListener('tezlify:ws_event', handleWsEvent);
       window.removeEventListener('tezlify:ws_connected', handleReconnect);
     };
-  }, [selectedConv, loadConversations]);
+  }, [selectedConv, loadConversations, startSyncPolling]);
 
   // Anti-Ban Timing & Change-Tracking State
   const [savedConfig, setSavedConfig] = useState<AntiBanConfig>(getStoredAntiBanConfig());
@@ -850,7 +925,10 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   const handleQrSuccess = useCallback(() => {
     fetchSessions(true);
     onRefreshStats();
-  }, [fetchSessions, onRefreshStats]);
+    // Faz 7: QR sonrasi initial-sync hemen izlenmeye baslanir (gercek ilerleme)
+    refreshSyncStatus();
+    startSyncPolling();
+  }, [fetchSessions, onRefreshStats, refreshSyncStatus, startSyncPolling]);
 
   const handleOpenQrConnect = useCallback(() => {
     setReconnectSessionId(undefined);
@@ -872,6 +950,14 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       ) {
         fetchSessions(true);
         onRefreshStats();
+        // Faz 7: baglanti degisikliginde gercek sync durumunu cek (banner icin)
+        refreshSyncStatus();
+      } else if (
+        eventData?.event === 'session_sync_started' ||
+        eventData?.event === 'session_sync_progress' ||
+        eventData?.event === 'session_sync_completed'
+      ) {
+        fetchSessions(true);
       } else if (eventData?.event === 'conversations_cleared') {
         conversationsGenerationRef.current += 1;
         setConversations([]);
@@ -880,6 +966,8 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       }
     };
     window.addEventListener('tezlify:ws_event', handleWs);
+    // Faz 7: sayfa acildiginda devam eden bir initial-sync varsa banner hemen gorunsun
+    refreshSyncStatus();
 
     // Load persisted Anti-Ban configuration from backend database
     ApiClient.getAntiBanSettings()
@@ -899,7 +987,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     return () => {
       window.removeEventListener('tezlify:ws_event', handleWs);
     };
-  }, [fetchSessions, onRefreshStats]);
+  }, [fetchSessions, onRefreshStats, refreshSyncStatus]);
 
   const handlePresetSelect = (presetKey: 'ultra_safe' | 'standard_balanced' | 'fast_warmed') => {
     const presetData = ANTI_BAN_PRESETS[presetKey];
@@ -1137,6 +1225,31 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         <Card className="h-[650px] p-0 flex flex-col md:flex-row overflow-hidden border border-slate-200/80 dark:border-white/[0.08] shadow-sm">
           {/* Left: Conversation List */}
           <div className="w-full md:w-80 lg:w-96 shrink-0 h-full flex flex-col">
+            {/* Faz 7: QR sonrasi GERCEK initial-sync banneri — yalnizca
+                gateway'den gelen ilerleme verisi gosterilir (sahte progress yok). */}
+            {sessionSync?.phase === 'syncing' && (
+              <div className="mx-3 mt-3 rounded-xl border border-[#7367F0]/30 bg-[#7367F0]/5 dark:bg-[#7367F0]/10 px-3 py-2.5 shrink-0">
+                <div className="flex items-center space-x-2">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin text-[#7367F0] shrink-0" />
+                  <span className="text-[11px] font-bold text-[#7367F0] dark:text-[#a29bfe]">
+                    {t('whatsapp.syncingTitle')}
+                  </span>
+                  <span className="ml-auto text-[10px] font-extrabold text-[#7367F0]">{Math.max(0, Math.min(100, Math.round(sessionSync.progress || 0)))}%</span>
+                </div>
+                <div className="mt-1.5 h-1.5 rounded-full bg-[#7367F0]/15 overflow-hidden">
+                  <div
+                    className="h-full rounded-full bg-gradient-to-r from-[#7367F0] to-[#a29bfe] transition-all duration-700"
+                    style={{ width: `${Math.max(4, Math.min(100, Math.round(sessionSync.progress || 0)))}%` }}
+                  />
+                </div>
+                <p className="mt-1 text-[10px] text-slate-500 dark:text-slate-400">
+                  {t('whatsapp.syncingChats')}
+                  {` · ${t('whatsapp.syncingContactsCount', { count: sessionSync.contacts_synced ?? 0 })}`}
+                  {` · ${t('whatsapp.syncingChatsCount', { count: sessionSync.chats_synced ?? 0 })}`}
+                  {` · ${t('whatsapp.syncingMessagesCount', { count: sessionSync.messages_synced ?? 0 })}`}
+                </p>
+              </div>
+            )}
             <ConversationList
               conversations={conversations}
               selectedId={selectedConv?.id}
