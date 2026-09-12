@@ -406,6 +406,7 @@ export const tr = {
     syncingChatsCount: '{count} sohbet',
     syncingMessagesCount: '{count} mesaj',
     pendingIdentity: 'Kişi kimliği çözülüyor…',
+    groupFallback: 'Grup',
     unreadBadge: '{count} okunmamış',
     tabAll: 'Tümü',
     tabActive: 'Aktif',

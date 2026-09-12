@@ -225,7 +225,17 @@ export const ConversationList: React.FC<ConversationListProps> = ({
                   conv.lead_phone.includes('@c.us'))
             );
             const safePhone = isRawJid ? null : conv.lead_phone;
-            const displayName = conv.lead_name || safePhone || (t('whatsapp.pendingIdentity') || 'Kişi kimliği çözülüyor…');
+            // Faz 9 (§6/§14): grup-duyarli kimlik durumu — cozulmemis bir
+            // GRUBA sonsuz "kişilik çözümlüyor" yerine terminal fallback
+            // ("Grup") gösterilir (WhatsApp Web paritesi); cozulmemis 1:1
+            // kisilerde resolving durumu kalmaya devam eder (gateway
+            // addressbook/phone eslesmesini bekler).
+            const displayName =
+              conv.lead_name ||
+              safePhone ||
+              (conv.is_group
+                ? t('whatsapp.groupFallback') || 'Group'
+                : t('whatsapp.pendingIdentity') || 'Kişi kimliği çözülüyor…');
             return (
               <button
                 key={conv.id}

@@ -47,7 +47,25 @@ def jid_to_phone(jid: str) -> Optional[str]:
     if "@g.us" in jid_str:
         return None
     digits = "".join(ch for ch in jid_str.split("@")[0] if ch.isdigit())
-    return f"+{digits}" if digits else None
+    # Faz 9 (§4/§5, RC-2): dejenere JID'lerden (`0@s.whatsapp.net`) '+0' gibi
+    # uydurma telefonlar üretilmez — en az 5 hane ve tümü sıfır olamaz.
+    if not digits or len(digits) < 5 or set(digits) == {"0"}:
+        return None
+    return f"+{digits}"
+
+
+def is_degenerate_jid(jid: str) -> bool:
+    """Faz 9 (§5): WhatsApp sistem/dejenere JID'leri (`0@s.whatsapp.net`,
+    `000@...`) gercek bir kisi/sohbet DEGILDIR — contact/conversation
+    kaydi uretilmez (kapida '+0' chat'in kaynagi buydu). Gateway ile
+    ayni kural: 5+ hane ve tamami sifir degil."""
+    if not jid:
+        return False
+    head = str(jid).split("@")[0]
+    digits = "".join(ch for ch in head if ch.isdigit())
+    if not digits or digits != head.strip():
+        return False
+    return len(digits) < 5 or set(digits) == {"0"}
 
 
 def phone_to_jid(phone_e164: str) -> str:
@@ -432,6 +450,9 @@ async def sync_contacts(db: AsyncSession, user_id: str) -> List[Dict[str, Any]]:
         jid = item.get("id")
         if not jid:
             continue
+        # Faz 9 (§5): dejenere JID'lerden (`0@s.whatsapp.net`) contact uretilmez.
+        if is_degenerate_jid(str(jid)):
+            continue
         name = item.get("name") or item.get("notify") or None
         contact = await _upsert_contact(db, user_id, jid, name, item.get("name_source"))
         _set_contact_avatar(contact, item.get("avatar_url"))
@@ -478,6 +499,11 @@ async def _upsert_contact(
     display_name: Optional[str],
     name_source: Optional[str] = None,
 ) -> Contact:
+    # Faz 9 (§5, RC-2): dejenere JID'lerden (`0@s.whatsapp.net`) contact
+    # ÜRETİLMEZ — '+0' contact'in kaynağı buydu. Çağıran katmanlar
+    # (sync/ingest) bu hatayı yakalayıp kaydı atlar.
+    if is_degenerate_jid(jid):
+        raise ValueError(f"Degenerate WhatsApp JID reddedildi: {jid}")
     # Grup JID'leri ("...@g.us") telefon numarasina cevrilemez; jid: sentinel'i
     # ile saklanır — _resolve_jid ve is_group bu sentinel'e guvenir.
     if "@g.us" in str(jid):
@@ -656,6 +682,9 @@ async def _sync_conversations_impl(db: AsyncSession, user_id: str) -> List[Dict[
         if not jid or "@" not in str(jid):
             continue
         jid_str = str(jid)
+        # Faz 9 (§5): dejenere JID sohbetleri (`0@s.whatsapp.net`) DB'ye yazilmaz.
+        if is_degenerate_jid(jid_str):
+            continue
         preview = item.get("last_message_preview") or ""
         # Sohbet adini (history sync'ten gelir) contact'a tasi — oncelik
         # cozulumu _set_contact_name icinde (rehber adi > push > telefon).
@@ -997,6 +1026,9 @@ async def _ingest_message(db: AsyncSession, event: Dict[str, Any]) -> Dict[str, 
     if not jid or "@" not in str(jid):
         return event
     jid_str = str(jid)
+    # Faz 9 (§5): dejenere JID mesajları (`0@s.whatsapp.net`) kalıcılaştırılmaz.
+    if is_degenerate_jid(jid_str):
+        return event
     # MVP: gateway tenant'i bilmiyor; kayitli oturumun sahibine, yoksa system'e baglan.
     owner = await _resolve_event_owner(db, jid_str)
     conv = await _ensure_conversation(db, owner, jid_str)
@@ -1085,6 +1117,9 @@ async def _ingest_contact_synced(db: AsyncSession, event: Dict[str, Any]) -> Dic
     jid = contact_payload.get("id") or contact_payload.get("jid")
     if not jid or "@" not in str(jid):
         return event
+    # Faz 9 (§5): dejenere JID kişileri (`0@s.whatsapp.net` → '+0') DB'ye yazılmaz.
+    if is_degenerate_jid(str(jid)):
+        return event
     phone_e164 = jid_to_phone(str(jid)) or f"jid:{jid}"
     owner = await _resolve_event_owner(db, str(jid))
     res = await db.execute(
@@ -1123,6 +1158,9 @@ async def _map_conversation_event(db: AsyncSession, event: Dict[str, Any]) -> Di
             jid = candidate
         else:
             return event
+    # Faz 9 (§5): dejenere JID sohbetleri (`0@s.whatsapp.net`) DB'ye yazilmaz.
+    if is_degenerate_jid(str(jid)):
+        return event
     owner = await _resolve_event_owner(db, str(jid))
     conv = await _ensure_conversation(db, owner, str(jid))
     event["conversation_id"] = conv.id

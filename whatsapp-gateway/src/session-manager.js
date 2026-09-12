@@ -112,7 +112,52 @@ function jidToPhone(jid) {
   // Faz 8: grup JID'i de telefon DEĞİLDİR — rakamlardan sahte +numara üretilmez.
   if (jid.includes('@g.us')) return null;
   const match = jid.match(/^(\d+)@/);
-  return match ? `+${match[1]}` : null;
+  if (!match) return null;
+  // Faz 9 (§4/§5): dejenere JID'ler (`0@s.whatsapp.net`, `000@...`) gerçek
+  // numara DEĞİLDİR — '+0' gibi uydurma telefonlar üretilmez (AGENTS.md:
+  // sahte telefon sentezlenmez). En az 5 haneli ve tümü sıfır olmayan
+  // numaralar geçerlidir (E.164 minimum uzunluk + dejenere koruma).
+  const digits = match[1];
+  if (digits.length < 5 || /^0+$/.test(digits)) return null;
+  return `+${digits}`;
+}
+
+// Faz 9 (§5, RC-2): dejenere/sistem JID'leri (`0@s.whatsapp.net`, `000@...`)
+// gerçek bir kişi ya da sohbet DEĞİLDİR — contact/conversation kaydı
+// üretilmez, pipeline'ın her katmanında bu tek kriterle atlanır.
+function isDegenerateJid(jid) {
+  if (!jid) return false;
+  const m = String(jid).match(/^(\d+)@/);
+  if (!m) return false;
+  const digits = m[1];
+  return digits.length < 5 || /^0+$/.test(digits);
+}
+
+// Faz 9 (§16/§19, RC-3): sync tamamlanma kararı — WhatsApp'ın GERÇEK
+// sinyallerinden türetilir (isLatest bayrağı VEYA messaging-history.set
+// progress=100'ü). Prod'da isLatest hiç gelmiyor (Baileys RECENT sync);
+// progress 100'e ulaşan senkron fiilen bitmiştir. Sahte timer/banner
+// kapatma YOK — tamamlanma yalnızca veri sinyaline bağlıdır. Progress
+// monotonik artar; ilk tamamlanmada completed_at set edilir.
+function resolveSyncState(prevSync, { progress, isLatest }) {
+  const prev = prevSync || { phase: 'syncing', progress: 0, chats_synced: 0, contacts_synced: 0, messages_synced: 0 };
+  const realProgress = typeof progress === 'number' && Number.isFinite(progress) ? Math.min(100, Math.round(progress)) : null;
+  const done = !!isLatest || realProgress === 100;
+  const alreadyDone = prev.phase === 'ready';
+  let nextProgress = prev.progress || 0;
+  if (realProgress != null) nextProgress = Math.max(nextProgress, realProgress);
+  if (done) nextProgress = 100;
+  return {
+    next: {
+      ...prev,
+      phase: done || alreadyDone ? 'ready' : 'syncing',
+      progress: nextProgress,
+      completed_at: (done || alreadyDone)
+        ? (prev.completed_at || new Date().toISOString())
+        : prev.completed_at || null,
+    },
+    justCompleted: (done && !alreadyDone),
+  };
 }
 
 // Faz 8: ham WhatsApp kimliği (jid:/@lid/@g.us/@s.whatsapp.net) görüntülenen
@@ -203,7 +248,7 @@ function sanitizeOutboundEvent(event) {
 // Faz 8: birim testleri icin sanitizasyon yardimcilari disa aktarilir
 // (createSessionManager factory'si ayrica export edilir; index.js ikisini de
 // kullanabilir).
-export { isRawIdentityName, sanitizeChatForEmit, sanitizeOutboundEvent, mergeContactName, NAME_RANK, jidToPhone };
+export { isRawIdentityName, sanitizeChatForEmit, sanitizeOutboundEvent, mergeContactName, NAME_RANK, jidToPhone, isDegenerateJid, resolveSyncState };
 
 function mergeContactName(existing, name, source) {
   const base = existing || {};
@@ -798,47 +843,75 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
     // kayıtlarına `group_subject` rütbesiyle yazılır ve conversation_updated
     // olarak yayınlanır (gerçek zamanlı yeniden adlandırma ayrıca groups.update
     // olayıyla gelir).
-    async _ensureGroupSubjects() {
+    // Faz 9 (RC-1): toplu çağrı sunucu tarafında dönmeyen gruplar için
+    // yalnızca ÇÖZÜLEMEMİŞ @g.us sohbetleri başına hedefli `groupMetadata()`
+    // fallback'i eklenir (sınırlı: en fazla 10 grup, 500 ms arayla — request
+    // storm değil). Böylece `120363xxx@g.us` gibi isimsiz gruplar da gerçek
+    // başlığına kavuşur; çözülemeyenler UI'da terminal "Grup" fallback'i görür.
+    async _ensureGroupSubjects({ force = false } = {}) {
       const session = [...sessions.values()].find((s) => s.status === 'CONNECTED' && s.sock);
       if (!session) return;
       const last = session._groupSubjectsAt || 0;
-      if (Date.now() - last < 10 * 60 * 1000) return;
+      if (!force && Date.now() - last < 10 * 60 * 1000) return;
       if (session._groupSubjectsInFlight) return;
       session._groupSubjectsInFlight = true;
       session._groupSubjectsAt = Date.now();
+      const applySubject = (jid, subject) => {
+        const key = normalizeJid(jid);
+        const chat = chats.get(key);
+        const contact = contacts.get(key);
+        const rankCur = NAME_RANK[chat?.name_source] || 0;
+        if (chat && (NAME_RANK.group_subject > rankCur || isRawIdentityName(chat.name))) {
+          const merged = mergeContactName({ name: chat.name, name_source: chat.name_source }, subject, 'group_subject');
+          if (merged.name && merged.name !== chat.name) {
+            chat.name = merged.name;
+            chat.name_source = merged.name_source;
+            chat.updated_at = new Date().toISOString();
+            emitEvent({ event: 'conversation_updated', conversation: { ...chat } });
+          }
+        }
+        if (contact) {
+          const mergedC = mergeContactName({ name: contact.name, name_source: contact.name_source }, subject, 'group_subject');
+          if (mergedC.name && mergedC.name !== contact.name) {
+            contact.name = mergedC.name;
+            contact.name_source = mergedC.name_source;
+            contact.updated_at = new Date().toISOString();
+            emitEvent({ event: 'contact_synced', contact: { ...contact } });
+          }
+        }
+      };
+      const resolvedKeys = new Set();
       try {
         const all = await session.sock.groupFetchAllParticipating();
         for (const meta of Object.values(all || {})) {
           const jid = meta?.id;
           const subject = typeof meta?.subject === 'string' ? meta.subject.trim() : '';
           if (!jid || !jid.includes('@g.us') || !subject) continue;
-          const key = normalizeJid(jid);
-          const chat = chats.get(key);
-          const contact = contacts.get(key);
-          const rankCur = NAME_RANK[chat?.name_source] || 0;
-          if (chat && (NAME_RANK.group_subject > rankCur || isRawIdentityName(chat.name))) {
-            const merged = mergeContactName({ name: chat.name, name_source: chat.name_source }, subject, 'group_subject');
-            if (merged.name && merged.name !== chat.name) {
-              chat.name = merged.name;
-              chat.name_source = merged.name_source;
-              chat.updated_at = new Date().toISOString();
-              emitEvent({ event: 'conversation_updated', conversation: { ...chat } });
-            }
-          }
-          if (contact) {
-            const mergedC = mergeContactName({ name: contact.name, name_source: contact.name_source }, subject, 'group_subject');
-            if (mergedC.name && mergedC.name !== contact.name) {
-              contact.name = mergedC.name;
-              contact.name_source = mergedC.name_source;
-              contact.updated_at = new Date().toISOString();
-              emitEvent({ event: 'contact_synced', contact: { ...contact } });
-            }
-          }
+          resolvedKeys.add(normalizeJid(jid));
+          applySubject(jid, subject);
         }
       } catch (err) {
         // Grup metadata alınamadı (kısıt/timeout) — sonraki tetiklemede tekrar denenir.
         session._groupSubjectsAt = 0;
         logger.warn({ err }, 'groupFetchAllParticipating failed');
+      }
+      // Faz 9 (RC-1): toplu çağrının döndürmediği çözülmemiş gruplar için
+      // hedefli groupMetadata() fallback — sınırlı sayıda, kısa arayla.
+      try {
+        const unresolved = [...chats.values()].filter(
+          (c) => c.jid && c.jid.includes('@g.us') && !resolvedKeys.has(normalizeJid(c.jid)) && (isRawIdentityName(c.name) || !c.name)
+        ).slice(0, 10);
+        for (const chat of unresolved) {
+          if (session._groupSubjectsInFlight === 'cancelled') break;
+          try {
+            const meta = await session.sock.groupMetadata(chat.jid);
+            const subject = typeof meta?.subject === 'string' ? meta.subject.trim() : '';
+            if (subject) applySubject(meta.id || chat.jid, subject);
+          } catch { /* grup kısıtlı/terk edilmiş — sessiz geç, UI fallback gösterir */ }
+          await new Promise((r) => setTimeout(r, 500));
+        }
+      } catch (err) {
+        logger.warn({ err }, 'targeted groupMetadata fallback failed');
       } finally {
         session._groupSubjectsInFlight = false;
       }
@@ -1017,8 +1090,21 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
           // başlıyor. Frontend bu event'le "Sohbetleriniz yükleniyor…"
           // ekranına geçer; progress yalnızca gerçek messaging-history.set
           // yüzdesidir (sahte progress üretilmez).
-          session.sync = { phase: 'syncing', progress: 0, chats_synced: 0, contacts_synced: 0, messages_synced: 0, started_at: new Date().toISOString(), completed_at: null };
-          emitEvent({ event: 'session_sync_started', session_id: id, session_name: session.session_name, sync: session.sync });
+          // Faz 9 (§19, RC-3): Bu cihazda daha önce TAMAMLANMIŞ bir senkron
+          // varsa (Baileys creds.accountSyncCounter > 0 — WhatsApp sunucusu
+          // reconnect'te history yeniden göndermez), banner 0%'da takılmasın:
+          // senkron zaten 'ready' kabul edilir. Bu da gerçek veri sinyalidir,
+          // timer/tahmin değil.
+          const priorSyncs = Number(state?.creds?.accountSyncCounter || 0);
+          session.sync = priorSyncs > 0
+            ? { phase: 'ready', progress: 100, chats_synced: 0, contacts_synced: 0, messages_synced: 0, started_at: new Date().toISOString(), completed_at: new Date().toISOString() }
+            : { phase: 'syncing', progress: 0, chats_synced: 0, contacts_synced: 0, messages_synced: 0, started_at: new Date().toISOString(), completed_at: null };
+          if (priorSyncs > 0) {
+            emitEvent({ event: 'session_sync_completed', session_id: id, session_name: session.session_name, sync: session.sync });
+            void sessionManager._ensureGroupSubjects();
+          } else {
+            emitEvent({ event: 'session_sync_started', session_id: id, session_name: session.session_name, sync: session.sync });
+          }
           // Faz 6e: Baileys'in doğal W:Contact senkronu yalnızca history-sync
           // bildirimi 20 sn içinde gelirse çalışır; gelmezse rehber adları
           // hiçbir bağlantıda ulaşmaz (WhatsApp Web'de görünen isimler burada
@@ -1219,6 +1305,9 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
         for (const c of list || []) {
           const rawId = c?.id;
           if (!rawId || !c.name) continue;
+          // Faz 9 (§5, RC-2): dejenere JID'lerden (`0@s.whatsapp.net`)
+          // contact ÜRETİLMEZ — '+0' contact'in kaynağı burasıydı.
+          if (isDegenerateJid(rawId)) continue;
           // Çift bilgisi varsa eşlemeyi öğren (id telefon + lid alanı dolu).
           if (c.lid && !isLidJid(rawId)) this._applyLidMapping(c.lid, rawId);
           // Faz 8 (patch): LID-anahtarli rehber yamalari telefonu `pnJid`'de
@@ -1277,6 +1366,9 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
         for (const update of updates) {
           const jid = update.id;
           if (!jid) continue;
+          // Faz 9 (§5, RC-2): dejenere JID'lerden (`0@s.whatsapp.net`)
+          // sohbet/contact ÜRETİLMEZ — '+0' chat'in kaynağı burasıydı.
+          if (isDegenerateJid(jid)) continue;
           const key = normalizeJid(jid);
           // Çözülmemiş LID anahtarı: sohbet LID altında bekler, eşleşme
           // öğrenilince _applyLidMapping telefona taşır — backend'e yaymaz.
@@ -1318,6 +1410,9 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
           // 1. Kisiler
           for (const c of historyContacts || []) {
             if (!c?.id) continue;
+            // Faz 9 (§5, RC-2): dejenere JID'lerden (`0@s.whatsapp.net`)
+            // contact üretilmez — '+0' kaynağı.
+            if (isDegenerateJid(c.id)) continue;
             // Faz 6e: gecmis kisi kaydi {id: telefon, lid} tasir — eşleşmeyi
             // öğren (LID anahtarlı bekleyen rehber adları varsa telefona taşınır).
             if (c.lid && !isLidJid(c.id)) this._applyLidMapping(c.lid, c.id);
@@ -1361,6 +1456,8 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
           for (const chat of historyChats || []) {
             const jid = chat.id || chat.jid;
             if (!jid) continue;
+            // Faz 9 (§5, RC-2): dejenere JID'lerden sohbet/contact üretilmez.
+            if (isDegenerateJid(jid)) continue;
             // Faz 6e: Conversation.lidJid — sohbet telefon anahtarlıysa eşlemeyi öğren;
             // Conversation.pnJid — sohbet LID anahtarlıysa telefonu buradan çöz.
             if (chat.lidJid && !isLidJid(jid)) this._applyLidMapping(chat.lidJid, jid);
@@ -1401,24 +1498,24 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
             messages_synced: storedMessages,
           });
           // Faz 7: gerçek initial-sync ilerlemesi — messaging-history.set
-          // yüzdesi + toplanan sayaçlar. isLatest geldiğinde rehber/sohbet
-          // hydrate tamamlanmış sayılır → phase 'ready' (UI READY durumu).
+          // yüzdesi + toplanan sayaçlar. Faz 9 (RC-3): tamamlanma artık
+          // WhatsApp'ın GERÇEK sinyallerinden çözülür (isLatest VEYA
+          // progress=100) — prod'da isLatest hiç gelmediği için banner
+          // %100'de takılı kalıyordu. Sahte timer yok; tamamlanma emit'i
+          // yalnızca veri sinyaline bağlı.
           if (session.sync) {
-            session.sync = {
-              ...session.sync,
-              phase: isLatest ? 'ready' : 'syncing',
-              progress: typeof progress === 'number' ? Math.max(session.sync.progress || 0, Math.min(100, Math.round(progress))) : (isLatest ? 100 : session.sync.progress || 0),
-              chats_synced: (session.sync.chats_synced || 0) + storedChats,
-              messages_synced: (session.sync.messages_synced || 0) + storedMessages,
-              contacts_synced: contacts.size,
-              completed_at: isLatest ? new Date().toISOString() : session.sync.completed_at,
-            };
+            const { next, justCompleted } = resolveSyncState(session.sync, { progress, isLatest });
+            next.chats_synced = (session.sync.chats_synced || 0) + storedChats;
+            next.messages_synced = (session.sync.messages_synced || 0) + storedMessages;
+            next.contacts_synced = contacts.size;
+            session.sync = next;
             emitEvent({ event: 'session_sync_progress', session_id: id, session_name: session.session_name, sync: session.sync });
-            if (isLatest) {
+            if (justCompleted) {
               emitEvent({ event: 'session_sync_completed', session_id: id, session_name: session.session_name, sync: session.sync });
               // Faz 8: initial sync tamamlanınca grup başlıklarını çöz (tek
-              // toplu groupFetchAllParticipating — N+1 yok, §20).
-              void sessionManager._ensureGroupSubjects();
+              // toplu groupFetchAllParticipating + hedefli groupMetadata
+              // fallback — N+1 request storm yok, §20).
+              void sessionManager._ensureGroupSubjects({ force: true });
             }
           }
           logger.info({ storedChats, storedMessages, progress, isLatest }, 'History sync ingested');

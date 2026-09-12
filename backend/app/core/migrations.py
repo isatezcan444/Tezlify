@@ -692,3 +692,67 @@ async def purge_raw_jid_identity_data(engine: AsyncEngine) -> None:
                 logger.debug("[MIGRATION] purge_raw_jid_identity_data: temizlenecek ham LID/JID verisi yok.")
     except Exception as e:  # noqa: BLE001 - startup'ı düşürmez, loglanır
         logger.warning("[MIGRATION] purge_raw_jid_identity_data atlandı: %s", e)
+
+
+# ---------------------------------------------------------------------------
+# Faz 9 (§5, RC-2): Dejenere '+0' telefonlu WhatsApp kayıtlarının temizliği
+# ---------------------------------------------------------------------------
+
+def _is_degenerate_phone(value: Any) -> bool:
+    """'+0', '+000...' gibi dejenere numaralar — E.164'te ülke kodu '0' ile
+    başlamaz; bu değerler yalnızca `0@s.whatsapp.net` sistem JID'inden
+    türetilmiş uydurma telefonlardır (AGENTS.md: sahte telefon sentezlenmez)."""
+    if not value or not isinstance(value, str):
+        return False
+    v = value.strip()
+    if not v.startswith("+"):
+        return False
+    digits = v[1:]
+    return bool(digits) and digits.isdigit() and set(digits) == {"0"}
+
+
+async def purge_degenerate_phone_contacts(engine: AsyncEngine) -> None:
+    """Faz 9: geçici bir dönemde `0@s.whatsapp.net` JID'inden türetilen
+    '+0' contact/sohbet kayıtlarını güvenli şekilde siler.
+
+    Kapsam: YALNIZCA tüm haneleri sıfır olan '+0…' telefonlu contact'ler ve
+    bunlara bağlı WhatsApp sohbetleri/mesajları. Meşru lead/CRM contact'leri
+    etkilenmez (E.164 '+0…' ile başlayamaz). Idempotenttir; mesajlar önce
+    sohbetlerden silinir (FK sırası), sonra contact silinir — kalan sohbet
+    contact_id'si SET NULL olduğu için diğer satırlar korunur.
+    """
+    try:
+        async with engine.begin() as conn:
+            rows = (
+                await conn.execute(
+                    text("SELECT id, phone_e164 FROM contacts WHERE phone_e164 LIKE '+0%'")
+                )
+            ).fetchall()
+            degenerate = [r for r in rows if _is_degenerate_phone(r[1])]
+            if not degenerate:
+                logger.debug("[MIGRATION] purge_degenerate_phone_contacts: temizlenecek '+0' kaydı yok.")
+                return
+            contact_ids = [r[0] for r in degenerate]
+            placeholders = ", ".join(f":k{i}" for i, k in enumerate(contact_ids))
+            params = {f"k{i}": cid for i, cid in enumerate(contact_ids)}
+            conv_ids = (
+                await conn.execute(
+                    text(f"SELECT id FROM conversations WHERE contact_id IN ({placeholders})"),
+                    params,
+                )
+            ).scalars().all()
+            deleted_msgs = deleted_convs = 0
+            if conv_ids:
+                cph = ", ".join(f":c{i}" for i, _ in enumerate(conv_ids))
+                cparams = {f"c{i}": cid for i, cid in enumerate(conv_ids)}
+                r = await conn.execute(text(f"DELETE FROM messages WHERE conversation_id IN ({cph})"), cparams)
+                deleted_msgs = r.rowcount or 0
+                r = await conn.execute(text(f"DELETE FROM conversations WHERE id IN ({cph})"), cparams)
+                deleted_convs = r.rowcount or 0
+            r = await conn.execute(text(f"DELETE FROM contacts WHERE id IN ({placeholders})"), params)
+            logger.info(
+                "[MIGRATION] purge_degenerate_phone_contacts: %d dejenere '+0' contact + %d sohbet + %d mesaj silindi.",
+                r.rowcount or 0, deleted_convs, deleted_msgs,
+            )
+    except Exception as e:  # noqa: BLE001 - startup'ı düşürmez, loglanır
+        logger.warning("[MIGRATION] purge_degenerate_phone_contacts atlandı: %s", e)

@@ -406,6 +406,7 @@ export const en = {
     syncingChatsCount: '{count} chats',
     syncingMessagesCount: '{count} messages',
     pendingIdentity: 'Resolving identity…',
+    groupFallback: 'Group',
     unreadBadge: '{count} unread',
     tabAll: 'All',
     tabActive: 'Active',

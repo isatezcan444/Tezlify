@@ -166,7 +166,10 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     syncPollTimerRef.current = setInterval(async () => {
       try {
         const data = await WhatsAppApi.getSyncStatus();
-        const connected = data.sessions.find((s) => s.status === 'CONNECTED') || data.sessions[0];
+        // Faz 9 (§19): banner YALNIZCA CONNECTED oturumun sync durumuna
+        // bağlıdır — eşleşme yoksa (oturum henüz bağlı değilse) banner
+        // gösterilmez, eski/pasif oturumun durumu takip edilmez.
+        const connected = data.sessions.find((s) => s.status === 'CONNECTED');
         const sync = connected?.sync || null;
         setSessionSync(sync);
         if (!sync || sync.phase !== 'syncing') {
@@ -196,7 +199,8 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   const refreshSyncStatus = useCallback(async () => {
     try {
       const data = await WhatsAppApi.getSyncStatus();
-      const connected = data.sessions.find((s) => s.status === 'CONNECTED') || data.sessions[0];
+      // Faz 9 (§19): yalnızca CONNECTED oturum izlenir; yoksa banner temizlenir.
+      const connected = data.sessions.find((s) => s.status === 'CONNECTED');
       const sync = connected?.sync || null;
       setSessionSync(sync);
       if (sync?.phase === 'syncing') startSyncPolling();
@@ -271,8 +275,19 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
 
   // Authoritative sync: pull chats & history from the WhatsApp gateway via the
   // Tezlify backend (sync=true), then refresh the list and active thread.
+  // Faz 9 (§20): manuel "Eşitle" GERÇEK request lifecycle'ıyla banner'ı
+  // sürer — istek başlayınca 'syncing', dönünce 'ready', hata olursa
+  // banner temizlenir ve hata toast'la gösterilir. Timer/sahte progress YOK;
+  // banner'ın kapanması isteğin gerçekten bitmesine bağlıdır.
   const handleSyncChats = async () => {
     setIsSyncingChats(true);
+    setSessionSync((prev) => ({
+      ...(prev || {}),
+      phase: 'syncing',
+      progress: prev?.phase === 'syncing' ? prev.progress : 0,
+      started_at: prev?.started_at || new Date().toISOString(),
+      completed_at: null,
+    }));
     try {
       const list = await WhatsAppRepository.getConversations({
         status: convFilter === 'ALL' ? undefined : (convFilter as ConversationStatus),
@@ -281,6 +296,12 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         sync: true,
       });
       setConversations(list);
+      setSessionSync((prev) => ({
+        ...(prev || {}),
+        phase: 'ready',
+        progress: 100,
+        completed_at: new Date().toISOString(),
+      }));
       if (selectedConv?.id) {
         const res = await WhatsAppRepository.getConversationMessages(selectedConv.id, { limit: 50 });
         if (res?.messages) {
@@ -302,7 +323,11 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         );
       }
     } catch (err: any) {
-      toast.error(err.message || 'Sohbetler eşitlenemedi', t('common.error'));
+      // Faz 9 (§23): basarisiz senkron — banner sonsuz 'syncing' durumunda
+      // birakilmaz; gerçek durum gateway'den yeniden okunur (yoksa temizlenir)
+      // ve hata kullaniciya maskelenmez.
+      void refreshSyncStatus();
+      toast.error(err.message || t('whatsapp.syncFailed') || 'Sohbetler eşitlenemedi', t('common.error'));
     } finally {
       setIsSyncingChats(false);
     }
@@ -1316,8 +1341,10 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                 {/* Active Chat Header */}
                 <div className="p-3.5 border-b border-slate-200/80 dark:border-white/[0.08] bg-slate-50/50 dark:bg-black/20 flex items-center justify-between shrink-0">
                   <div className="flex items-center space-x-3">
+                    {/* Faz 9 (§6/§14): cozulmemis grupta sonsuz "çözülüyor" yerine
+                        terminal fallback — 1:1 kisilerde resolving durumu surer. */}
                     <Avatar
-                      name={selectedConv.lead_name || (!isRawWhatsAppIdentity(selectedConv.lead_phone) ? selectedConv.lead_phone : '') || t('whatsapp.pendingIdentity') || 'Lead'}
+                      name={selectedConv.lead_name || (!isRawWhatsAppIdentity(selectedConv.lead_phone) ? selectedConv.lead_phone : '') || (selectedConv.is_group ? t('whatsapp.groupFallback') || 'Group' : t('whatsapp.pendingIdentity') || 'Lead')}
                       image={selectedConv.lead_avatar_url}
                       size="md"
                       shape="rounded"
@@ -1331,7 +1358,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                           </span>
                         )}
                         <h4 className="font-extrabold text-sm text-slate-800 dark:text-white">
-                          {selectedConv.lead_name || (!isRawWhatsAppIdentity(selectedConv.lead_phone) ? selectedConv.lead_phone : '') || t('whatsapp.pendingIdentity') || t('common.unnamedLead') || 'İsimsiz Müşteri'}
+                          {selectedConv.lead_name || (!isRawWhatsAppIdentity(selectedConv.lead_phone) ? selectedConv.lead_phone : '') || (selectedConv.is_group ? t('whatsapp.groupFallback') || 'Group' : t('whatsapp.pendingIdentity') || t('common.unnamedLead') || 'İsimsiz Müşteri')}
                         </h4>
                         {selectedConv.status !== 'ACTIVE' && (
                           <span className="text-[9px] font-bold uppercase px-1.5 py-0.5 rounded bg-slate-200 dark:bg-white/10 text-slate-500 dark:text-slate-400">
