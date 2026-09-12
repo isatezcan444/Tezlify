@@ -216,7 +216,14 @@ export const ConversationList: React.FC<ConversationListProps> = ({
             // Faz 7: internal JID/LID sentinel'leri ('jid:...@lid' vb.)
             // kullanıcıya ASLA gösterilmez — kimlik çözülene kadar güvenli
             // fallback kullanılır.
-            const isRawJid = Boolean(conv.lead_phone && (conv.lead_phone.startsWith('jid:') || conv.lead_phone.includes('@lid')));
+            const isRawJid = Boolean(
+              conv.lead_phone &&
+                (conv.lead_phone.startsWith('jid:') ||
+                  conv.lead_phone.includes('@lid') ||
+                  conv.lead_phone.includes('@g.us') ||
+                  conv.lead_phone.includes('@s.whatsapp.net') ||
+                  conv.lead_phone.includes('@c.us'))
+            );
             const safePhone = isRawJid ? null : conv.lead_phone;
             const displayName = conv.lead_name || safePhone || (t('whatsapp.pendingIdentity') || 'Kişi kimliği çözülüyor…');
             return (

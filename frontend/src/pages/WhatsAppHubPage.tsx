@@ -64,6 +64,21 @@ interface WhatsAppHubPageProps {
   onRefreshStats: () => void;
 }
 
+// Faz 8 (§3): ham WhatsApp kimligi (jid:/@lid/@g.us/@s.whatsapp.net) kullaniciya
+// ASLA isim veya telefon gibi gosterilmez — backend cozumuze kadar guvenli
+// fallback ('Kimlik cozuluyor...') kullanilir.
+function isRawWhatsAppIdentity(value?: string | null): boolean {
+  if (!value) return false;
+  const v = String(value);
+  return (
+    v.startsWith('jid:') ||
+    v.includes('@lid') ||
+    v.includes('@g.us') ||
+    v.includes('@s.whatsapp.net') ||
+    v.includes('@c.us')
+  );
+}
+
 export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats }) => {
   const toast = useToast();
   const { t } = useI18n();
@@ -159,7 +174,15 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
             clearInterval(syncPollTimerRef.current);
             syncPollTimerRef.current = null;
           }
-          if (sync?.phase === 'ready') loadConversations(true);
+          // Faz 8 (§16): READY durumunda DB'yi paylasilmis hattan besle —
+          // sync:true ayni sync_conversations pipeline'ini çağirir (backend
+          // in-flight dedupe eder; initial-sync event'i kaçarisa buradan
+          // garanti olur).
+          if (sync?.phase === 'ready') {
+            WhatsAppRepository.getConversations({ sync: true })
+              .then((list) => setConversations(list))
+              .catch(() => loadConversations(true));
+          }
         }
       } catch {
         if (syncPollTimerRef.current) {
@@ -790,10 +813,23 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       if (eventData.event === 'conversation_updated') {
         const convId = eventData.conversation_id;
         const payload = eventData.conversation || {};
+        // Faz 8 (§3): frontend ham WhatsApp kimliginden (jid:/@lid/@g.us) isim
+        // URETMEZ ve boyle bir degeri isim olarak yazmaz — cozulmemis kimlikte
+        // mevcut ad korunur, UI guvenli fallback gosterir.
+        const rawName = typeof payload.name === 'string' ? payload.name : '';
+        const safeName =
+          rawName &&
+          !rawName.startsWith('jid:') &&
+          !rawName.includes('@lid') &&
+          !rawName.includes('@g.us') &&
+          !rawName.endsWith('@s.whatsapp.net') &&
+          !rawName.endsWith('@c.us')
+            ? rawName
+            : undefined;
         if (typeof convId === 'number') {
           const patch = (c: Conversation): Conversation => ({
             ...c,
-            lead_name: payload.name || c.lead_name,
+            lead_name: safeName || c.lead_name,
             lead_avatar_url: payload.avatar_url || c.lead_avatar_url,
             last_message_preview: payload.last_message_preview || c.last_message_preview,
             last_message_at: payload.last_message_at || c.last_message_at,
@@ -1281,7 +1317,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                 <div className="p-3.5 border-b border-slate-200/80 dark:border-white/[0.08] bg-slate-50/50 dark:bg-black/20 flex items-center justify-between shrink-0">
                   <div className="flex items-center space-x-3">
                     <Avatar
-                      name={selectedConv.lead_name || selectedConv.lead_phone || 'Lead'}
+                      name={selectedConv.lead_name || (!isRawWhatsAppIdentity(selectedConv.lead_phone) ? selectedConv.lead_phone : '') || t('whatsapp.pendingIdentity') || 'Lead'}
                       image={selectedConv.lead_avatar_url}
                       size="md"
                       shape="rounded"
@@ -1295,7 +1331,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                           </span>
                         )}
                         <h4 className="font-extrabold text-sm text-slate-800 dark:text-white">
-                          {selectedConv.lead_name || selectedConv.lead_phone || t('common.unnamedLead') || 'İsimsiz Müşteri'}
+                          {selectedConv.lead_name || (!isRawWhatsAppIdentity(selectedConv.lead_phone) ? selectedConv.lead_phone : '') || t('whatsapp.pendingIdentity') || t('common.unnamedLead') || 'İsimsiz Müşteri'}
                         </h4>
                         {selectedConv.status !== 'ACTIVE' && (
                           <span className="text-[9px] font-bold uppercase px-1.5 py-0.5 rounded bg-slate-200 dark:bg-white/10 text-slate-500 dark:text-slate-400">
@@ -1303,9 +1339,11 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                           </span>
                         )}
                       </div>
-                      <p className="text-[11px] font-mono text-slate-400 font-medium">
-                        {selectedConv.lead_phone}
-                      </p>
+                      {!isRawWhatsAppIdentity(selectedConv.lead_phone) && (
+                        <p className="text-[11px] font-mono text-slate-400 font-medium">
+                          {selectedConv.lead_phone}
+                        </p>
+                      )}
                     </div>
                   </div>
 

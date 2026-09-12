@@ -169,6 +169,17 @@ app.get('/conversations', (req, res) => {
   res.json(sessionManager.listConversations({ search, limit: limit ? parseInt(limit, 10) : undefined, offset: offset ? parseInt(offset, 10) : undefined }));
 });
 
+// Faz 8: grup başlıklarını (subject) toplu çöz — backend sync_conversations
+// bunu çağırır (oturum başına 10 dk TTL + in-flight koruması içeride).
+app.post('/conversations/sync-groups', async (_req, res) => {
+  try {
+    await sessionManager._ensureGroupSubjects();
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Get messages for a conversation (jid)
 app.get('/conversations/:jid/messages', async (req, res) => {
   try {

@@ -6,9 +6,10 @@ tablolarina kalici yazilir; frontend her zaman sayisal DB kimlikleriyle
 konusur. Gateway olaylari (/ws/gateway) bu servis araciligiyla persist
 edilir ve broadcast icin sayisal kimliklere cevrilir.
 """
+import asyncio
 import logging
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from sqlalchemy import select, func, or_, delete
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -41,6 +42,10 @@ def jid_to_phone(jid: str) -> Optional[str]:
     jid_str = str(jid)
     if jid_str.endswith("@lid"):
         return None
+    # Faz 8 (RC-4): grup JID'inden (`120363...@g.us`) asla telefon türetilmez
+    # — yoksa UI'da `+1203632...` gibi sahte numaralar görünür (AGENTS.md).
+    if "@g.us" in jid_str:
+        return None
     digits = "".join(ch for ch in jid_str.split("@")[0] if ch.isdigit())
     return f"+{digits}" if digits else None
 
@@ -57,7 +62,7 @@ def phone_to_jid(phone_e164: str) -> str:
 # pushName'den (kişinin kendi profil adı, 'push') ve history sync adindan
 # ('history') once gelir. Kaynak gateway'den name_source alaniyla gelir.
 # ---------------------------------------------------------------------------
-_NAME_RANK: Dict[str, int] = {"addressbook": 5, "verified": 4, "history": 3, "push": 2, "phone": 1}
+_NAME_RANK: Dict[str, int] = {"addressbook": 5, "verified": 4, "group_subject": 4, "history": 3, "push": 2, "phone": 1}
 
 
 def _is_phone_like(value: Optional[str]) -> bool:
@@ -607,7 +612,26 @@ async def _persist_gateway_message(db: AsyncSession, owner: str, msg: Dict[str, 
     return True
 
 
+# Faz 8 (§16/§20): owner bazında tek paylaşılmış senkron hattı — initial-sync
+# background task'ı, manuel "Eşitle" butonu ve endpoint çağrıları AYNI
+# sync_conversations kodunu kullanır; aynı owner için ikinci bir çağrı
+# gateway'e ikinci bir istek fırtınası yaratmaz (in-flight dedupe), mevcut
+# DB anlık görüntüsünü döner.
+_sync_conversations_inflight: Set[str] = set()
+
+
 async def sync_conversations(db: AsyncSession, user_id: str) -> List[Dict[str, Any]]:
+    if user_id in _sync_conversations_inflight:
+        result, _total = await list_conversations(db, user_id)
+        return result
+    _sync_conversations_inflight.add(user_id)
+    try:
+        return await _sync_conversations_impl(db, user_id)
+    finally:
+        _sync_conversations_inflight.discard(user_id)
+
+
+async def _sync_conversations_impl(db: AsyncSession, user_id: str) -> List[Dict[str, Any]]:
     # Faz 7: "Eşitle" = tam yenileme — once telefon rehberini (W:Contact
     # app-state + history kisi kayitlari) DB'ye hydrate et; boylece hic
     # sohbeti olmayan kisilerin rehber adlari da kalici olur ve identity
@@ -616,6 +640,14 @@ async def sync_conversations(db: AsyncSession, user_id: str) -> List[Dict[str, A
         await sync_contacts(db, user_id)
     except Exception as exc:
         logger.warning("Rehber senkronu atlandi (sohbet senkronu suruyor): %s", exc)
+    # Faz 8 (RC-2): grup JID'leri subject olarak cozulmeden listeyi okuma —
+    # gateway tek toplu groupFetchAllParticipating ile chats Map'lerini gunceller
+    # ve conversation_updated yayar. Hata durumunda eski davranis surer
+    # (fail-soft: isim uydurulmaz, ham JID zaten sanitize edilir).
+    try:
+        await gw.sync_group_subjects()
+    except Exception as exc:
+        logger.warning("Grup basliklari senkronu atlandi: %s", exc)
     data = await gw.list_conversations(limit=200)
     items = data.get("items", []) if isinstance(data, dict) else []
     owner = user_id
@@ -890,6 +922,38 @@ async def get_media_bytes(db: AsyncSession, user_id: str, media_id: str) -> Tupl
 # Gateway olaylarini veritabanina isleme (inbound)
 # ---------------------------------------------------------------------------
 
+# Faz 8 (§16): initial-sync sonrasi DB hydrate eden paylasilmis pipeline —
+# owner bazinda in-flight dedupe (ayni kullanici icin ikinci bir hydration
+# tetiklenmez; "Eşitle" butonu da ayni sync_conversations'i kullanir).
+_initial_sync_inflight: Set[str] = set()
+
+
+def _schedule_initial_sync(owner: str) -> None:
+    if owner in _initial_sync_inflight:
+        return
+    _initial_sync_inflight.add(owner)
+    asyncio.create_task(_run_initial_sync(owner))
+
+
+async def _run_initial_sync(owner: str) -> None:
+    try:
+        async with AsyncSessionLocal() as db:
+            await sync_conversations(db, owner)
+        logger.info("Faz 8 initial-sync hydration tamamlandi (owner=%s)", owner)
+        # UI'i ayrica bir "Eşitle" tiklamasina gerek kalmadan sessizce tazele —
+        # frontend 'conversations_updated' olayini loadConversations(true) ile
+        # karsilar (mevcut WS sozlesmesi, §25 kirilmaz).
+        try:
+            from backend.app.api.v1.websocket import ws_manager
+            await ws_manager.broadcast({"event": "conversations_updated", "user_id": owner})
+        except Exception as exc:  # noqa: BLE001 — broadcast basarisiz olssa bile DB gercegi yazar
+            logger.warning("Initial-sync broadcast basarisiz (owner=%s): %s", owner, exc)
+    except Exception as exc:  # noqa: BLE001 — fail-soft: sonraki olay/Eşitle dener
+        logger.warning("Faz 8 initial-sync hydration basarisiz (owner=%s): %s", owner, exc)
+    finally:
+        _initial_sync_inflight.discard(owner)
+
+
 async def ingest_gateway_event(event: Dict[str, Any]) -> Dict[str, Any]:
     """Gateway olayini persist eder ve UI broadcast'i icin kimlikleri cevirir.
 
@@ -912,6 +976,14 @@ async def ingest_gateway_event(event: Dict[str, Any]) -> Dict[str, Any]:
             else:
                 result = event
             await db.commit()
+            # Faz 8 (§16, RC-5): initial sync TAMAMLANDIĞINDA backend DB'si de
+            # ayni paylasilmis hattan (sync_conversations) hydrate edilir —
+            # QR -> AUTHENTICATED -> INITIAL SYNC -> READY zinciri tek pipeline
+            # ile calisir; "Eşitle" (manuel) ile initial sync AYNI kodu kullanir.
+            if evt == "session_sync_completed":
+                owner = result.get("user_id") if isinstance(result, dict) else None
+                if owner and owner != SYSTEM_USER_ID:
+                    _schedule_initial_sync(str(owner))
             return result
         except Exception as exc:
             await db.rollback()
@@ -1003,8 +1075,11 @@ async def _resolve_event_owner(db: AsyncSession, jid: str) -> str:
 async def _ingest_contact_synced(db: AsyncSession, event: Dict[str, Any]) -> Dict[str, Any]:
     """Gateway `contact_synced` olayi: kisi adi/avatar'ini DB'ye kalici yaz.
 
-    Yalnizca mevcut kisi guncellenir (sohbeti olmayan kisiler icin satir
-    uretilmez — contacts.update her pushname degisiminde tetiklenir).
+    Faz 8 (§15, RC-1): yüksek rütbeli GERÇEK ad (addressbook/verified/
+    group_subject) taşıyan olay için satir YOKSA oluşturulur — böylece
+    hiç sohbeti olmayan rehber kişileri de kalıcı olur ve "Eşitle" sonrası
+    adlar kaybolmaz. Düşük rütbeli (push) pushName güncellemeleri eski
+    davranışta olduğu gibi yalnızca mevcut satırı günceller (şişirme yok).
     """
     contact_payload = event.get("contact") or {}
     jid = contact_payload.get("id") or contact_payload.get("jid")
@@ -1019,10 +1094,18 @@ async def _ingest_contact_synced(db: AsyncSession, event: Dict[str, Any]) -> Dic
         )
     )
     contact = res.scalar_one_or_none()
-    if contact is None:
-        return event
     name = contact_payload.get("name")
-    _set_contact_name(contact, name, contact_payload.get("name_source"))
+    source = str(contact_payload.get("name_source") or "")
+    if contact is None:
+        # Yalnızca gerçek rehber/metadata adıyla oluştur; ham jid/lid veya
+        # telefonsuz düşük rütbeli olaylar satır şişirmez.
+        high_rank = source in ("addressbook", "verified", "group_subject")
+        if high_rank and name and not _is_raw_jid_name(name):
+            contact = await _upsert_contact(db, owner, str(jid), name, source)
+            _set_contact_avatar(contact, contact_payload.get("avatar_url"))
+            await db.commit()
+        return event
+    _set_contact_name(contact, name, source)
     _set_contact_avatar(contact, contact_payload.get("avatar_url"))
     await db.commit()
     return event

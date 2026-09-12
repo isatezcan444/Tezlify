@@ -8,15 +8,16 @@
   },
   "scripts": {
     "start": "node src/index.js",
-    "dev": "node --watch src/index.js"
+    "dev": "node --watch src/index.js",
+    "postinstall": "node scripts/patch-baileys.mjs"
   },
   "dependencies": {
     "@whiskeysockets/baileys": "6.7.24",
-    "express": "^4.21.2",
-    "qrcode": "^1.5.4",
-    "ws": "^8.18.0",
-    "pino": "^9.5.0",
     "dotenv": "^16.4.7",
-    "uuid": "^11.0.3"
+    "express": "^4.21.2",
+    "pino": "^9.5.0",
+    "qrcode": "^1.5.4",
+    "uuid": "^11.0.3",
+    "ws": "^8.18.0"
   }
 }

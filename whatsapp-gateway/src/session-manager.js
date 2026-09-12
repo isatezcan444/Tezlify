@@ -109,8 +109,26 @@ function jidToPhone(jid) {
   // LID kimliği telefon numarası DEĞİLDİR — asla +rakam türetilmez
   // (AGENTS.md: sahte telefon sentezlenmez).
   if (isLidJid(jid)) return null;
+  // Faz 8: grup JID'i de telefon DEĞİLDİR — rakamlardan sahte +numara üretilmez.
+  if (jid.includes('@g.us')) return null;
   const match = jid.match(/^(\d+)@/);
   return match ? `+${match[1]}` : null;
+}
+
+// Faz 8: ham WhatsApp kimliği (jid:/@lid/@g.us/@s.whatsapp.net) görüntülenen
+// ad OLAMAZ — identity çözülmeden emit/REST'e ad olarak yayılmaz.
+function isRawIdentityName(value) {
+  if (!value || typeof value !== 'string') return true;
+  const v = value.trim();
+  if (!v) return true;
+  return (
+    v.startsWith('jid:') ||
+    v.includes('@lid') ||
+    v.endsWith('@g.us') ||
+    v.endsWith('@s.whatsapp.net') ||
+    v.endsWith('@c.us') ||
+    /^\d+@/.test(v)
+  );
 }
 
 function normalizeJid(jid) {
@@ -133,7 +151,59 @@ function normalizeJid(jid) {
 // rehberindeki ad (W:Contact app-state → contacts.upsert) her zaman
 // pushName'den (kişinin kendi profil adı) önce gelir.
 // ---------------------------------------------------------------------------
-const NAME_RANK = { addressbook: 5, verified: 4, history: 3, push: 2, phone: 1 };
+const NAME_RANK = { addressbook: 5, group_subject: 4, verified: 4, history: 3, push: 2, phone: 1 };
+
+// Faz 8: emit/REST'e çıkmadan önce sohbet kaydını temizler — ham jid/lid
+// asla görüntülenen ad olarak yayılmaz (WhatsApp Web paritesi: kullanıcı
+// `120363xxx@g.us` değil `İstanbul İş Grubu` görür).
+function sanitizeChatForEmit(chat) {
+  if (!chat) return chat;
+  const out = { ...chat };
+  if (isRawIdentityName(out.name)) {
+    out.name = null;
+    out.name_source = null;
+  }
+  return out;
+}
+
+// Faz 8: gateway'den backend'e giden TUM olaylarda ham kimlik sizintisini
+// kesen tek nokta (sessionManager._emit icinden cagrilir). Ad alanlari
+// cozulmemis kimlik iceriyorsa null'a cevrilir — backend/dogrulama katmani
+// (Faz 7 _set_contact_name) zaten reddediyor, ama WS broadcast'i DB'den
+// bagimsiz oldugu icin burada da temizlenir.
+function sanitizeOutboundEvent(event) {
+  if (!event || typeof event !== 'object') return event;
+  switch (event.event) {
+    case 'conversation_updated':
+      if (event.conversation) return { ...event, conversation: sanitizeChatForEmit(event.conversation) };
+      return event;
+    case 'contact_synced': {
+      if (!event.contact) return event;
+      const contact = { ...event.contact };
+      if (isRawIdentityName(contact.name)) {
+        contact.name = jidToPhone(contact.id) || null;
+        contact.name_source = contact.name ? 'phone' : null;
+      }
+      return { ...event, contact };
+    }
+    case 'message_new': {
+      if (!event.message) return event;
+      const msg = { ...event.message };
+      if (isRawIdentityName(msg.sender_name)) {
+        msg.sender_name = jidToPhone(msg.conversation_id) || null;
+      }
+      if (isRawIdentityName(msg.participant_name)) msg.participant_name = null;
+      return { ...event, message: msg };
+    }
+    default:
+      return event;
+  }
+}
+
+// Faz 8: birim testleri icin sanitizasyon yardimcilari disa aktarilir
+// (createSessionManager factory'si ayrica export edilir; index.js ikisini de
+// kullanabilir).
+export { isRawIdentityName, sanitizeChatForEmit, sanitizeOutboundEvent, mergeContactName, NAME_RANK, jidToPhone };
 
 function mergeContactName(existing, name, source) {
   const base = existing || {};
@@ -158,8 +228,13 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
   const sessionManager = {
     _listeners: new Set(),
     _emit(event) {
+      // Faz 8: TEK sanitizasyon noktasi — ham WhatsApp kimligi (@lid/@g.us/
+      // @s.whatsapp.net/jid:) hicbir olayda goruntulenen ad olarak disariya
+      // (backend/UI) yayilmaz. Backend ve frontend isim uretmez; cozulmemis
+      // kimlikte ad null kalir, UI guvenli fallback gosterir.
+      const sanitized = sanitizeOutboundEvent(event);
       for (const listener of this._listeners) {
-        try { listener(event); } catch (err) { logger.warn({ err }, 'Event listener error'); }
+        try { listener(sanitized); } catch (err) { logger.warn({ err }, 'Event listener error'); }
       }
     },
     onEvent(listener) {
@@ -377,10 +452,12 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
             const rankNew = NAME_RANK[contact.name_source] || 0;
             const rankCur = NAME_RANK[c.name_source] || (c.name && /^\+\d+$/.test(c.name) ? 0 : NAME_RANK.history);
             if (!c.name || /^\+\d+$/.test(c.name) || rankNew >= rankCur) {
-              return { ...c, name: contact.name, name_source: contact.name_source || null };
+              return sanitizeChatForEmit({ ...c, name: contact.name, name_source: contact.name_source || null });
             }
           }
-          return { ...c };
+          // Faz 8: ham jid/lid ad olarak REST'e cikmaz — backend/frontend
+          // normalize edilmis telefona duser (identity cozulene kadar).
+          return sanitizeChatForEmit(c);
         }),
         total,
       };
@@ -713,6 +790,72 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       }
     },
 
+    // Faz 8: grup başlıklarını (subject) tek istekte çöz — Baileys
+    // `groupFetchAllParticipating()` tüm katılımcı grupların metadata'sını
+    // döner (groups.js:22). Sohbet başına groupMetadata() çağırma (N+1 /
+    // request storm, AGENTS.md §20) YOK; oturum başına 10 dk TTL'lik tek
+    // toplu istek + in-flight koruması. Çözülen subject, chats/contacts
+    // kayıtlarına `group_subject` rütbesiyle yazılır ve conversation_updated
+    // olarak yayınlanır (gerçek zamanlı yeniden adlandırma ayrıca groups.update
+    // olayıyla gelir).
+    async _ensureGroupSubjects() {
+      const session = [...sessions.values()].find((s) => s.status === 'CONNECTED' && s.sock);
+      if (!session) return;
+      const last = session._groupSubjectsAt || 0;
+      if (Date.now() - last < 10 * 60 * 1000) return;
+      if (session._groupSubjectsInFlight) return;
+      session._groupSubjectsInFlight = true;
+      session._groupSubjectsAt = Date.now();
+      try {
+        const all = await session.sock.groupFetchAllParticipating();
+        for (const meta of Object.values(all || {})) {
+          const jid = meta?.id;
+          const subject = typeof meta?.subject === 'string' ? meta.subject.trim() : '';
+          if (!jid || !jid.includes('@g.us') || !subject) continue;
+          const key = normalizeJid(jid);
+          const chat = chats.get(key);
+          const contact = contacts.get(key);
+          const rankCur = NAME_RANK[chat?.name_source] || 0;
+          if (chat && (NAME_RANK.group_subject > rankCur || isRawIdentityName(chat.name))) {
+            const merged = mergeContactName({ name: chat.name, name_source: chat.name_source }, subject, 'group_subject');
+            if (merged.name && merged.name !== chat.name) {
+              chat.name = merged.name;
+              chat.name_source = merged.name_source;
+              chat.updated_at = new Date().toISOString();
+              emitEvent({ event: 'conversation_updated', conversation: { ...chat } });
+            }
+          }
+          if (contact) {
+            const mergedC = mergeContactName({ name: contact.name, name_source: contact.name_source }, subject, 'group_subject');
+            if (mergedC.name && mergedC.name !== contact.name) {
+              contact.name = mergedC.name;
+              contact.name_source = mergedC.name_source;
+              contact.updated_at = new Date().toISOString();
+              emitEvent({ event: 'contact_synced', contact: { ...contact } });
+            }
+          }
+        }
+      } catch (err) {
+        // Grup metadata alınamadı (kısıt/timeout) — sonraki tetiklemede tekrar denenir.
+        session._groupSubjectsAt = 0;
+        logger.warn({ err }, 'groupFetchAllParticipating failed');
+      } finally {
+        session._groupSubjectsInFlight = false;
+      }
+    },
+
+    // Faz 8: bir JID için görüntülenecek adı çözer — contacts Map (rehber >
+    // group subject > verified > history > push) → telefon → null. Ham jid/lid
+    // ASLA ad olarak dönmez (§3: frontend/ad üretmez, backend çözümlü ad görür).
+    _resolveDisplayName(jid, fallbackPushName) {
+      const key = normalizeJid(jid);
+      const contact = key ? contacts.get(key) : null;
+      if (contact?.name && !isRawIdentityName(contact.name)) return contact.name;
+      if (fallbackPushName && !isRawIdentityName(fallbackPushName)) return fallbackPushName;
+      const phone = jidToPhone(key);
+      return phone || null;
+    },
+
     // History sync mesajlarini (WAMessage) gateway Message kaydina cevirir.
     // Medya indirmesi yapilmaz (gizemli/sifreli history medyasi): tip + caption
     // kaydedilir, media_id bos kalir.
@@ -752,8 +895,12 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
         wa_message_id: msg.key?.id || null,
         sender_phone: msg.key?.fromMe ? 'ME' : (jidToPhone(msg.key?.participant || key) || key),
         recipient_phone: msg.key?.fromMe ? (jidToPhone(key) || key) : 'ME',
-        sender_name: msg.pushName || (msg.key?.fromMe ? 'ME' : null),
-        participant_jid: msg.key?.participant || null,      participant_name: msg.key?.participant ? msg.pushName || null : null,        created_at: new Date(Number.isFinite(ts) ? ts : Date.now()).toISOString(),
+        // Faz 8: tarih mesajlarında da ad, Contact çözücüsünden geçer
+        // (rehber > pushName > telefon); ham JID/LID ad olarak yazılmaz.
+        sender_name: msg.key?.fromMe ? 'ME' : (sessionManager._resolveDisplayName(msg.key?.participant || key, msg.pushName) || null),
+        participant_jid: msg.key?.participant || null,
+        participant_name: msg.key?.participant ? sessionManager._resolveDisplayName(msg.key.participant, msg.pushName) : null,
+        created_at: new Date(Number.isFinite(ts) ? ts : Date.now()).toISOString(),
       };
     },
 
@@ -1004,10 +1151,14 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
             wa_message_id: msg.key?.id || null,
             sender_phone: jidToPhone(key) || key,
             recipient_phone: 'ME',
-            sender_name: contact?.name || jidToPhone(key) || key,
+            // Faz 8 (§13): başlık kimliği de Contact çözücüsünden geçer —
+            // rehber adı > pushName > telefon; ham JID ad olarak yayılmaz.
+            sender_name: sessionManager._resolveDisplayName(key, msg.pushName),
             sender_name_source: contact?.name_source || null,
             participant_jid: msg.key?.participant || null,
-            participant_name: isGroup ? msg.pushName || null : null,
+            // Faz 8 (§13-14): grup göndereni Contact çözücüsünden geçer —
+            // rehber/çözümlemedeki ad > pushName > telefon; ham JID asla ad olmaz.
+            participant_name: isGroup ? sessionManager._resolveDisplayName(msg.key?.participant, msg.pushName) : null,
             created_at: new Date((msg.messageTimestamp || Date.now()) * 1000).toISOString(),
           };
           if (!messagesByChat.has(key)) messagesByChat.set(key, []);
@@ -1070,6 +1221,11 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
           if (!rawId || !c.name) continue;
           // Çift bilgisi varsa eşlemeyi öğren (id telefon + lid alanı dolu).
           if (c.lid && !isLidJid(rawId)) this._applyLidMapping(c.lid, rawId);
+          // Faz 8 (patch): LID-anahtarli rehber yamalari telefonu `pnJid`'de
+          // tasir; Baileys bunu dusuruyordu — patch ile artik `c.pn`.
+          // Eşleşme burada öğrenilir: bekleyen LID kaydı telefona taşınır ve
+          // ad, telefon-anahtarlı kişiye addressbook rütbesiyle yazılır.
+          if (c.pn && isLidJid(rawId)) this._applyLidMapping(rawId, c.pn);
           const jid = normalizeJid(rawId); // lid ise ve eşleşme biliniyorsa telefona çözülür
           const now = new Date().toISOString();
           if (isLidJid(jid)) {
@@ -1149,8 +1305,16 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       // --- History sync (Faz 4): telefonun baglantı sirasinda pasif olarak
       // gonderdigi RECENT gecmisi isler. syncFullHistory (428 riski) KULLANILMAZ;
       // yalnizca shouldSyncHistoryMessage ile bildirim kabul edilir. ---
-      sock.ev.on('messaging-history.set', async ({ chats: historyChats, contacts: historyContacts, messages: historyMessages, progress, isLatest }) => {
+      sock.ev.on('messaging-history.set', async ({ chats: historyChats, contacts: historyContacts, messages: historyMessages, progress, isLatest, phoneNumberToLidMappings }) => {
         try {
+          // Faz 8 (patch): HistorySync.phoneNumberToLidMappings — telefon<->LID
+          // ciftleri Baileys tarafindan dusuruluyordu; patch ile gelir.
+          // Bunlari IŞLEMEYE BAŞLAMADAN önce uygula ki aynı chunk'taki
+          // LID-anahtarlı rehber adları/sohbetleri telefon kimligine çözülerek
+          // yazilsin (yoksa kalici olarak lid_pending'de beklerlerdi).
+          for (const m of phoneNumberToLidMappings || []) {
+            if (m?.pnJid && m?.lidJid) this._applyLidMapping(m.lidJid, m.pnJid);
+          }
           // 1. Kisiler
           for (const c of historyContacts || []) {
             if (!c?.id) continue;
@@ -1252,11 +1416,47 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
             emitEvent({ event: 'session_sync_progress', session_id: id, session_name: session.session_name, sync: session.sync });
             if (isLatest) {
               emitEvent({ event: 'session_sync_completed', session_id: id, session_name: session.session_name, sync: session.sync });
+              // Faz 8: initial sync tamamlanınca grup başlıklarını çöz (tek
+              // toplu groupFetchAllParticipating — N+1 yok, §20).
+              void sessionManager._ensureGroupSubjects();
             }
           }
           logger.info({ storedChats, storedMessages, progress, isLatest }, 'History sync ingested');
         } catch (err) {
           logger.warn({ err }, 'History sync ingestion failed');
+        }
+      });
+
+      // --- Groups (Faz 8, §17): gerçek zamanlı grup yeniden adlandırma ---
+      // Baileys `groups.update` grup metadata değişince gelir (subject dahil).
+      // groups.js self-emit eder; burada chats/contacts Map'lerini group_subject
+      // rütbesiyle güncelleyip conversation_updated yayınlarız.
+      sock.ev.on('groups.update', (updates) => {
+        for (const update of updates || []) {
+          const jid = update?.id;
+          const subject = typeof update?.subject === 'string' ? update.subject.trim() : '';
+          if (!jid || !jid.includes('@g.us') || !subject) continue;
+          const key = normalizeJid(jid);
+          const chat = chats.get(key);
+          if (chat) {
+            const merged = mergeContactName({ name: chat.name, name_source: chat.name_source }, subject, 'group_subject');
+            if (merged.name && merged.name !== chat.name) {
+              chat.name = merged.name;
+              chat.name_source = merged.name_source;
+              chat.updated_at = new Date().toISOString();
+              emitEvent({ event: 'conversation_updated', conversation: { ...chat } });
+            }
+          }
+          const contact = contacts.get(key);
+          if (contact) {
+            const mergedC = mergeContactName({ name: contact.name, name_source: contact.name_source }, subject, 'group_subject');
+            if (mergedC.name && mergedC.name !== contact.name) {
+              contact.name = mergedC.name;
+              contact.name_source = mergedC.name_source;
+              contact.updated_at = new Date().toISOString();
+              emitEvent({ event: 'contact_synced', contact: { ...contact } });
+            }
+          }
         }
       });
 

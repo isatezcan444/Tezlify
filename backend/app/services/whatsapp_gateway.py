@@ -106,6 +106,13 @@ async def list_conversations(
     return await _request("GET", "/conversations", params=params)
 
 
+async def sync_group_subjects() -> Dict[str, Any]:
+    """Faz 8: gateway'den tüm katılımcı grupların subject'ini tek toplu
+    istekte çözer (oturum bazında TTL gateway içinde). Hata fail-closed:
+    WhatsAppGatewayError yükselir, çağıran yutar ama isim uydurmaz."""
+    return await _request("POST", "/conversations/sync-groups")
+
+
 async def get_messages(jid: str, limit: int = 50, before: Optional[int] = None) -> Dict[str, Any]:
     params: Dict[str, Any] = {"limit": limit}
     if before is not None:
