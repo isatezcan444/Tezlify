@@ -141,10 +141,14 @@ def mock_gateway():
 
 @pytest.fixture
 def events():
-    """_broadcast_sync_event'i yakala — payload sozlesmesi testleri icin."""
+    """_broadcast_sync_event'i yakala — payload sozlesmesi testleri icin.
+
+    Faz 13: `owner` artik ZORUNLU ikinci argümandir (hedef tenant cagri
+    aninda acikca verilir, payload'a guvenilmez).
+    """
     captured: List[Dict[str, Any]] = []
 
-    async def _capture(payload: Dict[str, Any]) -> None:
+    async def _capture(payload: Dict[str, Any], owner: str) -> None:
         captured.append(dict(payload))
 
     from unittest.mock import patch
@@ -293,7 +297,7 @@ async def test_04_tenant_isolation_events_route_to_owner_only(mock_gateway):
     captured: List[Dict[str, Any]] = []
     from unittest.mock import AsyncMock, patch
 
-    async def _cap(payload):
+    async def _cap(payload, target_user_id=None):
         captured.append(payload)
 
     with patch("backend.app.api.v1.websocket.ws_manager.broadcast", new=AsyncMock(side_effect=_cap)):
@@ -561,8 +565,14 @@ async def test_11_session_delete_cancels_running_job(auth_headers, mock_gateway,
     await asyncio.wait_for(job.done.wait(), timeout=5)
     assert job.state == "FAILED"
     assert job.error == "sync iptal edildi"
+    # Faz 13 (fail-visible): iptal de job'i sonlandirir; eski davranis hicbir
+    # olay yayinlamiyordu ve frontend "senkronize ediliyor" bandinda asili
+    # kaliyordu. Artik SAHIBINE tek bir whatsapp_sync_failed gider; `error`
+    # alani iptal ile gercek arizayi ayirt eder (§26).
     failed = _of(events, "whatsapp_sync_failed")
-    assert not failed  # iptal, kullici hatasi degil — UI'a failed yayinlanmaz (§26)
+    assert len(failed) == 1, f"iptal olayi tam olarak bir kez yayinlanmali: {len(failed)}"
+    assert failed[0]["error"] == "sync iptal edildi"
+    assert failed[0]["user_id"] == TEST_USER
 
 
 @pytest.mark.asyncio
@@ -666,7 +676,7 @@ async def test_18_run_initial_sync_broadcasts_conversations_updated(mock_gateway
     from unittest.mock import AsyncMock, patch
     captured: List[Dict[str, Any]] = []
 
-    async def _cap(payload):
+    async def _cap(payload, target_user_id=None):
         captured.append(payload)
 
     mock_gateway.list_conversations.return_value = {
@@ -914,9 +924,11 @@ async def test_29_conversation_updated_emits_throttled_bootstrap_signal(mock_gat
 
     ws._last_bootstrap_emit.clear()
     captured: List[Dict[str, Any]] = []
+    routed: List[Optional[str]] = []
 
-    async def _cap(payload):
+    async def _cap(payload, target_user_id=None):
         captured.append(dict(payload))
+        routed.append(target_user_id)
 
     with patch("backend.app.services.whatsapp_service._broadcast_sync_event", new=_cap):
         async with AsyncSessionLocal() as db:
@@ -945,6 +957,8 @@ async def test_29_conversation_updated_emits_throttled_bootstrap_signal(mock_gat
     assert len(boots) == 1, f"throttle calismadi: {len(boots)} sinyal"
     assert boots[0]["user_id"] == TEST_USER
     assert boots[0]["sync_id"] == "live"
+    # Faz 13: hedef tenant cagri aninda ACIKCA verilir (payload'a guvenilmez).
+    assert routed == [TEST_USER], f"bootstrap yanlis hedefe yonlendirildi: {routed}"
 
 
 @pytest.mark.asyncio

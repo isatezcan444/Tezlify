@@ -51,6 +51,18 @@ async def run_scraper_task(
             logger.error(f"[SEARCH_JOB] job_id={job_id} NOT FOUND in database")
             return
 
+        # Faz 13 (tenant izolasyonu): sahibi cozulemeyen isin olaylari
+        # yayinlanamaz (lead listesi PII tasir). Fail-visible: is FAILED'a
+        # alinir — sessizce "calisiyor ama gorunmuyor" durumuna dusulmez.
+        owner = str(job.user_id) if job.user_id else None
+        if not owner:
+            job.status = ScraperJobStatus.FAILED
+            job.error_message = "Is sahibi (user_id) atanmamis; sonuclar hicbir tenant'a guvenle yazilamaz."
+            job.completed_at = datetime.utcnow()
+            await db.commit()
+            logger.error("[SEARCH_JOB] job_id=%s sahipsiz — FAILED olarak kapatildi.", job_id)
+            return
+
         job.status = ScraperJobStatus.RUNNING
         job.started_at = datetime.utcnow()
         await db.commit()
@@ -58,6 +70,7 @@ async def run_scraper_task(
         await ws_manager.broadcast({
             "event": "scraper_started",
             "job_id": job_id,
+            "user_id": owner,
             "keyword": keyword,
             "city": city,
             "districts": districts,
@@ -72,6 +85,7 @@ async def run_scraper_task(
             await ws_manager.broadcast({
                 "event": "scraper_progress",
                 "job_id": job_id,
+                "user_id": owner,
                 "data": event_data
             })
 
@@ -101,6 +115,7 @@ async def run_scraper_task(
             await ws_manager.broadcast({
                 "event": "scraper_completed",
                 "job_id": job_id,
+                "user_id": owner,
                 "total_found": len(raw_leads),
                 "total_new_leads": 0,
                 "leads": raw_leads,
@@ -121,6 +136,7 @@ async def run_scraper_task(
             await ws_manager.broadcast({
                 "event": "scraper_cancelled",
                 "job_id": job_id,
+                "user_id": owner,
             })
             raise
         except Exception as e:
@@ -139,6 +155,7 @@ async def run_scraper_task(
             await ws_manager.broadcast({
                 "event": "scraper_failed",
                 "job_id": job_id,
+                "user_id": owner,
                 "error": str(e)
             })
         finally:

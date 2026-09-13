@@ -142,6 +142,10 @@ class WhatsAppSendResult(BaseModel):
 
 class WhatsAppReadResult(BaseModel):
     success: bool = True
+    # Faz 13 (truthfulness): gateway'e ILETILEMEDIYSE neden'i tasinir. Alan
+    # opsiyoneldir; `success=False` iken UI kullaniciya gercek nedeni
+    # gosterebilir — sessiz yutma yok.
+    error: Optional[str] = None
 
 
 class WhatsAppStatusResult(BaseModel):
@@ -159,7 +163,16 @@ class WhatsAppSyncSessionStatus(BaseModel):
 
 
 class WhatsAppSyncStatusResponse(BaseModel):
+    """Oturum bazli gercek senkron durumu.
+
+    Faz 13 (truthfulness): gateway'e ulasilamazsa `gateway_available=False`
+    ve her oturumun `sync.phase`'i `unavailable` olur. Istemci bunu "senkron
+    yok" (idle) ile karistirmamalidir — hata artik maskelenmiyor.
+    """
+
     sessions: List[WhatsAppSyncSessionStatus] = Field(default_factory=list)
+    gateway_available: bool = True
+    gateway_error: Optional[str] = None
 
 
 class WhatsAppSyncJobResponse(BaseModel):

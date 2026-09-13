@@ -21,6 +21,7 @@ from backend.app.core.database import AsyncSessionLocal
 from backend.app.core.auth import get_user_filter
 from backend.app.models.contact import Contact
 from backend.app.models.conversation import Conversation, ConversationStatus
+from backend.app.models.lead import Lead
 from backend.app.models.message import Message, MessageDirection, MessageType, ConversationMessageStatus
 from backend.app.models.whatsapp_session import WhatsAppSession, SessionStatus
 from backend.app.services import whatsapp_gateway as gw
@@ -392,11 +393,21 @@ async def _gateway_op_or_recreate(
 # Session yonetimi
 # ---------------------------------------------------------------------------
 
-async def list_sessions(db: AsyncSession, user_id: str) -> List[Dict[str, Any]]:
+async def _list_sessions_internal(
+    db: AsyncSession, user_id: str
+) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    """Oturum listesi + (varsa) gateway erisim hatasi.
+
+    Faz 13: gateway hatasi ARTIK YUTULMAZ — cagirana dondurulur, karar
+    cagirana birakilir. `list_sessions` DB durumunu gostermeye devam eder
+    (kullanici oturumlarini gormeli), ancak `get_sync_status` bu hatayi
+    'unavailable' olarak yuzeye cikarir; "senkron yok" ile karistirilamaz.
+    """
     stmt = select(WhatsAppSession).where(get_user_filter(WhatsAppSession.user_id, user_id))
     res = await db.execute(stmt)
     rows = res.scalars().all()
     gw_sync: Dict[str, Any] = {}
+    gateway_error: Optional[str] = None
     try:
         gw_sessions = {s["id"]: s for s in await gw.list_sessions()}
         for row in rows:
@@ -410,26 +421,51 @@ async def list_sessions(db: AsyncSession, user_id: str) -> List[Dict[str, Any]]:
                     row.phone_number = live.get("phone_number", row.phone_number)
         await db.commit()
     except Exception as exc:
+        gateway_error = str(exc)[:300]
         logger.warning("Gateway canli durum tazelenemedi: %s", exc)
     out: List[Dict[str, Any]] = []
     for r in rows:
         d = _session_dict(r)
-        # Faz 7: gercek initial-sync asaması/ilerlemesi (gateway belleğinden,
-        # sahte degil). Gateway'e ulaşılamazsa 'idle'.
+        # Faz 7: gercek initial-sync asamasi/ilerlemesi (gateway belleginden,
+        # sahte degil). Gateway'e ulasilamazsa `get_sync_status` bunu ayrica
+        # 'unavailable' olarak bildirir.
         d["sync"] = gw_sync.get(r.id, {"phase": "idle", "progress": 0})
         out.append(d)
-    return out
+    return out, gateway_error
+
+
+async def list_sessions(db: AsyncSession, user_id: str) -> List[Dict[str, Any]]:
+    sessions, _gateway_error = await _list_sessions_internal(db, user_id)
+    return sessions
 
 
 async def get_sync_status(db: AsyncSession, user_id: str) -> Dict[str, Any]:
-    """Oturumların gerçek senkron durumunu döndürür (QR sonrası initial sync).
+    """Oturumlarin GERCEK senkron durumunu dondurur (QR sonrasi initial sync).
 
-    Kaynak: gateway belleğindeki sync durumu (session_sync_* olaylarıyla aynı).
-    Gateway'e ulaşılamazsa fail-closed: phase 'unavailable', hata maskelenmez.
+    Kaynak: gateway bellegindeki sync durumu (session_sync_* olaylariyla ayni).
+    Gateway'e ulasilamazsa `gateway_available=False` + phase `unavailable`
+    doner — hata MASKELENMEZ ve "senkron yok" (idle) ile KARISTIRILAMAZ.
+    (Onceki surum hatayi yutup her seyi 'idle' gosteriyordu; docstring
+    'fail-closed' diyordu ama kod bunu yapmiyordu.)
     """
-    sessions = await list_sessions(db, user_id)
+    sessions, gateway_error = await _list_sessions_internal(db, user_id)
+    if gateway_error:
+        return {
+            "gateway_available": False,
+            "gateway_error": gateway_error,
+            "sessions": [
+                {
+                    "id": s["id"],
+                    "session_name": s["session_name"],
+                    "status": s["status"],
+                    "sync": {"phase": "unavailable", "progress": 0},
+                }
+                for s in sessions
+            ],
+        }
     active = [s for s in sessions if s["status"] == "CONNECTED"] or sessions
     return {
+        "gateway_available": True,
         "sessions": [
             {
                 "id": s["id"],
@@ -438,7 +474,7 @@ async def get_sync_status(db: AsyncSession, user_id: str) -> Dict[str, Any]:
                 "sync": s.get("sync", {"phase": "idle", "progress": 0}),
             }
             for s in active
-        ]
+        ],
     }
 
 
@@ -1185,11 +1221,42 @@ async def list_conversations(
     unread_only: bool = False,
     group_only: bool = False,
     archived_only: bool = False,
+    lead_id: Optional[int] = None,
+    conversation_id: Optional[int] = None,
     limit: Optional[int] = None,
     offset: Optional[int] = None,
 ) -> Tuple[List[Dict[str, Any]], int]:
     conv_filter = get_user_filter(Conversation.user_id, user_id)
     base = select(Conversation).where(conv_filter, Conversation.channel == "WHATSAPP")
+    # `Contact` tablosuna katlanma GEREKEN filtreler icin join BIR KEZ yapilir
+    # (ayni sorguda iki kez join etmek SQL hatasi uretir).
+    joined_contact = False
+    # Faz 12: lead -> sohbet cozumlemesi SUNUCU tarafinda. Onceden istemci
+    # `limit=200` listesini indirip icinde ariyordu (LeadDetailDrawer'in sohbet
+    # sekmesi) — hem agir hem de 200 sohbetten sonra sessizce basarisiz.
+    #
+    # DIKKAT: `Conversation.lead_id` kolonu var ama bugune kadar hicbir yerde
+    # YAZILMIYOR (nullable CRM bagi). Yalnizca o kolonu filtrelemek sessizce HER
+    # ZAMAN bos sonuc donerdi (AGENTS.md §1.1: sahte/bos basari yok). Gercek bag
+    # TELEFON uzerindendir: `Lead.phone_e164` == `Contact.phone_e164`.
+    # Bu yuzden iki yol BIRLIKTE denenir — kayitli CRM bagi VEYA telefon eslesmesi.
+    if lead_id is not None:
+        lead_phone = await db.scalar(
+            select(Lead.phone_e164).where(
+                Lead.id == lead_id,
+                get_user_filter(Lead.user_id, user_id),
+            )
+        )
+        base = base.join(Contact, Conversation.contact_id == Contact.id)
+        joined_contact = True
+        lead_match = [Contact.lead_id == lead_id]
+        if lead_phone:
+            lead_match.append(Contact.phone_e164 == lead_phone)
+        base = base.where(or_(*lead_match))
+    # Faz 12: tek sohbet cozumlemesi de hedefli sorguyla (200 satirlik liste
+    # taramasi yerine) — ayni tenant filtresi.
+    if conversation_id is not None:
+        base = base.where(Conversation.id == conversation_id)
     if status:
         try:
             base = base.where(Conversation.status == ConversationStatus(status))
@@ -1213,7 +1280,10 @@ async def list_conversations(
         )
     if search:
         like = f"%{search.strip().lower()}%"
-        base = base.join(Contact, Conversation.contact_id == Contact.id).where(
+        if not joined_contact:
+            base = base.join(Contact, Conversation.contact_id == Contact.id)
+            joined_contact = True
+        base = base.where(
             or_(
                 func.lower(Contact.display_name).like(like),
                 func.lower(Contact.phone_e164).like(like),
@@ -1570,15 +1640,30 @@ async def send_media_message(
 
 
 async def mark_conversation_read(db: AsyncSession, user_id: str, conversation_id: int) -> Dict[str, Any]:
+    """Sohbeti okundu isaretler.
+
+    Faz 13 (truthfulness): gateway'e okundu bilgisi ILETILEMEZSE `success=False`
+    doner. Onceden gateway hatasi yutulup her durumda `success: True` donuyordu
+    — karsi taraf mesaji hala "okunmadi" gorurken UI "okundu" gosteriyordu
+    (sahte basari). Yerel CRM sayaci yine sifirlanir (kullanici mesaji bu UI'da
+    gordu), ancak gercek iletim durumu cagirana DOGRU bildirilir.
+    """
     conv, jid = await _resolve_jid(db, user_id, conversation_id)
+    gateway_ok = True
+    gateway_error: Optional[str] = None
     try:
         await gw.mark_conversation_read(jid)
     except Exception as exc:
-        logger.warning("Gateway okundu isareti iletilemedi: %s", exc)
+        gateway_ok = False
+        gateway_error = str(exc)[:300]
+        logger.warning("Gateway okundu isareti iletilemedi (conv=%s): %s", conversation_id, exc)
     conv.unread_count = 0
     conv.last_read_at = datetime.utcnow()
     await db.commit()
-    return {"success": True}
+    result: Dict[str, Any] = {"success": gateway_ok}
+    if gateway_error:
+        result["error"] = gateway_error
+    return result
 
 
 async def send_typing(db: AsyncSession, user_id: str, conversation_id: int, typing: bool = True) -> Dict[str, Any]:
@@ -1662,7 +1747,7 @@ def _schedule_chats_bootstrap(owner: str) -> None:
             "sync_id": "live",
             "user_id": owner,
             "at": datetime.now(timezone.utc).isoformat(),
-        })
+        }, owner)
 
     try:
         asyncio.get_running_loop().create_task(_emit())
@@ -1746,16 +1831,22 @@ async def _bulk_channel_available() -> bool:
     return ok
 
 
-async def _broadcast_sync_event(payload: Dict[str, Any]) -> None:
+async def _broadcast_sync_event(payload: Dict[str, Any], owner: str) -> None:
     """whatsapp_sync_* olayini mevcut ws_manager uzerinden SAHIBINE yollar.
 
-    user_id routing zorunlu (§40 tenant izolasyonu); broadcast hatasi job'i
-    dusurmaz — DB gercegi yazilmaya devam eder, frontend reconnect'te
-    GET /sync/job ile toparlar (§28).
+    `owner` ZORUNLU argümandir: hedef tenant cagri aninda acikca verilir,
+    payload icindeki `user_id` alanina guvenilmez (Faz 13 tenant izolasyonu).
+    Broadcast hatasi job'i dusurmaz — DB gercegi yazilmaya devam eder,
+    frontend reconnect'te GET /sync/job ile toparlar (§28).
     """
     try:
         from backend.app.api.v1.websocket import ws_manager
-        await ws_manager.broadcast(payload)
+        sent = await ws_manager.broadcast(payload, target_user_id=owner)
+        if sent == 0:
+            logger.debug(
+                "Sync olayi teslim edilecek soket bulamadi (event=%s, owner=%s)",
+                payload.get("event"), owner,
+            )
     except Exception as exc:  # noqa: BLE001
         logger.warning("Sync olayi yayilamadi (%s): %s", payload.get("event"), exc)
 
@@ -1857,7 +1948,7 @@ async def _run_sync_job(job: SyncJob) -> None:
     owner = job.user_id
     try:
         async with AsyncSessionLocal() as db:
-            await _broadcast_sync_event(_sync_event(job, "whatsapp_sync_started", started_at=job.started_at.isoformat()))
+            await _broadcast_sync_event(_sync_event(job, "whatsapp_sync_started", started_at=job.started_at.isoformat()), owner)
             phase_t0 = time.monotonic()
 
             def _mark_phase(name: str) -> None:
@@ -1891,7 +1982,7 @@ async def _run_sync_job(job: SyncJob) -> None:
                 await _broadcast_sync_event(_sync_event(
                     job, "whatsapp_sync_chats_snapshot",
                     total=job.chats_total,
-                    conversations=conv_out[page_start:page_start + _SYNC_CHAT_PAGE_SIZE]))
+                    conversations=conv_out[page_start:page_start + _SYNC_CHAT_PAGE_SIZE]), owner)
             _mark_phase("chats")
 
             # 3) Rehber (fail-soft — sohbetler artik gorunur, ad zenginlestirmesi
@@ -1907,7 +1998,7 @@ async def _run_sync_job(job: SyncJob) -> None:
                 raise asyncio.CancelledError()
             await _broadcast_sync_event(_sync_event(
                 job, "whatsapp_sync_contacts_snapshot",
-                total=job.contacts_synced, contacts=contacts[:_SYNC_EVENT_CHUNK]))
+                total=job.contacts_synced, contacts=contacts[:_SYNC_EVENT_CHUNK]), owner)
             _mark_phase("contacts")
 
             # 3b) Ad otoritesini geri ver (P0.3 tie-break onarimi, tek SELECT):
@@ -1951,7 +2042,7 @@ async def _run_sync_job(job: SyncJob) -> None:
                 finished_at=job.finished_at.isoformat(),
                 stage_timings=dict(job.stage_timings),
                 duration_s=round((job.finished_at - job.started_at).total_seconds(), 3),
-            ))
+            ), owner)
             logger.info(
                 "Sync job tamamlandi (owner=%s sync_id=%s chats=%s msgs=%s sure=%ss fazlar=%s)",
                 owner, job.sync_id, job.chats_synced, job.messages_synced,
@@ -1961,13 +2052,20 @@ async def _run_sync_job(job: SyncJob) -> None:
     except asyncio.CancelledError:
         job.state = "FAILED"
         job.error = "sync iptal edildi"
+        job.finished_at = datetime.now(timezone.utc)
         logger.info("Sync job iptal edildi (owner=%s sync_id=%s)", owner, job.sync_id)
+        # Faz 13: iptal de UI'a BILDIRILIR. Onceden yalnizca state degisiyordu;
+        # frontend `whatsapp_sync_failed` olayi gelmedigi icin banner'i
+        # "senkron surüyor" durumunda takili kaliyordu (sessiz basarisizlik).
+        await _broadcast_sync_event(_sync_event(
+            job, "whatsapp_sync_failed", error=job.error, stage=job.stage), owner)
     except Exception as exc:  # noqa: BLE001 — fail-closed: hatayi UI'a bildir
         job.state = "FAILED"
         job.error = str(exc)[:500]
+        job.finished_at = datetime.now(timezone.utc)
         logger.warning("Sync job basarisiz (owner=%s sync_id=%s): %s", owner, job.sync_id, exc)
         await _broadcast_sync_event(_sync_event(
-            job, "whatsapp_sync_failed", error=job.error, stage=job.stage))
+            job, "whatsapp_sync_failed", error=job.error, stage=job.stage), owner)
     finally:
         job.done.set()
         _initial_sync_inflight.discard(owner)
@@ -2183,14 +2281,14 @@ async def _run_bulk_message_sync(
                 messages=serialized[chunk_start:chunk_start + _SYNC_EVENT_CHUNK],
                 total=job.messages_total,
                 synced=job.messages_synced,
-            ))
+            ), job.user_id)
         await _broadcast_sync_event(_sync_event(
             job, "whatsapp_sync_progress",
             stage=job.stage,
             chats_total=job.chats_total, chats_synced=job.chats_synced,
             contacts_synced=job.contacts_synced,
             messages_total=job.messages_total, messages_synced=job.messages_synced,
-        ))
+        ), job.user_id)
         offset += len(msgs)
         if offset >= total:
             break
@@ -2240,13 +2338,32 @@ async def _run_initial_sync(owner: str) -> None:
         _initial_sync_inflight.discard(owner)
 
 
-async def ingest_gateway_event(event: Dict[str, Any]) -> Dict[str, Any]:
+def _skip_event(event: Dict[str, Any], reason: str) -> Dict[str, Any]:
+    """Kalici yazilmayacak olayi NEDENIYLE isaretle (sessiz yutma yok).
+
+    Dondurulen olay `_skip` tasir; `ingest_gateway_event` sinirinda bu olay
+    UI'a YAYINLANMAZ ama debug seviyesinde loglanir. Boylece "bu olay neden
+    yayinlanmadi" sorusu her zaman cevaplanabilir kalir — ne sessizce
+    yutulur ne de sahte/eksik veri olarak disari cikar (AGENTS.md §1.1).
+    """
+    logger.debug("Gateway olayi kalici yazilmadi (%s)", reason)
+    event["_skip"] = reason
+    return event
+
+
+async def ingest_gateway_event(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Gateway olayini persist eder ve UI broadcast'i icin kimlikleri cevirir.
 
     - `message_new`: inbound/outbound mesaji contact/conversation/messages'a
       yazar; `conversation_id` jid'den backend sayisal id'sine cevrilir.
     - `session_*`: `session_id` (gateway UUID) backend oturum id'sine cevrilir.
     - `conversation_*`: conversation kimligi sayisallastirilir.
+
+    Dönüş sözleşmesi (Faz 13 — fail-closed): yayınlanabilir olay, tenant
+    `user_id`'si KESİN olarak eklenmiş halde döner. `None` dönerse çağıran
+    olayı **YAYINLAMAMALIDIR**. Böylece hiçbir koşulda persist edilmemiş ya da
+    sahibi belirsiz bir olay UI'a çıkmaz (AGENTS.md §1.1 — sahte veri yok,
+    sessiz hata yutma yok).
     """
     async with AsyncSessionLocal() as db:
         evt = event.get("event") or event.get("event_type") or ""
@@ -2260,34 +2377,64 @@ async def ingest_gateway_event(event: Dict[str, Any]) -> Dict[str, Any]:
             elif evt == "connection_error" or str(evt).startswith("session_"):
                 result = await _map_session_event(db, event)
             else:
-                result = event
+                logger.error("Bilinmeyen gateway olayi yayinlanmadi (event=%s)", evt)
+                return None
+
+            # Sinir kontrolu: sahibi cozulemeyen olay DISARI CIKMAZ.
+            if not isinstance(result, dict):
+                logger.error("Gateway olayi sozluk degil, yayinlanmadi (event=%s)", evt)
+                return None
+            if result.get("_skip"):
+                # Helper bilerek atladi (dejenere JID / eksik kimlik) — beklenen
+                # durum, debug seviyesinde zaten loglandi. Sessiz yutma degil.
+                return None
+            if not result.get("user_id"):
+                logger.error(
+                    "Gateway olayi sahipsiz (event=%s, gateway_session_id=%s) — yayinlanmadi",
+                    evt, event.get("gateway_session_id"),
+                )
+                return None
+
             await db.commit()
             # Faz 8 (§16, RC-5): initial sync TAMAMLANDIĞINDA backend DB'si de
             # ayni paylasilmis hattan (sync_conversations) hydrate edilir —
             # QR -> AUTHENTICATED -> INITIAL SYNC -> READY zinciri tek pipeline
             # ile calisir; "Eşitle" (manuel) ile initial sync AYNI kodu kullanir.
             if evt == "session_sync_completed":
-                owner = result.get("user_id") if isinstance(result, dict) else None
+                owner = result.get("user_id")
                 if owner and owner != SYSTEM_USER_ID:
                     _schedule_initial_sync(str(owner))
             return result
+        except EventOwnerUnresolved as exc:
+            # Beklenen fail-closed durumu: olay yanlis tenant'a YAZILMAZ ve
+            # UI'a YAYINLANMAZ. Hata seviyesinde loglanir (sessiz yutma yok).
+            await db.rollback()
+            logger.error("Gateway olayi sahibi cozulemedi, atlandi (event=%s): %s", evt, exc)
+            return None
         except Exception as exc:
             await db.rollback()
-            logger.warning("Gateway olayi islenemedi (%s): %s", evt, exc)
-            return event
+            logger.exception("Gateway olayi islenemedi, yayinlanmadi (event=%s): %s", evt, exc)
+            return None
 
 
 async def _ingest_message(db: AsyncSession, event: Dict[str, Any]) -> Dict[str, Any]:
     msg = event.get("message") or {}
     jid = msg.get("conversation_id") or event.get("conversation_id")
     if not jid or "@" not in str(jid):
-        return event
+        return _skip_event(event, "message_new: gecerli jid yok")
     jid_str = str(jid)
     # Faz 9 (§5): dejenere JID mesajları (`0@s.whatsapp.net`) kalıcılaştırılmaz.
     if is_degenerate_jid(jid_str):
-        return event
+        return _skip_event(event, f"message_new: dejenere jid ({jid_str})")
     # MVP: gateway tenant'i bilmiyor; kayitli oturumun sahibine, yoksa system'e baglan.
-    owner = await _resolve_event_owner(db, jid_str)
+    # Faz 13 (tenant izolasyonu): gateway artik her olayda `gateway_session_id`
+    # (gateway UUID) tasiyor — sahip KESIN olarak cozulur, tahmin edilmez.
+    # Cozulemezse `EventOwnerUnresolved` yukselir ve olay hic islenmez.
+    owner = await _resolve_event_owner(db, jid_str, event.get("gateway_session_id"))
+    # Faz 13 (fail-closed sinir kontrolu): cozulen sahip olaya YAZILIR. Aksi
+    # halde `ingest_gateway_event` sonundaki "sahipsiz olay yayinlanmaz"
+    # kontrolu bu mesaji reddeder ve gercek mesajlar UI'a hic ulasmaz.
+    event["user_id"] = owner
     conv = await _ensure_conversation(db, owner, jid_str)
     # Faz 10 (P1, RC-4): GRUP sohbetlerinde mesajin gonderen adi (pushName —
     # ör. bir üyenin "Ahmet"ı) GRUP contact'ine ASLA yazilmaz; grup adi
@@ -2380,17 +2527,57 @@ async def _ingest_message(db: AsyncSession, event: Dict[str, Any]) -> Dict[str, 
 SYSTEM_USER_ID = "00000000-0000-0000-0000-000000000000"
 
 
-async def _resolve_event_owner(db: AsyncSession, jid: str) -> str:
-    """Gateway olayinin kime ait oldugunu (oturum sahibi) cozmeye calisir."""
-    stmt = select(WhatsAppSession).where(WhatsAppSession.status == SessionStatus.CONNECTED)
-    try:
-        res = await db.execute(stmt)
-        row = res.scalar_one_or_none()
-        if row and row.user_id:
-            return str(row.user_id)
-    except Exception:
-        pass
-    return SYSTEM_USER_ID
+class EventOwnerUnresolved(Exception):
+    """Gateway olayinin hangi tenant'a ait oldugu KESIN olarak belirlenemedi.
+
+    Fail-closed: bu durumda olay ne DB'ye yazilir ne de UI'a yayilir. Onceki
+    davranis (rastgele bir CONNECTED oturumu secmek; hata durumunda
+    `except Exception: pass` ile SYSTEM_USER_ID'ye dusmek) veriyi yanlis
+    tenant'a yaziyor ve mesaj/telefon verisini diger tenant'lara sizdiriyordu.
+    Ayrica `scalar_one_or_none()` iki oturum varken MultipleResultsFound
+    firlatiyor, bu hata yutuluyor ve TUM olaylar sistem tenant'ina yaziliyordu.
+    """
+
+
+async def _resolve_event_owner(
+    db: AsyncSession, jid: str, gw_session_id: Optional[str] = None
+) -> str:
+    """Gateway olayinin sahibi (tenant user_id) — KESIN cozum, tahmin yok.
+
+    1) Tercih edilen yol: olay `session_id` (gateway UUID) tasiyorsa sahibi
+       `whatsapp_sessions.gateway_id` uzerinden birebir bulunur.
+    2) Geriye donuk uyum: `session_id` gondermeyen eski gateway surumu icin,
+       YALNIZCA tek bir bagli oturum varsa sahibi belirsiz degildir.
+       Birden fazla tenant bagliysa cozum imkansizdir -> hata (tahmin yok).
+
+    `jid` yalnizca teshis/log icin tasinir.
+    """
+    if gw_session_id:
+        owner = await db.scalar(
+            select(WhatsAppSession.user_id).where(
+                WhatsAppSession.gateway_id == str(gw_session_id)
+            )
+        )
+        if owner:
+            return str(owner)
+        raise EventOwnerUnresolved(
+            f"Bilinmeyen gateway oturumu (session_id={gw_session_id}, jid={jid})"
+        )
+
+    rows = (
+        await db.execute(
+            select(WhatsAppSession.user_id).where(
+                WhatsAppSession.status == SessionStatus.CONNECTED
+            )
+        )
+    ).all()
+    owners = {str(r[0]) for r in rows if r[0]}
+    if len(owners) == 1:
+        return next(iter(owners))
+    raise EventOwnerUnresolved(
+        "Olay session_id tasimiyor ve sahibi tek anlamli degil "
+        f"(bagli tenant sayisi={len(owners)}, jid={jid})"
+    )
 
 
 async def _ingest_contact_synced(db: AsyncSession, event: Dict[str, Any]) -> Dict[str, Any]:
@@ -2405,12 +2592,13 @@ async def _ingest_contact_synced(db: AsyncSession, event: Dict[str, Any]) -> Dic
     contact_payload = event.get("contact") or {}
     jid = contact_payload.get("id") or contact_payload.get("jid")
     if not jid or "@" not in str(jid):
-        return event
+        return _skip_event(event, "contact_synced: gecerli jid yok")
     # Faz 9 (§5): dejenere JID kişileri (`0@s.whatsapp.net` → '+0') DB'ye yazılmaz.
     if is_degenerate_jid(str(jid)):
-        return event
+        return _skip_event(event, f"contact_synced: dejenere jid ({jid})")
     phone_e164 = jid_to_phone(str(jid)) or f"jid:{jid}"
-    owner = await _resolve_event_owner(db, str(jid))
+    owner = await _resolve_event_owner(db, str(jid), event.get("gateway_session_id"))
+    event["user_id"] = owner  # Faz 13: cozulen sahip olaya yazilir (yayin sinir kontrolu)
     res = await db.execute(
         select(Contact).where(
             Contact.phone_e164 == phone_e164,
@@ -2449,11 +2637,12 @@ async def _map_conversation_event(db: AsyncSession, event: Dict[str, Any]) -> Di
         if candidate and "@" in str(candidate):
             jid = candidate
         else:
-            return event
+            return _skip_event(event, f"{event.get('event')}: sohbet jid'i cozulemedi")
     # Faz 9 (§5): dejenere JID sohbetleri (`0@s.whatsapp.net`) DB'ye yazilmaz.
     if is_degenerate_jid(str(jid)):
-        return event
-    owner = await _resolve_event_owner(db, str(jid))
+        return _skip_event(event, f"{event.get('event')}: dejenere jid ({jid})")
+    owner = await _resolve_event_owner(db, str(jid), event.get("gateway_session_id"))
+    event["user_id"] = owner  # Faz 13: cozulen sahip olaya yazilir (yayin sinir kontrolu)
     conv = await _ensure_conversation(db, owner, str(jid))
     event["conversation_id"] = conv.id
     if event.get("event") == "presence_updated":
@@ -2554,7 +2743,7 @@ async def _map_conversation_event(db: AsyncSession, event: Dict[str, Any]) -> Di
 async def _map_session_event(db: AsyncSession, event: Dict[str, Any]) -> Dict[str, Any]:
     gw_session_id = event.get("session_id")
     if not gw_session_id:
-        return event
+        return _skip_event(event, "session_*: session_id yok")
     evt = event.get("event") or event.get("event_type") or ""
     res = await db.execute(select(WhatsAppSession).where(WhatsAppSession.gateway_id == str(gw_session_id)))
     row = res.scalar_one_or_none()

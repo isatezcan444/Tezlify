@@ -176,8 +176,19 @@ app.get('/conversations', (req, res) => {
 app.post('/conversations/sync-groups', async (req, res) => {
   try {
     const force = req.body && req.body.force === true;
-    await sessionManager._ensureGroupSubjects({ force });
-    res.json({ success: true, force });
+    const result = await sessionManager._ensureGroupSubjects({ force });
+    // Faz 13 (truthfulness): cozumleme yapilmadiysa SAHTE basari donme.
+    // `ambiguous_scope` gercek bir reddedilme (kiracilar arasi karisma riski).
+    if (result && result.applied === false && result.reason === 'ambiguous_scope') {
+      return res.status(409).json({
+        success: false,
+        reason: result.reason,
+        error:
+          'Birden fazla WhatsApp oturumu bagli; grup basliklarinin hangi hesaptan cozulecegi ' +
+          'belirsiz oldugu icin islem REDDEDILDI.',
+      });
+    }
+    res.json({ success: true, force, applied: result ? result.applied : false, reason: result ? result.reason : null });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

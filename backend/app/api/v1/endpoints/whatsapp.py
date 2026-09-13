@@ -4,6 +4,7 @@ HTTP katmanı: doğrulama + query parsing; iş mantığı `whatsapp_service`'de.
 Tüm uç noktalar kimlik doğrulamalı ve çok kiracılı (user_id filtresi) çalışır.
 """
 from typing import Optional
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -33,15 +34,23 @@ from backend.app.services import whatsapp_service
 
 router = APIRouter()
 
+logger = logging.getLogger(__name__)
+
 
 def _not_found(exc: Exception) -> HTTPException:
     return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
 
 
 def _bad_gateway(exc: Exception) -> HTTPException:
+    """Gateway erisim hatasi -> 502.
+
+    Faz 13: ham exception metni (ic URL, host, stack detayi) istemciye
+    GONDERILMEZ — yalnizca sunucu logunda tutulur. Istemci generic mesaj alir.
+    """
+    logger.warning("WhatsApp gateway hatasi: %s", exc)
     return HTTPException(
         status_code=status.HTTP_502_BAD_GATEWAY,
-        detail=f"WhatsApp gateway'e ulaşılamadı: {exc}",
+        detail="WhatsApp gateway'e ulaşılamadı. Lütfen gateway servisinin çalıştığını doğrulayın.",
     )
 
 
@@ -213,6 +222,12 @@ async def get_conversations(
     unread_only: bool = Query(False),
     group_only: bool = Query(False, description="Yalnizca grup sohbetleri (is_group)"),
     archived_only: bool = Query(False, description="Yalnizca WhatsApp arsivli sohbetler (is_archived veya status=ARCHIVED)"),
+    lead_id: Optional[int] = Query(
+        None, ge=1, description="Yalnizca bu lead'e bagli sohbet (LeadDetailDrawer sohbet sekmesi)"
+    ),
+    conversation_id: Optional[int] = Query(
+        None, ge=1, description="Yalnizca bu sohbet (hedefli tek-sohbet sorgusu)"
+    ),
     sync: bool = Query(False, description="Arka plan sync job'ını tetikle (beklemeden döner)"),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
@@ -234,6 +249,8 @@ async def get_conversations(
         unread_only=unread_only,
         group_only=group_only,
         archived_only=archived_only,
+        lead_id=lead_id,
+        conversation_id=conversation_id,
         limit=limit,
         offset=offset,
     )
@@ -325,7 +342,10 @@ async def mark_conversation_read(
         result = await whatsapp_service.mark_conversation_read(db, current_user.id, conversation_id)
     except LookupError as exc:
         raise _not_found(exc) from exc
-    return WhatsAppReadResult(success=bool(result.get("success", True)))
+    return WhatsAppReadResult(
+        success=bool(result.get("success", True)),
+        error=result.get("error"),
+    )
 
 
 @router.post("/conversations/{conversation_id}/typing", response_model=WhatsAppReadResult)
@@ -341,7 +361,10 @@ async def send_typing(
         raise _not_found(exc) from exc
     except Exception as exc:
         raise _bad_gateway(exc) from exc
-    return WhatsAppReadResult(success=bool(result.get("success", True)))
+    return WhatsAppReadResult(
+        success=bool(result.get("success", True)),
+        error=result.get("error"),
+    )
 
 
 @router.get("/media/{media_id}")

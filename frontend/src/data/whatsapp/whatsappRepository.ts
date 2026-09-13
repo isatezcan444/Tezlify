@@ -11,7 +11,13 @@
  * - Real-time events from `/ws/gateway` are dispatched as
  *   `tezlify:ws_event` CustomEvents for UI components to consume.
  */
-import { WhatsAppApi, probeLive, invalidateLiveProbe, WhatsAppApiError } from '../../api/whatsappApi';
+import {
+  WhatsAppApi,
+  probeLive,
+  invalidateLiveProbe,
+  WhatsAppApiError,
+  ConversationReadResult,
+} from '../../api/whatsappApi';
 import {
   Conversation,
   ConversationDetail,
@@ -112,6 +118,8 @@ export class WhatsAppRepository {
     unread_only?: boolean;
     group_only?: boolean;
     archived_only?: boolean;
+    lead_id?: number;
+    conversation_id?: number;
     search?: string;
     limit?: number;
     offset?: number;
@@ -123,6 +131,8 @@ export class WhatsAppRepository {
       unread_only: params?.unread_only,
       group_only: params?.group_only,
       archived_only: params?.archived_only,
+      lead_id: params?.lead_id,
+      conversation_id: params?.conversation_id,
       search: params?.search,
       limit: params?.limit,
       offset: params?.offset,
@@ -132,11 +142,20 @@ export class WhatsAppRepository {
 
   static async getConversation(conversationId: number): Promise<ConversationDetail> {
     await requireLive();
-    const list = await WhatsAppApi.getConversations({ limit: 200 });
-    const conv = list.find((c) => c.id === conversationId);
+    // Faz 12: hedefli tek-sohbet sorgusu — eskiden TUM liste (limit=200)
+    // indirilip istemcide filtreleniyordu (agir + 200 sohbetten sonra sessizce
+    // basarisiz). Ayni tenant filtresi sunucuda uygulanir.
+    const list = await WhatsAppApi.getConversations({ conversation_id: conversationId, limit: 1 });
+    const conv = list[0];
     if (!conv) throw new WhatsAppApiError('Konu\u015fma bulunamad\u0131');
     const messages = await WhatsAppApi.getMessages(conversationId, { limit: 100 });
-    return { ...conv, messages: messages.messages, has_more: messages.has_more };
+    return {
+      ...conv,
+      messages: messages.messages,
+      has_more: messages.has_more,
+      oldest_message_id: messages.oldest_message_id,
+      newest_message_id: messages.newest_message_id,
+    };
   }
 
   static async getConversationMessages(
@@ -147,16 +166,27 @@ export class WhatsAppRepository {
     return WhatsAppApi.getMessages(conversationId, params);
   }
 
-  static async markConversationAsRead(conversationId: number): Promise<Conversation> {
+  /**
+   * Sohbeti okundu isaretler ve GERCEK sonucu dondurur.
+   *
+   * Faz 13 (truthfulness): donen `success=false` ise gateway'e okundu bilgisi
+   * ILETILEMEMISTIR — cagiran bunu kullaniciya bildirmelidir. Onceki imza
+   * (`Conversation | null`) basari bilgisini tasimiyordu ve cagiranlar
+   * `.catch(() => {})` ile hem ag hem gateway hatasini sessizce yutuyordu.
+   */
+  static async markConversationAsRead(
+    conversationId: number,
+    known?: Conversation,
+  ): Promise<ConversationReadResult> {
     await requireLive();
-    return WhatsAppApi.markConversationRead(conversationId);
+    return WhatsAppApi.markConversationRead(conversationId, known);
   }
 
-  static async markLeadConversationAsRead(leadId: number): Promise<Conversation> {
+  static async markLeadConversationAsRead(leadId: number): Promise<ConversationReadResult> {
     const convs = await WhatsAppRepository.getConversations({ search: String(leadId), limit: 50 });
     const conv = convs.find((c) => c.lead_id === leadId || c.id === leadId);
     if (!conv) throw new WhatsAppApiError('Lead konu\u015fmas\u0131 bulunamad\u0131');
-    return WhatsAppRepository.markConversationAsRead(conv.id);
+    return WhatsAppRepository.markConversationAsRead(conv.id, conv);
   }
 
   static async sendMessage(
@@ -225,8 +255,31 @@ export class WhatsAppRepository {
     throw new WhatsAppApiError('Yeni konu\u015fma ba\u015flatmak i\u00e7in canl\u0131 gateway gereklidir.');
   }
 
-  static async getLeadConversation(_leadId: number): Promise<ConversationDetail> {
-    throw new WhatsAppApiError('Bu \u00f6zellik kald\u0131r\u0131ld\u0130.');
+  /**
+   * Lead'e bagli canli WhatsApp sohbetini cozer (LeadDetailDrawer "Sohbet" sekmesi).
+   *
+   * Faz 12: eskiden bu metot dogrudan
+   * `throw new WhatsAppApiError('Bu özellik kaldırıldı.')` yapiyordu — cekmecedeki
+   * sohbet sekmesi HER acilista hata durumuna dusuyordu. Artik sunucu tarafi
+   * `lead_id` filtresiyle hedefli sorgu + mesaj cekimi yapilir; istemcide
+   * 200 satirlik liste taramasi YOK (AGENTS.md §1.1: sahte basari/veri uretilmez,
+   * sohbet yoksa gercek hata firlatilir).
+   */
+  static async getLeadConversation(leadId: number): Promise<ConversationDetail> {
+    await requireLive();
+    const list = await WhatsAppApi.getConversations({ lead_id: leadId, limit: 1 });
+    const conv = list[0];
+    if (!conv) {
+      throw new WhatsAppApiError('Bu lead icin WhatsApp sohbeti bulunamadi.');
+    }
+    const messages = await WhatsAppApi.getMessages(conv.id, { limit: 50 });
+    return {
+      ...conv,
+      messages: messages.messages,
+      has_more: messages.has_more,
+      oldest_message_id: messages.oldest_message_id,
+      newest_message_id: messages.newest_message_id,
+    };
   }
 
   static async updateConversationStatus(

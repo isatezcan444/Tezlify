@@ -25,6 +25,7 @@ from backend.app.core.database import AsyncSessionLocal
 from backend.app.models.whatsapp_session import WhatsAppSession, SessionStatus
 from backend.app.models.contact import Contact
 from backend.app.models.conversation import Conversation, ConversationStatus
+from backend.app.models.lead import Lead
 from backend.app.models.message import Message, MessageDirection, MessageType, ConversationMessageStatus
 from backend.app.services import whatsapp_gateway as gw
 from backend.app.services.whatsapp_service import ingest_gateway_event
@@ -123,6 +124,12 @@ async def _cleanup_whatsapp_tables():
             )
             await db.execute(
                 text("DELETE FROM contacts WHERE phone_e164 = '+905551112233'"),
+            )
+            # Faz 12 lead→sohbet cozumleme testleri gecici Lead satirlari yaratir
+            # (leads.phone_e164 UNIQUE) — sonraki kosularda cakismasin diye temizle.
+            await db.execute(
+                text("DELETE FROM leads WHERE user_id IN (:h1, :h2)"),
+                {"h1": TEST_USER_HEX, "h2": SYS_USER_HEX},
             )
             await db.commit()
 
@@ -479,6 +486,101 @@ async def test_get_conversations_empty(auth_headers, mock_gateway):
         assert "items" in data
         assert "total" in data
         assert data["total"] == 0
+
+
+@pytest.mark.asyncio
+async def test_get_conversations_filter_by_lead_id(auth_headers, mock_gateway):
+    """Faz 12: `lead_id` filtresi telefon eslesmesiyle TEK sohbeti dondurur.
+
+    Regresyon: LeadDetailDrawer'in sohbet sekmesi onceden istemcide
+    `limit=200` listesini indirip ariyordu (200'den sonra sessiz basarisiz).
+    Artik sunucu tarafi filtre. `Conversation.lead_id` hicbir yerde
+    YAZILMADIGI icin eslesme `Lead.phone_e164 == Contact.phone_e164` uzerinden
+    kurulmalidir; aksi halde filtre sessizce BOS donerdi.
+    """
+    async with AsyncSessionLocal() as db:
+        lead = Lead(
+            user_id=TEST_USER,
+            name="Lead A",
+            phone=MOCK_PHONE,
+            phone_e164=MOCK_PHONE,
+        )
+        db.add(lead)
+        await db.flush()
+
+        contact_a = Contact(user_id=TEST_USER, phone_e164=MOCK_PHONE, display_name="Lead A")
+        contact_b = Contact(user_id=TEST_USER, phone_e164=MOCK_PHONE2, display_name="Baska Kisi")
+        db.add_all([contact_a, contact_b])
+        await db.flush()
+
+        conv_a = Conversation(
+            user_id=TEST_USER, contact_id=contact_a.id, channel="WHATSAPP",
+            status=ConversationStatus.ACTIVE, unread_count=0,
+        )
+        conv_b = Conversation(
+            user_id=TEST_USER, contact_id=contact_b.id, channel="WHATSAPP",
+            status=ConversationStatus.ACTIVE, unread_count=0,
+        )
+        db.add_all([conv_a, conv_b])
+        await db.flush()
+        lead_id, conv_a_id = lead.id, conv_a.id
+        await db.commit()
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # Filtresiz: iki sohbet de gorunur (kontrol grubu).
+        all_res = await client.get("/api/v1/whatsapp/conversations", headers=auth_headers)
+        assert all_res.status_code == 200
+        assert all_res.json()["total"] == 2
+
+        # lead_id filtresi: yalnizca telefonu eslesen sohbet.
+        res = await client.get(
+            f"/api/v1/whatsapp/conversations?lead_id={lead_id}", headers=auth_headers
+        )
+        assert res.status_code == 200
+        data = res.json()
+        assert data["total"] == 1
+        assert [i["id"] for i in data["items"]] == [conv_a_id]
+        assert data["items"][0]["phone"] == MOCK_PHONE
+
+        # Eslesmeyen lead_id: sessizce bos (sahte sonuc uretilmez).
+        missing = await client.get(
+            "/api/v1/whatsapp/conversations?lead_id=99999999", headers=auth_headers
+        )
+        assert missing.status_code == 200
+        assert missing.json()["total"] == 0
+
+
+@pytest.mark.asyncio
+async def test_get_conversations_filter_by_conversation_id(auth_headers, mock_gateway):
+    """Faz 12: `conversation_id` filtresi tek satiri hedefli sorguyla getirir.
+
+    `whatsappRepository.getConversation` onceden `limit=200` taramasi yapip
+    istemcide ariyordu; artik sunucu tarafi tek-kayit sorgusu.
+    """
+    async with AsyncSessionLocal() as db:
+        contact = Contact(user_id=TEST_USER, phone_e164=MOCK_PHONE, display_name="Lead A")
+        db.add(contact)
+        await db.flush()
+        conv = Conversation(
+            user_id=TEST_USER, contact_id=contact.id, channel="WHATSAPP",
+            status=ConversationStatus.ACTIVE, unread_count=0,
+        )
+        db.add(conv)
+        await db.flush()
+        conv_id = conv.id
+        await db.commit()
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        res = await client.get(
+            f"/api/v1/whatsapp/conversations?conversation_id={conv_id}", headers=auth_headers
+        )
+        assert res.status_code == 200
+        data = res.json()
+        assert data["total"] == 1
+        assert data["items"][0]["id"] == conv_id
+        assert data["items"][0]["name"] == "Lead A"
 
 
 # ---------------------------------------------------------------------------
@@ -1173,7 +1275,13 @@ async def test_mark_conversation_read_endpoint(auth_headers, mock_gateway):
 
 @pytest.mark.asyncio
 async def test_mark_conversation_read_survives_gateway_failure(auth_headers, mock_gateway):
-    """If the gateway is unreachable, read still clears DB unread (fail-soft) and returns success."""
+    """Gateway erisilemezse: DB okundu isareti YINE temizlenir (fail-soft),
+    ancak yanit SAHTE basari dondurmez — `success=False` + `error` verir.
+
+    Faz 13: onceki davranis gateway cagrisi patlasa bile `success: True`
+    donuyordu; UI "okundu olarak isaretlendi" diyor, WhatsApp tarafinda ise
+    hicbir sey olmuyordu (sessiz yalan). Artik gercek sonuc raporlanir.
+    """
     conv_id = await _make_conv()
     mock_gateway.mark_conversation_read.side_effect = Exception("gateway down")
 
@@ -1182,8 +1290,18 @@ async def test_mark_conversation_read_survives_gateway_failure(auth_headers, moc
         res = await client.post(
             f"/api/v1/whatsapp/conversations/{conv_id}/read", headers=auth_headers
         )
+        # Kullanici icin yerel okundu islemi yine de tamamlanir (fail-soft).
         assert res.status_code == 200
-        assert res.json()["success"] is True
+        body = res.json()
+        assert body["success"] is False
+        assert "gateway down" in (body.get("error") or "")
+
+    # DB gercegi: yerel okundu isareti temizlendi.
+    async with AsyncSessionLocal() as db:
+        conv = (await db.execute(
+            select(Conversation).where(Conversation.id == conv_id)
+        )).scalar_one()
+        assert conv.unread_count == 0
 
 
 @pytest.mark.asyncio

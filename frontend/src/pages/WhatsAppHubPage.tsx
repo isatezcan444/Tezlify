@@ -109,6 +109,10 @@ function compareByLastMessageDesc(a: Conversation, b: Conversation): number {
   return tb - ta;
 }
 
+// Faz 12 (Sorun 2): tekrar oynatilan WS olaylarinda sayac sismesini onlemek icin
+// tutulan son gorulen wa_message_id kumesinin ust siniri.
+const SEEN_WA_IDS_MAX = 1000;
+
 export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats }) => {
   const toast = useToast();
   const { t } = useI18n();
@@ -141,6 +145,78 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   // id'lerini ref uzerinden okur (bayat closure / StrictMode çift calisma yok).
   const loadConversationsRef = useRef<((silent?: boolean) => Promise<void>) | null>(null);
   const knownConvIdsRef = useRef<Set<number>>(new Set());
+
+  // Faz 13 (truthfulness): okundu isaretleme artik GERCEK sonuc dondurur.
+  // Gateway'e iletilemezse sessizce yutulmaz — konsola her zaman yazilir,
+  // kullanici eylemiyse (tiklama) kullaniciya da bildirilir.
+  //
+  // `toast` ve `t` ref uzerinden okunur: bu callback'ler WS kurulum effect'inin
+  // bagimlilik dizisine girer; kimlikleri degisirse listener'lar her render'da
+  // sokulup yeniden takilir (olay kaybi + gereksiz is).
+  const toastRef = useRef(toast);
+  toastRef.current = toast;
+  const tRef = useRef(t);
+  tRef.current = t;
+
+  const reportReadSync = useCallback(
+    (res: { success: boolean; error?: string } | null | undefined, opts?: { notify?: boolean; label?: string }) => {
+      if (!res || res.success) return;
+      const detail = res.error || 'bilinmeyen neden';
+      console.warn(
+        `[WhatsAppHubPage] Okundu bilgisi WhatsApp'a iletilemedi${opts?.label ? ` (${opts.label})` : ''}: ${detail}`
+      );
+      if (opts?.notify) {
+        toastRef.current.error(
+          tRef.current('whatsapp.readSyncFailed') || `Okundu bilgisi WhatsApp'a iletilemedi: ${detail}`,
+          tRef.current('common.error')
+        );
+      }
+    },
+    []
+  );
+
+  // Faz 13: arka plan mesaj tazeleme hatalari da sessizce yutulmaz.
+  const logBackgroundFetchFailure = useCallback(
+    (scope: string) => (err: unknown) => {
+      console.warn(`[WhatsAppHubPage] ${scope} basarisiz:`, err);
+    },
+    []
+  );
+
+  // Faz 12 (P0): `onRefreshStats` prop'u üst bileşende (App) yeniden üretilirse
+  // kimliği değişir. Aşağıdaki kurulum effect'i bunu bağımlılık olarak taşırsa
+  // HER render'da yeniden çalışır ve GET /whatsapp/sessions +
+  // GET /whatsapp/sync/job + GET /settings/antiban isteklerini tekrar atar
+  // (Network sekmesindeki fırtınanın ikinci ayağı). Ref üzerinden okunur;
+  // effect bağımlılığından çıkarılır.
+  const onRefreshStatsRef = useRef(onRefreshStats);
+  useEffect(() => {
+    onRefreshStatsRef.current = onRefreshStats;
+  }, [onRefreshStats]);
+
+  // Faz 12 (Sorun 2 — canli liste tutarliligi): backend ayni `wa_message_id`
+  // icin dedup edip ERKEN donsa bile olayi yine de broadcast ediyor
+  // (main.py `/ws/gateway`), ayrica gateway kuyrugu yeniden baglanmada olaylari
+  // tekrar oynatabiliyor. Bu durumda `message_count` ve `unread_count`
+  // KOSULSUZ +1 yapildigi icin rozet/sayaclar sisiyordu. Son gorulen
+  // wa_message_id'ler sinirli bir kume (ring) ile tutulur; tekrar gelen olay
+  // sayaclari ARTIRMAZ (mesaj balonlari zaten messagesMap'te dedup edilir).
+  const seenWaMessageIdsRef = useRef<Set<string>>(new Set());
+  const rememberWaMessageId = useCallback((waId: string): boolean => {
+    const seen = seenWaMessageIdsRef.current;
+    if (seen.has(waId)) return false; // tekrar oynatilan olay
+    seen.add(waId);
+    if (seen.size > SEEN_WA_IDS_MAX) {
+      // Bellek siniri: en eski girdileri dusur (Set ekleme sirasini korur).
+      const it = seen.values();
+      for (let i = 0; i < SEEN_WA_IDS_MAX / 2; i += 1) {
+        const next = it.next();
+        if (next.done) break;
+        seen.delete(next.value);
+      }
+    }
+    return true;
+  }, []);
 
   // Faz 7/11: GERÇEK initial-sync durumu — artık WS tabanlı chunked sync job'i
   // (whatsapp_sync_* olaylari) ile beslenir. Polling storm ve sahte progress YOK.
@@ -225,8 +301,9 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       } else if (job.state === 'FAILED') {
         setSessionSync({ phase: 'error', stage: job.stage, error: job.error ?? null, progress: 0 });
       }
-    } catch {
-      /* backend erisilemezse banner gösterilmez; hata maskelenmez ama startup'i kirmez */
+    } catch (err) {
+      // Faz 13: hata MASKELENMEZ — startup'i kirletmeden gorunur loglanir.
+      console.warn('[WhatsAppHubPage] Sync durumu alinamadi (GET /whatsapp/sync/job):', err);
     }
   }, []);
 
@@ -269,7 +346,12 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     // tiklama ya da otomatik secim yoluyla gelmesi farketmez; okundu boylece
     // telefona da geri yazilir.
     if ((selectedConv.unread_count ?? 0) > 0) {
-      WhatsAppRepository.markConversationAsRead(convId).catch(() => {});
+      // Faz 12: sohbet elimizde — `known` geçilir; ekstra 200 satırlık liste
+      // GET'i YOK.
+      // Faz 13: sonuc GERCEK — gateway'e iletilemezse sessizce yutulmaz.
+      WhatsAppRepository.markConversationAsRead(convId, selectedConv)
+        .then((res) => reportReadSync(res, { label: `conv#${convId}` }))
+        .catch((err) => console.warn('[WhatsAppHubPage] Okundu istegi basarisiz:', err));
       setConversations((prev) =>
         prev.map((item) => (item.id === convId ? { ...item, unread_count: 0 } : item))
       );
@@ -314,7 +396,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     return () => {
       isMounted = false;
     };
-  }, [selectedConv?.id]);
+  }, [selectedConv?.id, reportReadSync]);
 
   // Faz 11: Manuel "Eşitle" artık ağır sync'i HTTP'de BEKLEMİYOR — POST /sync
   // kısa ömürlü job'ı tetikler (202); tüm ilerleme ve tamamlama mevcut WS
@@ -693,6 +775,12 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         // 'ME' yayinlar; balon sagda 'Siz' olarak etiketlenir.
         const senderLabel = isOutbound ? 'Siz' : msgObj0?.sender_name || eventData.sender_name;
 
+        // Faz 12 (Sorun 2): ayni mesajin tekrar oynatilmasi (WS replay / cift
+        // emit) liste sayaclarini SISIRMEZ. `wa_message_id` yoksa (nadir:
+        // optimistic/eski olay) eski davranis korunur — sessizce yutmayiz.
+        const waIdForDedup = msgObj0?.wa_message_id || eventData.wa_message_id || eventData.message_id;
+        const isReplayedEvent = Boolean(waIdForDedup) && !rememberWaMessageId(String(waIdForDedup));
+
         // Update Conversation in list
         setConversations((prev) => {
           const idx = prev.findIndex(
@@ -716,17 +804,44 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
               Boolean(existing.is_group),
               t,
             );
-            const applyPreview = summary && shouldApplyPreview(msgTime, existing.last_message_at);
+            // Sorun 2 (kronolojik siralama — sertlestirme): ZAMAN DAMGASI
+            // guncellemesi onizleme uretiminden BAGIMSIZDIR. Onceden
+            // `last_message_at` yalnizca `summary` (insan-okur onizleme)
+            // uretilebildiginde yaziliyordu: govdesiz/etiketsiz bir olay
+            // (bos metin, taninmayan tip, gec gelen metadata) geldiginde
+            // damga yerinde kaliyor ve sohbet listede EN USTE TASINMIYORDU.
+            // Artik: damga her zaman zaman-damgali kurala gore uygulanir,
+            // onizleme ayrica degerlendirilir — siralama ile metin birbirini
+            // bloklamaz.
+            const tsFresh = shouldApplyPreview(msgTime, existing.last_message_at);
+            const applyPreview = Boolean(summary) && tsFresh;
+            // Tekrar oynatilan olayda sayaclar/rozet ARTMAZ; mesaj balonu
+            // messagesMap'te ayrica dedup edilir, veri kaybi olmaz.
             const updated: Conversation = {
               ...existing,
               status: 'ACTIVE',
-              last_message_preview: applyPreview ? summary : existing.last_message_preview,
-              last_message_at: applyPreview || !existing.last_message_at ? msgTime : existing.last_message_at,
-              message_count: (existing.message_count ?? 0) + 1,
+              last_message_preview:
+                isReplayedEvent
+                  ? existing.last_message_preview
+                  : applyPreview
+                    ? summary
+                    : existing.last_message_preview,
+              last_message_at:
+                isReplayedEvent
+                  ? existing.last_message_at
+                  : tsFresh || !existing.last_message_at
+                    ? msgTime
+                    : existing.last_message_at,
+              message_count: isReplayedEvent ? (existing.message_count ?? 0) : (existing.message_count ?? 0) + 1,
               last_message_state: applyPreview ? 'RESOLVED' : existing.last_message_state,
-              unread_count: isCurrentSelected || isOutbound ? 0 : (existing.unread_count || 0) + 1,
+              unread_count:
+                isReplayedEvent
+                  ? existing.unread_count
+                  : isCurrentSelected || isOutbound
+                    ? 0
+                    : (existing.unread_count || 0) + 1,
               is_window_open: true, // Inbound message opens the 24h customer window!
-              last_inbound_at: !isOutbound ? msgTime : existing.last_inbound_at,
+              last_inbound_at: isReplayedEvent ? existing.last_inbound_at : !isOutbound ? msgTime : existing.last_inbound_at,
             };
             if (isCurrentSelected) {
               setSelectedConv(updated);
@@ -803,7 +918,11 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
               return n;
             });
             clearTimeout(peerTypingTimersRef.current[convId as number]);
-            WhatsAppRepository.markConversationAsRead(convId).catch(() => {});
+            // Otomatik okundu: kullanici sohbeti acik tutuyor — basarisizlikta
+            // toast GOSTERILMEZ (her gelen mesajda spam olur) ama konsola yazilir.
+            WhatsAppRepository.markConversationAsRead(convId)
+              .then((res) => reportReadSync(res, { label: `auto#${convId}` }))
+              .catch((err) => console.warn('[WhatsAppHubPage] Otomatik okundu istegi basarisiz:', err));
           }
         }
       }
@@ -1068,7 +1187,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                 setMessagesMap((prev) => ({ ...prev, [selectedConv.id]: res.messages }));
               }
             })
-            .catch(() => {});
+            .catch(logBackgroundFetchFailure('history_sync_completed mesaj tazeleme'));
         }
       }
 
@@ -1095,7 +1214,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                 setMessagesMap((prev) => ({ ...prev, [selectedConv.id]: res.messages }));
               }
             })
-            .catch(() => {});
+            .catch(logBackgroundFetchFailure('session_sync_completed mesaj tazeleme'));
         }
       }
 
@@ -1148,7 +1267,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
               });
             }
           })
-          .catch(() => {});
+          .catch(logBackgroundFetchFailure('reconnect mesaj mutabakati'));
       }
     };
 
@@ -1158,7 +1277,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       window.removeEventListener('tezlify:ws_event', handleWsEvent);
       window.removeEventListener('tezlify:ws_connected', handleReconnect);
     };
-  }, [selectedConv, loadConversations, refreshSyncStatus]);
+  }, [selectedConv, loadConversations, refreshSyncStatus, reportReadSync, logBackgroundFetchFailure]);
 
   // Anti-Ban Timing & Change-Tracking State
   const [savedConfig, setSavedConfig] = useState<AntiBanConfig>(getStoredAntiBanConfig());
@@ -1206,7 +1325,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         eventData?.event === 'number_updated'
       ) {
         fetchSessions(true);
-        onRefreshStats();
+        onRefreshStatsRef.current();
         // Faz 7: baglanti degisikliginde gercek sync durumunu cek (banner icin)
         refreshSyncStatus();
       } else if (
@@ -1244,7 +1363,11 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     return () => {
       window.removeEventListener('tezlify:ws_event', handleWs);
     };
-  }, [fetchSessions, onRefreshStats, refreshSyncStatus]);
+    // Faz 12: `onRefreshStats` BİLEREK bağımlılıkta DEĞİL — ref üzerinden
+    // okunur, böylece üst bileşen yeniden render olduğunda bu kurulum effect'i
+    // (ve içindeki 3 HTTP isteği) tekrar tetiklenmez.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fetchSessions, refreshSyncStatus]);
 
   const handlePresetSelect = (presetKey: 'ultra_safe' | 'standard_balanced' | 'fast_warmed') => {
     const presetData = ANTI_BAN_PRESETS[presetKey];
@@ -1542,7 +1665,13 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
               onSelect={(c) => {
                 setSelectedConv(c);
                 if (c.unread_count > 0) {
-                  WhatsAppRepository.markConversationAsRead(c.id).catch(() => {});
+                  // Kullanici eylemi → gateway'e iletilemezse GORUNUR bildirim.
+                  WhatsAppRepository.markConversationAsRead(c.id, c)
+                    .then((res) => reportReadSync(res, { notify: true, label: `click#${c.id}` }))
+                    .catch((err) => {
+                      console.warn('[WhatsAppHubPage] Okundu istegi basarisiz:', err);
+                      toast.error(t('whatsapp.readSyncFailed') || t('common.error'), t('common.error'));
+                    });
                   setConversations((prev) =>
                     prev.map((item) => (item.id === c.id ? { ...item, unread_count: 0 } : item))
                   );

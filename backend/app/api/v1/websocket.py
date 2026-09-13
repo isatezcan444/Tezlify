@@ -31,38 +31,47 @@ class ConnectionManager:
                 del self.user_connections[uid_str]
         logger.info(f"WebSocket client disconnected. Active: {len(self.active_connections)}")
 
-    async def broadcast(self, message: Dict[str, Any], target_user_id: Any = None):
-        """
-        Broadcasts a JSON message.
-        If target_user_id is provided or message has 'user_id', routes strictly to that tenant's sockets!
-        Otherwise, broadcasts to all connected clients.
-        """
-        if not self.active_connections:
-            return
+    async def broadcast(self, message: Dict[str, Any], target_user_id: Any = None) -> int:
+        """JSON mesajini YALNIZCA hedef tenant'in soketlerine yollar.
 
-        target_uid = target_user_id or message.get("user_id")
+        Güvenlik sözleşmesi (fail-closed): hedef tenant çözülemezse mesaj
+        HİÇBİR istemciye gönderilmez. Eskiden `user_id` yoksa TÜM bağlı
+        istemcilere yayın yapılıyordu — bu, bir tenant'ın mesaj/telefon/lead
+        verisinin diğer tenant'lara sızmasına yol açıyordu (çok kiracılı
+        izolasyon ihlali). Sessiz geniş yayın yerine açık hata loglanır.
+
+        Dönüş: mesajın gönderildiği soket sayısı (0 = hedef yok / gönderilemedi).
+        """
+        target_uid = target_user_id if target_user_id is not None else message.get("user_id")
+        if target_uid is None or str(target_uid).strip() == "":
+            logger.error(
+                "WS broadcast REDDEDILDI: hedef user_id yok (event=%s). "
+                "Çok kiracılı izolasyon gereği geniş yayın yapılmaz.",
+                message.get("event"),
+            )
+            return 0
+
+        target_str = str(target_uid).strip()
+        recipients = list(self.user_connections.get(target_str, set()))
+        if not recipients:
+            # Bağlı istemci yok: bu bir hata değil, sadece teslim edilecek yer yok.
+            logger.debug("WS broadcast: '%s' için bağlı soket yok (event=%s)", target_str, message.get("event"))
+            return 0
+
         payload = json.dumps(message, default=str)
+        sent = 0
         dead_connections = set()
-
-        if target_uid:
-            target_str = str(target_uid)
-            recipients = list(self.user_connections.get(target_str, set()))
-            for connection in recipients:
-                try:
-                    await connection.send_text(payload)
-                except Exception as e:
-                    logger.warning(f"Error sending message to websocket client: {e}")
-                    dead_connections.add(connection)
-        else:
-            for connection in list(self.active_connections):
-                try:
-                    await connection.send_text(payload)
-                except Exception as e:
-                    logger.warning(f"Error sending message to websocket client: {e}")
-                    dead_connections.add(connection)
+        for connection in recipients:
+            try:
+                await connection.send_text(payload)
+                sent += 1
+            except Exception as e:
+                logger.warning("WS gönderim hatası (user=%s): %s", target_str, e)
+                dead_connections.add(connection)
 
         for dead in dead_connections:
             self.disconnect(dead)
+        return sent
 
 
 ws_manager = ConnectionManager()

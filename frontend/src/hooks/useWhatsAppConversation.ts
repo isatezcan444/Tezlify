@@ -57,8 +57,16 @@ export function useWhatsAppConversation({
       // Auto mark as read when opened if there are unread messages
       if (autoMarkAsRead && data.unread_count > 0) {
         try {
-          await WhatsAppRepository.markConversationAsRead(data.id);
+          const res = await WhatsAppRepository.markConversationAsRead(data.id);
           setConversation((prev) => (prev ? { ...prev, unread_count: 0 } : null));
+          // Faz 13: yerel sayac sifirlandi ama gateway'e ILETILEMEDIYSE
+          // sessizce yutmayiz — gercek neden loglanir.
+          if (!res.success) {
+            console.warn(
+              '[useWhatsAppConversation] Okundu bilgisi WhatsApp\'a iletilemedi:',
+              res.error || 'bilinmeyen neden'
+            );
+          }
         } catch (e) {
           console.warn('[useWhatsAppConversation] Mark as read failed:', e);
         }
@@ -128,14 +136,22 @@ export function useWhatsAppConversation({
     }
   }, [conversation]);
 
-  // Explicit mark as read helper
+  // Explicit mark as read helper — GERCEK sonucu doner (Faz 13).
   const markAsRead = useCallback(async () => {
-    if (!conversation) return;
+    if (!conversation) return null;
     try {
-      await WhatsAppRepository.markConversationAsRead(conversation.id);
+      const res = await WhatsAppRepository.markConversationAsRead(conversation.id);
       setConversation((prev) => (prev ? { ...prev, unread_count: 0 } : null));
+      if (!res.success) {
+        console.warn(
+          '[useWhatsAppConversation] Okundu bilgisi WhatsApp\'a iletilemedi:',
+          res.error || 'bilinmeyen neden'
+        );
+      }
+      return res;
     } catch (e) {
       console.warn('[useWhatsAppConversation] Mark as read failed:', e);
+      return null;
     }
   }, [conversation]);
 

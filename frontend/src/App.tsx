@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { ThemeProvider } from './context/ThemeContext';
 import { ToastProvider, useToast } from './context/ToastContext';
 import { I18nProvider, useI18n } from './context/I18nContext';
@@ -36,17 +36,51 @@ const AppContent: React.FC = () => {
     setActiveTab(tab);
   };
 
-  const refreshStats = async () => {
+  // Faz 12 (P0 — ağ fırtınası kök nedeni): İSTATİSTİK POLLING'İ KALDIRILDI.
+  //
+  // Eskiden burada `setInterval(refreshStats, 8000)` vardı ve `refreshStats`
+  // her render'da YENİDEN üretilen bir fonksiyondu. Sonuç zinciri:
+  //   8 sn'lik tick → setStats → App yeniden render → `refreshStats` kimliği
+  //   değişir → `onRefreshStats` prop'u değişir → WhatsAppHubPage'in
+  //   [fetchSessions, onRefreshStats, refreshSyncStatus] bağımlılıklı effect'i
+  //   yeniden çalışır → GET /whatsapp/sessions + GET /whatsapp/sync/job +
+  //   GET /settings/antiban tekrar gider.
+  // Yani 8 sn'de bir dashboard isteği, yanında 3 istek daha doğuruyordu —
+  // Network sekmesindeki "dashboard + sessions + job + antiban" sürekli
+  // polling tablosunun tamamı bu tek hatadan geliyordu. `/analytics/dashboard`
+  // ~11 ayrı aggregate sorgu çalıştırdığı için istekler saniyeleri buluyor ve
+  // kuyruğu tıkıyordu.
+  //
+  // Artık: kimlik STABİL (useCallback) → alt sayfa effect'i bir daha
+  // tetiklenmez. Veri yalnızca GERÇEK sinyallerle tazelenir:
+  //   1) dashboard toplamlarını değiştiren WS olayları (debounce'lu),
+  //   2) sekme yeniden görünür/pencere odaklandığında,
+  //   3) Dashboard sekmesine dönüldüğünde.
+  // Sürekli HTTP polling YOK.
+  const refreshStats = useCallback(async () => {
     try {
       const data = await ApiClient.getDashboardStats();
       setStats(data);
     } catch (err) {
       console.error('Error loading stats:', err);
     }
-  };
+  }, []);
+
+  // Aynı anda çok sayıda WS olayı geldiğinde (ör. kampanya sırasında ardı ardına
+  // `message_sent`) TEK bir tazeleme yapılır — istek fırtınası oluşmaz.
+  const statsRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scheduleStatsRefresh = useCallback(() => {
+    if (statsRefreshTimerRef.current) return;
+    statsRefreshTimerRef.current = setTimeout(() => {
+      statsRefreshTimerRef.current = null;
+      void refreshStats();
+    }, 1200);
+  }, [refreshStats]);
 
   useEffect(() => {
-    refreshStats();
+    // İlk yükleme: kullanıcı boş ekran görmesin diye ANINDA tek istek
+    // (polling değil, tek seferlik bootstrap).
+    void refreshStats();
 
     // Setup Realtime WebSocket connection with automatic reconnect
     let ws: { close: () => void } | null = null;
@@ -62,13 +96,24 @@ const AppContent: React.FC = () => {
               `${eventData.lead_name} (${eventData.phone})`,
               t('toast.messageSentTitle')
             );
-            refreshStats();
+            scheduleStatsRefresh();
           } else if (eventData.event === 'scraper_completed') {
             toast.info(
               t('toast.scraperCompletedMsg', { found: eventData.total_found, leads: eventData.total_new_leads }),
               t('toast.scraperCompletedTitle')
             );
-            refreshStats();
+            scheduleStatsRefresh();
+          } else if (
+            // Dashboard toplamlarını gerçekten değiştiren diğer olaylar.
+            // (scraper_progress gibi yüksek frekanslı akışlar BİLEREK dışarıda
+            // bırakıldı — onlar sayfa içi ilerleme UI'ını besler.)
+            eventData.event === 'scraper_failed' ||
+            eventData.event === 'scraper_cancelled' ||
+            eventData.event === 'campaign_started' ||
+            eventData.event === 'campaign_completed' ||
+            eventData.event === 'campaign_failed'
+          ) {
+            scheduleStatsRefresh();
           }
         },
         (connected) => {
@@ -81,6 +126,9 @@ const AppContent: React.FC = () => {
                 t('toast.reconnectedMsg'),
                 t('toast.reconnectedTitle')
               );
+              // Kopma sırasında kaçan veri olabilir — yeniden bağlanınca
+              // tek seferlik mutabakat (polling değil).
+              scheduleStatsRefresh();
             }
             wasDisconnectedRef.current = false;
           } else {
@@ -93,13 +141,39 @@ const AppContent: React.FC = () => {
       console.warn('WS Init failed:', e);
     }
 
-    const interval = setInterval(refreshStats, 8000);
-
     return () => {
-      clearInterval(interval);
+      if (statsRefreshTimerRef.current) {
+        clearTimeout(statsRefreshTimerRef.current);
+        statsRefreshTimerRef.current = null;
+      }
       if (ws) ws.close();
     };
-  }, [toast, t]);
+  }, [toast, t, refreshStats, scheduleStatsRefresh]);
+
+  // Polling yerine kullanıcı sinyali: sekme/pencere yeniden görünür olduğunda
+  // bayat toplamlar bir kez tazelenir (uygulama uyanma senaryosu).
+  useEffect(() => {
+    const onBecameVisible = () => {
+      if (document.visibilityState === 'visible') scheduleStatsRefresh();
+    };
+    document.addEventListener('visibilitychange', onBecameVisible);
+    window.addEventListener('focus', onBecameVisible);
+    return () => {
+      document.removeEventListener('visibilitychange', onBecameVisible);
+      window.removeEventListener('focus', onBecameVisible);
+    };
+  }, [scheduleStatsRefresh]);
+
+  // Dashboard sekmesine dönüldüğünde tek tazeleme — kullanıcı bayat sayı görmez.
+  // İlk çalıştırma atlanır (mount'ta zaten tek bootstrap isteği yapıldı).
+  const isFirstStatsTabRunRef = useRef(true);
+  useEffect(() => {
+    if (isFirstStatsTabRunRef.current) {
+      isFirstStatsTabRunRef.current = false;
+      return;
+    }
+    if (activeTab === 'dashboard') scheduleStatsRefresh();
+  }, [activeTab, scheduleStatsRefresh]);
 
   const getPageTitle = () => {
     switch (activeTab) {

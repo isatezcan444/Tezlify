@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
 
 from backend.app.core.database import AsyncSessionLocal
+from backend.app.core.auth import get_user_filter
 from backend.app.models.lead import Lead, LeadStatus
 from backend.app.models.campaign import Campaign, CampaignStatus
 from backend.app.services.outreach_manager import OutreachManager
@@ -86,10 +87,28 @@ class CampaignRunner:
     ):
         logger.info(f"[CampaignRunner] Campaign #{campaign_id} outreach worker started.")
 
+        # Faz 13: tenant sahibi. `except` bloklarinda da guvenle kullanilabilmesi
+        # icin donguden ONCE tanimlanir (atama try icinde yapilir).
+        owner: Optional[str] = None
+
         try:
             async with AsyncSessionLocal() as db:
                 campaign = await db.get(Campaign, campaign_id)
                 if not campaign:
+                    return
+
+                # Faz 13 (tenant izolasyonu): kampanyanin sahibi KESIN olmali.
+                # Sahipsiz kampanya ile gonderim yapmak (ve olaylari genis
+                # yayinlamak) veriyi yanlis tenant'a tasir — fail-closed dur.
+                owner = str(campaign.user_id) if campaign.user_id else None
+                if not owner:
+                    logger.error(
+                        "[CampaignRunner] Campaign #%s sahipsiz (user_id yok) — "
+                        "gonderim yapilmadi, olay yayinlanmadi.",
+                        campaign_id,
+                    )
+                    campaign.status = CampaignStatus.PAUSED
+                    await db.commit()
                     return
 
                 campaign.status = CampaignStatus.ACTIVE
@@ -98,18 +117,24 @@ class CampaignRunner:
                 await ws_manager.broadcast({
                     "event": "campaign_started",
                     "campaign_id": campaign_id,
-                    "campaign_name": campaign.name
+                    "campaign_name": campaign.name,
+                    "user_id": owner,
                 })
 
-                # Fetch Target Leads
+                # Fetch Target Leads — ZORUNLU tenant filtresi. Filtresiz sorgu
+                # bir tenant'in kampanyasinin BASKA tenant'larin lead'lerine
+                # gercek WhatsApp mesaji gondermesine yol aciyordu.
+                tenant_scope = get_user_filter(Lead.user_id, owner)
                 if lead_ids:
                     stmt = select(Lead).where(
+                        tenant_scope,
                         Lead.id.in_(lead_ids),
                         Lead.is_whatsapp_eligible == True,
                         Lead.status == LeadStatus.NEW
                     )
                 else:
                     stmt = select(Lead).where(
+                        tenant_scope,
                         Lead.is_whatsapp_eligible == True,
                         Lead.status == LeadStatus.NEW
                     ).order_by(Lead.id.asc()).limit(limit)
@@ -129,6 +154,7 @@ class CampaignRunner:
                     await ws_manager.broadcast({
                         "event": "campaign_completed",
                         "campaign_id": campaign_id,
+                        "user_id": owner,
                         "message": f"Gönderilecek doğrulanmış işletme lead'i bulunamadı ({len(blocked_leads)} kayıt doğrulanamadığı için engellendi)."
                     })
                     return
@@ -154,10 +180,12 @@ class CampaignRunner:
                         campaign_id=campaign.id,
                     )
 
-                    # Broadcast progress
+                    # Broadcast progress — yalnizca sahibine (lead adi/telefon
+                    # tasiyor; genis yayin diger tenant'lara PII sizdirirdi).
                     await ws_manager.broadcast({
                         "event": "message_sent" if success else "message_failed",
                         "campaign_id": campaign_id,
+                        "user_id": owner,
                         "lead_id": lead.id,
                         "lead_name": lead.name,
                         "phone": lead.phone_e164,
@@ -187,6 +215,7 @@ class CampaignRunner:
                     await ws_manager.broadcast({
                         "event": "campaign_completed",
                         "campaign_id": campaign_id,
+                        "user_id": owner,
                         "total_sent": campaign.sent_count,
                         "total_failed": campaign.failed_count
                     })
@@ -209,12 +238,23 @@ class CampaignRunner:
                     if broken and broken.status == CampaignStatus.ACTIVE:
                         broken.status = CampaignStatus.PAUSED
                         await db.commit()
+                    # Hata `owner` atamasindan ONCE olustuysa sahibi DB'den coz —
+                    # olay yalnizca sahibine yayinlanabilir.
+                    if owner is None and broken and broken.user_id:
+                        owner = str(broken.user_id)
             except Exception as record_err:
                 logger.error(f"[CampaignRunner] Could not park failed campaign #{campaign_id}: {record_err}")
-            await ws_manager.broadcast({
-                "event": "campaign_failed",
-                "campaign_id": campaign_id,
-                "error": str(e)[:300],
-            })
+            if owner:
+                await ws_manager.broadcast({
+                    "event": "campaign_failed",
+                    "campaign_id": campaign_id,
+                    "user_id": owner,
+                    "error": str(e)[:300],
+                })
+            else:
+                logger.error(
+                    "[CampaignRunner] Campaign #%s hatasi yayinlanmadi: tenant sahibi cozulemedi.",
+                    campaign_id,
+                )
         finally:
             active_campaign_tasks.pop(campaign_id, None)

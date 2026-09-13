@@ -399,6 +399,7 @@ export const tr = {
     syncEmpty: 'Eşitlenecek yeni sohbet bulunamadı.',
     syncHealedDetail: '{merged} yinelenen konuşma birleştirildi, {healed} isim düzeltildi.',
     syncFailed: 'WhatsApp sohbetleri eşitlenemedi.',
+    readSyncFailed: 'Okundu bilgisi WhatsApp\'a iletilemedi.',
     syncingTitle: 'WhatsApp senkronize ediliyor',
     syncingChats: 'Sohbetler aktarılıyor...',
     syncingReady: 'Senkronizasyon tamamlandı',

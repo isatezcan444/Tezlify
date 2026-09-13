@@ -577,6 +577,9 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
     // Contacts
     // -----------------------------------------------------------------------
     listContacts() {
+      // Faz 13: `contacts` global Map'tir (JID anahtarli) — birden fazla
+      // oturum bagliyken rehberler karisir. Belirsizlikte reddet.
+      this._assertUnambiguousScope();
       // Telefon kimliği henüz çözülememiş LID-bekletme kayıtlarını dışarı
       // verme — eşleşme öğrenilince _migrateLidToPhone telefona taşır.
       return [...contacts.values()]
@@ -588,6 +591,9 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
     // Conversations
     // -----------------------------------------------------------------------
     listConversations({ search, limit, offset } = {}) {
+      // Faz 13: `chats` global Map'tir (JID anahtarli) — birden fazla oturum
+      // bagliyken sohbetler karisir. Belirsizlikte reddet.
+      this._assertUnambiguousScope();
       // Eşleşmesi henüz çözülememiş LID-anahtarlı sohbetleri dışarı verme —
       // telefon eşleşmesi öğrenilince _applyLidMapping onları telefona taşır
       // (WhatsApp Web'de ham `xxx@lid` başlığı görünmez).
@@ -657,6 +663,9 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
     // sirasinda lazy hydration ile ceker. `total` bu sinirli kume sayisidir
     // — backend sayfalama dongusu icin tutarli gorunum.
     listAllMessages({ limit = 1000, offset = 0, since = null, perChatLimit = null } = {}) {
+      // Faz 13: `messagesByChat` global Map'tir (JID anahtarli) — birden fazla
+      // oturum bagliyken mesaj gecmisi karisir. Belirsizlikte reddet.
+      this._assertUnambiguousScope();
       const sinceMs = Number.isFinite(Number(since)) && since !== null && since !== ''
         ? Number(since) * 1000
         : null;
@@ -702,7 +711,7 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
         client_message_id: client_message_id || `cmsg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
         wa_message_id: result?.key?.id || null,
         status: 'SENT',
-      });
+      }, session.id);
       return msg;
     },
 
@@ -735,7 +744,7 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
         client_message_id: client_message_id || `media_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
         wa_message_id: result?.key?.id || null,
         status: 'SENT',
-      });
+      }, session.id);
       return msg;
     },
 
@@ -755,6 +764,10 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       const session = this._getConnectedSession();
       const key = normalizeJid(jid);
       const isGroup = key.includes('@g.us');
+      // Faz 13: okundu bilgisi WhatsApp'a ILETILEMEZSE basari DONMEYIZ — aksi
+      // halde karsi taraf mesaji "okunmadi" gorurken UI "okundu" gosterir.
+      let gatewayOk = true;
+      let gatewayError = null;
       try {
         const list = messagesByChat.get(key) || [];
         const inbound = list.filter((m) => m.direction === 'INBOUND' && m.wa_message_id);
@@ -778,12 +791,19 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
           await session.sock.readMessages([{ remoteJid: key, id: newest?.wa_message_id, fromMe: false }]);
         }
       } catch (err) {
+        gatewayOk = false;
+        gatewayError = err?.message || String(err);
         logger.warn({ err }, 'Mark read error');
       }
       const chat = chats.get(key);
       if (chat) chat.unread_count = 0;
-      emitEvent({ event: 'conversation_read', conversation_id: key, unread_count: 0 });
-      return { success: true };
+      emitEvent({
+        event: 'conversation_read',
+        conversation_id: key,
+        unread_count: 0,
+        gateway_session_id: session.id,
+      });
+      return gatewayOk ? { success: true } : { success: false, error: gatewayError };
     },
 
     // -----------------------------------------------------------------------
@@ -818,17 +838,52 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
     // -----------------------------------------------------------------------
     // Internal
     // -----------------------------------------------------------------------
+    // Faz 13 (tenant izolasyonu): gateway veri modeli (contacts / chats /
+    // messagesByChat) MODUL SEVIYESINDE GLOBAL'dir ve yalnizca JID ile
+    // anahtarlanir — oturum bazli DEGILDIR. Bu yuzden birden fazla oturum
+    // bagliyken "birini secmek" sessizce YANLIS hesaptan mesaj gondermek,
+    // sohbetleri karistirmak ve bir kiracinin verisini digerine sizdirmak
+    // demektir. Belirsizlik varsa fail-closed davranip ACIK hata firlatiriz:
+    // sessiz veri bozulmasi yerine gorunur hata tercih edilir.
     _getConnectedSession() {
-      const connected = [...sessions.values()].find((s) => s.status === 'CONNECTED' && s.sock);
-      if (!connected) throw new Error('Bagli bir WhatsApp oturumu yok. Lutfen once QR ile eslestirin.');
-      return connected;
+      const connected = [...sessions.values()].filter((s) => s.status === 'CONNECTED' && s.sock);
+      if (connected.length === 0) {
+        throw new Error('Bagli bir WhatsApp oturumu yok. Lutfen once QR ile eslestirin.');
+      }
+      if (connected.length > 1) {
+        throw new Error(
+          `Birden fazla WhatsApp oturumu bagli (${connected.length}). Gateway veri modeli oturum bazli ` +
+            'olmadigi icin hangi hesabin kullanilacagi belirsizdir; yanlis hesaptan gonderimi ve ' +
+            'kiracilar arasi veri karismasini onlemek icin islem REDDEDILDI.'
+        );
+      }
+      return connected[0];
+    },
+
+    // Salt-okuma toplu uclari icin ayni belirsizlik kapisi: /contacts,
+    // /conversations ve /messages/bulk oturum bazli filtrelenmedigi icin
+    // birden fazla bagli oturumda kiracilar arasi veri karismasi kacinilmazdir.
+    _assertUnambiguousScope() {
+      const connected = [...sessions.values()].filter((s) => s.status === 'CONNECTED' && s.sock);
+      if (connected.length > 1) {
+        throw new Error(
+          `Birden fazla WhatsApp oturumu bagli (${connected.length}). Toplu okuma uclari ` +
+            '(/contacts, /conversations, /messages/bulk) oturum bazli filtrelenmedigi icin ' +
+            'kiracilar arasi veri karismasini onlemek uzere REDDEDILDI.'
+        );
+      }
     },
 
     // Faz 10 (P3): messages.upsert olayini (gelen + telefondan gonderilen)
     // kalici gateway kaydina cevirir, messagesByChat'e ekler, sohbeti tazeler
     // ve `message_new` yayar. Test edilebilirlik icin handler'dan ayrildi.
     // Doner: kaydedilen record; atlanirsa null.
-    async _ingestUpsertMessage(msg, sock) {
+    async _ingestUpsertMessage(msg, sock, sessionId = null) {
+      // Faz 13: bu mesaj belirli bir oturumun soketinden geldi — olaylar
+      // `gateway_session_id` tasimali ki backend sahibi TAHMIN ETMESIN.
+      const emitEvent = sessionId
+        ? (event) => sessionManager._emit({ gateway_session_id: sessionId, ...event })
+        : (event) => sessionManager._emit(event);
       // Faz 10 (P3): telefondan (gateway API'si DIŞINDAN) gonderilen mesajlar
       // de messages.upsert ile fromMe=true olarak gelir. Eskiden bunlar
       // `continue` ile atiliyordu → "Sg" gibi kullanıcının kendi gonderdigi
@@ -916,7 +971,12 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       return record;
     },
 
-    _recordOutbound(jid, data) {
+    _recordOutbound(jid, data, sessionId = null) {
+      // Faz 13: gonderim belirli bir oturumun soketinden yapildi — olay
+      // `gateway_session_id` tasir, backend sahibi tahmin etmez.
+      const emitEvent = sessionId
+        ? (event) => sessionManager._emit({ gateway_session_id: sessionId, ...event })
+        : (event) => sessionManager._emit(event);
       const key = normalizeJid(jid);
       // Faz 10 (P3): messages.upsert fromMe kolu ayni mesaji (wa_message_id)
       // zaten kaydettiyse ikinci kayit + ikinci emitEvent YAPILMAZ.
@@ -1090,24 +1150,39 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       if (avatarFetchInFlight.has(key)) return;
       const lastAttempt = avatarFetchAttemptedAt.get(key) || 0;
       if (Date.now() - lastAttempt < 10 * 60 * 1000) return;
+      // Faz 13: oturum secimi burada acikca yapilir.
+      //  - 0 bagli oturum: avatar zenginlestirmesi SESSIZCE atlanir (normal
+      //    durum — QR bekleniyor). Log spam'i uretilmez.
+      //  - >1 bagli oturum: belirsizlik GERCEK bir sorundur (yanlis hesabin
+      //    resmi cekilebilir) — loglanir ve atlanir.
+      // Karar asagidaki `catch` blogunun DISINDA verilir; aksi halde
+      // belirsizlik hatasi "resim yok" gibi sessizce yutulurdu.
+      const connected = [...sessions.values()].filter((s) => s.status === 'CONNECTED' && s.sock);
+      if (connected.length === 0) return;
+      if (connected.length > 1) {
+        logger.warn(
+          { key, connected: connected.length },
+          'Avatar zenginlestirmesi atlandi (oturum belirsiz)'
+        );
+        return;
+      }
+      const session = connected[0];
       avatarFetchInFlight.add(key);
       avatarFetchAttemptedAt.set(key, Date.now());
       try {
-        const session = [...sessions.values()].find((s) => s.status === 'CONNECTED' && s.sock);
-        if (!session) return;
         const url = await session.sock.profilePictureUrl(key, 'preview');
         if (url) {
           const chat = chats.get(key);
           if (chat && chat.avatar_url !== url) {
             chat.avatar_url = url;
             chat.updated_at = new Date().toISOString();
-            emitEvent({ event: 'conversation_updated', conversation: { ...chat } });
+            emitEvent({ event: 'conversation_updated', conversation: { ...chat }, gateway_session_id: session.id });
           }
           const contact = contacts.get(key);
           if (contact && contact.avatar_url !== url) {
             contact.avatar_url = url;
             contact.updated_at = new Date().toISOString();
-            emitEvent({ event: 'contact_synced', contact: { ...contact } });
+            emitEvent({ event: 'contact_synced', contact: { ...contact }, gateway_session_id: session.id });
           }
         }
       } catch {
@@ -1131,11 +1206,26 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
     // storm değil). Böylece `120363xxx@g.us` gibi isimsiz gruplar da gerçek
     // başlığına kavuşur; çözülemeyenler UI'da terminal "Grup" fallback'i görür.
     async _ensureGroupSubjects({ force = false } = {}) {
-      const session = [...sessions.values()].find((s) => s.status === 'CONNECTED' && s.sock);
-      if (!session) return;
+      // Faz 13 (tenant izolasyonu): bu metod GLOBAL `chats` / `contacts`
+      // haritalarini yazar ve bu haritalar oturum bazli DEGILDIR. Birden fazla
+      // oturum bagliyken "ilkini secmek" yanlis hesabin grup basliklarini
+      // diger kiracinin sohbetlerine yazar (sessiz veri karismasi). Bu yuzden
+      // belirsizlikte fail-closed davraniriz: hicbir sey yazilmaz ve cagirana
+      // ACIKCA bildirilir. Fire-and-forget cagrilar (`void ...`) oldugu icin
+      // firlatmak yerine sonuc dondurulur — unhandled rejection yaratmaz.
+      const connected = [...sessions.values()].filter((s) => s.status === 'CONNECTED' && s.sock);
+      if (connected.length === 0) return { applied: false, reason: 'no_session' };
+      if (connected.length > 1) {
+        logger.error(
+          { connected: connected.length },
+          'Grup basligi cozumleme REDDEDILDI: birden fazla oturum bagli ve gateway veri modeli oturum bazli degil'
+        );
+        return { applied: false, reason: 'ambiguous_scope' };
+      }
+      const session = connected[0];
       const last = session._groupSubjectsAt || 0;
-      if (!force && Date.now() - last < 10 * 60 * 1000) return;
-      if (session._groupSubjectsInFlight) return;
+      if (!force && Date.now() - last < 10 * 60 * 1000) return { applied: false, reason: 'throttled' };
+      if (session._groupSubjectsInFlight) return { applied: false, reason: 'in_flight' };
       session._groupSubjectsInFlight = true;
       session._groupSubjectsAt = Date.now();
       const applySubject = (jid, subject) => {
@@ -1197,6 +1287,7 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       } finally {
         session._groupSubjectsInFlight = false;
       }
+      return { applied: true, reason: null };
     },
 
     // Faz 8: bir JID için görüntülenecek adı çözer — contacts Map (rehber >
@@ -1289,6 +1380,18 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
         browser: Browsers.macOS('Desktop'),
         auth: state,
         markOnlineOnConnect: true,
+        // Sorun 1 (senkron hizi): TAM gecmis senkronu KAPALI.
+        //  - `syncFullHistory: false`: binlerce mesajlik sohbet gecmisini
+        //    bastan indirmeye calismaz. ACIK birakildiginda WhatsApp
+        //    registration payload'ini reddedip statusCode=428 ile baglantiyi
+        //    kiriyor (QR hic olusmuyor) — bu yuzden hem varsayilan hem burada
+        //    ACIKCA false. Gecmis, lazy hydration ile parca parca gelir
+        //    (asagidaki `shouldSyncHistoryMessage` + `messaging-history.set`).
+        //  - `generateHighQualityLinkPreviews: false`: her link mesaji icin
+        //    ekstra medya indirme/onizleme uretimi yapmaz — ilk senkronu ve
+        //    bant genisligini sisiren ikinci buyuk maliyet kalemi.
+        syncFullHistory: false,
+        generateHighQualityLinkPreviews: false,
         // NOT: syncFullHistory: true WhatsApp tarafından statusCode=428 ile
         // bağlantı kırılarak reddediliyor (QR hiç oluşmuyor) — registration
         // payload'ını (requireFullSync) DEĞİŞTİRMEDEN, yalnızca telefonun
@@ -1296,10 +1399,20 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
         // bildirimini işlemek için shouldSyncHistoryMessage kullanılır.
         // Bu, QR eşleşmesi sonrası sohbet listesinin boş kalmasını (Faz 4
         // hatası) çözer: 'messaging-history.set' olayı aşağıda dinlenir.
+        // Ek sinir: gateway bellekte sohbet basina en yeni 500 mesaji tutar
+        // (§1708), backend ise `_SYNC_PER_CHAT_LIMIT = 50` ile cekiyor.
         shouldSyncHistoryMessage: () => true,
       });
 
       session.sock = sock;
+
+      // Faz 13 (tenant izolasyonu): bu oturumun soketinden cikan TUM olaylar
+      // `gateway_session_id` tasir. Backend, olayi hangi tenant'a yazacagini
+      // TAHMIN ETMEK yerine bu kimlikten birebir cozer (whatsapp_sessions.
+      // gateway_id). Bu yerel tanim, asagidaki tum `sock.ev.on(...)`
+      // isleyicilerinde dis kapsamdaki `emitEvent`i GOLGELER; boylece 20+
+      // cagri yerini tek tek degistirmeye gerek kalmaz.
+      const emitEvent = (event) => sessionManager._emit({ gateway_session_id: id, ...event });
 
       // --- QR event ---
       sock.ev.on('creds.update', saveCreds);
@@ -1470,7 +1583,7 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       // --- Messages (inbound + phone-sent outbound) ---
       sock.ev.on('messages.upsert', async ({ messages: newMessages, type }) => {
         for (const msg of newMessages) {
-          await this._ingestUpsertMessage(msg, sock);
+          await this._ingestUpsertMessage(msg, sock, id);
         }
       });
 

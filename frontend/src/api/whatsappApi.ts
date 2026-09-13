@@ -21,6 +21,23 @@ import {
 
 export class WhatsAppApiError extends Error {}
 
+/**
+ * Sohbeti okundu isaretleme sonucu (Faz 13 — truthfulness).
+ *
+ * Backend `/read` cagrisi yerel CRM sayacini her durumda sifirlar (kullanici
+ * mesaji bu UI'da gordu) ANCAK gateway'e iletim basarisizsa `success=false`
+ * doner. Cagiran taraf `success`'i KONTROL ETMEK zorundadir — aksi halde
+ * "okundu" gosterilirken karsi taraf mesaji okunmamis gorur (sahte basari).
+ */
+export interface ConversationReadResult {
+  /** Sunucu sohbeti biliniyorsa guncel (unread_count=0) hali; yoksa null. */
+  conversation: Conversation | null;
+  /** WhatsApp gateway'ine okundu bilgisi GERCEKTEN iletildi mi. */
+  success: boolean;
+  /** `success=false` iken gercek neden (backend'den gelir). */
+  error?: string;
+}
+
 export { LiveModeStatus };
 
 // ---------------------------------------------------------------------------
@@ -240,6 +257,23 @@ export const mapMessageItem = mapMessage;
 // Public API — repository'nin canlı katmanı buraya delege eder
 // ---------------------------------------------------------------------------
 
+// Faz 12 (P0 — ağ fırtınası): canlılık yoklaması ARTIK SÜREKLİ POLLING YAPMAZ.
+//
+// Eskiden `useLiveMode` içinde `setInterval(probe, 30_000)` vardı; Network
+// sekmesinde kalıcı bir `GET /whatsapp/sessions` akışı üretiyordu. Oturum
+// yaşam döngüsü zaten `/ws` üzerinden gerçek olaylarla akıyor
+// (session_connected / session_disconnected / session_qr_updated /
+// session_sync_completed / gateway_connected). Yoklama yalnızca bu GERÇEK
+// sinyallerde ve WS yeniden bağlandığında tekrarlanır.
+const LIVE_SESSION_EVENTS = new Set([
+  'session_connected',
+  'session_disconnected',
+  'session_deleted',
+  'session_qr_updated',
+  'session_sync_completed',
+  'gateway_connected',
+]);
+
 export function useLiveMode(): { status: LiveModeStatus; probe: () => Promise<LiveModeStatus> } {
   const [status, setStatus] = useState<LiveModeStatus>(LiveModeStatus.LIVE_DISCONNECTED);
 
@@ -252,9 +286,26 @@ export function useLiveMode(): { status: LiveModeStatus; probe: () => Promise<Li
 
   useEffect(() => {
     setStatus(LiveModeStatus.LIVE_CONNECTING);
-    probe();
-    const interval = setInterval(probe, 30_000);
-    return () => clearInterval(interval);
+    void probe();
+
+    // Durum değişmiş olabilir: önbelleği düşür, sonra gerçek yanıtı al.
+    const revalidate = () => {
+      invalidateLiveProbe();
+      void probe();
+    };
+
+    const handleWsEvent = (e: Event) => {
+      const detail = (e as CustomEvent<any>).detail;
+      if (detail && LIVE_SESSION_EVENTS.has(String(detail.event || ''))) revalidate();
+    };
+    const handleWsConnected = () => revalidate();
+
+    window.addEventListener('tezlify:ws_event', handleWsEvent);
+    window.addEventListener('tezlify:ws_connected', handleWsConnected);
+    return () => {
+      window.removeEventListener('tezlify:ws_event', handleWsEvent);
+      window.removeEventListener('tezlify:ws_connected', handleWsConnected);
+    };
   }, [probe]);
 
   return { status, probe };
@@ -319,10 +370,28 @@ export const WhatsAppApi = {
   },
 
   // Faz 7: QR sonrası gerçek initial-sync durumu (gateway Baileys progress).
-  async getSyncStatus(): Promise<{ sessions: Array<{ id: number; session_name?: string; status?: string; sync: SessionSyncState }> }> {
-    return apiGet<{ sessions: Array<{ id: number; session_name?: string; status?: string; sync: SessionSyncState }> }>(
-      '/whatsapp/sync-status'
-    );
+  //
+  // Faz 13: `gateway_available=false` iken `sync.phase` `"unavailable"` olur ve
+  // `gateway_error` gerçek nedeni taşır. Bu alan YOK SAYILIRSA gateway kesintisi
+  // "senkron yok" (idle) gibi görünür — sessiz yanıltma. Çağıranlar önce
+  // `gateway_available`'i kontrol etmelidir.
+  async getSyncStatus(): Promise<{
+    gateway_available: boolean;
+    gateway_error?: string | null;
+    sessions: Array<{ id: number; session_name?: string; status?: string; sync: SessionSyncState }>;
+  }> {
+    const data = await apiGet<{
+      gateway_available?: boolean;
+      gateway_error?: string | null;
+      sessions: Array<{ id: number; session_name?: string; status?: string; sync: SessionSyncState }>;
+    }>('/whatsapp/sync-status');
+    return {
+      // Alan gelmezse gateway'e ULAŞILDIĞINI varsaymak yerine temkinli
+      // davranırız: eski gateway sürümleri bu alanı döndürmez.
+      gateway_available: data.gateway_available !== false,
+      gateway_error: data.gateway_error ?? null,
+      sessions: data.sessions || [],
+    };
   },
 
   // Faz 11: WS tabanli chunked initial-sync — POST kisa omurlu job tetikler
@@ -342,6 +411,8 @@ export const WhatsAppApi = {
     unread_only?: boolean;
     group_only?: boolean;
     archived_only?: boolean;
+    lead_id?: number;
+    conversation_id?: number;
     search?: string;
     limit?: number;
     offset?: number;
@@ -352,6 +423,8 @@ export const WhatsAppApi = {
     if (params?.unread_only) qs.set('unread_only', 'true');
     if (params?.group_only) qs.set('group_only', 'true');
     if (params?.archived_only) qs.set('archived_only', 'true');
+    if (params?.lead_id) qs.set('lead_id', String(params.lead_id));
+    if (params?.conversation_id) qs.set('conversation_id', String(params.conversation_id));
     if (params?.search?.trim()) qs.set('search', params.search.trim());
     if (params?.limit) qs.set('limit', String(params.limit));
     if (params?.offset) qs.set('offset', String(params.offset));
@@ -480,13 +553,31 @@ export const WhatsAppApi = {
     await apiSend<{ success: boolean }>(`/whatsapp/conversations/${conversationId}/typing`, 'POST', { typing });
   },
 
-  async markConversationRead(conversationId: number): Promise<Conversation> {
-    await apiSend<{ success: boolean }>(`/whatsapp/conversations/${conversationId}/read`, 'POST');
-    // Backend guncel konusmayi dondurdugu icin listeden temsilini bul:
-    const convs = await WhatsAppApi.getConversations({ limit: 200 });
-    const conv = convs.find((c) => c.id === conversationId);
-    if (conv) return { ...conv, unread_count: 0 };
-    throw new WhatsAppApiError('Konuşma bulunamadı');
+  /**
+   * Sohbeti okundu olarak işaretler.
+   *
+   * Faz 12 (P0 — ağ fırtınası): eskiden burada `POST /read` sonrasında TÜM
+   * sohbet listesi (`limit=200`) yeniden indiriliyordu — kullanıcı okunmamış
+   * bir sohbete her tıkladığında ~200 satırlık ağır bir GET daha gidiyordu.
+   * Backend `/read` yerel sayacı sıfırlar ve `{success, error}` döndürür;
+   * çağıranlar iyimser olarak `unread_count`'u 0'a çeker. Bu yüzden listeden
+   * temsil aramak gereksizdir: çağıran sohbeti biliyorsa `known` ile geçer,
+   * aksi halde `conversation: null` döner. Sahte sunucu verisi ÜRETİLMEZ
+   * (AGENTS.md §1.1). Faz 13: `success=false` (gateway'e iletilemedi) artık
+   * yutulmaz — çağıran gerçek nedeni görebilir.
+   */
+  async markConversationRead(conversationId: number, known?: Conversation): Promise<ConversationReadResult> {
+    const data = await apiSend<{ success?: boolean; error?: string | null }>(
+      `/whatsapp/conversations/${conversationId}/read`,
+      'POST'
+    );
+    // Sahte basari YOK: `success` alani yoksa da basarili saymayiz — backend
+    // sozlesmesi bu alani her zaman doner (WhatsAppReadResult.success).
+    return {
+      conversation: known ? { ...known, unread_count: 0 } : null,
+      success: data?.success === true,
+      error: data?.error ?? undefined,
+    };
   },
 
   async getContacts(): Promise<any[]> {

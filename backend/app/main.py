@@ -144,10 +144,13 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
+    # Faz 13: ic hata metni (stack/DB/gateway detayi) ISTEMCIYE gonderilmez —
+    # bilgi sizintisi. Detay sunucu logunda tutulur, istemci korelasyon icin
+    # yalnizca path + generic mesaj alir.
     logger.exception(f"Unhandled server error on {request.method} {request.url.path}: {exc}")
     return JSONResponse(
         status_code=500,
-        content={"detail": f"İç sunucu hatası: {str(exc)}"},
+        content={"detail": "İç sunucu hatası. Lütfen tekrar deneyin; sorun sürerse destek ekibine başvurun."},
     )
 
 
@@ -220,10 +223,17 @@ async def gateway_websocket_endpoint(
             if not isinstance(event_data, dict):
                 continue
             try:
-                event_data = await ingest_gateway_event(event_data)
+                persisted = await ingest_gateway_event(event_data)
             except Exception as ingest_err:
-                logger.warning(f"[WS-GATEWAY] Olay persist edilirken hata (yine de broadcast): {ingest_err}")
-            await ws_manager.broadcast(event_data)
+                # Persist EDILEMEYEN olay UI'a yayinlanmaz — aksi halde
+                # kullanicinin gordugu mesaj DB'de hic yokmus gibi olur (sahte veri).
+                logger.exception("[WS-GATEWAY] Olay persist edilemedi, yayinlanmadi: %s", ingest_err)
+                continue
+            if persisted is None:
+                # Sahibi KESIN cozulemeyen ya da bilinmeyen olay: genis yayin
+                # yapmak yerine atlanir (cok kiracili izolasyon, fail-closed).
+                continue
+            await ws_manager.broadcast(persisted)
     except WebSocketDisconnect:
         pass
     except Exception as e:
