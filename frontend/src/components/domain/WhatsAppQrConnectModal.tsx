@@ -211,6 +211,9 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
         clearTimers();
         toast.success(t('whatsapp.connectedState'), t('common.success'));
         if (onSuccessRef.current) onSuccessRef.current({ id: targetSessionId } as any);
+        setTimeout(() => {
+          if (isMountedRef.current) onClose();
+        }, 1500);
         return;
       }
 
@@ -316,6 +319,7 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
 
       const targetMatches = 
         (sessionId && detail.session_id && String(detail.session_id) === String(sessionId)) ||
+        (activeSessionIdRef.current && detail.session_id && String(detail.session_id) === String(activeSessionIdRef.current)) ||
         (sessionName && detail.session_name && detail.session_name === sessionName);
 
       if (!targetMatches && detail.session_id) return;
@@ -363,6 +367,9 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
             session_name: sessionName 
           } as any);
         }
+        setTimeout(() => {
+          if (isMountedRef.current) onClose();
+        }, 1500);
       }
 
       // 3. Temporary Disconnect
@@ -406,6 +413,9 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
             setModalState('CONNECTED');
             if (fallbackPollRef.current) clearInterval(fallbackPollRef.current);
             if (onSuccessRef.current) onSuccessRef.current({ id: sessionId, phone_number: res.phone } as any);
+            setTimeout(() => {
+              if (isMountedRef.current) onClose();
+            }, 1500);
           } else if (res.qr_code) {
             setQrCode(res.qr_code);
             setModalState('QR_READY');

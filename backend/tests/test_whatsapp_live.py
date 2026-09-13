@@ -739,6 +739,15 @@ async def test_ingest_session_event_maps_gateway_id():
     assert result["session_id"] == db_session_id
     assert result["session_name"] == "Test Session"
 
+    # Verify DB record updated to CONNECTED
+    async with AsyncSessionLocal() as db:
+        res = await db.execute(select(WhatsAppSession).where(WhatsAppSession.id == db_session_id))
+        row = res.scalar_one()
+        assert row.status == SessionStatus.CONNECTED
+        assert row.is_phone_online is True
+        assert row.phone_number == MOCK_PHONE
+        assert row.qr_code is None
+
 
 @pytest.mark.asyncio
 async def test_ingest_message_dedup_by_wa_message_id():

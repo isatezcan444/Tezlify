@@ -1069,6 +1069,8 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
 
       if (eventData.event === 'new_conversation' || eventData.event === 'conversations_updated') {
         loadConversations(true);
+        fetchSessions(true);
+        onRefreshStatsRef.current();
       }
 
       // Faz 11: WS tabanli chunked initial-sync olaylari — HTTP polling yerine
@@ -1176,7 +1178,11 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
           // Tamamlanma: cozulmus TAM sohbet listesi gelir (preview'lar dahil) —
           // banner gercek bitiste kapanir, sahte kapanis yok (§20/§27).
           const finalList: Conversation[] = (eventData.conversations || []).map((c: any) => mapConversationItem(c));
-          if (finalList.length > 0) setConversations(finalList);
+          if (finalList.length > 0) {
+            setConversations(finalList);
+          } else {
+            loadConversations(true);
+          }
           setSessionSync((prev) => ({
             ...(prev || {}), phase: 'ready', stage: 'complete', progress: 100,
             chats_synced: eventData.chats_synced ?? prev?.chats_synced,
@@ -1187,6 +1193,8 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
           setIsSyncingChats(false);
           activeSyncIdRef.current = null;
           syncMsgBufferRef.current = {};
+          fetchSessions(true);
+          onRefreshStatsRef.current();
         } else if (eventData.event === 'whatsapp_sync_failed') {
           setSessionSync({ phase: 'error', stage: eventData.stage || 'failed', error: eventData.error || null, progress: 0 });
           setIsSyncingChats(false);
@@ -1323,7 +1331,9 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     // Faz 7/11: QR sonrasi initial-sync hemen izlenmeye baslanir — devam eden
     // job varsa GET /sync/job ile benimsenir, ilerleme WS olaylarinda akar.
     refreshSyncStatus();
-  }, [fetchSessions, onRefreshStats, refreshSyncStatus, loadConversations]);
+    // Sıfır tıklama eşitleme: QR eşleşmesi tamamlanır tamamlanmaz canlı veri çekimini başlat
+    void handleSyncChats();
+  }, [fetchSessions, onRefreshStats, refreshSyncStatus, loadConversations, handleSyncChats]);
 
   const handleOpenQrConnect = useCallback(() => {
     setReconnectSessionId(undefined);
@@ -1341,10 +1351,12 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       } else if (
         eventData?.event === 'session_connected' ||
         eventData?.event === 'session_disconnected' ||
+        eventData?.event === 'session_updated' ||
         eventData?.event === 'number_updated'
       ) {
         fetchSessions(true);
         onRefreshStatsRef.current();
+        loadConversations(true);
         // Faz 7: baglanti degisikliginde gercek sync durumunu cek (banner icin)
         refreshSyncStatus();
       } else if (
@@ -1353,6 +1365,9 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         eventData?.event === 'session_sync_completed'
       ) {
         fetchSessions(true);
+        loadConversations(true);
+        onRefreshStatsRef.current();
+        refreshSyncStatus();
       } else if (eventData?.event === 'conversations_cleared') {
         conversationsGenerationRef.current += 1;
         setConversations([]);

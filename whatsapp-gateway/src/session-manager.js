@@ -36,19 +36,19 @@ function createBaileysLogger(baseLogger) {
       if (prop === 'error') {
         return function (obj, msg, ...args) {
           const msgStr = typeof obj === 'string' ? obj : (msg || '');
+          const objErrStr = obj instanceof Error ? obj.message : (obj?.err?.message || obj?.message || '');
+          const fullText = `${msgStr} ${objErrStr}`.toLowerCase();
           const isHandshakeRetry =
-            msgStr.includes('failed to decrypt message') ||
-            msgStr.includes("unexpected error in 'init queries'") ||
-            msgStr.includes('stream errored out') ||
-            msgStr.includes('error in handling message') ||
-            (typeof obj === 'object' && obj?.err?.message && (
-              obj.err.message.includes('Bad MAC') ||
-              obj.err.message.includes('No matching sessions') ||
-              obj.err.message.includes('Timed Out')
-            ));
+            fullText.includes('failed to decrypt message') ||
+            fullText.includes("unexpected error in 'init queries'") ||
+            fullText.includes('stream errored out') ||
+            fullText.includes('error in handling message') ||
+            fullText.includes('bad mac') ||
+            fullText.includes('no matching sessions') ||
+            fullText.includes('timed out');
 
           if (isHandshakeRetry) {
-            const errSummary = typeof obj === 'object' && obj !== null ? (obj.err?.message || obj.msg || msgStr) : msgStr;
+            const errSummary = objErrStr || (typeof obj === 'object' && obj !== null ? obj?.msg : '') || msgStr;
             const remoteJid = typeof obj === 'object' && obj !== null ? (obj.key?.remoteJid || '') : '';
             return target.warn(
               { key: remoteJid ? { remoteJid } : undefined, err: errSummary },
@@ -1368,7 +1368,7 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
         if (phoneMsgs.length > 500) phoneMsgs.splice(0, phoneMsgs.length - 500);
         messagesByChat.set(phoneKey, phoneMsgs);
       }
-      logger.warn({ lid: lidKey, jid: phoneKey }, 'LID→telefon eşleşmesi uygulandı');
+      logger.debug({ lid: lidKey, jid: phoneKey }, 'LID→telefon eşleşmesi uygulandı');
     },
 
     _touchChat(session, jid, preview, timestamp) {

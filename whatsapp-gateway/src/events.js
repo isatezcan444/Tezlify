@@ -22,6 +22,7 @@ export function createEventBridge({ backendWsUrl, sessionManager }) {
 
   let backendSocket = null;
   let reconnectTimer = null;
+  let pingTimer = null;
   let isManuallyClosed = false;
   // Sorun (Render log): backend yeniden baslarken (redeploy / hibernate) köprü
   // sabit 3 sn'de bir yeniden baglanmayi deniyordu ve HER denemede
@@ -54,6 +55,13 @@ export function createEventBridge({ backendWsUrl, sessionManager }) {
       ws.on('open', () => {
         console.log('[bridge] Connected to backend WebSocket');
         connectAttempt = 0; // basarili baglanti sayaci sifirlar
+        if (pingTimer) clearInterval(pingTimer);
+        pingTimer = setInterval(() => {
+          if (backendSocket?.readyState === WebSocket.OPEN) {
+            backendSocket.ping();
+          }
+        }, 25000);
+
         // Replay buffered events on reconnect (FIFO). Silinen oturumun
         // bayat olaylari replay'e girmeden dusurulur — aksi halde backend
         // her reconnect'te yuzlerce sahipsiz olayla sel olur (Render log).
@@ -70,11 +78,19 @@ export function createEventBridge({ backendWsUrl, sessionManager }) {
       });
 
       ws.on('close', () => {
+        if (pingTimer) {
+          clearInterval(pingTimer);
+          pingTimer = null;
+        }
         backendSocket = null;
         scheduleReconnect();
       });
 
       ws.on('error', (err) => {
+        if (pingTimer) {
+          clearInterval(pingTimer);
+          pingTimer = null;
+        }
         connectAttempt += 1;
         const isStartupRefused = (err.code === 'ECONNREFUSED' || err.message?.includes('ECONNREFUSED')) && connectAttempt <= 15;
         if (isStartupRefused) {
@@ -89,6 +105,10 @@ export function createEventBridge({ backendWsUrl, sessionManager }) {
         ws.close();
       });
     } catch (err) {
+      if (pingTimer) {
+        clearInterval(pingTimer);
+        pingTimer = null;
+      }
       connectAttempt += 1;
       const isStartupRefused = (err.code === 'ECONNREFUSED' || err.message?.includes('ECONNREFUSED')) && connectAttempt <= 15;
       if (isStartupRefused) {
@@ -139,6 +159,7 @@ export function createEventBridge({ backendWsUrl, sessionManager }) {
     },
     close() {
       isManuallyClosed = true;
+      if (pingTimer) clearInterval(pingTimer);
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (backendSocket) backendSocket.close();
       unsubscribe();

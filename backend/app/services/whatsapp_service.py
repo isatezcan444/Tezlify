@@ -2613,6 +2613,7 @@ async def _run_initial_sync(owner: str) -> None:
             try:
                 from backend.app.api.v1.websocket import ws_manager
                 await ws_manager.broadcast({"event": "conversations_updated", "user_id": owner})
+                await ws_manager.broadcast({"event": "session_updated", "user_id": owner})
             except Exception as exc:  # noqa: BLE001 — broadcast basarisiz olssa bile DB gercegi yazar
                 logger.warning("Initial-sync broadcast basarisiz (owner=%s): %s", owner, exc)
         else:
@@ -2756,7 +2757,7 @@ async def ingest_gateway_event(event: Dict[str, Any]) -> Optional[Dict[str, Any]
             # ayni paylasilmis hattan (sync_conversations) hydrate edilir —
             # QR -> AUTHENTICATED -> INITIAL SYNC -> READY zinciri tek pipeline
             # ile calisir; "Eşitle" (manuel) ile initial sync AYNI kodu kullanir.
-            if evt == "session_sync_completed":
+            if evt in ("session_sync_completed", "session_connected"):
                 owner = result.get("user_id")
                 if owner and owner != SYSTEM_USER_ID:
                     _schedule_initial_sync(str(owner))
@@ -3206,6 +3207,24 @@ async def _map_session_event(db: AsyncSession, event: Dict[str, Any]) -> Dict[st
         row.status = SessionStatus.DISCONNECTED
         row.is_phone_online = False
         row.updated_at = datetime.utcnow()
-    elif evt in ("session_connected", "session_qr_updated"):
+    elif evt == "session_connected":
+        row.status = SessionStatus.CONNECTED
+        row.is_phone_online = True
+        row.qr_code = None
         row.error_message = None
+        phone = event.get("phone") or event.get("phone_number")
+        if phone:
+            row.phone_number = str(phone)
+        row.updated_at = datetime.utcnow()
+    elif evt == "session_disconnected":
+        row.status = SessionStatus.DISCONNECTED
+        row.is_phone_online = False
+        row.updated_at = datetime.utcnow()
+    elif evt == "session_qr_updated":
+        row.status = SessionStatus.SCAN_QR
+        qr = event.get("qr_code")
+        if qr:
+            row.qr_code = str(qr)
+        row.error_message = None
+        row.updated_at = datetime.utcnow()
     return event
