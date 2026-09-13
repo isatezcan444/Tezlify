@@ -9,6 +9,7 @@ edilir ve broadcast icin sayisal kimliklere cevrilir.
 import asyncio
 import logging
 import re
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Set, Tuple
@@ -640,24 +641,30 @@ def _get_contact_avatar(contact: Optional[Contact]) -> Optional[str]:
 
 
 async def sync_contacts(db: AsyncSession, user_id: str) -> List[Dict[str, Any]]:
-    out: List[Dict[str, Any]] = []
+    # Faz 6 (N+1 kaldirma): kisi basina SELECT+flush yerine TEK SELECT + tek
+    # flush — 197 kisilik rehberde ~394 sorgu -> 2 sorgu. Semantik korunur
+    # (dejenere JID kapisi, oncelikli ad cozumu, avatar, commit).
     gw_contacts = await gw.list_contacts()
-    for item in gw_contacts:
-        jid = item.get("id")
-        if not jid:
-            continue
-        # Faz 9 (§5): dejenere JID'lerden (`0@s.whatsapp.net`) contact uretilmez.
-        if is_degenerate_jid(str(jid)):
-            continue
-        name = item.get("name") or item.get("notify") or None
-        contact = await _upsert_contact(db, user_id, jid, name, item.get("name_source"))
-        _set_contact_avatar(contact, item.get("avatar_url"))
-        out.append({
-            "id": jid,
+    items = [
+        (
+            item.get("id"),
+            item.get("name") or item.get("notify") or None,
+            item.get("name_source"),
+            item.get("avatar_url"),
+        )
+        for item in gw_contacts
+        if item.get("id")
+    ]
+    resolved = await _bulk_upsert_contacts(db, user_id, items)
+    out = [
+        {
+            "id": jid_str,
             "phone": contact.phone_e164,
             "name": contact.display_name,
             "avatar_url": _get_contact_avatar(contact),
-        })
+        }
+        for jid_str, contact in resolved
+    ]
     await db.commit()
     return out
 
@@ -688,6 +695,128 @@ def _safe_display_name(contact: Optional[Contact]) -> Optional[str]:
     return name
 
 
+def _contact_phone_for_jid(jid: str) -> str:
+    """Kisi telefon/`jid:` sentinel kurali (tek kaynak — _upsert_contact ve
+    batch yollari ayni semantigi kullanir).
+
+    Grup JID'leri ("...@g.us") telefon numarasina cevrilemez; jid: sentinel'i
+    ile saklanır — _resolve_jid ve is_group bu sentinel'e guvenir.
+    """
+    if "@g.us" in str(jid):
+        return f"jid:{jid}"
+    phone = jid_to_phone(jid)
+    return phone or f"jid:{jid}"
+
+
+async def _bulk_upsert_contacts(
+    db: AsyncSession,
+    user_id: str,
+    items: List[Tuple[str, Optional[str], Optional[str], Optional[str]]],
+) -> List[Tuple[str, Contact]]:
+    """(jid, name, name_source, avatar) listesini TOPLU upsert eder (N+1 yok).
+
+    Kisi basina SELECT+INSERT/UPDATE yerine 1 SELECT + tek flush: 197 kisilik
+    rehberde 394 sorgu -> 2 sorgu (prod Postgres'te ~55s -> ~2s, Faz 6).
+    Semantik `_upsert_contact` ile birebir aynidir: dejenere JID atlanir,
+    `jid:` sentinel + legacy '+rakam' tasima, oncelik cozulumlu ad, avatar.
+    Doner: (jid_str, Contact) — yeni kisi flush sonrasi id'lidir.
+    """
+    resolved: List[Tuple[str, str, Optional[str], Optional[str], Optional[str]]] = []
+    for jid, name, source, avatar in items:
+        jid_str = str(jid)
+        if is_degenerate_jid(jid_str):  # §5/§24: '+0' kisi uretilmez
+            continue
+        resolved.append((jid_str, _contact_phone_for_jid(jid_str), name, source, avatar))
+    if not resolved:
+        return []
+    phones: Set[str] = set()
+    for jid_str, phone, _n, _s, _a in resolved:
+        phones.add(phone)
+        if phone.startswith("jid:"):
+            legacy = jid_to_phone(jid_str)
+            if legacy:
+                phones.add(legacy)
+    res = await db.execute(
+        select(Contact).where(
+            Contact.phone_e164.in_(sorted(phones)),
+            get_user_filter(Contact.user_id, user_id),
+        )
+    )
+    by_phone: Dict[str, Contact] = {}
+    for c in res.scalars().all():
+        by_phone.setdefault(str(c.phone_e164), c)
+    out: List[Tuple[str, Contact]] = []
+    for jid_str, phone, name, source, avatar in resolved:
+        contact = by_phone.get(phone)
+        if contact is None and phone.startswith("jid:"):
+            # Eski kayitlar: grup JID'i yanlislikla "+rakam" gibi saklanmis olabilir.
+            legacy = jid_to_phone(jid_str)
+            if legacy:
+                contact = by_phone.get(legacy)
+                if contact is not None:
+                    contact.phone_e164 = phone
+        if contact is None:
+            contact = Contact(
+                user_id=user_id,
+                phone_e164=phone,
+                # Faz 7: ham jid/lid asla display_name olmaz — isim yoksa None.
+                display_name=(None if _is_raw_jid_name(name) else name) or jid_to_phone(jid_str),
+            )
+            if name and str(source or "") in _NAME_RANK:
+                contact.custom_attributes = {"name_source": str(source)}
+            by_phone[phone] = contact
+            db.add(contact)
+        else:
+            _set_contact_name(contact, name, source)
+        _set_contact_avatar(contact, avatar)
+        out.append((jid_str, contact))
+    await db.flush()
+    return out
+
+
+async def _ensure_conversations_bulk(
+    db: AsyncSession, user_id: str, contacts: List[Tuple[str, Contact]]
+) -> List[Tuple[str, Contact, Conversation]]:
+    """Kisi listesi icin WhatsApp conversation satirlarini TOPLU garanti eder.
+
+    `_ensure_conversation` ile ayni semantik (yoksa ACTIVE + last_message_at
+    tohumlanmaz — Faz 10 RC-1 korumasi), ama sohbet basina 2 sorgu yerine
+    1 SELECT + tek flush (Faz 7).
+    """
+    contact_ids = [c.id for _jid, c in contacts if c.id is not None]
+    by_contact: Dict[int, Conversation] = {}
+    if contact_ids:
+        res = await db.execute(
+            select(Conversation).where(
+                Conversation.contact_id.in_(contact_ids),
+                Conversation.channel == "WHATSAPP",
+                get_user_filter(Conversation.user_id, user_id),
+            )
+        )
+        for conv in res.scalars().all():
+            by_contact.setdefault(int(conv.contact_id), conv)
+    out: List[Tuple[str, Contact, Conversation]] = []
+    for jid_str, contact in contacts:
+        conv = by_contact.get(contact.id) if contact.id is not None else None
+        if conv is None:
+            conv = Conversation(
+                user_id=user_id,
+                contact_id=contact.id,
+                channel="WHATSAPP",
+                status=ConversationStatus.ACTIVE,
+                last_message_preview=None,
+                # Faz 10 (P2, RC-1): olustururken utcnow() ile GELECEK timestamp
+                # tohumlanmaz — ozet yalnizca gercek mesaj verisiyle dolar.
+                last_message_at=None,
+            )
+            if contact.id is not None:
+                by_contact[contact.id] = conv
+            db.add(conv)
+        out.append((jid_str, contact, conv))
+    await db.flush()
+    return out
+
+
 async def _upsert_contact(
     db: AsyncSession,
     user_id: str,
@@ -700,14 +829,7 @@ async def _upsert_contact(
     # (sync/ingest) bu hatayı yakalayıp kaydı atlar.
     if is_degenerate_jid(jid):
         raise ValueError(f"Degenerate WhatsApp JID reddedildi: {jid}")
-    # Grup JID'leri ("...@g.us") telefon numarasina cevrilemez; jid: sentinel'i
-    # ile saklanır — _resolve_jid ve is_group bu sentinel'e guvenir.
-    if "@g.us" in str(jid):
-        phone_e164 = f"jid:{jid}"
-    else:
-        phone_e164 = jid_to_phone(jid)
-        if not phone_e164:
-            phone_e164 = f"jid:{jid}"
+    phone_e164 = _contact_phone_for_jid(jid)
     stmt = select(Contact).where(
         Contact.phone_e164 == phone_e164,
         get_user_filter(Contact.user_id, user_id),
@@ -1157,6 +1279,73 @@ async def _resolve_jid(db: AsyncSession, user_id: str, conversation_id: int) -> 
     return conv, jid
 
 
+async def _hydrate_messages_on_demand(
+    db: AsyncSession, owner: str, conv: Conversation, limit: int
+) -> List[Message]:
+    """P0.11 (WhatsApp Web paritesi): kullanici sohbeti job hydrasyonundan once
+    actiysa gateway belleğinden (history-sync'ten beri mevcut) bu sohbetin son
+    mesajlarini cek + kalici yaz. Gercek veri, sentez yok; hata fail-soft
+    (bos liste doner — UI zaten job banner'ini gosteriyor, basari maskelenmez).
+    """
+    if not conv.contact_id:
+        return []
+    cres = await db.execute(select(Contact).where(Contact.id == conv.contact_id))
+    contact = cres.scalar_one_or_none()
+    if contact is None or not contact.phone_e164:
+        return []
+    phone = str(contact.phone_e164)
+    jid = phone[4:] if phone.startswith("jid:") else phone_to_jid(phone)
+    if not jid:
+        return []
+    try:
+        data = await gw.get_messages(jid, limit=min(max(limit, 50), 100))
+    except Exception as exc:  # noqa: BLE001 — gateway kapali/eski: sessiz bos
+        logger.info("On-demand hydrasyon atlandi (conv=%s): %s", conv.id, exc)
+        return []
+    gw_msgs = data.get("messages", []) if isinstance(data, dict) else []
+    if not gw_msgs:
+        return []
+    # dedup: mevcut wa_message_id'ler tek SELECT ile.
+    res = await db.execute(
+        select(Message.wa_message_id).where(
+            Message.conversation_id == conv.id, Message.wa_message_id.isnot(None)
+        )
+    )
+    have = {str(r[0]) for r in res.all()}
+    rows: List[Message] = []
+    for gm in gw_msgs:
+        wa = gm.get("wa_message_id")
+        if wa and str(wa) in have:
+            continue
+        row = _message_row_from_gateway(owner, conv, gm)
+        if row is None:
+            continue
+        if wa:
+            have.add(str(wa))
+        rows.append(row)
+    if not rows:
+        return []
+    db.add_all(rows)
+    await db.flush()
+    # Preview'i da hydrate edilen gercek mesajla guncelle (sohbet listesi tutarli).
+    summary_src = rows[-1]
+    _apply_last_message(
+        conv,
+        summary_src.external_timestamp,
+        build_last_message_summary(
+            message_type=summary_src.message_type.value,
+            body=summary_src.body,
+            sender_name=summary_src.sender_name,
+            is_group="@g.us" in jid,
+            direction=summary_src.direction.value,
+        ),
+    )
+    await db.commit()
+    for r in rows:
+        await db.refresh(r)
+    return list(reversed(rows))
+
+
 async def get_messages(
     db: AsyncSession, user_id: str, conversation_id: int, limit: int = 50, before: Optional[int] = None
 ) -> Dict[str, Any]:
@@ -1170,6 +1359,10 @@ async def get_messages(
     base = base.order_by(Message.id.desc()).limit(min(limit, 100))
     res = await db.execute(base)
     rows = list(res.scalars().all())
+    # Faz 6 (P0.11 lazy hydration): ilk sayfa hic bos ve sohbet hicbir zaman
+    # mesaj gormemisse gateway belleğinden canli cek (job'u bekleme).
+    if not rows and before is None:
+        rows = await _hydrate_messages_on_demand(db, user_id, conv, limit)
     rows.reverse()
     has_more = len(rows) == min(limit, 100)
     messages = [_serialize_message(r) for r in rows]
@@ -1318,7 +1511,43 @@ _SYNC_PERSIST_BATCH = 200     # dedup-SELECT + INSERT grubu
 _SYNC_EVENT_CHUNK = 100       # WS mesaj chunk olayinin ust siniri
 _SYNC_CHAT_PAGE_SIZE = 40     # sohbet anlik goruntusu sayfa boyutu
 
+# WhatsApp Web paritesi (Faz 17/28): sohbet listesi, Baileys history sync
+# SIRASINDA (session_sync_completed'i beklemeden) canli `conversation_updated`
+# olaylariyla akmaya baslar. Backend bu akisi owner'in WS'ine 2 sn'de bir
+# 'whatsapp_sync_chats_bootstrap' olayiyla sinyaller; frontend bu olayi
+# aldiginda DB snapshot'ini GET /conversations ile hemen yukler — UI, job'un
+# ~137 sn'lik N+1 fazini beklemez. Sahte veri/atlama YOK: yalnizca GERCEK
+# kalici yazilmis sohbetler gosterilir.
+_BOOTSTRAP_EMIT_INTERVAL_S = 2.0
+
 _bulk_channel_cache: Dict[str, Any] = {"ok": False, "checked_at": 0.0}
+
+# owner -> son bootstrap yayin zamani (time.monotonic) — throttled akis.
+_last_bootstrap_emit: Dict[str, float] = {}
+
+
+def _schedule_chats_bootstrap(owner: str) -> None:
+    """Canli sohbet olayindan sonra (throttled) bootstrap sinyali yayinla.
+
+    Fire-and-forget: hata yayilmaz, zamanlayici varsa ikinci task yok."""
+    now = time.monotonic()
+    last = _last_bootstrap_emit.get(owner)
+    if last is not None and now - last < _BOOTSTRAP_EMIT_INTERVAL_S:
+        return
+    _last_bootstrap_emit[owner] = now
+
+    async def _emit() -> None:
+        await _broadcast_sync_event({
+            "event": "whatsapp_sync_chats_bootstrap",
+            "sync_id": "live",
+            "user_id": owner,
+            "at": datetime.now(timezone.utc).isoformat(),
+        })
+
+    try:
+        asyncio.get_running_loop().create_task(_emit())
+    except RuntimeError:
+        pass  # event loop yok (test disi senkron baglam) — sessiz atla
 
 
 class SyncJob:
@@ -1330,7 +1559,8 @@ class SyncJob:
 
     __slots__ = ("sync_id", "user_id", "state", "stage", "error", "cancel_requested",
                  "chats_total", "chats_synced", "contacts_synced", "messages_total",
-                 "messages_synced", "started_at", "finished_at", "done", "task")
+                 "messages_synced", "started_at", "finished_at", "done", "task",
+                 "stage_timings")
 
     def __init__(self, sync_id: str, user_id: str) -> None:
         self.sync_id = sync_id
@@ -1348,6 +1578,9 @@ class SyncJob:
         self.finished_at: Optional[datetime] = None
         self.done = asyncio.Event()
         self.task: Optional[asyncio.Task] = None
+        # Faz 6 (P0.1 enstrumantasyon): asama bazinda gecen sure (sn) — benchmark
+        # ve raporlama icin gercek olcum; tahmin DEGIL (time.monotonic delta).
+        self.stage_timings: Dict[str, float] = {}
 
     def snapshot(self) -> Dict[str, Any]:
         """GET /sync/job + WS reconnect kurtarmasi icin gercek durum (§28)."""
@@ -1363,6 +1596,7 @@ class SyncJob:
             "messages_synced": self.messages_synced,
             "started_at": self.started_at.isoformat(),
             "finished_at": self.finished_at.isoformat() if self.finished_at else None,
+            "stage_timings": dict(self.stage_timings),
         }
 
 
@@ -1443,40 +1677,88 @@ def _cancel_stale_sync_jobs(user_id: str) -> int:
     return 1
 
 
+async def _reapply_chat_names(
+    db: AsyncSession, owner: str, items: List[Dict[str, Any]]
+) -> None:
+    """Faz 6 (P0.3 sonrasi): sohbet-listesi adlarini REHBER fazindan SONRA
+    yeniden otoriter kilar.
+
+    Eski sirada (contacts -> chats) sohbet adi son yazan oldugu icin tie-break'ta
+    kazanirdi — WhatsApp Web paritesi: gateway sohbet adini contact-store ile
+    merge ederek uretir, canli ortamda iki kaynak ayni ad/rutbeyi tasir. Yeni
+    sirada (chats -> contacts) tie-break tersine donup rehber mock/eski adini
+    sohbet adinin uzerine yazabiliyor; tek SELECT'lik bu onarim ad semantigini
+    SIRADAN BAGIMSIZ hale getirir. Dusuk rutbeli ad yuksek rutbeliyi asla ezmez
+    (_set_contact_name korumasi) — addressbook > chat-gorunen ad kirilmaz.
+    """
+    named = [
+        (str(item.get("jid") or item.get("id")), item.get("name"), item.get("name_source"))
+        for item in items
+        if (item.get("jid") or item.get("id")) and item.get("name")
+    ]
+    if not named:
+        return
+    phones = {
+        _contact_phone_for_jid(j) for j, _n, _s in named if not is_degenerate_jid(j)
+    }
+    if not phones:
+        return
+    res = await db.execute(
+        select(Contact).where(
+            Contact.phone_e164.in_(sorted(phones)),
+            get_user_filter(Contact.user_id, owner),
+        )
+    )
+    by_phone: Dict[str, Contact] = {}
+    for c in res.scalars().all():
+        by_phone.setdefault(str(c.phone_e164), c)
+    changed = False
+    for jid_str, name, source in named:
+        if is_degenerate_jid(jid_str):
+            continue
+        contact = by_phone.get(_contact_phone_for_jid(jid_str))
+        if contact is not None and _set_contact_name(contact, name, source):
+            changed = True
+    if changed:
+        await db.commit()
+
+
 async def _run_sync_job(job: SyncJob) -> None:
     """Chunked initial-sync hatti — WS olaylariyla ilerler, HTTP'yi bloklamaz.
 
-    Akis: started -> contacts snapshot -> chats snapshot (chat basina gateway
-    cagrisi YOK) -> tek bulk mesaj fetch'i (sayfali) -> batch'li kalici yazim
-    + mesaj chunk -> ilerleme -> onarim + complete/failed.
+    Faz 6 (P0.3) — SOHBETLER İLK: chats snapshot artik rehber/mesaj fazlarindan
+    ONCE yayinlanir; kullanici sohbete job basladiktan saniyeler sonra baslar,
+    rehber adlari + mesajlar arka planda tamamlanir (WhatsApp Web sirasi).
+    Akis: started -> grup basliklari -> chats snapshot -> contacts -> mesajlar
+    (tek bulk fetch, sayfali) -> onarim + complete/failed.
+    Chat basina gateway cagrisi YOK (§21); her fazin gercek suresi
+    stage_timings'e yazilir (P0.1).
     """
     owner = job.user_id
     try:
         async with AsyncSessionLocal() as db:
             await _broadcast_sync_event(_sync_event(job, "whatsapp_sync_started", started_at=job.started_at.isoformat()))
+            phase_t0 = time.monotonic()
 
-            # 1) Rehber (fail-soft — sohbet senkronu surer).
-            job.stage = "contacts"
-            try:
-                contacts = await sync_contacts(db, owner)
-                job.contacts_synced = len(contacts)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("Sync job rehber adimi atlandi (owner=%s): %s", owner, exc)
-                contacts = []
-            if job.cancel_requested:
-                raise asyncio.CancelledError()
-            await _broadcast_sync_event(_sync_event(
-                job, "whatsapp_sync_contacts_snapshot",
-                total=job.contacts_synced, contacts=contacts[:_SYNC_EVENT_CHUNK]))
+            def _mark_phase(name: str) -> None:
+                nonlocal phase_t0
+                now = time.monotonic()
+                job.stage_timings[name] = round(job.stage_timings.get(name, 0.0) + (now - phase_t0), 3)
+                phase_t0 = now
 
-            # 2) Grup basliklari (fail-soft; force — cozulememis gruplar tekrar denensin).
+            # 1) Grup basliklari (fail-soft; force — cozulememis gruplar tekrar denensin).
+            #    Tek gateway cagrisi, bellek-ici cozum — hizli; sohbet snapshot'indaki
+            #    grup isimlerinin dogru gelmesi icin chats'ten once kalir.
             try:
                 await gw.sync_group_subjects(force=True)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Sync job grup basliklari atlandi (owner=%s): %s", owner, exc)
+            _mark_phase("group_subjects")
 
-            # 3) Sohbet anlik goruntusu — chat BASINA gateway istegi YOK (§21);
-            #    chats listesi tek cagri, DB'ye bir geciste toplu yazilir.
+            # 2) Sohbet anlik goruntusu — chat BASINA gateway istegi YOK (§21);
+            #    chats listesi tek cagri, DB'ye bir geciste TOPLU yazilir (Faz 7).
+            #    Bu faz biter bitmez chats_snapshot yayinlanir — UI artik mesaj
+            #    senkronunu BEKLEMEZ (P0.3).
             job.stage = "chats"
             data = await gw.list_conversations(limit=200)
             items = data.get("items", []) if isinstance(data, dict) else []
@@ -1490,9 +1772,35 @@ async def _run_sync_job(job: SyncJob) -> None:
                     job, "whatsapp_sync_chats_snapshot",
                     total=job.chats_total,
                     conversations=conv_out[page_start:page_start + _SYNC_CHAT_PAGE_SIZE]))
+            _mark_phase("chats")
+
+            # 3) Rehber (fail-soft — sohbetler artik gorunur, ad zenginlestirmesi
+            #    arka planda tamamlanir; final complete olayi cozulmus listeyi tasir).
+            job.stage = "contacts"
+            try:
+                contacts = await sync_contacts(db, owner)
+                job.contacts_synced = len(contacts)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Sync job rehber adimi atlandi (owner=%s): %s", owner, exc)
+                contacts = []
+            if job.cancel_requested:
+                raise asyncio.CancelledError()
+            await _broadcast_sync_event(_sync_event(
+                job, "whatsapp_sync_contacts_snapshot",
+                total=job.contacts_synced, contacts=contacts[:_SYNC_EVENT_CHUNK]))
+            _mark_phase("contacts")
+
+            # 3b) Ad otoritesini geri ver (P0.3 tie-break onarimi, tek SELECT):
+            #     sohbet-listesi adlari rehber fazindan bagimsiz olarak kazanir —
+            #     WhatsApp Web'de kullaniciyin gordugu ad budur.
+            try:
+                await _reapply_chat_names(db, owner, items)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Sync job ad onarimi atlandi (owner=%s): %s", owner, exc)
 
             # 4) Mesajlar — TEK bulk kanaldan, bellek-ici offset sayfalamasi
-            #    (§21: per-chat HTTP yok; §23: mesaj basina sorgu yok).
+            #    (§21: per-chat HTTP yok; §23: mesaj basina sorgu yok; Faz 8:
+            #    dedup kumesi sayfalar arasi onbelleklenir).
             job.stage = "messages"
             if await _bulk_channel_available():
                 await _run_bulk_message_sync(db, job, jid_by_conv)
@@ -1502,6 +1810,7 @@ async def _run_sync_job(job: SyncJob) -> None:
                 await _sync_conversations_impl(db, owner)
             if job.cancel_requested:
                 raise asyncio.CancelledError()
+            _mark_phase("messages")
 
             # 5) Onarim + tamamlanma — preview'i eksik sohbetleri tek agregat
             #    sorguyla hydrate et, sonra cozulmus tam listeyi yayinla.
@@ -1509,6 +1818,7 @@ async def _run_sync_job(job: SyncJob) -> None:
             await _repair_last_message_previews(db, owner)
             await db.commit()
             result, _total = await list_conversations(db, owner)
+            _mark_phase("finalizing")
             job.state = "COMPLETED"
             job.stage = "complete"
             job.finished_at = datetime.now(timezone.utc)
@@ -1519,10 +1829,14 @@ async def _run_sync_job(job: SyncJob) -> None:
                 contacts_synced=job.contacts_synced,
                 messages_synced=job.messages_synced,
                 finished_at=job.finished_at.isoformat(),
+                stage_timings=dict(job.stage_timings),
+                duration_s=round((job.finished_at - job.started_at).total_seconds(), 3),
             ))
             logger.info(
-                "Sync job tamamlandi (owner=%s sync_id=%s chats=%s msgs=%s)",
+                "Sync job tamamlandi (owner=%s sync_id=%s chats=%s msgs=%s sure=%ss fazlar=%s)",
                 owner, job.sync_id, job.chats_synced, job.messages_synced,
+                round((job.finished_at - job.started_at).total_seconds(), 1),
+                job.stage_timings,
             )
     except asyncio.CancelledError:
         job.state = "FAILED"
@@ -1542,27 +1856,44 @@ async def _run_sync_job(job: SyncJob) -> None:
 async def _persist_chat_snapshot(
     db: AsyncSession, owner: str, items: List[Dict[str, Any]]
 ) -> Tuple[List[Dict[str, Any]], Dict[int, str]]:
-    """Gateway chats listesini TEK geciste DB'ye yazar.
+    """Gateway chats listesini TOPLU geciste DB'ye yazar (Faz 7: N+1 yok).
+
+    Eski yol sohbet basina `_upsert_contact` + `_ensure_conversation`
+    (2 SELECT + flush) calistiriyordu — 113 sohbette prod Postgres'te ~81s.
+    Yeni yol: tek `_bulk_upsert_contacts` + tek `_ensure_conversations_bulk`
+    (2 SELECT + 2 flush) + tek commit. Semantik birebir korunur: dejenere JID
+    kapisi, oncelikli ad cozumu, avatar, ts-guard'lu preview, unread max.
 
     Doner: (list_conversations formatinda sohbet serisi — ham WhatsApp
     nesnesi DEGIL, sayisal DB kimlikli, §30; conversation_id -> ham jid haritasi
     — jid yalnizca backend icinde kalir, frontend'e sizmaz).
     """
-    out: List[Dict[str, Any]] = []
-    jid_by_conv: Dict[int, str] = {}
+    candidates: List[Dict[str, Any]] = []
     for item in items:
         jid = item.get("jid") or item.get("id")
         if not jid or "@" not in str(jid):
             continue
-        jid_str = str(jid)
-        if is_degenerate_jid(jid_str):  # §5/§24: '+0' sohbeti DB'ye yazilmaz
+        if is_degenerate_jid(str(jid)):  # §5/§24: '+0' sohbeti DB'ye yazilmaz
             continue
-        try:
-            contact = await _upsert_contact(db, owner, jid_str, item.get("name"), item.get("name_source"))
-        except ValueError:
+        candidates.append(item)
+    contacts = await _bulk_upsert_contacts(
+        db, owner,
+        [
+            (str(item.get("jid") or item.get("id")), item.get("name"),
+             item.get("name_source"), item.get("avatar_url"))
+            for item in candidates
+        ],
+    )
+    item_by_jid: Dict[str, Dict[str, Any]] = {
+        str(item.get("jid") or item.get("id")): item for item in candidates
+    }
+    triples = await _ensure_conversations_bulk(db, owner, contacts)
+    out: List[Dict[str, Any]] = []
+    jid_by_conv: Dict[int, str] = {}
+    for jid_str, contact, conv in triples:
+        item = item_by_jid.get(jid_str)
+        if item is None:
             continue
-        _set_contact_avatar(contact, item.get("avatar_url"))
-        conv = await _ensure_conversation(db, owner, jid_str)
         gw_ts = _as_naive_utc(_parse_dt(str(item.get("last_message_at")))) if item.get("last_message_at") else None
         gw_summary = _normalize_preview_text(item.get("message_type") or "TEXT", item.get("last_message_preview") or "")
         if gw_summary:
@@ -1589,9 +1920,27 @@ async def _persist_chat_snapshot(
                 "status": conv.status.value if hasattr(conv.status, "value") else str(conv.status),
             }
         )
-    await db.flush()
     await db.commit()
     return out, jid_by_conv
+
+
+async def _sync_watermark_epoch(db: AsyncSession, owner: str) -> Optional[int]:
+    """P0.13 delta suucusu: kullanıcının DB'sindeki en son mesaj zamanı (epoch
+    saniye, 5 dk overlap payıyla). Hiç mesaj yoksa None → tam cekim.
+
+    Suuc uydurma degil: external_timestamp gateway'deki GERCEK Baileys
+    messageTimestamp'ten yazilir. Realtime akis (message_new) yeni mesajları
+    zaten kalici yazdigi icin suuc her senkronla ilerler.
+    """
+    res = await db.execute(
+        select(func.max(Message.external_timestamp)).where(
+            get_user_filter(Message.user_id, owner)
+        )
+    )
+    ts = res.scalar()
+    if ts is None:
+        return None
+    return int(ts.replace(tzinfo=timezone.utc).timestamp()) - 300
 
 
 async def _run_bulk_message_sync(
@@ -1607,11 +1956,25 @@ async def _run_bulk_message_sync(
     for cid, jid_str in jid_by_conv.items():
         conv_by_jid[jid_str] = cid
     conv_by_id: Dict[int, Conversation] = {}
+    # Faz 8 (N+1 kaldirma): dedup kumesi SAYFALAR ARASI onbelleklenir. Eski yol
+    # her sayfada deginen sohbetlerin TAM wa_message_id listesini yeniden
+    # SELECT'liyordu — 5 sayfa x 16k mesaj = ~42s. On bellekte, her sohbet yalnizca
+    # ILK deginisinde bir kez yuklenir; bu job'in kendisinin ekledigi id'ler zaten
+    # `have`'a eklendigi icin tutarlilik korunur.
+    existing_ids: Dict[int, Set[str]] = {}
+    dedup_loaded: Set[int] = set()
+
+    # Faz 6 (P0.13 delta sync): GERCEK suuc — bu kullanicinin DB'sindeki en son
+    # bilinen mesaj zamani (external_timestamp MAX). Varsa gateway'den yalnizca
+    # (suuc - 5 dk overlap) sonrasi istenir; boylece reconnect sonrasi ayni
+    # gecmis tekrar tekrar cekilmez. Overlap + wa_message_id dedup'u, sinirdaki
+    # mesajlarin kaybolmasini onler. Ilk senkronda suuc yok → tam cekim.
+    since_epoch = await _sync_watermark_epoch(db, job.user_id)
 
     offset = 0
     first_page = True
     while True:
-        page = await gw.list_all_messages(limit=_SYNC_BULK_PAGE_SIZE, offset=offset)
+        page = await gw.list_all_messages(limit=_SYNC_BULK_PAGE_SIZE, offset=offset, since=since_epoch)
         msgs = page.get("messages", []) if isinstance(page, dict) else []
         total = int(page.get("total") or 0) if isinstance(page, dict) else 0
         if first_page:
@@ -1627,9 +1990,8 @@ async def _run_bulk_message_sync(
             if cid is None:
                 continue
             pending.setdefault(cid, []).append(gm)
-        # dedup: sohbet bazinda mevcut wa_message_id'leri toplu SELECT ile cek (§23).
-        existing_ids: Dict[int, Set[str]] = {}
-        cid_list = list(pending.keys())
+        # dedup: ilk temasda sohbet bazinda mevcut wa_message_id'leri toplu SELECT ile cek (§23).
+        cid_list = [cid for cid in pending.keys() if cid not in dedup_loaded]
         for batch_start in range(0, len(cid_list), _SYNC_PERSIST_BATCH):
             sub = cid_list[batch_start:batch_start + _SYNC_PERSIST_BATCH]
             res = await db.execute(
@@ -1640,6 +2002,7 @@ async def _run_bulk_message_sync(
             )
             for cid, wa in res.all():
                 existing_ids.setdefault(int(cid), set()).add(str(wa))
+        dedup_loaded.update(pending.keys())
         rows: List[Tuple[Message, Dict[str, Any]]] = []  # (satır, jid_str) — serialization flush sonrası
         touched: Set[int] = set()
         for cid, gm_list in pending.items():
@@ -1998,6 +2361,14 @@ async def _map_conversation_event(db: AsyncSession, event: Dict[str, Any]) -> Di
         except Exception:
             pass
         await db.commit()
+        # Faz 6 (P0.4 / PHASE-28): history sync sirasinda gelen her
+        # conversation_updated DB'ye yazildiktan sonra frontend'e "sozlesme
+        # listende yeni veri var, gel al" sinyali verilir (2 sn'de bir,
+        # throttle'li). Frontend bu sinyalle GET /conversations'i tetikler —
+        # UI, job'un chats_snapshot'unu (T+~44s) BEKLEMEZ, canli akistaki
+        # sohbetleri saniyeler icinde gorur.
+        if owner != SYSTEM_USER_ID:
+            _schedule_chats_bootstrap(owner)
         return event
     if event.get("event") == "conversation_read":
         conv.unread_count = 0

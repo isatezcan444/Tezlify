@@ -82,6 +82,9 @@ function isRawWhatsAppIdentity(value?: string | null): boolean {
 
 // Faz 11 (§27): banner ilerlemesi GERÇEK job sayaçlarından türetilir — sahte
 // timer/progress üretilmez. Mesaj toplamı biliniyorsa oran, değilse asama.
+// Faz 6 (P0.3): job sirasi artik chats -> contacts -> messages (sohbetler
+// once gelir); asama agirliklari bu siraya gore guncellendi — ilerleme
+// geriye gitmez.
 function computeSyncProgress(
   stage: string,
   chatsSynced: number,
@@ -93,8 +96,8 @@ function computeSyncProgress(
   if (messagesTotal > 0) return Math.min(99, Math.round((messagesSynced / messagesTotal) * 100));
   if (stage === 'finalizing') return 92;
   if (stage === 'messages') return 85;
-  if (stage === 'chats') return chatsSynced > 0 ? 55 : 35;
-  if (stage === 'contacts') return contactsSynced > 0 ? 20 : 8;
+  if (stage === 'contacts') return contactsSynced > 0 ? 70 : 60;
+  if (stage === 'chats') return chatsSynced > 0 ? 50 : 30;
   return 4;
 }
 
@@ -126,6 +129,10 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   const [isNewChatModalOpen, setIsNewChatModalOpen] = useState<boolean>(false);
   const [isSyncingChats, setIsSyncingChats] = useState<boolean>(false);
   const conversationsGenerationRef = useRef(0);
+  // Faz 6: WS handler'i guncel loadConversations kopyasini ve bilinen sohbet
+  // id'lerini ref uzerinden okur (bayat closure / StrictMode çift calisma yok).
+  const loadConversationsRef = useRef<((silent?: boolean) => Promise<void>) | null>(null);
+  const knownConvIdsRef = useRef<Set<number>>(new Set());
 
   // Faz 7/11: GERÇEK initial-sync durumu — artık WS tabanlı chunked sync job'i
   // (whatsapp_sync_* olaylari) ile beslenir. Polling storm ve sahte progress YOK.
@@ -204,6 +211,28 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     } catch {
       /* backend erisilemezse banner gösterilmez; hata maskelenmez ama startup'i kirmez */
     }
+  }, []);
+
+  useEffect(() => {
+    loadConversationsRef.current = loadConversations;
+  }, [loadConversations]);
+
+  useEffect(() => {
+    knownConvIdsRef.current = new Set(conversations.map((c) => c.id));
+  }, [conversations]);
+
+  // Faz 6 (P0.4/PHASE-28): canli sohbet akisi (bootstrap) sinyalleri tek
+  // refetch'e indirgenir — 2 sn'den sik GET /conversations istegi yok.
+  const bootstrapFetchRef = useRef<{ last: number; pending: ReturnType<typeof setTimeout> | null }>({ last: 0, pending: null });
+  const scheduleBootstrapFetch = useCallback(() => {
+    const st = bootstrapFetchRef.current;
+    if (st.pending) return;
+    const wait = Math.max(0, 2000 - (Date.now() - st.last));
+    st.pending = setTimeout(() => {
+      st.pending = null;
+      st.last = Date.now();
+      loadConversationsRef.current?.(true);
+    }, wait);
   }, []);
 
   useEffect(() => {
@@ -843,6 +872,13 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
             ? rawName
             : undefined;
         if (typeof convId === 'number') {
+          // Faz 6 (PHASE-28 duzeltmesi): handler eskiden yalnizca MEVCUT
+          // sohbeti guncellerdi — history sync sirasinda backend'e yazilan
+          // YENI sohbetler UI'ye hic dusmuyordu (veri akıyor, ekran bos).
+          // Bilinmeyen convId => listede yok: (throttle'li) DB'den tazele.
+          if (!knownConvIdsRef.current.has(convId)) {
+            scheduleBootstrapFetch();
+          }
           const patch = (c: Conversation): Conversation => {
             // Faz 10 (P2): gateway'den gelen gecikmeli ozet de paylasilan
             // kuraldan gecer ('[IMAGE]' -> etiket); daha eski zaman damgali
@@ -876,6 +912,15 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       // Faz 11: WS tabanli chunked initial-sync olaylari — HTTP polling yerine
       // backend job'i bu olaylari mevcut /ws hattiyla sahibine yollar (§13).
       if (String(eventData.event || '').startsWith('whatsapp_sync_')) {
+        // Faz 6 (P0.4): canli sohbet akisi sinyali — job'dan bagimsiz
+        // (sync_id='live'), stale filtresinden once islenir. Backend
+        // conversation_updated'i DB'ye yazdiginda gelir; UI GET /conversations
+        // ile saniyeler icinde gercek sohbetleri gosterir — job'un
+        // chats_snapshot'unu beklemez (WhatsApp Web paritesi).
+        if (eventData.event === 'whatsapp_sync_chats_bootstrap') {
+          scheduleBootstrapFetch();
+          return;
+        }
         const syncId = (eventData.sync_id as string) || null;
         const isStale = Boolean(syncId && activeSyncIdRef.current && syncId !== activeSyncIdRef.current);
         // §14: bay (stale) job'un gec gelen olaylari YOK SAYILIR. 'started' her
@@ -1105,10 +1150,15 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   const handleQrSuccess = useCallback(() => {
     fetchSessions(true);
     onRefreshStats();
+    // Faz 6 (PHASE-17 cache-first): QR sonrasi ONCE DB'deki kalici sohbet
+    // snapshot'i aninda yuklenir (reconnect'te kullanici 2-3 sn'de listeyi
+    // gorur); gercek zamanli tazeleme WS bootstrap/chats_snapshot olaylariyla
+    // ve job ile arkadan gelir. Sahte veri yok — yalnizca kalici gercek satirlar.
+    loadConversations(true);
     // Faz 7/11: QR sonrasi initial-sync hemen izlenmeye baslanir — devam eden
     // job varsa GET /sync/job ile benimsenir, ilerleme WS olaylarinda akar.
     refreshSyncStatus();
-  }, [fetchSessions, onRefreshStats, refreshSyncStatus]);
+  }, [fetchSessions, onRefreshStats, refreshSyncStatus, loadConversations]);
 
   const handleOpenQrConnect = useCallback(() => {
     setReconnectSessionId(undefined);

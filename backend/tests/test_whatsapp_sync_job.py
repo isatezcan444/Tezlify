@@ -167,13 +167,20 @@ def _msg(jid: str, wa: str, body: str = "mesaj", direction: str = "INBOUND",
 
 
 def _fake_bulk(all_msgs: List[Dict[str, Any]], data_delay: float = 0.0):
-    """limit=1 → probe; aksi halde offset/limit sayfalamasi."""
-    async def _bulk(limit: int = 1000, offset: int = 0):
+    """limit=1 → probe; aksi halde offset/limit sayfalamasi. P0.13: `since`
+    (epoch sn) verildiginde gercek gateway gibi created_at filtresi uygular."""
+    async def _bulk(limit: int = 1000, offset: int = 0, since=None):
         if limit == 1:
             return {"messages": [], "total": len(all_msgs), "offset": 0, "limit": 1}
         if data_delay:
             await asyncio.sleep(data_delay)
-        return {"messages": all_msgs[offset:offset + limit], "total": len(all_msgs),
+        pool = all_msgs
+        if since is not None:
+            from datetime import datetime, timezone
+            pool = [m for m in all_msgs
+                    if datetime.fromisoformat(str(m["created_at"]).replace("Z", "+00:00"))
+                    .timestamp() >= since]
+        return {"messages": pool[offset:offset + limit], "total": len(pool),
                 "offset": offset, "limit": limit}
     return _bulk
 
@@ -392,8 +399,9 @@ async def test_07_batched_dedup_single_select_per_batch(mock_gateway, events):
     assert job.state == "COMPLETED", job.error
 
     total_message_selects = sum(s.message_selects for s in sessions)
-    # Legacy yol 300 dedup SELECT atardi; yeni yol: 1 batch dedup (+ onarim 0 — preview'ler var).
-    assert total_message_selects <= 2, f"mesaj SELECT sayisi: {total_message_selects}"
+    # Legacy yol 300 dedup SELECT atardi; yeni yol: 1 batch dedup (+ onarim 0 — preview'ler var)
+    # + 1 P0.13 delta suucu SELECT'i (MAX external_timestamp, job basi tek seferlik).
+    assert total_message_selects <= 3, f"mesaj SELECT sayisi: {total_message_selects}"
 
 
 # ---------------------------------------------------------------------------
@@ -495,7 +503,7 @@ async def test_11_session_delete_cancels_running_job(auth_headers, mock_gateway,
     release = asyncio.Event()
     calls: List[Dict[str, Any]] = []
 
-    async def _hanging_bulk(limit: int = 1000, offset: int = 0):
+    async def _hanging_bulk(limit: int = 1000, offset: int = 0, since=None):
         if limit == 1:
             return {"messages": [], "total": 1, "offset": 0, "limit": 1}
         calls.append({"limit": limit, "offset": offset})
@@ -780,3 +788,277 @@ async def test_25_sessionmaker_expire_on_commit_false_preserved():
     assert AsyncSessionLocal.kw.get("expire_on_commit") is False
     # Job icerisindeki session da ayni factory'den uretilir (kullanim hatasi olmasin)
     assert ws.AsyncSessionLocal is AsyncSessionLocal
+
+
+# ---------------------------------------------------------------------------
+# Faz 6 — P0 performans yeniden siralama / batch / bootstrap sozlesmeleri
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_26_chats_snapshot_precedes_contacts_snapshot(mock_gateway, events):
+    """P0.3: sohbet anlik goruntusu REHBER fazindan once yayinlanir — kullanici
+    sohbete job'un ilk fazinda baslar (WhatsApp Web sirasi)."""
+    mock_gateway.list_conversations.return_value = {
+        "items": [_chat(MOCK_JID, "Ayse Yilmaz")], "total": 1}
+    job = await ws.request_sync(None, TEST_USER)
+    await job.done.wait()
+    assert job.state == "COMPLETED", job.error
+
+    names = [e["event"] for e in events]
+    i_chats = names.index("whatsapp_sync_chats_snapshot")
+    i_contacts = names.index("whatsapp_sync_contacts_snapshot")
+    assert i_chats < i_contacts, f"chats_oncelikli olmali: {names}"
+
+
+@pytest.mark.asyncio
+async def test_27_sync_contacts_single_prefetch_select_no_n_plus_one(mock_gateway):
+    """P0.6: 50 kisilik rehberde kisi basina SELECT YOK — tek prefetch SELECT.
+    (Eski yol: 50 SELECT + 50 flush; yeni yol: 1 SELECT + 1 flush.)"""
+    from sqlalchemy import event as sa_event
+    from backend.app.core.database import engine
+
+    jids = [f"9055511{i:05d}@s.whatsapp.net" for i in range(50)]
+    mock_gateway.list_contacts.return_value = [
+        {"id": j, "name": f"Musteri {i}", "name_source": "addressbook"}
+        for i, j in enumerate(jids)]
+
+    contact_selects: List[str] = []
+
+    def _count(conn, cursor, statement, parameters, context, executemany):
+        if "FROM contacts" in statement.lower().replace('"', ""):
+            contact_selects.append(statement)
+
+    sa_event.listen(engine.sync_engine, "before_cursor_execute", _count)
+    try:
+        async with AsyncSessionLocal() as db:
+            out = await ws.sync_contacts(db, TEST_USER)
+    finally:
+        sa_event.remove(engine.sync_engine, "before_cursor_execute", _count)
+
+    assert len(out) == 50
+    # 50 kisi icin en fazla 2 SELECT (prefetch + flush sonrasi hic); N+1 olsaydi
+    # 50+ olurdu.
+    assert len(contact_selects) <= 2, f"N+1 dondu: {len(contact_selects)} SELECT"
+    async with AsyncSessionLocal() as db:
+        n = (await db.execute(select(func.count()).select_from(Contact).where(
+            Contact.user_id.in_([TEST_USER, TEST_USER_HEX])))).scalar()
+    assert n == 50
+
+
+@pytest.mark.asyncio
+async def test_28_bulk_dedup_select_once_per_conversation_across_pages(mock_gateway, events):
+    """P0.8: 3 sayfa x 1000 mesaj, TEK sohbet — dedup SELECT sayfa basina
+    DEĞIL, sohbet basina bir kez calisir (eski yol: 3 tam tarama)."""
+    from sqlalchemy import event as sa_event
+    from backend.app.core.database import engine
+
+    msgs = [_msg(MOCK_JID, f"wamid_d{i}", f"m{i}",
+                 ts=f"2025-02-01T09:{i % 60:02d}:00.000Z") for i in range(2500)]
+    mock_gateway.list_conversations.return_value = {
+        "items": [_chat(MOCK_JID, "Dedup")], "total": 1}
+    mock_gateway.list_all_messages.side_effect = _fake_bulk(msgs)
+
+    dedup_selects: List[str] = []
+
+    def _count(conn, cursor, statement, parameters, context, executemany):
+        s = statement.lower().replace('"', "")
+        if "from messages" in s and "wa_message_id" in s and "in (" in s:
+            dedup_selects.append(statement)
+
+    sa_event.listen(engine.sync_engine, "before_cursor_execute", _count)
+    try:
+        job = await ws.request_sync(None, TEST_USER)
+        await job.done.wait()
+    finally:
+        sa_event.remove(engine.sync_engine, "before_cursor_execute", _count)
+
+    assert job.state == "COMPLETED", job.error
+    assert job.messages_synced == 2500
+    # 3 sayfada ayni sohbet icin dedup SELECT TEK sefer (onbellek calisiyor).
+    assert len(dedup_selects) == 1, f"dedup sayfalar arasi onbellek kirildi: {len(dedup_selects)}"
+
+
+@pytest.mark.asyncio
+async def test_29_conversation_updated_emits_throttled_bootstrap_signal(mock_gateway, events):
+    """P0.4/PHASE-28: history-sync sirasinda DB'ye yazilan her
+    conversation_updated, owner'in WS'ine (2 sn throttle'li)
+    whatsapp_sync_chats_bootstrap sinyali verir — UI job'u beklemez."""
+    from unittest.mock import patch
+
+    async with AsyncSessionLocal() as db:
+        db.add(WhatsAppSession(
+            user_id=TEST_USER, gateway_id="gw-boot", session_name="boot",
+            status=SessionStatus.CONNECTED))
+        await db.commit()
+
+    ws._last_bootstrap_emit.clear()
+    captured: List[Dict[str, Any]] = []
+
+    async def _cap(payload):
+        captured.append(dict(payload))
+
+    with patch("backend.app.services.whatsapp_service._broadcast_sync_event", new=_cap):
+        async with AsyncSessionLocal() as db:
+            await ws._map_conversation_event(db, {
+                "event": "conversation_updated",
+                "conversation_id": MOCK_JID,
+                "conversation": {
+                    "id": MOCK_JID, "name": "Canli Kisi",
+                    "last_message_preview": "Merhaba",
+                    "last_message_at": "2025-03-01T10:00:00.000Z",
+                },
+            })
+            # ikinci olay throttle araliginda — ikinci sinyal OLMAMALI
+            await ws._map_conversation_event(db, {
+                "event": "conversation_updated",
+                "conversation_id": MOCK_JID,
+                "conversation": {
+                    "id": MOCK_JID, "name": "Canli Kisi",
+                    "last_message_preview": "Merhaba 2",
+                    "last_message_at": "2025-03-01T10:00:05.000Z",
+                },
+            })
+        await asyncio.sleep(0.05)  # fire-and-forget task'lari bosalt
+
+    boots = [e for e in captured if e.get("event") == "whatsapp_sync_chats_bootstrap"]
+    assert len(boots) == 1, f"throttle calismadi: {len(boots)} sinyal"
+    assert boots[0]["user_id"] == TEST_USER
+    assert boots[0]["sync_id"] == "live"
+
+
+@pytest.mark.asyncio
+async def test_30_stage_timings_instrumented_in_snapshot_and_complete(mock_gateway, events):
+    """P0.1: her fazin GERCEK suresi (monotonic delta) snapshot + complete
+    olayinda ve GET /sync/job semasinda yayinlanir."""
+    mock_gateway.list_conversations.return_value = {
+        "items": [_chat(MOCK_JID, "Timed")], "total": 1}
+    job = await ws.request_sync(None, TEST_USER)
+    await job.done.wait()
+    assert job.state == "COMPLETED", job.error
+
+    for phase in ("group_subjects", "chats", "contacts", "messages", "finalizing"):
+        assert phase in job.stage_timings, f"faz olcumu yok: {phase}"
+        assert job.stage_timings[phase] >= 0.0
+
+    done = _of(events, "whatsapp_sync_complete")[0]
+    assert done["stage_timings"] == job.stage_timings
+    assert done["duration_s"] >= 0.0
+    snap = job.snapshot()
+    assert snap["stage_timings"] == job.stage_timings
+    # Schema dogrulamasi (test_22 sozlesmesi genisletildi):
+    resp = WhatsAppSyncJobResponse(**snap)
+    assert resp.stage_timings == job.stage_timings
+
+
+@pytest.mark.asyncio
+async def test_31_chat_name_authority_survives_chats_first_order(mock_gateway, events):
+    """P0.3 regresyon: chats->contacts sirasinda rehber fazindaki es-rutbeli
+    (history) ad sohbet adini EZEMEZ — _reapply_chat_names otoriteyi korur.
+    Yuksek rutbe (addressbook) ise sohbet adini ezmeye DEVAM EDER (§27)."""
+    mock_gateway.list_conversations.return_value = {
+        "items": [_chat(MOCK_JID, "Ayse Yilmaz")], "total": 1}
+    # Eski (mock) davranis: rehber, ayni kisi icin farkli es-rutbeli ad tasir.
+    mock_gateway.list_contacts.return_value = [
+        {"id": MOCK_JID, "name": "Test Lead"},  # name_source yok -> history
+        {"id": "905320000001@s.whatsapp.net", "name": "Rehber Adi",
+         "name_source": "addressbook"},
+    ]
+
+    job = await ws.request_sync(None, TEST_USER)
+    await job.done.wait()
+    assert job.state == "COMPLETED", job.error
+
+    async with AsyncSessionLocal() as db:
+        ayse = (await db.execute(select(Contact).where(
+            Contact.phone_e164 == MOCK_PHONE))).scalar_one()
+    assert ayse.display_name == "Ayse Yilmaz"  # sohbet adli kazanir (tie-break)
+
+
+@pytest.mark.asyncio
+async def test_32_delta_sync_uses_real_db_watermark(mock_gateway, events):
+    """P0.13: ikinci job, gateway'den DB'deki en son mesaj zamanindan
+    (5 dk overlap'li GERCEK suuc) sonrasi ister — uydurma suuc yok; ilk
+    senkronda suuc None → tam cekim."""
+    from datetime import datetime, timezone
+
+    mock_gateway.list_conversations.return_value = {
+        "items": [_chat(MOCK_JID, "Delta")], "total": 1}
+    msgs = [_msg(MOCK_JID, f"wamid_d{i}", ts="2025-01-15T09:00:00.000Z")
+            for i in range(3)]
+    mock_gateway.list_all_messages.side_effect = _fake_bulk(msgs)
+
+    job1 = await ws.request_sync(None, TEST_USER)
+    await job1.done.wait()
+    assert job1.state == "COMPLETED", job1.error
+    assert job1.messages_synced == 3
+
+    # Ilk job'taki bulk cagrilarinda suuc yok (DB bos) → None/gecersiz.
+    real_calls = [c for c in mock_gateway.list_all_messages.call_args_list
+                  if c.kwargs.get("limit") != 1]
+    assert all(c.kwargs.get("since") is None for c in real_calls)
+
+    mock_gateway.list_all_messages.reset_mock()
+    mock_gateway.list_all_messages.side_effect = _fake_bulk(msgs)
+
+    job2 = await ws.request_sync(None, TEST_USER)
+    await job2.done.wait()
+    assert job2.state == "COMPLETED", job2.error
+
+    expected = int(datetime(2025, 1, 15, 9, 0, tzinfo=timezone.utc).timestamp()) - 300
+    real_calls2 = [c for c in mock_gateway.list_all_messages.call_args_list
+                   if c.kwargs.get("limit") != 1]
+    assert real_calls2, "ikinci job bulk kanalina dokunmadi"
+    for c in real_calls2:
+        assert c.kwargs.get("since") == expected
+    # Dedup: suuc'ya ragmen ayni mesajlar gelirse tekrar YAZILMAZ.
+    assert job2.messages_synced == 0
+    async with AsyncSessionLocal() as db:
+        n = (await db.execute(select(func.count()).select_from(Message).where(
+            Message.user_id == TEST_USER))).scalar()
+    assert n == 3
+
+
+@pytest.mark.asyncio
+async def test_33_lazy_hydration_on_open_before_job(mock_gateway, events):
+    """P0.11: job mesajlari henuz hydrate ETMEDEN kullanici sohbeti actiginda
+    get_messages gateway belleğinden gercek mesajlari cekip kalici yazar;
+    tekrar acista dedup sayesinde duplicate olusmaz."""
+    mock_gateway.list_conversations.return_value = {
+        "items": [_chat(MOCK_JID, "Lazy", preview=None, ts=None)], "total": 1}
+    # Bulk kanali bos → job hic mesaj yazmadi (hydrate edilmemis sohbet).
+    job = await ws.request_sync(None, TEST_USER)
+    await job.done.wait()
+    assert job.state == "COMPLETED", job.error
+
+    async with AsyncSessionLocal() as db:
+        conv = (await db.execute(select(Conversation).where(
+            Conversation.user_id == TEST_USER,
+            Conversation.channel == "WHATSAPP"))).scalar_one()
+        assert conv is not None
+        cid = conv.id
+
+    mock_gateway.get_messages.return_value = {
+        "messages": [
+            _msg(MOCK_JID, "wamid_h1", "Ilk", ts="2025-01-14T08:00:00.000Z"),
+            _msg(MOCK_JID, "wamid_h2", "Ikinci", ts="2025-01-14T09:00:00.000Z"),
+        ], "has_more": False}
+
+    async with AsyncSessionLocal() as db:
+        out = await ws.get_messages(db, TEST_USER, cid, limit=50)
+    bodies = [m["body"] for m in out["messages"]]
+    assert bodies == ["Ilk", "Ikinci"]  # kronolojik sira korunur
+
+    # Idempotency: ikinci acilis gateway'i tekrar sorsa da duplicate yazilmaz.
+    async with AsyncSessionLocal() as db:
+        out2 = await ws.get_messages(db, TEST_USER, cid, limit=50)
+    assert len(out2["messages"]) == 2
+    async with AsyncSessionLocal() as db:
+        n = (await db.execute(select(func.count()).select_from(Message).where(
+            Message.conversation_id == cid))).scalar()
+    assert n == 2
+
+    # Preview de hydrate edilen gercek mesajla guncellendi (§29 tutarliligi).
+    async with AsyncSessionLocal() as db:
+        conv2 = (await db.execute(select(Conversation).where(
+            Conversation.id == cid))).scalar_one()
+    assert conv2.last_message_at is not None

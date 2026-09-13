@@ -611,10 +611,26 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
     // gelen her seyi bellekte tutar; burada yalniza flatten + sirali sayfa
     // dondurulur (ek kopya/veri sentezi yok). Offset sayfalamasi, tam
     // siralama anahtariyla (id, wa_message_id) deterministiktir.
-    listAllMessages({ limit = 1000, offset = 0 } = {}) {
+    //
+    // Faz 6 (P0.13 delta sync): `since` (epoch saniye) verildiginde yalnizca
+    // GERCEK mesaj zaman damgasi (created_at — Baileys messageTimestamp'ten
+    // turetilir, sentez degil) `since`'tan yeni olanlar dondurulur. Backend
+    // suucusu DB'deki en son bilinen mesaj zamanidir; boylece reconnect
+    // sonrasinda tekrar-tekrar ayni gecmis cekilmez. Sayim/total bu filtreli
+    // kume gorudur.
+    listAllMessages({ limit = 1000, offset = 0, since = null } = {}) {
+      const sinceMs = Number.isFinite(Number(since)) && since !== null && since !== ''
+        ? Number(since) * 1000
+        : null;
       const all = [];
       for (const list of messagesByChat.values()) {
-        for (const m of list) all.push(m);
+        for (const m of list) {
+          if (sinceMs !== null) {
+            const t = Date.parse(m.created_at || '');
+            if (!Number.isFinite(t) || t < sinceMs) continue;
+          }
+          all.push(m);
+        }
       }
       all.sort((a, b) => {
         const d = (a.id || 0) - (b.id || 0);

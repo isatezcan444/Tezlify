@@ -187,10 +187,13 @@ app.post('/conversations/sync-groups', async (req, res) => {
 // ayri ayri HTTP turu atmak icin bunu kullaniir (deterministik offset sayfalama).
 app.get('/messages/bulk', (req, res) => {
   try {
-    const { limit, offset } = req.query;
+    const { limit, offset, since } = req.query;
     res.json(sessionManager.listAllMessages({
       limit: limit ? parseInt(limit, 10) : 1000,
       offset: offset ? parseInt(offset, 10) : 0,
+      // Faz 6 (P0.13): opsiyonel delta suucusu (epoch saniye). Eski backend
+      // gondermezse undefined kalir → tam gecmis (geriye donuk uyumlu).
+      since: since !== undefined && since !== '' ? parseInt(since, 10) : null,
     }));
   } catch (err) {
     res.status(500).json({ error: err.message });
