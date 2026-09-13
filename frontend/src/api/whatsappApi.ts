@@ -217,7 +217,8 @@ interface BackendMessage {
 function mapMessage(m: BackendMessage, convId: number): Message {
   // Medya proxy'si auth korumalıdır: <img>/<audio> etiketleri Authorization
   // başlığı taşıyamaz, bu yüzden backend'in kabul ettiği ?token= sorgu
-  // parametresi eklenir.
+  // parametresi eklenir. WhatsApp Web paritesi: medya her zaman kimlikli
+  // URL'den gelir; tokensiz URL 401'e düşer ve balon boş kalır.
   const mediaUrl = m.media_id
     ? (() => {
         const base = `${API_BASE}/whatsapp/media/${m.media_id}`;
@@ -236,7 +237,7 @@ function mapMessage(m: BackendMessage, convId: number): Message {
     media_mime_type: m.media_mime_type ?? undefined,
     media_filename: m.media_filename ?? undefined,
     media_caption: m.media_caption ?? undefined,
-    media_url: m.media_id ? `${API_BASE}/whatsapp/media/${m.media_id}` : undefined,
+    media_url: mediaUrl,
     wa_message_id: m.wa_message_id ?? undefined,
     client_message_id: m.client_message_id ?? undefined,
     sender_phone: m.sender_phone ?? undefined,

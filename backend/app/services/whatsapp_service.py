@@ -432,6 +432,18 @@ async def _list_sessions_internal(
                     row.is_phone_online = bool(live.get("is_phone_online", row.is_phone_online))
                     row.battery_level = live.get("battery_level", row.battery_level)
                     row.phone_number = live.get("phone_number", row.phone_number)
+                # Canli prob ile dogrulandi (prod): liste `qr_code=null`
+                # donerken dogrudan `/qr` gecerli QR veriyordu — liste DB'deki
+                # bayat QR'i tasiyordu. WhatsApp Web paritesi: QR her zaman
+                # canli oturum durumunu yansitir; liste de canli QR'i tasir.
+                # CONNECTED iken QR tasinmaz (gateway zaten null doner).
+                live_qr = live.get("qr_code")
+                if live_qr:
+                    row.qr_code = live_qr
+                elif live.get("status") == "CONNECTED":
+                    row.qr_code = None
+                if live.get("status") in ("CONNECTED", "SCAN_QR"):
+                    row.error_message = None
         await db.commit()
     except Exception as exc:
         gateway_error = str(exc)[:300]
@@ -2111,7 +2123,11 @@ async def _run_sync_job(job: SyncJob) -> None:
             job, "whatsapp_sync_failed", error=job.error, stage=job.stage), owner)
     finally:
         job.done.set()
-        _initial_sync_inflight.discard(owner)
+        # NOT: `_initial_sync_inflight` buradan temizlenmez — o set
+        # `_run_initial_sync`'e aittir. Bu job `request_sync` ile tetiklendi
+        # ve erken temizlik ikinci bir initial-sync'in ayni anda baslamasina
+        # (cift bulk sync + DB yarisina) yol aciyordu: senkron hata ile
+        # kesilip job FAILED oluyordu (WhatsApp Web'de history sync tektir).
 
 
 async def _persist_chat_snapshot(
@@ -2135,6 +2151,12 @@ async def _persist_chat_snapshot(
         if not jid or "@" not in str(jid):
             continue
         if is_degenerate_jid(str(jid)):  # §5/§24: '+0' sohbeti DB'ye yazilmaz
+            continue
+        # WhatsApp Web paritesi: Durum (`status@broadcast`) / kanal
+        # (`@newsletter`) sohbet listesinde YER ALMAZ — snapshot'a girmez.
+        # (Alt katman `_bulk_upsert_contacts` zaten filtreler; bu, adim
+        # girisinde ikinci savunma hattidir.)
+        if is_broadcast_only_jid(str(jid)):
             continue
         candidates.append(item)
     contacts = await _bulk_upsert_contacts(
@@ -2843,17 +2865,27 @@ async def _map_session_event(db: AsyncSession, event: Dict[str, Any]) -> Dict[st
     evt = event.get("event") or event.get("event_type") or ""
     res = await db.execute(select(WhatsAppSession).where(WhatsAppSession.gateway_id == str(gw_session_id)))
     row = res.scalar_one_or_none()
-    if row:
-        event["session_id"] = row.id
-        event["session_name"] = event.get("session_name") or row.session_name
-        event["user_id"] = str(row.user_id) if row.user_id else None
-        # Kalici hata yuzeyi: gateway'in gercek baglanti hatasini DB'ye yaz.
-        err = event.get("error") or event.get("error_message")
-        if evt == "connection_error" and err:
-            row.error_message = str(err)[:1000]
-            row.status = SessionStatus.DISCONNECTED
-            row.is_phone_online = False
-            row.updated_at = datetime.utcnow()
-        elif evt in ("session_connected", "session_qr_updated"):
-            row.error_message = None
+    if row is None:
+        # Redeploy sonrasi yetim gateway oturumu: bu olayin sahibi DB'de
+        # KESIN cozulemiyor. Sessizce user_id'siz dondurmek yerine acikca
+        # hata yukselt — `ingest_gateway_event` error seviyesinde loglar ve
+        # olayi yayinlamaz (fail-closed). Aksi halde `session_sync_completed`
+        # hic islenmez, initial-sync HIC tetiklenmez ve senkron sessizce
+        # takili kalir (WhatsApp Web'de karsiligi: "yeniden baglan" uyarisi).
+        raise EventOwnerUnresolved(
+            f"Bilinmeyen gateway oturumu (session_id={gw_session_id}, event={evt}) — "
+            "gateway yeniden baslatilmis olabilir; QR ile yeniden eslestirin."
+        )
+    event["session_id"] = row.id
+    event["session_name"] = event.get("session_name") or row.session_name
+    event["user_id"] = str(row.user_id) if row.user_id else None
+    # Kalici hata yuzeyi: gateway'in gercek baglanti hatasini DB'ye yaz.
+    err = event.get("error") or event.get("error_message")
+    if evt == "connection_error" and err:
+        row.error_message = str(err)[:1000]
+        row.status = SessionStatus.DISCONNECTED
+        row.is_phone_online = False
+        row.updated_at = datetime.utcnow()
+    elif evt in ("session_connected", "session_qr_updated"):
+        row.error_message = None
     return event

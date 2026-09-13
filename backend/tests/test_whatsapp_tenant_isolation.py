@@ -227,6 +227,29 @@ async def test_message_event_without_owner_is_not_published():
 
 
 @pytest.mark.asyncio
+async def test_orphan_session_event_is_not_published():
+    """Bilinmeyen gateway oturumundan gelen session_* olayı fail-closed düşer.
+
+    Redeploy sonrası yetim gateway_id: sessizce user_id'siz yayınlanmak
+    yerine açık hata ile reddedilir — aksi halde `session_sync_completed`
+    hiç işlenmez ve senkron sessizce takılı kalır (WhatsApp Web'de
+    karşılığı "yeniden bağlan" uyarısıdır).
+    """
+    await _add_session(U1)
+    async with AsyncSessionLocal() as db:
+        with pytest.raises(ws.EventOwnerUnresolved):
+            await ws._map_session_event(db, {
+                "event": "session_sync_completed",
+                "session_id": "gw-yetim-oturum",
+            })
+    result = await ws.ingest_gateway_event({
+        "event": "session_sync_completed",
+        "session_id": "gw-yetim-oturum",
+    })
+    assert result is None
+
+
+@pytest.mark.asyncio
 async def test_degenerate_jid_is_marked_skip_not_silently_dropped():
     """Dejenere JID: sessiz yutma DEGIL — acik `_skip` nedeniyle ayrilir."""
     await _add_session(U1)
