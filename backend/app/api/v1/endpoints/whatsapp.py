@@ -25,6 +25,7 @@ from backend.app.schemas.whatsapp import (
     WhatsAppSessionListResponse,
     WhatsAppSessionResponse,
     WhatsAppStatusResult,
+    WhatsAppSyncJobResponse,
     WhatsAppSyncStatusResponse,
     WhatsAppTypingRequest,
 )
@@ -160,6 +161,36 @@ async def get_sync_status(
     return WhatsAppSyncStatusResponse(**data)
 
 
+@router.post("/sync", response_model=WhatsAppSyncJobResponse, status_code=status.HTTP_202_ACCEPTED)
+async def start_sync(
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+) -> WhatsAppSyncJobResponse:
+    """Initial-sync job'ını tetikle (kısa ömürlü, §15/§16).
+
+    HTTP beklemez: job kaydı oluşturulur ve ilerleme MEVCUT WebSocket
+    üzerinden `whatsapp_sync_*` olaylarıyla akar. Süren bir job varsa yeni
+    job tetiklenmez — aynı sync_id döner (çift-sync koruması, §17).
+    """
+    job = await whatsapp_service.request_sync(db, current_user.id)
+    return WhatsAppSyncJobResponse(**job.snapshot())
+
+
+@router.get("/sync/job", response_model=WhatsAppSyncJobResponse)
+async def get_sync_job(
+    current_user: AuthUser = Depends(get_current_user),
+) -> WhatsAppSyncJobResponse:
+    """Aktif/son sync job'ının gerçek durumu (WS reconnect kurtarması, §28).
+
+    Job yoksa state=IDLE döner — frontend bu durumda senkron banner'ı kapatır
+    ve listeyi DB'den normal yükler.
+    """
+    snap = whatsapp_service.get_sync_job(current_user.id)
+    if snap is None:
+        return WhatsAppSyncJobResponse(sync_id=None, state="IDLE", stage="idle")
+    return WhatsAppSyncJobResponse(**snap)
+
+
 # ---------------------------------------------------------------------------
 # Contacts & conversations
 # ---------------------------------------------------------------------------
@@ -180,17 +211,19 @@ async def get_conversations(
     search: Optional[str] = Query(None),
     conv_status: Optional[str] = Query(None, alias="status"),
     unread_only: bool = Query(False),
-    sync: bool = Query(False, description="Gateway'den sohbetleri senkronize et"),
+    sync: bool = Query(False, description="Arka plan sync job'ını tetikle (beklemeden döner)"),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_db),
     current_user: AuthUser = Depends(get_current_user),
 ) -> WhatsAppConversationListResponse:
-    try:
-        if sync:
-            await whatsapp_service.sync_conversations(db, current_user.id)
-    except Exception as exc:
-        raise _bad_gateway(exc) from exc
+    # Yeni mimari (§15/§16): `sync=true` artık HTTP içinde gateway'den mesaj
+    # çekMEZ — kısa ömürlüdür: job'ı tetikler (süren job varsa dokunmaz, §17)
+    # ve anında mevcut DB snapshot'ını döner. Gerçek ilerleme WS üzerinden
+    # `whatsapp_sync_*` olaylarıyla akar. Eski 502/timeout storm'unun kaynağı
+    # bu endpoint'in içinde bekleyen 113 chat'lik round-trip zinciriydi.
+    if sync:
+        await whatsapp_service.request_sync(db, current_user.id)
     items, total = await whatsapp_service.list_conversations(
         db,
         current_user.id,

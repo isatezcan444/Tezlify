@@ -126,6 +126,14 @@ async def get_messages(jid: str, limit: int = 50, before: Optional[int] = None) 
     return await _request("GET", f"/conversations/{jid}/messages", params=params)
 
 
+async def list_all_messages(limit: int = 1000, offset: int = 0) -> Dict[str, Any]:
+    """Faz 10 (P5): gateway belleğindeki TÜM geçmişi zaman damgası sıralı,
+    deterministik offset sayfalamasıyla toplu çeker. initial-sync job'ı
+    sohbet-başına getMessages turu (N+1 HTTP) yerine bu tek kanalı kullanır.
+    Hata fail-closed: WhatsAppGatewayError yükselir."""
+    return await _request("GET", "/messages/bulk", params={"limit": limit, "offset": offset})
+
+
 # ---------------------------------------------------------------------------
 # Sending
 # ---------------------------------------------------------------------------

@@ -16,6 +16,7 @@ import {
   Message,
   SessionSyncState,
   WhatsAppSession,
+  WhatsAppSyncJob,
 } from '../types';
 
 export class WhatsAppApiError extends Error {}
@@ -228,6 +229,11 @@ function mapMessage(m: BackendMessage, convId: number): Message {
   };
 }
 
+// Faz 11: WS sync olaylarindaki ham payload'lari ayni tiplere eslemek icin
+// disariya acilir (chunk'lar HTTP yanitiyla birebir ayni seklidir).
+export const mapConversationItem = mapConversation;
+export const mapMessageItem = mapMessage;
+
 // ---------------------------------------------------------------------------
 // Public API — repository'nin canlı katmanı buraya delege eder
 // ---------------------------------------------------------------------------
@@ -315,6 +321,18 @@ export const WhatsAppApi = {
     return apiGet<{ sessions: Array<{ id: number; session_name?: string; status?: string; sync: SessionSyncState }> }>(
       '/whatsapp/sync-status'
     );
+  },
+
+  // Faz 11: WS tabanli chunked initial-sync — POST kisa omurlu job tetikler
+  // (202), GET /sync/job reconnect kurtarmasi icin gercek durumu donerur.
+  async startSync(): Promise<WhatsAppSyncJob> {
+    const res = await authFetch(`${API_BASE}/whatsapp/sync`, { method: 'POST' });
+    if (!res.ok) throw new WhatsAppApiError(await parseError(res, 'WhatsApp API hatası'));
+    return res.json() as Promise<WhatsAppSyncJob>;
+  },
+
+  async getSyncJob(): Promise<WhatsAppSyncJob> {
+    return apiGet<WhatsAppSyncJob>('/whatsapp/sync/job');
   },
 
   async getConversations(params?: {

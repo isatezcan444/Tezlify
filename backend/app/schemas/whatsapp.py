@@ -158,3 +158,23 @@ class WhatsAppSyncSessionStatus(BaseModel):
 
 class WhatsAppSyncStatusResponse(BaseModel):
     sessions: List[WhatsAppSyncSessionStatus] = Field(default_factory=list)
+
+
+class WhatsAppSyncJobResponse(BaseModel):
+    """Arka plan initial-sync job'ının GERÇEK durumu (§16/§28).
+
+    state: IDLE | SYNCING | COMPLETED | FAILED — sahte tamamlanma üretilmez.
+    sync_id: job bazlı kimlik; frontend eski sync_id'li olayları yok sayar.
+    """
+
+    sync_id: Optional[str] = None
+    state: str = "IDLE"
+    stage: str = "idle"
+    error: Optional[str] = None
+    chats_total: int = 0
+    chats_synced: int = 0
+    contacts_synced: int = 0
+    messages_total: int = 0
+    messages_synced: int = 0
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None

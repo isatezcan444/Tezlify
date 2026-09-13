@@ -134,13 +134,34 @@ export type SessionStatus = 'DISCONNECTED' | 'SCAN_QR' | 'CONNECTING' | 'CONNECT
 
 export interface SessionSyncState {
   // Faz 7: gateway'deki GERÇEK initial-sync durumu (Baileys history progress).
-  phase: 'idle' | 'syncing' | 'ready' | string;
+  // Faz 11: ayni banner artik WS tabanli chunked sync job'i ile de beslenir
+  // (stage/error alanlari gercek olaylardan gelir, sahte veri uretilmez).
+  phase: 'idle' | 'syncing' | 'ready' | 'error' | string;
   progress?: number;
+  stage?: string;
+  error?: string | null;
+  chats_total?: number;
   chats_synced?: number;
   contacts_synced?: number;
+  messages_total?: number;
   messages_synced?: number;
   started_at?: string | null;
   completed_at?: string | null;
+}
+
+// Faz 11: WS tabanli initial-sync job sozlesmesi (backend WhatsAppSyncJobResponse).
+export interface WhatsAppSyncJob {
+  sync_id: string | null;
+  state: 'IDLE' | 'SYNCING' | 'COMPLETED' | 'FAILED' | string;
+  stage: string;
+  error?: string | null;
+  chats_total: number;
+  chats_synced: number;
+  contacts_synced: number;
+  messages_total: number;
+  messages_synced: number;
+  started_at?: string | null;
+  finished_at?: string | null;
 }
 
 export interface WhatsAppSession {

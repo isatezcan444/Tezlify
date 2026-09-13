@@ -27,7 +27,7 @@ import {
 import { ApiClient } from '../api/client';
 import { WhatsAppRepository } from '../data/whatsapp/whatsappRepository';
 import { WhatsAppSession, Conversation, ConversationStatus, ConversationMessageStatus, Lead, Message, LiveModeStatus, SessionSyncState } from '../types';
-import { WhatsAppApi, useLiveMode, probeLive, invalidateLiveProbe, isLiveCached } from '../api/whatsappApi';
+import { WhatsAppApi, useLiveMode, probeLive, invalidateLiveProbe, isLiveCached, mapConversationItem, mapMessageItem } from '../api/whatsappApi';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 import { Card } from '../components/ui/card';
@@ -80,6 +80,24 @@ function isRawWhatsAppIdentity(value?: string | null): boolean {
   );
 }
 
+// Faz 11 (§27): banner ilerlemesi GERÇEK job sayaçlarından türetilir — sahte
+// timer/progress üretilmez. Mesaj toplamı biliniyorsa oran, değilse asama.
+function computeSyncProgress(
+  stage: string,
+  chatsSynced: number,
+  contactsSynced: number,
+  messagesSynced: number,
+  messagesTotal: number
+): number {
+  if (stage === 'complete') return 100;
+  if (messagesTotal > 0) return Math.min(99, Math.round((messagesSynced / messagesTotal) * 100));
+  if (stage === 'finalizing') return 92;
+  if (stage === 'messages') return 85;
+  if (stage === 'chats') return chatsSynced > 0 ? 55 : 35;
+  if (stage === 'contacts') return contactsSynced > 0 ? 20 : 8;
+  return 4;
+}
+
 export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats }) => {
   const toast = useToast();
   const { t } = useI18n();
@@ -109,16 +127,14 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   const [isSyncingChats, setIsSyncingChats] = useState<boolean>(false);
   const conversationsGenerationRef = useRef(0);
 
-  // Faz 7: QR sonrasi GERCEK initial-sync durumu (gateway Baileys progress).
-  // Sahte progress uretilmez — yalnızca backend/gateway'den gelen veri gösterilir.
+  // Faz 7/11: GERÇEK initial-sync durumu — artık WS tabanlı chunked sync job'i
+  // (whatsapp_sync_* olaylari) ile beslenir. Polling storm ve sahte progress YOK.
   const [sessionSync, setSessionSync] = useState<SessionSyncState | null>(null);
-  const syncPollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  useEffect(() => {
-    return () => {
-      if (syncPollTimerRef.current) clearInterval(syncPollTimerRef.current);
-    };
-  }, []);
+  // Aktif sync job kimligi — eski (stale) job'un geç gelen olaylari yok sayilir (§14).
+  const activeSyncIdRef = useRef<string | null>(null);
+  // Sync mesaj tamponu: conversation_id -> Message[] chunk chunk birikir; her
+  // chunk icin TAM liste yeniden render edilmez (§29) — yalnizca acik sohbet.
+  const syncMsgBufferRef = useRef<Record<number, Message[]>>({});
 
   // 'yazıyor...' durumu: conversation_id -> bool (gateway presence_updated ile)
   const [peerTypingMap, setPeerTypingMap] = useState<Record<number, boolean>>({});
@@ -162,53 +178,33 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     }
   }, [convFilter, convSearch]);
 
-  const startSyncPolling = useCallback(() => {
-    if (syncPollTimerRef.current) return;
-    syncPollTimerRef.current = setInterval(async () => {
-      try {
-        const data = await WhatsAppApi.getSyncStatus();
-        // Faz 9 (§19): banner YALNIZCA CONNECTED oturumun sync durumuna
-        // bağlıdır — eşleşme yoksa (oturum henüz bağlı değilse) banner
-        // gösterilmez, eski/pasif oturumun durumu takip edilmez.
-        const connected = data.sessions.find((s) => s.status === 'CONNECTED');
-        const sync = connected?.sync || null;
-        setSessionSync(sync);
-        if (!sync || sync.phase !== 'syncing') {
-          if (syncPollTimerRef.current) {
-            clearInterval(syncPollTimerRef.current);
-            syncPollTimerRef.current = null;
-          }
-          // Faz 8 (§16): READY durumunda DB'yi paylasilmis hattan besle —
-          // sync:true ayni sync_conversations pipeline'ini çağirir (backend
-          // in-flight dedupe eder; initial-sync event'i kaçarisa buradan
-          // garanti olur).
-          if (sync?.phase === 'ready') {
-            WhatsAppRepository.getConversations({ sync: true })
-              .then((list) => setConversations(list))
-              .catch(() => loadConversations(true));
-          }
-        }
-      } catch {
-        if (syncPollTimerRef.current) {
-          clearInterval(syncPollTimerRef.current);
-          syncPollTimerRef.current = null;
-        }
-      }
-    }, 4000);
-  }, [loadConversations]);
-
+  // Faz 11: 4 sn'lik sync=true polling STORM'u kaldirildi. Sync durumu yalnizca
+  // WS olaylariyla akir; mount/reconnect sirasinda TEK seferlik GET /sync/job
+  // ile devam eden job benimsenir (yeniden indirme YOK, §28 kurtarma).
   const refreshSyncStatus = useCallback(async () => {
     try {
-      const data = await WhatsAppApi.getSyncStatus();
-      // Faz 9 (§19): yalnızca CONNECTED oturum izlenir; yoksa banner temizlenir.
-      const connected = data.sessions.find((s) => s.status === 'CONNECTED');
-      const sync = connected?.sync || null;
-      setSessionSync(sync);
-      if (sync?.phase === 'syncing') startSyncPolling();
+      const job = await WhatsAppApi.getSyncJob();
+      if (job.state === 'SYNCING') {
+        if (job.sync_id) activeSyncIdRef.current = job.sync_id;
+        setSessionSync({
+          phase: 'syncing',
+          stage: job.stage,
+          progress: computeSyncProgress(job.stage, job.chats_synced, job.contacts_synced, job.messages_synced, job.messages_total),
+          chats_synced: job.chats_synced,
+          contacts_synced: job.contacts_synced,
+          messages_synced: job.messages_synced,
+          started_at: job.started_at ?? null,
+          completed_at: null,
+        });
+      } else if (job.state === 'COMPLETED') {
+        setSessionSync((prev) => (prev ? { ...prev, phase: 'ready', progress: 100, stage: 'complete' } : prev));
+      } else if (job.state === 'FAILED') {
+        setSessionSync({ phase: 'error', stage: job.stage, error: job.error ?? null, progress: 0 });
+      }
     } catch {
-      /* gateway yoksa banner gösterilmez; hata maskelenmez ama startup'i kirmez */
+      /* backend erisilemezse banner gösterilmez; hata maskelenmez ama startup'i kirmez */
     }
-  }, [startSyncPolling]);
+  }, []);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -274,63 +270,32 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     };
   }, [selectedConv?.id]);
 
-  // Authoritative sync: pull chats & history from the WhatsApp gateway via the
-  // Tezlify backend (sync=true), then refresh the list and active thread.
-  // Faz 9 (§20): manuel "Eşitle" GERÇEK request lifecycle'ıyla banner'ı
-  // sürer — istek başlayınca 'syncing', dönünce 'ready', hata olursa
-  // banner temizlenir ve hata toast'la gösterilir. Timer/sahte progress YOK;
-  // banner'ın kapanması isteğin gerçekten bitmesine bağlıdır.
+  // Faz 11: Manuel "Eşitle" artık ağır sync'i HTTP'de BEKLEMİYOR — POST /sync
+  // kısa ömürlü job'ı tetikler (202); tüm ilerleme ve tamamlama mevcut WS
+  // üzerinden whatsapp_sync_* olaylarıyla akar. 502/polling storm sona erdi.
+  // Banner'ın kapanması job'ın GERÇEK tamamlanmasina bağlıdır (§20).
   const handleSyncChats = async () => {
     setIsSyncingChats(true);
-    setSessionSync((prev) => ({
-      ...(prev || {}),
-      phase: 'syncing',
-      progress: prev?.phase === 'syncing' ? prev.progress : 0,
-      started_at: prev?.started_at || new Date().toISOString(),
-      completed_at: null,
-    }));
     try {
-      const list = await WhatsAppRepository.getConversations({
-        status: convFilter === 'ALL' ? undefined : (convFilter as ConversationStatus),
-        unread_only: convFilter === 'UNREAD',
-        search: convSearch.trim() || undefined,
-        sync: true,
+      const job = await WhatsAppApi.startSync();
+      if (job.sync_id) activeSyncIdRef.current = job.sync_id;
+      syncMsgBufferRef.current = {};
+      setSessionSync({
+        phase: 'syncing',
+        stage: job.stage,
+        progress: computeSyncProgress(job.stage, job.chats_synced, job.contacts_synced, job.messages_synced, job.messages_total),
+        chats_synced: job.chats_synced,
+        contacts_synced: job.contacts_synced,
+        messages_synced: job.messages_synced,
+        started_at: job.started_at ?? new Date().toISOString(),
+        completed_at: null,
       });
-      setConversations(list);
-      setSessionSync((prev) => ({
-        ...(prev || {}),
-        phase: 'ready',
-        progress: 100,
-        completed_at: new Date().toISOString(),
-      }));
-      if (selectedConv?.id) {
-        const res = await WhatsAppRepository.getConversationMessages(selectedConv.id, { limit: 50 });
-        if (res?.messages) {
-          setMessagesMap((prev) => ({
-            ...prev,
-            [selectedConv.id]: res.messages,
-          }));
-        }
-      }
-      if (list.length === 0) {
-        toast.info(
-          t('whatsapp.syncEmpty') || 'Eşitlenecek yeni sohbet yok.',
-          t('common.success')
-        );
-      } else {
-        toast.success(
-          t('whatsapp.syncSuccess', { count: list.length }) || 'Sohbetler eşitlendi',
-          t('common.success')
-        );
-      }
     } catch (err: any) {
-      // Faz 9 (§23): basarisiz senkron — banner sonsuz 'syncing' durumunda
-      // birakilmaz; gerçek durum gateway'den yeniden okunur (yoksa temizlenir)
-      // ve hata kullaniciya maskelenmez.
+      // Başarısız tetikleme — banner sonsuz 'syncing' durumunda bırakılmaz;
+      // gerçek durum bir kez okunur ve hata maskelenmez.
+      setIsSyncingChats(false);
       void refreshSyncStatus();
       toast.error(err.message || t('whatsapp.syncFailed') || 'Sohbetler eşitlenemedi', t('common.error'));
-    } finally {
-      setIsSyncingChats(false);
     }
   };
 
@@ -908,6 +873,118 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         loadConversations(true);
       }
 
+      // Faz 11: WS tabanli chunked initial-sync olaylari — HTTP polling yerine
+      // backend job'i bu olaylari mevcut /ws hattiyla sahibine yollar (§13).
+      if (String(eventData.event || '').startsWith('whatsapp_sync_')) {
+        const syncId = (eventData.sync_id as string) || null;
+        const isStale = Boolean(syncId && activeSyncIdRef.current && syncId !== activeSyncIdRef.current);
+        // §14: bay (stale) job'un gec gelen olaylari YOK SAYILIR. 'started' her
+        // zaman benimsenir — yeni job basladiysa aktif kimlik guncellenir.
+        if (isStale && eventData.event !== 'whatsapp_sync_started') {
+          // eski job'un olayi — sessizce yok say
+        } else if (eventData.event === 'whatsapp_sync_started') {
+          activeSyncIdRef.current = syncId;
+          syncMsgBufferRef.current = {};
+          setSessionSync({
+            phase: 'syncing', stage: 'starting', progress: 4,
+            chats_synced: 0, contacts_synced: 0, messages_synced: 0,
+            started_at: eventData.started_at || new Date().toISOString(), completed_at: null,
+          });
+        } else if (eventData.event === 'whatsapp_sync_contacts_snapshot') {
+          setSessionSync((prev) => (prev && prev.phase === 'syncing' ? {
+            ...prev, stage: 'contacts', contacts_synced: eventData.total ?? prev.contacts_synced,
+            progress: computeSyncProgress('contacts', prev.chats_synced ?? 0, eventData.total ?? 0, prev.messages_synced ?? 0, 0),
+          } : prev));
+        } else if (eventData.event === 'whatsapp_sync_chats_snapshot') {
+          // Sohbetler sayfa sayfa INCREMENTAL eklenir — tam liste rebuild yok (§29).
+          const incoming: Conversation[] = (eventData.conversations || []).map((c: any) => mapConversationItem(c));
+          if (incoming.length > 0) {
+            setConversations((prev) => {
+              const byId = new Map(prev.map((c) => [c.id, c]));
+              for (const c of incoming) byId.set(c.id, c);
+              return Array.from(byId.values()).sort((a, b) =>
+                (new Date(b.last_message_at || 0).getTime()) - (new Date(a.last_message_at || 0).getTime())
+              );
+            });
+            setSelectedConv((prev) => prev || incoming[0] || null);
+          }
+          setSessionSync((prev) => (prev && prev.phase === 'syncing' ? {
+            ...prev, stage: 'chats', chats_synced: eventData.total ?? prev.chats_synced,
+            progress: computeSyncProgress('chats', eventData.total ?? 0, prev.contacts_synced ?? 0, prev.messages_synced ?? 0, 0),
+          } : prev));
+        } else if (eventData.event === 'whatsapp_sync_messages_chunk') {
+          // Mesaj chunk'lari tampona birikir; YALNIZCA acik sohbetin store'u
+          // incremental guncellenir — 16k mesajlik DOM rebuild yok (§29).
+          const raw: any[] = eventData.messages || [];
+          if (raw.length > 0) {
+            const buf = syncMsgBufferRef.current;
+            const byConv: Record<number, Message[]> = {};
+            for (const m of raw) {
+              const cid = Number(m.conversation_id);
+              if (!Number.isFinite(cid)) continue;
+              const mapped = mapMessageItem(m, cid);
+              (buf[cid] = buf[cid] || []).push(mapped);
+              (byConv[cid] = byConv[cid] || []).push(mapped);
+            }
+            const openId = selectedConv?.id;
+            if (openId && byConv[openId]) {
+              setMessagesMap((prev) => {
+                const existing = prev[openId] || [];
+                const have = new Set(existing.map((m) => m.id));
+                const add = byConv[openId].filter((m) => !have.has(m.id));
+                if (add.length === 0) return prev;
+                const merged = [...existing, ...add].sort((a, b) => {
+                  const tA = new Date(a.created_at || a.external_timestamp || 0).getTime();
+                  const tB = new Date(b.created_at || b.external_timestamp || 0).getTime();
+                  if (tA !== tB) return tA - tB;
+                  return (typeof a.id === 'number' ? a.id : 0) - (typeof b.id === 'number' ? b.id : 0);
+                });
+                return { ...prev, [openId]: merged };
+              });
+            }
+          }
+          setSessionSync((prev) => (prev && prev.phase === 'syncing' ? {
+            ...prev, stage: 'messages', messages_synced: eventData.synced ?? prev.messages_synced,
+            progress: computeSyncProgress('messages', prev.chats_synced ?? 0, prev.contacts_synced ?? 0, eventData.synced ?? 0, eventData.total ?? 0),
+          } : prev));
+        } else if (eventData.event === 'whatsapp_sync_progress') {
+          setSessionSync((prev) => (prev && prev.phase === 'syncing' ? {
+            ...prev,
+            stage: eventData.stage || prev.stage,
+            chats_synced: eventData.chats_synced ?? prev.chats_synced,
+            contacts_synced: eventData.contacts_synced ?? prev.contacts_synced,
+            messages_synced: eventData.messages_synced ?? prev.messages_synced,
+            progress: computeSyncProgress(
+              eventData.stage || prev.stage || 'messages',
+              eventData.chats_synced ?? 0,
+              eventData.contacts_synced ?? 0,
+              eventData.messages_synced ?? 0,
+              eventData.messages_total ?? 0
+            ),
+          } : prev));
+        } else if (eventData.event === 'whatsapp_sync_complete') {
+          // Tamamlanma: cozulmus TAM sohbet listesi gelir (preview'lar dahil) —
+          // banner gercek bitiste kapanir, sahte kapanis yok (§20/§27).
+          const finalList: Conversation[] = (eventData.conversations || []).map((c: any) => mapConversationItem(c));
+          if (finalList.length > 0) setConversations(finalList);
+          setSessionSync((prev) => ({
+            ...(prev || {}), phase: 'ready', stage: 'complete', progress: 100,
+            chats_synced: eventData.chats_synced ?? prev?.chats_synced,
+            contacts_synced: eventData.contacts_synced ?? prev?.contacts_synced,
+            messages_synced: eventData.messages_synced ?? prev?.messages_synced,
+            completed_at: eventData.finished_at || new Date().toISOString(),
+          }));
+          setIsSyncingChats(false);
+          activeSyncIdRef.current = null;
+          syncMsgBufferRef.current = {};
+        } else if (eventData.event === 'whatsapp_sync_failed') {
+          setSessionSync({ phase: 'error', stage: eventData.stage || 'failed', error: eventData.error || null, progress: 0 });
+          setIsSyncingChats(false);
+          activeSyncIdRef.current = null;
+          toast.error(eventData.error || t('whatsapp.syncFailed') || 'Sohbetler eşitlenemedi', t('common.error'));
+        }
+      }
+
       // Faz 4: gateway gecmis senkronunu tamamladiginda listeyi ve aktif
       // konusmeyi sessizce tazele (telefonun RECENT history'si DB'ye yazildi).
       if (eventData.event === 'history_sync_completed') {
@@ -924,21 +1001,20 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       }
 
       // Faz 7: gateway initial-sync yasam dongusu (QR sonrasi GERCEK ilerleme).
+      // Faz 11: polling yok — ilerleme WS olaylarinda; bu olaylar yalnizca
+      // banner'i gateway (Baileys) asamasinda besler.
       if (eventData.event === 'session_sync_started' || eventData.event === 'session_sync_progress') {
         const sync = (eventData.sync || null) as SessionSyncState | null;
-        if (sync) {
+        // WS sync job'i aktifse banner job olaylarina birakilir; gateway
+        // (Baileys) asamasinda yalnizca job yokken bu olaylar banner'i besler.
+        if (sync && !activeSyncIdRef.current) {
           setSessionSync(sync);
-          if (sync.phase === 'syncing') startSyncPolling();
         }
       }
       if (eventData.event === 'session_sync_completed') {
         const sync = (eventData.sync || null) as SessionSyncState | null;
-        if (sync) setSessionSync({ ...sync, phase: 'ready', progress: 100 });
-        if (syncPollTimerRef.current) {
-          clearInterval(syncPollTimerRef.current);
-          syncPollTimerRef.current = null;
-        }
-        // Senkron bitince listeyi gercek rehber/sihbet verisiyle tazele
+        if (sync && !activeSyncIdRef.current) setSessionSync({ ...sync, phase: 'ready', progress: 100 });
+        // Senkron bitince listeyi gercek rehber/sohbet verisiyle tazele
         loadConversations(true);
         if (selectedConv?.id) {
           WhatsAppRepository.getConversationMessages(selectedConv.id, { limit: 50 })
@@ -981,18 +1057,23 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       }
     };
 
-    // Reconnect Recovery: silently refresh active conversation if connection drops and recovers
+    // Reconnect Recovery: WS dustuyse job arka planda calismaya devam eder —
+    // reconnect'te TEK seferlik GET /sync/job ile devam eden job benimsenir
+    // (yeniden indirme YOK, §28) + sessiz mutabakat.
     const handleReconnect = () => {
       console.log('[WhatsAppHubPage] WebSocket reconnected. Performing silent reconciliation...');
+      void refreshSyncStatus();
       loadConversations(true);
       if (selectedConv?.id) {
         WhatsAppRepository.getConversationMessages(selectedConv.id, { limit: 50 })
           .then((res) => {
             if (res?.messages) {
-              setMessagesMap((prev) => ({
-                ...prev,
-                [selectedConv.id]: res.messages,
-              }));
+              setMessagesMap((prev) => {
+                const buf = syncMsgBufferRef.current[selectedConv.id] || [];
+                const have = new Set(res.messages.map((m: Message) => m.id));
+                const add = buf.filter((m) => !have.has(m.id));
+                return { ...prev, [selectedConv.id]: add.length ? [...res.messages, ...add] : res.messages };
+              });
             }
           })
           .catch(() => {});
@@ -1005,7 +1086,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       window.removeEventListener('tezlify:ws_event', handleWsEvent);
       window.removeEventListener('tezlify:ws_connected', handleReconnect);
     };
-  }, [selectedConv, loadConversations, startSyncPolling]);
+  }, [selectedConv, loadConversations, refreshSyncStatus]);
 
   // Anti-Ban Timing & Change-Tracking State
   const [savedConfig, setSavedConfig] = useState<AntiBanConfig>(getStoredAntiBanConfig());
@@ -1024,10 +1105,10 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   const handleQrSuccess = useCallback(() => {
     fetchSessions(true);
     onRefreshStats();
-    // Faz 7: QR sonrasi initial-sync hemen izlenmeye baslanir (gercek ilerleme)
+    // Faz 7/11: QR sonrasi initial-sync hemen izlenmeye baslanir — devam eden
+    // job varsa GET /sync/job ile benimsenir, ilerleme WS olaylarinda akar.
     refreshSyncStatus();
-    startSyncPolling();
-  }, [fetchSessions, onRefreshStats, refreshSyncStatus, startSyncPolling]);
+  }, [fetchSessions, onRefreshStats, refreshSyncStatus]);
 
   const handleOpenQrConnect = useCallback(() => {
     setReconnectSessionId(undefined);
@@ -1324,8 +1405,9 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         <Card className="h-[650px] p-0 flex flex-col md:flex-row overflow-hidden border border-slate-200/80 dark:border-white/[0.08] shadow-sm">
           {/* Left: Conversation List */}
           <div className="w-full md:w-80 lg:w-96 shrink-0 h-full flex flex-col">
-            {/* Faz 7: QR sonrasi GERCEK initial-sync banneri — yalnizca
-                gateway'den gelen ilerleme verisi gosterilir (sahte progress yok). */}
+            {/* Faz 7/11: GERCEK initial-sync banneri — yalnizca backend'den
+                gelen asama/sayaclar gosterilir (sahte progress yok); job
+                gercekten tamamlaninca (whatsapp_sync_complete) kapanir. */}
             {sessionSync?.phase === 'syncing' && (
               <div className="mx-3 mt-3 rounded-xl border border-[#7367F0]/30 bg-[#7367F0]/5 dark:bg-[#7367F0]/10 px-3 py-2.5 shrink-0">
                 <div className="flex items-center space-x-2">
@@ -1342,11 +1424,31 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                   />
                 </div>
                 <p className="mt-1 text-[10px] text-slate-500 dark:text-slate-400">
-                  {t('whatsapp.syncingChats')}
+                  {t(`whatsapp.syncStage.${sessionSync.stage || 'starting'}`) || t('whatsapp.syncingChats')}
                   {` · ${t('whatsapp.syncingContactsCount', { count: sessionSync.contacts_synced ?? 0 })}`}
                   {` · ${t('whatsapp.syncingChatsCount', { count: sessionSync.chats_synced ?? 0 })}`}
                   {` · ${t('whatsapp.syncingMessagesCount', { count: sessionSync.messages_synced ?? 0 })}`}
                 </p>
+              </div>
+            )}
+            {sessionSync?.phase === 'error' && (
+              <div className="mx-3 mt-3 rounded-xl border border-rose-400/40 bg-rose-500/5 dark:bg-rose-500/10 px-3 py-2.5 shrink-0">
+                <div className="flex items-center space-x-2">
+                  <AlertTriangle className="w-3.5 h-3.5 text-rose-500 shrink-0" />
+                  <span className="text-[11px] font-bold text-rose-600 dark:text-rose-400">
+                    {t('whatsapp.syncFailedTitle')}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => { setSessionSync(null); void handleSyncChats(); }}
+                    className="ml-auto text-[10px] font-extrabold text-rose-600 dark:text-rose-400 hover:underline cursor-pointer"
+                  >
+                    {t('whatsapp.syncRetry')}
+                  </button>
+                </div>
+                {sessionSync.error && (
+                  <p className="mt-1 text-[10px] text-slate-500 dark:text-slate-400 break-words">{sessionSync.error}</p>
+                )}
               </div>
             )}
             <ConversationList

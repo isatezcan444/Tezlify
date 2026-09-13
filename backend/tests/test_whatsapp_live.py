@@ -8,6 +8,7 @@ Tests cover backend ↔ gateway ↔ frontend API contract consistency:
 - Response field consistency (logout/delete return `status` field)
 - Fail-closed behavior when gateway is unreachable
 """
+import asyncio
 import base64
 import json
 import uuid as _uuid
@@ -125,9 +126,28 @@ async def _cleanup_whatsapp_tables():
             )
             await db.commit()
 
+    await _drain_sync_jobs()
     await _wipe()
     yield
+    await _drain_sync_jobs()
     await _wipe()
+
+
+async def _drain_sync_jobs():
+    """Süren initial-sync job'larini bekleyip registry'yi bosalt (test izolasyonu)."""
+    from backend.app.services import whatsapp_service as ws
+    for _ in range(3):
+        jobs = [j for j in ws._sync_jobs.values() if j.state == "SYNCING"]
+        if not jobs:
+            break
+        await asyncio.wait_for(
+            asyncio.gather(*[j.done.wait() for j in jobs], return_exceptions=True),
+            timeout=10,
+        )
+    ws._sync_jobs.clear()
+    # Bulk-kanal algilama cache'i de modil-global — her test taze baslasin.
+    ws._bulk_channel_cache["ok"] = False
+    ws._bulk_channel_cache["checked_at"] = 0.0
 
 
 @pytest.fixture
@@ -153,6 +173,9 @@ def mock_gateway():
     contacts = _patch("list_contacts", [{"id": MOCK_JID, "phone": MOCK_PHONE, "name": "Test Lead", "avatar_url": None}])
     convs = _patch("list_conversations", {"items": [], "total": 0})
     messages = _patch("get_messages", {"messages": [], "has_more": False})
+    subjects = _patch("sync_group_subjects", {"success": True, "resolved": 0})
+    # Bulk kanal (yeni sync job'i) — varsayilan bos; testler override eder.
+    bulk = _patch("list_all_messages", {"messages": [], "total": 0, "offset": 0, "limit": 1000})
     send_text = _patch("send_text_message", {
         "id": 1, "wa_message_id": "wamid123", "client_message_id": "cmsg_123",
         "status": "SENT", "body": "Merhaba",
@@ -178,6 +201,8 @@ def mock_gateway():
         "list_contacts": contacts,
         "list_conversations": convs,
         "get_messages": messages,
+        "sync_group_subjects": subjects,
+        "list_all_messages": bulk,
         "send_text_message": send_text,
         "send_media_message": send_media,
         "mark_conversation_read": mark_read,
@@ -194,6 +219,24 @@ def _fixture(auth_headers):
     """Helper to get an authenticated ASGITransport client."""
     transport = ASGITransport(app=app)
     return transport, {"Authorization": auth_headers["Authorization"]}
+
+
+async def _drain_active_sync_jobs():
+    """Tetiklenen initial-sync job'larinin bitmesini bekle (yeni async akis).
+
+    `sync=true` artik job'i tetikleyip ANINDA donuyor; testler gateway
+    mock'larinin DB'ye yazdigi gercek sonuclari dogrulamak icin job'in
+    tamamlanmasini beklemeli. Job bitmisse done set'lidir — aninda doner.
+    """
+    from backend.app.services import whatsapp_service as ws
+
+    jobs = [j for j in ws._sync_jobs.values() if j.state == "SYNCING"]
+    if jobs:
+        await asyncio.wait_for(
+            asyncio.gather(*[j.done.wait() for j in jobs], return_exceptions=True),
+            timeout=10,
+        )
+    return jobs
 
 
 # ---------------------------------------------------------------------------
@@ -932,7 +975,8 @@ async def test_ingest_presence_updated_maps_jid_and_types():
 
 @pytest.mark.asyncio
 async def test_sync_conversations_pulls_messages_from_gateway(auth_headers, mock_gateway):
-    """GET /conversations?sync=true must pull chat list AND per-chat history from the gateway."""
+    """Yeni mimari: sync=true job'i tetikler (aninda 200 snapshot); job WS
+    hattiyla chat + mesajlari DB'ye yazar — test job bitiminde doğrular."""
     mock_gateway.list_conversations.return_value = {
         "items": [
             {
@@ -945,46 +989,45 @@ async def test_sync_conversations_pulls_messages_from_gateway(auth_headers, mock
         ],
         "total": 1,
     }
-    mock_gateway.get_messages.return_value = {
-        "messages": [
-            {
-                "conversation_id": MOCK_JID,
-                "direction": "INBOUND",
-                "message_type": "TEXT",
-                "status": "RECEIVED",
-                "body": "Merhaba",
-                "wa_message_id": "wamid_hist_1",
-                "sender_phone": MOCK_PHONE,
-                "recipient_phone": "ME",
-                "created_at": "2025-01-15T09:59:00.000Z",
-            },
-            {
-                "conversation_id": MOCK_JID,
-                "direction": "OUTBOUND",
-                "message_type": "TEXT",
-                "status": "SENT",
-                "body": "Aleykum selam",
-                "wa_message_id": "wamid_hist_2",
-                "sender_phone": "ME",
-                "recipient_phone": MOCK_PHONE,
-                "created_at": "2025-01-15T10:00:00.000Z",
-            },
-        ],
-        "has_more": False,
-    }
+    history = [
+        {
+            "conversation_id": MOCK_JID,
+            "direction": "INBOUND",
+            "message_type": "TEXT",
+            "status": "RECEIVED",
+            "body": "Merhaba",
+            "wa_message_id": "wamid_hist_1",
+            "sender_phone": MOCK_PHONE,
+            "recipient_phone": "ME",
+            "created_at": "2025-01-15T09:59:00.000Z",
+        },
+        {
+            "conversation_id": MOCK_JID,
+            "direction": "OUTBOUND",
+            "message_type": "TEXT",
+            "status": "SENT",
+            "body": "Aleykum selam",
+            "wa_message_id": "wamid_hist_2",
+            "sender_phone": "ME",
+            "recipient_phone": MOCK_PHONE,
+            "created_at": "2025-01-15T10:00:00.000Z",
+        },
+    ]
+    mock_gateway.list_all_messages.return_value = {"messages": history, "total": len(history), "offset": 0, "limit": 1000}
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         res = await client.get("/api/v1/whatsapp/conversations?sync=true", headers=auth_headers)
-        assert res.status_code == 200
-        data = res.json()
+        assert res.status_code == 200  # kisa omurlu: job tetiklendi, beklemeden dondu
+        await _drain_active_sync_jobs()
+        data = (await client.get("/api/v1/whatsapp/conversations", headers=auth_headers)).json()
         assert data["total"] >= 1
         conv = data["items"][0]
         assert conv["name"] == "Ayse Yilmaz"
         assert conv["unread_count"] == 3
         conv_id = conv["id"]
 
-        # Messages must now be visible through the numeric-id API
+        # Mesajlar bulk kanaldan persist edilmis olmali (sayisal id API'si).
         res2 = await client.get(
             f"/api/v1/whatsapp/conversations/{conv_id}/messages", headers=auth_headers
         )
@@ -1002,24 +1045,24 @@ async def test_sync_conversations_dedups_history_messages(auth_headers, mock_gat
                    "last_message_at": "2025-01-15T10:00:00.000Z", "unread_count": 0}],
         "total": 1,
     }
-    mock_gateway.get_messages.return_value = {
-        "messages": [
-            {"conversation_id": MOCK_JID, "direction": "INBOUND", "message_type": "TEXT",
-             "status": "RECEIVED", "body": "tek", "wa_message_id": "wamid_dedup_1",
-             "sender_phone": MOCK_PHONE, "recipient_phone": "ME",
-             "created_at": "2025-01-15T09:00:00.000Z"},
-        ],
-        "has_more": False,
-    }
+    history = [
+        {"conversation_id": MOCK_JID, "direction": "INBOUND", "message_type": "TEXT",
+         "status": "RECEIVED", "body": "tek", "wa_message_id": "wamid_dedup_1",
+         "sender_phone": MOCK_PHONE, "recipient_phone": "ME",
+         "created_at": "2025-01-15T09:00:00.000Z"},
+    ]
+    mock_gateway.list_all_messages.return_value = {"messages": history, "total": len(history), "offset": 0, "limit": 1000}
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         r1 = await client.get("/api/v1/whatsapp/conversations?sync=true", headers=auth_headers)
         assert r1.status_code == 200
-        conv_id = r1.json()["items"][0]["id"]
-        # second sync — same gateway payload
+        await _drain_active_sync_jobs()
+        conv_id = (await client.get("/api/v1/whatsapp/conversations", headers=auth_headers)).json()["items"][0]["id"]
+        # second sync — same gateway payload (yeni job, ayni mesajlar)
         r2 = await client.get("/api/v1/whatsapp/conversations?sync=true", headers=auth_headers)
         assert r2.status_code == 200
+        await _drain_active_sync_jobs()
 
         res = await client.get(f"/api/v1/whatsapp/conversations/{conv_id}/messages", headers=auth_headers)
         msgs = res.json()["messages"]
@@ -1066,20 +1109,24 @@ async def test_ingest_conversation_updated_persists_fields():
 
 @pytest.mark.asyncio
 async def test_sync_conversations_survives_history_pull_failure(auth_headers, mock_gateway):
-    """If per-chat history pull fails, sync still returns the chat list (graceful degradation)."""
+    """Mesaj cekimi patlasa bile sohbet listesi DB'de kalmali (graceful
+    degradation): chat snapshot ayri commit'lenir, job mesaj asamasinda
+    FAILED olur ama liste kaybolmaz."""
     mock_gateway.list_conversations.return_value = {
         "items": [{"jid": MOCK_JID, "name": "Kismen", "last_message_preview": "p",
                    "last_message_at": "2025-01-15T10:00:00.000Z", "unread_count": 1}],
         "total": 1,
     }
-    mock_gateway.get_messages.side_effect = Exception("gateway boom")
+    mock_gateway.list_all_messages.side_effect = Exception("gateway boom")
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         res = await client.get("/api/v1/whatsapp/conversations?sync=true", headers=auth_headers)
         assert res.status_code == 200
-        assert res.json()["total"] >= 1
-        assert res.json()["items"][0]["name"] == "Kismen"
+        await _drain_active_sync_jobs()
+        data = (await client.get("/api/v1/whatsapp/conversations", headers=auth_headers)).json()
+        assert data["total"] >= 1
+        assert data["items"][0]["name"] == "Kismen"
 
 
 # ---------------------------------------------------------------------------
@@ -1157,7 +1204,8 @@ async def test_group_conversation_sync_sets_is_group_and_name(auth_headers, mock
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         res = await client.get("/api/v1/whatsapp/conversations?sync=true", headers=auth_headers)
         assert res.status_code == 200
-        items = res.json()["items"]
+        await _drain_active_sync_jobs()
+        items = (await client.get("/api/v1/whatsapp/conversations", headers=auth_headers)).json()["items"]
         grp = next((i for i in items if i.get("is_group")), None)
         assert grp is not None, "group conversation should be present with is_group=True"
         assert grp["name"] == "Satici Ekip"
@@ -1187,7 +1235,10 @@ async def test_resolve_jid_for_group_returns_group_jid(auth_headers, mock_gatewa
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         sync = await client.get("/api/v1/whatsapp/conversations?sync=true", headers=auth_headers)
-        grp = next(i for i in sync.json()["items"] if i.get("is_group"))
+        assert sync.status_code == 200
+        await _drain_active_sync_jobs()
+        items = (await client.get("/api/v1/whatsapp/conversations", headers=auth_headers)).json()["items"]
+        grp = next(i for i in items if i.get("is_group"))
         res = await client.post(f"/api/v1/whatsapp/conversations/{grp['id']}/read", headers=auth_headers)
         assert res.status_code == 200
     called_jid = mock_gateway.mark_conversation_read.await_args.args[0]
@@ -1351,11 +1402,14 @@ async def test_sync_group_history_prefers_participant_name(auth_headers, mock_ga
         ],
         "has_more": False,
     }
+    mock_gateway.list_all_messages.return_value = {"messages": mock_gateway.get_messages.return_value["messages"], "total": 2, "offset": 0, "limit": 1000}
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         sync = await client.get("/api/v1/whatsapp/conversations?sync=true", headers=auth_headers)
         assert sync.status_code == 200
-        grp = next(i for i in sync.json()["items"] if i.get("is_group"))
+        await _drain_active_sync_jobs()
+        items = (await client.get("/api/v1/whatsapp/conversations", headers=auth_headers)).json()["items"]
+        grp = next(i for i in items if i.get("is_group"))
         msgs = await client.get(f"/api/v1/whatsapp/conversations/{grp['id']}/messages", headers=auth_headers)
         assert msgs.status_code == 200
         by_wa = {m["wa_message_id"]: m for m in msgs.json()["messages"]}

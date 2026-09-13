@@ -604,6 +604,27 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       return list.slice(-limit);
     },
 
+    // Faz 10 (P5): initial-sync bulk kanali — TUM gecmisi tek kaynakta, zaman
+    // damgasi sirali ve sayfalidir. Eski yol sohbet basina getMessages cagrisi
+    // 113 HTTP turu yaratip backend istegini Render limitlerini asacak kadar
+    // uzatiyordu (502 kok nedeni). messagesByChat zaten history-sync'ten
+    // gelen her seyi bellekte tutar; burada yalniza flatten + sirali sayfa
+    // dondurulur (ek kopya/veri sentezi yok). Offset sayfalamasi, tam
+    // siralama anahtariyla (id, wa_message_id) deterministiktir.
+    listAllMessages({ limit = 1000, offset = 0 } = {}) {
+      const all = [];
+      for (const list of messagesByChat.values()) {
+        for (const m of list) all.push(m);
+      }
+      all.sort((a, b) => {
+        const d = (a.id || 0) - (b.id || 0);
+        if (d !== 0) return d;
+        return String(a.wa_message_id || '') < String(b.wa_message_id || '') ? -1 : 1;
+      });
+      const page = all.slice(offset, offset + limit);
+      return { messages: page, total: all.length, offset, limit };
+    },
+
     // -----------------------------------------------------------------------
     // Sending
     // -----------------------------------------------------------------------

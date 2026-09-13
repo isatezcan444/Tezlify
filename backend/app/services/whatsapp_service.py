@@ -9,6 +9,7 @@ edilir ve broadcast icin sayisal kimliklere cevrilir.
 import asyncio
 import logging
 import re
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Set, Tuple
 
@@ -599,6 +600,9 @@ async def purge_whatsapp_data(db: AsyncSession, user_id: str) -> Dict[str, int]:
 
 async def delete_session(db: AsyncSession, user_id: str, session_id: int) -> Dict[str, Any]:
     row = await _get_session_or_404(db, user_id, session_id)
+    # §26/§27: oturum silinirken süren initial-sync job'ı iptal edilir — eski
+    # gateway oturumuna karsi istek gondermeye devam etmez.
+    _cancel_stale_sync_jobs(user_id)
     try:
         await gw.delete_session(row.gateway_id)
     except Exception as exc:
@@ -779,6 +783,47 @@ async def _ensure_conversation(
     return conv
 
 
+def _message_row_from_gateway(owner: str, conv: Conversation, msg: Dict[str, Any]) -> Optional[Message]:
+    """Gateway mesaj kaydinden Message satiri uretir (INSERT yapmaz).
+
+    `_persist_gateway_message` (tekli yol) ile chunked sync job'i (batch yolu)
+    AYNI alan semantigini kullanir — iki kopya drift'i olusmaz.
+    """
+    jid_str = str(msg.get("conversation_id") or "")
+    mtype_str = (msg.get("message_type") or "TEXT").upper()
+    try:
+        mtype = MessageType[mtype_str] if mtype_str in MessageType.__members__ else MessageType.TEXT
+    except Exception:
+        mtype = MessageType.TEXT
+    direction = MessageDirection.INBOUND if str(msg.get("direction", "INBOUND")).upper() == "INBOUND" else MessageDirection.OUTBOUND
+    body = msg.get("body") or ""
+    ts = _parse_dt(msg.get("created_at"))
+    status_str = str(msg.get("status") or ("RECEIVED" if direction == MessageDirection.INBOUND else "SENT")).upper()
+    try:
+        status = ConversationMessageStatus[status_str]
+    except Exception:
+        status = ConversationMessageStatus.RECEIVED if direction == MessageDirection.INBOUND else ConversationMessageStatus.SENT
+    return Message(
+        user_id=owner,
+        conversation_id=conv.id,
+        direction=direction,
+        message_type=mtype,
+        body=body[:4000] if body else None,
+        media_id=msg.get("media_id"),
+        media_mime_type=msg.get("media_mime_type"),
+        media_filename=msg.get("media_filename"),
+        media_caption=msg.get("media_caption"),
+        wa_message_id=msg.get("wa_message_id"),
+        client_message_id=msg.get("client_message_id"),
+        sender_phone=msg.get("sender_phone") or jid_to_phone(jid_str) or "unknown",
+        # Faz 6a: grup gecmisi mesajlarinda participant pushname onecliklidir.
+        sender_name=msg.get("participant_name") or msg.get("sender_name"),
+        recipient_phone=msg.get("recipient_phone") or "ME",
+        status=status,
+        external_timestamp=_as_naive_utc(ts),
+    )
+
+
 async def _persist_gateway_message(db: AsyncSession, owner: str, msg: Dict[str, Any]) -> bool:
     """Gateway mesaj kaydini (history sync veya sync sirasinda cekilen) DB'ye yazar.
 
@@ -796,47 +841,19 @@ async def _persist_gateway_message(db: AsyncSession, owner: str, msg: Dict[str, 
         )
         if existing.scalar_one_or_none() is not None:
             return False  # dedup
-    mtype_str = (msg.get("message_type") or "TEXT").upper()
-    try:
-        mtype = MessageType[mtype_str] if mtype_str in MessageType.__members__ else MessageType.TEXT
-    except Exception:
-        mtype = MessageType.TEXT
-    direction = MessageDirection.INBOUND if str(msg.get("direction", "INBOUND")).upper() == "INBOUND" else MessageDirection.OUTBOUND
-    body = msg.get("body") or ""
-    ts = _parse_dt(msg.get("created_at"))
-    status_str = str(msg.get("status") or ("RECEIVED" if direction == MessageDirection.INBOUND else "SENT")).upper()
-    try:
-        status = ConversationMessageStatus[status_str]
-    except Exception:
-        status = ConversationMessageStatus.RECEIVED if direction == MessageDirection.INBOUND else ConversationMessageStatus.SENT
-    row = Message(
-        user_id=owner,
-        conversation_id=conv.id,
-        direction=direction,
-        message_type=mtype,
-        body=body[:4000] if body else None,
-        media_id=msg.get("media_id"),
-        media_mime_type=msg.get("media_mime_type"),
-        media_filename=msg.get("media_filename"),
-        media_caption=msg.get("media_caption"),
-        wa_message_id=wa_id,
-        client_message_id=msg.get("client_message_id"),
-        sender_phone=msg.get("sender_phone") or jid_to_phone(jid_str) or "unknown",
-        # Faz 6a: grup gecmisi mesajlarinda participant pushname onecliklidir.
-        sender_name=msg.get("participant_name") or msg.get("sender_name"),
-        recipient_phone=msg.get("recipient_phone") or "ME",
-        status=status,
-        external_timestamp=_as_naive_utc(ts),
-    )
+    row = _message_row_from_gateway(owner, conv, msg)
+    if row is None:
+        return False
+    ts = _as_naive_utc(_parse_dt(msg.get("created_at")))
     db.add(row)
     # Faz 10 (P2): paylasilan son-mesaj kurali — tip etiketi, grup gonderen
     # on eki ve ZAMAN DAMGASI siralamasi tek kaynaktan.
     summary = build_last_message_summary(
-        message_type=mtype_str,
-        body=body,
+        message_type=row.message_type.value,
+        body=row.body,
         sender_name=row.sender_name,
         is_group="@g.us" in jid_str,
-        direction=direction.value,
+        direction=row.direction.value,
     )
     _apply_last_message(conv, ts, summary)
     await db.flush()
@@ -918,6 +935,13 @@ _sync_conversations_inflight: Set[str] = set()
 
 
 async def sync_conversations(db: AsyncSession, user_id: str) -> List[Dict[str, Any]]:
+    """LEGACY senkron hatti (chat basina gateway round-trip + tek commit).
+
+    Yeni mimaride HTTP yolu bu fonksiyonu KULLANMAZ: `request_sync` WS tabanli
+    chunked job'i tetikler (§15/§16). Bu hatti yalnizca gateway'de bulk kanali
+    (`/messages/bulk`) yoksa job icinden fail-soft fallback olarak ve servis
+    testleri icin korunur.
+    """
     if user_id in _sync_conversations_inflight:
         result, _total = await list_conversations(db, user_id)
         return result
@@ -1273,6 +1297,410 @@ async def get_media_bytes(db: AsyncSession, user_id: str, media_id: str) -> Tupl
         raise LookupError(f"Medya bulunamadi: {media_id}")
     data = await gw.fetch_media(media_id)
     return data, row.media_mime_type, row.media_filename
+
+
+# ---------------------------------------------------------------------------
+# Initial-sync job mimarisi (HTTP yerine WS tabanli arka plan hydrasyonu)
+#
+# Eski davranis: GET /conversations?sync=true, 113 chat icin per-chat gateway
+# round-trip'ini + tek commit'i HTTP istegi ICINDE beklerdi; Render 60s proxy
+# timeout'u ve Baileys "Timed Out" hatalariyla 502 + retry storm'u uretiyordu
+# (olculen kok neden). Yeni davranis: HTTP yalnizca job'i tetikler ve aninda
+# DB snapshot'i doner; agir hydrasyon asyncio job'i olarak MEVCUT WebSocket
+# uzerinden `whatsapp_sync_*` olaylarina akitor.
+#
+# Sozlesme (§25/§40): her olay snake_case `event`, job bazinda `sync_id`
+# (frontend stale-sync filtresi) ve `user_id` (WS tenant routing) tasir.
+# ---------------------------------------------------------------------------
+
+_SYNC_BULK_PAGE_SIZE = 1000   # gateway'den tek istekte cekilen mesaj
+_SYNC_PERSIST_BATCH = 200     # dedup-SELECT + INSERT grubu
+_SYNC_EVENT_CHUNK = 100       # WS mesaj chunk olayinin ust siniri
+_SYNC_CHAT_PAGE_SIZE = 40     # sohbet anlik goruntusu sayfa boyutu
+
+_bulk_channel_cache: Dict[str, Any] = {"ok": False, "checked_at": 0.0}
+
+
+class SyncJob:
+    """Tek bir initial-sync calismasi — durum makinesi SYNCING/COMPLETED/FAILED.
+
+    `done` event'i job sonlandiginda set edilir; `sync_conversations` gibi
+    HTTP kisa yollari yeni job tetiklemeden mevcut job'i bekleyebilir (§17).
+    """
+
+    __slots__ = ("sync_id", "user_id", "state", "stage", "error", "cancel_requested",
+                 "chats_total", "chats_synced", "contacts_synced", "messages_total",
+                 "messages_synced", "started_at", "finished_at", "done", "task")
+
+    def __init__(self, sync_id: str, user_id: str) -> None:
+        self.sync_id = sync_id
+        self.user_id = user_id
+        self.state = "SYNCING"
+        self.stage = "starting"
+        self.error: Optional[str] = None
+        self.cancel_requested = False
+        self.chats_total = 0
+        self.chats_synced = 0
+        self.contacts_synced = 0
+        self.messages_total = 0
+        self.messages_synced = 0
+        self.started_at = datetime.now(timezone.utc)
+        self.finished_at: Optional[datetime] = None
+        self.done = asyncio.Event()
+        self.task: Optional[asyncio.Task] = None
+
+    def snapshot(self) -> Dict[str, Any]:
+        """GET /sync/job + WS reconnect kurtarmasi icin gercek durum (§28)."""
+        return {
+            "sync_id": self.sync_id,
+            "state": self.state,
+            "stage": self.stage,
+            "error": self.error,
+            "chats_total": self.chats_total,
+            "chats_synced": self.chats_synced,
+            "contacts_synced": self.contacts_synced,
+            "messages_total": self.messages_total,
+            "messages_synced": self.messages_synced,
+            "started_at": self.started_at.isoformat(),
+            "finished_at": self.finished_at.isoformat() if self.finished_at else None,
+        }
+
+
+# owner -> aktif/son job (uvicorn tek is parca calisir — start.py; in-process
+# registry yeterli; redeploy'da job duser, frontend GET /sync/job ile gorur).
+_sync_jobs: Dict[str, SyncJob] = {}
+
+
+async def _bulk_channel_available() -> bool:
+    """Gateway'de `/messages/bulk` kanali var mi (yeni gateway surumu).
+
+    Eski gateway dagitimi 404 donerur; job bu durumda legacy per-chat hattina
+    fail-soft duser (hata yayilmaz). Sonuc 5 dk cache'lenir.
+    """
+    import time as _time
+
+    now = _time.monotonic()
+    if now - float(_bulk_channel_cache.get("checked_at") or 0.0) < 300:
+        return bool(_bulk_channel_cache.get("ok"))
+    try:
+        probe = await gw.list_all_messages(limit=1, offset=0)
+        ok = isinstance(probe, dict) and "messages" in probe
+    except Exception:  # noqa: BLE001 — gateway kapali/eski surum: legacy hat
+        ok = False
+    _bulk_channel_cache["ok"] = ok
+    _bulk_channel_cache["checked_at"] = now
+    return ok
+
+
+async def _broadcast_sync_event(payload: Dict[str, Any]) -> None:
+    """whatsapp_sync_* olayini mevcut ws_manager uzerinden SAHIBINE yollar.
+
+    user_id routing zorunlu (§40 tenant izolasyonu); broadcast hatasi job'i
+    dusurmaz — DB gercegi yazilmaya devam eder, frontend reconnect'te
+    GET /sync/job ile toparlar (§28).
+    """
+    try:
+        from backend.app.api.v1.websocket import ws_manager
+        await ws_manager.broadcast(payload)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Sync olayi yayilamadi (%s): %s", payload.get("event"), exc)
+
+
+def _sync_event(job: SyncJob, event: str, **fields: Any) -> Dict[str, Any]:
+    """Ortak sozlesme: snake_case event + sync_id + user_id + alanlar."""
+    return {"event": event, "sync_id": job.sync_id, "user_id": job.user_id, **fields}
+
+
+async def request_sync(db: AsyncSession, user_id: str) -> SyncJob:
+    """Sync job'i tetikle ya da suren job'i dondur (asla ikinci job yok, §17).
+
+    Kisa omurlu: job kaydi olustur + arka plan task'i baslat + aninda don.
+    COMPLETED/FAILED job beklenmez — yeni sync_id ile taze job baslar.
+    """
+    owner = str(user_id)
+    job = _sync_jobs.get(owner)
+    if job is not None and job.state == "SYNCING":
+        return job
+    job = SyncJob(sync_id=uuid.uuid4().hex, user_id=owner)
+    _sync_jobs[owner] = job
+    job.task = asyncio.create_task(_run_sync_job(job))
+    return job
+
+
+def get_sync_job(user_id: str) -> Optional[Dict[str, Any]]:
+    """Owner'in mevcut/son job anlik goruntusu (WS reconnect kurtarma, §28)."""
+    job = _sync_jobs.get(str(user_id))
+    return job.snapshot() if job else None
+
+
+def _cancel_stale_sync_jobs(user_id: str) -> int:
+    """Oturum silinince owner'in suren job'ini iptal eder — eski gateway
+    oturumuna karsi istek gondermeye devam etmez (§26/§27)."""
+    job = _sync_jobs.get(str(user_id))
+    if job is None or job.state != "SYNCING":
+        return 0
+    job.cancel_requested = True
+    return 1
+
+
+async def _run_sync_job(job: SyncJob) -> None:
+    """Chunked initial-sync hatti — WS olaylariyla ilerler, HTTP'yi bloklamaz.
+
+    Akis: started -> contacts snapshot -> chats snapshot (chat basina gateway
+    cagrisi YOK) -> tek bulk mesaj fetch'i (sayfali) -> batch'li kalici yazim
+    + mesaj chunk -> ilerleme -> onarim + complete/failed.
+    """
+    owner = job.user_id
+    try:
+        async with AsyncSessionLocal() as db:
+            await _broadcast_sync_event(_sync_event(job, "whatsapp_sync_started", started_at=job.started_at.isoformat()))
+
+            # 1) Rehber (fail-soft — sohbet senkronu surer).
+            job.stage = "contacts"
+            try:
+                contacts = await sync_contacts(db, owner)
+                job.contacts_synced = len(contacts)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Sync job rehber adimi atlandi (owner=%s): %s", owner, exc)
+                contacts = []
+            if job.cancel_requested:
+                raise asyncio.CancelledError()
+            await _broadcast_sync_event(_sync_event(
+                job, "whatsapp_sync_contacts_snapshot",
+                total=job.contacts_synced, contacts=contacts[:_SYNC_EVENT_CHUNK]))
+
+            # 2) Grup basliklari (fail-soft; force — cozulememis gruplar tekrar denensin).
+            try:
+                await gw.sync_group_subjects(force=True)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Sync job grup basliklari atlandi (owner=%s): %s", owner, exc)
+
+            # 3) Sohbet anlik goruntusu — chat BASINA gateway istegi YOK (§21);
+            #    chats listesi tek cagri, DB'ye bir geciste toplu yazilir.
+            job.stage = "chats"
+            data = await gw.list_conversations(limit=200)
+            items = data.get("items", []) if isinstance(data, dict) else []
+            conv_out, jid_by_conv = await _persist_chat_snapshot(db, owner, items)
+            job.chats_total = len(conv_out)
+            job.chats_synced = len(conv_out)
+            if job.cancel_requested:
+                raise asyncio.CancelledError()
+            for page_start in range(0, len(conv_out), _SYNC_CHAT_PAGE_SIZE):
+                await _broadcast_sync_event(_sync_event(
+                    job, "whatsapp_sync_chats_snapshot",
+                    total=job.chats_total,
+                    conversations=conv_out[page_start:page_start + _SYNC_CHAT_PAGE_SIZE]))
+
+            # 4) Mesajlar — TEK bulk kanaldan, bellek-ici offset sayfalamasi
+            #    (§21: per-chat HTTP yok; §23: mesaj basina sorgu yok).
+            job.stage = "messages"
+            if await _bulk_channel_available():
+                await _run_bulk_message_sync(db, job, jid_by_conv)
+            else:
+                # Eski gateway dagitimi: legacy per-chat hatti (fail-soft).
+                logger.warning("Gateway bulk kanali yok — legacy per-chat sync (owner=%s)", owner)
+                await _sync_conversations_impl(db, owner)
+            if job.cancel_requested:
+                raise asyncio.CancelledError()
+
+            # 5) Onarim + tamamlanma — preview'i eksik sohbetleri tek agregat
+            #    sorguyla hydrate et, sonra cozulmus tam listeyi yayinla.
+            job.stage = "finalizing"
+            await _repair_last_message_previews(db, owner)
+            await db.commit()
+            result, _total = await list_conversations(db, owner)
+            job.state = "COMPLETED"
+            job.stage = "complete"
+            job.finished_at = datetime.now(timezone.utc)
+            await _broadcast_sync_event(_sync_event(
+                job, "whatsapp_sync_complete",
+                conversations=result,
+                chats_synced=job.chats_synced,
+                contacts_synced=job.contacts_synced,
+                messages_synced=job.messages_synced,
+                finished_at=job.finished_at.isoformat(),
+            ))
+            logger.info(
+                "Sync job tamamlandi (owner=%s sync_id=%s chats=%s msgs=%s)",
+                owner, job.sync_id, job.chats_synced, job.messages_synced,
+            )
+    except asyncio.CancelledError:
+        job.state = "FAILED"
+        job.error = "sync iptal edildi"
+        logger.info("Sync job iptal edildi (owner=%s sync_id=%s)", owner, job.sync_id)
+    except Exception as exc:  # noqa: BLE001 — fail-closed: hatayi UI'a bildir
+        job.state = "FAILED"
+        job.error = str(exc)[:500]
+        logger.warning("Sync job basarisiz (owner=%s sync_id=%s): %s", owner, job.sync_id, exc)
+        await _broadcast_sync_event(_sync_event(
+            job, "whatsapp_sync_failed", error=job.error, stage=job.stage))
+    finally:
+        job.done.set()
+        _initial_sync_inflight.discard(owner)
+
+
+async def _persist_chat_snapshot(
+    db: AsyncSession, owner: str, items: List[Dict[str, Any]]
+) -> Tuple[List[Dict[str, Any]], Dict[int, str]]:
+    """Gateway chats listesini TEK geciste DB'ye yazar.
+
+    Doner: (list_conversations formatinda sohbet serisi — ham WhatsApp
+    nesnesi DEGIL, sayisal DB kimlikli, §30; conversation_id -> ham jid haritasi
+    — jid yalnizca backend icinde kalir, frontend'e sizmaz).
+    """
+    out: List[Dict[str, Any]] = []
+    jid_by_conv: Dict[int, str] = {}
+    for item in items:
+        jid = item.get("jid") or item.get("id")
+        if not jid or "@" not in str(jid):
+            continue
+        jid_str = str(jid)
+        if is_degenerate_jid(jid_str):  # §5/§24: '+0' sohbeti DB'ye yazilmaz
+            continue
+        try:
+            contact = await _upsert_contact(db, owner, jid_str, item.get("name"), item.get("name_source"))
+        except ValueError:
+            continue
+        _set_contact_avatar(contact, item.get("avatar_url"))
+        conv = await _ensure_conversation(db, owner, jid_str)
+        gw_ts = _as_naive_utc(_parse_dt(str(item.get("last_message_at")))) if item.get("last_message_at") else None
+        gw_summary = _normalize_preview_text(item.get("message_type") or "TEXT", item.get("last_message_preview") or "")
+        if gw_summary:
+            if conv.last_message_at is None or (gw_ts and gw_ts > conv.last_message_at):
+                _apply_last_message(conv, gw_ts or datetime.utcnow(), gw_summary)
+            elif not conv.last_message_preview:
+                _apply_last_message(conv, None, gw_summary)
+        conv.unread_count = max(conv.unread_count or 0, int(item.get("unread_count") or 0))
+        jid_by_conv[conv.id] = jid_str
+        out.append(
+            {
+                "id": conv.id,
+                "contact_id": contact.id,
+                "lead_id": conv.lead_id,
+                "name": _safe_display_name(contact),
+                "phone": contact.phone_e164,
+                "is_group": "@g.us" in jid_str,
+                "avatar_url": _get_contact_avatar(contact),
+                "last_message_preview": gw_summary or None,
+                "last_message_at": gw_ts.isoformat() if gw_ts else None,
+                "message_count": 0,
+                "last_message_state": "RESOLVED" if gw_summary else "REPAIRING",
+                "unread_count": conv.unread_count,
+                "status": conv.status.value if hasattr(conv.status, "value") else str(conv.status),
+            }
+        )
+    await db.flush()
+    await db.commit()
+    return out, jid_by_conv
+
+
+async def _run_bulk_message_sync(
+    db: AsyncSession, job: SyncJob, jid_by_conv: Dict[int, str]
+) -> None:
+    """Bulk mesaj kanalindan sayfali hydrasyon.
+
+    Bellek-ici (jid -> conv) haritasi + sohbet gruplu TEK dedup SELECT
+    (wa_message_id) + gruplu INSERT + ~100'luk WS chunk olaylari. Kismi
+    ilerleme commit'lenir — job yarida olse yazilanlar korunur (§20).
+    """
+    conv_by_jid: Dict[str, int] = {}
+    for cid, jid_str in jid_by_conv.items():
+        conv_by_jid[jid_str] = cid
+    conv_by_id: Dict[int, Conversation] = {}
+
+    offset = 0
+    first_page = True
+    while True:
+        page = await gw.list_all_messages(limit=_SYNC_BULK_PAGE_SIZE, offset=offset)
+        msgs = page.get("messages", []) if isinstance(page, dict) else []
+        total = int(page.get("total") or 0) if isinstance(page, dict) else 0
+        if first_page:
+            job.messages_total = total
+            first_page = False
+        if not msgs:
+            break
+        # jid -> conversation cozumu (yalnizca snapshot'taki sohbetler).
+        pending: Dict[int, List[Dict[str, Any]]] = {}
+        for gm in msgs:
+            jid_str = str(gm.get("conversation_id") or "")
+            cid = conv_by_jid.get(jid_str)
+            if cid is None:
+                continue
+            pending.setdefault(cid, []).append(gm)
+        # dedup: sohbet bazinda mevcut wa_message_id'leri toplu SELECT ile cek (§23).
+        existing_ids: Dict[int, Set[str]] = {}
+        cid_list = list(pending.keys())
+        for batch_start in range(0, len(cid_list), _SYNC_PERSIST_BATCH):
+            sub = cid_list[batch_start:batch_start + _SYNC_PERSIST_BATCH]
+            res = await db.execute(
+                select(Message.conversation_id, Message.wa_message_id).where(
+                    Message.conversation_id.in_(sub),
+                    Message.wa_message_id.isnot(None),
+                )
+            )
+            for cid, wa in res.all():
+                existing_ids.setdefault(int(cid), set()).add(str(wa))
+        rows: List[Tuple[Message, Dict[str, Any]]] = []  # (satır, jid_str) — serialization flush sonrası
+        touched: Set[int] = set()
+        for cid, gm_list in pending.items():
+            conv = conv_by_id.get(cid)
+            if conv is None:
+                conv = await db.get(Conversation, cid)
+                if conv is None:
+                    continue
+                conv_by_id[cid] = conv
+            have = existing_ids.setdefault(cid, set())
+            for gm in gm_list:
+                wa = gm.get("wa_message_id")
+                if wa and str(wa) in have:
+                    continue
+                row = _message_row_from_gateway(job.user_id, conv, gm)
+                if row is None:
+                    continue
+                if wa:
+                    have.add(str(wa))
+                rows.append((row, str(gm.get("conversation_id") or "")))
+                summary = build_last_message_summary(
+                    message_type=row.message_type.value,
+                    body=row.body,
+                    sender_name=row.sender_name,
+                    is_group="@g.us" in str(gm.get("conversation_id") or ""),
+                    direction=row.direction.value,
+                )
+                _apply_last_message(conv, _parse_dt(gm.get("created_at")), summary)
+            touched.add(cid)
+        # persist: gruplu INSERT + commit (kismi ilerleme kalici).
+        serialized: List[Dict[str, Any]] = []
+        if rows:
+            for batch_start in range(0, len(rows), _SYNC_PERSIST_BATCH):
+                db.add_all([r for r, _ in rows[batch_start:batch_start + _SYNC_PERSIST_BATCH]])
+            await db.flush()
+            await db.commit()
+            # flush sonrasi id'ler doludur — WS chunk'i sayisal DB kimlikli seridir.
+            serialized = [_serialize_message(r) for r, _ in rows]
+            job.messages_synced += len(rows)
+        for chunk_start in range(0, len(serialized), _SYNC_EVENT_CHUNK):
+            await _broadcast_sync_event(_sync_event(
+                job, "whatsapp_sync_messages_chunk",
+                conversation_ids=sorted(touched),
+                messages=serialized[chunk_start:chunk_start + _SYNC_EVENT_CHUNK],
+                total=job.messages_total,
+                synced=job.messages_synced,
+            ))
+        await _broadcast_sync_event(_sync_event(
+            job, "whatsapp_sync_progress",
+            stage=job.stage,
+            chats_total=job.chats_total, chats_synced=job.chats_synced,
+            contacts_synced=job.contacts_synced,
+            messages_total=job.messages_total, messages_synced=job.messages_synced,
+        ))
+        offset += len(msgs)
+        if offset >= total:
+            break
+        if job.cancel_requested:
+            raise asyncio.CancelledError()
+
+
 # ---------------------------------------------------------------------------
 # Gateway olaylarini veritabanina isleme (inbound)
 # ---------------------------------------------------------------------------
@@ -1291,20 +1719,26 @@ def _schedule_initial_sync(owner: str) -> None:
 
 
 async def _run_initial_sync(owner: str) -> None:
+    # Faz 8 (§16) sozlesmesi korunur: initial-sync, "Eşitle" ile AYNI pipeline'i
+    # kullanir — artik bu, WS tabanli chunked sync job'i (`request_sync`).
+    # HTTP 502/timeout storm'u yerine agirlik arka planda `whatsapp_sync_*`
+    # olaylariyla akitor; `conversations_updated` eski UI sozlesmesi olarak
+    # tamamlanmada yayinlanmaya devam eder (§25 kirilmaz).
     try:
         async with AsyncSessionLocal() as db:
-            await sync_conversations(db, owner)
-        logger.info("Faz 8 initial-sync hydration tamamlandi (owner=%s)", owner)
-        # UI'i ayrica bir "Eşitle" tiklamasina gerek kalmadan sessizce tazele —
-        # frontend 'conversations_updated' olayini loadConversations(true) ile
-        # karsilar (mevcut WS sozlesmesi, §25 kirilmaz).
-        try:
-            from backend.app.api.v1.websocket import ws_manager
-            await ws_manager.broadcast({"event": "conversations_updated", "user_id": owner})
-        except Exception as exc:  # noqa: BLE001 — broadcast basarisiz olssa bile DB gercegi yazar
-            logger.warning("Initial-sync broadcast basarisiz (owner=%s): %s", owner, exc)
+            job = await request_sync(db, owner)
+            await asyncio.shield(job.done.wait())
+        if job.state == "COMPLETED":
+            logger.info("Initial-sync hydration tamamlandi (owner=%s)", owner)
+            try:
+                from backend.app.api.v1.websocket import ws_manager
+                await ws_manager.broadcast({"event": "conversations_updated", "user_id": owner})
+            except Exception as exc:  # noqa: BLE001 — broadcast basarisiz olssa bile DB gercegi yazar
+                logger.warning("Initial-sync broadcast basarisiz (owner=%s): %s", owner, exc)
+        else:
+            logger.warning("Initial-sync hydration basarisiz (owner=%s): %s", owner, job.error)
     except Exception as exc:  # noqa: BLE001 — fail-soft: sonraki olay/Eşitle dener
-        logger.warning("Faz 8 initial-sync hydration basarisiz (owner=%s): %s", owner, exc)
+        logger.warning("Initial-sync hydration beklenemedi (owner=%s): %s", owner, exc)
     finally:
         _initial_sync_inflight.discard(owner)
 
@@ -1379,7 +1813,7 @@ async def _ingest_message(db: AsyncSession, event: Dict[str, Any]) -> Dict[str, 
         existing = await db.execute(
             select(Message).where(Message.wa_message_id == wa_id, Message.conversation_id == conv.id)
         )
-        if existing.scalar_one_or_none() is not None:
+        if existing.scalars().first() is not None:
             event["conversation_id"] = conv.id
             return event  # dedup
 
@@ -1418,7 +1852,10 @@ async def _ingest_message(db: AsyncSession, event: Dict[str, Any]) -> Dict[str, 
         ),
         recipient_phone=msg.get("recipient_phone") or "ME" if direction == MessageDirection.INBOUND else contact.phone_e164,
         status=ConversationMessageStatus.RECEIVED if direction == MessageDirection.INBOUND else ConversationMessageStatus.SENT,
-        external_timestamp=_parse_dt(msg.get("created_at")),
+        # Prod fix (render log): asyncpg aware datetime'i naive kolona yazmayi
+        # reddediyor ("can't subtract offset-naive and offset-aware") — tıpkı
+        # _persist_gateway_message gibi _as_naive_utc ile normalize edilir.
+        external_timestamp=_as_naive_utc(_parse_dt(msg.get("created_at"))),
     )
     db.add(row)
     # Faz 10 (P2): paylasilan kural — gercek mesaj zaman damgasiyla, tip
@@ -1430,7 +1867,7 @@ async def _ingest_message(db: AsyncSession, event: Dict[str, Any]) -> Dict[str, 
         is_group=is_group_jid,
         direction=direction.value,
     )
-    _apply_last_message(conv, _parse_dt(msg.get("created_at")) or datetime.utcnow(), summary)
+    _apply_last_message(conv, _as_naive_utc(_parse_dt(msg.get("created_at"))) or datetime.utcnow(), summary)
     if direction == MessageDirection.INBOUND:
         conv.unread_count = (conv.unread_count or 0) + 1
     await db.flush()
@@ -1483,7 +1920,10 @@ async def _ingest_contact_synced(db: AsyncSession, event: Dict[str, Any]) -> Dic
             get_user_filter(Contact.user_id, owner),
         )
     )
-    contact = res.scalar_one_or_none()
+    # Prod fix (render log): ayni telefonda mükerrer contact satiri varsa
+    # scalar_one_or_none() "Multiple rows were found" ile ingest'i kırıyordu;
+    # ilk satiri al — guncelleme idempotent.
+    contact = res.scalars().first()
     name = contact_payload.get("name")
     source = str(contact_payload.get("name_source") or "")
     if contact is None:

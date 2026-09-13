@@ -183,6 +183,20 @@ app.post('/conversations/sync-groups', async (req, res) => {
   }
 });
 
+// Faz 10 (P5): toplu gecmis kanali — backend initial-sync job'i sohbet basina
+// ayri ayri HTTP turu atmak icin bunu kullaniir (deterministik offset sayfalama).
+app.get('/messages/bulk', (req, res) => {
+  try {
+    const { limit, offset } = req.query;
+    res.json(sessionManager.listAllMessages({
+      limit: limit ? parseInt(limit, 10) : 1000,
+      offset: offset ? parseInt(offset, 10) : 0,
+    }));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Get messages for a conversation (jid)
 app.get('/conversations/:jid/messages', async (req, res) => {
   try {
