@@ -9,7 +9,7 @@
  * - Media download & storage
  * - Realtime event emission to the event bridge
  */
-import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, Browsers, downloadMediaMessage, extractMessageContent, getContentType, ALL_WA_PATCH_NAMES } from '@whiskeysockets/baileys';
+import { makeWASocket, useMultiFileAuthState, makeCacheableSignalKeyStore, DisconnectReason, fetchLatestBaileysVersion, Browsers, downloadMediaMessage, extractMessageContent, getContentType } from '@whiskeysockets/baileys';
 import QRCode from 'qrcode';
 import fs from 'fs';
 import path from 'path';
@@ -17,6 +17,7 @@ import crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 import pino from 'pino';
 import { diagnostic, sessionRef } from './observability.js';
+import { SocketLifecycle } from './domain/socket-lifecycle.js';
 
 const logger = pino({ level: process.env.LOG_LEVEL || 'warn' });
 
@@ -86,12 +87,6 @@ function createBaileysLogger(baseLogger) {
 // verisini okuyup o hattan mesaj gönderebiliyordu. Store'lar oturuma taşınınca
 // hem bu sızıntı kapanır hem çok hatlı kullanım mümkün olur.
 // ---------------------------------------------------------------------------
-const sessions = new Map(); // id -> session record
-
-// Medya indeksi süreç genelinde tek Map'tir ama her kayıt SAHİBİ oturumu
-// taşır; okuma her zaman sessionId ile doğrulanır (bkz. getMediaPath).
-const mediaIndex = new Map(); // media_id -> { sessionId, filePath, mimeType, filename, sizeBytes }
-
 /** Bir oturumun kendine ait bellek depoları. */
 function createSessionStore() {
   return {
@@ -562,7 +557,9 @@ function getSessionDir(sessionsDir, sessionId) {
 // ---------------------------------------------------------------------------
 // Session Manager factory
 // ---------------------------------------------------------------------------
-export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsUrl }) {
+export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsUrl, authRepository = null }) {
+  const sessions = new Map(); // manager-local: no cross-instance/session leakage
+  const mediaIndex = new Map(); // every entry is scoped by its owning session
   const persistedSessionDirectories = fs.existsSync(sessionsDir)
     ? fs.readdirSync(sessionsDir, { withFileTypes: true }).filter((entry) => entry.isDirectory()).length
     : 0;
@@ -593,6 +590,22 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       return () => this._listeners.delete(listener);
     },
 
+    async shutdown() {
+      for (const session of sessions.values()) {
+        session._shuttingDown = true;
+        session.lifecycle.invalidate();
+        if (session._historyQuietTimer) {
+          clearTimeout(session._historyQuietTimer);
+          session._historyQuietTimer = null;
+        }
+        try { session.sock?.ev?.removeAllListeners(); } catch (err) { /* ignore */ }
+        try { session.sock?.end(undefined); } catch (err) { /* ignore */ }
+        session.sock = null;
+        session.is_phone_online = false;
+      }
+      diagnostic('session_registry_shutdown', { sessions: sessions.size });
+    },
+
     // -----------------------------------------------------------------------
     // Session CRUD
     // -----------------------------------------------------------------------
@@ -620,8 +633,43 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       return sessions.get(id) || null;
     },
 
-    async createSession(name, { autoStart = true } = {}) {
-      const id = uuidv4();
+    async restoreSessions({ concurrency = 2 } = {}) {
+      if (!authRepository) return { discovered: 0, restored: 0 };
+      const records = await authRepository.listRestorableSessions();
+      let restored = 0;
+      for (let offset = 0; offset < records.length; offset += concurrency) {
+        const batch = records.slice(offset, offset + concurrency);
+        await Promise.all(batch.map(async (record) => {
+          const id = String(record.session_id);
+          if (sessions.has(id)) return;
+          const session = await this.createSession(record.session_name, {
+            id,
+            autoStart: false,
+            persistRegistry: false,
+          });
+          session.status = 'RESTORING';
+          this._startSocket(id);
+          restored += 1;
+        }));
+      }
+      diagnostic('session_registry_restored', {
+        discovered: records.length,
+        restored,
+        concurrency,
+      });
+      return { discovered: records.length, restored };
+    },
+
+    async createSession(name, {
+      autoStart = true,
+      id: requestedId = null,
+      persistRegistry = true,
+    } = {}) {
+      const id = requestedId ? String(requestedId) : uuidv4();
+      if (sessions.has(id)) return this.getSession(id);
+      if (authRepository && persistRegistry) {
+        await authRepository.registerSession(id, name, { active: true });
+      }
       const session = {
         id,
         session_name: name,
@@ -641,6 +689,7 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
         sock: null,
+        lifecycle: new SocketLifecycle(),
         // Bu hesaba ait kişiler/sohbetler/mesajlar yalnızca burada yaşar.
         store: createSessionStore(),
       };
@@ -667,8 +716,13 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       session._connFailures = 0;
       session._qrSeenForAttempt = false;
       session.updated_at = new Date().toISOString();
+      if (authRepository) {
+        await authRepository.registerSession(id, session.session_name, { active: true });
+      }
       // Force a fresh QR by restarting the socket
+      session.lifecycle.invalidate();
       if (session.sock) {
+        try { session.sock.ev?.removeAllListeners(); } catch (err) { /* ignore */ }
         try { session.sock.end(undefined); } catch (err) { /* ignore */ }
         session.sock = null;
       }
@@ -738,6 +792,7 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
     async logoutSession(id) {
       const session = sessions.get(id);
       if (!session) throw new Error('Session not found');
+      session.lifecycle.invalidate();
       try {
         if (session.sock) {
           await session.sock.logout();
@@ -763,6 +818,10 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       // BAŞKA bir hesabın istekleriyle karışabiliyordu.)
       session.store = createSessionStore();
       // Remove persisted auth state
+      if (authRepository) {
+        await authRepository.clearAuth(id);
+        await authRepository.setSessionActive(id, false);
+      }
       const dir = getSessionDir(sessionsDir, id);
       if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
       emitEvent({ event: 'session_disconnected', session_id: id, session_name: session.session_name });
@@ -773,6 +832,7 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       const session = sessions.get(id);
       if (session) {
         session._deleted = true;
+        session.lifecycle.invalidate();
         if (session.sock?.ev) {
           try { session.sock.ev.removeAllListeners(); } catch (err) { /* ignore */ }
         }
@@ -788,6 +848,7 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
         session._historyQuietTimer = null;
       }
       sessions.delete(id);
+      if (authRepository) await authRepository.deleteSession(id);
       // Oturumun bellek deposu ve indirilmiş medyası da bırakılır.
       if (session) session.store = null;
       for (const [mediaId, entry] of mediaIndex) {
@@ -1627,13 +1688,27 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
     _startSocket(id) {
       const session = sessions.get(id);
       if (!session) return;
-      this._connectSocket(id);
+      this._connectSocket(id).catch((error) => {
+        const current = sessions.get(id);
+        if (!current || current._deleted) return;
+        current.status = 'UNAVAILABLE';
+        current.is_phone_online = false;
+        current.error_message = 'WHATSAPP_AUTH_STORE_UNAVAILABLE';
+        current.updated_at = new Date().toISOString();
+        diagnostic('socket_start_failed', {
+          session_ref: sessionRef(id),
+          generation: current._diagnosticSocketGeneration || 0,
+          error_name: error?.name || 'Error',
+          error_code: error?.code || null,
+        });
+        logger.error({ err: error, session_ref: sessionRef(id) }, 'WhatsApp socket start failed');
+      });
     },
 
     async _connectSocket(id) {
       const session = sessions.get(id);
       if (!session) return;
-      const generation = (session._diagnosticSocketGeneration || 0) + 1;
+      const generation = session.lifecycle.beginAttempt();
       session._diagnosticSocketGeneration = generation;
       const sessionDir = getSessionDir(sessionsDir, id);
       fs.mkdirSync(sessionDir, { recursive: true });
@@ -1646,9 +1721,14 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
         auth_json_files: authFilesBefore.length,
       });
 
-      // Load persisted auth state (encrypted on disk)
-      const persisted = safeReadEncrypted(path.join(sessionDir, 'auth.json'), aesKey);
-      const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
+      // Production uses the durable PostgreSQL adapter. The file adapter is
+      // retained only for explicit local development compatibility.
+      const persisted = authRepository
+        ? null
+        : safeReadEncrypted(path.join(sessionDir, 'auth.json'), aesKey);
+      const { state, saveCreds } = authRepository
+        ? await authRepository.createAuthState(id)
+        : await useMultiFileAuthState(sessionDir);
       diagnostic('auth_state_loaded', {
         session_ref: sessionRef(id),
         generation,
@@ -1661,7 +1741,7 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       });
 
       // If we have persisted creds, restore them
-      if (persisted?.creds) {
+      if (!authRepository && persisted?.creds) {
         if (!session._diagnosticLegacyRestoreLogged) {
           session._diagnosticLegacyRestoreLogged = true;
           diagnostic('legacy_auth_restore_after_state_load', {
@@ -1702,11 +1782,14 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       const ensureGroupSubjects = (opts = {}) => sessionManager._ensureGroupSubjects({ ...opts, sessionId: id });
 
       const { version } = await fetchLatestBaileysVersion();
+      const baileysAuth = authRepository
+        ? { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, logger) }
+        : state;
       const sock = makeWASocket({
         version,
         logger: createBaileysLogger(logger),
         browser: Browsers.macOS('Desktop'),
-        auth: state,
+        auth: baileysAuth,
         markOnlineOnConnect: true,
         // Sorun 1 (senkron hizi): TAM gecmis senkronu KAPALI.
         //  - `syncFullHistory: false`: binlerce mesajlik sohbet gecmisini
@@ -1738,12 +1821,15 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
         getMessage: async (key) => lookupRawMessage(store, key),
       });
 
-      if (session.sock && session.sock !== sock) {
+      const replacedSocket = session.lifecycle.attach(generation, sock);
+      if (replacedSocket) {
         diagnostic('socket_owner_replaced', {
           session_ref: sessionRef(id),
           generation,
           previous_generation: generation - 1,
         });
+        try { replacedSocket.ev?.removeAllListeners(); } catch (err) { /* ignore */ }
+        try { replacedSocket.end(undefined); } catch (err) { /* ignore */ }
       }
       session.sock = sock;
 
@@ -1792,6 +1878,7 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
 
       // --- QR event ---
       sock.ev.on('creds.update', async () => {
+        if (!session.lifecycle.isCurrent(generation, sock)) return;
         session._diagnosticAuthUpdates = (session._diagnosticAuthUpdates || 0) + 1;
         try {
           await saveCreds();
@@ -1809,6 +1896,18 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
         const statusCode = lastDisconnect?.error?.output?.statusCode;
+        if (!session.lifecycle.isCurrent(generation, sock)) {
+          if (connection) {
+            diagnostic('stale_socket_transition_ignored', {
+              session_ref: sessionRef(id),
+              generation,
+              current_generation: session.lifecycle.generation,
+              connection,
+              status_code: statusCode ?? null,
+            });
+          }
+          return;
+        }
         if (connection) {
           diagnostic('socket_connection_transition', {
             session_ref: sessionRef(id),
@@ -1870,13 +1969,15 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
           session.is_phone_online = true;
           session.updated_at = new Date().toISOString();
           // Persist encrypted auth state
-          safeWriteEncrypted(path.join(sessionDir, 'auth.json'), { creds: state.creds, keys: state.keys }, aesKey);
-          diagnostic('legacy_auth_snapshot_written', {
-            session_ref: sessionRef(id),
-            generation,
-            auth_updates: session._diagnosticAuthUpdates || 0,
-            keys_value_type: typeof state.keys,
-          });
+          if (!authRepository) {
+            safeWriteEncrypted(path.join(sessionDir, 'auth.json'), { creds: state.creds, keys: state.keys }, aesKey);
+            diagnostic('legacy_auth_snapshot_written', {
+              session_ref: sessionRef(id),
+              generation,
+              auth_updates: session._diagnosticAuthUpdates || 0,
+              keys_value_type: typeof state.keys,
+            });
+          }
           emitEvent({ event: 'session_connected', session_id: id, session_name: session.session_name, phone: session.phone_number || null });
           // Faz 7: WhatsApp Web paritesi — bağlantı kuruldu, INITIAL SYNC
           // başlıyor. Frontend bu event'le "Sohbetleriniz yükleniyor…"
@@ -1907,36 +2008,6 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
               finalizeHistorySync('no_history_chunks_received');
             }, HISTORY_NO_CHUNK_FALLBACK_MS);
           }
-          // Faz 6e: Baileys'in doğal W:Contact senkronu yalnızca history-sync
-          // bildirimi 20 sn içinde gelirse çalışır; gelmezse rehber adları
-          // hiçbir bağlantıda ulaşmaz (WhatsApp Web'de görünen isimler burada
-          // hiç oluşmaz). Bağlantıdan sonra gecikmeli tam app-state senkronunu
-          // zorla tetikle — idempotent: sürüm > 0 ise sunucu yalnızca yeni
-          // yamaları döner, sürüm 0 ise snapshot'la tüm rehber gelir.
-          // Doğal senkron hâlâ sürüyorsa (event buffer aktif) dokunma — o
-          // yol kendi flush'ını kendisi yapar; 5 sn sonra tekrar dene.
-          const forceAppStateResync = (attempt) => {
-            if (session.status !== 'CONNECTED' || !sock) return;
-            if (attempt > 6) return;
-            if (sock.ev.isBuffering && sock.ev.isBuffering()) {
-              setTimeout(() => forceAppStateResync(attempt + 1), 5000);
-              return;
-            }
-            try {
-              Promise.resolve(sock.resyncAppState(ALL_WA_PATCH_NAMES, true))
-                .then(() => {
-                  // resyncAppState createBufferedFunction'dır: ürettiği
-                  // contacts.upsert/chats.update olayları buffer'da kalır ve
-                  // merkezi durum makinesi Online geçişini çoktan yaptığı için
-                  // kimse flush etmez — burada elle boşalt.
-                  try { sock.ev.flush(); } catch { /* zaten boşsa önemsiz */ }
-                })
-                .catch((err) => logger.warn({ err }, 'Forced app-state resync failed'));
-            } catch (err) {
-              logger.warn({ err }, 'Forced app-state resync threw');
-            }
-          };
-          setTimeout(() => forceAppStateResync(0), 8000);
         }
         if (connection === 'close') {
           // Faz 7: bağlantı koptu — sync lifecycle sıfırlanır (yeniden
@@ -1947,14 +2018,6 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
           }
           if (session.sync && session.sync.phase !== 'ready') {
             session.sync = { phase: 'idle' };
-          }
-          if (session.sock !== sock || session._diagnosticSocketGeneration !== generation) {
-            diagnostic('stale_socket_close_observed', {
-              session_ref: sessionRef(id),
-              generation,
-              current_generation: session._diagnosticSocketGeneration,
-              status_code: statusCode ?? null,
-            });
           }
           const isLoggedOut = statusCode === DisconnectReason.loggedOut;
           const isBanned = statusCode === DisconnectReason.badSession;
@@ -1969,14 +2032,13 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
             session.is_phone_online = false;
             session.updated_at = new Date().toISOString();
             logger.info({ id }, 'Baileys restartRequired (515) — soket hemen yeniden kuruluyor');
-            diagnostic('socket_reconnect_scheduled', {
-              session_ref: sessionRef(id),
-              generation,
-              reason: 'restart_required',
-              delay_ms: 500,
-              is_current_socket: session.sock === sock,
+            const scheduled = session.lifecycle.scheduleReconnect(
+              generation, sock, 500, () => this._startSocket(id),
+            );
+            if (scheduled) diagnostic('socket_reconnect_scheduled', {
+              session_ref: sessionRef(id), generation,
+              reason: 'restart_required', delay_ms: 500,
             });
-            setTimeout(() => this._connectSocket(id), 500);
             return;
           }
           if (isLoggedOut || isBanned) {
@@ -2023,16 +2085,16 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
             session.status = 'CONNECTING';
             session.is_phone_online = false;
             session.updated_at = new Date().toISOString();
-            diagnostic('socket_reconnect_scheduled', {
-              session_ref: sessionRef(id),
-              generation,
-              reason: 'transient_disconnect',
-              delay_ms: 5000,
-              status_code: statusCode ?? null,
-              failure_count: session._connFailures,
-              is_current_socket: session.sock === sock,
+            const delayMs = Math.min(30_000, 1_000 * (2 ** Math.min(session._connFailures - 1, 5)));
+            const jitterMs = Math.floor(Math.random() * Math.max(1, Math.floor(delayMs * 0.2)));
+            const scheduled = session.lifecycle.scheduleReconnect(
+              generation, sock, delayMs + jitterMs, () => this._startSocket(id),
+            );
+            if (scheduled) diagnostic('socket_reconnect_scheduled', {
+              session_ref: sessionRef(id), generation,
+              reason: 'transient_disconnect', delay_ms: delayMs + jitterMs,
+              status_code: statusCode ?? null, failure_count: session._connFailures,
             });
-            setTimeout(() => this._connectSocket(id), 5000);
           }
         }
       });

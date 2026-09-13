@@ -2,7 +2,7 @@
  * Tezlify WhatsApp Gateway — Baileys-based WhatsApp Web bridge.
  *
  * This service connects to WhatsApp Web via QR pairing (multi-device),
- * persists sessions locally, and exposes a REST + WebSocket API for the
+ * persists sessions in an encrypted PostgreSQL store, and exposes a REST + WebSocket API for the
  * FastAPI backend to consume. It forwards realtime events (messages,
  * contacts, chats, presence) to the backend via WebSocket.
  *
@@ -21,6 +21,7 @@ import { fileURLToPath } from 'url';
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
+import { createPostgresAuthRepository } from './auth/postgres-auth-repository.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -30,6 +31,9 @@ const BACKEND_WS_URL = process.env.BACKEND_WS_URL || 'ws://127.0.0.1:8000/ws/gat
 const SESSIONS_DIR = process.env.SESSIONS_DIR || path.join(__dirname, '..', 'sessions');
 const MEDIA_DIR = process.env.MEDIA_DIR || path.join(__dirname, '..', 'media');
 const ENCRYPTION_KEY = process.env.GATEWAY_ENCRYPTION_KEY;
+const DATABASE_URL = (process.env.GATEWAY_DATABASE_URL || process.env.DATABASE_URL || '')
+  .replace('postgresql+asyncpg://', 'postgresql://');
+const REQUIRE_DURABLE_AUTH = String(process.env.REQUIRE_DURABLE_AUTH || 'false').toLowerCase() === 'true';
 
 if (!ENCRYPTION_KEY || ENCRYPTION_KEY.length < 32) {
   throw new Error('GATEWAY_ENCRYPTION_KEY must be set to a secret of at least 32 characters.');
@@ -41,6 +45,29 @@ fs.mkdirSync(MEDIA_DIR, { recursive: true });
 
 // Derive a 32-byte AES key from the configured passphrase
 const aesKey = crypto.createHash('sha256').update(ENCRYPTION_KEY).digest();
+
+let authRepository = null;
+if (DATABASE_URL) {
+  authRepository = createPostgresAuthRepository({
+    connectionString: DATABASE_URL,
+    encryptionKey: aesKey,
+    poolMax: Math.max(1, Math.min(5, parseInt(process.env.GATEWAY_DATABASE_POOL_MAX || '2', 10))),
+  });
+  let lastError = null;
+  for (let attempt = 1; attempt <= 30; attempt += 1) {
+    try {
+      await authRepository.assertReady();
+      lastError = null;
+      break;
+    } catch (error) {
+      lastError = error;
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+  }
+  if (lastError) throw new Error('Durable WhatsApp auth store is unavailable.', { cause: lastError });
+} else if (REQUIRE_DURABLE_AUTH) {
+  throw new Error('Durable WhatsApp auth is required but GATEWAY_DATABASE_URL is not configured.');
+}
 
 const app = express();
 app.use(express.json({ limit: '10mb' }));
@@ -56,6 +83,11 @@ const sessionManager = createSessionManager({
   mediaDir: MEDIA_DIR,
   aesKey,
   backendWsUrl: BACKEND_WS_URL,
+  authRepository,
+});
+
+await sessionManager.restoreSessions({
+  concurrency: Math.max(1, Math.min(5, parseInt(process.env.GATEWAY_RESTORE_CONCURRENCY || '2', 10))),
 });
 
 // ---------------------------------------------------------------------------
@@ -296,3 +328,15 @@ server.listen(PORT, HOST, () => {
   console.log(`[gateway] Sessions dir: ${SESSIONS_DIR}`);
   console.log(`[gateway] Media dir: ${MEDIA_DIR}`);
 });
+
+async function shutdown(signal) {
+  console.log(`[gateway] ${signal} received; shutting down.`);
+  eventBridge.close();
+  await sessionManager.shutdown();
+  await new Promise((resolve) => server.close(resolve));
+  if (authRepository) await authRepository.close();
+  process.exit(0);
+}
+
+process.once('SIGTERM', () => { void shutdown('SIGTERM'); });
+process.once('SIGINT', () => { void shutdown('SIGINT'); });

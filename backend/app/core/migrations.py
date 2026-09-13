@@ -603,6 +603,111 @@ async def ensure_whatsapp_sessions_table(engine: AsyncEngine) -> None:
     logger.info("[MIGRATION] ensure_whatsapp_sessions_table verified")
 
 
+async def ensure_whatsapp_gateway_private_schema(engine: AsyncEngine) -> None:
+    """Create the durable gateway store used when Render has no persistent disk.
+
+    The schema is intentionally outside the frontend-facing API schema. Payloads
+    remain application-encrypted; database access alone does not reveal Baileys
+    credentials, Signal keys, retry messages, or event bodies.
+    """
+    if engine.dialect.name != "postgresql":
+        return
+
+    statements = [
+        "CREATE SCHEMA IF NOT EXISTS whatsapp_private",
+        "REVOKE ALL ON SCHEMA whatsapp_private FROM PUBLIC",
+        """
+        CREATE TABLE IF NOT EXISTS whatsapp_private.gateway_sessions (
+            session_id TEXT PRIMARY KEY,
+            session_name VARCHAR(150) NOT NULL,
+            is_active BOOLEAN NOT NULL DEFAULT TRUE,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS whatsapp_private.session_credentials (
+            session_id TEXT PRIMARY KEY REFERENCES whatsapp_private.gateway_sessions(session_id) ON DELETE CASCADE,
+            ciphertext BYTEA NOT NULL,
+            nonce BYTEA NOT NULL CHECK (octet_length(nonce) = 12),
+            auth_tag BYTEA NOT NULL CHECK (octet_length(auth_tag) = 16),
+            key_version SMALLINT NOT NULL CHECK (key_version > 0),
+            version BIGINT NOT NULL DEFAULT 1 CHECK (version > 0),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS whatsapp_private.signal_keys (
+            session_id TEXT NOT NULL REFERENCES whatsapp_private.gateway_sessions(session_id) ON DELETE CASCADE,
+            key_type VARCHAR(80) NOT NULL,
+            key_hash CHAR(64) NOT NULL,
+            ciphertext BYTEA NOT NULL,
+            nonce BYTEA NOT NULL CHECK (octet_length(nonce) = 12),
+            auth_tag BYTEA NOT NULL CHECK (octet_length(auth_tag) = 16),
+            key_version SMALLINT NOT NULL CHECK (key_version > 0),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            PRIMARY KEY (session_id, key_type, key_hash)
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS whatsapp_private.socket_leases (
+            session_id TEXT PRIMARY KEY REFERENCES whatsapp_private.gateway_sessions(session_id) ON DELETE CASCADE,
+            instance_id TEXT NOT NULL,
+            generation BIGINT NOT NULL CHECK (generation > 0),
+            expires_at TIMESTAMPTZ NOT NULL,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS whatsapp_private.event_outbox (
+            sequence BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+            event_id UUID NOT NULL UNIQUE,
+            session_id TEXT NOT NULL REFERENCES whatsapp_private.gateway_sessions(session_id) ON DELETE CASCADE,
+            event_type VARCHAR(100) NOT NULL,
+            ciphertext BYTEA NOT NULL,
+            nonce BYTEA NOT NULL CHECK (octet_length(nonce) = 12),
+            auth_tag BYTEA NOT NULL CHECK (octet_length(auth_tag) = 16),
+            key_version SMALLINT NOT NULL CHECK (key_version > 0),
+            state VARCHAR(20) NOT NULL DEFAULT 'PENDING' CHECK (state IN ('PENDING', 'IN_FLIGHT', 'DELIVERED', 'DEAD_LETTER')),
+            attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+            next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            delivered_at TIMESTAMPTZ
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS ix_wa_outbox_pending
+        ON whatsapp_private.event_outbox (next_attempt_at, sequence)
+        WHERE state IN ('PENDING', 'IN_FLIGHT')
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS whatsapp_private.retry_messages (
+            session_id TEXT NOT NULL REFERENCES whatsapp_private.gateway_sessions(session_id) ON DELETE CASCADE,
+            message_hash CHAR(64) NOT NULL,
+            ciphertext BYTEA NOT NULL,
+            nonce BYTEA NOT NULL CHECK (octet_length(nonce) = 12),
+            auth_tag BYTEA NOT NULL CHECK (octet_length(auth_tag) = 16),
+            key_version SMALLINT NOT NULL CHECK (key_version > 0),
+            byte_size INTEGER NOT NULL CHECK (byte_size >= 0),
+            expires_at TIMESTAMPTZ NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            PRIMARY KEY (session_id, message_hash)
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS ix_wa_retry_expiry
+        ON whatsapp_private.retry_messages (expires_at)
+        """,
+        "REVOKE ALL ON ALL TABLES IN SCHEMA whatsapp_private FROM PUBLIC",
+        "ALTER DEFAULT PRIVILEGES IN SCHEMA whatsapp_private REVOKE ALL ON TABLES FROM PUBLIC",
+    ]
+    async with engine.begin() as conn:
+        await conn.execute(text("SET LOCAL lock_timeout = '5s'"))
+        for statement in statements:
+            await conn.execute(text(statement))
+    logger.info("[MIGRATION] whatsapp_private durable gateway schema verified")
+
+
 async def ensure_messages_wa_message_id(engine: AsyncEngine) -> None:
     """messages.wa_message_id kolonunu (varsa) güvence altına alır.
 

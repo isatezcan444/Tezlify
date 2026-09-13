@@ -26,6 +26,7 @@ from backend.app.core.migrations import (
     ensure_message_status_enum,
     ensure_user_id_columns,
     ensure_whatsapp_sessions_table,
+    ensure_whatsapp_gateway_private_schema,
     ensure_messages_wa_message_id,
     purge_raw_jid_identity_data,
     purge_degenerate_phone_contacts,
@@ -91,6 +92,7 @@ async def lifespan(app: FastAPI):
     await ensure_message_status_enum(engine)
     await ensure_user_id_columns(engine)
     await ensure_whatsapp_sessions_table(engine)
+    await ensure_whatsapp_gateway_private_schema(engine)
     await ensure_messages_wa_message_id(engine)
     await purge_raw_jid_identity_data(engine)
     await purge_degenerate_phone_contacts(engine)
