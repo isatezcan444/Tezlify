@@ -14,7 +14,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Dict, FrozenSet, List, Optional, Set, Tuple
 
-from sqlalchemy import select, func, or_, delete
+from sqlalchemy import select, func, or_, delete, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -2748,7 +2748,24 @@ async def ingest_gateway_event(event: Dict[str, Any]) -> Optional[Dict[str, Any]
     """
     async with AsyncSessionLocal() as db:
         evt = event.get("event") or event.get("event_type") or ""
+        event_id: Optional[str] = None
+        if event.get("event_id"):
+            try:
+                event_id = str(uuid.UUID(str(event["event_id"])))
+            except (TypeError, ValueError):
+                logger.warning("Gateway olayi gecersiz event_id ile reddedildi (event=%s)", evt)
+                return None
         try:
+            if event_id and db.bind is not None and db.bind.dialect.name == "postgresql":
+                duplicate = await db.execute(
+                    text(
+                        "SELECT 1 FROM whatsapp_private.processed_events "
+                        "WHERE event_id = :event_id"
+                    ),
+                    {"event_id": event_id},
+                )
+                if duplicate.first() is not None:
+                    return {"_duplicate": True, "event_id": event_id}
             if evt == "message_new":
                 result = await _ingest_message(db, event)
             elif evt in ("conversation_updated", "conversation_read", "message_status_updated", "presence_updated"):
@@ -2782,6 +2799,14 @@ async def ingest_gateway_event(event: Dict[str, Any]) -> Optional[Dict[str, Any]
                 )
                 return None
 
+            if event_id and db.bind is not None and db.bind.dialect.name == "postgresql":
+                await db.execute(
+                    text(
+                        "INSERT INTO whatsapp_private.processed_events (event_id) "
+                        "VALUES (:event_id) ON CONFLICT (event_id) DO NOTHING"
+                    ),
+                    {"event_id": event_id},
+                )
             await db.commit()
             # Faz 8 (§16, RC-5): initial sync TAMAMLANDIĞINDA backend DB'si de
             # ayni paylasilmis hattan (sync_conversations) hydrate edilir —

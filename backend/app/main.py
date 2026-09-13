@@ -227,7 +227,10 @@ async def gateway_websocket_endpoint(
 
     await websocket.accept()
     logger.info("[WS-GATEWAY] Baileys gateway bağlandı.")
-    counters = {"received": 0, "broadcast": 0, "skipped": 0, "failed": 0}
+    counters = {
+        "received": 0, "broadcast": 0, "skipped": 0,
+        "failed": 0, "acked": 0, "nacked": 0,
+    }
     try:
         while True:
             raw = await websocket.receive_text()
@@ -253,17 +256,43 @@ async def gateway_websocket_endpoint(
                 # Sahibi KESIN cozulemeyen ya da bilinmeyen olay: genis yayin
                 # yapmak yerine atlanir (cok kiracili izolasyon, fail-closed).
                 counters["skipped"] += 1
+                event_id = event_data.get("event_id")
+                if event_id:
+                    await websocket.send_json({
+                        "type": "gateway_event_nack",
+                        "event_id": str(event_id),
+                        "permanent": False,
+                    })
+                    counters["nacked"] += 1
+                continue
+            if persisted.get("_duplicate") is True:
+                event_id = event_data.get("event_id")
+                if event_id:
+                    await websocket.send_json({
+                        "type": "gateway_event_ack",
+                        "event_id": str(event_id),
+                    })
+                    counters["acked"] += 1
                 continue
             await ws_manager.broadcast(persisted)
             counters["broadcast"] += 1
+            event_id = event_data.get("event_id")
+            if event_id:
+                await websocket.send_json({
+                    "type": "gateway_event_ack",
+                    "event_id": str(event_id),
+                })
+                counters["acked"] += 1
     except WebSocketDisconnect:
         pass
     except Exception as e:
         logger.warning(f"[WS-GATEWAY] Bağlantı hatası: {e}")
     finally:
         logger.info(
-            "[WS-GATEWAY] Bağlantı kapandı (received=%d broadcast=%d skipped=%d failed=%d).",
-            counters["received"], counters["broadcast"], counters["skipped"], counters["failed"],
+            "[WS-GATEWAY] Bağlantı kapandı "
+            "(received=%d broadcast=%d skipped=%d failed=%d acked=%d nacked=%d).",
+            counters["received"], counters["broadcast"], counters["skipped"],
+            counters["failed"], counters["acked"], counters["nacked"],
         )
 # Include API Router
 app.include_router(api_router, prefix=settings.API_V1_STR)

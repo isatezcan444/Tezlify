@@ -22,6 +22,7 @@ import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
 import { createPostgresAuthRepository } from './auth/postgres-auth-repository.js';
+import { createPostgresEventOutbox } from './outbox/postgres-event-outbox.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -47,6 +48,7 @@ fs.mkdirSync(MEDIA_DIR, { recursive: true });
 const aesKey = crypto.createHash('sha256').update(ENCRYPTION_KEY).digest();
 
 let authRepository = null;
+let eventOutbox = null;
 if (DATABASE_URL) {
   authRepository = createPostgresAuthRepository({
     connectionString: DATABASE_URL,
@@ -65,6 +67,11 @@ if (DATABASE_URL) {
     }
   }
   if (lastError) throw new Error('Durable WhatsApp auth store is unavailable.', { cause: lastError });
+  eventOutbox = createPostgresEventOutbox({
+    connectionString: DATABASE_URL,
+    encryptionKey: aesKey,
+    poolMax: 1,
+  });
 } else if (REQUIRE_DURABLE_AUTH) {
   throw new Error('Durable WhatsApp auth is required but GATEWAY_DATABASE_URL is not configured.');
 }
@@ -96,6 +103,7 @@ await sessionManager.restoreSessions({
 const eventBridge = createEventBridge({
   backendWsUrl: BACKEND_WS_URL,
   sessionManager,
+  eventOutbox,
 });
 
 // ---------------------------------------------------------------------------
@@ -334,6 +342,7 @@ async function shutdown(signal) {
   eventBridge.close();
   await sessionManager.shutdown();
   await new Promise((resolve) => server.close(resolve));
+  if (eventOutbox) await eventOutbox.close();
   if (authRepository) await authRepository.close();
   process.exit(0);
 }

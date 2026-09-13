@@ -698,6 +698,16 @@ async def ensure_whatsapp_gateway_private_schema(engine: AsyncEngine) -> None:
         CREATE INDEX IF NOT EXISTS ix_wa_retry_expiry
         ON whatsapp_private.retry_messages (expires_at)
         """,
+        """
+        CREATE TABLE IF NOT EXISTS whatsapp_private.processed_events (
+            event_id UUID PRIMARY KEY,
+            processed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS ix_wa_processed_event_expiry
+        ON whatsapp_private.processed_events (processed_at)
+        """,
         "REVOKE ALL ON ALL TABLES IN SCHEMA whatsapp_private FROM PUBLIC",
         "ALTER DEFAULT PRIVILEGES IN SCHEMA whatsapp_private REVOKE ALL ON TABLES FROM PUBLIC",
     ]

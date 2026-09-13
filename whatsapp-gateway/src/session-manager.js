@@ -847,8 +847,11 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
         try { clearTimeout(session._historyQuietTimer); } catch (err) { /* ignore */ }
         session._historyQuietTimer = null;
       }
+      if (authRepository) {
+        await authRepository.clearAuth(id);
+        await authRepository.setSessionActive(id, false);
+      }
       sessions.delete(id);
-      if (authRepository) await authRepository.deleteSession(id);
       // Oturumun bellek deposu ve indirilmiş medyası da bırakılır.
       if (session) session.store = null;
       for (const [mediaId, entry] of mediaIndex) {
@@ -859,7 +862,6 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       }
       const dir = getSessionDir(sessionsDir, id);
       if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
-      emitEvent({ event: 'session_deleted', session_id: id });
     },
 
     // -----------------------------------------------------------------------

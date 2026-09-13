@@ -1,194 +1,227 @@
-/**
- * Event Bridge - forwards gateway events to the FastAPI backend via WebSocket.
- *
- * The backend subscribes to realtime WhatsApp events (messages, contacts,
- * chats, presence, session lifecycle) by connecting to the gateway WS at
- * `/ws`. The bridge also buffers events while the backend is disconnected
- * and replays them on reconnect so nothing is lost during deploys.
- */
+/** Durable gateway-to-backend event relay with ACK/replay semantics. */
 import WebSocket from 'ws';
 import { diagnostic } from './observability.js';
 
-export function createEventBridge({ backendWsUrl, sessionManager }) {
-  const clients = new Set(); // local WS clients (e.g. backend)
-  const buffer = []; // events queued while backend is disconnected
-  const MAX_BUFFER = 500;
-  let droppedEvents = 0;
+export function createEventBridge({ backendWsUrl, sessionManager, eventOutbox = null }) {
+  const clients = new Set();
+  const fallbackBuffer = [];
+  const fallbackCapacity = 500;
+  let fallbackDropped = 0;
+  let backendSocket = null;
+  let reconnectTimer = null;
+  let retryTimer = null;
+  let cleanupTimer = null;
+  let manuallyClosed = false;
+  let connectAttempt = 0;
+  let pumpRunning = false;
 
-  // When the backend protects /ws/gateway with WHATSAPP_GATEWAY_SECRET,
-  // the gateway must present the same secret via ?token= (fail-closed auth).
   const bridgeSecret = process.env.WHATSAPP_GATEWAY_SECRET || '';
-  const authedBackendWsUrl = bridgeSecret
+  const targetUrl = bridgeSecret
     ? `${backendWsUrl}${backendWsUrl.includes('?') ? '&' : '?'}token=${encodeURIComponent(bridgeSecret)}`
     : backendWsUrl;
 
-  let backendSocket = null;
-  let reconnectTimer = null;
-  let pingTimer = null;
-  let isManuallyClosed = false;
-  // Sorun (Render log): backend yeniden baslarken (redeploy / hibernate) köprü
-  // sabit 3 sn'de bir yeniden baglanmayi deniyordu ve HER denemede
-  // "connect ECONNREFUSED" WARNING'i yaziyordu — tek bir restart 10-20 satir
-  // log uretiyordu. Artik ustel geri cekilme (3s -> 30s cap) + tekrar eden
-  // hatalarda log seyreltme uygulanir. Baglanma davranisi degismez.
-  let connectAttempt = 0;
-
-  const RECONNECT_BASE_MS = 3000;
-  const RECONNECT_MAX_MS = 30000;
+  function isOpen() {
+    return backendSocket?.readyState === WebSocket.OPEN;
+  }
 
   function nextBackoffMs() {
-    const exp = Math.min(RECONNECT_BASE_MS * 2 ** Math.max(0, connectAttempt - 1), RECONNECT_MAX_MS);
-    // %20 jitter — es zamanli yeniden baglanma dalgasini onler.
-    return Math.round(exp * (0.8 + Math.random() * 0.4));
+    const base = Math.min(3000 * 2 ** Math.max(0, connectAttempt - 1), 30000);
+    return Math.round(base * (0.8 + Math.random() * 0.4));
   }
 
   function scheduleReconnect() {
-    if (isManuallyClosed) return;
-    if (reconnectTimer) clearTimeout(reconnectTimer);
-    reconnectTimer = setTimeout(connectToBackend, nextBackoffMs());
+    if (manuallyClosed || reconnectTimer) return;
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      connectToBackend();
+    }, nextBackoffMs());
+  }
+
+  function sendLocal(event) {
+    const payload = JSON.stringify(event);
+    for (const client of clients) {
+      if (client.readyState === WebSocket.OPEN) client.send(payload);
+    }
+  }
+
+  async function pumpOutbox() {
+    if (!eventOutbox || !isOpen() || pumpRunning) return;
+    pumpRunning = true;
+    try {
+      const batch = await eventOutbox.claimPending(50);
+      for (const item of batch) {
+        if (!isOpen()) break;
+        backendSocket.send(JSON.stringify(item.event));
+      }
+      if (batch.length > 0) {
+        diagnostic('event_outbox_batch_sent', {
+          count: batch.length,
+          first_sequence: batch[0].sequence,
+          last_sequence: batch[batch.length - 1].sequence,
+        });
+      }
+    } catch (error) {
+      diagnostic('event_outbox_pump_failed', {
+        error_name: error?.name || 'Error',
+        error_code: error?.code || null,
+      });
+    } finally {
+      pumpRunning = false;
+    }
+  }
+
+  async function cleanupOutbox() {
+    try {
+      await eventOutbox.cleanup();
+    } catch (error) {
+      diagnostic('event_outbox_cleanup_failed', {
+        error_name: error?.name || 'Error', error_code: error?.code || null,
+      });
+    }
+  }
+
+  function flushFallbackBuffer() {
+    const queued = fallbackBuffer.length;
+    let replayed = 0;
+    let discarded = 0;
+    while (fallbackBuffer.length > 0 && isOpen()) {
+      const event = fallbackBuffer.shift();
+      const sessionId = event?.gateway_session_id;
+      if (sessionId && !sessionManager.getSession(sessionId)) {
+        discarded += 1;
+        continue;
+      }
+      backendSocket.send(JSON.stringify(event));
+      replayed += 1;
+    }
+    diagnostic('event_bridge_flush', {
+      queued,
+      replayed,
+      discarded_deleted_session: discarded,
+      dropped_while_disconnected: fallbackDropped,
+    });
+    fallbackDropped = 0;
   }
 
   function connectToBackend() {
-    if (isManuallyClosed || backendSocket) return;
+    if (manuallyClosed || backendSocket) return;
     try {
-      const ws = new WebSocket(authedBackendWsUrl);
-      backendSocket = ws;
+      const socket = new WebSocket(targetUrl);
+      backendSocket = socket;
 
-      ws.on('open', () => {
-        console.log('[bridge] Connected to backend WebSocket');
-        connectAttempt = 0; // basarili baglanti sayaci sifirlar
-        if (pingTimer) clearInterval(pingTimer);
-        pingTimer = setInterval(() => {
-          if (backendSocket?.readyState === WebSocket.OPEN) {
-            backendSocket.ping();
-          }
-        }, 25000);
-
-        // Replay buffered events on reconnect (FIFO). Silinen oturumun
-        // bayat olaylari replay'e girmeden dusurulur — aksi halde backend
-        // her reconnect'te yuzlerce sahipsiz olayla sel olur (Render log).
-        const queuedBeforeFlush = buffer.length;
-        let replayed = 0;
-        let discardedForDeletedSession = 0;
-        while (buffer.length > 0) {
-          const evt = buffer.shift();
-          const gwSid = evt && evt.gateway_session_id;
-          if (gwSid && typeof sessionManager.getSession === 'function' && !sessionManager.getSession(gwSid)) {
-            discardedForDeletedSession += 1;
-            continue;
-          }
-          if (backendSocket?.readyState === WebSocket.OPEN) {
-            backendSocket.send(JSON.stringify(evt));
-            replayed += 1;
-          }
+      socket.on('open', () => {
+        connectAttempt = 0;
+        if (eventOutbox) {
+          void eventOutbox.requeueInflight().then(pumpOutbox).catch((error) => {
+            diagnostic('event_outbox_requeue_failed', {
+              error_name: error?.name || 'Error', error_code: error?.code || null,
+            });
+          });
+        } else {
+          flushFallbackBuffer();
         }
-        diagnostic('event_bridge_flush', {
-          queued: queuedBeforeFlush,
-          replayed,
-          discarded_deleted_session: discardedForDeletedSession,
-          dropped_while_disconnected: droppedEvents,
-        });
-        droppedEvents = 0;
       });
 
-      ws.on('close', () => {
-        if (pingTimer) {
-          clearInterval(pingTimer);
-          pingTimer = null;
+      socket.on('message', (raw) => {
+        if (!eventOutbox) return;
+        try {
+          const message = JSON.parse(String(raw));
+          if (message?.type === 'gateway_event_ack' && message.event_id) {
+            void eventOutbox.acknowledge(message.event_id).then(pumpOutbox);
+          } else if (message?.type === 'gateway_event_nack' && message.event_id) {
+            void eventOutbox.reject(message.event_id, { permanent: message.permanent === true })
+              .then(pumpOutbox);
+          }
+        } catch (error) {
+          diagnostic('event_bridge_invalid_ack', { error_name: error?.name || 'Error' });
         }
-        backendSocket = null;
+      });
+
+      socket.on('close', () => {
+        if (backendSocket === socket) backendSocket = null;
         scheduleReconnect();
       });
 
-      ws.on('error', (err) => {
-        if (pingTimer) {
-          clearInterval(pingTimer);
-          pingTimer = null;
-        }
+      socket.on('error', (error) => {
         connectAttempt += 1;
-        const isStartupRefused = (err.code === 'ECONNREFUSED' || err.message?.includes('ECONNREFUSED')) && connectAttempt <= 15;
-        if (isStartupRefused) {
-          if (connectAttempt === 1 || connectAttempt % 5 === 0) {
-            console.log(`[bridge] Backend baslatiliyor, baglanti bekleniyor (deneme=${connectAttempt})...`);
-          }
-        } else if (connectAttempt === 1 || connectAttempt % 10 === 0) {
-          console.warn(
-            `[bridge] Backend WS error (deneme=${connectAttempt}): ${err.message}`
-          );
+        if (connectAttempt === 1 || connectAttempt % 10 === 0) {
+          diagnostic('event_bridge_connection_failed', {
+            attempt: connectAttempt,
+            error_code: error?.code || null,
+          });
         }
-        ws.close();
+        socket.close();
       });
-    } catch (err) {
-      if (pingTimer) {
-        clearInterval(pingTimer);
-        pingTimer = null;
-      }
+    } catch (error) {
       connectAttempt += 1;
-      const isStartupRefused = (err.code === 'ECONNREFUSED' || err.message?.includes('ECONNREFUSED')) && connectAttempt <= 15;
-      if (isStartupRefused) {
-        if (connectAttempt === 1 || connectAttempt % 5 === 0) {
-          console.log(`[bridge] Backend baslatiliyor, baglanti bekleniyor (deneme=${connectAttempt})...`);
-        }
-      } else {
-        console.warn(`[bridge] Backend WS connect failed (deneme=${connectAttempt}): ${err.message}`);
-      }
+      diagnostic('event_bridge_connection_failed', {
+        attempt: connectAttempt,
+        error_code: error?.code || null,
+      });
+      backendSocket = null;
       scheduleReconnect();
     }
   }
 
-  function broadcast(event) {
-    const gwSid = event && (event.gateway_session_id || event.session_id);
-    if (gwSid && typeof sessionManager.getSession === 'function' && !sessionManager.getSession(gwSid) && !String(event.event || '').startsWith('session_deleted')) {
+  async function publish(event) {
+    const sessionId = event?.gateway_session_id || event?.session_id;
+    const isDelete = String(event?.event || '').startsWith('session_deleted');
+    if (sessionId && !sessionManager.getSession(String(sessionId)) && !isDelete) return;
+
+    if (eventOutbox) {
+      try {
+        const durableEvent = await eventOutbox.enqueue(event);
+        sendLocal(durableEvent);
+        await pumpOutbox();
+      } catch (error) {
+        diagnostic('event_outbox_enqueue_failed', {
+          event_type: String(event?.event || event?.event_type || 'unknown'),
+          error_name: error?.name || 'Error',
+          error_code: error?.code || null,
+        });
+      }
       return;
     }
-    const payload = JSON.stringify(event);
-    // 1. Local WS clients (backend may also attach here)
-    for (const client of clients) {
-      if (client.readyState === WebSocket.OPEN) {
-        client.send(payload);
-      }
-    }
-    // 2. Outbound socket to backend
-    if (backendSocket?.readyState === WebSocket.OPEN) {
-      backendSocket.send(payload);
+
+    sendLocal(event);
+    if (isOpen()) {
+      backendSocket.send(JSON.stringify(event));
+    } else if (fallbackBuffer.length < fallbackCapacity) {
+      fallbackBuffer.push(event);
     } else {
-      if (buffer.length < MAX_BUFFER) {
-        buffer.push(event);
-      } else {
-        droppedEvents += 1;
-        if (droppedEvents === 1 || droppedEvents % 100 === 0) {
-          diagnostic('event_bridge_buffer_overflow', {
-            capacity: MAX_BUFFER,
-            dropped_since_disconnect: droppedEvents,
-            event_type: String(event?.event || 'unknown'),
-          });
-        }
+      fallbackDropped += 1;
+      if (fallbackDropped === 1 || fallbackDropped % 100 === 0) {
+        diagnostic('event_bridge_buffer_overflow', {
+          capacity: fallbackCapacity,
+          dropped_since_disconnect: fallbackDropped,
+          event_type: String(event?.event || 'unknown'),
+        });
       }
     }
   }
 
-  // Subscribe to all session manager events
-  const unsubscribe = sessionManager.onEvent((event) => {
-    broadcast(event);
-  });
-
-  // Start outbound connection to backend
+  const unsubscribe = sessionManager.onEvent((event) => { void publish(event); });
   connectToBackend();
+  if (eventOutbox) {
+    retryTimer = setInterval(() => { void pumpOutbox(); }, 10_000);
+    void cleanupOutbox();
+    cleanupTimer = setInterval(() => { void cleanupOutbox(); }, 60 * 60 * 1000);
+  }
 
   return {
-    attachClient(ws) {
-      clients.add(ws);
-      ws.send(JSON.stringify({
+    attachClient(socket) {
+      clients.add(socket);
+      socket.send(JSON.stringify({
         event: 'gateway_connected',
         sessions_count: sessionManager.listSessions().length,
       }));
     },
-    detachClient(ws) {
-      clients.delete(ws);
-    },
+    detachClient(socket) { clients.delete(socket); },
+    async cleanup() { return eventOutbox ? eventOutbox.cleanup() : 0; },
     close() {
-      isManuallyClosed = true;
-      if (pingTimer) clearInterval(pingTimer);
+      manuallyClosed = true;
+      if (retryTimer) clearInterval(retryTimer);
+      if (cleanupTimer) clearInterval(cleanupTimer);
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (backendSocket) backendSocket.close();
       unsubscribe();
