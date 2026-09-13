@@ -30,6 +30,10 @@ from backend.app.services import whatsapp_gateway as gw
 logger = logging.getLogger(__name__)
 
 
+class WhatsAppRelinkRequired(RuntimeError):
+    """The logical line exists, but its durable WhatsApp auth cannot be restored."""
+
+
 # ---------------------------------------------------------------------------
 # Yardimcilar
 # ---------------------------------------------------------------------------
@@ -193,10 +197,13 @@ def _session_dict(row: WhatsAppSession) -> Dict[str, Any]:
 
 
 def _parse_status(value: Optional[str]) -> SessionStatus:
-    try:
-        return SessionStatus(value or "SCAN_QR")
-    except Exception:
+    if value is None:
         return SessionStatus.SCAN_QR
+    try:
+        return SessionStatus(value)
+    except Exception:
+        logger.error("Unknown WhatsApp session status received from gateway: %r", value)
+        return SessionStatus.ERROR
 
 
 def _parse_dt(value: Optional[str]) -> Optional[datetime]:
@@ -337,7 +344,7 @@ def _apply_gateway_live(row: WhatsAppSession, data: Dict[str, Any]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Yetim gateway oturumu -> yeniden kurma (self-healing)
+# Missing gateway oturumu -> explicit relink, stable identity
 #
 # Kok neden (canli probe ile kanitlandi): Render redeploy'da gateway'in
 # bellekteki `sessions` Map'i (ve ephemeral auth dizini) sifirlanir; backend
@@ -347,10 +354,10 @@ def _apply_gateway_live(row: WhatsAppSession, data: Dict[str, Any]) -> None:
 # backend 502 "WhatsApp gateway'e ulasilamadi" uretir. Bu, hem QR hem de
 # "Telefon No ile Baglan" akisini kirar.
 #
-# Cozum: gateway "Session not found" derse DB satiri icin gateway'de yeni bir
-# oturum olusturulur, satirin gateway_id/durumu tazelenir ve orijinal cagri
-# bir kez tekrar denenir. Fail-closed korunur: baska hicbir hata yutulmaz ve
-# asla sahte basari/sahte kod uretilmez (AGENTS.md Truthfulness).
+# A missing in-memory gateway session is not proof that the WhatsApp identity
+# disappeared. Creating a new UUID here used to hide lost auth behind a fresh
+# QR and severed the durable identity. Keep gateway_id stable and require an
+# explicit relink until the persistent gateway registry can restore it.
 # ---------------------------------------------------------------------------
 
 _GATEWAY_SESSION_MISSING = "session not found"
@@ -363,44 +370,30 @@ def _is_gateway_session_missing(exc: Exception) -> bool:
     return _GATEWAY_SESSION_MISSING in str(exc).lower()
 
 
-async def _recreate_gateway_session(db: AsyncSession, row: WhatsAppSession) -> Dict[str, Any]:
-    """Bayat `gateway_id` icin gateway'de yeni oturum kurar ve DB satirini
-    taze kimlik + SCAN_QR durumu ile gunceller. Gateway'e ulasilamazsa hata
-    aynen yukari firlar (sahte basari yok)."""
-    gw_session = await gw.create_session(row.session_name)
-    new_id = gw_session.get("id")
-    if not new_id:
-        raise gw.WhatsAppGatewayError("Gateway yeniden kurulan oturum kimligini dondurmedi.")
-    logger.warning(
-        "[WhatsApp] Yetim gateway oturumu yeniden kuruldu: DB id=%s gateway_id %s -> %s",
-        row.id, row.gateway_id, new_id,
-    )
-    row.gateway_id = str(new_id)
-    row.status = _parse_status(gw_session.get("status"))
-    row.qr_code = gw_session.get("qr_code")
-    row.error_message = None
-    row.is_active = True
-    row.updated_at = datetime.utcnow()
-    await db.commit()
-    await db.refresh(row)
-    return gw_session
-
-
-async def _gateway_op_or_recreate(
+async def _gateway_op_or_mark_relink(
     db: AsyncSession,
     row: WhatsAppSession,
     op: Callable[[str], Awaitable[Dict[str, Any]]],
 ) -> Dict[str, Any]:
-    """`op(gateway_id)` cagrisini calistirir; gateway 'Session not found' derse
-    (redeploy sonrasi bellek kaybi) oturumu yeniden kurup cagriyi BIR KEZ tekrar
-    dener. Baska hata -> aynen yukselir."""
+    """Run a gateway operation without ever replacing the logical line id."""
     try:
         return await op(row.gateway_id)
     except gw.WhatsAppGatewayError as exc:
         if not _is_gateway_session_missing(exc):
             raise
-        await _recreate_gateway_session(db, row)
-        return await op(row.gateway_id)
+        row.status = SessionStatus.RELINK_REQUIRED
+        row.is_phone_online = False
+        row.qr_code = None
+        row.error_message = "WHATSAPP_AUTH_RELINK_REQUIRED"
+        row.updated_at = datetime.utcnow()
+        await db.commit()
+        logger.warning(
+            "[WhatsApp] Durable session is not available in gateway (db_id=%s); relink required",
+            row.id,
+        )
+        raise WhatsAppRelinkRequired(
+            "WhatsApp bağlantısı geri yüklenemedi. Aynı hattı yeniden eşleştirin."
+        ) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -599,9 +592,7 @@ async def _get_session_or_404(db: AsyncSession, user_id: str, session_id: int) -
 
 async def get_session_qr(db: AsyncSession, user_id: str, session_id: int) -> Dict[str, Any]:
     row = await _get_session_or_404(db, user_id, session_id)
-    # Redeploy sonrasi yetim kalan gateway oturumu varsa self-heal ile yeniden
-    # kurulur (aksi halde QR/pairing akisi kalici olarak 502 verirdi).
-    data = await _gateway_op_or_recreate(db, row, gw.get_session_qr)
+    data = await _gateway_op_or_mark_relink(db, row, gw.get_session_qr)
     _apply_gateway_live(row, data)
     await db.commit()
     return {
@@ -614,7 +605,7 @@ async def get_session_qr(db: AsyncSession, user_id: str, session_id: int) -> Dic
 
 async def refresh_session_qr(db: AsyncSession, user_id: str, session_id: int) -> Dict[str, Any]:
     row = await _get_session_or_404(db, user_id, session_id)
-    data = await _gateway_op_or_recreate(db, row, gw.refresh_session_qr)
+    data = await _gateway_op_or_mark_relink(db, row, gw.refresh_session_qr)
     _apply_gateway_live(row, data)
     await db.commit()
     return {
@@ -631,9 +622,7 @@ async def request_pairing_code(db: AsyncSession, user_id: str, session_id: int, 
     sahte kod/sahte başarı döndürülmez (AGENTS.md Truthfulness).
     """
     row = await _get_session_or_404(db, user_id, session_id)
-    # "Session not found" (redeploy yetimi) self-heal ile yeniden kurulur;
-    # digeri hata aynen yukselir — sahte kod asla uretilmez (fail-closed).
-    data = await _gateway_op_or_recreate(
+    data = await _gateway_op_or_mark_relink(
         db, row, lambda gid: gw.request_pairing_code(gid, phone)
     )
     pairing_code = data.get("pairing_code")

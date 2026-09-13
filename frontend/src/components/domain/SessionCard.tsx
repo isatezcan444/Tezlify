@@ -30,6 +30,17 @@ export const SessionCard: React.FC<SessionCardProps> = ({
   className,
 }) => {
   const { t } = useI18n();
+  const statusLabels: Record<WhatsAppSession['status'], string> = {
+    CONNECTED: t('whatsapp.statusConnected'),
+    SCAN_QR: t('whatsapp.statusScanQr'),
+    RESTORING: t('whatsapp.statusRestoring'),
+    CONNECTING: t('whatsapp.statusConnecting'),
+    DISCONNECTED: t('whatsapp.statusDisconnected'),
+    RELINK_REQUIRED: t('whatsapp.statusRelinkRequired'),
+    UNAVAILABLE: t('whatsapp.statusUnavailable'),
+    ERROR: t('whatsapp.statusError'),
+    BANNED: t('whatsapp.statusBanned'),
+  };
   const quotaPercent = session.max_daily_limit > 0
     ? Math.round((session.daily_sent_count / session.max_daily_limit) * 100)
     : 0;
@@ -64,7 +75,7 @@ export const SessionCard: React.FC<SessionCardProps> = ({
           </div>
 
           <Badge variant={isConnected ? 'success' : 'outline'} className="text-[10px] uppercase font-mono font-bold">
-            {session.status}
+            {statusLabels[session.status]}
           </Badge>
         </div>
 
@@ -97,11 +108,11 @@ export const SessionCard: React.FC<SessionCardProps> = ({
             <span className="flex items-center gap-1.5">
               <span className={`w-2 h-2 rounded-full ${isConnected ? 'bg-[#28C76F] animate-pulse' : 'bg-slate-400'}`} />
               <span className={isConnected ? 'text-[#28C76F] font-bold' : 'text-slate-400 font-medium'}>
-                {isConnected ? (t('whatsapp.connectionActive') || 'Multi-Device Aktif') : (t('whatsapp.disconnected') || 'Bağlantı Yok')}
+                {isConnected ? t('whatsapp.connectionActive') : t('whatsapp.disconnected')}
               </span>
             </span>
             <span className="font-mono text-[10px] text-slate-400">
-              {isConnected ? (t('whatsapp.socketLive') || 'Canlı Soket') : (t('whatsapp.offline') || 'Çevrimdışı')}
+              {isConnected ? t('whatsapp.socketLive') : t('whatsapp.offline')}
             </span>
           </div>
         </div>

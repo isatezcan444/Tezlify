@@ -496,6 +496,9 @@ async def ensure_message_status_enum(engine: AsyncEngine) -> None:
         "messagetype": [e.value for e in MessageType],
     }
 
+    from backend.app.models.whatsapp_session import SessionStatus
+    targets["sessionstatus"] = [e.value for e in SessionStatus]
+
     try:
         async with engine.connect() as conn:
             for typname, wanted in targets.items():

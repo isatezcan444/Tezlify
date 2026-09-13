@@ -31,7 +31,7 @@ from backend.app.schemas.whatsapp import (
     WhatsAppTypingRequest,
 )
 from backend.app.services import whatsapp_service
-from backend.app.services.whatsapp_service import NoWhatsAppSession
+from backend.app.services.whatsapp_service import NoWhatsAppSession, WhatsAppRelinkRequired
 
 router = APIRouter()
 
@@ -65,6 +65,14 @@ def _bad_gateway(exc: Exception) -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_502_BAD_GATEWAY,
         detail="WhatsApp gateway'e ulaşılamadı. Lütfen gateway servisinin çalıştığını doğrulayın.",
+    )
+
+
+def _relink_required(exc: Exception) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail=str(exc),
+        headers={"X-WhatsApp-State": "RELINK_REQUIRED"},
     )
 
 
@@ -103,6 +111,8 @@ async def get_session_qr(
 ) -> WhatsAppQrResponse:
     try:
         return WhatsAppQrResponse(**await whatsapp_service.get_session_qr(db, current_user.id, session_id))
+    except WhatsAppRelinkRequired as exc:
+        raise _relink_required(exc) from exc
     except NoWhatsAppSession as exc:
         raise _no_session(exc) from exc
     except LookupError as exc:
@@ -121,6 +131,8 @@ async def refresh_session_qr(
 ) -> WhatsAppQrResponse:
     try:
         return WhatsAppQrResponse(**await whatsapp_service.refresh_session_qr(db, current_user.id, session_id))
+    except WhatsAppRelinkRequired as exc:
+        raise _relink_required(exc) from exc
     except NoWhatsAppSession as exc:
         raise _no_session(exc) from exc
     except LookupError as exc:
@@ -140,6 +152,8 @@ async def request_pairing_code(
 ) -> WhatsAppPairingCodeResponse:
     try:
         result = await whatsapp_service.request_pairing_code(db, current_user.id, session_id, payload.phone)
+    except WhatsAppRelinkRequired as exc:
+        raise _relink_required(exc) from exc
     except NoWhatsAppSession as exc:
         raise _no_session(exc) from exc
     except LookupError as exc:

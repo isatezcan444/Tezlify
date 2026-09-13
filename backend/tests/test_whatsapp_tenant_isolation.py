@@ -809,49 +809,58 @@ async def test_duplicate_contacts_are_merged_and_uniqueness_enforced():
     olayini komple dusuruyordu (GERCEK MESAJ KAYBI).
     """
     from sqlalchemy import text as _text
-    from backend.app.core.database import engine
+    from sqlalchemy.exc import IntegrityError as _IntegrityError
+    from sqlalchemy.ext.asyncio import create_async_engine
     from backend.app.core.migrations import ensure_contacts_unique_phone
-    from backend.app.models.message import (
-        Message, MessageDirection, MessageType, ConversationMessageStatus)
-    from backend.app.models.contact import Contact
 
     phone = "+905321009999"
-    async with AsyncSessionLocal() as db:
-        # UNIQUE kisiti gecici kaldir: kisit ONCESI uretilmis eski veriyi taklit et.
-        await db.execute(_text("DROP INDEX IF EXISTS uq_contact_user_phone"))
-        await db.commit()
-        for i in range(2):
-            c = Contact(user_id=U1, phone_e164=phone, display_name=f"dup{i}")
-            db.add(c)
-            await db.flush()
-            conv = Conversation(user_id=U1, contact_id=c.id, channel="WHATSAPP",
-                                status=ConversationStatus.ACTIVE)
-            db.add(conv)
-            await db.flush()
-            db.add(Message(
-                user_id=U1, conversation_id=conv.id,
-                direction=MessageDirection.INBOUND, message_type=MessageType.TEXT,
-                body=f"m{i}", sender_phone=phone, recipient_phone="ME",
-                status=ConversationMessageStatus.RECEIVED,
-                client_message_id=f"cmsg_dup_{_uuid.uuid4()}"))
-        await db.commit()
+    # Taze ORM semasi constraint'i tabloya gömer; sadece index'i düşürmek eski
+    # bozuk şemayı taklit etmez. İzole bir legacy şema kurarak migration'ın
+    # veri birleştirme davranışını gerçekten sınarız.
+    legacy_engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    try:
+        async with legacy_engine.begin() as conn:
+            await conn.execute(_text(
+                "CREATE TABLE contacts (id INTEGER PRIMARY KEY, user_id TEXT, "
+                "phone_e164 TEXT NOT NULL, display_name TEXT)"
+            ))
+            await conn.execute(_text(
+                "CREATE TABLE conversations (id INTEGER PRIMARY KEY, contact_id INTEGER, channel TEXT)"
+            ))
+            await conn.execute(_text(
+                "CREATE TABLE messages (id INTEGER PRIMARY KEY, conversation_id INTEGER, body TEXT)"
+            ))
+            await conn.execute(_text(
+                "INSERT INTO contacts (id, user_id, phone_e164, display_name) VALUES "
+                "(1, :u, :p, 'dup1'), (2, :u, :p, 'dup2')"
+            ), {"u": U1, "p": phone})
+            await conn.execute(_text(
+                "INSERT INTO conversations (id, contact_id, channel) VALUES "
+                "(11, 1, 'WHATSAPP'), (12, 2, 'WHATSAPP')"
+            ))
+            await conn.execute(_text(
+                "INSERT INTO messages (id, conversation_id, body) VALUES "
+                "(21, 11, 'm1'), (22, 12, 'm2')"
+            ))
 
-    await ensure_contacts_unique_phone(engine)
+        await ensure_contacts_unique_phone(legacy_engine)
 
-    async with AsyncSessionLocal() as db:
-        contacts = (await db.execute(select(Contact).where(
-            Contact.user_id == U1, Contact.phone_e164 == phone))).scalars().all()
-        assert len(contacts) == 1, "mukerrer kisiler tek satira birlestirilmeli"
-        convs = (await db.execute(select(Conversation).where(
-            Conversation.contact_id == contacts[0].id))).scalars().all()
-        assert len(convs) == 1, "ayni kisi+kanal icin tek sohbet kalmali"
-        msgs = (await db.execute(select(Message).where(
-            Message.conversation_id == convs[0].id))).scalars().all()
-        assert len(msgs) == 2, "birlestirmede MESAJ KAYBEDILMEZ"
+        async with legacy_engine.connect() as conn:
+            assert (await conn.execute(_text(
+                "SELECT COUNT(*) FROM contacts WHERE user_id=:u AND phone_e164=:p"
+            ), {"u": U1, "p": phone})).scalar_one() == 1
+            assert (await conn.execute(_text(
+                "SELECT COUNT(*) FROM conversations WHERE contact_id=1"
+            ))).scalar_one() == 1
+            assert (await conn.execute(_text(
+                "SELECT COUNT(*) FROM messages WHERE conversation_id=11"
+            ))).scalar_one() == 2
 
-    # Kisit artik yeni mukerrerleri reddeder.
-    from sqlalchemy.exc import IntegrityError as _IE
-    with pytest.raises(_IE):
-        async with AsyncSessionLocal() as db:
-            db.add(Contact(user_id=U1, phone_e164=phone, display_name="yeni-dup"))
-            await db.commit()
+        with pytest.raises(_IntegrityError):
+            async with legacy_engine.begin() as conn:
+                await conn.execute(_text(
+                    "INSERT INTO contacts (user_id, phone_e164, display_name) "
+                    "VALUES (:u, :p, 'new-dup')"
+                ), {"u": U1, "p": phone})
+    finally:
+        await legacy_engine.dispose()

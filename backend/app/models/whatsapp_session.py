@@ -6,9 +6,13 @@ from backend.app.core.database import Base
 
 class SessionStatus(str, enum.Enum):
     SCAN_QR = "SCAN_QR"
+    RESTORING = "RESTORING"
     CONNECTING = "CONNECTING"
     CONNECTED = "CONNECTED"
     DISCONNECTED = "DISCONNECTED"
+    RELINK_REQUIRED = "RELINK_REQUIRED"
+    UNAVAILABLE = "UNAVAILABLE"
+    ERROR = "ERROR"
     BANNED = "BANNED"
 
 

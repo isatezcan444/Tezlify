@@ -130,7 +130,16 @@ export interface GenerateMessageResponse {
 }
 
 
-export type SessionStatus = 'DISCONNECTED' | 'SCAN_QR' | 'CONNECTING' | 'CONNECTED' | 'BANNED';
+export type SessionStatus =
+  | 'DISCONNECTED'
+  | 'SCAN_QR'
+  | 'RESTORING'
+  | 'CONNECTING'
+  | 'CONNECTED'
+  | 'RELINK_REQUIRED'
+  | 'UNAVAILABLE'
+  | 'ERROR'
+  | 'BANNED';
 
 export interface SessionSyncState {
   // Faz 7: gateway'deki GERÇEK initial-sync durumu (Baileys history progress).

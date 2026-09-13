@@ -28,8 +28,8 @@ else:
             "lock_timeout": "5000",
         },
     }
-    engine_kwargs["pool_size"] = 10
-    engine_kwargs["max_overflow"] = 20
+    engine_kwargs["pool_size"] = settings.DATABASE_POOL_SIZE
+    engine_kwargs["max_overflow"] = settings.DATABASE_MAX_OVERFLOW
     engine_kwargs["pool_recycle"] = 300
     engine_kwargs["pool_pre_ping"] = True
 

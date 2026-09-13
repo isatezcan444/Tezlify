@@ -28,6 +28,18 @@ class Settings(BaseSettings):
         default="sqlite+aiosqlite:///./tezlify.db",
         description="Async SQLite or PostgreSQL connection string",
     )
+    DATABASE_POOL_SIZE: int = Field(
+        default=3,
+        ge=1,
+        le=10,
+        description="Small persistent pool; sized for Supabase Free by default.",
+    )
+    DATABASE_MAX_OVERFLOW: int = Field(
+        default=0,
+        ge=0,
+        le=10,
+        description="Bounded temporary database connections.",
+    )
 
     @field_validator("DATABASE_URL", mode="before")
     @classmethod
