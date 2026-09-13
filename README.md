@@ -17,7 +17,7 @@
 - ✨ **Spintax Studio & Dinamik Şablonlar**:
   - `{Merhaba|Selamlar|İyi günler} {name} Yetkilisi, {city} bölgesindeki {category} profilinizi gördüm...` formatında sınırsız varyasyon üretimi.
   - Anlık kombinasyon sayısı hesaplama ve canlı varyasyon önizlemesi.
-- 🖥️ **WhatsApp Hub (Ön Yüz)**: Canlı Konuşmalar, Aktif Numaralar, QR bağlantı modalı, Yeni Sohbet, sohbet listesi, mesaj balonları, arama/filtreler ve test kutusu — tümü tasarımı korunarak frontend-only veri katmanıyla çalışır.
+- 🖥️ **WhatsApp Hub (Ön Yüz)**: Canlı konuşmalar, bir kullanıcıya ait birden fazla WhatsApp hattı, QR/pairing modalı, sohbet listesi, mesaj ve medya akışı. Gateway/backend erişilemezse işlemler fail-closed olarak hata gösterir; mock başarı üretilmez.
 - 📊 **Canlı Dönüşüm Hunisi & Dashboard**: Taranan Lead -> WhatsApp Uyumlu -> İletişime Geçilen -> Yanıt Veren metrikleri ve WebSocket olay akışı.
 - 📥 **CSV ve Excel (.xlsx) Dışa Aktarma**: Filtrelenmiş lead veritabanını tek tıkla Excel/CSV formatında indirme.
 
@@ -41,7 +41,7 @@ Tezlify/
 │   ├── src/
 │   │   ├── components/      # Sidebar, TopHeader, UI Elements, WhatsApp domain components
 │   │   ├── pages/           # Dashboard, LeadFinder, LeadCRM, Campaigns, WhatsAppHub, Blacklist, Settings
-│   │   ├── data/whatsapp/   # Frontend-only WhatsApp veri katmanı (repository + mock)
+│   │   ├── data/whatsapp/   # Canlı gateway repository ve fail-closed istemci
 │   │   ├── api/client.ts    # REST API & WebSocket Client Wrapper
 │   │   └── types/           # TypeScript Types
 │   └── package.json
@@ -110,17 +110,19 @@ Kurulum (Render dashboard veya API):
 1. `tezlify` web servisine şu environment değişkenini ekleyin:
    - `GATEWAY_ENCRYPTION_KEY`: en az 32 karakterlik kalıcı bir gizli anahtar
      (üretilmiş bir değer girin; her dağıtımda aynı kalmalı).
-2. İsteğe bağlı: `WHATSAPP_GATEWAY_SECRET` belirleyin; gateway/backend WS
+2. `GATEWAY_DATABASE_URL`: Supabase PostgreSQL URI'si. `REQUIRE_DURABLE_AUTH=true`
+   ile birlikte zorunludur; auth ve Signal anahtarları burada şifreli saklanır.
+3. `WHATSAPP_GATEWAY_SECRET` belirleyin; gateway/backend WS
    köprüsü `?token=` ile fail-closed doğrulanır.
-3. Servisi yeniden dağıtın. Build loglarında `[entrypoint] Starting WhatsApp
+4. Servisi yeniden dağıtın. Build loglarında `[entrypoint] Starting WhatsApp
    gateway` ve backend loglarında `[WS-GATEWAY] Baileys gateway bağlandı.`
    satırlarını görmelisiniz. `GATEWAY_ENCRYPTION_KEY` yoksa backend yine
    başlar ve WhatsApp işlemleri açık hata ile fail-closed olur.
 
-> Not: Free plan'da dosya sistemi ephemeral'dır; yeniden dağıtımda QR oturumu
-> sıfırlanır ve yeniden tarama gerekir. Kalıcı oturum için gateway'i ayrı bir
-> persistent disk ile çalıştırmak ya da ücretli planda private service kurmak
-> gerekir.
+> Not: Render Free dosya sistemi ephemeral'dır ve servis uykuya geçebilir. Auth
+> Supabase PostgreSQL'de tutulduğu için yeniden dağıtım/uyanma sonrası oturum
+> otomatik geri yüklenir. Free plan uyku süresince canlı WebSocket teslimatı
+> beklemeye alınır; 7/24 canlı bağlantı için sürekli çalışan servis gerekir.
 
 > ✅ statusCode=428 kök nedeni (doğrulanmış): QR üretilmeden bağlantıyı kapatan
 > şey datacenter IP engeli değil, Baileys'in `syncFullHistory: true` seçeneğiydi.

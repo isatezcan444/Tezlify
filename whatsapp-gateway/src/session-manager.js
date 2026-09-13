@@ -3,7 +3,7 @@
 
  * Handles:
  * - Session creation with QR pairing (multi-device)
- * - Session persistence (encrypted auth state on disk)
+ * - Session persistence (encrypted PostgreSQL auth state in production)
  * - Contact / chat / message sync into in-memory stores
  * - Text & media message sending
  * - Media download & storage
@@ -18,6 +18,7 @@ import { v4 as uuidv4 } from 'uuid';
 import pino from 'pino';
 import { diagnostic, sessionRef } from './observability.js';
 import { SocketLifecycle } from './domain/socket-lifecycle.js';
+import { createBoundedCache } from './domain/bounded-cache.js';
 
 const logger = pino({ level: process.env.LOG_LEVEL || 'warn' });
 
@@ -557,9 +558,61 @@ function getSessionDir(sessionsDir, sessionId) {
 // ---------------------------------------------------------------------------
 // Session Manager factory
 // ---------------------------------------------------------------------------
-export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsUrl, authRepository = null }) {
+export function createSessionManager({
+  sessionsDir,
+  mediaDir,
+  aesKey,
+  backendWsUrl,
+  authRepository = null,
+  leaseRepository = null,
+  instanceId = 'local-instance',
+}) {
   const sessions = new Map(); // manager-local: no cross-instance/session leakage
   const mediaIndex = new Map(); // every entry is scoped by its owning session
+  // Baileys retry counters must outlive an individual socket. Keep one bounded
+  // cache per session so two WhatsApp lines can never share message IDs or
+  // retry budgets, while reconnects on the same line retain their counters.
+  const msgRetryCounterCaches = new Map();
+  function retryCounterCacheFor(sessionId) {
+    let cache = msgRetryCounterCaches.get(String(sessionId));
+    if (!cache) {
+      cache = createBoundedCache({ maxEntries: 10_000, ttlMs: 60 * 60 * 1000 });
+      msgRetryCounterCaches.set(String(sessionId), cache);
+    }
+    return cache;
+  }
+  function resetRetryCounterCache(sessionId) {
+    const cache = msgRetryCounterCaches.get(String(sessionId));
+    cache?.close();
+    msgRetryCounterCaches.delete(String(sessionId));
+  }
+  function clearLeaseTimers(session) {
+    if (session._leaseRenewTimer) clearInterval(session._leaseRenewTimer);
+    if (session._leaseRetryTimer) clearTimeout(session._leaseRetryTimer);
+    session._leaseRenewTimer = null;
+    session._leaseRetryTimer = null;
+    session._leaseRenewing = false;
+  }
+
+  async function releaseLease(session) {
+    clearLeaseTimers(session);
+    session._leaseValidUntil = 0;
+    if (leaseRepository) await leaseRepository.release(session.id, instanceId);
+  }
+
+  async function deactivatePersistentSession(sessionId) {
+    if (!authRepository) return;
+    // A remote logout/badSession is authoritative. Remove credentials before
+    // the next restore cycle so a dead Signal state can never be retried.
+    try {
+      await authRepository.clearAuth(sessionId);
+      await authRepository.setSessionActive(sessionId, false);
+    } catch (err) {
+      // The in-memory state is still marked inactive; expose persistence
+      // failure without turning a real disconnect into a false success.
+      logger.error({ err, session_ref: sessionRef(sessionId) }, 'Persistent auth cleanup failed');
+    }
+  }
   const persistedSessionDirectories = fs.existsSync(sessionsDir)
     ? fs.readdirSync(sessionsDir, { withFileTypes: true }).filter((entry) => entry.isDirectory()).length
     : 0;
@@ -591,6 +644,7 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
     },
 
     async shutdown() {
+      const leaseReleases = [];
       for (const session of sessions.values()) {
         session._shuttingDown = true;
         session.lifecycle.invalidate();
@@ -602,7 +656,9 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
         try { session.sock?.end(undefined); } catch (err) { /* ignore */ }
         session.sock = null;
         session.is_phone_online = false;
+        if (leaseRepository) leaseReleases.push(releaseLease(session));
       }
+      await Promise.allSettled(leaseReleases);
       diagnostic('session_registry_shutdown', { sessions: sessions.size });
     },
 
@@ -690,6 +746,10 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
         updated_at: new Date().toISOString(),
         sock: null,
         lifecycle: new SocketLifecycle(),
+        _leaseRenewTimer: null,
+        _leaseRetryTimer: null,
+        _leaseRenewing: false,
+        _leaseValidUntil: 0,
         // Bu hesaba ait kişiler/sohbetler/mesajlar yalnızca burada yaşar.
         store: createSessionStore(),
       };
@@ -721,6 +781,7 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       }
       // Force a fresh QR by restarting the socket
       session.lifecycle.invalidate();
+      await releaseLease(session);
       if (session.sock) {
         try { session.sock.ev?.removeAllListeners(); } catch (err) { /* ignore */ }
         try { session.sock.end(undefined); } catch (err) { /* ignore */ }
@@ -793,6 +854,7 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       const session = sessions.get(id);
       if (!session) throw new Error('Session not found');
       session.lifecycle.invalidate();
+      await releaseLease(session);
       try {
         if (session.sock) {
           await session.sock.logout();
@@ -817,6 +879,7 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       // (Eski global modelde veriler süresiz duruyor ve yeniden eşleşen
       // BAŞKA bir hesabın istekleriyle karışabiliyordu.)
       session.store = createSessionStore();
+      resetRetryCounterCache(id);
       // Remove persisted auth state
       if (authRepository) {
         await authRepository.clearAuth(id);
@@ -833,6 +896,7 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       if (session) {
         session._deleted = true;
         session.lifecycle.invalidate();
+        await releaseLease(session);
         if (session.sock?.ev) {
           try { session.sock.ev.removeAllListeners(); } catch (err) { /* ignore */ }
         }
@@ -852,6 +916,7 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
         await authRepository.setSessionActive(id, false);
       }
       sessions.delete(id);
+      resetRetryCounterCache(id);
       // Oturumun bellek deposu ve indirilmiş medyası da bırakılır.
       if (session) session.store = null;
       for (const [mediaId, entry] of mediaIndex) {
@@ -1712,6 +1777,27 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       if (!session) return;
       const generation = session.lifecycle.beginAttempt();
       session._diagnosticSocketGeneration = generation;
+      clearLeaseTimers(session);
+      if (leaseRepository) {
+        const acquired = await leaseRepository.acquire(id, instanceId, generation);
+        if (!acquired) {
+          session.status = 'RESTORING';
+          session.is_phone_online = false;
+          session.error_message = 'WHATSAPP_SESSION_OWNED_BY_ANOTHER_INSTANCE';
+          diagnostic('socket_lease_contended', {
+            session_ref: sessionRef(id), generation,
+          });
+          session._leaseRetryTimer = setTimeout(() => {
+            session._leaseRetryTimer = null;
+            if (!session._deleted && !session._shuttingDown) this._startSocket(id);
+          }, 5000 + Math.floor(Math.random() * 1000));
+          return;
+        }
+        diagnostic('socket_lease_acquired', {
+          session_ref: sessionRef(id), generation,
+        });
+        session._leaseValidUntil = Date.now() + leaseRepository.ttlSeconds * 1000;
+      }
       const sessionDir = getSessionDir(sessionsDir, id);
       fs.mkdirSync(sessionDir, { recursive: true });
 
@@ -1821,6 +1907,7 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
         // Verilmedigi surece yalnizca log yazip mesaji KAYBEDIYORDU. Ham proto
         // govdeler sinirli `rawMessagesByChat` depounda tutulur (yukarida).
         getMessage: async (key) => lookupRawMessage(store, key),
+        msgRetryCounterCache: retryCounterCacheFor(id),
       });
 
       const replacedSocket = session.lifecycle.attach(generation, sock);
@@ -1834,6 +1921,38 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
         try { replacedSocket.end(undefined); } catch (err) { /* ignore */ }
       }
       session.sock = sock;
+      if (leaseRepository) {
+        const renewalMs = Math.max(10_000, Math.floor(leaseRepository.ttlSeconds * 1000 / 3));
+        const loseLease = () => {
+          if (!session.lifecycle.isCurrent(generation, sock)) return;
+          session.lifecycle.invalidate();
+          clearLeaseTimers(session);
+          try { sock.ev?.removeAllListeners(); } catch (err) { /* ignore */ }
+          try { sock.end(undefined); } catch (err) { /* ignore */ }
+          session.sock = null;
+          session.status = 'UNAVAILABLE';
+          session.is_phone_online = false;
+          session.error_message = 'WHATSAPP_SESSION_LEASE_LOST';
+          diagnostic('socket_lease_lost', { session_ref: sessionRef(id), generation });
+        };
+        session._leaseRenewTimer = setInterval(async () => {
+          if (session._leaseRenewing || !session.lifecycle.isCurrent(generation, sock)) return;
+          session._leaseRenewing = true;
+          try {
+            const renewed = await leaseRepository.renew(id, instanceId, generation);
+            if (renewed) session._leaseValidUntil = Date.now() + leaseRepository.ttlSeconds * 1000;
+            else loseLease();
+          } catch (error) {
+            diagnostic('socket_lease_renew_failed', {
+              session_ref: sessionRef(id), generation,
+              error_name: error?.name || 'Error', error_code: error?.code || null,
+            });
+            if (Date.now() >= session._leaseValidUntil) loseLease();
+          } finally {
+            session._leaseRenewing = false;
+          }
+        }, renewalMs);
+      }
 
       // Faz 13 (tenant izolasyonu): bu oturumun soketinden cikan TUM olaylar
       // `gateway_session_id` tasir. Backend, olayi hangi tenant'a yazacagini
@@ -2052,6 +2171,9 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
               : null;
             session.error_reason = isBanned ? 'BANNED' : 'LOGGED_OUT';
             session.updated_at = new Date().toISOString();
+            await releaseLease(session);
+            await deactivatePersistentSession(id);
+            resetRetryCounterCache(id);
             emitEvent({ event: 'session_disconnected', session_id: id, session_name: session.session_name, reason: isBanned ? 'BANNED' : 'LOGGED_OUT' });
           } else {
             // Transient disconnect — retry with a bounded number of attempts.

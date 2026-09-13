@@ -23,6 +23,8 @@ import fs from 'fs';
 import crypto from 'crypto';
 import { createPostgresAuthRepository } from './auth/postgres-auth-repository.js';
 import { createPostgresEventOutbox } from './outbox/postgres-event-outbox.js';
+import { createGatewayPostgresPool } from './database/postgres-pool.js';
+import { createPostgresSessionLease } from './lease/postgres-session-lease.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -49,11 +51,17 @@ const aesKey = crypto.createHash('sha256').update(ENCRYPTION_KEY).digest();
 
 let authRepository = null;
 let eventOutbox = null;
+let leaseRepository = null;
+let gatewayPool = null;
+const instanceId = crypto.randomUUID();
 if (DATABASE_URL) {
+  gatewayPool = createGatewayPostgresPool(
+    DATABASE_URL,
+    parseInt(process.env.GATEWAY_DATABASE_POOL_MAX || '3', 10),
+  );
   authRepository = createPostgresAuthRepository({
-    connectionString: DATABASE_URL,
     encryptionKey: aesKey,
-    poolMax: Math.max(1, Math.min(5, parseInt(process.env.GATEWAY_DATABASE_POOL_MAX || '2', 10))),
+    pool: gatewayPool,
   });
   let lastError = null;
   for (let attempt = 1; attempt <= 30; attempt += 1) {
@@ -68,9 +76,12 @@ if (DATABASE_URL) {
   }
   if (lastError) throw new Error('Durable WhatsApp auth store is unavailable.', { cause: lastError });
   eventOutbox = createPostgresEventOutbox({
-    connectionString: DATABASE_URL,
     encryptionKey: aesKey,
-    poolMax: 1,
+    pool: gatewayPool,
+  });
+  leaseRepository = createPostgresSessionLease({
+    pool: gatewayPool,
+    ttlSeconds: parseInt(process.env.GATEWAY_LEASE_TTL_SECONDS || '45', 10),
   });
 } else if (REQUIRE_DURABLE_AUTH) {
   throw new Error('Durable WhatsApp auth is required but GATEWAY_DATABASE_URL is not configured.');
@@ -91,6 +102,8 @@ const sessionManager = createSessionManager({
   aesKey,
   backendWsUrl: BACKEND_WS_URL,
   authRepository,
+  leaseRepository,
+  instanceId,
 });
 
 await sessionManager.restoreSessions({
@@ -343,7 +356,9 @@ async function shutdown(signal) {
   await sessionManager.shutdown();
   await new Promise((resolve) => server.close(resolve));
   if (eventOutbox) await eventOutbox.close();
+  if (leaseRepository) await leaseRepository.close();
   if (authRepository) await authRepository.close();
+  if (gatewayPool) await gatewayPool.end();
   process.exit(0);
 }
 

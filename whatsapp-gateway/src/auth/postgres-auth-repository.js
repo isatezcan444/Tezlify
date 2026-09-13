@@ -33,6 +33,7 @@ export function createPostgresAuthRepository({
     connectionTimeoutMillis: 10_000,
     allowExitOnIdle: true,
   });
+  const ownsPool = !injectedPool;
   const codec = createEncryptedCodec(encryptionKey);
 
   const repository = {
@@ -221,7 +222,7 @@ export function createPostgresAuthRepository({
     },
 
     async close() {
-      await pool.end();
+      if (ownsPool) await pool.end();
     },
   };
 

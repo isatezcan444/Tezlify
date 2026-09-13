@@ -3,8 +3,8 @@
  *
  * FastAPI `/api/v1/whatsapp/*` uç noktalarını çağırır ve yanıtları frontend
  * tiplerine (`WhatsAppSession`, `Conversation`, `Message`) eşler.
- * Gateway kapalıysa `WhatsAppApiError` fırlatır; repository bunu yakalayıp
- * demo katmanına düşer — asla sahte başarı üretilmez.
+ * Gateway kapalıysa `WhatsAppApiError` fırlatır; hata UI katmanına taşınır ve
+ * hiçbir koşulda sahte başarı üretilmez.
  */
 import { useCallback, useEffect, useState } from 'react';
 import { authFetch, API_BASE, parseError, ApiClient } from './client';
@@ -41,7 +41,7 @@ export interface ConversationReadResult {
 export { LiveModeStatus };
 
 // ---------------------------------------------------------------------------
-// Live probe (örnek: gateway çalışmıyorsa demo katmanına düş)
+// Live probe (gateway erişilebilirliğini kısa süreli ölçer; mock fallback yok)
 // ---------------------------------------------------------------------------
 let liveProbe: { value: boolean; checkedAt: number } | null = null;
 const LIVE_TTL_MS = 30_000;

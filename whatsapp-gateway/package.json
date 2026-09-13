@@ -8,11 +8,10 @@
   },
   "scripts": {
     "start": "node src/index.js",
-    "dev": "node --watch src/index.js",
-    "postinstall": "node scripts/patch-baileys.mjs"
+    "dev": "node --watch src/index.js"
   },
   "dependencies": {
-    "@whiskeysockets/baileys": "6.7.24",
+    "@whiskeysockets/baileys": "7.0.0-rc14",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "pg": "^8.13.3",

@@ -1,20 +1,62 @@
 #!/bin/sh
-# Tezlify container entrypoint.
-# Starts the WhatsApp gateway (Baileys) as a sidecar when configured, then
-# execs the FastAPI backend as PID-of-record. If the gateway is not
-# configured (no GATEWAY_ENCRYPTION_KEY), the backend still starts and all
-# WhatsApp operations fail closed with a clear error — never a false success.
-set -e
+# Supervise FastAPI + Baileys as one Render Free web service. A child failure
+# terminates the container so Render cannot route traffic to a half-dead app.
+set -eu
 
-if [ -n "$GATEWAY_ENCRYPTION_KEY" ]; then
-  echo "[entrypoint] Starting WhatsApp gateway on ${GATEWAY_HOST:-127.0.0.1}:${GATEWAY_PORT:-8787}"
-  (cd /app/whatsapp-gateway && node src/index.js) &
-  GATEWAY_PID=$!
-  # Keep the backend alive even if the gateway process dies; the gateway's
-  # own crash is surfaced via backend health checks failing closed.
-  echo "[entrypoint] Gateway PID: $GATEWAY_PID"
-else
-  echo "[entrypoint] GATEWAY_ENCRYPTION_KEY not set - WhatsApp gateway disabled (fail-closed)."
+BACKEND_PID=""
+GATEWAY_PID=""
+
+shutdown() {
+  trap - TERM INT EXIT
+  [ -z "$GATEWAY_PID" ] || kill -TERM "$GATEWAY_PID" 2>/dev/null || true
+  [ -z "$BACKEND_PID" ] || kill -TERM "$BACKEND_PID" 2>/dev/null || true
+  [ -z "$GATEWAY_PID" ] || wait "$GATEWAY_PID" 2>/dev/null || true
+  [ -z "$BACKEND_PID" ] || wait "$BACKEND_PID" 2>/dev/null || true
+}
+
+trap 'shutdown; exit 143' TERM INT
+trap shutdown EXIT
+
+python /app/start.py &
+BACKEND_PID=$!
+
+# FastAPI owns idempotent schema migration. Start Baileys only after the
+# private durable gateway schema is available.
+BACKEND_READY=0
+attempt=1
+while [ "$attempt" -le 45 ]; do
+  if ! kill -0 "$BACKEND_PID" 2>/dev/null; then
+    wait "$BACKEND_PID" || exit $?
+  fi
+  if curl --fail --silent --max-time 2 "http://127.0.0.1:${PORT:-10000}/health" >/dev/null; then
+    BACKEND_READY=1
+    break
+  fi
+  attempt=$((attempt + 1))
+  sleep 1
+done
+
+if [ "$BACKEND_READY" -ne 1 ]; then
+  echo "[entrypoint] Backend readiness timeout." >&2
+  exit 1
 fi
 
-exec python /app/start.py
+if [ -n "${GATEWAY_ENCRYPTION_KEY:-}" ]; then
+  echo "[entrypoint] Starting durable WhatsApp gateway."
+  (cd /app/whatsapp-gateway && exec node src/index.js) &
+  GATEWAY_PID=$!
+else
+  echo "[entrypoint] WhatsApp gateway disabled: GATEWAY_ENCRYPTION_KEY is not set."
+fi
+
+while :; do
+  if ! kill -0 "$BACKEND_PID" 2>/dev/null; then
+    wait "$BACKEND_PID"
+    exit $?
+  fi
+  if [ -n "$GATEWAY_PID" ] && ! kill -0 "$GATEWAY_PID" 2>/dev/null; then
+    wait "$GATEWAY_PID"
+    exit $?
+  fi
+  sleep 2
+done

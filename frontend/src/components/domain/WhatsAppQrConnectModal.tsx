@@ -113,6 +113,19 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
     }, 1000);
   }, []);
 
+  const applyTerminalGatewayStatus = useCallback((status: string | undefined, message?: string | null) => {
+    if (!['RELINK_REQUIRED', 'UNAVAILABLE', 'ERROR', 'BANNED'].includes(String(status))) return false;
+    clearTimers();
+    setModalState('ERROR');
+    setErrorMessage(message || ({
+      RELINK_REQUIRED: t('whatsapp.statusRelinkRequired'),
+      UNAVAILABLE: t('whatsapp.statusUnavailable'),
+      BANNED: t('whatsapp.statusBanned'),
+      ERROR: t('whatsapp.statusError'),
+    } as Record<string, string>)[String(status)]);
+    return true;
+  }, [clearTimers, t]);
+
   // Initialize or connect session (strictly idempotent)
   const initSession = useCallback(async () => {
     if (isInitializingRef.current) return;
@@ -142,6 +155,8 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
           return;
         }
 
+        if (applyTerminalGatewayStatus(qrRes.status, qrRes.error_message)) return;
+
         if (qrRes.qr_code) {
           setQrCode(qrRes.qr_code);
           setModalState('QR_READY');
@@ -154,9 +169,8 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
             setQrCode(refreshRes.qr_code);
             setModalState('QR_READY');
             resetCountdown();
-          } else if (refreshRes.error_message) {
-            setModalState('ERROR');
-            setErrorMessage(refreshRes.error_message);
+          } else {
+            applyTerminalGatewayStatus(refreshRes.status, refreshRes.error_message);
           }
         }
       } else {
@@ -195,7 +209,7 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
     } finally {
       isInitializingRef.current = false;
     }
-  }, [existingSessionId, initialSessionName, clearTimers, resetCountdown, t]);
+  }, [existingSessionId, initialSessionName, clearTimers, resetCountdown, t, applyTerminalGatewayStatus]);
 
   // Manual QR Refresh - strictly operates on current session_id
   const handleRefreshQr = useCallback(async () => {
@@ -221,9 +235,8 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
         setQrCode(res.qr_code);
         setModalState('QR_READY');
         resetCountdown();
-      } else if (res.error_message) {
-        setModalState('ERROR');
-        setErrorMessage(res.error_message);
+      } else {
+        applyTerminalGatewayStatus(res.status, res.error_message);
       }
     } catch (err: any) {
       toast.error(err?.message || t('whatsapp.refreshingQr') || 'QR kod yenilenemedi', t('common.error'));
@@ -232,7 +245,7 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
         setIsRefreshing(false);
       }
     }
-  }, [sessionId, isRefreshing, resetCountdown, clearTimers, toast, t]);
+  }, [sessionId, isRefreshing, resetCountdown, clearTimers, toast, t, applyTerminalGatewayStatus]);
 
   // Pairing code — "Telefon No ile Bağlan" tabisi. Fail-closed: hata gerçek
   // mesajla gösterilir, sahte kod/sahte başarı asla üretilmez (AGENTS.md).
@@ -427,6 +440,8 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
             setErrorMessage(res.error_message);
             setModalState('ERROR');
             if (fallbackPollRef.current) clearInterval(fallbackPollRef.current);
+          } else if (applyTerminalGatewayStatus(res.status, res.error_message)) {
+            if (fallbackPollRef.current) clearInterval(fallbackPollRef.current);
           }
         } catch {
           // Silent catch in fallback poll
@@ -445,7 +460,7 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
         fallbackPollRef.current = null;
       }
     };
-  }, [isOpen, sessionId, modalState, qrCode, resetCountdown]);
+  }, [isOpen, sessionId, modalState, qrCode, resetCountdown, applyTerminalGatewayStatus]);
 
   // Keyboard accessibility: Escape to close
   useEffect(() => {

@@ -44,11 +44,9 @@ COPY start.py .
 # always reach it at 127.0.0.1:8787 (Render free plan has no private network
 # across services unless paid; single-container keeps the QR flow working).
 COPY whatsapp-gateway/package.json ./whatsapp-gateway/package.json
+COPY whatsapp-gateway/package-lock.json ./whatsapp-gateway/package-lock.json
 COPY whatsapp-gateway/src ./whatsapp-gateway/src
-# The postinstall hook runs scripts/patch-baileys.mjs (Baileys LID/name fixes),
-# so the scripts dir must exist before npm install.
-COPY whatsapp-gateway/scripts ./whatsapp-gateway/scripts
-RUN cd whatsapp-gateway && npm install --omit=dev --no-audit --no-fund
+RUN cd whatsapp-gateway && npm ci --omit=dev --ignore-scripts --no-audit --no-fund
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
