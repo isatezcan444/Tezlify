@@ -148,9 +148,27 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setLoading(false);
     });
 
+    // Faz 13: WebSocket auth hatası (sürekli token reddi) olduğunda oturumu
+    // temizle ve girişe yönlendir — aksi halde kullanıcı sonsuz döngüde
+    // takılı kalır ve hiçbir şey çalışmaz.
+    const onWsAuthFailed = () => {
+      console.warn('[AuthContext] WS auth failed event received — clearing session');
+      ApiClient.setAuthToken(null);
+      setSession(null);
+      setUser(null);
+      setProfile(null);
+      // Sayfa yenileme, Supabase'in otomatik refresh mekanizmasını tetikler
+      // (varsa) veya giriş ekranına düşer.
+      if (typeof window !== 'undefined') {
+        window.location.reload();
+      }
+    };
+    window.addEventListener('tezlify:ws_auth_failed', onWsAuthFailed);
+
     return () => {
       subscription.unsubscribe();
       setTokenRefresher(null);
+      window.removeEventListener('tezlify:ws_auth_failed', onWsAuthFailed);
     };
   }, [fetchOrCreateProfile]);
 
