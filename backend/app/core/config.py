@@ -49,10 +49,12 @@ class Settings(BaseSettings):
         default="dev-only-insecure-secret-key",
         description="Üretimde mutlaka .env ile güçlü bir değerle ezilmelidir.",
     )
-    # Supabase'in erişim token'larını imzaladığı HS256 anahtarı. Bu değer
-    # AYARLANMADIKÇA imza doğrulanamaz; token'ın `sub` (kullanıcı) alanı
-    # istemci tarafından serbestçe uydurulabilir ve çok kiracılı izolasyon
-    # (WhatsApp sohbetleri dahil) tamamen devre dışı kalır. Üretimde ZORUNLU.
+    # Supabase URL (JWKS asimetrik anahtar doğrulaması için kullanılır: ES256 / RS256).
+    SUPABASE_URL: str = Field(
+        default="https://pzpgjjtefeplygqcxfsj.supabase.co",
+        description="Supabase proje URL'i (JWKS anahtar doğrulaması için).",
+    )
+    # Supabase'in erişim token'larını imzaladığı HS256 anahtarı (simetrik mod için).
     SUPABASE_JWT_SECRET: str = Field(
         default="",
         description="Supabase JWT HS256 imza anahtarı (Dashboard > Settings > API > JWT Secret).",

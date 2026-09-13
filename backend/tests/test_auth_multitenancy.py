@@ -97,3 +97,126 @@ async def test_multitenancy_lead_isolation():
         # User B CANNOT get User A's lead (404 / isolated)
         res_get_b = await ac.get(f"/api/v1/leads/{lead_a_id}", headers={"Authorization": f"Bearer {token_b}"})
         assert res_get_b.status_code == 404
+
+
+def test_verify_and_decode_jwt_hs256_with_secret():
+    import jwt
+    from unittest.mock import patch
+    from backend.app.core.auth import verify_and_decode_jwt
+
+    secret = "test-secret-key-123456789012345678901234"
+    token = jwt.encode(
+        {"sub": "user-hs256", "email": "hs256@tezlify.com", "exp": 9999999999},
+        secret,
+        algorithm="HS256",
+    )
+
+    with patch("backend.app.core.auth.settings.SUPABASE_JWT_SECRET", secret):
+        payload = verify_and_decode_jwt(token)
+        assert payload["sub"] == "user-hs256"
+        assert payload["email"] == "hs256@tezlify.com"
+
+
+def test_verify_and_decode_jwt_hs256_invalid_signature():
+    import jwt
+    from unittest.mock import patch
+    from fastapi import HTTPException
+    from backend.app.core.auth import verify_and_decode_jwt
+
+    token = jwt.encode(
+        {"sub": "user-hs256", "exp": 9999999999},
+        "wrong-secret-123456789012345678901234",
+        algorithm="HS256",
+    )
+
+    with patch("backend.app.core.auth.settings.SUPABASE_JWT_SECRET", "correct-secret-123456789012345678901234"):
+        with pytest.raises(HTTPException) as exc_info:
+            verify_and_decode_jwt(token)
+        assert exc_info.value.status_code == 401
+        assert "Geçersiz token imzası" in exc_info.value.detail
+
+
+def test_verify_and_decode_jwt_es256_mock_jwks():
+    import jwt
+    from unittest.mock import MagicMock, patch
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from backend.app.core.auth import verify_and_decode_jwt
+
+    private_key = ec.generate_private_key(ec.SECP256R1())
+    public_key = private_key.public_key()
+
+    token = jwt.encode(
+        {"sub": "user-es256", "email": "es256@tezlify.com", "iss": "https://pzpgjjtefeplygqcxfsj.supabase.co/auth/v1", "exp": 9999999999},
+        private_key,
+        algorithm="ES256",
+        headers={"kid": "test-kid"},
+    )
+
+    mock_signing_key = MagicMock()
+    mock_signing_key.key = public_key
+    mock_client = MagicMock()
+    mock_client.get_signing_key_from_jwt.return_value = mock_signing_key
+
+    with patch("backend.app.core.auth._get_jwks_client", return_value=mock_client):
+        payload = verify_and_decode_jwt(token)
+        assert payload["sub"] == "user-es256"
+        assert payload["email"] == "es256@tezlify.com"
+
+
+def test_verify_and_decode_jwt_es256_invalid_signature():
+    import jwt
+    from unittest.mock import MagicMock, patch
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from fastapi import HTTPException
+    from backend.app.core.auth import verify_and_decode_jwt
+
+    key1 = ec.generate_private_key(ec.SECP256R1())
+    key2 = ec.generate_private_key(ec.SECP256R1())
+
+    token = jwt.encode(
+        {"sub": "user-es256", "iss": "https://pzpgjjtefeplygqcxfsj.supabase.co/auth/v1", "exp": 9999999999},
+        key1,
+        algorithm="ES256",
+        headers={"kid": "test-kid"},
+    )
+
+    mock_signing_key = MagicMock()
+    mock_signing_key.key = key2.public_key()
+    mock_client = MagicMock()
+    mock_client.get_signing_key_from_jwt.return_value = mock_signing_key
+
+    with patch("backend.app.core.auth._get_jwks_client", return_value=mock_client):
+        with pytest.raises(HTTPException) as exc_info:
+            verify_and_decode_jwt(token)
+        assert exc_info.value.status_code == 401
+        assert "Geçersiz token imzası" in exc_info.value.detail
+
+
+def test_verify_and_decode_jwt_expired():
+    import jwt
+    from unittest.mock import MagicMock, patch
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from fastapi import HTTPException
+    from backend.app.core.auth import verify_and_decode_jwt
+
+    private_key = ec.generate_private_key(ec.SECP256R1())
+    public_key = private_key.public_key()
+
+    token = jwt.encode(
+        {"sub": "user-es256", "iss": "https://pzpgjjtefeplygqcxfsj.supabase.co/auth/v1", "exp": 1000},
+        private_key,
+        algorithm="ES256",
+        headers={"kid": "test-kid"},
+    )
+
+    mock_signing_key = MagicMock()
+    mock_signing_key.key = public_key
+    mock_client = MagicMock()
+    mock_client.get_signing_key_from_jwt.return_value = mock_signing_key
+
+    with patch("backend.app.core.auth._get_jwks_client", return_value=mock_client):
+        with pytest.raises(HTTPException) as exc_info:
+            verify_and_decode_jwt(token)
+        assert exc_info.value.status_code == 401
+        assert "Oturum süresi doldu" in exc_info.value.detail
+

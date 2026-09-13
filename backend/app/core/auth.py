@@ -63,33 +63,92 @@ def _is_dev_or_test_context() -> bool:
 
 
 _unverified_jwt_warned = False
+_jwks_clients: dict = {}
+
+
+def _get_jwks_client(jwks_url: str):
+    """Caches PyJWKClient instances per JWKS URL with 1-hour key caching."""
+    import jwt as pyjwt
+    client = _jwks_clients.get(jwks_url)
+    if client is None:
+        client = pyjwt.PyJWKClient(jwks_url, cache_jwk_set=True, lifespan=3600)
+        _jwks_clients[jwks_url] = client
+    return client
 
 
 def verify_and_decode_jwt(token: str) -> dict:
     """JWT'yi kriptografik imza + son kullanma doğrulamasıyla çözer.
 
-    FAIL-CLOSED (güvenlik düzeltmesi): `SUPABASE_JWT_SECRET` ayarlıysa imza
-    doğrulanır. Ayarlı DEĞİLSE token yalnızca geliştirme/test bağlamında ya da
-    `ALLOW_UNVERIFIED_JWT=True` ile açıkça izin verildiğinde kabul edilir;
-    üretimde 401 ile reddedilir.
-
-    Gerekçe: imza doğrulanmadığında `sub` (kullanıcı kimliği) istemci
-    tarafından serbestçe uydurulabilir. Bu, servis katmanındaki tüm
-    `get_user_filter` tenant izolasyonunu (WhatsApp sohbetleri, mesajlar,
-    medya ve mesaj gönderimi dahil) etkisiz kılar.
+    Doğrulama Sırası:
+    1. Asimetrik JWKS Doğrulaması (Supabase varsayılanı: ES256 / RS256):
+       Token `iss` (veya `settings.SUPABASE_URL`) üzerindeki `/.well-known/jwks.json`
+       uç noktasından genel anahtar alınır ve kriptografik imza doğrulanır.
+       Bu sayede manuel `SUPABASE_JWT_SECRET` senkronizasyonuna gerek kalmadan
+       tam kriptografik güvenlik sağlanır.
+    2. Simetrik HS256 Doğrulaması:
+       `SUPABASE_JWT_SECRET` ayarlıysa imza doğrulanır.
+    3. FAIL-CLOSED (güvenlik ilkesi):
+       Token imzasız/doğrulanamaz ise, yalnızca geliştirme/test bağlamında ya da
+       `ALLOW_UNVERIFIED_JWT=True` ile açıkça izin verildiğinde kabul edilir;
+       üretimde 401 ile reddedilir.
     """
     import time
     import jwt as pyjwt
 
-    jwt_secret = getattr(settings, "SUPABASE_JWT_SECRET", None) or os.getenv("SUPABASE_JWT_SECRET")
+    try:
+        header = pyjwt.get_unverified_header(token)
+    except Exception:
+        header = {}
 
+    alg = header.get("alg", "")
+
+    # 1. Asimetrik algoritma (Supabase varsayılanı ES256 / RS256): JWKS ile doğrula
+    if alg in ("ES256", "RS256"):
+        try:
+            unverified_payload = decode_jwt_unverified(token)
+            iss = str(unverified_payload.get("iss", "")).strip()
+            supabase_url = str(getattr(settings, "SUPABASE_URL", "") or os.getenv("SUPABASE_URL", "")).strip()
+
+            jwks_url = None
+            if iss and (iss.endswith(".supabase.co/auth/v1") or iss.endswith(".supabase.co") or (supabase_url and supabase_url in iss)):
+                jwks_url = f"{iss.rstrip('/')}/.well-known/jwks.json"
+            elif supabase_url:
+                jwks_url = f"{supabase_url.rstrip('/')}/auth/v1/.well-known/jwks.json"
+
+            if jwks_url:
+                client = _get_jwks_client(jwks_url)
+                signing_key = client.get_signing_key_from_jwt(token)
+                return pyjwt.decode(
+                    token,
+                    signing_key.key,
+                    algorithms=[alg],
+                    options={"verify_exp": True, "verify_signature": True, "verify_aud": False},
+                )
+        except pyjwt.ExpiredSignatureError:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Oturum süresi doldu (Session expired)",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        except pyjwt.PyJWTError as e:
+            logger.warning(f"JWKS imza doğrulaması başarısız: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=f"Geçersiz token imzası: {str(e)}",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        except Exception as e:
+            logger.warning(f"JWKS anahtar getirme/doğrulama hatası: {e}")
+
+    # 2. Simetrik algoritma (HS256): SUPABASE_JWT_SECRET ile doğrula
+    jwt_secret = getattr(settings, "SUPABASE_JWT_SECRET", None) or os.getenv("SUPABASE_JWT_SECRET")
     if jwt_secret:
         try:
             return pyjwt.decode(
                 token,
                 jwt_secret,
                 algorithms=["HS256"],
-                options={"verify_exp": True, "verify_signature": True},
+                options={"verify_exp": True, "verify_signature": True, "verify_aud": False},
             )
         except pyjwt.ExpiredSignatureError:
             raise HTTPException(
@@ -104,13 +163,12 @@ def verify_and_decode_jwt(token: str) -> dict:
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
-    # İmza anahtarı yok: üretimde KABUL EDİLMEZ (fail-closed).
+    # 3. Kriptografik doğrulama yapılamadı: üretimde KABUL EDİLMEZ (fail-closed).
     allow_unverified = bool(getattr(settings, "ALLOW_UNVERIFIED_JWT", False))
     if not allow_unverified and not _is_dev_or_test_context():
         logger.error(
-            "SUPABASE_JWT_SECRET ayarlı değil — JWT imzası doğrulanamıyor ve istek "
-            "REDDEDİLDİ. Üretimde bu değişkeni ayarlayın (Supabase Dashboard > "
-            "Settings > API > JWT Secret)."
+            "JWT imzası doğrulanamadı ve istek REDDEDİLDİ. "
+            "Supabase JWKS URL'i veya SUPABASE_JWT_SECRET yapılandırılmış olmalıdır."
         )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

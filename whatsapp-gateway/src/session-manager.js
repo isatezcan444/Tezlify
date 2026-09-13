@@ -27,7 +27,7 @@ const logger = pino({ level: process.env.LOG_LEVEL || 'warn' });
  * aldığında Baileys libsignal katmanında 'Bad MAC' ya da 'No matching sessions'
  * fırlatılır. Baileys bunu `getMessage` üzerinden yeniden talep eder (retry receipt).
  * Bu olağan el sıkışma döngüleri ile 'init queries' zaman aşımları ve akış kopmaları
- * Pino level 50 (hata) yerine level 40 (uyarı) olarak yapılandırılmış formatta loglanır;
+ * Pino level 50 (hata) veya level 40 (uyarı) yerine level 20 (debug) olarak yapılandırılmış formatta loglanır;
  * böylece sahte 500 ve alarm üretilmezken gerçek hatalar level 50'de korunur.
  */
 function createBaileysLogger(baseLogger) {
@@ -50,7 +50,7 @@ function createBaileysLogger(baseLogger) {
           if (isHandshakeRetry) {
             const errSummary = objErrStr || (typeof obj === 'object' && obj !== null ? obj?.msg : '') || msgStr;
             const remoteJid = typeof obj === 'object' && obj !== null ? (obj.key?.remoteJid || '') : '';
-            return target.warn(
+            return target.debug(
               { key: remoteJid ? { remoteJid } : undefined, err: errSummary },
               `[baileys-handshake] ${msgStr || errSummary}`
             );
