@@ -927,7 +927,28 @@ async def _bulk_upsert_contacts(
             _set_contact_name(contact, name, source)
         _set_contact_avatar(contact, avatar)
         out.append((jid_str, contact))
-    await db.flush()
+    try:
+        async with db.begin_nested():
+            await db.flush()
+    except IntegrityError:
+        # Es zamanli diger transaction veya gateway olayi (orn: conversation_updated)
+        # ayni kisiyi olusturdu. Guncel satirlari DB'den yeniden cekip birlestir.
+        res = await db.execute(
+            select(Contact).where(
+                Contact.phone_e164.in_(sorted(phones)),
+                get_user_filter(Contact.user_id, user_id),
+            )
+        )
+        for c in res.scalars().all():
+            by_phone[str(c.phone_e164)] = c
+        out = []
+        for jid_str, phone, name, source, avatar in resolved:
+            contact = by_phone.get(phone)
+            if contact is not None:
+                _set_contact_name(contact, name, source)
+                _set_contact_avatar(contact, avatar)
+                out.append((jid_str, contact))
+        await db.flush()
     return out
 
 
@@ -979,7 +1000,28 @@ async def _ensure_conversations_bulk(
             # Eski (hat bagi olmayan) satiri ilk gorulen hatta bagla.
             conv.session_id = session_id
         out.append((jid_str, contact, conv))
-    await db.flush()
+    try:
+        async with db.begin_nested():
+            await db.flush()
+    except IntegrityError:
+        # Es zamanli diger islem sohbeti olusturdu. DB'den yeniden cek.
+        res = await db.execute(
+            select(Conversation).where(
+                Conversation.contact_id.in_(contact_ids),
+                Conversation.channel == "WHATSAPP",
+                get_user_filter(Conversation.user_id, user_id),
+            )
+        )
+        for c_row in res.scalars().all():
+            by_contact[int(c_row.contact_id)] = c_row
+        out = []
+        for jid_str, contact in contacts:
+            conv = by_contact.get(contact.id)
+            if conv is not None:
+                if session_id is not None and conv.session_id is None:
+                    conv.session_id = session_id
+                out.append((jid_str, contact, conv))
+        await db.flush()
     return out
 
 
@@ -1036,12 +1078,11 @@ async def _upsert_contact(
             contact.custom_attributes = {"name_source": str(name_source)}
         db.add(contact)
         try:
-            await db.flush()
+            async with db.begin_nested():
+                await db.flush()
         except IntegrityError:
             # Es zamanli ikinci yazici ayni kisiyi araya girip olusturdu
-            # (UNIQUE kisit). Kendi INSERT'imizi geri al ve KAZANAN satiri
-            # kullan — olay dusurulmez, mesaj kaybolmaz.
-            await db.rollback()
+            # (UNIQUE kisit). Savepoint geri alindi; KAZANAN satiri al ve kullan.
             res = await db.execute(stmt)
             contact = res.scalars().first()
             if contact is None:
@@ -2687,11 +2728,11 @@ def _log_orphan_event(evt: str, exc: Exception, gw_session_id: Optional[str]) ->
         _orphan_suppressed.clear()
     if slot is None:
         _orphan_suppressed[key] = {"count": 1, "logged_at": now}
-        logger.error("Gateway olayi sahibi cozulemedi, atlandi (event=%s): %s", evt, exc)
+        logger.warning("Gateway olayi sahibi cozulemedi, atlandi (event=%s): %s", evt, exc)
         return
     slot["count"] = int(slot.get("count") or 0) + 1
     if now - float(slot.get("logged_at") or 0.0) >= 60.0:
-        logger.error(
+        logger.warning(
             "Gateway olayi sahibi cozulemedi, atlandi (event=%s, session=%s): %s "
             "(son 60 sn'de %d olay atlandi)",
             evt, key, exc, slot["count"],

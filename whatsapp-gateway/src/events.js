@@ -123,6 +123,10 @@ export function createEventBridge({ backendWsUrl, sessionManager }) {
   }
 
   function broadcast(event) {
+    const gwSid = event && (event.gateway_session_id || event.session_id);
+    if (gwSid && typeof sessionManager.getSession === 'function' && !sessionManager.getSession(gwSid) && !String(event.event || '').startsWith('session_deleted')) {
+      return;
+    }
     const payload = JSON.stringify(event);
     // 1. Local WS clients (backend may also attach here)
     for (const client of clients) {

@@ -565,6 +565,11 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
   const sessionManager = {
     _listeners: new Set(),
     _emit(event) {
+      // Silinen veya tanimsiz oturumlarin gecikmis olaylarini yayma
+      const gwSid = event && (event.gateway_session_id || event.session_id);
+      if (gwSid && !sessions.has(String(gwSid)) && !String(event.event || '').startsWith('session_deleted')) {
+        return;
+      }
       // Faz 8: TEK sanitizasyon noktasi — ham WhatsApp kimligi (@lid/@g.us/
       // @s.whatsapp.net/jid:) hicbir olayda goruntulenen ad olarak disariya
       // (backend/UI) yayilmaz. Backend ve frontend isim uretmez; cozulmemis
@@ -752,8 +757,14 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
 
     async deleteSession(id) {
       const session = sessions.get(id);
-      if (session?.sock) {
-        try { session.sock.end(undefined); } catch (err) { /* ignore */ }
+      if (session) {
+        session._deleted = true;
+        if (session.sock?.ev) {
+          try { session.sock.ev.removeAllListeners(); } catch (err) { /* ignore */ }
+        }
+        if (session.sock) {
+          try { session.sock.end(undefined); } catch (err) { /* ignore */ }
+        }
       }
       // Bekleyen history-sync sessizlik zamanlayicisini iptal et — yoksa
       // silme sonrasi hayalet `session_sync_completed` / `history_sync_completed`
