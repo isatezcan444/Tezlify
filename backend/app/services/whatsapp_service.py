@@ -892,6 +892,7 @@ async def _bulk_upsert_contacts(
     for c in res.scalars().all():
         by_phone.setdefault(str(c.phone_e164), c)
     out: List[Tuple[str, Contact]] = []
+    pending_contacts: List[Contact] = []
     for jid_str, phone, name, source, avatar in resolved:
         contact = by_phone.get(phone)
         if contact is None and phone.startswith("jid:"):
@@ -911,13 +912,19 @@ async def _bulk_upsert_contacts(
             if name and str(source or "") in _NAME_RANK:
                 contact.custom_attributes = {"name_source": str(source)}
             by_phone[phone] = contact
-            db.add(contact)
+            # Add only after the SAVEPOINT is opened below. SQLAlchemy flushes
+            # pending objects when entering begin_nested(); adding here would
+            # execute the INSERT outside the savepoint and poison the session
+            # on a concurrent uq_contact_user_phone race.
+            pending_contacts.append(contact)
         else:
             _set_contact_name(contact, name, source)
         _set_contact_avatar(contact, avatar)
         out.append((jid_str, contact))
     try:
         async with db.begin_nested():
+            for contact in pending_contacts:
+                db.add(contact)
             await db.flush()
     except IntegrityError:
         # Es zamanli diger transaction veya gateway olayi (orn: conversation_updated)
@@ -964,6 +971,7 @@ async def _ensure_conversations_bulk(
         for conv in res.scalars().all():
             by_contact.setdefault(int(conv.contact_id), conv)
     out: List[Tuple[str, Contact, Conversation]] = []
+    pending_conversations: List[Conversation] = []
     for jid_str, contact in contacts:
         conv = by_contact.get(contact.id) if contact.id is not None else None
         if conv is None:
@@ -984,13 +992,18 @@ async def _ensure_conversations_bulk(
             )
             if contact.id is not None:
                 by_contact[contact.id] = conv
-            db.add(conv)
+            # Keep the INSERT inside the savepoint; begin_nested() performs an
+            # unconditional flush on entry and must not see this object before
+            # the savepoint exists.
+            pending_conversations.append(conv)
         elif session_id is not None and conv.session_id is None:
             # Eski (hat bagi olmayan) satiri ilk gorulen hatta bagla.
             conv.session_id = session_id
         out.append((jid_str, contact, conv))
     try:
         async with db.begin_nested():
+            for conv in pending_conversations:
+                db.add(conv)
             await db.flush()
     except IntegrityError:
         # Es zamanli diger islem sohbeti olusturdu. DB'den yeniden cek.
@@ -1065,9 +1078,12 @@ async def _upsert_contact(
         )
         if display_name and str(name_source or "") in _NAME_RANK:
             contact.custom_attributes = {"name_source": str(name_source)}
-        db.add(contact)
         try:
             async with db.begin_nested():
+                # `begin_nested()` flushes pending state on entry. Registering
+                # the candidate inside the context guarantees a concurrent
+                # unique-key violation is contained by the SAVEPOINT.
+                db.add(contact)
                 await db.flush()
         except IntegrityError:
             # Es zamanli ikinci yazici ayni kisiyi araya girip olusturdu
