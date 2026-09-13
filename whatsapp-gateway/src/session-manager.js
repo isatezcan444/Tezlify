@@ -600,6 +600,18 @@ export function createSessionManager({
     if (leaseRepository) await leaseRepository.release(session.id, instanceId);
   }
 
+  function clearSessionMedia(sessionId) {
+    for (const [mediaId, entry] of mediaIndex) {
+      if (entry?.sessionId !== String(sessionId)) continue;
+      try {
+        if (entry.filePath && fs.existsSync(entry.filePath)) fs.rmSync(entry.filePath, { force: true });
+      } catch (err) {
+        logger.warn({ err, mediaId }, 'Session media cleanup failed');
+      }
+      mediaIndex.delete(mediaId);
+    }
+  }
+
   async function deactivatePersistentSession(sessionId) {
     if (!authRepository) return;
     // A remote logout/badSession is authoritative. Remove credentials before
@@ -879,6 +891,7 @@ export function createSessionManager({
       // (Eski global modelde veriler süresiz duruyor ve yeniden eşleşen
       // BAŞKA bir hesabın istekleriyle karışabiliyordu.)
       session.store = createSessionStore();
+      clearSessionMedia(id);
       resetRetryCounterCache(id);
       // Remove persisted auth state
       if (authRepository) {
@@ -919,12 +932,7 @@ export function createSessionManager({
       resetRetryCounterCache(id);
       // Oturumun bellek deposu ve indirilmiş medyası da bırakılır.
       if (session) session.store = null;
-      for (const [mediaId, entry] of mediaIndex) {
-        if (entry?.sessionId !== String(id)) continue;
-        try { if (entry.filePath && fs.existsSync(entry.filePath)) fs.rmSync(entry.filePath, { force: true }); }
-        catch (err) { logger.warn({ err, mediaId }, 'Medya dosyasi silinemedi'); }
-        mediaIndex.delete(mediaId);
-      }
+      clearSessionMedia(id);
       const dir = getSessionDir(sessionsDir, id);
       if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
     },
@@ -2173,6 +2181,8 @@ export function createSessionManager({
             session.updated_at = new Date().toISOString();
             await releaseLease(session);
             await deactivatePersistentSession(id);
+            session.store = createSessionStore();
+            clearSessionMedia(id);
             resetRetryCounterCache(id);
             emitEvent({ event: 'session_disconnected', session_id: id, session_name: session.session_name, reason: isBanned ? 'BANNED' : 'LOGGED_OUT' });
           } else {
