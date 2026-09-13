@@ -22,6 +22,10 @@ const sm = createSessionManager({
   backendWsUrl: '',
 });
 
+// Oturum kapsamli API (guvenlik duzeltmesi): her cagri hangi hatta ait
+// oldugunu acikca soyler. Testler icin soketsiz bir oturum kaydi acilir.
+const SID = (await sm.createSession('test-hat', { autoStart: false })).id;
+
 const JID_A = '905321002030@s.whatsapp.net';
 const JID_B = '905339998877@s.whatsapp.net';
 const JID_G = '120363012345678901@g.us';
@@ -29,18 +33,18 @@ const JID_G = '120363012345678901@g.us';
 // --- Bos bellek: probe sekli (limit=1) yine gecerli sozlesme doner ---
 
 check('empty store: listAllMessages returns contract shape (messages/total/offset/limit)', () => {
-  const res = sm.listAllMessages({ limit: 1, offset: 0 });
+  const res = sm.listAllMessages(SID, { limit: 1, offset: 0 });
   assert.deepEqual(res, { messages: [], total: 0, offset: 0, limit: 1 });
 });
 
 // --- Sohbetler arasi flatten: tek kaynak, kayip/kopya yok ---
 
 check('flatten across chats: every stored message appears exactly once', () => {
-  for (let i = 0; i < 3; i += 1) sm._recordOutbound(JID_A, { body: `a${i}`, wa_message_id: `wamid_a${i}`, message_type: 'TEXT', status: 'SENT' });
-  for (let i = 0; i < 2; i += 1) sm._recordOutbound(JID_B, { body: `b${i}`, wa_message_id: `wamid_b${i}`, message_type: 'TEXT', status: 'SENT' });
-  sm._recordOutbound(JID_G, { body: `g0`, wa_message_id: 'wamid_g0', message_type: 'TEXT', status: 'SENT' });
+  for (let i = 0; i < 3; i += 1) sm._recordOutbound(JID_A, { body: `a${i}`, wa_message_id: `wamid_a${i}`, message_type: 'TEXT', status: 'SENT' }, SID);
+  for (let i = 0; i < 2; i += 1) sm._recordOutbound(JID_B, { body: `b${i}`, wa_message_id: `wamid_b${i}`, message_type: 'TEXT', status: 'SENT' }, SID);
+  sm._recordOutbound(JID_G, { body: `g0`, wa_message_id: 'wamid_g0', message_type: 'TEXT', status: 'SENT' }, SID);
 
-  const all = sm.listAllMessages({ limit: 1000, offset: 0 });
+  const all = sm.listAllMessages(SID, { limit: 1000, offset: 0 });
   assert.equal(all.total, 6);
   assert.equal(all.messages.length, 6);
   const ids = all.messages.map((m) => m.wa_message_id).sort();
@@ -50,12 +54,12 @@ check('flatten across chats: every stored message appears exactly once', () => {
 // --- Deterministik offset sayfalamasi: birlesim = tam liste, kesisim bos ---
 
 check('paging is deterministic: pages tile the full list with no gaps/overlaps', () => {
-  const total = sm.listAllMessages({ limit: 1, offset: 0 }).total;
+  const total = sm.listAllMessages(SID, { limit: 1, offset: 0 }).total;
   const seen = [];
   let offset = 0;
   let guard = 0;
   while (offset < total && guard < 100) {
-    const page = sm.listAllMessages({ limit: 2, offset });
+    const page = sm.listAllMessages(SID, { limit: 2, offset });
     assert.equal(page.total, total);
     assert.equal(page.offset, offset);
     assert.equal(page.limit, 2);
@@ -71,7 +75,7 @@ check('paging is deterministic: pages tile the full list with no gaps/overlaps',
 // --- Sayfa kaydirma sinirlari: offset >= total -> bos sayfa, total dogru ---
 
 check('offset past end returns empty page but true total', () => {
-  const res = sm.listAllMessages({ limit: 1000, offset: 9999 });
+  const res = sm.listAllMessages(SID, { limit: 1000, offset: 9999 });
   assert.deepEqual(res.messages, []);
   assert.equal(res.total, 6);
 });
@@ -79,7 +83,7 @@ check('offset past end returns empty page but true total', () => {
 // --- Kayit semasi: backend _message_row_from_gateway alanlarini tuketir ---
 
 check('record shape: bulk rows carry backend-consumable fields (no raw WA objects)', () => {
-  const page = sm.listAllMessages({ limit: 1000, offset: 0 });
+  const page = sm.listAllMessages(SID, { limit: 1000, offset: 0 });
   for (const m of page.messages) {
     assert.ok(typeof m.conversation_id === 'string' && m.conversation_id.includes('@'));
     assert.equal(m.direction, 'OUTBOUND');

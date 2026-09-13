@@ -20,6 +20,7 @@ from backend.app.core.migrations import (
     purge_whatsapp_schema,
     ensure_leads_phone_nullable,
     ensure_contacts_table,
+    ensure_contacts_unique_phone,
     ensure_conversations_columns,
     ensure_messages_media_columns,
     ensure_message_status_enum,
@@ -84,6 +85,7 @@ async def lifespan(app: FastAPI):
     await purge_whatsapp_schema(engine)
     await ensure_leads_phone_nullable(engine)
     await ensure_contacts_table(engine)
+    await ensure_contacts_unique_phone(engine)
     await ensure_conversations_columns(engine)
     await ensure_messages_media_columns(engine)
     await ensure_message_status_enum(engine)

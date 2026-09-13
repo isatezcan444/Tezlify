@@ -53,10 +53,30 @@ def decode_jwt_unverified(token: str) -> dict:
         )
 
 
+def _is_dev_or_test_context() -> bool:
+    """Geliştirme/test bağlamı mı? (pytest koşuyor ya da SECRET_KEY hâlâ
+    varsayılan geliştirme değerinde). Üretimde ikisi de doğru olmaz."""
+    return (
+        os.getenv("PYTEST_CURRENT_TEST") is not None
+        or settings.SECRET_KEY == "dev-only-insecure-secret-key"
+    )
+
+
+_unverified_jwt_warned = False
+
+
 def verify_and_decode_jwt(token: str) -> dict:
-    """
-    Validates and decodes JWT token with cryptographic signature verification and expiration checks.
-    Uses Supabase JWT secret if configured; strictly enforces expiration claims.
+    """JWT'yi kriptografik imza + son kullanma doğrulamasıyla çözer.
+
+    FAIL-CLOSED (güvenlik düzeltmesi): `SUPABASE_JWT_SECRET` ayarlıysa imza
+    doğrulanır. Ayarlı DEĞİLSE token yalnızca geliştirme/test bağlamında ya da
+    `ALLOW_UNVERIFIED_JWT=True` ile açıkça izin verildiğinde kabul edilir;
+    üretimde 401 ile reddedilir.
+
+    Gerekçe: imza doğrulanmadığında `sub` (kullanıcı kimliği) istemci
+    tarafından serbestçe uydurulabilir. Bu, servis katmanındaki tüm
+    `get_user_filter` tenant izolasyonunu (WhatsApp sohbetleri, mesajlar,
+    medya ve mesaj gönderimi dahil) etkisiz kılar.
     """
     import time
     import jwt as pyjwt
@@ -83,6 +103,28 @@ def verify_and_decode_jwt(token: str) -> dict:
                 detail=f"Geçersiz token imzası: {str(e)}",
                 headers={"WWW-Authenticate": "Bearer"},
             )
+
+    # İmza anahtarı yok: üretimde KABUL EDİLMEZ (fail-closed).
+    allow_unverified = bool(getattr(settings, "ALLOW_UNVERIFIED_JWT", False))
+    if not allow_unverified and not _is_dev_or_test_context():
+        logger.error(
+            "SUPABASE_JWT_SECRET ayarlı değil — JWT imzası doğrulanamıyor ve istek "
+            "REDDEDİLDİ. Üretimde bu değişkeni ayarlayın (Supabase Dashboard > "
+            "Settings > API > JWT Secret)."
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Sunucu kimlik doğrulaması yapılandırılmamış (JWT imza anahtarı eksik).",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    global _unverified_jwt_warned
+    if not _unverified_jwt_warned:
+        _unverified_jwt_warned = True
+        logger.warning(
+            "JWT imzası DOĞRULANMIYOR (SUPABASE_JWT_SECRET yok). Yalnızca "
+            "geliştirme/test için güvenlidir; kullanıcı kimliği uydurulabilir."
+        )
 
     # Standard decode with expiration validation
     payload = decode_jwt_unverified(token)
@@ -115,10 +157,7 @@ async def get_current_user(
     # If no token provided:
     if not token:
         # Check if running in test suite or development fallback mode
-        is_test_env = (
-            os.getenv("PYTEST_CURRENT_TEST") is not None
-            or settings.SECRET_KEY == "dev-only-insecure-secret-key"
-        )
+        is_test_env = _is_dev_or_test_context()
         if is_test_env:
             test_uid = request.headers.get("x-test-user-id") or request.headers.get("X-Test-User-Id")
             test_email = request.headers.get("x-test-user-email") or request.headers.get("X-Test-User-Email") or "dev@tezlify.com"
@@ -149,8 +188,12 @@ async def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # Decode Supabase JWT payload
-    payload = decode_jwt_unverified(token)
+    # Supabase JWT'sini İMZA + SON KULLANMA doğrulamasıyla çöz.
+    # (Önceden `decode_jwt_unverified` kullanılıyordu: imza hiç kontrol
+    # edilmediği için istemci `sub` alanını değiştirip başka bir kiracının
+    # WhatsApp sohbetlerini okuyabiliyor ve onun hattından mesaj
+    # gönderebiliyordu. `/ws` zaten doğrulanmış yolu kullanıyordu.)
+    payload = verify_and_decode_jwt(token)
     user_id = payload.get("sub")
     email = payload.get("email") or ""
 

@@ -62,13 +62,25 @@ Docker `HEALTHCHECK` bu endpoint'i 30s aralıklarla kontrol eder.
 | POST | `/sessions/:id/qr/refresh` | QR'ı yenile |
 | POST | `/sessions/:id/logout` | Oturumu kapat |
 | DELETE | `/sessions/:id` | Oturumu sil |
-| GET | `/contacts` | Senkronize edilmiş kişiler |
-| GET | `/conversations?search=&limit=&offset=` | Sohbet listesi |
-| GET | `/conversations/:jid/messages?limit=&before=` | Sohbet mesajları |
-| POST | `/conversations/:jid/messages` | Metin gönder (`{ "body": "..." }`) |
-| POST | `/conversations/:jid/media` | Medya gönder |
-| POST | `/conversations/:jid/read` | Okundu işaretle |
-| GET | `/media/:mediaId` | Medyayı indir |
+| GET | `/sessions/:sid/contacts` | Senkronize edilmiş kişiler |
+| GET | `/sessions/:sid/conversations?search=&limit=&offset=` | Sohbet listesi |
+| POST | `/sessions/:sid/conversations/sync-groups` | Grup başlıklarını toplu çöz |
+| GET | `/sessions/:sid/messages/bulk?limit=&offset=&since=&perChatLimit=` | Toplu geçmiş |
+| GET | `/sessions/:sid/conversations/:jid/messages?limit=&before=` | Sohbet mesajları |
+| POST | `/sessions/:sid/conversations/:jid/messages` | Metin gönder (`{ "body": "..." }`) |
+| POST | `/sessions/:sid/conversations/:jid/media` | Medya gönder |
+| POST | `/sessions/:sid/conversations/:jid/typing` | "yazıyor…" gönder |
+| POST | `/sessions/:sid/conversations/:jid/read` | Okundu işaretle |
+| GET | `/sessions/:sid/media/:mediaId` | Medyayı indir |
+
+> **Veri düzlemi oturum kapsamlıdır.** Bu uçlar eskiden oturumsuzdu
+> (`/contacts`, `/conversations/:jid/...`) ve gateway "bağlı olan tek oturumu"
+> seçiyordu. Çağıranın kimliği hiç sorulmadığı için bir kiracının isteği,
+> bağlı olan **başka bir kiracının** hattından veri okuyabiliyor ve o hattan
+> mesaj gönderebiliyordu. Artık kişiler/sohbetler/mesajlar her oturumun kendi
+> belleğinde (`session.store`) tutulur ve her istek hangi hattı kastettiğini
+> yolda açıkça belirtir. Backend, çağırmadan önce oturumun gerçekten o
+> kullanıcıya ait olduğunu doğrular.
 
 ## WebSocket
 

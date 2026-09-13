@@ -20,23 +20,46 @@ import pino from 'pino';
 const logger = pino({ level: process.env.LOG_LEVEL || 'warn' });
 
 // ---------------------------------------------------------------------------
-// In-memory stores (single source of truth for the gateway process)
+// In-memory stores
+//
+// OTURUM BAZLI (güvenlik düzeltmesi): kişiler, sohbetler, mesajlar, LID
+// eşleşmeleri ve ham mesaj deposu artık MODÜL SEVİYESİNDE GLOBAL DEĞİLDİR —
+// her biri ilgili `session` kaydının içinde yaşar (`session.store`).
+//
+// Önceki model bu Map'leri yalnızca JID ile anahtarlıyordu; birden fazla
+// WhatsApp hattı bağlandığında iki kiracının sohbetleri, rehberleri ve mesaj
+// geçmişi aynı haritada karışıyordu. Kod bunu `_assertUnambiguousScope()` ile
+// "1'den fazla oturum varsa isteği reddet" diyerek örtüyordu; yani sistem
+// fiilen tek hatlıydı ve tek hat bağlıyken BAŞKA bir kiracının isteği o hattın
+// verisini okuyup o hattan mesaj gönderebiliyordu. Store'lar oturuma taşınınca
+// hem bu sızıntı kapanır hem çok hatlı kullanım mümkün olur.
 // ---------------------------------------------------------------------------
 const sessions = new Map(); // id -> session record
-const contacts = new Map(); // jid -> contact
-const chats = new Map(); // jid -> chat summary
-// Faz 6e: WhatsApp'ın LID (Large Identity) dönemi — W:Contact app-state
-// yamaları ve bazı mesaj anahtarları artık telefon JID'i yerine
-// `xxx@lid` kimliğiyle anahtarlanır. Bu haritalar LID ↔ telefon JID
-// köprüsünü kurar; rehber adları böylece telefon-anahtarlı sohbetlere
-// işlenebilir (WhatsApp Web paritesi).
-const lidToJid = new Map(); // lid jid -> phone jid
-const jidToLid = new Map(); // phone jid -> lid jid
-// Faz 5: profil/grup resmi fetch durum takibi (retry storm önleme)
-const avatarFetchInFlight = new Set();
-const avatarFetchAttemptedAt = new Map(); // jid -> ms timestamp
-const messagesByChat = new Map(); // jid -> Message[]
-const mediaIndex = new Map(); // media_id -> { filePath, mimeType, filename, sizeBytes }
+
+// Medya indeksi süreç genelinde tek Map'tir ama her kayıt SAHİBİ oturumu
+// taşır; okuma her zaman sessionId ile doğrulanır (bkz. getMediaPath).
+const mediaIndex = new Map(); // media_id -> { sessionId, filePath, mimeType, filename, sizeBytes }
+
+/** Bir oturumun kendine ait bellek depoları. */
+function createSessionStore() {
+  return {
+    contacts: new Map(), // jid -> contact
+    chats: new Map(), // jid -> chat summary
+    messagesByChat: new Map(), // jid -> Message[]
+    // Faz 6e: WhatsApp'ın LID (Large Identity) dönemi — W:Contact app-state
+    // yamaları ve bazı mesaj anahtarları artık telefon JID'i yerine
+    // `xxx@lid` kimliğiyle anahtarlanır. Bu haritalar LID ↔ telefon JID
+    // köprüsünü kurar; rehber adları böylece telefon-anahtarlı sohbetlere
+    // işlenebilir (WhatsApp Web paritesi). Eşleşmeler hesaba özeldir.
+    lidToJid: new Map(), // lid jid -> phone jid
+    jidToLid: new Map(), // phone jid -> lid jid
+    // Faz 5: profil/grup resmi fetch durum takibi (retry storm önleme)
+    avatarFetchInFlight: new Set(),
+    avatarFetchAttemptedAt: new Map(), // jid -> ms timestamp
+    rawMessagesByChat: new Map(), // jid -> Map<waMessageId, proto.IMessage>
+    rawMessageCount: 0,
+  };
+}
 
 // Sorun (Render log: `failed to decrypt message | err=No session record` /
 // `Bad MAC`): Baileys, sifresi cozulemeyen bir mesaji kurtarmak icin gonderen
@@ -48,26 +71,25 @@ const mediaIndex = new Map(); // media_id -> { filePath, mimeType, filename, siz
 // sayida tutar; `getMessage(key)` buradan beslenir. Ham govde tutuldugu icin
 // `messagesByChat` kayitlari DEGISMEZ (onlar normalize edilmis kayitlardir).
 const RAW_MESSAGE_STORE_MAX = 2000;
-const rawMessagesByChat = new Map(); // jid -> Map<waMessageId, proto.IMessage>
-let rawMessageCount = 0;
 
-function rememberRawMessage(jid, id, message) {
-  if (!jid || !id || !message) return;
+function rememberRawMessage(store, jid, id, message) {
+  if (!store || !jid || !id || !message) return;
+  const { rawMessagesByChat } = store;
   let byId = rawMessagesByChat.get(jid);
   if (!byId) {
     byId = new Map();
     rawMessagesByChat.set(jid, byId);
   }
-  if (!byId.has(id)) rawMessageCount += 1;
+  if (!byId.has(id)) store.rawMessageCount += 1;
   byId.set(id, message);
   // Sinirli bellek: en eski kayitlar FIFO atilir (per-chat 500 mesaj siniriyla
   // ayni ruh — sinirsiz buyume yok).
   if (byId.size > 500) {
     const oldest = byId.keys().next().value;
     byId.delete(oldest);
-    rawMessageCount -= 1;
+    store.rawMessageCount -= 1;
   }
-  while (rawMessageCount > RAW_MESSAGE_STORE_MAX) {
+  while (store.rawMessageCount > RAW_MESSAGE_STORE_MAX) {
     const firstChat = rawMessagesByChat.keys().next().value;
     const firstMap = rawMessagesByChat.get(firstChat);
     if (!firstMap || firstMap.size === 0) {
@@ -76,13 +98,14 @@ function rememberRawMessage(jid, id, message) {
     }
     const oldest = firstMap.keys().next().value;
     firstMap.delete(oldest);
-    rawMessageCount -= 1;
+    store.rawMessageCount -= 1;
     if (firstMap.size === 0) rawMessagesByChat.delete(firstChat);
   }
 }
 
-function lookupRawMessage(key) {
-  if (!key?.remoteJid || !key?.id) return undefined;
+function lookupRawMessage(store, key) {
+  if (!store || !key?.remoteJid || !key?.id) return undefined;
+  const { rawMessagesByChat, lidToJid, jidToLid } = store;
   const direct = rawMessagesByChat.get(key.remoteJid)?.get(key.id);
   if (direct) return direct;
   // LID ↔ telefon köprüsü: ayni mesaj her iki anahtar altinda da aranir.
@@ -188,14 +211,15 @@ function asPn(v) {
 }
 
 // LID ↔ telefon çiftini kalıcı olarak öğren; ilk kez görülüyorsa true döner
-// (çağıran taraf bekleyen LID kayıtlarını telefona taşır).
-function rememberLidPair(lid, phoneJid) {
+// (çağıran taraf bekleyen LID kayıtlarını telefona taşır). Eşleşmeler
+// OTURUMA ÖZELDİR — bir hesabın LID haritası başka hesabın JID'lerini çözmez.
+function rememberLidPair(store, lid, phoneJid) {
   const l = asLid(lid);
   const p = asPn(phoneJid);
-  if (!l || !p || !isLidJid(l) || isLidJid(p)) return false;
-  if (lidToJid.get(l) === p) return false;
-  lidToJid.set(l, p);
-  jidToLid.set(p, l);
+  if (!store || !l || !p || !isLidJid(l) || isLidJid(p)) return false;
+  if (store.lidToJid.get(l) === p) return false;
+  store.lidToJid.set(l, p);
+  store.jidToLid.set(p, l);
   return true;
 }
 
@@ -389,14 +413,18 @@ function summarizeWaMessage(waMsg) {
   return { message_type: classifyMessageType(content), body: text };
 }
 
-function normalizeJid(jid) {
+// Oturumun LID haritasına göre JID'i kanonik anahtara çözer.
+// (Eski adı `normalizeJid`; artık store parametresi ZORUNLU — `_connectSocket`
+// içinde `normalizeJid` adıyla store'a bağlı yerel bir sarmalayıcı tanımlanır,
+// böylece soket işleyicilerinin gövdesi değişmeden çalışır.)
+function resolveJidKey(store, jid) {
   if (!jid) return jid;
   if (jid.includes('@g.us')) return jid; // group
   // LID kimliği eşleşmesi biliniyorsa telefon JID'ine çöz — sohbetler,
   // kişiler ve mesajlar her zaman telefon anahtarıyla tutulur (WhatsApp
   // Web paritesi: rehber adı telefon-anahtarlı sohbete işlenir).
   if (isLidJid(jid)) {
-    const phone = lidToJid.get(jid);
+    const phone = store?.lidToJid.get(jid);
     return phone || jid;
   }
   if (jid.includes('@s.whatsapp.net')) return jid;
@@ -527,7 +555,7 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       return sessions.get(id) || null;
     },
 
-    async createSession(name) {
+    async createSession(name, { autoStart = true } = {}) {
       const id = uuidv4();
       const session = {
         id,
@@ -548,9 +576,13 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
         sock: null,
+        // Bu hesaba ait kişiler/sohbetler/mesajlar yalnızca burada yaşar.
+        store: createSessionStore(),
       };
       sessions.set(id, session);
-      this._startSocket(id);
+      // `autoStart: false` yalnızca birim testleri içindir: Baileys soketi
+      // açılmadan oturum kaydı + deposu oluşur.
+      if (autoStart) this._startSocket(id);
       return this.getSession(id);
     },
 
@@ -656,6 +688,10 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
         session._historyQuietTimer = null;
       }
       session.updated_at = new Date().toISOString();
+      // Hattan çıkıldı: bu hesabın sohbet/kişi/mesaj belleği de bırakılır.
+      // (Eski global modelde veriler süresiz duruyor ve yeniden eşleşen
+      // BAŞKA bir hesabın istekleriyle karışabiliyordu.)
+      session.store = createSessionStore();
       // Remove persisted auth state
       const dir = getSessionDir(sessionsDir, id);
       if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
@@ -676,6 +712,14 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
         session._historyQuietTimer = null;
       }
       sessions.delete(id);
+      // Oturumun bellek deposu ve indirilmiş medyası da bırakılır.
+      if (session) session.store = null;
+      for (const [mediaId, entry] of mediaIndex) {
+        if (entry?.sessionId !== String(id)) continue;
+        try { if (entry.filePath && fs.existsSync(entry.filePath)) fs.rmSync(entry.filePath, { force: true }); }
+        catch (err) { logger.warn({ err, mediaId }, 'Medya dosyasi silinemedi'); }
+        mediaIndex.delete(mediaId);
+      }
       const dir = getSessionDir(sessionsDir, id);
       if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
       emitEvent({ event: 'session_deleted', session_id: id });
@@ -684,12 +728,11 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
     // -----------------------------------------------------------------------
     // Contacts
     // -----------------------------------------------------------------------
-    listContacts() {
-      // Faz 13: `contacts` global Map'tir (JID anahtarli) — birden fazla
-      // oturum bagliyken rehberler karisir. Belirsizlikte reddet.
-      this._assertUnambiguousScope();
+    listContacts(sessionId) {
+      const session = this._requireSession(sessionId);
+      const { contacts } = this._storeOf(session);
       // Telefon kimliği henüz çözülememiş LID-bekletme kayıtlarını dışarı
-      // verme — eşleşme öğrenilince _migrateLidToPhone telefona taşır.
+      // verme — eşleşme öğrenilince _applyLidMapping telefona taşır.
       return [...contacts.values()]
         .filter((c) => !isLidJid(c.id))
         .map((c) => ({ ...c }));
@@ -698,10 +741,10 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
     // -----------------------------------------------------------------------
     // Conversations
     // -----------------------------------------------------------------------
-    listConversations({ search, limit, offset } = {}) {
-      // Faz 13: `chats` global Map'tir (JID anahtarli) — birden fazla oturum
-      // bagliyken sohbetler karisir. Belirsizlikte reddet.
-      this._assertUnambiguousScope();
+    listConversations(sessionId, { search, limit, offset } = {}) {
+      const session = this._requireSession(sessionId);
+      const store = this._storeOf(session);
+      const { chats, contacts } = store;
       // Eşleşmesi henüz çözülememiş LID-anahtarlı sohbetleri dışarı verme —
       // telefon eşleşmesi öğrenilince _applyLidMapping onları telefona taşır
       // (WhatsApp Web'de ham `xxx@lid` başlığı görünmez).
@@ -724,7 +767,7 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       // senkronu sohbet kaydindan sonra gelmis olabilir — sidebar paritesi).
       return {
         items: list.map((c) => {
-          const contact = contacts.get(c.jid) || contacts.get(normalizeJid(c.jid));
+          const contact = contacts.get(c.jid) || contacts.get(resolveJidKey(store, c.jid));
           if (contact?.name && contact.name !== c.name) {
             const rankNew = NAME_RANK[contact.name_source] || 0;
             const rankCur = NAME_RANK[c.name_source] || (c.name && /^\+\d+$/.test(c.name) ? 0 : NAME_RANK.history);
@@ -740,9 +783,11 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       };
     },
 
-    async getMessages(jid, { limit = 50, before } = {}) {
-      const key = normalizeJid(jid);
-      let list = messagesByChat.get(key) || [];
+    async getMessages(sessionId, jid, { limit = 50, before } = {}) {
+      const session = this._requireSession(sessionId);
+      const store = this._storeOf(session);
+      const key = resolveJidKey(store, jid);
+      let list = store.messagesByChat.get(key) || [];
       if (before) {
         list = list.filter((m) => m.id < before);
       }
@@ -770,10 +815,9 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
     // basi ~50 mesajla sinirli kalir; daha eskileri backend kaydirma
     // sirasinda lazy hydration ile ceker. `total` bu sinirli kume sayisidir
     // — backend sayfalama dongusu icin tutarli gorunum.
-    listAllMessages({ limit = 1000, offset = 0, since = null, perChatLimit = null } = {}) {
-      // Faz 13: `messagesByChat` global Map'tir (JID anahtarli) — birden fazla
-      // oturum bagliyken mesaj gecmisi karisir. Belirsizlikte reddet.
-      this._assertUnambiguousScope();
+    listAllMessages(sessionId, { limit = 1000, offset = 0, since = null, perChatLimit = null } = {}) {
+      const session = this._requireSession(sessionId);
+      const { messagesByChat } = this._storeOf(session);
       const sinceMs = Number.isFinite(Number(since)) && since !== null && since !== ''
         ? Number(since) * 1000
         : null;
@@ -809,9 +853,9 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
     // -----------------------------------------------------------------------
     // Sending
     // -----------------------------------------------------------------------
-    async sendTextMessage(jid, body, client_message_id) {
-      const session = this._getConnectedSession();
-      const key = normalizeJid(jid);
+    async sendTextMessage(sessionId, jid, body, client_message_id) {
+      const session = this._requireConnectedSession(sessionId);
+      const key = resolveJidKey(this._storeOf(session), jid);
       const result = await session.sock.sendMessage(key, { text: body });
       const msg = this._recordOutbound(key, {
         body,
@@ -823,9 +867,9 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       return msg;
     },
 
-    async sendMediaMessage(jid, { media_type, media_url, media_base64, mime_type, caption, filename, client_message_id }) {
-      const session = this._getConnectedSession();
-      const key = normalizeJid(jid);
+    async sendMediaMessage(sessionId, jid, { media_type, media_url, media_base64, mime_type, caption, filename, client_message_id }) {
+      const session = this._requireConnectedSession(sessionId);
+      const key = resolveJidKey(this._storeOf(session), jid);
       const type = (media_type || 'document').toLowerCase();
       // Base64 payload (frontend upload) wins over URL; Baileys accepts Buffers.
       const buffer = media_base64 ? Buffer.from(media_base64, 'base64') : null;
@@ -857,9 +901,9 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
     },
 
     // Faz 5: 'yazıyor…' presence güncellemesi (WhatsApp Web paritesi).
-    async sendTyping(jid, typing = true, durationMs = 4000) {
-      const session = this._getConnectedSession();
-      const key = normalizeJid(jid);
+    async sendTyping(sessionId, jid, typing = true, durationMs = 4000) {
+      const session = this._requireConnectedSession(sessionId);
+      const key = resolveJidKey(this._storeOf(session), jid);
       try {
         await session.sock.sendPresenceUpdate(typing ? 'composing' : 'paused', key);
       } catch (err) {
@@ -868,9 +912,10 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       return { success: true };
     },
 
-    async markConversationRead(jid) {
-      const session = this._getConnectedSession();
-      const key = normalizeJid(jid);
+    async markConversationRead(sessionId, jid) {
+      const session = this._requireConnectedSession(sessionId);
+      const { chats, messagesByChat } = this._storeOf(session);
+      const key = resolveJidKey(this._storeOf(session), jid);
       const isGroup = key.includes('@g.us');
       // Faz 13: okundu bilgisi WhatsApp'a ILETILEMEZSE basari DONMEYIZ — aksi
       // halde karsi taraf mesaji "okunmadi" gorurken UI "okundu" gosterir.
@@ -917,11 +962,17 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
     // -----------------------------------------------------------------------
     // Media
     // -----------------------------------------------------------------------
-    getMediaPath(mediaId) {
-      return mediaIndex.get(mediaId)?.filePath || null;
+    // Medya yalnızca onu indiren oturuma servis edilir: `media_id` tahmin
+    // edilemez bir UUID olsa da, sahiplik kontrolü olmadan bir kiracının
+    // medya kimliğini ele geçiren başka bir kiracı dosyayı çekebilirdi.
+    getMediaPath(sessionId, mediaId) {
+      const entry = mediaIndex.get(mediaId);
+      if (!entry) return null;
+      if (!sessionId || entry.sessionId !== String(sessionId)) return null;
+      return entry.filePath || null;
     },
 
-    async storeIncomingMedia(waMessage, sock) {
+    async storeIncomingMedia(session, waMessage, sock) {
       try {
         // Sorun (Render log: `Failed to store incoming media | err=No message
         // present`, 5 kez): `downloadMediaMessage` TAM WAMessage bekler —
@@ -953,6 +1004,7 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
         const filePath = path.join(mediaDir, `${mediaId}.${ext}`);
         fs.writeFileSync(filePath, buffer);
         mediaIndex.set(mediaId, {
+          sessionId: String(session?.id || ''),
           filePath,
           mimeType,
           filename,
@@ -968,52 +1020,56 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
     // -----------------------------------------------------------------------
     // Internal
     // -----------------------------------------------------------------------
-    // Faz 13 (tenant izolasyonu): gateway veri modeli (contacts / chats /
-    // messagesByChat) MODUL SEVIYESINDE GLOBAL'dir ve yalnizca JID ile
-    // anahtarlanir — oturum bazli DEGILDIR. Bu yuzden birden fazla oturum
-    // bagliyken "birini secmek" sessizce YANLIS hesaptan mesaj gondermek,
-    // sohbetleri karistirmak ve bir kiracinin verisini digerine sizdirmak
-    // demektir. Belirsizlik varsa fail-closed davranip ACIK hata firlatiriz:
-    // sessiz veri bozulmasi yerine gorunur hata tercih edilir.
-    _getConnectedSession() {
-      const connected = [...sessions.values()].filter((s) => s.status === 'CONNECTED' && s.sock);
-      if (connected.length === 0) {
-        throw new Error('Bagli bir WhatsApp oturumu yok. Lutfen once QR ile eslestirin.');
-      }
-      if (connected.length > 1) {
-        throw new Error(
-          `Birden fazla WhatsApp oturumu bagli (${connected.length}). Gateway veri modeli oturum bazli ` +
-            'olmadigi icin hangi hesabin kullanilacagi belirsizdir; yanlis hesaptan gonderimi ve ' +
-            'kiracilar arasi veri karismasini onlemek icin islem REDDEDILDI.'
-        );
-      }
-      return connected[0];
+    // Oturum çözümleme (güvenlik düzeltmesi): her veri/gönderim çağrısı HANGİ
+    // oturuma ait olduğunu AÇIKÇA söyler. Önceki `_getConnectedSession()` /
+    // `_assertUnambiguousScope()` çifti "tek bağlı oturumu seç" davranışıyla
+    // çağıranın kimliğini hiç sormuyordu; bu yüzden bir kiracının isteği
+    // bağlı olan TEK hattın (başka bir kiracıya ait olsa bile) verisini okuyup
+    // o hattan mesaj gönderebiliyordu. Artık kimlik zorunludur ve store'lar
+    // oturuma ait olduğu için karışma fiziksel olarak mümkün değildir.
+    _requireSession(sessionId) {
+      if (!sessionId) throw new Error('session_id is required');
+      const session = sessions.get(String(sessionId));
+      if (!session) throw new Error('Session not found');
+      return session;
     },
 
-    // Salt-okuma toplu uclari icin ayni belirsizlik kapisi: /contacts,
-    // /conversations ve /messages/bulk oturum bazli filtrelenmedigi icin
-    // birden fazla bagli oturumda kiracilar arasi veri karismasi kacinilmazdir.
-    _assertUnambiguousScope() {
-      const connected = [...sessions.values()].filter((s) => s.status === 'CONNECTED' && s.sock);
-      if (connected.length > 1) {
+    _requireConnectedSession(sessionId) {
+      const session = this._requireSession(sessionId);
+      if (session.status !== 'CONNECTED' || !session.sock) {
         throw new Error(
-          `Birden fazla WhatsApp oturumu bagli (${connected.length}). Toplu okuma uclari ` +
-            '(/contacts, /conversations, /messages/bulk) oturum bazli filtrelenmedigi icin ' +
-            'kiracilar arasi veri karismasini onlemek uzere REDDEDILDI.'
+          'Bu WhatsApp oturumu bagli degil. Lutfen once QR ile eslestirin.'
         );
       }
+      return session;
+    },
+
+    /** Oturum nesnesi ya da id kabul eder — iç çağrılar nesne, testler id verir. */
+    _sess(sessionOrId) {
+      if (sessionOrId && typeof sessionOrId === 'object') return sessionOrId;
+      return this._requireSession(sessionOrId);
+    },
+
+    /** Oturumun bellek deposu (yoksa tembel oluşturulur). */
+    _storeOf(sessionOrId) {
+      const session = this._sess(sessionOrId);
+      if (!session.store) session.store = createSessionStore();
+      return session.store;
     },
 
     // Faz 10 (P3): messages.upsert olayini (gelen + telefondan gonderilen)
     // kalici gateway kaydina cevirir, messagesByChat'e ekler, sohbeti tazeler
     // ve `message_new` yayar. Test edilebilirlik icin handler'dan ayrildi.
     // Doner: kaydedilen record; atlanirsa null.
-    async _ingestUpsertMessage(msg, sock, sessionId = null) {
+    async _ingestUpsertMessage(msg, sock, sessionId) {
       // Faz 13: bu mesaj belirli bir oturumun soketinden geldi — olaylar
       // `gateway_session_id` tasimali ki backend sahibi TAHMIN ETMESIN.
-      const emitEvent = sessionId
-        ? (event) => sessionManager._emit({ gateway_session_id: sessionId, ...event })
-        : (event) => sessionManager._emit(event);
+      // Oturum kimligi artik ZORUNLU: mesaj o hesabin deposuna yazilir.
+      const session = this._requireSession(sessionId);
+      const store = this._storeOf(session);
+      const { contacts, chats, messagesByChat } = store;
+      const normalizeJid = (jid) => resolveJidKey(store, jid);
+      const emitEvent = (event) => sessionManager._emit({ gateway_session_id: sessionId, ...event });
       // Faz 10 (P3): telefondan (gateway API'si DIŞINDAN) gonderilen mesajlar
       // de messages.upsert ile fromMe=true olarak gelir. Eskiden bunlar
       // `continue` ile atiliyordu → "Sg" gibi kullanıcının kendi gonderdigi
@@ -1032,10 +1088,10 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       // — eşleşmeyi kalıcı olarak öğren (remoteJid @lid ise sohbet de
       // normalizeJid ile telefona çözülür).
       if (msg.key?.senderLid && msg.key?.senderPn) {
-        this._applyLidMapping(msg.key.senderLid, msg.key.senderPn);
+        this._applyLidMapping(session, msg.key.senderLid, msg.key.senderPn);
       }
       if (msg.key?.participantLid && msg.key?.participantPn) {
-        this._applyLidMapping(msg.key.participantLid, msg.key.participantPn);
+        this._applyLidMapping(session, msg.key.participantLid, msg.key.participantPn);
       }
       const key = normalizeJid(jid);
       if (isBroadcastOnlyJid(key)) return null;
@@ -1057,7 +1113,7 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       // `getMessage` uzerinden buradan okuyup gonderen taraftan yeniden
       // gonderim ister. Boylece mesaj kalici olarak kaybolmaz.
       if (msg.key?.id && msg.message) {
-        rememberRawMessage(key, msg.key.id, msg.message);
+        rememberRawMessage(store, key, msg.key.id, msg.message);
       }
       const contact = contacts.get(key);
       const isGroup = jid.includes('@g.us');
@@ -1072,7 +1128,7 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
         // Boom('No message present') ile dusuyordu. Tam mesaj gecilir —
         // sarmalayici cozumu (viewOnce/ephemeral/documentWithCaption) ve
         // "medya yok" karari artik `storeIncomingMedia` icinde verilir.
-        mediaInfo = await this.storeIncomingMedia(msg, sock);
+        mediaInfo = await this.storeIncomingMedia(session, msg, sock);
       }
       const record = {
         id: Date.now() + Math.floor(Math.random() * 1000),
@@ -1091,19 +1147,19 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
         // Faz 8 (§13): başlık kimliği de Contact çözücüsünden geçer —
         // rehber adı > pushName > telefon; ham JID ad olarak yayılmaz.
         // Faz 10 (P3): telefondan gonderilen mesajin gondereni 'ME'dir.
-        sender_name: fromMe ? 'ME' : sessionManager._resolveDisplayName(key, msg.pushName),
+        sender_name: fromMe ? 'ME' : sessionManager._resolveDisplayName(session, key, msg.pushName),
         sender_name_source: fromMe ? null : (contact?.name_source || null),
         participant_jid: msg.key?.participant || null,
         // Faz 8 (§13-14): grup göndereni Contact çözücüsünden geçer —
         // rehber/çözümlemedeki ad > pushName > telefon; ham JID asla ad olmaz.
-        participant_name: isGroup ? sessionManager._resolveDisplayName(msg.key?.participant, msg.pushName) : null,
+        participant_name: isGroup ? sessionManager._resolveDisplayName(session, msg.key?.participant, msg.pushName) : null,
         created_at: new Date((msg.messageTimestamp || Date.now()) * 1000).toISOString(),
       };
       if (!messagesByChat.has(key)) messagesByChat.set(key, []);
       messagesByChat.get(key).push(record);
       // Faz 10 (P2): paylasilan kural — "[IMAGE]" yerine tip etiketi,
       // gruplarda cozulmus gonderen on eki ("Ahmet: ...").
-      this._touchChat(key, buildChatPreview(record, isGroup), record.created_at);
+      this._touchChat(session, key, buildChatPreview(record, isGroup), record.created_at);
       // Update unread count (yalnizca GELEN mesajlar okunmamis sayilir)
       const chat = chats.get(key);
       if (chat && !fromMe) chat.unread_count = (chat.unread_count || 0) + 1;
@@ -1117,13 +1173,15 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       return record;
     },
 
-    _recordOutbound(jid, data, sessionId = null) {
+    _recordOutbound(jid, data, sessionId) {
       // Faz 13: gonderim belirli bir oturumun soketinden yapildi — olay
-      // `gateway_session_id` tasir, backend sahibi tahmin etmez.
-      const emitEvent = sessionId
-        ? (event) => sessionManager._emit({ gateway_session_id: sessionId, ...event })
-        : (event) => sessionManager._emit(event);
-      const key = normalizeJid(jid);
+      // `gateway_session_id` tasir, backend sahibi tahmin etmez. Oturum
+      // kimligi ZORUNLU: kayit o hesabin deposuna yazilir.
+      const session = this._requireSession(sessionId);
+      const store = this._storeOf(session);
+      const { messagesByChat } = store;
+      const emitEvent = (event) => sessionManager._emit({ gateway_session_id: session.id, ...event });
+      const key = resolveJidKey(store, jid);
       // Faz 10 (P3): messages.upsert fromMe kolu ayni mesaji (wa_message_id)
       // zaten kaydettiyse ikinci kayit + ikinci emitEvent YAPILMAZ.
       if (data.wa_message_id) {
@@ -1151,7 +1209,7 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       if (!messagesByChat.has(key)) messagesByChat.set(key, []);
       messagesByChat.get(key).push(msg);
       // Faz 10 (P2): govde bos olsa bile (medya) paylasilan kural tip etiketini uretir.
-      this._touchChat(key, buildChatPreview(msg, key.includes('@g.us')), msg.created_at);
+      this._touchChat(session, key, buildChatPreview(msg, key.includes('@g.us')), msg.created_at);
       emitEvent({
         event: 'message_new',
         conversation_id: key,
@@ -1163,8 +1221,14 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
     // Faz 6e: yeni bir LID ↔ telefon eşleşmesi öğrenildiğinde, LID anahtarı
     // altında bekletilen kişi/sohbet/mesaj kayıtlarını telefon anahtarına
     // taşır ve sidebar'ı rehber adıyla tazeler. mapping değişmediyse no-op.
-    _applyLidMapping(lid, phoneJid) {
-      if (!rememberLidPair(lid, phoneJid)) return;
+    _applyLidMapping(session, lid, phoneJid) {
+      session = this._sess(session);
+      const store = this._storeOf(session);
+      const { contacts, chats, messagesByChat } = store;
+      // Bu olaylar da `gateway_session_id` taşır: aksi halde backend sahibi
+      // çözemeyip olayı düşürüyordu (grup adları/LID taşımaları kaybolurdu).
+      const emitEvent = (event) => sessionManager._emit({ gateway_session_id: session.id, ...event });
+      if (!rememberLidPair(store, lid, phoneJid)) return;
       const lidKey = asLid(lid);
       const phoneKey = asPn(phoneJid);
       // 1. Bekleyen LID kişisini telefona taşı (mergeContactName önceliği korur).
@@ -1256,8 +1320,11 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       logger.warn({ lid: lidKey, jid: phoneKey }, 'LID→telefon eşleşmesi uygulandı');
     },
 
-    _touchChat(jid, preview, timestamp) {
-      const key = normalizeJid(jid);
+    _touchChat(session, jid, preview, timestamp) {
+      session = this._sess(session);
+      const store = this._storeOf(session);
+      const { chats, contacts } = store;
+      const key = resolveJidKey(store, jid);
       const existing = chats.get(key) || {};
       const contact = contacts.get(key);
       const newTs = timestamp || new Date().toISOString();
@@ -1285,34 +1352,25 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
         updated_at: new Date().toISOString(),
       });
       // Faz 5: sohbetin profil/grup resmi henüz yoksa arka planda çek.
-      if (!chats.get(key)?.avatar_url) void this._ensureChatAvatar(key);
+      if (!chats.get(key)?.avatar_url) void this._ensureChatAvatar(session, key);
     },
 
     // Faz 5: profil (veya grup) resmini Baileys'ten tembel tembel çekip
     // sohbet ve kişi kayıtlarına yazar; conversation_updated olayı yayınlar.
     // Resmi olmayan kişilerde profilePictureUrl hata fırlatır — sessizce geçilir
     // ve 10 dk boyunca yeniden denenmez (retry storm yok).
-    async _ensureChatAvatar(key) {
+    async _ensureChatAvatar(session, key) {
+      if (!session) return;
+      session = this._sess(session);
+      const store = this._storeOf(session);
+      const { chats, contacts, avatarFetchInFlight, avatarFetchAttemptedAt } = store;
       if (avatarFetchInFlight.has(key)) return;
       const lastAttempt = avatarFetchAttemptedAt.get(key) || 0;
       if (Date.now() - lastAttempt < 10 * 60 * 1000) return;
-      // Faz 13: oturum secimi burada acikca yapilir.
-      //  - 0 bagli oturum: avatar zenginlestirmesi SESSIZCE atlanir (normal
-      //    durum — QR bekleniyor). Log spam'i uretilmez.
-      //  - >1 bagli oturum: belirsizlik GERCEK bir sorundur (yanlis hesabin
-      //    resmi cekilebilir) — loglanir ve atlanir.
-      // Karar asagidaki `catch` blogunun DISINDA verilir; aksi halde
-      // belirsizlik hatasi "resim yok" gibi sessizce yutulurdu.
-      const connected = [...sessions.values()].filter((s) => s.status === 'CONNECTED' && s.sock);
-      if (connected.length === 0) return;
-      if (connected.length > 1) {
-        logger.warn(
-          { key, connected: connected.length },
-          'Avatar zenginlestirmesi atlandi (oturum belirsiz)'
-        );
-        return;
-      }
-      const session = connected[0];
+      // Avatar, sohbetin ait olduğu oturumun soketinden çekilir — "bağlı olan
+      // tek oturumu seç" tahmini yok. Oturum bağlı değilse sessizce atlanır
+      // (normal durum: QR bekleniyor).
+      if (session.status !== 'CONNECTED' || !session.sock) return;
       avatarFetchInFlight.add(key);
       avatarFetchAttemptedAt.set(key, Date.now());
       try {
@@ -1334,7 +1392,7 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       } catch {
         // Resim yok/erişilemiyor — normal durum, sessiz geç.
       } finally {
-        avatarFetchInFlight.delete(key);
+        store.avatarFetchInFlight.delete(key);
       }
     },
 
@@ -1351,31 +1409,31 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
     // fallback'i eklenir (sınırlı: en fazla 10 grup, 500 ms arayla — request
     // storm değil). Böylece `120363xxx@g.us` gibi isimsiz gruplar da gerçek
     // başlığına kavuşur; çözülemeyenler UI'da terminal "Grup" fallback'i görür.
-    async _ensureGroupSubjects({ force = false } = {}) {
-      // Faz 13 (tenant izolasyonu): bu metod GLOBAL `chats` / `contacts`
-      // haritalarini yazar ve bu haritalar oturum bazli DEGILDIR. Birden fazla
-      // oturum bagliyken "ilkini secmek" yanlis hesabin grup basliklarini
-      // diger kiracinin sohbetlerine yazar (sessiz veri karismasi). Bu yuzden
-      // belirsizlikte fail-closed davraniriz: hicbir sey yazilmaz ve cagirana
-      // ACIKCA bildirilir. Fire-and-forget cagrilar (`void ...`) oldugu icin
-      // firlatmak yerine sonuc dondurulur — unhandled rejection yaratmaz.
-      const connected = [...sessions.values()].filter((s) => s.status === 'CONNECTED' && s.sock);
-      if (connected.length === 0) return { applied: false, reason: 'no_session' };
-      if (connected.length > 1) {
-        logger.error(
-          { connected: connected.length },
-          'Grup basligi cozumleme REDDEDILDI: birden fazla oturum bagli ve gateway veri modeli oturum bazli degil'
-        );
-        return { applied: false, reason: 'ambiguous_scope' };
+    async _ensureGroupSubjects({ sessionId, force = false } = {}) {
+      // Grup başlıkları SADECE kendi oturumunun sohbetlerine yazılır. (Eski
+      // sürüm global haritalara yazdığı için birden fazla hat bağlıyken
+      // `ambiguous_scope` ile tamamen reddediliyordu; artık kapsam net.)
+      // Fire-and-forget çağrılar (`void ...`) olduğu için fırlatmak yerine
+      // sonuç döndürülür — unhandled rejection yaratmaz.
+      const session = sessionId ? sessions.get(String(sessionId)) : null;
+      if (!session) return { applied: false, reason: 'no_session' };
+      if (session.status !== 'CONNECTED' || !session.sock) {
+        return { applied: false, reason: 'no_session' };
       }
-      const session = connected[0];
+      const store = this._storeOf(session);
+      const { chats, contacts } = store;
+      // Faz 13 + düzeltme: bu olaylar `gateway_session_id` TAŞIR. Önceden
+      // modül seviyesindeki `emitEvent` kullanılıyordu; olay sahipsiz kaldığı
+      // için backend `EventOwnerUnresolved` ile düşürüyordu ve çözülen grup
+      // adları hiçbir zaman kalıcılaşmıyordu ("Grup" olarak kalıyordu).
+      const emitEvent = (event) => sessionManager._emit({ gateway_session_id: session.id, ...event });
       const last = session._groupSubjectsAt || 0;
       if (!force && Date.now() - last < 10 * 60 * 1000) return { applied: false, reason: 'throttled' };
       if (session._groupSubjectsInFlight) return { applied: false, reason: 'in_flight' };
       session._groupSubjectsInFlight = true;
       session._groupSubjectsAt = Date.now();
       const applySubject = (jid, subject) => {
-        const key = normalizeJid(jid);
+        const key = resolveJidKey(store, jid);
         const chat = chats.get(key);
         const contact = contacts.get(key);
         const rankCur = NAME_RANK[chat?.name_source] || 0;
@@ -1405,7 +1463,7 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
           const jid = meta?.id;
           const subject = typeof meta?.subject === 'string' ? meta.subject.trim() : '';
           if (!jid || !jid.includes('@g.us') || !subject) continue;
-          resolvedKeys.add(normalizeJid(jid));
+          resolvedKeys.add(resolveJidKey(store, jid));
           applySubject(jid, subject);
         }
       } catch (err) {
@@ -1417,7 +1475,7 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       // hedefli groupMetadata() fallback — sınırlı sayıda, kısa arayla.
       try {
         const unresolved = [...chats.values()].filter(
-          (c) => c.jid && c.jid.includes('@g.us') && !resolvedKeys.has(normalizeJid(c.jid)) && (isRawIdentityName(c.name) || !c.name)
+          (c) => c.jid && c.jid.includes('@g.us') && !resolvedKeys.has(resolveJidKey(store, c.jid)) && (isRawIdentityName(c.name) || !c.name)
         ).slice(0, 10);
         for (const chat of unresolved) {
           if (session._groupSubjectsInFlight === 'cancelled') break;
@@ -1439,9 +1497,11 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
     // Faz 8: bir JID için görüntülenecek adı çözer — contacts Map (rehber >
     // group subject > verified > history > push) → telefon → null. Ham jid/lid
     // ASLA ad olarak dönmez (§3: frontend/ad üretmez, backend çözümlü ad görür).
-    _resolveDisplayName(jid, fallbackPushName) {
-      const key = normalizeJid(jid);
-      const contact = key ? contacts.get(key) : null;
+    _resolveDisplayName(session, jid, fallbackPushName) {
+      session = this._sess(session);
+      const store = this._storeOf(session);
+      const key = resolveJidKey(store, jid);
+      const contact = key ? store.contacts.get(key) : null;
       if (contact?.name && !isRawIdentityName(contact.name)) return contact.name;
       if (fallbackPushName && !isRawIdentityName(fallbackPushName)) return fallbackPushName;
       const phone = jidToPhone(key);
@@ -1451,7 +1511,8 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
     // History sync mesajlarini (WAMessage) gateway Message kaydina cevirir.
     // Medya indirmesi yapilmaz (gizemli/sifreli history medyasi): tip + caption
     // kaydedilir, media_id bos kalir.
-    _historyMessageToRecord(msg, key) {
+    _historyMessageToRecord(session, msg, key) {
+      session = this._sess(session);
       const content = msg.message || {};
       const text =
         content.conversation ||
@@ -1480,9 +1541,9 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
         recipient_phone: msg.key?.fromMe ? (jidToPhone(key) || key) : 'ME',
         // Faz 8: tarih mesajlarında da ad, Contact çözücüsünden geçer
         // (rehber > pushName > telefon); ham JID/LID ad olarak yazılmaz.
-        sender_name: msg.key?.fromMe ? 'ME' : (sessionManager._resolveDisplayName(msg.key?.participant || key, msg.pushName) || null),
+        sender_name: msg.key?.fromMe ? 'ME' : (sessionManager._resolveDisplayName(session, msg.key?.participant || key, msg.pushName) || null),
         participant_jid: msg.key?.participant || null,
-        participant_name: msg.key?.participant ? sessionManager._resolveDisplayName(msg.key.participant, msg.pushName) : null,
+        participant_name: msg.key?.participant ? sessionManager._resolveDisplayName(session, msg.key.participant, msg.pushName) : null,
         created_at: new Date(Number.isFinite(ts) ? ts : Date.now()).toISOString(),
       };
     },
@@ -1519,6 +1580,23 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
         }
       }
 
+      // Oturum bazli bellek baglami. Asagidaki tum `sock.ev.on(...)`
+      // isleyicileri bu YEREL adlari kullanir; boylece kisiler/sohbetler/
+      // mesajlar yalnizca BU hesabin deposuna yazilir. (Eski surumde ayni
+      // adlar modul seviyesinde global'di ve iki hat ayni haritayi
+      // paylasiyordu.) Yerel tanimlar, disaridaki yardimcilarin oturum
+      // gerektiren imzalarini da golgeleyerek isleyici govdelerini
+      // degistirmeden calismalarini saglar.
+      const store = sessionManager._storeOf(session);
+      const { contacts, chats, messagesByChat } = store;
+      const normalizeJid = (jid) => resolveJidKey(store, jid);
+      const rememberRaw = (jid, msgId, message) => rememberRawMessage(store, jid, msgId, message);
+      const applyLidMapping = (lid, phoneJid) => sessionManager._applyLidMapping(session, lid, phoneJid);
+      const resolveDisplayName = (jid, pushName) => sessionManager._resolveDisplayName(session, jid, pushName);
+      const historyMessageToRecord = (msg, key) => sessionManager._historyMessageToRecord(session, msg, key);
+      const ensureChatAvatar = (key) => sessionManager._ensureChatAvatar(session, key);
+      const ensureGroupSubjects = (opts = {}) => sessionManager._ensureGroupSubjects({ ...opts, sessionId: id });
+
       const { version } = await fetchLatestBaileysVersion();
       const sock = makeWASocket({
         version,
@@ -1553,7 +1631,7 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
         // yeniden gonderilmesini isteyebilmek icin `getMessage`e ihtiyac duyar.
         // Verilmedigi surece yalnizca log yazip mesaji KAYBEDIYORDU. Ham proto
         // govdeler sinirli `rawMessagesByChat` depounda tutulur (yukarida).
-        getMessage: async (key) => lookupRawMessage(key),
+        getMessage: async (key) => lookupRawMessage(store, key),
       });
 
       session.sock = sock;
@@ -1565,7 +1643,6 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       // isleyicilerinde dis kapsamdaki `emitEvent`i GOLGELER; boylece 20+
       // cagri yerini tek tek degistirmeye gerek kalmaz.
       const emitEvent = (event) => sessionManager._emit({ gateway_session_id: id, ...event });
-
       // Sorun (prod: "senkron asla tamamlanmıyor"): RECENT sync'te WhatsApp
       // `isLatest` GONDERMEYEBILIR ve `progress` 100'e hic ulasmayabilir —
       // yalnizca bu iki sinyale bagli tamamlanma mantigi sonsuza dek
@@ -1599,7 +1676,7 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
         };
         logger.info({ id, reason, chats: session.sync.chats_synced, msgs: session.sync.messages_synced }, 'History sync finalized');
         emitEvent({ event: 'session_sync_completed', session_id: id, session_name: session.session_name, sync: session.sync });
-        void sessionManager._ensureGroupSubjects({ force: true });
+        void ensureGroupSubjects({ force: true });
       };
 
       // --- QR event ---
@@ -1675,7 +1752,7 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
             : { phase: 'syncing', progress: 0, chats_synced: 0, contacts_synced: 0, messages_synced: 0, started_at: new Date().toISOString(), completed_at: null };
           if (priorSyncs > 0) {
             emitEvent({ event: 'session_sync_completed', session_id: id, session_name: session.session_name, sync: session.sync });
-            void sessionManager._ensureGroupSubjects();
+            void ensureGroupSubjects();
           } else {
             emitEvent({ event: 'session_sync_started', session_id: id, session_name: session.session_name, sync: session.sync });
             // Sorun (prod): bos/yeni hesapta HIC history chunk'i gelmeyebilir;
@@ -1856,12 +1933,12 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
           // contact ÜRETİLMEZ — '+0' contact'in kaynağı burasıydı.
           if (isDegenerateJid(rawId)) continue;
           // Çift bilgisi varsa eşlemeyi öğren (id telefon + lid alanı dolu).
-          if (c.lid && !isLidJid(rawId)) this._applyLidMapping(c.lid, rawId);
+          if (c.lid && !isLidJid(rawId)) applyLidMapping(c.lid, rawId);
           // Faz 8 (patch): LID-anahtarli rehber yamalari telefonu `pnJid`'de
           // tasir; Baileys bunu dusuruyordu — patch ile artik `c.pn`.
           // Eşleşme burada öğrenilir: bekleyen LID kaydı telefona taşınır ve
           // ad, telefon-anahtarlı kişiye addressbook rütbesiyle yazılır.
-          if (c.pn && isLidJid(rawId)) this._applyLidMapping(rawId, c.pn);
+          if (c.pn && isLidJid(rawId)) applyLidMapping(rawId, c.pn);
           const jid = normalizeJid(rawId); // lid ise ve eşleşme biliniyorsa telefona çözülür
           if (isBroadcastOnlyJid(jid)) continue;
           const now = new Date().toISOString();
@@ -1906,7 +1983,7 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       // --- Faz 6e: LID → telefon eşleşmesi — kişi telefon numarasını
       // paylaştığında WhatsApp bunu lid ile birlikte bildirir; kalıcı eşleme.
       sock.ev.on('chats.phoneNumberShare', ({ lid, jid }) => {
-        if (lid && jid) this._applyLidMapping(lid, jid);
+        if (lid && jid) applyLidMapping(lid, jid);
       });
 
       // --- Chats sync ---
@@ -1939,7 +2016,7 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
                 const base = normalizePreviewText(s.message_type, s.body);
                 if (!base) return null;
                 if (key.includes('@g.us') && !update.lastMessage.key?.fromMe) {
-                  const pname = this._resolveDisplayName(update.lastMessage.key?.participant, update.lastMessage.pushName);
+                  const pname = resolveDisplayName(update.lastMessage.key?.participant, update.lastMessage.pushName);
                   if (pname && !isRawIdentityName(pname) && !isPhoneLikeName(pname) && pname.toUpperCase() !== 'ME') {
                     return `${pname}: ${base}`;
                   }
@@ -1958,7 +2035,7 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
               const list = messagesByChat.get(key) || [];
               const known = list.some((m) => m.wa_message_id && m.wa_message_id === update.lastMessage.key.id);
               if (!known) {
-                const synth = this._historyMessageToRecord(update.lastMessage, key);
+                const synth = historyMessageToRecord(update.lastMessage, key);
                 if (synth) {
                   const next = [...list, synth];
                   if (next.length > 500) next.splice(0, next.length - 500);
@@ -1988,7 +2065,7 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
             created_at: existing.created_at || new Date().toISOString(),
             updated_at: new Date().toISOString(),
           });
-          if (!chats.get(key)?.avatar_url) void sessionManager._ensureChatAvatar(key);
+          if (!chats.get(key)?.avatar_url) void ensureChatAvatar(key);
           if (!lidHold) emitEvent({ event: 'conversation_updated', conversation: chats.get(key) });
         }
       });
@@ -2005,7 +2082,7 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
           // LID-anahtarlı rehber adları/sohbetleri telefon kimligine çözülerek
           // yazilsin (yoksa kalici olarak lid_pending'de beklerlerdi).
           for (const m of phoneNumberToLidMappings || []) {
-            if (m?.pnJid && m?.lidJid) this._applyLidMapping(m.lidJid, m.pnJid);
+            if (m?.pnJid && m?.lidJid) applyLidMapping(m.lidJid, m.pnJid);
           }
           // 1. Kisiler
           for (const c of historyContacts || []) {
@@ -2018,7 +2095,7 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
             if (isDegenerateJid(c.id)) continue;
             // Faz 6e: gecmis kisi kaydi {id: telefon, lid} tasir — eşleşmeyi
             // öğren (LID anahtarlı bekleyen rehber adları varsa telefona taşınır).
-            if (c.lid && !isLidJid(c.id)) this._applyLidMapping(c.lid, c.id);
+            if (c.lid && !isLidJid(c.id)) applyLidMapping(c.lid, c.id);
             if (isLidJid(c.id)) continue; // salt-LID kaydı: yalnızca eşleme kaynağı
             let merged = contacts.get(c.id) || {};
             // Conversation.name (senkron anındaki rehber adı) pushName'den önce gelir.
@@ -2044,16 +2121,16 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
             // (`@newsletter`) mesajlari sohbet listesini kirletiyordu.
             if (isBroadcastOnlyJid(jid)) continue;
             // Faz 6e: gecmis mesaj anahtarlari da LID↔telefon çifti tasir.
-            if (msg.key?.senderLid && msg.key?.senderPn) this._applyLidMapping(msg.key.senderLid, msg.key.senderPn);
+            if (msg.key?.senderLid && msg.key?.senderPn) applyLidMapping(msg.key.senderLid, msg.key.senderPn);
             if (msg.message?.protocolMessage) continue; // revoke/ephemeral vb. — atla
             const key = normalizeJid(jid);
             if (isBroadcastOnlyJid(key)) continue;
             // Ham govdeyi de sakla — karsi taraf retry istediginde `getMessage`
             // buradan beslenir (bkz. rawMessagesByChat).
-            if (msg.key.id && msg.message) rememberRawMessage(key, msg.key.id, msg.message);
+            if (msg.key.id && msg.message) rememberRaw(key, msg.key.id, msg.message);
             const list = messagesByChat.get(key) || [];
             if (msg.key.id && list.some((m) => m.wa_message_id === msg.key.id)) continue;
-            const record = this._historyMessageToRecord(msg, key);
+            const record = historyMessageToRecord(msg, key);
             if (!record) continue;
             list.push(record);
             // Bellek koruması: sohbet başına en yeni 500 mesaj
@@ -2074,8 +2151,8 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
             if (isDegenerateJid(jid)) continue;
             // Faz 6e: Conversation.lidJid — sohbet telefon anahtarlıysa eşlemeyi öğren;
             // Conversation.pnJid — sohbet LID anahtarlıysa telefonu buradan çöz.
-            if (chat.lidJid && !isLidJid(jid)) this._applyLidMapping(chat.lidJid, jid);
-            if (isLidJid(jid) && chat.pnJid) this._applyLidMapping(jid, chat.pnJid);
+            if (chat.lidJid && !isLidJid(jid)) applyLidMapping(chat.lidJid, jid);
+            if (isLidJid(jid) && chat.pnJid) applyLidMapping(jid, chat.pnJid);
             const key = normalizeJid(jid);
             if (isBroadcastOnlyJid(key)) continue;
             const contact = contacts.get(key);
@@ -2114,7 +2191,7 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
             };
             chats.set(key, merged);
             storedChats += 1;
-            if (!merged.avatar_url) void sessionManager._ensureChatAvatar(key);
+            if (!merged.avatar_url) void ensureChatAvatar(key);
             emitEvent({ event: 'conversation_updated', conversation: merged });
           }
           emitEvent({
@@ -2146,7 +2223,7 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
               // Faz 8: initial sync tamamlanınca grup başlıklarını çöz (tek
               // toplu groupFetchAllParticipating + hedefli groupMetadata
               // fallback — N+1 request storm yok, §20).
-              void sessionManager._ensureGroupSubjects({ force: true });
+              void ensureGroupSubjects({ force: true });
             } else if (session.sync.phase === 'syncing') {
               // Sorun (prod: "senkron asla tamamlanmıyor"): RECENT sync'te
               // WhatsApp `isLatest` GONDERMEYEBILIR ve `progress` hiç

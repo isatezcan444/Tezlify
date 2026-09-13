@@ -537,7 +537,7 @@ async def test_ensure_conversation_race_safe_recovers_when_session_alive():
     real = ws._ensure_conversation
     calls = {"n": 0}
 
-    async def _flaky(db, owner, jid, preview=None):
+    async def _flaky(db, owner, jid, preview=None, session_id=None):
         calls["n"] += 1
         if calls["n"] == 1:
             raise IntegrityError("INSERT INTO conversations", {}, Exception("fk"))
@@ -568,7 +568,7 @@ async def test_ensure_conversation_race_safe_drops_when_session_deleted():
         await db.execute(_delete(WhatsAppSession).where(WhatsAppSession.gateway_id == gw_id))
         await db.commit()
 
-    async def _boom(db, owner, jid, preview=None):
+    async def _boom(db, owner, jid, preview=None, session_id=None):
         raise IntegrityError("INSERT INTO conversations", {}, Exception("fk"))
 
     from unittest.mock import patch as _p
@@ -594,7 +594,7 @@ async def test_ingest_integrity_error_is_single_line_not_traceback():
         "conversation": {"id": REAL_JID},
     }
 
-    async def _boom(db, owner, jid, event=None):
+    async def _boom(db, owner, jid, event=None, session_id=None):
         raise IntegrityError("INSERT INTO conversations", {}, Exception("fk"))
 
     with _p.object(ws, "_ensure_conversation_race_safe", side_effect=_boom):
@@ -615,3 +615,243 @@ async def test_orphan_events_do_not_flood_logs():
     assert await ws.ingest_gateway_event(dict(event)) is None
     key = "gw-hic-var-olmadi"
     assert ws._orphan_suppressed.get(key, {}).get("count", 0) >= 2
+
+
+# ===========================================================================
+# 6) Gateway veri duzlemi OTURUM KAPSAMLI (guvenlik duzeltmesi)
+#
+# Kok neden: gateway'in kisiler/sohbetler/mesajlar deposu modul seviyesinde
+# GLOBAL ve yalnizca JID anahtarliydi; REST uclari oturumsuzdu ve gateway
+# "bagli olan tek oturumu" seciyordu. Cagiranin kimligi HIC sorulmadigi icin
+# bir kiracinin istegi, bagli olan BASKA bir kiracinin hattindan veri okuyup
+# o hattan mesaj gonderebiliyordu. Artik her cagri kullanicinin KENDI
+# hattinin `gateway_id`'siyle yapilir.
+# ===========================================================================
+
+@pytest.mark.asyncio
+async def test_data_plane_uses_only_callers_own_gateway_session():
+    """U1'in rehber cagrisi U1'in gateway_id'siyle yapilir — U2 bagli olsa bile."""
+    from unittest.mock import AsyncMock, patch as _p
+
+    gw_u1 = await _add_session(U1)
+    gw_u2 = await _add_session(U2)
+
+    async with AsyncSessionLocal() as db:
+        with _p("backend.app.services.whatsapp_service.gw.list_contacts",
+                new_callable=AsyncMock, return_value=[]) as lc:
+            await ws.sync_contacts(db, U1)
+
+    lc.assert_awaited_once()
+    used = lc.await_args.args[0]
+    assert used == gw_u1, f"cagri U1'in hattiyla yapilmali: {used}"
+    assert used != gw_u2, "BASKA kiracinin hattina asla dokunulmaz"
+
+
+@pytest.mark.asyncio
+async def test_user_without_session_cannot_reach_any_gateway_session():
+    """Hic hatti olmayan kullanici, BASKA kiracinin bagli hattini kullanamaz.
+
+    Eski davranis: gateway "bagli olan tek oturumu" secerdi ve U2 hic hat
+    eslestirmemis olmasina ragmen U1'in WhatsApp rehberini/sohbetlerini
+    okuyabilir, U1'in hattindan mesaj gonderebilirdi.
+    """
+    from unittest.mock import AsyncMock, patch as _p
+
+    await _add_session(U1)  # yalnizca U1'in bagli hatti var
+
+    async with AsyncSessionLocal() as db:
+        with _p("backend.app.services.whatsapp_service.gw.list_contacts",
+                new_callable=AsyncMock, return_value=[]) as lc:
+            with pytest.raises(ws.NoWhatsAppSession):
+                await ws.sync_contacts(db, U2)
+        lc.assert_not_awaited()  # gateway'e HIC istek gitmez (fail-closed)
+
+
+@pytest.mark.asyncio
+async def test_send_routes_through_the_conversations_own_session():
+    """Coklu hat: mesaj, sohbetin GELDIGI hattan gonderilir (tahmin yok)."""
+    from unittest.mock import AsyncMock, patch as _p
+    from backend.app.models.contact import Contact
+
+    gw_a = await _add_session(U1)
+    gw_b = await _add_session(U1)
+
+    async with AsyncSessionLocal() as db:
+        sid_b = await db.scalar(
+            select(WhatsAppSession.id).where(WhatsAppSession.gateway_id == gw_b))
+        contact = Contact(user_id=U1, phone_e164="+905321004040", display_name="Ali")
+        db.add(contact)
+        await db.flush()
+        conv = Conversation(user_id=U1, contact_id=contact.id, channel="WHATSAPP",
+                            status=ConversationStatus.ACTIVE, session_id=sid_b)
+        db.add(conv)
+        await db.commit()
+        conv_id = conv.id
+
+    async with AsyncSessionLocal() as db:
+        with _p("backend.app.services.whatsapp_service.gw.send_text_message",
+                new_callable=AsyncMock, return_value={"wa_message_id": "wamid_x"}) as st:
+            await ws.send_text_message(db, U1, conv_id, "merhaba")
+
+    used = st.await_args.args[0]
+    assert used == gw_b, f"sohbetin kendi hatti kullanilmali: {used}"
+    assert used != gw_a, "yanlis hattan gonderim YOK"
+
+
+@pytest.mark.asyncio
+async def test_deleting_one_session_keeps_the_other_sessions_chats():
+    """Bir hatti silmek YALNIZCA o hattin sohbetlerini temizler.
+
+    Eski davranis: `purge_whatsapp_data` kullanicinin `channel='WHATSAPP'`
+    olan TUM sohbetlerini siliyordu — iki hatti olan kullanici birini silince
+    digerinin sohbetleri de gidiyordu.
+    """
+    from unittest.mock import AsyncMock, patch as _p
+    from backend.app.models.contact import Contact
+
+    gw_a = await _add_session(U1)
+    gw_b = await _add_session(U1)
+
+    async with AsyncSessionLocal() as db:
+        sid_a = await db.scalar(select(WhatsAppSession.id).where(WhatsAppSession.gateway_id == gw_a))
+        sid_b = await db.scalar(select(WhatsAppSession.id).where(WhatsAppSession.gateway_id == gw_b))
+        c_a = Contact(user_id=U1, phone_e164="+905321001111", display_name="A")
+        c_b = Contact(user_id=U1, phone_e164="+905321002222", display_name="B")
+        db.add_all([c_a, c_b])
+        await db.flush()
+        conv_a = Conversation(user_id=U1, contact_id=c_a.id, channel="WHATSAPP",
+                              status=ConversationStatus.ACTIVE, session_id=sid_a)
+        conv_b = Conversation(user_id=U1, contact_id=c_b.id, channel="WHATSAPP",
+                              status=ConversationStatus.ACTIVE, session_id=sid_b)
+        db.add_all([conv_a, conv_b])
+        await db.commit()
+        conv_a_id, conv_b_id = conv_a.id, conv_b.id
+
+    async with AsyncSessionLocal() as db:
+        with _p("backend.app.services.whatsapp_service.gw.delete_session",
+                new_callable=AsyncMock, return_value={"success": True}):
+            await ws.delete_session(db, U1, sid_a)
+
+    async with AsyncSessionLocal() as db:
+        assert (await db.get(Conversation, conv_a_id)) is None, "silinen hattin sohbeti gitmeli"
+        assert (await db.get(Conversation, conv_b_id)) is not None, \
+            "DIGER hattin sohbeti KORUNMALI (regresyon)"
+
+
+# ===========================================================================
+# 7) Durum olaylari SOHBET YARATMAZ (hayalet sohbet regresyonu)
+# ===========================================================================
+
+@pytest.mark.asyncio
+async def test_presence_event_does_not_create_ghost_conversation():
+    """'yaziyor...' sinyali, listede olmayan biri icin sohbet/kisi URETMEZ.
+
+    Eski davranis: `_map_conversation_event` dort olayin HEPSI icin
+    `_ensure_conversation` cagiriyordu; tek bir presence sinyali kalici bir
+    kisi + bos sohbet satiri birakiyordu (WhatsApp Web'de boyle bir sey yok).
+    """
+    from backend.app.models.contact import Contact
+
+    gw_id = await _add_session(U1)
+    result = await ws.ingest_gateway_event({
+        "event": "presence_updated",
+        "gateway_session_id": gw_id,
+        "conversation_id": REAL_JID,
+        "presence": "composing",
+    })
+    assert result is None, "sohbeti olmayan presence olayi YAYINLANMAZ"
+
+    async with AsyncSessionLocal() as db:
+        convs = (await db.execute(select(Conversation).where(
+            Conversation.user_id == U1, Conversation.channel == "WHATSAPP"))).scalars().all()
+        contacts = (await db.execute(select(Contact).where(
+            Contact.user_id == U1))).scalars().all()
+    assert convs == [], "hayalet sohbet olusmamali"
+    assert contacts == [], "hayalet kisi olusmamali"
+
+
+@pytest.mark.asyncio
+async def test_presence_event_still_maps_existing_conversation():
+    """Sohbet MEVCUTSA presence olayi normal sekilde eslenir ve yayinlanir."""
+    from backend.app.models.contact import Contact
+
+    gw_id = await _add_session(U1)
+    async with AsyncSessionLocal() as db:
+        contact = Contact(user_id=U1, phone_e164="+905321004040", display_name="Ali")
+        db.add(contact)
+        await db.flush()
+        db.add(Conversation(user_id=U1, contact_id=contact.id, channel="WHATSAPP",
+                            status=ConversationStatus.ACTIVE))
+        await db.commit()
+
+    result = await ws.ingest_gateway_event({
+        "event": "presence_updated",
+        "gateway_session_id": gw_id,
+        "conversation_id": REAL_JID,
+        "presence": "composing",
+    })
+    assert result is not None
+    assert result["typing"] is True
+    assert isinstance(result["conversation_id"], int)
+
+
+# ===========================================================================
+# 8) Kisi tekilligi: mukerrer satir ingest'i (ve gercek mesaji) dusuruyordu
+# ===========================================================================
+
+@pytest.mark.asyncio
+async def test_duplicate_contacts_are_merged_and_uniqueness_enforced():
+    """Mukerrer kisiler birlestirilir, mesaj kaybolmaz, kisit devreye girer.
+
+    Kok neden: `contacts`ta yalnizca index vardi. Es zamanli senkron + ingest
+    ayni telefon icin iki satir uretebiliyor, `_upsert_contact`'teki
+    `scalar_one_or_none()` `MultipleResultsFound` firlatip `message_new`
+    olayini komple dusuruyordu (GERCEK MESAJ KAYBI).
+    """
+    from sqlalchemy import text as _text
+    from backend.app.core.database import engine
+    from backend.app.core.migrations import ensure_contacts_unique_phone
+    from backend.app.models.message import (
+        Message, MessageDirection, MessageType, ConversationMessageStatus)
+    from backend.app.models.contact import Contact
+
+    phone = "+905321009999"
+    async with AsyncSessionLocal() as db:
+        # UNIQUE kisiti gecici kaldir: kisit ONCESI uretilmis eski veriyi taklit et.
+        await db.execute(_text("DROP INDEX IF EXISTS uq_contact_user_phone"))
+        await db.commit()
+        for i in range(2):
+            c = Contact(user_id=U1, phone_e164=phone, display_name=f"dup{i}")
+            db.add(c)
+            await db.flush()
+            conv = Conversation(user_id=U1, contact_id=c.id, channel="WHATSAPP",
+                                status=ConversationStatus.ACTIVE)
+            db.add(conv)
+            await db.flush()
+            db.add(Message(
+                user_id=U1, conversation_id=conv.id,
+                direction=MessageDirection.INBOUND, message_type=MessageType.TEXT,
+                body=f"m{i}", sender_phone=phone, recipient_phone="ME",
+                status=ConversationMessageStatus.RECEIVED,
+                client_message_id=f"cmsg_dup_{_uuid.uuid4()}"))
+        await db.commit()
+
+    await ensure_contacts_unique_phone(engine)
+
+    async with AsyncSessionLocal() as db:
+        contacts = (await db.execute(select(Contact).where(
+            Contact.user_id == U1, Contact.phone_e164 == phone))).scalars().all()
+        assert len(contacts) == 1, "mukerrer kisiler tek satira birlestirilmeli"
+        convs = (await db.execute(select(Conversation).where(
+            Conversation.contact_id == contacts[0].id))).scalars().all()
+        assert len(convs) == 1, "ayni kisi+kanal icin tek sohbet kalmali"
+        msgs = (await db.execute(select(Message).where(
+            Message.conversation_id == convs[0].id))).scalars().all()
+        assert len(msgs) == 2, "birlestirmede MESAJ KAYBEDILMEZ"
+
+    # Kisit artik yeni mukerrerleri reddeder.
+    from sqlalchemy.exc import IntegrityError as _IE
+    with pytest.raises(_IE):
+        async with AsyncSessionLocal() as db:
+            db.add(Contact(user_id=U1, phone_e164=phone, display_name="yeni-dup"))
+            await db.commit()

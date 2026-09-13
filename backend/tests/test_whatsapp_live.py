@@ -133,8 +133,22 @@ async def _cleanup_whatsapp_tables():
             )
             await db.commit()
 
+
+    async def _seed_session():
+        """Sahiplik kapisi (guvenlik duzeltmesi): gateway veri duzlemi oturum
+        kapsamlidir — her veri/gonderim cagrisi kullanicinin KENDI hattinin
+        `gateway_id`'siyle yapilir. Testlerin bagli bir hatti olmali."""
+        async with AsyncSessionLocal() as db:
+            existing = await db.execute(text(
+                "SELECT COUNT(*) FROM whatsapp_sessions WHERE gateway_id = 'gw-seed-test'"))
+            if (existing.scalar() or 0) == 0:
+                db.add(WhatsAppSession(
+                    user_id=TEST_USER, gateway_id="gw-seed-test",
+                    session_name="Seed Hat", status=SessionStatus.CONNECTED, is_active=True))
+                await db.commit()
     await _drain_sync_jobs()
     await _wipe()
+    await _seed_session()
     yield
     await _drain_sync_jobs()
     await _wipe()
@@ -921,7 +935,7 @@ async def test_send_media_base64_forwards_to_gateway(auth_headers, mock_gateway)
         assert res.status_code == 200
         assert res.json()["status"] == "SENT"
     mock_gateway.send_media_message.assert_awaited()
-    kwargs = mock_gateway.send_media_message.await_args.args[1]
+    kwargs = mock_gateway.send_media_message.await_args.args[2]
     assert kwargs["media_base64"] == "aW1hZ2U="
     assert kwargs["mime_type"] == "image/png"
 
@@ -1263,7 +1277,7 @@ async def test_mark_conversation_read_endpoint(auth_headers, mock_gateway):
         assert res.json()["success"] is True
     mock_gateway.mark_conversation_read.assert_awaited()
     # gateway'e jid gonderildi
-    called_jid = mock_gateway.mark_conversation_read.await_args.args[0]
+    called_jid = mock_gateway.mark_conversation_read.await_args.args[1]
     assert called_jid == MOCK_JID
 
     async with AsyncSessionLocal() as db:
@@ -1359,7 +1373,7 @@ async def test_resolve_jid_for_group_returns_group_jid(auth_headers, mock_gatewa
         grp = next(i for i in items if i.get("is_group"))
         res = await client.post(f"/api/v1/whatsapp/conversations/{grp['id']}/read", headers=auth_headers)
         assert res.status_code == 200
-    called_jid = mock_gateway.mark_conversation_read.await_args.args[0]
+    called_jid = mock_gateway.mark_conversation_read.await_args.args[1]
     assert called_jid == GROUP_JID
 
 
@@ -1761,6 +1775,15 @@ async def test_delete_session_purges_whatsapp_data(auth_headers, mock_gateway):
                                        json={"name": "Cascade Test"},
                                        headers=auth_headers)
         session_id = create_res.json()["id"]
+    # Hat bazli temizlik (duzeltme): purge artik SILINEN HATTIN sohbetlerini
+    # hedefler — kullanicinin tum WhatsApp verisini degil. Test verisini o
+    # hatta bagla.
+    async with AsyncSessionLocal() as db:
+        for cid in (wa_conv_id, sys_conv_id):
+            conv = await db.get(Conversation, cid)
+            conv.session_id = session_id
+        await db.commit()
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
         res = await client.delete(f"/api/v1/whatsapp/sessions/{session_id}",
                                   headers=auth_headers)
         assert res.status_code == 200
@@ -1799,3 +1822,91 @@ async def test_delete_session_purges_whatsapp_data(auth_headers, mock_gateway):
                 Conversation.channel == "OTHER")
         )
         assert other_res.scalar_one() == 1
+
+
+# ---------------------------------------------------------------------------
+# Mesaj zaman ekseni: gonderilen mesajlar kaybolmamali
+#
+# Kok neden (duzeltildi): `send_text_message` / `send_media_message`
+# `external_timestamp` yazmiyordu; `get_messages` ise siralamayi ve keyset
+# kesimini YALNIZCA `external_timestamp` uzerinden yapiyordu. NULL satirlar
+# `nullslast` ile listenin sonuna dusuyor, `... < cutoff` kiyasinda da
+# eleniyordu — sohbette sayfa boyutundan fazla mesaj varsa kullanicinin kendi
+# gonderdigi mesajlar yeniden yuklemede GORUNMUYORDU.
+# ---------------------------------------------------------------------------
+
+async def _seed_conversation_with_history(n: int) -> int:
+    """n adet zaman damgali GELEN mesajli bir WhatsApp sohbeti olusturur."""
+    from datetime import datetime, timedelta
+
+    base_ts = datetime(2025, 1, 15, 8, 0, 0)
+    async with AsyncSessionLocal() as db:
+        contact = Contact(user_id=TEST_USER, phone_e164=MOCK_PHONE, display_name="Gecmis")
+        db.add(contact)
+        await db.flush()
+        conv = Conversation(user_id=TEST_USER, contact_id=contact.id, channel="WHATSAPP",
+                            status=ConversationStatus.ACTIVE, unread_count=0)
+        db.add(conv)
+        await db.flush()
+        for i in range(n):
+            db.add(Message(
+                user_id=TEST_USER, conversation_id=conv.id,
+                direction=MessageDirection.INBOUND, message_type=MessageType.TEXT,
+                body=f"gecmis-{i:03d}", sender_phone=MOCK_PHONE, recipient_phone="ME",
+                status=ConversationMessageStatus.RECEIVED,
+                external_timestamp=base_ts + timedelta(minutes=i),
+                client_message_id=f"cmsg_hist_{_uuid.uuid4()}",
+            ))
+        await db.commit()
+        return conv.id
+
+
+@pytest.mark.asyncio
+async def test_sent_message_survives_reload_with_full_history(auth_headers, mock_gateway):
+    """60 gecmis mesajli sohbete gonderilen mesaj, ILK SAYFADA gorunur."""
+    from backend.app.services import whatsapp_service as ws
+
+    conv_id = await _seed_conversation_with_history(60)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        res = await client.post(
+            f"/api/v1/whatsapp/conversations/{conv_id}/messages",
+            json={"body": "BENIM MESAJIM", "client_message_id": f"cmsg_{_uuid.uuid4()}"},
+            headers=auth_headers,
+        )
+        assert res.status_code == 200
+
+    # Yeniden yukleme (ilk sayfa): gonderilen mesaj EN YENI kayit olmali.
+    async with AsyncSessionLocal() as db:
+        page = await ws.get_messages(db, TEST_USER, conv_id, limit=50)
+    bodies = [m["body"] for m in page["messages"]]
+    assert "BENIM MESAJIM" in bodies, "gonderilen mesaj ilk sayfada YOK (regresyon)"
+    assert bodies[-1] == "BENIM MESAJIM", "gonderilen mesaj en yeni sirada olmali"
+    assert len(page["messages"]) <= 50, "limit sozlesmesi asilmamali"
+
+
+@pytest.mark.asyncio
+async def test_pagination_reaches_oldest_history_without_skipping(auth_headers, mock_gateway):
+    """Keyset sayfalamasi tum gecmisi kapsar; `has_more` erken False olmaz."""
+    from backend.app.services import whatsapp_service as ws
+
+    conv_id = await _seed_conversation_with_history(60)
+    # Gateway'den ek hydration gelmesin: bu test SADECE DB sayfalamasini olcer.
+    mock_gateway.get_messages.return_value = {"messages": [], "has_more": False}
+
+    seen: list[str] = []
+    before = None
+    async with AsyncSessionLocal() as db:
+        for _ in range(5):
+            page = await ws.get_messages(db, TEST_USER, conv_id, limit=25, before=before)
+            msgs = page["messages"]
+            if not msgs:
+                break
+            seen = [m["body"] for m in msgs] + seen
+            before = page["oldest_message_id"]
+            if not page["has_more"]:
+                break
+
+    assert len(seen) == 60, f"tum gecmise ulasilmali, ulasilan: {len(seen)}"
+    assert seen[0] == "gecmis-000" and seen[-1] == "gecmis-059"

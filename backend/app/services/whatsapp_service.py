@@ -526,6 +526,65 @@ async def create_session(db: AsyncSession, user_id: str, name: str) -> Dict[str,
     return _session_dict(row)
 
 
+async def _user_sessions(
+    db: AsyncSession, user_id: str, connected_only: bool = True
+) -> List[WhatsAppSession]:
+    """Kullanicinin WhatsApp hatlari (varsayilan: yalnizca BAGLI olanlar).
+
+    SAHIPLIK KAPISI (guvenlik duzeltmesi): gateway veri duzlemi artik oturum
+    kapsamlidir ve her cagri bir `gateway_id` ister. O kimlik YALNIZCA burada,
+    kullanici filtresiyle uretilir — bir kiracinin istegi baska bir kiracinin
+    hattina asla ulasamaz. (Onceki surumde gateway "bagli olan tek oturumu"
+    seciyordu; kullanicinin hic hatti olmasa bile baskasinin hattindan veri
+    okunup mesaj gonderilebiliyordu.)
+    """
+    stmt = select(WhatsAppSession).where(get_user_filter(WhatsAppSession.user_id, user_id))
+    if connected_only:
+        stmt = stmt.where(WhatsAppSession.status == SessionStatus.CONNECTED)
+    res = await db.execute(stmt.order_by(WhatsAppSession.updated_at.desc()))
+    return list(res.scalars().all())
+
+
+class NoWhatsAppSession(LookupError):
+    """Kullanicinin kullanilabilir bir WhatsApp hatti yok (fail-closed)."""
+
+
+async def _require_user_session(
+    db: AsyncSession, user_id: str, session_id: Optional[int] = None
+) -> WhatsAppSession:
+    """Tek bir hat cozer: verilen `session_id` (sahiplik dogrulanarak) ya da
+    kullanicinin bagli hatti. Hic yoksa `NoWhatsAppSession` (sahte basari yok).
+    """
+    if session_id is not None:
+        row = await db.scalar(
+            select(WhatsAppSession).where(
+                WhatsAppSession.id == session_id,
+                get_user_filter(WhatsAppSession.user_id, user_id),
+            )
+        )
+        if row is not None:
+            return row
+    sessions = await _user_sessions(db, user_id, connected_only=True)
+    if sessions:
+        return sessions[0]
+    raise NoWhatsAppSession(
+        "Bagli bir WhatsApp hatti yok. Lutfen once QR ile eslestirin."
+    )
+
+
+async def _conversation_gateway_id(
+    db: AsyncSession, user_id: str, conv: Conversation
+) -> str:
+    """Sohbetin ait oldugu hattin gateway kimligi.
+
+    Sohbet hangi hattan geldiyse gonderim/okuma o hattan yapilir — birden
+    fazla hat bagliyken "birini sec" tahmini YOK. Eski (session_id NULL)
+    satirlar kullanicinin bagli hattina duser.
+    """
+    row = await _require_user_session(db, user_id, conv.session_id)
+    return str(row.gateway_id)
+
+
 async def _get_session_or_404(db: AsyncSession, user_id: str, session_id: int) -> WhatsAppSession:
     stmt = select(WhatsAppSession).where(
         WhatsAppSession.id == session_id,
@@ -612,26 +671,54 @@ async def logout_session(db: AsyncSession, user_id: str, session_id: int) -> Dic
     return {"success": True, "status": "DISCONNECTED"}
 
 
-async def purge_whatsapp_data(db: AsyncSession, user_id: str) -> Dict[str, int]:
-    """QR oturumu silindiğinde kullanıcının tüm WhatsApp eşitlemelerini kalıcı
-    olarak temizler: mesajlar -> sohbetler -> (artık sohbeti kalmayan) kişiler.
+async def purge_whatsapp_data(
+    db: AsyncSession, user_id: str, session_id: Optional[int] = None
+) -> Dict[str, int]:
+    """Bir WhatsApp hatti silindiginde O HATTIN esitlemelerini kalici olarak
+    temizler: mesajlar -> sohbetler -> (artik sohbeti kalmayan) kisiler.
 
-    Kapsam: kullanıcıya ait satırlar + oturum sahibi çözümlenemeden gateway
-    olaylarıyla yazılan SYSTEM_USER_ID satırları (hayalet sohbet kalmasın).
-    Lead kayıtlarına dokunulmaz (contacts.lead_id FK'i yalnızca kişidedir,
-    leads tablosu korunur). CRM/WhatsApp-dışı sohbetler korunur.
+    Kapsam (duzeltme): `session_id` verildiginde YALNIZCA o hatta bagli
+    sohbetler silinir. Onceden kullanicinin `channel='WHATSAPP'` olan TUM
+    sohbetleri siliniyordu; iki hatti olan bir kullanici birini silince
+    digerinin sohbetleri de gidiyordu. Hat bagi olmayan (eski) satirlar,
+    kullanicinin baska hatti kalmadiysa temizlige dahil edilir — aksi halde
+    korunur (veri kaybi yerine artik satir tercih edilir).
+
+    Lead kayitlarina dokunulmaz. CRM/WhatsApp-disi sohbetler korunur.
     """
+    purged = {"messages": 0, "conversations": 0, "contacts": 0}
+
+    # Bu kullanicinin (silinecek hat disinda) baska hatti kaldi mi?
+    other_sessions = await db.execute(
+        select(func.count()).select_from(WhatsAppSession).where(
+            get_user_filter(WhatsAppSession.user_id, user_id),
+            WhatsAppSession.id != session_id if session_id is not None else True,
+        )
+    )
+    has_other_session = (other_sessions.scalar_one() or 0) > 0
+
     conv_ids: List[int] = []
     for owner in (str(user_id), SYSTEM_USER_ID):
-        res = await db.execute(
-            select(Conversation.id).where(
-                get_user_filter(Conversation.user_id, owner),
-                Conversation.channel == "WHATSAPP",
-            )
+        stmt = select(Conversation.id).where(
+            get_user_filter(Conversation.user_id, owner),
+            Conversation.channel == "WHATSAPP",
         )
+        if session_id is not None:
+            if has_other_session:
+                # Baska hat duruyor: yalnizca BU hattin sohbetleri.
+                stmt = stmt.where(Conversation.session_id == session_id)
+            else:
+                # Son hat siliniyor: bu hattin sohbetleri + hat bagi olmayan
+                # (migration oncesi) eski satirlar.
+                stmt = stmt.where(
+                    or_(
+                        Conversation.session_id == session_id,
+                        Conversation.session_id.is_(None),
+                    )
+                )
+        res = await db.execute(stmt)
         conv_ids.extend(int(r[0]) for r in res.all())
 
-    purged = {"messages": 0, "conversations": 0, "contacts": 0}
     if not conv_ids:
         return purged
 
@@ -670,7 +757,7 @@ async def delete_session(db: AsyncSession, user_id: str, session_id: int) -> Dic
         await gw.delete_session(row.gateway_id)
     except Exception as exc:
         logger.warning("Gateway oturum silinemedi (devam): %s", exc)
-    purged = await purge_whatsapp_data(db, user_id)
+    purged = await purge_whatsapp_data(db, user_id, session_id=row.id)
     await db.delete(row)
     await db.commit()
     logger.info(
@@ -702,11 +789,15 @@ def _get_contact_avatar(contact: Optional[Contact]) -> Optional[str]:
     return str(value) if value else None
 
 
-async def sync_contacts(db: AsyncSession, user_id: str) -> List[Dict[str, Any]]:
+async def sync_contacts(
+    db: AsyncSession, user_id: str, session: Optional[WhatsAppSession] = None
+) -> List[Dict[str, Any]]:
     # Faz 6 (N+1 kaldirma): kisi basina SELECT+flush yerine TEK SELECT + tek
     # flush — 197 kisilik rehberde ~394 sorgu -> 2 sorgu. Semantik korunur
     # (dejenere JID kapisi, oncelikli ad cozumu, avatar, commit).
-    gw_contacts = await gw.list_contacts()
+    # Rehber, kullanicinin KENDI hattindan okunur (sahiplik kapisi).
+    row = session or await _require_user_session(db, user_id)
+    gw_contacts = await gw.list_contacts(row.gateway_id)
     items = [
         (
             item.get("id"),
@@ -841,7 +932,8 @@ async def _bulk_upsert_contacts(
 
 
 async def _ensure_conversations_bulk(
-    db: AsyncSession, user_id: str, contacts: List[Tuple[str, Contact]]
+    db: AsyncSession, user_id: str, contacts: List[Tuple[str, Contact]],
+    session_id: Optional[int] = None,
 ) -> List[Tuple[str, Contact, Conversation]]:
     """Kisi listesi icin WhatsApp conversation satirlarini TOPLU garanti eder.
 
@@ -870,6 +962,8 @@ async def _ensure_conversations_bulk(
                 contact_id=contact.id,
                 channel="WHATSAPP",
                 status=ConversationStatus.ACTIVE,
+                # Sohbetin geldigi hat: gonderim yonlendirmesi + hat bazli temizlik.
+                session_id=session_id,
                 last_message_preview=None,
                 # Sorun 4: grup bayragi JID'den kalici yazilir (@g.us).
                 is_group="@g.us" in jid_str,
@@ -881,6 +975,9 @@ async def _ensure_conversations_bulk(
             if contact.id is not None:
                 by_contact[contact.id] = conv
             db.add(conv)
+        elif session_id is not None and conv.session_id is None:
+            # Eski (hat bagi olmayan) satiri ilk gorulen hatta bagla.
+            conv.session_id = session_id
         out.append((jid_str, contact, conv))
     await db.flush()
     return out
@@ -908,7 +1005,10 @@ async def _upsert_contact(
         get_user_filter(Contact.user_id, user_id),
     )
     res = await db.execute(stmt)
-    contact = res.scalar_one_or_none()
+    # `.first()`: tekillik artik UNIQUE kisitla garanti, ancak kisit
+    # olusturulmadan once yazilmis eski mukerrer satirlar `scalar_one_or_none()`
+    # ile MultipleResultsFound firlatip ingest'i (ve gercek mesaji) dusuruyordu.
+    contact = res.scalars().first()
     if contact is None and phone_e164.startswith("jid:"):
         # Eski kayitlar: grup JID'i yanlislikla "+rakam" telefon gibi saklanmis
         # olabilir (jid_to_phone rakamlari topluyordu). Bulursak sentinel'e tasi.
@@ -920,7 +1020,7 @@ async def _upsert_contact(
                     get_user_filter(Contact.user_id, user_id),
                 )
             )
-            contact = lres.scalar_one_or_none()
+            contact = lres.scalars().first()
             if contact is not None:
                 contact.phone_e164 = phone_e164
                 await db.flush()
@@ -935,7 +1035,19 @@ async def _upsert_contact(
         if display_name and str(name_source or "") in _NAME_RANK:
             contact.custom_attributes = {"name_source": str(name_source)}
         db.add(contact)
-        await db.flush()
+        try:
+            await db.flush()
+        except IntegrityError:
+            # Es zamanli ikinci yazici ayni kisiyi araya girip olusturdu
+            # (UNIQUE kisit). Kendi INSERT'imizi geri al ve KAZANAN satiri
+            # kullan — olay dusurulmez, mesaj kaybolmaz.
+            await db.rollback()
+            res = await db.execute(stmt)
+            contact = res.scalars().first()
+            if contact is None:
+                raise
+            if _set_contact_name(contact, display_name, name_source):
+                await db.flush()
     else:
         if _set_contact_name(contact, display_name, name_source):
             await db.flush()
@@ -947,7 +1059,8 @@ async def _upsert_contact(
 # ---------------------------------------------------------------------------
 
 async def _ensure_conversation(
-    db: AsyncSession, user_id: str, jid: str, preview: Optional[str] = None
+    db: AsyncSession, user_id: str, jid: str, preview: Optional[str] = None,
+    session_id: Optional[int] = None,
 ) -> Conversation:
     contact = await _upsert_contact(db, user_id, jid, None)
     stmt = select(Conversation).where(
@@ -963,6 +1076,8 @@ async def _ensure_conversation(
             contact_id=contact.id,
             channel="WHATSAPP",
             status=ConversationStatus.ACTIVE,
+            # Sohbetin geldigi hat (gateway oturumu).
+            session_id=session_id,
             last_message_preview=preview,
             # Sorun 4: grup bayragi JID'den kalici yazilir (@g.us).
             is_group="@g.us" in jid,
@@ -978,11 +1093,14 @@ async def _ensure_conversation(
         )
         db.add(conv)
         await db.flush()
+    elif session_id is not None and conv.session_id is None:
+        conv.session_id = session_id
     return conv
 
 
 async def _ensure_conversation_race_safe(
-    db: AsyncSession, owner: str, jid_str: str, event: Dict[str, Any]
+    db: AsyncSession, owner: str, jid_str: str, event: Dict[str, Any],
+    session_id: Optional[int] = None,
 ) -> Conversation:
     """`_ensure_conversation` + es-zamanli silme yarisi korumasi.
 
@@ -999,12 +1117,12 @@ async def _ensure_conversation_race_safe(
     yarisi) ikinci deneme basarir — gercek mesaj kaybolmaz.
     """
     try:
-        return await _ensure_conversation(db, owner, jid_str)
+        return await _ensure_conversation(db, owner, jid_str, session_id=session_id)
     except IntegrityError:
         await db.rollback()
         fresh_owner = await _resolve_event_owner(db, jid_str, event.get("gateway_session_id"))
         event["user_id"] = fresh_owner
-        return await _ensure_conversation(db, fresh_owner, jid_str)
+        return await _ensure_conversation(db, fresh_owner, jid_str, session_id=session_id)
 
 
 def _message_row_from_gateway(owner: str, conv: Conversation, msg: Dict[str, Any]) -> Optional[Message]:
@@ -1129,8 +1247,7 @@ async def _repair_last_message_previews(db: AsyncSession, user_id: str) -> int:
             continue  # gercekten mesajsiz — onarilacak bir sey yok
         newest = max(
             msgs,
-            key=lambda m: _as_naive_utc(m.external_timestamp or m.sent_at or m.created_at)
-            or datetime.min,
+            key=lambda m: _as_naive_utc(_msg_time(m)) or datetime.min,
         )
         mtype = newest.message_type.value if hasattr(newest.message_type, "value") else str(newest.message_type or "TEXT")
         summary = build_last_message_summary(
@@ -1185,8 +1302,10 @@ async def _sync_conversations_impl(db: AsyncSession, user_id: str) -> List[Dict[
     # app-state + history kisi kayitlari) DB'ye hydrate et; boylece hic
     # sohbeti olmayan kisilerin rehber adlari da kalici olur ve identity
     # cozumleme sohbet listesinde dogru ad uretir.
+    session_row = await _require_user_session(db, user_id)
+    gateway_id = str(session_row.gateway_id)
     try:
-        await sync_contacts(db, user_id)
+        await sync_contacts(db, user_id, session=session_row)
     except Exception as exc:
         logger.warning("Rehber senkronu atlandi (sohbet senkronu suruyor): %s", exc)
     # Faz 8 (RC-2): grup JID'leri subject olarak cozulmeden listeyi okuma —
@@ -1198,10 +1317,10 @@ async def _sync_conversations_impl(db: AsyncSession, user_id: str) -> List[Dict[
     # yeniden denenmesini engelliyordu. Gateway'de in-flight korumasi
     # varindan oldugu icin request storm olusmaz.
     try:
-        await gw.sync_group_subjects(force=True)
+        await gw.sync_group_subjects(gateway_id, force=True)
     except Exception as exc:
         logger.warning("Grup basliklari senkronu atlandi: %s", exc)
-    data = await gw.list_conversations(limit=200)
+    data = await gw.list_conversations(gateway_id, limit=200)
     items = data.get("items", []) if isinstance(data, dict) else []
     owner = user_id
     for item in items:
@@ -1241,7 +1360,7 @@ async def _sync_conversations_impl(db: AsyncSession, user_id: str) -> List[Dict[
             # Sorun 1: legacy yolda sohbet basina tam gecmis yerine en yeni
             # _SYNC_PER_CHAT_LIMIT mesaj cekilir (bulk kanal yoksa bile
             # initial-sync maliyeti sinirli kalir; gecmis lazy hydration ile).
-            msg_data = await gw.get_messages(jid_str, limit=_SYNC_PER_CHAT_LIMIT)
+            msg_data = await gw.get_messages(gateway_id, jid_str, limit=_SYNC_PER_CHAT_LIMIT)
             gw_messages = msg_data.get("messages", []) if isinstance(msg_data, dict) else []
             for gm in gw_messages:
                 gm = dict(gm)
@@ -1497,7 +1616,9 @@ async def _hydrate_messages_on_demand(
     if not jid:
         return []
     try:
+        gateway_id = await _conversation_gateway_id(db, owner, conv)
         data = await gw.get_messages(
+            gateway_id,
             jid,
             limit=min(max(limit, 50), 100),
             before=before_ts_ms,
@@ -1555,6 +1676,28 @@ async def _hydrate_messages_on_demand(
     return list(reversed(rows))
 
 
+def _msg_time_col():
+    """Mesajin ZAMAN EKSENI (tek kural).
+
+    `external_timestamp` yalnizca gateway'den gelen mesajlarda doludur;
+    uygulamadan GONDERILEN mesajlarda `sent_at` tasiyicidir. Siralama ve
+    keyset sayfalamasi yalnizca `external_timestamp`'e bakarken gonderilen
+    mesajlar (NULL) `nullslast` ile listenin sonuna dusuyor, `... < cutoff`
+    kiyasinda da NULL oldugu icin TAMAMEN eleniyordu: sohbette sayfa
+    boyutundan fazla mesaj varsa kullanicinin kendi gonderdigi mesajlar
+    yeniden yuklemede KAYBOLUYORDU. Migration ve preview onarimi zaten bu
+    COALESCE'i kullaniyordu — burasi tek tutarsiz noktaydi.
+    """
+    return func.coalesce(Message.external_timestamp, Message.sent_at, Message.created_at)
+
+
+def _msg_time(row: Optional[Message]) -> Optional[datetime]:
+    """`_msg_time_col()` kolonunun Python karsiligi (ayni oncelik)."""
+    if row is None:
+        return None
+    return row.external_timestamp or row.sent_at or row.created_at
+
+
 def _hydration_cursor_ms(rows: List[Optional[Message]]) -> Optional[int]:
     """Verilen mesaj satirlarindaki EN ESKI gercek zaman damgasini gateway
     sucut alanina (ms epoch, naive-UTC tabanli) cevirir. Satir yoksa veya
@@ -1568,7 +1711,7 @@ def _hydration_cursor_ms(rows: List[Optional[Message]]) -> Optional[int]:
     for r in rows:
         if r is None:
             continue
-        ts = r.external_timestamp or r.created_at
+        ts = _msg_time(r)
         if ts is not None and (oldest is None or ts < oldest):
             oldest = ts
     if oldest is None:
@@ -1598,15 +1741,13 @@ async def get_messages(
             select(Message).where(Message.id == before, Message.conversation_id == conv.id)
         )
         before_row = bres.scalars().first()
-        cutoff = before_row.external_timestamp if before_row else None
+        cutoff = _msg_time(before_row) if before_row else None
         if cutoff is not None:
-            base = base.where(Message.external_timestamp < cutoff)
+            base = base.where(_msg_time_col() < cutoff)
         else:
             # before satiri cozulemedi → bos sayfa (uydurma sucut yok).
             base = base.where(Message.id < before)
-    base = base.order_by(
-        Message.external_timestamp.desc().nullslast(), Message.id.desc()
-    ).limit(page_size)
+    base = base.order_by(_msg_time_col().desc(), Message.id.desc()).limit(page_size)
     res = await db.execute(base)
     rows = list(res.scalars().all())
     # Faz 6 (P0.11 lazy hydration): ilk sayfa hic bos ve sohbet hicbir zaman
@@ -1629,8 +1770,14 @@ async def get_messages(
                 rows = [r for r in older if r.id not in seen_ids] + rows
     # Kronolojik cikis siralamasi (eski→yeni): hydration sonrasi id sirasi
     # bozulabilir — tek dogru anahtar gercek zaman damgasidir.
-    rows.sort(key=lambda r: (r.external_timestamp or r.created_at or datetime.min, r.id or 0))
-    has_more = len(rows) == page_size
+    rows.sort(key=lambda r: (_msg_time(r) or datetime.min, r.id or 0))
+    # `has_more`: hydration istenenden FAZLA satir ekleyebilir (gateway en az
+    # 50 kayit doner). Eski `len(rows) == page_size` kiyasi bu durumda False
+    # uretip sonsuz kaydirmayi erkenden durduruyor, ayrica `limit` sozlesmesi
+    # asiliyordu. Sayfa boyutuna kirp; fazlasi varsa "devam var" de.
+    has_more = len(rows) >= page_size
+    if len(rows) > page_size:
+        rows = rows[-page_size:]
     messages = [_serialize_message(r) for r in rows]
     return {
         "messages": messages,
@@ -1647,7 +1794,9 @@ async def send_text_message(
     clean = body.strip()
     if not clean:
         raise LookupError("Mesaj bos olamaz.")
-    gateway_result = await gw.send_text_message(jid, clean, client_message_id)
+    _now = datetime.utcnow()
+    gateway_id = await _conversation_gateway_id(db, user_id, conv)
+    gateway_result = await gw.send_text_message(gateway_id, jid, clean, client_message_id)
     wa_id = gateway_result.get("wa_message_id")
     row = Message(
         user_id=user_id,
@@ -1660,7 +1809,10 @@ async def send_text_message(
         sender_phone="ME",
         recipient_phone=jid_to_phone(jid) or jid,
         status=ConversationMessageStatus.SENT,
-        sent_at=datetime.utcnow(),
+        sent_at=_now,
+        # Gonderilen mesaj da ZAMAN EKSENINDE yer alir; aksi halde siralama
+        # ve keyset sayfalamasi disinda kalip sohbetten kayboluyordu.
+        external_timestamp=_now,
     )
     db.add(row)
     # Faz 10 (P2): gonderim yolu da paylasilan kurali kullanir (tek kaynak).
@@ -1680,7 +1832,8 @@ async def send_media_message(
     db: AsyncSession, user_id: str, conversation_id: int, media: Dict[str, Any]
 ) -> Dict[str, Any]:
     conv, jid = await _resolve_jid(db, user_id, conversation_id)
-    gateway_result = await gw.send_media_message(jid, media)
+    gateway_id = await _conversation_gateway_id(db, user_id, conv)
+    gateway_result = await gw.send_media_message(gateway_id, jid, media)
     wa_id = gateway_result.get("wa_message_id")
     mtype_str = (media.get("media_type") or "document").upper()
     try:
@@ -1689,6 +1842,7 @@ async def send_media_message(
         msg_type = MessageType.DOCUMENT
     caption = media.get("caption")
     filename = media.get("filename")
+    _now = datetime.utcnow()
     row = Message(
         user_id=user_id,
         conversation_id=conv.id,
@@ -1703,7 +1857,8 @@ async def send_media_message(
         sender_phone="ME",
         recipient_phone=jid_to_phone(jid) or jid,
         status=ConversationMessageStatus.SENT,
-        sent_at=datetime.utcnow(),
+        sent_at=_now,
+        external_timestamp=_now,
     )
     db.add(row)
     # Faz 10 (P2): "[Medya]" yerine paylasilan kuralin tip etiketi.
@@ -1734,7 +1889,8 @@ async def mark_conversation_read(db: AsyncSession, user_id: str, conversation_id
     gateway_ok = True
     gateway_error: Optional[str] = None
     try:
-        await gw.mark_conversation_read(jid)
+        gateway_id = await _conversation_gateway_id(db, user_id, conv)
+        await gw.mark_conversation_read(gateway_id, jid)
     except Exception as exc:
         gateway_ok = False
         gateway_error = str(exc)[:300]
@@ -1751,7 +1907,8 @@ async def mark_conversation_read(db: AsyncSession, user_id: str, conversation_id
 async def send_typing(db: AsyncSession, user_id: str, conversation_id: int, typing: bool = True) -> Dict[str, Any]:
     """Karsı tarafa 'yazıyor...' gostermesi gonderir (WhatsApp Web paritesi)."""
     conv, jid = await _resolve_jid(db, user_id, conversation_id)
-    await gw.send_typing(jid, typing=typing)
+    gateway_id = await _conversation_gateway_id(db, user_id, conv)
+    await gw.send_typing(gateway_id, jid, typing=typing)
     return {"success": True}
 
 
@@ -1769,7 +1926,11 @@ async def get_media_bytes(db: AsyncSession, user_id: str, media_id: str) -> Tupl
     row = res.scalars().first()
     if row is None:
         raise LookupError(f"Medya bulunamadi: {media_id}")
-    data = await gw.fetch_media(media_id)
+    conv = await db.get(Conversation, row.conversation_id)
+    if conv is None:
+        raise LookupError(f"Medya bulunamadi: {media_id}")
+    gateway_id = await _conversation_gateway_id(db, user_id, conv)
+    data = await gw.fetch_media(gateway_id, media_id)
     return data, row.media_mime_type, row.media_filename
 
 
@@ -1892,7 +2053,7 @@ class SyncJob:
 _sync_jobs: Dict[str, SyncJob] = {}
 
 
-async def _bulk_channel_available() -> bool:
+async def _bulk_channel_available(gateway_id: str) -> bool:
     """Gateway'de `/messages/bulk` kanali var mi (yeni gateway surumu).
 
     Eski gateway dagitimi 404 donerur; job bu durumda legacy per-chat hattina
@@ -1904,7 +2065,7 @@ async def _bulk_channel_available() -> bool:
     if now - float(_bulk_channel_cache.get("checked_at") or 0.0) < 300:
         return bool(_bulk_channel_cache.get("ok"))
     try:
-        probe = await gw.list_all_messages(limit=1, offset=0)
+        probe = await gw.list_all_messages(gateway_id, limit=1, offset=0)
         ok = isinstance(probe, dict) and "messages" in probe
     except Exception:  # noqa: BLE001 — gateway kapali/eski surum: legacy hat
         ok = False
@@ -2039,71 +2200,95 @@ async def _run_sync_job(job: SyncJob) -> None:
                 job.stage_timings[name] = round(job.stage_timings.get(name, 0.0) + (now - phase_t0), 3)
                 phase_t0 = now
 
-            # 1) Grup basliklari (fail-soft; force — cozulememis gruplar tekrar denensin).
-            #    Tek gateway cagrisi, bellek-ici cozum — hizli; sohbet snapshot'indaki
-            #    grup isimlerinin dogru gelmesi icin chats'ten once kalir.
-            try:
-                await gw.sync_group_subjects(force=True)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("Sync job grup basliklari atlandi (owner=%s): %s", owner, exc)
-            _mark_phase("group_subjects")
+            # Hangi hatlar senkronlanacak? YALNIZCA bu kullanicinin BAGLI
+            # hatlari (sahiplik kapisi). Birden fazla hat varsa her biri kendi
+            # kapsaminda sirayla senkronlanir — "bagli olan tek oturumu sec"
+            # tahmini YOK.
+            sessions_to_sync = await _user_sessions(db, owner, connected_only=True)
+            if not sessions_to_sync:
+                raise NoWhatsAppSession(
+                    "Bagli bir WhatsApp hatti yok. Lutfen once QR ile eslestirin."
+                )
 
-            # 2) Sohbet anlik goruntusu — chat BASINA gateway istegi YOK (§21);
-            #    chats listesi tek cagri, DB'ye bir geciste TOPLU yazilir (Faz 7).
-            #    Bu faz biter bitmez chats_snapshot yayinlanir — UI artik mesaj
-            #    senkronunu BEKLEMEZ (P0.3).
-            job.stage = "chats"
-            data = await gw.list_conversations(limit=200)
-            items = data.get("items", []) if isinstance(data, dict) else []
-            conv_out, jid_by_conv = await _persist_chat_snapshot(db, owner, items)
-            job.chats_total = len(conv_out)
-            job.chats_synced = len(conv_out)
-            if job.cancel_requested:
-                raise asyncio.CancelledError()
-            for page_start in range(0, len(conv_out), _SYNC_CHAT_PAGE_SIZE):
+            all_items: List[Dict[str, Any]] = []
+            conv_out: List[Dict[str, Any]] = []
+            jid_by_conv: Dict[int, str] = {}
+            contacts: List[Dict[str, Any]] = []
+
+            for ws_session in sessions_to_sync:
+                gateway_id = str(ws_session.gateway_id)
+
+                # 1) Grup basliklari (fail-soft; force — cozulememis gruplar tekrar denensin).
+                #    Tek gateway cagrisi, bellek-ici cozum — hizli; sohbet
+                #    snapshot'indaki grup isimlerinin dogru gelmesi icin
+                #    chats'ten once kalir.
+                try:
+                    await gw.sync_group_subjects(gateway_id, force=True)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Sync job grup basliklari atlandi (owner=%s hat=%s): %s", owner, ws_session.id, exc)
+                _mark_phase("group_subjects")
+
+                # 2) Sohbet anlik goruntusu — chat BASINA gateway istegi YOK (§21);
+                #    chats listesi tek cagri, DB'ye bir geciste TOPLU yazilir (Faz 7).
+                job.stage = "chats"
+                data = await gw.list_conversations(gateway_id, limit=200)
+                items = data.get("items", []) if isinstance(data, dict) else []
+                all_items.extend(items)
+                session_convs, session_jids = await _persist_chat_snapshot(
+                    db, owner, items, session_id=ws_session.id
+                )
+                conv_out.extend(session_convs)
+                jid_by_conv.update(session_jids)
+                job.chats_total = len(conv_out)
+                job.chats_synced = len(conv_out)
+                if job.cancel_requested:
+                    raise asyncio.CancelledError()
+                for page_start in range(0, len(session_convs), _SYNC_CHAT_PAGE_SIZE):
+                    await _broadcast_sync_event(_sync_event(
+                        job, "whatsapp_sync_chats_snapshot",
+                        total=job.chats_total,
+                        conversations=session_convs[page_start:page_start + _SYNC_CHAT_PAGE_SIZE]), owner)
+                _mark_phase("chats")
+
+                # 3) Rehber (fail-soft — sohbetler artik gorunur, ad
+                #    zenginlestirmesi arka planda tamamlanir).
+                job.stage = "contacts"
+                try:
+                    session_contacts = await sync_contacts(db, owner, session=ws_session)
+                    contacts.extend(session_contacts)
+                    job.contacts_synced = len(contacts)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Sync job rehber adimi atlandi (owner=%s hat=%s): %s", owner, ws_session.id, exc)
+                if job.cancel_requested:
+                    raise asyncio.CancelledError()
                 await _broadcast_sync_event(_sync_event(
-                    job, "whatsapp_sync_chats_snapshot",
-                    total=job.chats_total,
-                    conversations=conv_out[page_start:page_start + _SYNC_CHAT_PAGE_SIZE]), owner)
-            _mark_phase("chats")
+                    job, "whatsapp_sync_contacts_snapshot",
+                    total=job.contacts_synced, contacts=contacts[:_SYNC_EVENT_CHUNK]), owner)
+                _mark_phase("contacts")
 
-            # 3) Rehber (fail-soft — sohbetler artik gorunur, ad zenginlestirmesi
-            #    arka planda tamamlanir; final complete olayi cozulmus listeyi tasir).
-            job.stage = "contacts"
-            try:
-                contacts = await sync_contacts(db, owner)
-                job.contacts_synced = len(contacts)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("Sync job rehber adimi atlandi (owner=%s): %s", owner, exc)
-                contacts = []
-            if job.cancel_requested:
-                raise asyncio.CancelledError()
-            await _broadcast_sync_event(_sync_event(
-                job, "whatsapp_sync_contacts_snapshot",
-                total=job.contacts_synced, contacts=contacts[:_SYNC_EVENT_CHUNK]), owner)
-            _mark_phase("contacts")
+                # 3b) Ad otoritesini geri ver (P0.3 tie-break onarimi, tek SELECT):
+                #     sohbet-listesi adlari rehber fazindan bagimsiz olarak kazanir —
+                #     WhatsApp Web'de kullaniciyin gordugu ad budur.
+                try:
+                    await _reapply_chat_names(db, owner, items)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Sync job ad onarimi atlandi (owner=%s): %s", owner, exc)
 
-            # 3b) Ad otoritesini geri ver (P0.3 tie-break onarimi, tek SELECT):
-            #     sohbet-listesi adlari rehber fazindan bagimsiz olarak kazanir —
-            #     WhatsApp Web'de kullaniciyin gordugu ad budur.
-            try:
-                await _reapply_chat_names(db, owner, items)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("Sync job ad onarimi atlandi (owner=%s): %s", owner, exc)
+                # 4) Mesajlar — TEK bulk kanaldan, bellek-ici offset sayfalamasi
+                #    (§21: per-chat HTTP yok; §23: mesaj basina sorgu yok; Faz 8:
+                #    dedup kumesi sayfalar arasi onbelleklenir).
+                job.stage = "messages"
+                if await _bulk_channel_available(gateway_id):
+                    await _run_bulk_message_sync(db, job, session_jids, gateway_id)
+                else:
+                    # Eski gateway dagitimi: legacy per-chat hatti (fail-soft).
+                    logger.warning("Gateway bulk kanali yok — legacy per-chat sync (owner=%s)", owner)
+                    await _sync_conversations_impl(db, owner)
+                if job.cancel_requested:
+                    raise asyncio.CancelledError()
+                _mark_phase("messages")
 
-            # 4) Mesajlar — TEK bulk kanaldan, bellek-ici offset sayfalamasi
-            #    (§21: per-chat HTTP yok; §23: mesaj basina sorgu yok; Faz 8:
-            #    dedup kumesi sayfalar arasi onbelleklenir).
-            job.stage = "messages"
-            if await _bulk_channel_available():
-                await _run_bulk_message_sync(db, job, jid_by_conv)
-            else:
-                # Eski gateway dagitimi: legacy per-chat hatti (fail-soft).
-                logger.warning("Gateway bulk kanali yok — legacy per-chat sync (owner=%s)", owner)
-                await _sync_conversations_impl(db, owner)
-            if job.cancel_requested:
-                raise asyncio.CancelledError()
-            _mark_phase("messages")
+            items = all_items
 
             # 5) Onarim + tamamlanma — preview'i eksik sohbetleri tek agregat
             #    sorguyla hydrate et, sonra cozulmus tam listeyi yayinla.
@@ -2158,7 +2343,8 @@ async def _run_sync_job(job: SyncJob) -> None:
 
 
 async def _persist_chat_snapshot(
-    db: AsyncSession, owner: str, items: List[Dict[str, Any]]
+    db: AsyncSession, owner: str, items: List[Dict[str, Any]],
+    session_id: Optional[int] = None,
 ) -> Tuple[List[Dict[str, Any]], Dict[int, str]]:
     """Gateway chats listesini TOPLU geciste DB'ye yazar (Faz 7: N+1 yok).
 
@@ -2197,7 +2383,7 @@ async def _persist_chat_snapshot(
     item_by_jid: Dict[str, Dict[str, Any]] = {
         str(item.get("jid") or item.get("id")): item for item in candidates
     }
-    triples = await _ensure_conversations_bulk(db, owner, contacts)
+    triples = await _ensure_conversations_bulk(db, owner, contacts, session_id=session_id)
     out: List[Dict[str, Any]] = []
     jid_by_conv: Dict[int, str] = {}
     for jid_str, contact, conv in triples:
@@ -2251,9 +2437,15 @@ async def _sync_watermark_epoch(db: AsyncSession, owner: str) -> Optional[int]:
     messageTimestamp'ten yazilir. Realtime akis (message_new) yeni mesajları
     zaten kalici yazdigi icin suuc her senkronla ilerler.
     """
+    # Yalnizca GELEN mesajlar suucu ilerletir: uygulamadan gonderilen mesajlar
+    # artik `external_timestamp` tasidigi icin (zaman ekseni duzeltmesi), onlari
+    # da sayarsak "simdi" gonderilen tek bir mesaj suucu one atip HENUZ
+    # cekilmemis eski gecmisin atlanmasina yol acardi. Fazla cekim dedup ile
+    # zararsizdir; eksik cekim veri kaybidir.
     res = await db.execute(
         select(func.max(Message.external_timestamp)).where(
-            get_user_filter(Message.user_id, owner)
+            get_user_filter(Message.user_id, owner),
+            Message.direction == MessageDirection.INBOUND,
         )
     )
     ts = res.scalar()
@@ -2263,7 +2455,7 @@ async def _sync_watermark_epoch(db: AsyncSession, owner: str) -> Optional[int]:
 
 
 async def _run_bulk_message_sync(
-    db: AsyncSession, job: SyncJob, jid_by_conv: Dict[int, str]
+    db: AsyncSession, job: SyncJob, jid_by_conv: Dict[int, str], gateway_id: str
 ) -> None:
     """Bulk mesaj kanalindan sayfali hydrasyon.
 
@@ -2294,6 +2486,7 @@ async def _run_bulk_message_sync(
     first_page = True
     while True:
         page = await gw.list_all_messages(
+            gateway_id,
             limit=_SYNC_BULK_PAGE_SIZE,
             offset=offset,
             since=since_epoch,
@@ -2610,7 +2803,8 @@ async def _ingest_message(db: AsyncSession, event: Dict[str, Any]) -> Dict[str, 
     # halde `ingest_gateway_event` sonundaki "sahipsiz olay yayinlanmaz"
     # kontrolu bu mesaji reddeder ve gercek mesajlar UI'a hic ulasmaz.
     event["user_id"] = owner
-    conv = await _ensure_conversation_race_safe(db, owner, jid_str, event)
+    ws_session_id = await _resolve_event_session_id(db, event.get("gateway_session_id"))
+    conv = await _ensure_conversation_race_safe(db, owner, jid_str, event, session_id=ws_session_id)
     # Faz 10 (P1, RC-4): GRUP sohbetlerinde mesajin gonderen adi (pushName —
     # ör. bir üyenin "Ahmet"ı) GRUP contact'ine ASLA yazilmaz; grup adi
     # yalnizca group_subject metadata'sindan guncellenir. (1:1'de mevcut
@@ -2714,6 +2908,24 @@ class EventOwnerUnresolved(Exception):
     """
 
 
+async def _resolve_event_session_id(
+    db: AsyncSession, gw_session_id: Optional[str]
+) -> Optional[int]:
+    """Olayin geldigi gateway oturumunun BACKEND satir id'si.
+
+    Sohbetler bu kimlikle hatta baglanir; boylece o sohbete verilen yanit
+    dogru hattan gider ve hat silinince yalnizca o hattin sohbetleri temizlenir.
+    Eski gateway surumu kimlik gondermiyorsa None doner (sohbet bagsiz kalir —
+    uydurma bag yazilmaz).
+    """
+    if not gw_session_id:
+        return None
+    row_id = await db.scalar(
+        select(WhatsAppSession.id).where(WhatsAppSession.gateway_id == str(gw_session_id))
+    )
+    return int(row_id) if row_id is not None else None
+
+
 async def _resolve_event_owner(
     db: AsyncSession, jid: str, gw_session_id: Optional[str] = None
 ) -> str:
@@ -2805,6 +3017,33 @@ async def _ingest_contact_synced(db: AsyncSession, event: Dict[str, Any]) -> Dic
     return event
 
 
+async def _find_whatsapp_conversation(
+    db: AsyncSession, user_id: str, jid: str
+) -> Optional[Conversation]:
+    """JID'e karsilik gelen MEVCUT WhatsApp sohbeti; yoksa None (yaratmaz).
+
+    Durum olaylari (presence/read/ack) icin kullanilir: bu olaylar sohbet
+    listesine yeni satir EKLEYEMEZ.
+    """
+    phone = _contact_phone_for_jid(jid)
+    contact_id = await db.scalar(
+        select(Contact.id).where(
+            Contact.phone_e164 == phone,
+            get_user_filter(Contact.user_id, user_id),
+        )
+    )
+    if contact_id is None:
+        return None
+    res = await db.execute(
+        select(Conversation).where(
+            Conversation.contact_id == contact_id,
+            Conversation.channel == "WHATSAPP",
+            get_user_filter(Conversation.user_id, user_id),
+        )
+    )
+    return res.scalars().first()
+
+
 async def _map_conversation_event(db: AsyncSession, event: Dict[str, Any]) -> Dict[str, Any]:
     jid = event.get("conversation_id")
     if not jid or "@" not in str(jid):
@@ -2826,7 +3065,23 @@ async def _map_conversation_event(db: AsyncSession, event: Dict[str, Any]) -> Di
         return _skip_event(event, f"{event.get('event')}: dejenere jid ({jid})")
     owner = await _resolve_event_owner(db, str(jid), event.get("gateway_session_id"))
     event["user_id"] = owner  # Faz 13: cozulen sahip olaya yazilir (yayin sinir kontrolu)
-    conv = await _ensure_conversation_race_safe(db, owner, str(jid), event)
+    ws_session_id = await _resolve_event_session_id(db, event.get("gateway_session_id"))
+    evt_name = event.get("event")
+    # WhatsApp Web paritesi: sohbet listesine YALNIZCA `conversation_updated`
+    # (gercek sohbet metadata'si) yeni satir ekleyebilir. `presence_updated`
+    # ("yaziyor..."), `conversation_read` ve `message_status_updated` MEVCUT
+    # bir sohbetin durumunu tasir — sohbet YARATMAZLAR.
+    #
+    # Eski davranis bu dort olayin HEPSI icin `_ensure_conversation` cagiriyordu:
+    # listenizde olmayan birinin tek bir presence sinyali bile kalici bir kisi +
+    # bos sohbet satiri uretiyordu (hayalet sohbetler). WhatsApp Web'de
+    # "yaziyor..." bilgisi sohbet acmaz.
+    if evt_name == "conversation_updated":
+        conv = await _ensure_conversation_race_safe(db, owner, str(jid), event, session_id=ws_session_id)
+    else:
+        conv = await _find_whatsapp_conversation(db, owner, str(jid))
+        if conv is None:
+            return _skip_event(event, f"{evt_name}: sohbet yok, durum olayi sohbet yaratmaz ({jid})")
     event["conversation_id"] = conv.id
     if event.get("event") == "presence_updated":
         # Baileys presence: composing / paused / available / recording ...

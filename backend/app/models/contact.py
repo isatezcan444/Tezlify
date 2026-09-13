@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, DateTime, Index, Uuid, ForeignKey, JSON
+from sqlalchemy import Column, Integer, String, DateTime, Index, Uuid, ForeignKey, JSON, UniqueConstraint
 from sqlalchemy.orm import relationship
 from backend.app.core.database import Base
 
@@ -32,4 +32,8 @@ class Contact(Base):
 
     __table_args__ = (
         Index("idx_contact_user_phone", "user_id", "phone_e164"),
+        # Mukerrer kisi satiri, `_upsert_contact`'te MultipleResultsFound'a ve
+        # `message_new` olayinin komple dusmesine (gercek mesaj kaybi) yol
+        # aciyordu. Tekillik artik veritabani seviyesinde garanti.
+        UniqueConstraint("user_id", "phone_e164", name="uq_contact_user_phone"),
     )

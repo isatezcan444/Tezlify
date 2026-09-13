@@ -88,13 +88,36 @@ async def delete_session(session_id: str) -> Dict[str, Any]:
 # Contacts & Conversations
 # ---------------------------------------------------------------------------
 
-async def list_contacts() -> List[Dict[str, Any]]:
-    data = await _request("GET", "/contacts")
+# ---------------------------------------------------------------------------
+# Veri duzlemi: TUM cagrilar OTURUM KAPSAMLIDIR.
+#
+# Guvenlik duzeltmesi: bu fonksiyonlar eskiden oturumsuz yollara
+# (`/contacts`, `/conversations/{jid}/messages` ...) gidiyordu ve gateway
+# "bagli olan tek oturumu" seciyordu. Cagiranin kimligi hic sorulmadigi icin
+# bir kiracinin istegi, bagli olan BASKA bir kiracinin hattindan veri okuyup
+# o hattan mesaj gonderebiliyordu. Artik her cagri `gateway_id` tasir ve
+# cagiran katman (whatsapp_service) oturumun gercekten o kullaniciya ait
+# oldugunu ONCEDEN dogrular.
+# ---------------------------------------------------------------------------
+
+def _s(gateway_id: str) -> str:
+    """Oturum kapsamli yol on eki. Kimlik bossa fail-closed."""
+    gid = str(gateway_id or "").strip()
+    if not gid:
+        raise WhatsAppGatewayError("Gateway oturum kimligi (gateway_id) zorunludur.")
+    return f"/sessions/{gid}"
+
+
+async def list_contacts(gateway_id: str) -> List[Dict[str, Any]]:
+    data = await _request("GET", f"{_s(gateway_id)}/contacts")
     return data.get("contacts", []) if isinstance(data, dict) else []
 
 
 async def list_conversations(
-    search: Optional[str] = None, limit: Optional[int] = None, offset: Optional[int] = None
+    gateway_id: str,
+    search: Optional[str] = None,
+    limit: Optional[int] = None,
+    offset: Optional[int] = None,
 ) -> Dict[str, Any]:
     params: Dict[str, Any] = {}
     if search:
@@ -103,10 +126,10 @@ async def list_conversations(
         params["limit"] = limit
     if offset is not None:
         params["offset"] = offset
-    return await _request("GET", "/conversations", params=params)
+    return await _request("GET", f"{_s(gateway_id)}/conversations", params=params)
 
 
-async def sync_group_subjects(force: bool = False) -> Dict[str, Any]:
+async def sync_group_subjects(gateway_id: str, force: bool = False) -> Dict[str, Any]:
     """Faz 8: gateway'den tüm katılımcı grupların subject'ini tek toplu
     istekte çözer (oturum bazında TTL gateway içinde). Hata fail-closed:
     WhatsAppGatewayError yükselir, çağıran yutar ama isim uydurmaz.
@@ -116,17 +139,18 @@ async def sync_group_subjects(force: bool = False) -> Dict[str, Any]:
     grupları her seferinde yeniden dener.
     """
     payload: Dict[str, Any] = {"force": bool(force)}
-    return await _request("POST", "/conversations/sync-groups", json=payload)
+    return await _request("POST", f"{_s(gateway_id)}/conversations/sync-groups", json=payload)
 
 
-async def get_messages(jid: str, limit: int = 50, before: Optional[int] = None) -> Dict[str, Any]:
+async def get_messages(gateway_id: str, jid: str, limit: int = 50, before: Optional[int] = None) -> Dict[str, Any]:
     params: Dict[str, Any] = {"limit": limit}
     if before is not None:
         params["before"] = before
-    return await _request("GET", f"/conversations/{jid}/messages", params=params)
+    return await _request("GET", f"{_s(gateway_id)}/conversations/{jid}/messages", params=params)
 
 
 async def list_all_messages(
+    gateway_id: str,
     limit: int = 1000,
     offset: int = 0,
     since: Optional[int] = None,
@@ -154,31 +178,31 @@ async def list_all_messages(
         params["since"] = int(since)
     if per_chat_limit is not None:
         params["perChatLimit"] = int(per_chat_limit)
-    return await _request("GET", "/messages/bulk", params=params)
+    return await _request("GET", f"{_s(gateway_id)}/messages/bulk", params=params)
 
 
 # ---------------------------------------------------------------------------
 # Sending
 # ---------------------------------------------------------------------------
 
-async def send_text_message(jid: str, body: str, client_message_id: Optional[str] = None) -> Dict[str, Any]:
+async def send_text_message(gateway_id: str, jid: str, body: str, client_message_id: Optional[str] = None) -> Dict[str, Any]:
     payload: Dict[str, Any] = {"body": body}
     if client_message_id:
         payload["client_message_id"] = client_message_id
-    return await _request("POST", f"/conversations/{jid}/messages", json=payload)
+    return await _request("POST", f"{_s(gateway_id)}/conversations/{jid}/messages", json=payload)
 
 
-async def send_media_message(jid: str, media: Dict[str, Any]) -> Dict[str, Any]:
-    return await _request("POST", f"/conversations/{jid}/media", json=media)
+async def send_media_message(gateway_id: str, jid: str, media: Dict[str, Any]) -> Dict[str, Any]:
+    return await _request("POST", f"{_s(gateway_id)}/conversations/{jid}/media", json=media)
 
 
-async def mark_conversation_read(jid: str) -> Dict[str, Any]:
-    return await _request("POST", f"/conversations/{jid}/read")
+async def mark_conversation_read(gateway_id: str, jid: str) -> Dict[str, Any]:
+    return await _request("POST", f"{_s(gateway_id)}/conversations/{jid}/read")
 
 
-async def send_typing(jid: str, typing: bool = True, duration_ms: int = 4000) -> Dict[str, Any]:
+async def send_typing(gateway_id: str, jid: str, typing: bool = True, duration_ms: int = 4000) -> Dict[str, Any]:
     return await _request(
-        "POST", f"/conversations/{jid}/typing", json={"typing": typing, "duration_ms": duration_ms}
+        "POST", f"{_s(gateway_id)}/conversations/{jid}/typing", json={"typing": typing, "duration_ms": duration_ms}
     )
 
 
@@ -186,9 +210,9 @@ async def send_typing(jid: str, typing: bool = True, duration_ms: int = 4000) ->
 # Media
 # ---------------------------------------------------------------------------
 
-async def fetch_media(media_id: str) -> bytes:
-    """Gateway'den medya indirir. Yalnızca 2xx bayt döner."""
-    url = f"{gateway_base()}/media/{media_id}"
+async def fetch_media(gateway_id: str, media_id: str) -> bytes:
+    """Gateway'den medya indirir (oturum kapsamli). Yalnızca 2xx bayt döner."""
+    url = f"{gateway_base()}{_s(gateway_id)}/media/{media_id}"
     try:
         async with httpx.AsyncClient(timeout=gateway_timeout()) as client:
             res = await client.get(url)

@@ -17,7 +17,6 @@ import http from 'http';
 import { WebSocketServer } from 'ws';
 import { createSessionManager } from './session-manager.js';
 import { createEventBridge } from './events.js';
-import { createMediaRouter } from './media.js';
 import { fileURLToPath } from 'url';
 import path from 'path';
 import fs from 'fs';
@@ -158,138 +157,127 @@ app.delete('/sessions/:id', async (req, res) => {
   }
 });
 
-// List all contacts (synced from WhatsApp)
-app.get('/contacts', (req, res) => {
-  res.json({ contacts: sessionManager.listContacts() });
-});
+// ---------------------------------------------------------------------------
+// Veri düzlemi — HEPSİ OTURUM KAPSAMLI (güvenlik düzeltmesi).
+//
+// Bu uçlar eskiden `/contacts`, `/conversations/:jid/...` gibi oturumsuz
+// yollardı ve gateway "bağlı olan tek oturumu" seçiyordu. Çağıranın kimliği
+// hiç sorulmadığı için bir kiracının isteği, bağlı olan BAŞKA bir kiracının
+// hattından veri okuyup mesaj gönderebiliyordu. Artık hangi hattın
+// kastedildiği yolda AÇIKÇA belirtilir; backend çağırmadan önce oturumun
+// gerçekten o kullanıcıya ait olduğunu doğrular.
+// ---------------------------------------------------------------------------
 
-// List conversations (chats)
-app.get('/conversations', (req, res) => {
+// Oturumu çözer; yoksa 404 döner (fail-closed — varsayılan hat seçilmez).
+function withSession(handler) {
+  return async (req, res) => {
+    const sessionId = req.params.sessionId;
+    if (!sessionManager.getSession(sessionId)) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+    try {
+      await handler(req, res, sessionId);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  };
+}
+
+// List contacts for one session (synced from WhatsApp)
+app.get('/sessions/:sessionId/contacts', withSession(async (req, res, sessionId) => {
+  res.json({ contacts: sessionManager.listContacts(sessionId) });
+}));
+
+// List conversations (chats) for one session
+app.get('/sessions/:sessionId/conversations', withSession(async (req, res, sessionId) => {
   const { search, limit, offset } = req.query;
-  res.json(sessionManager.listConversations({ search, limit: limit ? parseInt(limit, 10) : undefined, offset: offset ? parseInt(offset, 10) : undefined }));
-});
+  res.json(sessionManager.listConversations(sessionId, {
+    search,
+    limit: limit ? parseInt(limit, 10) : undefined,
+    offset: offset ? parseInt(offset, 10) : undefined,
+  }));
+}));
 
-// Faz 8: grup başlıklarını (subject) toplu çöz — backend sync_conversations
-// bunu çağırır (oturum başına 10 dk TTL + in-flight koruması içeride).
+// Faz 8: grup başlıklarını (subject) toplu çöz — backend sync akışı çağırır
+// (oturum başına 10 dk TTL + in-flight koruması içeride).
 // Faz 10 (P1): body.force=true TTL'i atlar — "Eşitle" her basışta çözülememiş
 // grupları yeniden dener (cache poisoning: "Grup" asla kalıcı değer olmaz).
-app.post('/conversations/sync-groups', async (req, res) => {
-  try {
-    const force = req.body && req.body.force === true;
-    const result = await sessionManager._ensureGroupSubjects({ force });
-    // Faz 13 (truthfulness): cozumleme yapilmadiysa SAHTE basari donme.
-    // `ambiguous_scope` gercek bir reddedilme (kiracilar arasi karisma riski).
-    if (result && result.applied === false && result.reason === 'ambiguous_scope') {
-      return res.status(409).json({
-        success: false,
-        reason: result.reason,
-        error:
-          'Birden fazla WhatsApp oturumu bagli; grup basliklarinin hangi hesaptan cozulecegi ' +
-          'belirsiz oldugu icin islem REDDEDILDI.',
-      });
-    }
-    res.json({ success: true, force, applied: result ? result.applied : false, reason: result ? result.reason : null });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+app.post('/sessions/:sessionId/conversations/sync-groups', withSession(async (req, res, sessionId) => {
+  const force = req.body && req.body.force === true;
+  const result = await sessionManager._ensureGroupSubjects({ sessionId, force });
+  // Faz 13 (truthfulness): cozumleme yapilmadiysa SAHTE basari donme.
+  res.json({ success: true, force, applied: result ? result.applied : false, reason: result ? result.reason : null });
+}));
 
 // Faz 10 (P5): toplu gecmis kanali — backend initial-sync job'i sohbet basina
-// ayri ayri HTTP turu atmak icin bunu kullaniir (deterministik offset sayfalama).
+// ayri ayri HTTP turu atmak yerine bunu kullanir (deterministik offset sayfalama).
 // Sorun 1: `perChatLimit` verildiginde her sohbet icin yalnizca en yeni N mesaj
 // dondurulur — ilk senkronun maliyetini sinirlar; gecmis lazy hydration ile gelir.
-app.get('/messages/bulk', (req, res) => {
-  try {
-    const { limit, offset, since, perChatLimit } = req.query;
-    res.json(sessionManager.listAllMessages({
-      limit: limit ? parseInt(limit, 10) : 1000,
-      offset: offset ? parseInt(offset, 10) : 0,
-      // Faz 6 (P0.13): opsiyonel delta suucusu (epoch saniye). Eski backend
-      // gondermezse undefined kalir → tam gecmis (geriye donuk uyumlu).
-      since: since !== undefined && since !== '' ? parseInt(since, 10) : null,
-      perChatLimit: perChatLimit !== undefined && perChatLimit !== '' ? parseInt(perChatLimit, 10) : null,
-    }));
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+app.get('/sessions/:sessionId/messages/bulk', withSession(async (req, res, sessionId) => {
+  const { limit, offset, since, perChatLimit } = req.query;
+  res.json(sessionManager.listAllMessages(sessionId, {
+    limit: limit ? parseInt(limit, 10) : 1000,
+    offset: offset ? parseInt(offset, 10) : 0,
+    // Faz 6 (P0.13): opsiyonel delta suucusu (epoch saniye).
+    since: since !== undefined && since !== '' ? parseInt(since, 10) : null,
+    perChatLimit: perChatLimit !== undefined && perChatLimit !== '' ? parseInt(perChatLimit, 10) : null,
+  }));
+}));
 
-// Get messages for a conversation (jid)
-app.get('/conversations/:jid/messages', async (req, res) => {
-  try {
-    const { limit, before } = req.query;
-    const messages = await sessionManager.getMessages(req.params.jid, {
-      limit: limit ? parseInt(limit, 10) : 50,
-      before: before ? parseInt(before, 10) : undefined,
-    });
-    res.json({ messages, has_more: messages.length === (limit ? parseInt(limit, 10) : 50) });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+// Get messages for a conversation (jid) within one session
+app.get('/sessions/:sessionId/conversations/:jid/messages', withSession(async (req, res, sessionId) => {
+  const { limit, before } = req.query;
+  const pageSize = limit ? parseInt(limit, 10) : 50;
+  const messages = await sessionManager.getMessages(sessionId, req.params.jid, {
+    limit: pageSize,
+    before: before ? parseInt(before, 10) : undefined,
+  });
+  res.json({ messages, has_more: messages.length === pageSize });
+}));
 
-// Send a text message
-app.post('/conversations/:jid/messages', async (req, res) => {
-  try {
-    const { body, client_message_id } = req.body || {};
-    if (!body || !body.trim()) return res.status(400).json({ error: 'Message body is required' });
-    const result = await sessionManager.sendTextMessage(req.params.jid, body.trim(), client_message_id);
-    res.status(201).json(result);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+// Send a text message from one session
+app.post('/sessions/:sessionId/conversations/:jid/messages', withSession(async (req, res, sessionId) => {
+  const { body, client_message_id } = req.body || {};
+  if (!body || !body.trim()) return res.status(400).json({ error: 'Message body is required' });
+  const result = await sessionManager.sendTextMessage(sessionId, req.params.jid, body.trim(), client_message_id);
+  res.status(201).json(result);
+}));
 
 // Send media (URL or base64 payload from the backend/frontend uploader)
-app.post('/conversations/:jid/media', async (req, res) => {
-  try {
-    const { media_type, media_url, media_base64, mime_type, caption, filename, client_message_id } = req.body || {};
-    if (!media_url && !media_base64) return res.status(400).json({ error: 'media_url or media_base64 is required' });
-    const result = await sessionManager.sendMediaMessage(req.params.jid, {
-      media_type,
-      media_url,
-      media_base64,
-      mime_type,
-      caption,
-      filename,
-      client_message_id,
-    });
-    res.status(201).json(result);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+app.post('/sessions/:sessionId/conversations/:jid/media', withSession(async (req, res, sessionId) => {
+  const { media_type, media_url, media_base64, mime_type, caption, filename, client_message_id } = req.body || {};
+  if (!media_url && !media_base64) return res.status(400).json({ error: 'media_url or media_base64 is required' });
+  const result = await sessionManager.sendMediaMessage(sessionId, req.params.jid, {
+    media_type,
+    media_url,
+    media_base64,
+    mime_type,
+    caption,
+    filename,
+    client_message_id,
+  });
+  res.status(201).json(result);
+}));
 
 // Typing indicator ("yazıyor…")
-app.post('/conversations/:jid/typing', async (req, res) => {
-  try {
-    const { typing = true, duration_ms = 4000 } = req.body || {};
-    const result = await sessionManager.sendTyping(req.params.jid, !!typing, parseInt(duration_ms, 10) || 4000);
-    res.json(result);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+app.post('/sessions/:sessionId/conversations/:jid/typing', withSession(async (req, res, sessionId) => {
+  const { typing = true, duration_ms = 4000 } = req.body || {};
+  const result = await sessionManager.sendTyping(sessionId, req.params.jid, !!typing, parseInt(duration_ms, 10) || 4000);
+  res.json(result);
+}));
 
 // Mark conversation as read
-app.post('/conversations/:jid/read', async (req, res) => {
-  try {
-    await sessionManager.markConversationRead(req.params.jid);
-    res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+app.post('/sessions/:sessionId/conversations/:jid/read', withSession(async (req, res, sessionId) => {
+  const result = await sessionManager.markConversationRead(sessionId, req.params.jid);
+  res.json(result);
+}));
 
-// Download media by media_id
-app.get('/media/:mediaId', (req, res) => {
-  const filePath = sessionManager.getMediaPath(req.params.mediaId);
+// Download media by media_id — yalnızca medyayı indiren oturuma servis edilir.
+app.get('/sessions/:sessionId/media/:mediaId', withSession(async (req, res, sessionId) => {
+  const filePath = sessionManager.getMediaPath(sessionId, req.params.mediaId);
   if (!filePath || !fs.existsSync(filePath)) return res.status(404).json({ error: 'Media not found' });
   res.sendFile(filePath);
-});
-
-// Media router (handles incoming media storage)
-app.use('/media', createMediaRouter({ mediaDir: MEDIA_DIR, sessionManager }));
+}));
 
 // ---------------------------------------------------------------------------
 // WebSocket — realtime events to connected clients (FastAPI backend)

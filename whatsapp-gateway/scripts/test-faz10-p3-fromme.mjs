@@ -20,13 +20,17 @@ const sm = createSessionManager({
   backendWsUrl: '',
 });
 
+// Oturum kapsamli API (guvenlik duzeltmesi): her cagri hangi hatta ait
+// oldugunu acikca soyler. Testler icin soketsiz bir oturum kaydi acilir.
+const SID = (await sm.createSession('test-hat', { autoStart: false })).id;
+
 const events = [];
 sm.onEvent((e) => {
   if (e.event === 'message_new') events.push(e);
 });
 
-const findChat = (jid) => sm.listConversations().items.find((c) => c.jid === jid);
-const msgsOf = async (jid) => sm.getMessages(jid, { limit: 500 });
+const findChat = (jid) => sm.listConversations(SID).items.find((c) => c.jid === jid);
+const msgsOf = async (jid) => sm.getMessages(SID, jid, { limit: 500 });
 
 const PN = '905525372434@s.whatsapp.net'; // Ali Ekincioğlu örneği
 const TS = Math.floor(Date.now() / 1000);
@@ -37,6 +41,7 @@ await check('fromMe upsert kaydedilir: OUTBOUND/SENT/sender ME, preview "Sg", ev
   const rec = await sm._ingestUpsertMessage(
     { key: { remoteJid: PN, id: 'SGID1', fromMe: true }, message: { conversation: 'Sg' }, messageTimestamp: TS },
     null,
+    SID,
   );
   assert.ok(rec, 'fromMe mesaj record döndürmeli (eskiden continue ile atiliyordu)');
   assert.equal(rec.direction, 'OUTBOUND');
@@ -68,6 +73,7 @@ await check('inbound upsert regresyon: INBOUND/RECEIVED, unread +1, preview gunc
   const rec = await sm._ingestUpsertMessage(
     { key: { remoteJid: PN, id: 'IN1' }, pushName: 'Ali Ekincioğlu', message: { conversation: 'Selam' }, messageTimestamp: TS + 10 },
     null,
+    SID,
   );
   assert.equal(rec.direction, 'INBOUND');
   assert.equal(rec.status, 'RECEIVED');
@@ -84,11 +90,12 @@ const PN2 = '905321002030@s.whatsapp.net';
 
 await check('ayni wa_message_id: _recordOutbound sonrasi fromMe upsert NULL doner, tek kayit/tek event', async () => {
   const before = events.length;
-  sm._recordOutbound(PN2, { body: 'Appden gonderdi', wa_message_id: 'DUP1' });
+  sm._recordOutbound(PN2, { body: 'Appden gonderdi', wa_message_id: 'DUP1' }, SID);
   assert.equal(events.length, before + 1);
   const dup = await sm._ingestUpsertMessage(
     { key: { remoteJid: PN2, id: 'DUP1', fromMe: true }, message: { conversation: 'Appden gonderdi' }, messageTimestamp: TS },
     null,
+    SID,
   );
   assert.equal(dup, null, 'duplicate upsert islenmemeli');
   assert.equal(events.length, before + 1, 'ikinci event yayinlanmali');
@@ -104,9 +111,10 @@ await check('ayni wa_message_id: once fromMe upsert ise _recordOutbound mevcut k
   await sm._ingestUpsertMessage(
     { key: { remoteJid: PN3, id: 'DUP2', fromMe: true }, message: { conversation: 'Telefondan' }, messageTimestamp: TS },
     null,
+    SID,
   );
   assert.equal(events.length, before + 1);
-  const out = sm._recordOutbound(PN3, { body: 'Telefondan', wa_message_id: 'DUP2' });
+  const out = sm._recordOutbound(PN3, { body: 'Telefondan', wa_message_id: 'DUP2' }, SID);
   assert.equal(out.wa_message_id, 'DUP2');
   assert.equal(events.length, before + 1, '_recordOutbound dedup edince event YAYINLAMALI');
   assert.equal((await msgsOf(PN3)).filter((m) => m.wa_message_id === 'DUP2').length, 1);
@@ -115,7 +123,7 @@ await check('ayni wa_message_id: once fromMe upsert ise _recordOutbound mevcut k
 // --- 5. History sync yolu (yeniden eşleştirme sonrası 'Sg' kurtarma) ---
 
 await check('_historyMessageToRecord: fromMe history mesaji OUTBOUND/ME olarak cevrilir', () => {
-  const rec = sm._historyMessageToRecord(
+  const rec = sm._historyMessageToRecord(SID,
     { key: { remoteJid: PN, id: 'H1', fromMe: true }, message: { conversation: 'Sg' }, messageTimestamp: TS },
     PN,
   );
@@ -132,6 +140,7 @@ await check('cozulmemis LID fromMe mesaj: record olusur ama message_new YAYINLAN
   const rec = await sm._ingestUpsertMessage(
     { key: { remoteJid: '1234567890@lid', id: 'LID1', fromMe: true }, message: { conversation: 'lid mesaji' }, messageTimestamp: TS },
     null,
+    SID,
   );
   assert.ok(rec);
   assert.equal(rec.direction, 'OUTBOUND');
@@ -146,6 +155,7 @@ await check('fromMe IMAGE upsert: caption/etiket preview, media indirmesi atlani
   const rec = await sm._ingestUpsertMessage(
     { key: { remoteJid: PN4, id: 'IMG1', fromMe: true }, message: { imageMessage: { caption: 'Bak' } }, messageTimestamp: TS },
     null,
+    SID,
   );
   assert.equal(rec.message_type, 'IMAGE');
   assert.equal(rec.body, 'Bak');

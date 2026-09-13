@@ -93,7 +93,21 @@ async def _cleanup():
             ), {"h1": TEST_USER_HEX, "h2": SYS_USER_HEX})
             await db.commit()
 
+
+    async def _seed_session():
+        """Sahiplik kapisi (guvenlik duzeltmesi): gateway veri duzlemi oturum
+        kapsamlidir — her veri/gonderim cagrisi kullanicinin KENDI hattinin
+        `gateway_id`'siyle yapilir. Testlerin bagli bir hatti olmali."""
+        async with AsyncSessionLocal() as db:
+            existing = await db.execute(text(
+                "SELECT COUNT(*) FROM whatsapp_sessions WHERE gateway_id = 'gw-seed-test'"))
+            if (existing.scalar() or 0) == 0:
+                db.add(WhatsAppSession(
+                    user_id=TEST_USER, gateway_id="gw-seed-test",
+                    session_name="Seed Hat", status=SessionStatus.CONNECTED, is_active=True))
+                await db.commit()
     await _wipe()
+    await _seed_session()
     yield
     await _wipe()
 
@@ -281,8 +295,9 @@ async def test_list_sessions_merges_gateway_sync_state():
         with patch("backend.app.services.whatsapp_gateway.list_sessions", new_callable=AsyncMock) as ls:
             ls.return_value = [{"id": gw_id, "status": "CONNECTED", "is_phone_online": True, "battery_level": 90, "phone_number": MOCK_PHONE, "sync": sync_payload}]
             sessions = await list_sessions(db, TEST_USER)
-    assert sessions[0]["sync"]["phase"] == "syncing"
-    assert sessions[0]["sync"]["progress"] == 42
+    sess = next(x for x in sessions if x["session_name"] == "Sync Test")
+    assert sess["sync"]["phase"] == "syncing"
+    assert sess["sync"]["progress"] == 42
 
 
 @pytest.mark.asyncio
@@ -296,7 +311,8 @@ async def test_list_sessions_sync_idle_when_gateway_unreachable():
         with patch("backend.app.services.whatsapp_gateway.list_sessions", new_callable=AsyncMock) as ls:
             ls.side_effect = RuntimeError("gateway yok")
             sessions = await list_sessions(db, TEST_USER)
-    assert sessions[0]["sync"] == {"phase": "idle", "progress": 0}
+    sess = next(x for x in sessions if x["session_name"] == "Offline")
+    assert sess["sync"] == {"phase": "idle", "progress": 0}
 
 
 @pytest.mark.asyncio
@@ -331,10 +347,14 @@ async def test_sync_status_endpoint_502_when_gateway_down(auth_headers):
         ls.side_effect = RuntimeError("gateway erisilemedi")
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             res = await client.get("/api/v1/whatsapp/sync-status", headers=auth_headers)
-    # list_sessions gateway hatasini yutuyor (fail-soft idle) → 200 + idle;
-    # endpoint'in kendisi 502 uretecek bir hata firlatirsa maskelenmemeli.
+    # Faz 13 sozlesmesi: gateway'e ulasilamiyorsa hata MASKELENMEZ —
+    # `gateway_available=False` + her oturumun fazi 'unavailable' olur ve
+    # istemci bunu "senkron yok" (idle) ile karistiramaz.
     assert res.status_code == 200
-    assert all(s["sync"]["phase"] == "idle" for s in res.json()["sessions"])
+    body = res.json()
+    assert body["gateway_available"] is False
+    assert body["sessions"], "en az bir oturum raporlanmali"
+    assert all(s["sync"]["phase"] == "unavailable" for s in body["sessions"])
 
 
 # ---------------------------------------------------------------------------

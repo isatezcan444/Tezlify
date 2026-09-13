@@ -31,6 +31,16 @@ class Conversation(Base):
         Integer, ForeignKey("leads.id", ondelete="SET NULL"), nullable=True, index=True
     )
 
+    # Sohbetin geldiği WhatsApp hattı (gateway oturumu). Güvenlik/yönlendirme
+    # düzeltmesi: gateway artık oturum kapsamlı çalışıyor, dolayısıyla bir
+    # sohbete mesaj gönderirken HANGİ hattın kullanılacağı tahmin edilemez —
+    # sohbetin kendi hattı kullanılır. Ayrıca bir hattı silmek yalnızca O
+    # hattın sohbetlerini temizler (önceden kullanıcının tüm WhatsApp verisi
+    # siliniyordu). Eski satırlar için nullable.
+    session_id = Column(
+        Integer, ForeignKey("whatsapp_sessions.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+
     channel = Column(String(30), default="WHATSAPP", nullable=False, index=True)
     status = Column(
         Enum(ConversationStatus), default=ConversationStatus.ACTIVE, nullable=False, index=True

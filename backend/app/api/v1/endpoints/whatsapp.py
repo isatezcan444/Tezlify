@@ -31,6 +31,7 @@ from backend.app.schemas.whatsapp import (
     WhatsAppTypingRequest,
 )
 from backend.app.services import whatsapp_service
+from backend.app.services.whatsapp_service import NoWhatsAppSession
 
 router = APIRouter()
 
@@ -39,6 +40,19 @@ logger = logging.getLogger(__name__)
 
 def _not_found(exc: Exception) -> HTTPException:
     return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+
+
+def _no_session(exc: Exception) -> HTTPException:
+    """Kullanicinin bagli WhatsApp hatti yok -> 409.
+
+    Bu bir gateway arizasi DEGILDIR; 502 "gateway'e ulasilamadi" demek
+    kullaniciyi yanlis yone yonlendirir. Gercek neden: hat eslestirilmemis
+    (ya da baglantisi kopmus) — UI kullaniciyi QR ekranina yonlendirmelidir.
+    """
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail="Bağlı bir WhatsApp hattı yok. Lütfen önce QR ile eşleştirin.",
+    )
 
 
 def _bad_gateway(exc: Exception) -> HTTPException:
@@ -74,6 +88,8 @@ async def create_session(
 ) -> WhatsAppSessionResponse:
     try:
         session = await whatsapp_service.create_session(db, current_user.id, payload.name)
+    except NoWhatsAppSession as exc:
+        raise _no_session(exc) from exc
     except Exception as exc:
         raise _bad_gateway(exc) from exc
     return WhatsAppSessionResponse(**session)
@@ -87,8 +103,12 @@ async def get_session_qr(
 ) -> WhatsAppQrResponse:
     try:
         return WhatsAppQrResponse(**await whatsapp_service.get_session_qr(db, current_user.id, session_id))
+    except NoWhatsAppSession as exc:
+        raise _no_session(exc) from exc
     except LookupError as exc:
         raise _not_found(exc) from exc
+    except NoWhatsAppSession as exc:
+        raise _no_session(exc) from exc
     except Exception as exc:
         raise _bad_gateway(exc) from exc
 
@@ -101,8 +121,12 @@ async def refresh_session_qr(
 ) -> WhatsAppQrResponse:
     try:
         return WhatsAppQrResponse(**await whatsapp_service.refresh_session_qr(db, current_user.id, session_id))
+    except NoWhatsAppSession as exc:
+        raise _no_session(exc) from exc
     except LookupError as exc:
         raise _not_found(exc) from exc
+    except NoWhatsAppSession as exc:
+        raise _no_session(exc) from exc
     except Exception as exc:
         raise _bad_gateway(exc) from exc
 
@@ -116,8 +140,12 @@ async def request_pairing_code(
 ) -> WhatsAppPairingCodeResponse:
     try:
         result = await whatsapp_service.request_pairing_code(db, current_user.id, session_id, payload.phone)
+    except NoWhatsAppSession as exc:
+        raise _no_session(exc) from exc
     except LookupError as exc:
         raise _not_found(exc) from exc
+    except NoWhatsAppSession as exc:
+        raise _no_session(exc) from exc
     except Exception as exc:
         raise _bad_gateway(exc) from exc
     return WhatsAppPairingCodeResponse(**result)
@@ -132,8 +160,12 @@ async def logout_session(
     try:
         result = await whatsapp_service.logout_session(db, current_user.id, session_id)
         return WhatsAppStatusResult(success=True, message=result.get("status"), status=result.get("status"))
+    except NoWhatsAppSession as exc:
+        raise _no_session(exc) from exc
     except LookupError as exc:
         raise _not_found(exc) from exc
+    except NoWhatsAppSession as exc:
+        raise _no_session(exc) from exc
     except Exception as exc:
         raise _bad_gateway(exc) from exc
 
@@ -147,8 +179,12 @@ async def delete_session(
     try:
         await whatsapp_service.delete_session(db, current_user.id, session_id)
         return WhatsAppStatusResult(success=True, message="Oturum silindi", status="DISCONNECTED")
+    except NoWhatsAppSession as exc:
+        raise _no_session(exc) from exc
     except LookupError as exc:
         raise _not_found(exc) from exc
+    except NoWhatsAppSession as exc:
+        raise _no_session(exc) from exc
     except Exception as exc:
         raise _bad_gateway(exc) from exc
 
@@ -165,6 +201,8 @@ async def get_sync_status(
     """
     try:
         data = await whatsapp_service.get_sync_status(db, current_user.id)
+    except NoWhatsAppSession as exc:
+        raise _no_session(exc) from exc
     except Exception as exc:
         raise _bad_gateway(exc) from exc
     return WhatsAppSyncStatusResponse(**data)
@@ -210,6 +248,8 @@ async def sync_contacts(
 ) -> WhatsAppContactListResponse:
     try:
         contacts = await whatsapp_service.sync_contacts(db, current_user.id)
+    except NoWhatsAppSession as exc:
+        raise _no_session(exc) from exc
     except Exception as exc:
         raise _bad_gateway(exc) from exc
     return WhatsAppContactListResponse(contacts=contacts)
@@ -267,6 +307,8 @@ async def get_messages(
 ) -> WhatsAppMessagesResponse:
     try:
         data = await whatsapp_service.get_messages(db, current_user.id, conversation_id, limit=limit, before=before)
+    except NoWhatsAppSession as exc:
+        raise _no_session(exc) from exc
     except LookupError as exc:
         raise _not_found(exc) from exc
     return WhatsAppMessagesResponse(**data)
@@ -283,8 +325,12 @@ async def send_message(
         msg = await whatsapp_service.send_text_message(
             db, current_user.id, conversation_id, payload.body, payload.client_message_id
         )
+    except NoWhatsAppSession as exc:
+        raise _no_session(exc) from exc
     except LookupError as exc:
         raise _not_found(exc) from exc
+    except NoWhatsAppSession as exc:
+        raise _no_session(exc) from exc
     except Exception as exc:
         raise _bad_gateway(exc) from exc
     return WhatsAppSendResult(
@@ -319,8 +365,12 @@ async def send_media(
     }
     try:
         msg = await whatsapp_service.send_media_message(db, current_user.id, conversation_id, media)
+    except NoWhatsAppSession as exc:
+        raise _no_session(exc) from exc
     except LookupError as exc:
         raise _not_found(exc) from exc
+    except NoWhatsAppSession as exc:
+        raise _no_session(exc) from exc
     except Exception as exc:
         raise _bad_gateway(exc) from exc
     return WhatsAppSendResult(
@@ -340,6 +390,8 @@ async def mark_conversation_read(
 ) -> WhatsAppReadResult:
     try:
         result = await whatsapp_service.mark_conversation_read(db, current_user.id, conversation_id)
+    except NoWhatsAppSession as exc:
+        raise _no_session(exc) from exc
     except LookupError as exc:
         raise _not_found(exc) from exc
     return WhatsAppReadResult(
@@ -357,8 +409,12 @@ async def send_typing(
 ) -> WhatsAppReadResult:
     try:
         result = await whatsapp_service.send_typing(db, current_user.id, conversation_id, typing=payload.typing)
+    except NoWhatsAppSession as exc:
+        raise _no_session(exc) from exc
     except LookupError as exc:
         raise _not_found(exc) from exc
+    except NoWhatsAppSession as exc:
+        raise _no_session(exc) from exc
     except Exception as exc:
         raise _bad_gateway(exc) from exc
     return WhatsAppReadResult(
@@ -376,8 +432,12 @@ async def get_media(
     """Kimlik dogrulamali medya proxy'si — gateway'deki gelen medyayi sunar."""
     try:
         data, mime, filename = await whatsapp_service.get_media_bytes(db, current_user.id, media_id)
+    except NoWhatsAppSession as exc:
+        raise _no_session(exc) from exc
     except LookupError as exc:
         raise _not_found(exc) from exc
+    except NoWhatsAppSession as exc:
+        raise _no_session(exc) from exc
     except Exception as exc:
         raise _bad_gateway(exc) from exc
     headers = {}

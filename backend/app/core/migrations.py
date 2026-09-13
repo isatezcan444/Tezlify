@@ -297,6 +297,10 @@ async def ensure_conversations_columns(engine: AsyncEngine) -> None:
                 # kalici tasiyen sütunlar (Baileys JID @g.us / chat.archived).
                 await conn.execute(text("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS is_group BOOLEAN NOT NULL DEFAULT FALSE"))
                 await conn.execute(text("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS is_archived BOOLEAN NOT NULL DEFAULT FALSE"))
+                # Sohbetin geldigi WhatsApp hatti (gateway oturumu): gonderim
+                # yonlendirmesi ve hat bazli temizlik icin. Eski satirlarda NULL.
+                await conn.execute(text("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS session_id INTEGER REFERENCES whatsapp_sessions(id) ON DELETE SET NULL"))
+                await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_conversations_session_id ON conversations (session_id)"))
                 await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_conv_user_contact ON conversations (user_id, contact_id)"))
                 await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_conversations_is_group ON conversations (is_group)"))
                 await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_conversations_is_archived ON conversations (is_archived)"))
@@ -368,12 +372,17 @@ async def ensure_conversations_columns(engine: AsyncEngine) -> None:
             if "is_archived" not in columns:
                 await conn.execute(text("ALTER TABLE conversations ADD COLUMN is_archived BOOLEAN NOT NULL DEFAULT 0"))
                 logger.info("[MIGRATION] Added conversations.is_archived")
+            # Sohbetin geldigi WhatsApp hatti (gateway oturumu).
+            if "session_id" not in columns:
+                await conn.execute(text("ALTER TABLE conversations ADD COLUMN session_id INTEGER REFERENCES whatsapp_sessions(id)"))
+                logger.info("[MIGRATION] Added conversations.session_id")
 
         # Ensure generic conversation indexes
         await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_conv_user_contact ON conversations (user_id, contact_id)"))
         await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_conversations_is_group ON conversations (is_group)"))
         await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_conversations_is_archived ON conversations (is_archived)"))
         await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_conv_user_group_archived ON conversations (user_id, is_group, is_archived)"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_conversations_session_id ON conversations (session_id)"))
 
     await ensure_messages_media_columns(engine)
 
@@ -901,3 +910,90 @@ async def backfill_whatsapp_last_message_previews(engine: AsyncEngine) -> None:
                 logger.debug("[MIGRATION] backfill_whatsapp_last_message_previews: doldurulacak kayit yok.")
     except Exception as e:  # noqa: BLE001 - startup'ı düşürmez, loglanır
         logger.warning("[MIGRATION] backfill_whatsapp_last_message_previews atlandı: %s", e)
+
+async def ensure_contacts_unique_phone(engine: AsyncEngine) -> None:
+    """`contacts` icin (user_id, phone_e164) TEKILLIGINI garanti eder.
+
+    Kok neden: tabloda yalnizca INDEX vardi, UNIQUE kisit yoktu. Es zamanli
+    senkron + olay ingest'i ayni telefon icin birden fazla satir uretebiliyordu.
+    `_upsert_contact` ise `scalar_one_or_none()` kullandigi icin mukerrer satirda
+    `MultipleResultsFound` firlatiyor ve `message_new` olayi komple dusuyordu —
+    yani GERCEK MESAJ KAYBI. (`_ingest_contact_synced` icindeki "Prod fix
+    (render log): Multiple rows were found" yorumu bu hatanin canli ortamda
+    gerceklestigini belgeliyor; orasi `.first()` ile yamanmisti ama asil yazma
+    yolu yamanmamisti.)
+
+    Bu gecis once mevcut mukerrerleri BIRLESTIRIR (veri kaybetmeden):
+      1) Ayni (user_id, phone_e164) grubunda en kucuk id kanonik kabul edilir.
+      2) Diger satirlara bagli sohbetler kanonik kisiye tasinir.
+      3) Ayni kisi+kanal icin birden fazla sohbet olusursa mesajlar en eski
+         sohbette toplanir, fazla sohbetler silinir.
+      4) Artik referansi kalmayan mukerrer kisi satirlari silinir.
+    Sonra UNIQUE index olusturur (idempotent).
+    """
+    dialect = engine.dialect.name
+    try:
+        async with engine.begin() as conn:
+            # 1) Mukerrer kisi gruplarini bul.
+            dup_rows = (await conn.execute(text("""
+                SELECT user_id, phone_e164, MIN(id) AS keep_id, COUNT(*) AS n
+                FROM contacts
+                WHERE user_id IS NOT NULL
+                GROUP BY user_id, phone_e164
+                HAVING COUNT(*) > 1
+            """))).fetchall()
+
+            merged_contacts = 0
+            merged_convs = 0
+            for user_id, phone, keep_id, _n in dup_rows:
+                dup_ids = [r[0] for r in (await conn.execute(text("""
+                    SELECT id FROM contacts
+                    WHERE user_id = :u AND phone_e164 = :p AND id <> :keep
+                """), {"u": user_id, "p": phone, "keep": keep_id})).fetchall()]
+                if not dup_ids:
+                    continue
+                ids_csv = ",".join(str(int(i)) for i in dup_ids)
+                # 2) Sohbetleri kanonik kisiye tasi.
+                await conn.execute(text(
+                    f"UPDATE conversations SET contact_id = :keep WHERE contact_id IN ({ids_csv})"
+                ), {"keep": keep_id})
+                # 3) Kanonik kiside ayni kanaldan birden fazla sohbet olustuysa birlestir.
+                chan_rows = (await conn.execute(text("""
+                    SELECT channel, MIN(id) AS keep_conv, COUNT(*) AS n
+                    FROM conversations WHERE contact_id = :keep
+                    GROUP BY channel HAVING COUNT(*) > 1
+                """), {"keep": keep_id})).fetchall()
+                for channel, keep_conv, _cn in chan_rows:
+                    extra = [r[0] for r in (await conn.execute(text("""
+                        SELECT id FROM conversations
+                        WHERE contact_id = :keep AND channel = :ch AND id <> :kc
+                    """), {"keep": keep_id, "ch": channel, "kc": keep_conv})).fetchall()]
+                    if not extra:
+                        continue
+                    extra_csv = ",".join(str(int(i)) for i in extra)
+                    await conn.execute(text(
+                        f"UPDATE messages SET conversation_id = :kc WHERE conversation_id IN ({extra_csv})"
+                    ), {"kc": keep_conv})
+                    await conn.execute(text(f"DELETE FROM conversations WHERE id IN ({extra_csv})"))
+                    merged_convs += len(extra)
+                # 4) Mukerrer kisileri sil.
+                await conn.execute(text(f"DELETE FROM contacts WHERE id IN ({ids_csv})"))
+                merged_contacts += len(dup_ids)
+
+            if merged_contacts or merged_convs:
+                logger.warning(
+                    "[MIGRATION] contacts tekillestirme: %d mukerrer kisi birlestirildi, "
+                    "%d fazla sohbet kapatildi.", merged_contacts, merged_convs,
+                )
+
+            # 5) UNIQUE index (her iki dialect'te de ayni ad).
+            if dialect in ("postgresql", "sqlite"):
+                await conn.execute(text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_contact_user_phone "
+                    "ON contacts (user_id, phone_e164)"
+                ))
+            else:
+                logger.warning(
+                    "[MIGRATION] ensure_contacts_unique_phone: bilinmeyen dialect %r", dialect)
+    except Exception as e:  # noqa: BLE001 — startup'i dusurmez, gorunur loglanir
+        logger.warning("[MIGRATION] ensure_contacts_unique_phone: %s", e)

@@ -65,7 +65,21 @@ async def _cleanup():
             ), {"h1": TEST_USER_HEX, "h2": SYS_USER_HEX})
             await db.commit()
 
+
+    async def _seed_session():
+        """Sahiplik kapisi (guvenlik duzeltmesi): gateway veri duzlemi oturum
+        kapsamlidir — her veri/gonderim cagrisi kullanicinin KENDI hattinin
+        `gateway_id`'siyle yapilir. Testlerin bagli bir hatti olmali."""
+        async with AsyncSessionLocal() as db:
+            existing = await db.execute(text(
+                "SELECT COUNT(*) FROM whatsapp_sessions WHERE gateway_id = 'gw-seed-test'"))
+            if (existing.scalar() or 0) == 0:
+                db.add(WhatsAppSession(
+                    user_id=TEST_USER, gateway_id="gw-seed-test",
+                    session_name="Seed Hat", status=SessionStatus.CONNECTED, is_active=True))
+                await db.commit()
     await _wipe()
+    await _seed_session()
     yield
     await _wipe()
 

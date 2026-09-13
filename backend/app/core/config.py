@@ -49,6 +49,21 @@ class Settings(BaseSettings):
         default="dev-only-insecure-secret-key",
         description="Üretimde mutlaka .env ile güçlü bir değerle ezilmelidir.",
     )
+    # Supabase'in erişim token'larını imzaladığı HS256 anahtarı. Bu değer
+    # AYARLANMADIKÇA imza doğrulanamaz; token'ın `sub` (kullanıcı) alanı
+    # istemci tarafından serbestçe uydurulabilir ve çok kiracılı izolasyon
+    # (WhatsApp sohbetleri dahil) tamamen devre dışı kalır. Üretimde ZORUNLU.
+    SUPABASE_JWT_SECRET: str = Field(
+        default="",
+        description="Supabase JWT HS256 imza anahtarı (Dashboard > Settings > API > JWT Secret).",
+    )
+    # Acil durum kaçış kapısı: imza anahtarı olmadan (yalnızca son kullanma
+    # tarihi kontrol edilerek) token kabul edilmesine izin verir. Varsayılan
+    # KAPALI — fail-closed. Yalnızca bilinçli ve geçici olarak açılmalıdır.
+    ALLOW_UNVERIFIED_JWT: bool = Field(
+        default=False,
+        description="İmzasız JWT kabulüne izin ver (güvensiz; yalnızca geçiş dönemi için).",
+    )
     BACKEND_CORS_ORIGINS: List[str] = [
         "http://localhost:5173",
         "http://127.0.0.1:5173",

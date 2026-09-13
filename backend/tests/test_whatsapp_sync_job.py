@@ -37,6 +37,7 @@ TEST_USER_HEX = "12345678123412341234123456789012"
 SYS_USER_HEX = "00000000000000000000000000000000"
 MOCK_PHONE = "+905321002030"
 MOCK_JID = "905321002030@s.whatsapp.net"
+MOCK_GW_ID = "gw-test-session"
 
 
 def _make_jwt(user_id: str = TEST_USER) -> str:
@@ -81,8 +82,19 @@ async def _isolate():
                 {"h1": TEST_USER_HEX, "h2": SYS_USER_HEX})
             await db.commit()
 
+    async def _seed_session():
+        """Sahiplik kapisi (guvenlik duzeltmesi): gateway veri duzlemi artik
+        oturum kapsamli — her veri/gonderim cagrisi kullanicinin KENDI hattinin
+        `gateway_id`'siyle yapilir. Testlerin bagli bir hatti olmali."""
+        async with AsyncSessionLocal() as db:
+            db.add(WhatsAppSession(
+                user_id=TEST_USER, gateway_id=MOCK_GW_ID,
+                session_name="Test Hat", status=SessionStatus.CONNECTED, is_active=True))
+            await db.commit()
+
     await _drain_jobs()
     await _wipe()
+    await _seed_session()
     yield
     await _drain_jobs()
     await _wipe()
@@ -178,7 +190,7 @@ def _fake_bulk(all_msgs: List[Dict[str, Any]], data_delay: float = 0.0,
     demektir ve sohbet basina yalnizca EN YENI N mesaj dondurulur (created_at
     kronolojisine gore). Varsayilan False = kap'i desteklemeyen gateway
     (eski/generic senaryo): service gelen kume neyse onu sayfalar."""
-    async def _bulk(limit: int = 1000, offset: int = 0, since=None,
+    async def _bulk(gateway_id=None, limit: int = 1000, offset: int = 0, since=None,
                     per_chat_limit=None):
         if limit == 1:
             return {"messages": [], "total": len(all_msgs), "offset": 0, "limit": 1}
@@ -527,7 +539,7 @@ async def test_11_session_delete_cancels_running_job(auth_headers, mock_gateway,
     release = asyncio.Event()
     calls: List[Dict[str, Any]] = []
 
-    async def _hanging_bulk(limit: int = 1000, offset: int = 0, since=None,
+    async def _hanging_bulk(gateway_id=None, limit: int = 1000, offset: int = 0, since=None,
                             per_chat_limit=None):
         if limit == 1:
             return {"messages": [], "total": 1, "offset": 0, "limit": 1}
@@ -538,12 +550,6 @@ async def test_11_session_delete_cancels_running_job(auth_headers, mock_gateway,
     mock_gateway.list_conversations.return_value = {
         "items": [_chat(MOCK_JID, "Canceller")], "total": 1}
     mock_gateway.list_all_messages.side_effect = _hanging_bulk
-
-    async with AsyncSessionLocal() as db:
-        db.add(WhatsAppSession(
-            user_id=TEST_USER, gateway_id=str(_uuid.uuid4()),
-            session_name="Cancel Hat", status=SessionStatus.CONNECTED, is_active=True))
-        await db.commit()
 
     job = await ws.request_sync(None, TEST_USER)
     for _ in range(50):
@@ -799,15 +805,15 @@ async def test_24_bulk_probe_cached_five_minutes(mock_gateway):
     """Bulk-kanal algilama tek probe; 5 dk cache — her job probe atmaz (§21 storm yok)."""
     mock_gateway.list_all_messages.side_effect = None
     mock_gateway.list_all_messages.return_value = {"messages": [], "total": 0}
-    assert await ws._bulk_channel_available() is True
-    assert await ws._bulk_channel_available() is True
+    assert await ws._bulk_channel_available(MOCK_GW_ID) is True
+    assert await ws._bulk_channel_available(MOCK_GW_ID) is True
     probe_calls = [c for c in mock_gateway.list_all_messages.await_args_list
                    if c.kwargs.get("limit") == 1]
     assert len(probe_calls) == 1
 
     # Cache suresi dolunca yeniden probe
     ws._bulk_channel_cache["checked_at"] = time.monotonic() - 301
-    assert await ws._bulk_channel_available() is True
+    assert await ws._bulk_channel_available(MOCK_GW_ID) is True
     probe_calls = [c for c in mock_gateway.list_all_messages.await_args_list
                    if c.kwargs.get("limit") == 1]
     assert len(probe_calls) == 2
@@ -915,12 +921,6 @@ async def test_29_conversation_updated_emits_throttled_bootstrap_signal(mock_gat
     conversation_updated, owner'in WS'ine (2 sn throttle'li)
     whatsapp_sync_chats_bootstrap sinyali verir — UI job'u beklemez."""
     from unittest.mock import patch
-
-    async with AsyncSessionLocal() as db:
-        db.add(WhatsAppSession(
-            user_id=TEST_USER, gateway_id="gw-boot", session_name="boot",
-            status=SessionStatus.CONNECTED))
-        await db.commit()
 
     ws._last_bootstrap_emit.clear()
     captured: List[Dict[str, Any]] = []
@@ -1240,12 +1240,6 @@ async def test_37_conversation_updated_archived_flag_persisted(mock_gateway, eve
     kalici yazilir; gateway alani GONDERMIYORSA (eski gateway) mevcut deger
     korunur — varsayimla sifirlanmaz."""
     async with AsyncSessionLocal() as db:
-        db.add(WhatsAppSession(
-            user_id=TEST_USER, gateway_id="gw-arch", session_name="arch",
-            status=SessionStatus.CONNECTED))
-        await db.commit()
-
-    async with AsyncSessionLocal() as db:
         await ws._map_conversation_event(db, {
             "event": "conversation_updated",
             "conversation_id": MOCK_JID,
@@ -1312,7 +1306,7 @@ async def test_38_lazy_hydration_older_history_keyset_ordering(mock_gateway, eve
     def _ms(ts: str) -> int:
         return int(datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp() * 1000)
 
-    async def _gw_get(jid, limit: int = 50, before=None):
+    async def _gw_get(gateway_id, jid, limit: int = 50, before=None):
         pool = [m for m in all_msgs
                 if _ms(m["created_at"]) < before] if before is not None else all_msgs
         pool = sorted(pool, key=lambda m: _ms(m["created_at"]))[-int(limit):] \

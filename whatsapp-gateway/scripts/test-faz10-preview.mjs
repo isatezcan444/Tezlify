@@ -116,26 +116,30 @@ const sm = createSessionManager({
   backendWsUrl: '',
 });
 
-const findChat = (jid) => sm.listConversations().items.find((c) => c.jid === jid);
+// Oturum kapsamli API (guvenlik duzeltmesi): her cagri hangi hatta ait
+// oldugunu acikca soyler. Testler icin soketsiz bir oturum kaydi acilir.
+const SID = (await sm.createSession('test-hat', { autoStart: false })).id;
+
+const findChat = (jid) => sm.listConversations(SID).items.find((c) => c.jid === jid);
 
 check('_touchChat: newer preview overwrites; older does not (retry-safe)', () => {
   const jid = '120363012345678901@g.us';
-  sm._touchChat(jid, 'Ahmet: 18:25 mesajı', '2026-02-10T18:25:00.000Z');
+  sm._touchChat(SID, jid, 'Ahmet: 18:25 mesajı', '2026-02-10T18:25:00.000Z');
   assert.equal(findChat(jid).last_message_preview, 'Ahmet: 18:25 mesajı');
   // daha eski zaman damgalı tekrar (duplicate/retry) -> ezmez
-  sm._touchChat(jid, 'Eski mesaj', '2026-02-10T18:20:00.000Z');
+  sm._touchChat(SID, jid, 'Eski mesaj', '2026-02-10T18:20:00.000Z');
   assert.equal(findChat(jid).last_message_preview, 'Ahmet: 18:25 mesajı');
   assert.equal(findChat(jid).last_message_at, '2026-02-10T18:25:00.000Z');
   // daha yeni -> yazar
-  sm._touchChat(jid, 'Görüşürüz', '2026-02-10T18:31:00.000Z');
+  sm._touchChat(SID, jid, 'Görüşürüz', '2026-02-10T18:31:00.000Z');
   assert.equal(findChat(jid).last_message_preview, 'Görüşürüz');
   assert.equal(findChat(jid).last_message_at, '2026-02-10T18:31:00.000Z');
 });
 
 check('_touchChat: empty preview never erases existing summary', () => {
   const jid = '905321002030@s.whatsapp.net';
-  sm._touchChat(jid, 'İlk özet', '2026-02-10T10:00:00.000Z');
-  sm._touchChat(jid, '', '2026-02-10T11:00:00.000Z');
+  sm._touchChat(SID, jid, 'İlk özet', '2026-02-10T10:00:00.000Z');
+  sm._touchChat(SID, jid, '', '2026-02-10T11:00:00.000Z');
   assert.equal(findChat(jid).last_message_preview, 'İlk özet');
 });
 

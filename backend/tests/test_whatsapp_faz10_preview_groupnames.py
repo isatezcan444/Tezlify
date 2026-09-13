@@ -78,7 +78,21 @@ async def _cleanup():
             ), {"h1": TEST_USER_HEX, "h2": SYS_USER_HEX})
             await db.commit()
 
+
+    async def _seed_session():
+        """Sahiplik kapisi (guvenlik duzeltmesi): gateway veri duzlemi oturum
+        kapsamlidir — her veri/gonderim cagrisi kullanicinin KENDI hattinin
+        `gateway_id`'siyle yapilir. Testlerin bagli bir hatti olmali."""
+        async with AsyncSessionLocal() as db:
+            existing = await db.execute(text(
+                "SELECT COUNT(*) FROM whatsapp_sessions WHERE gateway_id = 'gw-seed-test'"))
+            if (existing.scalar() or 0) == 0:
+                db.add(WhatsAppSession(
+                    user_id=TEST_USER, gateway_id="gw-seed-test",
+                    session_name="Seed Hat", status=SessionStatus.CONNECTED, is_active=True))
+                await db.commit()
     await _wipe()
+    await _seed_session()
     yield
     await _wipe()
 
@@ -450,7 +464,10 @@ async def test_sync_conversations_forces_group_subjects_and_repairs():
             gm.return_value = {"messages": [], "has_more": False}
             items = await sync_conversations(db, TEST_USER)
     # Faz 10 (P1): esitleme force ister — TTL engeli kaldirildi
-    sgs.assert_awaited_once_with(force=True)
+    # Grup basliklari artik OTURUM KAPSAMLI cagrilir (gateway_id ilk arg).
+    sgs.assert_awaited_once()
+    assert sgs.await_args.kwargs.get("force") is True
+    assert sgs.await_args.args[0], "gateway_id zorunlu"
     row = next(i for i in items if i["is_group"])
     assert row["name"] == "Aile"
     assert row["last_message_preview"] == "Görüşürüz"

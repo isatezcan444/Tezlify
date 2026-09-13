@@ -85,17 +85,21 @@ const sm = createSessionManager({
   backendWsUrl: '',
 });
 
+// Oturum kapsamli API (guvenlik duzeltmesi): her cagri hangi hatta ait
+// oldugunu acikca soyler. Testler icin soketsiz bir oturum kaydi acilir.
+const SID = (await sm.createSession('test-hat', { autoStart: false })).id;
+
 const JID_A = '905321002030@s.whatsapp.net';
 const JID_B = '905339998877@s.whatsapp.net';
 
 check('Issue 1: perChatLimit keeps only the NEWEST N per chat (insertion order)', () => {
   for (let i = 0; i < 7; i += 1) {
-    sm._recordOutbound(JID_A, { body: `a${i}`, wa_message_id: `wamid_a${i}`, message_type: 'TEXT', status: 'SENT' });
+    sm._recordOutbound(JID_A, { body: `a${i}`, wa_message_id: `wamid_a${i}`, message_type: 'TEXT', status: 'SENT' }, SID);
   }
   for (let i = 0; i < 4; i += 1) {
-    sm._recordOutbound(JID_B, { body: `b${i}`, wa_message_id: `wamid_b${i}`, message_type: 'TEXT', status: 'SENT' });
+    sm._recordOutbound(JID_B, { body: `b${i}`, wa_message_id: `wamid_b${i}`, message_type: 'TEXT', status: 'SENT' }, SID);
   }
-  const res = sm.listAllMessages({ limit: 1000, offset: 0, perChatLimit: 3 });
+  const res = sm.listAllMessages(SID, { limit: 1000, offset: 0, perChatLimit: 3 });
   // A'dan en yeni 3 (a4,a5,a6), B'den en yeni 3 (b1,b2,b3) — toplam 6.
   assert.equal(res.total, 6);
   const ids = res.messages.map((m) => m.wa_message_id).sort();
@@ -107,11 +111,11 @@ check('Issue 1: perChatLimit keeps only the NEWEST N per chat (insertion order)'
 });
 
 check('Issue 1: chats at/below the limit pass through untouched; null limit = full history', () => {
-  const full = sm.listAllMessages({ limit: 1000, offset: 0 });
+  const full = sm.listAllMessages(SID, { limit: 1000, offset: 0 });
   assert.equal(full.total, 11); // 7 + 4 — perChatLimit yoksa eski davranis
-  const big = sm.listAllMessages({ limit: 1000, offset: 0, perChatLimit: 100 });
+  const big = sm.listAllMessages(SID, { limit: 1000, offset: 0, perChatLimit: 100 });
   assert.equal(big.total, 11); // limit > sohbet boyutu -> kesim yok
-  const zero = sm.listAllMessages({ limit: 1000, offset: 0, perChatLimit: 0 });
+  const zero = sm.listAllMessages(SID, { limit: 1000, offset: 0, perChatLimit: 0 });
   assert.equal(zero.total, 11); // 0/negatif/NaN = devre disi (geriye uyumlu)
 });
 
@@ -119,11 +123,11 @@ check('Issue 1: since + perChatLimit compose (delta window first, then newest N)
   const future = new Date(Date.now() + 5 * 60 * 1000).toISOString();
   const sinceEpoch = Math.floor(Date.now() / 1000) + 60; // hepsi geçmişte kalir
   // `since` gelecek zamani -> hicbir sey donmemeli; perChatLimit bunu degistirmez.
-  const res = sm.listAllMessages({ limit: 1000, offset: 0, since: sinceEpoch, perChatLimit: 3 });
+  const res = sm.listAllMessages(SID, { limit: 1000, offset: 0, since: sinceEpoch, perChatLimit: 3 });
   assert.equal(res.total, 0);
   assert.deepEqual(res.messages, []);
   // `since` 0 (epoch) -> sinir yok, perChatLimit yine sohbet basina 3 uygular.
-  const res2 = sm.listAllMessages({ limit: 1000, offset: 0, since: 1, perChatLimit: 3 });
+  const res2 = sm.listAllMessages(SID, { limit: 1000, offset: 0, since: 1, perChatLimit: 3 });
   assert.equal(res2.total, 6);
   void future;
 });
