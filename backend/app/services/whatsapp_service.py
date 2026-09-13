@@ -72,6 +72,19 @@ def is_degenerate_jid(jid: str) -> bool:
     return len(digits) < 5 or set(digits) == {"0"}
 
 
+# Sorun (prod geri bildirim): WhatsApp Durum/Hikaye (`status@broadcast`) ve
+# kanal (`@newsletter`) JID'leri sohbet listesinde gorunuyordu. WhatsApp Web
+# paritesi: bu JID'ler sohbet listesinde YER ALMAZ (Durum / Guncellemeler
+# sekmelerine aittir). Bu uygulamada boyle bir sekme olmadigi icin
+# contact/conversation/mesaj kaydi HIC uretilmez (gateway de ayni filtreyi
+# uygular; burasi ikinci savunma hatti).
+def is_broadcast_only_jid(jid: Optional[str]) -> bool:
+    if not jid:
+        return False
+    jid_str = str(jid)
+    return jid_str == "status@broadcast" or jid_str.endswith("@newsletter")
+
+
 def phone_to_jid(phone_e164: str) -> str:
     """`+905321002030` -> `905321002030@s.whatsapp.net`."""
     digits = "".join(ch for ch in phone_e164 if ch.isdigit())
@@ -762,6 +775,10 @@ async def _bulk_upsert_contacts(
         jid_str = str(jid)
         if is_degenerate_jid(jid_str):  # §5/§24: '+0' kisi uretilmez
             continue
+        # Sorun (prod): Durum (`status@broadcast`) / kanal (`@newsletter`)
+        # kisileri uretilmez.
+        if is_broadcast_only_jid(jid_str):
+            continue
         resolved.append((jid_str, _contact_phone_for_jid(jid_str), name, source, avatar))
     if not resolved:
         return []
@@ -868,6 +885,10 @@ async def _upsert_contact(
     # (sync/ingest) bu hatayı yakalayıp kaydı atlar.
     if is_degenerate_jid(jid):
         raise ValueError(f"Degenerate WhatsApp JID reddedildi: {jid}")
+    # Sorun (prod): Durum (`status@broadcast`) / kanal (`@newsletter`)
+    # JID'lerinden contact/conversation uretilmez — WhatsApp Web paritesi.
+    if is_broadcast_only_jid(jid):
+        raise ValueError(f"Broadcast-only WhatsApp JID reddedildi: {jid}")
     phone_e164 = _contact_phone_for_jid(jid)
     stmt = select(Contact).where(
         Contact.phone_e164 == phone_e164,
@@ -997,6 +1018,10 @@ async def _persist_gateway_message(db: AsyncSession, owner: str, msg: Dict[str, 
     if not jid or "@" not in str(jid):
         return False
     jid_str = str(jid)
+    # Sorun (prod): Durum (`status@broadcast`) / kanal (`@newsletter`)
+    # mesajlari kalici yazilmaz.
+    if is_broadcast_only_jid(jid_str):
+        return False
     wa_id = msg.get("wa_message_id")
     conv = await _ensure_conversation(db, owner, jid_str)
     if wa_id:
@@ -1145,6 +1170,10 @@ async def _sync_conversations_impl(db: AsyncSession, user_id: str) -> List[Dict[
         if not jid or "@" not in str(jid):
             continue
         jid_str = str(jid)
+        # Sorun (prod): Durum (`status@broadcast`) / kanal (`@newsletter`)
+        # sohbetleri DB'ye yazilmaz — WhatsApp Web paritesi.
+        if is_broadcast_only_jid(jid_str):
+            continue
         # Faz 9 (§5): dejenere JID sohbetleri (`0@s.whatsapp.net`) DB'ye yazilmaz.
         if is_degenerate_jid(jid_str):
             continue
@@ -1228,6 +1257,20 @@ async def list_conversations(
 ) -> Tuple[List[Dict[str, Any]], int]:
     conv_filter = get_user_filter(Conversation.user_id, user_id)
     base = select(Conversation).where(conv_filter, Conversation.channel == "WHATSAPP")
+    # Sorun (prod geri bildirim): daha once `status@broadcast` / `@newsletter`
+    # JID'leri contact+conversation olarak KALICI yazilmisti. Yeni ingest
+    # filtreleri yenisini engeller ama eski kirli satirlar DB'de durur —
+    # bunlar sohbet listesinden dislanir (WhatsApp Web paritesi: Durum ve
+    # kanallar sohbet listesinde yer almaz). Join YOK — alt sorgu.
+    junk_contacts = select(Contact.id).where(
+        or_(
+            Contact.phone_e164 == "status",
+            Contact.phone_e164 == "broadcast",
+            Contact.phone_e164.like("%@broadcast%"),
+            Contact.phone_e164.like("%@newsletter%"),
+        )
+    )
+    base = base.where(~Conversation.contact_id.in_(junk_contacts))
     # `Contact` tablosuna katlanma GEREKEN filtreler icin join BIR KEZ yapilir
     # (ayni sorguda iki kez join etmek SQL hatasi uretir).
     joined_contact = False
@@ -2464,6 +2507,10 @@ async def _ingest_message(db: AsyncSession, event: Dict[str, Any]) -> Dict[str, 
     if not jid or "@" not in str(jid):
         return _skip_event(event, "message_new: gecerli jid yok")
     jid_str = str(jid)
+    # Sorun (prod): Durum (`status@broadcast`) / kanal (`@newsletter`)
+    # mesajlari sohbet listesine sohbet olarak dusuyordu — kalici YAZILMAZ.
+    if is_broadcast_only_jid(jid_str):
+        return _skip_event(event, f"message_new: broadcast-only jid ({jid_str})")
     # Faz 9 (§5): dejenere JID mesajları (`0@s.whatsapp.net`) kalıcılaştırılmaz.
     if is_degenerate_jid(jid_str):
         return _skip_event(event, f"message_new: dejenere jid ({jid_str})")
@@ -2634,6 +2681,10 @@ async def _ingest_contact_synced(db: AsyncSession, event: Dict[str, Any]) -> Dic
     jid = contact_payload.get("id") or contact_payload.get("jid")
     if not jid or "@" not in str(jid):
         return _skip_event(event, "contact_synced: gecerli jid yok")
+    # Sorun (prod): Durum (`status@broadcast`) / kanal (`@newsletter`)
+    # kisileri rehbere/sohbet listesine yazilmaz.
+    if is_broadcast_only_jid(str(jid)):
+        return _skip_event(event, f"contact_synced: broadcast-only jid ({jid})")
     # Faz 9 (§5): dejenere JID kişileri (`0@s.whatsapp.net` → '+0') DB'ye yazılmaz.
     if is_degenerate_jid(str(jid)):
         return _skip_event(event, f"contact_synced: dejenere jid ({jid})")
@@ -2679,6 +2730,10 @@ async def _map_conversation_event(db: AsyncSession, event: Dict[str, Any]) -> Di
             jid = candidate
         else:
             return _skip_event(event, f"{event.get('event')}: sohbet jid'i cozulemedi")
+    # Sorun (prod): Durum (`status@broadcast`) / kanal (`@newsletter`)
+    # sohbetleri DB'ye yazilmaz.
+    if is_broadcast_only_jid(str(jid)):
+        return _skip_event(event, f"{event.get('event')}: broadcast-only jid ({jid})")
     # Faz 9 (§5): dejenere JID sohbetleri (`0@s.whatsapp.net`) DB'ye yazilmaz.
     if is_degenerate_jid(str(jid)):
         return _skip_event(event, f"{event.get('event')}: dejenere jid ({jid})")

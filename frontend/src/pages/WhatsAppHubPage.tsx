@@ -1681,6 +1681,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
               onNewChat={() => setIsNewChatModalOpen(true)}
               onSync={handleSyncChats}
               isSyncing={isSyncingChats}
+              typingMap={peerTypingMap}
               onSelect={(c) => {
                 setSelectedConv(c);
                 if (c.unread_count > 0) {

@@ -158,6 +158,24 @@ function isLidJid(jid) {
   return typeof jid === 'string' && jid.endsWith('@lid');
 }
 
+// Sorun (prod geri bildirim): WhatsApp Durum/Hikaye güncellemeleri ve kanal
+// (newsletter) mesajlari SOHBET LISTESINDE gorunuyordu. WhatsApp Web'de bu
+// JID'ler asla sohbet listesinde gosterilmez — `status@broadcast` Durum
+// sekmesine, `@newsletter` Guncellemeler/Kanallar sekmesine aittir. Bu
+// uygulamada boyle bir sekme olmadigi icin bu JID'ler sohbet akisindan
+// TAMAMEN dislanir: sohbet/contact/mesaj uretilmez, UI'a yayinlanmaz.
+function isStatusBroadcastJid(jid) {
+  return jid === 'status@broadcast';
+}
+
+function isNewsletterJid(jid) {
+  return typeof jid === 'string' && jid.endsWith('@newsletter');
+}
+
+function isBroadcastOnlyJid(jid) {
+  return isStatusBroadcastJid(jid) || isNewsletterJid(jid);
+}
+
 // LID/telefon JID normalizasyonu: WhatsApp ham sayı ya da tam JID gönderebilir.
 function asLid(v) {
   if (!v || typeof v !== 'string') return null;
@@ -993,6 +1011,10 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       const fromMe = Boolean(msg.key?.fromMe);
       const jid = msg.key?.remoteJid;
       if (!jid) return null;
+      // Sorun (prod): `status@broadcast` (Durum/Hikaye) ve `@newsletter`
+      // (kanal) mesajlari sohbet listesine sohbet olarak dusuyordu.
+      // WhatsApp Web paritesi: bu JID'ler sohbet akisinda YER ALMAZ.
+      if (isBroadcastOnlyJid(jid)) return null;
       // Faz 6e: LID döneminde anahtar senderLid/senderPn çifti taşıyabilir
       // — eşleşmeyi kalıcı olarak öğren (remoteJid @lid ise sohbet de
       // normalizeJid ile telefona çözülür).
@@ -1003,6 +1025,7 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
         this._applyLidMapping(msg.key.participantLid, msg.key.participantPn);
       }
       const key = normalizeJid(jid);
+      if (isBroadcastOnlyJid(key)) return null;
       // Gateway API'siyle (sendTextMessage/sendMediaMessage) gonderilen
       // mesaj _recordOutbound ile zaten messagesByChat'e eklendi; Baileys
       // ayni mesaji fromMe upsert ile tekrar yayinladiginda atla.
@@ -1530,6 +1553,38 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       // cagri yerini tek tek degistirmeye gerek kalmaz.
       const emitEvent = (event) => sessionManager._emit({ gateway_session_id: id, ...event });
 
+      // Sorun (prod: "senkron asla tamamlanmıyor"): RECENT sync'te WhatsApp
+      // `isLatest` GONDERMEYEBILIR ve `progress` 100'e hic ulasmayabilir —
+      // yalnizca bu iki sinyale bagli tamamlanma mantigi sonsuza dek
+      // 'syncing' durumunda kalirdi ve `session_sync_completed` hic
+      // yayinlanmazdi (boylece backend initial-sync'i de HIC tetiklenmezdi).
+      //
+      // Cozum (veri-gudumlu, sahte ilerleme YOK): history chunk'lari burst
+      // halinde gelir. Son chunk'tan sonra HISTORY_QUIET_PERIOD_MS boyunca
+      // yeni chunk gelmemesi, senkronun GERCEKTEN bittiginin sinyalidir.
+      // Ilerleme degeri her zaman WhatsApp'in gercek yuzdesidir; bu
+      // zamanlayicilar yalnizca "veri akisi durdu" kararini verir.
+      const HISTORY_QUIET_PERIOD_MS = 12000;
+      // Bos/yeni hesap: hic chunk gelmezse de takili kalmamali.
+      const HISTORY_NO_CHUNK_FALLBACK_MS = 45000;
+
+      const finalizeHistorySync = (reason) => {
+        if (!session.sync || session.sync.phase !== 'syncing') return;
+        if (session._historyQuietTimer) {
+          clearTimeout(session._historyQuietTimer);
+          session._historyQuietTimer = null;
+        }
+        session.sync = {
+          ...session.sync,
+          phase: 'ready',
+          progress: 100,
+          completed_at: session.sync.completed_at || new Date().toISOString(),
+        };
+        logger.info({ id, reason, chats: session.sync.chats_synced, msgs: session.sync.messages_synced }, 'History sync finalized');
+        emitEvent({ event: 'session_sync_completed', session_id: id, session_name: session.session_name, sync: session.sync });
+        void sessionManager._ensureGroupSubjects({ force: true });
+      };
+
       // --- QR event ---
       sock.ev.on('creds.update', saveCreds);
 
@@ -1606,6 +1661,16 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
             void sessionManager._ensureGroupSubjects();
           } else {
             emitEvent({ event: 'session_sync_started', session_id: id, session_name: session.session_name, sync: session.sync });
+            // Sorun (prod): bos/yeni hesapta HIC history chunk'i gelmeyebilir;
+            // bu durumda quiet-period zamanlayicisi hic kurulamaz ve senkron
+            // sonsuza dek 'syncing' kalirdi. Guvenlik agi: hic chunk
+            // gelmezse de makul bir sure sonra senkron tamamlanmis sayilir
+            // (ilerleme yine gercek chunk'lardan beslenir; bu yalnizca
+            // "veri gelmeyecek" kararidir).
+            if (session._historyQuietTimer) clearTimeout(session._historyQuietTimer);
+            session._historyQuietTimer = setTimeout(() => {
+              finalizeHistorySync('no_history_chunks_received');
+            }, HISTORY_NO_CHUNK_FALLBACK_MS);
           }
           // Faz 6e: Baileys'in doğal W:Contact senkronu yalnızca history-sync
           // bildirimi 20 sn içinde gelirse çalışır; gelmezse rehber adları
@@ -1641,6 +1706,10 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
         if (connection === 'close') {
           // Faz 7: bağlantı koptu — sync lifecycle sıfırlanır (yeniden
           // bağlanınca tekrar 'syncing' olur), UI 'ready' sanmaya devam etmesin.
+          if (session._historyQuietTimer) {
+            clearTimeout(session._historyQuietTimer);
+            session._historyQuietTimer = null;
+          }
           if (session.sync && session.sync.phase !== 'ready') {
             session.sync = { phase: 'idle' };
           }
@@ -1722,11 +1791,15 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       // profil adi) — rehber adini asla ezmemeli; mergeContactName onceligi korur.
       sock.ev.on('contacts.update', (updates) => {
         for (const update of updates) {
+          // Sorun (prod): Durum (`status@broadcast`) / kanal (`@newsletter`)
+          // kisileri rehbere/sohbet listesine karismaz.
+          if (update.id && isBroadcastOnlyJid(update.id)) continue;
           // LID döneminde remoteJid/participant @lid olabilir — eşleşme
           // biliniyorsa telefona çöz, değilse lid anahtarında beklet
           // (_applyLidMapping öğrendiğinde telefona taşır).
           const jid = normalizeJid(update.id);
           if (!jid) continue;
+          if (isBroadcastOnlyJid(jid)) continue;
           // Eşleşmesi henüz bilinmeyen LID anahtarını backend'e yayma —
           // kayıt LID altında bekler, _applyLidMapping öğrendiğinde telefona
           // taşır (backend'de jid:@lid hayalet satır oluşmaz).
@@ -1759,6 +1832,9 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
         for (const c of list || []) {
           const rawId = c?.id;
           if (!rawId || !c.name) continue;
+          // Sorun (prod): Durum (`status@broadcast`) / kanal (`@newsletter`)
+          // kisileri rehbere/sohbet listesine karismaz.
+          if (isBroadcastOnlyJid(rawId)) continue;
           // Faz 9 (§5, RC-2): dejenere JID'lerden (`0@s.whatsapp.net`)
           // contact ÜRETİLMEZ — '+0' contact'in kaynağı burasıydı.
           if (isDegenerateJid(rawId)) continue;
@@ -1770,6 +1846,7 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
           // ad, telefon-anahtarlı kişiye addressbook rütbesiyle yazılır.
           if (c.pn && isLidJid(rawId)) this._applyLidMapping(rawId, c.pn);
           const jid = normalizeJid(rawId); // lid ise ve eşleşme biliniyorsa telefona çözülür
+          if (isBroadcastOnlyJid(jid)) continue;
           const now = new Date().toISOString();
           if (isLidJid(jid)) {
             // Eşleşme henüz bilinmiyor: adres defteri adını LID anahtarında
@@ -1820,10 +1897,14 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
         for (const update of updates) {
           const jid = update.id;
           if (!jid) continue;
+          // Sorun (prod): Durum/Hikaye (`status@broadcast`) ve kanal
+          // (`@newsletter`) sohbet listesine karisiyordu.
+          if (isBroadcastOnlyJid(jid)) continue;
           // Faz 9 (§5, RC-2): dejenere JID'lerden (`0@s.whatsapp.net`)
           // sohbet/contact ÜRETİLMEZ — '+0' chat'in kaynağı burasıydı.
           if (isDegenerateJid(jid)) continue;
           const key = normalizeJid(jid);
+          if (isBroadcastOnlyJid(key)) continue;
           // Çözülmemiş LID anahtarı: sohbet LID altında bekler, eşleşme
           // öğrenilince _applyLidMapping telefona taşır — backend'e yaymaz.
           const lidHold = isLidJid(key);
@@ -1897,7 +1978,8 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
 
       // --- History sync (Faz 4): telefonun baglantı sirasinda pasif olarak
       // gonderdigi RECENT gecmisi isler. syncFullHistory (428 riski) KULLANILMAZ;
-      // yalnizca shouldSyncHistoryMessage ile bildirim kabul edilir. ---
+      // yalnizca shouldSyncHistoryMessage ile bildirim kabul edilir.
+      // Tamamlanma garantisi (quiet-period + fallback) yukarida tanimli. ---
       sock.ev.on('messaging-history.set', async ({ chats: historyChats, contacts: historyContacts, messages: historyMessages, progress, isLatest, phoneNumberToLidMappings }) => {
         try {
           // Faz 8 (patch): HistorySync.phoneNumberToLidMappings — telefon<->LID
@@ -1911,6 +1993,9 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
           // 1. Kisiler
           for (const c of historyContacts || []) {
             if (!c?.id) continue;
+            // Sorun (prod): Durum (`status@broadcast`) / kanal (`@newsletter`)
+            // kisileri rehbere/sohbet listesine karismaz.
+            if (isBroadcastOnlyJid(c.id)) continue;
             // Faz 9 (§5, RC-2): dejenere JID'lerden (`0@s.whatsapp.net`)
             // contact üretilmez — '+0' kaynağı.
             if (isDegenerateJid(c.id)) continue;
@@ -1938,10 +2023,14 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
           for (const msg of historyMessages || []) {
             const jid = msg.key?.remoteJid;
             if (!jid || msg.key?.id === '__history__') continue;
+            // Sorun (prod): Durum/Hikaye (`status@broadcast`) ve kanal
+            // (`@newsletter`) mesajlari sohbet listesini kirletiyordu.
+            if (isBroadcastOnlyJid(jid)) continue;
             // Faz 6e: gecmis mesaj anahtarlari da LID↔telefon çifti tasir.
             if (msg.key?.senderLid && msg.key?.senderPn) this._applyLidMapping(msg.key.senderLid, msg.key.senderPn);
             if (msg.message?.protocolMessage) continue; // revoke/ephemeral vb. — atla
             const key = normalizeJid(jid);
+            if (isBroadcastOnlyJid(key)) continue;
             // Ham govdeyi de sakla — karsi taraf retry istediginde `getMessage`
             // buradan beslenir (bkz. rawMessagesByChat).
             if (msg.key.id && msg.message) rememberRawMessage(key, msg.key.id, msg.message);
@@ -1960,6 +2049,10 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
           for (const chat of historyChats || []) {
             const jid = chat.id || chat.jid;
             if (!jid) continue;
+            // Sorun (prod): Durum/Hikaye (`status@broadcast`) ve kanal
+            // (`@newsletter`) sohbetleri WhatsApp Web'de sohbet listesinde
+            // YER ALMAZ — sohbet olarak uretilmez.
+            if (isBroadcastOnlyJid(jid)) continue;
             // Faz 9 (§5, RC-2): dejenere JID'lerden sohbet/contact üretilmez.
             if (isDegenerateJid(jid)) continue;
             // Faz 6e: Conversation.lidJid — sohbet telefon anahtarlıysa eşlemeyi öğren;
@@ -1967,6 +2060,7 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
             if (chat.lidJid && !isLidJid(jid)) this._applyLidMapping(chat.lidJid, jid);
             if (isLidJid(jid) && chat.pnJid) this._applyLidMapping(jid, chat.pnJid);
             const key = normalizeJid(jid);
+            if (isBroadcastOnlyJid(key)) continue;
             const contact = contacts.get(key);
             const list = messagesByChat.get(key) || [];
             // Faz 10 (P2): en yeni mesaj EKLEME SIRASINA degil ZAMAN DAMGASINA
@@ -2027,11 +2121,31 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
             session.sync = next;
             emitEvent({ event: 'session_sync_progress', session_id: id, session_name: session.session_name, sync: session.sync });
             if (justCompleted) {
+              if (session._historyQuietTimer) {
+                clearTimeout(session._historyQuietTimer);
+                session._historyQuietTimer = null;
+              }
               emitEvent({ event: 'session_sync_completed', session_id: id, session_name: session.session_name, sync: session.sync });
               // Faz 8: initial sync tamamlanınca grup başlıklarını çöz (tek
               // toplu groupFetchAllParticipating + hedefli groupMetadata
               // fallback — N+1 request storm yok, §20).
               void sessionManager._ensureGroupSubjects({ force: true });
+            } else if (session.sync.phase === 'syncing') {
+              // Sorun (prod: "senkron asla tamamlanmıyor"): RECENT sync'te
+              // WhatsApp `isLatest` GONDERMEYEBILIR ve `progress` hiç
+              // 100'e ulasmayabilir — bu durumda yukaridaki sinyaller
+              // sonsuza dek gelmez ve banner takili kalirdi. Chunk'lar
+              // burst halinde gelir; son chunk'tan sonra N saniyelik
+              // SESSIZLIK = senkronun GERCEKTEN bittigi anlamina gelir.
+              // Bu sahte ilerleme DEGILDIR — ilerleme degeri her zaman
+              // WhatsApp'in gonderdigi gercek yuzdedir; zamanlayici yalnizca
+              // "artik yeni veri gelmiyor" kararini verir.
+              if (session._historyQuietTimer) clearTimeout(session._historyQuietTimer);
+              session._historyQuietTimer = setTimeout(() => {
+                if (session.sync && session.sync.phase === 'syncing') {
+                  finalizeHistorySync('quiet_period_after_last_chunk');
+                }
+              }, HISTORY_QUIET_PERIOD_MS);
             }
           }
           logger.info({ storedChats, storedMessages, progress, isLatest }, 'History sync ingested');

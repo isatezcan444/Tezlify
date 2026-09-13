@@ -338,6 +338,119 @@ async def test_genuinely_unknown_event_still_rejected():
 
 
 # ===========================================================================
+# 3c) Broadcast-only JID filtreleri (Durum / kanal sohbet listesine karismaz)
+# ===========================================================================
+# Prod geri bildirim: WhatsApp Durum/Hikaye (`status@broadcast`) ve kanal
+# (`@newsletter`) mesajlari sohbet listesinde gorunuyordu. WhatsApp Web
+# paritesi: bu JID'ler sohbet listesinde YER ALMAZ — backend'de
+# contact/conversation/mesaj HIC uretilmez.
+
+BROADCAST_JID = "status@broadcast"
+NEWSLETTER_JID = "120363123456789012@newsletter"
+
+
+def test_broadcast_only_jid_helper():
+    """Helper dogru JID'leri tanimli; normal JID'leri es gecer."""
+    assert ws.is_broadcast_only_jid(BROADCAST_JID) is True
+    assert ws.is_broadcast_only_jid(NEWSLETTER_JID) is True
+    assert ws.is_broadcast_only_jid(REAL_JID) is False
+    assert ws.is_broadcast_only_jid("120363@g.us") is False
+    assert ws.is_broadcast_only_jid(None) is False
+    assert ws.is_broadcast_only_jid("") is False
+
+
+@pytest.mark.asyncio
+async def test_status_broadcast_message_is_not_persisted():
+    """`status@broadcast` mesaji contact/conversation/message OLUSTURMAZ."""
+    gw_id = await _add_session(U1)
+    result = await ws.ingest_gateway_event({
+        "event": "message_new",
+        "conversation_id": BROADCAST_JID,
+        "gateway_session_id": gw_id,
+        "message": {
+            "body": "durum guncellemesi", "direction": "INBOUND", "message_type": "TEXT",
+            "wa_message_id": "wamid-status-1",
+        },
+    })
+    assert result is None, "status@broadcast mesaji yayinlanmamali"
+    async with AsyncSessionLocal() as db:
+        rows = (await db.execute(
+            text("SELECT COUNT(*) FROM conversations WHERE user_id = :u"),
+            {"u": U1_HEX},
+        )).scalar()
+    assert rows == 0, "status@broadcast icin conversation olusturulmamali"
+
+
+@pytest.mark.asyncio
+async def test_newsletter_message_is_not_persisted():
+    """`@newsletter` (kanal) mesaji sohbet listesine dusmez."""
+    gw_id = await _add_session(U1)
+    result = await ws.ingest_gateway_event({
+        "event": "message_new",
+        "conversation_id": NEWSLETTER_JID,
+        "gateway_session_id": gw_id,
+        "message": {
+            "body": "kanal paylasimi", "direction": "INBOUND", "message_type": "TEXT",
+            "wa_message_id": "wamid-news-1",
+        },
+    })
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_status_broadcast_conversation_event_is_skipped():
+    """conversation_updated bile olsa broadcast JID DB'ye yazilmaz."""
+    gw_id = await _add_session(U1)
+    result = await ws.ingest_gateway_event({
+        "event": "conversation_updated",
+        "conversation_id": BROADCAST_JID,
+        "gateway_session_id": gw_id,
+        "conversation": {"id": BROADCAST_JID, "name": "Durum", "last_message_preview": "x"},
+    })
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_status_broadcast_contact_is_not_created():
+    """`status@broadcast` icin contact satiri olusmaz."""
+    gw_id = await _add_session(U1)
+    result = await ws.ingest_gateway_event({
+        "event": "contact_synced",
+        "gateway_session_id": gw_id,
+        "contact": {"id": BROADCAST_JID, "name": "Durum"},
+    })
+    assert result is None
+    async with AsyncSessionLocal() as db:
+        rows = (await db.execute(
+            text("SELECT COUNT(*) FROM contacts WHERE user_id = :u AND phone_e164 LIKE '%broadcast%'"),
+            {"u": U1_HEX},
+        )).scalar()
+    assert rows == 0
+
+
+@pytest.mark.asyncio
+async def test_existing_broadcast_junk_is_excluded_from_listing():
+    """Eski kirli satirlar (varsa) list_conversations sonucunda GORUNMEZ."""
+    from backend.app.models.contact import Contact
+    await _add_session(U1)
+    # Eski kaydi dogrudan DB'ye yaz (ingest filtrelerini atlayarak) — prod'daki
+    # mevcut kirli durumu simule eder.
+    async with AsyncSessionLocal() as db:
+        contact = Contact(user_id=U1_HEX, phone_e164="jid:status@broadcast", display_name="Durum")
+        db.add(contact)
+        await db.flush()
+        db.add(Conversation(
+            user_id=U1_HEX, contact_id=contact.id, channel="WHATSAPP",
+            status=ConversationStatus.ACTIVE, unread_count=0,
+        ))
+        await db.commit()
+    async with AsyncSessionLocal() as db:
+        convs, total = await ws.list_conversations(db, U1)
+    assert total == 0, "broadcast-only sohbet listede gorunmemeli"
+    assert convs == []
+
+
+# ===========================================================================
 # 4) _apply_last_message — zaman damgasi korumasi
 # ===========================================================================
 

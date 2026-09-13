@@ -23,6 +23,9 @@ export interface ConversationListProps {
   onNewChat?: () => void;
   onSync?: () => void;
   isSyncing?: boolean;
+  /** WhatsApp Web paritesi: karsi taraf su an yaziyorsa listede "yazıyor..."
+   * (yesil) gosterilir. conversation_id -> bool. */
+  typingMap?: Record<number, boolean>;
 }
 
 export const ConversationList: React.FC<ConversationListProps> = ({
@@ -37,6 +40,7 @@ export const ConversationList: React.FC<ConversationListProps> = ({
   onNewChat,
   onSync,
   isSyncing = false,
+  typingMap,
 }) => {
   const { t, language } = useI18n();
   const [internalFilter, setInternalFilter] = useState<FilterTab>(activeFilter);
@@ -127,6 +131,9 @@ export const ConversationList: React.FC<ConversationListProps> = ({
   // (mesaj var / senkron suruyor) yaniltici "mesaj yok" yerine bekleme
   // metni gosterilir — kullaniciya yalan soylenemez (AGENTS.md Truthfulness).
   const renderLastMessage = (conv: Conversation) => {
+    // WhatsApp Web paritesi: karsi taraf yaziyorsa son mesaj yerine yesil
+    // "yazıyor..." gosterilir (hem liste hem acik sohbette ayni sinyal).
+    if (typingMap?.[conv.id]) return '__typing__';
     if (conv.last_message_preview) return conv.last_message_preview;
     const state = conv.last_message_state;
     const count = conv.message_count;
@@ -302,9 +309,22 @@ export const ConversationList: React.FC<ConversationListProps> = ({
                     </span>
                   </div>
 
-                  <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate mt-0.5">
-                    {renderLastMessage(conv)}
-                  </p>
+                  {(() => {
+                    const lastMsg = renderLastMessage(conv);
+                    if (lastMsg === '__typing__') {
+                      // WhatsApp Web: listede yesil "yazıyor..." gosterilir.
+                      return (
+                        <p className="text-[11px] text-[#25D366] dark:text-[#25D366] font-bold truncate mt-0.5 animate-pulse">
+                          {t('whatsapp.peerTyping') || 'yazıyor...'}
+                        </p>
+                      );
+                    }
+                    return (
+                      <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate mt-0.5">
+                        {lastMsg}
+                      </p>
+                    );
+                  })()}
 
                   <div className="flex items-center justify-between mt-1.5">
                     <span className="text-[10px] font-mono text-slate-400">
