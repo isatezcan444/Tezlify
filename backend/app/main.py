@@ -225,34 +225,44 @@ async def gateway_websocket_endpoint(
 
     await websocket.accept()
     logger.info("[WS-GATEWAY] Baileys gateway bağlandı.")
+    counters = {"received": 0, "broadcast": 0, "skipped": 0, "failed": 0}
     try:
         while True:
             raw = await websocket.receive_text()
+            counters["received"] += 1
             try:
                 event_data = json.loads(raw)
             except Exception as parse_err:
+                counters["failed"] += 1
                 logger.warning(f"[WS-GATEWAY] Geçersiz JSON atlandı: {parse_err}")
                 continue
             if not isinstance(event_data, dict):
+                counters["failed"] += 1
                 continue
             try:
                 persisted = await ingest_gateway_event(event_data)
             except Exception as ingest_err:
                 # Persist EDILEMEYEN olay UI'a yayinlanmaz — aksi halde
                 # kullanicinin gordugu mesaj DB'de hic yokmus gibi olur (sahte veri).
+                counters["failed"] += 1
                 logger.exception("[WS-GATEWAY] Olay persist edilemedi, yayinlanmadi: %s", ingest_err)
                 continue
             if persisted is None:
                 # Sahibi KESIN cozulemeyen ya da bilinmeyen olay: genis yayin
                 # yapmak yerine atlanir (cok kiracili izolasyon, fail-closed).
+                counters["skipped"] += 1
                 continue
             await ws_manager.broadcast(persisted)
+            counters["broadcast"] += 1
     except WebSocketDisconnect:
         pass
     except Exception as e:
         logger.warning(f"[WS-GATEWAY] Bağlantı hatası: {e}")
     finally:
-        logger.info("[WS-GATEWAY] Baileys gateway bağlantısı kapandı.")
+        logger.info(
+            "[WS-GATEWAY] Bağlantı kapandı (received=%d broadcast=%d skipped=%d failed=%d).",
+            counters["received"], counters["broadcast"], counters["skipped"], counters["failed"],
+        )
 # Include API Router
 app.include_router(api_router, prefix=settings.API_V1_STR)
 

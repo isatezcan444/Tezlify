@@ -7,11 +7,13 @@
  * and replays them on reconnect so nothing is lost during deploys.
  */
 import WebSocket from 'ws';
+import { diagnostic } from './observability.js';
 
 export function createEventBridge({ backendWsUrl, sessionManager }) {
   const clients = new Set(); // local WS clients (e.g. backend)
   const buffer = []; // events queued while backend is disconnected
   const MAX_BUFFER = 500;
+  let droppedEvents = 0;
 
   // When the backend protects /ws/gateway with WHATSAPP_GATEWAY_SECRET,
   // the gateway must present the same secret via ?token= (fail-closed auth).
@@ -65,16 +67,28 @@ export function createEventBridge({ backendWsUrl, sessionManager }) {
         // Replay buffered events on reconnect (FIFO). Silinen oturumun
         // bayat olaylari replay'e girmeden dusurulur — aksi halde backend
         // her reconnect'te yuzlerce sahipsiz olayla sel olur (Render log).
+        const queuedBeforeFlush = buffer.length;
+        let replayed = 0;
+        let discardedForDeletedSession = 0;
         while (buffer.length > 0) {
           const evt = buffer.shift();
           const gwSid = evt && evt.gateway_session_id;
           if (gwSid && typeof sessionManager.getSession === 'function' && !sessionManager.getSession(gwSid)) {
+            discardedForDeletedSession += 1;
             continue;
           }
           if (backendSocket?.readyState === WebSocket.OPEN) {
             backendSocket.send(JSON.stringify(evt));
+            replayed += 1;
           }
         }
+        diagnostic('event_bridge_flush', {
+          queued: queuedBeforeFlush,
+          replayed,
+          discarded_deleted_session: discardedForDeletedSession,
+          dropped_while_disconnected: droppedEvents,
+        });
+        droppedEvents = 0;
       });
 
       ws.on('close', () => {
@@ -138,7 +152,18 @@ export function createEventBridge({ backendWsUrl, sessionManager }) {
     if (backendSocket?.readyState === WebSocket.OPEN) {
       backendSocket.send(payload);
     } else {
-      if (buffer.length < MAX_BUFFER) buffer.push(event);
+      if (buffer.length < MAX_BUFFER) {
+        buffer.push(event);
+      } else {
+        droppedEvents += 1;
+        if (droppedEvents === 1 || droppedEvents % 100 === 0) {
+          diagnostic('event_bridge_buffer_overflow', {
+            capacity: MAX_BUFFER,
+            dropped_since_disconnect: droppedEvents,
+            event_type: String(event?.event || 'unknown'),
+          });
+        }
+      }
     }
   }
 

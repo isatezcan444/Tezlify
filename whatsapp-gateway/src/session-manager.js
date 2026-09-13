@@ -16,6 +16,7 @@ import path from 'path';
 import crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 import pino from 'pino';
+import { diagnostic, sessionRef } from './observability.js';
 
 const logger = pino({ level: process.env.LOG_LEVEL || 'warn' });
 
@@ -562,6 +563,14 @@ function getSessionDir(sessionsDir, sessionId) {
 // Session Manager factory
 // ---------------------------------------------------------------------------
 export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsUrl }) {
+  const persistedSessionDirectories = fs.existsSync(sessionsDir)
+    ? fs.readdirSync(sessionsDir, { withFileTypes: true }).filter((entry) => entry.isDirectory()).length
+    : 0;
+  diagnostic('session_registry_initialized', {
+    in_memory_sessions: sessions.size,
+    persisted_session_directories: persistedSessionDirectories,
+    restored_sessions: 0,
+  });
   const sessionManager = {
     _listeners: new Set(),
     _emit(event) {
@@ -646,6 +655,11 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       const session = sessions.get(id);
       if (!session) throw new Error('Session not found');
       if (session.status === 'CONNECTED') return this.getSession(id);
+      diagnostic('qr_refresh_requested', {
+        session_ref: sessionRef(id),
+        current_generation: session._diagnosticSocketGeneration || 0,
+        socket_present: Boolean(session.sock),
+      });
       session.status = 'SCAN_QR';
       session.qr_code = null;
       session.error_message = null;
@@ -717,7 +731,7 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       session.updated_at = new Date().toISOString();
       // logger.warn: prod'da pino seviyesi 'warn' — pairing yaşam döngüsü
       // olayları görünür kalmalı (aksi halde teşhis için log yok).
-      logger.warn({ id, pairingCode }, 'Pairing code generated');
+      logger.warn({ session_ref: sessionRef(id) }, 'Pairing code generated');
       return { pairing_code: pairingCode, phone: session.phone_number };
     },
 
@@ -1619,15 +1633,43 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
     async _connectSocket(id) {
       const session = sessions.get(id);
       if (!session) return;
+      const generation = (session._diagnosticSocketGeneration || 0) + 1;
+      session._diagnosticSocketGeneration = generation;
       const sessionDir = getSessionDir(sessionsDir, id);
       fs.mkdirSync(sessionDir, { recursive: true });
+
+      const authFilesBefore = fs.readdirSync(sessionDir).filter((name) => name.endsWith('.json'));
+      diagnostic('socket_connect_started', {
+        session_ref: sessionRef(id),
+        generation,
+        previous_socket_present: Boolean(session.sock),
+        auth_json_files: authFilesBefore.length,
+      });
 
       // Load persisted auth state (encrypted on disk)
       const persisted = safeReadEncrypted(path.join(sessionDir, 'auth.json'), aesKey);
       const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
+      diagnostic('auth_state_loaded', {
+        session_ref: sessionRef(id),
+        generation,
+        encrypted_snapshot_present: Boolean(persisted),
+        creds_file_present: authFilesBefore.includes('creds.json'),
+        signal_key_files: authFilesBefore.filter((name) => !['auth.json', 'creds.json', 'keys.json'].includes(name)).length,
+        registered: Boolean(state?.creds?.registered),
+        key_store_get: typeof state?.keys?.get === 'function',
+        key_store_set: typeof state?.keys?.set === 'function',
+      });
 
       // If we have persisted creds, restore them
       if (persisted?.creds) {
+        if (!session._diagnosticLegacyRestoreLogged) {
+          session._diagnosticLegacyRestoreLogged = true;
+          diagnostic('legacy_auth_restore_after_state_load', {
+            session_ref: sessionRef(id),
+            generation,
+            snapshot_keys_type: typeof persisted.keys,
+          });
+        }
         try {
           // Rebuild the auth state from the encrypted snapshot
           const restored = {
@@ -1696,6 +1738,13 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
         getMessage: async (key) => lookupRawMessage(store, key),
       });
 
+      if (session.sock && session.sock !== sock) {
+        diagnostic('socket_owner_replaced', {
+          session_ref: sessionRef(id),
+          generation,
+          previous_generation: generation - 1,
+        });
+      }
       session.sock = sock;
 
       // Faz 13 (tenant izolasyonu): bu oturumun soketinden cikan TUM olaylar
@@ -1742,10 +1791,34 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       };
 
       // --- QR event ---
-      sock.ev.on('creds.update', saveCreds);
+      sock.ev.on('creds.update', async () => {
+        session._diagnosticAuthUpdates = (session._diagnosticAuthUpdates || 0) + 1;
+        try {
+          await saveCreds();
+        } catch (err) {
+          diagnostic('auth_state_write_failed', {
+            session_ref: sessionRef(id),
+            generation,
+            error_name: err?.name || 'Error',
+            error_code: err?.code || null,
+          });
+          logger.error({ err, session_ref: sessionRef(id), generation }, 'Baileys auth state write failed');
+        }
+      });
 
       sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
+        const statusCode = lastDisconnect?.error?.output?.statusCode;
+        if (connection) {
+          diagnostic('socket_connection_transition', {
+            session_ref: sessionRef(id),
+            generation,
+            connection,
+            status_code: statusCode ?? null,
+            is_current_socket: session.sock === sock,
+            auth_updates: session._diagnosticAuthUpdates || 0,
+          });
+        }
         if (qr) {
           session.status = 'SCAN_QR';
           session.error_message = null;
@@ -1768,7 +1841,7 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
               try {
                 const freshCode = await sock.requestPairingCode(session._pairingPhone);
                 session.updated_at = new Date().toISOString();
-                logger.warn({ id, pairingCode: freshCode }, 'Pairing code re-issued after socket restart');
+                logger.warn({ session_ref: sessionRef(id) }, 'Pairing code re-issued after socket restart');
                 emitEvent({
                   event: 'session_pairing_code_updated',
                   session_id: id,
@@ -1798,6 +1871,12 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
           session.updated_at = new Date().toISOString();
           // Persist encrypted auth state
           safeWriteEncrypted(path.join(sessionDir, 'auth.json'), { creds: state.creds, keys: state.keys }, aesKey);
+          diagnostic('legacy_auth_snapshot_written', {
+            session_ref: sessionRef(id),
+            generation,
+            auth_updates: session._diagnosticAuthUpdates || 0,
+            keys_value_type: typeof state.keys,
+          });
           emitEvent({ event: 'session_connected', session_id: id, session_name: session.session_name, phone: session.phone_number || null });
           // Faz 7: WhatsApp Web paritesi — bağlantı kuruldu, INITIAL SYNC
           // başlıyor. Frontend bu event'le "Sohbetleriniz yükleniyor…"
@@ -1869,7 +1948,14 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
           if (session.sync && session.sync.phase !== 'ready') {
             session.sync = { phase: 'idle' };
           }
-          const statusCode = lastDisconnect?.error?.output?.statusCode;
+          if (session.sock !== sock || session._diagnosticSocketGeneration !== generation) {
+            diagnostic('stale_socket_close_observed', {
+              session_ref: sessionRef(id),
+              generation,
+              current_generation: session._diagnosticSocketGeneration,
+              status_code: statusCode ?? null,
+            });
+          }
           const isLoggedOut = statusCode === DisconnectReason.loggedOut;
           const isBanned = statusCode === DisconnectReason.badSession;
           // Sorun (Render log: `stream errored out | tag=stream:error code=515`):
@@ -1883,6 +1969,13 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
             session.is_phone_online = false;
             session.updated_at = new Date().toISOString();
             logger.info({ id }, 'Baileys restartRequired (515) — soket hemen yeniden kuruluyor');
+            diagnostic('socket_reconnect_scheduled', {
+              session_ref: sessionRef(id),
+              generation,
+              reason: 'restart_required',
+              delay_ms: 500,
+              is_current_socket: session.sock === sock,
+            });
             setTimeout(() => this._connectSocket(id), 500);
             return;
           }
@@ -1930,6 +2023,15 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
             session.status = 'CONNECTING';
             session.is_phone_online = false;
             session.updated_at = new Date().toISOString();
+            diagnostic('socket_reconnect_scheduled', {
+              session_ref: sessionRef(id),
+              generation,
+              reason: 'transient_disconnect',
+              delay_ms: 5000,
+              status_code: statusCode ?? null,
+              failure_count: session._connFailures,
+              is_current_socket: session.sock === sock,
+            });
             setTimeout(() => this._connectSocket(id), 5000);
           }
         }

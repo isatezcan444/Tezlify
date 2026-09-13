@@ -5,6 +5,8 @@ hata durumları `WhatsAppGatewayError` içine sarılır; asla yanlış pozitif
 başarı döndürülmez (AGENTS.md Truthfulness savunması).
 """
 import logging
+import re
+import time
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -12,6 +14,14 @@ import httpx
 from backend.app.core.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+def _diagnostic_route(path: str) -> str:
+    """PII-safe route shape for low-volume gateway diagnostics."""
+    route = re.sub(r"/sessions/[^/]+", "/sessions/:session", path)
+    route = re.sub(r"/conversations/[^/]+", "/conversations/:jid", route)
+    route = re.sub(r"/media/[^/?]+", "/media/:media", route)
+    return route
 
 
 class WhatsAppGatewayError(Exception):
@@ -28,14 +38,31 @@ def gateway_timeout() -> float:
 
 async def _request(method: str, path: str, **kwargs: Any) -> Any:
     url = f"{gateway_base()}{path}"
+    route = _diagnostic_route(path)
+    started = time.monotonic()
     try:
         async with httpx.AsyncClient(timeout=gateway_timeout()) as client:
             res = await client.request(method, url, **kwargs)
     except httpx.HTTPError as exc:
-        raise WhatsAppGatewayError(f"Gateway'e ulaşılamadı ({url}): {exc}") from exc
+        elapsed_ms = round((time.monotonic() - started) * 1000)
+        logger.warning(
+            "[WA-GATEWAY-HTTP] Ulaşım hatası (method=%s route=%s elapsed_ms=%d type=%s)",
+            method, route, elapsed_ms, type(exc).__name__,
+        )
+        raise WhatsAppGatewayError(f"Gateway'e ulaşılamadı ({route}): {exc}") from exc
+    elapsed_ms = round((time.monotonic() - started) * 1000)
     if res.status_code >= 400:
+        logger.warning(
+            "[WA-GATEWAY-HTTP] HTTP hata (method=%s route=%s status=%d elapsed_ms=%d)",
+            method, route, res.status_code, elapsed_ms,
+        )
         body = res.text[:300] if res.text else f"HTTP {res.status_code}"
         raise WhatsAppGatewayError(f"Gateway hatası {res.status_code}: {body}")
+    if elapsed_ms >= 2000:
+        logger.info(
+            "[WA-GATEWAY-HTTP] Yavaş çağrı (method=%s route=%s status=%d elapsed_ms=%d)",
+            method, route, res.status_code, elapsed_ms,
+        )
     try:
         return res.json()
     except Exception as exc:
