@@ -9,7 +9,7 @@ import { Skeleton } from '../ui/Skeleton';
 import { useI18n } from '../../context/I18nContext';
 import { parseServerTime, formatConversationTime } from '../../lib/utils';
 
-export type FilterTab = 'ALL' | 'ACTIVE' | 'ARCHIVED' | 'CLOSED' | 'UNREAD';
+export type FilterTab = 'ALL' | 'ACTIVE' | 'GROUPS' | 'ARCHIVED' | 'CLOSED' | 'UNREAD';
 
 export interface ConversationListProps {
   conversations: Conversation[];
@@ -56,10 +56,17 @@ export const ConversationList: React.FC<ConversationListProps> = ({
 
   const filtered = conversations.filter((c) => {
     // 1. Tab filter
-    if (currentFilter === 'ACTIVE' && c.status !== 'ACTIVE') return false;
-    if (currentFilter === 'ARCHIVED' && c.status !== 'ARCHIVED') return false;
+    // Sorun 4 (WhatsApp paritesi): arsivli sohbetler ANA listeden gizlenir,
+    // yalnizca "Arsiv" sekmesinde gorunur. Arsiv = WhatsApp arsiv durumu
+    // (is_archived, gateway metadata) VEYA CRM status ARCHIVED (kullanici
+    // aksiyonu) — ikisi de ayni sekmede toplanir.
+    const archivedLike = Boolean(c.is_archived) || c.status === 'ARCHIVED';
+    if (currentFilter === 'ALL' && archivedLike) return false;
+    if (currentFilter === 'ACTIVE' && (c.status !== 'ACTIVE' || archivedLike)) return false;
+    if (currentFilter === 'GROUPS' && !c.is_group) return false;
+    if (currentFilter === 'ARCHIVED' && !archivedLike) return false;
     if (currentFilter === 'CLOSED' && c.status !== 'CLOSED') return false;
-    if (currentFilter === 'UNREAD' && (c.unread_count || 0) <= 0) return false;
+    if (currentFilter === 'UNREAD' && ((c.unread_count || 0) <= 0 || archivedLike)) return false;
 
     // 2. Search query filter
     if (!searchQuery) return true;
@@ -138,6 +145,8 @@ export const ConversationList: React.FC<ConversationListProps> = ({
   const filterTabs: { id: FilterTab; label: string; icon: React.FC<{ className?: string }> }[] = [
     { id: 'ALL', label: t('whatsapp.tabAll') || 'Tümü', icon: Inbox },
     { id: 'ACTIVE', label: t('whatsapp.tabActive') || 'Aktif', icon: MessageSquare },
+    // Sorun 4: grup sohbetleri ayri sekme (JID @g.us — backend is_group).
+    { id: 'GROUPS', label: t('whatsapp.tabGroups') || 'Gruplar', icon: Users },
     { id: 'UNREAD', label: t('whatsapp.tabUnread') || 'Okunmamış', icon: Mail },
     { id: 'ARCHIVED', label: t('whatsapp.tabArchived') || 'Arşiv', icon: Archive },
     { id: 'CLOSED', label: t('whatsapp.tabClosed') || 'Kapatılan', icon: CheckCircle2 },

@@ -126,7 +126,12 @@ async def get_messages(jid: str, limit: int = 50, before: Optional[int] = None) 
     return await _request("GET", f"/conversations/{jid}/messages", params=params)
 
 
-async def list_all_messages(limit: int = 1000, offset: int = 0, since: Optional[int] = None) -> Dict[str, Any]:
+async def list_all_messages(
+    limit: int = 1000,
+    offset: int = 0,
+    since: Optional[int] = None,
+    per_chat_limit: Optional[int] = None,
+) -> Dict[str, Any]:
     """Faz 10 (P5): gateway belleğindeki TÜM geçmişi zaman damgası sıralı,
     deterministik offset sayfalamasıyla toplu çeker. initial-sync job'ı
     sohbet-başına getMessages turu (N+1 HTTP) yerine bu tek kanalı kullanır.
@@ -137,10 +142,18 @@ async def list_all_messages(limit: int = 1000, offset: int = 0, since: Optional[
     suuc DB'deki en son bilinen mesaj zamanından turetilir (uydurma degil).
     Eski gateway suucusu yoksa parametreyi yok sayar → tam gecmis + dedup
     (geriye donuk uyumlu, fail-safe).
+
+    Sorun 1 (initial-sync hızı): ``per_chat_limit`` verildiğinde gateway her
+    sohbet için yalnızca EN YENİ N mesajı döner — ilk senkronun yükü sohbet
+    başına ~50 mesajla sınırlanır; daha eski geçmiş kullanıcı kaydırdıkça
+    lazy hydration ile çekilir. Eski gateway parametreyi yok sayar → tam
+    geçmiş + dedup (geriye dönük uyumlu).
     """
     params: Dict[str, Any] = {"limit": limit, "offset": offset}
     if since is not None:
         params["since"] = int(since)
+    if per_chat_limit is not None:
+        params["perChatLimit"] = int(per_chat_limit)
     return await _request("GET", "/messages/bulk", params=params)
 
 

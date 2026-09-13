@@ -110,6 +110,8 @@ export class WhatsAppRepository {
   static async getConversations(params?: {
     status?: string;
     unread_only?: boolean;
+    group_only?: boolean;
+    archived_only?: boolean;
     search?: string;
     limit?: number;
     offset?: number;
@@ -119,6 +121,8 @@ export class WhatsAppRepository {
     return WhatsAppApi.getConversations({
       status: params?.status as ConversationStatus | undefined,
       unread_only: params?.unread_only,
+      group_only: params?.group_only,
+      archived_only: params?.archived_only,
       search: params?.search,
       limit: params?.limit,
       offset: params?.offset,

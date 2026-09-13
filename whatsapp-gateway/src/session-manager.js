@@ -241,6 +241,46 @@ function buildChatPreview(record, isGroup) {
   return base;
 }
 
+// Sorun 3 (tek kaynak): Baileys mesaj govdesinden mesaj TIPINI cozumleyen
+// TEK paylasilan fonksiyon. Eski yol ayni zinciri 3 ayri yerde (canli
+// messages.upsert, history sync, chats.update) kopyaliyordu — kopyalar
+// drift edince alintilanmis/iletilmis/link-onizlemeli metinler (hepsi
+// `extendedTextMessage` tasir) medya gibi siniflandiriliyordu.
+// Kurallar:
+//  - Gercek medya paketleri (image/document/audio/video/sticker) ONCE kontrol
+//    edilir; caption'li medya medyadir.
+//  - `conversation` VEYA `extendedTextMessage` (contextInfo.quotedMessage,
+//    contextInfo.isForwarded, matchedManagedLink/link-onizleme dahil) → TEXT.
+//  - Baska tanimli paket yoksa konum/kisi karti, o da yoksa TEXT.
+function classifyMessageType(content) {
+  const c = content || {};
+  if (c.imageMessage) return 'IMAGE';
+  if (c.documentMessage) return 'DOCUMENT';
+  if (c.audioMessage) return 'AUDIO';
+  if (c.videoMessage) return 'VIDEO';
+  if (c.stickerMessage) return 'STICKER';
+  // Metin paketleri: duz `conversation` veya `extendedTextMessage` — alintili,
+  // iletilmis ve link-onizlemeli mesajlarin TAMAMI extendedTextMessage'dir ve
+  // TEXT sayilir (medya DEGIL).
+  if (c.conversation || c.extendedTextMessage) return 'TEXT';
+  if (c.locationMessage) return 'LOCATION';
+  if (c.contactMessage) return 'CONTACT';
+  return 'TEXT';
+}
+
+// History/gecmis kayitlarinda `classifyMessageType` her sey TEXT dondurdugu
+// icin, hicbir taninir paket tasimayan stub'lari (reaction, protocol/revoke,
+// ephemeral ayar — govdesiz) ayirt etmek icin ayrica kullanilir: eskiden
+// tip zinciri bunlara `null` dondurup kaydi atliyordu; ayni davranis korunur.
+function hasRecognizedContent(content) {
+  const c = content || {};
+  return Boolean(
+    c.imageMessage || c.documentMessage || c.audioMessage || c.videoMessage ||
+    c.stickerMessage || c.conversation || c.extendedTextMessage ||
+    c.locationMessage || c.contactMessage
+  );
+}
+
 // Baileys WAMessage -> { message_type, body } (chats.update.lastMessage icin).
 function summarizeWaMessage(waMsg) {
   const content = waMsg?.message || {};
@@ -251,15 +291,7 @@ function summarizeWaMessage(waMsg) {
     content.videoMessage?.caption ||
     content.documentMessage?.caption ||
     '';
-  const type = content.imageMessage ? 'IMAGE'
-    : content.documentMessage ? 'DOCUMENT'
-    : content.audioMessage ? 'AUDIO'
-    : content.videoMessage ? 'VIDEO'
-    : content.stickerMessage ? 'STICKER'
-    : content.locationMessage ? 'LOCATION'
-    : content.contactMessage ? 'CONTACT'
-    : 'TEXT';
-  return { message_type: type, body: text };
+  return { message_type: classifyMessageType(content), body: text };
 }
 
 function normalizeJid(jid) {
@@ -334,7 +366,7 @@ function sanitizeOutboundEvent(event) {
 // Faz 8: birim testleri icin sanitizasyon yardimcilari disa aktarilir
 // (createSessionManager factory'si ayrica export edilir; index.js ikisini de
 // kullanabilir).
-export { isRawIdentityName, sanitizeChatForEmit, sanitizeOutboundEvent, mergeContactName, NAME_RANK, jidToPhone, isDegenerateJid, resolveSyncState, normalizePreviewText, buildChatPreview, isPhoneLikeName, summarizeWaMessage };
+export { isRawIdentityName, sanitizeChatForEmit, sanitizeOutboundEvent, mergeContactName, NAME_RANK, jidToPhone, isDegenerateJid, resolveSyncState, normalizePreviewText, buildChatPreview, isPhoneLikeName, summarizeWaMessage, classifyMessageType, hasRecognizedContent };
 
 function mergeContactName(existing, name, source) {
   const base = existing || {};
@@ -618,19 +650,35 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
     // suucusu DB'deki en son bilinen mesaj zamanidir; boylece reconnect
     // sonrasinda tekrar-tekrar ayni gecmis cekilmez. Sayim/total bu filtreli
     // kume gorudur.
-    listAllMessages({ limit = 1000, offset = 0, since = null } = {}) {
+    //
+    // Sorun 1 (initial-sync maliyeti): `perChatLimit` verildiginde her sohbet
+    // icin yalnizca EN YENI N mesaj dondurulur. Boylece ilk senkron sohbet
+    // basi ~50 mesajla sinirli kalir; daha eskileri backend kaydirma
+    // sirasinda lazy hydration ile ceker. `total` bu sinirli kume sayisidir
+    // — backend sayfalama dongusu icin tutarli gorunum.
+    listAllMessages({ limit = 1000, offset = 0, since = null, perChatLimit = null } = {}) {
       const sinceMs = Number.isFinite(Number(since)) && since !== null && since !== ''
         ? Number(since) * 1000
         : null;
+      const perChat = Number.isFinite(Number(perChatLimit)) && Number(perChatLimit) > 0
+        ? Number(perChatLimit)
+        : null;
       const all = [];
       for (const list of messagesByChat.values()) {
-        for (const m of list) {
-          if (sinceMs !== null) {
+        let group = list;
+        if (sinceMs !== null) {
+          group = group.filter((m) => {
             const t = Date.parse(m.created_at || '');
-            if (!Number.isFinite(t) || t < sinceMs) continue;
-          }
-          all.push(m);
+            return Number.isFinite(t) && t >= sinceMs;
+          });
         }
+        if (perChat !== null && group.length > perChat) {
+          // Sohbet ici en yeni N: kayit id'si hem history'de
+          // (messageTimestamp*1000) hem canli akista (Date.now() tabanli)
+          // ms kronolojisidir — buyuk id = daha yeni mesaj.
+          group = [...group].sort((a, b) => (a.id || 0) - (b.id || 0)).slice(-perChat);
+        }
+        for (const m of group) all.push(m);
       }
       all.sort((a, b) => {
         const d = (a.id || 0) - (b.id || 0);
@@ -817,7 +865,9 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       const contact = contacts.get(key);
       const isGroup = jid.includes('@g.us');
       const text = msg.message?.conversation || msg.message?.extendedTextMessage?.text || msg.message?.imageMessage?.caption || msg.message?.videoMessage?.caption || msg.message?.documentMessage?.caption || '';
-      const mediaType = msg.message?.imageMessage ? 'IMAGE' : msg.message?.documentMessage ? 'DOCUMENT' : msg.message?.audioMessage ? 'AUDIO' : msg.message?.videoMessage ? 'VIDEO' : msg.message?.stickerMessage ? 'STICKER' : msg.message?.locationMessage ? 'LOCATION' : msg.message?.contactMessage ? 'CONTACT' : 'TEXT';
+      // Sorun 3: tip cozumlemesi tek paylasilan fonksiyondan (canli akista
+      // alintili/iletilmis/link mesajlar extendedTextMessage → TEXT).
+      const mediaType = classifyMessageType(msg.message);
       let mediaInfo = null;
       if (!fromMe && mediaType !== 'TEXT' && mediaType !== 'LOCATION' && mediaType !== 'CONTACT' && typeof this.storeIncomingMedia === 'function' && sock) {
         const mediaMessage = msg.message?.imageMessage || msg.message?.documentMessage || msg.message?.audioMessage || msg.message?.videoMessage || msg.message?.stickerMessage;
@@ -1019,6 +1069,9 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
         name_source: contact?.name_source || existing.name_source || null,
         phone: jidToPhone(key) || existing.phone || '',
         is_group: key.includes('@g.us'),
+        // Sorun 4: arsiv durumu sohbet kaydinda tasinir (touch arsivlemez —
+        // mevcut deger korunur; arsiv degisikligi chats.update ile gelir).
+        archived: existing.archived ?? false,
         last_message_at: nextTs,
         last_message_preview: nextPreview,
         unread_count: existing.unread_count || 0,
@@ -1170,17 +1223,8 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
         content.videoMessage?.caption ||
         content.documentMessage?.caption ||
         '';
-      const mediaType = content.imageMessage ? 'IMAGE'
-        : content.documentMessage ? 'DOCUMENT'
-        : content.audioMessage ? 'AUDIO'
-        : content.videoMessage ? 'VIDEO'
-        : content.stickerMessage ? 'STICKER'
-        : content.locationMessage ? 'LOCATION'
-        : content.contactMessage ? 'CONTACT'
-        : content.extendedTextMessage ? 'TEXT'
-        : content.conversation ? 'TEXT'
-        : null;
-      if (!mediaType && !text) return null; // stub/unsupported message — skip
+      const mediaType = classifyMessageType(content); // Sorun 3: tek paylasilan kural
+      if (!hasRecognizedContent(content) && !text) return null; // stub/unsupported message — skip
       const ts = Number(msg.messageTimestamp) * 1000;
       return {
         id: Number.isFinite(ts) ? ts : Date.now(),
@@ -1593,6 +1637,10 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
             name_source: contact?.name_source || existing.name_source || null,
             phone: jidToPhone(key) || existing.phone || '',
             is_group: key.includes('@g.us'),
+            // Sorun 4: Baileys `chats.update.archived` (WhatsApp'ta
+            // sohbetin arsivlenmesi/arsivden cikarilmasi) sohbet kaydina
+            // islenir; yoksa mevcut deger korunur.
+            archived: update.archived ?? existing.archived ?? false,
             last_message_at: updTs && !tsOlder ? updTs : existing.last_message_at,
             last_message_preview: updPreview && !tsOlder ? updPreview : existing.last_message_preview || '',
             unread_count: update.unreadCount ?? existing.unread_count ?? 0,
@@ -1693,6 +1741,9 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
               name_source: contact?.name_source || existing.name_source || null,
               phone: jidToPhone(key) || existing.phone || '',
               is_group: key.includes('@g.us'),
+              // Sorun 4: HistorySync.Chat.archived — ilk gecmis senkronunda
+              // arsivli sohbetler buradan gelir.
+              archived: chat.archived ?? existing.archived ?? false,
               avatar_url: chat.avatar_url || contact?.avatar_url || existing.avatar_url || null,
               last_message_at: ts ? new Date(Number(ts) * 1000).toISOString() : (newest?.created_at || existing.last_message_at),
               // Faz 10 (P2): paylasilan kural — tip etiketi + grup gonderen on eki.

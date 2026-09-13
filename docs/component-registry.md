@@ -235,8 +235,8 @@ components/
 - **Import**: `import { TemplateSelectModal } from '@/components/domain';`
 
 ### `ConversationList`
-- **Purpose**: Sidebar list of all active conversation threads with search filtering, avatar hashing, unread badges, and last message previews.
-- **Props**: `conversations: Conversation[]`, `selectedId?: number`, `onSelect: (conv: Conversation) => void`, `loading?: boolean`, `searchQuery?: string`, `onSearchChange?: (q: string) => void`.
+- **Purpose**: Sidebar list of all active conversation threads with search filtering, avatar hashing, unread badges, and last message previews. Includes filter tabs (`ALL`, `ACTIVE`, `GROUPS`, `ARCHIVED`, `CLOSED`, `UNREAD`) — `GROUPS` filters on persisted `is_group`, `ARCHIVED` on `is_archived OR status=ARCHIVED` (Sorun 4).
+- **Props**: `conversations: Conversation[]`, `selectedId?: number`, `onSelect: (conv: Conversation) => void`, `loading?: boolean`, `searchQuery?: string`, `onSearchChange?: (q: string) => void`, `activeFilter?: FilterTab`, `onFilterChange?: (filter: FilterTab) => void`, `onNewChat?: () => void`, `onSync?: () => void`, `isSyncing?: boolean`.
 - **Import**: `import { ConversationList } from '@/components/domain';`
 
 ### `NewChatModal`

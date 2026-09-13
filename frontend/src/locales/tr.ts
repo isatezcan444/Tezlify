@@ -431,6 +431,7 @@ export const tr = {
     tabAll: 'Tümü',
     tabActive: 'Aktif',
     tabUnread: 'Okunmamış',
+    tabGroups: 'Gruplar',
     tabArchived: 'Arşiv',
     tabClosed: 'Kapatılan',
     statusArchived: 'Arşiv',

@@ -805,6 +805,9 @@ async def _ensure_conversations_bulk(
                 channel="WHATSAPP",
                 status=ConversationStatus.ACTIVE,
                 last_message_preview=None,
+                # Sorun 4: grup bayragi JID'den kalici yazilir (@g.us).
+                is_group="@g.us" in jid_str,
+                is_archived=False,
                 # Faz 10 (P2, RC-1): olustururken utcnow() ile GELECEK timestamp
                 # tohumlanmaz — ozet yalnizca gercek mesaj verisiyle dolar.
                 last_message_at=None,
@@ -891,6 +894,9 @@ async def _ensure_conversation(
             channel="WHATSAPP",
             status=ConversationStatus.ACTIVE,
             last_message_preview=preview,
+            # Sorun 4: grup bayragi JID'den kalici yazilir (@g.us).
+            is_group="@g.us" in jid,
+            is_archived=False,
             # Faz 10 (P2, RC-1): olustururken utcnow() ile GELECEK timestamp
             # tohumlanmaz — gecmis mesajlarin hicbiri "daha yeni" olamaz ve
             # preview hicbir zaman yazilamazdi (prod'da 18 sohbetin 100
@@ -1128,7 +1134,10 @@ async def _sync_conversations_impl(db: AsyncSession, user_id: str) -> List[Dict[
         # (medyada bos/eksik olabilir) yalnizca zaman damgasi daha yeni ise
         # ve normalize edilmis metin uretiyorsa uygulanir.
         try:
-            msg_data = await gw.get_messages(jid_str, limit=100)
+            # Sorun 1: legacy yolda sohbet basina tam gecmis yerine en yeni
+            # _SYNC_PER_CHAT_LIMIT mesaj cekilir (bulk kanal yoksa bile
+            # initial-sync maliyeti sinirli kalir; gecmis lazy hydration ile).
+            msg_data = await gw.get_messages(jid_str, limit=_SYNC_PER_CHAT_LIMIT)
             gw_messages = msg_data.get("messages", []) if isinstance(msg_data, dict) else []
             for gm in gw_messages:
                 gm = dict(gm)
@@ -1142,11 +1151,21 @@ async def _sync_conversations_impl(db: AsyncSession, user_id: str) -> List[Dict[
             # Eski zehirli degerler (utcnow tohumlu last_message_at) düzeltilsin
             # diye gateway preview'i kendi zaman damgasiyla uygulariz;
             # conv.last_message_at gateway'den yeni ise kural zaten yazar.
+            # Sorun 5: `gw_ts or utcnow()` UYDURMASI kaldirildi — gercek
+            # zaman damgasi yoksa "simdi" yazmak sohbeti gelecege kilitler ve
+            # sonraki gercek mesajlar (daha eski ts) ozeti bir daha asla
+            # guncelleyemezdi. ts None ise _apply_last_message yalnizca ozeti
+            # yazar (realtime semantigi), timestamp uydurulmaz.
             if conv.last_message_at is None or (gw_ts and gw_ts > conv.last_message_at):
-                _apply_last_message(conv, gw_ts or datetime.utcnow(), gw_summary)
+                _apply_last_message(conv, gw_ts, gw_summary)
             elif not conv.last_message_preview:
                 # Ozet hic yoksa (mesajsiz/eksik hydrate) gateway degeriyle doldur.
                 _apply_last_message(conv, None, gw_summary)
+        # Sorun 4: grup/arsiv metadata'sini kalici sutunlara yaz (gateway
+        # arsiv alanini gondermiyorsa — eski gateway — mevcut deger korunur).
+        conv.is_group = bool(item.get("is_group")) or "@g.us" in jid_str
+        if "archived" in item:
+            conv.is_archived = bool(item.get("archived"))
         unread = int(item.get("unread_count") or 0)
         conv.unread_count = max(conv.unread_count or 0, unread)
         await db.flush()
@@ -1164,6 +1183,8 @@ async def list_conversations(
     search: Optional[str] = None,
     status: Optional[str] = None,
     unread_only: bool = False,
+    group_only: bool = False,
+    archived_only: bool = False,
     limit: Optional[int] = None,
     offset: Optional[int] = None,
 ) -> Tuple[List[Dict[str, Any]], int]:
@@ -1176,6 +1197,20 @@ async def list_conversations(
             pass
     if unread_only:
         base = base.where(Conversation.unread_count > 0)
+    # Sorun 4 (Grup/Arsiv sekmeleri): kalici sütunlar üzerinden filtre —
+    # `group_only` yalnizca @g.us sohbetleri, `archived_only` WhatsApp'i
+    # arsivlenmis (is_archived) VEYA CRM status'u ARCHIVED olan sohbetleri
+    # dondurur. Ikisi birden verilirse kesisim (WhatsApp paritesi: "Arsiv"
+    # sekmesindeki gruplar hem grup hem arsiv olarak sayilir).
+    if group_only:
+        base = base.where(Conversation.is_group.is_(True))
+    if archived_only:
+        base = base.where(
+            or_(
+                Conversation.is_archived.is_(True),
+                Conversation.status == ConversationStatus.ARCHIVED,
+            )
+        )
     if search:
         like = f"%{search.strip().lower()}%"
         base = base.join(Contact, Conversation.contact_id == Contact.id).where(
@@ -1240,8 +1275,12 @@ async def list_conversations(
                 # normalize telefon) — presentation'a internal ID sizmaz.
                 "name": _safe_display_name(contact),
                 "phone": phone,
-                # Grup JID'i ("jid:...@g.us" sentinel veya ham jid) her zaman @g.us icerir.
-                "is_group": bool(phone and "@g.us" in phone),
+                # Sorun 4: kalici `is_group` sütunu esas; eski satirlar
+                # (sync oncesinde olusmus) JID sentinel'iyle tamamlanir.
+                "is_group": bool(r.is_group) or bool(phone and "@g.us" in phone),
+                # WhatsApp arsiv durumu (CRM status'tan bagimsiz, gateway
+                # metadata'sindan kalici yazilir).
+                "is_archived": bool(r.is_archived),
                 "avatar_url": _get_contact_avatar(contact),
                 "last_message_preview": preview,
                 "last_message_at": r.last_message_at.isoformat() if r.last_message_at else None,
@@ -1280,12 +1319,20 @@ async def _resolve_jid(db: AsyncSession, user_id: str, conversation_id: int) -> 
 
 
 async def _hydrate_messages_on_demand(
-    db: AsyncSession, owner: str, conv: Conversation, limit: int
+    db: AsyncSession, owner: str, conv: Conversation, limit: int,
+    before_ts_ms: Optional[int] = None,
 ) -> List[Message]:
     """P0.11 (WhatsApp Web paritesi): kullanici sohbeti job hydrasyonundan once
     actiysa gateway belleğinden (history-sync'ten beri mevcut) bu sohbetin son
     mesajlarini cek + kalici yaz. Gercek veri, sentez yok; hata fail-soft
     (bos liste doner — UI zaten job banner'ini gosteriyor, basari maskelenmez).
+
+    Sorun 1 (lazy hydration): `before_ts_ms` verildiginde gateway'den bu
+    MILAT (ms epoch) tarihinden ESKI mesajlar istenir — initial sync yalnizca
+    en yeni ~50 mesaji yazdigi icin, kullanici yukari kaydiridiginda kalan
+    gecmis buradan tamamlanir. Kayit id'si history'de messageTimestamp*1000,
+    canli akista Date.now() tabanlidir — ikisi de ms kronolojisi oldugu icin
+    sucut ayni alanda calisir.
     """
     if not conv.contact_id:
         return []
@@ -1298,7 +1345,11 @@ async def _hydrate_messages_on_demand(
     if not jid:
         return []
     try:
-        data = await gw.get_messages(jid, limit=min(max(limit, 50), 100))
+        data = await gw.get_messages(
+            jid,
+            limit=min(max(limit, 50), 100),
+            before=before_ts_ms,
+        )
     except Exception as exc:  # noqa: BLE001 — gateway kapali/eski: sessiz bos
         logger.info("On-demand hydrasyon atlandi (conv=%s): %s", conv.id, exc)
         return []
@@ -1325,9 +1376,15 @@ async def _hydrate_messages_on_demand(
         rows.append(row)
     if not rows:
         return []
+    # Kronolojik sirala: gateway sayfası asc doner ama dedup/INSERT sonrasi
+    # liste sirasi bozulabilir; sucut sonrasi eski+yeni karişik gelebilir.
+    rows.sort(key=lambda r: (r.external_timestamp or r.created_at, r.id or 0))
     db.add_all(rows)
     await db.flush()
     # Preview'i da hydrate edilen gercek mesajla guncelle (sohbet listesi tutarli).
+    # Sorun 1: eski gecmis hydrasyonunda (before_ts_ms) listedeki EN YENI
+    # mesaj esas alinir — _apply_last_message ts-guard'u zaten daha eski
+    # degerin mevcut ozeti ezmesini engeller.
     summary_src = rows[-1]
     _apply_last_message(
         conv,
@@ -1346,25 +1403,82 @@ async def _hydrate_messages_on_demand(
     return list(reversed(rows))
 
 
+def _hydration_cursor_ms(rows: List[Optional[Message]]) -> Optional[int]:
+    """Verilen mesaj satirlarindaki EN ESKI gercek zaman damgasini gateway
+    sucut alanina (ms epoch, naive-UTC tabanli) cevirir. Satir yoksa veya
+    damga cozulemiyorsa None — sucut uydurulmaz (Truthfulness).
+
+    Gateway `getMessages.before` kiyasi kayit id'si uzerindendir ve id hem
+    history'de (messageTimestamp*1000) hem canli akista (Date.now() tabanli)
+    ms epoch kronolojisidir — DB'deki external_timestamp ayni alana donusturulur.
+    """
+    oldest: Optional[datetime] = None
+    for r in rows:
+        if r is None:
+            continue
+        ts = r.external_timestamp or r.created_at
+        if ts is not None and (oldest is None or ts < oldest):
+            oldest = ts
+    if oldest is None:
+        return None
+    return int(oldest.replace(tzinfo=timezone.utc).timestamp() * 1000)
+
+
 async def get_messages(
     db: AsyncSession, user_id: str, conversation_id: int, limit: int = 50, before: Optional[int] = None
 ) -> Dict[str, Any]:
     conv = await _get_conversation_or_404(db, user_id, conversation_id)
+    page_size = min(limit, 100)
     base = select(Message).where(
         Message.conversation_id == conv.id,
         get_user_filter(Message.user_id, user_id),
     )
+    # Sorun 2 + Sorun 1 (zaman-damgali keyset sayfalamasi): `before` frontend
+    # sozlesmesi geregi bir mesaj id'sidir, ama KESIM NOKTASI o satirin GERCEK
+    # zaman damgasidir. Sebep: initial sync sohbet basina yalnizca en yeni ~50
+    # mesaji yazar; kalan gecmis kaydirma sirasinda lazy hydration ile eklenir
+    # ve bu eski mesajlar DB'de DAHA BUYUK auto-increment id alir. `id < before`
+    # sayfalamasi bunlari gormezden gelir ve kronolojik sayfayi bozardi —
+    # zaman-damgasi kesimi + siralamasi bunu duzeltir.
+    before_row: Optional[Message] = None
     if before:
-        base = base.where(Message.id < before)
-    base = base.order_by(Message.id.desc()).limit(min(limit, 100))
+        bres = await db.execute(
+            select(Message).where(Message.id == before, Message.conversation_id == conv.id)
+        )
+        before_row = bres.scalars().first()
+        cutoff = before_row.external_timestamp if before_row else None
+        if cutoff is not None:
+            base = base.where(Message.external_timestamp < cutoff)
+        else:
+            # before satiri cozulemedi → bos sayfa (uydurma sucut yok).
+            base = base.where(Message.id < before)
+    base = base.order_by(
+        Message.external_timestamp.desc().nullslast(), Message.id.desc()
+    ).limit(page_size)
     res = await db.execute(base)
     rows = list(res.scalars().all())
     # Faz 6 (P0.11 lazy hydration): ilk sayfa hic bos ve sohbet hicbir zaman
     # mesaj gormemisse gateway belleğinden canli cek (job'u bekleme).
     if not rows and before is None:
         rows = await _hydrate_messages_on_demand(db, user_id, conv, limit)
-    rows.reverse()
-    has_more = len(rows) == min(limit, 100)
+    elif len(rows) < page_size:
+        # Sorun 1 (kaydirma ile gecmis): DB sayfası tukendi — initial sync
+        # sohbet basina yalnizca en yeni ~50 mesaji yazdigi icin kalan gecmis
+        # gateway'den sucut tabanli tamamlanir. Suicut, sayfadaki (ve varsa
+        # `before` satirindaki) EN ESKI GERCEK zaman damgasidir (sentez yok).
+        cursor_src = list(rows) + ([before_row] if before_row else [])
+        cursor_ms = _hydration_cursor_ms(cursor_src)
+        if cursor_ms is not None:
+            older = await _hydrate_messages_on_demand(
+                db, user_id, conv, page_size - len(rows), before_ts_ms=cursor_ms
+            )
+            if older:
+                seen_ids = {r.id for r in rows}
+                rows = [r for r in older if r.id not in seen_ids] + rows
+    # Kronolojik cikis siralamasi (eski→yeni): hydration sonrasi id sirasi
+    # bozulabilir — tek dogru anahtar gercek zaman damgasidir.
+    rows.sort(key=lambda r: (r.external_timestamp or r.created_at or datetime.min, r.id or 0))
+    has_more = len(rows) == page_size
     messages = [_serialize_message(r) for r in rows]
     return {
         "messages": messages,
@@ -1510,6 +1624,12 @@ _SYNC_BULK_PAGE_SIZE = 1000   # gateway'den tek istekte cekilen mesaj
 _SYNC_PERSIST_BATCH = 200     # dedup-SELECT + INSERT grubu
 _SYNC_EVENT_CHUNK = 100       # WS mesaj chunk olayinin ust siniri
 _SYNC_CHAT_PAGE_SIZE = 40     # sohbet anlik goruntusu sayfa boyutu
+
+# Sorun 1 (yavas initial sync): bulk kanali her sohbet icin yalnizca EN YENI
+# N mesajı ceker (gateway `perChatLimit`). WhatsApp Web'in kendi davranisiyla
+# ayni: acilmayan sohbetin tam gecmisi istenmez; daha eskileri kullanici
+# yukari kaydiridiginda lazy hydration ile gelir (get_messages/before).
+_SYNC_PER_CHAT_LIMIT = 50
 
 # WhatsApp Web paritesi (Faz 17/28): sohbet listesi, Baileys history sync
 # SIRASINDA (session_sync_completed'i beklemeden) canli `conversation_updated`
@@ -1897,10 +2017,18 @@ async def _persist_chat_snapshot(
         gw_ts = _as_naive_utc(_parse_dt(str(item.get("last_message_at")))) if item.get("last_message_at") else None
         gw_summary = _normalize_preview_text(item.get("message_type") or "TEXT", item.get("last_message_preview") or "")
         if gw_summary:
+            # Sorun 5: `gw_ts or utcnow()` uydurmasi kaldirildi (bkz.
+            # sync_conversations ayisi) — gercek olmayan zaman damgasi
+            # sohbeti gelecege kilitler, toplu senkrondaki bayat ozet daha
+            # yeni gercek mesajlarin uzerine yazilmaz.
             if conv.last_message_at is None or (gw_ts and gw_ts > conv.last_message_at):
-                _apply_last_message(conv, gw_ts or datetime.utcnow(), gw_summary)
+                _apply_last_message(conv, gw_ts, gw_summary)
             elif not conv.last_message_preview:
                 _apply_last_message(conv, None, gw_summary)
+        # Sorun 4: Baileys sohbet metadata'sini (grup/arsiv) kalici yaz.
+        conv.is_group = bool(item.get("is_group")) or "@g.us" in jid_str
+        if "archived" in item:
+            conv.is_archived = bool(item.get("archived"))
         conv.unread_count = max(conv.unread_count or 0, int(item.get("unread_count") or 0))
         jid_by_conv[conv.id] = jid_str
         out.append(
@@ -1911,6 +2039,7 @@ async def _persist_chat_snapshot(
                 "name": _safe_display_name(contact),
                 "phone": contact.phone_e164,
                 "is_group": "@g.us" in jid_str,
+                "is_archived": bool(conv.is_archived),
                 "avatar_url": _get_contact_avatar(contact),
                 "last_message_preview": gw_summary or None,
                 "last_message_at": gw_ts.isoformat() if gw_ts else None,
@@ -1974,7 +2103,12 @@ async def _run_bulk_message_sync(
     offset = 0
     first_page = True
     while True:
-        page = await gw.list_all_messages(limit=_SYNC_BULK_PAGE_SIZE, offset=offset, since=since_epoch)
+        page = await gw.list_all_messages(
+            limit=_SYNC_BULK_PAGE_SIZE,
+            offset=offset,
+            since=since_epoch,
+            per_chat_limit=_SYNC_PER_CHAT_LIMIT,
+        )
         msgs = page.get("messages", []) if isinstance(page, dict) else []
         total = int(page.get("total") or 0) if isinstance(page, dict) else 0
         if first_page:
@@ -2330,6 +2464,13 @@ async def _map_conversation_event(db: AsyncSession, event: Dict[str, Any]) -> Di
     if event.get("event") == "conversation_updated":
         # Faz 4: history sync / chats.update alanlarini DB'ye kalici yaz.
         payload = event.get("conversation") or {}
+        # Sorun 4: grup bayragi her olayda JID'den garanti edilir; arsiv
+        # durumu yalnizca gateway GERCEK alan gonderdiyse yazilir (eski
+        # gateway payload'inda `archived` yok → mevcut deger korunur,
+        # varsayimla sifirlanmaz).
+        conv.is_group = bool(payload.get("is_group")) or "@g.us" in str(jid)
+        if "archived" in payload:
+            conv.is_archived = bool(payload.get("archived"))
         name = payload.get("name")
         if name or payload.get("avatar_url"):
             contact = await _upsert_contact(db, owner, str(jid), None)

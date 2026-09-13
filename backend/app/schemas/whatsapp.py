@@ -67,6 +67,8 @@ class WhatsAppConversationItem(BaseModel):
     name: Optional[str] = None
     phone: Optional[str] = None
     is_group: bool = False
+    # Sorun 4: WhatsApp arsiv durumu (gateway Baileys metadata'sindan kalici).
+    is_archived: bool = False
     avatar_url: Optional[str] = None
     last_message_preview: Optional[str] = None
     last_message_at: Optional[str] = None

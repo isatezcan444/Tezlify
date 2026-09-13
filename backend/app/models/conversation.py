@@ -1,6 +1,6 @@
 import enum
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, DateTime, Enum, ForeignKey, Index, Uuid, Text
+from sqlalchemy import Boolean, Column, Integer, String, DateTime, Enum, ForeignKey, Index, Uuid, Text
 from sqlalchemy.orm import relationship
 from backend.app.core.database import Base
 
@@ -43,6 +43,14 @@ class Conversation(Base):
     archived_at = Column(DateTime, nullable=True)
     closed_at = Column(DateTime, nullable=True)
 
+    # Sorun 4 (Grup/Arsiv ayrimi): kalici sütunlar — gateway'deki Baileys
+    # sohbet metadata'sindan (JID @g.us / chat.archived) senkronla yazilir.
+    # `is_group` eskiden her istekte JID'den turetiliyordu; `is_archived`
+    # hic yoktu (CRM `status=ARCHIVED` kullanici aksiyonu, WhatsApp arsiv
+    # durumundan farkli bir kavramdir).
+    is_group = Column(Boolean, default=False, nullable=False, index=True)
+    is_archived = Column(Boolean, default=False, nullable=False, index=True)
+
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
@@ -60,4 +68,5 @@ class Conversation(Base):
         Index("idx_conv_user_contact", "user_id", "contact_id"),
         Index("idx_conv_lead_channel_status", "lead_id", "channel", "status"),
         Index("idx_conv_last_msg_at", "last_message_at"),
+        Index("idx_conv_user_group_archived", "user_id", "is_group", "is_archived"),
     )

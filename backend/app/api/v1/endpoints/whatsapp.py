@@ -211,6 +211,8 @@ async def get_conversations(
     search: Optional[str] = Query(None),
     conv_status: Optional[str] = Query(None, alias="status"),
     unread_only: bool = Query(False),
+    group_only: bool = Query(False, description="Yalnizca grup sohbetleri (is_group)"),
+    archived_only: bool = Query(False, description="Yalnizca WhatsApp arsivli sohbetler (is_archived veya status=ARCHIVED)"),
     sync: bool = Query(False, description="Arka plan sync job'ını tetikle (beklemeden döner)"),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
@@ -230,6 +232,8 @@ async def get_conversations(
         search=search,
         status=conv_status,
         unread_only=unread_only,
+        group_only=group_only,
+        archived_only=archived_only,
         limit=limit,
         offset=offset,
     )

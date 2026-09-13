@@ -335,6 +335,8 @@ export interface Conversation {
   lead_phone?: string;
   lead_avatar_url?: string;
   is_group?: boolean;
+  // Sorun 4: WhatsApp arsiv durumu (Baileys metadata) — CRM status'tan bagimsiz.
+  is_archived?: boolean;
   last_message_preview?: string;
   // Faz 10 (P2): "Henüz WhatsApp Mesajı Yok" yalnızca message_count===0 &&
   // last_message_state==='NO_MESSAGES' iken gösterilir; LOADING/REPAIRING

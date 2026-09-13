@@ -143,6 +143,7 @@ interface BackendConversation {
   name?: string | null;
   phone?: string | null;
   is_group?: boolean;
+  is_archived?: boolean;
   avatar_url?: string | null;
   last_message_preview?: string | null;
   last_message_at?: string | null;
@@ -165,6 +166,7 @@ function mapConversation(c: BackendConversation): Conversation {
     lead_name: c.name || undefined,
     lead_phone: c.phone || undefined,
     is_group: isGroup,
+    is_archived: Boolean(c.is_archived),
     lead_avatar_url: c.avatar_url || undefined,
     last_message_preview: c.last_message_preview || undefined,
     message_count: c.message_count ?? 0,
@@ -338,6 +340,8 @@ export const WhatsAppApi = {
   async getConversations(params?: {
     status?: ConversationStatus;
     unread_only?: boolean;
+    group_only?: boolean;
+    archived_only?: boolean;
     search?: string;
     limit?: number;
     offset?: number;
@@ -346,6 +350,8 @@ export const WhatsAppApi = {
     const qs = new URLSearchParams();
     if (params?.status) qs.set('status', params.status);
     if (params?.unread_only) qs.set('unread_only', 'true');
+    if (params?.group_only) qs.set('group_only', 'true');
+    if (params?.archived_only) qs.set('archived_only', 'true');
     if (params?.search?.trim()) qs.set('search', params.search.trim());
     if (params?.limit) qs.set('limit', String(params.limit));
     if (params?.offset) qs.set('offset', String(params.offset));

@@ -101,6 +101,14 @@ function computeSyncProgress(
   return 4;
 }
 
+// Sorun 2 (kronolojik siralama): sidebar sırası her zaman API ile aynı kuralı
+// uygular — last_message_at DESC. Eksik/bozuk zaman damgası en sona düşer.
+function compareByLastMessageDesc(a: Conversation, b: Conversation): number {
+  const ta = a.last_message_at ? new Date(a.last_message_at).getTime() || 0 : 0;
+  const tb = b.last_message_at ? new Date(b.last_message_at).getTime() || 0 : 0;
+  return tb - ta;
+}
+
 export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats }) => {
   const toast = useToast();
   const { t } = useI18n();
@@ -163,9 +171,18 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     const generation = conversationsGenerationRef.current;
     if (!isSilent) setConvsLoading(true);
     try {
+      // Sorun 4: GROUPS / ARCHIVED sekmeleri sunucu tarafı filtreyle yüklenir
+      // (is_group / is_archived || status=ARCHIVED) — istemcide eksik sayfa
+      // riski yok. ALL sekmesi arşivlenmeleri dışlar (ConversationList filtresi
+      // ile tutarlı), bu yüzden archived_only=false varsayılanı korunur.
       const list = await WhatsAppRepository.getConversations({
-        status: convFilter === 'ALL' ? undefined : (convFilter as ConversationStatus),
+        status:
+          convFilter === 'ALL' || convFilter === 'GROUPS' || convFilter === 'ARCHIVED'
+            ? undefined
+            : (convFilter as ConversationStatus),
         unread_only: convFilter === 'UNREAD',
+        group_only: convFilter === 'GROUPS' ? true : undefined,
+        archived_only: convFilter === 'ARCHIVED' ? true : undefined,
         search: convSearch.trim() || undefined,
       });
       if (generation !== conversationsGenerationRef.current) return;
@@ -714,9 +731,11 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
             if (isCurrentSelected) {
               setSelectedConv(updated);
             }
-            // Move updated conversation to top of list
+            // Sorun 2 (kronolojik siralama): kosulsuz "en uste tasi" yerine
+            // zaman damgasina gore yeniden siralanir — gec/bayat bir olay
+            // (retry, geciken WS) sohbeti haksiz yere en uste kilitleyemez.
             const rest = prev.filter((_, i) => i !== idx);
-            return [updated, ...rest];
+            return [updated, ...rest].sort(compareByLastMessageDesc);
           } else {
             loadConversations(true);
             return prev;
@@ -900,7 +919,17 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                 payload.unread_count != null ? Math.max(c.unread_count || 0, payload.unread_count) : c.unread_count,
             };
           };
-          setConversations((prev) => prev.map((c) => (c.id === convId ? patch(c) : c)));
+          setConversations((prev) => {
+            const next = prev.map((c) => (c.id === convId ? patch(c) : c));
+            // Sorun 2: patch son mesaji/siralamayi degistirdiyse liste zaman
+            // damgasina gore yeniden siralanir (API sirasiyla ayni kural).
+            const patched = next.find((c) => c.id === convId);
+            const before = prev.find((c) => c.id === convId);
+            if (patched && before && patched.last_message_at !== before.last_message_at) {
+              return [...next].sort(compareByLastMessageDesc);
+            }
+            return next;
+          });
           setSelectedConv((prev) => (prev && prev.id === convId ? patch(prev) : prev));
         }
       }
@@ -947,9 +976,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
             setConversations((prev) => {
               const byId = new Map(prev.map((c) => [c.id, c]));
               for (const c of incoming) byId.set(c.id, c);
-              return Array.from(byId.values()).sort((a, b) =>
-                (new Date(b.last_message_at || 0).getTime()) - (new Date(a.last_message_at || 0).getTime())
-              );
+              return Array.from(byId.values()).sort(compareByLastMessageDesc);
             });
             setSelectedConv((prev) => prev || incoming[0] || null);
           }

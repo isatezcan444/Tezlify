@@ -431,6 +431,7 @@ export const en = {
     tabAll: 'All',
     tabActive: 'Active',
     tabUnread: 'Unread',
+    tabGroups: 'Groups',
     tabArchived: 'Archived',
     tabClosed: 'Closed',
     statusArchived: 'Archived',

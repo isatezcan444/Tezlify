@@ -291,7 +291,14 @@ async def ensure_conversations_columns(engine: AsyncEngine) -> None:
                 await conn.execute(text("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS last_read_at TIMESTAMP"))
                 await conn.execute(text("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS archived_at TIMESTAMP"))
                 await conn.execute(text("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS closed_at TIMESTAMP"))
+                # Sorun 4 (Grup/Arsiv ayrimi): WhatsApp sohbet metadata'sini
+                # kalici tasiyen sütunlar (Baileys JID @g.us / chat.archived).
+                await conn.execute(text("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS is_group BOOLEAN NOT NULL DEFAULT FALSE"))
+                await conn.execute(text("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS is_archived BOOLEAN NOT NULL DEFAULT FALSE"))
                 await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_conv_user_contact ON conversations (user_id, contact_id)"))
+                await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_conversations_is_group ON conversations (is_group)"))
+                await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_conversations_is_archived ON conversations (is_archived)"))
+                await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_conv_user_group_archived ON conversations (user_id, is_group, is_archived)"))
         except Exception as e:
             logger.warning("[MIGRATION] PostgreSQL conversations columns migration: %s", e)
         await ensure_messages_media_columns(engine)
@@ -352,9 +359,19 @@ async def ensure_conversations_columns(engine: AsyncEngine) -> None:
             if "closed_at" not in columns:
                 await conn.execute(text("ALTER TABLE conversations ADD COLUMN closed_at DATETIME"))
                 logger.info("[MIGRATION] Added conversations.closed_at")
+            # Sorun 4 (Grup/Arsiv ayrimi): kalici metadata sütunları.
+            if "is_group" not in columns:
+                await conn.execute(text("ALTER TABLE conversations ADD COLUMN is_group BOOLEAN NOT NULL DEFAULT 0"))
+                logger.info("[MIGRATION] Added conversations.is_group")
+            if "is_archived" not in columns:
+                await conn.execute(text("ALTER TABLE conversations ADD COLUMN is_archived BOOLEAN NOT NULL DEFAULT 0"))
+                logger.info("[MIGRATION] Added conversations.is_archived")
 
         # Ensure generic conversation indexes
         await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_conv_user_contact ON conversations (user_id, contact_id)"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_conversations_is_group ON conversations (is_group)"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_conversations_is_archived ON conversations (is_archived)"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_conv_user_group_archived ON conversations (user_id, is_group, is_archived)"))
 
     await ensure_messages_media_columns(engine)
 

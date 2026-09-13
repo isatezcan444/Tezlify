@@ -27,7 +27,7 @@ from backend.app.api.v1.websocket import ConnectionManager
 from backend.app.core.database import AsyncSessionLocal
 from backend.app.models.whatsapp_session import WhatsAppSession, SessionStatus
 from backend.app.models.contact import Contact
-from backend.app.models.conversation import Conversation
+from backend.app.models.conversation import Conversation, ConversationStatus
 from backend.app.models.message import Message
 from backend.app.schemas.whatsapp import WhatsAppSyncJobResponse
 from backend.app.services import whatsapp_service as ws
@@ -166,20 +166,40 @@ def _msg(jid: str, wa: str, body: str = "mesaj", direction: str = "INBOUND",
             "recipient_phone": "ME", "created_at": ts}
 
 
-def _fake_bulk(all_msgs: List[Dict[str, Any]], data_delay: float = 0.0):
+def _fake_bulk(all_msgs: List[Dict[str, Any]], data_delay: float = 0.0,
+               apply_per_chat: bool = False):
     """limit=1 → probe; aksi halde offset/limit sayfalamasi. P0.13: `since`
-    (epoch sn) verildiginde gercek gateway gibi created_at filtresi uygular."""
-    async def _bulk(limit: int = 1000, offset: int = 0, since=None):
+    (epoch sn) verildiginde gercek gateway gibi created_at filtresi uygular.
+    Sorun 1: `apply_per_chat=True` ise gateway `perChatLimit`'i DESTEKLIYOR
+    demektir ve sohbet basina yalnizca EN YENI N mesaj dondurulur (created_at
+    kronolojisine gore). Varsayilan False = kap'i desteklemeyen gateway
+    (eski/generic senaryo): service gelen kume neyse onu sayfalar."""
+    async def _bulk(limit: int = 1000, offset: int = 0, since=None,
+                    per_chat_limit=None):
         if limit == 1:
             return {"messages": [], "total": len(all_msgs), "offset": 0, "limit": 1}
         if data_delay:
             await asyncio.sleep(data_delay)
+        from datetime import datetime, timezone
+
+        def _ts(m):
+            return datetime.fromisoformat(str(m["created_at"]).replace("Z", "+00:00"))
+
         pool = all_msgs
         if since is not None:
-            from datetime import datetime, timezone
-            pool = [m for m in all_msgs
-                    if datetime.fromisoformat(str(m["created_at"]).replace("Z", "+00:00"))
-                    .timestamp() >= since]
+            pool = [m for m in pool if _ts(m).timestamp() >= since]
+        if apply_per_chat and per_chat_limit is not None and per_chat_limit > 0:
+            # Gercek gateway semantigi: sohbet ici en yeni N.
+            by_chat: Dict[str, List[Dict[str, Any]]] = {}
+            for m in pool:
+                key = str(m.get("conversation_id") or "")
+                by_chat.setdefault(key, []).append(m)
+            kept: List[Dict[str, Any]] = []
+            for group in by_chat.values():
+                group = sorted(group, key=_ts)
+                kept.extend(group[-int(per_chat_limit):])
+            kept = sorted(kept, key=_ts)
+            pool = kept
         return {"messages": pool[offset:offset + limit], "total": len(pool),
                 "offset": offset, "limit": limit}
     return _bulk
@@ -503,7 +523,8 @@ async def test_11_session_delete_cancels_running_job(auth_headers, mock_gateway,
     release = asyncio.Event()
     calls: List[Dict[str, Any]] = []
 
-    async def _hanging_bulk(limit: int = 1000, offset: int = 0, since=None):
+    async def _hanging_bulk(limit: int = 1000, offset: int = 0, since=None,
+                            per_chat_limit=None):
         if limit == 1:
             return {"messages": [], "total": 1, "offset": 0, "limit": 1}
         calls.append({"limit": limit, "offset": offset})
@@ -1062,3 +1083,259 @@ async def test_33_lazy_hydration_on_open_before_job(mock_gateway, events):
         conv2 = (await db.execute(select(Conversation).where(
             Conversation.id == cid))).scalar_one()
     assert conv2.last_message_at is not None
+
+
+# ---------------------------------------------------------------------------
+# 5 kritik bug-fix regresyon testleri (Issue 1, 4, 5 + keyset sayfalamasi)
+# ---------------------------------------------------------------------------
+
+GROUP_JID = "120363012345678901@g.us"
+
+
+def _msg_series(jid: str, n: int, start_min: int = 0) -> List[Dict[str, Any]]:
+    """n mesajlik artan zaman damgali seri: 2025-01-15T00:MM:00Z."""
+    return [
+        _msg(jid, f"wamid_s{i}", body=f"m{i:02d}",
+             ts=f"2025-01-15T00:{i:02d}:00.000Z")
+        for i in range(start_min, start_min + n)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_34_initial_sync_limits_per_chat_history(mock_gateway, events):
+    """Sorun 1: initial-sync bulk cagrisi sohbet basina en yeni
+    _SYNC_PER_CHAT_LIMIT mesajla sinirli — 60 mesajlik sohbetin yalnizca
+    en yeni 50'si DB'ye yazilir; gerisi lazy hydration ile tamamlanir."""
+    assert ws._SYNC_PER_CHAT_LIMIT == 50
+    mock_gateway.list_conversations.return_value = {
+        "items": [_chat(MOCK_JID, "Buyuk Sohbet")], "total": 1}
+    mock_gateway.list_all_messages.side_effect = _fake_bulk(
+        _msg_series(MOCK_JID, 60), apply_per_chat=True)
+
+    job = await ws.request_sync(None, TEST_USER)
+    await job.done.wait()
+    assert job.state == "COMPLETED", job.error
+
+    real_calls = [c for c in mock_gateway.list_all_messages.call_args_list
+                  if c.kwargs.get("limit") != 1]
+    assert real_calls, "bulk kanali hic kullanilmadi"
+    for c in real_calls:
+        assert c.kwargs.get("per_chat_limit") == ws._SYNC_PER_CHAT_LIMIT
+
+    async with AsyncSessionLocal() as db:
+        n = (await db.execute(select(func.count()).select_from(Message).where(
+            Message.user_id == TEST_USER))).scalar()
+    assert n == 50
+    # Yazilanlar EN YENI 50 olmali (m10..m59), en eskiler (m00..m09) disarida.
+    async with AsyncSessionLocal() as db:
+        bodies = {r[0] for r in (await db.execute(
+            select(Message.body).where(Message.user_id == TEST_USER))).all()}
+    assert "m00" not in bodies and "m09" not in bodies
+    assert "m10" in bodies and "m59" in bodies
+
+
+@pytest.mark.asyncio
+async def test_35_no_utcnow_fabrication_stale_preview_cannot_overwrite(mock_gateway, events):
+    """Sorun 5: `gw_ts or utcnow()` uydurmasi kaldirildi — zamansiz gateway
+    preview'i last_message_at'i 'simdi'ye kilitleyemez; DB'deki deger GERCEK
+    mesaj zaman damgasidir ve sonraki bayat (ts'siz) preview onu ezemez."""
+    from datetime import datetime, timezone
+
+    mock_gateway.list_conversations.return_value = {
+        "items": [_chat(MOCK_JID, "Zamansiz", preview="Selam", ts=None)], "total": 1}
+    mock_gateway.list_all_messages.side_effect = _fake_bulk([
+        _msg(MOCK_JID, "wamid_t1", "Ilk", ts="2025-01-15T09:00:00.000Z"),
+        _msg(MOCK_JID, "wamid_t2", "Ikinci", ts="2025-01-15T10:00:00.000Z"),
+    ])
+    job = await ws.request_sync(None, TEST_USER)
+    await job.done.wait()
+    assert job.state == "COMPLETED", job.error
+
+    async with AsyncSessionLocal() as db:
+        conv = (await db.execute(select(Conversation).where(
+            Conversation.user_id == TEST_USER,
+            Conversation.channel == "WHATSAPP"))).scalar_one()
+        expected = datetime(2025, 1, 15, 10, 0, tzinfo=timezone.utc).replace(tzinfo=None)
+        assert conv.last_message_at == expected, (
+            f"last_message_at sentezlenmemeliydi: {conv.last_message_at}")
+        assert conv.last_message_preview and "Ikinci" in conv.last_message_preview
+
+    # Ikinci job: ayni sohbet, ts'siz BAYAT preview — mevcut ozeti EZMEMELI.
+    mock_gateway.list_conversations.return_value = {
+        "items": [_chat(MOCK_JID, "Zamansiz", preview="Bayat ozet", ts=None)], "total": 1}
+    mock_gateway.list_all_messages.side_effect = _fake_bulk([])
+    job2 = await ws.request_sync(None, TEST_USER)
+    await job2.done.wait()
+    assert job2.state == "COMPLETED", job2.error
+    async with AsyncSessionLocal() as db:
+        conv2 = (await db.execute(select(Conversation).where(
+            Conversation.id == conv.id))).scalar_one()
+        assert "Bayat" not in (conv2.last_message_preview or "")
+        assert conv2.last_message_at == expected
+
+
+@pytest.mark.asyncio
+async def test_36_group_archived_persisted_and_filterable(mock_gateway, events):
+    """Sorun 4: is_group/is_archived snapshot'tan kalici yazilir;
+    group_only / archived_only sunucu tarafi filtreleri calisir (archived_only
+    WhatsApp arsivi VEYA CRM status=ARCHIVED'i kapsar)."""
+    mock_gateway.list_conversations.return_value = {
+        "items": [
+            {**_chat(GROUP_JID, "Tim Grubu"), "archived": True},
+            {**_chat(MOCK_JID, "Alici"), "archived": False},
+        ], "total": 2}
+    job = await ws.request_sync(None, TEST_USER)
+    await job.done.wait()
+    assert job.state == "COMPLETED", job.error
+
+    async with AsyncSessionLocal() as db:
+        rows = (await db.execute(select(Conversation).where(
+            Conversation.user_id == TEST_USER,
+            Conversation.channel == "WHATSAPP"))).scalars().all()
+        by_group = {c.is_group: c for c in rows}
+        assert set(by_group.keys()) == {True, False}
+        assert by_group[True].is_archived is True   # grup + arsiv
+        assert by_group[False].is_archived is False
+        # CRM arsivi ayri bir aksiyon: status=ARCHIVED olan ozel sohbet de
+        # archived_only kumesine girmeli (or_ semantigi).
+        priv = by_group[False]
+        priv.status = ConversationStatus.ARCHIVED
+        await db.commit()
+        priv_id, group_id = priv.id, by_group[True].id
+
+        res_all, total_all = await ws.list_conversations(db, TEST_USER)
+        assert total_all == 2
+        item_by_id = {i["id"]: i for i in res_all}
+        assert item_by_id[group_id]["is_group"] is True
+        assert item_by_id[group_id]["is_archived"] is True
+        assert item_by_id[priv_id]["is_archived"] is False  # WhatsApp arsivi degil
+
+        res_g, tg = await ws.list_conversations(db, TEST_USER, group_only=True)
+        assert tg == 1 and res_g[0]["id"] == group_id
+
+        res_a, ta = await ws.list_conversations(db, TEST_USER, archived_only=True)
+        assert ta == 2  # biri WhatsApp arsivi, biri CRM ARCHIVED
+        res_ag, tag = await ws.list_conversations(
+            db, TEST_USER, group_only=True, archived_only=True)
+        assert tag == 1 and res_ag[0]["id"] == group_id  # kesisim
+
+
+@pytest.mark.asyncio
+async def test_37_conversation_updated_archived_flag_persisted(mock_gateway, events):
+    """Sorun 4 (realtime): conversation_updated'de `archived` alan varsa
+    kalici yazilir; gateway alani GONDERMIYORSA (eski gateway) mevcut deger
+    korunur — varsayimla sifirlanmaz."""
+    async with AsyncSessionLocal() as db:
+        db.add(WhatsAppSession(
+            user_id=TEST_USER, gateway_id="gw-arch", session_name="arch",
+            status=SessionStatus.CONNECTED))
+        await db.commit()
+
+    async with AsyncSessionLocal() as db:
+        await ws._map_conversation_event(db, {
+            "event": "conversation_updated",
+            "conversation_id": MOCK_JID,
+            "conversation": {"id": MOCK_JID, "name": "Kisi", "archived": True},
+        })
+    async with AsyncSessionLocal() as db:
+        conv = (await db.execute(select(Conversation).where(
+            Conversation.user_id == TEST_USER,
+            Conversation.channel == "WHATSAPP"))).scalar_one()
+        assert conv.is_archived is True
+        assert conv.is_group is False
+        cid = conv.id
+
+    # Eski gateway semasi: payload'da `archived` HIC yok → deger korunmali.
+    async with AsyncSessionLocal() as db:
+        await ws._map_conversation_event(db, {
+            "event": "conversation_updated",
+            "conversation_id": MOCK_JID,
+            "conversation": {"id": MOCK_JID, "name": "Kisi 2"},
+        })
+    async with AsyncSessionLocal() as db:
+        conv2 = (await db.execute(select(Conversation).where(
+            Conversation.id == cid))).scalar_one()
+        assert conv2.is_archived is True
+
+    # Acik `archived: false` (arsivden cikarma) → guncellenir.
+    async with AsyncSessionLocal() as db:
+        await ws._map_conversation_event(db, {
+            "event": "conversation_updated",
+            "conversation_id": MOCK_JID,
+            "conversation": {"id": MOCK_JID, "archived": False},
+        })
+    async with AsyncSessionLocal() as db:
+        conv3 = (await db.execute(select(Conversation).where(
+            Conversation.id == cid))).scalar_one()
+        assert conv3.is_archived is False
+
+
+@pytest.mark.asyncio
+async def test_38_lazy_hydration_older_history_keyset_ordering(mock_gateway, events):
+    """Sorun 1 + Sorun 2 (kaydirma): initial sync yalnizca en yeni 50'yi
+    yazdiktan sonra kullanici yukari kaydirirsa kalan 10 eski mesaj gateway'den
+    sucut tabanli (EN ESKI gercek ts, ms) tamamlanir. Kritik regresyon: bu
+    eski mesajlar DAHA BUYUK auto-increment id alir — cikis sirasi id degil
+    ZAMAN DAMGASI ile verilmeli (keyset sayfalamasi)."""
+    from datetime import datetime, timezone
+
+    mock_gateway.list_conversations.return_value = {
+        "items": [_chat(MOCK_JID, "Kaydirma")], "total": 1}
+    all_msgs = _msg_series(MOCK_JID, 60)
+    mock_gateway.list_all_messages.side_effect = _fake_bulk(
+        all_msgs, apply_per_chat=True)
+    job = await ws.request_sync(None, TEST_USER)
+    await job.done.wait()
+    assert job.state == "COMPLETED", job.error
+
+    async with AsyncSessionLocal() as db:
+        conv = (await db.execute(select(Conversation).where(
+            Conversation.user_id == TEST_USER,
+            Conversation.channel == "WHATSAPP"))).scalar_one()
+        cid = conv.id
+
+    # Gercek gateway semasi: `before` (ms) altindaki kayitlar doner.
+    def _ms(ts: str) -> int:
+        return int(datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp() * 1000)
+
+    async def _gw_get(jid, limit: int = 50, before=None):
+        pool = [m for m in all_msgs
+                if _ms(m["created_at"]) < before] if before is not None else all_msgs
+        pool = sorted(pool, key=lambda m: _ms(m["created_at"]))[-int(limit):] \
+            if before is None else sorted(pool, key=lambda m: _ms(m["created_at"]))
+        return {"messages": pool, "has_more": False}
+
+    mock_gateway.get_messages.side_effect = _gw_get
+
+    # Sayfa 1: DB'de 50 mesaj var, limit 50 → hydration TETIKLENMEZ.
+    async with AsyncSessionLocal() as db:
+        p1 = await ws.get_messages(db, TEST_USER, cid, limit=50)
+    assert len(p1["messages"]) == 50
+    assert p1["messages"][0]["body"] == "m10" and p1["messages"][-1]["body"] == "m59"
+    mock_gateway.get_messages.assert_not_called()
+
+    # Sayfa 2: en eski (m10) id'siyle kaydir → sucut = m10'un GERCEK ts'i.
+    async with AsyncSessionLocal() as db:
+        p2 = await ws.get_messages(db, TEST_USER, cid, limit=50,
+                                   before=p1["oldest_message_id"])
+    expected_cursor = _ms("2025-01-15T00:10:00.000Z")
+    called_before = mock_gateway.get_messages.call_args.kwargs.get("before")
+    assert called_before == expected_cursor, (
+        f"sucuk uydurulmamali: {called_before} != {expected_cursor}")
+    bodies2 = [m["body"] for m in p2["messages"]]
+    assert bodies2 == [f"m{i:02d}" for i in range(10)]  # kronolojik, eksiksiz
+
+    # KRITIK: eski mesajlar yeni id'lerle INSERT edildi → tum liste yine
+    # zaman damgasi sirali olmali (id sayisi olsaydi m00..m09 en sonda olurdu).
+    async with AsyncSessionLocal() as db:
+        full = await ws.get_messages(db, TEST_USER, cid, limit=100)
+    bodies = [m["body"] for m in full["messages"]]
+    assert bodies == [f"m{i:02d}" for i in range(60)]
+    ids = [m["id"] for m in full["messages"]]
+    assert ids != sorted(ids), "60 mesaj id sirali donerse keyset testi anlamini yitirir"
+
+    # Idempotency: tekrar kaydirma duplicate yazmaz.
+    async with AsyncSessionLocal() as db:
+        n = (await db.execute(select(func.count()).select_from(Message).where(
+            Message.conversation_id == cid))).scalar()
+    assert n == 60

@@ -185,15 +185,18 @@ app.post('/conversations/sync-groups', async (req, res) => {
 
 // Faz 10 (P5): toplu gecmis kanali — backend initial-sync job'i sohbet basina
 // ayri ayri HTTP turu atmak icin bunu kullaniir (deterministik offset sayfalama).
+// Sorun 1: `perChatLimit` verildiginde her sohbet icin yalnizca en yeni N mesaj
+// dondurulur — ilk senkronun maliyetini sinirlar; gecmis lazy hydration ile gelir.
 app.get('/messages/bulk', (req, res) => {
   try {
-    const { limit, offset, since } = req.query;
+    const { limit, offset, since, perChatLimit } = req.query;
     res.json(sessionManager.listAllMessages({
       limit: limit ? parseInt(limit, 10) : 1000,
       offset: offset ? parseInt(offset, 10) : 0,
       // Faz 6 (P0.13): opsiyonel delta suucusu (epoch saniye). Eski backend
       // gondermezse undefined kalir → tam gecmis (geriye donuk uyumlu).
       since: since !== undefined && since !== '' ? parseInt(since, 10) : null,
+      perChatLimit: perChatLimit !== undefined && perChatLimit !== '' ? parseInt(perChatLimit, 10) : null,
     }));
   } catch (err) {
     res.status(500).json({ error: err.message });
