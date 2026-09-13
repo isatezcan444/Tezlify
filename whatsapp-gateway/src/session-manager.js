@@ -9,7 +9,7 @@
  * - Media download & storage
  * - Realtime event emission to the event bridge
  */
-import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, Browsers, downloadMediaMessage, ALL_WA_PATCH_NAMES } from '@whiskeysockets/baileys';
+import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, Browsers, downloadMediaMessage, extractMessageContent, getContentType, ALL_WA_PATCH_NAMES } from '@whiskeysockets/baileys';
 import QRCode from 'qrcode';
 import fs from 'fs';
 import path from 'path';
@@ -37,6 +37,83 @@ const avatarFetchInFlight = new Set();
 const avatarFetchAttemptedAt = new Map(); // jid -> ms timestamp
 const messagesByChat = new Map(); // jid -> Message[]
 const mediaIndex = new Map(); // media_id -> { filePath, mimeType, filename, sizeBytes }
+
+// Sorun (Render log: `failed to decrypt message | err=No session record` /
+// `Bad MAC`): Baileys, sifresi cozulemeyen bir mesaji kurtarmak icin gonderen
+// taraftan YENIDEN GONDERIM (retry receipt) ister — ancak bunun icin
+// `makeWASocket({ getMessage })` saglanmis olmalidir. Saglanmadigi surece
+// Baileys yalnizca log yaziyor ve mesaj KALICI olarak kayboluyordu.
+//
+// Bu harita, gelen mesajin HAM proto icerigini (`msg.message`) sinirli
+// sayida tutar; `getMessage(key)` buradan beslenir. Ham govde tutuldugu icin
+// `messagesByChat` kayitlari DEGISMEZ (onlar normalize edilmis kayitlardir).
+const RAW_MESSAGE_STORE_MAX = 2000;
+const rawMessagesByChat = new Map(); // jid -> Map<waMessageId, proto.IMessage>
+let rawMessageCount = 0;
+
+function rememberRawMessage(jid, id, message) {
+  if (!jid || !id || !message) return;
+  let byId = rawMessagesByChat.get(jid);
+  if (!byId) {
+    byId = new Map();
+    rawMessagesByChat.set(jid, byId);
+  }
+  if (!byId.has(id)) rawMessageCount += 1;
+  byId.set(id, message);
+  // Sinirli bellek: en eski kayitlar FIFO atilir (per-chat 500 mesaj siniriyla
+  // ayni ruh — sinirsiz buyume yok).
+  if (byId.size > 500) {
+    const oldest = byId.keys().next().value;
+    byId.delete(oldest);
+    rawMessageCount -= 1;
+  }
+  while (rawMessageCount > RAW_MESSAGE_STORE_MAX) {
+    const firstChat = rawMessagesByChat.keys().next().value;
+    const firstMap = rawMessagesByChat.get(firstChat);
+    if (!firstMap || firstMap.size === 0) {
+      rawMessagesByChat.delete(firstChat);
+      continue;
+    }
+    const oldest = firstMap.keys().next().value;
+    firstMap.delete(oldest);
+    rawMessageCount -= 1;
+    if (firstMap.size === 0) rawMessagesByChat.delete(firstChat);
+  }
+}
+
+function lookupRawMessage(key) {
+  if (!key?.remoteJid || !key?.id) return undefined;
+  const direct = rawMessagesByChat.get(key.remoteJid)?.get(key.id);
+  if (direct) return direct;
+  // LID ↔ telefon köprüsü: ayni mesaj her iki anahtar altinda da aranir.
+  const alt = key.remoteJid.includes('@lid')
+    ? lidToJid.get(key.remoteJid)
+    : jidToLid.get(key.remoteJid);
+  return alt ? rawMessagesByChat.get(alt)?.get(key.id) : undefined;
+}
+
+// Sorun (Render log: `Failed to store incoming media | err=No message
+// present`): `downloadMediaMessage` TAM WAMessage bekler ve icindeki
+// `message.message` alanini `extractMessageContent` ile kendisi acar
+// (viewOnce / ephemeral / documentWithCaption sarmalayicilari dahil). Bu
+// yardimci ayni cozumlemeyi ONCEDEN yapar; boylece hem indirilebilir medya
+// olup olmadigina karar verilebilir (yoksa `downloadMediaMessage` her
+// cagrida `Boom('No message present')` firlatirdi) hem de mime/dosya adi
+// dogru dugumden okunur. Saf fonksiyon — ag/dosya sistemi erismi yok.
+function resolveDownloadableMedia(messageContent) {
+  const content = extractMessageContent(messageContent);
+  const contentType = content ? getContentType(content) : null;
+  const media = contentType ? content?.[contentType] : null;
+  if (!media || typeof media !== 'object') return null;
+  // Baileys'in KENDI kabul kosulu (Utils/messages.js -> downloadMsg):
+  // medya dugumu `url` VEYA `thumbnailDirectPath` tasimalidir. Yalnizca
+  // "nesne mi" kontrolu yetersizdi — `extendedTextMessage` gibi METIN
+  // paketleri de nesnedir ve indirme denemesi
+  // `"extendedTextMessage" message is not a media message` hatasiyla
+  // duserdi (log gurultusu). Kabul kosulu burada birebir uygulanir.
+  if (!('url' in media) && !('thumbnailDirectPath' in media)) return null;
+  return { contentType, media };
+}
 
 // Baileys/WA ack seviyeleri → WhatsApp Web tik anlamları.
 // proto.WebMessageInfo.Status: 1=SERVER_ACK(✓) 2=DELIVERY_ACK(✓✓) 3=READ(✓✓ mavi) 4=PLAYED
@@ -366,7 +443,7 @@ function sanitizeOutboundEvent(event) {
 // Faz 8: birim testleri icin sanitizasyon yardimcilari disa aktarilir
 // (createSessionManager factory'si ayrica export edilir; index.js ikisini de
 // kullanabilir).
-export { isRawIdentityName, sanitizeChatForEmit, sanitizeOutboundEvent, mergeContactName, NAME_RANK, jidToPhone, isDegenerateJid, resolveSyncState, normalizePreviewText, buildChatPreview, isPhoneLikeName, summarizeWaMessage, classifyMessageType, hasRecognizedContent };
+export { isRawIdentityName, sanitizeChatForEmit, sanitizeOutboundEvent, mergeContactName, NAME_RANK, jidToPhone, isDegenerateJid, resolveSyncState, normalizePreviewText, buildChatPreview, isPhoneLikeName, summarizeWaMessage, classifyMessageType, hasRecognizedContent, resolveDownloadableMedia };
 
 function mergeContactName(existing, name, source) {
   const base = existing || {};
@@ -813,22 +890,44 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       return mediaIndex.get(mediaId)?.filePath || null;
     },
 
-    async storeIncomingMedia(mediaMessage, sock) {
+    async storeIncomingMedia(waMessage, sock) {
       try {
-        const buffer = await downloadMediaMessage(mediaMessage, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
+        // Sorun (Render log: `Failed to store incoming media | err=No message
+        // present`, 5 kez): `downloadMediaMessage` TAM WAMessage bekler —
+        // icindeki `message.message` alanini `extractMessageContent` ile
+        // kendisi acar (viewOnce / ephemeral / documentWithCaption
+        // sarmalayicilari dahil). Once buraya IC medya dugumu
+        // (`msg.message.imageMessage`) veriliyordu; o zaman `message.message`
+        // undefined kaliyor ve Baileys HER seferinde
+        // Boom('No message present') firlatiyordu — medya hic kaydedilmiyordu.
+        const resolved = resolveDownloadableMedia(waMessage?.message);
+        if (!resolved) {
+          // Indirilebilir medya yok: sarmalayici acilamadi ya da mesaj sifresi
+          // cozulemedi (pkmsg / senderKeyDistributionMessage). Beklenen durum —
+          // sessizce YUTULMAZ, nedeni debug seviyesinde loglanir ve cagirana
+          // `null` doner (sahte medya uretilmez, AGENTS.md §1.1).
+          logger.debug(
+            { waMessageId: waMessage?.key?.id },
+            'Medya indirilmedi: indirilebilir icerik bulunamadi'
+          );
+          return null;
+        }
+        const { media } = resolved;
+        const buffer = await downloadMediaMessage(waMessage, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
         if (!buffer) return null;
         const mediaId = uuidv4();
-        const ext = (mediaMessage.mimetype || '').split('/')[1] || 'bin';
-        const filename = mediaMessage.fileName || `media_${mediaId}.${ext}`;
+        const mimeType = media.mimetype || 'application/octet-stream';
+        const ext = (mimeType.split('/')[1] || 'bin').split(';')[0];
+        const filename = media.fileName || `media_${mediaId}.${ext}`;
         const filePath = path.join(mediaDir, `${mediaId}.${ext}`);
         fs.writeFileSync(filePath, buffer);
         mediaIndex.set(mediaId, {
           filePath,
-          mimeType: mediaMessage.mimetype || 'application/octet-stream',
+          mimeType,
           filename,
           sizeBytes: buffer.length,
         });
-        return { media_id: mediaId, mime_type: mediaMessage.mimetype || 'application/octet-stream', filename, size_bytes: buffer.length };
+        return { media_id: mediaId, mime_type: mimeType, filename, size_bytes: buffer.length };
       } catch (err) {
         logger.warn({ err }, 'Failed to store incoming media');
         return null;
@@ -917,6 +1016,13 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       // (hayalet `jid:@lid` sohbeti oluşmasın) — _applyLidMapping öğrendiğinde
       // telefon kimliğiyle yayına verilir.
       const lidHold = isLidJid(key);
+      // Sorun (Render log: `No session record` / `Bad MAC`): ham proto govdeyi
+      // sinirli depoda tut — Baileys sifre cozumleme basarisizliginda
+      // `getMessage` uzerinden buradan okuyup gonderen taraftan yeniden
+      // gonderim ister. Boylece mesaj kalici olarak kaybolmaz.
+      if (msg.key?.id && msg.message) {
+        rememberRawMessage(key, msg.key.id, msg.message);
+      }
       const contact = contacts.get(key);
       const isGroup = jid.includes('@g.us');
       const text = msg.message?.conversation || msg.message?.extendedTextMessage?.text || msg.message?.imageMessage?.caption || msg.message?.videoMessage?.caption || msg.message?.documentMessage?.caption || '';
@@ -925,8 +1031,12 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       const mediaType = classifyMessageType(msg.message);
       let mediaInfo = null;
       if (!fromMe && mediaType !== 'TEXT' && mediaType !== 'LOCATION' && mediaType !== 'CONTACT' && typeof this.storeIncomingMedia === 'function' && sock) {
-        const mediaMessage = msg.message?.imageMessage || msg.message?.documentMessage || msg.message?.audioMessage || msg.message?.videoMessage || msg.message?.stickerMessage;
-        mediaInfo = await this.storeIncomingMedia(mediaMessage, sock);
+        // Sorun: burada IC medya dugumu (`msg.message.imageMessage`) gecilirdi;
+        // `downloadMediaMessage` TAM WAMessage bekledigi icin her cagri
+        // Boom('No message present') ile dusuyordu. Tam mesaj gecilir —
+        // sarmalayici cozumu (viewOnce/ephemeral/documentWithCaption) ve
+        // "medya yok" karari artik `storeIncomingMedia` icinde verilir.
+        mediaInfo = await this.storeIncomingMedia(msg, sock);
       }
       const record = {
         id: Date.now() + Math.floor(Math.random() * 1000),
@@ -1402,6 +1512,12 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
         // Ek sinir: gateway bellekte sohbet basina en yeni 500 mesaji tutar
         // (§1708), backend ise `_SYNC_PER_CHAT_LIMIT = 50` ile cekiyor.
         shouldSyncHistoryMessage: () => true,
+        // Sorun (Render log: `failed to decrypt message | err=No session record`
+        // ve `Bad MAC`): Baileys sifre cozumleme basarisiz oldugunda, mesajin
+        // yeniden gonderilmesini isteyebilmek icin `getMessage`e ihtiyac duyar.
+        // Verilmedigi surece yalnizca log yazip mesaji KAYBEDIYORDU. Ham proto
+        // govdeler sinirli `rawMessagesByChat` depounda tutulur (yukarida).
+        getMessage: async (key) => lookupRawMessage(key),
       });
 
       session.sock = sock;
@@ -1531,6 +1647,20 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
           const statusCode = lastDisconnect?.error?.output?.statusCode;
           const isLoggedOut = statusCode === DisconnectReason.loggedOut;
           const isBanned = statusCode === DisconnectReason.badSession;
+          // Sorun (Render log: `stream errored out | tag=stream:error code=515`):
+          // 515 = `restartRequired`. Bu bir HATA DEGIL, eslesme sonrasi
+          // WhatsApp'in beklenen "soketi yeniden kur" sinyalidir. Eskiden
+          // asagidaki gecici-kopma dalina dusuyor, `_connFailures` sayacini
+          // artiriyor ve 3 denemede `WA_CONNECTION_TERMINATED` sahte hatasi
+          // uretebiliyordu. Artik sayilmaz, gecikmesiz yeniden baglanilir.
+          if (statusCode === DisconnectReason.restartRequired) {
+            session.status = 'CONNECTING';
+            session.is_phone_online = false;
+            session.updated_at = new Date().toISOString();
+            logger.info({ id }, 'Baileys restartRequired (515) — soket hemen yeniden kuruluyor');
+            setTimeout(() => this._connectSocket(id), 500);
+            return;
+          }
           if (isLoggedOut || isBanned) {
             session.status = isBanned ? 'BANNED' : 'DISCONNECTED';
             session.is_active = false;
@@ -1812,6 +1942,9 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
             if (msg.key?.senderLid && msg.key?.senderPn) this._applyLidMapping(msg.key.senderLid, msg.key.senderPn);
             if (msg.message?.protocolMessage) continue; // revoke/ephemeral vb. — atla
             const key = normalizeJid(jid);
+            // Ham govdeyi de sakla — karsi taraf retry istediginde `getMessage`
+            // buradan beslenir (bkz. rawMessagesByChat).
+            if (msg.key.id && msg.message) rememberRawMessage(key, msg.key.id, msg.message);
             const list = messagesByChat.get(key) || [];
             if (msg.key.id && list.some((m) => m.wa_message_id === msg.key.id)) continue;
             const record = this._historyMessageToRecord(msg, key);

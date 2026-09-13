@@ -12,7 +12,7 @@ import re
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Awaitable, Callable, Dict, FrozenSet, List, Optional, Set, Tuple
 
 from sqlalchemy import select, func, or_, delete
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -2338,6 +2338,41 @@ async def _run_initial_sync(owner: str) -> None:
         _initial_sync_inflight.discard(owner)
 
 
+# Faz 13 (düzeltme — Render log regresyonu): Gateway'in bilerek KALICI
+# YAZILMAYAN ama UI'a ULAŞMASI GEREKEN olayları. Bunlar DB'ye yazılmaz
+# (kalıcı yan etkisi yoktur) fakat sahibi KESİN çözülmeden YAYINLANMAZ —
+# aksi halde `ws_manager.broadcast` hedefsiz kalır ve olay diğer tenant'lara
+# sızabilir (AGENTS.md §1.1).
+#
+# `history_sync_completed` (whatsapp-gateway/src/session-manager.js:1876)
+# buradadır: telefonun geçmiş senkronu bittiğinde sohbet listesini ve seçili
+# sohbetin mesajlarını tazelemek için frontend'e
+# (frontend/src/pages/WhatsAppHubPage.tsx:1181) ulaşması ZORUNLUDUR.
+# Bu olay daha önce "bilinmeyen olay" dalına düşüyor, ERROR olarak loglanıyor
+# ve yayınlanmıyordu — UI geçmiş senkronu bitince tazelenmiyordu.
+#
+# NOT: `gateway_connected` (whatsapp-gateway/src/events.js:88) burada YOKTUR:
+# o olay yalnızca gateway'e doğrudan bağlanan istemci soketlerine gönderilir,
+# backend köprüsünden (`/ws/gateway`) HİÇ geçmez.
+_PASSTHROUGH_EVENTS: FrozenSet[str] = frozenset({"history_sync_completed"})
+
+
+async def _passthrough_event(db: AsyncSession, event: Dict[str, Any]) -> Dict[str, Any]:
+    """Kalıcı yazılmayan, yalnızca UI'a yönlendirilen gateway olayı.
+
+    `gateway_session_id` ZORUNLUDUR: sahip bu kimlikten KESİN çözülür. Eksikse
+    olay `_skip_event` ile işaretlenir ve yayınlanmaz — "tek bağlı oturum"
+    tahminine düşülmez, çünkü bu olayın DB'ye yazılacak bir yan etkisi
+    olmadığından sahipsiz yayınlanması yalnızca gereksiz sızıntı riski taşır.
+    """
+    gw_session_id = event.get("gateway_session_id")
+    if not gw_session_id:
+        return _skip_event(event, "passthrough: gateway_session_id yok")
+    owner = await _resolve_event_owner(db, "", str(gw_session_id))
+    event["user_id"] = owner
+    return event
+
+
 def _skip_event(event: Dict[str, Any], reason: str) -> Dict[str, Any]:
     """Kalici yazilmayacak olayi NEDENIYLE isaretle (sessiz yutma yok).
 
@@ -2376,7 +2411,13 @@ async def ingest_gateway_event(event: Dict[str, Any]) -> Optional[Dict[str, Any]
                 result = await _ingest_contact_synced(db, event)
             elif evt == "connection_error" or str(evt).startswith("session_"):
                 result = await _map_session_event(db, event)
+            elif evt in _PASSTHROUGH_EVENTS:
+                # Faz 13 (düzeltme): bilerek persist EDİLMEYEN ama UI'a
+                # ulaşması gereken olaylar (bkz. _PASSTHROUGH_EVENTS).
+                result = await _passthrough_event(db, event)
             else:
+                # Gerçekten bilinmeyen olay: gateway ile backend sözleşmesi
+                # kaymış demektir. Sessizce yutulmaz — fail-closed: yayınlanmaz.
                 logger.error("Bilinmeyen gateway olayi yayinlanmadi (event=%s)", evt)
                 return None
 

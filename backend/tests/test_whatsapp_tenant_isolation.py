@@ -275,6 +275,69 @@ async def test_conversation_event_attaches_resolved_owner():
 
 
 # ===========================================================================
+# 3b) Passthrough olaylar — kalici yazilmaz ama UI'a ULASIR
+# ===========================================================================
+# Render log regresyonu: `history_sync_completed` "bilinmeyen olay" dalina
+# dusup ERROR loglaniyor ve YAYINLANMIYORDU. Oysa gateway onu gecmis senkronu
+# bitince uretir (session-manager.js) ve frontend sohbet listesini tazelemek
+# icin tuketir (WhatsAppHubPage.tsx). Bu testler olayin geri donmesini engeller.
+
+@pytest.mark.asyncio
+async def test_history_sync_completed_is_published_with_owner():
+    """`history_sync_completed` bilinmeyen olay DEGIL — sahibiyle yayinlanir."""
+    gw_id = await _add_session(U1)
+    result = await ws.ingest_gateway_event({
+        "event": "history_sync_completed",
+        "gateway_session_id": gw_id,
+        "progress": 100,
+        "is_latest": True,
+        "chats_synced": 3,
+        "messages_synced": 42,
+    })
+    assert result is not None, "history_sync_completed UI'a ulasmali (regresyon)"
+    assert str(result["user_id"]).replace("-", "") == U1_HEX
+
+
+@pytest.mark.asyncio
+async def test_history_sync_completed_without_gateway_session_is_not_published():
+    """`gateway_session_id` yoksa sahip KESIN cozulemez → yayinlanmaz."""
+    await _add_session(U1)
+    result = await ws.ingest_gateway_event({
+        "event": "history_sync_completed",
+        "progress": 100,
+    })
+    assert result is None, "sahipsiz passthrough olay yayinlanmamali"
+
+
+@pytest.mark.asyncio
+async def test_history_sync_completed_unknown_session_is_not_published():
+    """Bilinmeyen gateway oturumu → tahmin yok, fail-closed."""
+    await _add_session(U1)
+    result = await ws.ingest_gateway_event({
+        "event": "history_sync_completed",
+        "gateway_session_id": "gw-boyle-bir-oturum-yok",
+        "progress": 100,
+    })
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_passthrough_allowlist_contains_only_known_events():
+    """Allowlist dar tutulur — yeni olay sessizce gecmemeli."""
+    assert ws._PASSTHROUGH_EVENTS == frozenset({"history_sync_completed"})
+
+
+@pytest.mark.asyncio
+async def test_genuinely_unknown_event_still_rejected():
+    """Allowlist disindaki olay yine fail-closed (sozlesme kaymasi gorunur)."""
+    gw_id = await _add_session(U1)
+    assert await ws.ingest_gateway_event({
+        "event": "hic_olmayan_bir_olay",
+        "gateway_session_id": gw_id,
+    }) is None
+
+
+# ===========================================================================
 # 4) _apply_last_message — zaman damgasi korumasi
 # ===========================================================================
 

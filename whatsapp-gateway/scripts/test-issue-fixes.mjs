@@ -15,7 +15,7 @@
 import assert from 'node:assert/strict';
 import os from 'node:os';
 import path from 'node:path';
-import { createSessionManager, classifyMessageType, hasRecognizedContent, summarizeWaMessage } from '../src/session-manager.js';
+import { createSessionManager, classifyMessageType, hasRecognizedContent, summarizeWaMessage, resolveDownloadableMedia } from '../src/session-manager.js';
 
 let passed = 0;
 const check = (label, fn) => {
@@ -126,6 +126,60 @@ check('Issue 1: since + perChatLimit compose (delta window first, then newest N)
   const res2 = sm.listAllMessages({ limit: 1000, offset: 0, since: 1, perChatLimit: 3 });
   assert.equal(res2.total, 6);
   void future;
+});
+
+// ---------------------------------------------------------------------------
+// Issue 4 (Render log: "Failed to store incoming media | err=No message
+// present"): `downloadMediaMessage` TAM WAMessage bekler; eskiden IC medya
+// dugumu gecilirdi -> `message.message` undefined -> Boom('No message present')
+// -> medya HIC kaydedilmezdi. `resolveDownloadableMedia` dogru sozlesmeyi
+// uygular ve indirilebilir medya yoksa `null` doner (cagri yapilmaz).
+// ---------------------------------------------------------------------------
+
+check('Issue 4: plain imageMessage resolves as downloadable media', () => {
+  const r = resolveDownloadableMedia({ imageMessage: { mimetype: 'image/jpeg', url: 'https://x/y.enc' } });
+  assert.ok(r, 'duz imageMessage indirilebilir olmali');
+  assert.equal(r.contentType, 'imageMessage');
+  assert.equal(r.media.mimetype, 'image/jpeg');
+});
+
+check('Issue 4: viewOnce wrapper is unwrapped to the inner media node', () => {
+  const r = resolveDownloadableMedia({
+    viewOnceMessageV2: { message: { imageMessage: { mimetype: 'image/png', url: 'https://x/z.enc' } } },
+  });
+  assert.ok(r, 'sarmalayici icindeki medya bulunmali');
+  assert.equal(r.contentType, 'imageMessage');
+  assert.equal(r.media.mimetype, 'image/png');
+});
+
+check('Issue 4: ephemeral + documentWithCaption wrappers unwrap correctly', () => {
+  const eph = resolveDownloadableMedia({
+    ephemeralMessage: { message: { videoMessage: { mimetype: 'video/mp4', url: 'https://x/v.enc' } } },
+  });
+  assert.ok(eph);
+  assert.equal(eph.contentType, 'videoMessage');
+
+  const doc = resolveDownloadableMedia({
+    documentWithCaptionMessage: { message: { documentMessage: { mimetype: 'application/pdf', url: 'https://x/d.enc' } } },
+  });
+  assert.ok(doc);
+  assert.equal(doc.contentType, 'documentMessage');
+});
+
+check('Issue 4: non-media content returns null (no doomed download attempt)', () => {
+  // Duz metin: `conversation` bir STRING'dir, medya dugumu degil.
+  assert.equal(resolveDownloadableMedia({ conversation: 'selam' }), null);
+  assert.equal(resolveDownloadableMedia({ extendedTextMessage: { text: 'alinti' } }), null);
+  // Sifre cozulemeyen / govdesiz stub (pkmsg sonrasi tipik hal).
+  assert.equal(resolveDownloadableMedia({ senderKeyDistributionMessage: { groupId: 'g' } }), null);
+  assert.equal(resolveDownloadableMedia({ protocolMessage: { type: 0 } }), null);
+  assert.equal(resolveDownloadableMedia(undefined), null);
+  assert.equal(resolveDownloadableMedia({}), null);
+});
+
+check('Issue 4: location/contact are not treated as downloadable media', () => {
+  assert.equal(resolveDownloadableMedia({ locationMessage: { degreesLatitude: 1 } }), null);
+  assert.equal(resolveDownloadableMedia({ contactMessage: { displayName: 'A' } }), null);
 });
 
 console.log(`\nPASS: ${passed} issue-fix gateway checks`);

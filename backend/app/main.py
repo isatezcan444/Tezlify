@@ -168,7 +168,18 @@ async def websocket_endpoint(
         except Exception as auth_err:
             logger.warning(f"WebSocket auth failed: {auth_err}")
             if not os.getenv("PYTEST_CURRENT_TEST"):
-                await websocket.close(code=1008)  # Policy violation
+                # Faz 13 (düzeltme — Render log: `WebSocket auth failed: 401`
+                # 55 kez, istemci sonsuz yeniden bağlanma döngüsü):
+                # 1008 kodu istemciye YALNIZCA el sıkışma kabul edildikten
+                # sonra ulaşır. `accept()` çağrılmadan `close()` yapılırsa
+                # ASGI sunucusu el sıkışmayı HTTP 403 ile reddeder ve tarayıcı
+                # `1006` (anormal kapanış) görür — istemci bunun bir YETKİ
+                # reddi olduğunu ayırt edemez, süresi dolmuş token'la yeniden
+                # bağlanmayı sonsuza dek sürdürür ve senkron olayları hiç
+                # ulaşmaz (banner asılı kalır). Bu yüzden önce kabul edilir,
+                # sonra 1008 ile kapatılır.
+                await websocket.accept()
+                await websocket.close(code=1008, reason="Oturum süresi doldu (Session expired)")
                 return
     if not user_id and os.getenv("PYTEST_CURRENT_TEST"):
         user_id = "00000000-0000-0000-0000-000000000001"

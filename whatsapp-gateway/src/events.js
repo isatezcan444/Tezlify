@@ -23,6 +23,27 @@ export function createEventBridge({ backendWsUrl, sessionManager }) {
   let backendSocket = null;
   let reconnectTimer = null;
   let isManuallyClosed = false;
+  // Sorun (Render log): backend yeniden baslarken (redeploy / hibernate) köprü
+  // sabit 3 sn'de bir yeniden baglanmayi deniyordu ve HER denemede
+  // "connect ECONNREFUSED" WARNING'i yaziyordu — tek bir restart 10-20 satir
+  // log uretiyordu. Artik ustel geri cekilme (3s -> 30s cap) + tekrar eden
+  // hatalarda log seyreltme uygulanir. Baglanma davranisi degismez.
+  let connectAttempt = 0;
+
+  const RECONNECT_BASE_MS = 3000;
+  const RECONNECT_MAX_MS = 30000;
+
+  function nextBackoffMs() {
+    const exp = Math.min(RECONNECT_BASE_MS * 2 ** Math.max(0, connectAttempt - 1), RECONNECT_MAX_MS);
+    // %20 jitter — es zamanli yeniden baglanma dalgasini onler.
+    return Math.round(exp * (0.8 + Math.random() * 0.4));
+  }
+
+  function scheduleReconnect() {
+    if (isManuallyClosed) return;
+    if (reconnectTimer) clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(connectToBackend, nextBackoffMs());
+  }
 
   function connectToBackend() {
     if (isManuallyClosed || backendSocket) return;
@@ -32,6 +53,7 @@ export function createEventBridge({ backendWsUrl, sessionManager }) {
 
       ws.on('open', () => {
         console.log('[bridge] Connected to backend WebSocket');
+        connectAttempt = 0; // basarili baglanti sayaci sifirlar
         // Replay buffered events on reconnect (FIFO)
         while (buffer.length > 0) {
           const evt = buffer.shift();
@@ -43,18 +65,27 @@ export function createEventBridge({ backendWsUrl, sessionManager }) {
 
       ws.on('close', () => {
         backendSocket = null;
-        if (!isManuallyClosed) {
-          reconnectTimer = setTimeout(connectToBackend, 3000);
-        }
+        scheduleReconnect();
       });
 
       ws.on('error', (err) => {
-        console.warn('[bridge] Backend WS error:', err.message);
+        connectAttempt += 1;
+        // Ilk denemede ve sonra her 10. denemede gorunur uyari; aradakiler
+        // gurultuyu onlemek icin debug seviyesinde kalir (hata YUTULMAZ —
+        // sayac ve son hata mesaji her zaman loglanir).
+        if (connectAttempt === 1 || connectAttempt % 10 === 0) {
+          console.warn(
+            `[bridge] Backend WS error (deneme=${connectAttempt}): ${err.message}`
+          );
+        } else {
+          console.debug(`[bridge] Backend WS error: ${err.message}`);
+        }
         ws.close();
       });
     } catch (err) {
-      console.warn('[bridge] Backend WS connect failed:', err.message);
-      reconnectTimer = setTimeout(connectToBackend, 3000);
+      connectAttempt += 1;
+      console.warn(`[bridge] Backend WS connect failed (deneme=${connectAttempt}): ${err.message}`);
+      scheduleReconnect();
     }
   }
 

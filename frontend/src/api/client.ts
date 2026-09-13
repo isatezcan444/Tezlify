@@ -648,6 +648,28 @@ export interface ManagedWebSocket {
   readonly socket: WebSocket | null;
 }
 
+// Faz 13 (düzeltme — Render log: `WebSocket auth failed: 401: Oturum süresi
+// doldu` 55 kez): kopan soket sabit 3 sn'de bir, AYNI (süresi dolmuş) token'la
+// yeniden deneniyordu — sonsuz 401 döngüsü. Soket hiç kurulamadığı için
+// `whatsapp_sync_*` olayları UI'a ulaşmıyor ve senkron bandı son değerde
+// asılı kalıyordu. Artık kapanış KODU incelenir; yetki reddinde (1008/4401)
+// önce oturum yenileme denenir, ardından üstel geri çekilmeyle yeniden
+// bağlanılır. Yenileme de başarısızsa döngü durdurulur (sessiz sonsuz deneme
+// yerine görünür uyarı).
+type TokenRefresher = () => Promise<string | null>;
+
+let tokenRefresher: TokenRefresher | null = null;
+
+/** AuthContext, oturum yenileme işlevini buraya kaydeder. */
+export function setTokenRefresher(fn: TokenRefresher | null): void {
+  tokenRefresher = fn;
+}
+
+const WS_BACKOFF_BASE_MS = 1000;
+const WS_BACKOFF_MAX_MS = 30000;
+// Yetki reddi arka arkaya bu kadar denemede sürerse döngü durdurulur.
+const WS_MAX_AUTH_FAILURES = 4;
+
 export function createWebSocket(
   onMessage: (data: any) => void,
   onStatusChange?: (connected: boolean) => void
@@ -655,6 +677,45 @@ export function createWebSocket(
   let ws: WebSocket | null = null;
   let isManuallyClosed = false;
   let reconnectTimeout: any = null;
+  let attempt = 0;
+  let authFailures = 0;
+
+  function backoffMs(): number {
+    const exp = Math.min(WS_BACKOFF_BASE_MS * 2 ** Math.max(0, attempt - 1), WS_BACKOFF_MAX_MS);
+    return Math.round(exp * (0.8 + Math.random() * 0.4));
+  }
+
+  function scheduleReconnect() {
+    if (isManuallyClosed) return;
+    if (reconnectTimeout) clearTimeout(reconnectTimeout);
+    reconnectTimeout = setTimeout(connect, backoffMs());
+  }
+
+  // Yetki reddi: önce oturumu yenile, sonra yeni token'la bağlan.
+  async function handleAuthRejection() {
+    authFailures += 1;
+    if (authFailures > WS_MAX_AUTH_FAILURES) {
+      console.error(
+        `[Tezlify WS] Oturum doğrulanamadı (${authFailures} deneme) — yeniden bağlanma durduruldu. ` +
+          'Lütfen tekrar giriş yapın.'
+      );
+      return;
+    }
+    if (tokenRefresher) {
+      try {
+        const fresh = await tokenRefresher();
+        if (fresh) {
+          currentAuthToken = fresh;
+          attempt = 0;
+          scheduleReconnect();
+          return;
+        }
+      } catch (e) {
+        console.warn('[Tezlify WS] Oturum yenileme başarısız:', e);
+      }
+    }
+    scheduleReconnect();
+  }
 
   function connect() {
     if (isManuallyClosed) return;
@@ -664,6 +725,8 @@ export function createWebSocket(
 
       ws.onopen = () => {
         console.log('[Tezlify WS] Connected to realtime event stream');
+        attempt = 0;
+        authFailures = 0;
         onStatusChange?.(true);
       };
 
@@ -676,13 +739,19 @@ export function createWebSocket(
         }
       };
 
-      ws.onclose = () => {
+      ws.onclose = (event) => {
         onStatusChange?.(false);
-        if (!isManuallyClosed) {
-          reconnectTimeout = setTimeout(() => {
-            connect();
-          }, 3000);
+        if (isManuallyClosed) return;
+        // 1008 = policy violation (sunucu yetkisiz/kimlik doğrulanmamış isteği
+        // kapatır), 4401/4001 = uygulama tanımlı yetki reddi.
+        const authRejected =
+          event?.code === 1008 || event?.code === 4401 || event?.code === 4001;
+        attempt += 1;
+        if (authRejected) {
+          void handleAuthRejection();
+          return;
         }
+        scheduleReconnect();
       };
 
       ws.onerror = (err) => {
@@ -690,9 +759,8 @@ export function createWebSocket(
         ws?.close();
       };
     } catch (e) {
-      if (!isManuallyClosed) {
-        reconnectTimeout = setTimeout(connect, 3000);
-      }
+      attempt += 1;
+      scheduleReconnect();
     }
   }
 

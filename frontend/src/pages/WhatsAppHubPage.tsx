@@ -281,6 +281,13 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   // Faz 11: 4 sn'lik sync=true polling STORM'u kaldirildi. Sync durumu yalnizca
   // WS olaylariyla akir; mount/reconnect sirasinda TEK seferlik GET /sync/job
   // ile devam eden job benimsenir (yeniden indirme YOK, §28 kurtarma).
+  //
+  // Sorun (Render log / "senkron %60'ta takıldı"): backend job kaydı
+  // `_sync_jobs` IN-PROCESS bir sozluktur — container restart/redeploy'da
+  // DUSER ve uç nokta `state: 'IDLE'` dondurur. Bu dal daha once hic ele
+  // alinmiyordu; banner son bilinen degerde (tipik olarak contacts asamasinin
+  // sabit %60'i) SONSUZA asili kaliyordu. Artik job yoksa/IDLE ise senkron
+  // bitmis kabul edilir: banner KAPATILIR ve liste DB gerceginden yuklenir.
   const refreshSyncStatus = useCallback(async () => {
     try {
       const job = await WhatsAppApi.getSyncJob();
@@ -300,6 +307,13 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         setSessionSync((prev) => (prev ? { ...prev, phase: 'ready', progress: 100, stage: 'complete' } : prev));
       } else if (job.state === 'FAILED') {
         setSessionSync({ phase: 'error', stage: job.stage, error: job.error ?? null, progress: 0 });
+      } else {
+        // IDLE ya da taninmayan durum: calisan/bilinen bir job YOK. Bu, isin
+        // bittigi (veya backend'in yeniden basladigi) anlamina gelir — banner
+        // asla asili birakilmaz. `isSyncingChats` de temizlenir.
+        activeSyncIdRef.current = null;
+        setIsSyncingChats(false);
+        setSessionSync((prev) => (prev && prev.phase === 'syncing' ? null : prev));
       }
     } catch (err) {
       // Faz 13: hata MASKELENMEZ — startup'i kirletmeden gorunur loglanir.
@@ -1145,12 +1159,17 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
             chats_synced: eventData.chats_synced ?? prev.chats_synced,
             contacts_synced: eventData.contacts_synced ?? prev.contacts_synced,
             messages_synced: eventData.messages_synced ?? prev.messages_synced,
+            // Sorun: burada eksik alanlar `0`'a dusuyordu (yukaridaki durum
+            // alanlari ise `prev`'e dusuyor). Alanlardan biri gelmezse
+            // computeSyncProgress sifir sayaclarla hesaplanip ilerlemeyi
+            // GERIYE dusuruyordu. Artik `prev`'e dusulur — ilerleme geriye
+            // gitmez, uydurma deger uretilmez.
             progress: computeSyncProgress(
               eventData.stage || prev.stage || 'messages',
-              eventData.chats_synced ?? 0,
-              eventData.contacts_synced ?? 0,
-              eventData.messages_synced ?? 0,
-              eventData.messages_total ?? 0
+              eventData.chats_synced ?? prev.chats_synced ?? 0,
+              eventData.contacts_synced ?? prev.contacts_synced ?? 0,
+              eventData.messages_synced ?? prev.messages_synced ?? 0,
+              eventData.messages_total ?? prev.messages_total ?? 0
             ),
           } : prev));
         } else if (eventData.event === 'whatsapp_sync_complete') {

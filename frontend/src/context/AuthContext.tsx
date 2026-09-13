@@ -2,7 +2,7 @@ import React, { createContext, useContext, useEffect, useState, useCallback } fr
 import { User, Session } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabase';
 import { UserProfile } from '../types';
-import { ApiClient } from '../api/client';
+import { ApiClient, setTokenRefresher } from '../api/client';
 
 interface AuthContextType {
   user: User | null;
@@ -93,6 +93,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, [user, fetchOrCreateProfile]);
 
   useEffect(() => {
+    // Faz 13 (düzeltme): WebSocket yetki reddinde (kapanış kodu 1008) oturumu
+    // yenileyebilmesi için yenileyici buraya kaydedilir. Süresi dolmuş token'la
+    // sonsuz yeniden bağlanma döngüsü (Render log: 55× 401) böylece kırılır.
+    setTokenRefresher(async () => {
+      try {
+        const { data, error } = await supabase.auth.refreshSession();
+        if (error || !data?.session?.access_token) return null;
+        ApiClient.setAuthToken(data.session.access_token);
+        return data.session.access_token;
+      } catch {
+        return null;
+      }
+    });
+
     // 1. Initial Session Check
     supabase.auth.getSession().then(async ({ data: { session: initialSession } }) => {
       setSession(initialSession);
@@ -136,6 +150,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     return () => {
       subscription.unsubscribe();
+      setTokenRefresher(null);
     };
   }, [fetchOrCreateProfile]);
 
