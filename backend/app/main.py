@@ -257,7 +257,7 @@ async def gateway_websocket_endpoint(
 app.include_router(api_router, prefix=settings.API_V1_STR)
 
 
-@app.get("/", tags=["Health"])
+@app.api_route("/", methods=["GET", "HEAD"], tags=["Health"])
 async def root():
     return {
         "status": "ok",
@@ -268,7 +268,7 @@ async def root():
     }
 
 
-@app.get("/health", tags=["Health"])
+@app.api_route("/health", methods=["GET", "HEAD"], tags=["Health"])
 async def health_check():
     # Process RSS via stdlib only (no psutil dependency): lets operators
     # verify the 512 MB Render budget from the outside. ru_maxrss is KiB on

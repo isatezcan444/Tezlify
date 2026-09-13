@@ -76,21 +76,28 @@ export function createEventBridge({ backendWsUrl, sessionManager }) {
 
       ws.on('error', (err) => {
         connectAttempt += 1;
-        // Ilk denemede ve sonra her 10. denemede gorunur uyari; aradakiler
-        // gurultuyu onlemek icin debug seviyesinde kalir (hata YUTULMAZ —
-        // sayac ve son hata mesaji her zaman loglanir).
-        if (connectAttempt === 1 || connectAttempt % 10 === 0) {
+        const isStartupRefused = (err.code === 'ECONNREFUSED' || err.message?.includes('ECONNREFUSED')) && connectAttempt <= 15;
+        if (isStartupRefused) {
+          if (connectAttempt === 1 || connectAttempt % 5 === 0) {
+            console.log(`[bridge] Backend baslatiliyor, baglanti bekleniyor (deneme=${connectAttempt})...`);
+          }
+        } else if (connectAttempt === 1 || connectAttempt % 10 === 0) {
           console.warn(
             `[bridge] Backend WS error (deneme=${connectAttempt}): ${err.message}`
           );
-        } else {
-          console.debug(`[bridge] Backend WS error: ${err.message}`);
         }
         ws.close();
       });
     } catch (err) {
       connectAttempt += 1;
-      console.warn(`[bridge] Backend WS connect failed (deneme=${connectAttempt}): ${err.message}`);
+      const isStartupRefused = (err.code === 'ECONNREFUSED' || err.message?.includes('ECONNREFUSED')) && connectAttempt <= 15;
+      if (isStartupRefused) {
+        if (connectAttempt === 1 || connectAttempt % 5 === 0) {
+          console.log(`[bridge] Backend baslatiliyor, baglanti bekleniyor (deneme=${connectAttempt})...`);
+        }
+      } else {
+        console.warn(`[bridge] Backend WS connect failed (deneme=${connectAttempt}): ${err.message}`);
+      }
       scheduleReconnect();
     }
   }

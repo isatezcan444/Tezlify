@@ -19,6 +19,57 @@ import pino from 'pino';
 
 const logger = pino({ level: process.env.LOG_LEVEL || 'warn' });
 
+/**
+ * Baileys soket loglayıcısı için sarmalayıcı (Proxy).
+ *
+ * WhatsApp multi-device Signal protokolünde yeni oturum açıldığında veya yeniden
+ * bağlanıldığında, cihaz eski anahtarlarla şifrelenmiş paketler ya da @lid mesajları
+ * aldığında Baileys libsignal katmanında 'Bad MAC' ya da 'No matching sessions'
+ * fırlatılır. Baileys bunu `getMessage` üzerinden yeniden talep eder (retry receipt).
+ * Bu olağan el sıkışma döngüleri ile 'init queries' zaman aşımları ve akış kopmaları
+ * Pino level 50 (hata) yerine level 40 (uyarı) olarak yapılandırılmış formatta loglanır;
+ * böylece sahte 500 ve alarm üretilmezken gerçek hatalar level 50'de korunur.
+ */
+function createBaileysLogger(baseLogger) {
+  return new Proxy(baseLogger, {
+    get(target, prop, receiver) {
+      if (prop === 'error') {
+        return function (obj, msg, ...args) {
+          const msgStr = typeof obj === 'string' ? obj : (msg || '');
+          const isHandshakeRetry =
+            msgStr.includes('failed to decrypt message') ||
+            msgStr.includes("unexpected error in 'init queries'") ||
+            msgStr.includes('stream errored out') ||
+            msgStr.includes('error in handling message') ||
+            (typeof obj === 'object' && obj?.err?.message && (
+              obj.err.message.includes('Bad MAC') ||
+              obj.err.message.includes('No matching sessions') ||
+              obj.err.message.includes('Timed Out')
+            ));
+
+          if (isHandshakeRetry) {
+            const errSummary = typeof obj === 'object' && obj !== null ? (obj.err?.message || obj.msg || msgStr) : msgStr;
+            const remoteJid = typeof obj === 'object' && obj !== null ? (obj.key?.remoteJid || '') : '';
+            return target.warn(
+              { key: remoteJid ? { remoteJid } : undefined, err: errSummary },
+              `[baileys-handshake] ${msgStr || errSummary}`
+            );
+          }
+          return target.error(obj, msg, ...args);
+        };
+      }
+      if (prop === 'child') {
+        return function (bindings) {
+          const childLogger = target.child(bindings);
+          return createBaileysLogger(childLogger);
+        };
+      }
+      const val = Reflect.get(target, prop, receiver);
+      return typeof val === 'function' ? val.bind(target) : val;
+    }
+  });
+}
+
 // ---------------------------------------------------------------------------
 // In-memory stores
 //
@@ -1600,7 +1651,7 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       const { version } = await fetchLatestBaileysVersion();
       const sock = makeWASocket({
         version,
-        logger,
+        logger: createBaileysLogger(logger),
         browser: Browsers.macOS('Desktop'),
         auth: state,
         markOnlineOnConnect: true,

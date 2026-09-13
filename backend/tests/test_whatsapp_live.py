@@ -96,14 +96,14 @@ async def _cleanup_whatsapp_tables():
     """
     async def _wipe():
         async with AsyncSessionLocal() as db:
-            await db.execute(text("DELETE FROM whatsapp_sessions WHERE user_id IN (:h1, :h2, :l1, :l2)"),
-                             {"h1": TEST_USER_HEX, "h2": SYS_USER_HEX, "l1": "testuserwa", "l2": "system"})
             await db.execute(text("DELETE FROM messages WHERE user_id IN (:h1, :h2, :l1, :l2)"),
                              {"h1": TEST_USER_HEX, "h2": SYS_USER_HEX, "l1": "testuserwa", "l2": "system"})
             await db.execute(
                 text("DELETE FROM conversations WHERE (user_id IN (:h1, :h2, :l1, :l2)) AND channel = 'WHATSAPP'"),
                 {"h1": TEST_USER_HEX, "h2": SYS_USER_HEX, "l1": "testuserwa", "l2": "system"},
             )
+            await db.execute(text("DELETE FROM whatsapp_sessions WHERE user_id IN (:h1, :h2, :l1, :l2)"),
+                             {"h1": TEST_USER_HEX, "h2": SYS_USER_HEX, "l1": "testuserwa", "l2": "system"})
             await db.execute(
                 text("DELETE FROM contacts WHERE (user_id IN (:h1, :h2, :l1, :l2)) AND phone_e164 = :phone"),
                 {"h1": TEST_USER_HEX, "h2": SYS_USER_HEX, "l1": "testuserwa", "l2": "system", "phone": MOCK_PHONE},
