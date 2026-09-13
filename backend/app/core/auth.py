@@ -130,13 +130,15 @@ def verify_and_decode_jwt(token: str) -> dict:
                 detail="Oturum süresi doldu (Session expired)",
                 headers={"WWW-Authenticate": "Bearer"},
             )
-        except pyjwt.PyJWTError as e:
-            logger.warning(f"JWKS imza doğrulaması başarısız: {e}")
+        except pyjwt.InvalidSignatureError as e:
+            logger.warning(f"JWKS geçersiz token imzası: {e}")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail=f"Geçersiz token imzası: {str(e)}",
                 headers={"WWW-Authenticate": "Bearer"},
             )
+        except pyjwt.PyJWTError as e:
+            logger.warning(f"JWKS imza doğrulaması başarısız: {e}")
         except Exception as e:
             logger.warning(f"JWKS anahtar getirme/doğrulama hatası: {e}")
 
