@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Dict, FrozenSet, List, Optional, Set, Tuple
 
 from sqlalchemy import select, func, or_, delete
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.database import AsyncSessionLocal
@@ -980,6 +981,32 @@ async def _ensure_conversation(
     return conv
 
 
+async def _ensure_conversation_race_safe(
+    db: AsyncSession, owner: str, jid_str: str, event: Dict[str, Any]
+) -> Conversation:
+    """`_ensure_conversation` + es-zamanli silme yarisi korumasi.
+
+    Prod (Render log, 19:08:52): `DELETE /sessions/28` purge'u (98 mesaj /
+    116 sohbet / 116 kisi silindi) ile `conversation_updated` ingest'i
+    yaristi — purge, contact SELECT'i ile conversation INSERT'i arasina
+    girip contact satirini sildi ve `conversations_contact_id_fkey`
+    ihlaliyle ingest EXCEPTION + dev traceback ile dustu.
+
+    Tekrar denemeden once tx rollback edilir ve sahip YENIDEN cozulur:
+    oturum da silinmisse `EventOwnerUnresolved` yukselir ve olay duser —
+    silinen veri diriltilmez (WhatsApp Web'de hat silinince diyaloglar
+    geri gelmez). Oturum duruyorsa (es-zamanli cift-ingest unique
+    yarisi) ikinci deneme basarir — gercek mesaj kaybolmaz.
+    """
+    try:
+        return await _ensure_conversation(db, owner, jid_str)
+    except IntegrityError:
+        await db.rollback()
+        fresh_owner = await _resolve_event_owner(db, jid_str, event.get("gateway_session_id"))
+        event["user_id"] = fresh_owner
+        return await _ensure_conversation(db, fresh_owner, jid_str)
+
+
 def _message_row_from_gateway(owner: str, conv: Conversation, msg: Dict[str, Any]) -> Optional[Message]:
     """Gateway mesaj kaydinden Message satiri uretir (INSERT yapmaz).
 
@@ -1035,7 +1062,7 @@ async def _persist_gateway_message(db: AsyncSession, owner: str, msg: Dict[str, 
     if is_broadcast_only_jid(jid_str):
         return False
     wa_id = msg.get("wa_message_id")
-    conv = await _ensure_conversation(db, owner, jid_str)
+    conv = await _ensure_conversation_race_safe(db, owner, jid_str, msg)
     if wa_id:
         existing = await db.execute(
             select(Message).where(Message.wa_message_id == wa_id, Message.conversation_id == conv.id)
@@ -2451,6 +2478,36 @@ def _skip_event(event: Dict[str, Any], reason: str) -> Dict[str, Any]:
     return event
 
 
+# Prod (Render log): silinen gateway oturumunun kuyruktaki/tekrar oynatilan
+# olaylari saniyede ~1 ERROR satiri uretiyordu (3 dk'da 100+ satir). Ilk sinyal
+# + 60 sn'de bir ozet loglanir; aradakiler debug'a duser (hata YUTULMAZ,
+# sayac korunur — log seli degil, log hijyeni).
+_orphan_suppressed: Dict[str, Dict[str, Any]] = {}
+
+
+def _log_orphan_event(evt: str, exc: Exception, gw_session_id: Optional[str]) -> None:
+    key = str(gw_session_id or "-")
+    now = time.monotonic()
+    slot = _orphan_suppressed.get(key)
+    if len(_orphan_suppressed) > 200:
+        _orphan_suppressed.clear()
+    if slot is None:
+        _orphan_suppressed[key] = {"count": 1, "logged_at": now}
+        logger.error("Gateway olayi sahibi cozulemedi, atlandi (event=%s): %s", evt, exc)
+        return
+    slot["count"] = int(slot.get("count") or 0) + 1
+    if now - float(slot.get("logged_at") or 0.0) >= 60.0:
+        logger.error(
+            "Gateway olayi sahibi cozulemedi, atlandi (event=%s, session=%s): %s "
+            "(son 60 sn'de %d olay atlandi)",
+            evt, key, exc, slot["count"],
+        )
+        slot["count"] = 0
+        slot["logged_at"] = now
+    else:
+        logger.debug("Gateway olayi sahibi cozulemedi, atlandi (event=%s): %s", evt, exc)
+
+
 async def ingest_gateway_event(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Gateway olayini persist eder ve UI broadcast'i icin kimlikleri cevirir.
 
@@ -2513,9 +2570,17 @@ async def ingest_gateway_event(event: Dict[str, Any]) -> Optional[Dict[str, Any]
             return result
         except EventOwnerUnresolved as exc:
             # Beklenen fail-closed durumu: olay yanlis tenant'a YAZILMAZ ve
-            # UI'a YAYINLANMAZ. Hata seviyesinde loglanir (sessiz yutma yok).
+            # UI'a YAYINLANMAZ (log seli _log_orphan_event ile kisilir).
             await db.rollback()
-            logger.error("Gateway olayi sahibi cozulemedi, atlandi (event=%s): %s", evt, exc)
+            _log_orphan_event(evt, exc, event.get("gateway_session_id"))
+            return None
+        except IntegrityError as exc:
+            # Emniyet agi: `_ensure_conversation_race_safe` disindaki yazim
+            # yollarinda (mesaj INSERT unique yarisi vb.) tx bozulur — rollback
+            # + tek satirlik uyari, dev traceback seli yok. Olay yayinlanmaz
+            # (persist edilmeyen veri UI'a cikmaz, AGENTS.md §1.1).
+            await db.rollback()
+            logger.warning("Gateway olayi atlandi (DB yarisi, event=%s): %s", evt, exc)
             return None
         except Exception as exc:
             await db.rollback()
@@ -2545,7 +2610,7 @@ async def _ingest_message(db: AsyncSession, event: Dict[str, Any]) -> Dict[str, 
     # halde `ingest_gateway_event` sonundaki "sahipsiz olay yayinlanmaz"
     # kontrolu bu mesaji reddeder ve gercek mesajlar UI'a hic ulasmaz.
     event["user_id"] = owner
-    conv = await _ensure_conversation(db, owner, jid_str)
+    conv = await _ensure_conversation_race_safe(db, owner, jid_str, event)
     # Faz 10 (P1, RC-4): GRUP sohbetlerinde mesajin gonderen adi (pushName —
     # ör. bir üyenin "Ahmet"ı) GRUP contact'ine ASLA yazilmaz; grup adi
     # yalnizca group_subject metadata'sindan guncellenir. (1:1'de mevcut
@@ -2761,7 +2826,7 @@ async def _map_conversation_event(db: AsyncSession, event: Dict[str, Any]) -> Di
         return _skip_event(event, f"{event.get('event')}: dejenere jid ({jid})")
     owner = await _resolve_event_owner(db, str(jid), event.get("gateway_session_id"))
     event["user_id"] = owner  # Faz 13: cozulen sahip olaya yazilir (yayin sinir kontrolu)
-    conv = await _ensure_conversation(db, owner, str(jid))
+    conv = await _ensure_conversation_race_safe(db, owner, str(jid), event)
     event["conversation_id"] = conv.id
     if event.get("event") == "presence_updated":
         # Baileys presence: composing / paused / available / recording ...

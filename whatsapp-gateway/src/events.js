@@ -54,9 +54,15 @@ export function createEventBridge({ backendWsUrl, sessionManager }) {
       ws.on('open', () => {
         console.log('[bridge] Connected to backend WebSocket');
         connectAttempt = 0; // basarili baglanti sayaci sifirlar
-        // Replay buffered events on reconnect (FIFO)
+        // Replay buffered events on reconnect (FIFO). Silinen oturumun
+        // bayat olaylari replay'e girmeden dusurulur — aksi halde backend
+        // her reconnect'te yuzlerce sahipsiz olayla sel olur (Render log).
         while (buffer.length > 0) {
           const evt = buffer.shift();
+          const gwSid = evt && evt.gateway_session_id;
+          if (gwSid && typeof sessionManager.getSession === 'function' && !sessionManager.getSession(gwSid)) {
+            continue;
+          }
           if (backendSocket?.readyState === WebSocket.OPEN) {
             backendSocket.send(JSON.stringify(evt));
           }

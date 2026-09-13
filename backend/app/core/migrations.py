@@ -32,8 +32,10 @@ _WHATSAPP_TABLES = [
 ]
 
 # PostgreSQL'de kaldırılacak WhatsApp enum tipleri
+# NOT: `sessionstatus` listede DEGILDIR — `whatsapp_sessions.status` kolonu
+# yeni gateway semasinda bu tipi HALA kullanir (tablo bilerek korunur) ve
+# DROP TYPE her acilista `DependentObjectsStillExistError` uyarisi veriyordu.
 _WHATSAPP_ENUM_TYPES = [
-    "sessionstatus",
     "whatsappnumberprovider",
     "whatsappnumberstatus",
     "webhookeventstatus",

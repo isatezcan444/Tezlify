@@ -649,6 +649,12 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       session.is_phone_online = false;
       session._pairingPhone = null;
       session._pairingRequestedAt = 0;
+      // Bekleyen history-sync sessizlik zamanlayicisini iptal et — yoksa
+      // logout sonrasi hayalet `session_sync_completed` yayinlanir.
+      if (session._historyQuietTimer) {
+        clearTimeout(session._historyQuietTimer);
+        session._historyQuietTimer = null;
+      }
       session.updated_at = new Date().toISOString();
       // Remove persisted auth state
       const dir = getSessionDir(sessionsDir, id);
@@ -661,6 +667,13 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       const session = sessions.get(id);
       if (session?.sock) {
         try { session.sock.end(undefined); } catch (err) { /* ignore */ }
+      }
+      // Bekleyen history-sync sessizlik zamanlayicisini iptal et — yoksa
+      // silme sonrasi hayalet `session_sync_completed` / `history_sync_completed`
+      // yayinlanir ve backend'de sahipsiz olay seli olur (Render log).
+      if (session?._historyQuietTimer) {
+        try { clearTimeout(session._historyQuietTimer); } catch (err) { /* ignore */ }
+        session._historyQuietTimer = null;
       }
       sessions.delete(id);
       const dir = getSessionDir(sessionsDir, id);
@@ -1569,6 +1582,10 @@ export function createSessionManager({ sessionsDir, mediaDir, aesKey, backendWsU
       const HISTORY_NO_CHUNK_FALLBACK_MS = 45000;
 
       const finalizeHistorySync = (reason) => {
+        // Oturum silindiyse (delete/logout sonrasi ateslenen bayat timer)
+        // hayalet `session_sync_completed` yayinlanmaz — backend'de sahipsiz
+        // olay seli ve takili senkron banner'i uretiyordu.
+        if (!sessions.get(id)) return;
         if (!session.sync || session.sync.phase !== 'syncing') return;
         if (session._historyQuietTimer) {
           clearTimeout(session._historyQuietTimer);

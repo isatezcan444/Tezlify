@@ -516,3 +516,102 @@ def test_apply_last_message_newer_timestamp_wins():
     ws._apply_last_message(conv, datetime(2025, 3, 1, 10, 0, 0), "ILK")
     assert ws._apply_last_message(conv, datetime(2025, 3, 1, 11, 0, 0), "IKINCI") is True
     assert conv.last_message_preview == "IKINCI"
+
+
+# ===========================================================================
+# 5) Es-zamanli silme yarisi — purge vs ingest (prod Render log regresyonu)
+# ===========================================================================
+
+@pytest.mark.asyncio
+async def test_ensure_conversation_race_safe_recovers_when_session_alive():
+    """IntegrityError + oturum duruyorsa: rollback + yeniden cozum + basari.
+
+    Es-zamanli cift-ingest unique yarisi gercek mesaji dusurmemeli.
+    """
+    from unittest.mock import patch as _p
+
+    from sqlalchemy.exc import IntegrityError
+
+    gw_id = await _add_session(U1)
+    event: Dict[str, Any] = {"event": "conversation_updated", "gateway_session_id": gw_id}
+    real = ws._ensure_conversation
+    calls = {"n": 0}
+
+    async def _flaky(db, owner, jid, preview=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise IntegrityError("INSERT INTO conversations", {}, Exception("fk"))
+        return await real(db, owner, jid, preview)
+
+    async with AsyncSessionLocal() as db:
+        with _p.object(ws, "_ensure_conversation", side_effect=_flaky):
+            conv = await ws._ensure_conversation_race_safe(db, U1, REAL_JID, event)
+        assert conv.id is not None
+        assert calls["n"] == 2
+        await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_ensure_conversation_race_safe_drops_when_session_deleted():
+    """IntegrityError + oturum silinmisse: silinen veri DIRILTILMEZ.
+
+    Purge sonrasi hayalet olay duser (WhatsApp Web'de hat silinince
+    diyaloglar geri gelmez).
+    """
+    from sqlalchemy.exc import IntegrityError
+    from sqlalchemy import delete as _delete
+
+    gw_id = await _add_session(U1)
+    event: Dict[str, Any] = {"event": "conversation_updated", "gateway_session_id": gw_id}
+    # Purge'u taklit et: oturum satiri gider.
+    async with AsyncSessionLocal() as db:
+        await db.execute(_delete(WhatsAppSession).where(WhatsAppSession.gateway_id == gw_id))
+        await db.commit()
+
+    async def _boom(db, owner, jid, preview=None):
+        raise IntegrityError("INSERT INTO conversations", {}, Exception("fk"))
+
+    from unittest.mock import patch as _p
+
+    async with AsyncSessionLocal() as db:
+        with _p.object(ws, "_ensure_conversation", side_effect=_boom):
+            with pytest.raises(ws.EventOwnerUnresolved):
+                await ws._ensure_conversation_race_safe(db, U1, REAL_JID, event)
+        await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_ingest_integrity_error_is_single_line_not_traceback():
+    """Emniyet agi: yardimci disindaki IntegrityError tek satirla atlanir."""
+    from unittest.mock import patch as _p
+
+    from sqlalchemy.exc import IntegrityError
+
+    gw_id = await _add_session(U1)
+    event = {
+        "event": "conversation_updated",
+        "gateway_session_id": gw_id,
+        "conversation": {"id": REAL_JID},
+    }
+
+    async def _boom(db, owner, jid, event=None):
+        raise IntegrityError("INSERT INTO conversations", {}, Exception("fk"))
+
+    with _p.object(ws, "_ensure_conversation_race_safe", side_effect=_boom):
+        assert await ws.ingest_gateway_event(event) is None
+
+
+@pytest.mark.asyncio
+async def test_orphan_events_do_not_flood_logs():
+    """Yetim olaylar ilk sinyali korur, tekrarlari kisar (log seli yok)."""
+    gw_id = await _add_session(U1)
+    event = {
+        "event": "contact_synced",
+        "gateway_session_id": "gw-hic-var-olmadi",
+        "contact": {"id": REAL_JID, "name": "Hayalet", "name_source": "history"},
+    }
+    # Ilk cagri ERROR uretir ama duser; sonraki cagrilar da duser (fail-closed).
+    assert await ws.ingest_gateway_event(dict(event)) is None
+    assert await ws.ingest_gateway_event(dict(event)) is None
+    key = "gw-hic-var-olmadi"
+    assert ws._orphan_suppressed.get(key, {}).get("count", 0) >= 2
