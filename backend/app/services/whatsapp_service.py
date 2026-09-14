@@ -211,7 +211,8 @@ def _parse_dt(value: Optional[str]) -> Optional[datetime]:
         return None
     try:
         return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except Exception:
+    except (TypeError, ValueError) as exc:
+        logger.warning("WhatsApp zaman damgasi parse edilemedi (value=%r): %s", value, exc)
         return None
 
 
@@ -742,10 +743,17 @@ async def delete_session(db: AsyncSession, user_id: str, session_id: int) -> Dic
     # §26/§27: oturum silinirken süren initial-sync job'ı iptal edilir — eski
     # gateway oturumuna karsi istek gondermeye devam etmez.
     _cancel_stale_sync_jobs(user_id)
+    gateway_ok = True
+    gateway_error: Optional[str] = None
     try:
         await gw.delete_session(row.gateway_id)
     except Exception as exc:
-        logger.warning("Gateway oturum silinemedi (devam): %s", exc)
+        gateway_ok = False
+        gateway_error = str(exc)[:300]
+        logger.warning(
+            "Gateway oturum silinemedi; yerel veri temizlenecek (user=%s session=%s gateway=%s): %s",
+            user_id, session_id, row.gateway_id, exc,
+        )
     purged = await purge_whatsapp_data(db, user_id, session_id=row.id)
     await db.delete(row)
     await db.commit()
@@ -753,7 +761,10 @@ async def delete_session(db: AsyncSession, user_id: str, session_id: int) -> Dic
         "WhatsApp oturumu silindi (user=%s session=%s): %s eşitleme temizlendi",
         user_id, session_id, purged,
     )
-    return {"success": True, "purged": purged}
+    result: Dict[str, Any] = {"success": gateway_ok, "purged": purged}
+    if gateway_error:
+        result["error"] = gateway_error
+    return result
 # ---------------------------------------------------------------------------
 # Kisiler (contacts)
 # ---------------------------------------------------------------------------
@@ -1507,8 +1518,8 @@ async def list_conversations(
     if status:
         try:
             base = base.where(Conversation.status == ConversationStatus(status))
-        except Exception:
-            pass
+        except ValueError:
+            logger.warning("Gecersiz WhatsApp conversation status filtresi yok sayildi: %r", status)
     if unread_only:
         base = base.where(Conversation.unread_count > 0)
     # Sorun 4 (Grup/Arsiv sekmeleri): kalici sütunlar üzerinden filtre —
@@ -1958,8 +1969,11 @@ async def send_typing(db: AsyncSession, user_id: str, conversation_id: int, typi
     """Karsı tarafa 'yazıyor...' gostermesi gonderir (WhatsApp Web paritesi)."""
     conv, jid = await _resolve_jid(db, user_id, conversation_id)
     gateway_id = await _conversation_gateway_id(db, user_id, conv)
-    await gw.send_typing(gateway_id, jid, typing=typing)
-    return {"success": True}
+    result = await gw.send_typing(gateway_id, jid, typing=typing)
+    return {
+        "success": bool(result.get("success", True)) if isinstance(result, dict) else True,
+        "error": result.get("error") if isinstance(result, dict) else None,
+    }
 
 
 async def get_media_bytes(db: AsyncSession, user_id: str, media_id: str) -> Tuple[bytes, Optional[str], Optional[str]]:
@@ -2117,8 +2131,12 @@ async def _bulk_channel_available(gateway_id: str) -> bool:
     try:
         probe = await gw.list_all_messages(gateway_id, limit=1, offset=0)
         ok = isinstance(probe, dict) and "messages" in probe
-    except Exception:  # noqa: BLE001 — gateway kapali/eski surum: legacy hat
+    except Exception as exc:  # noqa: BLE001 — gateway kapali/eski surum: legacy hat
         ok = False
+        logger.warning(
+            "WhatsApp bulk mesaj kanali kullanilamiyor; legacy sync fallback (gateway=%s): %s",
+            gateway_id, exc,
+        )
     _bulk_channel_cache["ok"] = ok
     _bulk_channel_cache["checked_at"] = now
     return ok
@@ -3204,8 +3222,11 @@ async def _map_conversation_event(db: AsyncSession, event: Dict[str, Any]) -> Di
         try:
             if payload.get("unread_count") is not None:
                 conv.unread_count = max(conv.unread_count or 0, int(payload["unread_count"]))
-        except Exception:
-            pass
+        except (TypeError, ValueError) as exc:
+            logger.warning(
+                "Gateway unread_count gecersiz; mevcut deger korundu (conv=%s value=%r): %s",
+                conv.id, payload.get("unread_count"), exc,
+            )
         await db.commit()
         # Faz 6 (P0.4 / PHASE-28): history sync sirasinda gelen her
         # conversation_updated DB'ye yazildiktan sonra frontend'e "sozlesme

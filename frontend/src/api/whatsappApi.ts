@@ -62,7 +62,11 @@ export async function probeLive(): Promise<boolean> {
   try {
     const res = await authFetch(`${API_BASE}/whatsapp/sessions`, { method: 'GET' });
     liveProbe = { value: res.ok, checkedAt: Date.now() };
-  } catch {
+  } catch (error) {
+    console.warn('[WhatsAppApi] Live probe failed', {
+      endpoint: `${API_BASE}/whatsapp/sessions`,
+      error: error instanceof Error ? error.message : String(error),
+    });
     liveProbe = { value: false, checkedAt: Date.now() };
   }
   return liveProbe.value;
@@ -370,7 +374,10 @@ export const WhatsAppApi = {
   },
 
   async deleteSession(sessionId: number): Promise<void> {
-    await apiSend<{ success: boolean }>(`/whatsapp/sessions/${sessionId}`, 'DELETE');
+    const data = await apiSend<{ success: boolean; error?: string }>(`/whatsapp/sessions/${sessionId}`, 'DELETE');
+    if (!data.success) {
+      throw new WhatsAppApiError(data.error || 'Oturum gateway üzerinden silinemedi.');
+    }
   },
 
   // Faz 7: QR sonrası gerçek initial-sync durumu (gateway Baileys progress).
@@ -553,8 +560,10 @@ export const WhatsAppApi = {
   },
 
   /** Karsı tarafa 'yazıyor...' gostermesi gonderir. */
-  async sendTyping(conversationId: number, typing: boolean = true): Promise<void> {
-    await apiSend<{ success: boolean }>(`/whatsapp/conversations/${conversationId}/typing`, 'POST', { typing });
+  async sendTyping(conversationId: number, typing: boolean = true): Promise<{ success: boolean; error?: string }> {
+    const data = await apiSend<{ success: boolean; error?: string }>(`/whatsapp/conversations/${conversationId}/typing`, 'POST', { typing });
+    if (!data.success) throw new WhatsAppApiError(data.error || 'Yazıyor durumu WhatsApp\'a iletilemedi.');
+    return data;
   },
 
   /**

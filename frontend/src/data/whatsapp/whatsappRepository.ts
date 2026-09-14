@@ -227,13 +227,9 @@ export class WhatsAppRepository {
     return WhatsAppApi.sendMediaFile(conversationId, file, caption, idempotencyKey);
   }
 
-  /** Karsı tarafa 'yazıyor...' göstergesi gönderir (fail-soft: UI gürültüsü). */
+  /** Karsı tarafa 'yazıyor...' göstergesi gönderir; hatayı çağırana taşır. */
   static async sendTyping(conversationId: number, typing: boolean = true): Promise<void> {
-    try {
-      await WhatsAppApi.sendTyping(conversationId, typing);
-    } catch {
-      // Yazıyor göstergesi kritik değildir; sessizce yut.
-    }
+    await WhatsAppApi.sendTyping(conversationId, typing);
   }
 
   static async getTemplates(): Promise<WhatsAppTemplate[]> {

@@ -308,7 +308,18 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         return null;
       });
     } catch (err: any) {
-      console.error('Failed to load conversations:', err);
+      console.warn('[WhatsAppHubPage] Conversation list load failed', {
+        silent: isSilent,
+        filter: convFilter,
+        search: convSearch.trim() || null,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      if (!isSilent) {
+        toastRef.current.error(
+          err?.message || tRef.current('whatsapp.conversationsLoadFailed') || tRef.current('common.error'),
+          tRef.current('common.error'),
+        );
+      }
     } finally {
       if (!isSilent && generation === conversationsGenerationRef.current) setConvsLoading(false);
     }
@@ -449,7 +460,14 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         }
       })
       .catch((err) => {
-        console.error('Failed to fetch messages for conversation', convId, err);
+        console.warn('[WhatsAppHubPage] Conversation messages load failed', {
+          conversation_id: convId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        toastRef.current.error(
+          tRef.current('whatsapp.messagesLoadFailed') || tRef.current('common.error'),
+          tRef.current('common.error'),
+        );
       });
     return () => {
       isMounted = false;
@@ -1902,7 +1920,16 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                   }}
                   onTyping={(typing) => {
                     if (selectedConv) {
-                      WhatsAppRepository.sendTyping(selectedConv.id, typing);
+                      void WhatsAppRepository.sendTyping(selectedConv.id, typing).catch((err) => {
+                        // Typing is background traffic; keep the composer quiet,
+                        // but retain a correlation-rich diagnostic instead of
+                        // dropping the failure.
+                        console.warn('[WhatsAppHubPage] Typing signal failed', {
+                          conversation_id: selectedConv.id,
+                          typing,
+                          error: err instanceof Error ? err.message : String(err),
+                        });
+                      });
                     }
                   }}
                   onSendMedia={async (type, url, caption, filename) => {

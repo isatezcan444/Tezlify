@@ -191,8 +191,13 @@ async def delete_session(
     current_user: AuthUser = Depends(get_current_user),
 ) -> WhatsAppStatusResult:
     try:
-        await whatsapp_service.delete_session(db, current_user.id, session_id)
-        return WhatsAppStatusResult(success=True, message="Oturum silindi", status="DISCONNECTED")
+        result = await whatsapp_service.delete_session(db, current_user.id, session_id)
+        return WhatsAppStatusResult(
+            success=bool(result.get("success")),
+            message="Oturum yerel olarak silindi" if result.get("success") else "Oturum yerel olarak silindi ancak gateway temizlenemedi",
+            status="DISCONNECTED",
+            error=result.get("error"),
+        )
     except NoWhatsAppSession as exc:
         raise _no_session(exc) from exc
     except LookupError as exc:

@@ -154,6 +154,7 @@ class WhatsAppStatusResult(BaseModel):
     success: bool = True
     message: Optional[str] = None
     status: Optional[str] = None
+    error: Optional[str] = None
 
 
 class WhatsAppSyncSessionStatus(BaseModel):

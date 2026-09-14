@@ -1138,6 +1138,7 @@ export function createSessionManager({
         await session.sock.sendPresenceUpdate(typing ? 'composing' : 'paused', key);
       } catch (err) {
         logger.warn({ err }, 'Send typing presence error');
+        return { success: false, error: err?.message || 'Presence update failed' };
       }
       return { success: true };
     },

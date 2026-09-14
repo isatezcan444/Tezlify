@@ -374,6 +374,20 @@ async def test_delete_session_returns_status_field(auth_headers, mock_gateway):
         assert data["status"] == "DISCONNECTED"
 
 
+@pytest.mark.asyncio
+async def test_delete_session_reports_gateway_failure(auth_headers, mock_gateway):
+    """Local cleanup may complete, but a gateway delete failure is explicit."""
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        create_res = await client.post("/api/v1/whatsapp/sessions", json={"name": "Delete Failure"}, headers=auth_headers)
+        session_id = create_res.json()["id"]
+        mock_gateway.delete_session.side_effect = RuntimeError("gateway unavailable")
+        res = await client.delete(f"/api/v1/whatsapp/sessions/{session_id}", headers=auth_headers)
+    assert res.status_code == 200
+    assert res.json()["success"] is False
+    assert "gateway unavailable" in res.json()["error"]
+
+
 # ---------------------------------------------------------------------------
 # Fail-closed tests — gateway unreachable → 502, no false positives
 # ---------------------------------------------------------------------------
@@ -908,6 +922,22 @@ async def test_send_typing_endpoint(auth_headers, mock_gateway):
         assert res.status_code == 200
         assert res.json()["success"] is True
     mock_gateway.send_typing.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_send_typing_endpoint_surfaces_gateway_failure(auth_headers, mock_gateway):
+    """Gateway presence failure must not be reported as success."""
+    conv_id = await _make_conv()
+    mock_gateway.send_typing.return_value = {"success": False, "error": "socket unavailable"}
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        res = await client.post(
+            f"/api/v1/whatsapp/conversations/{conv_id}/typing",
+            json={"typing": True},
+            headers=auth_headers,
+        )
+    assert res.status_code == 200
+    assert res.json() == {"success": False, "error": "socket unavailable"}
 
 
 @pytest.mark.asyncio
