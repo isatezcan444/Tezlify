@@ -982,7 +982,9 @@ async def _ensure_conversations_bulk(
         # event carries a concrete backend session id.
         if session_id is not None:
             filters.append(Conversation.session_id == session_id)
-        res = await db.execute(select(Conversation).where(*filters))
+        res = await db.execute(
+            select(Conversation).where(*filters).order_by(Conversation.id.asc())
+        )
         for conv in res.scalars().all():
             by_contact.setdefault(int(conv.contact_id), conv)
         if session_id is not None:
@@ -1054,7 +1056,9 @@ async def _ensure_conversations_bulk(
         ]
         if session_id is not None:
             filters.append(Conversation.session_id == session_id)
-        res = await db.execute(select(Conversation).where(*filters))
+        res = await db.execute(
+            select(Conversation).where(*filters).order_by(Conversation.id.asc())
+        )
         for c_row in res.scalars().all():
             by_contact[int(c_row.contact_id)] = c_row
         out = []
@@ -1157,7 +1161,7 @@ async def _ensure_conversation(
     ]
     if session_id is not None:
         filters.append(Conversation.session_id == session_id)
-    stmt = select(Conversation).where(*filters)
+    stmt = select(Conversation).where(*filters).order_by(Conversation.id.asc())
     res = await db.execute(stmt)
     matching = list(res.scalars().all())
     conv = matching[0] if matching else None
@@ -1466,7 +1470,7 @@ async def _sync_conversations_impl(db: AsyncSession, user_id: str) -> List[Dict[
             Conversation.channel == "WHATSAPP",
             Conversation.session_id == session_row.id,
             get_user_filter(Conversation.user_id, user_id),
-        )
+        ).order_by(Conversation.id.asc())
         res = await db.execute(stmt)
         matches = list(res.scalars().all())
         conv = matches[0] if matches else None

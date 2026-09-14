@@ -838,7 +838,12 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         eventData.event === 'outbound_message_sent'
       ) {
         const convIdRaw = eventData.conversation_id;
-        const convId = Number.isFinite(Number(convIdRaw)) ? Number(convIdRaw) : null;
+        const convIdNumber = typeof convIdRaw === 'number'
+          ? convIdRaw
+          : typeof convIdRaw === 'string' && convIdRaw.trim() !== ''
+            ? Number(convIdRaw)
+            : NaN;
+        const convId = Number.isInteger(convIdNumber) && convIdNumber > 0 ? convIdNumber : null;
         const rawPhone = eventData.lead_phone || eventData.phone || eventData.recipient_phone || eventData.sender_phone || '';
         const eventDigits = rawPhone.replace(/\D/g, '').slice(-10);
 
