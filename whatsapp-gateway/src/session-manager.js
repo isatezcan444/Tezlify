@@ -1948,6 +1948,16 @@ export function createSessionManager({
         msgRetryCounterCache: retryCounterCacheFor(id),
       });
 
+      if (session.lifecycle.generation !== generation) {
+        diagnostic('stale_socket_attach_rejected', {
+          session_ref: sessionRef(id),
+          generation,
+          current_generation: session.lifecycle.generation,
+        });
+        try { sock.ev?.removeAllListeners(); } catch (err) { /* ignore */ }
+        try { sock.end(undefined); } catch (err) { /* ignore */ }
+        return;
+      }
       const replacedSocket = session.lifecycle.attach(generation, sock);
       if (replacedSocket) {
         diagnostic('socket_owner_replaced', {
@@ -1957,6 +1967,16 @@ export function createSessionManager({
         });
         try { replacedSocket.ev?.removeAllListeners(); } catch (err) { /* ignore */ }
         try { replacedSocket.end(undefined); } catch (err) { /* ignore */ }
+      }
+      if (!session.lifecycle.isCurrent(generation, sock)) {
+        diagnostic('stale_socket_attach_rejected', {
+          session_ref: sessionRef(id),
+          generation,
+          current_generation: session.lifecycle.generation,
+        });
+        try { sock.ev?.removeAllListeners(); } catch (err) { /* ignore */ }
+        try { sock.end(undefined); } catch (err) { /* ignore */ }
+        return;
       }
       session.sock = sock;
       if (leaseRepository) {
@@ -1999,6 +2019,16 @@ export function createSessionManager({
       // isleyicilerinde dis kapsamdaki `emitEvent`i GOLGELER; boylece 20+
       // cagri yerini tek tek degistirmeye gerek kalmaz.
       const emitEvent = (event) => sessionManager._emit({ gateway_session_id: id, ...event });
+      const ignoreStaleSocketEvent = (eventName) => {
+        if (session.lifecycle.isCurrent(generation, sock)) return false;
+        diagnostic('stale_socket_event_ignored', {
+          session_ref: sessionRef(id),
+          generation,
+          current_generation: session.lifecycle.generation,
+          event_name: eventName,
+        });
+        return true;
+      };
       // Sorun (prod: "senkron asla tamamlanmıyor"): RECENT sync'te WhatsApp
       // `isLatest` GONDERMEYEBILIR ve `progress` 100'e hic ulasmayabilir —
       // yalnizca bu iki sinyale bagli tamamlanma mantigi sonsuza dek
@@ -2265,16 +2295,9 @@ export function createSessionManager({
 
       // --- Messages (inbound + phone-sent outbound) ---
       sock.ev.on('messages.upsert', async ({ messages: newMessages, type }) => {
-        if (!session.lifecycle.isCurrent(generation, sock)) {
-          diagnostic('stale_socket_messages_ignored', {
-            session_ref: sessionRef(id),
-            generation,
-            current_generation: session.lifecycle.generation,
-            upsert_type: type || null,
-          });
-          return;
-        }
-        for (const msg of newMessages) {
+        if (ignoreStaleSocketEvent('messages.upsert')) return;
+        for (const msg of newMessages || []) {
+          if (ignoreStaleSocketEvent('messages.upsert')) return;
           try {
             await this._ingestUpsertMessage(msg, sock, id);
           } catch (err) {
@@ -2302,6 +2325,7 @@ export function createSessionManager({
       // contacts.update: Baileys bunu msg.pushName ile yayar (kişinin KENDI
       // profil adi) — rehber adini asla ezmemeli; mergeContactName onceligi korur.
       sock.ev.on('contacts.update', (updates) => {
+        if (ignoreStaleSocketEvent('contacts.update')) return;
         for (const update of updates) {
           // Sorun (prod): Durum (`status@broadcast`) / kanal (`@newsletter`)
           // kisileri rehbere/sohbet listesine karismaz.
@@ -2343,6 +2367,7 @@ export function createSessionManager({
       // JID'iyse dolar). LID anahtarlı kayıtlar eşleşme öğrenilinceye kadar
       // bekletilir, öğrenilince _applyLidMapping telefona taşır.
       sock.ev.on('contacts.upsert', (list) => {
+        if (ignoreStaleSocketEvent('contacts.upsert')) return;
         for (const c of list || []) {
           const rawId = c?.id;
           if (!rawId || !c.name) continue;
@@ -2405,11 +2430,13 @@ export function createSessionManager({
       // --- Faz 6e: LID → telefon eşleşmesi — kişi telefon numarasını
       // paylaştığında WhatsApp bunu lid ile birlikte bildirir; kalıcı eşleme.
       sock.ev.on('chats.phoneNumberShare', ({ lid, jid }) => {
+        if (ignoreStaleSocketEvent('chats.phoneNumberShare')) return;
         if (lid && jid) applyLidMapping(lid, jid);
       });
 
       // --- Chats sync ---
       sock.ev.on('chats.update', (updates) => {
+        if (ignoreStaleSocketEvent('chats.update')) return;
         for (const update of updates) {
           const jid = update.id;
           if (!jid) continue;
@@ -2497,6 +2524,7 @@ export function createSessionManager({
       // yalnizca shouldSyncHistoryMessage ile bildirim kabul edilir.
       // Tamamlanma garantisi (quiet-period + fallback) yukarida tanimli. ---
       sock.ev.on('messaging-history.set', async ({ chats: historyChats, contacts: historyContacts, messages: historyMessages, progress, isLatest, phoneNumberToLidMappings }) => {
+        if (ignoreStaleSocketEvent('messaging-history.set')) return;
         try {
           // Faz 8 (patch): HistorySync.phoneNumberToLidMappings — telefon<->LID
           // ciftleri Baileys tarafindan dusuruluyordu; patch ile gelir.
@@ -2587,7 +2615,10 @@ export function createSessionManager({
               (acc, m) => (acc && Number(acc.id) >= Number(m.id) ? acc : m),
               null,
             );
-            const ts = chat.lastMessageRecvTimestamp || newest?.timestamp_s;
+            const timestampSeconds = Number(chat.lastMessageRecvTimestamp || newest?.timestamp_s);
+            const ts = Number.isFinite(timestampSeconds) && timestampSeconds > 0
+              ? timestampSeconds
+              : null;
             const existing = chats.get(key) || {};
             const merged = {
               ...existing,
@@ -2603,7 +2634,7 @@ export function createSessionManager({
               // arsivli sohbetler buradan gelir.
               archived: chat.archived ?? existing.archived ?? false,
               avatar_url: chat.avatar_url || contact?.avatar_url || existing.avatar_url || null,
-              last_message_at: ts ? new Date(Number(ts) * 1000).toISOString() : (newest?.created_at || existing.last_message_at),
+              last_message_at: ts ? new Date(messageTimestampMs(ts)).toISOString() : (newest?.created_at || existing.last_message_at),
               // Faz 10 (P2): paylasilan kural — tip etiketi + grup gonderen on eki.
               last_message_preview:
                 (newest ? buildChatPreview(newest, key.includes('@g.us')) : '') ||
@@ -2677,6 +2708,7 @@ export function createSessionManager({
       // groups.js self-emit eder; burada chats/contacts Map'lerini group_subject
       // rütbesiyle güncelleyip conversation_updated yayınlarız.
       sock.ev.on('groups.update', (updates) => {
+        if (ignoreStaleSocketEvent('groups.update')) return;
         for (const update of updates || []) {
           const jid = update?.id;
           const subject = typeof update?.subject === 'string' ? update.subject.trim() : '';
@@ -2707,6 +2739,7 @@ export function createSessionManager({
 
       // --- Presence ---
       sock.ev.on('presence.update', ({ id, presences }) => {
+        if (ignoreStaleSocketEvent('presence.update')) return;
         const key = normalizeJid(id);
         const chat = chats.get(key);
         if (chat) {
@@ -2720,6 +2753,7 @@ export function createSessionManager({
       // (fromMe) messages: SERVER_ACK → DELIVERY_ACK → READ. We translate these
       // into message_status_updated events so the backend can persist them.
       sock.ev.on('messages.update', (updates) => {
+        if (ignoreStaleSocketEvent('messages.update')) return;
         for (const { key, update } of updates || []) {
           if (!key?.fromMe || !key?.id) continue;
           const statusNum = update?.status;
