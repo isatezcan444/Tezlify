@@ -26,6 +26,7 @@ check('jidToPhone rejects degenerate 0@s.whatsapp.net (no +0)', () => {
 
 check('jidToPhone keeps valid numbers (regression: name/phone çalışması bozulmadı)', () => {
   assert.equal(jidToPhone('905321002030@s.whatsapp.net'), '+905321002030');
+  assert.equal(jidToPhone('905321002030:12@s.whatsapp.net'), '+905321002030');
   assert.equal(jidToPhone('15556599459@s.whatsapp.net'), '+15556599459');
   assert.equal(jidToPhone('12345@s.whatsapp.net'), '+12345');
   assert.equal(jidToPhone('120363012345678901@g.us'), null);

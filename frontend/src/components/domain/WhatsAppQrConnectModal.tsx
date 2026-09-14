@@ -365,6 +365,13 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
         }
       }
 
+      // 1c. Phone scanned QR / Connection in progress
+      if (detail.event === 'session_connecting' || detail.event_type === 'CONNECTING') {
+        if (modalState === 'QR_READY' || modalState === 'INITIALIZING') {
+          setModalState('CONNECTING');
+        }
+      }
+
       // 2. Session Connected
       if (detail.event === 'session_connected' || detail.event_type === 'CONNECTED') {
         const phone = detail.phone || detail.phone_number;
@@ -412,11 +419,13 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
     };
   }, [isOpen, sessionId, sessionName, modalState, resetCountdown, clearTimers, t, toast]);
 
-  // Gentle Fallback Polling (Every 4 seconds if in INITIALIZING without QR)
+  // Gentle Fallback Polling (Every 2.5 seconds while waiting for pairing/connection)
   useEffect(() => {
     if (!isOpen || !sessionId) return;
 
-    if (modalState === 'INITIALIZING' && !qrCode) {
+    const shouldPoll = modalState === 'INITIALIZING' || modalState === 'QR_READY' || modalState === 'CONNECTING';
+
+    if (shouldPoll) {
       fallbackPollRef.current = setInterval(async () => {
         try {
           const res = await WhatsAppRepository.getSessionQr(sessionId);
@@ -429,11 +438,12 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
             setTimeout(() => {
               if (isMountedRef.current) onClose();
             }, 1500);
-          } else if (res.qr_code) {
+          } else if (res.status === 'CONNECTING') {
+            setModalState('CONNECTING');
+          } else if (res.qr_code && res.qr_code !== qrCode) {
             setQrCode(res.qr_code);
             setModalState('QR_READY');
             resetCountdown();
-            if (fallbackPollRef.current) clearInterval(fallbackPollRef.current);
           } else if (res.error_message) {
             // Gateway failed permanently (e.g. WhatsApp terminated the
             // connection before issuing a QR) — surface the real reason.
@@ -446,7 +456,7 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
         } catch {
           // Silent catch in fallback poll
         }
-      }, 4000);
+      }, 2500);
     } else {
       if (fallbackPollRef.current) {
         clearInterval(fallbackPollRef.current);

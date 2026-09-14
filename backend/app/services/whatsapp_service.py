@@ -3031,10 +3031,15 @@ async def ingest_gateway_event(event: Dict[str, Any]) -> Optional[Dict[str, Any]
             # ayni paylasilmis hattan (sync_conversations) hydrate edilir —
             # QR -> AUTHENTICATED -> INITIAL SYNC -> READY zinciri tek pipeline
             # ile calisir; "Eşitle" (manuel) ile initial sync AYNI kodu kullanir.
-            if evt in ("session_sync_completed", "session_connected"):
+            if evt in ("session_sync_completed", "session_connected", "history_sync_completed"):
                 owner = result.get("user_id")
                 if owner and owner != SYSTEM_USER_ID:
-                    _schedule_initial_sync(str(owner))
+                    if evt == "history_sync_completed":
+                        chats_synced = event.get("chats_synced") or 0
+                        if chats_synced > 0:
+                            _schedule_initial_sync(str(owner))
+                    else:
+                        _schedule_initial_sync(str(owner))
             return result
         except EventOwnerUnresolved as exc:
             # Beklenen fail-closed durumu: olay yanlis tenant'a YAZILMAZ ve
@@ -3514,6 +3519,10 @@ async def _map_session_event(db: AsyncSession, event: Dict[str, Any]) -> Dict[st
     if evt == "connection_error" and err:
         row.error_message = str(err)[:1000]
         row.status = SessionStatus.DISCONNECTED
+        row.is_phone_online = False
+        row.updated_at = datetime.utcnow()
+    elif evt == "session_connecting":
+        row.status = SessionStatus.CONNECTING
         row.is_phone_online = False
         row.updated_at = datetime.utcnow()
     elif evt == "session_connected":

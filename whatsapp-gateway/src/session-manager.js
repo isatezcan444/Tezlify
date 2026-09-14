@@ -319,7 +319,7 @@ function jidToPhone(jid) {
   if (isLidJid(jid)) return null;
   // Faz 8: grup JID'i de telefon DEĞİLDİR — rakamlardan sahte +numara üretilmez.
   if (jid.includes('@g.us')) return null;
-  const match = jid.match(/^(\d+)@/);
+  const match = jid.match(/^(\d+)(?::\d+)?@/);
   if (!match) return null;
   // Faz 9 (§4/§5): dejenere JID'ler (`0@s.whatsapp.net`, `000@...`) gerçek
   // numara DEĞİLDİR — '+0' gibi uydurma telefonlar üretilmez (AGENTS.md:
@@ -2063,7 +2063,7 @@ export function createSessionManager({
       // yeni chunk gelmemesi, senkronun GERCEKTEN bittiginin sinyalidir.
       // Ilerleme degeri her zaman WhatsApp'in gercek yuzdesidir; bu
       // zamanlayicilar yalnizca "veri akisi durdu" kararini verir.
-      const HISTORY_QUIET_PERIOD_MS = 12000;
+      const HISTORY_QUIET_PERIOD_MS = 3000;
       // Bos/yeni hesap: hic chunk gelmezse de takili kalmamali.
       const HISTORY_NO_CHUNK_FALLBACK_MS = 45000;
 
@@ -2170,6 +2170,10 @@ export function createSessionManager({
             }
           }
         }
+        if (connection === 'connecting') {
+          session.status = 'CONNECTING';
+          emitEvent({ event: 'session_connecting', session_id: id, session_name: session.session_name });
+        }
         if (connection === 'open') {
           session.status = 'CONNECTED';
           session.qr_code = null;
@@ -2180,6 +2184,12 @@ export function createSessionManager({
           session._pairingRequestedAt = 0;
           session.is_phone_online = true;
           session.updated_at = new Date().toISOString();
+          if (!session.phone_number) {
+            const meJid = sock.user?.id || state?.creds?.me?.id;
+            if (meJid) {
+              session.phone_number = jidToPhone(meJid) || null;
+            }
+          }
           // Persist encrypted auth state
           if (!authRepository) {
             safeWriteEncrypted(path.join(sessionDir, 'auth.json'), { creds: state.creds, keys: state.keys }, aesKey);
@@ -2669,7 +2679,7 @@ export function createSessionManager({
             };
             chats.set(key, merged);
             storedChats += 1;
-            if (!merged.avatar_url) void ensureChatAvatar(key);
+            if (!merged.avatar_url && storedChats <= 3) void ensureChatAvatar(key);
             emitEvent({ event: 'conversation_updated', conversation: merged });
           }
           emitEvent({
