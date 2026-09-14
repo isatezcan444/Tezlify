@@ -399,6 +399,7 @@ export const en = {
     syncEmpty: 'No new chats to sync.',
     syncHealedDetail: '{merged} duplicate threads merged, {healed} names fixed.',
     syncFailed: 'Failed to sync WhatsApp chats.',
+    syncRelinkRequired: 'WhatsApp session lost. Please re-pair the line.',
     readSyncFailed: 'Read receipt could not be delivered to WhatsApp.',
     syncingTitle: 'Syncing WhatsApp',
     syncingChats: 'Transferring chats...',

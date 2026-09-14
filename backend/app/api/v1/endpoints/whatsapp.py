@@ -267,6 +267,8 @@ async def sync_contacts(
 ) -> WhatsAppContactListResponse:
     try:
         contacts = await whatsapp_service.sync_contacts(db, current_user.id)
+    except WhatsAppRelinkRequired as exc:
+        raise _relink_required(exc) from exc
     except NoWhatsAppSession as exc:
         raise _no_session(exc) from exc
     except Exception as exc:
@@ -326,6 +328,8 @@ async def get_messages(
 ) -> WhatsAppMessagesResponse:
     try:
         data = await whatsapp_service.get_messages(db, current_user.id, conversation_id, limit=limit, before=before)
+    except WhatsAppRelinkRequired as exc:
+        raise _relink_required(exc) from exc
     except NoWhatsAppSession as exc:
         raise _no_session(exc) from exc
     except LookupError as exc:
@@ -349,12 +353,12 @@ async def send_message(
         msg = await whatsapp_service.send_text_message(
             db, current_user.id, conversation_id, payload.body, payload.client_message_id
         )
+    except WhatsAppRelinkRequired as exc:
+        raise _relink_required(exc) from exc
     except NoWhatsAppSession as exc:
         raise _no_session(exc) from exc
     except LookupError as exc:
         raise _not_found(exc) from exc
-    except NoWhatsAppSession as exc:
-        raise _no_session(exc) from exc
     except Exception as exc:
         raise _bad_gateway(exc) from exc
     return WhatsAppSendResult(
@@ -389,12 +393,12 @@ async def send_media(
     }
     try:
         msg = await whatsapp_service.send_media_message(db, current_user.id, conversation_id, media)
+    except WhatsAppRelinkRequired as exc:
+        raise _relink_required(exc) from exc
     except NoWhatsAppSession as exc:
         raise _no_session(exc) from exc
     except LookupError as exc:
         raise _not_found(exc) from exc
-    except NoWhatsAppSession as exc:
-        raise _no_session(exc) from exc
     except Exception as exc:
         raise _bad_gateway(exc) from exc
     return WhatsAppSendResult(
@@ -433,12 +437,12 @@ async def send_typing(
 ) -> WhatsAppReadResult:
     try:
         result = await whatsapp_service.send_typing(db, current_user.id, conversation_id, typing=payload.typing)
+    except WhatsAppRelinkRequired as exc:
+        raise _relink_required(exc) from exc
     except NoWhatsAppSession as exc:
         raise _no_session(exc) from exc
     except LookupError as exc:
         raise _not_found(exc) from exc
-    except NoWhatsAppSession as exc:
-        raise _no_session(exc) from exc
     except Exception as exc:
         raise _bad_gateway(exc) from exc
     return WhatsAppReadResult(

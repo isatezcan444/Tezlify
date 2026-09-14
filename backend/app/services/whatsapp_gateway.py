@@ -27,6 +27,16 @@ def _diagnostic_route(path: str) -> str:
 class WhatsAppGatewayError(Exception):
     """Gateway çağrısı başarısız oldu (ağ, HTTP durum veya yanıt bozulması)."""
 
+    def __init__(
+        self,
+        message: str,
+        status_code: Optional[int] = None,
+        response_body: Optional[str] = None,
+    ):
+        super().__init__(message)
+        self.status_code = status_code
+        self.response_body = response_body
+
 
 def gateway_base() -> str:
     return (getattr(settings, "WHATSAPP_GATEWAY_URL", "") or "http://127.0.0.1:8787").rstrip("/")
@@ -57,7 +67,11 @@ async def _request(method: str, path: str, **kwargs: Any) -> Any:
             method, route, res.status_code, elapsed_ms,
         )
         body = res.text[:300] if res.text else f"HTTP {res.status_code}"
-        raise WhatsAppGatewayError(f"Gateway hatası {res.status_code}: {body}")
+        raise WhatsAppGatewayError(
+            f"Gateway hatası {res.status_code}: {body}",
+            status_code=res.status_code,
+            response_body=body,
+        )
     if elapsed_ms >= 2000:
         logger.info(
             "[WA-GATEWAY-HTTP] Yavaş çağrı (method=%s route=%s status=%d elapsed_ms=%d)",

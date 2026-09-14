@@ -368,7 +368,13 @@ def _is_gateway_session_missing(exc: Exception) -> bool:
     """Gateway hatasinin 'yetim/bilinmeyen oturum' hatasi olup olmadigini
     anlar. Sadece bu spesifik hata self-heal tetikler; ag/timeout/diger 500'ler
     aynen yukselir (fail-closed)."""
-    return _GATEWAY_SESSION_MISSING in str(exc).lower()
+    if isinstance(exc, gw.WhatsAppGatewayError):
+        if exc.status_code == 404:
+            return True
+        if exc.response_body and ("session not found" in exc.response_body.lower() or "not found" in exc.response_body.lower()):
+            return True
+    exc_str = str(exc).lower()
+    return _GATEWAY_SESSION_MISSING in exc_str or ("404" in exc_str and "session" in exc_str)
 
 
 async def _gateway_op_or_mark_relink(
@@ -389,9 +395,29 @@ async def _gateway_op_or_mark_relink(
         row.updated_at = datetime.utcnow()
         await db.commit()
         logger.warning(
-            "[WhatsApp] Durable session is not available in gateway (db_id=%s); relink required",
+            "[WhatsApp] Durable session is not available in gateway (db_id=%s, gw_id=%s); relink required",
             row.id,
+            row.gateway_id,
         )
+        try:
+            from backend.app.core.websocket_manager import ws_manager
+            await ws_manager.broadcast(
+                {
+                    "event": "session_updated",
+                    "session": {
+                        "id": row.id,
+                        "session_id": row.id,
+                        "status": SessionStatus.RELINK_REQUIRED.value,
+                        "phone_number": row.phone_number,
+                        "is_active": row.is_active,
+                        "is_phone_online": False,
+                        "error_message": "WHATSAPP_AUTH_RELINK_REQUIRED",
+                    },
+                },
+                tenant_id=str(row.user_id),
+            )
+        except Exception as ws_err:
+            logger.debug("[WhatsApp] Relink broadcast ws error: %s", ws_err)
         raise WhatsAppRelinkRequired(
             "WhatsApp bağlantısı geri yüklenemedi. Aynı hattı yeniden eşleştirin."
         ) from exc
@@ -577,6 +603,13 @@ async def _conversation_gateway_id(
     """
     row = await _require_user_session(db, user_id, conv.session_id)
     return str(row.gateway_id)
+
+
+async def _conversation_session(
+    db: AsyncSession, user_id: str, conv: Conversation
+) -> WhatsAppSession:
+    """Sohbetin ait oldugu kullanici oturum kaydi."""
+    return await _require_user_session(db, user_id, conv.session_id)
 
 
 async def _get_session_or_404(db: AsyncSession, user_id: str, session_id: int) -> WhatsAppSession:
@@ -797,7 +830,9 @@ async def sync_contacts(
     # (dejenere JID kapisi, oncelikli ad cozumu, avatar, commit).
     # Rehber, kullanicinin KENDI hattindan okunur (sahiplik kapisi).
     row = session or await _require_user_session(db, user_id)
-    gw_contacts = await gw.list_contacts(row.gateway_id)
+    gw_contacts = await _gateway_op_or_mark_relink(db, row, lambda gid: gw.list_contacts(gid))
+    if not isinstance(gw_contacts, list):
+        gw_contacts = []
     items = [
         (
             item.get("id"),
@@ -1436,21 +1471,21 @@ async def _sync_conversations_impl(db: AsyncSession, user_id: str) -> List[Dict[
     gateway_id = str(session_row.gateway_id)
     try:
         await sync_contacts(db, user_id, session=session_row)
+    except WhatsAppRelinkRequired:
+        raise
     except Exception as exc:
         logger.warning("Rehber senkronu atlandi (sohbet senkronu suruyor): %s", exc)
-    # Faz 8 (RC-2): grup JID'leri subject olarak cozulmeden listeyi okuma —
-    # gateway tek toplu groupFetchAllParticipating ile chats Map'lerini gunceller
-    # ve conversation_updated yayar. Hata durumunda eski davranis surer
-    # (fail-soft: isim uydurulmaz, ham JID zaten sanitize edilir).
-    # Faz 10 (P1): "Eşitle" ve initial-sync artik FORCE ile ister — gateway
-    # icindeki 10 dk'lik TTL, daha once cozulememis ("Grup" kalan) gruplarin
-    # yeniden denenmesini engelliyordu. Gateway'de in-flight korumasi
-    # varindan oldugu icin request storm olusmaz.
     try:
-        await gw.sync_group_subjects(gateway_id, force=True)
+        await _gateway_op_or_mark_relink(
+            db, session_row, lambda gid: gw.sync_group_subjects(gid, force=True)
+        )
+    except WhatsAppRelinkRequired:
+        raise
     except Exception as exc:
         logger.warning("Grup basliklari senkronu atlandi: %s", exc)
-    data = await gw.list_conversations(gateway_id, limit=200)
+    data = await _gateway_op_or_mark_relink(
+        db, session_row, lambda gid: gw.list_conversations(gid, limit=200)
+    )
     items = data.get("items", []) if isinstance(data, dict) else []
     owner = user_id
     for item in items:
@@ -1760,14 +1795,18 @@ async def _hydrate_messages_on_demand(
     if not jid:
         return []
     try:
-        gateway_id = await _conversation_gateway_id(db, owner, conv)
-        data = await gw.get_messages(
-            gateway_id,
-            jid,
-            # Preserve the caller's page size.  A hidden minimum of 50 made
-            # a request for a small page hydrate far too much history.
-            limit=min(max(int(limit), 1), 100),
-            before=before_ts_ms,
+        session_row = await _conversation_session(db, owner, conv)
+        data = await _gateway_op_or_mark_relink(
+            db,
+            session_row,
+            lambda gid: gw.get_messages(
+                gid,
+                jid,
+                # Preserve the caller's page size.  A hidden minimum of 50 made
+                # a request for a small page hydrate far too much history.
+                limit=min(max(int(limit), 1), 100),
+                before=before_ts_ms,
+            ),
         )
     except Exception as exc:  # noqa: BLE001 — operasyonel hata API'ye aktarilir
         logger.warning("On-demand hydrasyon basarisiz (conv=%s): %s", conv.id, exc)
@@ -1945,8 +1984,10 @@ async def send_text_message(
     if not clean:
         raise LookupError("Mesaj bos olamaz.")
     _now = datetime.utcnow()
-    gateway_id = await _conversation_gateway_id(db, user_id, conv)
-    gateway_result = await gw.send_text_message(gateway_id, jid, clean, client_message_id)
+    session_row = await _conversation_session(db, user_id, conv)
+    gateway_result = await _gateway_op_or_mark_relink(
+        db, session_row, lambda gid: gw.send_text_message(gid, jid, clean, client_message_id)
+    )
     wa_id = gateway_result.get("wa_message_id")
     row = Message(
         user_id=user_id,
@@ -1982,8 +2023,10 @@ async def send_media_message(
     db: AsyncSession, user_id: str, conversation_id: int, media: Dict[str, Any]
 ) -> Dict[str, Any]:
     conv, jid = await _resolve_jid(db, user_id, conversation_id)
-    gateway_id = await _conversation_gateway_id(db, user_id, conv)
-    gateway_result = await gw.send_media_message(gateway_id, jid, media)
+    session_row = await _conversation_session(db, user_id, conv)
+    gateway_result = await _gateway_op_or_mark_relink(
+        db, session_row, lambda gid: gw.send_media_message(gid, jid, media)
+    )
     wa_id = gateway_result.get("wa_message_id")
     mtype_str = (media.get("media_type") or "document").upper()
     try:
@@ -2040,8 +2083,13 @@ async def mark_conversation_read(db: AsyncSession, user_id: str, conversation_id
     gateway_ok = True
     gateway_error: Optional[str] = None
     try:
-        gateway_id = await _conversation_gateway_id(db, user_id, conv)
-        await gw.mark_conversation_read(gateway_id, jid)
+        session_row = await _conversation_session(db, user_id, conv)
+        await _gateway_op_or_mark_relink(
+            db, session_row, lambda gid: gw.mark_conversation_read(gid, jid)
+        )
+    except WhatsAppRelinkRequired:
+        gateway_ok = False
+        gateway_error = "WHATSAPP_AUTH_RELINK_REQUIRED"
     except Exception as exc:
         gateway_ok = False
         gateway_error = str(exc)[:300]
@@ -2058,8 +2106,10 @@ async def mark_conversation_read(db: AsyncSession, user_id: str, conversation_id
 async def send_typing(db: AsyncSession, user_id: str, conversation_id: int, typing: bool = True) -> Dict[str, Any]:
     """Karsı tarafa 'yazıyor...' gostermesi gonderir (WhatsApp Web paritesi)."""
     conv, jid = await _resolve_jid(db, user_id, conversation_id)
-    gateway_id = await _conversation_gateway_id(db, user_id, conv)
-    result = await gw.send_typing(gateway_id, jid, typing=typing)
+    session_row = await _conversation_session(db, user_id, conv)
+    result = await _gateway_op_or_mark_relink(
+        db, session_row, lambda gid: gw.send_typing(gid, jid, typing=typing)
+    )
     return {
         "success": bool(result.get("success")) if isinstance(result, dict) else False,
         "error": result.get("error") if isinstance(result, dict) else "Gateway returned an invalid typing response.",
@@ -2381,7 +2431,11 @@ async def _run_sync_job(job: SyncJob) -> None:
                 #    snapshot'indaki grup isimlerinin dogru gelmesi icin
                 #    chats'ten once kalir.
                 try:
-                    await gw.sync_group_subjects(gateway_id, force=True)
+                    await _gateway_op_or_mark_relink(
+                        db, ws_session, lambda gid: gw.sync_group_subjects(gid, force=True)
+                    )
+                except WhatsAppRelinkRequired:
+                    raise
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("Sync job grup basliklari atlandi (owner=%s hat=%s): %s", owner, ws_session.id, exc)
                 _mark_phase("group_subjects")
@@ -2389,7 +2443,9 @@ async def _run_sync_job(job: SyncJob) -> None:
                 # 2) Sohbet anlik goruntusu — chat BASINA gateway istegi YOK (§21);
                 #    chats listesi tek cagri, DB'ye bir geciste TOPLU yazilir (Faz 7).
                 job.stage = "chats"
-                data = await gw.list_conversations(gateway_id, limit=200)
+                data = await _gateway_op_or_mark_relink(
+                    db, ws_session, lambda gid: gw.list_conversations(gid, limit=200)
+                )
                 items = data.get("items", []) if isinstance(data, dict) else []
                 all_items.extend(items)
                 session_convs, session_jids = await _persist_chat_snapshot(
@@ -2415,6 +2471,8 @@ async def _run_sync_job(job: SyncJob) -> None:
                     session_contacts = await sync_contacts(db, owner, session=ws_session)
                     contacts.extend(session_contacts)
                     job.contacts_synced = len(contacts)
+                except WhatsAppRelinkRequired:
+                    raise
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("Sync job rehber adimi atlandi (owner=%s hat=%s): %s", owner, ws_session.id, exc)
                 if job.cancel_requested:
@@ -2437,7 +2495,7 @@ async def _run_sync_job(job: SyncJob) -> None:
                 #    dedup kumesi sayfalar arasi onbelleklenir).
                 job.stage = "messages"
                 if await _bulk_channel_available(gateway_id):
-                    await _run_bulk_message_sync(db, job, session_jids, gateway_id)
+                    await _run_bulk_message_sync(db, job, session_jids, gateway_id, ws_session=ws_session)
                 else:
                     # Eski gateway dagitimi: legacy per-chat hatti (fail-soft).
                     logger.warning("Gateway bulk kanali yok — legacy per-chat sync (owner=%s)", owner)
@@ -2474,6 +2532,16 @@ async def _run_sync_job(job: SyncJob) -> None:
                 round((job.finished_at - job.started_at).total_seconds(), 1),
                 job.stage_timings,
             )
+    except WhatsAppRelinkRequired as exc:
+        job.state = "FAILED"
+        job.error = str(exc)
+        job.finished_at = datetime.now(timezone.utc)
+        logger.warning(
+            "Sync job oturum kayip - yeniden eslestirme gerekli (owner=%s sync_id=%s): %s",
+            owner, job.sync_id, exc,
+        )
+        await _broadcast_sync_event(_sync_event(
+            job, "whatsapp_sync_failed", error=job.error, error_code="RELINK_REQUIRED", stage=job.stage), owner)
     except asyncio.CancelledError:
         job.state = "FAILED"
         job.error = "sync iptal edildi"
@@ -2489,8 +2557,11 @@ async def _run_sync_job(job: SyncJob) -> None:
         job.error = str(exc)[:500]
         job.finished_at = datetime.now(timezone.utc)
         logger.warning("Sync job basarisiz (owner=%s sync_id=%s): %s", owner, job.sync_id, exc)
-        await _broadcast_sync_event(_sync_event(
-            job, "whatsapp_sync_failed", error=job.error, stage=job.stage), owner)
+        err_code = "RELINK_REQUIRED" if _is_gateway_session_missing(exc) else None
+        sync_payload = _sync_event(job, "whatsapp_sync_failed", error=job.error, stage=job.stage)
+        if err_code:
+            sync_payload["error_code"] = err_code
+        await _broadcast_sync_event(sync_payload, owner)
     finally:
         job.done.set()
         # NOT: `_initial_sync_inflight` buradan temizlenmez — o set
@@ -2616,7 +2687,11 @@ async def _sync_watermark_epoch(db: AsyncSession, owner: str) -> Optional[int]:
 
 
 async def _run_bulk_message_sync(
-    db: AsyncSession, job: SyncJob, jid_by_conv: Dict[int, str], gateway_id: str
+    db: AsyncSession,
+    job: SyncJob,
+    jid_by_conv: Dict[int, str],
+    gateway_id: str,
+    ws_session: Optional[WhatsAppSession] = None,
 ) -> None:
     """Bulk mesaj kanalindan sayfali hydrasyon.
 
@@ -2646,13 +2721,26 @@ async def _run_bulk_message_sync(
     offset = 0
     first_page = True
     while True:
-        page = await gw.list_all_messages(
-            gateway_id,
-            limit=_SYNC_BULK_PAGE_SIZE,
-            offset=offset,
-            since=since_epoch,
-            per_chat_limit=_SYNC_PER_CHAT_LIMIT,
-        )
+        if ws_session is not None:
+            page = await _gateway_op_or_mark_relink(
+                db,
+                ws_session,
+                lambda gid: gw.list_all_messages(
+                    gid,
+                    limit=_SYNC_BULK_PAGE_SIZE,
+                    offset=offset,
+                    since=since_epoch,
+                    per_chat_limit=_SYNC_PER_CHAT_LIMIT,
+                ),
+            )
+        else:
+            page = await gw.list_all_messages(
+                gateway_id,
+                limit=_SYNC_BULK_PAGE_SIZE,
+                offset=offset,
+                since=since_epoch,
+                per_chat_limit=_SYNC_PER_CHAT_LIMIT,
+            )
         msgs = page.get("messages", []) if isinstance(page, dict) else []
         total = int(page.get("total") or 0) if isinstance(page, dict) else 0
         if first_page:

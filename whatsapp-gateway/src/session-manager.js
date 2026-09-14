@@ -33,22 +33,45 @@ const logger = pino({ level: process.env.LOG_LEVEL || 'warn' });
  * Pino level 50 (hata) veya level 40 (uyarı) yerine level 20 (debug) olarak yapılandırılmış formatta loglanır;
  * böylece sahte 500 ve alarm üretilmezken gerçek hatalar level 50'de korunur.
  */
+function extractBaileysErrorDetails(obj) {
+  if (!obj) return '';
+  if (obj instanceof Error) return `${obj.message} ${obj.stack || ''}`;
+  if (typeof obj === 'string') return obj;
+  const parts = [];
+  if (obj.err) parts.push(extractBaileysErrorDetails(obj.err));
+  if (obj.error) parts.push(extractBaileysErrorDetails(obj.error));
+  if (obj.message) parts.push(String(obj.message));
+  if (obj.msg) parts.push(String(obj.msg));
+  if (obj.output?.payload?.message) parts.push(String(obj.output.payload.message));
+  if (obj.payload?.message) parts.push(String(obj.payload.message));
+  if (obj.data) parts.push(typeof obj.data === 'string' ? obj.data : JSON.stringify(obj.data));
+  return parts.join(' ');
+}
+
 function createBaileysLogger(baseLogger) {
   return new Proxy(baseLogger, {
     get(target, prop, receiver) {
       if (prop === 'error') {
         return function (obj, msg, ...args) {
-          const msgStr = typeof obj === 'string' ? obj : (msg || '');
-          const objErrStr = obj instanceof Error ? obj.message : (obj?.err?.message || obj?.message || '');
+          const msgStr = typeof obj === 'string' ? obj : (msg || obj?.msg || '');
+          const objErrStr = extractBaileysErrorDetails(obj);
           const fullText = `${msgStr} ${objErrStr}`.toLowerCase();
           const isHandshakeRetry =
             fullText.includes('failed to decrypt message') ||
             fullText.includes("unexpected error in 'init queries'") ||
+            fullText.includes("unexpected error in 'handling notification'") ||
+            fullText.includes('failed to check/upload pre-keys') ||
+            fullText.includes('pre-key') ||
+            fullText.includes('prekey') ||
             fullText.includes('stream errored out') ||
             fullText.includes('error in handling message') ||
             fullText.includes('bad mac') ||
             fullText.includes('no matching sessions') ||
-            fullText.includes('timed out');
+            fullText.includes('timed out') ||
+            fullText.includes('timeout') ||
+            fullText.includes('connection closed') ||
+            fullText.includes('rate-overlimit') ||
+            fullText.includes('conflict');
 
           if (isHandshakeRetry) {
             const errSummary = objErrStr || (typeof obj === 'object' && obj !== null ? obj?.msg : '') || msgStr;
@@ -565,7 +588,7 @@ function sanitizeOutboundEvent(event) {
 // Faz 8: birim testleri icin sanitizasyon yardimcilari disa aktarilir
 // (createSessionManager factory'si ayrica export edilir; index.js ikisini de
 // kullanabilir).
-export { isRawIdentityName, sanitizeChatForEmit, sanitizeOutboundEvent, mergeContactName, NAME_RANK, jidToPhone, isDegenerateJid, resolveSyncState, normalizePreviewText, buildChatPreview, isPhoneLikeName, summarizeWaMessage, classifyMessageType, hasRecognizedContent, resolveDownloadableMedia, contactPhoneJid };
+export { createBaileysLogger, extractBaileysErrorDetails, isRawIdentityName, sanitizeChatForEmit, sanitizeOutboundEvent, mergeContactName, NAME_RANK, jidToPhone, isDegenerateJid, resolveSyncState, normalizePreviewText, buildChatPreview, isPhoneLikeName, summarizeWaMessage, classifyMessageType, hasRecognizedContent, resolveDownloadableMedia, contactPhoneJid };
 
 function mergeContactName(existing, name, source) {
   const base = existing || {};

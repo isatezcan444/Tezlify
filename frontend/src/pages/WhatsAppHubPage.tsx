@@ -1279,7 +1279,12 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
           setSessionSync({ phase: 'error', stage: eventData.stage || 'failed', error: eventData.error || null, progress: 0 });
           setIsSyncingChats(false);
           activeSyncIdRef.current = null;
-          toast.error(eventData.error || t('whatsapp.syncFailed') || 'Sohbetler eşitlenemedi', t('common.error'));
+          if (eventData.error_code === 'RELINK_REQUIRED') {
+            fetchSessions(true);
+            toast.error(t('whatsapp.syncRelinkRequired') || 'WhatsApp bağlantısı kayboldu. Lütfen hattı yeniden eşleştirin.', t('common.error'));
+          } else {
+            toast.error(eventData.error || t('whatsapp.syncFailed') || 'Sohbetler eşitlenemedi', t('common.error'));
+          }
         }
       }
 
