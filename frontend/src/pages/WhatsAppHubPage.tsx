@@ -25,6 +25,8 @@ import {
   Users
 } from 'lucide-react';
 import { ApiClient } from '../api/client';
+import { startWaLatency } from '../lib/whatsappLatency';
+import { mergeDeliveryStatus, mergeWhatsAppMessages } from '../lib/whatsappMessageMerge';
 import { WhatsAppRepository } from '../data/whatsapp/whatsappRepository';
 import { WhatsAppSession, Conversation, ConversationStatus, ConversationMessageStatus, Lead, Message, LiveModeStatus, SessionSyncState } from '../types';
 import { WhatsAppApi, useLiveMode, probeLive, invalidateLiveProbe, isLiveCached, mapConversationItem, mapMessageItem } from '../api/whatsappApi';
@@ -148,6 +150,22 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   // id'lerini ref uzerinden okur (bayat closure / StrictMode çift calisma yok).
   const loadConversationsRef = useRef<((silent?: boolean) => Promise<void>) | null>(null);
   const knownConvIdsRef = useRef<Set<number>>(new Set());
+  const hydratingConversationIds = useRef(new Set<number>());
+  const hydrateConversation = useCallback((id: number) => {
+    if (!Number.isSafeInteger(id) || id <= 0 || hydratingConversationIds.current.has(id)) return;
+    hydratingConversationIds.current.add(id);
+    void WhatsAppApi.getConversations({ conversation_id: id, limit: 1 }).then((items) => {
+      const item = items.find((c) => c.id === id);
+      if (!item) return;
+      setConversations((prev) => {
+        const existing = prev.find((c) => c.id === id);
+        const merged = existing && !shouldApplyPreview(item.last_message_at, existing.last_message_at)
+          ? { ...item, ...existing } : { ...existing, ...item };
+        return [...prev.filter((c) => c.id !== id), merged].sort(compareByLastMessageDesc);
+      });
+    }).catch((error) => console.warn('[WhatsApp] Targeted conversation hydration failed', error))
+      .finally(() => hydratingConversationIds.current.delete(id));
+  }, []);
 
   // Faz 13 (truthfulness): okundu isaretleme artik GERCEK sonuc dondurur.
   // Gateway'e iletilemezse sessizce yutulmaz — konsola her zaman yazilir,
@@ -248,6 +266,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   const activeLoadOlder = useCallback(async () => {
     if (!selectedConv || !activePaging?.hasMore || !activePaging.oldest || activePaging.loading) return;
     const convId = selectedConv.id;
+    startWaLatency('chat_request_to_commit_ms', convId);
     setMessagePaging((prev) => ({ ...prev, [convId]: { ...(prev[convId] || activePaging), loading: true } }));
     try {
       const res = await WhatsAppRepository.getConversationMessages(convId, {
@@ -826,6 +845,9 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       const customEvent = e as CustomEvent<any>;
       const eventData = customEvent.detail;
       if (!eventData) return;
+      if (eventData.event === 'message_new' && eventData.message?.id) {
+        startWaLatency('event_handler_to_message_commit_ms', eventData.message.id);
+      }
 
       // 1. INBOUND MESSAGE & OUTBOUND CONFIRMATION
       // Faz 10 (P3): gateway'in gercek olay adi 'message_new'tir (hem gelen hem
@@ -865,6 +887,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         const isReplayedEvent = Boolean(waIdForDedup) && !rememberWaMessageId(String(waIdForDedup));
 
         // Update Conversation in list
+        if (convId !== null && !knownConvIdsRef.current.has(convId)) hydrateConversation(convId);
         setConversations((prev) => {
           const exactIdx = convId == null ? -1 : prev.findIndex((c) => c.id === convId);
           const phoneMatches = eventDigits
@@ -942,7 +965,6 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
             const rest = prev.filter((_, i) => i !== idx);
             return [updated, ...rest].sort(compareByLastMessageDesc);
           } else {
-            loadConversations(true);
             return prev;
           }
         });
@@ -963,7 +985,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
             conversation_id: convId,
             direction: isOutbound ? 'OUTBOUND' : 'INBOUND',
             message_type: (msgObj?.message_type || eventData.message_type || 'TEXT').toUpperCase() as any,
-            status: isOutbound ? 'SENT' : 'RECEIVED',
+            status: msgObj?.status || (isOutbound ? 'PENDING' : 'RECEIVED'),
             body: typeof msgText === 'string' ? msgText : '',
             wa_message_id: waId,
             client_message_id: clientMid,
@@ -986,7 +1008,8 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
             );
             if (existingIdx !== -1) {
               const updatedList = [...list];
-              updatedList[existingIdx] = { ...updatedList[existingIdx], ...newMsg };
+              updatedList[existingIdx] = { ...updatedList[existingIdx], ...newMsg,
+                status: mergeDeliveryStatus(updatedList[existingIdx].status, newMsg.status) };
               return { ...prev, [convId]: updatedList };
             }
             return {
@@ -1051,7 +1074,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                   ...m,
                   id: numericServerId ?? m.id,
                   wa_message_id: waId || m.wa_message_id,
-                  status: newStatus,
+                  status: mergeDeliveryStatus(m.status, newStatus),
                   error_message: errorMsg || m.error_message,
                 };
               }
@@ -1132,6 +1155,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                 payload.unread_count != null ? Math.max(c.unread_count || 0, payload.unread_count) : c.unread_count,
             };
           };
+          if (!knownConvIdsRef.current.has(Number(convId))) hydrateConversation(Number(convId));
           setConversations((prev) => {
             const next = prev.map((c) => (c.id === convId ? patch(c) : c));
             // Sorun 2: patch son mesaji/siralamayi degistirdiyse liste zaman
@@ -1190,7 +1214,11 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
           if (incoming.length > 0) {
             setConversations((prev) => {
               const byId = new Map(prev.map((c) => [c.id, c]));
-              for (const c of incoming) byId.set(c.id, c);
+              for (const c of incoming) {
+                const existing = byId.get(c.id);
+                byId.set(c.id, existing && !shouldApplyPreview(c.last_message_at, existing.last_message_at)
+                  ? { ...c, ...existing } : { ...existing, ...c });
+              }
               return Array.from(byId.values()).sort(compareByLastMessageDesc);
             });
             setSelectedConv((prev) => prev || incoming[0] || null);
@@ -1216,17 +1244,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
             const openId = selectedConv?.id;
             if (openId && byConv[openId]) {
               setMessagesMap((prev) => {
-                const existing = prev[openId] || [];
-                const have = new Set(existing.map((m) => m.id));
-                const add = byConv[openId].filter((m) => !have.has(m.id));
-                if (add.length === 0) return prev;
-                const merged = [...existing, ...add].sort((a, b) => {
-                  const tA = new Date(a.created_at || a.external_timestamp || 0).getTime();
-                  const tB = new Date(b.created_at || b.external_timestamp || 0).getTime();
-                  if (tA !== tB) return tA - tB;
-                  return (typeof a.id === 'number' ? a.id : 0) - (typeof b.id === 'number' ? b.id : 0);
-                });
-                return { ...prev, [openId]: merged };
+                return { ...prev, [openId]: mergeWhatsAppMessages(prev[openId] || [], byConv[openId]) };
               });
             }
           }
@@ -1259,9 +1277,15 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
           // banner gercek bitiste kapanir, sahte kapanis yok (§20/§27).
           const finalList: Conversation[] = (eventData.conversations || []).map((c: any) => mapConversationItem(c));
           if (finalList.length > 0) {
-            setConversations(finalList);
-          } else {
-            loadConversations(true);
+            setConversations((prev) => {
+              const byId = new Map(prev.map((c) => [c.id, c]));
+              for (const item of finalList) {
+                const current = byId.get(item.id);
+                byId.set(item.id, current && !shouldApplyPreview(item.last_message_at, current.last_message_at)
+                  ? { ...item, ...current } : item);
+              }
+              return [...byId.values()].sort(compareByLastMessageDesc);
+            });
           }
           setSessionSync((prev) => ({
             ...(prev || {}), phase: 'ready', stage: 'complete', progress: 100,
@@ -1288,20 +1312,8 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         }
       }
 
-      // Faz 4: gateway gecmis senkronunu tamamladiginda listeyi ve aktif
-      // konusmeyi sessizce tazele (telefonun RECENT history'si DB'ye yazildi).
-      if (eventData.event === 'history_sync_completed') {
-        loadConversations(true);
-        if (selectedConv?.id) {
-          WhatsAppRepository.getConversationMessages(selectedConv.id, { limit: 50 })
-            .then((res) => {
-              if (res?.messages) {
-                setMessagesMap((prev) => ({ ...prev, [selectedConv.id]: res.messages }));
-              }
-            })
-            .catch(logBackgroundFetchFailure('history_sync_completed mesaj tazeleme'));
-        }
-      }
+      // Gateway completion is not persistence completion. Backend sync snapshots
+      // and chunks deliver the committed entities without replacing loaded history.
 
       // Faz 7: gateway initial-sync yasam dongusu (QR sonrasi GERCEK ilerleme).
       // Faz 11: polling yok — ilerleme WS olaylarinda; bu olaylar yalnizca
@@ -1317,17 +1329,6 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       if (eventData.event === 'session_sync_completed') {
         const sync = (eventData.sync || null) as SessionSyncState | null;
         if (sync && !activeSyncIdRef.current) setSessionSync({ ...sync, phase: 'ready', progress: 100 });
-        // Senkron bitince listeyi gercek rehber/sohbet verisiyle tazele
-        loadConversations(true);
-        if (selectedConv?.id) {
-          WhatsAppRepository.getConversationMessages(selectedConv.id, { limit: 50 })
-            .then((res) => {
-              if (res?.messages) {
-                setMessagesMap((prev) => ({ ...prev, [selectedConv.id]: res.messages }));
-              }
-            })
-            .catch(logBackgroundFetchFailure('session_sync_completed mesaj tazeleme'));
-        }
       }
 
       // 4. PRESENCE UPDATE ('yazıyor...' göstergesi) — backend jid'yi sayısal
@@ -1373,9 +1374,8 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
             if (res?.messages) {
               setMessagesMap((prev) => {
                 const buf = syncMsgBufferRef.current[selectedConv.id] || [];
-                const have = new Set(res.messages.map((m: Message) => m.id));
-                const add = buf.filter((m) => !have.has(m.id));
-                return { ...prev, [selectedConv.id]: add.length ? [...res.messages, ...add] : res.messages };
+                return { ...prev, [selectedConv.id]: mergeWhatsAppMessages(
+                  prev[selectedConv.id] || [], [...res.messages, ...buf]) };
               });
             }
           })
@@ -1389,7 +1389,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       window.removeEventListener('tezlify:ws_event', handleWsEvent);
       window.removeEventListener('tezlify:ws_connected', handleReconnect);
     };
-  }, [selectedConv, loadConversations, refreshSyncStatus, reportReadSync, logBackgroundFetchFailure]);
+  }, [selectedConv, loadConversations, refreshSyncStatus, reportReadSync, logBackgroundFetchFailure, hydrateConversation]);
 
   // Anti-Ban Timing & Change-Tracking State
   const [savedConfig, setSavedConfig] = useState<AntiBanConfig>(getStoredAntiBanConfig());
@@ -1450,7 +1450,6 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         eventData?.event === 'session_sync_completed'
       ) {
         fetchSessions(true);
-        loadConversations(true);
         onRefreshStatsRef.current();
         refreshSyncStatus();
       } else if (eventData?.event === 'conversations_cleared') {

@@ -180,7 +180,7 @@ async def test_missing_gateway_session_sync_job_emits_relink_required_event():
     async def _capture_broadcast(event_dict, owner_id):
         broadcast_events.append((event_dict, owner_id))
 
-    with patch("backend.app.services.whatsapp_gateway.sync_group_subjects", side_effect=missing_err), \
+    with patch("backend.app.services.whatsapp_gateway.list_conversations", side_effect=missing_err), \
          patch("backend.app.services.whatsapp_service._broadcast_sync_event", side_effect=_capture_broadcast):
         job = await ws.request_sync(AsyncSessionLocal(), TEST_USER)
         await job.done.wait()

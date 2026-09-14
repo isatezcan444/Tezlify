@@ -2,6 +2,8 @@
 
 This document serves as the single centralized registry for all reusable components in the Tezlify frontend design system (based on the Vuexy Admin Template architecture).
 
+Development profiling: existing `ChatThread` and `ChatBubble` record request/event-to-DOM-commit durations through `/Users/isatezcan/Documents/Github/Scoutify/frontend/src/lib/whatsappLatency.ts` when `VITE_WHATSAPP_LATENCY_PROFILING=true` in development. No visual or public prop changes. DOM commit is not browser paint.
+
 ---
 
 ## Component Taxonomy

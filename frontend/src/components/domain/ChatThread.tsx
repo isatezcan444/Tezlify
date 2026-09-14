@@ -7,6 +7,7 @@ import { Skeleton } from '../ui/Skeleton';
 import { WhatsAppIcon } from '../ui/whatsapp-icon';
 import { useI18n } from '../../context/I18nContext';
 import { parseServerTime, formatMessageDate } from '../../lib/utils';
+import { finishWaLatency } from '../../lib/whatsappLatency';
 
 /** WhatsApp Web tarzı 'yazıyor...' balonu (üç zıplayan nokta). */
 const TypingBubble: React.FC<{ label: string }> = ({ label }) => (
@@ -52,6 +53,9 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
   const { t, language } = useI18n();
   const containerRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    if (messages.length) finishWaLatency('chat_request_to_commit_ms', messages[0].conversation_id);
+  }, [messages]);
 
   const prevScrollHeightRef = useRef<number>(0);
   const prevScrollTopRef = useRef<number>(0);

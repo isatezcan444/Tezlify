@@ -14,7 +14,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Dict, FrozenSet, List, Optional, Set, Tuple
 
-from sqlalchemy import select, func, or_, delete, text
+from sqlalchemy import select, func, or_, and_, delete, text, insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,6 +26,7 @@ from backend.app.models.lead import Lead
 from backend.app.models.message import Message, MessageDirection, MessageType, ConversationMessageStatus
 from backend.app.models.whatsapp_session import WhatsAppSession, SessionStatus
 from backend.app.services import whatsapp_gateway as gw
+from backend.app.services.whatsapp_profiling import profiled
 
 logger = logging.getLogger(__name__)
 
@@ -1484,7 +1485,7 @@ async def _sync_conversations_impl(db: AsyncSession, user_id: str) -> List[Dict[
     except Exception as exc:
         logger.warning("Grup basliklari senkronu atlandi: %s", exc)
     data = await _gateway_op_or_mark_relink(
-        db, session_row, lambda gid: gw.list_conversations(gid, limit=200)
+        db, session_row, lambda gid: gw.list_conversations(gid)
     )
     items = data.get("items", []) if isinstance(data, dict) else []
     owner = user_id
@@ -1908,6 +1909,7 @@ def _hydration_cursor_ms(rows: List[Optional[Message]]) -> Optional[int]:
     return int(oldest.replace(tzinfo=timezone.utc).timestamp() * 1000)
 
 
+@profiled("chat_open")
 async def get_messages(
     db: AsyncSession, user_id: str, conversation_id: int, limit: int = 50, before: Optional[int] = None
 ) -> Dict[str, Any]:
@@ -1932,7 +1934,10 @@ async def get_messages(
         before_row = bres.scalars().first()
         cutoff = _msg_time(before_row) if before_row else None
         if cutoff is not None:
-            base = base.where(_msg_time_col() < cutoff)
+            base = base.where(or_(
+                _msg_time_col() < cutoff,
+                and_(_msg_time_col() == cutoff, Message.id < before_row.id),
+            ))
         else:
             # before satiri cozulemedi → bos sayfa (uydurma sucut yok).
             base = base.where(Message.id < before)
@@ -1976,6 +1981,24 @@ async def get_messages(
     }
 
 
+def _advance_message_status(row: Message, status: Optional[str]) -> None:
+    """Provider evidence advances delivery; a send promise alone does not."""
+    ranks = {"PENDING": 0, "FAILED": 0, "SENT": 1, "DELIVERED": 2, "READ": 3}
+    target = str(status or "").upper()
+    if target not in ranks or ranks[target] <= ranks.get(row.status.value, 0):
+        return
+    row.status = ConversationMessageStatus[target]
+    now = datetime.utcnow()
+    row.sent_at = row.sent_at or now
+    if ranks[target] >= 2:
+        row.delivered_at = row.delivered_at or now
+    if target == "READ":
+        row.read_at = row.read_at or now
+    row.error_message = None
+    row.failed_at = None
+
+
+@profiled("send_text")
 async def send_text_message(
     db: AsyncSession, user_id: str, conversation_id: int, body: str, client_message_id: Optional[str] = None
 ) -> Dict[str, Any]:
@@ -1985,27 +2008,46 @@ async def send_text_message(
         raise LookupError("Mesaj bos olamaz.")
     _now = datetime.utcnow()
     session_row = await _conversation_session(db, user_id, conv)
-    gateway_result = await _gateway_op_or_mark_relink(
-        db, session_row, lambda gid: gw.send_text_message(gid, jid, clean, client_message_id)
-    )
-    wa_id = gateway_result.get("wa_message_id")
+    client_message_id = client_message_id or str(uuid.uuid4())
+    existing = await db.scalar(select(Message).where(
+        Message.client_message_id == client_message_id,
+        Message.conversation_id == conv.id,
+        get_user_filter(Message.user_id, user_id),
+    ))
+    if existing is not None:
+        return _serialize_message(existing)
     row = Message(
         user_id=user_id,
         conversation_id=conv.id,
         direction=MessageDirection.OUTBOUND,
         message_type=MessageType.TEXT,
         body=clean,
-        wa_message_id=wa_id,
+        wa_message_id=None,
         client_message_id=client_message_id,
         sender_phone="ME",
         recipient_phone=jid_to_phone(jid) or jid,
-        status=ConversationMessageStatus.SENT,
-        sent_at=_now,
+        status=ConversationMessageStatus.PENDING,
         # Gonderilen mesaj da ZAMAN EKSENINDE yer alir; aksi halde siralama
         # ve keyset sayfalamasi disinda kalip sohbetten kayboluyordu.
         external_timestamp=_now,
     )
     db.add(row)
+    await db.commit()
+    try:
+        gateway_result = await _gateway_op_or_mark_relink(
+            db, session_row, lambda gid: gw.send_text_message(gid, jid, clean, client_message_id)
+        )
+    except Exception as exc:
+        await db.refresh(row)
+        if row.status == ConversationMessageStatus.PENDING:
+            row.status = ConversationMessageStatus.FAILED
+            row.failed_at = datetime.utcnow()
+            row.error_message = str(exc)[:300]
+            await db.commit()
+        raise
+    await db.refresh(row)
+    row.wa_message_id = gateway_result.get("wa_message_id") or row.wa_message_id
+    _advance_message_status(row, gateway_result.get("status"))
     # Faz 10 (P2): gonderim yolu da paylasilan kurali kullanir (tek kaynak).
     _apply_last_message(
         conv,
@@ -2024,10 +2066,14 @@ async def send_media_message(
 ) -> Dict[str, Any]:
     conv, jid = await _resolve_jid(db, user_id, conversation_id)
     session_row = await _conversation_session(db, user_id, conv)
-    gateway_result = await _gateway_op_or_mark_relink(
-        db, session_row, lambda gid: gw.send_media_message(gid, jid, media)
-    )
-    wa_id = gateway_result.get("wa_message_id")
+    media = {**media, "client_message_id": media.get("client_message_id") or str(uuid.uuid4())}
+    existing = await db.scalar(select(Message).where(
+        Message.client_message_id == media["client_message_id"],
+        Message.conversation_id == conv.id,
+        get_user_filter(Message.user_id, user_id),
+    ))
+    if existing is not None:
+        return _serialize_message(existing)
     mtype_str = (media.get("media_type") or "document").upper()
     try:
         msg_type = MessageType[mtype_str] if mtype_str in MessageType.__members__ else MessageType.DOCUMENT
@@ -2046,16 +2092,31 @@ async def send_media_message(
         media_id=None,
         media_filename=filename,
         media_caption=caption,
-        wa_message_id=wa_id,
+        wa_message_id=None,
         client_message_id=media.get("client_message_id"),
         sender_phone="ME",
         recipient_phone=jid_to_phone(jid) or jid,
-        status=ConversationMessageStatus.SENT,
-        sent_at=_now,
+        status=ConversationMessageStatus.PENDING,
         external_timestamp=_now,
     )
     db.add(row)
     # Faz 10 (P2): "[Medya]" yerine paylasilan kuralin tip etiketi.
+    await db.commit()
+    try:
+        gateway_result = await _gateway_op_or_mark_relink(
+            db, session_row, lambda gid: gw.send_media_message(gid, jid, media)
+        )
+    except Exception as exc:
+        await db.refresh(row)
+        if row.status == ConversationMessageStatus.PENDING:
+            row.status = ConversationMessageStatus.FAILED
+            row.failed_at = datetime.utcnow()
+            row.error_message = str(exc)[:300]
+            await db.commit()
+        raise
+    await db.refresh(row)
+    row.wa_message_id = gateway_result.get("wa_message_id") or row.wa_message_id
+    _advance_message_status(row, gateway_result.get("status"))
     _apply_last_message(
         conv,
         datetime.utcnow(),
@@ -2332,6 +2393,7 @@ def get_sync_job(user_id: str) -> Optional[Dict[str, Any]]:
 def _cancel_stale_sync_jobs(user_id: str) -> int:
     """Oturum silinince owner'in suren job'ini iptal eder — eski gateway
     oturumuna karsi istek gondermeye devam etmez (§26/§27)."""
+    _initial_sync_pending.discard(str(user_id))
     job = _sync_jobs.get(str(user_id))
     if job is None or job.state != "SYNCING":
         return 0
@@ -2385,6 +2447,26 @@ async def _reapply_chat_names(
         await db.commit()
 
 
+_metadata_tasks: Dict[str, asyncio.Task[None]] = {}
+
+
+def _schedule_metadata_enrichment(gateway_id: str) -> None:
+    """Optional provider I/O owns no sync transaction and never delays messages."""
+    if gateway_id in _metadata_tasks:
+        return
+
+    async def enrich() -> None:
+        try:
+            await gw.sync_group_subjects(gateway_id, force=True)
+        except Exception as exc:
+            logger.warning("Background group enrichment failed (session=%s): %s", gateway_id, exc)
+        finally:
+            _metadata_tasks.pop(gateway_id, None)
+
+    _metadata_tasks[gateway_id] = asyncio.create_task(enrich())
+
+
+@profiled("initial_sync")
 async def _run_sync_job(job: SyncJob) -> None:
     """Chunked initial-sync hatti — WS olaylariyla ilerler, HTTP'yi bloklamaz.
 
@@ -2426,25 +2508,11 @@ async def _run_sync_job(job: SyncJob) -> None:
             for ws_session in sessions_to_sync:
                 gateway_id = str(ws_session.gateway_id)
 
-                # 1) Grup basliklari (fail-soft; force — cozulememis gruplar tekrar denensin).
-                #    Tek gateway cagrisi, bellek-ici cozum — hizli; sohbet
-                #    snapshot'indaki grup isimlerinin dogru gelmesi icin
-                #    chats'ten once kalir.
-                try:
-                    await _gateway_op_or_mark_relink(
-                        db, ws_session, lambda gid: gw.sync_group_subjects(gid, force=True)
-                    )
-                except WhatsAppRelinkRequired:
-                    raise
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("Sync job grup basliklari atlandi (owner=%s hat=%s): %s", owner, ws_session.id, exc)
-                _mark_phase("group_subjects")
-
                 # 2) Sohbet anlik goruntusu — chat BASINA gateway istegi YOK (§21);
                 #    chats listesi tek cagri, DB'ye bir geciste TOPLU yazilir (Faz 7).
                 job.stage = "chats"
                 data = await _gateway_op_or_mark_relink(
-                    db, ws_session, lambda gid: gw.list_conversations(gid, limit=200)
+                    db, ws_session, lambda gid: gw.list_conversations(gid)
                 )
                 items = data.get("items", []) if isinstance(data, dict) else []
                 all_items.extend(items)
@@ -2463,6 +2531,11 @@ async def _run_sync_job(job: SyncJob) -> None:
                         total=job.chats_total,
                         conversations=session_convs[page_start:page_start + _SYNC_CHAT_PAGE_SIZE]), owner)
                 _mark_phase("chats")
+
+                # Optional names must not delay the first persisted, usable snapshot.
+                # Gateway metadata events enrich the already published conversations.
+                _schedule_metadata_enrichment(gateway_id)
+                _mark_phase("group_subjects")
 
                 # 3) Rehber (fail-soft — sohbetler artik gorunur, ad
                 #    zenginlestirmesi arka planda tamamlanir).
@@ -2769,15 +2842,20 @@ async def _run_bulk_message_sync(
             for cid, wa in res.all():
                 existing_ids.setdefault(int(cid), set()).add(str(wa))
         dedup_loaded.update(pending.keys())
+        missing_conversations = [cid for cid in pending if cid not in conv_by_id]
+        for batch_start in range(0, len(missing_conversations), _SYNC_PERSIST_BATCH):
+            batch = missing_conversations[batch_start:batch_start + _SYNC_PERSIST_BATCH]
+            loaded = await db.execute(select(Conversation).where(
+                Conversation.id.in_(batch),
+                get_user_filter(Conversation.user_id, job.user_id),
+            ))
+            conv_by_id.update({conv.id: conv for conv in loaded.scalars().all()})
         rows: List[Tuple[Message, Dict[str, Any]]] = []  # (satır, jid_str) — serialization flush sonrası
         touched: Set[int] = set()
         for cid, gm_list in pending.items():
             conv = conv_by_id.get(cid)
             if conv is None:
-                conv = await db.get(Conversation, cid)
-                if conv is None:
-                    continue
-                conv_by_id[cid] = conv
+                continue
             have = existing_ids.setdefault(cid, set())
             for gm in gm_list:
                 wa = gm.get("wa_message_id")
@@ -2801,12 +2879,20 @@ async def _run_bulk_message_sync(
         # persist: gruplu INSERT + commit (kismi ilerleme kalici).
         serialized: List[Dict[str, Any]] = []
         if rows:
+            persisted_rows: List[Message] = []
             for batch_start in range(0, len(rows), _SYNC_PERSIST_BATCH):
-                db.add_all([r for r, _ in rows[batch_start:batch_start + _SYNC_PERSIST_BATCH]])
+                values = [
+                    {column.name: getattr(row, column.name)
+                     for column in Message.__table__.columns
+                     if column.name != "id" and getattr(row, column.name) is not None}
+                    for row, _ in rows[batch_start:batch_start + _SYNC_PERSIST_BATCH]
+                ]
+                inserted = await db.scalars(insert(Message).returning(Message), values)
+                persisted_rows.extend(inserted.all())
             await db.flush()
             await db.commit()
             # flush sonrasi id'ler doludur — WS chunk'i sayisal DB kimlikli seridir.
-            serialized = [_serialize_message(r) for r, _ in rows]
+            serialized = [_serialize_message(r) for r in persisted_rows]
             job.messages_synced += len(rows)
         for chunk_start in range(0, len(serialized), _SYNC_EVENT_CHUNK):
             await _broadcast_sync_event(_sync_event(
@@ -2838,10 +2924,14 @@ async def _run_bulk_message_sync(
 # owner bazinda in-flight dedupe (ayni kullanici icin ikinci bir hydration
 # tetiklenmez; "Eşitle" butonu da ayni sync_conversations'i kullanir).
 _initial_sync_inflight: Set[str] = set()
+_initial_sync_pending: Set[str] = set()
 
 
-def _schedule_initial_sync(owner: str) -> None:
+def _schedule_initial_sync(owner: str, *, reconcile: bool = False) -> None:
+    """Coalesce data notifications; duplicate connection signals only join."""
     if owner in _initial_sync_inflight:
+        if reconcile:
+            _initial_sync_pending.add(owner)
         return
     _initial_sync_inflight.add(owner)
     asyncio.create_task(_run_initial_sync(owner))
@@ -2867,10 +2957,16 @@ async def _run_initial_sync(owner: str) -> None:
                 logger.warning("Initial-sync broadcast basarisiz (owner=%s): %s", owner, exc)
         else:
             logger.warning("Initial-sync hydration basarisiz (owner=%s): %s", owner, job.error)
+    except asyncio.CancelledError:
+        _initial_sync_pending.discard(owner)
+        raise
     except Exception as exc:  # noqa: BLE001 — fail-soft: sonraki olay/Eşitle dener
         logger.warning("Initial-sync hydration beklenemedi (owner=%s): %s", owner, exc)
     finally:
         _initial_sync_inflight.discard(owner)
+        if owner in _initial_sync_pending:
+            _initial_sync_pending.discard(owner)
+            _schedule_initial_sync(owner)
 
 
 # Faz 13 (düzeltme — Render log regresyonu): Gateway'in bilerek KALICI
@@ -2951,6 +3047,7 @@ def _log_orphan_event(evt: str, exc: Exception, gw_session_id: Optional[str]) ->
         logger.debug("Gateway olayi sahibi cozulemedi, atlandi (event=%s): %s", evt, exc)
 
 
+@profiled("gateway_event")
 async def ingest_gateway_event(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Gateway olayini persist eder ve UI broadcast'i icin kimlikleri cevirir.
 
@@ -3036,10 +3133,13 @@ async def ingest_gateway_event(event: Dict[str, Any]) -> Optional[Dict[str, Any]
                 if owner and owner != SYSTEM_USER_ID:
                     if evt == "history_sync_completed":
                         chats_synced = event.get("chats_synced") or 0
-                        if chats_synced > 0:
-                            _schedule_initial_sync(str(owner))
+                        messages_synced = event.get("messages_synced") or 0
+                        if chats_synced > 0 or messages_synced > 0:
+                            _schedule_initial_sync(str(owner), reconcile=True)
                     else:
-                        _schedule_initial_sync(str(owner))
+                        _schedule_initial_sync(
+                            str(owner), reconcile=evt == "session_sync_completed"
+                        )
             return result
         except EventOwnerUnresolved as exc:
             # Beklenen fail-closed durumu: olay yanlis tenant'a YAZILMAZ ve
@@ -3102,12 +3202,23 @@ async def _ingest_message(db: AsyncSession, event: Dict[str, Any]) -> Dict[str, 
     contact = await _upsert_contact(db, owner, jid_str, name_for_contact, source_for_contact)
 
     wa_id = msg.get("wa_message_id")
-    if wa_id:
+    client_id = msg.get("client_message_id")
+    if wa_id or client_id:
         existing = await db.execute(
-            select(Message).where(Message.wa_message_id == wa_id, Message.conversation_id == conv.id)
+            select(Message).where(
+                or_(Message.wa_message_id == wa_id if wa_id else False,
+                    Message.client_message_id == client_id if client_id else False),
+                Message.conversation_id == conv.id,
+                get_user_filter(Message.user_id, owner),
+            )
         )
-        if existing.scalars().first() is not None:
+        canonical = existing.scalars().first()
+        if canonical is not None:
+            canonical.wa_message_id = wa_id or canonical.wa_message_id
+            _advance_message_status(canonical, msg.get("status"))
+            await db.commit()
             event["conversation_id"] = conv.id
+            event["message"] = _serialize_message(canonical)
             return event  # dedup
 
     mtype_str = (msg.get("message_type") or "TEXT").upper()
@@ -3463,33 +3574,27 @@ async def _map_conversation_event(db: AsyncSession, event: Dict[str, Any]) -> Di
         if wa_id and new_status in ConversationMessageStatus.__members__:
             res = await db.execute(
                 select(Message).where(
-                    Message.wa_message_id == wa_id,
+                    or_(Message.wa_message_id == wa_id,
+                        Message.client_message_id == event["client_message_id"]
+                        if event.get("client_message_id") else False),
                     Message.conversation_id == conv.id,
                 )
             )
             row = res.scalars().first()
             if row is not None:
-                target = ConversationMessageStatus[new_status]
-                rank = {
-                    ConversationMessageStatus.PENDING: 0,
-                    ConversationMessageStatus.SENT: 1,
-                    ConversationMessageStatus.DELIVERED: 2,
-                    ConversationMessageStatus.READ: 3,
-                    ConversationMessageStatus.RECEIVED: 3,
-                    ConversationMessageStatus.FAILED: 4,
-                }
-                cur_rank = rank.get(row.status, 0)
-                new_rank = rank.get(target, 0)
-                # Acks only move forward; never downgrade an existing status.
-                if new_rank > cur_rank:
-                    row.status = target
-                    if target == ConversationMessageStatus.READ:
-                        row.delivered_at = row.delivered_at or datetime.utcnow()
-                        row.read_at = datetime.utcnow()
-                    elif target == ConversationMessageStatus.DELIVERED:
-                        row.delivered_at = row.delivered_at or datetime.utcnow()
-                    await db.commit()
-                    event["message_id"] = row.id
+                row.wa_message_id = wa_id or row.wa_message_id
+                if new_status == "FAILED" and row.status == ConversationMessageStatus.PENDING:
+                    row.status = ConversationMessageStatus.FAILED
+                    row.failed_at = datetime.utcnow()
+                    row.error_message = event.get("error_message")
+                else:
+                    _advance_message_status(row, new_status)
+                await db.commit()
+                event["message_id"] = row.id
+                event["client_message_id"] = row.client_message_id
+                event["status"] = row.status.value
+            else:
+                raise LookupError("Provider ACK precedes its message record; retry required")
     return event
 
 

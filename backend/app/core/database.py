@@ -35,6 +35,9 @@ else:
 
 engine = create_async_engine(settings.DATABASE_URL, **engine_kwargs)
 
+from backend.app.services.whatsapp_profiling import install as install_wa_profiling
+install_wa_profiling(engine.sync_engine)
+
 @event.listens_for(engine.sync_engine, "connect")
 def set_sqlite_pragma(dbapi_connection, connection_record):
     if "sqlite" in settings.DATABASE_URL:

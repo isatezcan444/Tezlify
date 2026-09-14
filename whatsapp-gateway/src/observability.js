@@ -17,3 +17,15 @@ export function sessionRef(sessionId) {
 export function diagnostic(event, fields = {}) {
   diagnosticLogger.info({ event, ...fields }, event);
 }
+
+const latencyLogger = pino({
+  level: process.env.WHATSAPP_LATENCY_PROFILING === 'true' ? 'info' : 'silent',
+  base: { component: 'whatsapp-latency' },
+});
+
+/** Only fixed metric names, opaque session hashes and monotonic durations. */
+export function latency(metric, started, sessionId) {
+  if (process.env.WHATSAPP_LATENCY_PROFILING !== 'true') return;
+  latencyLogger.info({ metric, duration_ms: performance.now() - started,
+    session_ref: sessionRef(sessionId), epoch_ms: Date.now() });
+}

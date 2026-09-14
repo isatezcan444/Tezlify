@@ -16,7 +16,7 @@ import path from 'path';
 import crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 import pino from 'pino';
-import { diagnostic, sessionRef } from './observability.js';
+import { diagnostic, sessionRef, latency } from './observability.js';
 import { SocketLifecycle } from './domain/socket-lifecycle.js';
 import { createBoundedCache } from './domain/bounded-cache.js';
 
@@ -210,9 +210,9 @@ function resolveDownloadableMedia(messageContent) {
 }
 
 // Baileys/WA ack seviyeleri → WhatsApp Web tik anlamları.
-// proto.WebMessageInfo.Status: 1=SERVER_ACK(✓) 2=DELIVERY_ACK(✓✓) 3=READ(✓✓ mavi) 4=PLAYED
-const ACK_RANK = { 1: 'SENT', 2: 'DELIVERED', 3: 'READ', 4: 'READ' };
-const ACK_ORDER = { PENDING: 0, SENT: 1, DELIVERED: 2, READ: 3, FAILED: 4 };
+// Installed Baileys enum: 1=PENDING, 2=SERVER_ACK, 3=DELIVERY_ACK, 4=READ, 5=PLAYED.
+const ACK_RANK = { 2: 'SENT', 3: 'DELIVERED', 4: 'READ', 5: 'READ' };
+const ACK_ORDER = { PENDING: 0, SENT: 1, DELIVERED: 2, READ: 3, FAILED: 0 };
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1128,13 +1128,27 @@ export function createSessionManager({
     async sendTextMessage(sessionId, jid, body, client_message_id) {
       const session = this._requireConnectedSession(sessionId);
       const key = resolveJidKey(this._storeOf(session), jid);
-      const result = await session.sock.sendMessage(key, { text: body });
+      const sendStarted = performance.now();
+      const messageId = crypto.randomBytes(16).toString('hex').toUpperCase();
+      const pending = this._recordOutbound(key, {
+        body, message_type: 'TEXT', client_message_id: client_message_id || uuidv4(),
+        wa_message_id: messageId, status: 'PENDING',
+      }, session.id);
+      let result;
+      try {
+        result = await session.sock.sendMessage(key, { text: body }, { messageId });
+      } catch (error) {
+        this._failOutbound(session.id, key, messageId, error);
+        throw error;
+      }
+      // Promise resolution is NOT the separate messages.update SERVER_ACK.
+      latency('provider_send_promise_ms', sendStarted, sessionId);
       const msg = this._recordOutbound(key, {
         body,
         message_type: 'TEXT',
-        client_message_id: client_message_id || `cmsg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-        wa_message_id: result?.key?.id || null,
-        status: 'SENT',
+        client_message_id: pending.client_message_id,
+        wa_message_id: result?.key?.id || messageId,
+        status: 'PENDING',
       }, session.id);
       return msg;
     },
@@ -1158,16 +1172,28 @@ export function createSessionManager({
       } else {
         content = { document: source, mimetype: mime_type || 'application/octet-stream', fileName: filename || 'belge.bin', caption: caption || '' };
       }
-      const result = await session.sock.sendMessage(key, content);
+      const messageId = crypto.randomBytes(16).toString('hex').toUpperCase();
+      const pending = this._recordOutbound(key, {
+        body: caption || filename || media_url || '', message_type: type.toUpperCase(),
+        client_message_id: client_message_id || uuidv4(), wa_message_id: messageId, status: 'PENDING',
+        media_filename: filename, media_caption: caption,
+      }, session.id);
+      let result;
+      try {
+        result = await session.sock.sendMessage(key, content, { messageId });
+      } catch (error) {
+        this._failOutbound(session.id, key, messageId, error);
+        throw error;
+      }
       const msg = this._recordOutbound(key, {
         body: caption || filename || media_url || `[${type.toUpperCase()}]`,
         message_type: type.toUpperCase(),
         media_url: media_url || null,
         media_filename: filename,
         media_caption: caption,
-        client_message_id: client_message_id || `media_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-        wa_message_id: result?.key?.id || null,
-        status: 'SENT',
+        client_message_id: pending.client_message_id,
+        wa_message_id: result?.key?.id || messageId,
+        status: 'PENDING',
       }, session.id);
       return msg;
     },
@@ -1457,11 +1483,15 @@ export function createSessionManager({
       const key = resolveJidKey(store, jid);
       // Faz 10 (P3): messages.upsert fromMe kolu ayni mesaji (wa_message_id)
       // zaten kaydettiyse ikinci kayit + ikinci emitEvent YAPILMAZ.
-      if (data.wa_message_id) {
-        const dup = (messagesByChat.get(key) || []).some(
-          (m) => m.wa_message_id && m.wa_message_id === data.wa_message_id
-        );
-        if (dup) return { ...messagesByChat.get(key).find((m) => m.wa_message_id === data.wa_message_id) };
+      if (data.wa_message_id || data.client_message_id) {
+        const dup = (messagesByChat.get(key) || []).find((m) =>
+          (data.wa_message_id && m.wa_message_id === data.wa_message_id) ||
+          (data.client_message_id && m.client_message_id === data.client_message_id));
+        if (dup) {
+          dup.client_message_id ||= data.client_message_id;
+          dup.wa_message_id = data.wa_message_id || dup.wa_message_id;
+          return { ...dup };
+        }
       }
       const msg = {
         id: Date.now(),
@@ -1489,6 +1519,30 @@ export function createSessionManager({
         message: msg,
       });
       return { ...msg };
+    },
+
+    _failOutbound(sessionId, jid, waId, error) {
+      const store = this._storeOf(this._requireSession(sessionId));
+      const msg = (store.messagesByChat.get(jid) || []).find((m) => m.wa_message_id === waId);
+      if (!msg || msg.status !== 'PENDING') return;
+      msg.status = 'FAILED';
+      this._emit({ event: 'message_status_updated', gateway_session_id: sessionId,
+        conversation_id: jid, wa_message_id: waId, client_message_id: msg.client_message_id,
+        status: 'FAILED', error_message: String(error?.message || error).slice(0, 300) });
+    },
+
+    _applyMessageAck(sessionId, key, update) {
+      const newStatus = ACK_RANK[update?.status];
+      if (!key?.fromMe || !key.id || !key.remoteJid || !newStatus) return;
+      const store = this._storeOf(this._requireSession(sessionId));
+      const jid = resolveJidKey(store, key.remoteJid);
+      const msg = (store.messagesByChat.get(jid) || []).find((m) => m.wa_message_id === key.id);
+      if (msg && ACK_ORDER[newStatus] <= (ACK_ORDER[msg.status] ?? 0)) return;
+      if (msg) msg.status = newStatus;
+      // Unknown records still reach the durable bridge; never discard provider evidence.
+      this._emit({ event: 'message_status_updated', gateway_session_id: sessionId,
+        conversation_id: jid, wa_message_id: key.id, client_message_id: msg?.client_message_id,
+        status: newStatus, timestamp: new Date().toISOString() });
     },
 
     // Faz 6e: yeni bir LID ↔ telefon eşleşmesi öğrenildiğinde, LID anahtarı
@@ -1843,6 +1897,7 @@ export function createSessionManager({
     },
 
     async _connectSocket(id) {
+      const connectStarted = performance.now();
       const session = sessions.get(id);
       if (!session) return;
       const generation = session.lifecycle.beginAttempt();
@@ -1884,9 +1939,11 @@ export function createSessionManager({
       const persisted = authRepository
         ? null
         : safeReadEncrypted(path.join(sessionDir, 'auth.json'), aesKey);
+      const authLoadStarted = performance.now();
       const { state, saveCreds } = authRepository
         ? await authRepository.createAuthState(id)
         : await useMultiFileAuthState(sessionDir);
+      latency('auth_state_load_ms', authLoadStarted, id);
       diagnostic('auth_state_loaded', {
         session_ref: sessionRef(id),
         generation,
@@ -1939,10 +1996,13 @@ export function createSessionManager({
       const ensureChatAvatar = (key) => sessionManager._ensureChatAvatar(session, key);
       const ensureGroupSubjects = (opts = {}) => sessionManager._ensureGroupSubjects({ ...opts, sessionId: id });
 
+      const versionStarted = performance.now();
       const { version } = await fetchLatestBaileysVersion();
+      latency('provider_version_lookup_ms', versionStarted, id);
       const baileysAuth = authRepository
         ? { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, logger) }
         : state;
+      const socketStarted = performance.now();
       const sock = makeWASocket({
         version,
         logger: createBaileysLogger(logger),
@@ -2011,6 +2071,7 @@ export function createSessionManager({
         return;
       }
       session.sock = sock;
+      latency('socket_initialization_ms', socketStarted, id);
       if (leaseRepository) {
         const renewalMs = Math.max(10_000, Math.floor(leaseRepository.ttlSeconds * 1000 / 3));
         const loseLease = () => {
@@ -2140,12 +2201,15 @@ export function createSessionManager({
           });
         }
         if (qr) {
+          latency('socket_start_to_provider_qr_ms', connectStarted, id);
           session.status = 'SCAN_QR';
           session.error_message = null;
           session.error_reason = null;
           session._connFailures = 0;
           session._qrSeenForAttempt = true;
+          const qrStarted = performance.now();
           session.qr_code = await QRCode.toDataURL(qr);
+          latency('qr_generation_ms', qrStarted, id);
           session.updated_at = new Date().toISOString();
           emitEvent({ event: 'session_qr_updated', session_id: id, qr_code: session.qr_code });
           // --- Faz 6b fix: pairing kodu sokete bağlıdır ve QR ile birlikte
@@ -2188,6 +2252,7 @@ export function createSessionManager({
           emitEvent({ event: 'session_connecting', session_id: id, session_name: session.session_name });
         }
         if (connection === 'open') {
+          latency('socket_start_to_ready_ms', connectStarted, id);
           session.status = 'CONNECTED';
           session.qr_code = null;
           session.error_message = null;
@@ -2802,28 +2867,7 @@ export function createSessionManager({
       sock.ev.on('messages.update', (updates) => {
         if (ignoreStaleSocketEvent('messages.update')) return;
         for (const { key, update } of updates || []) {
-          if (!key?.fromMe || !key?.id) continue;
-          const statusNum = update?.status;
-          const newStatus = ACK_RANK[statusNum];
-          if (!newStatus) continue;
-          const remoteJid = key.remoteJid;
-          if (!remoteJid) continue;
-          const k = normalizeJid(remoteJid);
-          const list = messagesByChat.get(k) || [];
-          const msg = list.find((m) => m.wa_message_id === key.id);
-          if (!msg) continue;
-          const currentRank = ACK_ORDER[msg.status] ?? 0;
-          const nextRank = ACK_ORDER[newStatus] ?? 0;
-          // Acks only move forward; never downgrade READ → DELIVERED.
-          if (nextRank <= currentRank) continue;
-          msg.status = newStatus;
-          emitEvent({
-            event: 'message_status_updated',
-            conversation_id: k,
-            wa_message_id: key.id,
-            status: newStatus,
-            timestamp: new Date().toISOString(),
-          });
+          this._applyMessageAck(id, key, update);
         }
       });
     },

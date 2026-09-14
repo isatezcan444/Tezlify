@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useLayoutEffect } from 'react';
 import { 
   Check, 
   CheckCheck, 
@@ -19,6 +19,7 @@ import { Tooltip } from '../ui/Tooltip';
 import { Modal } from '../ui/Modal';
 import { useI18n } from '../../context/I18nContext';
 import { parseServerTime, formatMessageTime } from '../../lib/utils';
+import { finishWaLatency } from '../../lib/whatsappLatency';
 
 export interface ChatBubbleProps {
   message: Message;
@@ -34,6 +35,9 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({ message, isGroup = false
   const isInbound = message.direction === 'INBOUND';
   const [isLightboxOpen, setIsLightboxOpen] = useState(false);
   const [retrying, setRetrying] = useState(false);
+  useLayoutEffect(() => {
+    finishWaLatency('event_handler_to_message_commit_ms', message.id);
+  }, [message]);
 
   const handleRetryClick = async (e: React.MouseEvent) => {
     e.stopPropagation();

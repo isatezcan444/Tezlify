@@ -52,8 +52,8 @@ export function createPostgresEventOutbox({
         `WITH claimed AS (
            SELECT sequence
            FROM whatsapp_private.event_outbox
-           WHERE state = 'PENDING'
-              OR (state = 'IN_FLIGHT' AND next_attempt_at <= NOW())
+            WHERE state IN ('PENDING', 'IN_FLIGHT')
+              AND next_attempt_at <= NOW()
            ORDER BY sequence ASC
            FOR UPDATE SKIP LOCKED
            LIMIT $1
@@ -69,6 +69,12 @@ export function createPostgresEventOutbox({
                    outbox.auth_tag, outbox.key_version, outbox.attempts`,
         [Math.max(1, Math.min(100, Number(limit) || 50))],
       );
+      // UPDATE RETURNING does not preserve the claimed CTE's ordering.
+      result.rows.sort((a, b) => {
+        const left = BigInt(a.sequence);
+        const right = BigInt(b.sequence);
+        return left < right ? -1 : left > right ? 1 : 0;
+      });
       return result.rows.map((row) => ({
         sequence: Number(row.sequence),
         attempts: Number(row.attempts),
