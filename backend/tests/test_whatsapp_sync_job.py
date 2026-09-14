@@ -1306,7 +1306,7 @@ async def test_38_lazy_hydration_older_history_keyset_ordering(mock_gateway, eve
     def _ms(ts: str) -> int:
         return int(datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp() * 1000)
 
-    async def _gw_get(gateway_id, jid, limit: int = 50, before=None):
+    async def _gw_get(gateway_id, jid, limit: int = 50, before=None, **kwargs):
         pool = [m for m in all_msgs
                 if _ms(m["created_at"]) < before] if before is not None else all_msgs
         pool = sorted(pool, key=lambda m: _ms(m["created_at"]))[-int(limit):] \

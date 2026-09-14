@@ -188,11 +188,52 @@ async def sync_group_subjects(gateway_id: str, force: bool = False) -> Dict[str,
     return await _request("POST", f"{_s(gateway_id)}/conversations/sync-groups", json=payload)
 
 
-async def get_messages(gateway_id: str, jid: str, limit: int = 50, before: Optional[int] = None) -> Dict[str, Any]:
+async def get_messages(
+    gateway_id: str,
+    jid: str,
+    limit: int = 50,
+    before: Optional[int] = None,
+    fetch_provider: bool = False,
+    oldest_msg_id: Optional[str] = None,
+    oldest_msg_from_me: Optional[bool] = None,
+    oldest_msg_ts_ms: Optional[int] = None,
+) -> Dict[str, Any]:
     params: Dict[str, Any] = {"limit": limit}
     if before is not None:
         params["before"] = before
+    if fetch_provider:
+        params["fetch_provider"] = "true"
+    if oldest_msg_id is not None:
+        params["oldest_msg_id"] = str(oldest_msg_id)
+    if oldest_msg_from_me is not None:
+        params["oldest_msg_from_me"] = "true" if oldest_msg_from_me else "false"
+    if oldest_msg_ts_ms is not None:
+        params["oldest_msg_timestamp_ms"] = int(oldest_msg_ts_ms)
     return await _request("GET", f"{_s(gateway_id)}/conversations/{jid}/messages", params=params)
+
+
+async def request_older_history(
+    gateway_id: str,
+    jid: str,
+    count: int = 50,
+    oldest_msg_id: Optional[str] = None,
+    oldest_msg_from_me: Optional[bool] = None,
+    oldest_msg_ts_ms: Optional[int] = None,
+    before: Optional[int] = None,
+    timeout_ms: Optional[int] = None,
+) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {"count": count}
+    if oldest_msg_id is not None:
+        payload["oldest_msg_id"] = str(oldest_msg_id)
+    if oldest_msg_from_me is not None:
+        payload["oldest_msg_from_me"] = bool(oldest_msg_from_me)
+    if oldest_msg_ts_ms is not None:
+        payload["oldest_msg_timestamp_ms"] = int(oldest_msg_ts_ms)
+    if before is not None:
+        payload["before"] = int(before)
+    if timeout_ms is not None:
+        payload["timeout_ms"] = int(timeout_ms)
+    return await _request("POST", f"{_s(gateway_id)}/conversations/{jid}/history", json=payload)
 
 
 async def list_all_messages(

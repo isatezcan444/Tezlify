@@ -88,6 +88,11 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
     if (nearBottom) {
       setShowNewMessagePill(false);
     }
+
+    // Scroll upward -> older page request
+    if (scrollTop < 60 && hasMore && !loadingOlder) {
+      handleLoadOlder();
+    }
   };
 
   // Trigger loading older messages and track previous scroll height

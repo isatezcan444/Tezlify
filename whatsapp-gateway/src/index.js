@@ -284,13 +284,31 @@ app.get('/sessions/:sessionId/messages/bulk', withSession(async (req, res, sessi
 
 // Get messages for a conversation (jid) within one session
 app.get('/sessions/:sessionId/conversations/:jid/messages', withSession(async (req, res, sessionId) => {
-  const { limit, before } = req.query;
+  const { limit, before, fetch_provider, oldest_msg_id, oldest_msg_from_me, oldest_msg_timestamp_ms } = req.query;
   const pageSize = limit ? parseInt(limit, 10) : 50;
   const messages = await sessionManager.getMessages(sessionId, req.params.jid, {
     limit: pageSize,
     before: before ? parseInt(before, 10) : undefined,
+    fetchProvider: fetch_provider === 'true' || fetch_provider === '1',
+    oldestMsgId: oldest_msg_id,
+    oldestMsgFromMe: oldest_msg_from_me !== undefined ? (oldest_msg_from_me === 'true' || oldest_msg_from_me === '1') : undefined,
+    oldestMsgTimestampMs: oldest_msg_timestamp_ms ? parseInt(oldest_msg_timestamp_ms, 10) : undefined,
   });
   res.json({ messages, has_more: messages.length === pageSize });
+}));
+
+// Request older history explicitly via provider
+app.post('/sessions/:sessionId/conversations/:jid/history', withSession(async (req, res, sessionId) => {
+  const { count, oldest_msg_id, oldest_msg_from_me, oldest_msg_timestamp_ms, before, timeout_ms } = req.body || {};
+  const result = await sessionManager.requestOlderHistory(sessionId, req.params.jid, {
+    count: count ? parseInt(count, 10) : 50,
+    oldestMsgId: oldest_msg_id,
+    oldestMsgFromMe: oldest_msg_from_me,
+    oldestMsgTimestampMs: oldest_msg_timestamp_ms,
+    before: before ? parseInt(before, 10) : undefined,
+    timeoutMs: timeout_ms ? parseInt(timeout_ms, 10) : undefined,
+  });
+  res.json(result);
 }));
 
 // Send a text message from one session

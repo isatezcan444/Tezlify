@@ -1127,13 +1127,6 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
             ? rawName
             : undefined;
         if (typeof convId === 'number') {
-          // Faz 6 (PHASE-28 duzeltmesi): handler eskiden yalnizca MEVCUT
-          // sohbeti guncellerdi — history sync sirasinda backend'e yazilan
-          // YENI sohbetler UI'ye hic dusmuyordu (veri akıyor, ekran bos).
-          // Bilinmeyen convId => listede yok: (throttle'li) DB'den tazele.
-          if (!knownConvIdsRef.current.has(convId)) {
-            scheduleBootstrapFetch();
-          }
           const patch = (c: Conversation): Conversation => {
             // Faz 10 (P2): gateway'den gelen gecikmeli ozet de paylasilan
             // kuraldan gecer ('[IMAGE]' -> etiket); daha eski zaman damgali
@@ -1172,7 +1165,20 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       }
 
       if (eventData.event === 'new_conversation' || eventData.event === 'conversations_updated') {
-        loadConversations(true);
+        if (eventData.conversation && eventData.conversation.id) {
+          // Targeted insertion without full list refetch
+          setConversations((prev) => {
+            if (prev.some((c) => c.id === eventData.conversation.id)) {
+              return prev.map((c) => (c.id === eventData.conversation.id ? { ...c, ...eventData.conversation } : c));
+            }
+            return [eventData.conversation, ...prev].sort(compareByLastMessageDesc);
+          });
+        } else if (eventData.conversation_id) {
+          hydrateConversation(Number(eventData.conversation_id));
+        } else {
+          // Full refetch retained only when event payload lacks conversation data to mutate accurately
+          loadConversations(true);
+        }
         fetchSessions(true);
         onRefreshStatsRef.current();
       }

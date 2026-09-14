@@ -637,6 +637,18 @@ export function createSessionManager({
   // cache per session so two WhatsApp lines can never share message IDs or
   // retry budgets, while reconnects on the same line retain their counters.
   const msgRetryCounterCaches = new Map();
+  const inFlightHistoryFetches = new Map(); // flightKey -> Promise
+  const pendingHistoryWaiters = new Map(); // flightKey -> { resolve, timer, targetId, key, sessionId }
+  function clearSessionHistoryFetches(sessionId) {
+    for (const [flightKey, waiter] of pendingHistoryWaiters.entries()) {
+      if (waiter.sessionId === sessionId) {
+        clearTimeout(waiter.timer);
+        waiter.resolve([]);
+        pendingHistoryWaiters.delete(flightKey);
+        inFlightHistoryFetches.delete(flightKey);
+      }
+    }
+  }
   function retryCounterCacheFor(sessionId) {
     let cache = msgRetryCounterCaches.get(String(sessionId));
     if (!cache) {
@@ -952,6 +964,7 @@ export function createSessionManager({
       // BAŞKA bir hesabın istekleriyle karışabiliyordu.)
       session.store = createSessionStore();
       clearSessionMedia(id);
+      clearSessionHistoryFetches(id);
       resetRetryCounterCache(id);
       // Remove persisted auth state
       if (authRepository) {
@@ -993,6 +1006,7 @@ export function createSessionManager({
       // Oturumun bellek deposu ve indirilmiş medyası da bırakılır.
       if (session) session.store = null;
       clearSessionMedia(id);
+      clearSessionHistoryFetches(id);
       const dir = getSessionDir(sessionsDir, id);
       if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
     },
@@ -1055,7 +1069,104 @@ export function createSessionManager({
       };
     },
 
-    async getMessages(sessionId, jid, { limit = 50, before } = {}) {
+    async requestOlderHistory(
+      sessionId,
+      jid,
+      { count = 50, oldestMsgId, oldestMsgFromMe, oldestMsgTimestampMs, before, timeoutMs = 5000 } = {}
+    ) {
+      const session = this._requireSession(sessionId);
+      const store = this._storeOf(session);
+      const key = resolveJidKey(store, jid);
+
+      let targetId = oldestMsgId;
+      let targetFromMe = oldestMsgFromMe;
+      let targetTs = oldestMsgTimestampMs;
+
+      if (!targetId) {
+        const list = store.messagesByChat.get(key) || [];
+        const candidates = before ? list.filter((m) => m.id < before) : list;
+        const oldest = candidates[0] || list[0];
+        if (oldest) {
+          targetId = oldest.wa_message_id;
+          targetFromMe = oldest.direction === 'OUTBOUND' || oldest.from_me;
+          targetTs = oldest.timestamp_s ? oldest.timestamp_s * 1000 : (oldest.id ? Number(oldest.id) : Date.now());
+        }
+      }
+
+      if (!targetId) {
+        return { messages: [], count: 0, status: 'NO_ANCHOR' };
+      }
+
+      const flightKey = `${session.id}:${key}:${targetId}`;
+      if (inFlightHistoryFetches.has(flightKey)) {
+        logger.debug({ flightKey }, 'Reusing in-flight history request');
+        return inFlightHistoryFetches.get(flightKey);
+      }
+
+      const sock = session.sock;
+      if (!sock || typeof sock.fetchMessageHistory !== 'function') {
+        return { messages: [], count: 0, status: 'SOCKET_UNAVAILABLE' };
+      }
+
+      const oldestMsgKey = {
+        remoteJid: key,
+        id: targetId,
+        fromMe: Boolean(targetFromMe),
+      };
+
+      const fetchPromise = new Promise((resolve) => {
+        const timer = setTimeout(() => {
+          pendingHistoryWaiters.delete(flightKey);
+          inFlightHistoryFetches.delete(flightKey);
+          logger.info({ flightKey, targetId }, 'Older history request timed out waiting for provider chunk');
+          resolve({ messages: [], count: 0, status: 'TIMEOUT' });
+        }, timeoutMs);
+
+        pendingHistoryWaiters.set(flightKey, {
+          resolve: (newMsgs) => {
+            clearTimeout(timer);
+            pendingHistoryWaiters.delete(flightKey);
+            inFlightHistoryFetches.delete(flightKey);
+            resolve({ messages: newMsgs, count: newMsgs.length, status: 'OK' });
+          },
+          timer,
+          targetId,
+          key,
+          before,
+          sessionId: session.id,
+        });
+
+        try {
+          sock
+            .fetchMessageHistory(count, oldestMsgKey, Number(targetTs) || Date.now())
+            .then((msgId) => {
+              logger.debug({ flightKey, msgId }, 'Sent HISTORY_SYNC_ON_DEMAND PDO');
+            })
+            .catch((err) => {
+              clearTimeout(timer);
+              pendingHistoryWaiters.delete(flightKey);
+              inFlightHistoryFetches.delete(flightKey);
+              logger.warn({ flightKey, err: err?.message }, 'Failed to send fetchMessageHistory PDO');
+              resolve({ messages: [], count: 0, status: 'ERROR', error: err?.message });
+            });
+        } catch (err) {
+          clearTimeout(timer);
+          pendingHistoryWaiters.delete(flightKey);
+          inFlightHistoryFetches.delete(flightKey);
+          logger.warn({ flightKey, err: err?.message }, 'Exception in sock.fetchMessageHistory');
+          resolve({ messages: [], count: 0, status: 'ERROR', error: err?.message });
+        }
+      });
+
+      inFlightHistoryFetches.set(flightKey, fetchPromise);
+      return fetchPromise;
+    },
+
+    async getMessages(
+      sessionId,
+      jid,
+      { limit = 50, before, fetchProvider = false, oldestMsgId, oldestMsgFromMe, oldestMsgTimestampMs, timeoutMs = 4000 } = {}
+    ) {
       const session = this._requireSession(sessionId);
       const store = this._storeOf(session);
       const key = resolveJidKey(store, jid);
@@ -1064,6 +1175,23 @@ export function createSessionManager({
         list = list.filter((m) => m.id < before);
       }
       list.sort((a, b) => (a.id || 0) - (b.id || 0));
+
+      if (fetchProvider && list.length < limit && session.sock) {
+        await this.requestOlderHistory(sessionId, jid, {
+          count: limit - list.length,
+          oldestMsgId: oldestMsgId || list[0]?.wa_message_id,
+          oldestMsgFromMe,
+          oldestMsgTimestampMs,
+          before,
+          timeoutMs,
+        });
+        list = store.messagesByChat.get(key) || [];
+        if (before) {
+          list = list.filter((m) => m.id < before);
+        }
+        list.sort((a, b) => (a.id || 0) - (b.id || 0));
+      }
+
       return list.slice(-limit);
     },
 
@@ -2355,6 +2483,7 @@ export function createSessionManager({
             await deactivatePersistentSession(id);
             session.store = createSessionStore();
             clearSessionMedia(id);
+            clearSessionHistoryFetches(id);
             resetRetryCounterCache(id);
             emitEvent({ event: 'session_disconnected', session_id: id, session_name: session.session_name, reason: isBanned ? 'BANNED' : 'LOGGED_OUT' });
           } else {
@@ -2697,10 +2826,21 @@ export function createSessionManager({
             const record = historyMessageToRecord(msg, key);
             if (!record) continue;
             list.push(record);
-            // Bellek koruması: sohbet başına en yeni 500 mesaj
+            list.sort((a, b) => (a.id || 0) - (b.id || 0));
+            // Bellek koruması: sohbet başına en yeni 500 mesaj (short-lived transport cache)
             if (list.length > 500) list.splice(0, list.length - 500);
             messagesByChat.set(key, list);
             storedMessages += 1;
+          }
+          // Notify any pending history waiters waiting for this session's history
+          for (const [flightKey, waiter] of pendingHistoryWaiters.entries()) {
+            if (waiter.sessionId === session.id) {
+              const chatMsgs = messagesByChat.get(waiter.key) || [];
+              const matching = waiter.before ? chatMsgs.filter((m) => m.id < waiter.before) : chatMsgs;
+              waiter.resolve(matching);
+              pendingHistoryWaiters.delete(flightKey);
+              inFlightHistoryFetches.delete(flightKey);
+            }
           }
           // 3. Sohbetler
           let storedChats = 0;

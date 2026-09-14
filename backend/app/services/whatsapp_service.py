@@ -35,6 +35,19 @@ class WhatsAppRelinkRequired(RuntimeError):
     """The logical line exists, but its durable WhatsApp auth cannot be restored."""
 
 
+_conversation_locks: Dict[Tuple[str, int], asyncio.Lock] = {}
+_in_flight_history_fetches: Dict[Tuple[int, Optional[int]], asyncio.Future] = {}
+
+
+def _get_conversation_lock(user_id: str, conversation_id: int) -> asyncio.Lock:
+    key = (str(user_id), int(conversation_id))
+    lock = _conversation_locks.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _conversation_locks[key] = lock
+    return lock
+
+
 # ---------------------------------------------------------------------------
 # Yardimcilar
 # ---------------------------------------------------------------------------
@@ -1305,6 +1318,19 @@ def _message_row_from_gateway(owner: str, conv: Conversation, msg: Dict[str, Any
     direction = MessageDirection.INBOUND if str(msg.get("direction", "INBOUND")).upper() == "INBOUND" else MessageDirection.OUTBOUND
     body = msg.get("body") or ""
     ts = _parse_dt(msg.get("created_at"))
+    if ts is None and msg.get("timestamp_s") is not None:
+        try:
+            ts = datetime.fromtimestamp(float(msg["timestamp_s"]), tz=timezone.utc)
+        except Exception:
+            pass
+    if ts is None and msg.get("timestamp") is not None:
+        try:
+            val = float(msg["timestamp"])
+            if val > 1e11:
+                val /= 1000.0
+            ts = datetime.fromtimestamp(val, tz=timezone.utc)
+        except Exception:
+            pass
     status_str = str(msg.get("status") or ("RECEIVED" if direction == MessageDirection.INBOUND else "SENT")).upper()
     try:
         status = ConversationMessageStatus[status_str]
@@ -1771,6 +1797,8 @@ async def _resolve_jid(db: AsyncSession, user_id: str, conversation_id: int) -> 
 async def _hydrate_messages_on_demand(
     db: AsyncSession, owner: str, conv: Conversation, limit: int,
     before_ts_ms: Optional[int] = None,
+    oldest_msg_id: Optional[str] = None,
+    oldest_msg_from_me: Optional[bool] = None,
 ) -> List[Message]:
     """P0.11 (WhatsApp Web paritesi): kullanici sohbeti job hydrasyonundan once
     actiysa gateway belleğinden (history-sync'ten beri mevcut) bu sohbetin son
@@ -1807,6 +1835,10 @@ async def _hydrate_messages_on_demand(
                 # a request for a small page hydrate far too much history.
                 limit=min(max(int(limit), 1), 100),
                 before=before_ts_ms,
+                fetch_provider=True,
+                oldest_msg_id=oldest_msg_id,
+                oldest_msg_from_me=oldest_msg_from_me,
+                oldest_msg_ts_ms=before_ts_ms,
             ),
         )
     except Exception as exc:  # noqa: BLE001 — operasyonel hata API'ye aktarilir
@@ -1944,32 +1976,83 @@ async def get_messages(
     base = base.order_by(_msg_time_col().desc(), Message.id.desc()).limit(page_size)
     res = await db.execute(base)
     rows = list(res.scalars().all())
-    # Faz 6 (P0.11 lazy hydration): ilk sayfa hic bos ve sohbet hicbir zaman
-    # mesaj gormemisse gateway belleğinden canli cek (job'u bekleme).
-    if not rows and before is None:
-        rows = await _hydrate_messages_on_demand(db, user_id, conv, limit)
-    elif len(rows) < page_size:
-        # Sorun 1 (kaydirma ile gecmis): DB sayfası tukendi — initial sync
-        # sohbet basina yalnizca en yeni ~50 mesaji yazdigi icin kalan gecmis
-        # gateway'den sucut tabanli tamamlanir. Suicut, sayfadaki (ve varsa
-        # `before` satirindaki) EN ESKI GERCEK zaman damgasidir (sentez yok).
-        cursor_src = list(rows) + ([before_row] if before_row else [])
-        cursor_ms = _hydration_cursor_ms(cursor_src)
-        if cursor_ms is not None:
-            older = await _hydrate_messages_on_demand(
-                db, user_id, conv, page_size - len(rows), before_ts_ms=cursor_ms
-            )
-            if older:
-                seen_ids = {r.id for r in rows}
-                rows = [r for r in older if r.id not in seen_ids] + rows
-    # Kronolojik cikis siralamasi (eski→yeni): hydration sonrasi id sirasi
-    # bozulabilir — tek dogru anahtar gercek zaman damgasidir.
+    # If DB has fewer than page_size rows, check if an in-flight operation is already fetching this page.
+    if len(rows) < page_size:
+        flight_key = (conv.id, before)
+        future = _in_flight_history_fetches.get(flight_key)
+        if future is not None:
+            await future
+            res = await db.execute(base)
+            rows = list(res.scalars().all())
+        else:
+            loop = asyncio.get_running_loop()
+            new_future = loop.create_future()
+            _in_flight_history_fetches[flight_key] = new_future
+            try:
+                async with _get_conversation_lock(user_id, conv.id):
+                    # Double-check inside lock
+                    res = await db.execute(base)
+                    rows = list(res.scalars().all())
+                    if len(rows) < page_size:
+                        if not rows and before is None:
+                            older = await _hydrate_messages_on_demand(db, user_id, conv, page_size)
+                            if older:
+                                res = await db.execute(base)
+                                rows = list(res.scalars().all())
+                        else:
+                            cursor_src = list(rows) + ([before_row] if before_row else [])
+                            cursor_ms = _hydration_cursor_ms(cursor_src)
+                            anchor = None
+                            for r in cursor_src:
+                                if r is not None and getattr(r, "wa_message_id", None):
+                                    if anchor is None or (_msg_time(r) or datetime.min) < (_msg_time(anchor) or datetime.min):
+                                        anchor = r
+                            anchor_id = anchor.wa_message_id if anchor else None
+                            anchor_from_me = (anchor.direction == MessageDirection.OUTBOUND) if anchor else None
+                            if cursor_ms is not None:
+                                older = await _hydrate_messages_on_demand(
+                                    db,
+                                    user_id,
+                                    conv,
+                                    page_size - len(rows),
+                                    before_ts_ms=cursor_ms,
+                                    oldest_msg_id=anchor_id,
+                                    oldest_msg_from_me=anchor_from_me,
+                                )
+                                if older:
+                                    res = await db.execute(base)
+                                    rows = list(res.scalars().all())
+                if not new_future.done():
+                    new_future.set_result(True)
+            except Exception as exc:
+                if not new_future.done():
+                    new_future.set_exception(exc)
+                raise
+            finally:
+                _in_flight_history_fetches.pop(flight_key, None)
+
+    # Kronolojik cikis siralamasi (eski→yeni)
     rows.sort(key=lambda r: (_msg_time(r) or datetime.min, r.id or 0))
-    # `has_more`: hydration istenenden FAZLA satir ekleyebilir (gateway en az
-    # 50 kayit doner). Eski `len(rows) == page_size` kiyasi bu durumda False
-    # uretip sonsuz kaydirmayi erkenden durduruyor, ayrica `limit` sozlesmesi
-    # asiliyordu. Sayfa boyutuna kirp; fazlasi varsa "devam var" de.
-    has_more = len(rows) >= page_size
+
+    has_more = False
+    if rows:
+        oldest_row = rows[0]
+        oldest_ts = _msg_time(oldest_row)
+        if oldest_ts is not None:
+            older_exists = await db.scalar(
+                select(Message.id).where(
+                    Message.conversation_id == conv.id,
+                    get_user_filter(Message.user_id, user_id),
+                    or_(
+                        _msg_time_col() < oldest_ts,
+                        and_(_msg_time_col() == oldest_ts, Message.id < oldest_row.id),
+                    ),
+                ).limit(1)
+            )
+            has_more = older_exists is not None
+        if not has_more and conv.session_id and len(rows) >= page_size:
+            has_more = True
+
     if len(rows) > page_size:
         rows = rows[-page_size:]
     messages = [_serialize_message(r) for r in rows]
@@ -2605,6 +2688,8 @@ async def _run_sync_job(job: SyncJob) -> None:
                 round((job.finished_at - job.started_at).total_seconds(), 1),
                 job.stage_timings,
             )
+            # Trigger progressive background history expansion without blocking realtime or UI
+            asyncio.create_task(_run_background_history_expansion(owner, gateway_id))
     except WhatsAppRelinkRequired as exc:
         job.state = "FAILED"
         job.error = str(exc)
@@ -2967,6 +3052,55 @@ async def _run_initial_sync(owner: str) -> None:
         if owner in _initial_sync_pending:
             _initial_sync_pending.discard(owner)
             _schedule_initial_sync(owner)
+
+
+async def _run_background_history_expansion(user_id: str, gateway_id: str) -> None:
+    """Progressive background history expansion after initial sync.
+    Runs cooperatively in small batches without blocking realtime events, outgoing sends, or holding global locks.
+    """
+    logger.info("Starting background history expansion for user=%s, gateway=%s", user_id, gateway_id)
+    try:
+        async with AsyncSessionLocal() as db:
+            cres = await db.execute(
+                select(Conversation).where(
+                    Conversation.channel == "WHATSAPP",
+                    get_user_filter(Conversation.user_id, user_id),
+                ).order_by(Conversation.last_message_at.desc().nullslast())
+            )
+            convs = cres.scalars().all()
+
+        for conv in convs:
+            await asyncio.sleep(0.05)
+            try:
+                async with AsyncSessionLocal() as db:
+                    c = await db.get(Conversation, conv.id)
+                    if not c:
+                        continue
+                    mres = await db.execute(
+                        select(Message).where(Message.conversation_id == c.id)
+                        .order_by(_msg_time_col().asc(), Message.id.asc())
+                        .limit(1)
+                    )
+                    oldest = mres.scalars().first()
+                    if oldest:
+                        cursor_ms = _hydration_cursor_ms([oldest])
+                        anchor_id = oldest.wa_message_id
+                        anchor_from_me = (oldest.direction == MessageDirection.OUTBOUND)
+                        if cursor_ms is not None:
+                            await _hydrate_messages_on_demand(
+                                db,
+                                user_id,
+                                c,
+                                limit=50,
+                                before_ts_ms=cursor_ms,
+                                oldest_msg_id=anchor_id,
+                                oldest_msg_from_me=anchor_from_me,
+                            )
+            except Exception as e:
+                logger.debug("Background expansion skipped conversation %s: %s", conv.id, e)
+                continue
+    except Exception as exc:
+        logger.warning("Background history expansion failed: %s", exc)
 
 
 # Faz 13 (düzeltme — Render log regresyonu): Gateway'in bilerek KALICI
@@ -3407,6 +3541,92 @@ async def _ingest_contact_synced(db: AsyncSession, event: Dict[str, Any]) -> Dic
     _set_contact_avatar(contact, contact_payload.get("avatar_url"))
     await db.commit()
     return event
+
+
+async def reconcile_legacy_split_conversation(
+    db: AsyncSession,
+    user_id: str,
+    lid_jid: str,
+    phone_jid: str,
+) -> Optional[Conversation]:
+    """Non-destructively reconciles and unifies legacy split conversations
+    caused by LID vs phone-based JID divergence.
+
+    Invariants:
+    - No messages are deleted (delivery statuses are preserved, higher status wins).
+    - Unread counts are merged.
+    - Last message preview & timestamp are updated to the newest real timestamp.
+    - Legacy conversation is archived with custom_attributes={"merged_into_conversation_id": canonical.id}.
+    - Historical legacy records are retained for auditing.
+    """
+    lid_phone = f"jid:{lid_jid}" if not str(lid_jid).startswith("jid:") else str(lid_jid)
+    canonical_phone = _contact_phone_for_jid(phone_jid)
+
+    cres = await db.execute(
+        select(Contact).where(
+            Contact.phone_e164.in_([lid_phone, canonical_phone]),
+            get_user_filter(Contact.user_id, user_id),
+        )
+    )
+    contacts = {c.phone_e164: c for c in cres.scalars().all()}
+    lid_contact = contacts.get(lid_phone)
+    canonical_contact = contacts.get(canonical_phone)
+
+    if not lid_contact or not canonical_contact:
+        return None
+
+    conv_res = await db.execute(
+        select(Conversation).where(
+            Conversation.contact_id.in_([lid_contact.id, canonical_contact.id]),
+            get_user_filter(Conversation.user_id, user_id),
+        )
+    )
+    convs = {c.contact_id: c for c in conv_res.scalars().all()}
+    legacy_conv = convs.get(lid_contact.id)
+    canonical_conv = convs.get(canonical_contact.id)
+
+    if not legacy_conv or not canonical_conv or legacy_conv.id == canonical_conv.id:
+        return canonical_conv
+
+    ranks = {"PENDING": 0, "FAILED": 0, "SENT": 1, "DELIVERED": 2, "READ": 3, "RECEIVED": 4}
+
+    async with _get_conversation_lock(user_id, legacy_conv.id), _get_conversation_lock(user_id, canonical_conv.id):
+        mres = await db.execute(
+            select(Message).where(Message.conversation_id.in_([legacy_conv.id, canonical_conv.id]))
+        )
+        all_msgs = list(mres.scalars().all())
+        canonical_wa_ids = {
+            m.wa_message_id: m for m in all_msgs if m.conversation_id == canonical_conv.id and m.wa_message_id
+        }
+
+        for msg in all_msgs:
+            if msg.conversation_id == legacy_conv.id:
+                if msg.wa_message_id and msg.wa_message_id in canonical_wa_ids:
+                    canon_msg = canonical_wa_ids[msg.wa_message_id]
+                    if ranks.get(msg.status.value, 0) > ranks.get(canon_msg.status.value, 0):
+                        canon_msg.status = msg.status
+                        canon_msg.delivered_at = canon_msg.delivered_at or msg.delivered_at
+                        canon_msg.read_at = canon_msg.read_at or msg.read_at
+                else:
+                    msg.conversation_id = canonical_conv.id
+
+        canonical_conv.unread_count = (canonical_conv.unread_count or 0) + (legacy_conv.unread_count or 0)
+
+        if legacy_conv.last_message_at and (
+            canonical_conv.last_message_at is None or legacy_conv.last_message_at > canonical_conv.last_message_at
+        ):
+            canonical_conv.last_message_at = legacy_conv.last_message_at
+            if legacy_conv.last_message_preview:
+                canonical_conv.last_message_preview = legacy_conv.last_message_preview
+
+        legacy_conv.status = ConversationStatus.ARCHIVED
+        legacy_conv.is_archived = True
+        legacy_conv.unread_count = 0
+        legacy_conv.archived_at = datetime.utcnow()
+
+        await db.commit()
+        await db.refresh(canonical_conv)
+        return canonical_conv
 
 
 async def _find_whatsapp_conversation(
