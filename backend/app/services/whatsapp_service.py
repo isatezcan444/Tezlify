@@ -1192,7 +1192,8 @@ def _message_row_from_gateway(owner: str, conv: Conversation, msg: Dict[str, Any
     mtype_str = (msg.get("message_type") or "TEXT").upper()
     try:
         mtype = MessageType[mtype_str] if mtype_str in MessageType.__members__ else MessageType.TEXT
-    except Exception:
+    except (KeyError, TypeError) as exc:
+        logger.warning("Gateway message_type gecersiz; TEXT fallback (value=%r): %s", mtype_str, exc)
         mtype = MessageType.TEXT
     direction = MessageDirection.INBOUND if str(msg.get("direction", "INBOUND")).upper() == "INBOUND" else MessageDirection.OUTBOUND
     body = msg.get("body") or ""
@@ -1200,7 +1201,8 @@ def _message_row_from_gateway(owner: str, conv: Conversation, msg: Dict[str, Any
     status_str = str(msg.get("status") or ("RECEIVED" if direction == MessageDirection.INBOUND else "SENT")).upper()
     try:
         status = ConversationMessageStatus[status_str]
-    except Exception:
+    except (KeyError, TypeError) as exc:
+        logger.warning("Gateway message status gecersiz; direction fallback (value=%r): %s", status_str, exc)
         status = ConversationMessageStatus.RECEIVED if direction == MessageDirection.INBOUND else ConversationMessageStatus.SENT
     return Message(
         user_id=owner,
@@ -1899,7 +1901,8 @@ async def send_media_message(
     mtype_str = (media.get("media_type") or "document").upper()
     try:
         msg_type = MessageType[mtype_str] if mtype_str in MessageType.__members__ else MessageType.DOCUMENT
-    except Exception:
+    except (KeyError, TypeError) as exc:
+        logger.warning("Media message_type gecersiz; DOCUMENT fallback (value=%r): %s", mtype_str, exc)
         msg_type = MessageType.DOCUMENT
     caption = media.get("caption")
     filename = media.get("filename")
@@ -2929,7 +2932,8 @@ async def _ingest_message(db: AsyncSession, event: Dict[str, Any]) -> Dict[str, 
     mtype_str = (msg.get("message_type") or "TEXT").upper()
     try:
         mtype = MessageType[mtype_str] if mtype_str in MessageType.__members__ else MessageType.TEXT
-    except Exception:
+    except (KeyError, TypeError) as exc:
+        logger.warning("Inbound message_type gecersiz; TEXT fallback (value=%r): %s", mtype_str, exc)
         mtype = MessageType.TEXT
     direction = msg_direction
 
