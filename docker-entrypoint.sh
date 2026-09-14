@@ -33,7 +33,7 @@ while [ "$attempt" -le "$MAX_ATTEMPTS" ]; do
     BACKEND_READY=1
     break
   fi
-  if [ $((attempt % 15)) -eq 0 ]; do
+  if [ $((attempt % 15)) -eq 0 ]; then
     echo "[entrypoint] Waiting for backend readiness... ($attempt/${MAX_ATTEMPTS}s)"
   fi
   attempt=$((attempt + 1))
