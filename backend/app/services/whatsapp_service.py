@@ -1601,6 +1601,8 @@ async def list_conversations(
                 "avatar_url": _get_contact_avatar(contact),
                 "last_message_preview": preview,
                 "last_message_at": r.last_message_at.isoformat() if r.last_message_at else None,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "updated_at": r.updated_at.isoformat() if r.updated_at else None,
                 "message_count": msg_count,
                 "last_message_state": lm_state,
                 "unread_count": r.unread_count,
@@ -1666,7 +1668,9 @@ async def _hydrate_messages_on_demand(
         data = await gw.get_messages(
             gateway_id,
             jid,
-            limit=min(max(limit, 50), 100),
+            # Preserve the caller's page size.  A hidden minimum of 50 made
+            # a request for a small page hydrate far too much history.
+            limit=min(max(int(limit), 1), 100),
             before=before_ts_ms,
         )
     except Exception as exc:  # noqa: BLE001 — gateway kapali/eski: sessiz bos
@@ -1769,7 +1773,7 @@ async def get_messages(
     db: AsyncSession, user_id: str, conversation_id: int, limit: int = 50, before: Optional[int] = None
 ) -> Dict[str, Any]:
     conv = await _get_conversation_or_404(db, user_id, conversation_id)
-    page_size = min(limit, 100)
+    page_size = min(max(int(limit), 1), 100)
     base = select(Message).where(
         Message.conversation_id == conv.id,
         get_user_filter(Message.user_id, user_id),
@@ -2465,6 +2469,8 @@ async def _persist_chat_snapshot(
                 "avatar_url": _get_contact_avatar(contact),
                 "last_message_preview": gw_summary or None,
                 "last_message_at": gw_ts.isoformat() if gw_ts else None,
+                "created_at": conv.created_at.isoformat() if conv.created_at else None,
+                "updated_at": conv.updated_at.isoformat() if conv.updated_at else None,
                 "message_count": 0,
                 "last_message_state": "RESOLVED" if gw_summary else "REPAIRING",
                 "unread_count": conv.unread_count,

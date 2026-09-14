@@ -8,6 +8,7 @@ import {
   mergeContactName,
   NAME_RANK,
   jidToPhone,
+  contactPhoneJid,
 } from '../src/session-manager.js';
 
 let passed = 0;
@@ -36,6 +37,13 @@ check('jidToPhone never derives phone from group or lid jid', () => {
   assert.equal(jidToPhone('120363012345678901@g.us'), null);
   assert.equal(jidToPhone('62771114836011@lid'), null);
   assert.equal(jidToPhone('905321002030@s.whatsapp.net'), '+905321002030');
+});
+
+check('contactPhoneJid resolves Baileys v7 phoneNumber and legacy aliases', () => {
+  assert.equal(contactPhoneJid({ id: '62771114836011@lid', phoneNumber: '+905321002030' }), '905321002030@s.whatsapp.net');
+  assert.equal(contactPhoneJid({ id: '62771114836011@lid', phoneNumber: '905321002030@s.whatsapp.net' }), '905321002030@s.whatsapp.net');
+  assert.equal(contactPhoneJid({ id: '62771114836011@lid', pnJid: '905321002030@s.whatsapp.net' }), '905321002030@s.whatsapp.net');
+  assert.equal(contactPhoneJid({ id: '62771114836011@lid', phoneNumber: '62771114836011@lid' }), null);
 });
 
 check('sanitizeChatForEmit nulls raw name', () => {

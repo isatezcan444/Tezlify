@@ -85,7 +85,8 @@ export const ConversationList: React.FC<ConversationListProps> = ({
   const sorted = [...filtered].sort((a, b) => {
     const timeA = a.last_message_at ? parseServerTime(a.last_message_at)?.getTime() ?? 0 : (a.created_at ? parseServerTime(a.created_at)?.getTime() ?? 0 : 0);
     const timeB = b.last_message_at ? parseServerTime(b.last_message_at)?.getTime() ?? 0 : (b.created_at ? parseServerTime(b.created_at)?.getTime() ?? 0 : 0);
-    return timeB - timeA;
+    if (timeB !== timeA) return timeB - timeA;
+    return b.id - a.id;
   });
 
   // Deduplicate conversations by phone number (last 10 digits) or group JID so duplicate windows never appear
@@ -104,9 +105,9 @@ export const ConversationList: React.FC<ConversationListProps> = ({
         seen.set(key, { ...c });
       } else {
         const existing = seen.get(key)!;
-        const existingTime = existing.last_message_at ? new Date(existing.last_message_at).getTime() : 0;
-        const currentTime = c.last_message_at ? new Date(c.last_message_at).getTime() : 0;
-        if (currentTime > existingTime) {
+        const existingTime = existing.last_message_at ? parseServerTime(existing.last_message_at)?.getTime() ?? 0 : 0;
+        const currentTime = c.last_message_at ? parseServerTime(c.last_message_at)?.getTime() ?? 0 : 0;
+        if (currentTime > existingTime || (currentTime === existingTime && c.id > existing.id)) {
           seen.set(key, {
             ...c,
             unread_count: (c.unread_count || 0) + (existing.unread_count || 0),

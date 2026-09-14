@@ -59,6 +59,7 @@ import {
 import { useToast } from '../context/ToastContext';
 import { useI18n } from '../context/I18nContext';
 import { buildChatPreview, normalizePreviewText, shouldApplyPreview } from '../lib/whatsappPreview';
+import { parseServerTime } from '../lib/utils';
 
 
 interface WhatsAppHubPageProps {
@@ -104,9 +105,10 @@ function computeSyncProgress(
 // Sorun 2 (kronolojik siralama): sidebar sırası her zaman API ile aynı kuralı
 // uygular — last_message_at DESC. Eksik/bozuk zaman damgası en sona düşer.
 function compareByLastMessageDesc(a: Conversation, b: Conversation): number {
-  const ta = a.last_message_at ? new Date(a.last_message_at).getTime() || 0 : 0;
-  const tb = b.last_message_at ? new Date(b.last_message_at).getTime() || 0 : 0;
-  return tb - ta;
+  const ta = a.last_message_at ? parseServerTime(a.last_message_at)?.getTime() || 0 : 0;
+  const tb = b.last_message_at ? parseServerTime(b.last_message_at)?.getTime() || 0 : 0;
+  if (tb !== ta) return tb - ta;
+  return b.id - a.id;
 }
 
 // Faz 12 (Sorun 2): tekrar oynatilan WS olaylarinda sayac sismesini onlemek icin
@@ -129,6 +131,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selectedConv, setSelectedConv] = useState<Conversation | null>(null);
   const [messagesMap, setMessagesMap] = useState<Record<number, Message[]>>({});
+  const [messagePaging, setMessagePaging] = useState<Record<number, { hasMore: boolean; oldest?: number; loading: boolean }>>({});
   const [convsLoading, setConvsLoading] = useState<boolean>(false);
   const [convSearch, setConvSearch] = useState<string>('');
   const [convFilter, setConvFilter] = useState<FilterTab>('ALL');
@@ -237,11 +240,44 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
 
   const activeMessages = selectedConv ? (messagesMap[selectedConv.id] || []) : [];
   const activeChatLoading = false;
-  const activeHasMore = false;
-  const activeLoadingOlder = false;
+  const activePaging = selectedConv ? messagePaging[selectedConv.id] : undefined;
+  const activeHasMore = Boolean(activePaging?.hasMore && activePaging.oldest);
+  const activeLoadingOlder = Boolean(activePaging?.loading);
   const activeConv = selectedConv;
 
-  const activeLoadOlder = async () => {};
+  const activeLoadOlder = useCallback(async () => {
+    if (!selectedConv || !activePaging?.hasMore || !activePaging.oldest || activePaging.loading) return;
+    const convId = selectedConv.id;
+    setMessagePaging((prev) => ({ ...prev, [convId]: { ...(prev[convId] || activePaging), loading: true } }));
+    try {
+      const res = await WhatsAppRepository.getConversationMessages(convId, {
+        limit: 50,
+        before: activePaging.oldest,
+      });
+      setMessagesMap((prev) => {
+        const existing = prev[convId] || [];
+        const seen = new Set(existing.map((m) => `${m.wa_message_id || ''}:${m.id}`));
+        const older = res.messages.filter((m) => !seen.has(`${m.wa_message_id || ''}:${m.id}`));
+        const merged = [...older, ...existing].sort((a, b) => {
+          const ta = new Date(a.created_at || a.external_timestamp || 0).getTime() || 0;
+          const tb = new Date(b.created_at || b.external_timestamp || 0).getTime() || 0;
+          return ta !== tb ? ta - tb : Number(a.id) - Number(b.id);
+        });
+        return { ...prev, [convId]: merged };
+      });
+      setMessagePaging((prev) => ({
+        ...prev,
+        [convId]: {
+          hasMore: Boolean(res.has_more),
+          oldest: res.oldest_message_id ?? prev[convId]?.oldest,
+          loading: false,
+        },
+      }));
+    } catch (err) {
+      setMessagePaging((prev) => ({ ...prev, [convId]: { ...(prev[convId] || activePaging), loading: false } }));
+      console.warn('[WhatsAppHubPage] Older messages fetch failed:', err);
+    }
+  }, [selectedConv, activePaging]);
 
   const loadConversations = useCallback(async (isSilent: boolean = false) => {
     const generation = conversationsGenerationRef.current;
@@ -374,6 +410,14 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     WhatsAppRepository.getConversationMessages(convId, { limit: 50 })
       .then((res) => {
         if (isMounted && res?.messages) {
+          setMessagePaging((prev) => ({
+            ...prev,
+            [convId]: {
+              hasMore: Boolean(res.has_more),
+              oldest: res.oldest_message_id,
+              loading: false,
+            },
+          }));
           setMessagesMap((prev) => {
             const existing = prev[convId] || [];
             // Merge strategy: prevent wiping messages received via realtime while GET was in flight

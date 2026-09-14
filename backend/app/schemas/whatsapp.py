@@ -72,6 +72,8 @@ class WhatsAppConversationItem(BaseModel):
     avatar_url: Optional[str] = None
     last_message_preview: Optional[str] = None
     last_message_at: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
     # Faz 10 (P2): UI "mesaj yok" bilgisini yalnizca message_count==0 ve
     # last_message_state=="NO_MESSAGES" iken gosterir.
     message_count: int = 0

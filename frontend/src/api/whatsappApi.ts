@@ -164,6 +164,8 @@ interface BackendConversation {
   avatar_url?: string | null;
   last_message_preview?: string | null;
   last_message_at?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
   message_count?: number;
   last_message_state?: string | null;
   unread_count?: number;
@@ -171,7 +173,6 @@ interface BackendConversation {
 }
 
 function mapConversation(c: BackendConversation): Conversation {
-  const last = c.last_message_at || new Date().toISOString();
   const isGroup = Boolean(c.is_group) || Boolean(c.phone?.endsWith('@g.us'));
   return {
     id: c.id,
@@ -188,9 +189,11 @@ function mapConversation(c: BackendConversation): Conversation {
     last_message_preview: c.last_message_preview || undefined,
     message_count: c.message_count ?? 0,
     last_message_state: c.last_message_state || undefined,
-    last_message_at: last,
-    created_at: last,
-    updated_at: last,
+    // Never synthesize "now" for server data. A conversation without a
+    // message must remain at the end of a chronological list.
+    last_message_at: c.last_message_at ?? undefined,
+    created_at: c.created_at ?? c.last_message_at ?? new Date(0).toISOString(),
+    updated_at: c.updated_at ?? c.created_at ?? c.last_message_at ?? new Date(0).toISOString(),
   };
 }
 
@@ -452,8 +455,8 @@ export const WhatsAppApi = {
     return {
       messages: (data.messages || []).map((m) => mapMessage(m, conversationId)),
       has_more: data.has_more ?? false,
-      oldest_message_id: (data.oldest_message_id as number | undefined) ?? undefined,
-      newest_message_id: (data.newest_message_id as number | undefined) ?? undefined,
+      oldest_message_id: data.oldest_message_id != null ? Number(data.oldest_message_id) : undefined,
+      newest_message_id: data.newest_message_id != null ? Number(data.newest_message_id) : undefined,
     };
   },
 

@@ -258,6 +258,24 @@ function asPn(v) {
   return v.includes('@') ? v : `${v}@s.whatsapp.net`;
 }
 
+// Baileys v7 uses `phoneNumber` for the phone-side identity of a contact
+// (older payloads used `pn`/`pnJid`).  Keep all variants in one resolver so a
+// LID-keyed address-book record is migrated to the canonical phone JID before
+// it is emitted or persisted.
+function contactPhoneJid(contact) {
+  if (!contact || typeof contact !== 'object') return null;
+  const candidates = [contact.phoneNumber, contact.pnJid, contact.pn, contact.jid, contact.phone];
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'string' || !candidate.trim()) continue;
+    const value = candidate.trim();
+    const normalized = /^\+?\d+$/.test(value) ? value.replace(/^\+/, '') : value;
+    const jid = asPn(normalized);
+    if (!jid || isLidJid(jid) || jid.includes('@g.us') || isBroadcastOnlyJid(jid)) continue;
+    if (jidToPhone(jid)) return jid;
+  }
+  return null;
+}
+
 // LID ↔ telefon çiftini kalıcı olarak öğren; ilk kez görülüyorsa true döner
 // (çağıran taraf bekleyen LID kayıtlarını telefona taşır). Eşleşmeler
 // OTURUMA ÖZELDİR — bir hesabın LID haritası başka hesabın JID'lerini çözmez.
@@ -537,7 +555,7 @@ function sanitizeOutboundEvent(event) {
 // Faz 8: birim testleri icin sanitizasyon yardimcilari disa aktarilir
 // (createSessionManager factory'si ayrica export edilir; index.js ikisini de
 // kullanabilir).
-export { isRawIdentityName, sanitizeChatForEmit, sanitizeOutboundEvent, mergeContactName, NAME_RANK, jidToPhone, isDegenerateJid, resolveSyncState, normalizePreviewText, buildChatPreview, isPhoneLikeName, summarizeWaMessage, classifyMessageType, hasRecognizedContent, resolveDownloadableMedia };
+export { isRawIdentityName, sanitizeChatForEmit, sanitizeOutboundEvent, mergeContactName, NAME_RANK, jidToPhone, isDegenerateJid, resolveSyncState, normalizePreviewText, buildChatPreview, isPhoneLikeName, summarizeWaMessage, classifyMessageType, hasRecognizedContent, resolveDownloadableMedia, contactPhoneJid };
 
 function mergeContactName(existing, name, source) {
   const base = existing || {};
@@ -2248,6 +2266,8 @@ export function createSessionManager({
           // Sorun (prod): Durum (`status@broadcast`) / kanal (`@newsletter`)
           // kisileri rehbere/sohbet listesine karismaz.
           if (update.id && isBroadcastOnlyJid(update.id)) continue;
+          const phoneJid = contactPhoneJid(update);
+          if (phoneJid && isLidJid(update.id)) applyLidMapping(update.id, phoneJid);
           // LID döneminde remoteJid/participant @lid olabilir — eşleşme
           // biliniyorsa telefona çöz, değilse lid anahtarında beklet
           // (_applyLidMapping öğrendiğinde telefona taşır).
@@ -2292,13 +2312,15 @@ export function createSessionManager({
           // Faz 9 (§5, RC-2): dejenere JID'lerden (`0@s.whatsapp.net`)
           // contact ÜRETİLMEZ — '+0' contact'in kaynağı burasıydı.
           if (isDegenerateJid(rawId)) continue;
+          const phoneJid = contactPhoneJid(c);
           // Çift bilgisi varsa eşlemeyi öğren (id telefon + lid alanı dolu).
           if (c.lid && !isLidJid(rawId)) applyLidMapping(c.lid, rawId);
-          // Faz 8 (patch): LID-anahtarli rehber yamalari telefonu `pnJid`'de
-          // tasir; Baileys bunu dusuruyordu — patch ile artik `c.pn`.
+          // Faz 8 (patch): LID-anahtarli rehber yamalari telefonu
+          // `phoneNumber`/`pnJid` alanlarinda tasir; eski surumler `c.pn`
+          // kullaniyordu. Tum varyantlar contactPhoneJid ile cozulur.
           // Eşleşme burada öğrenilir: bekleyen LID kaydı telefona taşınır ve
           // ad, telefon-anahtarlı kişiye addressbook rütbesiyle yazılır.
-          if (c.pn && isLidJid(rawId)) applyLidMapping(rawId, c.pn);
+          if (phoneJid && isLidJid(rawId)) applyLidMapping(rawId, phoneJid);
           const jid = normalizeJid(rawId); // lid ise ve eşleşme biliniyorsa telefona çözülür
           if (isBroadcastOnlyJid(jid)) continue;
           const now = new Date().toISOString();
@@ -2453,9 +2475,11 @@ export function createSessionManager({
             // Faz 9 (§5, RC-2): dejenere JID'lerden (`0@s.whatsapp.net`)
             // contact üretilmez — '+0' kaynağı.
             if (isDegenerateJid(c.id)) continue;
+            const phoneJid = contactPhoneJid(c);
             // Faz 6e: gecmis kisi kaydi {id: telefon, lid} tasir — eşleşmeyi
             // öğren (LID anahtarlı bekleyen rehber adları varsa telefona taşınır).
             if (c.lid && !isLidJid(c.id)) applyLidMapping(c.lid, c.id);
+            if (phoneJid && isLidJid(c.id)) applyLidMapping(c.id, phoneJid);
             if (isLidJid(c.id)) continue; // salt-LID kaydı: yalnızca eşleme kaynağı
             let merged = contacts.get(c.id) || {};
             // Conversation.name (senkron anındaki rehber adı) pushName'den önce gelir.
