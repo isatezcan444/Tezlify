@@ -36,7 +36,12 @@ const MEDIA_DIR = process.env.MEDIA_DIR || path.join(__dirname, '..', 'media');
 const ENCRYPTION_KEY = process.env.GATEWAY_ENCRYPTION_KEY;
 const DATABASE_URL = (process.env.GATEWAY_DATABASE_URL || process.env.DATABASE_URL || '')
   .replace('postgresql+asyncpg://', 'postgresql://');
-const REQUIRE_DURABLE_AUTH = String(process.env.REQUIRE_DURABLE_AUTH || 'false').toLowerCase() === 'true';
+// Durable Postgres auth is mandatory in production by default. Local
+// development may explicitly opt into the filesystem fallback, but a
+// misconfigured production deployment must fail at startup rather than lose
+// sessions on a restart.
+const durableAuthDefault = process.env.NODE_ENV === 'production' ? 'true' : 'false';
+const REQUIRE_DURABLE_AUTH = String(process.env.REQUIRE_DURABLE_AUTH ?? durableAuthDefault).toLowerCase() === 'true';
 
 if (!ENCRYPTION_KEY || ENCRYPTION_KEY.length < 32) {
   throw new Error('GATEWAY_ENCRYPTION_KEY must be set to a secret of at least 32 characters.');

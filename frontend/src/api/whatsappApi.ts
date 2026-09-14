@@ -159,6 +159,7 @@ function mapSession(s: BackendSession): WhatsAppSession {
 
 interface BackendConversation {
   id: number;
+  session_id?: number | null;
   contact_id?: number | null;
   lead_id?: number | null;
   name?: string | null;
@@ -180,6 +181,7 @@ function mapConversation(c: BackendConversation): Conversation {
   const isGroup = Boolean(c.is_group) || Boolean(c.phone?.endsWith('@g.us'));
   return {
     id: c.id,
+    session_id: c.session_id ?? null,
     lead_id: c.lead_id ?? null,
     contact_id: c.contact_id ?? null,
     channel: 'WHATSAPP',
@@ -196,8 +198,10 @@ function mapConversation(c: BackendConversation): Conversation {
     // Never synthesize "now" for server data. A conversation without a
     // message must remain at the end of a chronological list.
     last_message_at: c.last_message_at ?? undefined,
-    created_at: c.created_at ?? c.last_message_at ?? new Date(0).toISOString(),
-    updated_at: c.updated_at ?? c.created_at ?? c.last_message_at ?? new Date(0).toISOString(),
+    // Missing timestamps are a backend contract/data-integrity problem; keep
+    // them absent so chronology never presents fabricated epoch dates.
+    created_at: c.created_at ?? undefined,
+    updated_at: c.updated_at ?? undefined,
   };
 }
 

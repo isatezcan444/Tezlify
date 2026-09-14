@@ -62,6 +62,8 @@ class WhatsAppContactListResponse(BaseModel):
 
 class WhatsAppConversationItem(BaseModel):
     id: int
+    # A contact may have one conversation per connected WhatsApp line.
+    session_id: Optional[int] = None
     contact_id: Optional[int] = None
     lead_id: Optional[int] = None
     name: Optional[str] = None

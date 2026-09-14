@@ -331,6 +331,8 @@ export interface WhatsAppTemplate {
 export interface Conversation {
   id: number;
   lead_id?: number | null;
+  /** Backend WhatsApp line identity; same contact may exist on many lines. */
+  session_id?: number | null;
   whatsapp_number_id?: number | null;
   contact_id?: number | null;
   channel: string;
@@ -338,8 +340,8 @@ export interface Conversation {
   last_message_at?: string;
   unread_count: number;
   last_read_at?: string;
-  created_at: string;
-  updated_at: string;
+  created_at?: string;
+  updated_at?: string;
   lead_name?: string;
   lead_phone?: string;
   lead_avatar_url?: string;

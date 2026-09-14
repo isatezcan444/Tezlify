@@ -89,16 +89,17 @@ export const ConversationList: React.FC<ConversationListProps> = ({
     return b.id - a.id;
   });
 
-  // Deduplicate conversations by phone number (last 10 digits) or group JID so duplicate windows never appear
+  // Deduplicate only within the same WhatsApp line. The same contact can be
+  // present on multiple user-owned lines and must remain visible separately.
   const deduplicated = React.useMemo(() => {
     const seen = new Map<string, Conversation>();
     for (const c of sorted) {
       let key = '';
       if (c.is_group || c.lead_phone?.endsWith('@g.us')) {
-        key = `grp_${c.lead_phone || c.id}`;
+        key = `line_${c.session_id ?? 'legacy'}_grp_${c.lead_phone || c.id}`;
       } else {
         const digits = c.lead_phone ? c.lead_phone.replace(/\D/g, '').slice(-10) : '';
-        key = digits ? `phone_${digits}` : `conv_${c.id}`;
+        key = digits ? `line_${c.session_id ?? 'legacy'}_phone_${digits}` : `conv_${c.id}`;
       }
 
       if (!seen.has(key)) {
@@ -119,12 +120,6 @@ export const ConversationList: React.FC<ConversationListProps> = ({
     }
     return Array.from(seen.values());
   }, [sorted]);
-
-  const selectedConvDigits = React.useMemo(() => {
-    if (!selectedId) return '';
-    const found = conversations.find((c) => c.id === selectedId);
-    return found?.lead_phone ? found.lead_phone.replace(/\D/g, '').slice(-10) : '';
-  }, [selectedId, conversations]);
 
   // Faz 10 (P2): son mesaj satiri — "Henüz WhatsApp Mesajı Yok" YALNIZCA
   // sohbetin hic mesaji olmadigi dogrulaninca (message_count===0 &&
@@ -249,8 +244,9 @@ export const ConversationList: React.FC<ConversationListProps> = ({
           </div>
         ) : (
           deduplicated.map((conv) => {
-            const convDigits = conv.lead_phone ? conv.lead_phone.replace(/\D/g, '').slice(-10) : '';
-            const isSelected = selectedId === conv.id || Boolean(selectedConvDigits && convDigits && selectedConvDigits === convDigits);
+            // Conversation id is globally unique; phone-only selection would
+            // select both lines when the same contact exists on multiple lines.
+            const isSelected = selectedId === conv.id;
             // Faz 7: internal JID/LID sentinel'leri ('jid:...@lid' vb.)
             // kullanıcıya ASLA gösterilmez — kimlik çözülene kadar güvenli
             // fallback kullanılır.

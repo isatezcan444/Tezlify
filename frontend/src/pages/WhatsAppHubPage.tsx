@@ -837,7 +837,8 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         eventData.event === 'new_message' ||
         eventData.event === 'outbound_message_sent'
       ) {
-        const convId = eventData.conversation_id;
+        const convIdRaw = eventData.conversation_id;
+        const convId = Number.isFinite(Number(convIdRaw)) ? Number(convIdRaw) : null;
         const rawPhone = eventData.lead_phone || eventData.phone || eventData.recipient_phone || eventData.sender_phone || '';
         const eventDigits = rawPhone.replace(/\D/g, '').slice(-10);
 
@@ -860,9 +861,16 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
 
         // Update Conversation in list
         setConversations((prev) => {
-          const idx = prev.findIndex(
-            (c) => c.id === convId || (eventDigits && c.lead_phone && c.lead_phone.replace(/\D/g, '').slice(-10) === eventDigits)
-          );
+          const exactIdx = convId == null ? -1 : prev.findIndex((c) => c.id === convId);
+          const phoneMatches = eventDigits
+            ? prev.reduce<number[]>((matches, c, index) => {
+                if (c.lead_phone && c.lead_phone.replace(/\D/g, '').slice(-10) === eventDigits) matches.push(index);
+                return matches;
+              }, [])
+            : [];
+          // A phone-only fallback is safe only when exactly one line matches.
+          // With multiple lines, guessing would update the wrong tenant/line.
+          const idx = exactIdx !== -1 ? exactIdx : phoneMatches.length === 1 ? phoneMatches[0] : -1;
 
           if (idx !== -1) {
             const existing = prev[idx];
@@ -935,7 +943,11 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         });
 
         // If active conversation matches, append message to thread with deduplication
-        if (convId && selectedConv && (selectedConv.id === convId || (eventDigits && selectedConv.lead_phone && selectedConv.lead_phone.replace(/\D/g, '').slice(-10) === eventDigits))) {
+        const selectedPhoneIsUnambiguous = Boolean(
+          eventDigits &&
+          conversations.filter((c) => c.lead_phone && c.lead_phone.replace(/\D/g, '').slice(-10) === eventDigits).length === 1,
+        );
+        if (convId != null && selectedConv && (selectedConv.id === convId || (selectedPhoneIsUnambiguous && selectedConv.lead_phone && selectedConv.lead_phone.replace(/\D/g, '').slice(-10) === eventDigits))) {
           const msgObj = eventData.message && typeof eventData.message === 'object' ? eventData.message : null;
           const waId = msgObj?.wa_message_id || eventData.wa_message_id || eventData.message_id;
           const clientMid = msgObj?.client_message_id || eventData.client_message_id;

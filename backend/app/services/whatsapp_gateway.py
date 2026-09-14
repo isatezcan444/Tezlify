@@ -137,7 +137,12 @@ def _s(gateway_id: str) -> str:
 
 async def list_contacts(gateway_id: str) -> List[Dict[str, Any]]:
     data = await _request("GET", f"{_s(gateway_id)}/contacts")
-    return data.get("contacts", []) if isinstance(data, dict) else []
+    if not isinstance(data, dict):
+        raise WhatsAppGatewayError("Gateway contacts response is invalid.")
+    contacts = data.get("contacts", [])
+    if not isinstance(contacts, list):
+        raise WhatsAppGatewayError("Gateway contacts payload is invalid.")
+    return contacts
 
 
 async def list_conversations(

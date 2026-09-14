@@ -330,6 +330,11 @@ async def get_messages(
         raise _no_session(exc) from exc
     except LookupError as exc:
         raise _not_found(exc) from exc
+    except Exception as exc:
+        # On-demand history failures are operational outages, not an empty
+        # conversation. Surface an explicit 502 so the UI can show retryable
+        # state instead of claiming that no messages exist.
+        raise _bad_gateway(exc) from exc
     return WhatsAppMessagesResponse(**data)
 
 

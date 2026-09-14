@@ -972,15 +972,44 @@ async def _ensure_conversations_bulk(
     contact_ids = [c.id for _jid, c in contacts if c.id is not None]
     by_contact: Dict[int, Conversation] = {}
     if contact_ids:
-        res = await db.execute(
-            select(Conversation).where(
-                Conversation.contact_id.in_(contact_ids),
-                Conversation.channel == "WHATSAPP",
-                get_user_filter(Conversation.user_id, user_id),
-            )
-        )
+        filters = [
+            Conversation.contact_id.in_(contact_ids),
+            Conversation.channel == "WHATSAPP",
+            get_user_filter(Conversation.user_id, user_id),
+        ]
+        # A contact can legitimately have one conversation per connected
+        # WhatsApp line. Never reuse another line's conversation when the
+        # event carries a concrete backend session id.
+        if session_id is not None:
+            filters.append(Conversation.session_id == session_id)
+        res = await db.execute(select(Conversation).where(*filters))
         for conv in res.scalars().all():
             by_contact.setdefault(int(conv.contact_id), conv)
+        if session_id is not None:
+            missing_ids = [cid for cid in contact_ids if cid not in by_contact]
+            if missing_ids:
+                legacy_res = await db.execute(
+                    select(Conversation).where(
+                        Conversation.contact_id.in_(missing_ids),
+                        Conversation.channel == "WHATSAPP",
+                        Conversation.session_id.is_(None),
+                        get_user_filter(Conversation.user_id, user_id),
+                    )
+                )
+                legacy_by_contact: Dict[int, List[Conversation]] = {}
+                for conv in legacy_res.scalars().all():
+                    legacy_by_contact.setdefault(int(conv.contact_id), []).append(conv)
+                for cid, candidates in legacy_by_contact.items():
+                    if len(candidates) == 1:
+                        candidates[0].session_id = session_id
+                        by_contact[cid] = candidates[0]
+                    elif len(candidates) > 1:
+                        logger.warning(
+                            "Legacy line-less sohbetler belirsiz; yeni line sohbeti olusturulacak (user=%s,contact=%s,count=%s)",
+                            user_id,
+                            cid,
+                            len(candidates),
+                        )
     out: List[Tuple[str, Contact, Conversation]] = []
     pending_conversations: List[Conversation] = []
     for jid_str, contact in contacts:
@@ -1018,13 +1047,14 @@ async def _ensure_conversations_bulk(
             await db.flush()
     except IntegrityError:
         # Es zamanli diger islem sohbeti olusturdu. DB'den yeniden cek.
-        res = await db.execute(
-            select(Conversation).where(
-                Conversation.contact_id.in_(contact_ids),
-                Conversation.channel == "WHATSAPP",
-                get_user_filter(Conversation.user_id, user_id),
-            )
-        )
+        filters = [
+            Conversation.contact_id.in_(contact_ids),
+            Conversation.channel == "WHATSAPP",
+            get_user_filter(Conversation.user_id, user_id),
+        ]
+        if session_id is not None:
+            filters.append(Conversation.session_id == session_id)
+        res = await db.execute(select(Conversation).where(*filters))
         for c_row in res.scalars().all():
             by_contact[int(c_row.contact_id)] = c_row
         out = []
@@ -1120,13 +1150,43 @@ async def _ensure_conversation(
     session_id: Optional[int] = None,
 ) -> Conversation:
     contact = await _upsert_contact(db, user_id, jid, None)
-    stmt = select(Conversation).where(
+    filters = [
         Conversation.contact_id == contact.id,
         Conversation.channel == "WHATSAPP",
         get_user_filter(Conversation.user_id, user_id),
-    )
+    ]
+    if session_id is not None:
+        filters.append(Conversation.session_id == session_id)
+    stmt = select(Conversation).where(*filters)
     res = await db.execute(stmt)
-    conv = res.scalar_one_or_none()
+    matching = list(res.scalars().all())
+    conv = matching[0] if matching else None
+    if len(matching) > 1:
+        logger.warning(
+            "Birden fazla ayni hat sohbeti bulundu; deterministik ilk kayit kullaniliyor (user=%s,contact=%s,session=%s,count=%s)",
+            user_id,
+            contact.id,
+            session_id,
+            len(matching),
+        )
+    if conv is None and session_id is not None:
+        legacy_res = await db.execute(
+            select(Conversation).where(
+                Conversation.contact_id == contact.id,
+                Conversation.channel == "WHATSAPP",
+                Conversation.session_id.is_(None),
+                get_user_filter(Conversation.user_id, user_id),
+            ).order_by(Conversation.id.asc())
+        )
+        legacy_rows = list(legacy_res.scalars().all())
+        if len(legacy_rows) == 1:
+            conv = legacy_rows[0]
+            conv.session_id = session_id
+            await db.flush()
+        elif len(legacy_rows) > 1:
+            raise EventOwnerUnresolved(
+                f"Birden fazla legacy line-siz sohbet eslenemedi (contact={contact.id})"
+            )
     if not conv:
         conv = Conversation(
             user_id=user_id,
@@ -1404,12 +1464,22 @@ async def _sync_conversations_impl(db: AsyncSession, user_id: str) -> List[Dict[
         stmt = select(Conversation).where(
             Conversation.contact_id == contact.id,
             Conversation.channel == "WHATSAPP",
+            Conversation.session_id == session_row.id,
             get_user_filter(Conversation.user_id, user_id),
         )
         res = await db.execute(stmt)
-        conv = res.scalar_one_or_none()
+        matches = list(res.scalars().all())
+        conv = matches[0] if matches else None
+        if len(matches) > 1:
+            logger.warning(
+                "Sohbet senkronunda duplicate satir; ilk kayit kullaniliyor (user=%s,contact=%s,session=%s,count=%s)",
+                user_id,
+                contact.id,
+                session_row.id,
+                len(matches),
+            )
         if conv is None:
-            conv = await _ensure_conversation(db, user_id, jid_str)
+            conv = await _ensure_conversation(db, user_id, jid_str, session_id=session_row.id)
         # Faz 4: sohbet gecmisini de cek (history sync gateway belleğinde tuttu).
         # Faz 10 (P2): gecmis ONCE çekilir ki paylasilan zaman-damgali kural
         # en yeni mesajı dogru secsin; gateway'in sohbet bazli preview'i
@@ -1599,6 +1669,7 @@ async def list_conversations(
         out.append(
             {
                 "id": r.id,
+                "session_id": r.session_id,
                 "contact_id": r.contact_id,
                 "lead_id": r.lead_id,
                 # Faz 7: ham jid/lid sizarca UI'a None gonderilir (fallback
@@ -1656,8 +1727,9 @@ async def _hydrate_messages_on_demand(
 ) -> List[Message]:
     """P0.11 (WhatsApp Web paritesi): kullanici sohbeti job hydrasyonundan once
     actiysa gateway belleğinden (history-sync'ten beri mevcut) bu sohbetin son
-    mesajlarini cek + kalici yaz. Gercek veri, sentez yok; hata fail-soft
-    (bos liste doner — UI zaten job banner'ini gosteriyor, basari maskelenmez).
+    mesajlarini cek + kalici yaz. Gercek veri, sentez yok. Gateway hatasi
+    yukariya tasinir; bos listeye cevrilmez, aksi halde outage "mesaj yok"
+    olarak gorunur ve gercek hata maskelenir.
 
     Sorun 1 (lazy hydration): `before_ts_ms` verildiginde gateway'den bu
     MILAT (ms epoch) tarihinden ESKI mesajlar istenir — initial sync yalnizca
@@ -1686,10 +1758,14 @@ async def _hydrate_messages_on_demand(
             limit=min(max(int(limit), 1), 100),
             before=before_ts_ms,
         )
-    except Exception as exc:  # noqa: BLE001 — gateway kapali/eski: sessiz bos
-        logger.info("On-demand hydrasyon atlandi (conv=%s): %s", conv.id, exc)
-        return []
-    gw_msgs = data.get("messages", []) if isinstance(data, dict) else []
+    except Exception as exc:  # noqa: BLE001 — operasyonel hata API'ye aktarilir
+        logger.warning("On-demand hydrasyon basarisiz (conv=%s): %s", conv.id, exc)
+        raise
+    if not isinstance(data, dict):
+        raise RuntimeError("Gateway returned an invalid messages response.")
+    gw_msgs = data.get("messages", [])
+    if not isinstance(gw_msgs, list):
+        raise RuntimeError("Gateway returned an invalid messages payload.")
     if not gw_msgs:
         return []
     # dedup: mevcut wa_message_id'ler tek SELECT ile.
@@ -2481,6 +2557,7 @@ async def _persist_chat_snapshot(
         out.append(
             {
                 "id": conv.id,
+                "session_id": conv.session_id,
                 "contact_id": contact.id,
                 "lead_id": conv.lead_id,
                 "name": _safe_display_name(contact),
@@ -3118,7 +3195,7 @@ async def _ingest_contact_synced(db: AsyncSession, event: Dict[str, Any]) -> Dic
 
 
 async def _find_whatsapp_conversation(
-    db: AsyncSession, user_id: str, jid: str
+    db: AsyncSession, user_id: str, jid: str, session_id: Optional[int] = None
 ) -> Optional[Conversation]:
     """JID'e karsilik gelen MEVCUT WhatsApp sohbeti; yoksa None (yaratmaz).
 
@@ -3134,14 +3211,51 @@ async def _find_whatsapp_conversation(
     )
     if contact_id is None:
         return None
-    res = await db.execute(
-        select(Conversation).where(
-            Conversation.contact_id == contact_id,
-            Conversation.channel == "WHATSAPP",
-            get_user_filter(Conversation.user_id, user_id),
+    filters = [
+        Conversation.contact_id == contact_id,
+        Conversation.channel == "WHATSAPP",
+        get_user_filter(Conversation.user_id, user_id),
+    ]
+    if session_id is not None:
+        filters.append(Conversation.session_id == session_id)
+    res = await db.execute(select(Conversation).where(*filters).order_by(Conversation.id.asc()))
+    rows = list(res.scalars().all())
+    if session_id is not None and not rows:
+        # Backfill a legacy, line-less row only when it is unambiguous for
+        # this tenant/contact. Never borrow a row already assigned to another
+        # line.
+        legacy_res = await db.execute(
+            select(Conversation).where(
+                Conversation.contact_id == contact_id,
+                Conversation.channel == "WHATSAPP",
+                Conversation.session_id.is_(None),
+                get_user_filter(Conversation.user_id, user_id),
+            ).order_by(Conversation.id.asc())
         )
-    )
-    return res.scalars().first()
+        legacy_rows = list(legacy_res.scalars().all())
+        if len(legacy_rows) == 1:
+            legacy_rows[0].session_id = session_id
+            await db.flush()
+            return legacy_rows[0]
+        if len(legacy_rows) > 1:
+            logger.warning(
+                "Legacy line-less sohbet belirsizligi (user=%s,jid=%s,count=%s)",
+                user_id,
+                jid,
+                len(legacy_rows),
+            )
+            return None
+    if session_id is None and len(rows) > 1:
+        # Legacy gateway events without a session id cannot be attributed to
+        # one of several lines without guessing. Fail closed.
+        logger.warning(
+            "Durum olayi belirsiz sohbet nedeniyle atlandi (user=%s,jid=%s,conversation_count=%s)",
+            user_id,
+            jid,
+            len(rows),
+        )
+        return None
+    return rows[0] if rows else None
 
 
 async def _map_conversation_event(db: AsyncSession, event: Dict[str, Any]) -> Dict[str, Any]:
@@ -3179,7 +3293,7 @@ async def _map_conversation_event(db: AsyncSession, event: Dict[str, Any]) -> Di
     if evt_name == "conversation_updated":
         conv = await _ensure_conversation_race_safe(db, owner, str(jid), event, session_id=ws_session_id)
     else:
-        conv = await _find_whatsapp_conversation(db, owner, str(jid))
+        conv = await _find_whatsapp_conversation(db, owner, str(jid), session_id=ws_session_id)
         if conv is None:
             return _skip_event(event, f"{evt_name}: sohbet yok, durum olayi sohbet yaratmaz ({jid})")
     event["conversation_id"] = conv.id

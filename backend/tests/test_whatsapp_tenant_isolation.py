@@ -699,6 +699,44 @@ async def test_send_routes_through_the_conversations_own_session():
 
 
 @pytest.mark.asyncio
+async def test_status_events_are_isolated_between_same_contact_on_two_lines():
+    """Aynı kullanıcıdaki iki hat aynı telefonu açsa da durum olayı doğru
+    conversation satırını günceller; diğer hattın unread durumu değişmez."""
+    from backend.app.models.contact import Contact
+
+    gw_a = await _add_session(U1)
+    gw_b = await _add_session(U1)
+    async with AsyncSessionLocal() as db:
+        sid_a = await db.scalar(select(WhatsAppSession.id).where(WhatsAppSession.gateway_id == gw_a))
+        sid_b = await db.scalar(select(WhatsAppSession.id).where(WhatsAppSession.gateway_id == gw_b))
+        contact = Contact(user_id=U1, phone_e164="+905321004040", display_name="Ali")
+        db.add(contact)
+        await db.flush()
+        conv_a = Conversation(user_id=U1, contact_id=contact.id, channel="WHATSAPP",
+                              status=ConversationStatus.ACTIVE, session_id=sid_a, unread_count=4)
+        conv_b = Conversation(user_id=U1, contact_id=contact.id, channel="WHATSAPP",
+                              status=ConversationStatus.ACTIVE, session_id=sid_b, unread_count=7)
+        db.add_all([conv_a, conv_b])
+        await db.commit()
+        conv_a_id, conv_b_id = conv_a.id, conv_b.id
+
+    result = await ws.ingest_gateway_event({
+        "event": "conversation_read",
+        "gateway_session_id": gw_b,
+        "conversation_id": REAL_JID,
+    })
+    assert result is not None
+    assert result["conversation_id"] == conv_b_id
+
+    async with AsyncSessionLocal() as db:
+        a = await db.get(Conversation, conv_a_id)
+        b = await db.get(Conversation, conv_b_id)
+        assert a is not None and b is not None
+        assert a.unread_count == 4
+        assert b.unread_count == 0
+
+
+@pytest.mark.asyncio
 async def test_deleting_one_session_keeps_the_other_sessions_chats():
     """Bir hatti silmek YALNIZCA o hattin sohbetlerini temizler.
 
