@@ -376,7 +376,7 @@ export const WhatsAppApi = {
   async deleteSession(sessionId: number): Promise<void> {
     const data = await apiSend<{ success: boolean; error?: string }>(`/whatsapp/sessions/${sessionId}`, 'DELETE');
     if (!data.success) {
-      throw new WhatsAppApiError(data.error || 'Oturum gateway üzerinden silinemedi.');
+      throw new WhatsAppApiError(data.error || '');
     }
   },
 
@@ -562,7 +562,7 @@ export const WhatsAppApi = {
   /** Karsı tarafa 'yazıyor...' gostermesi gonderir. */
   async sendTyping(conversationId: number, typing: boolean = true): Promise<{ success: boolean; error?: string }> {
     const data = await apiSend<{ success: boolean; error?: string }>(`/whatsapp/conversations/${conversationId}/typing`, 'POST', { typing });
-    if (!data.success) throw new WhatsAppApiError(data.error || 'Yazıyor durumu WhatsApp\'a iletilemedi.');
+    if (!data.success) throw new WhatsAppApiError(data.error || '');
     return data;
   },
 

@@ -1974,8 +1974,8 @@ async def send_typing(db: AsyncSession, user_id: str, conversation_id: int, typi
     gateway_id = await _conversation_gateway_id(db, user_id, conv)
     result = await gw.send_typing(gateway_id, jid, typing=typing)
     return {
-        "success": bool(result.get("success", True)) if isinstance(result, dict) else True,
-        "error": result.get("error") if isinstance(result, dict) else None,
+        "success": bool(result.get("success")) if isinstance(result, dict) else False,
+        "error": result.get("error") if isinstance(result, dict) else "Gateway returned an invalid typing response.",
     }
 
 

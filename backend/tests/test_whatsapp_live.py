@@ -941,6 +941,22 @@ async def test_send_typing_endpoint_surfaces_gateway_failure(auth_headers, mock_
 
 
 @pytest.mark.asyncio
+async def test_send_typing_endpoint_rejects_malformed_gateway_response(auth_headers, mock_gateway):
+    """A malformed gateway response fails closed instead of becoming success."""
+    conv_id = await _make_conv()
+    mock_gateway.send_typing.return_value = None
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        res = await client.post(
+            f"/api/v1/whatsapp/conversations/{conv_id}/typing",
+            json={"typing": True},
+            headers=auth_headers,
+        )
+    assert res.status_code == 200
+    assert res.json()["success"] is False
+
+
+@pytest.mark.asyncio
 async def test_send_media_requires_url_or_base64(auth_headers, mock_gateway):
     """POST /conversations/{id}/media without media_url and media_base64 → 400."""
     conv_id = await _make_conv()

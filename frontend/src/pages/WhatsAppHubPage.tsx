@@ -276,6 +276,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     } catch (err) {
       setMessagePaging((prev) => ({ ...prev, [convId]: { ...(prev[convId] || activePaging), loading: false } }));
       console.warn('[WhatsAppHubPage] Older messages fetch failed:', err);
+      toastRef.current.error(tRef.current('whatsapp.messagesLoadFailed') || tRef.current('common.error'), tRef.current('common.error'));
     }
   }, [selectedConv, activePaging]);
 
@@ -1585,7 +1586,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       toast.success(t('whatsapp.deletedSuccess'), t('common.success'));
       onRefreshStats();
     } catch (err: any) {
-      toast.error(err?.message || t('common.error'), t('common.error'));
+      toast.error(err?.message || t('whatsapp.deleteSessionFailed') || t('common.error'), t('common.error'));
       await loadConversations(true);
     } finally {
       setDeletingSessionId(null);
@@ -1929,6 +1930,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                           typing,
                           error: err instanceof Error ? err.message : String(err),
                         });
+                        toastRef.current.error(tRef.current('whatsapp.typingFailed') || tRef.current('common.error'), tRef.current('common.error'));
                       });
                     }
                   }}
