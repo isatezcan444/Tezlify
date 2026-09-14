@@ -1,6 +1,6 @@
 import enum
 from datetime import datetime
-from sqlalchemy import Boolean, Column, Integer, String, DateTime, Enum, ForeignKey, Index, Uuid, Text
+from sqlalchemy import Boolean, Column, Integer, String, DateTime, Enum, ForeignKey, Index, Uuid, Text, UniqueConstraint
 from sqlalchemy.orm import relationship
 from backend.app.core.database import Base
 
@@ -79,4 +79,11 @@ class Conversation(Base):
         Index("idx_conv_lead_channel_status", "lead_id", "channel", "status"),
         Index("idx_conv_last_msg_at", "last_message_at"),
         Index("idx_conv_user_group_archived", "user_id", "is_group", "is_archived"),
+        # One contact may have one WhatsApp conversation per line.  Session
+        # is nullable for legacy rows; SQL NULL semantics intentionally allow
+        # those rows until they are safely backfilled by a session-scoped event.
+        UniqueConstraint(
+            "user_id", "session_id", "contact_id", "channel",
+            name="uq_conv_user_session_contact_channel",
+        ),
     )

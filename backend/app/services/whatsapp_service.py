@@ -1149,18 +1149,25 @@ async def _upsert_contact(
 # Sohbetler (conversations)
 # ---------------------------------------------------------------------------
 
-async def _ensure_conversation(
-    db: AsyncSession, user_id: str, jid: str, preview: Optional[str] = None,
-    session_id: Optional[int] = None,
-) -> Conversation:
-    contact = await _upsert_contact(db, user_id, jid, None)
-    filters = [
-        Conversation.contact_id == contact.id,
+def _conversation_scope_filters(
+    user_id: str, contact_id: Any, session_id: Optional[int] = None
+) -> List[Any]:
+    """Return the canonical tenant/line scope for a WhatsApp conversation."""
+    filters: List[Any] = [
+        Conversation.contact_id == contact_id,
         Conversation.channel == "WHATSAPP",
         get_user_filter(Conversation.user_id, user_id),
     ]
     if session_id is not None:
         filters.append(Conversation.session_id == session_id)
+    return filters
+
+async def _ensure_conversation(
+    db: AsyncSession, user_id: str, jid: str, preview: Optional[str] = None,
+    session_id: Optional[int] = None,
+) -> Conversation:
+    contact = await _upsert_contact(db, user_id, jid, None)
+    filters = _conversation_scope_filters(user_id, contact.id, session_id)
     stmt = select(Conversation).where(*filters).order_by(Conversation.id.asc())
     res = await db.execute(stmt)
     matching = list(res.scalars().all())
@@ -3215,13 +3222,7 @@ async def _find_whatsapp_conversation(
     )
     if contact_id is None:
         return None
-    filters = [
-        Conversation.contact_id == contact_id,
-        Conversation.channel == "WHATSAPP",
-        get_user_filter(Conversation.user_id, user_id),
-    ]
-    if session_id is not None:
-        filters.append(Conversation.session_id == session_id)
+    filters = _conversation_scope_filters(user_id, contact_id, session_id)
     res = await db.execute(select(Conversation).where(*filters).order_by(Conversation.id.asc()))
     rows = list(res.scalars().all())
     if session_id is not None and not rows:

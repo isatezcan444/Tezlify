@@ -305,6 +305,37 @@ async def ensure_conversations_columns(engine: AsyncEngine) -> None:
                 await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_conversations_is_group ON conversations (is_group)"))
                 await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_conversations_is_archived ON conversations (is_archived)"))
                 await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_conv_user_group_archived ON conversations (user_id, is_group, is_archived)"))
+                # Repair duplicate same-line conversations before enforcing
+                # uniqueness. Messages are reassigned to the lowest id so no
+                # history is lost; legacy line-less (NULL session_id) rows
+                # remain untouched by the partial index.
+                await conn.execute(text("""
+                    UPDATE messages m
+                       SET conversation_id = keeper.id
+                      FROM conversations duplicate, conversations keeper
+                     WHERE m.conversation_id = duplicate.id
+                       AND duplicate.id > keeper.id
+                       AND duplicate.user_id = keeper.user_id
+                       AND duplicate.session_id IS NOT NULL
+                       AND duplicate.session_id = keeper.session_id
+                       AND duplicate.contact_id = keeper.contact_id
+                       AND duplicate.channel = keeper.channel
+                """))
+                await conn.execute(text("""
+                    DELETE FROM conversations duplicate
+                    USING conversations keeper
+                    WHERE duplicate.id > keeper.id
+                      AND duplicate.user_id = keeper.user_id
+                      AND duplicate.session_id IS NOT NULL
+                      AND duplicate.session_id = keeper.session_id
+                      AND duplicate.contact_id = keeper.contact_id
+                      AND duplicate.channel = keeper.channel
+                """))
+                await conn.execute(text("""
+                    CREATE UNIQUE INDEX IF NOT EXISTS uq_conv_user_session_contact_channel
+                    ON conversations (user_id, session_id, contact_id, channel)
+                    WHERE session_id IS NOT NULL
+                """))
         except Exception as e:
             logger.warning("[MIGRATION] PostgreSQL conversations columns migration: %s", e)
         await ensure_messages_media_columns(engine)
@@ -383,6 +414,51 @@ async def ensure_conversations_columns(engine: AsyncEngine) -> None:
         await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_conversations_is_archived ON conversations (is_archived)"))
         await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_conv_user_group_archived ON conversations (user_id, is_group, is_archived)"))
         await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_conversations_session_id ON conversations (session_id)"))
+        await conn.execute(text("""
+            UPDATE messages
+               SET conversation_id = (
+                   SELECT MIN(keeper.id)
+                   FROM conversations duplicate
+                   JOIN conversations keeper
+                     ON duplicate.id > keeper.id
+                    AND duplicate.user_id = keeper.user_id
+                    AND duplicate.session_id IS NOT NULL
+                    AND duplicate.session_id = keeper.session_id
+                    AND duplicate.contact_id = keeper.contact_id
+                    AND duplicate.channel = keeper.channel
+                   WHERE duplicate.id = messages.conversation_id
+               )
+             WHERE conversation_id IN (
+                 SELECT duplicate.id
+                 FROM conversations duplicate
+                 JOIN conversations keeper
+                   ON duplicate.id > keeper.id
+                  AND duplicate.user_id = keeper.user_id
+                  AND duplicate.session_id IS NOT NULL
+                  AND duplicate.session_id = keeper.session_id
+                  AND duplicate.contact_id = keeper.contact_id
+                  AND duplicate.channel = keeper.channel
+             )
+        """))
+        await conn.execute(text("""
+            DELETE FROM conversations
+            WHERE id IN (
+                SELECT duplicate.id
+                FROM conversations duplicate
+                JOIN conversations keeper
+                  ON duplicate.id > keeper.id
+                 AND duplicate.user_id = keeper.user_id
+                 AND duplicate.session_id IS NOT NULL
+                 AND duplicate.session_id = keeper.session_id
+                 AND duplicate.contact_id = keeper.contact_id
+                 AND duplicate.channel = keeper.channel
+            )
+        """))
+        await conn.execute(text("""
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_conv_user_session_contact_channel
+            ON conversations (user_id, session_id, contact_id, channel)
+            WHERE session_id IS NOT NULL
+        """))
 
     await ensure_messages_media_columns(engine)
 

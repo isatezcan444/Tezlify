@@ -152,8 +152,10 @@ function mapSession(s: BackendSession): WhatsAppSession {
     battery_level: s.battery_level ?? undefined,
     error_message: s.error_message ?? undefined,
     sync: s.sync ?? undefined,
-    created_at: s.created_at || new Date().toISOString(),
-    updated_at: s.updated_at || new Date().toISOString(),
+    // Preserve missing server timestamps; fabricating "now" hides a broken
+    // session contract and can reorder line status displays.
+    created_at: s.created_at ?? undefined,
+    updated_at: s.updated_at ?? undefined,
   };
 }
 
