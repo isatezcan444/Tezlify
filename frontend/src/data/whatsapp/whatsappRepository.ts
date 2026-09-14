@@ -148,7 +148,9 @@ export class WhatsAppRepository {
     const list = await WhatsAppApi.getConversations({ conversation_id: conversationId, limit: 1 });
     const conv = list[0];
     if (!conv) throw new WhatsAppApiError('Konu\u015fma bulunamad\u0131');
-    const messages = await WhatsAppApi.getMessages(conversationId, { limit: 100 });
+    // Keep detail and paginated list views on the same bounded first page.
+    // Older history is fetched explicitly with the cursor by the UI.
+    const messages = await WhatsAppApi.getMessages(conversationId, { limit: 50 });
     return {
       ...conv,
       messages: messages.messages,
