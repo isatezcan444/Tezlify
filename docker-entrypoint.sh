@@ -24,7 +24,8 @@ BACKEND_PID=$!
 # private durable gateway schema is available.
 BACKEND_READY=0
 attempt=1
-while [ "$attempt" -le 45 ]; do
+MAX_ATTEMPTS=180
+while [ "$attempt" -le "$MAX_ATTEMPTS" ]; do
   if ! kill -0 "$BACKEND_PID" 2>/dev/null; then
     wait "$BACKEND_PID" || exit $?
   fi
@@ -32,12 +33,15 @@ while [ "$attempt" -le 45 ]; do
     BACKEND_READY=1
     break
   fi
+  if [ $((attempt % 15)) -eq 0 ]; do
+    echo "[entrypoint] Waiting for backend readiness... ($attempt/${MAX_ATTEMPTS}s)"
+  fi
   attempt=$((attempt + 1))
   sleep 1
 done
 
 if [ "$BACKEND_READY" -ne 1 ]; then
-  echo "[entrypoint] Backend readiness timeout." >&2
+  echo "[entrypoint] Backend readiness timeout after ${MAX_ATTEMPTS}s." >&2
   exit 1
 fi
 
