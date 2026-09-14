@@ -1764,10 +1764,11 @@ export function createSessionManager({
         '';
       const mediaType = classifyMessageType(content); // Sorun 3: tek paylasilan kural
       if (!hasRecognizedContent(content) && !text) return null; // stub/unsupported message — skip
-      const ts = Number(msg.messageTimestamp) * 1000;
+      const ts = messageTimestampMs(msg.messageTimestamp);
+      const timestampSeconds = Number(msg.messageTimestamp);
       return {
-        id: Number.isFinite(ts) ? ts : Date.now(),
-        timestamp_s: Number(msg.messageTimestamp) || null,
+        id: ts,
+        timestamp_s: Number.isFinite(timestampSeconds) && timestampSeconds > 0 ? timestampSeconds : null,
         conversation_id: key,
         direction: msg.key?.fromMe ? 'OUTBOUND' : 'INBOUND',
         message_type: mediaType || 'TEXT',
@@ -1785,7 +1786,7 @@ export function createSessionManager({
         sender_name: msg.key?.fromMe ? 'ME' : (sessionManager._resolveDisplayName(session, msg.key?.participant || key, msg.pushName) || null),
         participant_jid: msg.key?.participant || null,
         participant_name: msg.key?.participant ? sessionManager._resolveDisplayName(session, msg.key.participant, msg.pushName) : null,
-        created_at: new Date(Number.isFinite(ts) ? ts : Date.now()).toISOString(),
+        created_at: new Date(ts).toISOString(),
       };
     },
 
@@ -2264,6 +2265,15 @@ export function createSessionManager({
 
       // --- Messages (inbound + phone-sent outbound) ---
       sock.ev.on('messages.upsert', async ({ messages: newMessages, type }) => {
+        if (!session.lifecycle.isCurrent(generation, sock)) {
+          diagnostic('stale_socket_messages_ignored', {
+            session_ref: sessionRef(id),
+            generation,
+            current_generation: session.lifecycle.generation,
+            upsert_type: type || null,
+          });
+          return;
+        }
         for (const msg of newMessages) {
           try {
             await this._ingestUpsertMessage(msg, sock, id);

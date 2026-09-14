@@ -156,6 +156,18 @@ await check('_historyMessageToRecord: fromMe history mesaji OUTBOUND/ME olarak c
   assert.equal(rec.body, 'Sg');
 });
 
+await check('_historyMessageToRecord eksik timestamp receive-time kullanir', () => {
+  const before = Date.now() - 5000;
+  const rec = sm._historyMessageToRecord(
+    SID,
+    { key: { remoteJid: PN, id: 'H-NO-TS' }, message: { conversation: 'Eski mesaj' } },
+    PN,
+  );
+  const createdAtMs = Date.parse(rec.created_at);
+  assert.ok(createdAtMs >= before && createdAtMs <= Date.now() + 5000);
+  assert.equal(rec.timestamp_s, null);
+});
+
 // --- 6. Çözülmemiş LID: mesaj bellekte bekler, backend'e yayılmaz ---
 
 await check('cozulmemis LID fromMe mesaj: record olusur ama message_new YAYINLANMAZ (lidHold)', async () => {
