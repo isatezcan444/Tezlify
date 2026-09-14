@@ -341,6 +341,19 @@ function isDegenerateJid(jid) {
   return digits.length < 5 || /^0+$/.test(digits);
 }
 
+function normalizePairingPhone(phone) {
+  let digits = String(phone || '').replace(/\D/g, '');
+  if (digits.startsWith('00')) digits = digits.slice(2);
+  // TR formatı "05XX..." (11 hane) -> "905XX..."
+  if (/^0\d{10}$/.test(digits)) digits = `90${digits.slice(1)}`;
+  // TR formatı "5XX..." (10 hane, başında 0 veya 90 olmayan TR cep nosu) -> "905XX..."
+  if (/^5\d{9}$/.test(digits)) digits = `90${digits}`;
+  if (digits.length < 10 || digits.length > 15) {
+    throw new Error('Geçersiz telefon numarası. Ülke kodu ile birlikte girin (örn. +90 5XX XXX XX XX).');
+  }
+  return digits;
+}
+
 // Faz 9 (§16/§19, RC-3): sync tamamlanma kararı — WhatsApp'ın GERÇEK
 // sinyallerinden türetilir (isLatest bayrağı VEYA messaging-history.set
 // progress=100'ü). Prod'da isLatest hiç gelmiyor (Baileys RECENT sync);
@@ -588,7 +601,7 @@ function sanitizeOutboundEvent(event) {
 // Faz 8: birim testleri icin sanitizasyon yardimcilari disa aktarilir
 // (createSessionManager factory'si ayrica export edilir; index.js ikisini de
 // kullanabilir).
-export { createBaileysLogger, extractBaileysErrorDetails, isRawIdentityName, sanitizeChatForEmit, sanitizeOutboundEvent, mergeContactName, NAME_RANK, jidToPhone, isDegenerateJid, resolveSyncState, normalizePreviewText, buildChatPreview, isPhoneLikeName, summarizeWaMessage, classifyMessageType, hasRecognizedContent, resolveDownloadableMedia, contactPhoneJid };
+export { createBaileysLogger, extractBaileysErrorDetails, isRawIdentityName, sanitizeChatForEmit, sanitizeOutboundEvent, mergeContactName, NAME_RANK, jidToPhone, isDegenerateJid, resolveSyncState, normalizePreviewText, buildChatPreview, isPhoneLikeName, summarizeWaMessage, classifyMessageType, hasRecognizedContent, resolveDownloadableMedia, contactPhoneJid, normalizePairingPhone };
 
 function mergeContactName(existing, name, source) {
   const base = existing || {};
@@ -804,6 +817,7 @@ export function createSessionManager({
         _qrSeenForAttempt: false,
         _pairingPhone: null,
         _pairingRequestedAt: 0,
+        _pairingSocket: null,
         sync: { phase: 'idle', progress: 0, chats_synced: 0, contacts_synced: 0, messages_synced: 0, started_at: null, completed_at: null },
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
@@ -868,14 +882,7 @@ export function createSessionManager({
         throw new Error('Bu oturum zaten bağlı. Kod istemek için önce oturumu ayırın.');
       }
 
-      // Telefonu normalize et: yalnızca rakam (ülke kodu dahil, "+" yok).
-      let digits = String(phone || '').replace(/\D/g, '');
-      if (digits.startsWith('00')) digits = digits.slice(2);
-      // TR formatı "05XX..." olarak girilirse ülke kodunu otomatik tamamla.
-      if (/^0\d{10}$/.test(digits)) digits = `90${digits.slice(1)}`;
-      if (digits.length < 10 || digits.length > 15) {
-        throw new Error('Geçersiz telefon numarası. Ülke kodu ile birlikte girin (örn. +90 5XX XXX XX XX).');
-      }
+      const digits = normalizePairingPhone(phone);
 
       // Socket henüz hazırsa pairing çağrısı yapılamaz — kısa bir bekleme ile
       // socket açılışını karşıla (fail-fast değil, fail-closed: süreyi aşarsa hata).
@@ -906,6 +913,7 @@ export function createSessionManager({
       // içindeki yeni QR kolonu bu sayede taze kod üretip UI'a itebilir.
       session._pairingPhone = digits;
       session._pairingRequestedAt = Date.now();
+      session._pairingSocket = session.sock;
       session.updated_at = new Date().toISOString();
       // logger.warn: prod'da pino seviyesi 'warn' — pairing yaşam döngüsü
       // olayları görünür kalmalı (aksi halde teşhis için log yok).
@@ -931,6 +939,7 @@ export function createSessionManager({
       session.is_phone_online = false;
       session._pairingPhone = null;
       session._pairingRequestedAt = 0;
+      session._pairingSocket = null;
       // Bekleyen history-sync sessizlik zamanlayicisini iptal et — yoksa
       // logout sonrasi hayalet `session_sync_completed` yayinlanir.
       if (session._historyQuietTimer) {
@@ -1937,7 +1946,7 @@ export function createSessionManager({
       const sock = makeWASocket({
         version,
         logger: createBaileysLogger(logger),
-        browser: Browsers.macOS('Desktop'),
+        browser: Browsers.macOS('Chrome'),
         auth: baileysAuth,
         markOnlineOnConnect: true,
         // Sorun 1 (senkron hizi): TAM gecmis senkronu KAPALI.
@@ -2144,13 +2153,17 @@ export function createSessionManager({
           // üretildiğinde, ekrandaki eski kod WhatsApp'ta "Cihaza
           // bağlanamadı / kodu tekrar girin" hatası verir. Bekleyen bir
           // pairing isteği varsa taze kodu otomatik üretip UI'a it.
-          if (session._pairingPhone) {
+          // Dikkat: Aynı soketteki normal QR yenilenmelerinde kod tekrar istenmez,
+          // aksi halde WhatsApp sunucusundaki kod her 20 sn'de geçersiz kalır.
+          if (session._pairingPhone && session._pairingSocket !== sock) {
             const PAIRING_TTL_MS = 10 * 60 * 1000;
             if (Date.now() - (session._pairingRequestedAt || 0) > PAIRING_TTL_MS) {
               session._pairingPhone = null;
+              session._pairingSocket = null;
             } else {
               try {
                 const freshCode = await sock.requestPairingCode(session._pairingPhone);
+                session._pairingSocket = sock;
                 session.updated_at = new Date().toISOString();
                 logger.warn({ session_ref: sessionRef(id) }, 'Pairing code re-issued after socket restart');
                 emitEvent({
@@ -2182,6 +2195,7 @@ export function createSessionManager({
           session._connFailures = 0;
           session._pairingPhone = null;
           session._pairingRequestedAt = 0;
+          session._pairingSocket = null;
           session.is_phone_online = true;
           session.updated_at = new Date().toISOString();
           if (!session.phone_number) {

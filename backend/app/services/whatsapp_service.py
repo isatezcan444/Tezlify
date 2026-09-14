@@ -662,7 +662,7 @@ async def request_pairing_code(db: AsyncSession, user_id: str, session_id: int, 
     pairing_code = data.get("pairing_code")
     if not pairing_code:
         raise gw.WhatsAppGatewayError("Gateway pairing kodu döndürmedi.")
-    if data.get("phone") and not row.phone_number:
+    if data.get("phone"):
         row.phone_number = data["phone"]
         await db.commit()
     return {

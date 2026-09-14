@@ -250,7 +250,10 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
   // Pairing code — "Telefon No ile Bağlan" tabisi. Fail-closed: hata gerçek
   // mesajla gösterilir, sahte kod/sahte başarı asla üretilmez (AGENTS.md).
   const handleGetPairingCode = useCallback(async () => {
-    const digits = pairingPhone.replace(/\D/g, '');
+    let digits = pairingPhone.replace(/\D/g, '');
+    if (digits.startsWith('00')) digits = digits.slice(2);
+    if (/^0\d{10}$/.test(digits)) digits = `90${digits.slice(1)}`;
+    if (/^5\d{9}$/.test(digits)) digits = `90${digits}`;
     if (digits.length < 10 || digits.length > 15) {
       setPairingError(t('whatsapp.pairingInvalidPhone'));
       return;
@@ -269,7 +272,7 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
     setPairingCode(null);
     setPairingCopied(false);
     try {
-      const res = await WhatsAppRepository.requestPairingCode(sid, pairingPhone.trim());
+      const res = await WhatsAppRepository.requestPairingCode(sid, digits);
       if (!isMountedRef.current) return;
       setPairingCode(res.pairing_code);
     } catch (err: any) {

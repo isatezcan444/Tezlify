@@ -6,6 +6,7 @@ import {
   jidToPhone,
   isDegenerateJid,
   resolveSyncState,
+  normalizePairingPhone,
 } from '../src/session-manager.js';
 
 let passed = 0;
@@ -83,6 +84,15 @@ check('resolveSyncState: missing progress keeps previous value (no fake numbers)
   const { next } = resolveSyncState(prev, { progress: undefined, isLatest: false });
   assert.equal(next.phase, 'syncing');
   assert.equal(next.progress, 33);
+});
+
+check('normalizePairingPhone handles all Turkish and international mobile formats', () => {
+  assert.equal(normalizePairingPhone('5528073007'), '905528073007');
+  assert.equal(normalizePairingPhone('05528073007'), '905528073007');
+  assert.equal(normalizePairingPhone('+90 552 807 30 07'), '905528073007');
+  assert.equal(normalizePairingPhone('0090 552 807 30 07'), '905528073007');
+  assert.equal(normalizePairingPhone('+1 555 123 4567'), '15551234567');
+  assert.throws(() => normalizePairingPhone('123'), /Geçersiz/);
 });
 
 console.log(`[test-faz9-identity-sync] ${passed} assertions passed`);
