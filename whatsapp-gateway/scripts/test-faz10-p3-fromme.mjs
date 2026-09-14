@@ -84,6 +84,29 @@ await check('inbound upsert regresyon: INBOUND/RECEIVED, unread +1, preview gunc
   assert.equal(chat.unread_count, 1);
 });
 
+// --- 2b. Grup + eksik timestamp regresyonu ---
+
+await check('grup upsert eksik timestamp ile gelecekte tarih uretmez', async () => {
+  const groupJid = '120363123456789@g.us';
+  const before = Date.now() - 5000;
+  const rec = await sm._ingestUpsertMessage(
+    {
+      key: { remoteJid: groupJid, id: 'GROUP-NO-TS', participant: PN },
+      pushName: 'Ali Ekincioğlu',
+      message: { conversation: 'Gruptan güncel mesaj' },
+    },
+    null,
+    SID,
+  );
+  const createdAtMs = Date.parse(rec.created_at);
+  assert.ok(Number.isFinite(createdAtMs), 'created_at ISO tarih olmali');
+  assert.ok(createdAtMs >= before && createdAtMs <= Date.now() + 5000,
+    `eksik timestamp receive-time fallback kullanmali: ${rec.created_at}`);
+  assert.equal(rec.conversation_id, groupJid);
+  assert.equal(rec.participant_name, 'Ali Ekincioğlu');
+  assert.equal(findChat(groupJid).last_message_preview, 'Ali Ekincioğlu: Gruptan güncel mesaj');
+});
+
 // --- 3. Dedup (ileri yön): önce _recordOutbound, sonra aynı id ile upsert ---
 
 const PN2 = '905321002030@s.whatsapp.net';

@@ -479,6 +479,16 @@ function summarizeWaMessage(waMsg) {
   return { message_type: classifyMessageType(content), body: text };
 }
 
+// Baileys `messageTimestamp` is expressed in epoch seconds (and may be a
+// protobuf Long).  `Date.now()` is already milliseconds; multiplying that
+// fallback by 1000 creates dates tens of thousands of years in the future and
+// breaks chronological ordering in the conversation list.  Keep one guarded
+// conversion for every realtime timestamp path.
+function messageTimestampMs(value) {
+  const seconds = Number(value);
+  return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : Date.now();
+}
+
 // Oturumun LID haritasına göre JID'i kanonik anahtara çözer.
 // (Eski adı `normalizeJid`; artık store parametresi ZORUNLU — `_connectSocket`
 // içinde `normalizeJid` adıyla store'a bağlı yerel bir sarmalayıcı tanımlanır,
@@ -1384,7 +1394,7 @@ export function createSessionManager({
         // Faz 8 (§13-14): grup göndereni Contact çözücüsünden geçer —
         // rehber/çözümlemedeki ad > pushName > telefon; ham JID asla ad olmaz.
         participant_name: isGroup ? sessionManager._resolveDisplayName(session, msg.key?.participant, msg.pushName) : null,
-        created_at: new Date((msg.messageTimestamp || Date.now()) * 1000).toISOString(),
+        created_at: new Date(messageTimestampMs(msg.messageTimestamp)).toISOString(),
       };
       if (!messagesByChat.has(key)) messagesByChat.set(key, []);
       messagesByChat.get(key).push(record);
@@ -2255,7 +2265,26 @@ export function createSessionManager({
       // --- Messages (inbound + phone-sent outbound) ---
       sock.ev.on('messages.upsert', async ({ messages: newMessages, type }) => {
         for (const msg of newMessages) {
-          await this._ingestUpsertMessage(msg, sock, id);
+          try {
+            await this._ingestUpsertMessage(msg, sock, id);
+          } catch (err) {
+            // A malformed/media message must not reject the whole Baileys
+            // batch.  Continue ingesting later messages and expose one
+            // actionable, low-cardinality diagnostic for the failed item.
+            diagnostic('message_upsert_failed', {
+              session_ref: sessionRef(id),
+              upsert_type: type || null,
+              message_id_present: Boolean(msg?.key?.id),
+              group_message: Boolean(msg?.key?.remoteJid?.includes('@g.us')),
+              error_name: err?.name || 'Error',
+              error_code: err?.code || null,
+            });
+            logger.warn({
+              err,
+              session_ref: sessionRef(id),
+              message_id: msg?.key?.id || null,
+            }, 'messages.upsert item failed');
+          }
         }
       });
 
@@ -2391,7 +2420,7 @@ export function createSessionManager({
           // (medyada govde bos → tip etiketi). Zaman damgasi daha yeni ise
           // yazilir; eskisi mevcut ozeti ezmez.
           const updTs = update.lastMessage?.messageTimestamp
-            ? new Date(update.lastMessage.messageTimestamp * 1000).toISOString()
+            ? new Date(messageTimestampMs(update.lastMessage.messageTimestamp)).toISOString()
             : null;
           const updPreview = update.lastMessage
             ? (() => {
