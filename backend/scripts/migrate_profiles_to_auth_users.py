@@ -44,8 +44,8 @@ async def run_migration(dry_run: bool = True, rollback: bool = False):
                         display_name VARCHAR(255),
                         avatar_url VARCHAR(500),
                         is_active BOOLEAN NOT NULL DEFAULT TRUE,
-                        created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT now(),
-                        updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT now()
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
                     );
                     """,
                     """
@@ -55,8 +55,8 @@ async def run_migration(dry_run: bool = True, rollback: bool = False):
                         provider VARCHAR(50) NOT NULL,
                         provider_subject VARCHAR(255) NOT NULL,
                         provider_email VARCHAR(255) NOT NULL,
-                        created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT now(),
-                        updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT now(),
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                         CONSTRAINT uq_staging_oauth_provider_subject UNIQUE (provider, provider_subject)
                     );
                     """,
@@ -65,18 +65,18 @@ async def run_migration(dry_run: bool = True, rollback: bool = False):
                         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                         user_id UUID NOT NULL REFERENCES auth_staging_users(id) ON DELETE CASCADE,
                         session_token_hash VARCHAR(64) UNIQUE NOT NULL,
-                        expires_at TIMESTAMP WITHOUT TIME ZONE NOT NULL,
-                        created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT now(),
-                        last_seen_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT now(),
-                        revoked_at TIMESTAMP WITHOUT TIME ZONE
+                        expires_at TIMESTAMPTZ NOT NULL,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        revoked_at TIMESTAMPTZ
                     );
                     """,
                     """
                     CREATE TABLE IF NOT EXISTS auth_staging_oauth_states (
                         state_hash VARCHAR(64) PRIMARY KEY,
-                        expires_at TIMESTAMP WITHOUT TIME ZONE NOT NULL,
-                        created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT now(),
-                        consumed_at TIMESTAMP WITHOUT TIME ZONE
+                        expires_at TIMESTAMPTZ NOT NULL,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        consumed_at TIMESTAMPTZ
                     );
                     """
                 ]
