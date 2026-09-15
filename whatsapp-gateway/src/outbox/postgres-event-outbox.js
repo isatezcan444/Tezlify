@@ -105,6 +105,10 @@ export function createPostgresEventOutbox({
       );
     },
 
+    async nack(eventId, permanent = false) {
+      return this.reject(eventId, { permanent });
+    },
+
     async requeueInflight() {
       await pool.query(
         `UPDATE whatsapp_private.event_outbox

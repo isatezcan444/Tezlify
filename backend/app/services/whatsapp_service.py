@@ -3840,7 +3840,7 @@ async def _map_conversation_event(db: AsyncSession, event: Dict[str, Any]) -> Di
 
 
 async def _map_session_event(db: AsyncSession, event: Dict[str, Any]) -> Dict[str, Any]:
-    gw_session_id = event.get("session_id")
+    gw_session_id = event.get("session_id") or event.get("gateway_session_id")
     if not gw_session_id:
         return _skip_event(event, "session_*: session_id yok")
     evt = event.get("event") or event.get("event_type") or ""
