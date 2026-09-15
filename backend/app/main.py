@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+import datetime as _dt
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -42,6 +43,16 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger("tezlify")
+
+# ---------------------------------------------------------------------------
+# Gateway bridge in-process health state (STEP 5 diagnostics)
+# ---------------------------------------------------------------------------
+_gateway_bridge = {
+    "connected": False,
+    "last_connected_at": None,
+    "last_event_at": None,
+    "reconnect_count": 0,
+}
 
 
 async def recover_stuck_jobs() -> None:
@@ -243,6 +254,9 @@ async def gateway_websocket_endpoint(
             return
 
     await websocket.accept()
+    _gateway_bridge["connected"] = True
+    _gateway_bridge["last_connected_at"] = _dt.datetime.now(_dt.timezone.utc).isoformat()
+    _gateway_bridge["reconnect_count"] = _gateway_bridge["reconnect_count"] + 1
     logger.info("[WS-GATEWAY] Baileys gateway bağlandı.")
     counters = {
         "received": 0, "broadcast": 0, "skipped": 0,
@@ -265,6 +279,7 @@ async def gateway_websocket_endpoint(
                 continue
 
             counters["received"] += 1
+            _gateway_bridge["last_event_at"] = _dt.datetime.now(_dt.timezone.utc).isoformat()
             try:
                 event_data = json.loads(raw)
             except Exception as parse_err:
@@ -320,6 +335,7 @@ async def gateway_websocket_endpoint(
     except Exception as e:
         logger.warning(f"[WS-GATEWAY] Bağlantı hatası: {e}")
     finally:
+        _gateway_bridge["connected"] = False
         logger.info(
             "[WS-GATEWAY] Bağlantı kapandı "
             "(received=%d broadcast=%d skipped=%d failed=%d acked=%d nacked=%d).",
@@ -356,4 +372,11 @@ async def health_check():
         "version": settings.VERSION,
         "scraper_engine": getattr(settings, "SCRAPER_ENGINE", "HTTP"),
         "memory_mb": memory_mb,
+        # STEP 5 — Bridge health diagnostics (internal; no secrets exposed)
+        "gateway_bridge": {
+            "connected": _gateway_bridge["connected"],
+            "last_connected_at": _gateway_bridge["last_connected_at"],
+            "last_event_at": _gateway_bridge["last_event_at"],
+            "reconnect_count": _gateway_bridge["reconnect_count"],
+        },
     }
