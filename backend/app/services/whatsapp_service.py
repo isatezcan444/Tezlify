@@ -3721,6 +3721,27 @@ async def _map_conversation_event(db: AsyncSession, event: Dict[str, Any]) -> Di
     # "yaziyor..." bilgisi sohbet acmaz.
     if evt_name == "conversation_updated":
         conv = await _ensure_conversation_race_safe(db, owner, str(jid), event, session_id=ws_session_id)
+    elif evt_name == "message_status_updated":
+        conv = None
+        wa_id = event.get("wa_message_id")
+        client_mid = event.get("client_message_id")
+        if wa_id or client_mid:
+            msg_res = await db.execute(
+                select(Message).join(Conversation, Message.conversation_id == Conversation.id).where(
+                    or_(
+                        Message.wa_message_id == wa_id if wa_id else False,
+                        Message.client_message_id == client_mid if client_mid else False,
+                    ),
+                    get_user_filter(Conversation.user_id, owner),
+                )
+            )
+            matching_msg = msg_res.scalars().first()
+            if matching_msg:
+                conv = await db.get(Conversation, matching_msg.conversation_id)
+        if conv is None:
+            conv = await _find_whatsapp_conversation(db, owner, str(jid), session_id=ws_session_id)
+        if conv is None:
+            return _skip_event(event, f"{evt_name}: sohbet yok, durum olayi sohbet yaratmaz ({jid})")
     else:
         conv = await _find_whatsapp_conversation(db, owner, str(jid), session_id=ws_session_id)
         if conv is None:
