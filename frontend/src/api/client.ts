@@ -23,10 +23,10 @@ const isVercel = typeof window !== 'undefined' && (host.endsWith('.vercel.app') 
 function sanitizeBackendUrl(rawUrl: string | undefined): string | undefined {
   if (!rawUrl) return undefined;
   // Automatically heal and rewrite any legacy or stale subdomain references
-  if (rawUrl.includes('scoutify') || rawUrl.includes('tezlify-kuv3') || rawUrl.includes('kuv3')) {
+  if (rawUrl.includes('scoutify') || rawUrl.includes('tezlify-kuv3') || rawUrl.includes('kuv3') || rawUrl.includes('onrender.com')) {
     return rawUrl
-      .replace(/https?:\/\/[^\/]+/i, 'https://tezlify.onrender.com')
-      .replace(/wss?:\/\/[^\/]+/i, 'wss://tezlify.onrender.com');
+      .replace(/https?:\/\/[^\/]+/i, 'https://api.130.162.247.20.sslip.io')
+      .replace(/wss?:\/\/[^\/]+/i, 'wss://api.130.162.247.20.sslip.io/ws');
   }
   return rawUrl;
 }
@@ -40,7 +40,7 @@ function resolveApiBase(): string {
   if (envApi) {
     return envApi.endsWith('/api/v1') ? envApi : `${envApi.replace(/\/$/, '')}/api/v1`;
   }
-  return 'https://tezlify.onrender.com/api/v1';
+  return 'https://api.130.162.247.20.sslip.io/api/v1';
 }
 
 function resolveWsUrl(): string {
@@ -57,7 +57,7 @@ function resolveWsUrl(): string {
     const cleanHost = envApi.replace(/^https?:\/\//i, '').replace(/\/api\/v1\/?$/i, '').replace(/\/$/, '');
     return `${wsProto}${cleanHost}/ws`;
   }
-  return 'wss://tezlify.onrender.com/ws';
+  return 'wss://api.130.162.247.20.sslip.io/ws';
 }
 
 export const API_BASE = resolveApiBase();

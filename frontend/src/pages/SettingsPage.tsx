@@ -22,7 +22,7 @@ export const SettingsPage: React.FC = () => {
 
   const apiBaseLabel = API_BASE;
   const gatewayBaseLabel =
-    (import.meta.env?.VITE_GATEWAY_URL as string | undefined) || 'https://tezlify.onrender.com';
+    (import.meta.env?.VITE_GATEWAY_URL as string | undefined) || 'https://api.tezlify.com';
 
   return (
     <div className="space-y-6 pb-16 max-w-4xl select-none animate-fade-in">

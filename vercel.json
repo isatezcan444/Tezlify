@@ -6,19 +6,19 @@
   "rewrites": [
     {
       "source": "/api/:path*",
-      "destination": "https://tezlify.onrender.com/api/:path*"
+      "destination": "https://api.130.162.247.20.sslip.io/api/:path*"
     },
     {
       "source": "/health",
-      "destination": "https://tezlify.onrender.com/health"
+      "destination": "https://api.130.162.247.20.sslip.io/health"
     },
     {
       "source": "/docs",
-      "destination": "https://tezlify.onrender.com/docs"
+      "destination": "https://api.130.162.247.20.sslip.io/docs"
     },
     {
       "source": "/openapi.json",
-      "destination": "https://tezlify.onrender.com/openapi.json"
+      "destination": "https://api.130.162.247.20.sslip.io/openapi.json"
     },
     {
       "source": "/(.*)",

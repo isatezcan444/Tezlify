@@ -1,11 +1,14 @@
 import { createClient } from '@supabase/supabase-js';
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || 'https://pzpgjjtefeplygqcxfsj.supabase.co';
-const supabaseAnonKey =
-  import.meta.env.VITE_SUPABASE_ANON_KEY ||
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InB6cGdqanRlZmVwbHlncWN4ZnNqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc4MzY4ODksImV4cCI6MjEwMzQxMjg4OX0.qIzVd7i7XWPpWAEAqMxAmOEhWQ_1ToJ981WBZ1wJaNY';
+const supabaseUrl =
+  import.meta.env.VITE_SUPABASE_URL || 'https://qfypckopgelvsimfrfub.supabase.co';
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+if (!supabaseAnonKey && import.meta.env.PROD) {
+  console.warn('[Supabase] VITE_SUPABASE_ANON_KEY is not defined in production environment.');
+}
+
+export const supabase = createClient(supabaseUrl, supabaseAnonKey || 'dummy-anon-key-placeholder', {
   auth: {
     persistSession: true,
     autoRefreshToken: true,

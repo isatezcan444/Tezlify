@@ -111,9 +111,14 @@ const sessionManager = createSessionManager({
   instanceId,
 });
 
-await sessionManager.restoreSessions({
-  concurrency: Math.max(1, Math.min(5, parseInt(process.env.GATEWAY_RESTORE_CONCURRENCY || '2', 10))),
-});
+const autoRestore = process.env.WHATSAPP_AUTO_RESTORE !== 'false' && process.env.WHATSAPP_AUTO_RESTORE !== '0';
+if (autoRestore) {
+  await sessionManager.restoreSessions({
+    concurrency: Math.max(1, Math.min(5, parseInt(process.env.GATEWAY_RESTORE_CONCURRENCY || '2', 10))),
+  });
+} else {
+  logger.info('WhatsApp automatic session restore is disabled by WHATSAPP_AUTO_RESTORE=false.');
+}
 
 // ---------------------------------------------------------------------------
 // Event Bridge — forwards Baileys events to FastAPI backend via WebSocket
@@ -151,6 +156,17 @@ app.post('/sessions', async (req, res) => {
     const { name } = req.body || {};
     const session = await sessionManager.createSession(name || `hat-${Date.now()}`);
     res.status(201).json(session);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Explicitly trigger session restoration (used for controlled cutover)
+app.post('/sessions/restore', async (req, res) => {
+  try {
+    const concurrency = Math.max(1, Math.min(5, parseInt(req.query.concurrency || process.env.GATEWAY_RESTORE_CONCURRENCY || '2', 10)));
+    const result = await sessionManager.restoreSessions({ concurrency });
+    res.json({ status: 'ok', ...result });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

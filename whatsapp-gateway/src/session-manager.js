@@ -2021,6 +2021,14 @@ export function createSessionManager({
           error_code: error?.code || null,
         });
         logger.error({ err: error, session_ref: sessionRef(id) }, 'WhatsApp socket start failed');
+        const retryDelayMs = Math.min(15_000, 2_000 * (2 ** Math.min(current._connFailures || 0, 3)));
+        setTimeout(() => {
+          const s = sessions.get(id);
+          if (s && !s._deleted && s.status === 'UNAVAILABLE' && s.is_active) {
+            logger.info({ session_ref: sessionRef(id), retryDelayMs }, 'Retrying WhatsApp socket connect after transient store failure');
+            this._startSocket(id);
+          }
+        }, retryDelayMs);
       });
     },
 
@@ -2082,6 +2090,8 @@ export function createSessionManager({
         key_store_get: typeof state?.keys?.get === 'function',
         key_store_set: typeof state?.keys?.set === 'function',
       });
+
+      session._isRegistered = Boolean(state?.creds?.registered || session.phone_number);
 
       // If we have persisted creds, restore them
       if (!authRepository && persisted?.creds) {
@@ -2495,7 +2505,8 @@ export function createSessionManager({
             const sawQrThisAttempt = session._qrSeenForAttempt;
             session._qrSeenForAttempt = false;
             const maxAttempts = 3;
-            if (!sawQrThisAttempt && session._connFailures >= maxAttempts) {
+            const isPairing = !session._isRegistered && !session.phone_number;
+            if (isPairing && !sawQrThisAttempt && session._connFailures >= maxAttempts) {
               session.status = 'DISCONNECTED';
               session.is_active = false;
               session.is_phone_online = false;

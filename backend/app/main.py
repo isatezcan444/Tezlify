@@ -50,6 +50,10 @@ async def recover_stuck_jobs() -> None:
     - Aktif (ACTIVE) kampanyalar -> PAUSED (kullanıcı devam kararı verir)
     - RUNNING/PENDING tarama işleri -> FAILED (açık mesajla)
     """
+    if os.getenv("SKIP_JOB_RECOVERY", "false").lower() in ("true", "1"):
+        logger.info("[RECOVERY] SKIP_JOB_RECOVERY is set; skipping background job mutations.")
+        return
+
     from backend.app.core.database import AsyncSessionLocal
 
     async with AsyncSessionLocal() as db:
@@ -130,7 +134,7 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.BACKEND_CORS_ORIGINS,
-    allow_origin_regex=r"https://.*\.vercel\.app",
+    allow_origin_regex=r"https://.*(\.vercel\.app|\.sslip\.io|tezlify\.com)",
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
