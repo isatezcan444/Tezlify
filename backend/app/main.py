@@ -171,8 +171,21 @@ async def websocket_endpoint(
     user_id = None
     if token:
         try:
-            payload = verify_and_decode_jwt(token)
-            user_id = payload.get("sub")
+            # 1. Oracle Native Session lookup
+            try:
+                from backend.app.core.database import AsyncSessionLocal
+                from backend.app.auth.application.session_service import SessionService
+                async with AsyncSessionLocal() as db:
+                    _sess = await SessionService().get_session_by_token(db, token)
+                    if _sess:
+                        user_id = str(_sess.user_id)
+            except Exception as _ns_err:
+                logger.debug(f"WS native session check skipped: {_ns_err}")
+
+            # 2. Supabase JWT fallback
+            if not user_id:
+                payload = verify_and_decode_jwt(token)
+                user_id = payload.get("sub")
         except Exception as auth_err:
             logger.warning(f"WebSocket auth failed: {auth_err}")
             if not os.getenv("PYTEST_CURRENT_TEST"):

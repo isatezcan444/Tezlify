@@ -214,6 +214,10 @@ async def get_current_user(
     if not token:
         token = request.query_params.get("token")
 
+    # Also check HttpOnly cookie tezlify_session
+    if not token:
+        token = request.cookies.get("tezlify_session")
+
     # If no token provided:
     if not token:
         # Check if running in test suite or development fallback mode
@@ -248,11 +252,41 @@ async def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # Supabase JWT'sini İMZA + SON KULLANMA doğrulamasıyla çöz.
-    # (Önceden `decode_jwt_unverified` kullanılıyordu: imza hiç kontrol
-    # edilmediği için istemci `sub` alanını değiştirip başka bir kiracının
-    # WhatsApp sohbetlerini okuyabiliyor ve onun hattından mesaj
-    # gönderebiliyordu. `/ws` zaten doğrulanmış yolu kullanıyordu.)
+    # 1. Oracle Native Session lookup
+    try:
+        from backend.app.auth.application.session_service import SessionService
+        from backend.app.auth.application.user_service import UserService
+        _sess_svc = SessionService()
+        _session = await _sess_svc.get_session_by_token(db, token)
+        if _session:
+            _usr_svc = UserService()
+            _user = await _usr_svc.get_user_by_id(db, _session.user_id)
+            if _user:
+                if not _user.is_active:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="Kullanıcı hesabı askıya alınmış (Account deactivated)",
+                    )
+                stmt = select(Profile).where(Profile.id == str(_user.id))
+                res = await db.execute(stmt)
+                profile = res.scalar_one_or_none()
+
+                return AuthUser(
+                    id=str(_user.id),
+                    email=_user.email,
+                    full_name=profile.full_name if profile and profile.full_name else _user.display_name or "",
+                    avatar_url=profile.avatar_url if profile and profile.avatar_url else _user.avatar_url or "",
+                    plan_tier=profile.plan_tier if profile else "DEVELOPER_PRO",
+                    leads_monthly_limit=profile.leads_monthly_limit if profile else 999999,
+                    leads_used_this_month=profile.leads_used_this_month if profile else 0,
+                    messages_daily_limit=profile.messages_daily_limit if profile else 999999,
+                )
+    except HTTPException:
+        raise
+    except Exception as _native_err:
+        logger.debug(f"Native session resolution skipped in get_current_user: {_native_err}")
+
+    # 2. Supabase JWT fallback: İMZA + SON KULLANMA doğrulamasıyla çöz.
     payload = verify_and_decode_jwt(token)
     user_id = payload.get("sub")
     email = payload.get("email") or ""
