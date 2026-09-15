@@ -54,7 +54,10 @@ export function createPostgresEventOutbox({
            FROM whatsapp_private.event_outbox
             WHERE state IN ('PENDING', 'IN_FLIGHT')
               AND next_attempt_at <= NOW()
-           ORDER BY sequence ASC
+            ORDER BY CASE
+                WHEN event_type IN ('message_status_updated', 'message_new', 'message_upsert') THEN 1
+                ELSE 2
+              END ASC, sequence ASC
            FOR UPDATE SKIP LOCKED
            LIMIT $1
          )
