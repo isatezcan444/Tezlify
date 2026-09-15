@@ -95,9 +95,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   // --- ORACLE NATIVE AUTH FLOW (Staging / Cutover) ---
   const fetchOracleProfile = useCallback(async (token?: string): Promise<UserProfile | null> => {
     try {
+      const activeToken = token || ApiClient.getAuthToken() || (typeof window !== 'undefined' ? localStorage.getItem('tezlify_session_token') : null);
       const headers: Record<string, string> = {};
-      if (token) {
-        headers['Authorization'] = `Bearer ${token}`;
+      if (activeToken) {
+        headers['Authorization'] = `Bearer ${activeToken}`;
+        ApiClient.setAuthToken(activeToken);
       }
       const res = await fetch('/api/v1/auth/me', { headers, credentials: 'include' });
       if (res.ok) {
@@ -138,15 +140,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       // Check query param for session_token callback
       const params = new URLSearchParams(window.location.search);
       const urlToken = params.get('session_token');
+      const storedToken = typeof window !== 'undefined' ? localStorage.getItem('tezlify_session_token') : null;
+      const effectiveToken = urlToken || storedToken || null;
+
       if (urlToken) {
-        ApiClient.setAuthToken(urlToken);
-        setSession({ token: urlToken });
+        localStorage.setItem('tezlify_session_token', urlToken);
         // Clean URL query param without reload
         const newUrl = window.location.pathname;
         window.history.replaceState({}, '', newUrl);
       }
 
-      fetchOracleProfile(urlToken || undefined).finally(() => {
+      if (effectiveToken) {
+        ApiClient.setAuthToken(effectiveToken);
+        setSession({ token: effectiveToken });
+      }
+
+      fetchOracleProfile(effectiveToken || undefined).finally(() => {
         setLoading(false);
       });
       return;
@@ -258,7 +267,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setLoading(true);
     try {
       if (authProvider === 'oracle') {
-        await fetch('/api/v1/auth/logout', { method: 'POST', credentials: 'include' });
+        const activeToken = ApiClient.getAuthToken() || (typeof window !== 'undefined' ? localStorage.getItem('tezlify_session_token') : null);
+        const headers: Record<string, string> = {};
+        if (activeToken) headers['Authorization'] = `Bearer ${activeToken}`;
+        await fetch('/api/v1/auth/logout', { method: 'POST', headers, credentials: 'include' });
+        if (typeof window !== 'undefined') {
+          localStorage.removeItem('tezlify_session_token');
+        }
       } else {
         await supabase.auth.signOut();
       }
