@@ -248,9 +248,22 @@ async def gateway_websocket_endpoint(
         "received": 0, "broadcast": 0, "skipped": 0,
         "failed": 0, "acked": 0, "nacked": 0,
     }
+    _GW_PING_INTERVAL_S = 20.0
     try:
         while True:
-            raw = await websocket.receive_text()
+            try:
+                raw = await asyncio.wait_for(
+                    websocket.receive_text(),
+                    timeout=_GW_PING_INTERVAL_S,
+                )
+            except asyncio.TimeoutError:
+                try:
+                    await websocket.send_json({"type": "ping"})
+                except Exception as ping_err:
+                    logger.warning(f"[WS-GATEWAY] Ping gönderilemedi: {ping_err}")
+                    break
+                continue
+
             counters["received"] += 1
             try:
                 event_data = json.loads(raw)
@@ -260,6 +273,8 @@ async def gateway_websocket_endpoint(
                 continue
             if not isinstance(event_data, dict):
                 counters["failed"] += 1
+                continue
+            if event_data.get("type") == "pong":
                 continue
             try:
                 persisted = await ingest_gateway_event(event_data)

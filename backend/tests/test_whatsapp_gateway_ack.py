@@ -65,3 +65,35 @@ async def test_unpersisted_gateway_event_is_nacked_and_not_broadcast(monkeypatch
         "event_id": event_id,
         "permanent": False,
     }]
+
+
+@pytest.mark.asyncio
+async def test_gateway_pong_frame_is_silently_ignored(monkeypatch) -> None:
+    """Backend receives pong from gateway (reply to its keepalive ping) and silently ignores it.
+
+    The backend sends pings; the gateway responds with pong. The backend
+    must not call ingest or send any frame back for a pong frame.
+    """
+    socket = FakeGatewaySocket({"type": "pong"})
+    ingest = AsyncMock()
+    monkeypatch.setattr(whatsapp_service, "ingest_gateway_event", ingest)
+
+    await gateway_websocket_endpoint(socket, token=None)
+
+    assert socket.accepted is True
+    ingest.assert_not_awaited()
+    # No ack, nack, or ping sent for a pong frame
+    assert socket.sent == []
+
+
+@pytest.mark.asyncio
+async def test_gateway_pong_message_is_handled(monkeypatch) -> None:
+    socket = FakeGatewaySocket({"type": "pong"})
+    ingest = AsyncMock()
+    monkeypatch.setattr(whatsapp_service, "ingest_gateway_event", ingest)
+
+    await gateway_websocket_endpoint(socket, token=None)
+
+    assert socket.accepted is True
+    ingest.assert_not_awaited()
+    assert socket.sent == []

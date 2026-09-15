@@ -126,6 +126,11 @@ export function createEventBridge({ backendWsUrl, sessionManager, eventOutbox = 
         if (!eventOutbox) return;
         try {
           const message = JSON.parse(String(raw));
+          // Backend keepalive ping — respond with pong to confirm bridge is alive.
+          if (message?.type === 'ping') {
+            if (isOpen()) socket.send(JSON.stringify({ type: 'pong' }));
+            return;
+          }
           if (message?.type === 'gateway_event_ack' && message.event_id) {
             void eventOutbox.acknowledge(message.event_id).then(pumpOutbox);
           } else if (message?.type === 'gateway_event_nack' && message.event_id) {
