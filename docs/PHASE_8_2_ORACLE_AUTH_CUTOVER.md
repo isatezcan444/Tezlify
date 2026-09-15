@@ -8,28 +8,29 @@
 
 ## 1. Executive Summary
 
-Phase 8.2 cutover from Supabase Authentication to Oracle Native Authentication has been deployed and verified across both the Oracle Frankfurt VM (`130.162.247.20`) and Vercel Production.
+Phase 8.2 cutover from Supabase Authentication to Oracle Native Authentication has been re-verified following the Google Cloud Console redirect URI update.
 
-1. **Oracle Backend (`tezlify-backend`)**:
+1. **Google OAuth Redirect URI Fix**:
+   - Authorized redirect URI `https://api.130.162.247.20.sslip.io/api/v1/auth/google/callback` is now active in Google Cloud Console.
+   - `redirect_uri_mismatch` is **COMPLETELY RESOLVED**.
+   - Google returned `HTTP 200` and rendered the real sign-in prompt: `https://accounts.google.com/v3/signin/identifier` ("Sign in to continue to sslip.io").
+2. **Oracle Backend (`tezlify-backend`)**:
    - Rebuilt with Phase 8 native auth routes (`/api/v1/auth/google`, `/callback`, `/me`, `/logout`).
    - Production Google OAuth credentials configured in `/opt/tezlify/.env.production` (`chmod 600`).
    - Health endpoint `/health` verified `HTTP 200 OK`.
    - `/api/v1/auth/google?redirect=true` returns `HTTP 302` redirecting to Google OAuth with SHA-256 state tracking in `auth_staging_oauth_states`.
-2. **Vercel Production Frontend**:
+3. **Vercel Production Frontend**:
    - Switched to `VITE_AUTH_PROVIDER=oracle`.
    - Built and deployed cleanly (`index-BaJ-GOXy.js`).
    - Verified that `/api/*` requests route smoothly through Vercel rewrites to Oracle Caddy (`1.1 Caddy`).
    - Supabase fallback configurations (`VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`) strictly preserved for zero-downtime rollback capability.
-3. **Playwright Browser E2E Forensic**:
-   - Playwright launched headless browser against `https://tezlify-woad.vercel.app`.
-   - Clicked "Google ile Giriş Yap" (`button:has-text('Google')`).
-   - Navigation intercepted: redirected to `https://accounts.google.com/o/oauth2/v2/auth`.
-   - Google response: `Error 400: redirect_uri_mismatch` (`authError=ChVyZWRpcmVjdF91cmlfbWlzbWF0Y2g...`).
-   - Forensic confirmation: Google accepted `https://qfypckopgelvsimfrfub.supabase.co/auth/v1/callback` (`HTTP 200`), proving that the Google OAuth Client in Google Cloud Console is configured with the old Supabase callback and **must have the Oracle callback added**.
-4. **Data & WhatsApp Integrity**:
+4. **Interactive Login Status**:
+   - Automated headless Playwright successfully navigated from `https://tezlify-woad.vercel.app` -> Oracle API -> Google OAuth consent page.
+   - Automated progression stopped at Google's interactive credential entry screen per anti-bot security policy (`GOOGLE_INTERACTIVE_LOGIN_REQUIRED`).
+5. **Data & WhatsApp Integrity**:
    - Zero modifications to business data (3 profiles, 333 conversations, 1779 contacts, 20,116 messages, 4 sessions).
    - WhatsApp Gateway (`Hat 1`, `+905076382749`) remained active with valid socket lease (`generation: 4`, `is_lease_valid: t`).
-   - Complete test suite passed: **665/665 tests passed in 40.17s**.
+   - Test suites: **87/87 auth & whatsapp pytest tests passed**; local build succeeded in 2.15s.
 
 ---
 
