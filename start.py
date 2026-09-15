@@ -21,6 +21,8 @@ try:
         log_level="info",
         proxy_headers=True,
         forwarded_allow_ips="*",
+        ws_ping_interval=None,
+        ws_ping_timeout=None,
     )
 except Exception as exc:
     print(f"[TEZLIFY_CRITICAL_BOOT_FAILURE] {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
