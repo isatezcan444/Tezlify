@@ -43,17 +43,19 @@ class SessionService:
         raw_token: str,
     ) -> Optional[SessionDomain]:
         token_hash = self.hash_token(raw_token)
-        now = datetime.utcnow()
 
         stmt = select(AuthSessionDB).where(
             AuthSessionDB.session_token_hash == token_hash,
             AuthSessionDB.revoked_at.is_(None),
-            AuthSessionDB.expires_at > now,
         )
         res = await db.execute(stmt)
         db_session = res.scalar_one_or_none()
 
         if not db_session:
+            return None
+
+        now = datetime.now(db_session.expires_at.tzinfo) if db_session.expires_at.tzinfo is not None else datetime.utcnow()
+        if db_session.expires_at <= now:
             return None
 
         # Update last seen timestamp
@@ -68,15 +70,17 @@ class SessionService:
         raw_token: str,
     ) -> bool:
         token_hash = self.hash_token(raw_token)
-        now = datetime.utcnow()
 
-        stmt = (
-            update(AuthSessionDB)
-            .where(
-                AuthSessionDB.session_token_hash == token_hash,
-                AuthSessionDB.revoked_at.is_(None),
-            )
-            .values(revoked_at=now)
+        stmt = select(AuthSessionDB).where(
+            AuthSessionDB.session_token_hash == token_hash,
+            AuthSessionDB.revoked_at.is_(None),
         )
         res = await db.execute(stmt)
-        return (res.rowcount or 0) > 0
+        db_session = res.scalar_one_or_none()
+        if not db_session:
+            return False
+
+        now = datetime.now(db_session.expires_at.tzinfo) if db_session.expires_at.tzinfo is not None else datetime.utcnow()
+        db_session.revoked_at = now
+        await db.flush()
+        return True

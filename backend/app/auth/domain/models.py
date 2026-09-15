@@ -41,7 +41,7 @@ class SessionDomain(BaseModel):
 
     @property
     def is_valid(self) -> bool:
-        now = datetime.utcnow()
+        now = datetime.now(self.expires_at.tzinfo) if self.expires_at.tzinfo is not None else datetime.utcnow()
         return self.revoked_at is None and self.expires_at > now
 
 
@@ -55,5 +55,5 @@ class OAuthStateDomain(BaseModel):
 
     @property
     def is_valid(self) -> bool:
-        now = datetime.utcnow()
+        now = datetime.now(self.expires_at.tzinfo) if self.expires_at.tzinfo is not None else datetime.utcnow()
         return self.consumed_at is None and self.expires_at > now

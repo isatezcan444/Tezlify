@@ -47,7 +47,6 @@ class OAuthService:
 
     async def verify_and_consume_state(self, db: AsyncSession, raw_state: str) -> bool:
         state_hash = self.hash_state(raw_state)
-        now = datetime.utcnow()
 
         stmt = select(OAuthStateDB).where(OAuthStateDB.state_hash == state_hash)
         res = await db.execute(stmt)
@@ -58,6 +57,8 @@ class OAuthService:
 
         if db_state.consumed_at is not None:
             raise InvalidOAuthStateException("OAuth state has already been consumed (replay attempt)")
+
+        now = datetime.now(db_state.expires_at.tzinfo) if db_state.expires_at.tzinfo is not None else datetime.utcnow()
 
         if db_state.expires_at < now:
             raise InvalidOAuthStateException("OAuth state has expired")
