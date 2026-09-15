@@ -200,48 +200,61 @@ Gerçek public DNS sorguları 3 bağımsız çözümleyici üzerinden gerçekle�
 
 ---
 
-## 7.8 Real WhatsApp Outbound & Inbound Test Hazırlığı
+## 7.8 Real Authenticated Browser & WhatsApp E2E (Phase 7.8)
 
-- Gateway ve Backend hazır durumda.
-- Public domain (`api.tezlify.com`) ve Vercel açıldığı anda tarayıcı E2E mesajlaşma testi başlatılacaktır.
+- **Frontend E2E:** Gerçek Chromium Playwright ile `https://tezlify-woad.vercel.app` test edildi. Sayfa HTTP 200 ile yüklendi, 0 Render isteği, 0 Tokyo isteği, 0 unhandled error.
+- **WebSocket (WSS):** Gerçek tarayıcı bağlamından `wss://api.130.162.247.20.sslip.io/ws` açılarak `ping`/`pong` çerçeve değişimi başarıyla doğrulandı (`readyState: 1`, OPEN).
+- **WS Reconnect:** Tarayıcıda kontrollü soket kapatma ve otomatik yeniden bağlanma doğrulandı (`reconnect_success`).
+- **Canlı WhatsApp Durumu:** Session `0e8f8a0f...` (`+905076382749`) `CONNECTED`, `ONLINE`, 0 QR, 0 conflict, 0 lease loss; veritabanı outbox pump aktif.
+- **Geçmiş & Sayfalama:** Gerçek DB sohbetleri (örn: Conv 8756, 7982) üzerinde `whatsapp_service.get_messages` ve cursor tabanlı (`before=...`) sayfalama 0 duplikasyon ile doğrulandı.
+- **Google OAuth / Supabase Auth:** Supabase Free planında Egress kota aşımı (%174 — 8.69 GB) nedeniyle Supabase Auth servisi Cloudflare 521/522 hatası verdiğinden ve insan etkileşimi gerektiğinden `NOT EXECUTED — INTERACTIVE GOOGLE AUTH REQUIRED` olarak işaretlendi.
+- **Canlı Mesajlaşma:** Harici test cihazı sağlanmadığından Inbound/Outbound canlı dış telefon testleri `NOT EXECUTED` olarak işaretlendi.
 
 ---
 
 ## 7.9 Browser WebSocket Reconnect
 
 - WebSocket sunucusu Oracle Caddy + Uvicorn üzerinde RFC-6455 standartlarına uygun olarak dinlemektedir.
-- DNS devreye girdiğinde WSS reconnect döngüsü test edilecektir.
+- Gerçek Chromium tarayıcısı üzerinde kontrollü kesinti ve yeniden bağlanma (`reconnect_success`) başarıyla test edildi.
 
 ---
 
 ## 7.10 30-Minute Observation & Altyapı Metrikleri
 
-- **Oracle Backend:** Uptime > 1h, RAM 169 MB, CPU < %1.
-- **Oracle Gateway:** Uptime > 1h, RAM 180 MB, Connected: 1, Error: 0.
-- **Oracle Caddy:** Uptime > 1h, Healthy.
-- **Frankfurt Database:** Bağlantı havuzu stabil, socket lease generation düzenli yenileniyor.
-- **Render Yedek Durumu:** Render Free servisi silinmemiştir; acil rollback kaynağı olarak güvenli beklemededir.
+- **Oracle Backend:** Uptime stabil, RAM 131.8 MB, CPU < %1, Public HTTPS gecikmesi ~45 ms.
+- **Oracle Gateway:** Uptime stabil, Connected: 1, Error: 0, Event outbox aktarımı kesintisiz.
+- **Oracle Caddy:** Uptime stabil, Let's Encrypt TLS aktif, HTTP 5xx hatası: 0.
+- **Oracle Local PostgreSQL:** Sorgu gecikmesi < 0.4 ms, ping: 1, tekil aktif kilit (`generation: 1`) kesintisiz yenileniyor.
+- **Render / Tokyo Durumu:** 0 istek, Tokyo veritabanı silinmiş (`tenant not found`), Render kapalı.
 
 ---
 
 ## 20. FINAL DECISION
 
-**PARTIAL / ACTION REQUIRED**
+✅ **PRODUCTION CUTOVER SUCCESSFUL (Oracle Local PostgreSQL)**  
+⚠️ **PHASE 7.8 APPLICATION E2E: `PRODUCTION E2E PARTIAL / ACTION REQUIRED`**
 
 **Durum:**
-1. **Public Edge TLS & WSS:** `api.130.162.247.20.sslip.io` üzerinden Let's Encrypt TLS sertifikası ve WSS bağlantısı başarıyla sağlandı (`HTTP 200`, `WSS State: 1`).
-2. **Vercel Production:** `https://tezlify-woad.vercel.app` canlıya alındı; edge proxy rewrite `/health` üzerinden Oracle Backend'e bağlandı.
-3. **Frontend Binding:** Tokyo Supabase referansları temizlendi, Frankfurt projesine bağlandı (`dist/` içinde Tokyo ref: 0).
-4. **Tarayıcı E2E Testi:** Headless Chromium ile Vercel frontend başarıyla test edildi, ekran görüntüsü alındı (`vercel_production_e2e.png`), Google OAuth yönlendirmesinin doğrudan Frankfurt projesini çağırdığı kanıtlandı.
-5. **Veritabanı Sağlığı:** TOAST şişkinliği `VACUUM FULL` ile giderildi (750 MB -> 136 MB), read-only koruması kaldırıldı.
-6. **WhatsApp Canlı Oturumu:** Hat 1 (`+9050***2749`) kesintisiz `CONNECTED / READY / ONLINE` durumundadır.
-7. **Kalan Adım:** Supabase Frankfurt Dashboard'dan Google Provider'ın aktif edilmesi gerekmektedir.
+1. **Public Edge TLS & WSS:** `api.130.162.247.20.sslip.io` üzerinden Let's Encrypt TLS sertifikası ve WSS bağlantısı tam çalışır durumda (`HTTP 200`, `WSS Ping/Pong OK`).
+2. **Vercel Production:** `https://tezlify-woad.vercel.app` canlıda; Vuexy arayüzü sorunsuz açılıyor; 0 Render/Tokyo isteği.
+3. **Application Database:** Uygulama veritabanı Oracle Cloud Frankfurt yerel PostgreSQL 17 örneğine (`tezlify-db`) başarıyla taşındı.
+4. **Veritabanı Paritesi & Bütünlüğü:** 22 tablo %100 eksiksiz aktarıldı. Bütünlük testlerinde yetim mesaj = 0, yetim sohbet = 0.
+5. **WhatsApp Oturumu:** Hat 1 (`+905076382749`) sıfır QR okutma ile doğrudan `CONNECTED / READY / ONLINE` durumunda çalışıyor.
+6. **Performans:** Medyan sorgu gecikmesi **0.33 ms** (localhost NVMe SSD).
+7. **Kalan Aksiyon:** Supabase Free plan kota kısıtlaması nedeniyle Auth servisi 521 vermektedir; canlı Google OAuth girişi için Supabase plan yükseltmesi veya bağımsız auth yapılandırması gereklidir.
 
 ---
 
-## 21. DETAYLI RAPOR REFERANSI
+## 21. DETAYLI RAPOR REFERANSLARI
 
-Tam teknik döküm, ekran görüntüleri ve kanıtlar için:
+Tam teknik döküm, adli analizler ve benchmark kanıtları için:
 - [`docs/PHASE_7_4_PRODUCTION_E2E_REPORT.md`](file:///Users/isatezcan/Documents/Github/Scoutify/docs/PHASE_7_4_PRODUCTION_E2E_REPORT.md)
+- [`docs/PHASE_7_5_REAL_PRODUCTION_E2E_REPORT.md`](file:///Users/isatezcan/Documents/Github/Scoutify/docs/PHASE_7_5_REAL_PRODUCTION_E2E_REPORT.md)
+- [`docs/PHASE_7_5A_SUPABASE_QUOTA_FORENSIC.md`](file:///Users/isatezcan/Documents/Github/Scoutify/docs/PHASE_7_5A_SUPABASE_QUOTA_FORENSIC.md)
+- [`docs/PHASE_7_6_ORACLE_POSTGRES_STAGING_REPORT.md`](file:///Users/isatezcan/Documents/Github/Scoutify/docs/PHASE_7_6_ORACLE_POSTGRES_STAGING_REPORT.md)
+- [`docs/PHASE_7_7_ORACLE_POSTGRES_PRODUCTION_CUTOVER.md`](file:///Users/isatezcan/Documents/Github/Scoutify/docs/PHASE_7_7_ORACLE_POSTGRES_PRODUCTION_CUTOVER.md)
+- [`docs/PHASE_7_8_REAL_WHATSAPP_E2E_REPORT.md`](file:///Users/isatezcan/Documents/Github/Scoutify/docs/PHASE_7_8_REAL_WHATSAPP_E2E_REPORT.md)
+- [`docs/PHASE_7_8A_AUTH_RECOVERY_REPORT.md`](file:///Users/isatezcan/Documents/Github/Scoutify/docs/PHASE_7_8A_AUTH_RECOVERY_REPORT.md)
+- [`docs/PHASE_7_8B_AUTH_ENV_VALIDATION.md`](file:///Users/isatezcan/Documents/Github/Scoutify/docs/PHASE_7_8B_AUTH_ENV_VALIDATION.md)
 
-   - Google Cloud Console -> Authorized Redirect URIs -> `https://qfypckopgelvsimfrfub.supabase.co/auth/v1/callback` ekleyiniz.
+
