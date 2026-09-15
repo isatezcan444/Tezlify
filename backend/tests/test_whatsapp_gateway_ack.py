@@ -97,3 +97,17 @@ async def test_gateway_pong_message_is_handled(monkeypatch) -> None:
     assert socket.accepted is True
     ingest.assert_not_awaited()
     assert socket.sent == []
+
+
+@pytest.mark.asyncio
+async def test_gateway_ping_message_responds_with_pong(monkeypatch) -> None:
+    socket = FakeGatewaySocket({"type": "ping"})
+    ingest = AsyncMock()
+    monkeypatch.setattr(whatsapp_service, "ingest_gateway_event", ingest)
+
+    await gateway_websocket_endpoint(socket, token=None)
+
+    assert socket.accepted is True
+    ingest.assert_not_awaited()
+    assert socket.sent == [{"type": "pong"}]
+

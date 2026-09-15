@@ -263,20 +263,21 @@ async def gateway_websocket_endpoint(
         "failed": 0, "acked": 0, "nacked": 0,
     }
     _GW_PING_INTERVAL_S = 20.0
+
+    async def _keepalive_loop():
+        try:
+            while True:
+                await asyncio.sleep(_GW_PING_INTERVAL_S)
+                await websocket.send_json({"type": "ping"})
+        except asyncio.CancelledError:
+            pass
+        except Exception as ping_err:
+            logger.debug("[WS-GATEWAY] Keepalive ping send failed: %s", ping_err)
+
+    keepalive_task = asyncio.create_task(_keepalive_loop())
     try:
         while True:
-            try:
-                raw = await asyncio.wait_for(
-                    websocket.receive_text(),
-                    timeout=_GW_PING_INTERVAL_S,
-                )
-            except asyncio.TimeoutError:
-                try:
-                    await websocket.send_json({"type": "ping"})
-                except Exception as ping_err:
-                    logger.warning(f"[WS-GATEWAY] Ping gönderilemedi: {ping_err}")
-                    break
-                continue
+            raw = await websocket.receive_text()
 
             counters["received"] += 1
             _gateway_bridge["last_event_at"] = _dt.datetime.now(_dt.timezone.utc).isoformat()
@@ -290,6 +291,9 @@ async def gateway_websocket_endpoint(
                 counters["failed"] += 1
                 continue
             if event_data.get("type") == "pong":
+                continue
+            if event_data.get("type") == "ping":
+                await websocket.send_json({"type": "pong"})
                 continue
             try:
                 persisted = await ingest_gateway_event(event_data)
@@ -335,6 +339,11 @@ async def gateway_websocket_endpoint(
     except Exception as e:
         logger.warning(f"[WS-GATEWAY] Bağlantı hatası: {e}")
     finally:
+        keepalive_task.cancel()
+        try:
+            await keepalive_task
+        except asyncio.CancelledError:
+            pass
         _gateway_bridge["connected"] = False
         logger.info(
             "[WS-GATEWAY] Bağlantı kapandı "
