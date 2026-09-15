@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -6,6 +6,10 @@ from sqlalchemy import select
 
 from backend.app.auth.domain.models import UserDomain
 from backend.app.auth.infrastructure.sql_models import AuthUserDB, OAuthAccountDB
+
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 class UserService:
@@ -47,6 +51,7 @@ class UserService:
         res_user = await db.execute(stmt_user)
         existing_user = res_user.scalar_one_or_none()
 
+        now = utc_now()
         if existing_user:
             # Link new OAuth account to existing user
             new_oauth = OAuthAccountDB(
@@ -54,8 +59,8 @@ class UserService:
                 provider=provider,
                 provider_subject=provider_subject,
                 provider_email=email,
-                created_at=datetime.utcnow(),
-                updated_at=datetime.utcnow(),
+                created_at=now,
+                updated_at=now,
             )
             db.add(new_oauth)
             await db.flush()
@@ -68,8 +73,8 @@ class UserService:
             display_name=display_name,
             avatar_url=avatar_url,
             is_active=True,
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
+            created_at=now,
+            updated_at=now,
         )
         db.add(new_user)
         await db.flush()
@@ -79,8 +84,8 @@ class UserService:
             provider=provider,
             provider_subject=provider_subject,
             provider_email=email,
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
+            created_at=now,
+            updated_at=now,
         )
         db.add(new_oauth)
         await db.flush()

@@ -1,6 +1,6 @@
 import hashlib
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Tuple
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
@@ -11,6 +11,10 @@ from backend.app.auth.infrastructure.sql_models import OAuthStateDB
 from backend.app.auth.infrastructure.google_provider import GoogleOAuthProvider
 from backend.app.auth.application.user_service import UserService
 from backend.app.auth.application.session_service import SessionService
+
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 class OAuthService:
@@ -31,12 +35,13 @@ class OAuthService:
     async def initiate_google_flow(self, db: AsyncSession) -> Tuple[str, str]:
         raw_state = secrets.token_urlsafe(32)
         state_hash = self.hash_state(raw_state)
-        expires_at = datetime.utcnow() + timedelta(minutes=10)
+        now = utc_now()
+        expires_at = now + timedelta(minutes=10)
 
         db_state = OAuthStateDB(
             state_hash=state_hash,
             expires_at=expires_at,
-            created_at=datetime.utcnow(),
+            created_at=now,
             consumed_at=None,
         )
         db.add(db_state)
@@ -58,7 +63,7 @@ class OAuthService:
         if db_state.consumed_at is not None:
             raise InvalidOAuthStateException("OAuth state has already been consumed (replay attempt)")
 
-        now = datetime.now(db_state.expires_at.tzinfo) if db_state.expires_at.tzinfo is not None else datetime.utcnow()
+        now = utc_now() if db_state.expires_at.tzinfo is not None else datetime.utcnow()
 
         if db_state.expires_at < now:
             raise InvalidOAuthStateException("OAuth state has expired")

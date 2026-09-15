@@ -1,7 +1,11 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import uuid4
 from sqlalchemy import Column, String, Boolean, DateTime, Uuid, ForeignKey, UniqueConstraint, Index
 from backend.app.core.database import Base
+
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 class AuthUserDB(Base):
@@ -12,8 +16,8 @@ class AuthUserDB(Base):
     display_name = Column(String(255), nullable=True)
     avatar_url = Column(String(500), nullable=True)
     is_active = Column(Boolean, default=True, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
 
 
 class OAuthAccountDB(Base):
@@ -24,8 +28,8 @@ class OAuthAccountDB(Base):
     provider = Column(String(50), nullable=False)
     provider_subject = Column(String(255), nullable=False)
     provider_email = Column(String(255), nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
 
     __table_args__ = (
         UniqueConstraint("provider", "provider_subject", name="uq_oauth_provider_subject"),
@@ -39,10 +43,10 @@ class AuthSessionDB(Base):
     id = Column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     user_id = Column(Uuid(as_uuid=True), ForeignKey("auth_staging_users.id", ondelete="CASCADE"), nullable=False, index=True)
     session_token_hash = Column(String(64), unique=True, nullable=False, index=True)
-    expires_at = Column(DateTime, nullable=False, index=True)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    last_seen_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    revoked_at = Column(DateTime, nullable=True)
+    expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), default=utc_now, nullable=False)
+    last_seen_at = Column(DateTime(timezone=True), default=utc_now, nullable=False)
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
         Index("ix_session_active", "session_token_hash", "revoked_at", "expires_at"),
@@ -53,6 +57,6 @@ class OAuthStateDB(Base):
     __tablename__ = "auth_staging_oauth_states"
 
     state_hash = Column(String(64), primary_key=True)
-    expires_at = Column(DateTime, nullable=False, index=True)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    consumed_at = Column(DateTime, nullable=True)
+    expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), default=utc_now, nullable=False)
+    consumed_at = Column(DateTime(timezone=True), nullable=True)

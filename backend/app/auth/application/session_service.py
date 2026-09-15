@@ -1,6 +1,6 @@
 import hashlib
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple
 from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -8,6 +8,10 @@ from sqlalchemy import select, update
 
 from backend.app.auth.domain.models import SessionDomain
 from backend.app.auth.infrastructure.sql_models import AuthSessionDB
+
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 class SessionService:
@@ -23,14 +27,16 @@ class SessionService:
     ) -> Tuple[SessionDomain, str]:
         raw_token = secrets.token_urlsafe(32)
         token_hash = self.hash_token(raw_token)
-        expires_at = datetime.utcnow() + timedelta(days=ttl_days)
+        now = utc_now()
+        expires_at = now + timedelta(days=ttl_days)
 
         db_session = AuthSessionDB(
             user_id=user_id,
             session_token_hash=token_hash,
             expires_at=expires_at,
-            created_at=datetime.utcnow(),
-            last_seen_at=datetime.utcnow(),
+            created_at=now,
+            last_seen_at=now,
+            revoked_at=None,
         )
         db.add(db_session)
         await db.flush()
@@ -54,7 +60,7 @@ class SessionService:
         if not db_session:
             return None
 
-        now = datetime.now(db_session.expires_at.tzinfo) if db_session.expires_at.tzinfo is not None else datetime.utcnow()
+        now = utc_now() if db_session.expires_at.tzinfo is not None else datetime.utcnow()
         if db_session.expires_at <= now:
             return None
 
@@ -80,7 +86,7 @@ class SessionService:
         if not db_session:
             return False
 
-        now = datetime.now(db_session.expires_at.tzinfo) if db_session.expires_at.tzinfo is not None else datetime.utcnow()
+        now = utc_now() if db_session.expires_at.tzinfo is not None else datetime.utcnow()
         db_session.revoked_at = now
         await db.flush()
         return True
