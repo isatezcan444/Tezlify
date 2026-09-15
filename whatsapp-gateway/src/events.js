@@ -44,9 +44,15 @@ export function createEventBridge({ backendWsUrl, sessionManager, eventOutbox = 
     }
   }
 
+  let lastPumpMs = 0;
+  const PUMP_MIN_INTERVAL_MS = 50; // rate-limit: at most 1 pump per 50 ms
+
   async function pumpOutbox() {
     if (!eventOutbox || !isOpen() || pumpRunning) return;
+    const now = Date.now();
+    if (now - lastPumpMs < PUMP_MIN_INTERVAL_MS) return; // rate-limit
     pumpRunning = true;
+    lastPumpMs = Date.now();
     try {
       const batch = await eventOutbox.claimPending(50);
       for (const item of batch) {
@@ -59,6 +65,9 @@ export function createEventBridge({ backendWsUrl, sessionManager, eventOutbox = 
           first_sequence: batch[0].sequence,
           last_sequence: batch[batch.length - 1].sequence,
         });
+        // Yield to the event loop between batches so the backend connection
+        // is not overwhelmed by a burst of thousands of events on reconnect.
+        await new Promise((resolve) => setTimeout(resolve, 100));
       }
     } catch (error) {
       diagnostic('event_outbox_pump_failed', {
