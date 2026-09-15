@@ -188,6 +188,15 @@ export function createEventBridge({ backendWsUrl, sessionManager, eventOutbox = 
     const isDelete = String(event?.event || '').startsWith('session_deleted');
     if (sessionId && !sessionManager.getSession(String(sessionId)) && !isDelete) return;
 
+    const eventType = String(event?.event || event?.event_type || '');
+    if (eventType === 'session_sync_progress') {
+      sendLocal(event);
+      if (isOpen()) {
+        backendSocket.send(JSON.stringify(event));
+      }
+      return;
+    }
+
     if (eventOutbox) {
       try {
         const durableEvent = await eventOutbox.enqueue(event);

@@ -3054,10 +3054,17 @@ async def _run_initial_sync(owner: str) -> None:
             _schedule_initial_sync(owner)
 
 
+_history_expansion_running: Set[str] = set()
+_history_expansion_done: Set[str] = set()
+
+
 async def _run_background_history_expansion(user_id: str, gateway_id: str) -> None:
     """Progressive background history expansion after initial sync.
     Runs cooperatively in small batches without blocking realtime events, outgoing sends, or holding global locks.
     """
+    if user_id in _history_expansion_running or user_id in _history_expansion_done:
+        return
+    _history_expansion_running.add(user_id)
     logger.info("Starting background history expansion for user=%s, gateway=%s", user_id, gateway_id)
     try:
         async with AsyncSessionLocal() as db:
@@ -3099,8 +3106,11 @@ async def _run_background_history_expansion(user_id: str, gateway_id: str) -> No
             except Exception as e:
                 logger.debug("Background expansion skipped conversation %s: %s", conv.id, e)
                 continue
+        _history_expansion_done.add(user_id)
     except Exception as exc:
         logger.warning("Background history expansion failed: %s", exc)
+    finally:
+        _history_expansion_running.discard(user_id)
 
 
 # Faz 13 (düzeltme — Render log regresyonu): Gateway'in bilerek KALICI
@@ -3268,7 +3278,7 @@ async def ingest_gateway_event(event: Dict[str, Any]) -> Optional[Dict[str, Any]
                     if evt == "history_sync_completed":
                         chats_synced = event.get("chats_synced") or 0
                         messages_synced = event.get("messages_synced") or 0
-                        if chats_synced > 0 or messages_synced > 0:
+                        if (chats_synced > 0 or messages_synced > 0) and owner not in _initial_sync_inflight:
                             _schedule_initial_sync(str(owner), reconcile=True)
                     else:
                         _schedule_initial_sync(
