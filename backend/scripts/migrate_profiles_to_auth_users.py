@@ -36,7 +36,8 @@ async def run_migration(dry_run: bool = True, rollback: bool = False):
         if not table_exists:
             logger.info("Table auth_staging_users does not exist. Creating table structure...")
             if not dry_run:
-                await db.execute(text("""
+                ddl_statements = [
+                    """
                     CREATE TABLE IF NOT EXISTS auth_staging_users (
                         id UUID PRIMARY KEY,
                         email VARCHAR(255) UNIQUE NOT NULL,
@@ -46,6 +47,8 @@ async def run_migration(dry_run: bool = True, rollback: bool = False):
                         created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT now(),
                         updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT now()
                     );
+                    """,
+                    """
                     CREATE TABLE IF NOT EXISTS auth_staging_oauth_accounts (
                         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                         user_id UUID NOT NULL REFERENCES auth_staging_users(id) ON DELETE CASCADE,
@@ -56,6 +59,8 @@ async def run_migration(dry_run: bool = True, rollback: bool = False):
                         updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT now(),
                         CONSTRAINT uq_staging_oauth_provider_subject UNIQUE (provider, provider_subject)
                     );
+                    """,
+                    """
                     CREATE TABLE IF NOT EXISTS auth_staging_sessions (
                         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                         user_id UUID NOT NULL REFERENCES auth_staging_users(id) ON DELETE CASCADE,
@@ -65,13 +70,18 @@ async def run_migration(dry_run: bool = True, rollback: bool = False):
                         last_seen_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT now(),
                         revoked_at TIMESTAMP WITHOUT TIME ZONE
                     );
+                    """,
+                    """
                     CREATE TABLE IF NOT EXISTS auth_staging_oauth_states (
                         state_hash VARCHAR(64) PRIMARY KEY,
                         expires_at TIMESTAMP WITHOUT TIME ZONE NOT NULL,
                         created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT now(),
                         consumed_at TIMESTAMP WITHOUT TIME ZONE
                     );
-                """))
+                    """
+                ]
+                for stmt in ddl_statements:
+                    await db.execute(text(stmt))
                 await db.commit()
                 logger.info("Staging auth tables created successfully.")
 
