@@ -44,30 +44,31 @@ export function createEventBridge({ backendWsUrl, sessionManager, eventOutbox = 
     }
   }
 
-  let lastPumpMs = 0;
-  const PUMP_MIN_INTERVAL_MS = 50; // rate-limit: at most 1 pump per 50 ms
+  let pumpScheduled = false;
 
   async function pumpOutbox() {
-    if (!eventOutbox || !isOpen() || pumpRunning) return;
-    const now = Date.now();
-    if (now - lastPumpMs < PUMP_MIN_INTERVAL_MS) return; // rate-limit
+    if (!eventOutbox || !isOpen()) return;
+    if (pumpRunning) {
+      pumpScheduled = true;
+      return;
+    }
     pumpRunning = true;
-    lastPumpMs = Date.now();
     try {
-      const batch = await eventOutbox.claimPending(50);
-      for (const item of batch) {
-        if (!isOpen()) break;
-        backendSocket.send(JSON.stringify(item.event));
-      }
-      if (batch.length > 0) {
+      while (isOpen()) {
+        pumpScheduled = false;
+        const batch = await eventOutbox.claimPending(50);
+        if (!batch || batch.length === 0) break;
+        for (const item of batch) {
+          if (!isOpen()) break;
+          backendSocket.send(JSON.stringify(item.event));
+        }
         diagnostic('event_outbox_batch_sent', {
           count: batch.length,
           first_sequence: batch[0].sequence,
           last_sequence: batch[batch.length - 1].sequence,
         });
-        // Yield to the event loop between batches so the backend connection
-        // is not overwhelmed by a burst of thousands of events on reconnect.
-        await new Promise((resolve) => setTimeout(resolve, 100));
+        if (batch.length < 50) break;
+        await new Promise((resolve) => setTimeout(resolve, 50));
       }
     } catch (error) {
       diagnostic('event_outbox_pump_failed', {
@@ -76,6 +77,9 @@ export function createEventBridge({ backendWsUrl, sessionManager, eventOutbox = 
       });
     } finally {
       pumpRunning = false;
+      if (pumpScheduled && isOpen()) {
+        setImmediate(() => { void pumpOutbox(); });
+      }
     }
   }
 
