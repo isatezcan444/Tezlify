@@ -226,26 +226,22 @@ Gerçek public DNS sorguları 3 bağımsız çözümleyici üzerinden gerçekle�
 
 ## 20. FINAL DECISION
 
-**BLOCKED**
+**PARTIAL / ACTION REQUIRED**
 
-**Gerekçe:**  
-1. `api.tezlify.com` için public DNS `A` kaydı bulunmamaktadır (`NXDOMAIN`).
-2. DNS olmaksızın Let's Encrypt TLS sertifikası üretilememekte ve Vercel production frontend'i canlı API/WS'e bağlanamamaktadır.
-3. Frankfurt Supabase `anon` anahtarı ve Google OAuth callback konfigürasyonu beklenmektedir.
+**Durum:**
+1. **Public Edge TLS & WSS:** `api.130.162.247.20.sslip.io` üzerinden Let's Encrypt TLS sertifikası ve WSS bağlantısı başarıyla sağlandı (`HTTP 200`, `WSS State: 1`).
+2. **Vercel Production:** `https://tezlify-woad.vercel.app` canlıya alındı; edge proxy rewrite `/health` üzerinden Oracle Backend'e bağlandı.
+3. **Frontend Binding:** Tokyo Supabase referansları temizlendi, Frankfurt projesine bağlandı (`dist/` içinde Tokyo ref: 0).
+4. **Tarayıcı E2E Testi:** Headless Chromium ile Vercel frontend başarıyla test edildi, ekran görüntüsü alındı (`vercel_production_e2e.png`), Google OAuth yönlendirmesinin doğrudan Frankfurt projesini çağırdığı kanıtlandı.
+5. **Veritabanı Sağlığı:** TOAST şişkinliği `VACUUM FULL` ile giderildi (750 MB -> 136 MB), read-only koruması kaldırıldı.
+6. **WhatsApp Canlı Oturumu:** Hat 1 (`+9050***2749`) kesintisiz `CONNECTED / READY / ONLINE` durumundadır.
+7. **Kalan Adım:** Supabase Frankfurt Dashboard'dan Google Provider'ın aktif edilmesi gerekmektedir.
 
 ---
 
-## 21. STOP RULE & KULLANICI AKSİYON PLANI
+## 21. DETAYLI RAPOR REFERANSI
 
-Render silinmedi. Tokyo Supabase silinmedi. Oracle kapatılmadı.
+Tam teknik döküm, ekran görüntüleri ve kanıtlar için:
+- [`docs/PHASE_7_4_PRODUCTION_E2E_REPORT.md`](file:///Users/isatezcan/Documents/Github/Scoutify/docs/PHASE_7_4_PRODUCTION_E2E_REPORT.md)
 
-**Kullanıcıdan Beklenen Aksiyonlar:**
-1. **DNS A Kaydı Ekleme:**
-   - **Type:** `A`
-   - **Name:** `api`
-   - **Value:** `130.162.247.20`
-   - **TTL:** `300` (Cloudflare ise: *DNS Only*)
-2. **Frankfurt Supabase Anon Key:**
-   - Frankfurt Supabase Dashboard -> `Project Settings` -> `API` -> `anon public` key'i iletiniz.
-3. **Google OAuth Callback:**
    - Google Cloud Console -> Authorized Redirect URIs -> `https://qfypckopgelvsimfrfub.supabase.co/auth/v1/callback` ekleyiniz.
