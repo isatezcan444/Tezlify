@@ -1,0 +1,91 @@
+version: "3.8"
+
+networks:
+  tezlify-internal:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.29.0.0/16
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    container_name: tezlify-caddy
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "caddy", "version"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    networks:
+      - tezlify-internal
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: tezlify-backend
+    restart: always
+    expose:
+      - "8000"
+    env_file:
+      - .env.production
+    environment:
+      PORT: 8000
+      WHATSAPP_GATEWAY_URL: http://gateway:8787
+      SKIP_JOB_RECOVERY: "true"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; res = urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5); exit(0 if res.status == 200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    networks:
+      - tezlify-internal
+
+  gateway:
+    build:
+      context: .
+      dockerfile: whatsapp-gateway/Dockerfile
+    container_name: tezlify-gateway
+    restart: always
+    expose:
+      - "8787"
+    env_file:
+      - .env.production
+    environment:
+      GATEWAY_PORT: 8787
+      GATEWAY_HOST: 0.0.0.0
+      BACKEND_WS_URL: ws://backend:8000/ws/gateway
+      WHATSAPP_AUTO_RESTORE: "false"
+      LOG_LEVEL: info
+    depends_on:
+      backend:
+        condition: service_healthy
+    volumes:
+      - whatsapp_sessions:/app/sessions
+      - whatsapp_media:/app/media
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('node:http').get('http://127.0.0.1:8787/health', res => process.exit(res.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks:
+      - tezlify-internal
+
+volumes:
+  caddy_data:
+  caddy_config:
+  whatsapp_sessions:
+  whatsapp_media:

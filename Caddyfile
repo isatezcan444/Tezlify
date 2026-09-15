@@ -1,0 +1,61 @@
+{
+    auto_https disable_redirects
+}
+
+api.tezlify.com {
+    handle /caddy-health {
+        respond "OK" 200
+    }
+
+    @websockets {
+        header Connection *Upgrade*
+        header Upgrade websocket
+    }
+    reverse_proxy @websockets backend:8000
+
+    reverse_proxy backend:8000 {
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-Proto https
+    }
+}
+
+:80 {
+    handle /caddy-health {
+        respond "OK" 200
+    }
+
+    @websockets {
+        header Connection *Upgrade*
+        header Upgrade websocket
+    }
+    reverse_proxy @websockets backend:8000
+
+    reverse_proxy backend:8000 {
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-Proto http
+    }
+}
+
+:443 {
+    tls internal {
+        on_demand
+    }
+
+    handle /caddy-health {
+        respond "OK" 200
+    }
+
+    @websockets {
+        header Connection *Upgrade*
+        header Upgrade websocket
+    }
+    reverse_proxy @websockets backend:8000
+
+    reverse_proxy backend:8000 {
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-Proto https
+    }
+}

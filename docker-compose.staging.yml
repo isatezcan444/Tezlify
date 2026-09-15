@@ -1,0 +1,113 @@
+networks:
+  tezlify-internal:
+    name: tezlify-internal
+    driver: bridge
+
+volumes:
+  caddy_data:
+  caddy_config:
+  wa_staging_sessions:
+  wa_staging_media:
+  pg_staging_data:
+
+services:
+  staging-db:
+    image: postgres:16-alpine
+    container_name: tezlify-staging-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: tezlify_stage
+      POSTGRES_PASSWORD: stage_secure_password_9988
+      POSTGRES_DB: tezlify_staging
+    volumes:
+      - pg_staging_data:/var/lib/postgresql/data
+    networks:
+      - tezlify-internal
+    expose:
+      - "5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tezlify_stage -d tezlify_staging"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: tezlify-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - tezlify-internal
+    depends_on:
+      - backend
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:80/caddy-health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: tezlify-backend
+    restart: unless-stopped
+    expose:
+      - "8000"
+    environment:
+      - PORT=8000
+      - DATABASE_URL=postgresql+asyncpg://tezlify_stage:stage_secure_password_9988@staging-db:5432/tezlify_staging
+      - WHATSAPP_GATEWAY_URL=http://gateway:8787
+      - WHATSAPP_GATEWAY_SECRET=stage-gw-secret-token-389104812398
+      - SECRET_KEY=stage-backend-secret-key-oracle-staging-test-48192
+      - SCRAPER_ENGINE=HTTP
+      - SEED_DEMO_DATA=false
+    networks:
+      - tezlify-internal
+    depends_on:
+      staging-db:
+        condition: service_healthy
+      gateway:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 10s
+      timeout: 4s
+      retries: 3
+
+  gateway:
+    build:
+      context: .
+      dockerfile: whatsapp-gateway/Dockerfile
+    container_name: tezlify-gateway
+    restart: unless-stopped
+    expose:
+      - "8787"
+    environment:
+      - GATEWAY_PORT=8787
+      - GATEWAY_HOST=0.0.0.0
+      - BACKEND_WS_URL=ws://backend:8000/ws/gateway
+      - WHATSAPP_GATEWAY_SECRET=stage-gw-secret-token-389104812398
+      - GATEWAY_ENCRYPTION_KEY=staging-aes-key-for-oracle-stage-32char!
+      - DATABASE_URL=postgresql://tezlify_stage:stage_secure_password_9988@staging-db:5432/tezlify_staging
+      - REQUIRE_DURABLE_AUTH=true
+      - GATEWAY_DATABASE_POOL_MAX=3
+    volumes:
+      - wa_staging_sessions:/app/sessions
+      - wa_staging_media:/app/media
+    networks:
+      - tezlify-internal
+    depends_on:
+      staging-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "const r=require('node:http').request({hostname:'127.0.0.1',port:8787,path:'/health',timeout:3000},res=>{if(res.statusCode!==200)process.exit(1);res.on('data',()=>{});res.on('end',()=>process.exit(0))});r.on('error',()=>process.exit(1));r.end();"]
+      interval: 10s
+      timeout: 4s
+      retries: 3
