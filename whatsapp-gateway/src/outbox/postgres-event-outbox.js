@@ -55,8 +55,9 @@ export function createPostgresEventOutbox({
             WHERE state IN ('PENDING', 'IN_FLIGHT')
               AND next_attempt_at <= NOW()
             ORDER BY CASE
-                WHEN event_type IN ('message_status_updated', 'message_new', 'message_upsert') THEN 1
-                ELSE 2
+                WHEN event_type = 'message_status_updated' THEN 1
+                WHEN event_type IN ('message_new', 'message_upsert') THEN 2
+                ELSE 3
               END ASC, sequence ASC
            FOR UPDATE SKIP LOCKED
            LIMIT $1
