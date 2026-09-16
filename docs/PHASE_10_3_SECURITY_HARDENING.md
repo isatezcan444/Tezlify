@@ -178,7 +178,7 @@ All sensitive directories and files audited and locked down:
 | `/opt/tezlify/backups/config/*.tar.gz` | `0600` | `-rw-------` (`600`) | `ubuntu:ubuntu` |
 | `/home/ubuntu/.ssh` | `0700` | `drwx------` (`700`) | `ubuntu:ubuntu` |
 | `/home/ubuntu/.ssh/authorized_keys` | `0600` | `-rw-------` (`600`) | `ubuntu:ubuntu` |
-| `/opt/tezlify/monitoring/` | `0750` | `drwxrwxr-x` (`750`) | `ubuntu:ubuntu` |
+| `/opt/tezlify/monitoring/` | `0750` | `drwxr-x---` (`750`) | `ubuntu:ubuntu` |
 
 Audited for world-writable files in `/opt/tezlify`: **0 found**.
 
@@ -188,7 +188,9 @@ Audited for world-writable files in `/opt/tezlify`: **0 found**.
 
 - **OS Version:** Ubuntu 24.04.4 LTS (Kernel `6.17.0-1020-oracle` aarch64).
 - **Unattended Upgrades:** Package installed, service `active (running)`.
-- **Reboot Flag:** `/var/run/reboot-required` is present (pending kernel update from image setup). As per Phase 10.3 safety rules, no automated reboot was performed during this phase.
+- **Reboot Flag:** `/var/run/reboot-required` is present (pending kernel update from cloud image setup).
+  - **`REBOOT_REQUIRED_PENDING=true`**
+  - *Note:* This represents scheduled maintenance work, not an emergency action. As per Phase 10.3 safety rules, no automated reboot was performed during this phase to preserve uninterrupted service availability.
 - **Fail2ban:** `FAIL2BAN_STATUS=NOT_CONFIGURED`. SSH is protected by public-key-only authentication and `MaxAuthTries 4`.
 
 ---
@@ -255,9 +257,11 @@ sudo sed -i 's/PermitRootLogin no/PermitRootLogin prohibit-password/' /etc/ssh/s
 sudo sshd -t && sudo systemctl reload ssh
 ```
 
-### Caddy Headers Rollback
+### Caddy Headers Rollback (Git-Based)
 ```bash
-cp /opt/tezlify/Caddyfile.bak-phase-10.3 /opt/tezlify/Caddyfile
+# Roll back Caddyfile to the state prior to security header injection (commit c65440a)
+cd /opt/tezlify
+git checkout c65440a -- Caddyfile
 docker exec tezlify-caddy caddy reload --config /etc/caddy/Caddyfile
 ```
 
