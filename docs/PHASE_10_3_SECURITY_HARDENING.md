@@ -143,7 +143,7 @@ x-frame-options: SAMEORIGIN
 - **CORS:** Restricted to local development ports; authenticated requests require matching headers.
 - **Host Header Validation:** Proxied exclusively via Caddy reverse proxy.
 - **Canonical Origin:** `https://api.130.162.247.20.sslip.io` enforced throughout.
-- **Legacy PaaS References:** Zero active references to Vercel, Render, or Supabase.
+- **Legacy PaaS References:** Zero active references to legacy external PaaS platforms (pure Oracle architecture).
 
 ---
 
