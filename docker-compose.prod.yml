@@ -43,6 +43,7 @@ services:
       - .env.production
     environment:
       PORT: 8000
+      FRONTEND_ORIGIN: "https://api.130.162.247.20.sslip.io"
       WHATSAPP_GATEWAY_URL: http://gateway:8787
       SKIP_JOB_RECOVERY: "true"
     healthcheck:
