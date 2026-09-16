@@ -165,6 +165,10 @@ class AdminObservationMetadata(BaseModel):
     target_duration: str = "72 hours"
     observation_status: str = "OBSERVATION_WINDOW_INCOMPLETE"
     sample_count: int = 0
+    elapsed_seconds: Optional[float] = None
+    target_seconds: float = 259200.0
+    remaining_seconds: Optional[float] = None
+    progress_percent: Optional[float] = None
 
 
 class AdminInvariantStatus(BaseModel):
@@ -194,11 +198,14 @@ class AdminMonitoringResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     timestamp: str
+    overall_status: str = Field(default="OK", description="'OK', 'WARN', or 'CRITICAL'")
+    overall_status_reasons: List[str] = Field(default_factory=list)
     system_monitor: AdminTimerInfo
     whatsapp_observer: AdminTimerInfo
     observation: AdminObservationMetadata
     invariants: List[AdminInvariantStatus] = Field(default_factory=list)
     recent_observations: List[AdminObservationRecord] = Field(default_factory=list)
+
 
 
 # ---------------------------------------------------------------------------

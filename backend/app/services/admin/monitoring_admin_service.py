@@ -128,12 +128,21 @@ def get_monitoring_metrics() -> AdminMonitoringResponse:
         except Exception as oe:
             logger.debug("Could not read observations.jsonl: %s", oe)
 
+    elapsed_sec = None
+    target_sec = 72.0 * 3600.0
+    remaining_sec = None
+    progress_pct = None
+
     if baseline_ts and latest_ts:
         try:
             b_dt = datetime.fromisoformat(baseline_ts.replace("Z", "+00:00"))
             l_dt = datetime.fromisoformat(latest_ts.replace("Z", "+00:00"))
             diff = l_dt - b_dt
-            hours = diff.total_seconds() / 3600.0
+            diff_sec = max(0.0, diff.total_seconds())
+            elapsed_sec = round(diff_sec, 1)
+            remaining_sec = max(0.0, round(target_sec - diff_sec, 1))
+            progress_pct = min(100.0, round((diff_sec / target_sec) * 100.0, 1))
+            hours = diff_sec / 3600.0
             observed_duration_str = f"{hours:.1f} hours"
             if hours >= 72.0:
                 obs_status = "OBSERVATION_WINDOW_COMPLETE"
@@ -147,6 +156,10 @@ def get_monitoring_metrics() -> AdminMonitoringResponse:
         target_duration="72 hours",
         observation_status=obs_status,
         sample_count=sample_count,
+        elapsed_seconds=elapsed_sec,
+        target_seconds=target_sec,
+        remaining_seconds=remaining_sec,
+        progress_percent=progress_pct,
     )
 
     # 4. R1-R13 Invariants evaluation
@@ -165,8 +178,46 @@ def get_monitoring_metrics() -> AdminMonitoringResponse:
             )
         )
 
+    # 5. Determine deterministic overall monitoring status
+    overall_status = "OK"
+    overall_status_reasons: List[str] = []
+
+    critical_invs = {"R1_no_unexpected_restarts", "R2_no_oom_kills", "R3_postgres_reachable", "R13_all_containers_running"}
+    failing_invariants = [inv for inv in invariants_list if not inv.passed]
+
+    has_critical_failure = any(inv.id in critical_invs for inv in failing_invariants)
+    if has_critical_failure:
+        overall_status = "CRITICAL"
+        for inv in failing_invariants:
+            if inv.id in critical_invs:
+                overall_status_reasons.append(f"Critical invariant failed: {inv.name}")
+    elif failing_invariants:
+        overall_status = "WARN"
+        for inv in failing_invariants:
+            overall_status_reasons.append(f"Invariant advisory: {inv.name}")
+
+    if system_monitor.timer_status != "active":
+        if overall_status != "CRITICAL":
+            overall_status = "WARN"
+        overall_status_reasons.append("System health monitor timer is not active")
+
+    if whatsapp_observer.timer_status != "active":
+        if overall_status != "CRITICAL":
+            overall_status = "WARN"
+        overall_status_reasons.append("WhatsApp reliability observer timer is not active")
+
+    if obs_status == "OBSERVATION_WINDOW_INCOMPLETE":
+        if overall_status != "CRITICAL":
+            overall_status = "WARN"
+        overall_status_reasons.append("WhatsApp reliability 72h observation window incomplete")
+
+    if overall_status == "OK":
+        overall_status_reasons.append("All monitoring invariants verified and timers operational")
+
     return AdminMonitoringResponse(
         timestamp=now_iso,
+        overall_status=overall_status,
+        overall_status_reasons=overall_status_reasons,
         system_monitor=system_monitor,
         whatsapp_observer=whatsapp_observer,
         observation=observation_meta,

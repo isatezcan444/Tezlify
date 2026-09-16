@@ -76,9 +76,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
       items: [
         { id: 'admin-overview', label: t('nav.adminOverview'), icon: Activity, badge: 'System', badgeVariant: 'primary' as const },
         { id: 'admin-whatsapp', label: t('nav.adminWhatsApp'), icon: MessageSquare, badge: null },
+        { id: 'admin-monitoring', label: t('nav.adminMonitoring'), icon: ShieldCheck, badge: null },
       ]
     });
   }
+
 
   const handleTabClick = (tabId: string) => {
     setActiveTab(tabId);

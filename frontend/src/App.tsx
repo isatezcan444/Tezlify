@@ -14,6 +14,7 @@ import { BlacklistPage } from './pages/BlacklistPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { AdminOverviewPage } from './pages/admin/AdminOverviewPage';
 import { AdminWhatsAppPage } from './pages/admin/AdminWhatsAppPage';
+import { AdminMonitoringPage } from './pages/admin/AdminMonitoringPage';
 import { ApiClient, createWebSocket } from './api/client';
 import { DashboardStats } from './types';
 import { AuthProvider, useAuth } from './context/AuthContext';
@@ -199,6 +200,8 @@ const AppContent: React.FC = () => {
         return t('titles.adminOverview');
       case 'admin-whatsapp':
         return t('titles.adminWhatsApp');
+      case 'admin-monitoring':
+        return t('titles.adminMonitoring');
       default:
         return 'Tezlify';
     }
@@ -226,10 +229,13 @@ const AppContent: React.FC = () => {
         return t('titles.adminOverviewSub');
       case 'admin-whatsapp':
         return t('titles.adminWhatsAppSub');
+      case 'admin-monitoring':
+        return t('titles.adminMonitoringSub');
       default:
         return undefined;
     }
   };
+
 
   return (
     <div className="min-h-screen bg-[#F8F7FA] dark:bg-[#25293C] text-[#4B465C] dark:text-[#DBD7EC] flex font-sans transition-colors duration-200">
@@ -292,7 +298,11 @@ const AppContent: React.FC = () => {
           {activeTab === 'admin-whatsapp' && (
             <AdminWhatsAppPage onNavigate={handleNavigate} />
           )}
+          {activeTab === 'admin-monitoring' && (
+            <AdminMonitoringPage onNavigate={handleNavigate} />
+          )}
         </main>
+
       </div>
     </div>
   );

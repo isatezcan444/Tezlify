@@ -117,3 +117,5 @@ def test_monitoring_metrics_parsing_with_mock_data(monkeypatch):
         assert len(resp.invariants) == 13
         assert all(inv.passed for inv in resp.invariants)
         assert len(resp.recent_observations) == 5
+        assert resp.overall_status in ("OK", "WARN", "CRITICAL")
+        assert resp.observation.target_seconds == 259200.0

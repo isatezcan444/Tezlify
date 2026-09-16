@@ -110,3 +110,56 @@ export interface AdminWhatsAppResponse {
   outbox: AdminOutboxStatus;
   retry: AdminRetryStatus;
 }
+
+// ---------------------------------------------------------------------------
+// Monitoring & Reliability Definitions
+// ---------------------------------------------------------------------------
+
+export interface AdminTimerInfo {
+  timer_status: string;
+  interval: string;
+  latest_run: string | null;
+}
+
+export interface AdminObservationMetadata {
+  baseline_timestamp: string | null;
+  latest_observation_timestamp: string | null;
+  observed_duration: string | null;
+  target_duration: string;
+  observation_status: string;
+  sample_count: number;
+  elapsed_seconds?: number | null;
+  target_seconds?: number;
+  remaining_seconds?: number | null;
+  progress_percent?: number | null;
+}
+
+export interface AdminInvariantStatus {
+  id: string;
+  name: string;
+  passed: boolean;
+  last_evaluated_at: string | null;
+  safe_summary: string;
+}
+
+export interface AdminObservationRecord {
+  timestamp: string;
+  all_invariants_pass: boolean;
+  loadavg: number[];
+  active_socket_leases: number;
+  outbox_pending: number;
+  dead_letter: number;
+  backend_rss_mb: number;
+  gateway_rss_mb: number;
+}
+
+export interface AdminMonitoringResponse {
+  timestamp: string;
+  overall_status: OverallSystemStatus;
+  overall_status_reasons: string[];
+  system_monitor: AdminTimerInfo;
+  whatsapp_observer: AdminTimerInfo;
+  observation: AdminObservationMetadata;
+  invariants: AdminInvariantStatus[];
+  recent_observations: AdminObservationRecord[];
+}

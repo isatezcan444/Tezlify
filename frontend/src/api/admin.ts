@@ -1,5 +1,5 @@
 import { API_BASE, authFetch, parseError } from './client';
-import { AdminOverviewResponse, AdminWhatsAppResponse } from '../types/admin';
+import { AdminMonitoringResponse, AdminOverviewResponse, AdminWhatsAppResponse } from '../types/admin';
 
 export class AdminApi {
   /**
@@ -27,6 +27,21 @@ export class AdminApi {
         throw new Error('ACCESS_DENIED');
       }
       const errMsg = await parseError(res, 'WhatsApp operasyon verileri şu anda alınamadı');
+      throw new Error(errMsg);
+    }
+    return res.json();
+  }
+
+  /**
+   * Fetches real-time system monitor timer, observer timer, R1-R13 invariants, and telemetry history.
+   */
+  static async getMonitoring(): Promise<AdminMonitoringResponse> {
+    const res = await authFetch(`${API_BASE}/admin/monitoring`);
+    if (!res.ok) {
+      if (res.status === 403) {
+        throw new Error('ACCESS_DENIED');
+      }
+      const errMsg = await parseError(res, 'İzleme verileri şu anda alınamadı');
       throw new Error(errMsg);
     }
     return res.json();

@@ -71,6 +71,9 @@ async def test_admin_monitoring_endpoint(admin_headers):
         assert validated.system_monitor.interval == "every 3m"
         assert validated.whatsapp_observer.interval == "every 5m"
         assert len(validated.invariants) == 13
+        assert validated.overall_status in ("OK", "WARN", "CRITICAL")
+        assert validated.observation.target_duration == "72 hours"
+        assert validated.observation.target_seconds == 259200.0
 
 
 @pytest.mark.asyncio
