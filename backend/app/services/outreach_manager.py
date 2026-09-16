@@ -49,6 +49,8 @@ class OutreachManager:
         lead_id: int,
         campaign_id: int,
         session_id: Optional[int] = None,
+        lead: Optional[Lead] = None,
+        campaign: Optional[Campaign] = None,
     ) -> Tuple[bool, str, Optional[int]]:
         """
         Validates lead, checks blacklist, generates customized Spintax message,
@@ -58,8 +60,9 @@ class OutreachManager:
         resolves to an explicit failure — no log rows are fabricated and no
         counter is bumped for a send that never happened.
         """
-        # 1. Fetch Lead
-        lead = await db.get(Lead, lead_id)
+        # 1. Resolve Lead (reuse instance if already loaded in caller loop)
+        if lead is None:
+            lead = await db.get(Lead, lead_id)
         if not lead:
             return False, "Lead bulunamadı", None
 
@@ -72,8 +75,9 @@ class OutreachManager:
             await db.commit()
             return False, "Numara kara listede (Blacklisted)", None
 
-        # 3. Fetch Campaign
-        campaign = await db.get(Campaign, campaign_id)
+        # 3. Resolve Campaign (reuse instance if already loaded in caller loop)
+        if campaign is None:
+            campaign = await db.get(Campaign, campaign_id)
         if not campaign:
             return False, "Kampanya bulunamadı", None
 

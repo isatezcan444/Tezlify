@@ -64,9 +64,17 @@ class SessionService:
         if db_session.expires_at <= now:
             return None
 
-        # Update last seen timestamp
-        db_session.last_seen_at = now
-        await db.flush()
+        # Update last seen timestamp with 5-minute throttling to eliminate per-request write amplification
+        last_seen = db_session.last_seen_at
+        if last_seen is None:
+            db_session.last_seen_at = now
+            await db.flush()
+        else:
+            last_seen_aware = last_seen if last_seen.tzinfo is not None else last_seen.replace(tzinfo=timezone.utc)
+            now_aware = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
+            if (now_aware - last_seen_aware) > timedelta(minutes=5):
+                db_session.last_seen_at = now
+                await db.flush()
 
         return SessionDomain.model_validate(db_session)
 

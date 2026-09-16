@@ -2036,22 +2036,23 @@ async def get_messages(
 
     has_more = False
     if rows:
-        oldest_row = rows[0]
-        oldest_ts = _msg_time(oldest_row)
-        if oldest_ts is not None:
-            older_exists = await db.scalar(
-                select(Message.id).where(
-                    Message.conversation_id == conv.id,
-                    get_user_filter(Message.user_id, user_id),
-                    or_(
-                        _msg_time_col() < oldest_ts,
-                        and_(_msg_time_col() == oldest_ts, Message.id < oldest_row.id),
-                    ),
-                ).limit(1)
-            )
-            has_more = older_exists is not None
-        if not has_more and conv.session_id and len(rows) >= page_size:
+        if conv.session_id and len(rows) >= page_size:
             has_more = True
+        else:
+            oldest_row = rows[0]
+            oldest_ts = _msg_time(oldest_row)
+            if oldest_ts is not None:
+                older_exists = await db.scalar(
+                    select(Message.id).where(
+                        Message.conversation_id == conv.id,
+                        get_user_filter(Message.user_id, user_id),
+                        or_(
+                            _msg_time_col() < oldest_ts,
+                            and_(_msg_time_col() == oldest_ts, Message.id < oldest_row.id),
+                        ),
+                    ).limit(1)
+                )
+                has_more = older_exists is not None
 
     if len(rows) > page_size:
         rows = rows[-page_size:]
@@ -2238,9 +2239,10 @@ async def mark_conversation_read(db: AsyncSession, user_id: str, conversation_id
         gateway_ok = False
         gateway_error = str(exc)[:300]
         logger.warning("Gateway okundu isareti iletilemedi (conv=%s): %s", conversation_id, exc)
-    conv.unread_count = 0
-    conv.last_read_at = datetime.utcnow()
-    await db.commit()
+    if conv.unread_count > 0 or conv.last_read_at is None:
+        conv.unread_count = 0
+        conv.last_read_at = datetime.utcnow()
+        await db.commit()
     result: Dict[str, Any] = {"success": gateway_ok}
     if gateway_error:
         result["error"] = gateway_error
@@ -3322,12 +3324,11 @@ async def _ingest_message(db: AsyncSession, event: Dict[str, Any]) -> Dict[str, 
     # Faz 13 (tenant izolasyonu): gateway artik her olayda `gateway_session_id`
     # (gateway UUID) tasiyor — sahip KESIN olarak cozulur, tahmin edilmez.
     # Cozulemezse `EventOwnerUnresolved` yukselir ve olay hic islenmez.
-    owner = await _resolve_event_owner(db, jid_str, event.get("gateway_session_id"))
+    owner, ws_session_id = await _resolve_event_owner_and_session(db, jid_str, event.get("gateway_session_id"))
     # Faz 13 (fail-closed sinir kontrolu): cozulen sahip olaya YAZILIR. Aksi
     # halde `ingest_gateway_event` sonundaki "sahipsiz olay yayinlanmaz"
     # kontrolu bu mesaji reddeder ve gercek mesajlar UI'a hic ulasmaz.
     event["user_id"] = owner
-    ws_session_id = await _resolve_event_session_id(db, event.get("gateway_session_id"))
     conv = await _ensure_conversation_race_safe(db, owner, jid_str, event, session_id=ws_session_id)
     # Faz 10 (P1, RC-4): GRUP sohbetlerinde mesajin gonderen adi (pushName —
     # ör. bir üyenin "Ahmet"ı) GRUP contact'ine ASLA yazilmaz; grup adi
@@ -3442,6 +3443,28 @@ class EventOwnerUnresolved(Exception):
     Ayrica `scalar_one_or_none()` iki oturum varken MultipleResultsFound
     firlatiyor, bu hata yutuluyor ve TUM olaylar sistem tenant'ina yaziliyordu.
     """
+
+
+async def _resolve_event_owner_and_session(
+    db: AsyncSession, jid: str, gw_session_id: Optional[str] = None
+) -> Tuple[str, Optional[int]]:
+    """Olayin sahibi (user_id) ve backend oturum id'sini (WhatsAppSession.id)
+    tek bir SQL sorgusuyla cozer. 2 ayri SELECT tur-donusunu ortadan kaldirir.
+    """
+    if gw_session_id:
+        res = await db.execute(
+            select(WhatsAppSession.user_id, WhatsAppSession.id).where(
+                WhatsAppSession.gateway_id == str(gw_session_id)
+            )
+        )
+        row = res.first()
+        if row and row[0]:
+            return str(row[0]), int(row[1]) if row[1] is not None else None
+        raise EventOwnerUnresolved(
+            f"Bilinmeyen gateway oturumu (session_id={gw_session_id}, jid={jid})"
+        )
+    owner = await _resolve_event_owner(db, jid, None)
+    return owner, None
 
 
 async def _resolve_event_session_id(
@@ -3716,9 +3739,8 @@ async def _map_conversation_event(db: AsyncSession, event: Dict[str, Any]) -> Di
     # Faz 9 (§5): dejenere JID sohbetleri (`0@s.whatsapp.net`) DB'ye yazilmaz.
     if is_degenerate_jid(str(jid)):
         return _skip_event(event, f"{event.get('event')}: dejenere jid ({jid})")
-    owner = await _resolve_event_owner(db, str(jid), event.get("gateway_session_id"))
+    owner, ws_session_id = await _resolve_event_owner_and_session(db, str(jid), event.get("gateway_session_id"))
     event["user_id"] = owner  # Faz 13: cozulen sahip olaya yazilir (yayin sinir kontrolu)
-    ws_session_id = await _resolve_event_session_id(db, event.get("gateway_session_id"))
     evt_name = event.get("event")
     # WhatsApp Web paritesi: sohbet listesine YALNIZCA `conversation_updated`
     # (gercek sohbet metadata'si) yeni satir ekleyebilir. `presence_updated`
@@ -3816,8 +3838,9 @@ async def _map_conversation_event(db: AsyncSession, event: Dict[str, Any]) -> Di
             _schedule_chats_bootstrap(owner)
         return event
     if event.get("event") == "conversation_read":
-        conv.unread_count = 0
-        await db.commit()
+        if (conv.unread_count or 0) > 0:
+            conv.unread_count = 0
+            await db.commit()
     elif event.get("event") == "message_status_updated":
         # Outbound ack (✓ / ✓✓ / mavi ✓✓) → persist on the matching message.
         wa_id = event.get("wa_message_id")
@@ -3833,6 +3856,8 @@ async def _map_conversation_event(db: AsyncSession, event: Dict[str, Any]) -> Di
             )
             row = res.scalars().first()
             if row is not None:
+                orig_status = row.status
+                orig_wa_id = row.wa_message_id
                 row.wa_message_id = wa_id or row.wa_message_id
                 if new_status == "FAILED" and row.status == ConversationMessageStatus.PENDING:
                     row.status = ConversationMessageStatus.FAILED
@@ -3840,7 +3865,8 @@ async def _map_conversation_event(db: AsyncSession, event: Dict[str, Any]) -> Di
                     row.error_message = event.get("error_message")
                 else:
                     _advance_message_status(row, new_status)
-                await db.commit()
+                if row.status != orig_status or row.wa_message_id != orig_wa_id:
+                    await db.commit()
                 event["message_id"] = row.id
                 event["client_message_id"] = row.client_message_id
                 event["status"] = row.status.value

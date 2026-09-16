@@ -173,11 +173,13 @@ class CampaignRunner:
                         was_stopped_early = True
                         break
 
-                    # Process single outreach
+                    # Process single outreach (reusing in-memory lead and campaign objects)
                     success, msg, log_id = await OutreachManager.process_single_outreach(
                         db=db,
                         lead_id=lead.id,
                         campaign_id=campaign.id,
+                        lead=lead,
+                        campaign=campaign,
                     )
 
                     # Broadcast progress — yalnizca sahibine (lead adi/telefon

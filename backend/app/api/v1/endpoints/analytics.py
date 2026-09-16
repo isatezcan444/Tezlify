@@ -24,41 +24,42 @@ async def get_dashboard_stats(
     camp_filter = get_user_filter(Campaign.user_id, current_user.id)
     msg_filter = get_user_filter(MessageLog.user_id, current_user.id)
 
-    # 1. Total Leads Count
-    total_leads_res = await db.execute(select(func.count(Lead.id)).where(lead_filter))
-    total_leads = total_leads_res.scalar_one()
+    # 1. Leads by Status Breakdown (single grouped query resolving status distribution, contacted, replied & total)
+    status_counts_res = await db.execute(
+        select(Lead.status, func.count(Lead.id)).where(lead_filter).group_by(Lead.status)
+    )
+    leads_by_status = {
+        status.value if hasattr(status, "value") else str(status): count
+        for status, count in status_counts_res.all()
+    }
+    total_leads = sum(leads_by_status.values())
 
     # 2. WhatsApp Eligible Leads
     wa_eligible_res = await db.execute(select(func.count(Lead.id)).where(lead_filter, Lead.is_whatsapp_eligible == True))
     wa_eligible = wa_eligible_res.scalar_one()
 
-    # 3. Contacted Leads
-    contacted_res = await db.execute(
-        select(func.count(Lead.id)).where(
-            lead_filter,
-            Lead.status.in_([LeadStatus.CONTACTED, LeadStatus.REPLIED, LeadStatus.INTERESTED])
-        )
+    # 3. Contacted & Replied Leads (derived from grouped status counts — zero extra queries)
+    contacted = (
+        leads_by_status.get(LeadStatus.CONTACTED.value, 0)
+        + leads_by_status.get(LeadStatus.REPLIED.value, 0)
+        + leads_by_status.get(LeadStatus.INTERESTED.value, 0)
     )
-    contacted = contacted_res.scalar_one()
-
-    # 4. Replied Leads
-    replied_res = await db.execute(
-        select(func.count(Lead.id)).where(
-            lead_filter,
-            Lead.status.in_([LeadStatus.REPLIED, LeadStatus.INTERESTED])
-        )
+    replied = (
+        leads_by_status.get(LeadStatus.REPLIED.value, 0)
+        + leads_by_status.get(LeadStatus.INTERESTED.value, 0)
     )
-    replied = replied_res.scalar_one()
 
     # Response Rate %
     response_rate = round((replied / contacted * 100), 1) if contacted > 0 else 0.0
 
-    # 5. Total & Active Campaigns
-    total_camp_res = await db.execute(select(func.count(Campaign.id)).where(camp_filter))
-    total_campaigns = total_camp_res.scalar_one()
-
-    active_camp_res = await db.execute(select(func.count(Campaign.id)).where(camp_filter, Campaign.status == CampaignStatus.ACTIVE))
-    active_campaigns = active_camp_res.scalar_one()
+    # 4. Total & Active Campaigns (single aggregated query)
+    camp_counts_res = await db.execute(
+        select(
+            func.count(Campaign.id),
+            func.count(Campaign.id).filter(Campaign.status == CampaignStatus.ACTIVE)
+        ).where(camp_filter)
+    )
+    total_campaigns, active_campaigns = camp_counts_res.one()
 
     # 6. Connected WhatsApp Sessions: WhatsApp backend removed — always 0.
     #    Field kept for dashboard contract compatibility.
@@ -91,12 +92,6 @@ async def get_dashboard_stats(
     )
     messages_sent_today = today_sent_res.scalar_one()
 
-    # 8. Leads by Status Breakdown
-    status_counts_res = await db.execute(select(Lead.status, func.count(Lead.id)).where(lead_filter).group_by(Lead.status))
-    leads_by_status = {
-        status.value if hasattr(status, "value") else str(status): count
-        for status, count in status_counts_res.all()
-    }
 
     # 9. Top Categories
     top_cat_res = await db.execute(

@@ -297,15 +297,16 @@ class LeadIngestService:
                     ]
 
         await db.commit()
-        # Single batched re-read instead of N per-row refresh round-trips
-        # (matters on remote Postgres: N RTTs looked like a post-scan hang).
-        if all_processed_leads:
-            ids_in_order = [l.id for l in all_processed_leads]
-            rows = (
-                await db.execute(select(Lead).where(Lead.id.in_(ids_in_order)))
-            ).scalars().all()
-            by_id = {r.id: r for r in rows}
-            all_processed_leads = [by_id.get(l.id, l) for l in all_processed_leads]
+        # With expire_on_commit=False, all_processed_leads are already fully populated in memory.
+        # Only fallback to re-read if any lead instance lacks an assigned database ID.
+        if all_processed_leads and any(getattr(l, "id", None) is None for l in all_processed_leads):
+            ids_in_order = [l.id for l in all_processed_leads if getattr(l, "id", None) is not None]
+            if ids_in_order:
+                rows = (
+                    await db.execute(select(Lead).where(Lead.id.in_(ids_in_order)))
+                ).scalars().all()
+                by_id = {r.id: r for r in rows}
+                all_processed_leads = [by_id.get(l.id, l) for l in all_processed_leads]
 
         logger.info(
             f"[LeadIngestService] Ingest complete: total_raw={len(raw_leads)}, "
