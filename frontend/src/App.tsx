@@ -13,6 +13,7 @@ import { WhatsAppHubPage } from './pages/WhatsAppHubPage';
 import { BlacklistPage } from './pages/BlacklistPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { AdminOverviewPage } from './pages/admin/AdminOverviewPage';
+import { AdminWhatsAppPage } from './pages/admin/AdminWhatsAppPage';
 import { ApiClient, createWebSocket } from './api/client';
 import { DashboardStats } from './types';
 import { AuthProvider, useAuth } from './context/AuthContext';
@@ -196,6 +197,8 @@ const AppContent: React.FC = () => {
         return t('titles.settings');
       case 'admin-overview':
         return t('titles.adminOverview');
+      case 'admin-whatsapp':
+        return t('titles.adminWhatsApp');
       default:
         return 'Tezlify';
     }
@@ -221,6 +224,8 @@ const AppContent: React.FC = () => {
         return t('titles.settingsSub');
       case 'admin-overview':
         return t('titles.adminOverviewSub');
+      case 'admin-whatsapp':
+        return t('titles.adminWhatsAppSub');
       default:
         return undefined;
     }
@@ -283,6 +288,9 @@ const AppContent: React.FC = () => {
           )}
           {activeTab === 'admin-overview' && (
             <AdminOverviewPage onNavigate={handleNavigate} />
+          )}
+          {activeTab === 'admin-whatsapp' && (
+            <AdminWhatsAppPage onNavigate={handleNavigate} />
           )}
         </main>
       </div>

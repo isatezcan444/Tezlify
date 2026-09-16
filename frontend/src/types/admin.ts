@@ -45,3 +45,68 @@ export interface AdminOverviewResponse {
   containers: AdminContainerInfo[];
   database: AdminDatabaseInfo;
 }
+
+// ---------------------------------------------------------------------------
+// WhatsApp Operations Definitions
+// ---------------------------------------------------------------------------
+
+export interface AdminGatewayBridgeStatus {
+  connected: boolean;
+  reconnect_count: number;
+  last_connected_at: string | null;
+  last_event_at: string | null;
+}
+
+export interface AdminGatewayRuntimeStatus {
+  health_status: string;
+  session_count: number;
+  connected_count: number;
+  pending_qr_count: number;
+}
+
+export interface AdminDBSessionSummary {
+  total: number;
+  connected: number;
+  scan_qr: number;
+  relink_required: number;
+}
+
+export interface AdminWhatsAppSessionSummary {
+  id: number;
+  session_name: string;
+  status: string;
+  is_active: boolean;
+  is_phone_online: boolean;
+  phone_number_masked: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface AdminSocketLeasesStatus {
+  active_count: number;
+  duplicate_count: number;
+  stale_count: number;
+}
+
+export interface AdminOutboxStatus {
+  total: number;
+  pending: number;
+  in_flight: number;
+  delivered: number;
+  dead_letter: number;
+}
+
+export interface AdminRetryStatus {
+  retry_backlog: number;
+}
+
+export interface AdminWhatsAppResponse {
+  timestamp: string;
+  gateway_bridge: AdminGatewayBridgeStatus;
+  gateway_runtime: AdminGatewayRuntimeStatus;
+  db_session_summary: AdminDBSessionSummary;
+  sessions: AdminWhatsAppSessionSummary[];
+  socket_leases: AdminSocketLeasesStatus;
+  outbox: AdminOutboxStatus;
+  retry: AdminRetryStatus;
+}

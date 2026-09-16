@@ -13,6 +13,7 @@ import {
   Radio,
   ShieldCheck,
   Activity,
+  MessageSquare,
   X
 } from 'lucide-react';
 import { Badge } from '../ui/badge';
@@ -74,6 +75,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       title: t('nav.sectionAdmin'),
       items: [
         { id: 'admin-overview', label: t('nav.adminOverview'), icon: Activity, badge: 'System', badgeVariant: 'primary' as const },
+        { id: 'admin-whatsapp', label: t('nav.adminWhatsApp'), icon: MessageSquare, badge: null },
       ]
     });
   }
