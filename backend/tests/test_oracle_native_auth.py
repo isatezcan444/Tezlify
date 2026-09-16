@@ -358,3 +358,31 @@ async def test_16_unauthorized_protected_endpoints(setup_auth_tables):
         for ep in endpoints:
             res = await ac.get(ep, headers={"Authorization": "Bearer invalid-forged-token"})
             assert res.status_code == 401, f"{ep} did not enforce 401 on forged token"
+
+
+@pytest.mark.asyncio
+async def test_17_callback_redirects_to_oracle_origin(setup_auth_tables, auth_services, monkeypatch):
+    """Scenario 17: OAuth callback redirect URL dynamically targets Oracle origin and never Vercel."""
+    from backend.app.auth.api import routes as auth_routes
+    mock_token = create_mock_id_token(aud=auth_routes.GOOGLE_CLIENT_ID)
+    async def mock_exchange(code):
+        return {"access_token": "a", "id_token": mock_token}
+    monkeypatch.setattr(auth_routes.google_provider, "exchange_code", mock_exchange)
+
+    async with AsyncSessionLocal() as db:
+        _, state = await auth_routes.oauth_service.initiate_google_flow(db)
+        await db.commit()
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="https://api.130.162.247.20.sslip.io") as ac:
+        res = await ac.get(
+            f"/api/v1/auth/google/callback?code=test-code&state={state}&redirect=true",
+            headers={"Host": "api.130.162.247.20.sslip.io", "X-Forwarded-Proto": "https"},
+            follow_redirects=False,
+        )
+        assert res.status_code == 302
+        location = res.headers.get("location")
+        assert location.startswith("https://api.130.162.247.20.sslip.io/")
+        assert "vercel.app" not in location
+        assert "session_token=" in location
+
