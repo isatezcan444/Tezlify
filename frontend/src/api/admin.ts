@@ -4,6 +4,7 @@ import {
   AdminOverviewResponse,
   AdminWhatsAppResponse,
   AdminBackupsResponse,
+  AdminDeploymentResponse,
 } from '../types/admin';
 
 export class AdminApi {
@@ -55,6 +56,20 @@ export class AdminApi {
     if (!res.ok) {
       if (res.status === 403) throw new Error('ACCESS_DENIED');
       const errMsg = await parseError(res, 'Yedekleme verileri şu anda alınamadı');
+      throw new Error(errMsg);
+    }
+    return res.json();
+  }
+
+  /**
+   * Fetches read-only deployment and infrastructure metadata: source control, frontend releases, containers, host state.
+   * Zero mutations, zero restarts, zero secrets.
+   */
+  static async getDeployment(): Promise<AdminDeploymentResponse> {
+    const res = await authFetch(`${API_BASE}/admin/deployment`);
+    if (!res.ok) {
+      if (res.status === 403) throw new Error('ACCESS_DENIED');
+      const errMsg = await parseError(res, 'Dağıtım verileri şu anda alınamadı');
       throw new Error(errMsg);
     }
     return res.json();

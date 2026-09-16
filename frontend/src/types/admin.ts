@@ -190,3 +190,68 @@ export interface AdminBackupsResponse {
   config: AdminBackupFileInfo;
   total_backup_disk_usage: AdminBackupDiskUsage;
 }
+
+// ---------------------------------------------------------------------------
+// Deployment & Infrastructure Definitions
+// ---------------------------------------------------------------------------
+
+export interface AdminGitState {
+  branch?: string | null;
+  commit_hash?: string | null;
+  commit_message?: string | null;
+  commit_timestamp?: string | null;
+  working_tree_clean?: boolean | null;
+}
+
+export interface AdminFrontendRelease {
+  current_release: string;
+  current_symlink: string;
+  candidate_symlink?: string | null;
+  next_symlink?: string | null;
+  deployed_commit?: string | null;
+  deployed_at?: string | null;
+  js_asset?: string | null;
+  css_asset?: string | null;
+}
+
+export interface AdminContainerDeploymentState {
+  name: string;
+  image?: string | null;
+  status: string;
+  started_at?: string | null;
+  restart_count: number;
+  oom_killed: boolean;
+  health?: string | null;
+  short_id?: string | null;
+  rss_mb?: number | null;
+}
+
+export interface AdminHostState {
+  distro: string;
+  kernel: string;
+  architecture?: string | null;
+  cpu_cores?: number | null;
+  memory_total_mb?: number | null;
+  uptime?: string | null;
+  reboot_required: boolean;
+}
+
+export interface AdminDeploymentResponse {
+  timestamp: string;
+  environment: string;
+  branch?: string | null;
+  commit_hash?: string | null;
+  commit_message?: string | null;
+  commit_timestamp?: string | null;
+  working_tree_clean?: boolean | null;
+  deployment_directory: string;
+  kernel: string;
+  distro: string;
+  reboot_required: boolean;
+  overall_status?: string | null;
+  release_readiness?: string | null;
+  git?: AdminGitState | null;
+  frontend?: AdminFrontendRelease | null;
+  containers?: AdminContainerDeploymentState[] | null;
+  host?: AdminHostState | null;
+}

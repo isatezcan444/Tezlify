@@ -245,6 +245,55 @@ class AdminBackupsResponse(BaseModel):
 # Deployment Schemas
 # ---------------------------------------------------------------------------
 
+class AdminGitState(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    branch: Optional[str] = None
+    commit_hash: Optional[str] = None
+    commit_message: Optional[str] = None
+    commit_timestamp: Optional[str] = None
+    working_tree_clean: Optional[bool] = None
+
+
+class AdminFrontendReleaseInfo(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    current_release: str = "v20260916_phase10_6_5"
+    current_symlink: str = "/opt/tezlify/frontend_current"
+    candidate_symlink: Optional[str] = "/opt/tezlify/frontend_candidate"
+    next_symlink: Optional[str] = "/opt/tezlify/frontend_next"
+    deployed_commit: Optional[str] = None
+    deployed_at: Optional[str] = None
+    js_asset: Optional[str] = None
+    css_asset: Optional[str] = None
+
+
+class AdminContainerDeploymentState(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    image: Optional[str] = None
+    status: str
+    started_at: Optional[str] = None
+    restart_count: int = 0
+    oom_killed: bool = False
+    health: Optional[str] = None
+    short_id: Optional[str] = None
+    rss_mb: Optional[float] = None
+
+
+class AdminHostDeploymentState(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    distro: str = "unknown"
+    kernel: str = "unknown"
+    architecture: str = "unknown"
+    cpu_cores: int = 1
+    memory_total_mb: float = 0.0
+    uptime: str = "unknown"
+    reboot_required: bool = False
+
+
 class AdminDeploymentResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -259,6 +308,14 @@ class AdminDeploymentResponse(BaseModel):
     kernel: str = "unknown"
     distro: str = "unknown"
     reboot_required: bool = False
+
+    # Enhanced optional fields
+    overall_status: Optional[str] = None
+    release_readiness: Optional[str] = None
+    git: Optional[AdminGitState] = None
+    frontend: Optional[AdminFrontendReleaseInfo] = None
+    containers: Optional[List[AdminContainerDeploymentState]] = None
+    host: Optional[AdminHostDeploymentState] = None
 
 
 # ---------------------------------------------------------------------------
