@@ -2,7 +2,20 @@
     auto_https disable_redirects
 }
 
+(security_headers) {
+    header {
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "SAMEORIGIN"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()"
+        -Server
+        -Via
+    }
+}
+
 api.tezlify.com, api.130.162.247.20.sslip.io, 130.162.247.20.sslip.io {
+    import security_headers
+
     handle /caddy-health {
         respond "OK" 200
     }
@@ -62,6 +75,8 @@ api.tezlify.com, api.130.162.247.20.sslip.io, 130.162.247.20.sslip.io {
 }
 
 :80 {
+    import security_headers
+
     handle /caddy-health {
         respond "OK" 200
     }
@@ -121,6 +136,8 @@ api.tezlify.com, api.130.162.247.20.sslip.io, 130.162.247.20.sslip.io {
 }
 
 :443 {
+    import security_headers
+
     tls internal {
         on_demand
     }
