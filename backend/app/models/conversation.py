@@ -18,7 +18,7 @@ class Conversation(Base):
     """
     __tablename__ = "conversations"
 
-    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(Uuid(as_uuid=False), nullable=True, index=True)
 
     # Contact identity

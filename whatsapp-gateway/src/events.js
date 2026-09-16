@@ -234,7 +234,7 @@ export function createEventBridge({ backendWsUrl, sessionManager, eventOutbox = 
   if (eventOutbox) {
     retryTimer = setInterval(() => { void pumpOutbox(); }, 10_000);
     void cleanupOutbox();
-    cleanupTimer = setInterval(() => { void cleanupOutbox(); }, 60 * 60 * 1000);
+    cleanupTimer = setInterval(() => { void cleanupOutbox(); }, 10 * 60 * 1000);
   }
 
   return {

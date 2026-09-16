@@ -123,7 +123,7 @@ export function createPostgresEventOutbox({
            SELECT sequence FROM whatsapp_private.event_outbox
            WHERE (state = 'DELIVERED' AND delivered_at < NOW() - INTERVAL '24 hours')
               OR (state = 'DEAD_LETTER' AND created_at < NOW() - INTERVAL '7 days')
-           ORDER BY sequence ASC LIMIT 500
+           ORDER BY sequence ASC LIMIT 1000
          )
          DELETE FROM whatsapp_private.event_outbox
          WHERE sequence IN (SELECT sequence FROM doomed)`,

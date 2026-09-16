@@ -15,7 +15,7 @@ def get_utc_now() -> datetime:
 class RawCandidate(Base):
     __tablename__ = "raw_candidates"
 
-    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    id = Column(Integer, primary_key=True, autoincrement=True)
     discovery_run_id = Column(Integer, nullable=True, index=True)
 
     # Provider & Strategy Provenance

@@ -11,7 +11,11 @@ from backend.app.auth.infrastructure.google_provider import GoogleOAuthProvider
 from backend.app.auth.application.session_service import SessionService
 from backend.app.auth.application.user_service import UserService
 from backend.app.auth.application.oauth_service import OAuthService
-from backend.app.auth.api.dependencies import get_current_user_unified, extract_session_token
+from backend.app.auth.api.dependencies import (
+    get_current_user_unified,
+    get_current_user_unified_with_profile,
+    extract_session_token,
+)
 
 router = APIRouter()
 
@@ -132,7 +136,7 @@ async def logout(
 
 @router.get("/me", response_model=AuthUser)
 async def get_me(
-    current_user: AuthUser = Depends(get_current_user_unified),
+    current_user: AuthUser = Depends(get_current_user_unified_with_profile),
 ) -> AuthUser:
     """Returns currently authenticated user profile and subscription tier."""
     return current_user

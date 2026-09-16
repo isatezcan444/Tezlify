@@ -146,19 +146,16 @@ async def get_current_user(
                         status_code=status.HTTP_403_FORBIDDEN,
                         detail="Kullanıcı hesabı askıya alınmış (Account deactivated)",
                     )
-                stmt = select(Profile).where(Profile.id == str(_user.id))
-                res = await db.execute(stmt)
-                profile = res.scalar_one_or_none()
-
+                # Fast path: Profile is not loaded on non-profile endpoints (saved 1 DB roundtrip)
                 return AuthUser(
                     id=str(_user.id),
                     email=_user.email,
-                    full_name=profile.full_name if profile and profile.full_name else _user.display_name or "",
-                    avatar_url=profile.avatar_url if profile and profile.avatar_url else _user.avatar_url or "",
-                    plan_tier=profile.plan_tier if profile else "DEVELOPER_PRO",
-                    leads_monthly_limit=profile.leads_monthly_limit if profile else 999999,
-                    leads_used_this_month=profile.leads_used_this_month if profile else 0,
-                    messages_daily_limit=profile.messages_daily_limit if profile else 999999,
+                    full_name=_user.display_name or "",
+                    avatar_url=_user.avatar_url or "",
+                    plan_tier="DEVELOPER_PRO",
+                    leads_monthly_limit=999999,
+                    leads_used_this_month=0,
+                    messages_daily_limit=999999,
                 )
     except HTTPException:
         raise
@@ -232,3 +229,31 @@ def get_user_filter(column, user_id: str):
     if os.getenv("PYTEST_CURRENT_TEST") is not None:
         return or_(match_expr, column.is_(None))
     return match_expr
+
+
+async def get_current_user_with_profile(
+    request: Request,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    db: AsyncSession = Depends(get_db),
+) -> AuthUser:
+    """FastAPI dependency resolving current user AND associated profile from database."""
+    current_user = await get_current_user(request, credentials, db)
+    try:
+        stmt = select(Profile).where(Profile.id == current_user.id)
+        res = await db.execute(stmt)
+        profile = res.scalar_one_or_none()
+        if profile:
+            return AuthUser(
+                id=current_user.id,
+                email=current_user.email,
+                full_name=profile.full_name or current_user.full_name,
+                avatar_url=profile.avatar_url or current_user.avatar_url,
+                plan_tier=profile.plan_tier or "DEVELOPER_PRO",
+                leads_monthly_limit=profile.leads_monthly_limit or 999999,
+                leads_used_this_month=profile.leads_used_this_month or 0,
+                messages_daily_limit=profile.messages_daily_limit or 999999,
+            )
+    except Exception as pe:
+        logger.debug(f"Profile lookup skipped in get_current_user_with_profile: {pe}")
+    return current_user
+

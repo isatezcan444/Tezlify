@@ -11,7 +11,7 @@ class Contact(Base):
     """
     __tablename__ = "contacts"
 
-    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(Uuid(as_uuid=False), nullable=True, index=True)
 
     # Normalized E.164 phone number

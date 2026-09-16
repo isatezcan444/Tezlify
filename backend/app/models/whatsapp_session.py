@@ -26,7 +26,7 @@ class WhatsAppSession(Base):
 
     __tablename__ = "whatsapp_sessions"
 
-    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(Uuid(as_uuid=False), nullable=True, index=True)
 
     # Gateway'deki oturumun UUID'si (WhatsAppGateway servis çağrılarında kullanılır)

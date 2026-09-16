@@ -1232,3 +1232,40 @@ async def ensure_contacts_unique_phone(engine: AsyncEngine) -> None:
                     "[MIGRATION] ensure_contacts_unique_phone: bilinmeyen dialect %r", dialect)
     except Exception as e:  # noqa: BLE001 — startup'i dusurmez, gorunur loglanir
         logger.warning("[MIGRATION] ensure_contacts_unique_phone: %s", e)
+
+
+async def ensure_phase_10_7_indexes(engine: AsyncEngine) -> None:
+    """
+    Phase 10.7 Safe Database Optimization Migration:
+    1. Creates partial index on whatsapp_private.event_outbox for fast cleanup.
+    2. Drops the 12 duplicate secondary indexes on (id) that redundantly mirror primary keys.
+    """
+    dialect = engine.dialect.name
+    if dialect != "postgresql":
+        return
+
+    try:
+        autocommit_engine = engine.execution_options(isolation_level="AUTOCOMMIT")
+        async with autocommit_engine.connect() as conn:
+            # 1. Partial outbox cleanup index
+            table_check = (await conn.execute(text(
+                "SELECT 1 FROM information_schema.tables WHERE table_schema = 'whatsapp_private' AND table_name = 'event_outbox'"
+            ))).first()
+            if table_check is not None:
+                await conn.execute(text(
+                    "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_event_outbox_cleanup "
+                    "ON whatsapp_private.event_outbox (sequence ASC) WHERE state IN ('DELIVERED', 'DEAD_LETTER')"
+                ))
+
+            # 2. Drop duplicate secondary indexes
+            duplicate_indexes = [
+                "ix_blacklist_id", "ix_blacklists_id", "ix_campaign_groups_id", "ix_campaigns_id",
+                "ix_contacts_id", "ix_conversations_id", "ix_discovery_runs_id", "ix_leads_id",
+                "ix_message_logs_id", "ix_messages_id", "ix_raw_candidates_id", "ix_scraper_jobs_id",
+                "ix_profiles_id", "ix_whatsapp_sessions_id"
+            ]
+            for idx in duplicate_indexes:
+                await conn.execute(text(f"DROP INDEX CONCURRENTLY IF EXISTS public.{idx}"))
+    except Exception as e:
+        logger.warning("[MIGRATION] ensure_phase_10_7_indexes: %s", e)
+

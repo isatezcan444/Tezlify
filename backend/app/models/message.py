@@ -40,7 +40,7 @@ class Message(Base):
     """
     __tablename__ = "messages"
 
-    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(Uuid(as_uuid=False), nullable=True, index=True)
     conversation_id = Column(Integer, ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False, index=True)
 

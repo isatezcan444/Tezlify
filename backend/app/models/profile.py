@@ -6,7 +6,7 @@ from backend.app.core.database import Base
 class Profile(Base):
     __tablename__ = "profiles"
 
-    id = Column(Uuid(as_uuid=False), primary_key=True, index=True)
+    id = Column(Uuid(as_uuid=False), primary_key=True)
     email = Column(String(255), nullable=False)
     full_name = Column(String(255), nullable=True)
     avatar_url = Column(String(500), nullable=True)

@@ -18,7 +18,7 @@ class MessageStatus(str, enum.Enum):
 class MessageLog(Base):
     __tablename__ = "message_logs"
 
-    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    id = Column(Integer, primary_key=True, autoincrement=True)
     
     # Foreign Keys
     user_id = Column(Uuid(as_uuid=False), nullable=True, index=True)

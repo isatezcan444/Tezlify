@@ -27,7 +27,7 @@ class DiscoveryRunStatus(str, enum.Enum):
 class DiscoveryRun(Base):
     __tablename__ = "discovery_runs"
 
-    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(Uuid(as_uuid=False), nullable=True, index=True)
 
     # Intent Snapshot

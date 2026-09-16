@@ -1214,8 +1214,10 @@ def _conversation_scope_filters(
 async def _ensure_conversation(
     db: AsyncSession, user_id: str, jid: str, preview: Optional[str] = None,
     session_id: Optional[int] = None,
+    contact_name: Optional[str] = None,
+    contact_source: Optional[str] = None,
 ) -> Conversation:
-    contact = await _upsert_contact(db, user_id, jid, None)
+    contact = await _upsert_contact(db, user_id, jid, contact_name, contact_source)
     filters = _conversation_scope_filters(user_id, contact.id, session_id)
     stmt = select(Conversation).where(*filters).order_by(Conversation.id.asc())
     res = await db.execute(stmt)
@@ -1272,12 +1274,15 @@ async def _ensure_conversation(
         await db.flush()
     elif session_id is not None and conv.session_id is None:
         conv.session_id = session_id
+    conv._contact = contact
     return conv
 
 
 async def _ensure_conversation_race_safe(
     db: AsyncSession, owner: str, jid_str: str, event: Dict[str, Any],
     session_id: Optional[int] = None,
+    contact_name: Optional[str] = None,
+    contact_source: Optional[str] = None,
 ) -> Conversation:
     """`_ensure_conversation` + es-zamanli silme yarisi korumasi.
 
@@ -1293,13 +1298,22 @@ async def _ensure_conversation_race_safe(
     geri gelmez). Oturum duruyorsa (es-zamanli cift-ingest unique
     yarisi) ikinci deneme basarir — gercek mesaj kaybolmaz.
     """
+    extra_kw: Dict[str, Any] = {}
+    if contact_name is not None:
+        extra_kw["contact_name"] = contact_name
+    if contact_source is not None:
+        extra_kw["contact_source"] = contact_source
     try:
-        return await _ensure_conversation(db, owner, jid_str, session_id=session_id)
+        return await _ensure_conversation(
+            db, owner, jid_str, session_id=session_id, **extra_kw,
+        )
     except IntegrityError:
         await db.rollback()
         fresh_owner = await _resolve_event_owner(db, jid_str, event.get("gateway_session_id"))
         event["user_id"] = fresh_owner
-        return await _ensure_conversation(db, fresh_owner, jid_str, session_id=session_id)
+        return await _ensure_conversation(
+            db, fresh_owner, jid_str, session_id=session_id, **extra_kw,
+        )
 
 
 def _message_row_from_gateway(owner: str, conv: Conversation, msg: Dict[str, Any]) -> Optional[Message]:
@@ -3329,7 +3343,6 @@ async def _ingest_message(db: AsyncSession, event: Dict[str, Any]) -> Dict[str, 
     # halde `ingest_gateway_event` sonundaki "sahipsiz olay yayinlanmaz"
     # kontrolu bu mesaji reddeder ve gercek mesajlar UI'a hic ulasmaz.
     event["user_id"] = owner
-    conv = await _ensure_conversation_race_safe(db, owner, jid_str, event, session_id=ws_session_id)
     # Faz 10 (P1, RC-4): GRUP sohbetlerinde mesajin gonderen adi (pushName —
     # ör. bir üyenin "Ahmet"ı) GRUP contact'ine ASLA yazilmaz; grup adi
     # yalnizca group_subject metadata'sindan guncellenir. (1:1'de mevcut
@@ -3344,7 +3357,13 @@ async def _ingest_message(db: AsyncSession, event: Dict[str, Any]) -> Dict[str, 
     )
     name_for_contact = None if (is_group_jid or msg_direction == MessageDirection.OUTBOUND) else msg.get("sender_name")
     source_for_contact = None if (is_group_jid or msg_direction == MessageDirection.OUTBOUND) else msg.get("sender_name_source")
-    contact = await _upsert_contact(db, owner, jid_str, name_for_contact, source_for_contact)
+    conv = await _ensure_conversation_race_safe(
+        db, owner, jid_str, event, session_id=ws_session_id,
+        contact_name=name_for_contact, contact_source=source_for_contact,
+    )
+    contact = getattr(conv, "_contact", None)
+    if contact is None:
+        contact = await _upsert_contact(db, owner, jid_str, name_for_contact, source_for_contact)
 
     wa_id = msg.get("wa_message_id")
     client_id = msg.get("client_message_id")

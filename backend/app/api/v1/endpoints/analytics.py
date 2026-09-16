@@ -24,19 +24,21 @@ async def get_dashboard_stats(
     camp_filter = get_user_filter(Campaign.user_id, current_user.id)
     msg_filter = get_user_filter(MessageLog.user_id, current_user.id)
 
-    # 1. Leads by Status Breakdown (single grouped query resolving status distribution, contacted, replied & total)
-    status_counts_res = await db.execute(
-        select(Lead.status, func.count(Lead.id)).where(lead_filter).group_by(Lead.status)
+    # 1 & 2. Consolidated Leads by Status & WhatsApp Eligible (single aggregation scan)
+    leads_agg_res = await db.execute(
+        select(
+            Lead.status,
+            func.count(Lead.id).label("status_count"),
+            func.count(Lead.id).filter(Lead.is_whatsapp_eligible == True).label("wa_eligible_count"),
+        ).where(lead_filter).group_by(Lead.status)
     )
+    leads_rows = leads_agg_res.all()
     leads_by_status = {
-        status.value if hasattr(status, "value") else str(status): count
-        for status, count in status_counts_res.all()
+        (status.value if hasattr(status, "value") else str(status)): count
+        for status, count, _ in leads_rows
     }
     total_leads = sum(leads_by_status.values())
-
-    # 2. WhatsApp Eligible Leads
-    wa_eligible_res = await db.execute(select(func.count(Lead.id)).where(lead_filter, Lead.is_whatsapp_eligible == True))
-    wa_eligible = wa_eligible_res.scalar_one()
+    wa_eligible = sum(wa_count for _, _, wa_count in leads_rows)
 
     # 3. Contacted & Replied Leads (derived from grouped status counts — zero extra queries)
     contacted = (
@@ -65,32 +67,23 @@ async def get_dashboard_stats(
     #    Field kept for dashboard contract compatibility.
     connected_sessions = 0
 
-    # 7. Messages Sent Metrics
-    total_sent_res = await db.execute(
-        select(func.count(MessageLog.id)).where(
-            msg_filter,
-            MessageLog.status.in_([MessageStatus.SENT, MessageStatus.DELIVERED, MessageStatus.READ, MessageStatus.REPLIED])
-        )
-    )
-    total_messages_sent = total_sent_res.scalar_one()
-
-    # "Today" follows the product's home market (Europe/Istanbul, fixed UTC+3,
-    # no DST since 2016); columns store naive UTC, so compare naive instants.
-    # Same success set as the lifetime counter — FAILED sends never count.
+    # 7 & 8. Consolidated Messages Sent Metrics (Lifetime & Today in single scan)
     tr_now = datetime.now(ZoneInfo("Europe/Istanbul"))
     today_start = (
         tr_now.replace(hour=0, minute=0, second=0, microsecond=0)
         .astimezone(timezone.utc)
         .replace(tzinfo=None)
     )
-    today_sent_res = await db.execute(
-        select(func.count(MessageLog.id)).where(
+    sent_counts_res = await db.execute(
+        select(
+            func.count(MessageLog.id).label("total_sent"),
+            func.count(MessageLog.id).filter(MessageLog.created_at >= today_start).label("today_sent"),
+        ).where(
             msg_filter,
-            MessageLog.created_at >= today_start,
             MessageLog.status.in_([MessageStatus.SENT, MessageStatus.DELIVERED, MessageStatus.READ, MessageStatus.REPLIED]),
         )
     )
-    messages_sent_today = today_sent_res.scalar_one()
+    total_messages_sent, messages_sent_today = sent_counts_res.one()
 
 
     # 9. Top Categories
