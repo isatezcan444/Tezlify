@@ -362,7 +362,7 @@ async def test_16_unauthorized_protected_endpoints(setup_auth_tables):
 
 @pytest.mark.asyncio
 async def test_17_callback_redirects_to_oracle_origin(setup_auth_tables, auth_services, monkeypatch):
-    """Scenario 17: OAuth callback redirect URL dynamically targets Oracle origin and never Vercel."""
+    """Scenario 17: OAuth callback redirect URL dynamically targets Oracle origin."""
     from backend.app.auth.api import routes as auth_routes
     mock_token = create_mock_id_token(aud=auth_routes.GOOGLE_CLIENT_ID)
     async def mock_exchange(code):
@@ -383,6 +383,5 @@ async def test_17_callback_redirects_to_oracle_origin(setup_auth_tables, auth_se
         assert res.status_code == 302
         location = res.headers.get("location")
         assert location.startswith("https://api.130.162.247.20.sslip.io/")
-        assert "vercel.app" not in location
         assert "session_token=" in location
 

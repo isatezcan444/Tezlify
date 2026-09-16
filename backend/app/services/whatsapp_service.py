@@ -361,7 +361,7 @@ def _apply_gateway_live(row: WhatsAppSession, data: Dict[str, Any]) -> None:
 # ---------------------------------------------------------------------------
 # Missing gateway oturumu -> explicit relink, stable identity
 #
-# Kok neden (canli probe ile kanitlandi): Render redeploy'da gateway'in
+# Kok neden (canli probe ile kanitlandi): Gateway yeniden basladiginda
 # bellekteki `sessions` Map'i (ve ephemeral auth dizini) sifirlanir; backend
 # DB'sindeki `whatsapp_sessions` satirlari ise BAYAT `gateway_id` UUID'lerini
 # saklamaya devam eder. Bu satirla yapilan her gateway cagrisi (QR cekme,
@@ -1281,7 +1281,7 @@ async def _ensure_conversation_race_safe(
 ) -> Conversation:
     """`_ensure_conversation` + es-zamanli silme yarisi korumasi.
 
-    Prod (Render log, 19:08:52): `DELETE /sessions/28` purge'u (98 mesaj /
+    Prod (production log, 19:08:52): `DELETE /sessions/28` purge'u (98 mesaj /
     116 sohbet / 116 kisi silindi) ile `conversation_updated` ingest'i
     yaristi — purge, contact SELECT'i ile conversation INSERT'i arasina
     girip contact satirini sildi ve `conversations_contact_id_fkey`
@@ -2286,7 +2286,7 @@ async def get_media_bytes(db: AsyncSession, user_id: str, media_id: str) -> Tupl
 # Initial-sync job mimarisi (HTTP yerine WS tabanli arka plan hydrasyonu)
 #
 # Eski davranis: GET /conversations?sync=true, 113 chat icin per-chat gateway
-# round-trip'ini + tek commit'i HTTP istegi ICINDE beklerdi; Render 60s proxy
+# round-trip'ini + tek commit'i HTTP istegi ICINDE beklerdi; proxy
 # timeout'u ve Baileys "Timed Out" hatalariyla 502 + retry storm'u uretiyordu
 # (olculen kok neden). Yeni davranis: HTTP yalnizca job'i tetikler ve aninda
 # DB snapshot'i doner; agir hydrasyon asyncio job'i olarak MEVCUT WebSocket
@@ -3113,7 +3113,7 @@ async def _run_background_history_expansion(user_id: str, gateway_id: str) -> No
         _history_expansion_running.discard(user_id)
 
 
-# Faz 13 (düzeltme — Render log regresyonu): Gateway'in bilerek KALICI
+# Faz 13 (düzeltme — production log regresyonu): Gateway'in bilerek KALICI
 # YAZILMAYAN ama UI'a ULAŞMASI GEREKEN olayları. Bunlar DB'ye yazılmaz
 # (kalıcı yan etkisi yoktur) fakat sahibi KESİN çözülmeden YAYINLANMAZ —
 # aksi halde `ws_manager.broadcast` hedefsiz kalır ve olay diğer tenant'lara
@@ -3161,7 +3161,7 @@ def _skip_event(event: Dict[str, Any], reason: str) -> Dict[str, Any]:
     return event
 
 
-# Prod (Render log): silinen gateway oturumunun kuyruktaki/tekrar oynatilan
+# Prod (production log): silinen gateway oturumunun kuyruktaki/tekrar oynatilan
 # olaylari saniyede ~1 ERROR satiri uretiyordu (3 dk'da 100+ satir). Ilk sinyal
 # + 60 sn'de bir ozet loglanir; aradakiler debug'a duser (hata YUTULMAZ,
 # sayac korunur — log seli degil, log hijyeni).
@@ -3401,7 +3401,7 @@ async def _ingest_message(db: AsyncSession, event: Dict[str, Any]) -> Dict[str, 
         ),
         recipient_phone=msg.get("recipient_phone") or "ME" if direction == MessageDirection.INBOUND else contact.phone_e164,
         status=ConversationMessageStatus.RECEIVED if direction == MessageDirection.INBOUND else ConversationMessageStatus.SENT,
-        # Prod fix (render log): asyncpg aware datetime'i naive kolona yazmayi
+        # Prod fix (production log): asyncpg aware datetime'i naive kolona yazmayi
         # reddediyor ("can't subtract offset-naive and offset-aware") — tıpkı
         # _persist_gateway_message gibi _as_naive_utc ile normalize edilir.
         external_timestamp=_as_naive_utc(_parse_dt(msg.get("created_at"))),
@@ -3532,7 +3532,7 @@ async def _ingest_contact_synced(db: AsyncSession, event: Dict[str, Any]) -> Dic
             get_user_filter(Contact.user_id, owner),
         )
     )
-    # Prod fix (render log): ayni telefonda mükerrer contact satiri varsa
+    # Prod fix (production log): ayni telefonda mükerrer contact satiri varsa
     # scalar_one_or_none() "Multiple rows were found" ile ingest'i kırıyordu;
     # ilk satiri al — guncelleme idempotent.
     contact = res.scalars().first()

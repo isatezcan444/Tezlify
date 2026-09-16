@@ -689,7 +689,7 @@ async def ensure_whatsapp_sessions_table(engine: AsyncEngine) -> None:
 
 
 async def ensure_whatsapp_gateway_private_schema(engine: AsyncEngine) -> None:
-    """Create the durable gateway store used when Render has no persistent disk.
+    """Create the durable gateway store for persistent credentials and leases.
 
     The schema is intentionally outside the frontend-facing API schema. Payloads
     remain application-encrypted; database access alone does not reveal Baileys
@@ -1140,7 +1140,7 @@ async def ensure_contacts_unique_phone(engine: AsyncEngine) -> None:
     `_upsert_contact` ise `scalar_one_or_none()` kullandigi icin mukerrer satirda
     `MultipleResultsFound` firlatiyor ve `message_new` olayi komple dusuyordu —
     yani GERCEK MESAJ KAYBI. (`_ingest_contact_synced` icindeki "Prod fix
-    (render log): Multiple rows were found" yorumu bu hatanin canli ortamda
+    (production log): Multiple rows were found" yorumu bu hatanin canli ortamda
     gerceklestigini belgeliyor; orasi `.first()` ile yamanmisti ama asil yazma
     yolu yamanmamisti.)
 

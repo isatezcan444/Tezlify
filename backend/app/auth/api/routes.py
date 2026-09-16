@@ -75,16 +75,13 @@ async def handle_google_callback(
             detail=str(e),
         )
 
-    # Set secure HttpOnly session cookie
     if redirect:
         req_host = request.headers.get("host")
         req_proto = request.headers.get("x-forwarded-proto", "https")
-        if req_host and "vercel.app" not in req_host:
+        if req_host:
             target_origin = f"{req_proto}://{req_host}"
         else:
             target_origin = FRONTEND_ORIGIN
-        if "vercel.app" in target_origin:
-            target_origin = "https://api.130.162.247.20.sslip.io"
 
         redirect_url = f"{target_origin}/?session_token={raw_token}"
         redir = RedirectResponse(url=redirect_url, status_code=status.HTTP_302_FOUND)

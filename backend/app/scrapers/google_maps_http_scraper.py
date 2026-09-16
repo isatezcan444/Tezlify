@@ -3,7 +3,7 @@ High-performance pure HTTP Google Maps scraper engine.
 
 Queries Google Maps internal JSON RPC endpoint (/search?tbm=map) directly via httpx,
 completely eliminating headless browser (Chromium/Playwright) overhead, memory bloat,
-and OOM crashes on memory-constrained cloud environments (e.g. Render 512MB RAM).
+and OOM crashes on memory-constrained cloud environments.
 
 Data extraction integrity:
 - Clean Place Name, Categories, Rating & Review count

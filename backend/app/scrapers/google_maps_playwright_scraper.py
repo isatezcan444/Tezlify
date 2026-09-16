@@ -427,7 +427,7 @@ class GoogleMapsPlaywrightScraper:
     async def _open_results_session(self, page: Page, maps_url: str) -> None:
         """Navigates to the search URL, dismisses consent, and verifies Google served real results.
         Retries up to 3 times with exponential backoff to handle transient network timeouts
-        on production environments (e.g., Render's slower network).
+        on production environments.
         """
         max_attempts = 3
         last_exc: Optional[Exception] = None
@@ -679,7 +679,7 @@ class GoogleMapsPlaywrightScraper:
             await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
 
             # Route optimization: aggressively block heavy media, fonts, images, stylesheets and trackers
-            # to strictly stay within Render's 512MB memory limit
+            # to strictly stay within memory limits
             _BLOCKED_RESOURCE_TYPES = {"image", "media", "font", "stylesheet"}
             _BLOCKED_URL_FRAGMENTS = [
                 "google-analytics", "googletagmanager", "doubleclick",

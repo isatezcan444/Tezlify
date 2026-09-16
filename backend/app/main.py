@@ -351,7 +351,7 @@ async def root():
 @app.api_route("/health", methods=["GET", "HEAD"], tags=["Health"])
 async def health_check():
     # Process RSS via stdlib only (no psutil dependency): lets operators
-    # verify the 512 MB Render budget from the outside. ru_maxrss is KiB on
+    # verify the memory budget from the outside. ru_maxrss is KiB on
     # Linux, bytes on macOS — normalize to MB for both.
     import resource
     import sys
