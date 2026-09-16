@@ -451,4 +451,7 @@ export interface UserProfile {
   leads_used_this_month: number;
   messages_daily_limit: number;
   created_at: string;
+  is_admin?: boolean;
 }
+
+export * from './admin';

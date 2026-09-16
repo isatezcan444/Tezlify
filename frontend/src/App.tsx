@@ -12,6 +12,7 @@ import { CampaignGroupsPage } from './pages/CampaignGroupsPage';
 import { WhatsAppHubPage } from './pages/WhatsAppHubPage';
 import { BlacklistPage } from './pages/BlacklistPage';
 import { SettingsPage } from './pages/SettingsPage';
+import { AdminOverviewPage } from './pages/admin/AdminOverviewPage';
 import { ApiClient, createWebSocket } from './api/client';
 import { DashboardStats } from './types';
 import { AuthProvider, useAuth } from './context/AuthContext';
@@ -193,6 +194,8 @@ const AppContent: React.FC = () => {
         return t('titles.blacklist');
       case 'settings':
         return t('titles.settings');
+      case 'admin-overview':
+        return t('titles.adminOverview');
       default:
         return 'Tezlify';
     }
@@ -216,6 +219,8 @@ const AppContent: React.FC = () => {
         return t('titles.blacklistSub');
       case 'settings':
         return t('titles.settingsSub');
+      case 'admin-overview':
+        return t('titles.adminOverviewSub');
       default:
         return undefined;
     }
@@ -275,6 +280,9 @@ const AppContent: React.FC = () => {
           )}
           {activeTab === 'settings' && (
             <SettingsPage />
+          )}
+          {activeTab === 'admin-overview' && (
+            <AdminOverviewPage onNavigate={handleNavigate} />
           )}
         </main>
       </div>

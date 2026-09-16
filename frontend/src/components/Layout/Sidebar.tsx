@@ -12,10 +12,12 @@ import {
   Sparkles,
   Radio,
   ShieldCheck,
+  Activity,
   X
 } from 'lucide-react';
 import { Badge } from '../ui/badge';
 import { useI18n } from '../../context/I18nContext';
+import { useAuth } from '../../context/AuthContext';
 
 interface SidebarProps {
   activeTab: string;
@@ -63,6 +65,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
       ]
     }
   ];
+
+  const { user, profile, isAdmin } = useAuth();
+  const showAdmin = Boolean(isAdmin || profile?.is_admin || user?.is_admin);
+
+  if (showAdmin) {
+    sections.push({
+      title: t('nav.sectionAdmin'),
+      items: [
+        { id: 'admin-overview', label: t('nav.adminOverview'), icon: Activity, badge: 'System', badgeVariant: 'primary' as const },
+      ]
+    });
+  }
 
   const handleTabClick = (tabId: string) => {
     setActiveTab(tabId);

@@ -5,6 +5,7 @@ import { ApiClient } from '../api/client';
 export interface AuthUser {
   id: string;
   email: string;
+  is_admin?: boolean;
   user_metadata?: {
     full_name?: string;
     avatar_url?: string;
@@ -23,6 +24,7 @@ export interface AuthContextType {
   profile: UserProfile | null;
   loading: boolean;
   isAuthenticated: boolean;
+  isAdmin: boolean;
   signInWithGoogle: () => Promise<void>;
   signOut: () => Promise<void>;
   loginWithGoogle: () => Promise<void>;
@@ -61,6 +63,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         const authUser: AuthUser = {
           id: u.id,
           email: u.email,
+          is_admin: Boolean(u.is_admin),
           user_metadata: {
             full_name: u.full_name,
             avatar_url: u.avatar_url,
@@ -78,6 +81,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           leads_used_this_month: u.leads_used_this_month || 0,
           messages_daily_limit: u.messages_daily_limit || 20,
           created_at: u.created_at || new Date().toISOString(),
+          is_admin: Boolean(u.is_admin),
         };
         setProfile(p);
         return p;
@@ -191,6 +195,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         profile,
         loading,
         isAuthenticated,
+        isAdmin: Boolean(profile?.is_admin || user?.is_admin),
         signInWithGoogle,
         signOut,
         loginWithGoogle: signInWithGoogle,
