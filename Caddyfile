@@ -15,6 +15,7 @@
 
 api.tezlify.com, api.130.162.247.20.sslip.io, 130.162.247.20.sslip.io {
     import security_headers
+    encode zstd gzip
 
     handle /caddy-health {
         respond "OK" 200
@@ -76,6 +77,7 @@ api.tezlify.com, api.130.162.247.20.sslip.io, 130.162.247.20.sslip.io {
 
 :80 {
     import security_headers
+    encode zstd gzip
 
     handle /caddy-health {
         respond "OK" 200
@@ -137,6 +139,7 @@ api.tezlify.com, api.130.162.247.20.sslip.io, 130.162.247.20.sslip.io {
 
 :443 {
     import security_headers
+    encode zstd gzip
 
     tls internal {
         on_demand

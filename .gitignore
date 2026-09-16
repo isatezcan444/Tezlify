@@ -45,6 +45,7 @@ whatsapp-gateway/sessions/
 whatsapp-gateway/media/
 whatsapp-gateway/.env
 
-# Monitoring runtime state & logs
+# Monitoring & benchmark runtime state & logs
 monitoring/*.json
 logs/
+runtime/
