@@ -163,3 +163,30 @@ export interface AdminMonitoringResponse {
   invariants: AdminInvariantStatus[];
   recent_observations: AdminObservationRecord[];
 }
+
+// ---------------------------------------------------------------------------
+// Backup & Disaster Recovery Definitions
+// ---------------------------------------------------------------------------
+
+export interface AdminBackupFileInfo {
+  latest_backup_filename: string | null;
+  size_bytes: number | null;
+  size_human: string | null;
+  created_at: string | null;
+  age_hours: number | null;
+}
+
+export interface AdminBackupDiskUsage {
+  bytes: number;
+  human: string;
+}
+
+export interface AdminBackupsResponse {
+  timestamp: string;
+  certification_status: string;
+  off_host_status: string;
+  postgres: AdminBackupFileInfo;
+  media: AdminBackupFileInfo;
+  config: AdminBackupFileInfo;
+  total_backup_disk_usage: AdminBackupDiskUsage;
+}
