@@ -1,0 +1,16 @@
+[Unit]
+Description=Tezlify WhatsApp Long-Run Reliability Observer (Phase 10.5)
+After=docker.service tezlify-monitor.service
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/tezlify
+ExecStart=/usr/bin/python3 /opt/tezlify/scripts/whatsapp_reliability_collector.py
+TimeoutSec=30
+StandardOutput=append:/opt/tezlify/logs/tezlify-wa-observer.log
+StandardError=append:/opt/tezlify/logs/tezlify-wa-observer.log
+
+[Install]
+WantedBy=multi-user.target

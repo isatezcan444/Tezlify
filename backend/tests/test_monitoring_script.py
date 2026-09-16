@@ -58,6 +58,13 @@ def test_systemd_units_syntax():
     assert "/opt/tezlify/logs/tezlify-monitor.log" in logrotate_text
     assert "rotate 14" in logrotate_text
 
+    observer_service = REPO_ROOT / "monitoring" / "systemd" / "tezlify-wa-observer.service"
+    observer_timer = REPO_ROOT / "monitoring" / "systemd" / "tezlify-wa-observer.timer"
+    assert observer_service.exists()
+    assert observer_timer.exists()
+    assert "ExecStart=/usr/bin/python3 /opt/tezlify/scripts/whatsapp_reliability_collector.py" in observer_service.read_text()
+    assert "OnCalendar=*:0/5" in observer_timer.read_text()
+
 
 def test_no_secrets_in_monitoring_files():
     """Invariance check: Monitoring configs and scripts must not contain hardcoded secrets."""
