@@ -1,0 +1,17 @@
+[Unit]
+Description=Tezlify Production Health Monitor (Phase 10.2)
+After=docker.service network-online.target
+Wants=docker.service network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/tezlify
+ExecStart=/opt/tezlify/scripts/monitor_health.sh --summary
+TimeoutSec=45
+StandardOutput=append:/opt/tezlify/logs/tezlify-monitor.log
+StandardError=append:/opt/tezlify/logs/tezlify-monitor.log
+
+[Install]
+WantedBy=multi-user.target

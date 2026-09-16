@@ -1,0 +1,9 @@
+/opt/tezlify/logs/tezlify-monitor.log {
+    daily
+    missingok
+    rotate 14
+    compress
+    delaycompress
+    notifempty
+    create 0640 ubuntu ubuntu
+}
