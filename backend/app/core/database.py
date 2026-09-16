@@ -20,7 +20,7 @@ engine_kwargs = {
 if is_sqlite:
     engine_kwargs["connect_args"] = {"check_same_thread": False}
 else:
-    # Supabase / PostgreSQL Connection Pooling Best Practices
+    # PostgreSQL Connection Pooling Best Practices
     engine_kwargs["connect_args"] = {
         "statement_cache_size": 0,
         "server_settings": {

@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from backend.app.core.database import get_db
-from backend.app.core.auth import AuthUser, verify_and_decode_jwt, _is_dev_or_test_context
+from backend.app.core.auth import AuthUser, _is_dev_or_test_context
 from backend.app.models.profile import Profile
 from backend.app.auth.application.session_service import SessionService
 from backend.app.auth.application.user_service import UserService
@@ -47,7 +47,7 @@ async def get_current_user_unified(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
     db: AsyncSession = Depends(get_db),
 ) -> AuthUser:
-    """Unified FastAPI dependency supporting both Oracle Native Sessions and Supabase JWT fallback."""
+    """FastAPI dependency resolving the current authenticated user from the Oracle Native Session."""
     token = extract_session_token(request, credentials)
 
     if not token:
@@ -102,34 +102,7 @@ async def get_current_user_unified(
                 )
     except HTTPException:
         raise
-    except Exception as exc:
-        logger.warning(f"Native session resolution failed: {exc}")
-
-    # 2. Fallback to Supabase JWT verification for zero-downtime transition
-    try:
-        payload = verify_and_decode_jwt(token)
-        user_id = payload.get("sub")
-        email = payload.get("email") or ""
-
-        if user_id:
-            stmt = select(Profile).where(Profile.id == user_id)
-            res = await db.execute(stmt)
-            profile = res.scalar_one_or_none()
-
-            return AuthUser(
-                id=str(user_id),
-                email=email,
-                full_name=profile.full_name if profile and profile.full_name else payload.get("name"),
-                avatar_url=profile.avatar_url if profile and profile.avatar_url else payload.get("picture"),
-                plan_tier=profile.plan_tier if profile else "DEVELOPER_PRO",
-                leads_monthly_limit=profile.leads_monthly_limit if profile else 999999,
-                leads_used_this_month=profile.leads_used_this_month if profile else 0,
-                messages_daily_limit=profile.messages_daily_limit if profile else 999999,
-            )
-    except Exception:
-        pass
-
-    # Neither native session nor Supabase JWT was valid
+    # Session not found or invalid
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Geçersiz veya süresi dolmuş oturum (Invalid or expired session)",

@@ -161,7 +161,7 @@ async def test_ingest_batch_blacklist_prefetch_marks_unsubscribed():
 @pytest.mark.asyncio
 async def test_ingest_statement_budget_stays_flat():
     """50 fresh leads must persist in a handful of round-trips (bulk insert),
-    not ~7 statements per lead. Guards the Supabase save latency fix."""
+    not ~7 statements per lead. Guards the database save latency fix."""
     from sqlalchemy import event as sa_event
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
     async with engine.begin() as conn:

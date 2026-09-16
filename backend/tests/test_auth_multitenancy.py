@@ -1,34 +1,20 @@
 import pytest
-import base64
-import json
+import uuid
+import random
+import secrets
+from datetime import datetime, timedelta, timezone
 from httpx import AsyncClient, ASGITransport
 from sqlalchemy import select
 
 from backend.app.main import app
-from backend.app.core.database import AsyncSessionLocal
+from backend.app.core.database import AsyncSessionLocal, Base
 from backend.app.models.lead import Lead
 from backend.app.models.profile import Profile
-from backend.app.core.auth import decode_jwt_unverified, verify_lead_quota, AuthUser
+from backend.app.core.auth import verify_lead_quota, AuthUser
+from backend.app.auth.infrastructure.sql_models import AuthUserDB, AuthSessionDB, OAuthAccountDB
+from backend.app.auth.application.user_service import UserService
+from backend.app.auth.application.session_service import SessionService
 from fastapi import HTTPException
-
-
-def _make_mock_jwt(user_id: str, email: str) -> str:
-    """Constructs an unverified mock JWT for testing."""
-    header = base64.urlsafe_b64encode(json.dumps({"alg": "HS256", "typ": "JWT"}).encode()).decode().rstrip("=")
-    payload = base64.urlsafe_b64encode(json.dumps({
-        "sub": user_id,
-        "email": email,
-        "user_metadata": {"full_name": f"User {user_id[:6]}"}
-    }).encode()).decode().rstrip("=")
-    signature = "mock_sig"
-    return f"{header}.{payload}.{signature}"
-
-
-def test_decode_jwt_unverified():
-    token = _make_mock_jwt("11111111-1111-1111-1111-111111111111", "test@tezlify.com")
-    payload = decode_jwt_unverified(token)
-    assert payload["sub"] == "11111111-1111-1111-1111-111111111111"
-    assert payload["email"] == "test@tezlify.com"
 
 
 def test_verify_lead_quota_unlimited_in_dev():
@@ -45,36 +31,157 @@ def test_verify_lead_quota_unlimited_in_dev():
 
 
 @pytest.mark.asyncio
-async def test_auth_me_endpoint():
-    import uuid
+async def test_auth_me_endpoint_with_header():
     uid = str(uuid.uuid4())
     transport = ASGITransport(app=app)
-    token = _make_mock_jwt(uid, f"me_{uid[:6]}@tezlify.com")
-    headers = {"Authorization": f"Bearer {token}"}
+    headers = {"X-Test-User-Id": uid, "X-Test-User-Email": f"me_{uid[:6]}@tezlify.com"}
     
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         res = await ac.get("/api/v1/auth/me", headers=headers)
         assert res.status_code == 200
         data = res.json()
         assert data["id"] == uid
-        assert data["plan_tier"] == "DEVELOPER_PRO"
-        assert data["leads_monthly_limit"] == 999999
+        assert data["plan_tier"] == "PRO"
+        assert data["leads_monthly_limit"] == 100000
 
 
 @pytest.mark.asyncio
-async def test_multitenancy_lead_isolation():
-    import uuid
-    import random
-    unique_suffix = uuid.uuid4().hex[:6]
-    user_a = f"33333333-3333-3333-3333-{unique_suffix}000001"
-    user_b = f"44444444-4444-4444-4444-{unique_suffix}000002"
-    unique_phone = f"+90555{random.randint(1000000, 9999999)}"
-    
-    token_a = _make_mock_jwt(user_a, f"user_a_{unique_suffix}@tezlify.com")
-    token_b = _make_mock_jwt(user_b, f"user_b_{unique_suffix}@tezlify.com")
-    
+async def test_oracle_native_session_valid():
+    """Verifies that an authentic Oracle Native session token authenticates /api/v1/auth/me."""
+    u_svc = UserService()
+    s_svc = SessionService()
+
+    async with AsyncSessionLocal() as db:
+        unique = uuid.uuid4().hex[:8]
+        user = await u_svc.get_or_create_from_oauth(
+            db,
+            provider="google",
+            provider_subject=f"sub-{unique}",
+            email=f"native_{unique}@tezlify.com",
+            display_name=f"Native User {unique}",
+        )
+        _, raw_token = await s_svc.create_session(db, user_id=user.id)
+        await db.commit()
+
     transport = ASGITransport(app=app)
-    
+    headers = {"Authorization": f"Bearer {raw_token}"}
+
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        res = await ac.get("/api/v1/auth/me", headers=headers)
+        assert res.status_code == 200
+        data = res.json()
+        assert data["id"] == str(user.id)
+        assert data["email"] == f"native_{unique}@tezlify.com"
+
+
+@pytest.mark.asyncio
+async def test_oracle_native_session_invalid_token():
+    """Verifies that an unknown / forged token is rejected fail-closed with 401."""
+    transport = ASGITransport(app=app)
+    headers = {"Authorization": "Bearer forged-session-token-random-value-12345"}
+
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        res = await ac.get("/api/v1/auth/me", headers=headers)
+        assert res.status_code == 401
+        assert "Geçersiz veya süresi dolmuş oturum" in res.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_oracle_native_session_expired():
+    """Verifies that an expired Oracle Native session is rejected with 401."""
+    u_svc = UserService()
+    s_svc = SessionService()
+
+    async with AsyncSessionLocal() as db:
+        unique = uuid.uuid4().hex[:8]
+        user = await u_svc.get_or_create_from_oauth(
+            db,
+            provider="google",
+            provider_subject=f"sub-exp-{unique}",
+            email=f"exp_{unique}@tezlify.com",
+        )
+        # Create expired session
+        raw_token = secrets.token_urlsafe(32)
+        token_hash = s_svc.hash_token(raw_token)
+        now = datetime.now(timezone.utc)
+        expired_db_sess = AuthSessionDB(
+            user_id=user.id,
+            session_token_hash=token_hash,
+            expires_at=now - timedelta(hours=1),
+            created_at=now - timedelta(days=1),
+            last_seen_at=now - timedelta(days=1),
+            revoked_at=None,
+        )
+        db.add(expired_db_sess)
+        await db.commit()
+
+    transport = ASGITransport(app=app)
+    headers = {"Authorization": f"Bearer {raw_token}"}
+
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        res = await ac.get("/api/v1/auth/me", headers=headers)
+        assert res.status_code == 401
+        assert "Geçersiz veya süresi dolmuş oturum" in res.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_oracle_native_session_revoked():
+    """Verifies that a revoked Oracle Native session (post-logout) is rejected with 401."""
+    u_svc = UserService()
+    s_svc = SessionService()
+
+    async with AsyncSessionLocal() as db:
+        unique = uuid.uuid4().hex[:8]
+        user = await u_svc.get_or_create_from_oauth(
+            db,
+            provider="google",
+            provider_subject=f"sub-rev-{unique}",
+            email=f"rev_{unique}@tezlify.com",
+        )
+        session, raw_token = await s_svc.create_session(db, user_id=user.id)
+        await db.commit()
+        # Revoke the session
+        await s_svc.revoke_session(db, raw_token)
+        await db.commit()
+
+    transport = ASGITransport(app=app)
+    headers = {"Authorization": f"Bearer {raw_token}"}
+
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        res = await ac.get("/api/v1/auth/me", headers=headers)
+        assert res.status_code == 401
+        assert "Geçersiz veya süresi dolmuş oturum" in res.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_multitenancy_lead_isolation_native_sessions():
+    """Verifies multi-tenant isolation using authentic Oracle Native Sessions."""
+    u_svc = UserService()
+    s_svc = SessionService()
+    unique_suffix = uuid.uuid4().hex[:6]
+
+    async with AsyncSessionLocal() as db:
+        user_a = await u_svc.get_or_create_from_oauth(
+            db,
+            provider="google",
+            provider_subject=f"tenant-a-{unique_suffix}",
+            email=f"user_a_{unique_suffix}@tezlify.com",
+            display_name=f"User A {unique_suffix}",
+        )
+        user_b = await u_svc.get_or_create_from_oauth(
+            db,
+            provider="google",
+            provider_subject=f"tenant-b-{unique_suffix}",
+            email=f"user_b_{unique_suffix}@tezlify.com",
+            display_name=f"User B {unique_suffix}",
+        )
+        _, token_a = await s_svc.create_session(db, user_id=user_a.id)
+        _, token_b = await s_svc.create_session(db, user_id=user_b.id)
+        await db.commit()
+
+    unique_phone = f"+90555{random.randint(1000000, 9999999)}"
+    transport = ASGITransport(app=app)
+
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         # User A creates a lead
         res_create = await ac.post(
@@ -88,135 +195,12 @@ async def test_multitenancy_lead_isolation():
         )
         assert res_create.status_code == 201
         lead_a_id = res_create.json()["id"]
-        
+
         # User A can get their lead
         res_get_a = await ac.get(f"/api/v1/leads/{lead_a_id}", headers={"Authorization": f"Bearer {token_a}"})
         assert res_get_a.status_code == 200
         assert res_get_a.json()["name"] == f"Secret Corp {unique_suffix}"
-        
+
         # User B CANNOT get User A's lead (404 / isolated)
         res_get_b = await ac.get(f"/api/v1/leads/{lead_a_id}", headers={"Authorization": f"Bearer {token_b}"})
         assert res_get_b.status_code == 404
-
-
-def test_verify_and_decode_jwt_hs256_with_secret():
-    import jwt
-    from unittest.mock import patch
-    from backend.app.core.auth import verify_and_decode_jwt
-
-    secret = "test-secret-key-123456789012345678901234"
-    token = jwt.encode(
-        {"sub": "user-hs256", "email": "hs256@tezlify.com", "exp": 9999999999},
-        secret,
-        algorithm="HS256",
-    )
-
-    with patch("backend.app.core.auth.settings.SUPABASE_JWT_SECRET", secret):
-        payload = verify_and_decode_jwt(token)
-        assert payload["sub"] == "user-hs256"
-        assert payload["email"] == "hs256@tezlify.com"
-
-
-def test_verify_and_decode_jwt_hs256_invalid_signature():
-    import jwt
-    from unittest.mock import patch
-    from fastapi import HTTPException
-    from backend.app.core.auth import verify_and_decode_jwt
-
-    token = jwt.encode(
-        {"sub": "user-hs256", "exp": 9999999999},
-        "wrong-secret-123456789012345678901234",
-        algorithm="HS256",
-    )
-
-    with patch("backend.app.core.auth.settings.SUPABASE_JWT_SECRET", "correct-secret-123456789012345678901234"):
-        with pytest.raises(HTTPException) as exc_info:
-            verify_and_decode_jwt(token)
-        assert exc_info.value.status_code == 401
-        assert "Geçersiz token imzası" in exc_info.value.detail
-
-
-def test_verify_and_decode_jwt_es256_mock_jwks():
-    import jwt
-    from unittest.mock import MagicMock, patch
-    from cryptography.hazmat.primitives.asymmetric import ec
-    from backend.app.core.auth import verify_and_decode_jwt
-
-    private_key = ec.generate_private_key(ec.SECP256R1())
-    public_key = private_key.public_key()
-
-    token = jwt.encode(
-        {"sub": "user-es256", "email": "es256@tezlify.com", "iss": "https://pzpgjjtefeplygqcxfsj.supabase.co/auth/v1", "exp": 9999999999},
-        private_key,
-        algorithm="ES256",
-        headers={"kid": "test-kid"},
-    )
-
-    mock_signing_key = MagicMock()
-    mock_signing_key.key = public_key
-    mock_client = MagicMock()
-    mock_client.get_signing_key_from_jwt.return_value = mock_signing_key
-
-    with patch("backend.app.core.auth._get_jwks_client", return_value=mock_client):
-        payload = verify_and_decode_jwt(token)
-        assert payload["sub"] == "user-es256"
-        assert payload["email"] == "es256@tezlify.com"
-
-
-def test_verify_and_decode_jwt_es256_invalid_signature():
-    import jwt
-    from unittest.mock import MagicMock, patch
-    from cryptography.hazmat.primitives.asymmetric import ec
-    from fastapi import HTTPException
-    from backend.app.core.auth import verify_and_decode_jwt
-
-    key1 = ec.generate_private_key(ec.SECP256R1())
-    key2 = ec.generate_private_key(ec.SECP256R1())
-
-    token = jwt.encode(
-        {"sub": "user-es256", "iss": "https://pzpgjjtefeplygqcxfsj.supabase.co/auth/v1", "exp": 9999999999},
-        key1,
-        algorithm="ES256",
-        headers={"kid": "test-kid"},
-    )
-
-    mock_signing_key = MagicMock()
-    mock_signing_key.key = key2.public_key()
-    mock_client = MagicMock()
-    mock_client.get_signing_key_from_jwt.return_value = mock_signing_key
-
-    with patch("backend.app.core.auth._get_jwks_client", return_value=mock_client):
-        with pytest.raises(HTTPException) as exc_info:
-            verify_and_decode_jwt(token)
-        assert exc_info.value.status_code == 401
-        assert "Geçersiz token imzası" in exc_info.value.detail
-
-
-def test_verify_and_decode_jwt_expired():
-    import jwt
-    from unittest.mock import MagicMock, patch
-    from cryptography.hazmat.primitives.asymmetric import ec
-    from fastapi import HTTPException
-    from backend.app.core.auth import verify_and_decode_jwt
-
-    private_key = ec.generate_private_key(ec.SECP256R1())
-    public_key = private_key.public_key()
-
-    token = jwt.encode(
-        {"sub": "user-es256", "iss": "https://pzpgjjtefeplygqcxfsj.supabase.co/auth/v1", "exp": 1000},
-        private_key,
-        algorithm="ES256",
-        headers={"kid": "test-kid"},
-    )
-
-    mock_signing_key = MagicMock()
-    mock_signing_key.key = public_key
-    mock_client = MagicMock()
-    mock_client.get_signing_key_from_jwt.return_value = mock_signing_key
-
-    with patch("backend.app.core.auth._get_jwks_client", return_value=mock_client):
-        with pytest.raises(HTTPException) as exc_info:
-            verify_and_decode_jwt(token)
-        assert exc_info.value.status_code == 401
-        assert "Oturum süresi doldu" in exc_info.value.detail
-

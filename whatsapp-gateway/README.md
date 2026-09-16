@@ -6,7 +6,7 @@ FastAPI backend'inize (ve dolayısıyla React frontend'inize) bağlar.
 ## Özellikler (Aşama 1: MVP)
 
 - QR kod ile WhatsApp Web eşleştirme (multi-device, telefon çevrimiçi kalır)
-- Oturum kalıcılığı (üretimde Supabase PostgreSQL'de AES-256-GCM ile şifrelenir; disk yalnızca yerel fallback'tir)
+- Oturum kalıcılığı (üretimde Oracle PostgreSQL'de AES-256-GCM ile şifrelenir; disk yalnızca yerel fallback'tir)
 - Sohbet / kişi / mesaj senkronizasyonu
 - Metin ve medya (resim/belge/ses/video) gönderimi
 - Gelen medyanın indirilmesi ve diskte saklanması
@@ -43,17 +43,13 @@ docker-compose up -d
 | Backend (FastAPI) | 8000 | `BACKEND_WS_URL` Gateway'in WS URL'ini gösterir |
 | Frontend | 80/3000 | `VITE_API_URL` ile Backend'i hedef gösterin |
 
-### Üretim (Render Free + Supabase Free)
-
-Render Free yeniden başlatma/uyku sırasında yerel dosyaları siler. Üretimde
-`GATEWAY_DATABASE_URL` Supabase PostgreSQL bağlantısı olmalı ve
+### Üretim (Oracle Cloud)
+ 
+Üretimde `GATEWAY_DATABASE_URL` Oracle PostgreSQL bağlantısı olmalı ve
 `REQUIRE_DURABLE_AUTH=true` bırakılmalıdır. Baileys kimlik bilgileri ve Signal
 anahtarları bu veritabanında şifreli tutulur; QR yalnızca ilk eşleştirmede veya
-gerçek bir `RELINK_REQUIRED` durumunda gerekir.
-
-Free plan uykuya geçtiğinde canlı WebSocket akışı durur; servis ilk HTTP/WS
-isteğinde uyanır ve kalıcı oturumları otomatik geri yükler. 7/24 canlı bağlantı
-garantisi Free planın platform sınırları nedeniyle mümkün değildir.
+gerçek bir `RELINK_REQUIRED` durumunda gerekir. Canlı bağlantı ve WebSocket köprüsü
+7/24 kesintisiz çalışır.
 
 ### Health Check
 

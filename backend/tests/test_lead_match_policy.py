@@ -330,7 +330,7 @@ async def test_scrape_reports_explicit_suppression_funnel():
 # ============================================================
 
 class TestLegacyDuplicateFailSafe:
-    """Production Supabase holds duplicate rows predating the hardened unique
+    """Production database holds duplicate rows predating the hardened unique
     constraints. Identity resolution must merge into the oldest row instead of
     raising MultipleResultsFound and failing the whole scrape job."""
 

@@ -14,7 +14,6 @@ from sqlalchemy import update
 
 from backend.app.api.v1.api import api_router
 from backend.app.api.v1.websocket import ws_manager
-from backend.app.core.auth import verify_and_decode_jwt
 from backend.app.core.config import settings
 from backend.app.core.database import Base, engine
 from backend.app.core.migrations import (
@@ -182,37 +181,22 @@ async def websocket_endpoint(
     user_id = None
     if token:
         try:
-            # 1. Oracle Native Session lookup
-            try:
-                from backend.app.core.database import AsyncSessionLocal
-                from backend.app.auth.application.session_service import SessionService
-                async with AsyncSessionLocal() as db:
-                    _sess = await SessionService().get_session_by_token(db, token)
-                    if _sess:
-                        user_id = str(_sess.user_id)
-            except Exception as _ns_err:
-                logger.debug(f"WS native session check skipped: {_ns_err}")
+            # Oracle Native Session lookup
+            from backend.app.core.database import AsyncSessionLocal
+            from backend.app.auth.application.session_service import SessionService
+            async with AsyncSessionLocal() as db:
+                _sess = await SessionService().get_session_by_token(db, token)
+                if _sess:
+                    user_id = str(_sess.user_id)
+        except Exception as _ns_err:
+            logger.debug(f"WS native session check error: {_ns_err}")
 
-            # 2. Supabase JWT fallback
-            if not user_id:
-                payload = verify_and_decode_jwt(token)
-                user_id = payload.get("sub")
-        except Exception as auth_err:
-            logger.warning(f"WebSocket auth failed: {auth_err}")
-            if not os.getenv("PYTEST_CURRENT_TEST"):
-                # Faz 13 (düzeltme — Render log: `WebSocket auth failed: 401`
-                # 55 kez, istemci sonsuz yeniden bağlanma döngüsü):
-                # 1008 kodu istemciye YALNIZCA el sıkışma kabul edildikten
-                # sonra ulaşır. `accept()` çağrılmadan `close()` yapılırsa
-                # ASGI sunucusu el sıkışmayı HTTP 403 ile reddeder ve tarayıcı
-                # `1006` (anormal kapanış) görür — istemci bunun bir YETKİ
-                # reddi olduğunu ayırt edemez, süresi dolmuş token'la yeniden
-                # bağlanmayı sonsuza dek sürdürür ve senkron olayları hiç
-                # ulaşmaz (banner asılı kalır). Bu yüzden önce kabul edilir,
-                # sonra 1008 ile kapatılır.
-                await websocket.accept()
-                await websocket.close(code=1008, reason="Oturum süresi doldu (Session expired)")
-                return
+        if not user_id and not os.getenv("PYTEST_CURRENT_TEST"):
+            logger.warning("WebSocket auth failed: invalid or expired session token")
+            # 1008 code is sent after accepting handshake
+            await websocket.accept()
+            await websocket.close(code=1008, reason="Oturum süresi doldu (Session expired)")
+            return
     if not user_id and os.getenv("PYTEST_CURRENT_TEST"):
         user_id = "00000000-0000-0000-0000-000000000001"
 

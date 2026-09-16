@@ -23,7 +23,7 @@ const isVercel = typeof window !== 'undefined' && (host.endsWith('.vercel.app') 
 function sanitizeBackendUrl(rawUrl: string | undefined): string | undefined {
   if (!rawUrl) return undefined;
   // Automatically heal and rewrite any legacy or stale subdomain references
-  if (rawUrl.includes('scoutify') || rawUrl.includes('tezlify-kuv3') || rawUrl.includes('kuv3') || rawUrl.includes('onrender.com')) {
+  if (rawUrl.includes('scoutify') || rawUrl.includes('tezlify-kuv3') || rawUrl.includes('kuv3')) {
     return rawUrl
       .replace(/https?:\/\/[^\/]+/i, 'https://api.130.162.247.20.sslip.io')
       .replace(/wss?:\/\/[^\/]+/i, 'wss://api.130.162.247.20.sslip.io/ws');

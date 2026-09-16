@@ -96,42 +96,21 @@ npm run gateway:start
 
 * Health Check: [http://127.0.0.1:8787/health](http://127.0.0.1:8787/health)
 
-### Render Production Dağıtımı
+### Oracle Cloud Production Dağıtımı
 
-Render **free plan** hizmetler arası özel ağa (private network) izin vermediği
-için WhatsApp gateway, backend ile **aynı container içinde bir sidecar proses**
-olarak çalışır. Kök `Dockerfile` Node.js 20'yi kurar, `whatsapp-gateway`
-bağımlılıklarını yükler ve `docker-entrypoint.sh` ile gateway'i
-`127.0.0.1:8787` üzerinde başlatır; backend `WHATSAPP_GATEWAY_URL`
-varsayılanı olan bu adrese erişir.
+Oracle Cloud altyapısında Tezlify, `docker-compose.prod.yml` ile Caddy, FastAPI, Baileys Gateway ve yerel PostgreSQL konteynerleri olarak çalışır.
 
-Kurulum (Render dashboard veya API):
+Bileşenler:
+1. **Caddy**: Reverse proxy ve SSL sonlandırma (HTTP/HTTPS ve WebSocket aktarımı).
+2. **FastAPI Backend**: Python 3.12+, REST ve WebSocket API, Anti-Ban politikası, lead zenginleştirme.
+3. **Baileys Gateway**: WhatsApp Web köprüsü, multi-device socket oturumları, AES-256-GCM ile şifrelenmiş PostgreSQL kalıcılığı.
+4. **PostgreSQL**: Oracle yerel veritabanı, tek doğruluk kaynağı (Single Source of Truth).
+5. **Oracle Native Google OAuth**: Google Identity token değişimi ve yerel güvenli oturum yönetimi.
 
-1. `tezlify` web servisine şu environment değişkenini ekleyin:
-   - `GATEWAY_ENCRYPTION_KEY`: en az 32 karakterlik kalıcı bir gizli anahtar
-     (üretilmiş bir değer girin; her dağıtımda aynı kalmalı).
-2. `GATEWAY_DATABASE_URL`: Supabase PostgreSQL URI'si. `REQUIRE_DURABLE_AUTH=true`
-   ile birlikte zorunludur; auth ve Signal anahtarları burada şifreli saklanır.
-3. `WHATSAPP_GATEWAY_SECRET` belirleyin; gateway/backend WS
-   köprüsü `?token=` ile fail-closed doğrulanır.
-4. Servisi yeniden dağıtın. Build loglarında `[entrypoint] Starting WhatsApp
-   gateway` ve backend loglarında `[WS-GATEWAY] Baileys gateway bağlandı.`
-   satırlarını görmelisiniz. `GATEWAY_ENCRYPTION_KEY` yoksa backend yine
-   başlar ve WhatsApp işlemleri açık hata ile fail-closed olur.
-
-> Not: Render Free dosya sistemi ephemeral'dır ve servis uykuya geçebilir. Auth
-> Supabase PostgreSQL'de tutulduğu için yeniden dağıtım/uyanma sonrası oturum
-> otomatik geri yüklenir. Free plan uyku süresince canlı WebSocket teslimatı
-> beklemeye alınır; 7/24 canlı bağlantı için sürekli çalışan servis gerekir.
-
-> ✅ statusCode=428 kök nedeni (doğrulanmış): QR üretilmeden bağlantıyı kapatan
-> şey datacenter IP engeli değil, Baileys'in `syncFullHistory: true` seçeneğiydi.
-> WhatsApp bu kayıt isteğini `428 Precondition Required` ile reddediyor (hem
-> residential hem Render IP'sinde aynı davranış ölçüldü). Seçenek kaldırıldıktan
-> sonra Render FREE üzerinde QR normal şekilde üretiliyor (`SCAN_QR`).
-> Yine de beklenmedik bir erken kopmada gateway 3 denemeden sonra sonsuz
-> `CONNECTING` yerine gerçek hata mesajını (`error_message`) UI'a yansıtır
-> (fail-loudly, AGENTS.md truthfulness).
+Başlatma:
+```bash
+docker compose -f docker-compose.prod.yml up -d --build
+```
 
 ---
 

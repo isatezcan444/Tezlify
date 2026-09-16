@@ -29,10 +29,10 @@ class Settings(BaseSettings):
         description="Async SQLite or PostgreSQL connection string",
     )
     DATABASE_POOL_SIZE: int = Field(
-        default=3,
+        default=5,
         ge=1,
-        le=10,
-        description="Small persistent pool; sized for Supabase Free by default.",
+        le=20,
+        description="Persistent connection pool size for PostgreSQL.",
     )
     DATABASE_MAX_OVERFLOW: int = Field(
         default=0,
@@ -60,23 +60,6 @@ class Settings(BaseSettings):
     SECRET_KEY: str = Field(
         default="dev-only-insecure-secret-key",
         description="Üretimde mutlaka .env ile güçlü bir değerle ezilmelidir.",
-    )
-    # Supabase URL (JWKS asimetrik anahtar doğrulaması için kullanılır: ES256 / RS256).
-    SUPABASE_URL: str = Field(
-        default="https://pzpgjjtefeplygqcxfsj.supabase.co",
-        description="Supabase proje URL'i (JWKS anahtar doğrulaması için).",
-    )
-    # Supabase'in erişim token'larını imzaladığı HS256 anahtarı (simetrik mod için).
-    SUPABASE_JWT_SECRET: str = Field(
-        default="",
-        description="Supabase JWT HS256 imza anahtarı (Dashboard > Settings > API > JWT Secret).",
-    )
-    # Acil durum kaçış kapısı: imza anahtarı olmadan (yalnızca son kullanma
-    # tarihi kontrol edilerek) token kabul edilmesine izin verir. Varsayılan
-    # KAPALI — fail-closed. Yalnızca bilinçli ve geçici olarak açılmalıdır.
-    ALLOW_UNVERIFIED_JWT: bool = Field(
-        default=False,
-        description="İmzasız JWT kabulüne izin ver (güvensiz; yalnızca geçiş dönemi için).",
     )
     BACKEND_CORS_ORIGINS: List[str] = [
         "http://localhost:5173",

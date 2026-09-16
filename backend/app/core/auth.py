@@ -62,141 +62,8 @@ def _is_dev_or_test_context() -> bool:
     )
 
 
-_unverified_jwt_warned = False
-_jwks_clients: dict = {}
 
 
-def _get_jwks_client(jwks_url: str):
-    """Caches PyJWKClient instances per JWKS URL with 1-hour key caching."""
-    import jwt as pyjwt
-    client = _jwks_clients.get(jwks_url)
-    if client is None:
-        client = pyjwt.PyJWKClient(jwks_url, cache_jwk_set=True, lifespan=3600)
-        _jwks_clients[jwks_url] = client
-    return client
-
-
-def verify_and_decode_jwt(token: str) -> dict:
-    """JWT'yi kriptografik imza + son kullanma doğrulamasıyla çözer.
-
-    Doğrulama Sırası:
-    1. Asimetrik JWKS Doğrulaması (Supabase varsayılanı: ES256 / RS256):
-       Token `iss` (veya `settings.SUPABASE_URL`) üzerindeki `/.well-known/jwks.json`
-       uç noktasından genel anahtar alınır ve kriptografik imza doğrulanır.
-       Bu sayede manuel `SUPABASE_JWT_SECRET` senkronizasyonuna gerek kalmadan
-       tam kriptografik güvenlik sağlanır.
-    2. Simetrik HS256 Doğrulaması:
-       `SUPABASE_JWT_SECRET` ayarlıysa imza doğrulanır.
-    3. FAIL-CLOSED (güvenlik ilkesi):
-       Token imzasız/doğrulanamaz ise, yalnızca geliştirme/test bağlamında ya da
-       `ALLOW_UNVERIFIED_JWT=True` ile açıkça izin verildiğinde kabul edilir;
-       üretimde 401 ile reddedilir.
-    """
-    import time
-    import jwt as pyjwt
-
-    try:
-        header = pyjwt.get_unverified_header(token)
-    except Exception:
-        header = {}
-
-    alg = header.get("alg", "")
-
-    # 1. Asimetrik algoritma (Supabase varsayılanı ES256 / RS256): JWKS ile doğrula
-    if alg in ("ES256", "RS256"):
-        try:
-            unverified_payload = decode_jwt_unverified(token)
-            iss = str(unverified_payload.get("iss", "")).strip()
-            supabase_url = str(getattr(settings, "SUPABASE_URL", "") or os.getenv("SUPABASE_URL", "")).strip()
-
-            jwks_url = None
-            if iss and (iss.endswith(".supabase.co/auth/v1") or iss.endswith(".supabase.co") or (supabase_url and supabase_url in iss)):
-                jwks_url = f"{iss.rstrip('/')}/.well-known/jwks.json"
-            elif supabase_url:
-                jwks_url = f"{supabase_url.rstrip('/')}/auth/v1/.well-known/jwks.json"
-
-            if jwks_url:
-                client = _get_jwks_client(jwks_url)
-                signing_key = client.get_signing_key_from_jwt(token)
-                return pyjwt.decode(
-                    token,
-                    signing_key.key,
-                    algorithms=[alg],
-                    options={"verify_exp": True, "verify_signature": True, "verify_aud": False},
-                )
-        except pyjwt.ExpiredSignatureError:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Oturum süresi doldu (Session expired)",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-        except pyjwt.InvalidSignatureError as e:
-            logger.warning(f"JWKS geçersiz token imzası: {e}")
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=f"Geçersiz token imzası: {str(e)}",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-        except pyjwt.PyJWTError as e:
-            logger.warning(f"JWKS imza doğrulaması başarısız: {e}")
-        except Exception as e:
-            logger.warning(f"JWKS anahtar getirme/doğrulama hatası: {e}")
-
-    # 2. Simetrik algoritma (HS256): SUPABASE_JWT_SECRET ile doğrula
-    jwt_secret = getattr(settings, "SUPABASE_JWT_SECRET", None) or os.getenv("SUPABASE_JWT_SECRET")
-    if jwt_secret:
-        try:
-            return pyjwt.decode(
-                token,
-                jwt_secret,
-                algorithms=["HS256"],
-                options={"verify_exp": True, "verify_signature": True, "verify_aud": False},
-            )
-        except pyjwt.ExpiredSignatureError:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Oturum süresi doldu (Session expired)",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-        except pyjwt.PyJWTError as e:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=f"Geçersiz token imzası: {str(e)}",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-
-    # 3. Kriptografik doğrulama yapılamadı: üretimde KABUL EDİLMEZ (fail-closed).
-    allow_unverified = bool(getattr(settings, "ALLOW_UNVERIFIED_JWT", False))
-    if not allow_unverified and not _is_dev_or_test_context():
-        logger.error(
-            "JWT imzası doğrulanamadı ve istek REDDEDİLDİ. "
-            "Supabase JWKS URL'i veya SUPABASE_JWT_SECRET yapılandırılmış olmalıdır."
-        )
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Sunucu kimlik doğrulaması yapılandırılmamış (JWT imza anahtarı eksik).",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    global _unverified_jwt_warned
-    if not _unverified_jwt_warned:
-        _unverified_jwt_warned = True
-        logger.warning(
-            "JWT imzası DOĞRULANMIYOR (SUPABASE_JWT_SECRET yok). Yalnızca "
-            "geliştirme/test için güvenlidir; kullanıcı kimliği uydurulabilir."
-        )
-
-    # Standard decode with expiration validation
-    payload = decode_jwt_unverified(token)
-    exp = payload.get("exp")
-    if exp and isinstance(exp, (int, float)):
-        if time.time() > exp:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Oturum süresi doldu (Session expired)",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-    return payload
 
 
 async def get_current_user(
@@ -205,7 +72,7 @@ async def get_current_user(
     db: AsyncSession = Depends(get_db),
 ) -> AuthUser:
     """
-    FastAPI dependency resolving the current authenticated user from the Supabase JWT.
+    FastAPI dependency resolving the current authenticated user from the Oracle Native Session.
     Supports local testing/demo fallback when no token is present in development.
     """
     token = credentials.credentials if credentials else None
@@ -284,57 +151,36 @@ async def get_current_user(
     except HTTPException:
         raise
     except Exception as _native_err:
-        logger.debug(f"Native session resolution skipped in get_current_user: {_native_err}")
+        logger.debug(f"Native session resolution failed in get_current_user: {_native_err}")
 
-    # 2. Supabase JWT fallback: İMZA + SON KULLANMA doğrulamasıyla çöz.
-    payload = verify_and_decode_jwt(token)
-    user_id = payload.get("sub")
-    email = payload.get("email") or ""
-
-    if not user_id:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Geçersiz kullanıcı kimliği (Missing sub claim in token)",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    # Sync / Fetch user profile from database
-    stmt = select(Profile).where(Profile.id == user_id)
-    res = await db.execute(stmt)
-    profile = res.scalar_one_or_none()
-
-    if not profile:
-        # Create Starter Profile on first access
-        user_metadata = payload.get("user_metadata", {})
-        full_name = user_metadata.get("full_name") or user_metadata.get("name") or email.split("@")[0]
-        avatar_url = user_metadata.get("avatar_url") or user_metadata.get("picture") or ""
-        
-        profile = Profile(
-            id=user_id,
-            email=email,
-            full_name=full_name,
-            avatar_url=avatar_url,
-            plan_tier="DEVELOPER_PRO",
-            leads_monthly_limit=999999,
-            leads_used_this_month=0,
-            messages_daily_limit=999999,
-        )
-        db.add(profile)
+    # If in development or pytest test suite, allow mock JWTs for test fixtures
+    if _is_dev_or_test_context():
         try:
-            await db.commit()
-            await db.refresh(profile)
+            payload = decode_jwt_unverified(token)
+            user_id = payload.get("sub")
+            if user_id:
+                email = payload.get("email") or ""
+                user_metadata = payload.get("user_metadata", {})
+                full_name = user_metadata.get("full_name") or user_metadata.get("name") or email.split("@")[0]
+                avatar_url = user_metadata.get("avatar_url") or user_metadata.get("picture") or ""
+                return AuthUser(
+                    id=str(user_id),
+                    email=email,
+                    full_name=full_name,
+                    avatar_url=avatar_url,
+                    plan_tier="DEVELOPER_PRO",
+                    leads_monthly_limit=999999,
+                    leads_used_this_month=0,
+                    messages_daily_limit=999999,
+                )
         except Exception:
-            await db.rollback()
+            pass
 
-    return AuthUser(
-        id=profile.id if profile else user_id,
-        email=profile.email if profile else email,
-        full_name=profile.full_name if profile else "",
-        avatar_url=profile.avatar_url if profile else "",
-        plan_tier=profile.plan_tier if profile else "DEVELOPER_PRO",
-        leads_monthly_limit=profile.leads_monthly_limit if profile else 999999,
-        leads_used_this_month=profile.leads_used_this_month if profile else 0,
-        messages_daily_limit=profile.messages_daily_limit if profile else 999999,
+    # No valid native session found: fail-closed
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Geçersiz veya süresi dolmuş oturum (Invalid or expired session)",
+        headers={"WWW-Authenticate": "Bearer"},
     )
 
 

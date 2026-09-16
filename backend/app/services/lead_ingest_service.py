@@ -52,7 +52,7 @@ class LeadIngestService:
             (created_leads, total_new_count, total_updated_count)
 
         progress_callback (optional) receives (processed_count, total) roughly
-        every 10 leads so long Supabase round-trips never look like a hang.
+        every 10 leads so long database round-trips never look like a hang.
         """
         if not raw_leads:
             return [], 0, 0

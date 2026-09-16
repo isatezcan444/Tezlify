@@ -1,6 +1,6 @@
 #!/bin/sh
-# Supervise FastAPI + Baileys as one Render Free web service. A child failure
-# terminates the container so Render cannot route traffic to a half-dead app.
+# Supervise FastAPI + Baileys. A child failure
+# terminates the container so traffic is not routed to a half-dead app.
 set -eu
 
 BACKEND_PID=""

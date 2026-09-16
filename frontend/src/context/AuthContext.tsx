@@ -1,12 +1,25 @@
 import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
-import { User, Session } from '@supabase/supabase-js';
-import { supabase } from '../lib/supabase';
 import { UserProfile } from '../types';
-import { ApiClient, setTokenRefresher } from '../api/client';
+import { ApiClient } from '../api/client';
+
+export interface AuthUser {
+  id: string;
+  email: string;
+  user_metadata?: {
+    full_name?: string;
+    avatar_url?: string;
+    name?: string;
+    picture?: string;
+  };
+}
+
+export interface AuthSession {
+  token: string;
+}
 
 export interface AuthContextType {
-  user: User | any | null;
-  session: Session | any | null;
+  user: AuthUser | any | null;
+  session: AuthSession | any | null;
   profile: UserProfile | null;
   loading: boolean;
   isAuthenticated: boolean;
@@ -22,89 +35,39 @@ export interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [user, setUser] = useState<any | null>(null);
-  const [session, setSession] = useState<any | null>(null);
+  const [user, setUser] = useState<AuthUser | null>(null);
+  const [session, setSession] = useState<AuthSession | null>(null);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
 
-  const authProvider = import.meta.env.VITE_AUTH_PROVIDER || 'supabase';
-
-  // --- SUPABASE AUTH FLOW (Default / Rollback) ---
-  const fetchOrCreateProfileSupabase = useCallback(async (currentUser: User): Promise<UserProfile | null> => {
-    try {
-      const { data, error } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('id', currentUser.id)
-        .single();
-
-      if (data) {
-        return data as UserProfile;
-      }
-
-      if (error && error.code === 'PGRST116') {
-        const newProfile = {
-          id: currentUser.id,
-          email: currentUser.email || '',
-          full_name: currentUser.user_metadata?.full_name || currentUser.user_metadata?.name || '',
-          avatar_url: currentUser.user_metadata?.avatar_url || currentUser.user_metadata?.picture || '',
-          plan_tier: 'DEVELOPER_PRO',
-          leads_monthly_limit: 999999,
-          leads_used_this_month: 0,
-          messages_daily_limit: 999999,
-        };
-
-        const { data: inserted, error: insertError } = await supabase
-          .from('profiles')
-          .insert([newProfile])
-          .select()
-          .single();
-
-        if (!insertError && inserted) {
-          return inserted as UserProfile;
-        }
-      }
-
-      return {
-        id: currentUser.id,
-        email: currentUser.email || '',
-        full_name: currentUser.user_metadata?.full_name || currentUser.user_metadata?.name || '',
-        avatar_url: currentUser.user_metadata?.avatar_url || currentUser.user_metadata?.picture || '',
-        plan_tier: 'DEVELOPER_PRO',
-        leads_monthly_limit: 999999,
-        leads_used_this_month: 0,
-        messages_daily_limit: 999999,
-        created_at: new Date().toISOString(),
-      };
-    } catch (err) {
-      console.warn('Could not fetch/create profile, using fallback:', err);
-      return {
-        id: currentUser.id,
-        email: currentUser.email || '',
-        full_name: currentUser.user_metadata?.full_name || currentUser.user_metadata?.name || '',
-        avatar_url: currentUser.user_metadata?.avatar_url || currentUser.user_metadata?.picture || '',
-        plan_tier: 'DEVELOPER_PRO',
-        leads_monthly_limit: 999999,
-        leads_used_this_month: 0,
-        messages_daily_limit: 999999,
-        created_at: new Date().toISOString(),
-      };
-    }
-  }, []);
-
-  // --- ORACLE NATIVE AUTH FLOW (Staging / Cutover) ---
+  // Oracle Native Auth Profile Fetcher
   const fetchOracleProfile = useCallback(async (token?: string): Promise<UserProfile | null> => {
     try {
-      const activeToken = token || ApiClient.getAuthToken() || (typeof window !== 'undefined' ? localStorage.getItem('tezlify_session_token') : null);
+      const activeToken =
+        token ||
+        ApiClient.getAuthToken() ||
+        (typeof window !== 'undefined' ? localStorage.getItem('tezlify_session_token') : null);
+
       const headers: Record<string, string> = {};
       if (activeToken) {
         headers['Authorization'] = `Bearer ${activeToken}`;
         ApiClient.setAuthToken(activeToken);
+        setSession({ token: activeToken });
       }
+
       const res = await fetch('/api/v1/auth/me', { headers, credentials: 'include' });
       if (res.ok) {
         const u = await res.json();
-        setUser({ id: u.id, email: u.email, user_metadata: { full_name: u.full_name, avatar_url: u.avatar_url } });
+        const authUser: AuthUser = {
+          id: u.id,
+          email: u.email,
+          user_metadata: {
+            full_name: u.full_name,
+            avatar_url: u.avatar_url,
+          },
+        };
+        setUser(authUser);
+
         const p: UserProfile = {
           id: u.id,
           email: u.email,
@@ -118,6 +81,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         };
         setProfile(p);
         return p;
+      } else if (res.status === 401) {
+        // Session invalid or expired
+        if (typeof window !== 'undefined') {
+          localStorage.removeItem('tezlify_session_token');
+        }
+        ApiClient.setAuthToken(null);
+        setUser(null);
+        setSession(null);
+        setProfile(null);
       }
     } catch (e) {
       console.warn('[OracleAuth] /me fetch failed:', e);
@@ -126,89 +98,29 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   const refreshProfile = useCallback(async () => {
-    if (authProvider === 'oracle') {
-      await fetchOracleProfile();
-    } else {
-      if (!user) return;
-      const p = await fetchOrCreateProfileSupabase(user);
-      if (p) setProfile(p);
-    }
-  }, [user, authProvider, fetchOracleProfile, fetchOrCreateProfileSupabase]);
+    await fetchOracleProfile();
+  }, [fetchOracleProfile]);
 
   useEffect(() => {
-    if (authProvider === 'oracle') {
-      // Check query param for session_token callback
-      const params = new URLSearchParams(window.location.search);
-      const urlToken = params.get('session_token');
-      const storedToken = typeof window !== 'undefined' ? localStorage.getItem('tezlify_session_token') : null;
-      const effectiveToken = urlToken || storedToken || null;
+    // Check URL search parameters for session_token callback from Google OAuth redirect
+    const params = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
+    const urlToken = params?.get('session_token');
+    const storedToken = typeof window !== 'undefined' ? localStorage.getItem('tezlify_session_token') : null;
+    const effectiveToken = urlToken || storedToken || null;
 
-      if (urlToken) {
-        localStorage.setItem('tezlify_session_token', urlToken);
-        // Clean URL query param without reload
-        const newUrl = window.location.pathname;
-        window.history.replaceState({}, '', newUrl);
-      }
-
-      if (effectiveToken) {
-        ApiClient.setAuthToken(effectiveToken);
-        setSession({ token: effectiveToken });
-      }
-
-      fetchOracleProfile(effectiveToken || undefined).finally(() => {
-        setLoading(false);
-      });
-      return;
+    if (urlToken && typeof window !== 'undefined') {
+      localStorage.setItem('tezlify_session_token', urlToken);
+      // Clean query parameter from URL without page reload
+      const newUrl = window.location.pathname;
+      window.history.replaceState({}, '', newUrl);
     }
 
-    // Default Supabase Flow
-    setTokenRefresher(async () => {
-      try {
-        const { data, error } = await supabase.auth.refreshSession();
-        if (error || !data?.session?.access_token) return null;
-        ApiClient.setAuthToken(data.session.access_token);
-        return data.session.access_token;
-      } catch {
-        return null;
-      }
-    });
+    if (effectiveToken) {
+      ApiClient.setAuthToken(effectiveToken);
+      setSession({ token: effectiveToken });
+    }
 
-    supabase.auth.getSession().then(async ({ data: { session: initialSession } }) => {
-      setSession(initialSession);
-      const currentUser = initialSession?.user ?? null;
-      setUser(currentUser);
-      if (initialSession?.access_token) {
-        ApiClient.setAuthToken(initialSession.access_token);
-      } else {
-        ApiClient.setAuthToken(null);
-      }
-
-      if (currentUser) {
-        const p = await fetchOrCreateProfileSupabase(currentUser);
-        setProfile(p);
-      }
-      setLoading(false);
-    });
-
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange(async (_event, newSession) => {
-      setSession(newSession);
-      const currentUser = newSession?.user ?? null;
-      setUser(currentUser);
-
-      if (newSession?.access_token) {
-        ApiClient.setAuthToken(newSession.access_token);
-      } else {
-        ApiClient.setAuthToken(null);
-      }
-
-      if (currentUser) {
-        const p = await fetchOrCreateProfileSupabase(currentUser);
-        setProfile(p);
-      } else {
-        setProfile(null);
-      }
+    fetchOracleProfile(effectiveToken || undefined).finally(() => {
       setLoading(false);
     });
 
@@ -219,43 +131,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setUser(null);
       setProfile(null);
       if (typeof window !== 'undefined') {
+        localStorage.removeItem('tezlify_session_token');
         window.location.reload();
       }
     };
     window.addEventListener('tezlify:ws_auth_failed', onWsAuthFailed);
 
     return () => {
-      subscription.unsubscribe();
-      setTokenRefresher(null);
       window.removeEventListener('tezlify:ws_auth_failed', onWsAuthFailed);
     };
-  }, [authProvider, fetchOracleProfile, fetchOrCreateProfileSupabase]);
+  }, [fetchOracleProfile]);
 
   const signInWithGoogle = async () => {
     setLoading(true);
     try {
-      if (authProvider === 'oracle') {
-        // Redirect to Oracle backend Google OAuth endpoint
-        window.location.href = '/api/v1/auth/google?redirect=true';
-        return;
-      }
-
-      const redirectUrl =
-        typeof window !== 'undefined' && window.location.hostname.includes('vercel.app')
-          ? window.location.origin
-          : 'https://tezlify-woad.vercel.app';
-
-      const { error } = await supabase.auth.signInWithOAuth({
-        provider: 'google',
-        options: {
-          redirectTo: redirectUrl,
-          queryParams: {
-            access_type: 'offline',
-            prompt: 'consent',
-          },
-        },
-      });
-      if (error) throw error;
+      // Redirect to Oracle backend Google OAuth initiation endpoint
+      window.location.href = '/api/v1/auth/google?redirect=true';
     } catch (err) {
       console.error('Google sign in error:', err);
       setLoading(false);
@@ -266,16 +157,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const signOut = async () => {
     setLoading(true);
     try {
-      if (authProvider === 'oracle') {
-        const activeToken = ApiClient.getAuthToken() || (typeof window !== 'undefined' ? localStorage.getItem('tezlify_session_token') : null);
-        const headers: Record<string, string> = {};
-        if (activeToken) headers['Authorization'] = `Bearer ${activeToken}`;
-        await fetch('/api/v1/auth/logout', { method: 'POST', headers, credentials: 'include' });
-        if (typeof window !== 'undefined') {
-          localStorage.removeItem('tezlify_session_token');
-        }
-      } else {
-        await supabase.auth.signOut();
+      const activeToken =
+        ApiClient.getAuthToken() ||
+        (typeof window !== 'undefined' ? localStorage.getItem('tezlify_session_token') : null);
+      const headers: Record<string, string> = {};
+      if (activeToken) {
+        headers['Authorization'] = `Bearer ${activeToken}`;
+      }
+
+      await fetch('/api/v1/auth/logout', { method: 'POST', headers, credentials: 'include' });
+
+      if (typeof window !== 'undefined') {
+        localStorage.removeItem('tezlify_session_token');
       }
       setUser(null);
       setSession(null);
