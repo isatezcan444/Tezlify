@@ -44,3 +44,7 @@ playwright-report/
 whatsapp-gateway/sessions/
 whatsapp-gateway/media/
 whatsapp-gateway/.env
+
+# Monitoring runtime state & logs
+monitoring/*.json
+logs/
