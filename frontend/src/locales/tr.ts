@@ -1222,6 +1222,12 @@ export const tr = {
       emptyTitle: 'Yedek Bulunamadı',
       emptyDesc: 'Üretim sunucusunda yedek dosyası bulunamadı. Bu, yeni bir dağıtımda beklenen bir durum olabilir.',
       noHistoryAvailable: 'Yedekleme geçmişi mevcut değil. API yalnızca kategori başına en son anlık görüntüyü döndürür.',
+      configured: 'Yapılandırıldı',
+      notConfigured: 'Yapılandırılmadı',
+      certified: 'Onaylı',
+      uncertified: 'Onaysız',
+      historyTitle: 'Yedekleme Geçmişi',
+      historySubtitle: 'Geçmiş yedekleme kayıtları',
     }
   }
 };

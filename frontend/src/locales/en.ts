@@ -1222,6 +1222,12 @@ export const en = {
       emptyTitle: 'No Backups Available',
       emptyDesc: 'No backup files were found on the production host. This may be expected on a fresh deployment.',
       noHistoryAvailable: 'Backup history is not available. API returns only the latest snapshot per category.',
+      configured: 'Configured',
+      notConfigured: 'Not Configured',
+      certified: 'Certified',
+      uncertified: 'Uncertified',
+      historyTitle: 'Backup History',
+      historySubtitle: 'Historical backup snapshots',
     }
   }
 };

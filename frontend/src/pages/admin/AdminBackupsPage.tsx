@@ -418,7 +418,11 @@ export const AdminBackupsPage: React.FC<AdminBackupsPageProps> = ({ onNavigate }
           <StatsCard
             title={t('admin.backups.offHostStatus')}
             value={isOffHostConfigured ? '✓' : '!'}
-            subText={isOffHostConfigured ? 'Configured' : 'Not Configured'}
+            subText={
+              isOffHostConfigured
+                ? t('admin.backups.configured')
+                : t('admin.backups.notConfigured')
+            }
             icon={isOffHostConfigured ? ShieldCheck : CloudOff}
             iconVariant={isOffHostConfigured ? 'success' : 'warning'}
           />
@@ -432,7 +436,11 @@ export const AdminBackupsPage: React.FC<AdminBackupsPageProps> = ({ onNavigate }
           <StatsCard
             title={t('admin.backups.overallStatus')}
             value={isVerified ? 'OK' : 'WARN'}
-            subText={isVerified ? 'Certified' : 'Uncertified'}
+            subText={
+              isVerified
+                ? t('admin.backups.certified')
+                : t('admin.backups.uncertified')
+            }
             icon={isVerified ? ShieldCheck : ShieldAlert}
             iconVariant={isVerified ? 'success' : 'warning'}
           />
@@ -530,9 +538,14 @@ export const AdminBackupsPage: React.FC<AdminBackupsPageProps> = ({ onNavigate }
           <CardHeader className="pb-3 border-b border-slate-100 dark:border-white/[0.06]">
             <div className="flex items-center gap-2">
               <Database className="w-5 h-5 text-[#7367F0]" />
-              <CardTitle className="text-base text-slate-800 dark:text-white">
-                {t('admin.backups.drStatus')} — History
-              </CardTitle>
+              <div>
+                <CardTitle className="text-base text-slate-800 dark:text-white">
+                  {t('admin.backups.historyTitle')}
+                </CardTitle>
+                <p className="text-xs text-slate-400 dark:text-[#7E7F96]">
+                  {t('admin.backups.historySubtitle')}
+                </p>
+              </div>
             </div>
           </CardHeader>
           <CardContent className="pt-6 pb-8 flex flex-col items-center justify-center text-center gap-2">
