@@ -17,6 +17,7 @@ services:
       - "443:443"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - /opt/tezlify/frontend_candidate:/srv/frontend:ro
       - caddy_data:/data
       - caddy_config:/config
     depends_on:
