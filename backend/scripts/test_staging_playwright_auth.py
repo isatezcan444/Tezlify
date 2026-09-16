@@ -75,7 +75,7 @@ async def test_playwright_staging_flow():
             context = await browser.new_context(viewport={"width": 1280, "height": 800})
             page = await context.new_page()
 
-            login_url = "https://tezlify-woad.vercel.app/login"
+            login_url = "https://api.130.162.247.20.sslip.io/login"
             print(f"  Navigating to frontend login: {login_url}")
             await page.goto(login_url, wait_until="networkidle")
             screenshot_path = os.path.join(ARTIFACT_DIR, "staging_playwright_login_page.png")

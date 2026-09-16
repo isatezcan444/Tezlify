@@ -8,8 +8,8 @@ async def main():
         context = await browser.new_context(viewport={"width": 1280, "height": 800})
         page = await context.new_page()
 
-        print("[TEST] Navigating to https://tezlify-woad.vercel.app ...")
-        await page.goto("https://tezlify-woad.vercel.app", wait_until="networkidle")
+        print("[TEST] Navigating to https://api.130.162.247.20.sslip.io ...")
+        await page.goto("https://api.130.162.247.20.sslip.io", wait_until="networkidle")
         
         # Take initial screenshot
         await page.screenshot(path="/Users/isatezcan/.gemini/antigravity-ide/brain/68bc2c3a-6fe0-4a70-a55c-a06af81221f7/phase_8_2_production_login_page.png")

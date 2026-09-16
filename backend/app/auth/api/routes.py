@@ -22,7 +22,7 @@ OAUTH_REDIRECT_URI = os.getenv(
     "GOOGLE_REDIRECT_URI",
     "https://api.130.162.247.20.sslip.io/api/v1/auth/google/callback",
 )
-FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "https://tezlify-woad.vercel.app")
+FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "https://api.130.162.247.20.sslip.io")
 
 google_provider = GoogleOAuthProvider(
     client_id=GOOGLE_CLIENT_ID,

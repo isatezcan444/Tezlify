@@ -18,7 +18,6 @@ import {
 const isHttps = typeof window !== 'undefined' && window.location.protocol === 'https:';
 const host = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
 const isRemoteHost = typeof window !== 'undefined' && host !== 'localhost' && host !== '127.0.0.1';
-const isVercel = typeof window !== 'undefined' && (host.endsWith('.vercel.app') || host.includes('vercel.app'));
 
 function sanitizeBackendUrl(rawUrl: string | undefined): string | undefined {
   if (!rawUrl) return undefined;
@@ -32,7 +31,7 @@ function sanitizeBackendUrl(rawUrl: string | undefined): string | undefined {
 }
 
 function resolveApiBase(): string {
-  // When running on any remote host (Vercel rewrite proxy or Oracle Caddy), use same-origin `/api/v1`
+  // When running on remote host (Oracle Caddy), use same-origin `/api/v1`
   if (isRemoteHost) {
     return '/api/v1';
   }
@@ -53,12 +52,7 @@ function resolveWsUrl(): string {
     return envWs;
   }
 
-  // 2. When hosted on Vercel, Vercel Edge cannot proxy WebSockets, so fallback to Oracle backend WSS
-  if (isVercel) {
-    return 'wss://api.130.162.247.20.sslip.io/ws';
-  }
-
-  // 3. When hosted on Oracle Caddy (or any same-origin server), connect directly to same-origin /ws
+  // 2. When hosted on Oracle Caddy (or any same-origin server), connect directly to same-origin /ws
   if (typeof window !== 'undefined' && window.location.host) {
     const wsProto = isHttps ? 'wss:' : 'ws:';
     return `${wsProto}//${window.location.host}/ws`;

@@ -139,12 +139,10 @@ app = FastAPI(
 )
 
 # CORS: strict allowlist from settings (AGENTS.md single source of truth).
-# Vercel preview deployments (*.vercel.app) are matched by regex so feature
-# branches keep working without reopening to "*". Credentials stay disabled.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.BACKEND_CORS_ORIGINS,
-    allow_origin_regex=r"https://.*(\.vercel\.app|\.sslip\.io|tezlify\.com)",
+    allow_origin_regex=r"https://.*(\.sslip\.io|tezlify\.com)",
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
