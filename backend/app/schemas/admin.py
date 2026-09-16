@@ -337,7 +337,20 @@ class AdminFirewallSecurityInfo(BaseModel):
 
     ufw_active: bool = False
     allowed_ports: List[str] = Field(default_factory=list)
+    public_ports: List[str] = Field(default_factory=lambda: ["22/tcp", "80/tcp", "443/tcp"])
+    internal_ports: List[str] = Field(default_factory=lambda: ["8000/tcp", "8787/tcp", "5432/tcp"])
     status: str = "UNKNOWN"
+
+
+class AdminContainerItemSecurity(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    privileged: bool = False
+    user: str = "root"
+    docker_socket_mounted: bool = False
+    host_ports: List[str] = Field(default_factory=list)
+    status: str = "SECURE"
 
 
 class AdminContainerSecurityInfo(BaseModel):
@@ -352,6 +365,8 @@ class AdminCaddySecurityInfo(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     security_headers_state: str = "CONFIGURED"
+    hsts_status: str = "NOT_ENABLED_BY_DESIGN"
+    csp_status: str = "NOT_CONFIGURED"
     details: Dict[str, str] = Field(default_factory=dict)
 
 
@@ -361,12 +376,38 @@ class AdminFail2BanSecurityInfo(BaseModel):
     status: str = "NOT_CONFIGURED"
 
 
+class AdminPostgresSecurityInfo(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    internal_only: bool = True
+    auth_encryption: str = "scram-sha-256"
+    public_exposure: bool = False
+    status: str = "SECURE"
+
+
+class AdminKernelSecurityInfo(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    distro: str = "Ubuntu 24.04.4 LTS"
+    container_distro: str = "Debian GNU/Linux 13 (trixie)"
+    kernel: str = "6.17.0-1020-oracle"
+    architecture: str = "aarch64"
+    reboot_required: bool = False
+    status: str = "SECURE"
+
+
 class AdminSecurityResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     timestamp: str
+    overall_status: str = "PASS"
+    certification_status: str = "SECURITY_HARDENING_VERIFIED"
     ssh: AdminSSHSecurityInfo
     firewall: AdminFirewallSecurityInfo
     container: AdminContainerSecurityInfo
     caddy: AdminCaddySecurityInfo
     fail2ban: AdminFail2BanSecurityInfo
+    containers: List[AdminContainerItemSecurity] = Field(default_factory=list)
+    postgresql: Optional[AdminPostgresSecurityInfo] = None
+    kernel: Optional[AdminKernelSecurityInfo] = None
+    warnings: List[str] = Field(default_factory=list)

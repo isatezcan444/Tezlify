@@ -5,6 +5,7 @@ import {
   AdminWhatsAppResponse,
   AdminBackupsResponse,
   AdminDeploymentResponse,
+  AdminSecurityResponse,
 } from '../types/admin';
 
 export class AdminApi {
@@ -70,6 +71,20 @@ export class AdminApi {
     if (!res.ok) {
       if (res.status === 403) throw new Error('ACCESS_DENIED');
       const errMsg = await parseError(res, 'Dağıtım verileri şu anda alınamadı');
+      throw new Error(errMsg);
+    }
+    return res.json();
+  }
+
+  /**
+   * Fetches read-only security hardening posture and audit telemetry.
+   * Zero secrets, zero credential leakage, zero mutation operations.
+   */
+  static async getSecurity(): Promise<AdminSecurityResponse> {
+    const res = await authFetch(`${API_BASE}/admin/security`);
+    if (!res.ok) {
+      if (res.status === 403) throw new Error('ACCESS_DENIED');
+      const errMsg = await parseError(res, 'Güvenlik verileri şu anda alınamadı');
       throw new Error(errMsg);
     }
     return res.json();

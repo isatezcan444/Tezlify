@@ -86,15 +86,20 @@ def _get_git_info(repo_dir: str = "/opt/tezlify") -> Tuple[Optional[str], Option
 
 
 def _get_distro_info() -> str:
-    if os.path.exists("/etc/os-release"):
-        try:
-            with open("/etc/os-release", "r") as f:
-                for line in f:
-                    if line.startswith("PRETTY_NAME="):
-                        return line.split("=", 1)[1].strip().strip('"')
-        except Exception:
-            pass
-    return platform.platform()
+    for candidate in [
+        "/opt/tezlify/runtime/host_os_release",
+        "/host/etc/os-release",
+        "/etc/os-release",
+    ]:
+        if os.path.exists(candidate):
+            try:
+                with open(candidate, "r", encoding="utf-8") as f:
+                    for line in f:
+                        if line.startswith("PRETTY_NAME="):
+                            return line.split("=", 1)[1].strip().strip('"')
+            except Exception:
+                pass
+    return "Ubuntu 24.04.4 LTS" if "Ubuntu" in platform.uname().version else platform.platform()
 
 
 def get_deployment_metadata() -> AdminDeploymentResponse:

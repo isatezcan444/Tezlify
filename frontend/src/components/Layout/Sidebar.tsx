@@ -16,6 +16,7 @@ import {
   MessageSquare,
   Database,
   Server,
+  Lock,
   X
 } from 'lucide-react';
 import { Badge } from '../ui/badge';
@@ -81,6 +82,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         { id: 'admin-monitoring', label: t('nav.adminMonitoring'), icon: ShieldCheck, badge: null },
         { id: 'admin-backups', label: t('nav.adminBackups'), icon: Database, badge: null },
         { id: 'admin-deployment', label: t('nav.adminDeployment'), icon: Server, badge: null },
+        { id: 'admin-security', label: t('nav.adminSecurity'), icon: Lock, badge: null },
       ]
     });
   }

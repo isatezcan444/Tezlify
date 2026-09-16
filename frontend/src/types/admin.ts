@@ -255,3 +255,80 @@ export interface AdminDeploymentResponse {
   containers?: AdminContainerDeploymentState[] | null;
   host?: AdminHostState | null;
 }
+
+// ---------------------------------------------------------------------------
+// Security & Hardening Definitions
+// ---------------------------------------------------------------------------
+
+export interface AdminSSHSecurity {
+  permit_root_login: string;
+  password_authentication: string;
+  pubkey_authentication: string;
+  max_auth_tries?: number | null;
+  status: string;
+}
+
+export interface AdminFirewallSecurity {
+  ufw_active: boolean;
+  allowed_ports: string[];
+  public_ports?: string[];
+  internal_ports?: string[];
+  status: string;
+}
+
+export interface AdminContainerItemSecurity {
+  name: string;
+  privileged: boolean;
+  user: string;
+  docker_socket_mounted: boolean;
+  host_ports: string[];
+  status: string;
+}
+
+export interface AdminContainerSecurity {
+  privileged: boolean;
+  docker_socket_mounted: boolean;
+  status: string;
+}
+
+export interface AdminCaddySecurity {
+  security_headers_state: string;
+  hsts_status?: string;
+  csp_status?: string;
+  details: Record<string, string>;
+}
+
+export interface AdminFail2BanSecurity {
+  status: string;
+}
+
+export interface AdminPostgresSecurity {
+  internal_only: boolean;
+  auth_encryption: string;
+  public_exposure: boolean;
+  status: string;
+}
+
+export interface AdminKernelSecurity {
+  distro: string;
+  container_distro?: string;
+  kernel: string;
+  architecture?: string;
+  reboot_required: boolean;
+  status: string;
+}
+
+export interface AdminSecurityResponse {
+  timestamp: string;
+  overall_status: string;
+  certification_status: string;
+  ssh: AdminSSHSecurity;
+  firewall: AdminFirewallSecurity;
+  container: AdminContainerSecurity;
+  caddy: AdminCaddySecurity;
+  fail2ban: AdminFail2BanSecurity;
+  containers?: AdminContainerItemSecurity[];
+  postgresql?: AdminPostgresSecurity | null;
+  kernel?: AdminKernelSecurity | null;
+  warnings?: string[];
+}

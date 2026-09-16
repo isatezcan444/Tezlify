@@ -17,6 +17,7 @@ import { AdminWhatsAppPage } from './pages/admin/AdminWhatsAppPage';
 import { AdminMonitoringPage } from './pages/admin/AdminMonitoringPage';
 import { AdminBackupsPage } from './pages/admin/AdminBackupsPage';
 import { AdminDeploymentPage } from './pages/admin/AdminDeploymentPage';
+import { AdminSecurityPage } from './pages/admin/AdminSecurityPage';
 import { ApiClient, createWebSocket } from './api/client';
 import { DashboardStats } from './types';
 import { AuthProvider, useAuth } from './context/AuthContext';
@@ -208,6 +209,8 @@ const AppContent: React.FC = () => {
         return t('titles.adminBackups');
       case 'admin-deployment':
         return t('titles.adminDeployment');
+      case 'admin-security':
+        return t('titles.adminSecurity');
       default:
         return 'Tezlify';
     }
@@ -241,6 +244,8 @@ const AppContent: React.FC = () => {
         return t('titles.adminBackupsSub');
       case 'admin-deployment':
         return t('titles.adminDeploymentSub');
+      case 'admin-security':
+        return t('titles.adminSecuritySub');
       default:
         return undefined;
     }
@@ -316,6 +321,9 @@ const AppContent: React.FC = () => {
           )}
           {activeTab === 'admin-deployment' && (
             <AdminDeploymentPage onNavigate={handleNavigate} />
+          )}
+          {activeTab === 'admin-security' && (
+            <AdminSecurityPage onNavigate={handleNavigate} />
           )}
         </main>
 
