@@ -346,6 +346,7 @@ class AdminContainerItemSecurity(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str
+    base_os: str = "Linux"
     privileged: bool = False
     user: str = "root"
     docker_socket_mounted: bool = False
@@ -389,7 +390,7 @@ class AdminKernelSecurityInfo(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     distro: str = "Ubuntu 24.04.4 LTS"
-    container_distro: str = "Debian GNU/Linux 13 (trixie)"
+    container_distro: Optional[str] = None
     kernel: str = "6.17.0-1020-oracle"
     architecture: str = "aarch64"
     reboot_required: bool = False

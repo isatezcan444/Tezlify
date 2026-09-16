@@ -278,6 +278,7 @@ export interface AdminFirewallSecurity {
 
 export interface AdminContainerItemSecurity {
   name: string;
+  base_os?: string;
   privileged: boolean;
   user: string;
   docker_socket_mounted: boolean;

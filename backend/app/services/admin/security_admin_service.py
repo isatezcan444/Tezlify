@@ -133,6 +133,7 @@ def _inspect_containers_detailed() -> List[AdminContainerItemSecurity]:
     return [
         AdminContainerItemSecurity(
             name="tezlify-backend",
+            base_os="Debian GNU/Linux 13 (trixie)",
             privileged=False,
             user="root",
             docker_socket_mounted=False,
@@ -141,6 +142,7 @@ def _inspect_containers_detailed() -> List[AdminContainerItemSecurity]:
         ),
         AdminContainerItemSecurity(
             name="tezlify-gateway",
+            base_os="Alpine Linux v3.23",
             privileged=False,
             user="gateway",
             docker_socket_mounted=False,
@@ -149,6 +151,7 @@ def _inspect_containers_detailed() -> List[AdminContainerItemSecurity]:
         ),
         AdminContainerItemSecurity(
             name="tezlify-caddy",
+            base_os="Alpine Linux v3.23",
             privileged=False,
             user="root",
             docker_socket_mounted=False,
@@ -157,6 +160,7 @@ def _inspect_containers_detailed() -> List[AdminContainerItemSecurity]:
         ),
         AdminContainerItemSecurity(
             name="tezlify-db",
+            base_os="Alpine Linux v3.24",
             privileged=False,
             user="root",
             docker_socket_mounted=False,
@@ -243,7 +247,7 @@ def _inspect_host_kernel() -> AdminKernelSecurityInfo:
 
     return AdminKernelSecurityInfo(
         distro=host_distro,
-        container_distro=container_distro,
+        container_distro=None,
         kernel=kernel_version,
         architecture=architecture,
         reboot_required=reboot_required,

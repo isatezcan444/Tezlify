@@ -228,6 +228,7 @@ export const AdminSecurityPage: React.FC<AdminSecurityPageProps> = ({ onNavigate
       : [
           {
             name: 'tezlify-backend',
+            base_os: 'Debian GNU/Linux 13 (trixie)',
             privileged: false,
             user: 'root',
             docker_socket_mounted: false,
@@ -236,6 +237,7 @@ export const AdminSecurityPage: React.FC<AdminSecurityPageProps> = ({ onNavigate
           },
           {
             name: 'tezlify-gateway',
+            base_os: 'Alpine Linux v3.23',
             privileged: false,
             user: 'gateway',
             docker_socket_mounted: false,
@@ -244,6 +246,7 @@ export const AdminSecurityPage: React.FC<AdminSecurityPageProps> = ({ onNavigate
           },
           {
             name: 'tezlify-caddy',
+            base_os: 'Alpine Linux v3.23',
             privileged: false,
             user: 'root',
             docker_socket_mounted: false,
@@ -252,6 +255,7 @@ export const AdminSecurityPage: React.FC<AdminSecurityPageProps> = ({ onNavigate
           },
           {
             name: 'tezlify-db',
+            base_os: 'Alpine Linux v3.24',
             privileged: false,
             user: 'root',
             docker_socket_mounted: false,
@@ -537,6 +541,7 @@ export const AdminSecurityPage: React.FC<AdminSecurityPageProps> = ({ onNavigate
                 <thead>
                   <tr className="border-b border-slate-200 dark:border-white/[0.06] text-[10px] uppercase font-bold text-slate-400 tracking-wider">
                     <th className="pb-2.5">{t('admin.security.colContainer')}</th>
+                    <th className="pb-2.5">{t('admin.security.colBaseOs')}</th>
                     <th className="pb-2.5">{t('admin.security.colPrivileged')}</th>
                     <th className="pb-2.5">{t('admin.security.colUser')}</th>
                     <th className="pb-2.5">{t('admin.security.colDockerSocket')}</th>
@@ -549,6 +554,9 @@ export const AdminSecurityPage: React.FC<AdminSecurityPageProps> = ({ onNavigate
                     <tr key={c.name} className="hover:bg-slate-50/50 dark:hover:bg-white/[0.01]">
                       <td className="py-3 font-mono font-bold text-slate-800 dark:text-white">
                         {c.name}
+                      </td>
+                      <td className="py-3 font-mono text-slate-600 dark:text-slate-300 text-[11px]">
+                        {c.base_os || 'Linux'}
                       </td>
                       <td className="py-3">
                         <span
@@ -701,7 +709,7 @@ export const AdminSecurityPage: React.FC<AdminSecurityPageProps> = ({ onNavigate
               </div>
               <StatusBadge
                 status={isRebootRequired ? 'warning' : 'online'}
-                label={isRebootRequired ? t('admin.security.rebootRequired') : 'UP TO DATE'}
+                label={isRebootRequired ? t('admin.security.rebootRequired') : t('admin.security.statusPass')}
                 size="sm"
               />
             </div>
@@ -714,15 +722,6 @@ export const AdminSecurityPage: React.FC<AdminSecurityPageProps> = ({ onNavigate
                 </span>
                 <span className="font-mono text-xs font-bold text-slate-800 dark:text-white mt-1 block">
                   {kernel?.distro || 'Ubuntu 24.04.4 LTS'}
-                </span>
-              </div>
-
-              <div className="p-3 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-200/40 dark:border-white/[0.03]">
-                <span className="text-[10px] uppercase font-semibold text-slate-400 block tracking-wider">
-                  {t('admin.security.containerDistro')}
-                </span>
-                <span className="font-mono text-xs font-bold text-slate-800 dark:text-white mt-1 block">
-                  {kernel?.container_distro || 'Debian GNU/Linux 13 (trixie)'}
                 </span>
               </div>
 
@@ -742,6 +741,19 @@ export const AdminSecurityPage: React.FC<AdminSecurityPageProps> = ({ onNavigate
                 <span className="font-mono text-xs font-bold text-slate-800 dark:text-white mt-1 block">
                   {kernel?.architecture || 'aarch64'}
                 </span>
+              </div>
+
+              <div className="p-3 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-200/40 dark:border-white/[0.03]">
+                <span className="text-[10px] uppercase font-semibold text-slate-400 block tracking-wider">
+                  {t('admin.security.maintenanceStatus')}
+                </span>
+                <div className="mt-1">
+                  <StatusBadge
+                    status={isRebootRequired ? 'warning' : 'online'}
+                    label={isRebootRequired ? t('admin.security.rebootRequired') : t('admin.security.statusPass')}
+                    size="sm"
+                  />
+                </div>
               </div>
             </div>
           </CardContent>
