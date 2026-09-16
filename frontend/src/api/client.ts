@@ -32,31 +32,38 @@ function sanitizeBackendUrl(rawUrl: string | undefined): string | undefined {
 }
 
 function resolveApiBase(): string {
-  // If hosted on Vercel, use same-origin proxy rewrite `/api/v1` for optimal reliability and no CORS overhead
-  if (isVercel) {
+  // When running on any remote host (Vercel rewrite proxy or Oracle Caddy), use same-origin `/api/v1`
+  if (isRemoteHost) {
     return '/api/v1';
   }
   const envApi = sanitizeBackendUrl(import.meta.env?.VITE_API_URL as string | undefined);
-  if (envApi) {
+  if (envApi && envApi !== '') {
     return envApi.endsWith('/api/v1') ? envApi : `${envApi.replace(/\/$/, '')}/api/v1`;
   }
-  return 'https://api.130.162.247.20.sslip.io/api/v1';
+  return '/api/v1';
 }
 
 function resolveWsUrl(): string {
+  // 1. Explicitly configured WS URL takes precedence
   const envWs = sanitizeBackendUrl(import.meta.env?.VITE_WS_URL as string | undefined);
-  if (envWs) {
+  if (envWs && envWs !== '') {
     if (isHttps && envWs.startsWith('ws://')) {
       return envWs.replace(/^ws:\/\//i, 'wss://');
     }
     return envWs;
   }
-  const envApi = sanitizeBackendUrl(import.meta.env?.VITE_API_URL as string | undefined);
-  if (envApi) {
-    const wsProto = envApi.startsWith('https://') || isHttps ? 'wss://' : 'ws://';
-    const cleanHost = envApi.replace(/^https?:\/\//i, '').replace(/\/api\/v1\/?$/i, '').replace(/\/$/, '');
-    return `${wsProto}${cleanHost}/ws`;
+
+  // 2. When hosted on Vercel, Vercel Edge cannot proxy WebSockets, so fallback to Oracle backend WSS
+  if (isVercel) {
+    return 'wss://api.130.162.247.20.sslip.io/ws';
   }
+
+  // 3. When hosted on Oracle Caddy (or any same-origin server), connect directly to same-origin /ws
+  if (typeof window !== 'undefined' && window.location.host) {
+    const wsProto = isHttps ? 'wss:' : 'ws:';
+    return `${wsProto}//${window.location.host}/ws`;
+  }
+
   return 'wss://api.130.162.247.20.sslip.io/ws';
 }
 
