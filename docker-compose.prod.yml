@@ -46,6 +46,11 @@ services:
       FRONTEND_ORIGIN: "https://api.130.162.247.20.sslip.io"
       WHATSAPP_GATEWAY_URL: http://gateway:8787
       SKIP_JOB_RECOVERY: "true"
+    volumes:
+      - /opt/tezlify/runtime:/opt/tezlify/runtime:ro
+      - /opt/tezlify/backups:/opt/tezlify/backups:ro
+      - /opt/tezlify/monitoring:/opt/tezlify/monitoring:ro
+      - /run:/host/run:ro
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; res = urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5); exit(0 if res.status == 200 else 1)"]
       interval: 15s

@@ -86,6 +86,40 @@ class Settings(BaseSettings):
             "http://127.0.0.1:8000",
         ]
 
+    # Admin / Operations Center
+    ADMIN_EMAILS: List[str] = Field(
+        default_factory=list,
+        description="Yönetici (admin) e-posta adresleri. Virgülle ayrılmış dize veya liste.",
+    )
+
+    @field_validator("ADMIN_EMAILS", mode="before")
+    @classmethod
+    def assemble_admin_emails(cls, v: object) -> List[str]:
+        if not v:
+            return []
+        if isinstance(v, str):
+            v_str = v.strip()
+            if not v_str:
+                return []
+            if v_str.startswith("["):
+                import json
+                try:
+                    parsed = json.loads(v_str)
+                    if isinstance(parsed, list):
+                        return [str(e).strip().lower() for e in parsed if str(e).strip()]
+                except Exception:
+                    pass
+            return [e.strip().lower() for e in v_str.split(",") if e.strip()]
+        if isinstance(v, (list, set, tuple)):
+            return [str(e).strip().lower() for e in v if str(e).strip()]
+        return []
+
+    # Operations & Monitoring paths
+    TEZLIFY_RUNTIME_DIR: str = "/opt/tezlify/runtime/whatsapp-reliability"
+    TEZLIFY_MONITORING_DIR: str = "/opt/tezlify/monitoring"
+    TEZLIFY_BACKUPS_DIR: str = "/opt/tezlify/backups"
+    HOST_RUN_DIR: str = "/var/run"
+
     # Default Outreach Anti-Ban Thresholds
     # Tek doğruluk kaynağı burasıdır; Campaign model varsayılanları ve
     # AntibanPolicy bu değerlerden beslenir.

@@ -10,6 +10,7 @@ from backend.app.api.v1.endpoints import (
     campaign_groups,
     auth,
     whatsapp,
+    admin,
 )
 
 api_router = APIRouter()
@@ -24,4 +25,5 @@ api_router.include_router(analytics.router, prefix="/analytics", tags=["Analytic
 api_router.include_router(settings.router, prefix="/settings", tags=["Settings"])
 api_router.include_router(smart_outreach.router, prefix="/smart-outreach", tags=["Smart Outreach"])
 api_router.include_router(whatsapp.router, prefix="/whatsapp", tags=["WhatsApp"])
+api_router.include_router(admin.router, prefix="/admin", tags=["Admin"])
 

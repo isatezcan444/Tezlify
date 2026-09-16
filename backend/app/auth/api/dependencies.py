@@ -108,3 +108,27 @@ async def get_current_user_unified(
         detail="Geçersiz veya süresi dolmuş oturum (Invalid or expired session)",
         headers={"WWW-Authenticate": "Bearer"},
     )
+
+
+async def require_admin(
+    current_user: AuthUser = Depends(get_current_user_unified),
+) -> AuthUser:
+    """FastAPI dependency enforcing that the authenticated user is a configured administrator.
+
+    Fail-closed behavior:
+    - Anonymous (no token or invalid session) -> 401 Unauthorized (via get_current_user_unified)
+    - Authenticated non-admin -> 403 Forbidden
+    - Empty or missing ADMIN_EMAILS configuration -> 403 Forbidden for all users
+    - Configured admin -> request proceeds with current_user
+    """
+    from backend.app.core.config import settings
+
+    admin_emails = {e.strip().lower() for e in settings.ADMIN_EMAILS if e and e.strip()}
+    user_email = (current_user.email or "").strip().lower()
+
+    if not admin_emails or not user_email or user_email not in admin_emails:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Bu işlem için yönetici yetkisi gerekiyor (Admin authorization required)",
+        )
+    return current_user

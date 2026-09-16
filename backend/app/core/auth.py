@@ -3,7 +3,7 @@ import base64
 import json
 import logging
 from typing import Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 from fastapi import Request, HTTPException, Depends, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,6 +27,18 @@ class AuthUser(BaseModel):
     leads_monthly_limit: int = 999999
     leads_used_this_month: int = 0
     messages_daily_limit: int = 999999
+    is_admin: bool = False
+
+    @model_validator(mode="after")
+    def compute_is_admin(self) -> "AuthUser":
+        try:
+            from backend.app.core.config import settings
+            admin_emails = {e.strip().lower() for e in settings.ADMIN_EMAILS if e and e.strip()}
+            if self.email and self.email.strip().lower() in admin_emails:
+                self.is_admin = True
+        except Exception:
+            pass
+        return self
 
 
 def decode_jwt_unverified(token: str) -> dict:
