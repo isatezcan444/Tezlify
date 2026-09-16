@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import List, Optional, Union
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -87,7 +87,7 @@ class Settings(BaseSettings):
         ]
 
     # Admin / Operations Center
-    ADMIN_EMAILS: List[str] = Field(
+    ADMIN_EMAILS: Union[List[str], str] = Field(
         default_factory=list,
         description="Yönetici (admin) e-posta adresleri. Virgülle ayrılmış dize veya liste.",
     )
