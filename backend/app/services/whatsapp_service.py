@@ -14,10 +14,10 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Dict, FrozenSet, List, Optional, Set, Tuple
 
-from sqlalchemy import select, func, or_, and_, delete, text, insert, exists
+from sqlalchemy import select, func, or_, and_, delete, text, insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import joinedload, contains_eager, aliased
+from sqlalchemy.orm import joinedload, contains_eager
 
 from backend.app.core.database import AsyncSessionLocal
 from backend.app.core.auth import get_user_filter
@@ -1637,21 +1637,18 @@ async def list_conversations(
     # filtreleri yenisini engeller ama eski kirli satirlar DB'de durur —
     # bunlar sohbet listesinden dislanir (WhatsApp Web paritesi: Durum ve
     # kanallar sohbet listesinde yer almaz). Join YOK — alt sorgu.
-    # Faz 10.11: Correlated NOT EXISTS replaces ~Conversation.contact_id.in_(junk_contacts).
-    # Uses aliased(Contact) to prevent correlation collisions when base joins Contact (e.g. search/lead_id).
-    # This avoids a full sequential scan on the contacts table (hashed SubPlan 1) and
-    # utilizes Nested Loop Anti Join with primary key index scan (contacts_pkey).
-    junk_contact_alias = aliased(Contact)
-    junk_contacts = select(1).select_from(junk_contact_alias).where(
-        junk_contact_alias.id == Conversation.contact_id,
+    # Faz 10.12 Rollback Audit: NOT EXISTS query form caused higher planning/exec
+    # latency on representative production data (PLANNER_COST_IMPROVEMENT_WITHOUT_RUNTIME_IMPROVEMENT).
+    # Reverted to subquery form.
+    junk_contacts = select(Contact.id).where(
         or_(
-            junk_contact_alias.phone_e164 == "status",
-            junk_contact_alias.phone_e164 == "broadcast",
-            junk_contact_alias.phone_e164.like("%@broadcast%"),
-            junk_contact_alias.phone_e164.like("%@newsletter%"),
-        ),
+            Contact.phone_e164 == "status",
+            Contact.phone_e164 == "broadcast",
+            Contact.phone_e164.like("%@broadcast%"),
+            Contact.phone_e164.like("%@newsletter%"),
+        )
     )
-    base = base.where(~junk_contacts.exists())
+    base = base.where(~Conversation.contact_id.in_(junk_contacts))
     # `Contact` tablosuna katlanma GEREKEN filtreler icin join BIR KEZ yapilir
     # (ayni sorguda iki kez join etmek SQL hatasi uretir).
     joined_contact = False
@@ -3718,33 +3715,17 @@ async def _find_whatsapp_conversation(
     listesine yeni satir EKLEYEMEZ.
     """
     phone = _contact_phone_for_jid(jid)
-    if not phone:
-        return None
-    # Faz 10.11: Single joined query to resolve Contact and matching Conversation together,
-    # eliminating sequential roundtrips per status/read/presence event.
-    join_cond = and_(
-        Conversation.contact_id == Contact.id,
-        Conversation.channel == "WHATSAPP",
-        get_user_filter(Conversation.user_id, user_id),
-    )
-    if session_id is not None:
-        join_cond = and_(join_cond, Conversation.session_id == session_id)
-
-    stmt = (
-        select(Contact.id, Conversation)
-        .outerjoin(Conversation, join_cond)
-        .where(
+    contact_id = await db.scalar(
+        select(Contact.id).where(
             Contact.phone_e164 == phone,
             get_user_filter(Contact.user_id, user_id),
         )
-        .order_by(Conversation.id.asc())
     )
-    res = await db.execute(stmt)
-    records = res.all()
-    if not records:
+    if contact_id is None:
         return None
-    contact_id = records[0][0]
-    rows = [r[1] for r in records if r[1] is not None]
+    filters = _conversation_scope_filters(user_id, contact_id, session_id)
+    res = await db.execute(select(Conversation).where(*filters).order_by(Conversation.id.asc()))
+    rows = list(res.scalars().all())
     if session_id is not None and not rows:
         # Backfill a legacy, line-less row only when it is unambiguous for
         # this tenant/contact. Never borrow a row already assigned to another
