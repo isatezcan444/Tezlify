@@ -67,6 +67,14 @@ from backend.app.services.whatsapp.repositories.sessions import (
     resolve_event_owner_and_session as _resolve_event_owner_and_session,
     resolve_event_session_id as _resolve_event_session_id,
 )
+from backend.app.services.whatsapp.gateway import (
+    classify_gateway_error,
+    extract_live_session_fields,
+    extract_pairing_code,
+    extract_send_result,
+    extract_session_id,
+    is_gateway_session_missing,
+)
 
 
 _conversation_locks: Dict[Tuple[str, int], asyncio.Lock] = {}
@@ -168,15 +176,14 @@ from backend.app.services.whatsapp.preview_normalization import (
 
 
 def _apply_gateway_live(row: WhatsAppSession, data: Dict[str, Any]) -> None:
-    status = data.get("status")
-    if status:
-        row.status = _parse_status(status)
-    if data.get("phone"):
-        row.phone_number = data["phone"]
-    gw_error = data.get("error_message")
-    if gw_error is not None:
-        row.error_message = str(gw_error)[:1000] or None
-    if status in ("CONNECTED", "SCAN_QR"):
+    fields = extract_live_session_fields(data)
+    if fields["status"]:
+        row.status = _parse_status(fields["status"])
+    if fields["phone"]:
+        row.phone_number = fields["phone"]
+    if fields["error_message"] is not None:
+        row.error_message = fields["error_message"]
+    if fields["status"] in ("CONNECTED", "SCAN_QR"):
         row.error_message = None
     row.updated_at = datetime.utcnow()
 
@@ -199,19 +206,7 @@ def _apply_gateway_live(row: WhatsAppSession, data: Dict[str, Any]) -> None:
 # ---------------------------------------------------------------------------
 
 _GATEWAY_SESSION_MISSING = "session not found"
-
-
-def _is_gateway_session_missing(exc: Exception) -> bool:
-    """Gateway hatasinin 'yetim/bilinmeyen oturum' hatasi olup olmadigini
-    anlar. Sadece bu spesifik hata self-heal tetikler; ag/timeout/diger 500'ler
-    aynen yukselir (fail-closed)."""
-    if isinstance(exc, gw.WhatsAppGatewayError):
-        if exc.status_code == 404:
-            return True
-        if exc.response_body and ("session not found" in exc.response_body.lower() or "not found" in exc.response_body.lower()):
-            return True
-    exc_str = str(exc).lower()
-    return _GATEWAY_SESSION_MISSING in exc_str or ("404" in exc_str and "session" in exc_str)
+_is_gateway_session_missing = is_gateway_session_missing
 
 
 async def _gateway_op_or_mark_relink(
@@ -284,23 +279,19 @@ async def _list_sessions_internal(
         for row in rows:
             live = gw_sessions.get(row.gateway_id)
             if live:
-                gw_sync[row.id] = live.get("sync") or {"phase": "idle"}
-                if live.get("status") != row.status.value:
-                    row.status = _parse_status(live.get("status"))
-                    row.is_phone_online = bool(live.get("is_phone_online", row.is_phone_online))
-                    row.battery_level = live.get("battery_level", row.battery_level)
-                    row.phone_number = live.get("phone_number", row.phone_number)
-                # Canli prob ile dogrulandi (prod): liste `qr_code=null`
-                # donerken dogrudan `/qr` gecerli QR veriyordu — liste DB'deki
-                # bayat QR'i tasiyordu. WhatsApp Web paritesi: QR her zaman
-                # canli oturum durumunu yansitir; liste de canli QR'i tasir.
-                # CONNECTED iken QR tasinmaz (gateway zaten null doner).
-                live_qr = live.get("qr_code")
+                fields = extract_live_session_fields(live)
+                gw_sync[row.id] = fields["sync"]
+                if fields["status"] and fields["status"] != row.status.value:
+                    row.status = _parse_status(fields["status"])
+                    row.is_phone_online = bool(fields["is_phone_online"] if fields["is_phone_online"] is not None else row.is_phone_online)
+                    row.battery_level = fields["battery_level"] if fields["battery_level"] is not None else row.battery_level
+                    row.phone_number = fields["phone"] if fields["phone"] is not None else row.phone_number
+                live_qr = fields["qr_code"]
                 if live_qr:
                     row.qr_code = live_qr
-                elif live.get("status") == "CONNECTED":
+                elif fields["status"] == "CONNECTED":
                     row.qr_code = None
-                if live.get("status") in ("CONNECTED", "SCAN_QR"):
+                if fields["status"] in ("CONNECTED", "SCAN_QR"):
                     row.error_message = None
         await db.commit()
     except Exception as exc:
@@ -363,7 +354,7 @@ async def get_sync_status(db: AsyncSession, user_id: str) -> Dict[str, Any]:
 
 async def create_session(db: AsyncSession, user_id: str, name: str) -> Dict[str, Any]:
     gw_session = await gw.create_session(name)
-    gateway_id = gw_session.get("id")
+    gateway_id = extract_session_id(gw_session)
     if not gateway_id:
         raise gw.WhatsAppGatewayError("Gateway oturum kimligi dondurmedi.")
     row = WhatsAppSession(
@@ -423,7 +414,7 @@ async def request_pairing_code(db: AsyncSession, user_id: str, session_id: int, 
     data = await _gateway_op_or_mark_relink(
         db, row, lambda gid: gw.request_pairing_code(gid, phone)
     )
-    pairing_code = data.get("pairing_code")
+    pairing_code = extract_pairing_code(data)
     if not pairing_code:
         raise gw.WhatsAppGatewayError("Gateway pairing kodu döndürmedi.")
     if data.get("phone"):
@@ -1708,8 +1699,9 @@ async def send_text_message(
             await db.commit()
         raise
     await db.refresh(row)
-    row.wa_message_id = gateway_result.get("wa_message_id") or row.wa_message_id
-    _advance_message_status(row, gateway_result.get("status"))
+    send_res = extract_send_result(gateway_result)
+    row.wa_message_id = send_res["wa_message_id"] or row.wa_message_id
+    _advance_message_status(row, send_res["status"])
     # Faz 10 (P2): gonderim yolu da paylasilan kurali kullanir (tek kaynak).
     _apply_last_message(
         conv,
@@ -1776,8 +1768,9 @@ async def send_media_message(
             await db.commit()
         raise
     await db.refresh(row)
-    row.wa_message_id = gateway_result.get("wa_message_id") or row.wa_message_id
-    _advance_message_status(row, gateway_result.get("status"))
+    send_res = extract_send_result(gateway_result)
+    row.wa_message_id = send_res["wa_message_id"] or row.wa_message_id
+    _advance_message_status(row, send_res["status"])
     _apply_last_message(
         conv,
         datetime.utcnow(),
