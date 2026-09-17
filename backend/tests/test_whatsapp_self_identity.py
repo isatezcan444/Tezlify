@@ -214,3 +214,60 @@ async def test_self_04_reconcile_self_identity_merges_duplicate_conversation():
     # Check that canonical contact received the avatar
     assert get_contact_avatar(canonical_contact) == "https://pps.whatsapp.net/test.jpg"
     assert msg_unique.conversation_id == 9525
+
+
+@pytest.mark.asyncio
+async def test_lid_01_unresolved_lid_skips_new_conversation():
+    """LID-01: conversation_updated for an unresolved LID JID skips creating a new conversation."""
+    service = MagicMock()
+    service._find_whatsapp_conversation = AsyncMock(return_value=None)
+    service._resolve_event_owner_and_session = AsyncMock(return_value=("test-user", 1))
+
+    orchestrator = WhatsAppEventOrchestrator(service=service)
+    mock_db = AsyncMock(spec=AsyncSession)
+    mock_db.get = AsyncMock(return_value=None)
+
+    event = {
+        "event": "conversation_updated",
+        "conversation_id": "97418884436079@lid",
+        "gateway_session_id": 1,
+        "conversation": {
+            "id": "97418884436079@lid",
+            "last_message_preview": "Test preview",
+        },
+    }
+
+    result = await orchestrator._map_conversation_event(mock_db, event)
+    assert bool(result.get("_skip")) is True
+    assert "unresolved lid sohbet yaratmaz" in result.get("_skip", "")
+
+
+@pytest.mark.asyncio
+async def test_lid_02_lid_mapped_event_triggers_reconciliation():
+    """LID-02: lid_mapped event triggers reconcile_legacy_split_conversation and broadcasts."""
+    service = MagicMock()
+    service._resolve_event_owner = AsyncMock(return_value="test-user")
+
+    orchestrator = WhatsAppEventOrchestrator(service=service)
+    mock_db = AsyncMock(spec=AsyncSession)
+
+    mock_reconciled_conv = MagicMock()
+    mock_reconciled_conv.id = 9764
+    mock_reconciled_conv.contact = MagicMock(phone_e164="+905525372434")
+    mock_reconciled_conv.last_message_preview = "Reconciled preview"
+    mock_reconciled_conv.last_message_at = None
+
+    orchestrator.reconcile_legacy_split_conversation = AsyncMock(return_value=mock_reconciled_conv)
+
+    event = {
+        "event": "lid_mapped",
+        "lid": "97418884436079@lid",
+        "phone_jid": "905525372434@s.whatsapp.net",
+        "gateway_session_id": 1,
+    }
+
+    result = await orchestrator._ingest_lid_mapped(mock_db, event)
+    assert result.get("event") == "conversations_updated"
+    assert result.get("reconciled_conversation_id") == 9764
+    assert result.get("conversation", {}).get("archived_lid") == "97418884436079@lid"
+

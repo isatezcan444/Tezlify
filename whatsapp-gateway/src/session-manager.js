@@ -1782,6 +1782,12 @@ export function createSessionManager({
         messagesByChat.set(phoneKey, phoneMsgs);
       }
       logger.debug({ lid: lidKey, jid: phoneKey }, 'LID→telefon eşleşmesi uygulandı');
+      emitEvent({
+        event: 'lid_mapped',
+        lid: lidKey,
+        phone_jid: phoneKey,
+        gateway_session_id: session.id,
+      });
     },
 
     _touchChat(session, jid, preview, timestamp) {
@@ -1844,7 +1850,9 @@ export function createSessionManager({
           if (chat && chat.avatar_url !== url) {
             chat.avatar_url = url;
             chat.updated_at = new Date().toISOString();
-            emitEvent({ event: 'conversation_updated', conversation: { ...chat }, gateway_session_id: session.id });
+            if (!isLidJid(key)) {
+              emitEvent({ event: 'conversation_updated', conversation: { ...chat }, gateway_session_id: session.id });
+            }
           }
           const contact = contacts.get(key);
           if (contact && contact.avatar_url !== url) {
@@ -2697,6 +2705,7 @@ export function createSessionManager({
           if (update.id && isBroadcastOnlyJid(update.id)) continue;
           const phoneJid = contactPhoneJid(update);
           if (phoneJid && isLidJid(update.id)) applyLidMapping(update.id, phoneJid);
+          if (update.lid && !isLidJid(update.id)) applyLidMapping(update.lid, update.id);
           // LID döneminde remoteJid/participant @lid olabilir — eşleşme
           // biliniyorsa telefona çöz, değilse lid anahtarında beklet
           // (_applyLidMapping öğrendiğinde telefona taşır).
@@ -3022,8 +3031,11 @@ export function createSessionManager({
             };
             chats.set(key, merged);
             storedChats += 1;
-            if (!merged.avatar_url && storedChats <= 5) void ensureChatAvatar(key);
-            emitEvent({ event: 'conversation_updated', conversation: merged });
+            const lidHold = isLidJid(key);
+            if (!lidHold) {
+              if (!merged.avatar_url && storedChats <= 5) void ensureChatAvatar(key);
+              emitEvent({ event: 'conversation_updated', conversation: merged });
+            }
           }
           emitEvent({
             event: 'history_sync_completed',

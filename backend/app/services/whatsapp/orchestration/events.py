@@ -525,8 +525,19 @@ class WhatsAppEventOrchestrator:
         lid_contact = contacts.get(lid_phone)
         canonical_contact = contacts.get(canonical_phone)
 
-        if not lid_contact or not canonical_contact:
+        if not lid_contact:
             return None
+        if not canonical_contact:
+            upsert_contact = self._get_helper("_upsert_contact", self._upsert_contact)
+            canonical_contact = await upsert_contact(db, user_id, phone_jid, lid_contact.display_name, None)
+
+        # Merge avatar if lid contact has it and canonical does not
+        lid_attrs = lid_contact.custom_attributes or {}
+        canon_attrs = canonical_contact.custom_attributes or {}
+        if lid_attrs.get("avatar_url") and not canon_attrs.get("avatar_url"):
+            canon_attrs["avatar_url"] = lid_attrs["avatar_url"]
+            canonical_contact.custom_attributes = dict(canon_attrs)
+            await db.flush()
 
         conv_res = await db.execute(
             select(Conversation).where(
@@ -538,7 +549,15 @@ class WhatsAppEventOrchestrator:
         legacy_conv = convs.get(lid_contact.id)
         canonical_conv = convs.get(canonical_contact.id)
 
-        if not legacy_conv or not canonical_conv or legacy_conv.id == canonical_conv.id:
+        if not legacy_conv:
+            return canonical_conv
+        if not canonical_conv:
+            ensure_conversation = self._get_helper("_ensure_conversation", self._ensure_conversation)
+            canonical_conv = await ensure_conversation(
+                db, user_id, phone_jid, session_id=legacy_conv.session_id
+            )
+
+        if legacy_conv.id == canonical_conv.id:
             return canonical_conv
 
         ranks = {"PENDING": 0, "FAILED": 0, "SENT": 1, "DELIVERED": 2, "READ": 3, "RECEIVED": 4}
@@ -585,6 +604,29 @@ class WhatsAppEventOrchestrator:
             async with get_conversation_lock(user_id, legacy_conv.id), get_conversation_lock(user_id, canonical_conv.id):
                 return await _do_reconciliation()
         return await _do_reconciliation()
+
+    async def _ingest_lid_mapped(self, db: AsyncSession, event: Dict[str, Any]) -> Dict[str, Any]:
+        resolve_event_owner = self._get_helper("_resolve_event_owner", _resolve_event_owner)
+        lid = event.get("lid")
+        phone_jid = event.get("phone_jid")
+        if not lid or not phone_jid:
+            return _skip_event(event, "lid_mapped: lid veya phone_jid eksik")
+        clean_lid = _strip_jid_prefix(str(lid))
+        clean_phone = _strip_jid_prefix(str(phone_jid))
+        owner = await resolve_event_owner(db, clean_phone, event.get("gateway_session_id"))
+        event["user_id"] = owner
+        reconciled = await self.reconcile_legacy_split_conversation(db, owner, clean_lid, clean_phone)
+        if reconciled:
+            event["reconciled_conversation_id"] = reconciled.id
+            event["event"] = "conversations_updated"
+            event["conversation"] = {
+                "id": reconciled.id,
+                "archived_lid": clean_lid,
+                "lead_phone": reconciled.contact.phone_e164 if reconciled.contact else clean_phone,
+                "last_message_preview": reconciled.last_message_preview,
+                "last_message_at": reconciled.last_message_at.isoformat() if reconciled.last_message_at else None,
+            }
+        return event
 
     async def reconcile_self_identity(
         self,
@@ -780,7 +822,12 @@ class WhatsAppEventOrchestrator:
         upsert_contact = self._get_helper("_upsert_contact", self._upsert_contact)
 
         if evt_name == "conversation_updated":
-            conv = await ensure_conversation_race_safe(db, owner, str(jid), event, session_id=ws_session_id)
+            if clean_jid.endswith("@lid"):
+                conv = await find_whatsapp_conversation(db, owner, str(jid), session_id=ws_session_id)
+                if conv is None:
+                    return _skip_event(event, f"conversation_updated: unresolved lid sohbet yaratmaz ({clean_jid})")
+            else:
+                conv = await ensure_conversation_race_safe(db, owner, str(jid), event, session_id=ws_session_id)
         elif evt_name == "message_status_updated":
             conv = None
             matching_msg = None
@@ -992,6 +1039,8 @@ class WhatsAppEventOrchestrator:
                     result = await map_conversation_event(db, event)
                 elif evt == "contact_synced":
                     result = await ingest_contact_synced(db, event)
+                elif evt == "lid_mapped":
+                    result = await self._ingest_lid_mapped(db, event)
                 elif evt == "connection_error" or str(evt).startswith("session_"):
                     result = await map_session_event(db, event)
                 elif evt in _PASSTHROUGH_EVENTS:
