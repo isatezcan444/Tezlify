@@ -39,7 +39,15 @@ import {
 } from '../components/ui';
 import { SearchInput, Select } from '../components/forms';
 import { BusinessCell } from '../components/data-display';
-import { LeadDetailDrawer, LocationMultiSelect, CategoryMultiSelect } from '../features/leads/components';
+import { 
+  LeadDetailDrawer, 
+  LocationMultiSelect, 
+  CategoryMultiSelect,
+  LeadDeleteModal,
+  LeadBlacklistModal,
+  LeadAddManualModal,
+  LeadAddToGroupModal
+} from '../features/leads/components';
 import { ApiClient } from '../api/client';
 import { Lead, LeadStatus, CampaignGroup } from '../types';
 import { useToast } from '../context/ToastContext';
@@ -953,429 +961,68 @@ export const LeadCRMPage: React.FC<LeadCRMPageProps> = ({ onRefreshStats }) => {
       />
 
       {/* Centralized Delete Confirmation Modal */}
-      <Modal
+      <LeadDeleteModal
         isOpen={isDeleteModalOpen}
         onClose={() => !isDeleting && setIsDeleteModalOpen(false)}
-        title={
-          isBulkDelete 
-            ? (selectAllMatching ? t('leads.bulkDeleteAll', { total }) : t('leads.bulkDelete', { count: selectedCount })) 
-            : t('leads.deleteConfirmTitle')
-        }
-        subtitle={t('leads.deleteConfirmMsg')}
-        icon={Trash2}
-        variant="danger"
-        maxWidth="md"
-        footer={
-          <>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              disabled={isDeleting}
-              onClick={() => setIsDeleteModalOpen(false)}
-              className="cursor-pointer"
-            >
-              {t('common.cancel')}
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              disabled={isDeleting}
-              onClick={handleConfirmDelete}
-              className="bg-[#EA5455] hover:bg-[#D43B3C] text-white font-bold space-x-1.5 shadow-md shadow-[#EA5455]/30 cursor-pointer"
-            >
-              {isDeleting ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  <span>{t('common.loading')}</span>
-                </>
-              ) : (
-                <>
-                  <Trash2 className="w-4 h-4" />
-                  <span>{t('common.delete')}</span>
-                </>
-              )}
-            </Button>
-          </>
-        }
-      >
-        <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-[#25293C] border border-slate-200/60 dark:border-white/[0.05] text-xs text-slate-600 dark:text-slate-300 space-y-3">
-          {!isBulkDelete && leadToDelete ? (
-            <p>
-              <strong className="text-slate-800 dark:text-white font-bold">{leadToDelete.name}</strong> - {t('leads.deleteConfirmMsg')}
-            </p>
-          ) : (
-            <div className="space-y-2">
-              <label className="flex items-start space-x-2.5 p-2 rounded-lg border border-slate-200 dark:border-white/[0.08] cursor-pointer hover:bg-slate-100 dark:hover:bg-white/[0.03] transition-colors">
-                <input
-                  type="radio"
-                  name="deleteScope"
-                  checked={!selectAllMatching}
-                  onChange={() => setSelectAllMatching(false)}
-                  className="mt-0.5 text-[#EA5455] focus:ring-0"
-                />
-                <div>
-                  <span className="font-bold text-slate-800 dark:text-white">
-                    {t('leads.bulkDelete', { count: selectedIds.length })}
-                  </span>
-                </div>
-              </label>
-
-              {total > leads.length && (
-                <label className="flex items-start space-x-2.5 p-2 rounded-lg border border-rose-200 dark:border-rose-500/30 bg-rose-50/50 dark:bg-rose-500/10 cursor-pointer hover:bg-rose-50 dark:hover:bg-rose-500/20 transition-colors">
-                  <input
-                    type="radio"
-                    name="deleteScope"
-                    checked={selectAllMatching}
-                    onChange={() => setSelectAllMatching(true)}
-                    className="mt-0.5 text-[#EA5455] focus:ring-0"
-                  />
-                  <div>
-                    <span className="font-bold text-[#EA5455]">
-                      {t('leads.bulkDeleteAll', { total })}
-                    </span>
-                  </div>
-                </label>
-              )}
-            </div>
-          )}
-        </div>
-      </Modal>
+        onConfirm={handleConfirmDelete}
+        isDeleting={isDeleting}
+        isBulkDelete={isBulkDelete}
+        leadToDelete={leadToDelete}
+        selectedCount={selectedCount}
+        total={total}
+        leadsCount={leads.length}
+        selectAllMatching={selectAllMatching}
+        setSelectAllMatching={setSelectAllMatching}
+      />
 
       {/* Centralized Blacklist Modal */}
-      <Modal
+      <LeadBlacklistModal
         isOpen={isBlacklistModalOpen}
         onClose={() => !isBlacklisting && setIsBlacklistModalOpen(false)}
-        title={isBulkBlacklist ? t('blacklist.confirmBulkRemoveTitle') : t('blacklist.modalTitle')}
-        subtitle={t('blacklist.subtitle')}
-        icon={ShieldAlert}
-        variant="warning"
-        maxWidth="md"
-        footer={
-          <>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              disabled={isBlacklisting}
-              onClick={() => setIsBlacklistModalOpen(false)}
-              className="cursor-pointer"
-            >
-              {t('common.cancel')}
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              disabled={isBlacklisting}
-              onClick={handleConfirmBlacklist}
-              className="bg-[#FF9F43] hover:bg-[#E58A32] text-white font-bold space-x-1.5 shadow-md shadow-[#FF9F43]/30 cursor-pointer"
-            >
-              {isBlacklisting ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  <span>{t('common.loading')}</span>
-                </>
-              ) : (
-                <>
-                  <ShieldAlert className="w-4 h-4" />
-                  <span>{t('blacklist.addNumber')}</span>
-                </>
-              )}
-            </Button>
-          </>
-        }
-      >
-        <div className="space-y-4">
-          <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-[#25293C] border border-slate-200/60 dark:border-white/[0.05] text-xs text-slate-600 dark:text-slate-300 space-y-2">
-            {!isBulkBlacklist && leadToBlacklist ? (
-              <p>
-                <strong className="text-slate-800 dark:text-white font-bold">{leadToBlacklist.name}</strong> ({leadToBlacklist.phone_e164 || leadToBlacklist.phone})
-              </p>
-            ) : (
-              <p>
-                {t('blacklist.selectedToolbarCount', { count: selectedCount })}
-              </p>
-            )}
-          </div>
-
-          <div className="space-y-2 text-xs">
-            <label className="text-slate-700 dark:text-slate-300 font-bold block">{t('blacklist.blockReasonLabel')}</label>
-            <div className="flex flex-wrap gap-1.5">
-              {[
-                'USER_REQUEST',
-                'BOUNCED',
-                'SPAM_COMPLAINT',
-                'MANUAL_BLACKLIST'
-              ].map((r) => (
-                <button
-                  key={r}
-                  type="button"
-                  onClick={() => setBlacklistReason(r)}
-                  className={`px-2.5 py-1 rounded-lg text-[10px] font-bold border transition-all cursor-pointer ${
-                    blacklistReason === r
-                      ? 'bg-[#FF9F43]/15 text-[#FF9F43] border-[#FF9F43]'
-                      : 'bg-white dark:bg-white/[0.03] border-slate-200 dark:border-white/[0.08] text-slate-600 dark:text-slate-300 hover:bg-slate-50'
-                  }`}
-                >
-                  {r === 'USER_REQUEST' ? t('blacklist.reasonUserRequest') : r === 'BOUNCED' ? t('blacklist.reasonBounced') : r === 'SPAM_COMPLAINT' ? t('blacklist.reasonSpamComplaint') : t('blacklist.reasonManual')}
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-      </Modal>
+        onConfirm={handleConfirmBlacklist}
+        isBlacklisting={isBlacklisting}
+        isBulkBlacklist={isBulkBlacklist}
+        leadToBlacklist={leadToBlacklist}
+        selectedCount={selectedCount}
+        blacklistReason={blacklistReason}
+        setBlacklistReason={setBlacklistReason}
+      />
 
       {/* Centralized Add New Lead Modal */}
-      <Modal
+      <LeadAddManualModal
         isOpen={isAddModalOpen}
         onClose={() => setIsAddModalOpen(false)}
-        title={t('leads.addNewLeadTitle')}
-        subtitle={t('leads.addNewLeadSubtitle')}
-        icon={Plus}
-        variant="primary"
-        maxWidth="md"
-      >
-        {formError && (
-          <div className="mb-4 p-3 rounded-lg bg-rose-50 text-[#EA5455] text-xs font-bold border border-rose-200">
-            {formError}
-          </div>
-        )}
-
-        <form onSubmit={handleAddLead} className="space-y-3.5 text-xs">
-          <div>
-            <label className="text-slate-700 dark:text-slate-300 font-bold block mb-1">{t('leads.leadNameRequired')}</label>
-            <input
-              type="text"
-              value={newLeadName}
-              onChange={(e) => setNewLeadName(e.target.value)}
-              placeholder="e.g. Dentgroup Ataşehir"
-              className="w-full px-3 py-2 rounded-lg vuexy-input"
-              required
-            />
-          </div>
-
-          <div>
-            <label className="text-slate-700 dark:text-slate-300 font-bold block mb-1">{t('leads.leadPhoneRequired')}</label>
-            <input
-              type="text"
-              value={newLeadPhone}
-              onChange={(e) => setNewLeadPhone(e.target.value)}
-              placeholder="e.g. +905321234567"
-              className="w-full px-3 py-2 rounded-lg vuexy-input font-mono"
-              required
-            />
-          </div>
-
-          <div>
-            <label className="text-slate-700 dark:text-slate-300 font-bold block mb-1">{t('leads.categoryLabel')}</label>
-            <input
-              type="text"
-              value={newLeadCategory}
-              onChange={(e) => setNewLeadCategory(e.target.value)}
-              placeholder="e.g. Dental Clinic"
-              className="w-full px-3 py-2 rounded-lg vuexy-input"
-            />
-          </div>
-
-          <div className="grid grid-cols-2 gap-2.5">
-            <div>
-              <label className="text-slate-700 dark:text-slate-300 font-bold block mb-1">{t('leads.cityLabel')}</label>
-              <input
-                type="text"
-                value={newLeadCity}
-                onChange={(e) => setNewLeadCity(e.target.value)}
-                placeholder="İstanbul"
-                className="w-full px-3 py-2 rounded-lg vuexy-input"
-              />
-            </div>
-            <div>
-              <label className="text-slate-700 dark:text-slate-300 font-bold block mb-1">{t('leads.districtLabel')}</label>
-              <input
-                type="text"
-                value={newLeadDistrict}
-                onChange={(e) => setNewLeadDistrict(e.target.value)}
-                placeholder="Ataşehir"
-                className="w-full px-3 py-2 rounded-lg vuexy-input"
-              />
-            </div>
-          </div>
-
-          <div className="pt-3 flex items-center justify-end space-x-2">
-            <Button 
-              type="button" 
-              variant="outline" 
-              size="sm" 
-              onClick={() => setIsAddModalOpen(false)}
-              className="cursor-pointer"
-            >
-              {t('common.cancel')}
-            </Button>
-            <Button 
-              type="submit" 
-              size="sm" 
-              className="font-bold shadow-md shadow-[#7367F0]/30 cursor-pointer"
-            >
-              {t('common.save')}
-            </Button>
-          </div>
-        </form>
-      </Modal>
+        onSubmit={handleAddLead}
+        formError={formError}
+        newLeadName={newLeadName}
+        setNewLeadName={setNewLeadName}
+        newLeadPhone={newLeadPhone}
+        setNewLeadPhone={setNewLeadPhone}
+        newLeadCategory={newLeadCategory}
+        setNewLeadCategory={setNewLeadCategory}
+        newLeadCity={newLeadCity}
+        setNewLeadCity={setNewLeadCity}
+        newLeadDistrict={newLeadDistrict}
+        setNewLeadDistrict={setNewLeadDistrict}
+      />
 
       {/* Centralized Add to Campaign Group Modal */}
-      <Modal
+      <LeadAddToGroupModal
         isOpen={isAddToGroupModalOpen}
-        onClose={() => setIsAddToGroupModalOpen(false)}
-        title={t('leads.addToGroupModalTitle')}
-        subtitle={t('leads.addToGroupModalSubtitle')}
-        icon={FolderPlus}
-        variant="primary"
-        maxWidth="md"
-        footer={
-          <>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              disabled={isAddingToGroup}
-              onClick={() => setIsAddToGroupModalOpen(false)}
-              className="cursor-pointer"
-            >
-              {t('common.cancel')}
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              disabled={isAddingToGroup || (selectedTargetGroupId === 'NEW' && !newGroupName.trim())}
-              onClick={handleConfirmAddToGroup}
-              className="bg-[#7367F0] hover:bg-[#685dd8] text-white font-bold space-x-1.5 shadow-md shadow-[#7367F0]/30 cursor-pointer"
-            >
-              {isAddingToGroup ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  <span>{t('common.loading')}</span>
-                </>
-              ) : (
-                <>
-                  <FolderPlus className="w-4 h-4" />
-                  <span>{t('leads.addToGroupBtn')}</span>
-                </>
-              )}
-            </Button>
-          </>
-        }
-      >
-        <div className="space-y-4 text-xs">
-          {/* Target Leads Summary Box */}
-          <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-[#25293C] border border-slate-200/60 dark:border-white/[0.05] flex items-center justify-between">
-            <div className="flex items-center space-x-2 min-w-0 pr-2">
-              <Building2 className="w-4 h-4 text-[#7367F0] shrink-0" />
-              <span className="font-bold text-slate-800 dark:text-white truncate">
-                {singleLeadForGroup
-                  ? singleLeadForGroup.name
-                  : selectAllMatching
-                  ? t('leads.allMatchingSelected', { total })
-                  : t('leads.bulkToolbarCount', { count: selectedCount })}
-              </span>
-            </div>
-            <Badge variant="primary" className="text-[10px] shrink-0">
-              {singleLeadForGroup ? 1 : selectedCount} {t('campaignGroups.businesses')}
-            </Badge>
-          </div>
-
-          {/* Group Choice Selection */}
-          <div className="space-y-3">
-            <label className="text-slate-700 dark:text-slate-300 font-bold block">
-              {t('leads.selectExistingGroup')}
-            </label>
-
-            {isLoadingGroups ? (
-              <div className="p-4 text-center text-slate-400">
-                <Loader2 className="w-4 h-4 animate-spin inline mr-2" />
-                <span>{t('common.loading')}</span>
-              </div>
-            ) : (
-              <div className="space-y-2">
-                {/* Radio choice for New Group */}
-                <label
-                  className={`p-3 rounded-xl border flex items-center justify-between cursor-pointer transition-colors ${
-                    selectedTargetGroupId === 'NEW'
-                      ? 'bg-[#7367F0]/10 border-[#7367F0] text-[#7367F0]'
-                      : 'bg-white dark:bg-[#25293C] border-slate-200 dark:border-white/10 text-slate-700 dark:text-slate-200 hover:bg-slate-50'
-                  }`}
-                >
-                  <div className="flex items-center space-x-2.5">
-                    <input
-                      type="radio"
-                      name="targetGroupChoice"
-                      value="NEW"
-                      checked={selectedTargetGroupId === 'NEW'}
-                      onChange={() => setSelectedTargetGroupId('NEW')}
-                      className="text-[#7367F0] focus:ring-[#7367F0]"
-                    />
-                    <span className="font-bold">{t('leads.createNewGroupOption')}</span>
-                  </div>
-                  <Plus className="w-4 h-4" />
-                </label>
-
-                {selectedTargetGroupId === 'NEW' && (
-                  <div className="pl-6 pr-1 pt-1 pb-2">
-                    <input
-                      type="text"
-                      value={newGroupName}
-                      onChange={(e) => setNewGroupName(e.target.value)}
-                      placeholder={t('leads.newGroupNamePlaceholder')}
-                      className="w-full px-3 py-2 rounded-lg vuexy-input text-xs"
-                      autoFocus
-                    />
-                  </div>
-                )}
-
-                {/* List of Existing Campaign Groups */}
-                {campaignGroups.length > 0 && (
-                  <div className="max-h-52 overflow-y-auto space-y-1.5 pr-1">
-                    {campaignGroups.map((grp) => {
-                      const isSelected = selectedTargetGroupId === grp.id;
-                      return (
-                        <label
-                          key={grp.id}
-                          className={`p-2.5 px-3 rounded-xl border flex items-center justify-between cursor-pointer transition-colors ${
-                            isSelected
-                              ? 'bg-[#7367F0]/10 border-[#7367F0] text-[#7367F0]'
-                              : 'bg-white dark:bg-[#25293C] border-slate-200/80 dark:border-white/10 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-white/[0.02]'
-                          }`}
-                        >
-                          <div className="flex items-center space-x-2.5 min-w-0 pr-2">
-                            <input
-                              type="radio"
-                              name="targetGroupChoice"
-                              value={grp.id}
-                              checked={isSelected}
-                              onChange={() => setSelectedTargetGroupId(grp.id)}
-                              className="text-[#7367F0] focus:ring-[#7367F0]"
-                            />
-                            <div className="min-w-0 truncate">
-                              <div className="font-bold truncate">{grp.name}</div>
-                              <div className="text-[10px] text-slate-400 truncate">
-                                {grp.target_category || ''} {grp.target_location ? `• ${grp.target_location}` : ''}
-                              </div>
-                            </div>
-                          </div>
-
-                          <div className="text-right shrink-0">
-                            <Badge variant="primary" className="text-[9px]">
-                              {grp.total_leads_count} {t('campaignGroups.businesses')}
-                            </Badge>
-                          </div>
-                        </label>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        </div>
-      </Modal>
+        onClose={() => !isAddingToGroup && setIsAddToGroupModalOpen(false)}
+        onConfirm={handleConfirmAddToGroup}
+        isAddingToGroup={isAddingToGroup}
+        singleLeadForGroup={singleLeadForGroup}
+        selectAllMatching={selectAllMatching}
+        total={total}
+        selectedCount={selectedCount}
+        campaignGroups={campaignGroups}
+        isLoadingGroups={isLoadingGroups}
+        selectedTargetGroupId={selectedTargetGroupId}
+        setSelectedTargetGroupId={setSelectedTargetGroupId}
+        newGroupName={newGroupName}
+        setNewGroupName={setNewGroupName}
+      />
     </div>
   );
 };

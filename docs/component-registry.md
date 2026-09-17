@@ -252,6 +252,31 @@ src/
 - **Props**: `template: string`, `sampleLead?: object`.
 - **Import**: `import { SpintaxPreviewCard } from '@/features/campaigns/components';`
 
+#### `CampaignDeleteModal`
+- **Purpose**: Focused confirmation modal for single campaign deletion with card preview and loading state.
+- **Props**: `isOpen: boolean`, `onClose: () => void`, `onConfirm: () => void`, `isDeleting: boolean`, `campaignToDelete: Campaign | null`.
+- **Import**: `import { CampaignDeleteModal } from '@/features/campaigns/components';`
+
+#### `CampaignCreateWizard`
+- **Purpose**: Comprehensive multi-step campaign builder and spintax studio supporting 6 communication goals, dynamic goal-specific inputs, AI template generation with debounce, live spintax preview, and anti-ban settings.
+- **Props**: `prefill?: object | null`, `onClearPrefill?: () => void`, `onSuccess: () => void`, `onCancel: () => void`.
+- **Import**: `import { CampaignCreateWizard } from '@/features/campaigns/components';`
+
+#### `CampaignGroupDetailModal`
+- **Purpose**: Read-only audience group inspection modal with metadata cards, in-group lead search, WhatsApp readiness tags, and direct launch/edit triggers.
+- **Props**: `isOpen: boolean`, `groupId: number | null`, `onClose: () => void`, `onEdit: (group: CampaignGroup) => void`, `onLaunchCampaign: (group: CampaignGroup) => void`, `allGroups: CampaignGroup[]`.
+- **Import**: `import { CampaignGroupDetailModal } from '@/features/campaigns/components';`
+
+#### `CampaignGroupEditModal`
+- **Purpose**: Focused group editing modal with metadata form and live CRM lead search selector with suggestions and chips.
+- **Props**: `isOpen: boolean`, `group: CampaignGroup | null`, `onClose: () => void`, `onSuccess: () => void`.
+- **Import**: `import { CampaignGroupEditModal } from '@/features/campaigns/components';`
+
+#### `CampaignGroupCreateView`
+- **Purpose**: Cohesive campaign group creation view with sector autocomplete, hierarchical location selector, and sidebar guide card.
+- **Props**: `onCancel: () => void`, `onSuccess: () => void`.
+- **Import**: `import { CampaignGroupCreateView } from '@/features/campaigns/components';`
+
 ---
 
 ### Leads & Discovery Feature Components (`features/leads/components/`)
@@ -280,6 +305,41 @@ src/
 - **Purpose**: Industry sector search autocomplete input with Turkish search normalization and quick suggestion tags.
 - **Props**: `value: string`, `onChange: (value: string) => void`, `placeholder?: string`, `disabled?: boolean`.
 - **Import**: `import { SectorAutocomplete } from '@/features/leads/components';`
+
+#### `LeadDeleteModal`
+- **Purpose**: Deletion confirmation dialog for single or bulk leads.
+- **Props**: `isOpen: boolean`, `onClose: () => void`, `onConfirm: () => void`, `isDeleting: boolean`, `count?: number`.
+- **Import**: `import { LeadDeleteModal } from '@/features/leads/components';`
+
+#### `LeadBlacklistModal`
+- **Purpose**: Blacklisting dialog for adding leads to the blacklist with reason selection.
+- **Props**: `isOpen: boolean`, `onClose: () => void`, `onConfirm: (reason: string) => void`, `isBlacklisting: boolean`.
+- **Import**: `import { LeadBlacklistModal } from '@/features/leads/components';`
+
+#### `LeadAddManualModal`
+- **Purpose**: Form modal for creating a new lead with validation and duplicate checking.
+- **Props**: `isOpen: boolean`, `onClose: () => void`, `onSuccess: () => void`.
+- **Import**: `import { LeadAddManualModal } from '@/features/leads/components';`
+
+#### `LeadAddToGroupModal`
+- **Purpose**: Selection modal for adding selected leads to an existing or new campaign group.
+- **Props**: `isOpen: boolean`, `onClose: () => void`, `leadIds: number[]`, `onSuccess: () => void`.
+- **Import**: `import { LeadAddToGroupModal } from '@/features/leads/components';`
+
+#### `LeadFinderSaveModal`
+- **Purpose**: Modal to save discovered scraper leads into a new or existing campaign group.
+- **Props**: `isOpen: boolean`, `onClose: () => void`, `onConfirm: (mode: 'NEW' | 'EXISTING', groupName: string, groupId: number | null) => void`, `isSavingGroup: boolean`, `savedLeadsCount: number`, `existingGroups: CampaignGroup[]`, `defaultMode?: 'NEW' | 'EXISTING'`, `defaultGroupName?: string`.
+- **Import**: `import { LeadFinderSaveModal } from '@/features/leads/components';`
+
+#### `LeadFinderResultCard`
+- **Purpose**: Interactive result card for scraper leads displaying contact info, entity badges, rating, address, and quick links.
+- **Props**: `lead: any`, `keyword: string`, `isSelected: boolean`, `onToggleSelect: (key: string) => void`, `leadKey: string`, `googleMapsUrl: string`.
+- **Import**: `import { LeadFinderResultCard } from '@/features/leads/components';`
+
+#### `BlacklistAddModal`
+- **Purpose**: Modal for searching leads and adding their phone numbers to the blacklist with reason selection.
+- **Props**: `isOpen: boolean`, `onClose: () => void`, `onSuccess: () => void`.
+- **Import**: `import { BlacklistAddModal } from '@/features/leads/components';`
 
 
 
