@@ -48,6 +48,7 @@ import {
   LeadAddManualModal,
   LeadAddToGroupModal
 } from '../features/leads/components';
+import { useLeadFilters, useLeadSelection } from '../features/leads/hooks';
 import { ApiClient } from '../api/client';
 import { Lead, LeadStatus, CampaignGroup } from '../types';
 import { useToast } from '../context/ToastContext';
@@ -62,16 +63,30 @@ export const LeadCRMPage: React.FC<LeadCRMPageProps> = ({ onRefreshStats }) => {
   const { t } = useI18n();
   const [leads, setLeads] = useState<Lead[]>([]);
   const [total, setTotal] = useState(0);
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
-  
-  // Search & Filter State
-  const [search, setSearch] = useState('');
-  const [selectedCity, setSelectedCity] = useState('');
-  const [selectedDistricts, setSelectedDistricts] = useState<string[]>([]);
-  const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
-  const [statusFilter, setStatusFilter] = useState('');
-  const [waOnly, setWaOnly] = useState(false);
+  // Search, Filter & Pagination Hook
+  const {
+    search,
+    setSearch,
+    selectedCity,
+    setSelectedCity,
+    selectedDistricts,
+    setSelectedDistricts,
+    selectedCategories,
+    setSelectedCategories,
+    statusFilter,
+    setStatusFilter,
+    waOnly,
+    setWaOnly,
+    page,
+    setPage,
+    pageSize,
+    setPageSize,
+    hasActiveFilters,
+    resetAllFilters,
+    buildQueryParams,
+    buildExportParams,
+  } = useLeadFilters(20);
+
   const [loading, setLoading] = useState(false);
 
   // Detail Drawer State
@@ -79,9 +94,20 @@ export const LeadCRMPage: React.FC<LeadCRMPageProps> = ({ onRefreshStats }) => {
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [drawerInitialTab, setDrawerInitialTab] = useState<'overview' | 'chat'>('overview');
 
-  // Selection state (Gmail style)
-  const [selectedIds, setSelectedIds] = useState<number[]>([]);
-  const [selectAllMatching, setSelectAllMatching] = useState(false);
+  // Multi-Selection Hook (Gmail style)
+  const {
+    selectedIds,
+    setSelectedIds,
+    selectAllMatching,
+    setSelectAllMatching,
+    isAllCurrentPageSelected,
+    isSomeCurrentPageSelected,
+    handleToggleSelectAllPage,
+    handleToggleSingleSelect,
+    handleSelectAllAcrossPages,
+    handleClearSelection,
+    selectedCount,
+  } = useLeadSelection({ leads, total });
 
   // Add to Campaign Group Modal State
   const [isAddToGroupModalOpen, setIsAddToGroupModalOpen] = useState(false);
@@ -122,16 +148,7 @@ export const LeadCRMPage: React.FC<LeadCRMPageProps> = ({ onRefreshStats }) => {
     const requestId = ++fetchLeadsRequestIdRef.current;
     setLoading(true);
     try {
-      const data = await ApiClient.getLeads({
-        page,
-        size: pageSize,
-        search: search.trim() || undefined,
-        city: selectedCity || undefined,
-        districts: selectedDistricts.length > 0 ? selectedDistricts : undefined,
-        categories: selectedCategories.length > 0 ? selectedCategories : undefined,
-        status: statusFilter || undefined,
-        whatsapp_eligible_only: waOnly,
-      });
+      const data = await ApiClient.getLeads(buildQueryParams());
       if (requestId !== fetchLeadsRequestIdRef.current) return;
       setLeads(data.items);
       setTotal(data.total);
@@ -151,50 +168,7 @@ export const LeadCRMPage: React.FC<LeadCRMPageProps> = ({ onRefreshStats }) => {
     if (!selectAllMatching) {
       setSelectedIds([]);
     }
-  }, [page, pageSize, search, selectedCity, selectedDistricts, selectedCategories, statusFilter, waOnly]);
-
-  // --- Gmail-style Checkbox logic ---
-  const currentPageIds = leads.map((l) => l.id);
-  const isAllCurrentPageSelected =
-    leads.length > 0 && currentPageIds.every((id) => selectedIds.includes(id));
-  const isSomeCurrentPageSelected =
-    currentPageIds.some((id) => selectedIds.includes(id)) && !isAllCurrentPageSelected;
-
-  const handleToggleSelectAllPage = () => {
-    if (selectAllMatching) {
-      setSelectAllMatching(false);
-      setSelectedIds([]);
-      return;
-    }
-
-    if (isAllCurrentPageSelected) {
-      setSelectedIds((prev) => prev.filter((id) => !currentPageIds.includes(id)));
-    } else {
-      setSelectedIds((prev) => Array.from(new Set([...prev, ...currentPageIds])));
-    }
-  };
-
-  const handleToggleSingleSelect = (id: number) => {
-    if (selectAllMatching) {
-      setSelectAllMatching(false);
-      setSelectedIds(currentPageIds.filter((x) => x !== id));
-      return;
-    }
-
-    setSelectedIds((prev) =>
-      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
-    );
-  };
-
-  const handleSelectAllAcrossPages = () => {
-    setSelectAllMatching(true);
-    setSelectedIds(currentPageIds);
-  };
-
-  const handleClearSelection = () => {
-    setSelectedIds([]);
-    setSelectAllMatching(false);
-  };
+  }, [page, pageSize, search, selectedCity, selectedDistricts, selectedCategories, statusFilter, waOnly, selectAllMatching, setSelectedIds]);
 
   // --- Drawer Opener ---
   const handleOpenLeadDrawer = (lead: Lead, tab: 'overview' | 'chat' = 'overview') => {
@@ -455,22 +429,6 @@ export const LeadCRMPage: React.FC<LeadCRMPageProps> = ({ onRefreshStats }) => {
     return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`;
   };
 
-  const hasActiveFilters = Boolean(
-    search || selectedCity || selectedDistricts.length > 0 || selectedCategories.length > 0 || statusFilter || waOnly
-  );
-
-  const resetAllFilters = () => {
-    setSearch('');
-    setSelectedCity('');
-    setSelectedDistricts([]);
-    setSelectedCategories([]);
-    setStatusFilter('');
-    setWaOnly(false);
-    setPage(1);
-  };
-
-  const selectedCount = selectAllMatching ? total : selectedIds.length;
-
   return (
     <div className="space-y-4 sm:space-y-6 pb-16 select-none animate-fade-in">
       {/* Top Action Bar & Filter Header */}
@@ -492,13 +450,7 @@ export const LeadCRMPage: React.FC<LeadCRMPageProps> = ({ onRefreshStats }) => {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => ApiClient.exportCsv({ 
-                  search, 
-                  city: selectedCity, 
-                  districts: selectedDistricts,
-                  categories: selectedCategories,
-                  status: statusFilter 
-                })}
+                onClick={() => ApiClient.exportCsv(buildExportParams())}
                 className="space-x-1.5 flex-1 sm:flex-initial justify-center cursor-pointer"
               >
                 <Download className="w-3.5 h-3.5" />
@@ -507,13 +459,7 @@ export const LeadCRMPage: React.FC<LeadCRMPageProps> = ({ onRefreshStats }) => {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => ApiClient.exportExcel({ 
-                  search, 
-                  city: selectedCity, 
-                  districts: selectedDistricts,
-                  categories: selectedCategories,
-                  status: statusFilter 
-                })}
+                onClick={() => ApiClient.exportExcel(buildExportParams())}
                 className="space-x-1.5 flex-1 sm:flex-initial justify-center cursor-pointer"
               >
                 <Download className="w-3.5 h-3.5 text-[#28C76F]" />

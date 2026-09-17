@@ -341,5 +341,21 @@ src/
 - **Props**: `isOpen: boolean`, `onClose: () => void`, `onSuccess: () => void`.
 - **Import**: `import { BlacklistAddModal } from '@/features/leads/components';`
 
+---
+
+### Leads Feature Hooks (`features/leads/hooks/`)
+
+#### `useLeadSelection`
+- **Purpose**: Encapsulates Gmail-style multi-row selection logic across paginated tables (single toggle, page toggle, select all matching across pages, clear selection, and selected count).
+- **Props**: `{ leads: Lead[]; total: number; }`
+- **Returns**: `selectedIds`, `setSelectedIds`, `selectAllMatching`, `setSelectAllMatching`, `isAllCurrentPageSelected`, `isSomeCurrentPageSelected`, `handleToggleSelectAllPage`, `handleToggleSingleSelect`, `handleSelectAllAcrossPages`, `handleClearSelection`, `selectedCount`.
+- **Import**: `import { useLeadSelection } from '@/features/leads/hooks';`
+
+#### `useLeadFilters`
+- **Purpose**: Encapsulates CRM lead filtering, pagination, search input, active filter chips detection, filter resetting, and API/export query parameter serialization.
+- **Props**: `initialPageSize?: number` (default: 20)
+- **Returns**: `search`, `setSearch`, `selectedCity`, `setSelectedCity`, `selectedDistricts`, `setSelectedDistricts`, `selectedCategories`, `setSelectedCategories`, `statusFilter`, `setStatusFilter`, `waOnly`, `setWaOnly`, `page`, `setPage`, `pageSize`, `setPageSize`, `hasActiveFilters`, `resetAllFilters`, `buildQueryParams`, `buildExportParams`.
+- **Import**: `import { useLeadFilters } from '@/features/leads/hooks';`
+
 
 
