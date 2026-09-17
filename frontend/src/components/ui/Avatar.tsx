@@ -33,6 +33,13 @@ const getInitials = (name: string) => {
   return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 };
 
+// Global cache of failed/expired image URLs to prevent repeated network failure storms
+export const failedAvatarUrls = new Set<string>();
+
+export const clearFailedAvatarUrlsCache = () => {
+  failedAvatarUrls.clear();
+};
+
 export const Avatar: React.FC<AvatarProps> = ({
   name,
   image,
@@ -41,6 +48,14 @@ export const Avatar: React.FC<AvatarProps> = ({
   status,
   className,
 }) => {
+  const [imageError, setImageError] = React.useState<boolean>(() => {
+    return image ? failedAvatarUrls.has(image) : false;
+  });
+
+  React.useEffect(() => {
+    setImageError(image ? failedAvatarUrls.has(image) : false);
+  }, [image]);
+
   const sizeClasses = {
     xs: "w-6 h-6 text-[10px]",
     sm: "w-8 h-8 text-xs",
@@ -63,20 +78,31 @@ export const Avatar: React.FC<AvatarProps> = ({
 
   const colorClass = getAvatarColor(name);
   const initials = getInitials(name);
+  const shouldRenderImage = Boolean(image && !imageError && !failedAvatarUrls.has(image));
 
   return (
     <div className="relative inline-flex shrink-0">
       <div
         className={cn(
-          "flex items-center justify-center font-bold tracking-wider select-none overflow-hidden border border-black/5 dark:border-white/10 transition-transform",
+          "flex items-center justify-center font-bold tracking-wider select-none overflow-hidden aspect-square border border-black/5 dark:border-white/10 transition-transform",
           sizeClasses[size],
           shapeClasses[shape],
           colorClass,
           className
         )}
       >
-        {image ? (
-          <img src={image} alt={name} className="w-full h-full object-cover" />
+        {shouldRenderImage ? (
+          <img
+            src={image}
+            alt={name}
+            loading="lazy"
+            decoding="async"
+            onError={() => {
+              if (image) failedAvatarUrls.add(image);
+              setImageError(true);
+            }}
+            className="w-full h-full object-cover aspect-square block"
+          />
         ) : (
           <span>{initials}</span>
         )}

@@ -22,12 +22,14 @@ import {
   ExternalLink,
   Copy,
   MessageSquarePlus,
-  Users
+  Users,
+  ArrowLeft
 } from 'lucide-react';
 import { ApiClient } from '../api/client';
 import { startWaLatency } from '../features/whatsapp/lib/whatsappLatency';
 import { mergeDeliveryStatus, mergeWhatsAppMessages } from '../features/whatsapp/lib/whatsappMessageMerge';
 import { WhatsAppRepository } from '../features/whatsapp/data/whatsappRepository';
+import { compareConversationsByActivityDesc } from '../features/whatsapp/lib/whatsappOrdering';
 import { WhatsAppSession, Conversation, ConversationStatus, ConversationMessageStatus, Lead, Message, LiveModeStatus, SessionSyncState } from '../types';
 import { WhatsAppApi, useLiveMode, probeLive, invalidateLiveProbe, isLiveCached, mapConversationItem, mapMessageItem } from '../features/whatsapp/api/whatsappApi';
 import { Button } from '../components/ui/button';
@@ -104,14 +106,8 @@ function computeSyncProgress(
   return 4;
 }
 
-// Sorun 2 (kronolojik siralama): sidebar sırası her zaman API ile aynı kuralı
-// uygular — last_message_at DESC. Eksik/bozuk zaman damgası en sona düşer.
-function compareByLastMessageDesc(a: Conversation, b: Conversation): number {
-  const ta = a.last_message_at ? parseServerTime(a.last_message_at)?.getTime() || 0 : 0;
-  const tb = b.last_message_at ? parseServerTime(b.last_message_at)?.getTime() || 0 : 0;
-  if (tb !== ta) return tb - ta;
-  return b.id - a.id;
-}
+// WhatsApp Web kronolojik siralama standardi (last_message_at -> updated_at -> created_at)
+const compareByLastMessageDesc = compareConversationsByActivityDesc;
 
 // Faz 12 (Sorun 2): tekrar oynatilan WS olaylarinda sayac sismesini onlemek icin
 // tutulan son gorulen wa_message_id kumesinin ust siniri.
@@ -568,13 +564,14 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       ...prev,
       [selectedConv.id]: [...(prev[selectedConv.id] || []), optimisticMsg],
     }));
-    setConversations((prev) =>
-      prev.map((c) =>
+    setConversations((prev) => {
+      const updated = prev.map((c) =>
         c.id === selectedConv.id
           ? { ...c, last_message_preview: trimmed, last_message_at: nowIso }
           : c
-      )
-    );
+      );
+      return [...updated].sort(compareConversationsByActivityDesc);
+    });
 
     try {
       const res = await WhatsAppRepository.sendMessage(selectedConv.id, trimmed, tempClientMid);
@@ -1726,9 +1723,9 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       {/* 1. CANLI DİYALOGLAR (CONVERSATIONS) PANELİ */}
       {/* ========================================================================= */}
       {hubTab === 'conversations' && (
-        <Card className="h-[650px] p-0 flex flex-col md:flex-row overflow-hidden border border-slate-200/80 dark:border-white/[0.08] shadow-sm">
+        <Card className="h-[650px] md:h-[calc(100vh-12rem)] md:min-h-[550px] md:max-h-[850px] p-0 flex flex-col md:flex-row overflow-hidden border border-slate-200/80 dark:border-white/[0.08] shadow-sm">
           {/* Left: Conversation List */}
-          <div className="w-full md:w-80 lg:w-96 shrink-0 h-full flex flex-col">
+          <div className={`w-full md:w-80 lg:w-96 shrink-0 h-full flex flex-col min-w-0 ${selectedConv ? 'hidden md:flex' : 'flex'}`}>
             {/* Faz 7/11: GERCEK initial-sync banneri — yalnizca backend'den
                 gelen asama/sayaclar gosterilir (sahte progress yok); job
                 gercekten tamamlaninca (whatsapp_sync_complete) kapanir. */}
@@ -1806,46 +1803,55 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
           </div>
 
           {/* Right: Active Chat View */}
-          <div className="flex-1 flex flex-col h-full bg-white dark:bg-[#181C28]">
+          <div className={`flex-1 flex flex-col h-full bg-white dark:bg-[#181C28] min-w-0 ${selectedConv ? 'flex' : 'hidden md:flex'}`}>
             {selectedConv ? (
               <>
                 {/* Active Chat Header */}
-                <div className="p-3.5 border-b border-slate-200/80 dark:border-white/[0.08] bg-slate-50/50 dark:bg-black/20 flex items-center justify-between shrink-0">
-                  <div className="flex items-center space-x-3">
-                    {/* Faz 9 (§6/§14): cozulmemis grupta sonsuz "çözülüyor" yerine
-                        terminal fallback — 1:1 kisilerde resolving durumu surer. */}
+                <div className="p-3 sm:p-3.5 border-b border-slate-200/80 dark:border-white/[0.08] bg-slate-50/50 dark:bg-black/20 flex items-center justify-between shrink-0 gap-2">
+                  <div className="flex items-center space-x-2 sm:space-x-3 min-w-0 flex-1">
+                    {/* Mobile Back Button to Conversation List */}
+                    <button
+                      type="button"
+                      onClick={() => setSelectedConv(null)}
+                      className="md:hidden p-1.5 -ml-1 rounded-lg text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 hover:bg-slate-200/60 dark:hover:bg-white/[0.08] transition-all cursor-pointer shrink-0"
+                      aria-label={t('common.back') || 'Geri'}
+                      title={t('common.back') || 'Geri'}
+                    >
+                      <ArrowLeft className="w-5 h-5" />
+                    </button>
+
                     <Avatar
                       name={selectedConv.lead_name || (!isRawWhatsAppIdentity(selectedConv.lead_phone) ? selectedConv.lead_phone : '') || (selectedConv.is_group ? t('whatsapp.groupFallback') || 'Group' : t('whatsapp.pendingIdentity') || 'Lead')}
                       image={selectedConv.lead_avatar_url}
                       size="md"
                       shape="rounded"
                     />
-                    <div>
-                      <div className="flex items-center space-x-2">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center space-x-2 truncate">
                         {selectedConv.is_group && (
                           <span className="shrink-0 inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-md bg-[#7367F0]/15 text-[#7367F0] dark:bg-[#7367F0]/25">
                             <Users className="w-3 h-3" />
                             <span>{t('whatsapp.group') || 'Grup'}</span>
                           </span>
                         )}
-                        <h4 className="font-extrabold text-sm text-slate-800 dark:text-white">
+                        <h4 className="font-extrabold text-sm text-slate-800 dark:text-white truncate">
                           {selectedConv.lead_name || (!isRawWhatsAppIdentity(selectedConv.lead_phone) ? selectedConv.lead_phone : '') || (selectedConv.is_group ? t('whatsapp.groupFallback') || 'Group' : t('whatsapp.pendingIdentity') || t('common.unnamedLead') || 'İsimsiz Müşteri')}
                         </h4>
                         {selectedConv.status !== 'ACTIVE' && (
-                          <span className="text-[9px] font-bold uppercase px-1.5 py-0.5 rounded bg-slate-200 dark:bg-white/10 text-slate-500 dark:text-slate-400">
+                          <span className="text-[9px] font-bold uppercase px-1.5 py-0.5 rounded bg-slate-200 dark:bg-white/10 text-slate-500 dark:text-slate-400 shrink-0">
                             {selectedConv.status === 'ARCHIVED' ? (t('whatsapp.statusArchived') || 'Arşiv') : (t('whatsapp.statusClosed') || 'Kapalı')}
                           </span>
                         )}
                       </div>
                       {!isRawWhatsAppIdentity(selectedConv.lead_phone) && (
-                        <p className="text-[11px] font-mono text-slate-400 font-medium">
+                        <p className="text-[11px] font-mono text-slate-400 font-medium truncate">
                           {selectedConv.lead_phone}
                         </p>
                       )}
                     </div>
                   </div>
 
-                  <div className="flex items-center space-x-2">
+                  <div className="flex items-center space-x-1 sm:space-x-2 shrink-0">
                     {/* Lifecycle Status Action */}
                     {selectedConv.status === 'ACTIVE' ? (
                       <div className="flex items-center space-x-1">
@@ -1853,19 +1859,21 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                           variant="outline"
                           size="sm"
                           onClick={() => handleStatusChange(selectedConv.id, 'ARCHIVED')}
-                          className="space-x-1 text-xs font-bold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/[0.06] cursor-pointer"
+                          title={t('whatsapp.archive') || 'Arşivle'}
+                          className="space-x-1 text-xs font-bold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/[0.06] cursor-pointer px-2 sm:px-3"
                         >
                           <Archive className="w-3.5 h-3.5" />
-                          <span>{t('whatsapp.archive') || 'Arşivle'}</span>
+                          <span className="hidden sm:inline">{t('whatsapp.archive') || 'Arşivle'}</span>
                         </Button>
                         <Button
                           variant="outline"
                           size="sm"
                           onClick={() => handleStatusChange(selectedConv.id, 'CLOSED')}
-                          className="space-x-1 text-xs font-bold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/[0.06] cursor-pointer"
+                          title={t('whatsapp.close') || 'Kapat'}
+                          className="space-x-1 text-xs font-bold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/[0.06] cursor-pointer px-2 sm:px-3"
                         >
                           <CheckCircle2 className="w-3.5 h-3.5 text-slate-400" />
-                          <span>{t('whatsapp.close') || 'Kapat'}</span>
+                          <span className="hidden sm:inline">{t('whatsapp.close') || 'Kapat'}</span>
                         </Button>
                       </div>
                     ) : (
@@ -1873,10 +1881,10 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                         variant="outline"
                         size="sm"
                         onClick={() => handleStatusChange(selectedConv.id, 'ACTIVE')}
-                        className="space-x-1 text-xs font-bold text-[#7367F0] border-[#7367F0]/30 hover:bg-[#7367F0]/10 cursor-pointer"
+                        className="space-x-1 text-xs font-bold text-[#7367F0] border-[#7367F0]/30 hover:bg-[#7367F0]/10 cursor-pointer px-2 sm:px-3"
                       >
                         <RotateCcw className="w-3.5 h-3.5" />
-                        <span>{t('whatsapp.reopen') || 'Yeniden Aç'}</span>
+                        <span className="hidden sm:inline">{t('whatsapp.reopen') || 'Yeniden Aç'}</span>
                       </Button>
                     )}
 
@@ -1885,15 +1893,16 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                       size="sm"
                       onClick={() => handleOpenLead(selectedConv.lead_id)}
                       disabled={leadLoading}
-                      className="space-x-1.5 text-xs font-bold border-slate-200 dark:border-white/[0.1] hover:bg-slate-100 dark:hover:bg-white/[0.06] cursor-pointer"
+                      title={t('leads.openLeadDetail') || 'Müşteri Detayı'}
+                      className="space-x-1.5 text-xs font-bold border-slate-200 dark:border-white/[0.1] hover:bg-slate-100 dark:hover:bg-white/[0.06] cursor-pointer px-2 sm:px-3"
                     >
                       <Building2 className="w-3.5 h-3.5 text-[#7367F0]" />
-                      <span>{t('leads.openLeadDetail') || 'Müşteri Detayı'}</span>
+                      <span className="hidden md:inline">{t('leads.openLeadDetail') || 'Müşteri Detayı'}</span>
                     </Button>
 
-                    <span className="inline-flex items-center space-x-1 px-2.5 py-1 rounded-full bg-[#25D366]/15 text-[#25D366] font-bold text-xs">
+                    <span className="inline-flex items-center space-x-1 px-2 sm:px-2.5 py-1 rounded-full bg-[#25D366]/15 text-[#25D366] font-bold text-xs">
                       <WhatsAppIcon className="w-3.5 h-3.5" />
-                      <span>{t('leads.whatsappActive')}</span>
+                      <span className="hidden sm:inline">{t('leads.whatsappActive')}</span>
                     </span>
                   </div>
                 </div>
@@ -2033,7 +2042,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
               className="space-x-2 font-bold shadow-md shadow-[#28C76F]/20 cursor-pointer bg-[#28C76F] hover:bg-[#24B263] text-white"
             >
               <QrCode className="w-4 h-4" />
-              <span>{t('whatsapp.connectWithQr') || 'QR ile Bağla'}</span>
+              <span>{t('whatsapp.connectWithQr') || 'Cihaz Bağla'}</span>
             </Button>
 
           </div>
@@ -2045,7 +2054,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                 title={t('whatsapp.noSessions')}
                 description={t('whatsapp.noSessionsDesc')}
                 action={{
-                  label: t('whatsapp.connectWithQr') || 'QR ile Bağla',
+                  label: t('whatsapp.connectWithQr') || 'Cihaz Bağla',
                   onClick: handleOpenQrConnect,
                   icon: QrCode,
                 }}
@@ -2537,6 +2546,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         onClose={() => {
           setIsQrConnectModalOpen(false);
           setReconnectSessionId(undefined);
+          void fetchSessions(true);
         }}
         existingSessionId={reconnectSessionId}
         onSuccess={handleQrSuccess}

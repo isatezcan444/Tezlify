@@ -8,6 +8,7 @@ import { SearchInput } from '../../../components/forms/SearchInput';
 import { Skeleton } from '../../../components/ui/Skeleton';
 import { useI18n } from '../../../context/I18nContext';
 import { parseServerTime, formatConversationTime } from '../../../lib/utils';
+import { compareConversationsByActivityDesc } from '../lib/whatsappOrdering';
 
 export type FilterTab = 'ALL' | 'ACTIVE' | 'GROUPS' | 'ARCHIVED' | 'CLOSED' | 'UNREAD';
 
@@ -82,12 +83,7 @@ export const ConversationList: React.FC<ConversationListProps> = ({
     );
   });
 
-  const sorted = [...filtered].sort((a, b) => {
-    const timeA = a.last_message_at ? parseServerTime(a.last_message_at)?.getTime() ?? 0 : (a.created_at ? parseServerTime(a.created_at)?.getTime() ?? 0 : 0);
-    const timeB = b.last_message_at ? parseServerTime(b.last_message_at)?.getTime() ?? 0 : (b.created_at ? parseServerTime(b.created_at)?.getTime() ?? 0 : 0);
-    if (timeB !== timeA) return timeB - timeA;
-    return b.id - a.id;
-  });
+  const sorted = [...filtered].sort(compareConversationsByActivityDesc);
 
   // Deduplicate only within the same WhatsApp line. The same contact can be
   // present on multiple user-owned lines and must remain visible separately.
@@ -323,11 +319,8 @@ export const ConversationList: React.FC<ConversationListProps> = ({
                     );
                   })()}
 
-                  <div className="flex items-center justify-between mt-1.5">
-                    <span className="text-[10px] font-mono text-slate-400">
-                      {safePhone || ''}
-                    </span>
-                    <div className="flex items-center space-x-1.5">
+                  {(conv.status !== 'ACTIVE' || conv.unread_count > 0) && (
+                    <div className="flex items-center justify-end space-x-1.5 mt-1.5">
                       {conv.status !== 'ACTIVE' && (
                         <span className="text-[9px] font-bold uppercase px-1.5 py-0.5 rounded bg-slate-200 dark:bg-white/10 text-slate-500 dark:text-slate-400">
                           {conv.status === 'ARCHIVED' ? (t('whatsapp.statusArchived') || 'Arşiv') : (t('whatsapp.statusClosed') || 'Kapalı')}
@@ -339,7 +332,7 @@ export const ConversationList: React.FC<ConversationListProps> = ({
                         </Badge>
                       )}
                     </div>
-                  </div>
+                  )}
                 </div>
               </button>
             );

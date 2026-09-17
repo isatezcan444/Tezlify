@@ -21,10 +21,14 @@ import { useToast } from '../../../context/ToastContext';
 import { useI18n } from '../../../context/I18nContext';
 
 export type QrModalState = 
+  | 'IDLE'
+  | 'OPENING'
   | 'INITIALIZING'
   | 'QR_READY'
   | 'CONNECTING'
   | 'CONNECTED'
+  | 'CANCELLING'
+  | 'CANCELLED'
   | 'DISCONNECTED'
   | 'LOGGED_OUT'
   | 'ERROR';
@@ -48,7 +52,7 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
   const { t } = useI18n();
 
   // Lifecycle State Machine
-  const [modalState, setModalState] = useState<QrModalState>('INITIALIZING');
+  const [modalState, setModalState] = useState<QrModalState>('IDLE');
   const [sessionId, setSessionId] = useState<number | null>(existingSessionId || null);
   const [sessionName, setSessionName] = useState<string>(initialSessionName || '');
   const [qrCode, setQrCode] = useState<string | null>(null);
@@ -78,6 +82,8 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
   const hasInitializedRef = useRef<boolean>(false);
   const isInitializingRef = useRef<boolean>(false);
   const activeSessionIdRef = useRef<number | null>(existingSessionId || null);
+  const isNewlyCreatedRef = useRef<boolean>(false);
+  const isCancelledRef = useRef<boolean>(false);
 
   // Sync ref with existingSessionId prop if changed
   useEffect(() => {
@@ -179,7 +185,14 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
         setSessionName(nameToUse);
 
         const newSession = await WhatsAppRepository.createWhatsAppSession(nameToUse, 50);
-        if (!isMountedRef.current) return;
+        if (isCancelledRef.current || !isMountedRef.current) {
+          // Modal was closed or cancelled while session creation was in flight!
+          // Safely delete this orphaned session in background.
+          void WhatsAppRepository.deleteSession(newSession.id).catch((err) => {
+            console.warn('[WhatsAppQrConnectModal] Aborted session cleanup failed:', err);
+          });
+          return;
+        }
 
         activeSessionIdRef.current = newSession.id;
         setSessionId(newSession.id);
@@ -299,17 +312,27 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
   useEffect(() => {
     isMountedRef.current = true;
     if (isOpen) {
+      isCancelledRef.current = false;
       if (!hasInitializedRef.current) {
         hasInitializedRef.current = true;
+        if (!existingSessionId) {
+          isNewlyCreatedRef.current = true;
+          setModalState('OPENING');
+        } else {
+          isNewlyCreatedRef.current = false;
+          setModalState('INITIALIZING');
+        }
         initSession();
       }
     } else {
       // Reset initialization state on modal close
       hasInitializedRef.current = false;
       isInitializingRef.current = false;
+      isNewlyCreatedRef.current = false;
+      isCancelledRef.current = false;
       activeSessionIdRef.current = existingSessionId || null;
       clearTimers();
-      setModalState('INITIALIZING');
+      setModalState('IDLE');
       setQrCode(null);
       setConnectedPhone(null);
       setErrorMessage(null);
@@ -324,6 +347,37 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
       clearTimers();
     };
   }, [isOpen, initSession, clearTimers, existingSessionId]);
+
+  // Unified safe cancellation handler: ensures that unlinked ephemeral sessions are purged
+  const handleCancel = useCallback(async () => {
+    // If the session is already authenticated and CONNECTED, close without deleting!
+    if (modalState === 'CONNECTED') {
+      onClose();
+      return;
+    }
+
+    isCancelledRef.current = true;
+    clearTimers();
+    setModalState('CANCELLING');
+
+    const createdSessionId = isNewlyCreatedRef.current ? activeSessionIdRef.current : null;
+    activeSessionIdRef.current = null;
+    setSessionId(null);
+
+    if (createdSessionId && !existingSessionId) {
+      try {
+        await WhatsAppRepository.deleteSession(createdSessionId);
+      } catch (err) {
+        console.warn('[WhatsAppQrConnectModal] Failed to clean up cancelled session:', err);
+      }
+    }
+
+    setModalState('CANCELLED');
+    setTimeout(() => {
+      setModalState('IDLE');
+      onClose();
+    }, 50);
+  }, [modalState, existingSessionId, clearTimers, onClose]);
 
   // Real-time WebSocket Event Listener
   useEffect(() => {
@@ -475,17 +529,17 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
     };
   }, [isOpen, sessionId, modalState, qrCode, resetCountdown, applyTerminalGatewayStatus]);
 
-  // Keyboard accessibility: Escape to close
+  // Keyboard accessibility: Escape to close / cancel
   useEffect(() => {
     if (!isOpen) return;
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        onClose();
+        void handleCancel();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, onClose]);
+  }, [isOpen, handleCancel]);
 
   if (!isOpen || typeof document === 'undefined') return null;
 
@@ -499,7 +553,7 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
   return createPortal(
     <div 
       className="fixed inset-0 z-[99999] bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 animate-fade-in select-none"
-      onClick={onClose}
+      onClick={handleCancel}
       role="dialog"
       aria-modal="true"
       aria-labelledby="qr-modal-title"
@@ -527,7 +581,7 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
           </div>
           <button
             type="button"
-            onClick={onClose}
+            onClick={handleCancel}
             aria-label={t('whatsapp.closeModal') || 'Kapat'}
             className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/[0.06] transition-colors cursor-pointer"
           >
@@ -535,8 +589,18 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
           </button>
         </div>
 
+        {/* State: CANCELLING */}
+        {modalState === 'CANCELLING' && (
+          <div className="py-8 flex flex-col items-center justify-center space-y-3 animate-fade-in">
+            <Loader2 className="w-8 h-8 animate-spin text-[#7367F0]" />
+            <p className="text-xs font-bold text-slate-500 dark:text-slate-400">
+              {t('common.cancelling') || 'İptal ediliyor...'}
+            </p>
+          </div>
+        )}
+
         {/* Tab switcher — QR Kod ile Tara | Telefon No ile Bağlan */}
-        {modalState !== 'CONNECTED' && (
+        {modalState !== 'CONNECTED' && modalState !== 'CANCELLING' && modalState !== 'CANCELLED' && (
           <div className="grid grid-cols-2 gap-1 p-1 rounded-xl bg-slate-100 dark:bg-white/[0.06]" role="tablist" aria-label={t('whatsapp.qrModalTitle')}>
             <button
               type="button"
@@ -815,7 +879,7 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
             <div className="flex items-center gap-2 w-full pt-2">
               <Button
                 variant="outline"
-                onClick={onClose}
+                onClick={handleCancel}
                 className="flex-1 text-xs font-bold cursor-pointer"
               >
                 {t('whatsapp.closeModal')}
@@ -872,7 +936,7 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
             <div className="flex items-center gap-2 w-full pt-2">
               <Button
                 variant="outline"
-                onClick={onClose}
+                onClick={handleCancel}
                 className="flex-1 text-xs font-bold cursor-pointer"
               >
                 {t('whatsapp.closeModal')}
