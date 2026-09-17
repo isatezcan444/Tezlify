@@ -1083,9 +1083,12 @@ export function createSessionManager({
       // Sohbet listesi: telefon, grup ve çözümlenmemiş LID sohbetlerinin tamamını içerir.
       // Çözümlenmemiş LID'ler güvenli fallback başlığıyla (sanitizeChatForEmit) sunulur.
       let list = [...chats.values()].sort((a, b) => {
-        const tA = new Date(a.last_message_at || a.created_at || 0).getTime();
-        const tB = new Date(b.last_message_at || b.created_at || 0).getTime();
-        return tB - tA;
+        const tA = a.last_message_at ? new Date(a.last_message_at).getTime() : 0;
+        const tB = b.last_message_at ? new Date(b.last_message_at).getTime() : 0;
+        if (tB !== tA) return tB - tA;
+        const cA = a.created_at ? new Date(a.created_at).getTime() : 0;
+        const cB = b.created_at ? new Date(b.created_at).getTime() : 0;
+        return cB - cA;
       });
       if (search) {
         const q = search.toLowerCase();
@@ -1923,15 +1926,19 @@ export function createSessionManager({
 
       setImmediate(async () => {
         try {
-          const recentChats = Array.from(store.chats.values())
+          const chatsToFetch = Array.from(store.chats.values())
             .filter((c) => c && c.jid && !c.avatar_url && !isBroadcastOnlyJid(c.jid) && !isDegenerateJid(c.jid))
-            .sort((a, b) => (b.last_message_at ? new Date(b.last_message_at).getTime() : 0) - (a.last_message_at ? new Date(a.last_message_at).getTime() : 0))
-            .slice(0, 35);
+            .sort((a, b) => (b.last_message_at ? new Date(b.last_message_at).getTime() : 0) - (a.last_message_at ? new Date(a.last_message_at).getTime() : 0));
 
-          for (const chat of recentChats) {
+          // Concurrency: 3 concurrent requests at a time, with 100ms pacing between batches
+          const BATCH_SIZE = 3;
+          for (let i = 0; i < chatsToFetch.length; i += BATCH_SIZE) {
             if (session.status !== 'CONNECTED' || !session.sock) break;
-            await this._ensureChatAvatar(session, chat.jid);
-            await new Promise((resolve) => setTimeout(resolve, 400));
+            const batch = chatsToFetch.slice(i, i + BATCH_SIZE);
+            await Promise.all(
+              batch.map((chat) => this._ensureChatAvatar(session, chat.jid).catch(() => null))
+            );
+            await new Promise((resolve) => setTimeout(resolve, 100));
           }
         } catch (err) {
           logger.warn({ err, sessionId: session.id }, 'Background avatar fetch encountered error');

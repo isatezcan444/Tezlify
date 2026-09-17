@@ -164,6 +164,44 @@ assert.deepEqual(
   dedupeList.map(c => c.id),
   'Refreshed list ordering must deterministically match real-time state'
 );
-console.log('✓ TEST-CHAT-ORDER-08 passed');
+// TEST-CHAT-ORDER-09: Boş sohbet (last_message_at: null) bugün sync edilse bile aktif sohbetin üstüne ÇIKMAZ
+console.log("Running TEST-CHAT-ORDER-09: Empty conversation (no messages) must never sort above active chats");
+const activeConvYesterday = {
+  id: 10,
+  last_message_at: '2026-09-17T12:00:00Z',
+  created_at: '2026-09-01T10:00:00Z',
+  updated_at: '2026-09-17T12:00:00Z',
+};
+const emptyConvJustCreated = {
+  id: 11,
+  last_message_at: null,
+  created_at: '2026-09-18T00:05:00Z', // Today just now
+  updated_at: '2026-09-18T00:05:00Z',
+};
+let emptyOrderList = [emptyConvJustCreated, activeConvYesterday];
+emptyOrderList.sort(compareConversationsByActivityDesc);
+assert.equal(emptyOrderList[0].id, 10, 'Active conversation from yesterday MUST stay above empty conversation');
+assert.equal(emptyOrderList[1].id, 11, 'Empty conversation must sort to bottom');
+console.log('✓ TEST-CHAT-ORDER-09 passed');
 
-console.log('[test-whatsapp-chat-order] ALL TEST-CHAT-ORDER (01-08) ASSERTIONS PASSED SUCCESSFULLY.');
+// TEST-CHAT-ORDER-10: Contact sync / avatar update updated_at'i değiştirir ama sohbet sırasını DEĞİŞTİRMEZ
+console.log("Running TEST-CHAT-ORDER-10: Contact sync / avatar update (updated_at change) must NOT change order");
+const olderChatWithNewAvatar = {
+  id: 10,
+  last_message_at: '2026-09-17T12:00:00Z',
+  created_at: '2026-09-01T10:00:00Z',
+  updated_at: '2026-09-18T00:10:00Z', // avatar fetched now
+};
+const newerChat = {
+  id: 12,
+  last_message_at: '2026-09-17T15:00:00Z',
+  created_at: '2026-09-01T10:00:00Z',
+  updated_at: '2026-09-17T15:00:00Z',
+};
+let avatarUpdateList = [olderChatWithNewAvatar, newerChat];
+avatarUpdateList.sort(compareConversationsByActivityDesc);
+assert.equal(avatarUpdateList[0].id, 12, 'Newer message chat must remain on top despite older chat having newer updated_at');
+assert.equal(avatarUpdateList[1].id, 10, 'Older chat with avatar update must remain below');
+console.log('✓ TEST-CHAT-ORDER-10 passed');
+
+console.log('[test-whatsapp-chat-order] ALL TEST-CHAT-ORDER (01-10) ASSERTIONS PASSED SUCCESSFULLY.');

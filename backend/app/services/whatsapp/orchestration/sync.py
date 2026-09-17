@@ -1392,6 +1392,7 @@ class WhatsAppSyncOrchestrator:
             logger.warning("Background history expansion failed: %s", exc)
         finally:
             self._history_expansion_running.discard(key)
+            self._history_expansion_done.add(key)
 
 
     async def sync_conversations(self, db: AsyncSession, user_id: str) -> List[Dict[str, Any]]:

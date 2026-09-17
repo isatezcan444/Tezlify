@@ -98,13 +98,18 @@ def is_raw_jid_name(value: Optional[str]) -> bool:
 
 def safe_display_name(contact: Optional[Any]) -> Optional[str]:
     """UI icin guvenli gorunen ad: ham jid/lid sizarca None'a cevrilir
-    (frontend normalize edilmis telefona duser)."""
+    (frontend normalize edilmis telefona veya push_name fallback'ine duser)."""
     if contact is None:
         return None
     name = getattr(contact, "display_name", None)
-    if is_raw_jid_name(name):
-        return None
-    return name
+    if name and not is_raw_jid_name(name) and str(name).strip():
+        return str(name).strip()
+    custom = getattr(contact, "custom_attributes", None)
+    if isinstance(custom, dict):
+        push_name = custom.get("push_name")
+        if push_name and not is_raw_jid_name(push_name) and str(push_name).strip():
+            return str(push_name).strip()
+    return None
 
 
 def contact_phone_for_jid(jid: str) -> str:

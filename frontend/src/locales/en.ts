@@ -437,6 +437,7 @@ export const en = {
       complete: 'Sync completed',
     },
     pendingIdentity: 'Resolving identity…',
+    contactFallback: 'Contact',
     groupFallback: 'Group',
     lastMessageSyncing: 'Loading last message…',
     previewImage: '📷 Photo',

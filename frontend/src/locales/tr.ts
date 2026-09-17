@@ -437,6 +437,7 @@ export const tr = {
       complete: 'Senkronizasyon tamamlandı',
     },
     pendingIdentity: 'Kişi kimliği çözülüyor…',
+    contactFallback: 'Kişi',
     groupFallback: 'Grup',
     lastMessageSyncing: 'Son mesaj yükleniyor…',
     previewImage: '📷 Fotoğraf',

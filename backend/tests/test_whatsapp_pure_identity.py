@@ -18,8 +18,9 @@ from backend.app.services.whatsapp.identity import (
 
 
 class DummyContact:
-    def __init__(self, display_name: str | None = None) -> None:
+    def __init__(self, display_name: str | None = None, custom_attributes: dict | None = None) -> None:
         self.display_name = display_name
+        self.custom_attributes = custom_attributes
 
 
 # ==============================================================================
@@ -130,6 +131,10 @@ def test_safe_display_name():
     assert safe_display_name(DummyContact("Ali Veli")) == "Ali Veli"
     assert safe_display_name(DummyContact("12345678901234@lid")) is None
     assert safe_display_name(DummyContact("jid:120363025442111111@g.us")) is None
+    # Push name fallback for no-phone / LID contacts
+    assert safe_display_name(DummyContact("12345678901234@lid", {"push_name": "Semih Doğan"})) == "Semih Doğan"
+    assert safe_display_name(DummyContact(None, {"push_name": "Semih Doğan"})) == "Semih Doğan"
+    assert safe_display_name(DummyContact(None, {"push_name": "6277000@lid"})) is None
 
 
 # ==============================================================================

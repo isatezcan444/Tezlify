@@ -272,17 +272,22 @@ export const ConversationList: React.FC<ConversationListProps> = ({
                   conv.lead_phone.includes('@c.us'))
             );
             const safePhone = isRawJid ? null : conv.lead_phone;
-            // Faz 9 (§6/§14): grup-duyarli kimlik durumu — cozulmemis bir
-            // GRUBA sonsuz "kişilik çözümlüyor" yerine terminal fallback
-            // ("Grup") gösterilir (WhatsApp Web paritesi); cozulmemis 1:1
-            // kisilerde resolving durumu kalmaya devam eder (gateway
-            // addressbook/phone eslesmesini bekler).
-            const displayName =
-              conv.lead_name ||
-              safePhone ||
-              (conv.is_group
-                ? t('whatsapp.groupFallback') || 'Group'
-                : t('whatsapp.pendingIdentity') || 'Kişi kimliği çözülüyor…');
+            // Phase 15.4: No-phone contact contract & identity state machine
+            let displayName = conv.lead_name || safePhone;
+            if (!displayName) {
+              if (conv.is_group) {
+                displayName = t('whatsapp.groupFallback') || 'Group';
+              } else if (conv.last_message_state === 'REPAIRING' || (conv.created_at && Date.now() - new Date(conv.created_at).getTime() < 10000)) {
+                // Transient loading only while sync/repair is actively in-flight
+                displayName = t('whatsapp.pendingIdentity') || 'Kişi kimliği çözülüyor…';
+              } else if (conv.lead_phone && conv.lead_phone.includes('@lid')) {
+                // Stable no-phone LID contact — show clean stable identity
+                const cleanLid = conv.lead_phone.replace(/^jid:/, '').split('@')[0];
+                displayName = `${t('whatsapp.contactFallback') || 'Kişi'} (${cleanLid.slice(-4)})`;
+              } else {
+                displayName = t('whatsapp.contactFallback') || 'WhatsApp Kişisi';
+              }
+            }
             return (
               <button
                 key={conv.id}
@@ -318,7 +323,7 @@ export const ConversationList: React.FC<ConversationListProps> = ({
                       </h4>
                     </div>
                     <span className="text-[10px] text-slate-400 font-medium shrink-0 ml-1">
-                      {formatTime(conv.last_message_at || conv.created_at)}
+                      {conv.last_message_at ? formatTime(conv.last_message_at) : ''}
                     </span>
                   </div>
 
