@@ -153,9 +153,23 @@ app.get('/sessions', (_req, res) => {
 // Create a new session (returns QR code as data URI)
 app.post('/sessions', async (req, res) => {
   try {
-    const { name } = req.body || {};
-    const session = await sessionManager.createSession(name || `hat-${Date.now()}`);
+    const { name, ephemeral } = req.body || {};
+    const session = await sessionManager.createSession(name || `hat-${Date.now()}`, {
+      ephemeral: Boolean(ephemeral),
+    });
     res.status(201).json(session);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Refresh contact avatar from WhatsApp
+app.post('/sessions/:id/avatar/refresh', async (req, res) => {
+  try {
+    const { jid } = req.body || {};
+    if (!jid) return res.status(400).json({ error: 'jid is required' });
+    const result = await sessionManager.refreshAvatar(req.params.id, jid);
+    res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

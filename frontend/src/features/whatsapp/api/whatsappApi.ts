@@ -338,6 +338,38 @@ export const WhatsAppApi = {
     return mapSession(s);
   },
 
+  async startPairing(name?: string): Promise<{ pair_token: string; gateway_id: string; session_name: string; status: string; qr_code?: string | null }> {
+    return apiSend<{ pair_token: string; gateway_id: string; session_name: string; status: string; qr_code?: string | null }>(
+      '/whatsapp/pairing/start',
+      'POST',
+      { name }
+    );
+  },
+
+  async getPairingQr(pairToken: string): Promise<{ status: string; qr_code: string | null; phone: string | null; session_id?: number | null; error_message: string | null }> {
+    const data = await apiGet<{ status: string; qr_code: string | null; phone: string | null; session_id?: number | null; error_message?: string | null }>(
+      `/whatsapp/pairing/${pairToken}/qr`
+    );
+    return {
+      status: data.status,
+      qr_code: data.qr_code ?? null,
+      phone: data.phone ?? null,
+      session_id: data.session_id ?? null,
+      error_message: data.error_message ?? null,
+    };
+  },
+
+  async cancelPairing(pairToken: string): Promise<{ success: boolean }> {
+    return apiSend<{ success: boolean }>(`/whatsapp/pairing/${pairToken}/cancel`, 'POST');
+  },
+
+  async refreshAvatar(phone: string): Promise<{ success: boolean; avatar_url?: string | null; error?: string }> {
+    return apiSend<{ success: boolean; avatar_url?: string | null; error?: string }>(
+      `/whatsapp/contacts/${encodeURIComponent(phone)}/avatar/refresh`,
+      'POST'
+    );
+  },
+
   async getSessionQr(sessionId: number): Promise<{ status: string; qr_code: string | null; phone: string | null; error_message: string | null }> {
     const data = await apiGet<{ status: string; qr_code: string | null; phone: string | null; error_message?: string | null }>(
       `/whatsapp/sessions/${sessionId}/qr`

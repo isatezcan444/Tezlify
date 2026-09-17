@@ -1,5 +1,6 @@
 import * as React from "react";
 import { cn } from "../../lib/utils";
+import { WhatsAppRepository } from "../../features/whatsapp/data/whatsappRepository";
 
 export interface AvatarProps {
   name: string;
@@ -8,6 +9,8 @@ export interface AvatarProps {
   shape?: "circle" | "rounded";
   status?: "online" | "offline" | "busy" | "away";
   className?: string;
+  phone?: string;
+  onRefresh?: (newUrl: string) => void;
 }
 
 // Generate consistent background color based on name string
@@ -35,9 +38,11 @@ const getInitials = (name: string) => {
 
 // Global cache of failed/expired image URLs to prevent repeated network failure storms
 export const failedAvatarUrls = new Set<string>();
+export const inFlightAvatarRefreshes = new Set<string>();
 
 export const clearFailedAvatarUrlsCache = () => {
   failedAvatarUrls.clear();
+  inFlightAvatarRefreshes.clear();
 };
 
 export const Avatar: React.FC<AvatarProps> = ({
@@ -47,14 +52,42 @@ export const Avatar: React.FC<AvatarProps> = ({
   shape = "rounded",
   status,
   className,
+  phone,
+  onRefresh,
 }) => {
+  const [currentImage, setCurrentImage] = React.useState<string | undefined>(image);
   const [imageError, setImageError] = React.useState<boolean>(() => {
     return image ? failedAvatarUrls.has(image) : false;
   });
 
   React.useEffect(() => {
+    setCurrentImage(image);
     setImageError(image ? failedAvatarUrls.has(image) : false);
   }, [image]);
+
+  const handleImageError = React.useCallback(() => {
+    if (currentImage) failedAvatarUrls.add(currentImage);
+    setImageError(true);
+
+    if (phone && !inFlightAvatarRefreshes.has(phone)) {
+      inFlightAvatarRefreshes.add(phone);
+      WhatsAppRepository.refreshAvatar(phone)
+        .then((res) => {
+          if (res.success && res.avatar_url && res.avatar_url !== currentImage) {
+            failedAvatarUrls.delete(res.avatar_url);
+            setCurrentImage(res.avatar_url);
+            setImageError(false);
+            onRefresh?.(res.avatar_url);
+          }
+        })
+        .catch((err) => {
+          console.debug("[Avatar] Refresh attempt failed:", err);
+        })
+        .finally(() => {
+          inFlightAvatarRefreshes.delete(phone);
+        });
+    }
+  }, [currentImage, phone, onRefresh]);
 
   const sizeClasses = {
     xs: "w-6 h-6 text-[10px]",
@@ -78,7 +111,7 @@ export const Avatar: React.FC<AvatarProps> = ({
 
   const colorClass = getAvatarColor(name);
   const initials = getInitials(name);
-  const shouldRenderImage = Boolean(image && !imageError && !failedAvatarUrls.has(image));
+  const shouldRenderImage = Boolean(currentImage && !imageError && !failedAvatarUrls.has(currentImage));
 
   return (
     <div className="relative inline-flex shrink-0">
@@ -93,14 +126,11 @@ export const Avatar: React.FC<AvatarProps> = ({
       >
         {shouldRenderImage ? (
           <img
-            src={image}
+            src={currentImage}
             alt={name}
             loading="lazy"
             decoding="async"
-            onError={() => {
-              if (image) failedAvatarUrls.add(image);
-              setImageError(true);
-            }}
+            onError={handleImageError}
             className="w-full h-full object-cover aspect-square block"
           />
         ) : (

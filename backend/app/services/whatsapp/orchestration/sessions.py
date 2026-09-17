@@ -11,6 +11,7 @@ Handles WhatsApp tenant session lifecycle:
 from datetime import datetime
 import logging
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
+import uuid
 
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -209,6 +210,138 @@ async def create_session(db: AsyncSession, user_id: str, name: str) -> Dict[str,
     await db.refresh(row)
     logger.info("[WhatsApp] Yeni gateway oturumu: %s (%s)", row.session_name, gateway_id)
     return _session_dict(row)
+
+
+# ---------------------------------------------------------------------------
+# Ephemeral Pairing (No-Create QR Lifecycle)
+# ---------------------------------------------------------------------------
+_ephemeral_pairings: Dict[str, Dict[str, Any]] = {}
+
+
+async def start_pairing_session(user_id: str, name: Optional[str] = None) -> Dict[str, Any]:
+    """Starts an ephemeral pairing session in gateway without persisting any row in public.whatsapp_sessions.
+    Guarantees ZERO persistent database rows until the QR code is truly scanned and connected.
+    """
+    line_name = name or f"Hat {datetime.utcnow().strftime('%H:%M')}"
+    gw_session = await gw.create_session(line_name, ephemeral=True)
+    gateway_id = extract_session_id(gw_session)
+    if not gateway_id:
+        raise gw.WhatsAppGatewayError("Gateway oturum kimligi dondurmedi.")
+    pair_token = str(uuid.uuid4())
+    _ephemeral_pairings[pair_token] = {
+        "user_id": str(user_id),
+        "gateway_id": gateway_id,
+        "session_name": gw_session.get("session_name") or line_name,
+        "created_at": datetime.utcnow(),
+    }
+    return {
+        "pair_token": pair_token,
+        "gateway_id": gateway_id,
+        "session_name": gw_session.get("session_name") or line_name,
+        "status": "SCAN_QR",
+        "qr_code": gw_session.get("qr_code"),
+    }
+
+
+async def get_pairing_qr(db: AsyncSession, user_id: str, pair_token: str) -> Dict[str, Any]:
+    """Fetches QR code for an active ephemeral pairing session.
+    If the user scanned the QR and connection is established (CONNECTED),
+    promotes the session into public.whatsapp_sessions and persists it.
+    """
+    pairing = _ephemeral_pairings.get(pair_token)
+    if not pairing or pairing["user_id"] != str(user_id):
+        raise LookupError("Eşleşme oturumu bulunamadı veya süresi doldu.")
+
+    gateway_id = pairing["gateway_id"]
+    try:
+        data = await gw.get_session_qr(gateway_id)
+    except gw.WhatsAppGatewayError as exc:
+        if exc.status_code == 404:
+            _ephemeral_pairings.pop(pair_token, None)
+            raise LookupError("Gateway oturumu bulunamadı.") from exc
+        raise
+
+    status_val = data.get("status")
+    # When user scans QR code with phone and connection succeeds:
+    if status_val == "CONNECTED":
+        row = WhatsAppSession(
+            user_id=user_id,
+            gateway_id=gateway_id,
+            session_name=pairing["session_name"],
+            status=SessionStatus.CONNECTED,
+            phone_number=data.get("phone") or data.get("phone_number"),
+            is_active=True,
+            is_phone_online=True,
+        )
+        db.add(row)
+        await db.commit()
+        await db.refresh(row)
+        _ephemeral_pairings.pop(pair_token, None)
+        logger.info("[WhatsApp] Ephemeral eşleşme başarıyla kalıcı oturuma dönüştü: id=%s (%s)", row.id, gateway_id)
+        return {
+            "status": "CONNECTED",
+            "session_id": row.id,
+            "phone": row.phone_number,
+            "qr_code": None,
+            "error_message": None,
+        }
+
+    return {
+        "status": status_val or "SCAN_QR",
+        "qr_code": data.get("qr_code"),
+        "phone": data.get("phone"),
+        "error_message": data.get("error_message"),
+    }
+
+
+async def cancel_pairing_session(user_id: str, pair_token: str) -> Dict[str, Any]:
+    """Cancels an ephemeral pairing attempt, terminating gateway socket and freeing memory.
+    Guarantees that ZERO rows were ever created in public.whatsapp_sessions.
+    """
+    pairing = _ephemeral_pairings.pop(pair_token, None)
+    if pairing and pairing["user_id"] == str(user_id):
+        try:
+            await gw.delete_session(pairing["gateway_id"])
+        except Exception as exc:
+            logger.warning("[WhatsApp] Ephemeral gateway oturumu silinirken hata: %s", exc)
+    return {"success": True}
+
+
+async def refresh_contact_avatar(db: AsyncSession, user_id: str, phone: str) -> Dict[str, Any]:
+    """Refreshes contact avatar URL directly from WhatsApp via connected gateway session."""
+    stmt = (
+        select(WhatsAppSession)
+        .where(
+            get_user_filter(WhatsAppSession.user_id, user_id),
+            WhatsAppSession.status == SessionStatus.CONNECTED,
+            WhatsAppSession.is_active.is_(True),
+        )
+        .order_by(WhatsAppSession.id.desc())
+    )
+    sess = await db.scalar(stmt)
+    if not sess:
+        return {"success": False, "phone": phone, "error": "Aktif WhatsApp oturumu bulunamadı"}
+
+    gateway_id = sess.gateway_id
+    from backend.app.services.whatsapp.repositories.contacts import set_contact_avatar
+
+    jid = phone if ("@" in phone) else f"{phone.lstrip('+')}@s.whatsapp.net"
+    try:
+        res = await gw.refresh_avatar(gateway_id, jid)
+        new_url = res.get("avatar_url") if isinstance(res, dict) else None
+        
+        # Update contact in DB if exists
+        contact = await db.scalar(
+            select(Contact).where(get_user_filter(Contact.user_id, user_id), Contact.phone_e164 == phone)
+        )
+        if contact:
+            set_contact_avatar(contact, new_url)
+            await db.commit()
+            
+        return {"success": True, "phone": phone, "avatar_url": new_url}
+    except Exception as exc:
+        logger.warning("[WhatsApp] Avatar yenileme hatası (%s): %s", phone, exc)
+        return {"success": False, "phone": phone, "error": str(exc)}
 
 
 async def get_session_qr(db: AsyncSession, user_id: str, session_id: int) -> Dict[str, Any]:

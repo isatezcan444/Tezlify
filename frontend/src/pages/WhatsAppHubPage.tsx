@@ -1723,7 +1723,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       {/* 1. CANLI DİYALOGLAR (CONVERSATIONS) PANELİ */}
       {/* ========================================================================= */}
       {hubTab === 'conversations' && (
-        <Card className="h-[650px] md:h-[calc(100vh-12rem)] md:min-h-[550px] md:max-h-[850px] p-0 flex flex-col md:flex-row overflow-hidden border border-slate-200/80 dark:border-white/[0.08] shadow-sm">
+        <Card className="h-[520px] sm:h-[600px] md:h-[calc(100dvh-16.5rem)] md:min-h-[480px] md:max-h-[calc(100dvh-15.5rem)] p-0 flex flex-col md:flex-row overflow-hidden border border-slate-200/80 dark:border-white/[0.08] shadow-sm">
           {/* Left: Conversation List */}
           <div className={`w-full md:w-80 lg:w-96 shrink-0 h-full flex flex-col min-w-0 ${selectedConv ? 'hidden md:flex' : 'flex'}`}>
             {/* Faz 7/11: GERCEK initial-sync banneri — yalnizca backend'den
@@ -1823,6 +1823,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                     <Avatar
                       name={selectedConv.lead_name || (!isRawWhatsAppIdentity(selectedConv.lead_phone) ? selectedConv.lead_phone : '') || (selectedConv.is_group ? t('whatsapp.groupFallback') || 'Group' : t('whatsapp.pendingIdentity') || 'Lead')}
                       image={selectedConv.lead_avatar_url}
+                      phone={selectedConv.lead_phone}
                       size="md"
                       shape="rounded"
                     />

@@ -808,15 +808,17 @@ export function createSessionManager({
       autoStart = true,
       id: requestedId = null,
       persistRegistry = true,
+      ephemeral = false,
     } = {}) {
       const id = requestedId ? String(requestedId) : uuidv4();
       if (sessions.has(id)) return this.getSession(id);
-      if (authRepository && persistRegistry) {
+      if (authRepository && persistRegistry && !ephemeral) {
         await authRepository.registerSession(id, name, { active: true });
       }
       const session = {
         id,
         session_name: name,
+        ephemeral: Boolean(ephemeral),
         status: 'SCAN_QR',
         qr_code: null,
         phone_number: null,
@@ -997,7 +999,7 @@ export function createSessionManager({
         try { clearTimeout(session._historyQuietTimer); } catch (err) { /* ignore */ }
         session._historyQuietTimer = null;
       }
-      if (authRepository) {
+      if (authRepository && !session?.ephemeral) {
         await authRepository.clearAuth(id);
         await authRepository.setSessionActive(id, false);
       }
@@ -1851,6 +1853,35 @@ export function createSessionManager({
       }
     },
 
+    async refreshAvatar(sessionId, jid) {
+      const session = this._requireSession(sessionId);
+      if (!session.sock || session.status !== 'CONNECTED') {
+        return { success: false, error: 'Session not connected' };
+      }
+      const store = this._storeOf(session);
+      const key = resolveJidKey(store, jid);
+      try {
+        const url = await session.sock.profilePictureUrl(key, 'preview').catch(() => null);
+        if (store) {
+          const chat = store.chats.get(key);
+          if (chat) {
+            chat.avatar_url = url;
+            chat.updated_at = new Date().toISOString();
+            emitEvent({ event: 'conversation_updated', conversation: { ...chat }, gateway_session_id: session.id });
+          }
+          const contact = store.contacts.get(key);
+          if (contact) {
+            contact.avatar_url = url;
+            contact.updated_at = new Date().toISOString();
+            emitEvent({ event: 'contact_synced', contact: { ...contact }, gateway_session_id: session.id });
+          }
+        }
+        return { success: true, jid: key, avatar_url: url };
+      } catch (err) {
+        return { success: false, jid: key, error: err.message };
+      }
+    },
+
     // Faz 8: grup başlıklarını (subject) tek istekte çöz — Baileys
     // `groupFetchAllParticipating()` tüm katılımcı grupların metadata'sını
     // döner (groups.js:22). Sohbet başına groupMetadata() çağırma (N+1 /
@@ -2039,7 +2070,7 @@ export function createSessionManager({
       const generation = session.lifecycle.beginAttempt();
       session._diagnosticSocketGeneration = generation;
       clearLeaseTimers(session);
-      if (leaseRepository) {
+      if (leaseRepository && !session.ephemeral) {
         const acquired = await leaseRepository.acquire(id, instanceId, generation);
         if (!acquired) {
           session.status = 'RESTORING';
@@ -2076,7 +2107,7 @@ export function createSessionManager({
         ? null
         : safeReadEncrypted(path.join(sessionDir, 'auth.json'), aesKey);
       const authLoadStarted = performance.now();
-      const { state, saveCreds } = authRepository
+      const { state, saveCreds } = (authRepository && !session.ephemeral)
         ? await authRepository.createAuthState(id)
         : await useMultiFileAuthState(sessionDir);
       latency('auth_state_load_ms', authLoadStarted, id);
@@ -2416,6 +2447,22 @@ export function createSessionManager({
               auth_updates: session._diagnosticAuthUpdates || 0,
               keys_value_type: typeof state.keys,
             });
+          }
+          // If this was an ephemeral pairing attempt, promote it to persistent now that it is connected
+          if (session.ephemeral) {
+            session.ephemeral = false;
+            if (authRepository) {
+              await authRepository.registerSession(id, session.session_name, { active: true });
+              if (state?.creds) {
+                await authRepository.saveCredentials(id, state.creds);
+              }
+            }
+            if (leaseRepository) {
+              const acquired = await leaseRepository.acquire(id, instanceId, generation);
+              if (acquired) {
+                session._leaseValidUntil = Date.now() + leaseRepository.ttlSeconds * 1000;
+              }
+            }
           }
           emitEvent({ event: 'session_connected', session_id: id, session_name: session.session_name, phone: session.phone_number || null });
           // Faz 7: WhatsApp Web paritesi — bağlantı kuruldu, INITIAL SYNC

@@ -3,7 +3,7 @@
 HTTP katmanı: doğrulama + query parsing; iş mantığı `whatsapp_service`'de.
 Tüm uç noktalar kimlik doğrulamalı ve çok kiracılı (user_id filtresi) çalışır.
 """
-from typing import Optional
+from typing import Optional, Dict, Any
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
@@ -12,11 +12,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.core.auth import AuthUser, get_current_user
 from backend.app.core.database import get_db
 from backend.app.schemas.whatsapp import (
+    WhatsAppAvatarRefreshResponse,
     WhatsAppContactListResponse,
     WhatsAppConversationListResponse,
     WhatsAppMessagesResponse,
     WhatsAppPairingCodeRequest,
     WhatsAppPairingCodeResponse,
+    WhatsAppPairingQrResponse,
+    WhatsAppPairingStartRequest,
+    WhatsAppPairingStartResponse,
     WhatsAppQrResponse,
     WhatsAppReadResult,
     WhatsAppSendMediaRequest,
@@ -86,6 +90,48 @@ async def get_sessions(
 ) -> WhatsAppSessionListResponse:
     sessions = await whatsapp_service.list_sessions(db, current_user.id)
     return WhatsAppSessionListResponse(sessions=sessions)
+
+
+# ---------------------------------------------------------------------------
+# Ephemeral Pairing Lifecycle (No-Create QR)
+# ---------------------------------------------------------------------------
+@router.post("/pairing/start", response_model=WhatsAppPairingStartResponse, status_code=status.HTTP_201_CREATED)
+async def start_pairing(
+    payload: WhatsAppPairingStartRequest,
+    current_user: AuthUser = Depends(get_current_user),
+) -> WhatsAppPairingStartResponse:
+    try:
+        data = await whatsapp_service.start_pairing_session(current_user.id, payload.name)
+        return WhatsAppPairingStartResponse(**data)
+    except Exception as exc:
+        raise _bad_gateway(exc) from exc
+
+
+@router.get("/pairing/{pair_token}/qr", response_model=WhatsAppPairingQrResponse)
+async def get_pairing_qr(
+    pair_token: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+) -> WhatsAppPairingQrResponse:
+    try:
+        data = await whatsapp_service.get_pairing_qr(db, current_user.id, pair_token)
+        return WhatsAppPairingQrResponse(**data)
+    except LookupError as exc:
+        raise _not_found(exc) from exc
+    except Exception as exc:
+        raise _bad_gateway(exc) from exc
+
+
+@router.post("/pairing/{pair_token}/cancel")
+async def cancel_pairing(
+    pair_token: str,
+    current_user: AuthUser = Depends(get_current_user),
+) -> Dict[str, Any]:
+    try:
+        return await whatsapp_service.cancel_pairing_session(current_user.id, pair_token)
+    except Exception as exc:
+        logger.warning("[WhatsApp] cancel_pairing error: %s", exc)
+        return {"success": True}
 
 
 @router.post("/sessions", response_model=WhatsAppSessionResponse, status_code=status.HTTP_201_CREATED)
@@ -274,6 +320,19 @@ async def sync_contacts(
     except Exception as exc:
         raise _bad_gateway(exc) from exc
     return WhatsAppContactListResponse(contacts=contacts)
+
+
+@router.post("/contacts/{phone}/avatar/refresh", response_model=WhatsAppAvatarRefreshResponse)
+async def refresh_contact_avatar(
+    phone: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+) -> WhatsAppAvatarRefreshResponse:
+    try:
+        res = await whatsapp_service.refresh_contact_avatar(db, current_user.id, phone)
+        return WhatsAppAvatarRefreshResponse(**res)
+    except Exception as exc:
+        raise _bad_gateway(exc) from exc
 
 
 @router.get("/conversations", response_model=WhatsAppConversationListResponse)

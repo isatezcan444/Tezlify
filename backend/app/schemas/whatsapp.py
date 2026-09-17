@@ -38,6 +38,33 @@ class WhatsAppQrResponse(BaseModel):
     error_message: Optional[str] = None
 
 
+class WhatsAppPairingStartRequest(BaseModel):
+    name: Optional[str] = Field(default=None, max_length=100)
+
+
+class WhatsAppPairingStartResponse(BaseModel):
+    pair_token: str
+    gateway_id: str
+    session_name: str
+    status: str
+    qr_code: Optional[str] = None
+
+
+class WhatsAppPairingQrResponse(BaseModel):
+    status: str
+    qr_code: Optional[str] = None
+    phone: Optional[str] = None
+    session_id: Optional[int] = None
+    error_message: Optional[str] = None
+
+
+class WhatsAppAvatarRefreshResponse(BaseModel):
+    success: bool
+    phone: str
+    avatar_url: Optional[str] = None
+    error: Optional[str] = None
+
+
 class WhatsAppPairingCodeRequest(BaseModel):
     phone: str = Field(min_length=7, max_length=24, description="Ülke kodu dahil telefon (örn. +90 5XX XXX XX XX)")
 

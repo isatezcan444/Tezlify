@@ -96,8 +96,15 @@ async def list_sessions() -> List[Dict[str, Any]]:
     return data.get("sessions", []) if isinstance(data, dict) else []
 
 
-async def create_session(name: str) -> Dict[str, Any]:
-    return await _request("POST", "/sessions", json={"name": name})
+async def create_session(name: str, ephemeral: bool = False) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {"name": name}
+    if ephemeral:
+        payload["ephemeral"] = True
+    return await _request("POST", "/sessions", json=payload)
+
+
+async def refresh_avatar(gateway_id: str, jid: str) -> Dict[str, Any]:
+    return await _request("POST", f"/sessions/{_s(gateway_id)}/avatar/refresh", json={"jid": jid})
 
 
 async def get_session_status(session_id: str) -> Dict[str, Any]:

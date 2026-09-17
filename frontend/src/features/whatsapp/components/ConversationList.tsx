@@ -280,6 +280,7 @@ export const ConversationList: React.FC<ConversationListProps> = ({
                 <Avatar
                   name={displayName}
                   image={conv.lead_avatar_url}
+                  phone={conv.lead_phone}
                   size="md"
                   shape="rounded"
                 />

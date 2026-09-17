@@ -86,14 +86,18 @@ from backend.app.services.whatsapp.repositories.sessions import (
 from backend.app.services.whatsapp.orchestration.sessions import (
     _gateway_op_or_mark_relink,
     _list_sessions_internal,
+    cancel_pairing_session,
     create_session,
     delete_session as _orchestrated_delete_session,
+    get_pairing_qr,
     get_session_qr,
     list_sessions,
     logout_session,
     purge_whatsapp_data,
+    refresh_contact_avatar,
     refresh_session_qr,
     request_pairing_code,
+    start_pairing_session,
 )
 
 
