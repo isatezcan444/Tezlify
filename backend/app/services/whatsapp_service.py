@@ -14,10 +14,10 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Dict, FrozenSet, List, Optional, Set, Tuple
 
-from sqlalchemy import select, func, or_, and_, delete, text, insert
+from sqlalchemy import select, func, or_, and_, delete, text, insert, exists
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import joinedload, contains_eager
+from sqlalchemy.orm import joinedload, contains_eager, aliased
 
 from backend.app.core.database import AsyncSessionLocal
 from backend.app.core.auth import get_user_filter
@@ -1637,15 +1637,21 @@ async def list_conversations(
     # filtreleri yenisini engeller ama eski kirli satirlar DB'de durur —
     # bunlar sohbet listesinden dislanir (WhatsApp Web paritesi: Durum ve
     # kanallar sohbet listesinde yer almaz). Join YOK — alt sorgu.
-    junk_contacts = select(Contact.id).where(
+    # Faz 10.11: Correlated NOT EXISTS replaces ~Conversation.contact_id.in_(junk_contacts).
+    # Uses aliased(Contact) to prevent correlation collisions when base joins Contact (e.g. search/lead_id).
+    # This avoids a full sequential scan on the contacts table (hashed SubPlan 1) and
+    # utilizes Nested Loop Anti Join with primary key index scan (contacts_pkey).
+    junk_contact_alias = aliased(Contact)
+    junk_contacts = select(1).select_from(junk_contact_alias).where(
+        junk_contact_alias.id == Conversation.contact_id,
         or_(
-            Contact.phone_e164 == "status",
-            Contact.phone_e164 == "broadcast",
-            Contact.phone_e164.like("%@broadcast%"),
-            Contact.phone_e164.like("%@newsletter%"),
-        )
+            junk_contact_alias.phone_e164 == "status",
+            junk_contact_alias.phone_e164 == "broadcast",
+            junk_contact_alias.phone_e164.like("%@broadcast%"),
+            junk_contact_alias.phone_e164.like("%@newsletter%"),
+        ),
     )
-    base = base.where(~Conversation.contact_id.in_(junk_contacts))
+    base = base.where(~junk_contacts.exists())
     # `Contact` tablosuna katlanma GEREKEN filtreler icin join BIR KEZ yapilir
     # (ayni sorguda iki kez join etmek SQL hatasi uretir).
     joined_contact = False
@@ -3712,17 +3718,33 @@ async def _find_whatsapp_conversation(
     listesine yeni satir EKLEYEMEZ.
     """
     phone = _contact_phone_for_jid(jid)
-    contact_id = await db.scalar(
-        select(Contact.id).where(
+    if not phone:
+        return None
+    # Faz 10.11: Single joined query to resolve Contact and matching Conversation together,
+    # eliminating sequential roundtrips per status/read/presence event.
+    join_cond = and_(
+        Conversation.contact_id == Contact.id,
+        Conversation.channel == "WHATSAPP",
+        get_user_filter(Conversation.user_id, user_id),
+    )
+    if session_id is not None:
+        join_cond = and_(join_cond, Conversation.session_id == session_id)
+
+    stmt = (
+        select(Contact.id, Conversation)
+        .outerjoin(Conversation, join_cond)
+        .where(
             Contact.phone_e164 == phone,
             get_user_filter(Contact.user_id, user_id),
         )
+        .order_by(Conversation.id.asc())
     )
-    if contact_id is None:
+    res = await db.execute(stmt)
+    records = res.all()
+    if not records:
         return None
-    filters = _conversation_scope_filters(user_id, contact_id, session_id)
-    res = await db.execute(select(Conversation).where(*filters).order_by(Conversation.id.asc()))
-    rows = list(res.scalars().all())
+    contact_id = records[0][0]
+    rows = [r[1] for r in records if r[1] is not None]
     if session_id is not None and not rows:
         # Backfill a legacy, line-less row only when it is unambiguous for
         # this tenant/contact. Never borrow a row already assigned to another
@@ -3800,8 +3822,12 @@ async def _map_conversation_event(db: AsyncSession, event: Dict[str, Any]) -> Di
         wa_id = event.get("wa_message_id")
         client_mid = event.get("client_message_id")
         if wa_id or client_mid:
+            # Faz 10.11: Select both (Message, Conversation) in a single joined query,
+            # eliminating the subsequent db.get(Conversation, ...) roundtrip.
             msg_res = await db.execute(
-                select(Message).join(Conversation, Message.conversation_id == Conversation.id).where(
+                select(Message, Conversation)
+                .join(Conversation, Message.conversation_id == Conversation.id)
+                .where(
                     or_(
                         Message.wa_message_id == wa_id if wa_id else False,
                         Message.client_message_id == client_mid if client_mid else False,
@@ -3809,9 +3835,9 @@ async def _map_conversation_event(db: AsyncSession, event: Dict[str, Any]) -> Di
                     get_user_filter(Conversation.user_id, owner),
                 )
             )
-            matching_msg = msg_res.scalars().first()
-            if matching_msg:
-                conv = await db.get(Conversation, matching_msg.conversation_id)
+            first_pair = msg_res.first()
+            if first_pair:
+                matching_msg, conv = first_pair
         if conv is None:
             conv = await _find_whatsapp_conversation(db, owner, str(jid), session_id=ws_session_id)
         if conv is None:
