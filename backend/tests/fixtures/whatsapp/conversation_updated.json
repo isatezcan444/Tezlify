@@ -1,0 +1,14 @@
+{
+  "event_id": "00000000-0000-4000-8000-000000000008",
+  "event": "conversation_updated",
+  "gateway_session_id": "2b2ed927-866c-4373-89d9-0ad8b35d63c8",
+  "conversation_id": 42,
+  "conversation": {
+    "id": 42,
+    "jid": "905551234567@s.whatsapp.net",
+    "name": "Synthetic Contact",
+    "last_message_preview": "Hello from synthetic characterization",
+    "last_message_at": "2026-09-17T12:00:00.000Z",
+    "unread_count": 1
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "event_id": "00000000-0000-4000-8000-000000000003",
+  "event": "history_sync_completed",
+  "gateway_session_id": "2b2ed927-866c-4373-89d9-0ad8b35d63c8",
+  "chats_synced": 12,
+  "messages_synced": 150,
+  "sync_type": "RECENT",
+  "completed_at": "2026-09-17T12:00:10.000Z"
+}

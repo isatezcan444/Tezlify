@@ -32,8 +32,41 @@ from backend.app.services.whatsapp_profiling import profiled
 logger = logging.getLogger(__name__)
 
 
-class WhatsAppRelinkRequired(RuntimeError):
-    """The logical line exists, but its durable WhatsApp auth cannot be restored."""
+from backend.app.services.whatsapp.exceptions import (
+    EventOwnerUnresolved,
+    NoWhatsAppSession,
+    WhatsAppRelinkRequired,
+)
+from backend.app.services.whatsapp.repositories.contacts import (
+    get_contact_avatar as _get_contact_avatar,
+    set_contact_avatar as _set_contact_avatar,
+    set_contact_name as _set_contact_name,
+)
+from backend.app.services.whatsapp.repositories.conversations import (
+    apply_conversation_last_message as _apply_last_message,
+    find_whatsapp_conversation as _find_whatsapp_conversation,
+    get_conversation_by_id as _get_conversation_or_404,
+    get_conversation_scope_filters as _conversation_scope_filters,
+    resolve_conversation_jid as _resolve_jid,
+)
+from backend.app.services.whatsapp.repositories.messages import (
+    build_message_from_gateway as _message_row_from_gateway,
+    get_sync_watermark_epoch as _sync_watermark_epoch,
+    hydration_cursor_ms as _hydration_cursor_ms,
+    message_exists_by_wa_id,
+    msg_time as _msg_time,
+    msg_time_col as _msg_time_col,
+)
+from backend.app.services.whatsapp.repositories.sessions import (
+    conversation_gateway_id as _conversation_gateway_id,
+    conversation_session as _conversation_session,
+    get_session_by_id as _get_session_or_404,
+    get_user_sessions as _user_sessions,
+    require_user_session as _require_user_session,
+    resolve_event_owner as _resolve_event_owner,
+    resolve_event_owner_and_session as _resolve_event_owner_and_session,
+    resolve_event_session_id as _resolve_event_session_id,
+)
 
 
 _conversation_locks: Dict[Tuple[str, int], asyncio.Lock] = {}
@@ -53,119 +86,21 @@ def _get_conversation_lock(user_id: str, conversation_id: int) -> asyncio.Lock:
 # Yardimcilar
 # ---------------------------------------------------------------------------
 
-def jid_to_phone(jid: str) -> Optional[str]:
-    """`905321002030@s.whatsapp.net` -> `+905321002030`.
-
-    Faz 6e: `xxx@lid` kimlikleri WhatsApp'ın telefon-gizli LID anahtarıdır ve
-    telefon numarası DEĞİLDİR — asla `+rakam` türetilmez (AGENTS.md: sahte
-    telefon sentezlenmez). Gateway eşleşmeyi öğrenince telefona çözülmüş JID
-    gönderir; öğrenemezse hiç göndermez.
-    """
-    if not jid:
-        return None
-    jid_str = str(jid)
-    if jid_str.endswith("@lid"):
-        return None
-    # Faz 8 (RC-4): grup JID'inden (`120363...@g.us`) asla telefon türetilmez
-    # — yoksa UI'da `+1203632...` gibi sahte numaralar görünür (AGENTS.md).
-    if "@g.us" in jid_str:
-        return None
-    digits = "".join(ch for ch in jid_str.split("@")[0] if ch.isdigit())
-    # Faz 9 (§4/§5, RC-2): dejenere JID'lerden (`0@s.whatsapp.net`) '+0' gibi
-    # uydurma telefonlar üretilmez — en az 5 hane ve tümü sıfır olamaz.
-    if not digits or len(digits) < 5 or set(digits) == {"0"}:
-        return None
-    return f"+{digits}"
+from backend.app.services.whatsapp.identity import (
+    NAME_RANK as _NAME_RANK,
+    contact_phone_for_jid as _contact_phone_for_jid,
+    is_broadcast_only_jid,
+    is_degenerate_jid,
+    is_phone_like as _is_phone_like,
+    is_raw_jid_name as _is_raw_jid_name,
+    jid_to_phone,
+    phone_to_jid,
+    safe_display_name as _safe_display_name,
+)
 
 
-def is_degenerate_jid(jid: str) -> bool:
-    """Faz 9 (§5): WhatsApp sistem/dejenere JID'leri (`0@s.whatsapp.net`,
-    `000@...`) gercek bir kisi/sohbet DEGILDIR — contact/conversation
-    kaydi uretilmez (kapida '+0' chat'in kaynagi buydu). Gateway ile
-    ayni kural: 5+ hane ve tamami sifir degil."""
-    if not jid:
-        return False
-    head = str(jid).split("@")[0]
-    digits = "".join(ch for ch in head if ch.isdigit())
-    if not digits or digits != head.strip():
-        return False
-    return len(digits) < 5 or set(digits) == {"0"}
 
-
-# Sorun (prod geri bildirim): WhatsApp Durum/Hikaye (`status@broadcast`) ve
-# kanal (`@newsletter`) JID'leri sohbet listesinde gorunuyordu. WhatsApp Web
-# paritesi: bu JID'ler sohbet listesinde YER ALMAZ (Durum / Guncellemeler
-# sekmelerine aittir). Bu uygulamada boyle bir sekme olmadigi icin
-# contact/conversation/mesaj kaydi HIC uretilmez (gateway de ayni filtreyi
-# uygular; burasi ikinci savunma hatti).
-def is_broadcast_only_jid(jid: Optional[str]) -> bool:
-    if not jid:
-        return False
-    jid_str = str(jid)
-    return jid_str == "status@broadcast" or jid_str.endswith("@newsletter")
-
-
-def phone_to_jid(phone_e164: str) -> str:
-    """`+905321002030` -> `905321002030@s.whatsapp.net`."""
-    digits = "".join(ch for ch in phone_e164 if ch.isdigit())
-    return f"{digits}@s.whatsapp.net"
-
-
-# ---------------------------------------------------------------------------
-# Kisi adi onceligi (WhatsApp Web parityi): kullanıcının telefon rehberindeki
-# ad (gateway W:Contact app-state → name_source='addressbook') her zaman
-# pushName'den (kişinin kendi profil adı, 'push') ve history sync adindan
-# ('history') once gelir. Kaynak gateway'den name_source alaniyla gelir.
-# ---------------------------------------------------------------------------
-_NAME_RANK: Dict[str, int] = {"addressbook": 5, "verified": 4, "group_subject": 4, "history": 3, "push": 2, "phone": 1}
-
-
-def _is_phone_like(value: Optional[str]) -> bool:
-    """Ad bos ya da telefon numarasi gorunumunde mi ('+90...', 'jid:...')."""
-    if not value:
-        return True
-    v = str(value).strip()
-    return (v.startswith("+") and v[1:].isdigit()) or v.startswith("jid:")
-
-
-def _set_contact_name(contact: Contact, name: Optional[str], source: Optional[str]) -> bool:
-    """Oncelik-cozumumlu kisi adi guncellemesi; isim degistiyse True doner.
-
-    Kural: mevcut ad telefon gorunumunde/bossa her gercek ad yazar;
-    aksi halde yalnizca rutbesi (addressbook > verified > history > push)
-    mevcut rutbeyi saglayan ad yazilir. Boylece pushName rehber adini, ya da
-    eski bir pushName yeni rehber adini asla ezemez.
-    """
-    if not name:
-        return False
-    # Faz 7: ham jid/lid ('6277...@lid', 'jid:...') asla gercek ad olarak
-    # yazilmaz — identity cozulumu tamamlanana kadar ad None kalir.
-    if _is_raw_jid_name(name):
-        return False
-    clean = str(name).strip()[:150]
-    if not clean:
-        return False
-    # Telefon gorunumundeki bir ad (ornek '+90532...') gercek bir adin
-    # uzerine asla yazilmaz; yalnizca bos kisiye yerlestirilir.
-    if _is_phone_like(clean) and not _is_phone_like(contact.display_name):
-        return False
-    src = str(source) if str(source or "") in _NAME_RANK else "history"
-    attrs = dict(contact.custom_attributes or {})
-    stored_source = str(attrs.get("name_source") or "")
-    if stored_source in _NAME_RANK:
-        current_rank = _NAME_RANK[stored_source]
-    else:
-        # Kaynagi bilinmeyen eski kayitlar: gercek ad gibi varsay (history rutbesi).
-        current_rank = _NAME_RANK["history"] if contact.display_name else 0
-    phone_like = _is_phone_like(contact.display_name) or contact.display_name == contact.phone_e164
-    if phone_like or _NAME_RANK[src] >= current_rank:
-        changed = contact.display_name != clean
-        contact.display_name = clean
-        if attrs.get("name_source") != src:
-            attrs["name_source"] = src
-            contact.custom_attributes = attrs
-        return changed
-    return False
+# _set_contact_name is imported from backend.app.services.whatsapp.repositories.contacts
 
 
 def _serialize_message(row: Message) -> Dict[str, Any]:
@@ -211,138 +146,25 @@ def _session_dict(row: WhatsAppSession) -> Dict[str, Any]:
     }
 
 
-def _parse_status(value: Optional[str]) -> SessionStatus:
-    if value is None:
-        return SessionStatus.SCAN_QR
-    try:
-        return SessionStatus(value)
-    except Exception:
-        logger.error("Unknown WhatsApp session status received from gateway: %r", value)
-        return SessionStatus.ERROR
+from backend.app.services.whatsapp.status_policy import (
+    advance_message_status as _advance_message_status,
+    parse_session_status as _parse_status,
+)
 
 
-def _parse_dt(value: Optional[str]) -> Optional[datetime]:
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except (TypeError, ValueError) as exc:
-        logger.warning("WhatsApp zaman damgasi parse edilemedi (value=%r): %s", value, exc)
-        return None
+from backend.app.services.whatsapp.preview_normalization import (
+    BRACKET_TYPE_RE as _BRACKET_TYPE_RE,
+    TYPE_PREVIEW_LABELS as _TYPE_PREVIEW_LABELS,
+    as_naive_utc as _as_naive_utc,
+    build_last_message_summary,
+    normalize_preview_text as _normalize_preview_text,
+    parse_dt as _parse_dt,
+    should_apply_last_message,
+)
 
 
-def _as_naive_utc(value: Optional[datetime]) -> Optional[datetime]:
-    """DB kolonlari naive UTC; aware datetime'lari karsilastirilabilir hale getirir."""
-    if value is None:
-        return None
-    if value.tzinfo is not None:
-        return value.astimezone(timezone.utc).replace(tzinfo=None)
-    return value
+# _apply_last_message is imported from backend.app.services.whatsapp.repositories.conversations (as apply_conversation_last_message)
 
-
-# ---------------------------------------------------------------------------
-# Faz 10 (P2): SON MESAJ OZETI — TEK PAYLASILAN KURAL.
-# Initial sync, manuel "Eşitle", realtime ingest ve gonderim yollari AYNI
-# fonksiyonlari kullanir; sohbet ozeti hicbir yerde farkli hesaplanmaz.
-# Kurallar:
-#  - Metin mesajinda govde; medyada tip etiketi (📷/🎥/🎵/📄/Sticker...).
-#  - Eski kose-parantezli degerler ([IMAGE] vb.) ayni etiketlere normalize
-#    edilir — UI'a asla '[IMAGE]' veya '[object Object]' sizmaz.
-#  - Grup sohbetinde gonderen cozulebildiyse on ek: "Ahmet: Toplantı...";
-#    cozulemiyorsa ham JID/LID on ek ASLA yazilmaz, yalans govde kalir.
-#  - Uygulama zaman-damgali siralamayadir (ekleme sirasi DEGIL): daha yeni
-#    mesaj eskisini ezemez; bos ozet mevcut ozeti silmez.
-# ---------------------------------------------------------------------------
-
-_TYPE_PREVIEW_LABELS: Dict[str, str] = {
-    "IMAGE": "📷 Fotoğraf",
-    "VIDEO": "🎥 Video",
-    "AUDIO": "🎵 Sesli mesaj",
-    "STICKER": "Sticker",
-    "DOCUMENT": "📄 Dosya",
-    "LOCATION": "📍 Konum",
-    "CONTACT": "👤 Kişi kartı",
-    "TEMPLATE": "Şablon mesajı",
-    "UNKNOWN": "Mesaj",
-    "OTHER": "Mesaj",
-}
-
-_BRACKET_TYPE_RE = re.compile(r"^\[([A-Za-z_]+)\]$")
-
-
-def _normalize_preview_text(message_type: Optional[str], body: Optional[str]) -> str:
-    """Bir mesajdan (tip + govde) yuzluk preview metnini uretir.
-
-    Bos govde + medya tipi -> tip etiketi; eski '[IMAGE]' tarzi kalici
-    degerler de ayni etikete cevrilir. Metin tipi + bos govde -> bos string
-    (ozet YAZILMAZ, mevcut korunur).
-    """
-    t = str(message_type or "TEXT").upper()
-    text = (body or "").strip()
-    if text:
-        m = _BRACKET_TYPE_RE.match(text)
-        if m:
-            inner = m.group(1).upper()
-            # UI'a asla kopeli deger sizmaz: taninmayan tip -> mesajin kendi
-            # tip etiketi, o da yoksa genel 'Mesaj'.
-            return _TYPE_PREVIEW_LABELS.get(inner, _TYPE_PREVIEW_LABELS.get(t, "Mesaj"))
-        if text in ("[object Object]", "[Medya]"):
-            return _TYPE_PREVIEW_LABELS.get(t, "Mesaj")
-        return text
-    if t == "TEXT":
-        return ""
-    return _TYPE_PREVIEW_LABELS.get(t, "Mesaj")
-
-
-def build_last_message_summary(
-    *,
-    message_type: Optional[str],
-    body: Optional[str],
-    sender_name: Optional[str] = None,
-    is_group: bool = False,
-    direction: Optional[str] = None,
-) -> str:
-    """Sohbet listesi satiri icin son-mesaj ozetini uretir (tek kural).
-
-    Grup + gelen mesajda cozulmus gonderen adi one eklenir
-    ('Ahmet: Toplantıyı yarına aldık.'). Gonderen adi ham JID/LID veya
-    telefon gorunumundeyse ya da sohbet adinin kendisiyle ayniysa on ek
-    atlanir (WhatsApp Web paritesi: 'Ahmet:' degilse yalans govde).
-    """
-    base = _normalize_preview_text(message_type, body)
-    if not base:
-        return ""
-    name = (sender_name or "").strip()
-    if (
-        is_group
-        and str(direction or "INBOUND").upper() == "INBOUND"
-        and name
-        and name.upper() != "ME"
-        and not _is_raw_jid_name(name)
-        and not _is_phone_like(name)
-    ):
-        return f"{name}: {base}"
-    return base
-
-
-def _apply_last_message(conv: Conversation, ts: Optional[datetime], summary: str) -> bool:
-    """Sohbetin son mesaj alanlarini ZAMAN DAMGALI kurala gore gunceller.
-
-    - summary bos ise hicbir sey yazilmaz (mevcut ozet silinmez).
-    - ts mevcut last_message_at'ten eski/eseit ise guncellenmez — boylece
-      gecmis mesajlarin yeniden yazimi (retry/duplicate) en yeni ozeti bozamaz.
-    - ts yoksa (realtime) yazilir — canli akista siralama gateway'de dogru.
-    Degisiklik olduysa True doner.
-    """
-    if not summary:
-        return False
-    ts = _as_naive_utc(ts)
-    if ts is not None and conv.last_message_at is not None and ts <= conv.last_message_at:
-        return False
-    conv.last_message_preview = summary[:500]
-    if ts is not None:
-        conv.last_message_at = ts
-    return True
 
 
 def _apply_gateway_live(row: WhatsAppSession, data: Dict[str, Any]) -> None:
@@ -561,82 +383,9 @@ async def create_session(db: AsyncSession, user_id: str, name: str) -> Dict[str,
     return _session_dict(row)
 
 
-async def _user_sessions(
-    db: AsyncSession, user_id: str, connected_only: bool = True
-) -> List[WhatsAppSession]:
-    """Kullanicinin WhatsApp hatlari (varsayilan: yalnizca BAGLI olanlar).
-
-    SAHIPLIK KAPISI (guvenlik duzeltmesi): gateway veri duzlemi artik oturum
-    kapsamlidir ve her cagri bir `gateway_id` ister. O kimlik YALNIZCA burada,
-    kullanici filtresiyle uretilir — bir kiracinin istegi baska bir kiracinin
-    hattina asla ulasamaz. (Onceki surumde gateway "bagli olan tek oturumu"
-    seciyordu; kullanicinin hic hatti olmasa bile baskasinin hattindan veri
-    okunup mesaj gonderilebiliyordu.)
-    """
-    stmt = select(WhatsAppSession).where(get_user_filter(WhatsAppSession.user_id, user_id))
-    if connected_only:
-        stmt = stmt.where(WhatsAppSession.status == SessionStatus.CONNECTED)
-    res = await db.execute(stmt.order_by(WhatsAppSession.updated_at.desc()))
-    return list(res.scalars().all())
-
-
-class NoWhatsAppSession(LookupError):
-    """Kullanicinin kullanilabilir bir WhatsApp hatti yok (fail-closed)."""
-
-
-async def _require_user_session(
-    db: AsyncSession, user_id: str, session_id: Optional[int] = None
-) -> WhatsAppSession:
-    """Tek bir hat cozer: verilen `session_id` (sahiplik dogrulanarak) ya da
-    kullanicinin bagli hatti. Hic yoksa `NoWhatsAppSession` (sahte basari yok).
-    """
-    if session_id is not None:
-        row = await db.scalar(
-            select(WhatsAppSession).where(
-                WhatsAppSession.id == session_id,
-                get_user_filter(WhatsAppSession.user_id, user_id),
-            )
-        )
-        if row is not None:
-            return row
-    sessions = await _user_sessions(db, user_id, connected_only=True)
-    if sessions:
-        return sessions[0]
-    raise NoWhatsAppSession(
-        "Bagli bir WhatsApp hatti yok. Lutfen once QR ile eslestirin."
-    )
-
-
-async def _conversation_gateway_id(
-    db: AsyncSession, user_id: str, conv: Conversation
-) -> str:
-    """Sohbetin ait oldugu hattin gateway kimligi.
-
-    Sohbet hangi hattan geldiyse gonderim/okuma o hattan yapilir — birden
-    fazla hat bagliyken "birini sec" tahmini YOK. Eski (session_id NULL)
-    satirlar kullanicinin bagli hattina duser.
-    """
-    row = await _require_user_session(db, user_id, conv.session_id)
-    return str(row.gateway_id)
-
-
-async def _conversation_session(
-    db: AsyncSession, user_id: str, conv: Conversation
-) -> WhatsAppSession:
-    """Sohbetin ait oldugu kullanici oturum kaydi."""
-    return await _require_user_session(db, user_id, conv.session_id)
-
-
-async def _get_session_or_404(db: AsyncSession, user_id: str, session_id: int) -> WhatsAppSession:
-    stmt = select(WhatsAppSession).where(
-        WhatsAppSession.id == session_id,
-        get_user_filter(WhatsAppSession.user_id, user_id),
-    )
-    res = await db.execute(stmt)
-    row = res.scalar_one_or_none()
-    if not row:
-        raise LookupError("WhatsApp oturumu bulunamadi.")
-    return row
+# Session repository functions (_user_sessions, _require_user_session,
+# _conversation_gateway_id, _conversation_session, _get_session_or_404, NoWhatsAppSession)
+# are imported from backend.app.services.whatsapp.repositories.sessions and backend.app.services.whatsapp.exceptions
 
 
 async def get_session_qr(db: AsyncSession, user_id: str, session_id: int) -> Dict[str, Any]:
@@ -817,24 +566,7 @@ async def delete_session(db: AsyncSession, user_id: str, session_id: int) -> Dic
 # Kisiler (contacts)
 # ---------------------------------------------------------------------------
 
-def _set_contact_avatar(contact: Contact, avatar_url: Optional[str]) -> None:
-    """Contact avatarini custom_attributes icina yazar (SQLite JSON degisim
-    algisi icin sozlugu yeniden atamali guncelle)."""
-    if not avatar_url:
-        return
-    attrs = dict(contact.custom_attributes or {})
-    if attrs.get("avatar_url") == avatar_url:
-        return
-    attrs["avatar_url"] = avatar_url
-    contact.custom_attributes = attrs
-
-
-def _get_contact_avatar(contact: Optional[Contact]) -> Optional[str]:
-    if contact is None:
-        return None
-    attrs = contact.custom_attributes or {}
-    value = attrs.get("avatar_url") if isinstance(attrs, dict) else None
-    return str(value) if value else None
+# _set_contact_avatar and _get_contact_avatar are imported from backend.app.services.whatsapp.repositories.contacts
 
 
 async def sync_contacts(
@@ -871,44 +603,6 @@ async def sync_contacts(
     await db.commit()
     return out
 
-
-def _is_raw_jid_name(value: Optional[str]) -> bool:
-    """Ham WhatsApp kimligi gorunumunde ad mi ('6277...@lid', '123...@c.us',
-    'jid:...') — presentation layer'a asla cikmamali (Faz 7)."""
-    if not value:
-        return False
-    v = str(value).strip()
-    return (
-        v.startswith("jid:")
-        or "@lid" in v
-        or v.endswith("@c.us")
-        or v.endswith("@s.whatsapp.net")
-        or v.endswith("@g.us")
-    )
-
-
-def _safe_display_name(contact: Optional[Contact]) -> Optional[str]:
-    """UI icin guvenli gorunen ad: ham jid/lid sizarca None'a cevrilir
-    (frontend normalize edilmis telefona duser)."""
-    if contact is None:
-        return None
-    name = contact.display_name
-    if _is_raw_jid_name(name):
-        return None
-    return name
-
-
-def _contact_phone_for_jid(jid: str) -> str:
-    """Kisi telefon/`jid:` sentinel kurali (tek kaynak — _upsert_contact ve
-    batch yollari ayni semantigi kullanir).
-
-    Grup JID'leri ("...@g.us") telefon numarasina cevrilemez; jid: sentinel'i
-    ile saklanır — _resolve_jid ve is_group bu sentinel'e guvenir.
-    """
-    if "@g.us" in str(jid):
-        return f"jid:{jid}"
-    phone = jid_to_phone(jid)
-    return phone or f"jid:{jid}"
 
 
 async def _bulk_upsert_contacts(
@@ -1199,18 +893,7 @@ async def _upsert_contact(
 # Sohbetler (conversations)
 # ---------------------------------------------------------------------------
 
-def _conversation_scope_filters(
-    user_id: str, contact_id: Any, session_id: Optional[int] = None
-) -> List[Any]:
-    """Return the canonical tenant/line scope for a WhatsApp conversation."""
-    filters: List[Any] = [
-        Conversation.contact_id == contact_id,
-        Conversation.channel == "WHATSAPP",
-        get_user_filter(Conversation.user_id, user_id),
-    ]
-    if session_id is not None:
-        filters.append(Conversation.session_id == session_id)
-    return filters
+# _conversation_scope_filters is imported from backend.app.services.whatsapp.repositories.conversations
 
 async def _ensure_conversation(
     db: AsyncSession, user_id: str, jid: str, preview: Optional[str] = None,
@@ -1317,60 +1000,7 @@ async def _ensure_conversation_race_safe(
         )
 
 
-def _message_row_from_gateway(owner: str, conv: Conversation, msg: Dict[str, Any]) -> Optional[Message]:
-    """Gateway mesaj kaydinden Message satiri uretir (INSERT yapmaz).
-
-    `_persist_gateway_message` (tekli yol) ile chunked sync job'i (batch yolu)
-    AYNI alan semantigini kullanir — iki kopya drift'i olusmaz.
-    """
-    jid_str = str(msg.get("conversation_id") or "")
-    mtype_str = (msg.get("message_type") or "TEXT").upper()
-    try:
-        mtype = MessageType[mtype_str] if mtype_str in MessageType.__members__ else MessageType.TEXT
-    except (KeyError, TypeError) as exc:
-        logger.warning("Gateway message_type gecersiz; TEXT fallback (value=%r): %s", mtype_str, exc)
-        mtype = MessageType.TEXT
-    direction = MessageDirection.INBOUND if str(msg.get("direction", "INBOUND")).upper() == "INBOUND" else MessageDirection.OUTBOUND
-    body = msg.get("body") or ""
-    ts = _parse_dt(msg.get("created_at"))
-    if ts is None and msg.get("timestamp_s") is not None:
-        try:
-            ts = datetime.fromtimestamp(float(msg["timestamp_s"]), tz=timezone.utc)
-        except Exception:
-            pass
-    if ts is None and msg.get("timestamp") is not None:
-        try:
-            val = float(msg["timestamp"])
-            if val > 1e11:
-                val /= 1000.0
-            ts = datetime.fromtimestamp(val, tz=timezone.utc)
-        except Exception:
-            pass
-    status_str = str(msg.get("status") or ("RECEIVED" if direction == MessageDirection.INBOUND else "SENT")).upper()
-    try:
-        status = ConversationMessageStatus[status_str]
-    except (KeyError, TypeError) as exc:
-        logger.warning("Gateway message status gecersiz; direction fallback (value=%r): %s", status_str, exc)
-        status = ConversationMessageStatus.RECEIVED if direction == MessageDirection.INBOUND else ConversationMessageStatus.SENT
-    return Message(
-        user_id=owner,
-        conversation_id=conv.id,
-        direction=direction,
-        message_type=mtype,
-        body=body[:4000] if body else None,
-        media_id=msg.get("media_id"),
-        media_mime_type=msg.get("media_mime_type"),
-        media_filename=msg.get("media_filename"),
-        media_caption=msg.get("media_caption"),
-        wa_message_id=msg.get("wa_message_id"),
-        client_message_id=msg.get("client_message_id"),
-        sender_phone=msg.get("sender_phone") or jid_to_phone(jid_str) or "unknown",
-        # Faz 6a: grup gecmisi mesajlarinda participant pushname onecliklidir.
-        sender_name=msg.get("participant_name") or msg.get("sender_name"),
-        recipient_phone=msg.get("recipient_phone") or "ME",
-        status=status,
-        external_timestamp=_as_naive_utc(ts),
-    )
+# _message_row_from_gateway is imported from backend.app.services.whatsapp.repositories.messages (as build_message_from_gateway)
 
 
 async def _persist_gateway_message(db: AsyncSession, owner: str, msg: Dict[str, Any]) -> bool:
@@ -1388,12 +1018,8 @@ async def _persist_gateway_message(db: AsyncSession, owner: str, msg: Dict[str, 
         return False
     wa_id = msg.get("wa_message_id")
     conv = await _ensure_conversation_race_safe(db, owner, jid_str, msg)
-    if wa_id:
-        existing = await db.execute(
-            select(Message).where(Message.wa_message_id == wa_id, Message.conversation_id == conv.id)
-        )
-        if existing.scalar_one_or_none() is not None:
-            return False  # dedup
+    if wa_id and await message_exists_by_wa_id(db, conv.id, wa_id):
+        return False  # dedup
     row = _message_row_from_gateway(owner, conv, msg)
     if row is None:
         return False
@@ -1800,42 +1426,7 @@ async def list_conversations(
 # Mesajlar & gonderme
 # ---------------------------------------------------------------------------
 
-async def _get_conversation_or_404(db: AsyncSession, user_id: str, conversation_id: int) -> Conversation:
-    stmt = select(Conversation).where(
-        Conversation.id == conversation_id,
-        get_user_filter(Conversation.user_id, user_id),
-    )
-    res = await db.execute(stmt)
-    conv = res.scalar_one_or_none()
-    if not conv:
-        raise LookupError("Konusma bulunamadi.")
-    return conv
-
-
-async def _resolve_jid(db: AsyncSession, user_id: str, conversation_id: int) -> Tuple[Conversation, str]:
-    stmt = (
-        select(Conversation)
-        .options(joinedload(Conversation.contact))
-        .where(
-            Conversation.id == conversation_id,
-            get_user_filter(Conversation.user_id, user_id),
-        )
-    )
-    res = await db.execute(stmt)
-    conv = res.scalar_one_or_none()
-    if not conv:
-        raise LookupError("Konusma bulunamadi.")
-    if not conv.contact_id:
-        raise LookupError("Konusma bir kisiyle iliskili degil.")
-    contact = conv.contact
-    if contact is None:
-        cres = await db.execute(select(Contact).where(Contact.id == conv.contact_id))
-        contact = cres.scalar_one_or_none()
-        if contact is None:
-            raise LookupError("Konusma bir kisiyle iliskili degil.")
-    phone = contact.phone_e164
-    jid = phone[4:] if phone.startswith("jid:") else phone_to_jid(phone)
-    return conv, jid
+# _get_conversation_or_404 and _resolve_jid are imported from backend.app.services.whatsapp.repositories.conversations
 
 
 async def _hydrate_messages_on_demand(
@@ -1940,47 +1531,7 @@ async def _hydrate_messages_on_demand(
     return list(reversed(rows))
 
 
-def _msg_time_col():
-    """Mesajin ZAMAN EKSENI (tek kural).
-
-    `external_timestamp` yalnizca gateway'den gelen mesajlarda doludur;
-    uygulamadan GONDERILEN mesajlarda `sent_at` tasiyicidir. Siralama ve
-    keyset sayfalamasi yalnizca `external_timestamp`'e bakarken gonderilen
-    mesajlar (NULL) `nullslast` ile listenin sonuna dusuyor, `... < cutoff`
-    kiyasinda da NULL oldugu icin TAMAMEN eleniyordu: sohbette sayfa
-    boyutundan fazla mesaj varsa kullanicinin kendi gonderdigi mesajlar
-    yeniden yuklemede KAYBOLUYORDU. Migration ve preview onarimi zaten bu
-    COALESCE'i kullaniyordu — burasi tek tutarsiz noktaydi.
-    """
-    return func.coalesce(Message.external_timestamp, Message.sent_at, Message.created_at)
-
-
-def _msg_time(row: Optional[Message]) -> Optional[datetime]:
-    """`_msg_time_col()` kolonunun Python karsiligi (ayni oncelik)."""
-    if row is None:
-        return None
-    return row.external_timestamp or row.sent_at or row.created_at
-
-
-def _hydration_cursor_ms(rows: List[Optional[Message]]) -> Optional[int]:
-    """Verilen mesaj satirlarindaki EN ESKI gercek zaman damgasini gateway
-    sucut alanina (ms epoch, naive-UTC tabanli) cevirir. Satir yoksa veya
-    damga cozulemiyorsa None — sucut uydurulmaz (Truthfulness).
-
-    Gateway `getMessages.before` kiyasi kayit id'si uzerindendir ve id hem
-    history'de (messageTimestamp*1000) hem canli akista (Date.now() tabanli)
-    ms epoch kronolojisidir — DB'deki external_timestamp ayni alana donusturulur.
-    """
-    oldest: Optional[datetime] = None
-    for r in rows:
-        if r is None:
-            continue
-        ts = _msg_time(r)
-        if ts is not None and (oldest is None or ts < oldest):
-            oldest = ts
-    if oldest is None:
-        return None
-    return int(oldest.replace(tzinfo=timezone.utc).timestamp() * 1000)
+# _msg_time_col, _msg_time, _hydration_cursor_ms are imported from backend.app.services.whatsapp.repositories.messages
 
 
 @profiled("chat_open")
@@ -2107,21 +1658,6 @@ async def get_messages(
     }
 
 
-def _advance_message_status(row: Message, status: Optional[str]) -> None:
-    """Provider evidence advances delivery; a send promise alone does not."""
-    ranks = {"PENDING": 0, "FAILED": 0, "SENT": 1, "DELIVERED": 2, "READ": 3}
-    target = str(status or "").upper()
-    if target not in ranks or ranks[target] <= ranks.get(row.status.value, 0):
-        return
-    row.status = ConversationMessageStatus[target]
-    now = datetime.utcnow()
-    row.sent_at = row.sent_at or now
-    if ranks[target] >= 2:
-        row.delivered_at = row.delivered_at or now
-    if target == "READ":
-        row.read_at = row.read_at or now
-    row.error_message = None
-    row.failed_at = None
 
 
 @profiled("send_text")
@@ -2861,29 +2397,7 @@ async def _persist_chat_snapshot(
     return out, jid_by_conv
 
 
-async def _sync_watermark_epoch(db: AsyncSession, owner: str) -> Optional[int]:
-    """P0.13 delta suucusu: kullanıcının DB'sindeki en son mesaj zamanı (epoch
-    saniye, 5 dk overlap payıyla). Hiç mesaj yoksa None → tam cekim.
-
-    Suuc uydurma degil: external_timestamp gateway'deki GERCEK Baileys
-    messageTimestamp'ten yazilir. Realtime akis (message_new) yeni mesajları
-    zaten kalici yazdigi icin suuc her senkronla ilerler.
-    """
-    # Yalnizca GELEN mesajlar suucu ilerletir: uygulamadan gonderilen mesajlar
-    # artik `external_timestamp` tasidigi icin (zaman ekseni duzeltmesi), onlari
-    # da sayarsak "simdi" gonderilen tek bir mesaj suucu one atip HENUZ
-    # cekilmemis eski gecmisin atlanmasina yol acardi. Fazla cekim dedup ile
-    # zararsizdir; eksik cekim veri kaybidir.
-    res = await db.execute(
-        select(func.max(Message.external_timestamp)).where(
-            get_user_filter(Message.user_id, owner),
-            Message.direction == MessageDirection.INBOUND,
-        )
-    )
-    ts = res.scalar()
-    if ts is None:
-        return None
-    return int(ts.replace(tzinfo=timezone.utc).timestamp()) - 300
+# _sync_watermark_epoch is imported from backend.app.services.whatsapp.repositories.messages
 
 
 async def _run_bulk_message_sync(
@@ -3477,97 +2991,9 @@ async def _ingest_message(db: AsyncSession, event: Dict[str, Any]) -> Dict[str, 
 SYSTEM_USER_ID = "00000000-0000-0000-0000-000000000000"
 
 
-class EventOwnerUnresolved(Exception):
-    """Gateway olayinin hangi tenant'a ait oldugu KESIN olarak belirlenemedi.
-
-    Fail-closed: bu durumda olay ne DB'ye yazilir ne de UI'a yayilir. Onceki
-    davranis (rastgele bir CONNECTED oturumu secmek; hata durumunda
-    `except Exception: pass` ile SYSTEM_USER_ID'ye dusmek) veriyi yanlis
-    tenant'a yaziyor ve mesaj/telefon verisini diger tenant'lara sizdiriyordu.
-    Ayrica `scalar_one_or_none()` iki oturum varken MultipleResultsFound
-    firlatiyor, bu hata yutuluyor ve TUM olaylar sistem tenant'ina yaziliyordu.
-    """
-
-
-async def _resolve_event_owner_and_session(
-    db: AsyncSession, jid: str, gw_session_id: Optional[str] = None
-) -> Tuple[str, Optional[int]]:
-    """Olayin sahibi (user_id) ve backend oturum id'sini (WhatsAppSession.id)
-    tek bir SQL sorgusuyla cozer. 2 ayri SELECT tur-donusunu ortadan kaldirir.
-    """
-    if gw_session_id:
-        res = await db.execute(
-            select(WhatsAppSession.user_id, WhatsAppSession.id).where(
-                WhatsAppSession.gateway_id == str(gw_session_id)
-            )
-        )
-        row = res.first()
-        if row and row[0]:
-            return str(row[0]), int(row[1]) if row[1] is not None else None
-        raise EventOwnerUnresolved(
-            f"Bilinmeyen gateway oturumu (session_id={gw_session_id}, jid={jid})"
-        )
-    owner = await _resolve_event_owner(db, jid, None)
-    return owner, None
-
-
-async def _resolve_event_session_id(
-    db: AsyncSession, gw_session_id: Optional[str]
-) -> Optional[int]:
-    """Olayin geldigi gateway oturumunun BACKEND satir id'si.
-
-    Sohbetler bu kimlikle hatta baglanir; boylece o sohbete verilen yanit
-    dogru hattan gider ve hat silinince yalnizca o hattin sohbetleri temizlenir.
-    Eski gateway surumu kimlik gondermiyorsa None doner (sohbet bagsiz kalir —
-    uydurma bag yazilmaz).
-    """
-    if not gw_session_id:
-        return None
-    row_id = await db.scalar(
-        select(WhatsAppSession.id).where(WhatsAppSession.gateway_id == str(gw_session_id))
-    )
-    return int(row_id) if row_id is not None else None
-
-
-async def _resolve_event_owner(
-    db: AsyncSession, jid: str, gw_session_id: Optional[str] = None
-) -> str:
-    """Gateway olayinin sahibi (tenant user_id) — KESIN cozum, tahmin yok.
-
-    1) Tercih edilen yol: olay `session_id` (gateway UUID) tasiyorsa sahibi
-       `whatsapp_sessions.gateway_id` uzerinden birebir bulunur.
-    2) Geriye donuk uyum: `session_id` gondermeyen eski gateway surumu icin,
-       YALNIZCA tek bir bagli oturum varsa sahibi belirsiz degildir.
-       Birden fazla tenant bagliysa cozum imkansizdir -> hata (tahmin yok).
-
-    `jid` yalnizca teshis/log icin tasinir.
-    """
-    if gw_session_id:
-        owner = await db.scalar(
-            select(WhatsAppSession.user_id).where(
-                WhatsAppSession.gateway_id == str(gw_session_id)
-            )
-        )
-        if owner:
-            return str(owner)
-        raise EventOwnerUnresolved(
-            f"Bilinmeyen gateway oturumu (session_id={gw_session_id}, jid={jid})"
-        )
-
-    rows = (
-        await db.execute(
-            select(WhatsAppSession.user_id).where(
-                WhatsAppSession.status == SessionStatus.CONNECTED
-            )
-        )
-    ).all()
-    owners = {str(r[0]) for r in rows if r[0]}
-    if len(owners) == 1:
-        return next(iter(owners))
-    raise EventOwnerUnresolved(
-        "Olay session_id tasimiyor ve sahibi tek anlamli degil "
-        f"(bagli tenant sayisi={len(owners)}, jid={jid})"
-    )
+# Event owner resolution functions (_resolve_event_owner_and_session,
+# _resolve_event_session_id, _resolve_event_owner, EventOwnerUnresolved)
+# are imported from backend.app.services.whatsapp.repositories.sessions and backend.app.services.whatsapp.exceptions
 
 
 async def _ingest_contact_synced(db: AsyncSession, event: Dict[str, Any]) -> Dict[str, Any]:
@@ -3706,62 +3132,7 @@ async def reconcile_legacy_split_conversation(
         return canonical_conv
 
 
-async def _find_whatsapp_conversation(
-    db: AsyncSession, user_id: str, jid: str, session_id: Optional[int] = None
-) -> Optional[Conversation]:
-    """JID'e karsilik gelen MEVCUT WhatsApp sohbeti; yoksa None (yaratmaz).
-
-    Durum olaylari (presence/read/ack) icin kullanilir: bu olaylar sohbet
-    listesine yeni satir EKLEYEMEZ.
-    """
-    phone = _contact_phone_for_jid(jid)
-    contact_id = await db.scalar(
-        select(Contact.id).where(
-            Contact.phone_e164 == phone,
-            get_user_filter(Contact.user_id, user_id),
-        )
-    )
-    if contact_id is None:
-        return None
-    filters = _conversation_scope_filters(user_id, contact_id, session_id)
-    res = await db.execute(select(Conversation).where(*filters).order_by(Conversation.id.asc()))
-    rows = list(res.scalars().all())
-    if session_id is not None and not rows:
-        # Backfill a legacy, line-less row only when it is unambiguous for
-        # this tenant/contact. Never borrow a row already assigned to another
-        # line.
-        legacy_res = await db.execute(
-            select(Conversation).where(
-                Conversation.contact_id == contact_id,
-                Conversation.channel == "WHATSAPP",
-                Conversation.session_id.is_(None),
-                get_user_filter(Conversation.user_id, user_id),
-            ).order_by(Conversation.id.asc())
-        )
-        legacy_rows = list(legacy_res.scalars().all())
-        if len(legacy_rows) == 1:
-            legacy_rows[0].session_id = session_id
-            await db.flush()
-            return legacy_rows[0]
-        if len(legacy_rows) > 1:
-            logger.warning(
-                "Legacy line-less sohbet belirsizligi (user=%s,jid=%s,count=%s)",
-                user_id,
-                jid,
-                len(legacy_rows),
-            )
-            return None
-    if session_id is None and len(rows) > 1:
-        # Legacy gateway events without a session id cannot be attributed to
-        # one of several lines without guessing. Fail closed.
-        logger.warning(
-            "Durum olayi belirsiz sohbet nedeniyle atlandi (user=%s,jid=%s,conversation_count=%s)",
-            user_id,
-            jid,
-            len(rows),
-        )
-        return None
-    return rows[0] if rows else None
+# _find_whatsapp_conversation is imported from backend.app.services.whatsapp.repositories.conversations
 
 
 async def _map_conversation_event(db: AsyncSession, event: Dict[str, Any]) -> Dict[str, Any]:

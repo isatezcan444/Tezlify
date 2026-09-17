@@ -1,0 +1,15 @@
+{
+  "event_id": "00000000-0000-4000-8000-000000000007",
+  "event": "contact_synced",
+  "gateway_session_id": "2b2ed927-866c-4373-89d9-0ad8b35d63c8",
+  "contact": {
+    "jid": "905551234567@s.whatsapp.net",
+    "lid": "12345678901234@lid",
+    "phone_number": "+905551234567",
+    "name": "Synthetic Contact",
+    "notify_name": "Synthetic",
+    "verified_name": null,
+    "avatar_url": null,
+    "is_business": false
+  }
+}

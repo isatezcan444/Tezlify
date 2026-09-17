@@ -1,0 +1,11 @@
+{
+  "event_id": "00000000-0000-4000-8000-000000000002",
+  "event": "message_status_updated",
+  "gateway_session_id": "2b2ed927-866c-4373-89d9-0ad8b35d63c8",
+  "conversation_id": "905551234567@s.whatsapp.net",
+  "wa_message_id": "WAMID_SYNTH_001",
+  "client_message_id": "CLI_SYNTH_001",
+  "message_id": 1001,
+  "status": "DELIVERED",
+  "updated_at": "2026-09-17T12:00:05.000Z"
+}
