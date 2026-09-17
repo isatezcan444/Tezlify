@@ -162,6 +162,10 @@ class CampaignRunner:
                 policy = AntibanPolicy.from_campaign(campaign)
                 was_stopped_early = False
 
+                # Campaign-scoped batch blacklist pre-resolution: 1 query instead of N per-lead queries
+                candidate_phones = [l.phone_e164 for l in leads if l.phone_e164]
+                blacklisted_phones = await OutreachManager.get_blacklisted_phones(db, candidate_phones)
+
                 for idx, lead in enumerate(leads):
                     # Re-check if campaign was paused or cancelled. Narrow
                     # status poll — no full-row refresh per lead.
@@ -173,13 +177,14 @@ class CampaignRunner:
                         was_stopped_early = True
                         break
 
-                    # Process single outreach (reusing in-memory lead and campaign objects)
+                    # Process single outreach (reusing in-memory lead and campaign objects, plus batch blacklist)
                     success, msg, log_id = await OutreachManager.process_single_outreach(
                         db=db,
                         lead_id=lead.id,
                         campaign_id=campaign.id,
                         lead=lead,
                         campaign=campaign,
+                        blacklisted_phones=blacklisted_phones,
                     )
 
                     # Broadcast progress — yalnizca sahibine (lead adi/telefon

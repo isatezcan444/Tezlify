@@ -2155,7 +2155,6 @@ async def send_text_message(
         ),
     )
     await db.commit()
-    await db.refresh(row)
     return _serialize_message(row)
 
 
@@ -2225,7 +2224,6 @@ async def send_media_message(
         ),
     )
     await db.commit()
-    await db.refresh(row)
     return _serialize_message(row)
 
 
@@ -3440,7 +3438,6 @@ async def _ingest_message(db: AsyncSession, event: Dict[str, Any]) -> Dict[str, 
     if direction == MessageDirection.INBOUND:
         conv.unread_count = (conv.unread_count or 0) + 1
     await db.flush()
-    await db.refresh(row)
 
     event["conversation_id"] = conv.id
     event["message"] = _serialize_message(row)
@@ -3774,6 +3771,7 @@ async def _map_conversation_event(db: AsyncSession, event: Dict[str, Any]) -> Di
         conv = await _ensure_conversation_race_safe(db, owner, str(jid), event, session_id=ws_session_id)
     elif evt_name == "message_status_updated":
         conv = None
+        matching_msg = None
         wa_id = event.get("wa_message_id")
         client_mid = event.get("client_message_id")
         if wa_id or client_mid:
@@ -3865,15 +3863,18 @@ async def _map_conversation_event(db: AsyncSession, event: Dict[str, Any]) -> Di
         wa_id = event.get("wa_message_id")
         new_status = (event.get("status") or "").upper()
         if wa_id and new_status in ConversationMessageStatus.__members__:
-            res = await db.execute(
-                select(Message).where(
-                    or_(Message.wa_message_id == wa_id,
-                        Message.client_message_id == event["client_message_id"]
-                        if event.get("client_message_id") else False),
-                    Message.conversation_id == conv.id,
+            # Reuse matching_msg if already resolved during conversation mapping; avoids redundant SELECT
+            row = matching_msg
+            if row is None:
+                res = await db.execute(
+                    select(Message).where(
+                        or_(Message.wa_message_id == wa_id,
+                            Message.client_message_id == event["client_message_id"]
+                            if event.get("client_message_id") else False),
+                        Message.conversation_id == conv.id,
+                    )
                 )
-            )
-            row = res.scalars().first()
+                row = res.scalars().first()
             if row is not None:
                 orig_status = row.status
                 orig_wa_id = row.wa_message_id

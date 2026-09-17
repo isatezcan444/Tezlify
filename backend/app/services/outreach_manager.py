@@ -38,9 +38,18 @@ class OutreachManager:
     @classmethod
     async def is_blacklisted(cls, db: AsyncSession, phone_e164: str) -> bool:
         """Checks if phone number is present in Blacklist."""
-        stmt = select(Blacklist).where(Blacklist.phone_e164 == phone_e164)
+        stmt = select(Blacklist.id).where(Blacklist.phone_e164 == phone_e164).limit(1)
         result = await db.execute(stmt)
         return result.scalar_one_or_none() is not None
+
+    @classmethod
+    async def get_blacklisted_phones(cls, db: AsyncSession, phones: list[str]) -> set[str]:
+        """Batch checks phone numbers against Blacklist in a single query."""
+        if not phones:
+            return set()
+        stmt = select(Blacklist.phone_e164).where(Blacklist.phone_e164.in_(phones))
+        result = await db.execute(stmt)
+        return set(result.scalars().all())
 
     @classmethod
     async def process_single_outreach(
@@ -51,6 +60,7 @@ class OutreachManager:
         session_id: Optional[int] = None,
         lead: Optional[Lead] = None,
         campaign: Optional[Campaign] = None,
+        blacklisted_phones: Optional[set[str]] = None,
     ) -> Tuple[bool, str, Optional[int]]:
         """
         Validates lead, checks blacklist, generates customized Spintax message,
@@ -69,8 +79,13 @@ class OutreachManager:
         if not lead.is_whatsapp_eligible or not lead.phone_e164:
             return False, "Telefon WhatsApp için uygun değil veya geçerli E.164 numarası yok", None
 
-        # 2. Check Blacklist
-        if await cls.is_blacklisted(db, lead.phone_e164):
+        # 2. Check Blacklist (use batch pre-resolved set if provided, else single-query)
+        is_bl = (
+            lead.phone_e164 in blacklisted_phones
+            if blacklisted_phones is not None
+            else await cls.is_blacklisted(db, lead.phone_e164)
+        )
+        if is_bl:
             lead.status = LeadStatus.UNSUBSCRIBED
             await db.commit()
             return False, "Numara kara listede (Blacklisted)", None
