@@ -117,7 +117,7 @@ if (autoRestore) {
     concurrency: Math.max(1, Math.min(5, parseInt(process.env.GATEWAY_RESTORE_CONCURRENCY || '2', 10))),
   });
 } else {
-  logger.info('WhatsApp automatic session restore is disabled by WHATSAPP_AUTO_RESTORE=false.');
+  console.log('[gateway] WhatsApp automatic session restore is disabled by WHATSAPP_AUTO_RESTORE=false.');
 }
 
 // ---------------------------------------------------------------------------

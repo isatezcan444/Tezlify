@@ -37,6 +37,9 @@ services:
   # FastAPI Backend
   # ---------------------------------------------------------------------------
   backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
     image: ghcr.io/isatezcan444/tezlify-backend:latest
     container_name: tezlify-backend
     restart: unless-stopped
