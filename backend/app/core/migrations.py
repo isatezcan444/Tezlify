@@ -1302,6 +1302,16 @@ async def ensure_whatsapp_private_lid_and_history_tables(engine: AsyncEngine) ->
             PRIMARY KEY (session_id, jid)
         )
         """,
+        """
+        ALTER TABLE whatsapp_private.history_sync_states
+        ADD COLUMN IF NOT EXISTS state VARCHAR(50) DEFAULT 'NEVER_CHECKED',
+        ADD COLUMN IF NOT EXISTS stall_count INTEGER DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS timeout_count INTEGER DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS error_count INTEGER DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS last_attempt_at TIMESTAMPTZ,
+        ADD COLUMN IF NOT EXISTS last_success_at TIMESTAMPTZ,
+        ADD COLUMN IF NOT EXISTS last_error TEXT
+        """,
         "REVOKE ALL ON ALL TABLES IN SCHEMA whatsapp_private FROM PUBLIC",
     ]
     try:

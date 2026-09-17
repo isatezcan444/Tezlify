@@ -1098,6 +1098,7 @@ class WhatsAppSyncOrchestrator:
         logger.info("Starting background history expansion queue for user=%s, gateway=%s", user_id, gateway_id)
         try:
             async with session_factory() as db:
+                is_mock = isinstance(db, Mock)
                 cres = await db.execute(
                     select(Conversation).where(
                         Conversation.channel == "WHATSAPP",
@@ -1105,6 +1106,48 @@ class WhatsAppSyncOrchestrator:
                     ).order_by(Conversation.last_message_at.desc().nullslast())
                 )
                 convs = cres.scalars().all()
+
+                if not is_mock:
+                    # Phase 15: Initialize all conversations in history_sync_states to eliminate NEVER_CHECKED
+                    for c in convs:
+                        contact = await db.get(Contact, c.contact_id) if c.contact_id else None
+                        phone_val = str(contact.phone_e164) if contact and contact.phone_e164 else ""
+                        jid = phone_val[4:] if phone_val.startswith("jid:") else phone_to_jid(phone_val)
+                        if not jid:
+                            continue
+
+                        # Check message count
+                        mc_res = await db.execute(
+                            select(func.count(Message.id)).where(Message.conversation_id == c.id)
+                        )
+                        m_count = mc_res.scalar() or 0
+
+                        if m_count == 0:
+                            # 0 messages: classify as NO_MESSAGES
+                            await db.execute(
+                                text(
+                                    "INSERT INTO whatsapp_private.history_sync_states "
+                                    "(session_id, jid, has_more, state, completed_at, updated_at) "
+                                    "VALUES (:sid, :jid, FALSE, 'NO_MESSAGES', NOW(), NOW()) "
+                                    "ON CONFLICT (session_id, jid) DO UPDATE SET "
+                                    "has_more = FALSE, state = 'NO_MESSAGES', "
+                                    "completed_at = COALESCE(whatsapp_private.history_sync_states.completed_at, NOW()), "
+                                    "updated_at = NOW()"
+                                ),
+                                {"sid": gateway_id, "jid": jid},
+                            )
+                        else:
+                            # Messages exist: ensure baseline state if not already set
+                            await db.execute(
+                                text(
+                                    "INSERT INTO whatsapp_private.history_sync_states "
+                                    "(session_id, jid, has_more, state, updated_at) "
+                                    "VALUES (:sid, :jid, TRUE, 'IN_PROGRESS', NOW()) "
+                                    "ON CONFLICT (session_id, jid) DO NOTHING"
+                                ),
+                                {"sid": gateway_id, "jid": jid},
+                            )
+                    await db.commit()
 
             queue = collections.deque(convs)
             sweep_counts: Dict[int, int] = collections.defaultdict(int)
@@ -1125,9 +1168,28 @@ class WhatsAppSyncOrchestrator:
                     async with conv_lock:
                         async with session_factory() as db:
                             is_mock = isinstance(db, Mock)
-                            c = await db.get(Conversation, conv.id)
+                            c = await db.get(Conversation, conv_id)
                             if not c:
                                 continue
+
+                            # Resolve JID
+                            jid = ""
+                            if not is_mock:
+                                contact = await db.get(Contact, c.contact_id) if c.contact_id else None
+                                phone_val = str(contact.phone_e164) if contact and contact.phone_e164 else ""
+                                jid = phone_val[4:] if phone_val.startswith("jid:") else phone_to_jid(phone_val)
+
+                                # Check existing state: skip if already EXHAUSTED or NO_MESSAGES or CURSOR_STALLED
+                                if jid:
+                                    s_res = await db.execute(
+                                        text("SELECT state, stall_count, timeout_count, error_count, oldest_timestamp_ms FROM whatsapp_private.history_sync_states WHERE session_id = :sid AND jid = :jid"),
+                                        {"sid": gateway_id, "jid": jid},
+                                    )
+                                    s_row = s_res.first()
+                                    if s_row:
+                                        curr_state = s_row[0]
+                                        if curr_state in ("EXHAUSTED", "NO_MESSAGES", "CURSOR_STALLED") and sweep_counts[conv_id] > 1:
+                                            continue
 
                             mres = await db.execute(
                                 select(Message).where(Message.conversation_id == c.id)
@@ -1136,6 +1198,18 @@ class WhatsAppSyncOrchestrator:
                             )
                             oldest = mres.scalars().first()
                             if not oldest:
+                                if not is_mock and jid:
+                                    await db.execute(
+                                        text(
+                                            "INSERT INTO whatsapp_private.history_sync_states "
+                                            "(session_id, jid, has_more, state, completed_at, updated_at) "
+                                            "VALUES (:sid, :jid, FALSE, 'NO_MESSAGES', NOW(), NOW()) "
+                                            "ON CONFLICT (session_id, jid) DO UPDATE SET "
+                                            "has_more = FALSE, state = 'NO_MESSAGES', completed_at = NOW(), updated_at = NOW()"
+                                        ),
+                                        {"sid": gateway_id, "jid": jid},
+                                    )
+                                    await db.commit()
                                 continue
 
                             cursor_ms = _hydration_cursor_ms([oldest])
@@ -1144,6 +1218,17 @@ class WhatsAppSyncOrchestrator:
 
                             if cursor_ms is None:
                                 continue
+
+                            if not is_mock and jid:
+                                await db.execute(
+                                    text(
+                                        "UPDATE whatsapp_private.history_sync_states "
+                                        "SET state = 'IN_PROGRESS', last_attempt_at = NOW(), updated_at = NOW() "
+                                        "WHERE session_id = :sid AND jid = :jid"
+                                    ),
+                                    {"sid": gateway_id, "jid": jid},
+                                )
+                                await db.commit()
 
                             try:
                                 older = await hydrate_messages_on_demand(
@@ -1156,52 +1241,116 @@ class WhatsAppSyncOrchestrator:
                                     oldest_msg_from_me=anchor_from_me,
                                 )
 
-                                if not is_mock:
-                                    contact = await db.get(Contact, c.contact_id) if c.contact_id else None
-                                    phone_val = str(contact.phone_e164) if contact and contact.phone_e164 and not isinstance(contact.phone_e164, Mock) else ""
-                                    jid = phone_val[4:] if phone_val.startswith("jid:") else phone_to_jid(phone_val)
-                                    if jid:
-                                        if older:
+                                if not is_mock and jid:
+                                    if older:
+                                        new_oldest_ms = _hydration_cursor_ms(older)
+                                        # Cursor stall detection: if new_oldest_ms equals cursor_ms, cursor didn't advance
+                                        is_stalled = (new_oldest_ms is not None and new_oldest_ms >= cursor_ms)
+                                        
+                                        # Get current stall count
+                                        st_res = await db.execute(
+                                            text("SELECT stall_count FROM whatsapp_private.history_sync_states WHERE session_id = :sid AND jid = :jid"),
+                                            {"sid": gateway_id, "jid": jid},
+                                        )
+                                        prev_stalls = (st_res.scalar() or 0) if st_res else 0
+
+                                        if is_stalled:
+                                            new_stalls = prev_stalls + 1
+                                            if new_stalls >= 3:
+                                                logger.warning("[cursor_stalled] Conv %s (jid=%s) stalled at cursor %s after 3 attempts", conv_id, jid, cursor_ms)
+                                                await db.execute(
+                                                    text(
+                                                        "UPDATE whatsapp_private.history_sync_states SET "
+                                                        "oldest_msg_id = :mid, oldest_timestamp_ms = :ts, "
+                                                        "has_more = FALSE, state = 'CURSOR_STALLED', stall_count = :stalls, "
+                                                        "last_error = 'Cursor stalled for 3 consecutive fetches', updated_at = NOW() "
+                                                        "WHERE session_id = :sid AND jid = :jid"
+                                                    ),
+                                                    {"sid": gateway_id, "jid": jid, "mid": older[0].wa_message_id, "ts": cursor_ms, "stalls": new_stalls},
+                                                )
+                                                await db.commit()
+                                                continue
+                                            else:
+                                                await db.execute(
+                                                    text(
+                                                        "UPDATE whatsapp_private.history_sync_states SET "
+                                                        "oldest_msg_id = :mid, oldest_timestamp_ms = :ts, "
+                                                        "has_more = TRUE, state = 'HAS_MORE', stall_count = :stalls, "
+                                                        "last_success_at = NOW(), updated_at = NOW() "
+                                                        "WHERE session_id = :sid AND jid = :jid"
+                                                    ),
+                                                    {"sid": gateway_id, "jid": jid, "mid": older[0].wa_message_id, "ts": cursor_ms, "stalls": new_stalls},
+                                                )
+                                                await db.commit()
+                                        else:
+                                            # Cursor advanced successfully! Reset stall_count
                                             await db.execute(
                                                 text(
                                                     "INSERT INTO whatsapp_private.history_sync_states "
-                                                    "(session_id, jid, oldest_msg_id, oldest_timestamp_ms, has_more, updated_at) "
-                                                    "VALUES (:sid, :jid, :mid, :ts, TRUE, NOW()) "
+                                                    "(session_id, jid, oldest_msg_id, oldest_timestamp_ms, has_more, state, stall_count, last_success_at, updated_at) "
+                                                    "VALUES (:sid, :jid, :mid, :ts, TRUE, 'HAS_MORE', 0, NOW(), NOW()) "
                                                     "ON CONFLICT (session_id, jid) DO UPDATE SET "
                                                     "oldest_msg_id = EXCLUDED.oldest_msg_id, "
                                                     "oldest_timestamp_ms = EXCLUDED.oldest_timestamp_ms, "
-                                                    "has_more = TRUE, updated_at = NOW()"
+                                                    "has_more = TRUE, state = 'HAS_MORE', stall_count = 0, "
+                                                    "last_success_at = NOW(), updated_at = NOW()"
                                                 ),
                                                 {"sid": gateway_id, "jid": jid, "mid": older[0].wa_message_id, "ts": cursor_ms},
                                             )
                                             await db.commit()
 
-                                            # Re-queue for next sweep if more history exists and within sweep budget
-                                            if sweep_counts[conv_id] < _HISTORY_EXPANSION_MAX_SWEEPS_PER_CONV:
-                                                queue.append(c)
+                                        # Re-queue for next sweep if more history exists and within sweep budget
+                                        if sweep_counts[conv_id] < _HISTORY_EXPANSION_MAX_SWEEPS_PER_CONV:
+                                            queue.append(c)
                                         else:
-                                            await db.execute(
-                                                text(
-                                                    "INSERT INTO whatsapp_private.history_sync_states "
-                                                    "(session_id, jid, has_more, completed_at, updated_at) "
-                                                    "VALUES (:sid, :jid, FALSE, NOW(), NOW()) "
-                                                    "ON CONFLICT (session_id, jid) DO UPDATE SET "
-                                                    "has_more = FALSE, completed_at = NOW(), updated_at = NOW()"
-                                                ),
-                                                {"sid": gateway_id, "jid": jid},
-                                            )
-                                            await db.commit()
+                                            logger.info("[sweep_limit] Conv %s reached max sweep limit %d (retained as HAS_MORE)", conv_id, _HISTORY_EXPANSION_MAX_SWEEPS_PER_CONV)
+                                    else:
+                                        # Provider returned empty messages without timeout: history is truly exhausted
+                                        await db.execute(
+                                            text(
+                                                "INSERT INTO whatsapp_private.history_sync_states "
+                                                "(session_id, jid, has_more, state, completed_at, last_success_at, updated_at) "
+                                                "VALUES (:sid, :jid, FALSE, 'EXHAUSTED', NOW(), NOW(), NOW()) "
+                                                "ON CONFLICT (session_id, jid) DO UPDATE SET "
+                                                "has_more = FALSE, state = 'EXHAUSTED', completed_at = NOW(), last_success_at = NOW(), updated_at = NOW()"
+                                            ),
+                                            {"sid": gateway_id, "jid": jid},
+                                        )
+                                        await db.commit()
 
                             except Exception as fetch_exc:
                                 from backend.app.services.whatsapp.exceptions import WhatsAppHistoryTimeout
                                 if isinstance(fetch_exc, (WhatsAppHistoryTimeout, TimeoutError, asyncio.TimeoutError)):
                                     logger.warning(
-                                        "[history_timeout] Chunk timeout for conv=%s. Preserving cursor.",
+                                        "[history_timeout] Chunk timeout for conv=%s (jid=%s). Preserving cursor.",
                                         conv_id,
+                                        jid,
                                     )
+                                    if not is_mock and jid:
+                                        await db.execute(
+                                            text(
+                                                "UPDATE whatsapp_private.history_sync_states SET "
+                                                "state = 'TEMPORARY_TIMEOUT', timeout_count = timeout_count + 1, "
+                                                "has_more = TRUE, last_error = :err, updated_at = NOW() "
+                                                "WHERE session_id = :sid AND jid = :jid"
+                                            ),
+                                            {"sid": gateway_id, "jid": jid, "err": str(fetch_exc)},
+                                        )
+                                        await db.commit()
                                     await asyncio.sleep(4.0)
                                 else:
                                     logger.warning("Background expansion error for conv=%s: %s", conv_id, fetch_exc)
+                                    if not is_mock and jid:
+                                        await db.execute(
+                                            text(
+                                                "UPDATE whatsapp_private.history_sync_states SET "
+                                                "state = 'ERROR', error_count = error_count + 1, "
+                                                "last_error = :err, updated_at = NOW() "
+                                                "WHERE session_id = :sid AND jid = :jid"
+                                            ),
+                                            {"sid": gateway_id, "jid": jid, "err": str(fetch_exc)},
+                                        )
+                                        await db.commit()
 
                 except Exception as e:
                     logger.debug("Background expansion skipped conversation %s: %s", conv.id, e)
