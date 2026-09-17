@@ -165,6 +165,9 @@ _initial_sync_inflight: Set[str] = set()
 _initial_sync_pending: Set[str] = set()
 _history_expansion_running: Set[Tuple[str, str]] = set()
 _history_expansion_done: Set[Tuple[str, str]] = set()
+_history_expansion_cooldown: Dict[Tuple[str, str], float] = {}
+_history_jid_cooldown: Dict[Tuple[str, str], float] = {}
+_history_jid_attempts: Dict[Tuple[str, str], int] = {}
 
 
 class WhatsAppSyncOrchestrator:
@@ -181,6 +184,9 @@ class WhatsAppSyncOrchestrator:
         self._initial_sync_pending = _initial_sync_pending
         self._history_expansion_running = _history_expansion_running
         self._history_expansion_done = _history_expansion_done
+        self._history_expansion_cooldown = _history_expansion_cooldown
+        self._history_jid_cooldown = _history_jid_cooldown
+        self._history_jid_attempts = _history_jid_attempts
 
     def _get_helper(self, name: str, default: Any) -> Any:
         if self.service is not None:
@@ -259,10 +265,21 @@ class WhatsAppSyncOrchestrator:
             key = (str(user_id), str(gateway_id))
             self._history_expansion_running.discard(key)
             self._history_expansion_done.discard(key)
+            self._history_expansion_cooldown.pop(key, None)
+            jid_prefix = str(gateway_id)
+            for k in list(self._history_jid_cooldown.keys()):
+                if k[0] == jid_prefix:
+                    self._history_jid_cooldown.pop(k, None)
+            for k in list(self._history_jid_attempts.keys()):
+                if k[0] == jid_prefix:
+                    self._history_jid_attempts.pop(k, None)
         else:
             for s in (self._history_expansion_running, self._history_expansion_done):
                 keys = {k for k in s if k[0] == str(user_id)}
                 s.difference_update(keys)
+            cooldown_keys = [k for k in self._history_expansion_cooldown if k[0] == str(user_id)]
+            for k in cooldown_keys:
+                self._history_expansion_cooldown.pop(k, None)
 
     async def _reapply_chat_names(
         self, db: AsyncSession, owner: str, items: List[Dict[str, Any]]
@@ -1009,7 +1026,11 @@ class WhatsAppSyncOrchestrator:
                     job.stage_timings,
                 )
                 expansion_key = (str(owner), str(gateway_id))
-                if expansion_key not in self._history_expansion_running and expansion_key not in self._history_expansion_done:
+                if (
+                    expansion_key not in self._history_expansion_running
+                    and expansion_key not in self._history_expansion_done
+                    and time.monotonic() >= self._history_expansion_cooldown.get(expansion_key, 0.0)
+                ):
                     asyncio.create_task(run_background_history_expansion(owner, gateway_id))
         except WhatsAppRelinkRequired as exc:
             job.state = "FAILED"
@@ -1089,13 +1110,19 @@ class WhatsAppSyncOrchestrator:
         import collections
         from unittest.mock import Mock
         key = (str(user_id), str(gateway_id))
+        now = time.monotonic()
         if key in self._history_expansion_running or key in self._history_expansion_done:
+            return
+        if now < self._history_expansion_cooldown.get(key, 0.0):
+            logger.debug("Background history expansion in cooldown for %s (remaining: %.1fs)", key, self._history_expansion_cooldown[key] - now)
             return
         self._history_expansion_running.add(key)
         session_factory = self._get_helper("AsyncSessionLocal", AsyncSessionLocal)
         hydrate_messages_on_demand = self._get_helper("_hydrate_messages_on_demand", self._hydrate_messages_on_demand)
         get_conv_lock = self._get_helper("_get_conversation_lock", _get_conversation_lock)
         logger.info("Starting background history expansion queue for user=%s, gateway=%s", user_id, gateway_id)
+        had_transient_failure = False
+        had_unhandled_error = False
         try:
             async with session_factory() as db:
                 is_mock = isinstance(db, Mock)
@@ -1161,8 +1188,13 @@ class WhatsAppSyncOrchestrator:
                                 phone_val = str(contact.phone_e164) if contact and contact.phone_e164 else ""
                                 jid = phone_val[4:] if phone_val.startswith("jid:") else phone_to_jid(phone_val)
 
-                                # Check existing state: skip if already EXHAUSTED or NO_MESSAGES or CURSOR_STALLED
+                                # Check existing state and rate limits per JID
                                 if jid:
+                                    jid_key = (str(gateway_id), str(jid))
+                                    if time.monotonic() < self._history_jid_cooldown.get(jid_key, 0.0):
+                                        continue
+                                    if self._history_jid_attempts.get(jid_key, 0) >= 3:
+                                        continue
                                     s_res = await db.execute(
                                         text("SELECT state, stall_count, timeout_count, error_count, oldest_timestamp_ms FROM whatsapp_private.history_sync_states WHERE session_id = :sid AND jid = :jid"),
                                         {"sid": gateway_id, "jid": jid},
@@ -1212,6 +1244,9 @@ class WhatsAppSyncOrchestrator:
                                 continue
 
                             if not is_mock and jid:
+                                jid_key = (str(gateway_id), str(jid))
+                                self._history_jid_attempts[jid_key] = self._history_jid_attempts.get(jid_key, 0) + 1
+                                self._history_jid_cooldown[jid_key] = time.monotonic() + 10.0
                                 await db.execute(
                                     text(
                                         "UPDATE whatsapp_private.history_sync_states "
@@ -1344,6 +1379,7 @@ class WhatsAppSyncOrchestrator:
                                         await db.commit()
 
                             except Exception as fetch_exc:
+                                had_transient_failure = True
                                 from backend.app.services.whatsapp.exceptions import WhatsAppHistoryTimeout
                                 if isinstance(fetch_exc, (WhatsAppHistoryTimeout, TimeoutError, asyncio.TimeoutError)):
                                     logger.warning(
@@ -1386,13 +1422,22 @@ class WhatsAppSyncOrchestrator:
                 except Exception as e:
                     logger.debug("Background expansion skipped conversation %s: %s", conv.id, e)
                     continue
-            self._history_expansion_done.add(key)
-            logger.info("Background history expansion completed for user=%s, gateway=%s", user_id, gateway_id)
+            logger.info("Background history expansion sweep loop completed for user=%s, gateway=%s", user_id, gateway_id)
         except Exception as exc:
+            had_unhandled_error = True
             logger.warning("Background history expansion failed: %s", exc)
         finally:
             self._history_expansion_running.discard(key)
-            self._history_expansion_done.add(key)
+            if not had_transient_failure and not had_unhandled_error:
+                self._history_expansion_done.add(key)
+                logger.info("Background history expansion completed cleanly for user=%s, gateway=%s", user_id, gateway_id)
+            else:
+                self._history_expansion_cooldown[key] = time.monotonic() + 60.0
+                logger.info(
+                    "Background history expansion paused with transient issues for user=%s, gateway=%s; cooldown 60s",
+                    user_id,
+                    gateway_id,
+                )
 
 
     async def sync_conversations(self, db: AsyncSession, user_id: str) -> List[Dict[str, Any]]:

@@ -55,7 +55,12 @@ async def test_history_02_timeout_does_not_exhaust_or_clear_cursor(monkeypatch):
     )
     mock_mres = MagicMock()
     mock_mres.scalars.return_value.first.return_value = mock_oldest
-    mock_db.execute.side_effect = [mock_cres, mock_mres]
+    def mock_exec(stmt, *args, **kwargs):
+        s_str = str(stmt).lower()
+        if "select conversations" in s_str or "from conversations" in s_str:
+            return mock_cres
+        return mock_mres
+    mock_db.execute = AsyncMock(side_effect=mock_exec)
 
     context = AsyncMock()
     context.__aenter__.return_value = mock_db
@@ -72,8 +77,28 @@ async def test_history_02_timeout_does_not_exhaust_or_clear_cursor(monkeypatch):
 
     await orchestrator._run_background_history_expansion(owner, gw)
 
-    assert key in orchestrator._history_expansion_done
+    # Phase 15.4 Safety: Transient failure MUST NOT mark expansion as done (preserves retryability)
+    assert key not in orchestrator._history_expansion_done
     assert key not in orchestrator._history_expansion_running
+    # Cooldown must be active to protect against immediate phone flapping
+    assert orchestrator._history_expansion_cooldown.get(key) is not None
+
+    # Immediate second call during cooldown is suppressed (phone spam avoided)
+    hydrate_count = 0
+    async def counting_hydrate(*args, **kwargs):
+        nonlocal hydrate_count
+        hydrate_count += 1
+        return []
+    helpers["_hydrate_messages_on_demand"] = counting_hydrate
+    await orchestrator._run_background_history_expansion(owner, gw)
+    assert hydrate_count == 0  # In cooldown
+
+    # After cooldown reset or expiry, controlled retry is permitted
+    orchestrator.reset_history_expansion_state(owner, gw)
+    assert orchestrator._history_expansion_cooldown.get(key) is None
+    await orchestrator._run_background_history_expansion(owner, gw)
+    assert hydrate_count == 1  # Retried!
+    assert key in orchestrator._history_expansion_done
 
 
 @pytest.mark.asyncio
