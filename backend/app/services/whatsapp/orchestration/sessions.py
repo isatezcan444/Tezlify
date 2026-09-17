@@ -13,7 +13,7 @@ import logging
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 import uuid
 
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import delete, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.api.v1.websocket import ws_manager
@@ -33,6 +33,11 @@ from backend.app.services.whatsapp.gateway import (
     extract_pairing_code,
     extract_session_id,
     is_gateway_session_missing,
+)
+from backend.app.services.whatsapp.orchestration.relink import (
+    RelinkCandidateAmbiguous,
+    RelinkCandidateNotFound,
+    perform_atomic_relink,
 )
 from backend.app.services.whatsapp.repositories.sessions import (
     get_session_by_id as _get_session_or_404,
@@ -245,8 +250,18 @@ async def start_pairing_session(user_id: str, name: Optional[str] = None) -> Dic
 
 async def get_pairing_qr(db: AsyncSession, user_id: str, pair_token: str) -> Dict[str, Any]:
     """Fetches QR code for an active ephemeral pairing session.
-    If the user scanned the QR and connection is established (CONNECTED),
-    promotes the session into public.whatsapp_sessions and persists it.
+
+    When the user scans the QR and a CONNECTED status is returned from gateway:
+
+    Scenario A (RELINK): An existing RELINK_REQUIRED session with the same
+        user_id + phone_number is found. Its gateway_id is atomically updated and
+        unverified history_sync_states are migrated. Logical session identity
+        (public.whatsapp_sessions.id) is preserved. No new row is created.
+
+    Scenario A-new (FIRST QR): No RELINK_REQUIRED candidate exists for this
+        phone (first-time pairing). A new WhatsAppSession row is created.
+
+    In both cases returns the stable logical session id.
     """
     pairing = _ephemeral_pairings.get(pair_token)
     if not pairing or pairing["user_id"] != str(user_id):
@@ -262,22 +277,59 @@ async def get_pairing_qr(db: AsyncSession, user_id: str, pair_token: str) -> Dic
         raise
 
     status_val = data.get("status")
-    # When user scans QR code with phone and connection succeeds:
     if status_val == "CONNECTED":
+        phone = (data.get("phone") or data.get("phone_number") or "").strip()
+        _ephemeral_pairings.pop(pair_token, None)
+
+        # --- Scenario A: try to bind to existing RELINK_REQUIRED logical session ---
+        try:
+            result = await perform_atomic_relink(
+                db,
+                user_id=str(user_id),
+                phone=phone,
+                new_gateway_id=str(gateway_id),
+                session_name=pairing["session_name"],
+            )
+            logger.info(
+                "[WhatsApp] Relink Scenario A: session=%s gateway %s→%s (%d history rows migrated)",
+                result.session_id,
+                result.old_gateway_id,
+                result.new_gateway_id,
+                result.history_rows_migrated,
+            )
+            return {
+                "status": "CONNECTED",
+                "session_id": result.session_id,
+                "phone": result.phone_number,
+                "qr_code": None,
+                "error_message": None,
+            }
+        except RelinkCandidateAmbiguous as exc:
+            # Fail closed — multiple matching sessions, cannot safely bind.
+            logger.error("[WhatsApp] Relink failed — ambiguous candidate: %s", exc)
+            raise ValueError(str(exc)) from exc
+        except RelinkCandidateNotFound:
+            # Scenario A-new: no prior session for this phone → first-time pairing.
+            pass
+
+        # --- Scenario A-new: create new logical session (first QR for this phone) ---
         row = WhatsAppSession(
             user_id=user_id,
             gateway_id=gateway_id,
             session_name=pairing["session_name"],
             status=SessionStatus.CONNECTED,
-            phone_number=data.get("phone") or data.get("phone_number"),
+            phone_number=phone or None,
             is_active=True,
             is_phone_online=True,
         )
         db.add(row)
         await db.commit()
         await db.refresh(row)
-        _ephemeral_pairings.pop(pair_token, None)
-        logger.info("[WhatsApp] Ephemeral eşleşme başarıyla kalıcı oturuma dönüştü: id=%s (%s)", row.id, gateway_id)
+        logger.info(
+            "[WhatsApp] First-time QR pairing — new session created: id=%s (%s)",
+            row.id,
+            gateway_id,
+        )
         return {
             "status": "CONNECTED",
             "session_id": row.id,

@@ -942,6 +942,56 @@ class WhatsAppEventOrchestrator:
         res = await db.execute(select(WhatsAppSession).where(WhatsAppSession.gateway_id == str(gw_session_id)))
         row = res.scalar_one_or_none()
         if row is None:
+            # Phase 15.3 Scenario A self-healing:
+            # A session_connected event arrived with a gateway UUID unknown to our DB.
+            # Delegate to RelinkReconciliationService — atomic, deterministic, idempotent.
+            # This layer does NOT perform direct DB mutations; all repair is in relink.py.
+            if evt == "session_connected":
+                from backend.app.services.whatsapp.orchestration.relink import (
+                    RelinkCandidateAmbiguous,
+                    RelinkCandidateNotFound,
+                    perform_atomic_relink,
+                )
+                phone_from_event = (event.get("phone") or event.get("phone_number") or "").strip()
+                user_id_from_event = (event.get("user_id") or "").strip()
+                if phone_from_event and user_id_from_event:
+                    try:
+                        relink_result = await perform_atomic_relink(
+                            db,
+                            user_id=user_id_from_event,
+                            phone=phone_from_event,
+                            new_gateway_id=str(gw_session_id),
+                        )
+                        logger.info(
+                            "[Phase15.3] map_session_event relink OK: session=%s %s→%s (history=%d)",
+                            relink_result.session_id,
+                            relink_result.old_gateway_id,
+                            relink_result.new_gateway_id,
+                            relink_result.history_rows_migrated,
+                        )
+                        res2 = await db.execute(
+                            select(WhatsAppSession).where(WhatsAppSession.id == relink_result.session_id)
+                        )
+                        row = res2.scalar_one_or_none()
+                        if row is not None:
+                            event["session_id"] = row.id
+                            event["session_name"] = event.get("session_name") or row.session_name
+                            event["user_id"] = str(row.user_id) if row.user_id else None
+                            if row.user_id and row.phone_number:
+                                try:
+                                    await self.reconcile_self_identity(
+                                        db, str(row.user_id), row, self_lid=event.get("self_lid")
+                                    )
+                                except Exception as rec_err:
+                                    logger.warning(
+                                        "[WhatsApp] Self identity reconciliation warning: %s", rec_err
+                                    )
+                            return event
+                    except RelinkCandidateAmbiguous as exc:
+                        logger.error("[Phase15.3] Relink ambiguous in map_session_event: %s", exc)
+                        raise EventOwnerUnresolved(str(exc)) from exc
+                    except RelinkCandidateNotFound:
+                        pass  # Fall through to EventOwnerUnresolved below
             raise EventOwnerUnresolved(
                 f"Bilinmeyen gateway oturumu (session_id={gw_session_id}, event={evt}) — "
                 "gateway yeniden baslatilmis olabilir; QR ile yeniden eslestirin."
@@ -987,6 +1037,8 @@ class WhatsAppEventOrchestrator:
             row.error_message = None
             row.updated_at = datetime.utcnow()
         return event
+
+
 
     @profiled("gateway_event")
     async def ingest_gateway_event(self, event: Dict[str, Any]) -> Optional[Dict[str, Any]]:

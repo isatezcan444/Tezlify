@@ -1312,6 +1312,16 @@ async def ensure_whatsapp_private_lid_and_history_tables(engine: AsyncEngine) ->
         ADD COLUMN IF NOT EXISTS last_success_at TIMESTAMPTZ,
         ADD COLUMN IF NOT EXISTS last_error TEXT
         """,
+        """
+        ALTER TABLE whatsapp_private.history_sync_states
+        ADD COLUMN IF NOT EXISTS provider_checked BOOLEAN NOT NULL DEFAULT FALSE,
+        ADD COLUMN IF NOT EXISTS provider_checked_at TIMESTAMPTZ,
+        ADD COLUMN IF NOT EXISTS provider_exhausted BOOLEAN,
+        ADD COLUMN IF NOT EXISTS provider_signal VARCHAR(32),
+        ADD COLUMN IF NOT EXISTS provider_msgs_returned INTEGER,
+        ADD COLUMN IF NOT EXISTS provider_cursor_used VARCHAR(255),
+        ADD COLUMN IF NOT EXISTS last_sweep_count INTEGER NOT NULL DEFAULT 0
+        """,
         "REVOKE ALL ON ALL TABLES IN SCHEMA whatsapp_private FROM PUBLIC",
     ]
     try:
