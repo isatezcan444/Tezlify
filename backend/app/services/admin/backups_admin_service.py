@@ -20,18 +20,11 @@ from backend.app.schemas.admin import (
     AdminBackupsResponse,
 )
 
+from backend.app.services.admin.admin_common import format_bytes_human
+
 logger = logging.getLogger(__name__)
 
-
-def _format_size_human(size_bytes: int) -> str:
-    if size_bytes < 1024:
-        return f"{size_bytes} B"
-    elif size_bytes < 1024 * 1024:
-        return f"{size_bytes / 1024:.1f} KB"
-    elif size_bytes < 1024 * 1024 * 1024:
-        return f"{size_bytes / (1024 * 1024):.1f} MB"
-    else:
-        return f"{size_bytes / (1024 * 1024 * 1024):.2f} GB"
+_format_size_human = format_bytes_human
 
 
 def _inspect_backup_dir(dir_path: str) -> AdminBackupFileInfo:

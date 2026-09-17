@@ -2,12 +2,11 @@ import os
 from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, Body
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, or_, delete, insert
+from sqlalchemy import select, func, delete, insert
 from sqlalchemy.exc import IntegrityError
 
 from backend.app.core.database import get_db
 from backend.app.core.auth import AuthUser, get_current_user, get_user_filter
-from backend.app.core.search_utils import build_tr_search_filter
 from backend.app.models.lead import Lead, LeadStatus
 from backend.app.models.blacklist import Blacklist
 from backend.app.schemas.lead import (
@@ -21,73 +20,9 @@ from backend.app.schemas.lead import (
 )
 from backend.app.services.phone_service import PhoneService
 from backend.app.services.export_service import ExportService
+from backend.app.services.lead_query_service import build_lead_filter_conditions
 
 router = APIRouter()
-
-
-def build_lead_filter_conditions(
-    search: Optional[str] = None,
-    city: Optional[str] = None,
-    district: Optional[str] = None,
-    districts: Optional[List[str]] = None,
-    category: Optional[str] = None,
-    categories: Optional[List[str]] = None,
-    status: Optional[LeadStatus] = None,
-    whatsapp_eligible_only: bool = False
-):
-    conditions = []
-    
-    if search and search.strip():
-        search_filter = build_tr_search_filter(
-            [Lead.name, Lead.phone, Lead.phone_e164, Lead.district, Lead.category, Lead.city],
-            search.strip(),
-        )
-        if search_filter is not None:
-            conditions.append(search_filter)
-
-    if city and city.strip():
-        city_filter = build_tr_search_filter([Lead.city], city.strip())
-        if city_filter is not None:
-            conditions.append(city_filter)
-
-    # Multi-district support (takes priority over single district)
-    if districts and len(districts) > 0:
-        clean_districts = [d.strip() for d in districts if d and d.strip()]
-        if clean_districts:
-            district_clauses = []
-            for d in clean_districts:
-                f = build_tr_search_filter([Lead.district], d)
-                if f is not None:
-                    district_clauses.append(f)
-            if district_clauses:
-                conditions.append(or_(*district_clauses))
-    elif district and district.strip():
-        dist_filter = build_tr_search_filter([Lead.district], district.strip())
-        if dist_filter is not None:
-            conditions.append(dist_filter)
-
-    # Multi-category support (takes priority over single category)
-    if categories and len(categories) > 0:
-        clean_categories = [c.strip() for c in categories if c and c.strip()]
-        if clean_categories:
-            category_clauses = []
-            for c in clean_categories:
-                f = build_tr_search_filter([Lead.category], c)
-                if f is not None:
-                    category_clauses.append(f)
-            if category_clauses:
-                conditions.append(or_(*category_clauses))
-    elif category and category.strip():
-        cat_filter = build_tr_search_filter([Lead.category], category.strip())
-        if cat_filter is not None:
-            conditions.append(cat_filter)
-
-    if status:
-        conditions.append(Lead.status == status)
-    if whatsapp_eligible_only:
-        conditions.append(Lead.is_whatsapp_eligible == True)
-
-    return conditions
 
 
 @router.get("", response_model=LeadListResponse)
@@ -404,27 +339,7 @@ async def bulk_blacklist_leads(
     return {"blacklisted_count": count, "leads_updated": len(leads)}
 
 
-def _lead_export_dict(l: Lead) -> dict:
-    """Explicit export projection: never leak SQLAlchemy internals
-    (_sa_instance_state) or unreviewed columns into customer files."""
-    return {
-        "id": l.id,
-        "name": l.name,
-        "category": l.category,
-        "phone_e164": l.phone_e164,
-        "phone": l.phone,
-        "is_mobile": l.is_mobile,
-        "is_whatsapp_eligible": l.is_whatsapp_eligible,
-        "city": l.city,
-        "district": l.district,
-        "address": l.address,
-        "rating": l.rating,
-        "reviews_count": l.reviews_count,
-        "website": l.website,
-        "search_keyword": l.search_keyword,
-        "status": l.status.value if hasattr(l.status, "value") else str(l.status),
-        "created_at": l.created_at,
-    }
+_lead_export_dict = ExportService.lead_to_export_dict
 
 
 @router.post("/export/csv")

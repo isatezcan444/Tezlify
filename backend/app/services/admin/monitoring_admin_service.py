@@ -41,16 +41,9 @@ INVARIANT_DEFINITIONS = [
 ]
 
 
-def _read_json_file(filepath: str) -> Optional[Dict[str, Any]]:
-    if not os.path.exists(filepath):
-        return None
-    try:
-        with open(filepath, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            return data if isinstance(data, dict) else None
-    except Exception as e:
-        logger.debug("Failed to read JSON from %s: %s", filepath, e)
-        return None
+from backend.app.services.admin.admin_common import read_json_file
+
+_read_json_file = read_json_file
 
 
 def get_monitoring_metrics() -> AdminMonitoringResponse:

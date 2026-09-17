@@ -7,6 +7,29 @@ from typing import List, Dict, Any
 
 class ExportService:
     @staticmethod
+    def lead_to_export_dict(l: Any) -> Dict[str, Any]:
+        """Explicit export projection: never leak SQLAlchemy internals
+        (_sa_instance_state) or unreviewed columns into customer files."""
+        return {
+            "id": l.id,
+            "name": l.name,
+            "category": l.category,
+            "phone_e164": l.phone_e164,
+            "phone": l.phone,
+            "is_mobile": l.is_mobile,
+            "is_whatsapp_eligible": l.is_whatsapp_eligible,
+            "city": l.city,
+            "district": l.district,
+            "address": l.address,
+            "rating": l.rating,
+            "reviews_count": l.reviews_count,
+            "website": l.website,
+            "search_keyword": l.search_keyword,
+            "status": l.status.value if hasattr(l.status, "value") else str(l.status),
+            "created_at": l.created_at,
+        }
+
+    @staticmethod
     def leads_to_dataframe(leads: List[Dict[str, Any]]) -> "pd.DataFrame":
         formatted = []
         for l in leads:
