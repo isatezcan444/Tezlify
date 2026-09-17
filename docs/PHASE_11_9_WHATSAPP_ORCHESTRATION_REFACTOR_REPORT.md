@@ -128,3 +128,33 @@ node frontend/scripts/test-whatsapp-message-merge.mjs
 python3 check_circular_dependencies.py
 ```
 **Result**: `0 circular dependency cycles detected` across Python, TypeScript, and Gateway codebases.
+
+---
+
+## 5. Production Deployment & Live Verification
+
+- **Deployed Commit**: [`6bf7ca3`](https://github.com/isatezcan444/Tezlify/commit/6bf7ca3) (`refactor(whatsapp): decompose orchestration layer into sessions and messaging coordinators (Phase 11.9)`)
+- **Container Health**: 4/4 containers healthy (`tezlify-backend`, `tezlify-caddy`, `tezlify-db`, `tezlify-gateway`).
+- **Gateway Bridge**: Active & connected (`/ws/gateway` accepted, `reconnect_count: 1`, `connected: true`).
+- **Live WebSocket Traffic**: Active frontend user connection verified (`/ws?token=...`).
+
+### Pre vs. Post Session Snapshot Comparison
+
+Pre-deployment snapshot:
+```text
+ id |               user_id                |              gateway_id              | session_name |     status      | is_active 
+----+--------------------------------------+--------------------------------------+--------------+-----------------+-----------
+  4 | 00000000-0000-0000-0000-000000000001 | 2b2ed927-866c-4373-89d9-0ad8b35d63c8 | diag         | SCAN_QR         | t
+  5 | 00000000-0000-0000-0000-000000000001 | 87cf30e9-91d7-40b8-aba4-5d36494192f9 | diag         | RELINK_REQUIRED | t
+```
+
+Post-deployment snapshot:
+```text
+ id |               user_id                |              gateway_id              | session_name |     status      | is_active 
+----+--------------------------------------+--------------------------------------+--------------+-----------------+-----------
+  4 | 00000000-0000-0000-0000-000000000001 | 2b2ed927-866c-4373-89d9-0ad8b35d63c8 | diag         | SCAN_QR         | t
+  5 | 00000000-0000-0000-0000-000000000001 | 87cf30e9-91d7-40b8-aba4-5d36494192f9 | diag         | RELINK_REQUIRED | t
+```
+
+**`SESSION_MUTATIONS = 0`** (Exact identity, status, and configuration preserved without drift).
+
