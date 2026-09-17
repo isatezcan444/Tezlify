@@ -822,12 +822,7 @@ class WhatsAppEventOrchestrator:
         upsert_contact = self._get_helper("_upsert_contact", self._upsert_contact)
 
         if evt_name == "conversation_updated":
-            if clean_jid.endswith("@lid"):
-                conv = await find_whatsapp_conversation(db, owner, str(jid), session_id=ws_session_id)
-                if conv is None:
-                    return _skip_event(event, f"conversation_updated: unresolved lid sohbet yaratmaz ({clean_jid})")
-            else:
-                conv = await ensure_conversation_race_safe(db, owner, str(jid), event, session_id=ws_session_id)
+            conv = await ensure_conversation_race_safe(db, owner, str(jid), event, session_id=ws_session_id)
         elif evt_name == "message_status_updated":
             conv = None
             matching_msg = None

@@ -349,7 +349,7 @@ async def get_conversations(
         None, ge=1, description="Yalnizca bu sohbet (hedefli tek-sohbet sorgusu)"
     ),
     sync: bool = Query(False, description="Arka plan sync job'ını tetikle (beklemeden döner)"),
-    limit: int = Query(50, ge=1, le=200),
+    limit: int = Query(200, ge=1, le=1000),
     offset: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_db),
     current_user: AuthUser = Depends(get_current_user),

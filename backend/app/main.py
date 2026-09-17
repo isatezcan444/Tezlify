@@ -32,6 +32,7 @@ from backend.app.core.migrations import (
     purge_degenerate_phone_contacts,
     backfill_whatsapp_last_message_previews,
     ensure_phase_10_7_indexes,
+    ensure_whatsapp_private_lid_and_history_tables,
 )
 from backend.app.core.seed import seed_demo_data_if_empty
 from backend.app.models.blacklist import ScraperJob, ScraperJobStatus
@@ -116,6 +117,7 @@ async def lifespan(app: FastAPI):
     await purge_degenerate_phone_contacts(engine)
     await backfill_whatsapp_last_message_previews(engine)
     await ensure_phase_10_7_indexes(engine)
+    await ensure_whatsapp_private_lid_and_history_tables(engine)
 
     # Restart sonrası yarıda kalan arka plan işlerini toparla
     await recover_stuck_jobs()

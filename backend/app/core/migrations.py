@@ -1269,3 +1269,47 @@ async def ensure_phase_10_7_indexes(engine: AsyncEngine) -> None:
     except Exception as e:
         logger.warning("[MIGRATION] ensure_phase_10_7_indexes: %s", e)
 
+
+async def ensure_whatsapp_private_lid_and_history_tables(engine: AsyncEngine) -> None:
+    """Ensures persistent tables in whatsapp_private for LID mappings and history cursor states."""
+    dialect = engine.dialect.name
+    if dialect != "postgresql":
+        return
+
+    statements = [
+        """
+        CREATE TABLE IF NOT EXISTS whatsapp_private.lid_mappings (
+            session_id TEXT NOT NULL REFERENCES whatsapp_private.gateway_sessions(session_id) ON DELETE CASCADE,
+            lid_jid VARCHAR(100) NOT NULL,
+            phone_jid VARCHAR(100) NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            PRIMARY KEY (session_id, lid_jid)
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS ix_wa_lid_mappings_phone
+        ON whatsapp_private.lid_mappings (session_id, phone_jid)
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS whatsapp_private.history_sync_states (
+            session_id TEXT NOT NULL REFERENCES whatsapp_private.gateway_sessions(session_id) ON DELETE CASCADE,
+            jid VARCHAR(100) NOT NULL,
+            oldest_msg_id VARCHAR(100),
+            oldest_timestamp_ms BIGINT,
+            has_more BOOLEAN NOT NULL DEFAULT TRUE,
+            completed_at TIMESTAMPTZ,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            PRIMARY KEY (session_id, jid)
+        )
+        """,
+        "REVOKE ALL ON ALL TABLES IN SCHEMA whatsapp_private FROM PUBLIC",
+    ]
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text("SET LOCAL lock_timeout = '5s'"))
+            for s in statements:
+                await conn.execute(text(s))
+        logger.info("[MIGRATION] whatsapp_private lid_mappings & history_sync_states verified")
+    except Exception as e:
+        logger.warning("[MIGRATION] ensure_whatsapp_private_lid_and_history_tables: %s", e)
+

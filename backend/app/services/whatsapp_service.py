@@ -37,7 +37,7 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple
 
-from sqlalchemy import select, func, or_, and_
+from sqlalchemy import select, func, or_, and_, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, contains_eager
 
@@ -624,23 +624,43 @@ async def get_messages(
 
     has_more = False
     if rows:
-        if conv.session_id and len(rows) >= page_size:
-            has_more = True
-        elif not conv.session_id and len(rows) >= page_size:
-            oldest_row = rows[0]
-            oldest_ts = _msg_time(oldest_row)
-            if oldest_ts is not None:
-                older_exists = await db.scalar(
-                    select(Message.id).where(
-                        Message.conversation_id == conv.id,
-                        get_user_filter(Message.user_id, user_id),
-                        or_(
-                            _msg_time_col() < oldest_ts,
-                            and_(_msg_time_col() == oldest_ts, Message.id < oldest_row.id),
-                        ),
-                    ).limit(1)
-                )
-                has_more = older_exists is not None
+        oldest_row = rows[0]
+        oldest_ts = _msg_time(oldest_row)
+        if oldest_ts is not None:
+            older_exists = await db.scalar(
+                select(Message.id).where(
+                    Message.conversation_id == conv.id,
+                    get_user_filter(Message.user_id, user_id),
+                    or_(
+                        _msg_time_col() < oldest_ts,
+                        and_(_msg_time_col() == oldest_ts, Message.id < oldest_row.id),
+                    ),
+                ).limit(1)
+            )
+            if older_exists is not None:
+                has_more = True
+
+        if not has_more and conv.session_id:
+            try:
+                cres = await db.execute(select(Contact.phone_e164).where(Contact.id == conv.contact_id))
+                phone_val = cres.scalar_one_or_none()
+                if phone_val:
+                    jid_val = phone_val[4:] if phone_val.startswith("jid:") else phone_to_jid(phone_val)
+                    if jid_val:
+                        state_res = await db.execute(
+                            text(
+                                "SELECT has_more, completed_at FROM whatsapp_private.history_sync_states "
+                                "WHERE jid = :jid AND completed_at IS NOT NULL"
+                            ),
+                            {"jid": jid_val},
+                        )
+                        state_row = state_res.fetchone()
+                        if state_row is None:
+                            has_more = True
+            except Exception as e:
+                logger.debug("history_sync_states check failed: %s", e)
+                if len(rows) >= page_size:
+                    has_more = True
 
     if len(rows) > page_size:
         rows = rows[-page_size:]

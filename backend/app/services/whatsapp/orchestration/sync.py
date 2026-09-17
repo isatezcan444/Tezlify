@@ -14,11 +14,12 @@ Coordinates multi-phase synchronization and on-demand history hydration:
 import asyncio
 from datetime import datetime, timezone
 import logging
+import random
 import time
 from typing import Any, Callable, Dict, FrozenSet, List, Optional, Set, Tuple
 import uuid
 
-from sqlalchemy import delete, func, insert, or_, select
+from sqlalchemy import delete, func, insert, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -695,6 +696,22 @@ class WhatsAppSyncOrchestrator:
         conv_by_jid: Dict[str, int] = {}
         for cid, jid_str in jid_by_conv.items():
             conv_by_jid[jid_str] = cid
+
+        if ws_session and ws_session.gateway_id:
+            try:
+                lid_res = await db.execute(
+                    text("SELECT lid_jid, phone_jid FROM whatsapp_private.lid_mappings WHERE session_id = :sid"),
+                    {"sid": str(ws_session.gateway_id)},
+                )
+                for row in lid_res.fetchall():
+                    lid_jid, phone_jid = str(row[0]), str(row[1])
+                    if phone_jid in conv_by_jid and lid_jid not in conv_by_jid:
+                        conv_by_jid[lid_jid] = conv_by_jid[phone_jid]
+                    elif lid_jid in conv_by_jid and phone_jid not in conv_by_jid:
+                        conv_by_jid[phone_jid] = conv_by_jid[lid_jid]
+            except Exception as e:
+                logger.debug("LID mappings lookup in bulk sync skipped: %s", e)
+
         conv_by_id: Dict[int, Conversation] = {}
         existing_ids: Dict[int, Set[str]] = {}
         dedup_loaded: Set[int] = set()
@@ -1095,10 +1112,10 @@ class WhatsAppSyncOrchestrator:
                         oldest = mres.scalars().first()
                         if oldest:
                             cursor_ms = _hydration_cursor_ms([oldest])
-                            anchor_id = oldest.wa_message_id
-                            anchor_from_me = (oldest.direction == MessageDirection.OUTBOUND)
+                            anchor_id = getattr(oldest, "wa_message_id", None)
+                            anchor_from_me = (getattr(oldest, "direction", None) == MessageDirection.OUTBOUND)
                             if cursor_ms is not None:
-                                await hydrate_messages_on_demand(
+                                older = await hydrate_messages_on_demand(
                                     db,
                                     user_id,
                                     c,
@@ -1107,6 +1124,38 @@ class WhatsAppSyncOrchestrator:
                                     oldest_msg_id=anchor_id,
                                     oldest_msg_from_me=anchor_from_me,
                                 )
+                                try:
+                                    contact = await db.get(Contact, c.contact_id) if c.contact_id else None
+                                    phone_val = str(contact.phone_e164) if contact and contact.phone_e164 else ""
+                                    jid = phone_val[4:] if phone_val.startswith("jid:") else phone_to_jid(phone_val)
+                                    if jid:
+                                        if older:
+                                            await db.execute(
+                                                text(
+                                                    "INSERT INTO whatsapp_private.history_sync_states "
+                                                    "(session_id, jid, oldest_msg_id, oldest_timestamp_ms, has_more, updated_at) "
+                                                    "VALUES (:sid, :jid, :mid, :ts, TRUE, NOW()) "
+                                                    "ON CONFLICT (session_id, jid) DO UPDATE SET "
+                                                    "oldest_msg_id = EXCLUDED.oldest_msg_id, "
+                                                    "oldest_timestamp_ms = EXCLUDED.oldest_timestamp_ms, "
+                                                    "has_more = TRUE, updated_at = NOW()"
+                                                ),
+                                                {"sid": gateway_id, "jid": jid, "mid": older[0].wa_message_id, "ts": cursor_ms},
+                                            )
+                                        else:
+                                            await db.execute(
+                                                text(
+                                                    "INSERT INTO whatsapp_private.history_sync_states "
+                                                    "(session_id, jid, has_more, completed_at, updated_at) "
+                                                    "VALUES (:sid, :jid, FALSE, NOW(), NOW()) "
+                                                    "ON CONFLICT (session_id, jid) DO UPDATE SET "
+                                                    "has_more = FALSE, completed_at = NOW(), updated_at = NOW()"
+                                                ),
+                                                {"sid": gateway_id, "jid": jid},
+                                            )
+                                        await db.commit()
+                                except Exception:
+                                    pass
                 except Exception as e:
                     logger.debug("Background expansion skipped conversation %s: %s", conv.id, e)
                     continue

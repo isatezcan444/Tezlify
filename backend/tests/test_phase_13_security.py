@@ -34,7 +34,7 @@ def test_sec_02_websocket_query_token_masking():
 def test_sec_03_no_unmasked_secrets_in_repo_docs_and_scripts():
     """TEST-SEC-03: Asserts zero occurrences of revoked/exposed token in repository files."""
     import subprocess
-    cmd = ["git", "grep", "-nI", "5jYsO86WARwHOqXZ8ihJnhoBW8X-ZMGX26I6gnZ-eE0"]
+    cmd = ["git", "grep", "-nI", "5jYsO86WARwHOqXZ8ihJnhoBW8X-ZMGX26I6gnZ-eE0", "--", ":!backend/tests/test_phase_13_security.py"]
     res = subprocess.run(cmd, capture_output=True, text=True)
     assert res.returncode != 0, f"Found leaked token in repository files: {res.stdout}"
     assert len(res.stdout.strip()) == 0

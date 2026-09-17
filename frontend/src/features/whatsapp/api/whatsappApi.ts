@@ -474,8 +474,8 @@ export const WhatsAppApi = {
     if (params?.archived_only) qs.set('archived_only', 'true');
     if (params?.lead_id) qs.set('lead_id', String(params.lead_id));
     if (params?.conversation_id) qs.set('conversation_id', String(params.conversation_id));
-    if (params?.search?.trim()) qs.set('search', params.search.trim());
-    if (params?.limit) qs.set('limit', String(params.limit));
+    const limit = params?.limit ?? 300;
+    qs.set('limit', String(limit));
     if (params?.offset) qs.set('offset', String(params.offset));
     if (params?.sync) qs.set('sync', 'true');
     const suffix = qs.toString() ? `?${qs.toString()}` : '';

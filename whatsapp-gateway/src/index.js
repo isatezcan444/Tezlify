@@ -109,6 +109,7 @@ const sessionManager = createSessionManager({
   authRepository,
   leaseRepository,
   instanceId,
+  pool: gatewayPool,
 });
 
 const autoRestore = process.env.WHATSAPP_AUTO_RESTORE !== 'false' && process.env.WHATSAPP_AUTO_RESTORE !== '0';

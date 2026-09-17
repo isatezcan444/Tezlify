@@ -633,9 +633,48 @@ export function createSessionManager({
   authRepository = null,
   leaseRepository = null,
   instanceId = 'local-instance',
+  pool = null,
 }) {
   const sessions = new Map(); // manager-local: no cross-instance/session leakage
   const mediaIndex = new Map(); // every entry is scoped by its owning session
+
+  async function persistLidMappingToDb(sessionId, lid, phoneJid) {
+    if (!pool || !sessionId || !lid || !phoneJid) return;
+    try {
+      await pool.query(
+        `INSERT INTO whatsapp_private.lid_mappings (session_id, lid_jid, phone_jid, created_at)
+         VALUES ($1, $2, $3, NOW())
+         ON CONFLICT (session_id, lid_jid) DO UPDATE SET phone_jid = EXCLUDED.phone_jid, created_at = NOW()`,
+        [String(sessionId), String(lid), String(phoneJid)]
+      );
+    } catch (err) {
+      logger.warn({ err: err?.message, sessionId, lid, phoneJid }, 'Failed to persist LID mapping to PostgreSQL');
+    }
+  }
+
+  async function loadLidMappingsFromDb(sessionId, store) {
+    if (!pool || !sessionId || !store) return 0;
+    try {
+      const res = await pool.query(
+        `SELECT lid_jid, phone_jid FROM whatsapp_private.lid_mappings WHERE session_id = $1`,
+        [String(sessionId)]
+      );
+      let count = 0;
+      for (const row of res.rows) {
+        if (row.lid_jid && row.phone_jid) {
+          rememberLidPair(store, row.lid_jid, row.phone_jid);
+          count += 1;
+        }
+      }
+      if (count > 0) {
+        logger.info({ sessionId, count }, 'Loaded persistent LID mappings from PostgreSQL');
+      }
+      return count;
+    } catch (err) {
+      logger.warn({ err: err?.message, sessionId }, 'Failed to load persistent LID mappings from PostgreSQL');
+      return 0;
+    }
+  }
   // Baileys retry counters must outlive an individual socket. Keep one bounded
   // cache per session so two WhatsApp lines can never share message IDs or
   // retry budgets, while reconnects on the same line retain their counters.
@@ -851,6 +890,7 @@ export function createSessionManager({
         // Bu hesaba ait kişiler/sohbetler/mesajlar yalnızca burada yaşar.
         store: createSessionStore(),
       };
+      await loadLidMappingsFromDb(id, session.store);
       sessions.set(id, session);
       // `autoStart: false` yalnızca birim testleri içindir: Baileys soketi
       // açılmadan oturum kaydı + deposu oluşur.
@@ -1039,11 +1079,9 @@ export function createSessionManager({
     listConversations(sessionId, { search, limit, offset } = {}) {
       const session = this._requireSession(sessionId);
       const store = this._storeOf(session);
-      const { chats, contacts } = store;
-      // Eşleşmesi henüz çözülememiş LID-anahtarlı sohbetleri dışarı verme —
-      // telefon eşleşmesi öğrenilince _applyLidMapping onları telefona taşır
-      // (WhatsApp Web'de ham `xxx@lid` başlığı görünmez).
-      let list = [...chats.values()].filter((c) => !isLidJid(c.jid)).sort((a, b) => {
+      // Sohbet listesi: telefon, grup ve çözümlenmemiş LID sohbetlerinin tamamını içerir.
+      // Çözümlenmemiş LID'ler güvenli fallback başlığıyla (sanitizeChatForEmit) sunulur.
+      let list = [...chats.values()].sort((a, b) => {
         const tA = new Date(a.last_message_at || a.created_at || 0).getTime();
         const tB = new Date(b.last_message_at || b.created_at || 0).getTime();
         return tB - tA;
@@ -1081,7 +1119,7 @@ export function createSessionManager({
     async requestOlderHistory(
       sessionId,
       jid,
-      { count = 50, oldestMsgId, oldestMsgFromMe, oldestMsgTimestampMs, before, timeoutMs = 5000 } = {}
+      { count = 50, oldestMsgId, oldestMsgFromMe, oldestMsgTimestampMs, before, timeoutMs = 15000 } = {}
     ) {
       const session = this._requireSession(sessionId);
       const store = this._storeOf(session);
@@ -1174,7 +1212,7 @@ export function createSessionManager({
     async getMessages(
       sessionId,
       jid,
-      { limit = 50, before, fetchProvider = false, oldestMsgId, oldestMsgFromMe, oldestMsgTimestampMs, timeoutMs = 4000 } = {}
+      { limit = 50, before, fetchProvider = false, oldestMsgId, oldestMsgFromMe, oldestMsgTimestampMs, timeoutMs = 15000 } = {}
     ) {
       const session = this._requireSession(sessionId);
       const store = this._storeOf(session);
@@ -1185,12 +1223,12 @@ export function createSessionManager({
       }
       list.sort((a, b) => (a.id || 0) - (b.id || 0));
 
-      if (fetchProvider && list.length < limit && session.sock) {
+      if (fetchProvider && session.sock && (list.length < limit || oldestMsgId)) {
         await this.requestOlderHistory(sessionId, jid, {
-          count: limit - list.length,
+          count: limit,
           oldestMsgId: oldestMsgId || list[0]?.wa_message_id,
-          oldestMsgFromMe,
-          oldestMsgTimestampMs,
+          oldestMsgFromMe: oldestMsgFromMe !== undefined ? oldestMsgFromMe : (list[0]?.direction === 'OUTBOUND' || list[0]?.from_me),
+          oldestMsgTimestampMs: oldestMsgTimestampMs || (list[0]?.timestamp_s ? list[0].timestamp_s * 1000 : undefined),
           before,
           timeoutMs,
         });
@@ -1693,6 +1731,7 @@ export function createSessionManager({
       // çözemeyip olayı düşürüyordu (grup adları/LID taşımaları kaybolurdu).
       const emitEvent = (event) => sessionManager._emit({ gateway_session_id: session.id, ...event });
       if (!rememberLidPair(store, lid, phoneJid)) return;
+      void persistLidMappingToDb(session.id, lid, phoneJid);
       const lidKey = asLid(lid);
       const phoneKey = asPn(phoneJid);
       // 1. Bekleyen LID kişisini telefona taşı (mergeContactName önceliği korur).
@@ -1778,7 +1817,7 @@ export function createSessionManager({
           emitEvent({ event: 'message_new', conversation_id: phoneKey, message: m });
         }
         phoneMsgs.sort((a, b) => (a.id || 0) - (b.id || 0));
-        if (phoneMsgs.length > 500) phoneMsgs.splice(0, phoneMsgs.length - 500);
+        if (phoneMsgs.length > 2000) phoneMsgs.splice(0, phoneMsgs.length - 2000);
         messagesByChat.set(phoneKey, phoneMsgs);
       }
       logger.debug({ lid: lidKey, jid: phoneKey }, 'LID→telefon eşleşmesi uygulandı');
@@ -2853,7 +2892,7 @@ export function createSessionManager({
           // (yaris/cihaz dongusu) sohbet gecmisi eksik kalir — son mesaji
           // buradan sentezleyip messagesByChat'e ekleriz (wa_message_id ile
           // dedup; backend de kendi tarafinda dedup eder).
-          if (update.lastMessage?.key?.id && !lidHold) {
+          if (update.lastMessage?.key?.id) {
             try {
               const list = messagesByChat.get(key) || [];
               const known = list.some((m) => m.wa_message_id && m.wa_message_id === update.lastMessage.key.id);
@@ -2861,7 +2900,7 @@ export function createSessionManager({
                 const synth = historyMessageToRecord(update.lastMessage, key);
                 if (synth) {
                   const next = [...list, synth];
-                  if (next.length > 500) next.splice(0, next.length - 500);
+                  if (next.length > 2000) next.splice(0, next.length - 2000);
                   messagesByChat.set(key, next);
                   emitEvent({ event: 'message_new', conversation_id: key, message: synth });
                 }
@@ -2889,7 +2928,7 @@ export function createSessionManager({
             updated_at: new Date().toISOString(),
           });
           if (!chats.get(key)?.avatar_url) void ensureChatAvatar(key);
-          if (!lidHold) emitEvent({ event: 'conversation_updated', conversation: chats.get(key) });
+          emitEvent({ event: 'conversation_updated', conversation: chats.get(key) });
         }
       });
 
@@ -2897,16 +2936,20 @@ export function createSessionManager({
       // gonderdigi RECENT gecmisi isler. syncFullHistory (428 riski) KULLANILMAZ;
       // yalnizca shouldSyncHistoryMessage ile bildirim kabul edilir.
       // Tamamlanma garantisi (quiet-period + fallback) yukarida tanimli. ---
-      sock.ev.on('messaging-history.set', async ({ chats: historyChats, contacts: historyContacts, messages: historyMessages, progress, isLatest, phoneNumberToLidMappings }) => {
+      sock.ev.on('messaging-history.set', async ({ chats: historyChats, contacts: historyContacts, messages: historyMessages, progress, isLatest, phoneNumberToLidMappings, lidPnMappings }) => {
         if (ignoreStaleSocketEvent('messaging-history.set')) return;
         try {
-          // Faz 8 (patch): HistorySync.phoneNumberToLidMappings — telefon<->LID
-          // ciftleri Baileys tarafindan dusuruluyordu; patch ile gelir.
-          // Bunlari IŞLEMEYE BAŞLAMADAN önce uygula ki aynı chunk'taki
-          // LID-anahtarlı rehber adları/sohbetleri telefon kimligine çözülerek
-          // yazilsin (yoksa kalici olarak lid_pending'de beklerlerdi).
-          for (const m of phoneNumberToLidMappings || []) {
-            if (m?.pnJid && m?.lidJid) applyLidMapping(m.lidJid, m.pnJid);
+          // Faz 8 (patch): HistorySync.phoneNumberToLidMappings & lidPnMappings — telefon<->LID
+          // ciftleri Baileys tarafindan dusuruluyordu; hem lidPnMappings ({ lid, pn })
+          // hem phoneNumberToLidMappings ({ pnJid, lidJid } veya { pn, lid }) desteklenir.
+          const rawMappings = [
+            ...(Array.isArray(lidPnMappings) ? lidPnMappings : []),
+            ...(Array.isArray(phoneNumberToLidMappings) ? phoneNumberToLidMappings : []),
+          ];
+          for (const m of rawMappings) {
+            const lid = m?.lid || m?.lidJid;
+            const pn = m?.pn || m?.pnJid;
+            if (lid && pn) applyLidMapping(lid, pn);
           }
           // 1. Kisiler
           for (const c of historyContacts || []) {
@@ -2960,8 +3003,8 @@ export function createSessionManager({
             if (!record) continue;
             list.push(record);
             list.sort((a, b) => (a.id || 0) - (b.id || 0));
-            // Bellek koruması: sohbet başına en yeni 500 mesaj (short-lived transport cache)
-            if (list.length > 500) list.splice(0, list.length - 500);
+            // Bellek koruması: sohbet başına en yeni 2000 mesaj (short-lived transport cache)
+            if (list.length > 2000) list.splice(0, list.length - 2000);
             messagesByChat.set(key, list);
             storedMessages += 1;
           }
@@ -3031,11 +3074,8 @@ export function createSessionManager({
             };
             chats.set(key, merged);
             storedChats += 1;
-            const lidHold = isLidJid(key);
-            if (!lidHold) {
-              if (!merged.avatar_url && storedChats <= 5) void ensureChatAvatar(key);
-              emitEvent({ event: 'conversation_updated', conversation: merged });
-            }
+            if (!merged.avatar_url && storedChats <= 5) void ensureChatAvatar(key);
+            emitEvent({ event: 'conversation_updated', conversation: merged });
           }
           emitEvent({
             event: 'history_sync_completed',

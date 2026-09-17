@@ -217,10 +217,12 @@ async def test_self_04_reconcile_self_identity_merges_duplicate_conversation():
 
 
 @pytest.mark.asyncio
-async def test_lid_01_unresolved_lid_skips_new_conversation():
-    """LID-01: conversation_updated for an unresolved LID JID skips creating a new conversation."""
+async def test_lid_01_unresolved_lid_creates_conversation():
+    """LID-01: conversation_updated for an unresolved LID JID creates a conversation safely."""
     service = MagicMock()
-    service._find_whatsapp_conversation = AsyncMock(return_value=None)
+    mock_conv = MagicMock()
+    mock_conv.id = 9741
+    service._ensure_conversation_race_safe = AsyncMock(return_value=mock_conv)
     service._resolve_event_owner_and_session = AsyncMock(return_value=("test-user", 1))
 
     orchestrator = WhatsAppEventOrchestrator(service=service)
@@ -238,8 +240,8 @@ async def test_lid_01_unresolved_lid_skips_new_conversation():
     }
 
     result = await orchestrator._map_conversation_event(mock_db, event)
-    assert bool(result.get("_skip")) is True
-    assert "unresolved lid sohbet yaratmaz" in result.get("_skip", "")
+    assert not result.get("_skip")
+    assert service._ensure_conversation_race_safe.called
 
 
 @pytest.mark.asyncio
