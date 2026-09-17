@@ -12,7 +12,6 @@ from backend.app.auth.application.session_service import SessionService
 from backend.app.auth.application.user_service import UserService
 from backend.app.auth.application.oauth_service import OAuthService
 from backend.app.auth.api.dependencies import (
-    get_current_user_unified,
     get_current_user_unified_with_profile,
     extract_session_token,
 )

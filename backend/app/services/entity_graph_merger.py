@@ -7,7 +7,7 @@ Preserves complete provenance and provider identities on unified BusinessEntity 
 import re
 import uuid
 import logging
-from typing import Dict, Any, List, Optional, Set, Tuple
+from typing import Dict, Any, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from backend.app.schemas.intelligence import (
@@ -17,7 +17,6 @@ from backend.app.schemas.intelligence import (
     QualificationState
 )
 from backend.app.data.turkey_locations import normalize_turkish
-from backend.app.services.phone_service import PhoneService
 
 logger = logging.getLogger(__name__)
 

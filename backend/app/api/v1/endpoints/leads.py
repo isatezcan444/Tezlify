@@ -7,7 +7,7 @@ from sqlalchemy.exc import IntegrityError
 
 from backend.app.core.database import get_db
 from backend.app.core.auth import AuthUser, get_current_user, get_user_filter
-from backend.app.core.search_utils import build_tr_search_filter, generate_tr_search_terms
+from backend.app.core.search_utils import build_tr_search_filter
 from backend.app.models.lead import Lead, LeadStatus
 from backend.app.models.blacklist import Blacklist
 from backend.app.schemas.lead import (

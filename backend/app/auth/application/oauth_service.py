@@ -3,7 +3,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Tuple
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update
+from sqlalchemy import select
 
 from backend.app.auth.domain.exceptions import InvalidOAuthStateException
 from backend.app.auth.domain.models import UserDomain, SessionDomain
@@ -63,7 +63,7 @@ class OAuthService:
         if db_state.consumed_at is not None:
             raise InvalidOAuthStateException("OAuth state has already been consumed (replay attempt)")
 
-        now = utc_now() if db_state.expires_at.tzinfo is not None else datetime.utcnow()
+        now = utc_now() if db_state.expires_at.tzinfo is not None else datetime.now(timezone.utc).replace(tzinfo=None)
 
         if db_state.expires_at < now:
             raise InvalidOAuthStateException("OAuth state has expired")

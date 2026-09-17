@@ -4,13 +4,12 @@ Executes directory category-slug discovery across all available pages until exha
 """
 import uuid
 import logging
-from typing import List, Dict, Any, Optional
+from typing import List, Optional
 import httpx
 
 from backend.app.schemas.intelligence import (
     ProviderQuery,
     RawBusinessCandidate,
-    QueryFamily,
     CategoryProfile
 )
 from backend.app.scrapers.adapters.base_adapter import BaseProviderAdapter

@@ -7,8 +7,6 @@ and real-time WebSocket progress broadcasts.
 import asyncio
 import logging
 from typing import List, Optional
-from datetime import datetime
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
 
 from backend.app.core.database import AsyncSessionLocal

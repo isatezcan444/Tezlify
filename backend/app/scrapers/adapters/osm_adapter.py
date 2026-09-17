@@ -4,10 +4,10 @@ Executes targeted geo-category and subdivision queries, returning RawBusinessCan
 """
 import uuid
 import logging
-from typing import List, Dict, Any
+from typing import List
 from urllib.parse import quote
 import httpx
-from backend.app.schemas.intelligence import ProviderQuery, RawBusinessCandidate, QueryFamily
+from backend.app.schemas.intelligence import ProviderQuery, RawBusinessCandidate
 from backend.app.scrapers.adapters.base_adapter import BaseProviderAdapter
 from backend.app.scrapers.directory_scraper import DirectoryScraper
 

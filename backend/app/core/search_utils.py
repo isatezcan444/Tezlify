@@ -1,6 +1,8 @@
 from typing import List, Sequence
 from sqlalchemy import or_
-from sqlalchemy.sql.elements import BinaryExpression
+
+# Precompiled translation table for Turkish de-accenting
+_TR2ASCII_TRANS = str.maketrans("çğıöşüÇĞİÖŞÜ", "cgiosuCGIOSU")
 
 
 def generate_tr_search_terms(query: str) -> List[str]:
@@ -55,8 +57,7 @@ def generate_tr_search_terms(query: str) -> List[str]:
         variants.add(tu.capitalize())
 
         # 2. ASCII de-accenting
-        tr2ascii = str.maketrans("çğıöşüÇĞİÖŞÜ", "cgiosuCGIOSU")
-        ascii_t = term.translate(tr2ascii)
+        ascii_t = term.translate(_TR2ASCII_TRANS)
         variants.add(ascii_t)
         variants.add(ascii_t.lower())
         variants.add(ascii_t.upper())

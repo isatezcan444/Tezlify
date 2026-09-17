@@ -19,7 +19,6 @@ from backend.app.scrapers.google_maps_scraper import GoogleMapsScraper
 from backend.app.services.lead_ingest_service import LeadIngestService
 from backend.app.api.v1.websocket import ws_manager
 from backend.app.data.turkey_locations import get_districts_for_city, get_supported_cities
-from sqlalchemy import or_
 
 logger = logging.getLogger(__name__)
 

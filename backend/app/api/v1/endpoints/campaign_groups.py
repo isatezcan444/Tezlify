@@ -1,6 +1,6 @@
 import os
-from datetime import datetime
-from typing import List, Optional
+from datetime import datetime, timezone
+from typing import List
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select, func, delete, insert, case
 from sqlalchemy.exc import IntegrityError
@@ -368,7 +368,7 @@ async def remove_lead_from_campaign_group(
     if res.rowcount == 0:
         raise HTTPException(status_code=404, detail="İşletme bu grupta bulunamadı.")
 
-    group.updated_at = datetime.utcnow()
+    group.updated_at = datetime.now(timezone.utc)
     await db.commit()
 
     total, wa = await _get_group_counts(db, group.id)

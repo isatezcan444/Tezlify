@@ -1,7 +1,6 @@
 import enum
-import json
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Text, DateTime, Enum, Index, JSON, Uuid
+from sqlalchemy import Column, Integer, String, Text, DateTime, Enum, JSON, Uuid
 from backend.app.core.database import Base
 
 

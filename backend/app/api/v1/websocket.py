@@ -1,7 +1,7 @@
 import json
 import logging
-from typing import List, Dict, Any, Set
-from fastapi import WebSocket, WebSocketDisconnect
+from typing import Dict, Any, Set
+from fastapi import WebSocket
 
 logger = logging.getLogger(__name__)
 

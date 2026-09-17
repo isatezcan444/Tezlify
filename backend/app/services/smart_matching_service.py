@@ -8,8 +8,7 @@ from typing import List, Optional, Dict, Any, Tuple
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.models.lead import Lead, LeadStatus, EntityType, VerificationStatus
-from backend.app.models.conversation import Conversation
+from backend.app.models.lead import Lead, LeadStatus, EntityType
 from backend.app.core.search_utils import build_tr_search_filter
 from backend.app.core.auth import get_user_filter
 from backend.app.schemas.smart_outreach import (

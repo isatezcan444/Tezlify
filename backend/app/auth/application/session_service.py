@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple
 from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update
+from sqlalchemy import select
 
 from backend.app.auth.domain.models import SessionDomain
 from backend.app.auth.infrastructure.sql_models import AuthSessionDB
@@ -60,7 +60,7 @@ class SessionService:
         if not db_session:
             return None
 
-        now = utc_now() if db_session.expires_at.tzinfo is not None else datetime.utcnow()
+        now = utc_now() if db_session.expires_at.tzinfo is not None else datetime.now(timezone.utc).replace(tzinfo=None)
         if db_session.expires_at <= now:
             return None
 
@@ -94,7 +94,7 @@ class SessionService:
         if not db_session:
             return False
 
-        now = utc_now() if db_session.expires_at.tzinfo is not None else datetime.utcnow()
+        now = utc_now() if db_session.expires_at.tzinfo is not None else datetime.now(timezone.utc).replace(tzinfo=None)
         db_session.revoked_at = now
         await db.flush()
         return True

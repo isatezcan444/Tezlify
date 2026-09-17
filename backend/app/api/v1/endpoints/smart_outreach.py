@@ -1,15 +1,13 @@
 """
 Smart Outreach, Category Confirmation, and Lead Matching Endpoints.
 """
-import os
 import asyncio
 import logging
-from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
-from backend.app.core.database import get_db, AsyncSessionLocal
+from backend.app.core.database import get_db
 from backend.app.core.auth import AuthUser, get_current_user, get_user_filter
 from backend.app.models.lead import Lead
 from backend.app.models.blacklist import ScraperJob, ScraperJobStatus

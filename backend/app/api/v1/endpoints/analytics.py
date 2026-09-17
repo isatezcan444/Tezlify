@@ -1,9 +1,8 @@
-from typing import Dict, Any, List
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, or_
+from sqlalchemy import select, func
 
 from backend.app.core.database import get_db
 from backend.app.core.auth import AuthUser, get_current_user, get_user_filter
@@ -121,7 +120,7 @@ async def get_dashboard_stats(
 
     daily_volume = []
     for i in range(6, -1, -1):
-        day = (datetime.utcnow() - timedelta(days=i)).date()
+        day = (datetime.now(timezone.utc) - timedelta(days=i)).date()
         day_str = str(day)
         daily_volume.append({
             "date": day.strftime("%d %b"),

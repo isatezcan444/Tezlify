@@ -3,10 +3,9 @@ Abstract Base Provider Adapter for B2B Lead Discovery.
 Defines standard interface for all discovery providers (Directories, Maps, OSM, Web).
 """
 from abc import ABC, abstractmethod
-from typing import List, Dict, Any, Optional
+from typing import List
 import httpx
 from backend.app.schemas.intelligence import (
-    SearchPlan,
     ProviderQuery,
     RawBusinessCandidate
 )
