@@ -1,21 +1,43 @@
-"""WhatsApp gateway - veri katmani orkestrasyonu.
+"""WhatsApp gateway - veri katmani ve servis orkestrasyonu (Public Facade).
 
-WhatsApp UI, gateway (transport) + FastAPI DB (tek dogruluk kaynagi)
-arasinda koprulenir: ic mesajlar contacts/conversations/messages
-tablolarina kalici yazilir; frontend her zaman sayisal DB kimlikleriyle
-konusur. Gateway olaylari (/ws/gateway) bu servis araciligiyla persist
-edilir ve broadcast icin sayisal kimliklere cevrilir.
+Mimari (Phase 11.11 Consolidated):
+                       WhatsApp API
+                            │
+                            ▼
+                  whatsapp_service.py
+                    Public Facade
+                            │
+          ┌─────────────────┼─────────────────┐
+          ▼                 ▼                 ▼
+       sessions          messaging          events
+          │                 │                 │
+          └─────────────────┼─────────────────┘
+                            ▼
+                           sync
+                            │
+               ┌────────────┴────────────┐
+               ▼                         ▼
+         repositories              gateway boundary
+                                         │
+                                         ▼
+                                whatsapp_gateway.py
+                                         │
+                                         ▼
+                                    Node/Baileys
+
+Bu modul, WhatsApp alt sisteminin ana dis cephesidir (public facade).
+- Tum REST API endpointleri ve WebSocket ingestion hatti bu servis uzerinden cagirilir.
+- Yazma ve durum yonetimi `orchestration/{sessions,messaging,events,sync}.py` modullerine delege edilir.
+- Paylasimli concurrency kilitleri (`_conversation_locks`) ve sorgu optimizasyon kayitlari (`_in_flight_history_fetches`) bu modulde yonetilir.
+- Okuma odakli kritik sorgu cepheleri (`list_conversations`, `get_messages`, `get_sync_status`) yuksek basarim icin burada barinir.
+- Facade icinde dogrudan `db.commit()` veya `db.rollback()` yapilmaz; transaction ownership ilgili orchestrator katmanindadir.
 """
 import asyncio
 import logging
-import re
-import time
-import uuid
-from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable, Dict, FrozenSet, List, Optional, Set, Tuple
+from datetime import datetime
+from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple
 
-from sqlalchemy import select, func, or_, and_, delete, text, insert
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import select, func, or_, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, contains_eager
 
@@ -39,7 +61,6 @@ from backend.app.services.whatsapp.exceptions import (
 )
 from backend.app.services.whatsapp.repositories.contacts import (
     get_contact_avatar as _get_contact_avatar,
-    set_contact_avatar as _set_contact_avatar,
     set_contact_name as _set_contact_name,
 )
 from backend.app.services.whatsapp.repositories.conversations import (
@@ -51,35 +72,20 @@ from backend.app.services.whatsapp.repositories.conversations import (
 )
 from backend.app.services.whatsapp.repositories.messages import (
     build_message_from_gateway as _message_row_from_gateway,
-    get_sync_watermark_epoch as _sync_watermark_epoch,
     hydration_cursor_ms as _hydration_cursor_ms,
-    message_exists_by_wa_id,
     msg_time as _msg_time,
     msg_time_col as _msg_time_col,
 )
 from backend.app.services.whatsapp.repositories.sessions import (
     conversation_gateway_id as _conversation_gateway_id,
     conversation_session as _conversation_session,
-    get_session_by_id as _get_session_or_404,
     get_user_sessions as _user_sessions,
     require_user_session as _require_user_session,
     resolve_event_owner as _resolve_event_owner,
-    resolve_event_owner_and_session as _resolve_event_owner_and_session,
-    resolve_event_session_id as _resolve_event_session_id,
-)
-from backend.app.services.whatsapp.gateway import (
-    classify_gateway_error,
-    extract_live_session_fields,
-    extract_pairing_code,
-    extract_send_result,
-    extract_session_id,
-    is_gateway_session_missing,
 )
 from backend.app.services.whatsapp.orchestration.sessions import (
-    _apply_gateway_live,
     _gateway_op_or_mark_relink,
     _list_sessions_internal,
-    _session_dict,
     create_session,
     delete_session as _orchestrated_delete_session,
     get_session_qr,
@@ -89,8 +95,6 @@ from backend.app.services.whatsapp.orchestration.sessions import (
     refresh_session_qr,
     request_pairing_code,
 )
-
-_is_gateway_session_missing = is_gateway_session_missing
 
 
 _conversation_locks: Dict[Tuple[str, int], asyncio.Lock] = {}
@@ -112,20 +116,12 @@ def _get_conversation_lock(user_id: str, conversation_id: int) -> asyncio.Lock:
 
 from backend.app.services.whatsapp.identity import (
     NAME_RANK as _NAME_RANK,
-    contact_phone_for_jid as _contact_phone_for_jid,
     is_broadcast_only_jid,
     is_degenerate_jid,
-    is_phone_like as _is_phone_like,
     is_raw_jid_name as _is_raw_jid_name,
     jid_to_phone,
-    phone_to_jid,
     safe_display_name as _safe_display_name,
 )
-
-
-
-# _set_contact_name is imported from backend.app.services.whatsapp.repositories.contacts
-
 
 import sys
 
@@ -133,12 +129,6 @@ import sys
 from backend.app.services.whatsapp.orchestration.messaging import (
     WhatsAppMessagingOrchestrator,
     _serialize_message,
-    get_media_bytes as _messaging_get_media_bytes,
-    mark_conversation_read as _messaging_mark_conversation_read,
-    send_media_message as _messaging_send_media_message,
-    send_text_message as _messaging_send_text_message,
-    send_typing as _messaging_send_typing,
-    serialize_message,
 )
 
 _messaging_orchestrator = WhatsAppMessagingOrchestrator(service=sys.modules[__name__])
@@ -146,91 +136,34 @@ _messaging_orchestrator = WhatsAppMessagingOrchestrator(service=sys.modules[__na
 # Event Orchestration (Phase 11.10)
 from backend.app.services.whatsapp.orchestration.events import (
     WhatsAppEventOrchestrator,
-    _ensure_conversation as _events_ensure_conversation,
-    _ensure_conversation_race_safe as _events_ensure_conversation_race_safe,
-    _ingest_contact_synced as _events_ingest_contact_synced,
-    _ingest_message as _events_ingest_message,
-    _log_orphan_event,
-    _map_conversation_event as _events_map_conversation_event,
-    _map_session_event as _events_map_session_event,
     _orphan_suppressed,
-    _passthrough_event as _events_passthrough_event,
-    _persist_gateway_message as _events_persist_gateway_message,
-    _skip_event,
-    _upsert_contact as _events_upsert_contact,
-    ingest_gateway_event as _events_ingest_gateway_event,
-    reconcile_legacy_split_conversation as _events_reconcile_legacy_split_conversation,
 )
 
 _event_orchestrator = WhatsAppEventOrchestrator(service=sys.modules[__name__])
 
 # Sync Orchestration (Phase 11.10)
 from backend.app.services.whatsapp.orchestration.sync import (
-    _BOOTSTRAP_EMIT_INTERVAL_S,
-    _SYNC_BULK_PAGE_SIZE,
-    _SYNC_CHAT_PAGE_SIZE,
-    _SYNC_EVENT_CHUNK,
     _SYNC_PER_CHAT_LIMIT,
-    _SYNC_PERSIST_BATCH,
     SyncJob,
     WhatsAppSyncOrchestrator,
-    _bulk_channel_available as _sync_bulk_channel_available,
     _bulk_channel_cache,
-    _bulk_upsert_contacts as _sync_bulk_upsert_contacts,
-    _cancel_stale_sync_jobs as _sync_cancel_stale_sync_jobs,
-    _ensure_conversations_bulk as _sync_ensure_conversations_bulk,
-    _history_expansion_done,
-    _history_expansion_running,
-    _hydrate_messages_on_demand as _sync_hydrate_messages_on_demand,
     _initial_sync_inflight,
     _initial_sync_pending,
     _last_bootstrap_emit,
     _metadata_tasks,
-    _persist_chat_snapshot as _sync_persist_chat_snapshot,
-    _reapply_chat_names as _sync_reapply_chat_names,
-    _repair_last_message_previews as _sync_repair_last_message_previews,
-    _run_background_history_expansion as _sync_run_background_history_expansion,
-    _run_bulk_message_sync as _sync_run_bulk_message_sync,
-    _run_initial_sync as _sync_run_initial_sync,
-    _run_sync_job as _sync_run_sync_job,
-    _schedule_chats_bootstrap as _sync_schedule_chats_bootstrap,
-    _schedule_initial_sync as _sync_schedule_initial_sync,
-    _schedule_metadata_enrichment as _sync_schedule_metadata_enrichment,
-    _sync_conversations_impl as _sync_sync_conversations_impl,
-    _sync_conversations_inflight,
     _sync_jobs,
-    get_sync_job as _sync_get_sync_job,
-    request_sync as _sync_request_sync,
-    sync_contacts as _sync_sync_contacts,
-    sync_conversations as _sync_sync_conversations,
-)
-
-from backend.app.services.whatsapp.status_policy import (
-    advance_message_status as _advance_message_status,
-    parse_session_status as _parse_status,
 )
 
 _sync_orchestrator = WhatsAppSyncOrchestrator(service=sys.modules[__name__])
 
-
-from backend.app.services.whatsapp.preview_normalization import (
-    BRACKET_TYPE_RE as _BRACKET_TYPE_RE,
-    TYPE_PREVIEW_LABELS as _TYPE_PREVIEW_LABELS,
-    as_naive_utc as _as_naive_utc,
-    build_last_message_summary,
-    normalize_preview_text as _normalize_preview_text,
-    parse_dt as _parse_dt,
-    should_apply_last_message,
+from backend.app.services.whatsapp.status_policy import (
+    advance_message_status as _advance_message_status,
 )
 
-
-# _apply_last_message is imported from backend.app.services.whatsapp.repositories.conversations (as apply_conversation_last_message)
-
-
-
-# Session orchestration functions (_apply_gateway_live, _gateway_op_or_mark_relink,
-# _list_sessions_internal, list_sessions) are imported from
-# backend.app.services.whatsapp.orchestration.sessions
+from backend.app.services.whatsapp.preview_normalization import (
+    build_last_message_summary,
+    normalize_preview_text as _normalize_preview_text,
+)
 
 
 async def get_sync_status(db: AsyncSession, user_id: str) -> Dict[str, Any]:
