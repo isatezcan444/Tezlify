@@ -17,6 +17,7 @@ from typing import Any, Awaitable, Callable, Dict, FrozenSet, List, Optional, Se
 from sqlalchemy import select, func, or_, and_, delete, text, insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import joinedload, contains_eager
 
 from backend.app.core.database import AsyncSessionLocal
 from backend.app.core.auth import get_user_filter
@@ -1707,8 +1708,11 @@ async def list_conversations(
             )
         )
 
-    count_res = await db.execute(select(func.count()).select_from(base.subquery()))
-    total = count_res.scalar_one()
+    if conversation_id is not None:
+        total = None
+    else:
+        count_res = await db.execute(select(func.count()).select_from(base.subquery()))
+        total = count_res.scalar_one()
 
     base = base.order_by(Conversation.last_message_at.desc().nullslast()).order_by(Conversation.id.desc())
     if offset:
@@ -1716,10 +1720,18 @@ async def list_conversations(
     if limit:
         base = base.limit(limit)
 
-    res = await db.execute(base)
-    rows = res.scalars().all()
+    if joined_contact:
+        base = base.options(contains_eager(Conversation.contact))
+    else:
+        base = base.options(joinedload(Conversation.contact))
 
-    contact_ids = [r.contact_id for r in rows if r.contact_id]
+    res = await db.execute(base)
+    rows = list(res.scalars().unique().all())
+
+    if total is None:
+        total = len(rows)
+
+    contact_ids = [r.contact_id for r in rows if r.contact_id and not r.contact]
     contacts_map: Dict[int, Contact] = {}
     if contact_ids:
         cres = await db.execute(select(Contact).where(Contact.id.in_(contact_ids)))
@@ -1740,7 +1752,7 @@ async def list_conversations(
 
     out: List[Dict[str, Any]] = []
     for r in rows:
-        contact = contacts_map.get(r.contact_id)
+        contact = r.contact or contacts_map.get(r.contact_id)
         phone = contact.phone_e164 if contact else None
         # Faz 10: eski kose-parantezli degerler okuma aninda da etikete
         # normalize edilir ('[IMAGE]' -> '📷 Fotoğraf'); normal metin aynen gecer.
@@ -1798,11 +1810,26 @@ async def _get_conversation_or_404(db: AsyncSession, user_id: str, conversation_
 
 
 async def _resolve_jid(db: AsyncSession, user_id: str, conversation_id: int) -> Tuple[Conversation, str]:
-    conv = await _get_conversation_or_404(db, user_id, conversation_id)
+    stmt = (
+        select(Conversation)
+        .options(joinedload(Conversation.contact))
+        .where(
+            Conversation.id == conversation_id,
+            get_user_filter(Conversation.user_id, user_id),
+        )
+    )
+    res = await db.execute(stmt)
+    conv = res.scalar_one_or_none()
+    if not conv:
+        raise LookupError("Konusma bulunamadi.")
     if not conv.contact_id:
         raise LookupError("Konusma bir kisiyle iliskili degil.")
-    cres = await db.execute(select(Contact).where(Contact.id == conv.contact_id))
-    contact = cres.scalar_one()
+    contact = conv.contact
+    if contact is None:
+        cres = await db.execute(select(Contact).where(Contact.id == conv.contact_id))
+        contact = cres.scalar_one_or_none()
+        if contact is None:
+            raise LookupError("Konusma bir kisiyle iliskili degil.")
     phone = contact.phone_e164
     jid = phone[4:] if phone.startswith("jid:") else phone_to_jid(phone)
     return conv, jid
@@ -1907,8 +1934,6 @@ async def _hydrate_messages_on_demand(
         ),
     )
     await db.commit()
-    for r in rows:
-        await db.refresh(r)
     return list(reversed(rows))
 
 
@@ -2052,7 +2077,7 @@ async def get_messages(
     if rows:
         if conv.session_id and len(rows) >= page_size:
             has_more = True
-        else:
+        elif not conv.session_id and len(rows) >= page_size:
             oldest_row = rows[0]
             oldest_ts = _msg_time(oldest_row)
             if oldest_ts is not None:
