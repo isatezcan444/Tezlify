@@ -143,3 +143,47 @@ All functions and symbols accessed either by existing test suites, dynamic orche
   5 | 00000000-0000-0000-0000-000000000001 | 87cf30e9-91d7-40b8-aba4-5d36494192f9 | diag         | RELINK_REQUIRED | +905525372434 | t
 ```
 **Post-Deployment Verification Requirement:** Exact match on all 7 columns (`id`, `user_id`, `gateway_id`, `session_name`, `status`, `phone_number`, `is_active`) with `SESSION_MUTATIONS = 0`.
+
+---
+
+## 7. Production Deployment & Verification Results
+
+### 7.1 Deployment Metadata
+- **Commit SHA:** `d198cd6` (`refactor(whatsapp): Phase 11.11 final facade consolidation and legacy cleanup`)
+- **Remote Host:** `130.162.247.20` (`/opt/tezlify`)
+- **Build Timestamp:** 2026-09-17 12:07:27 UTC
+- **Rebuilt Container:** `tezlify-backend` (`tezlify-backend:latest`)
+
+### 7.2 Container Health Audit
+```text
+NAME              IMAGE                                    STATUS                   PORTS
+tezlify-backend   tezlify-backend:latest                   Up (healthy)             8000/tcp
+tezlify-caddy     caddy:2-alpine                           Up (healthy)             0.0.0.0:80->80, 443->443
+tezlify-db        postgres:17-alpine                       Up (healthy)             5432/tcp
+tezlify-gateway   sha256:bc0dc7b11be0600a1deee7269f8f...   Up (healthy)             8787/tcp
+```
+- **Backend Health Check:**
+  `curl -s http://localhost:8000/health` -> `{"status":"healthy","gateway_bridge":{"connected":true}}`
+- **External Edge Health:**
+  `https://api.130.162.247.20.sslip.io/health` -> `HTTP 200 (healthy)`
+
+### 7.3 Post-Deploy Session Snapshot Comparison
+```text
+ id |               user_id                |              gateway_id              | session_name |     status      | phone_number  | is_active 
+----+--------------------------------------+--------------------------------------+--------------+-----------------+---------------+-----------
+  4 | 00000000-0000-0000-0000-000000000001 | 2b2ed927-866c-4373-89d9-0ad8b35d63c8 | diag         | SCAN_QR         | +905525372434 | t
+  5 | 00000000-0000-0000-0000-000000000001 | 87cf30e9-91d7-40b8-aba4-5d36494192f9 | diag         | RELINK_REQUIRED | +905525372434 | t
+(2 rows)
+```
+- **Evaluation:** Row-by-row, column-by-column **100% MATCH** with pre-deployment baseline.
+- **`SESSION_MUTATIONS = 0` CONFIRMED.**
+
+### 7.4 Non-Destructive Smoke Verification
+All production read paths probed directly via `whatsapp_service` inside `tezlify-backend`:
+- `list_sessions`: 2 sessions returned (OK)
+- `get_sync_status`: `gateway_available = True` (OK)
+- `list_conversations`: query executed with tenant isolation (OK)
+- `get_messages`: query executed with keyset pagination logic (OK)
+- WebSocket gateway bridge (`/ws/gateway`): `Baileys gateway bağlandı` (OK)
+- Active client WebSockets (`/ws`): active (OK)
+
