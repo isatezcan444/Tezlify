@@ -177,6 +177,7 @@ interface BackendConversation {
   last_message_state?: string | null;
   unread_count?: number;
   status?: string;
+  identity_state?: string | null;
 }
 
 function mapConversation(c: BackendConversation): Conversation {
@@ -191,6 +192,7 @@ function mapConversation(c: BackendConversation): Conversation {
     unread_count: c.unread_count ?? 0,
     lead_name: c.name || undefined,
     lead_phone: c.phone || undefined,
+    identity_state: c.identity_state || undefined,
     is_group: isGroup,
     is_archived: Boolean(c.is_archived),
     lead_avatar_url: c.avatar_url || undefined,

@@ -32,6 +32,54 @@ export interface ConversationListProps {
   loadingMore?: boolean;
 }
 
+export function extractCleanPhone(phone?: string | null): string | null {
+  if (!phone) return null;
+  const raw = String(phone).replace(/^jid:/, '').trim();
+  if (raw.endsWith('@lid') || raw.includes('@g.us')) return null;
+  const head = raw.includes('@') ? raw.split('@')[0] : raw;
+  const digits = head.replace(/\D/g, '');
+  if (digits.length < 5 || /^0+$/.test(digits)) return null;
+  return `+${digits}`;
+}
+
+export function getConversationDisplayName(
+  conv: Conversation,
+  t: (key: string) => string
+): string {
+  const isRawJid = Boolean(
+    conv.lead_phone &&
+      (conv.lead_phone.startsWith('jid:') ||
+        conv.lead_phone.includes('@lid') ||
+        conv.lead_phone.includes('@g.us') ||
+        conv.lead_phone.includes('@s.whatsapp.net') ||
+        conv.lead_phone.includes('@c.us'))
+  );
+  const cleanPhone = extractCleanPhone(conv.lead_phone);
+  const safePhone = cleanPhone || (!isRawJid ? conv.lead_phone : null);
+
+  // Phase 15.4: Strict 5-tier WhatsApp Web identity hierarchy:
+  // 1. Verified / Address-book / Profile name (conv.lead_name)
+  // 2. Normalized phone from lead_phone or PN JID
+  // 3. Group fallback ('Grup')
+  // 4. Clean LID contact fallback ('Kişi (XXXX)')
+  // 5. Transient resolving (ONLY if active resolution is in-flight)
+  // 6. Stable permanent fallback ('WhatsApp Kişisi')
+  let displayName = (conv.lead_name && !isRawJid) ? conv.lead_name : (conv.lead_name || safePhone);
+  if (!displayName) {
+    if (conv.is_group) {
+      displayName = t('whatsapp.groupFallback') || 'Group';
+    } else if (conv.lead_phone && conv.lead_phone.includes('@lid')) {
+      const cleanLid = conv.lead_phone.replace(/^jid:/, '').split('@')[0];
+      displayName = `${t('whatsapp.contactFallback') || 'Kişi'} (${cleanLid.slice(-4)})`;
+    } else if (conv.identity_state === 'RESOLVING_TRANSIENT') {
+      displayName = t('whatsapp.pendingIdentity') || 'Kişi kimliği çözülüyor…';
+    } else {
+      displayName = t('whatsapp.contactFallback') || 'WhatsApp Kişisi';
+    }
+  }
+  return displayName;
+}
+
 export const ConversationList: React.FC<ConversationListProps> = ({
   conversations,
   selectedId,
@@ -260,9 +308,6 @@ export const ConversationList: React.FC<ConversationListProps> = ({
             // Conversation id is globally unique; phone-only selection would
             // select both lines when the same contact exists on multiple lines.
             const isSelected = selectedId === conv.id;
-            // Faz 7: internal JID/LID sentinel'leri ('jid:...@lid' vb.)
-            // kullanıcıya ASLA gösterilmez — kimlik çözülene kadar güvenli
-            // fallback kullanılır.
             const isRawJid = Boolean(
               conv.lead_phone &&
                 (conv.lead_phone.startsWith('jid:') ||
@@ -271,23 +316,8 @@ export const ConversationList: React.FC<ConversationListProps> = ({
                   conv.lead_phone.includes('@s.whatsapp.net') ||
                   conv.lead_phone.includes('@c.us'))
             );
-            const safePhone = isRawJid ? null : conv.lead_phone;
-            // Phase 15.4: No-phone contact contract & identity state machine
-            let displayName = conv.lead_name || safePhone;
-            if (!displayName) {
-              if (conv.is_group) {
-                displayName = t('whatsapp.groupFallback') || 'Group';
-              } else if (conv.last_message_state === 'REPAIRING' || (conv.created_at && Date.now() - new Date(conv.created_at).getTime() < 10000)) {
-                // Transient loading only while sync/repair is actively in-flight
-                displayName = t('whatsapp.pendingIdentity') || 'Kişi kimliği çözülüyor…';
-              } else if (conv.lead_phone && conv.lead_phone.includes('@lid')) {
-                // Stable no-phone LID contact — show clean stable identity
-                const cleanLid = conv.lead_phone.replace(/^jid:/, '').split('@')[0];
-                displayName = `${t('whatsapp.contactFallback') || 'Kişi'} (${cleanLid.slice(-4)})`;
-              } else {
-                displayName = t('whatsapp.contactFallback') || 'WhatsApp Kişisi';
-              }
-            }
+            const cleanPhone = extractCleanPhone(conv.lead_phone);
+            const displayName = getConversationDisplayName(conv, t);
             return (
               <button
                 key={conv.id}
@@ -304,7 +334,7 @@ export const ConversationList: React.FC<ConversationListProps> = ({
                 <Avatar
                   name={displayName}
                   image={conv.lead_avatar_url}
-                  phone={conv.lead_phone?.replace(/^jid:/, '')}
+                  phone={cleanPhone || (!isRawJid ? conv.lead_phone : undefined)}
                   size="md"
                   shape="rounded"
                 />

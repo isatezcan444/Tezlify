@@ -42,6 +42,8 @@ import {
   SessionCard,
   WhatsAppQrConnectModal,
   ConversationList, 
+  getConversationDisplayName,
+  extractCleanPhone,
   ChatThread, 
   ChatComposer, 
   TemplateSelectModal, 
@@ -568,10 +570,12 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   };
 
   const handleOpenLead = async (leadId: number) => {
+    const displayName = selectedConv ? getConversationDisplayName(selectedConv, t) : 'Müşteri';
+    const cleanPhone = selectedConv ? extractCleanPhone(selectedConv.lead_phone) : null;
     setDrawerLead({
       id: leadId,
-      name: selectedConv?.lead_name || 'Müşteri',
-      phone: selectedConv?.lead_phone || '',
+      name: selectedConv?.lead_name || displayName,
+      phone: cleanPhone || (!isRawWhatsAppIdentity(selectedConv?.lead_phone) ? selectedConv?.lead_phone : '') || '',
       category: 'WhatsApp Sohbeti',
       status: 'NEW',
     } as any);
@@ -1913,36 +1917,44 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                       <ArrowLeft className="w-5 h-5" />
                     </button>
 
-                    <Avatar
-                      name={selectedConv.lead_name || (!isRawWhatsAppIdentity(selectedConv.lead_phone) ? selectedConv.lead_phone : '') || (selectedConv.is_group ? t('whatsapp.groupFallback') || 'Group' : t('whatsapp.pendingIdentity') || 'Lead')}
-                      image={selectedConv.lead_avatar_url}
-                      phone={selectedConv.lead_phone?.replace(/^jid:/, '')}
-                      size="md"
-                      shape="rounded"
-                    />
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center space-x-2 truncate">
-                        {selectedConv.is_group && (
-                          <span className="shrink-0 inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-md bg-[#7367F0]/15 text-[#7367F0] dark:bg-[#7367F0]/25">
-                            <Users className="w-3 h-3" />
-                            <span>{t('whatsapp.group') || 'Grup'}</span>
-                          </span>
-                        )}
-                        <h4 className="font-extrabold text-sm text-slate-800 dark:text-white truncate">
-                          {selectedConv.lead_name || (!isRawWhatsAppIdentity(selectedConv.lead_phone) ? selectedConv.lead_phone : '') || (selectedConv.is_group ? t('whatsapp.groupFallback') || 'Group' : t('whatsapp.pendingIdentity') || t('common.unnamedLead') || 'İsimsiz Müşteri')}
-                        </h4>
-                        {selectedConv.status !== 'ACTIVE' && (
-                          <span className="text-[9px] font-bold uppercase px-1.5 py-0.5 rounded bg-slate-200 dark:bg-white/10 text-slate-500 dark:text-slate-400 shrink-0">
-                            {selectedConv.status === 'ARCHIVED' ? (t('whatsapp.statusArchived') || 'Arşiv') : (t('whatsapp.statusClosed') || 'Kapalı')}
-                          </span>
-                        )}
-                      </div>
-                      {!isRawWhatsAppIdentity(selectedConv.lead_phone) && (
-                        <p className="text-[11px] font-mono text-slate-400 font-medium truncate">
-                          {selectedConv.lead_phone}
-                        </p>
-                      )}
-                    </div>
+                    {(() => {
+                      const headerDisplayName = getConversationDisplayName(selectedConv, t);
+                      const headerCleanPhone = extractCleanPhone(selectedConv.lead_phone);
+                      return (
+                        <>
+                          <Avatar
+                            name={headerDisplayName}
+                            image={selectedConv.lead_avatar_url}
+                            phone={headerCleanPhone || (!isRawWhatsAppIdentity(selectedConv.lead_phone) ? selectedConv.lead_phone : undefined)}
+                            size="md"
+                            shape="rounded"
+                          />
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center space-x-2 truncate">
+                              {selectedConv.is_group && (
+                                <span className="shrink-0 inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-md bg-[#7367F0]/15 text-[#7367F0] dark:bg-[#7367F0]/25">
+                                  <Users className="w-3 h-3" />
+                                  <span>{t('whatsapp.group') || 'Grup'}</span>
+                                </span>
+                              )}
+                              <h4 className="font-extrabold text-sm text-slate-800 dark:text-white truncate">
+                                {headerDisplayName}
+                              </h4>
+                              {selectedConv.status !== 'ACTIVE' && (
+                                <span className="text-[9px] font-bold uppercase px-1.5 py-0.5 rounded bg-slate-200 dark:bg-white/10 text-slate-500 dark:text-slate-400 shrink-0">
+                                  {selectedConv.status === 'ARCHIVED' ? (t('whatsapp.statusArchived') || 'Arşiv') : (t('whatsapp.statusClosed') || 'Kapalı')}
+                                </span>
+                              )}
+                            </div>
+                            {headerCleanPhone && headerCleanPhone !== headerDisplayName && (
+                              <p className="text-[11px] font-mono text-slate-400 font-medium truncate">
+                                {headerCleanPhone}
+                              </p>
+                            )}
+                          </div>
+                        </>
+                      );
+                    })()}
                   </div>
 
                   <div className="flex items-center space-x-1 sm:space-x-2 shrink-0">

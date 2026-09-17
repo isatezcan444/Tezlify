@@ -5,7 +5,7 @@ Phase 11.6: Extracted from whatsapp_service.py.
 Pure, deterministic, database-independent, network-independent identity functions.
 """
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 SYSTEM_USER_ID = "00000000-0000-0000-0000-000000000000"
 
@@ -163,4 +163,81 @@ def is_self_identity(
         return True
 
     return False
+
+
+class IdentityResolutionState:
+    RESOLVED_PROFILE = "RESOLVED_PROFILE"
+    RESOLVED_PHONE = "RESOLVED_PHONE"
+    RESOLVED_JID = "RESOLVED_JID"
+    RESOLVING_TRANSIENT = "RESOLVING_TRANSIENT"
+    UNRESOLVED_PERMANENT = "UNRESOLVED_PERMANENT"
+
+
+def extract_clean_phone(value: Optional[str]) -> Optional[str]:
+    """Extracts a valid normalized E.164 phone string from phone_e164 or raw PN JID.
+    
+    Returns None for LID JIDs (@lid), Group JIDs (@g.us), broadcast JIDs,
+    or degenerate/invalid numbers (< 5 digits, all zeros).
+    """
+    if not value:
+        return None
+    val = strip_jid_prefix(str(value).strip())
+    if not val or val.endswith("@lid") or "@g.us" in val or is_broadcast_only_jid(val):
+        return None
+    if "@" in val:
+        val = val.split("@")[0]
+    digits = "".join(ch for ch in val if ch.isdigit())
+    if not digits or len(digits) < 5 or set(digits) == {"0"}:
+        return None
+    return f"+{digits}"
+
+
+def resolve_contact_identity(
+    contact: Optional[Any],
+    phone: Optional[str] = None,
+    is_group: bool = False,
+    is_transient_resolving: bool = False,
+) -> Tuple[Optional[str], str]:
+    """Resolves contact identity following the strict 5-tier WhatsApp Web parity hierarchy:
+    1. ADDRESS_BOOK_MATCH (real display_name) -> RESOLVED_PROFILE
+    2. WHATSAPP_PROFILE_MATCH (push_name from custom_attributes) -> RESOLVED_PROFILE
+    3. PHONE_JID (normalized +E.164 phone from contact.phone_e164 or PN JID) -> RESOLVED_PHONE
+    4. GROUP_JID / LID_JID -> RESOLVED_JID
+    5. STABLE_FALLBACK -> RESOLVING_TRANSIENT (only if active resolution in-flight) or UNRESOLVED_PERMANENT
+    """
+    # 1. Address book / verified display_name
+    if contact is not None:
+        name = getattr(contact, "display_name", None)
+        if name and not is_raw_jid_name(name) and not is_phone_like(name) and str(name).strip():
+            return str(name).strip(), IdentityResolutionState.RESOLVED_PROFILE
+
+        # 2. WhatsApp profile push_name
+        custom = getattr(contact, "custom_attributes", None)
+        if isinstance(custom, dict):
+            push_name = custom.get("push_name")
+            if push_name and not is_raw_jid_name(push_name) and not is_phone_like(push_name) and str(push_name).strip():
+                return str(push_name).strip(), IdentityResolutionState.RESOLVED_PROFILE
+
+    # 3. Clean E.164 Phone from phone or contact.phone_e164
+    clean_phone = extract_clean_phone(phone)
+    if not clean_phone and contact is not None:
+        clean_phone = extract_clean_phone(getattr(contact, "phone_e164", None))
+    if clean_phone:
+        return clean_phone, IdentityResolutionState.RESOLVED_PHONE
+
+    # 4. Group JID
+    phone_val = str(phone or (contact.phone_e164 if contact else "") or "")
+    if is_group or "@g.us" in phone_val:
+        return None, IdentityResolutionState.RESOLVED_JID
+
+    # 5. LID JID
+    if "@lid" in phone_val:
+        return None, IdentityResolutionState.RESOLVED_JID
+
+    # 6. Transient resolving (only when genuinely in-flight)
+    if is_transient_resolving:
+        return None, IdentityResolutionState.RESOLVING_TRANSIENT
+
+    # 7. Stable permanent fallback
+    return None, IdentityResolutionState.UNRESOLVED_PERMANENT
 

@@ -24,6 +24,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.auth import get_user_filter
+from backend.app.core.config import settings
 from backend.app.core.database import AsyncSessionLocal
 from backend.app.models.contact import Contact
 from backend.app.models.conversation import Conversation, ConversationStatus
@@ -1027,7 +1028,8 @@ class WhatsAppSyncOrchestrator:
                 )
                 expansion_key = (str(owner), str(gateway_id))
                 if (
-                    expansion_key not in self._history_expansion_running
+                    getattr(settings, "WHATSAPP_BACKGROUND_HISTORY_EXPANSION_ENABLED", False)
+                    and expansion_key not in self._history_expansion_running
                     and expansion_key not in self._history_expansion_done
                     and time.monotonic() >= self._history_expansion_cooldown.get(expansion_key, 0.0)
                 ):
@@ -1109,6 +1111,13 @@ class WhatsAppSyncOrchestrator:
     async def _run_background_history_expansion(self, user_id: str, gateway_id: str) -> None:
         import collections
         from unittest.mock import Mock
+        if not getattr(settings, "WHATSAPP_BACKGROUND_HISTORY_EXPANSION_ENABLED", False):
+            logger.info(
+                "Background history expansion is paused via kill-switch (WHATSAPP_BACKGROUND_HISTORY_EXPANSION_ENABLED=False) for user=%s, gateway=%s",
+                user_id,
+                gateway_id,
+            )
+            return
         key = (str(user_id), str(gateway_id))
         now = time.monotonic()
         if key in self._history_expansion_running or key in self._history_expansion_done:

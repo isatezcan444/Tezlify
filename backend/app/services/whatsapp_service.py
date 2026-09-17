@@ -118,6 +118,8 @@ from backend.app.services.whatsapp.identity import (
     strip_jid_prefix as _strip_jid_prefix,
     jid_to_phone,
     safe_display_name as _safe_display_name,
+    resolve_contact_identity as _resolve_contact_identity,
+    IdentityResolutionState as _IdentityResolutionState,
 )
 
 import sys
@@ -468,16 +470,19 @@ async def list_conversations(
         else:
             # Mesaj var ama ozet henuz hesaplanmadi (senkron/hydrate sürüyor).
             lm_state = "REPAIRING"
+        is_grp = bool(r.is_group) or bool(phone and "@g.us" in phone)
+        resolved_name, id_state = _resolve_contact_identity(contact, phone=phone, is_group=is_grp)
         out.append(
             {
                 "id": r.id,
                 "session_id": r.session_id,
                 "contact_id": r.contact_id,
                 "lead_id": r.lead_id,
-                # Faz 7: ham jid/lid sizarca UI'a None gonderilir (fallback
-                # normalize telefon) — presentation'a internal ID sizmaz.
-                "name": _safe_display_name(contact),
+                # Faz 7 & Phase 15.4: Ham jid/lid presentation'a sızmaz,
+                # 5-tier hiyerarşiyle çözülen temiz ad / telefon / None döner.
+                "name": resolved_name,
                 "phone": phone,
+                "identity_state": id_state,
                 # Sorun 4: kalici `is_group` sütunu esas; eski satirlar
                 # (sync oncesinde olusmus) JID sentinel'iyle tamamlanir.
                 "is_group": bool(r.is_group) or bool(phone and "@g.us" in phone),

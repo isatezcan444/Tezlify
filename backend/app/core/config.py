@@ -176,6 +176,8 @@ class Settings(BaseSettings):
     WHATSAPP_GATEWAY_TIMEOUT: float = 30.0
     # /ws/gateway uç noktası için opsiyonel paylaşılan sır (boşsa açık kalır)
     WHATSAPP_GATEWAY_SECRET: str = ""
+    # Arka plan otomatik tarihçe genişletme kill-switch (WhatsApp Web / Chrome sync storm önleme)
+    WHATSAPP_BACKGROUND_HISTORY_EXPANSION_ENABLED: bool = False
 
 
 settings = Settings()

@@ -109,6 +109,7 @@ class WhatsAppConversationItem(BaseModel):
     last_message_state: Optional[str] = None
     unread_count: int = 0
     status: str = "ACTIVE"
+    identity_state: Optional[str] = None
 
 
 class WhatsAppConversationListResponse(BaseModel):

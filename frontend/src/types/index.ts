@@ -354,6 +354,7 @@ export interface Conversation {
   // durumlarında senkron sürüyor mesajı gösterilir.
   message_count?: number;
   last_message_state?: 'RESOLVED' | 'NO_MESSAGES' | 'REPAIRING' | 'LOADING' | string;
+  identity_state?: 'RESOLVED_PROFILE' | 'RESOLVED_PHONE' | 'RESOLVED_JID' | 'RESOLVING_TRANSIENT' | 'UNRESOLVED_PERMANENT' | string;
   is_window_open?: boolean;
   last_inbound_at?: string;
   seconds_remaining?: number;
