@@ -155,8 +155,8 @@ _metadata_tasks: Dict[str, asyncio.Task[None]] = {}
 _sync_conversations_inflight: Set[str] = set()
 _initial_sync_inflight: Set[str] = set()
 _initial_sync_pending: Set[str] = set()
-_history_expansion_running: Set[str] = set()
-_history_expansion_done: Set[str] = set()
+_history_expansion_running: Set[Tuple[str, str]] = set()
+_history_expansion_done: Set[Tuple[str, str]] = set()
 
 
 class WhatsAppSyncOrchestrator:
@@ -231,13 +231,30 @@ class WhatsAppSyncOrchestrator:
         job = self._sync_jobs.get(str(user_id))
         return job.snapshot() if job else None
 
-    def _cancel_stale_sync_jobs(self, user_id: str) -> int:
+    def _cancel_stale_sync_jobs(self, user_id: str, gateway_id: Optional[str] = None) -> int:
         self._initial_sync_pending.discard(str(user_id))
+        if gateway_id:
+            key = (str(user_id), str(gateway_id))
+            self._history_expansion_running.discard(key)
+        else:
+            to_discard = {k for k in self._history_expansion_running if k[0] == str(user_id)}
+            self._history_expansion_running.difference_update(to_discard)
         job = self._sync_jobs.get(str(user_id))
         if job is None or job.state != "SYNCING":
             return 0
         job.cancel_requested = True
         return 1
+
+    def reset_history_expansion_state(self, user_id: str, gateway_id: Optional[str] = None) -> None:
+        """Resets background history expansion state for reconnect or session recreation."""
+        if gateway_id:
+            key = (str(user_id), str(gateway_id))
+            self._history_expansion_running.discard(key)
+            self._history_expansion_done.discard(key)
+        else:
+            for s in (self._history_expansion_running, self._history_expansion_done):
+                keys = {k for k in s if k[0] == str(user_id)}
+                s.difference_update(keys)
 
     async def _reapply_chat_names(
         self, db: AsyncSession, owner: str, items: List[Dict[str, Any]]
@@ -967,7 +984,8 @@ class WhatsAppSyncOrchestrator:
                     round((job.finished_at - job.started_at).total_seconds(), 1),
                     job.stage_timings,
                 )
-                if owner not in self._history_expansion_running and owner not in self._history_expansion_done:
+                expansion_key = (str(owner), str(gateway_id))
+                if expansion_key not in self._history_expansion_running and expansion_key not in self._history_expansion_done:
                     asyncio.create_task(run_background_history_expansion(owner, gateway_id))
         except WhatsAppRelinkRequired as exc:
             job.state = "FAILED"
@@ -1044,9 +1062,10 @@ class WhatsAppSyncOrchestrator:
                 self._schedule_initial_sync(owner)
 
     async def _run_background_history_expansion(self, user_id: str, gateway_id: str) -> None:
-        if user_id in self._history_expansion_running or user_id in self._history_expansion_done:
+        key = (str(user_id), str(gateway_id))
+        if key in self._history_expansion_running or key in self._history_expansion_done:
             return
-        self._history_expansion_running.add(user_id)
+        self._history_expansion_running.add(key)
         session_factory = self._get_helper("AsyncSessionLocal", AsyncSessionLocal)
         hydrate_messages_on_demand = self._get_helper("_hydrate_messages_on_demand", self._hydrate_messages_on_demand)
         logger.info("Starting background history expansion for user=%s, gateway=%s", user_id, gateway_id)
@@ -1091,11 +1110,11 @@ class WhatsAppSyncOrchestrator:
                 except Exception as e:
                     logger.debug("Background expansion skipped conversation %s: %s", conv.id, e)
                     continue
-            self._history_expansion_done.add(user_id)
+            self._history_expansion_done.add(key)
         except Exception as exc:
             logger.warning("Background history expansion failed: %s", exc)
         finally:
-            self._history_expansion_running.discard(user_id)
+            self._history_expansion_running.discard(key)
 
     async def sync_conversations(self, db: AsyncSession, user_id: str) -> List[Dict[str, Any]]:
         list_conversations = self._get_helper("list_conversations", None)
@@ -1338,3 +1357,4 @@ _run_background_history_expansion = _default_sync_orchestrator._run_background_h
 _bulk_channel_available = _default_sync_orchestrator._bulk_channel_available
 _broadcast_sync_event = _default_sync_orchestrator._broadcast_sync_event
 _sync_event = _default_sync_orchestrator._sync_event
+reset_history_expansion_state = _default_sync_orchestrator.reset_history_expansion_state

@@ -66,17 +66,17 @@ Continuous real-time telemetry captured from `tezlify-gateway`, `tezlify-backend
   - *"WhatsApp ile senkronizasyon devam ediyor"*
   - *"WhatsApp ile senkronizasyon durduruldu"*
 - **Observed Result:**
-  The periodic notification loop observed repeatedly during Phase 12.1 has **completely stopped**. Once the 5th conversation expansion completed at `12:57:53 UTC`, the notification permanently vanished.
-- **Root-Cause Resolution Confirmation:**
-  In Phase 12.1, every ON_DEMAND chunk delivery triggered `history_sync_completed`, which re-scheduled initial sync, which triggered full un-throttled history expansion across all chats every 50ms. Meta's companion protocol interpreted this flood as endless history requests and kept the phone's background sync service awake, repeatedly cycling the notification.
-  With the recursive trigger removed and background expansion strictly capped to 5 conversations, Meta's sync service went idle immediately.
+  The periodic notification loop observed repeatedly during Phase 12.1 has **completely stopped**. Once the 5th conversation expansion completed at `12:57:53 UTC`, the notification ceased and did not reappear.
+- **Evidence-Based Telemetry Correlation:**
+  Gateway and backend telemetry correlate the elimination of the notification with the removal of the recursive history fetch loop. In Phase 12.1, every ON_DEMAND chunk delivery triggered `history_sync_completed`, which re-scheduled initial sync and initiated full history expansion across all chats at 50ms intervals. 
+  With the recursive trigger eliminated and background expansion bounded to 5 conversations, gateway history stanzas dropped to zero, correlating directly with the phone companion sync service transitioning to idle.
 - **Diagnostic Note:** ADB / syslog daemon is not attached to this headless Linux/Cloud environment; observation was verified via physical user screen inspection and correlated directly with server telemetry.
 
 ---
 
 ## 4. Real UI Outbound Test
 
-Outbound message transmission was executed through the Tezlify API endpoint (`POST /api/v1/whatsapp/conversations/9299/messages`), exactly as invoked by the frontend UI Composer:
+Outbound message transmission was executed through the Tezlify UI Composer API path / production messaging endpoint (`POST /api/v1/whatsapp/conversations/9299/messages`), using the exact payload structure dispatched by the frontend UI Composer:
 
 ### Outbound Message Payload:
 ```json
@@ -87,7 +87,7 @@ Outbound message transmission was executed through the Tezlify API endpoint (`PO
 ```
 
 ### Flow Verification:
-`Frontend / API`  
+`UI Composer API Path`  
 $\longrightarrow$ `WhatsAppService.send_text_message`  
 $\longrightarrow$ `MessagingOrchestrator`  
 $\longrightarrow$ `Gateway HTTP POST /sessions/:id/conversations/:jid/messages`  
@@ -117,28 +117,19 @@ FROM messages WHERE id = 70980;
 
 ## 5. Real Read ACK Test
 
+- **Status:** **DELIVERED IN PHASE 12.2 (READ ACK PENDING / VERIFIED IN PHASE 12.1)**
 - **Message ID:** 70980
-- **Current State:** `DELIVERED` (double checkmark received from Meta).
-- **Read Receipt Flow:**
-  - `status: DELIVERED` verified in DB.
-  - Event sequence 88461-88463 in `whatsapp_private.event_outbox` processed the delivery receipt cleanly.
-  - Upon recipient opening the conversation thread on the physical handset, `message_status_updated` (`status: READ`) transitions `read_at`.
-  - No regression detected in event handling or outbox encryption pipeline.
+- **Observed State in Phase 12.2:** `DELIVERED` (double checkmark confirmed via gateway event_outbox sequence 88461-88463).
+- **Read ACK Observation:** Because the recipient did not physically open the conversation thread on the receiving mobile phone during the 15-minute observation window, status remained at `DELIVERED` (`read_at = NULL`). Full progression (`SENT -> DELIVERED -> READ`) was verified in Phase 12.1 (Message 69635, `read_at: 2026-09-17 12:37:30`). No regression was found in the event handling pipeline.
 
 ---
 
 ## 6. Real Inbound Test
 
-- **Expected Message:** `REAL PHASE 12.2 INBOUND <timestamp>` sent from recipient device (`+905076382749`) to Session 50 (`+905413749073`).
-- **Telemetry & Gateway Readiness:**
-  - Baileys socket is actively listening on `open` state.
-  - `/ws/gateway` bridge is connected and active.
-  - Inbound pipeline contract verified:
-    - Direction: `INBOUND`
-    - Status: `RECEIVED`
-    - `wa_message_id`: Extracted from Baileys stanza key (`wa_message_id != NULL`).
-    - Phone number normalization: Strict E.164 (`+905076382749`), no raw `@lid` or `@g.us` artifacts.
-    - Idempotent deduplication: `ON CONFLICT (conversation_id, wa_message_id) DO NOTHING`.
+- **Status:** **NOT EXECUTED IN PHASE 12.2 (VERIFIED IN PHASE 12.1)**
+- **Note:** No physical inbound message (`REAL PHASE 12.2 INBOUND <timestamp>`) was sent from the counter-party phone during the Phase 12.2 observation window.
+- **Prior Verification:** Full end-to-end inbound delivery (`Phone -> WhatsApp/Meta -> Baileys -> Gateway -> Backend -> PostgreSQL -> Frontend WS`) was verified in Phase 12.1 (e.g. Messages 69636 and 70978, `status = RECEIVED`, clean E.164 without raw `@lid` or `@g.us`).
+- **Phase 12.2 Socket Readiness:** Baileys socket open and `/ws/gateway` bridge confirmed actively connected and ready for inbound ingestion.
 
 ---
 
@@ -260,6 +251,13 @@ Comparison between pre-test baseline and current production state:
 | **Reconnects** | 24 flapping attempts | **0** (post-restore) | **100% stable** |
 | **Active authenticated sockets** | 1 + orphan thrashing | 1 clean (Session 50) | **Zero orphan contention** |
 | **Orphan restore candidates** | 2 discovered | 0 candidates | **Cleaned** |
+
+> [!NOTE]
+> **Metric Counting Method Definitions:**
+> - **ON_DEMAND requests:** Distinct Baileys `fetchMessageHistory(fetch_provider=true)` invocations logged.
+> - **History chunks ingested:** Ingestion events matching `"History sync ingested"` in gateway logs.
+> - **Provider timeouts:** Unfulfilled provider chunk timeouts logged as `"Older history request timed out waiting for provider chunk"`.
+> - **Recursive sync cascades:** Full re-initialization tasks scheduled as a direct side-effect of `history_sync_completed`.
 
 ---
 

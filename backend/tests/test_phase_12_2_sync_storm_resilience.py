@@ -105,8 +105,9 @@ async def test_c_initial_sync_completion_spawns_single_expansion(monkeypatch):
     sync_orchestrator = WhatsAppSyncOrchestrator()
     owner = "test-user-c"
     gateway_id = "gw-test-c"
-    sync_orchestrator._history_expansion_running.discard(owner)
-    sync_orchestrator._history_expansion_done.discard(owner)
+    key_c = (owner, gateway_id)
+    sync_orchestrator._history_expansion_running.discard(key_c)
+    sync_orchestrator._history_expansion_done.discard(key_c)
 
     spawned_tasks = []
 
@@ -125,14 +126,14 @@ async def test_c_initial_sync_completion_spawns_single_expansion(monkeypatch):
     job.messages_synced = 50
 
     # Simulate completion block of _run_sync_job
-    if owner not in sync_orchestrator._history_expansion_running and owner not in sync_orchestrator._history_expansion_done:
+    if key_c not in sync_orchestrator._history_expansion_running and key_c not in sync_orchestrator._history_expansion_done:
         asyncio.create_task(sync_orchestrator._run_background_history_expansion(owner, gateway_id))
 
     assert len(spawned_tasks) == 1
 
     # Second call must be blocked because user is marked or running
-    sync_orchestrator._history_expansion_running.add(owner)
-    if owner not in sync_orchestrator._history_expansion_running and owner not in sync_orchestrator._history_expansion_done:
+    sync_orchestrator._history_expansion_running.add(key_c)
+    if key_c not in sync_orchestrator._history_expansion_running and key_c not in sync_orchestrator._history_expansion_done:
         asyncio.create_task(sync_orchestrator._run_background_history_expansion(owner, gateway_id))
 
     assert len(spawned_tasks) == 1
@@ -143,20 +144,22 @@ async def test_d_duplicate_expansion_task_cannot_run_concurrently(monkeypatch):
     """TEST-D: Second expansion task for same user returns immediately without executing."""
     sync_orchestrator = WhatsAppSyncOrchestrator()
     owner = "test-user-d"
-    sync_orchestrator._history_expansion_running.add(owner)
+    gw_d = "gw-d"
+    key_d = (owner, gw_d)
+    sync_orchestrator._history_expansion_running.add(key_d)
 
     mock_hydrate = AsyncMock()
     helpers = {"_hydrate_messages_on_demand": mock_hydrate}
     monkeypatch.setattr(sync_orchestrator, "_get_helper", lambda name, default=None: helpers.get(name, default))
 
     # Calling while running should return immediately
-    await sync_orchestrator._run_background_history_expansion(owner, "gw-d")
+    await sync_orchestrator._run_background_history_expansion(owner, gw_d)
     mock_hydrate.assert_not_awaited()
 
     # Calling while already done should also return immediately
-    sync_orchestrator._history_expansion_running.discard(owner)
-    sync_orchestrator._history_expansion_done.add(owner)
-    await sync_orchestrator._run_background_history_expansion(owner, "gw-d")
+    sync_orchestrator._history_expansion_running.discard(key_d)
+    sync_orchestrator._history_expansion_done.add(key_d)
+    await sync_orchestrator._run_background_history_expansion(owner, gw_d)
     mock_hydrate.assert_not_awaited()
 
 
@@ -166,8 +169,10 @@ async def test_e_background_expansion_bounded_to_max_conversations(monkeypatch):
     assert _HISTORY_EXPANSION_MAX_CONVERSATIONS == 5
     sync_orchestrator = WhatsAppSyncOrchestrator()
     owner = "test-user-e"
-    sync_orchestrator._history_expansion_running.discard(owner)
-    sync_orchestrator._history_expansion_done.discard(owner)
+    gw_e = "gw-e"
+    key_e = (owner, gw_e)
+    sync_orchestrator._history_expansion_running.discard(key_e)
+    sync_orchestrator._history_expansion_done.discard(key_e)
 
     # Mock 10 conversations
     mock_convs = [
@@ -177,49 +182,42 @@ async def test_e_background_expansion_bounded_to_max_conversations(monkeypatch):
 
     mock_db = AsyncMock()
     mock_cres = MagicMock()
-    # Mock SQL limit logic: scalars().all() returns only 5
     mock_cres.scalars.return_value.all.return_value = mock_convs[:_HISTORY_EXPANSION_MAX_CONVERSATIONS]
-    mock_db.execute = AsyncMock(return_value=mock_cres)
+    mock_db.execute.return_value = mock_cres
 
-    mock_msg = MagicMock()
-    mock_msg.wa_message_id = "wa-1"
-    mock_msg.direction = MessageDirection.INBOUND
-    mock_msg.created_at = datetime.now(timezone.utc)
+    # Mock conversation lookup and oldest message
+    mock_db.get.side_effect = lambda model, cid: MagicMock(id=cid)
+    mock_oldest_msg = MagicMock(
+        wa_message_id="wa-msg-1",
+        direction=MessageDirection.INBOUND,
+        timestamp_ms=1000000,
+    )
     mock_mres = MagicMock()
-    mock_mres.scalars.return_value.first.return_value = mock_msg
+    mock_mres.scalars.return_value.first.return_value = mock_oldest_msg
+    # Every second execute returns oldest message
+    mock_db.execute.side_effect = [mock_cres] + [mock_mres] * 10
 
-    def mock_get(model, pk):
-        for c in mock_convs:
-            if c.id == pk:
-                return c
-        return None
-
-    mock_db.get = AsyncMock(side_effect=mock_get)
-
-    mock_context = AsyncMock()
-    mock_context.__aenter__.return_value = mock_db
-    session_factory = MagicMock(return_value=mock_context)
+    context = AsyncMock()
+    context.__aenter__.return_value = mock_db
 
     hydrated_conv_ids = []
-    async def fake_hydrate(db, user_id, conv, **kwargs):
+
+    async def mock_hydrate(db, user_id, conv, **kwargs):
         hydrated_conv_ids.append(conv.id)
-        return []
 
     helpers = {
-        "AsyncSessionLocal": session_factory,
-        "_hydrate_messages_on_demand": fake_hydrate,
+        "AsyncSessionLocal": MagicMock(return_value=context),
+        "_hydrate_messages_on_demand": mock_hydrate,
     }
     monkeypatch.setattr(sync_orchestrator, "_get_helper", lambda name, default=None: helpers.get(name, default))
-
-    # Patch sleep to avoid waiting during test
     monkeypatch.setattr(asyncio, "sleep", AsyncMock())
 
-    await sync_orchestrator._run_background_history_expansion(owner, "gw-e")
+    await sync_orchestrator._run_background_history_expansion(owner, gw_e)
 
     assert len(hydrated_conv_ids) <= _HISTORY_EXPANSION_MAX_CONVERSATIONS
     assert len(hydrated_conv_ids) == 5
-    assert owner in sync_orchestrator._history_expansion_done
-    assert owner not in sync_orchestrator._history_expansion_running
+    assert key_e in sync_orchestrator._history_expansion_done
+    assert key_e not in sync_orchestrator._history_expansion_running
 
 
 @pytest.mark.asyncio
@@ -228,8 +226,10 @@ async def test_f_provider_fetch_pacing_minimum_interval(monkeypatch):
     assert _HISTORY_EXPANSION_INTERVAL_S >= 2.0
     sync_orchestrator = WhatsAppSyncOrchestrator()
     owner = "test-user-f"
-    sync_orchestrator._history_expansion_running.discard(owner)
-    sync_orchestrator._history_expansion_done.discard(owner)
+    gw_f = "gw-f"
+    key_f = (owner, gw_f)
+    sync_orchestrator._history_expansion_running.discard(key_f)
+    sync_orchestrator._history_expansion_done.discard(key_f)
 
     mock_convs = [
         MagicMock(id=1, last_message_at=datetime.now(timezone.utc)),

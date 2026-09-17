@@ -11,8 +11,9 @@ except ValueError:
 print(f"[TEZLIFY_BOOT] Starting initialization on port {port}...", flush=True)
 
 try:
-    # Try importing the real FastAPI app
     from backend.app.main import app
+    from backend.app.core.logging_security import setup_security_logging
+    setup_security_logging()
     print(f"[TEZLIFY_BOOT] Successfully loaded backend.app.main. Starting Uvicorn...", flush=True)
     uvicorn.run(
         app,

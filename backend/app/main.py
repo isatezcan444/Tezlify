@@ -37,11 +37,14 @@ from backend.app.core.seed import seed_demo_data_if_empty
 from backend.app.models.blacklist import ScraperJob, ScraperJobStatus
 from backend.app.models.campaign import Campaign, CampaignStatus
 
+from backend.app.core.logging_security import setup_security_logging
+
 # Setup logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
+setup_security_logging()
 logger = logging.getLogger("tezlify")
 
 # ---------------------------------------------------------------------------

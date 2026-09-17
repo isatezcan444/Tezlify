@@ -68,6 +68,7 @@ from backend.app.services.whatsapp.orchestration.sync import (
     _sync_conversations_impl,
     get_sync_job,
     request_sync,
+    reset_history_expansion_state,
     sync_contacts,
     sync_conversations,
 )
@@ -132,6 +133,7 @@ __all__ = [
     "_reapply_chat_names",
     "_run_background_history_expansion",
     "_bulk_channel_available",
+    "reset_history_expansion_state",
 ]
 
 
