@@ -221,9 +221,32 @@ async def create_session(db: AsyncSession, user_id: str, name: str) -> Dict[str,
 # Ephemeral Pairing (No-Create QR Lifecycle)
 # ---------------------------------------------------------------------------
 _ephemeral_pairings: Dict[str, Dict[str, Any]] = {}
+_logical_to_ephemeral: Dict[int, str] = {}
 
 
-async def start_pairing_session(user_id: str, name: Optional[str] = None) -> Dict[str, Any]:
+def find_ephemeral_pairing_by_gateway_id(gateway_id: str) -> Optional[Dict[str, Any]]:
+    """Lookup ephemeral pairing metadata by its gateway UUID."""
+    for token, data in list(_ephemeral_pairings.items()):
+        if data.get("gateway_id") == str(gateway_id):
+            return data
+    return None
+
+
+def remove_ephemeral_pairing_by_gateway_id(gateway_id: str) -> None:
+    """Clean up ephemeral pairing metadata by gateway UUID."""
+    for token, data in list(_ephemeral_pairings.items()):
+        if data.get("gateway_id") == str(gateway_id):
+            log_id = data.get("logical_session_id")
+            if log_id and _logical_to_ephemeral.get(log_id) == token:
+                _logical_to_ephemeral.pop(log_id, None)
+            _ephemeral_pairings.pop(token, None)
+
+
+async def start_pairing_session(
+    user_id: str,
+    name: Optional[str] = None,
+    logical_session_id: Optional[int] = None,
+) -> Dict[str, Any]:
     """Starts an ephemeral pairing session in gateway without persisting any row in public.whatsapp_sessions.
     Guarantees ZERO persistent database rows until the QR code is truly scanned and connected.
     """
@@ -237,8 +260,11 @@ async def start_pairing_session(user_id: str, name: Optional[str] = None) -> Dic
         "user_id": str(user_id),
         "gateway_id": gateway_id,
         "session_name": gw_session.get("session_name") or line_name,
+        "logical_session_id": logical_session_id,
         "created_at": datetime.utcnow(),
     }
+    if logical_session_id:
+        _logical_to_ephemeral[logical_session_id] = pair_token
     return {
         "pair_token": pair_token,
         "gateway_id": gateway_id,
@@ -254,9 +280,9 @@ async def get_pairing_qr(db: AsyncSession, user_id: str, pair_token: str) -> Dic
     When the user scans the QR and a CONNECTED status is returned from gateway:
 
     Scenario A (RELINK): An existing RELINK_REQUIRED session with the same
-        user_id + phone_number is found. Its gateway_id is atomically updated and
-        unverified history_sync_states are migrated. Logical session identity
-        (public.whatsapp_sessions.id) is preserved. No new row is created.
+        user_id + phone_number (or specified logical_session_id) is found. Its gateway_id
+        is atomically updated and unverified history_sync_states are migrated.
+        Logical session identity (public.whatsapp_sessions.id) is preserved. No new row is created.
 
     Scenario A-new (FIRST QR): No RELINK_REQUIRED candidate exists for this
         phone (first-time pairing). A new WhatsAppSession row is created.
@@ -272,6 +298,9 @@ async def get_pairing_qr(db: AsyncSession, user_id: str, pair_token: str) -> Dic
         data = await gw.get_session_qr(gateway_id)
     except gw.WhatsAppGatewayError as exc:
         if exc.status_code == 404:
+            log_id = pairing.get("logical_session_id")
+            if log_id and _logical_to_ephemeral.get(log_id) == pair_token:
+                _logical_to_ephemeral.pop(log_id, None)
             _ephemeral_pairings.pop(pair_token, None)
             raise LookupError("Gateway oturumu bulunamadı.") from exc
         raise
@@ -279,6 +308,9 @@ async def get_pairing_qr(db: AsyncSession, user_id: str, pair_token: str) -> Dic
     status_val = data.get("status")
     if status_val == "CONNECTED":
         phone = (data.get("phone") or data.get("phone_number") or "").strip()
+        log_id = pairing.get("logical_session_id")
+        if log_id and _logical_to_ephemeral.get(log_id) == pair_token:
+            _logical_to_ephemeral.pop(log_id, None)
         _ephemeral_pairings.pop(pair_token, None)
 
         # --- Scenario A: try to bind to existing RELINK_REQUIRED logical session ---
@@ -309,8 +341,14 @@ async def get_pairing_qr(db: AsyncSession, user_id: str, pair_token: str) -> Dic
             logger.error("[WhatsApp] Relink failed — ambiguous candidate: %s", exc)
             raise ValueError(str(exc)) from exc
         except RelinkCandidateNotFound:
-            # Scenario A-new: no prior session for this phone → first-time pairing.
-            pass
+            if log_id:
+                # If pairing was targeted at a specific logical session, fail closed
+                logger.error(
+                    "[WhatsApp] Targeted relink failed for logical_session_id=%s, phone=%s",
+                    log_id,
+                    phone,
+                )
+                raise ValueError("Eşleşme tamamlandı ancak hedef oturum doğrulanamadı.")
 
         # --- Scenario A-new: create new logical session (first QR for this phone) ---
         row = WhatsAppSession(
@@ -348,14 +386,19 @@ async def get_pairing_qr(db: AsyncSession, user_id: str, pair_token: str) -> Dic
 
 async def cancel_pairing_session(user_id: str, pair_token: str) -> Dict[str, Any]:
     """Cancels an ephemeral pairing attempt, terminating gateway socket and freeing memory.
-    Guarantees that ZERO rows were ever created in public.whatsapp_sessions.
+    Guarantees that ZERO rows were ever created in public.whatsapp_sessions and
+    ZERO history states are mutated.
     """
     pairing = _ephemeral_pairings.pop(pair_token, None)
-    if pairing and pairing["user_id"] == str(user_id):
-        try:
-            await gw.delete_session(pairing["gateway_id"])
-        except Exception as exc:
-            logger.warning("[WhatsApp] Ephemeral gateway oturumu silinirken hata: %s", exc)
+    if pairing:
+        log_id = pairing.get("logical_session_id")
+        if log_id and _logical_to_ephemeral.get(log_id) == pair_token:
+            _logical_to_ephemeral.pop(log_id, None)
+        if pairing["user_id"] == str(user_id):
+            try:
+                await gw.delete_session(pairing["gateway_id"])
+            except Exception as exc:
+                logger.warning("[WhatsApp] Ephemeral gateway oturumu silinirken hata: %s", exc)
     return {"success": True}
 
 
@@ -406,8 +449,104 @@ async def refresh_contact_avatar(db: AsyncSession, user_id: str, phone: str) -> 
 
 
 async def get_session_qr(db: AsyncSession, user_id: str, session_id: int) -> Dict[str, Any]:
-    """Fetches QR code for session from gateway."""
+    """Fetches QR code for session from gateway.
+
+    If the logical session is in RELINK_REQUIRED state and its gateway session is
+    missing/unavailable:
+    - Does NOT terminate flow with WhatsAppRelinkRequired / 409.
+    - Creates or reuses an ephemeral pairing session in the gateway.
+    - Returns status='SCAN_QR' with the active ephemeral QR code.
+    - When CONNECTED, perform_atomic_relink preserves logical session ID and migrates history states.
+    """
     row = await _get_session_or_404(db, user_id, session_id)
+    if row.status == SessionStatus.RELINK_REQUIRED:
+        gw_missing = False
+        data = None
+        try:
+            data = await gw.get_session_qr(row.gateway_id)
+        except gw.WhatsAppGatewayError as exc:
+            if is_gateway_session_missing(exc):
+                gw_missing = True
+            else:
+                raise
+
+        if gw_missing:
+            pair_token = _logical_to_ephemeral.get(row.id)
+            pairing = _ephemeral_pairings.get(pair_token) if pair_token else None
+            eph_data = None
+            if pairing:
+                try:
+                    eph_data = await gw.get_session_qr(pairing["gateway_id"])
+                except gw.WhatsAppGatewayError as eph_exc:
+                    if is_gateway_session_missing(eph_exc):
+                        pairing = None
+                    else:
+                        raise
+
+            if not pairing or not eph_data:
+                line_name = row.session_name or f"Hat {datetime.utcnow().strftime('%H:%M')}"
+                gw_session = await gw.create_session(line_name, ephemeral=True)
+                ephemeral_gid = extract_session_id(gw_session)
+                if not ephemeral_gid:
+                    raise gw.WhatsAppGatewayError("Gateway oturum kimligi dondurmedi.")
+                pair_token = str(uuid.uuid4())
+                _ephemeral_pairings[pair_token] = {
+                    "user_id": str(user_id),
+                    "gateway_id": ephemeral_gid,
+                    "session_name": line_name,
+                    "logical_session_id": row.id,
+                    "phone": row.phone_number,
+                    "created_at": datetime.utcnow(),
+                }
+                _logical_to_ephemeral[row.id] = pair_token
+                return {
+                    "status": "SCAN_QR",
+                    "qr_code": gw_session.get("qr_code"),
+                    "phone": row.phone_number,
+                    "error_message": None,
+                }
+
+            ephemeral_gid = pairing["gateway_id"]
+            if eph_data.get("status") == "CONNECTED":
+                phone = (
+                    eph_data.get("phone")
+                    or eph_data.get("phone_number")
+                    or row.phone_number
+                    or ""
+                ).strip()
+                _ephemeral_pairings.pop(pair_token, None)
+                _logical_to_ephemeral.pop(row.id, None)
+                relink_result = await perform_atomic_relink(
+                    db,
+                    user_id=str(user_id),
+                    phone=phone,
+                    new_gateway_id=ephemeral_gid,
+                    session_name=row.session_name,
+                )
+                return {
+                    "status": "CONNECTED",
+                    "session_id": relink_result.session_id,
+                    "phone": relink_result.phone_number,
+                    "qr_code": None,
+                    "error_message": None,
+                }
+            return {
+                "status": eph_data.get("status") or "SCAN_QR",
+                "qr_code": eph_data.get("qr_code"),
+                "phone": row.phone_number,
+                "error_message": eph_data.get("error_message"),
+            }
+
+        # If gateway session actually exists on gateway
+        _apply_gateway_live(row, data)
+        await db.commit()
+        return {
+            "status": row.status.value if hasattr(row.status, "value") else str(row.status),
+            "qr_code": data.get("qr_code") or row.qr_code,
+            "phone": data.get("phone") or row.phone_number,
+            "error_message": data.get("error_message") or row.error_message,
+        }
+
     data = await _gateway_op_or_mark_relink(db, row, gw.get_session_qr)
     _apply_gateway_live(row, data)
     await db.commit()
@@ -422,6 +561,21 @@ async def get_session_qr(db: AsyncSession, user_id: str, session_id: int) -> Dic
 async def refresh_session_qr(db: AsyncSession, user_id: str, session_id: int) -> Dict[str, Any]:
     """Refreshes QR code for session via gateway."""
     row = await _get_session_or_404(db, user_id, session_id)
+    if row.status == SessionStatus.RELINK_REQUIRED:
+        pair_token = _logical_to_ephemeral.get(row.id)
+        pairing = _ephemeral_pairings.get(pair_token) if pair_token else None
+        if pairing:
+            try:
+                ref_data = await gw.refresh_session_qr(pairing["gateway_id"])
+                return {
+                    "status": ref_data.get("status") or "SCAN_QR",
+                    "qr_code": ref_data.get("qr_code"),
+                    "error_message": ref_data.get("error_message"),
+                }
+            except Exception as exc:
+                logger.warning("[WhatsApp] Ephemeral refresh failed: %s", exc)
+        return await get_session_qr(db, user_id, session_id)
+
     data = await _gateway_op_or_mark_relink(db, row, gw.refresh_session_qr)
     _apply_gateway_live(row, data)
     await db.commit()

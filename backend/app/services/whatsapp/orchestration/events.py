@@ -952,8 +952,49 @@ class WhatsAppEventOrchestrator:
                     RelinkCandidateNotFound,
                     perform_atomic_relink,
                 )
+                from backend.app.services.whatsapp.orchestration.sessions import (
+                    find_ephemeral_pairing_by_gateway_id,
+                    remove_ephemeral_pairing_by_gateway_id,
+                )
+
                 phone_from_event = (event.get("phone") or event.get("phone_number") or "").strip()
                 user_id_from_event = (event.get("user_id") or "").strip()
+
+                # 1. Resolve through ephemeral pairing registry if available
+                pairing = find_ephemeral_pairing_by_gateway_id(str(gw_session_id))
+                if pairing:
+                    user_id_from_event = user_id_from_event or pairing.get("user_id")
+                    if not phone_from_event and pairing.get("phone"):
+                        phone_from_event = pairing["phone"]
+
+                # 2. If user_id is still unknown, resolve deterministically via phone + RELINK_REQUIRED
+                # Section 10: 0 -> fail closed, 1 -> valid, >1 -> fail closed
+                if not user_id_from_event and phone_from_event:
+                    clean_digits = phone_from_event.split("@")[0].lstrip("+")
+                    clean_e164 = f"+{clean_digits}"
+                    cand_stmt = select(WhatsAppSession).where(
+                        or_(
+                            WhatsAppSession.phone_number == phone_from_event,
+                            WhatsAppSession.phone_number == clean_e164,
+                            WhatsAppSession.phone_number == clean_digits,
+                        ),
+                        WhatsAppSession.status == SessionStatus.RELINK_REQUIRED,
+                        WhatsAppSession.is_active.is_(True),
+                    )
+                    cand_res = await db.execute(cand_stmt)
+                    candidates = cand_res.scalars().all()
+                    if len(candidates) == 1:
+                        user_id_from_event = str(candidates[0].user_id)
+                    elif len(candidates) > 1:
+                        logger.error(
+                            "[Phase15.4] Multiple (%d) RELINK_REQUIRED candidates for phone %s — fail closed",
+                            len(candidates),
+                            phone_from_event,
+                        )
+                        raise EventOwnerUnresolved(
+                            f"Ambiguous relink candidates for phone {phone_from_event} — fail closed."
+                        )
+
                 if phone_from_event and user_id_from_event:
                     try:
                         relink_result = await perform_atomic_relink(
@@ -962,8 +1003,9 @@ class WhatsAppEventOrchestrator:
                             phone=phone_from_event,
                             new_gateway_id=str(gw_session_id),
                         )
+                        remove_ephemeral_pairing_by_gateway_id(str(gw_session_id))
                         logger.info(
-                            "[Phase15.3] map_session_event relink OK: session=%s %s→%s (history=%d)",
+                            "[Phase15.4] map_session_event relink OK: session=%s %s→%s (history=%d)",
                             relink_result.session_id,
                             relink_result.old_gateway_id,
                             relink_result.new_gateway_id,
@@ -988,7 +1030,7 @@ class WhatsAppEventOrchestrator:
                                     )
                             return event
                     except RelinkCandidateAmbiguous as exc:
-                        logger.error("[Phase15.3] Relink ambiguous in map_session_event: %s", exc)
+                        logger.error("[Phase15.4] Relink ambiguous in map_session_event: %s", exc)
                         raise EventOwnerUnresolved(str(exc)) from exc
                     except RelinkCandidateNotFound:
                         pass  # Fall through to EventOwnerUnresolved below

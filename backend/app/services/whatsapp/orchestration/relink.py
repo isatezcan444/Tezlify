@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import select, text
+from sqlalchemy import or_, select, text
 from sqlalchemy.exc import MultipleResultsFound
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -85,11 +85,18 @@ async def resolve_relink_candidate(
     if not phone:
         raise RelinkCandidateNotFound("Phone number is required for relink candidate resolution.")
 
+    clean_digits = phone.split("@")[0].lstrip("+")
+    clean_e164 = f"+{clean_digits}"
+
     stmt = (
         select(WhatsAppSession)
         .where(
             WhatsAppSession.user_id == user_id,
-            WhatsAppSession.phone_number == phone,
+            or_(
+                WhatsAppSession.phone_number == phone,
+                WhatsAppSession.phone_number == clean_e164,
+                WhatsAppSession.phone_number == clean_digits,
+            ),
             WhatsAppSession.status == SessionStatus.RELINK_REQUIRED,
             WhatsAppSession.gateway_id != new_gateway_id,
         )
