@@ -1079,6 +1079,7 @@ export function createSessionManager({
     listConversations(sessionId, { search, limit, offset } = {}) {
       const session = this._requireSession(sessionId);
       const store = this._storeOf(session);
+      const { chats, contacts } = store;
       // Sohbet listesi: telefon, grup ve çözümlenmemiş LID sohbetlerinin tamamını içerir.
       // Çözümlenmemiş LID'ler güvenli fallback başlığıyla (sanitizeChatForEmit) sunulur.
       let list = [...chats.values()].sort((a, b) => {
