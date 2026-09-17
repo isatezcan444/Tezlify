@@ -17,8 +17,11 @@ import json
 import os
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from scripts.auth_helper import get_ephemeral_auth_token
+
 BASE_URL = os.environ.get("TARGET_URL", "https://130.162.247.20.sslip.io")
-TOKEN = os.environ.get("AUTH_TOKEN", "5jYsO86WARwHOqXZ8ihJnhoBW8X-ZMGX26I6gnZ-eE0")
+TOKEN = get_ephemeral_auth_token()
 
 
 async def main():

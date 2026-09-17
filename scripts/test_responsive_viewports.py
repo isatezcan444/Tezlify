@@ -38,9 +38,13 @@ VIEWPORTS = [
     {"name": "1920x1080 (Full HD Desktop)", "width": 1920, "height": 1080, "is_mobile": False},
 ]
 
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from scripts.auth_helper import get_ephemeral_auth_token
+
 CHROME_PATH = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 BASE_URL = os.environ.get("TARGET_URL", "https://130.162.247.20.sslip.io")
-TOKEN = os.environ.get("AUTH_TOKEN", "5jYsO86WARwHOqXZ8ihJnhoBW8X-ZMGX26I6gnZ-eE0")
+TOKEN = get_ephemeral_auth_token()
 
 
 async def run_live_viewport_test(page, vp):

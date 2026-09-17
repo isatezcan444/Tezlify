@@ -153,12 +153,12 @@ async def main():
 
     s4 = run_psql("SELECT status FROM public.whatsapp_sessions WHERE id = 4;")
     s5 = run_psql("SELECT status FROM public.whatsapp_sessions WHERE id = 5;")
-    s50 = run_psql("SELECT status, phone_number, is_active FROM public.whatsapp_sessions WHERE id = 50;")
+    s_active = run_psql("SELECT id, status, phone_number, is_active FROM public.whatsapp_sessions WHERE phone_number = '+905413749073' AND is_active = true ORDER BY id DESC LIMIT 1;")
 
     assert s4 == "SCAN_QR", f"Session 4 status changed: {s4}"
     assert s5 == "RELINK_REQUIRED", f"Session 5 status changed: {s5}"
-    assert "CONNECTED|+905413749073|t" in s50, f"Session 50 compromised: {s50}"
-    print("\n>>> INVARIANT PASSED: SESSIONS 4, 5 UNTOUCHED (0 MUTATIONS); SESSION 50 CONNECTED & ACTIVE! <<<")
+    assert "CONNECTED|+905413749073|t" in s_active, f"Production phone compromised: {s_active}"
+    print("\n>>> INVARIANT PASSED: SESSIONS 4, 5 UNTOUCHED (0 MUTATIONS); PRODUCTION SESSION CONNECTED & ACTIVE! <<<")
 
     # Clean up test tenant user from database
     run_psql(f"DELETE FROM auth_staging_users WHERE id = '{TEST_USER_ID}';")

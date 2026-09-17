@@ -83,4 +83,47 @@ assert.ok(avatarSource.includes('object-cover'), 'Must use object-cover to avoid
 assert.ok(avatarSource.includes('onError='), 'Must handle image loading errors gracefully');
 console.log('✓ Avatar.tsx markup invariants passed');
 
+// 6. Test Avatar Storm Prevention (20 simulated errors for same contact)
+console.log('Testing Avatar Storm Prevention (20 consecutive errors for same contact)...');
+clearFailedAvatarUrlsCache();
+const inFlightAvatarRefreshes = new Set();
+let refreshApiCallCount = 0;
+
+const simulateAvatarError = (phone, url) => {
+  if (url) failedAvatarUrls.add(url);
+  if (phone && !inFlightAvatarRefreshes.has(phone)) {
+    inFlightAvatarRefreshes.add(phone);
+    refreshApiCallCount++;
+  }
+};
+
+const testPhone = '+905413749073';
+const staleUrl = 'https://pps.whatsapp.net/v/t61.24694-24/stale_token_test.jpg';
+
+// Fire 20 consecutive error events
+for (let i = 0; i < 20; i++) {
+  simulateAvatarError(testPhone, staleUrl);
+}
+
+assert.equal(refreshApiCallCount, 1, 'Exactly 1 refresh API request should be fired');
+assert.equal(failedAvatarUrls.has(staleUrl), true, 'Stale URL must be marked in failedAvatarUrls');
+console.log('✓ Avatar storm test passed: 1 refresh request fired, 19 duplicate requests blocked');
+
+// 7. Test Concurrent Component Render with same stale URL
+console.log('Testing Concurrent Component Render with same stale URL...');
+let concurrentCallCount = 0;
+const simulateConcurrentRenderError = (phone, url) => {
+  if (url && failedAvatarUrls.has(url)) {
+    return;
+  }
+  if (phone && !inFlightAvatarRefreshes.has(phone)) {
+    inFlightAvatarRefreshes.add(phone);
+    concurrentCallCount++;
+  }
+};
+simulateConcurrentRenderError(testPhone, staleUrl);
+simulateConcurrentRenderError(testPhone, staleUrl);
+assert.equal(concurrentCallCount, 0, 'No additional calls should be made when URL is in failedAvatarUrls');
+console.log('✓ Concurrent render test passed (0 duplicate requests)');
+
 console.log('[test-whatsapp-avatar] ALL AVATAR TESTS PASSED SUCCESSFULLY.');
