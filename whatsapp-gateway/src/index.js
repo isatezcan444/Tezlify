@@ -156,7 +156,20 @@ app.get('/sessions/:id', (req, res) => {
   if (!session) {
     return res.status(404).json({ error: 'Session not found' });
   }
-  res.json(session);
+  res.json({
+    id: session.id,
+    session_name: session.session_name,
+    status: session.status,
+    phone_number: session.phone_number || null,
+    is_active: session.is_active,
+    is_phone_online: session.is_phone_online || false,
+    battery_level: session.battery_level ?? null,
+    error_message: session.error_message || null,
+    qr_code: session.status === 'SCAN_QR' ? session.qr_code : null,
+    sync: session.sync || { phase: 'idle' },
+    created_at: session.created_at,
+    updated_at: session.updated_at,
+  });
 });
 
 // Create a new session (returns QR code as data URI)
