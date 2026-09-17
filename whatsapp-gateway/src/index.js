@@ -161,6 +161,8 @@ app.get('/sessions/:id', (req, res) => {
     session_name: session.session_name,
     status: session.status,
     phone_number: session.phone_number || null,
+    self_jid: session.self_jid || null,
+    self_lid: session.self_lid || null,
     is_active: session.is_active,
     is_phone_online: session.is_phone_online || false,
     battery_level: session.battery_level ?? null,

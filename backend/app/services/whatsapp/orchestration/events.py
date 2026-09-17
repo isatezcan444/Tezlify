@@ -38,6 +38,8 @@ from backend.app.services.whatsapp.identity import (
     is_broadcast_only_jid,
     is_degenerate_jid,
     is_raw_jid_name as _is_raw_jid_name,
+    is_self_identity as _is_self_identity,
+    strip_jid_prefix as _strip_jid_prefix,
     jid_to_phone,
 )
 from backend.app.services.whatsapp.orchestration.messaging import (
@@ -51,6 +53,7 @@ from backend.app.services.whatsapp.preview_normalization import (
 )
 from backend.app.services.whatsapp_profiling import profiled
 from backend.app.services.whatsapp.repositories.contacts import (
+    get_contact_avatar as _get_contact_avatar,
     set_contact_avatar as _set_contact_avatar,
     set_contact_name as _set_contact_name,
 )
@@ -138,11 +141,41 @@ class WhatsAppEventOrchestrator:
         display_name: Optional[str],
         name_source: Optional[str] = None,
     ) -> Contact:
-        if is_degenerate_jid(jid):
+        clean_jid = _strip_jid_prefix(jid)
+        if is_degenerate_jid(clean_jid):
             raise ValueError(f"Degenerate WhatsApp JID reddedildi: {jid}")
-        if is_broadcast_only_jid(jid):
+        if is_broadcast_only_jid(clean_jid):
             raise ValueError(f"Broadcast-only WhatsApp JID reddedildi: {jid}")
-        phone_e164 = _contact_phone_for_jid(jid)
+
+        # Check if clean_jid is the authenticated user's self identity
+        sess_stmt = (
+            select(WhatsAppSession)
+            .where(
+                get_user_filter(WhatsAppSession.user_id, user_id),
+                WhatsAppSession.status == SessionStatus.CONNECTED,
+                WhatsAppSession.is_active.is_(True),
+            )
+            .order_by(WhatsAppSession.id.desc())
+        )
+        active_sess = (await db.execute(sess_stmt)).scalars().first()
+        if active_sess and active_sess.phone_number and _is_self_identity(clean_jid, active_sess.phone_number):
+            canonical_phone = active_sess.phone_number
+            self_contact = (
+                await db.execute(
+                    select(Contact).where(
+                        Contact.phone_e164 == canonical_phone,
+                        get_user_filter(Contact.user_id, user_id),
+                    )
+                )
+            ).scalars().first()
+            if self_contact:
+                if _set_contact_name(self_contact, display_name, name_source):
+                    await db.flush()
+                return self_contact
+            phone_e164 = canonical_phone
+        else:
+            phone_e164 = _contact_phone_for_jid(clean_jid)
+
         stmt = select(Contact).where(
             Contact.phone_e164 == phone_e164,
             get_user_filter(Contact.user_id, user_id),
@@ -150,7 +183,7 @@ class WhatsAppEventOrchestrator:
         res = await db.execute(stmt)
         contact = res.scalars().first()
         if contact is None and phone_e164.startswith("jid:"):
-            legacy = jid_to_phone(jid)
+            legacy = jid_to_phone(clean_jid)
             if legacy:
                 lres = await db.execute(
                     select(Contact).where(
@@ -166,7 +199,7 @@ class WhatsAppEventOrchestrator:
             contact = Contact(
                 user_id=user_id,
                 phone_e164=phone_e164,
-                display_name=(None if _is_raw_jid_name(display_name) else display_name) or jid_to_phone(jid),
+                display_name=(None if _is_raw_jid_name(display_name) else display_name) or jid_to_phone(clean_jid),
             )
             if display_name and str(name_source or "") in _NAME_RANK:
                 contact.custom_attributes = {"name_source": str(name_source)}
@@ -425,13 +458,28 @@ class WhatsAppEventOrchestrator:
         jid = contact_payload.get("id") or contact_payload.get("jid")
         if not jid or "@" not in str(jid):
             return _skip_event(event, "contact_synced: gecerli jid yok")
-        if is_broadcast_only_jid(str(jid)):
-            return _skip_event(event, f"contact_synced: broadcast-only jid ({jid})")
-        if is_degenerate_jid(str(jid)):
-            return _skip_event(event, f"contact_synced: dejenere jid ({jid})")
-        phone_e164 = jid_to_phone(str(jid)) or f"jid:{jid}"
-        owner = await resolve_event_owner(db, str(jid), event.get("gateway_session_id"))
+        clean_jid = _strip_jid_prefix(str(jid))
+        if is_broadcast_only_jid(clean_jid):
+            return _skip_event(event, f"contact_synced: broadcast-only jid ({clean_jid})")
+        if is_degenerate_jid(clean_jid):
+            return _skip_event(event, f"contact_synced: dejenere jid ({clean_jid})")
+        phone_e164 = _contact_phone_for_jid(clean_jid)
+        owner = await resolve_event_owner(db, clean_jid, event.get("gateway_session_id"))
         event["user_id"] = owner
+
+        sess_stmt = (
+            select(WhatsAppSession)
+            .where(
+                get_user_filter(WhatsAppSession.user_id, owner),
+                WhatsAppSession.status == SessionStatus.CONNECTED,
+                WhatsAppSession.is_active.is_(True),
+            )
+            .order_by(WhatsAppSession.id.desc())
+        )
+        active_sess = (await db.execute(sess_stmt)).scalars().first()
+        if active_sess and active_sess.phone_number and _is_self_identity(clean_jid, active_sess.phone_number):
+            phone_e164 = active_sess.phone_number
+
         res = await db.execute(
             select(Contact).where(
                 Contact.phone_e164 == phone_e164,
@@ -441,15 +489,18 @@ class WhatsAppEventOrchestrator:
         contact = res.scalars().first()
         name = contact_payload.get("name")
         source = str(contact_payload.get("name_source") or "")
+        avatar_url = contact_payload.get("avatar_url")
         if contact is None:
             high_rank = source in ("addressbook", "verified", "group_subject")
-            if high_rank and name and not _is_raw_jid_name(name):
-                contact = await upsert_contact(db, owner, str(jid), name, source)
-                _set_contact_avatar(contact, contact_payload.get("avatar_url"))
+            if (high_rank and name and not _is_raw_jid_name(name)) or avatar_url:
+                contact = await upsert_contact(db, owner, clean_jid, name, source)
+                if avatar_url:
+                    _set_contact_avatar(contact, avatar_url)
                 await db.commit()
             return event
         _set_contact_name(contact, name, source)
-        _set_contact_avatar(contact, contact_payload.get("avatar_url"))
+        if avatar_url:
+            _set_contact_avatar(contact, avatar_url)
         await db.commit()
         return event
 
@@ -535,6 +586,159 @@ class WhatsAppEventOrchestrator:
                 return await _do_reconciliation()
         return await _do_reconciliation()
 
+    async def reconcile_self_identity(
+        self,
+        db: AsyncSession,
+        user_id: str,
+        session: WhatsAppSession,
+        self_lid: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Reconciles duplicate contacts and conversations created for the authenticated user's self number.
+
+        Merges duplicate conversation (e.g. LID conversation) into the canonical self conversation,
+        deduplicates messages by wa_message_id, re-points unique messages, and deletes duplicate rows.
+        """
+        if not session or not session.phone_number:
+            return {"status": "skipped", "reason": "session has no phone number"}
+
+        canonical_phone = session.phone_number
+
+        if not self_lid and session.gateway_id:
+            try:
+                from backend.app.services import whatsapp_gateway as gw
+                gw_info = await gw.get_session_status(session.gateway_id)
+                if isinstance(gw_info, dict):
+                    self_lid = gw_info.get("self_lid")
+            except Exception:
+                pass
+
+        canonical_contact = (
+            await db.execute(
+                select(Contact).where(
+                    Contact.phone_e164 == canonical_phone,
+                    get_user_filter(Contact.user_id, user_id),
+                )
+            )
+        ).scalars().first()
+
+        if not canonical_contact:
+            canonical_contact = Contact(
+                user_id=user_id,
+                phone_e164=canonical_phone,
+                display_name=session.session_name or canonical_phone,
+            )
+            db.add(canonical_contact)
+            await db.flush()
+
+        canonical_conv = (
+            await db.execute(
+                select(Conversation).where(
+                    Conversation.contact_id == canonical_contact.id,
+                    get_user_filter(Conversation.user_id, user_id),
+                ).order_by(Conversation.id.asc())
+            )
+        ).scalars().first()
+
+        if not canonical_conv:
+            canonical_conv = Conversation(
+                user_id=user_id,
+                contact_id=canonical_contact.id,
+                channel="WHATSAPP",
+                status=ConversationStatus.ACTIVE,
+                session_id=session.id,
+                is_group=False,
+                is_archived=False,
+            )
+            db.add(canonical_conv)
+            await db.flush()
+
+        all_contacts = (
+            await db.execute(
+                select(Contact).where(
+                    get_user_filter(Contact.user_id, user_id),
+                    Contact.id != canonical_contact.id,
+                )
+            )
+        ).scalars().all()
+
+        duplicate_contacts = [
+            c for c in all_contacts
+            if c.phone_e164 and _is_self_identity(c.phone_e164, canonical_phone, self_lid)
+        ]
+
+        merged_convs: List[int] = []
+        moved_msgs = 0
+        deleted_msgs = 0
+        deleted_contacts: List[int] = []
+
+        for dup_c in duplicate_contacts:
+            canonical_avatar = _get_contact_avatar(canonical_contact)
+            dup_avatar = _get_contact_avatar(dup_c)
+            if not canonical_avatar and dup_avatar:
+                _set_contact_avatar(canonical_contact, dup_avatar)
+
+            dup_convs = (
+                await db.execute(
+                    select(Conversation).where(
+                        Conversation.contact_id == dup_c.id,
+                        get_user_filter(Conversation.user_id, user_id),
+                    )
+                )
+            ).scalars().all()
+
+            for dup_conv in dup_convs:
+                if dup_conv.id == canonical_conv.id:
+                    continue
+                dup_messages = (
+                    await db.execute(
+                        select(Message).where(Message.conversation_id == dup_conv.id)
+                    )
+                ).scalars().all()
+
+                existing_wa_ids = set(
+                    (
+                        await db.execute(
+                            select(Message.wa_message_id).where(
+                                Message.conversation_id == canonical_conv.id,
+                                Message.wa_message_id.isnot(None),
+                            )
+                        )
+                    ).scalars().all()
+                )
+
+                for msg in dup_messages:
+                    if msg.wa_message_id and msg.wa_message_id in existing_wa_ids:
+                        await db.delete(msg)
+                        deleted_msgs += 1
+                    else:
+                        msg.conversation_id = canonical_conv.id
+                        msg.contact_id = canonical_contact.id
+                        if msg.wa_message_id:
+                            existing_wa_ids.add(msg.wa_message_id)
+                        moved_msgs += 1
+
+                await db.delete(dup_conv)
+                merged_convs.append(dup_conv.id)
+
+            await db.delete(dup_c)
+            deleted_contacts.append(dup_c.id)
+
+        await db.commit()
+        if merged_convs or deleted_contacts:
+            logger.info(
+                "[WhatsApp] Self identity reconciled (user=%s): merged_convs=%s, deleted_contacts=%s, moved_msgs=%d, deleted_msgs=%d",
+                user_id, merged_convs, deleted_contacts, moved_msgs, deleted_msgs,
+            )
+        return {
+            "status": "reconciled",
+            "merged_conversations": merged_convs,
+            "deleted_contacts": deleted_contacts,
+            "moved_messages": moved_msgs,
+            "deleted_duplicate_messages": deleted_msgs,
+            "canonical_conversation_id": canonical_conv.id,
+            "canonical_contact_id": canonical_contact.id,
+        }
+
     async def _map_conversation_event(self, db: AsyncSession, event: Dict[str, Any]) -> Dict[str, Any]:
         resolve_event_owner_and_session = self._get_helper(
             "_resolve_event_owner_and_session", _resolve_event_owner_and_session
@@ -552,14 +756,21 @@ class WhatsAppEventOrchestrator:
                 jid = candidate
             else:
                 return _skip_event(event, f"{event.get('event')}: sohbet jid'i cozulemedi")
-        if is_broadcast_only_jid(str(jid)):
-            return _skip_event(event, f"{event.get('event')}: broadcast-only jid ({jid})")
-        if is_degenerate_jid(str(jid)):
-            return _skip_event(event, f"{event.get('event')}: dejenere jid ({jid})")
+        clean_jid = _strip_jid_prefix(str(jid))
+        if is_broadcast_only_jid(clean_jid):
+            return _skip_event(event, f"{event.get('event')}: broadcast-only jid ({clean_jid})")
+        if is_degenerate_jid(clean_jid):
+            return _skip_event(event, f"{event.get('event')}: dejenere jid ({clean_jid})")
 
         owner, ws_session_id = await resolve_event_owner_and_session(
-            db, str(jid), event.get("gateway_session_id")
+            db, clean_jid, event.get("gateway_session_id")
         )
+        if ws_session_id:
+            sess_row = await db.get(WhatsAppSession, ws_session_id)
+            if sess_row and sess_row.phone_number and _is_self_identity(clean_jid, sess_row.phone_number):
+                from backend.app.services.whatsapp.identity import phone_to_jid
+                jid = phone_to_jid(sess_row.phone_number)
+
         event["user_id"] = owner
         evt_name = event.get("event")
 
@@ -715,6 +926,13 @@ class WhatsAppEventOrchestrator:
             if phone:
                 row.phone_number = str(phone)
             row.updated_at = datetime.utcnow()
+            if row.user_id and row.phone_number:
+                try:
+                    await self.reconcile_self_identity(
+                        db, str(row.user_id), row, self_lid=event.get("self_lid")
+                    )
+                except Exception as rec_err:
+                    logger.warning("[WhatsApp] Self identity auto-reconciliation warning: %s", rec_err)
         elif evt == "session_disconnected":
             row.status = SessionStatus.DISCONNECTED
             row.is_phone_online = False

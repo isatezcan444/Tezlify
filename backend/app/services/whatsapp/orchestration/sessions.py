@@ -324,20 +324,29 @@ async def refresh_contact_avatar(db: AsyncSession, user_id: str, phone: str) -> 
 
     gateway_id = sess.gateway_id
     from backend.app.services.whatsapp.repositories.contacts import set_contact_avatar
+    from backend.app.services.whatsapp.identity import strip_jid_prefix
 
-    jid = phone if ("@" in phone) else f"{phone.lstrip('+')}@s.whatsapp.net"
+    clean_phone = strip_jid_prefix(phone)
+    jid = clean_phone if ("@" in clean_phone) else f"{clean_phone.lstrip('+')}@s.whatsapp.net"
     try:
         res = await gw.refresh_avatar(gateway_id, jid)
         new_url = res.get("avatar_url") if isinstance(res, dict) else None
-        
+
         # Update contact in DB if exists
         contact = await db.scalar(
-            select(Contact).where(get_user_filter(Contact.user_id, user_id), Contact.phone_e164 == phone)
+            select(Contact).where(
+                get_user_filter(Contact.user_id, user_id),
+                or_(
+                    Contact.phone_e164 == phone,
+                    Contact.phone_e164 == clean_phone,
+                    Contact.phone_e164 == f"jid:{clean_phone}",
+                ),
+            )
         )
-        if contact:
+        if contact and new_url:
             set_contact_avatar(contact, new_url)
             await db.commit()
-            
+
         return {"success": True, "phone": phone, "avatar_url": new_url}
     except Exception as exc:
         logger.warning("[WhatsApp] Avatar yenileme hatası (%s): %s", phone, exc)

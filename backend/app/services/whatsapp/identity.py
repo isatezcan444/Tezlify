@@ -118,3 +118,44 @@ def contact_phone_for_jid(jid: str) -> str:
         return f"jid:{jid}"
     phone = jid_to_phone(jid)
     return phone or f"jid:{jid}"
+
+
+def strip_jid_prefix(value: Optional[str]) -> str:
+    """Strips 'jid:' sentinel prefix from phone/JID strings."""
+    if not value:
+        return ""
+    v = str(value).strip()
+    if v.startswith("jid:"):
+        return v[4:]
+    return v
+
+
+def is_self_identity(
+    candidate: Optional[str],
+    session_phone: Optional[str],
+    session_lid: Optional[str] = None,
+) -> bool:
+    """Checks whether candidate JID/LID/phone represents the authenticated user's self identity."""
+    if not candidate or not session_phone:
+        return False
+    clean_cand = strip_jid_prefix(candidate)
+    clean_sess = strip_jid_prefix(session_phone)
+
+    # Match session LID if provided
+    if session_lid:
+        clean_lid = strip_jid_prefix(session_lid)
+        cand_user = clean_cand.split("@")[0].split(":")[0]
+        lid_user = clean_lid.split("@")[0].split(":")[0]
+        if clean_cand == clean_lid or cand_user == lid_user:
+            return True
+
+    # Match digits / phone E.164
+    cand_user = clean_cand.split("@")[0].split(":")[0]
+    sess_user = clean_sess.split("@")[0].split(":")[0]
+    cand_digits = "".join(ch for ch in cand_user if ch.isdigit())
+    sess_digits = "".join(ch for ch in sess_user if ch.isdigit())
+    if cand_digits and sess_digits and cand_digits == sess_digits:
+        return True
+
+    return False
+

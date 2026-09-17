@@ -1161,6 +1161,47 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         }
       }
 
+      if (eventData.event === 'contact_synced') {
+        const contact = (eventData.contact || {}) as {
+          jid?: string;
+          id?: string;
+          phone?: string;
+          avatar_url?: string | null;
+        };
+        const avatarUrl = contact.avatar_url;
+        const jid = contact.jid || contact.id;
+        const phone = contact.phone || (jid ? jid.replace(/^jid:/, '').split('@')[0] : null);
+        if (avatarUrl && (phone || jid)) {
+          const matchPhone = phone ? phone.replace(/\D/g, '') : null;
+          const cleanJid = jid ? jid.replace(/^jid:/, '') : null;
+          setConversations((prev) =>
+            prev.map((c) => {
+              const cPhone = c.lead_phone ? c.lead_phone.replace(/\D/g, '') : null;
+              const cCleanJid = c.lead_phone ? c.lead_phone.replace(/^jid:/, '') : null;
+              if (
+                (matchPhone && cPhone === matchPhone) ||
+                (cleanJid && (c.lead_phone === cleanJid || cCleanJid === cleanJid))
+              ) {
+                return { ...c, lead_avatar_url: avatarUrl };
+              }
+              return c;
+            })
+          );
+          setSelectedConv((prev) => {
+            if (!prev) return prev;
+            const prevPhone = prev.lead_phone ? prev.lead_phone.replace(/\D/g, '') : null;
+            const prevCleanJid = prev.lead_phone ? prev.lead_phone.replace(/^jid:/, '') : null;
+            if (
+              (matchPhone && prevPhone === matchPhone) ||
+              (cleanJid && (prev.lead_phone === cleanJid || prevCleanJid === cleanJid))
+            ) {
+              return { ...prev, lead_avatar_url: avatarUrl };
+            }
+            return prev;
+          });
+        }
+      }
+
       if (eventData.event === 'new_conversation' || eventData.event === 'conversations_updated') {
         if (eventData.conversation && eventData.conversation.id) {
           // Targeted insertion without full list refetch
@@ -1823,7 +1864,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                     <Avatar
                       name={selectedConv.lead_name || (!isRawWhatsAppIdentity(selectedConv.lead_phone) ? selectedConv.lead_phone : '') || (selectedConv.is_group ? t('whatsapp.groupFallback') || 'Group' : t('whatsapp.pendingIdentity') || 'Lead')}
                       image={selectedConv.lead_avatar_url}
-                      phone={selectedConv.lead_phone}
+                      phone={selectedConv.lead_phone?.replace(/^jid:/, '')}
                       size="md"
                       shape="rounded"
                     />

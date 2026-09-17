@@ -531,17 +531,20 @@ function messageTimestampMs(value) {
 // böylece soket işleyicilerinin gövdesi değişmeden çalışır.)
 function resolveJidKey(store, jid) {
   if (!jid) return jid;
-  if (jid.includes('@g.us')) return jid; // group
+  let clean = String(jid).replace(/^jid:/, '').trim();
+  if (clean.includes('@g.us')) return clean; // group
+  clean = clean.replace(/(:\d+)?(@.*)$/, '$2');
   // LID kimliği eşleşmesi biliniyorsa telefon JID'ine çöz — sohbetler,
   // kişiler ve mesajlar her zaman telefon anahtarıyla tutulur (WhatsApp
   // Web paritesi: rehber adı telefon-anahtarlı sohbete işlenir).
-  if (isLidJid(jid)) {
-    const phone = store?.lidToJid.get(jid);
-    return phone || jid;
+  if (isLidJid(clean)) {
+    const phone = store?.lidToJid?.get(clean);
+    return phone || clean;
   }
-  if (jid.includes('@s.whatsapp.net')) return jid;
-  if (jid.includes('@')) return jid;
-  return `${jid}@s.whatsapp.net`;
+  if (clean.includes('@s.whatsapp.net')) return clean;
+  if (clean.includes('@')) return clean;
+  const digits = clean.replace(/\D/g, '');
+  return digits ? `${digits}@s.whatsapp.net` : clean;
 }
 
 // ---------------------------------------------------------------------------
@@ -759,6 +762,8 @@ export function createSessionManager({
         session_name: s.session_name,
         status: s.status,
         phone_number: s.phone_number || null,
+        self_jid: s.self_jid || null,
+        self_lid: s.self_lid || null,
         is_active: s.is_active,
         is_phone_online: s.is_phone_online || false,
         battery_level: s.battery_level ?? null,
@@ -822,6 +827,8 @@ export function createSessionManager({
         status: 'SCAN_QR',
         qr_code: null,
         phone_number: null,
+        self_jid: null,
+        self_lid: null,
         is_active: true,
         is_phone_online: false,
         battery_level: null,
@@ -1853,6 +1860,33 @@ export function createSessionManager({
       }
     },
 
+    _scheduleBackgroundAvatarFetch(session) {
+      if (!session) return;
+      session = this._sess(session);
+      const store = this._storeOf(session);
+      if (!store || store._backgroundAvatarFetchRunning) return;
+      store._backgroundAvatarFetchRunning = true;
+
+      setImmediate(async () => {
+        try {
+          const recentChats = Array.from(store.chats.values())
+            .filter((c) => c && c.jid && !c.avatar_url && !isBroadcastOnlyJid(c.jid) && !isDegenerateJid(c.jid))
+            .sort((a, b) => (b.last_message_at ? new Date(b.last_message_at).getTime() : 0) - (a.last_message_at ? new Date(a.last_message_at).getTime() : 0))
+            .slice(0, 35);
+
+          for (const chat of recentChats) {
+            if (session.status !== 'CONNECTED' || !session.sock) break;
+            await this._ensureChatAvatar(session, chat.jid);
+            await new Promise((resolve) => setTimeout(resolve, 400));
+          }
+        } catch (err) {
+          logger.warn({ err, sessionId: session.id }, 'Background avatar fetch encountered error');
+        } finally {
+          store._backgroundAvatarFetchRunning = false;
+        }
+      });
+    },
+
     async refreshAvatar(sessionId, jid) {
       const session = this._requireSession(sessionId);
       if (!session.sock || session.status !== 'CONNECTED') {
@@ -1874,6 +1908,8 @@ export function createSessionManager({
             contact.avatar_url = url;
             contact.updated_at = new Date().toISOString();
             emitEvent({ event: 'contact_synced', contact: { ...contact }, gateway_session_id: session.id });
+          } else if (url) {
+            emitEvent({ event: 'contact_synced', contact: { jid: key, avatar_url: url }, gateway_session_id: session.id });
           }
         }
         return { success: true, jid: key, avatar_url: url };
@@ -2165,6 +2201,19 @@ export function createSessionManager({
       const ensureChatAvatar = (key) => sessionManager._ensureChatAvatar(session, key);
       const ensureGroupSubjects = (opts = {}) => sessionManager._ensureGroupSubjects({ ...opts, sessionId: id });
 
+      if (state?.creds?.me?.id) {
+        const cleanJid = resolveJidKey(store, state.creds.me.id);
+        session.self_jid = cleanJid;
+        session.phone_number = jidToPhone(cleanJid) || session.phone_number;
+      }
+      if (state?.creds?.me?.lid) {
+        session.self_lid = resolveJidKey(store, state.creds.me.lid);
+      }
+      if (session.self_lid && session.self_jid) {
+        rememberLidPair(store, session.self_lid, session.self_jid);
+        sessionManager._applyLidMapping(session, session.self_lid, session.self_jid);
+      }
+
       const versionStarted = performance.now();
       const { version } = await fetchLatestBaileysVersion();
       latency('provider_version_lookup_ms', versionStarted, id);
@@ -2325,6 +2374,7 @@ export function createSessionManager({
         logger.info({ id, reason, chats: session.sync.chats_synced, msgs: session.sync.messages_synced }, 'History sync finalized');
         emitEvent({ event: 'session_sync_completed', session_id: id, session_name: session.session_name, sync: session.sync });
         void ensureGroupSubjects({ force: true });
+        sessionManager._scheduleBackgroundAvatarFetch(session);
       };
 
       // --- QR event ---
@@ -2432,11 +2482,19 @@ export function createSessionManager({
           session._pairingSocket = null;
           session.is_phone_online = true;
           session.updated_at = new Date().toISOString();
-          if (!session.phone_number) {
-            const meJid = sock.user?.id || state?.creds?.me?.id;
-            if (meJid) {
-              session.phone_number = jidToPhone(meJid) || null;
-            }
+          const meJid = sock.user?.id || state?.creds?.me?.id;
+          const meLid = sock.user?.lid || state?.creds?.me?.lid;
+          if (meJid) {
+            const cleanJid = resolveJidKey(store, meJid);
+            session.self_jid = cleanJid;
+            session.phone_number = jidToPhone(cleanJid) || session.phone_number;
+          }
+          if (meLid) {
+            session.self_lid = resolveJidKey(store, meLid);
+          }
+          if (session.self_lid && session.self_jid) {
+            rememberLidPair(store, session.self_lid, session.self_jid);
+            sessionManager._applyLidMapping(session, session.self_lid, session.self_jid);
           }
           // Persist encrypted auth state
           if (!authRepository) {
@@ -2464,7 +2522,14 @@ export function createSessionManager({
               }
             }
           }
-          emitEvent({ event: 'session_connected', session_id: id, session_name: session.session_name, phone: session.phone_number || null });
+          emitEvent({
+            event: 'session_connected',
+            session_id: id,
+            session_name: session.session_name,
+            phone: session.phone_number || null,
+            self_jid: session.self_jid || null,
+            self_lid: session.self_lid || null,
+          });
           // Faz 7: WhatsApp Web paritesi — bağlantı kuruldu, INITIAL SYNC
           // başlıyor. Frontend bu event'le "Sohbetleriniz yükleniyor…"
           // ekranına geçer; progress yalnızca gerçek messaging-history.set
@@ -2481,6 +2546,7 @@ export function createSessionManager({
           if (priorSyncs > 0) {
             emitEvent({ event: 'session_sync_completed', session_id: id, session_name: session.session_name, sync: session.sync });
             void ensureGroupSubjects();
+            sessionManager._scheduleBackgroundAvatarFetch(session);
           } else {
             emitEvent({ event: 'session_sync_started', session_id: id, session_name: session.session_name, sync: session.sync });
             // Sorun (prod): bos/yeni hesapta HIC history chunk'i gelmeyebilir;
@@ -2956,7 +3022,7 @@ export function createSessionManager({
             };
             chats.set(key, merged);
             storedChats += 1;
-            if (!merged.avatar_url && storedChats <= 3) void ensureChatAvatar(key);
+            if (!merged.avatar_url && storedChats <= 5) void ensureChatAvatar(key);
             emitEvent({ event: 'conversation_updated', conversation: merged });
           }
           emitEvent({
@@ -2966,6 +3032,9 @@ export function createSessionManager({
             chats_synced: storedChats,
             messages_synced: storedMessages,
           });
+          if (isLatest || progress === 100) {
+            sessionManager._scheduleBackgroundAvatarFetch(session);
+          }
           // Faz 7: gerçek initial-sync ilerlemesi — messaging-history.set
           // yüzdesi + toplanan sayaçlar. Faz 9 (RC-3): tamamlanma artık
           // WhatsApp'ın GERÇEK sinyallerinden çözülür (isLatest VEYA

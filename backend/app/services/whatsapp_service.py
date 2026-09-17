@@ -123,6 +123,8 @@ from backend.app.services.whatsapp.identity import (
     is_broadcast_only_jid,
     is_degenerate_jid,
     is_raw_jid_name as _is_raw_jid_name,
+    is_self_identity as _is_self_identity,
+    strip_jid_prefix as _strip_jid_prefix,
     jid_to_phone,
     safe_display_name as _safe_display_name,
 )
@@ -442,10 +444,28 @@ async def list_conversations(
         )
         counts_map = {cid: int(n) for cid, n in cnt_res.fetchall()}
 
+    active_sess_stmt = (
+        select(WhatsAppSession.phone_number)
+        .where(
+            get_user_filter(WhatsAppSession.user_id, user_id),
+            WhatsAppSession.status == SessionStatus.CONNECTED,
+            WhatsAppSession.is_active.is_(True),
+        )
+        .order_by(WhatsAppSession.id.desc())
+    )
+    active_sess_phone = (await db.execute(active_sess_stmt)).scalars().first()
+
+    seen_self_conversation = False
     out: List[Dict[str, Any]] = []
     for r in rows:
         contact = r.contact or contacts_map.get(r.contact_id)
         phone = contact.phone_e164 if contact else None
+
+        if phone and active_sess_phone and _is_self_identity(phone, active_sess_phone):
+            if seen_self_conversation:
+                continue
+            seen_self_conversation = True
+
         # Faz 10: eski kose-parantezli degerler okuma aninda da etikete
         # normalize edilir ('[IMAGE]' -> '📷 Fotoğraf'); normal metin aynen gecer.
         preview = _normalize_preview_text(None, r.last_message_preview) or None

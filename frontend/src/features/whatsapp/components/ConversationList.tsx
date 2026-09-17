@@ -270,6 +270,8 @@ export const ConversationList: React.FC<ConversationListProps> = ({
               <button
                 key={conv.id}
                 type="button"
+                data-conv-id={conv.id}
+                data-phone={conv.lead_phone}
                 onClick={() => onSelect(conv)}
                 className={`w-full text-left p-3.5 flex items-start space-x-3 transition-colors cursor-pointer ${
                   isSelected
@@ -280,7 +282,7 @@ export const ConversationList: React.FC<ConversationListProps> = ({
                 <Avatar
                   name={displayName}
                   image={conv.lead_avatar_url}
-                  phone={conv.lead_phone}
+                  phone={conv.lead_phone?.replace(/^jid:/, '')}
                   size="md"
                   shape="rounded"
                 />
