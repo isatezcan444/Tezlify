@@ -104,7 +104,7 @@ async def create_session(name: str, ephemeral: bool = False) -> Dict[str, Any]:
 
 
 async def refresh_avatar(gateway_id: str, jid: str) -> Dict[str, Any]:
-    return await _request("POST", f"/sessions/{_s(gateway_id)}/avatar/refresh", json={"jid": jid})
+    return await _request("POST", f"{_s(gateway_id)}/avatar/refresh", json={"jid": jid})
 
 
 async def get_session_status(session_id: str) -> Dict[str, Any]:
