@@ -27,7 +27,7 @@ from backend.app.data.turkey_locations import (
     find_matching_district,
     TURKEY_LOCATIONS,
 )
-from backend.app.scrapers.google_maps_scraper import GoogleMapsScraper, LocationConfidence
+from backend.app.scrapers.google.google_maps_scraper import GoogleMapsScraper, LocationConfidence
 from backend.app.schemas.scraper import ScraperRunRequest
 
 
@@ -426,7 +426,7 @@ class TestCacheIsolation:
 # ============================================================
 
 from backend.app.services.query_expander import QueryExpander
-from backend.app.scrapers.directory_scraper import DirectoryScraper
+from backend.app.scrapers.common.directory_scraper import DirectoryScraper
 
 
 class TestQueryExpansion:

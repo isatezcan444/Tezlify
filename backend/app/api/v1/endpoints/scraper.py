@@ -15,7 +15,7 @@ from backend.app.models.profile import Profile
 from backend.app.models.blacklist import ScraperJob, ScraperJobStatus
 from backend.app.models.lead import Lead
 from backend.app.schemas.scraper import ScraperRunRequest, ScraperSaveRequest, ScraperSaveResponse, ScraperJobResponse
-from backend.app.scrapers.google_maps_scraper import GoogleMapsScraper
+from backend.app.scrapers.google.google_maps_scraper import GoogleMapsScraper
 from backend.app.services.lead_ingest_service import LeadIngestService
 from backend.app.api.v1.websocket import ws_manager
 from backend.app.data.turkey_locations import get_districts_for_city, get_supported_cities

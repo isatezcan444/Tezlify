@@ -2,7 +2,7 @@ import json
 import pytest
 import urllib.parse
 from unittest.mock import AsyncMock, patch, MagicMock
-from backend.app.scrapers.google_maps_http_scraper import GoogleMapsHttpScraper
+from backend.app.scrapers.google.google_maps_http_scraper import GoogleMapsHttpScraper
 
 
 @pytest.fixture
@@ -141,14 +141,14 @@ async def test_scrape_district_places_mock(http_scraper):
 # ============================================================
 
 def test_strip_leading_business_name_exact_prefix(http_scraper):
-    from backend.app.scrapers.google_maps_playwright_scraper import strip_leading_business_name
+    from backend.app.scrapers.google.google_maps_playwright_scraper import strip_leading_business_name
     addr = "Mozaik Dent Ağız ve Diş Sağlığı Polikliniği, Atatürk, Meriç Cd. NO: 21/35, 34758 Ataşehir/İstanbul"
     assert strip_leading_business_name("Mozaik Dent Ağız ve Diş Sağlığı Polikliniği", addr) == \
         "Atatürk, Meriç Cd. NO: 21/35, 34758 Ataşehir/İstanbul"
 
 
 def test_strip_leading_business_name_no_match_untouched():
-    from backend.app.scrapers.google_maps_playwright_scraper import strip_leading_business_name
+    from backend.app.scrapers.google.google_maps_playwright_scraper import strip_leading_business_name
     addr = "Barbaros Mah. Halk Cd. No:1, Ataşehir"
     assert strip_leading_business_name("Başka Klinik", addr) == addr
     assert strip_leading_business_name(None, addr) == addr
@@ -156,7 +156,7 @@ def test_strip_leading_business_name_no_match_untouched():
 
 
 def test_strip_leading_business_name_never_empties():
-    from backend.app.scrapers.google_maps_playwright_scraper import strip_leading_business_name
+    from backend.app.scrapers.google.google_maps_playwright_scraper import strip_leading_business_name
     assert strip_leading_business_name("Klinik X", "Klinik X") == "Klinik X"
 
 

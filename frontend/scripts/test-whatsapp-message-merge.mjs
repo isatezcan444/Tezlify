@@ -2,7 +2,7 @@ import ts from 'typescript';
 import fs from 'node:fs';
 import assert from 'node:assert/strict';
 
-const source = fs.readFileSync(new URL('../src/lib/whatsappMessageMerge.ts', import.meta.url), 'utf8');
+const source = fs.readFileSync(new URL('../src/features/whatsapp/lib/whatsappMessageMerge.ts', import.meta.url), 'utf8');
 const js = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText;
 const { mergeWhatsAppMessages, mergeDeliveryStatus } = await import(`data:text/javascript;base64,${Buffer.from(js).toString('base64')}`);
 const base = { conversation_id: 1, direction: 'OUTBOUND', body: 'body', created_at: '2026-01-01T00:00:00Z' };

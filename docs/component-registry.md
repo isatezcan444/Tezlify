@@ -9,13 +9,18 @@ Development profiling: existing `ChatThread` and `ChatBubble` record request/eve
 ## Component Taxonomy
 
 ```
-components/
-├── ui/              # Foundation UI Primitives (Buttons, Badges, Cards, Modals, Overlays)
-├── forms/           # Form Controls, Inputs, Sliders, Switches, Sections
-├── data-display/    # Tables, Timelines, Toolbars, Cells, Funnels
-├── navigation/      # Steppers, Breadcrumbs, Tabs
-├── domain/          # Product/Domain Composites (LeadDetailDrawer, SessionCard, CampaignCard)
-└── Layout/          # Structural Layout Components (Sidebar, TopHeader)
+src/
+├── features/
+│   ├── whatsapp/        # WhatsApp feature components, api, hooks, data, lib
+│   │   └── components/  # ChatBubble, ChatThread, ChatComposer, ConversationList, SessionCard, etc.
+│   ├── campaigns/       # Campaign feature components (CampaignCard, CampaignGroupCard, SpintaxPreviewCard)
+│   └── leads/           # Leads and Discovery components (LeadDetailDrawer, CategoryMultiSelect, etc.)
+└── components/
+    ├── ui/              # Foundation UI Primitives (Buttons, Badges, Cards, Modals, Overlays)
+    ├── forms/           # Form Controls, Inputs, Sliders, Switches, Sections
+    ├── data-display/    # Tables, Timelines, Toolbars, Cells, Funnels
+    ├── Layout/          # Structural Layout Components (Sidebar, TopHeader)
+    └── admin/           # Admin panel layout and components
 ```
 
 ---
@@ -184,66 +189,97 @@ components/
 
 ---
 
-## 4. Domain Components (`components/domain/`)
+## 4. Feature Components (`src/features/`)
 
-### `LeadDetailDrawer`
-- **Purpose**: Slide-over inspector for lead records, metadata, phone verification, and campaign history.
-- **Props**: `lead: Lead | null`, `isOpen: boolean`, `onClose: () => void`.
-- **Import**: `import { LeadDetailDrawer } from '@/components/domain';`
+### WhatsApp Feature Components (`features/whatsapp/components/`)
 
-### `SessionCard`
-- **Purpose**: Reusable account card with warmup day indicator, battery level, daily quota, and disconnect/scan triggers.
-- **Props**: `session: WhatsAppSession`, `onDisconnect`, `onScanQR`, `onDelete`.
-- **Import**: `import { SessionCard } from '@/components/domain';`
-
-### `CampaignCard`
-- **Purpose**: Reusable outreach campaign card with live progress bar, sent/replied/failed counters, and start/pause/cancel triggers.
-- **Props**: `campaign: Campaign`, `onStart`, `onPause`, `onCancel`.
-- **Import**: `import { CampaignCard } from '@/components/domain';`
-
-### `CampaignGroupCard`
-- **Purpose**: Vuexy-themed card displaying audience group metadata, category/location tags, WhatsApp readiness progress bar, 3-metric statistics grid, and direct actions (`[ 🚀 Kampanya Başlat ]`, `[ 👁️ Görüntüle ]`, `[ 🗑️ Sil ]`).
-- **Props**: `group: CampaignGroup`, `onLaunch?: (group: CampaignGroup) => void`, `onView?: (groupId: number) => void`, `onDelete?: (group: CampaignGroup) => void`.
-- **Import**: `import { CampaignGroupCard } from '@/components/domain';`
-
-### `SpintaxPreviewCard`
-- **Purpose**: Interactive Spintax sampler card with dynamic variable injection and variation generator.
-- **Props**: `template: string`, `sampleLead?: object`.
-- **Import**: `import { SpintaxPreviewCard } from '@/components/domain';`
-
-### `VerificationBadge`
-- **Purpose**: Verification trust badge with shield icon and score indicator.
-- **Props**: `status: string`, `isVerified: boolean`, `score?: number`.
-- **Import**: `import { VerificationBadge } from '@/components/domain';`
-
-### `ChatBubble`
+#### `ChatBubble`
 - **Purpose**: WhatsApp message bubble primitive with inbound/outbound styling, timestamps, delivery/read checkmarks (✓ / ✓✓ / mavi ✓✓), inline media previews (image lightbox, native audio/video players, downloadable documents), and retry button for FAILED messages.
 - **Props**: `message: Message`, `onRetry?: (messageId: number) => Promise<void> | void`.
-- **Import**: `import { ChatBubble } from '@/components/domain';`
+- **Import**: `import { ChatBubble } from '@/features/whatsapp/components';`
 
-### `ChatThread`
+#### `ChatThread`
 - **Purpose**: Interactive scrollable message timeline with date separators, loading skeletons, empty state, smart auto-scroll, peer "typing..." bubble (WhatsApp Web parity), and failure retry dispatching.
 - **Props**: `messages: Message[]`, `loading?: boolean`, `hasMore?: boolean`, `loadingOlder?: boolean`, `onLoadOlder?: () => void`, `leadName?: string`, `leadPhone?: string`, `onRetry?: (messageId: number) => Promise<void> | void`, `peerTyping?: boolean`.
-- **Import**: `import { ChatThread } from '@/components/domain';`
+- **Import**: `import { ChatThread } from '@/features/whatsapp/components';`
 
-### `ChatComposer`
+#### `ChatComposer`
 - **Purpose**: Bottom message composer bar with 24-hour window status alerts, closed conversation notice with one-click reopen, attachment popover (native file picker with base64 upload + legacy URL modal), outgoing "typing..." presence signals (throttled composing/paused), and template shortcuts.
 - **Props**: `onSend?: (text: string) => Promise<void> | void`, `onSendTemplate?: () => void`, `onSendMedia?: (mediaType: 'IMAGE' | 'DOCUMENT', mediaUrl: string, caption?: string, filename?: string) => Promise<void>`, `onSendMediaFile?: (file: File, caption?: string) => Promise<void>`, `onTyping?: (typing: boolean) => void`, `onReopenConversation?: () => void`, `disabled?: boolean`, `isClosed?: boolean`, `isWindowOpen?: boolean`, `placeholder?: string`.
-- **Import**: `import { ChatComposer } from '@/components/domain';`
+- **Import**: `import { ChatComposer } from '@/features/whatsapp/components';`
 
-### `TemplateSelectModal`
-- **Purpose**: Modal for selecting pre-approved WhatsApp business templates with automated recipient variable pre-filling, real-time message preview, and one-click dispatch.
-- **Props**: `isOpen: boolean`, `onClose: () => void`, `leadName?: string`, `onSendTemplate: (templateKey: string, variables: Record<string, string>) => Promise<void>`.
-- **Import**: `import { TemplateSelectModal } from '@/components/domain';`
-
-### `ConversationList`
+#### `ConversationList`
 - **Purpose**: Sidebar list of all active conversation threads with search filtering, avatar hashing, unread badges, and last message previews. Includes filter tabs (`ALL`, `ACTIVE`, `GROUPS`, `ARCHIVED`, `CLOSED`, `UNREAD`) — `GROUPS` filters on persisted `is_group`, `ARCHIVED` on `is_archived OR status=ARCHIVED` (Sorun 4).
 - **Props**: `conversations: Conversation[]`, `selectedId?: number`, `onSelect: (conv: Conversation) => void`, `loading?: boolean`, `searchQuery?: string`, `onSearchChange?: (q: string) => void`, `activeFilter?: FilterTab`, `onFilterChange?: (filter: FilterTab) => void`, `onNewChat?: () => void`, `onSync?: () => void`, `isSyncing?: boolean`.
-- **Import**: `import { ConversationList } from '@/components/domain';`
+- **Import**: `import { ConversationList } from '@/features/whatsapp/components';`
 
-### `NewChatModal`
+#### `SessionCard`
+- **Purpose**: Reusable account card with warmup day indicator, battery level, daily quota, and disconnect/scan triggers.
+- **Props**: `session: WhatsAppSession`, `onDisconnect`, `onScanQR`, `onDelete`.
+- **Import**: `import { SessionCard } from '@/features/whatsapp/components';`
+
+#### `TemplateSelectModal`
+- **Purpose**: Modal for selecting pre-approved WhatsApp business templates with automated recipient variable pre-filling, real-time message preview, and one-click dispatch.
+- **Props**: `isOpen: boolean`, `onClose: () => void`, `leadName?: string`, `onSendTemplate: (templateKey: string, variables: Record<string, string>) => Promise<void>`.
+- **Import**: `import { TemplateSelectModal } from '@/features/whatsapp/components';`
+
+#### `NewChatModal`
 - **Purpose**: Modal for initiating a new WhatsApp conversation with any phone number (including non-CRM numbers), optional contact name, and immediate first message dispatch.
 - **Props**: `isOpen: boolean`, `onClose: () => void`, `onSuccess: (conv: ConversationDetail) => void`.
-- **Import**: `import { NewChatModal } from '@/components/domain';`
+- **Import**: `import { NewChatModal } from '@/features/whatsapp/components';`
+
+#### `WhatsAppQrConnectModal`
+- **Purpose**: Multi-step full-lifecycle QR pairing modal with pairing code fallback, retry cooldowns, and live WebSocket connection state synchronization.
+- **Props**: `isOpen: boolean`, `onClose: () => void`, `session: WhatsAppSession | null`, `onConnected: () => void`.
+- **Import**: `import { WhatsAppQrConnectModal } from '@/features/whatsapp/components';`
+
+---
+
+### Campaign Feature Components (`features/campaigns/components/`)
+
+#### `CampaignCard`
+- **Purpose**: Reusable outreach campaign card with live progress bar, sent/replied/failed counters, and start/pause/cancel triggers.
+- **Props**: `campaign: Campaign`, `onStart`, `onPause`, `onCancel`.
+- **Import**: `import { CampaignCard } from '@/features/campaigns/components';`
+
+#### `CampaignGroupCard`
+- **Purpose**: Vuexy-themed card displaying audience group metadata, category/location tags, WhatsApp readiness progress bar, 3-metric statistics grid, and direct actions (`[ 🚀 Kampanya Başlat ]`, `[ 👁️ Görüntüle ]`, `[ 🗑️ Sil ]`).
+- **Props**: `group: CampaignGroup`, `onLaunch?: (group: CampaignGroup) => void`, `onView?: (groupId: number) => void`, `onDelete?: (group: CampaignGroup) => void`.
+- **Import**: `import { CampaignGroupCard } from '@/features/campaigns/components';`
+
+#### `SpintaxPreviewCard`
+- **Purpose**: Interactive Spintax sampler card with dynamic variable injection and variation generator.
+- **Props**: `template: string`, `sampleLead?: object`.
+- **Import**: `import { SpintaxPreviewCard } from '@/features/campaigns/components';`
+
+---
+
+### Leads & Discovery Feature Components (`features/leads/components/`)
+
+#### `LeadDetailDrawer`
+- **Purpose**: Slide-over inspector for lead records, metadata, phone verification, and campaign history.
+- **Props**: `lead: Lead | null`, `isOpen: boolean`, `onClose: () => void`.
+- **Import**: `import { LeadDetailDrawer } from '@/features/leads/components';`
+
+#### `VerificationBadge`
+- **Purpose**: Verification trust badge with shield icon and score indicator.
+- **Props**: `status: string`, `isVerified: boolean`, `score?: number`.
+- **Import**: `import { VerificationBadge } from '@/features/leads/components';`
+
+#### `CategoryMultiSelect`
+- **Purpose**: Multi-category dropdown filter with autocomplete, badge tags, and database category aggregation.
+- **Props**: `selectedCategories: string[]`, `onChange: (categories: string[]) => void`, `disabled?: boolean`.
+- **Import**: `import { CategoryMultiSelect } from '@/features/leads/components';`
+
+#### `LocationMultiSelect`
+- **Purpose**: Hierarchical city and district multi-select selector with search filtering and all-district bulk toggles.
+- **Props**: `selectedCity: string`, `selectedDistricts: string[]`, `onChange?: (city: string, districts: string[]) => void`.
+- **Import**: `import { LocationMultiSelect } from '@/features/leads/components';`
+
+#### `SectorAutocomplete`
+- **Purpose**: Industry sector search autocomplete input with Turkish search normalization and quick suggestion tags.
+- **Props**: `value: string`, `onChange: (value: string) => void`, `placeholder?: string`, `disabled?: boolean`.
+- **Import**: `import { SectorAutocomplete } from '@/features/leads/components';`
+
 
 

@@ -31,13 +31,13 @@ from backend.app.data.turkey_locations import (
     get_districts_for_city,
     get_supported_cities,
 )
-from backend.app.scrapers.google_maps_scraper import (
+from backend.app.scrapers.google.google_maps_scraper import (
     GoogleMapsScraper,
     LeadDiscoveryDeduplicator,
     DedupDecision,
     compute_district_target,
 )
-from backend.app.scrapers.google_maps_playwright_scraper import (
+from backend.app.scrapers.google.google_maps_playwright_scraper import (
     GoogleMapsBlockedError,
     pane_belongs_to_card,
 )
@@ -494,7 +494,7 @@ class TestMahallePhase:
     @pytest.mark.asyncio
     async def test_mahalle_phase_runs_bounded_queries(self):
         from unittest.mock import AsyncMock
-        from backend.app.scrapers.google_maps_scraper import GoogleMapsScraper
+        from backend.app.scrapers.google.google_maps_scraper import GoogleMapsScraper
 
         scraper = GoogleMapsScraper()
         calls = []
@@ -534,7 +534,7 @@ class TestMahallePhase:
 
     @pytest.mark.asyncio
     async def test_mahalle_phase_skipped_without_primary_or_mahalles(self):
-        from backend.app.scrapers.google_maps_scraper import GoogleMapsScraper
+        from backend.app.scrapers.google.google_maps_scraper import GoogleMapsScraper
         scraper = GoogleMapsScraper()
         noop = AsyncMock()
         assert await scraper._run_mahalle_phase(
@@ -609,7 +609,7 @@ class _FakeMixedScraper:
 class TestCategoryGateIntegration:
     @pytest.mark.asyncio
     async def test_dental_search_keeps_dental_and_health_drops_junk(self, monkeypatch):
-        from backend.app.scrapers.google_maps_scraper import GoogleMapsScraper
+        from backend.app.scrapers.google.google_maps_scraper import GoogleMapsScraper
         monkeypatch.setattr(settings, "SCRAPER_MAX_QUERY_VARIANTS", 1)
         monkeypatch.setattr(settings, "SCRAPER_MAHALLE_PHASE_ENABLED", False)
         scraper = GoogleMapsScraper()
@@ -639,7 +639,7 @@ class TestCategoryGateIntegration:
 
     @pytest.mark.asyncio
     async def test_unknown_sector_skips_gate_keep_all(self, monkeypatch):
-        from backend.app.scrapers.google_maps_scraper import GoogleMapsScraper
+        from backend.app.scrapers.google.google_maps_scraper import GoogleMapsScraper
         monkeypatch.setattr(settings, "SCRAPER_MAX_QUERY_VARIANTS", 1)
         monkeypatch.setattr(settings, "SCRAPER_MAHALLE_PHASE_ENABLED", False)
         scraper = GoogleMapsScraper()
@@ -654,7 +654,7 @@ class TestCategoryGateIntegration:
 
 class TestGenericClinicalDowngrade:
     def test_only_generic_evidence_detected(self):
-        from backend.app.scrapers.google_maps_scraper import GoogleMapsScraper
+        from backend.app.scrapers.google.google_maps_scraper import GoogleMapsScraper
         from backend.app.services.taxonomy_registry import TaxonomyRegistry
         from backend.app.services.category_relevance_engine import CategoryRelevanceEngine
         from backend.app.schemas.intelligence import RawBusinessCandidate
@@ -678,7 +678,7 @@ class TestGenericClinicalDowngrade:
 
     @pytest.mark.asyncio
     async def test_generic_only_match_dropped_end_to_end(self, monkeypatch):
-        from backend.app.scrapers.google_maps_scraper import GoogleMapsScraper
+        from backend.app.scrapers.google.google_maps_scraper import GoogleMapsScraper
 
         class _FakeSingle:
             PLACES = [
@@ -713,7 +713,7 @@ class TestGenericClinicalDowngrade:
 class TestSpamAndCoordsGates:
     @pytest.mark.asyncio
     async def test_degenerate_names_dropped_counted(self, monkeypatch):
-        from backend.app.scrapers.google_maps_scraper import GoogleMapsScraper
+        from backend.app.scrapers.google.google_maps_scraper import GoogleMapsScraper
 
         class _FakeSpam:
             PLACES = [
@@ -754,7 +754,7 @@ class TestSpamAndCoordsGates:
 
     @pytest.mark.asyncio
     async def test_addressless_row_keeps_lead_drops_coords(self, monkeypatch):
-        from backend.app.scrapers.google_maps_scraper import GoogleMapsScraper
+        from backend.app.scrapers.google.google_maps_scraper import GoogleMapsScraper
 
         class _FakeNoAddr:
             PLACES = [

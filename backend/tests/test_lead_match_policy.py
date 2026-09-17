@@ -19,7 +19,7 @@ from sqlalchemy.orm import sessionmaker
 
 from backend.app.core.database import Base
 from backend.app.models.lead import Lead
-from backend.app.scrapers.google_maps_scraper import (
+from backend.app.scrapers.google.google_maps_scraper import (
     DedupDecision,
     GoogleMapsScraper,
     LeadDiscoveryDeduplicator,
@@ -458,7 +458,7 @@ async def test_category_gate_filters_before_dedup_accounting(monkeypatch):
     """A category-less generic 'Klinik' carries no dental proof and must be
     filtered by the relevance gate (counted, never silently kept)."""
     from unittest.mock import AsyncMock
-    from backend.app.scrapers.google_maps_scraper import GoogleMapsScraper
+    from backend.app.scrapers.google.google_maps_scraper import GoogleMapsScraper
 
     scraper = GoogleMapsScraper()
     captured: list = []
@@ -478,7 +478,7 @@ async def test_category_gate_filters_before_dedup_accounting(monkeypatch):
 
     scraper.playwright_scraper.scrape_district_places = AsyncMock(side_effect=fake_scrape)
     monkeypatch.setattr(
-        "backend.app.scrapers.google_maps_scraper.QueryExpander.build_search_terms",
+        "backend.app.scrapers.google.google_maps_scraper.QueryExpander.build_search_terms",
         classmethod(lambda cls, kw, max_terms=3: ["Diş Kliniği"]),
     )
     leads = await scraper.scrape(

@@ -22,7 +22,7 @@ import pytest
 
 from backend.app.services.geo_scope_filter import GeoScopeFilter, GeoScopeDecision
 from backend.app.services.query_expander import QueryExpander
-from backend.app.scrapers.google_maps_scraper import (
+from backend.app.scrapers.google.google_maps_scraper import (
     GoogleMapsScraper,
     LeadDiscoveryDeduplicator,
     DedupDecision,

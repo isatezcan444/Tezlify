@@ -39,9 +39,7 @@ import {
 } from '../components/ui';
 import { SearchInput, Select } from '../components/forms';
 import { BusinessCell } from '../components/data-display';
-import { LeadDetailDrawer } from '../components/domain/LeadDetailDrawer';
-import { LocationMultiSelect } from '../components/LeadFinder/LocationMultiSelect';
-import { CategoryMultiSelect } from '../components/LeadFinder/CategoryMultiSelect';
+import { LeadDetailDrawer, LocationMultiSelect, CategoryMultiSelect } from '../features/leads/components';
 import { ApiClient } from '../api/client';
 import { Lead, LeadStatus, CampaignGroup } from '../types';
 import { useToast } from '../context/ToastContext';

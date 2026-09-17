@@ -9,7 +9,7 @@ from urllib.parse import quote
 import httpx
 from backend.app.schemas.intelligence import ProviderQuery, RawBusinessCandidate
 from backend.app.scrapers.adapters.base_adapter import BaseProviderAdapter
-from backend.app.scrapers.directory_scraper import DirectoryScraper
+from backend.app.scrapers.common.directory_scraper import DirectoryScraper
 
 logger = logging.getLogger(__name__)
 

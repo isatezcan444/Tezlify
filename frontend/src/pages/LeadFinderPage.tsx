@@ -37,8 +37,7 @@ import {
 import { Modal } from '../components/ui/Modal';
 import { TextInput } from '../components/forms/TextInput';
 import { Select } from '../components/forms';
-import { SectorAutocomplete } from '../components/LeadFinder/SectorAutocomplete';
-import { LocationMultiSelect } from '../components/LeadFinder/LocationMultiSelect';
+import { SectorAutocomplete, LocationMultiSelect } from '../features/leads/components';
 import { useI18n } from '../context/I18nContext';
 import { useToast } from '../context/ToastContext';
 import { CampaignGroup } from '../types';

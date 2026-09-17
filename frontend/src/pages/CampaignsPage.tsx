@@ -31,14 +31,14 @@ import {
 import { 
   CampaignCard, 
   SpintaxPreviewCard
-} from '../components/domain';
+} from '../features/campaigns/components';
 import { 
   FormField, 
   TextInput, 
   Textarea, 
   FormSection 
 } from '../components/forms';
-import { SectorAutocomplete } from '../components/LeadFinder/SectorAutocomplete';
+import { SectorAutocomplete } from '../features/leads/components';
 import { getStoredAntiBanConfig } from '../utils/antiBanSettings';
 import { useToast } from '../context/ToastContext';
 import { useI18n } from '../context/I18nContext';

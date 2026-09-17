@@ -13,7 +13,7 @@ from backend.app.models.lead import Lead, LeadStatus, EntityType, VerificationSt
 from backend.app.models.blacklist import Blacklist
 from backend.app.services.phone_service import PhoneService
 from backend.app.services.lead_match_policy import LeadMatchPolicy, MatchBasis
-from backend.app.scrapers.google_maps_playwright_scraper import strip_leading_business_name
+from backend.app.scrapers.google.google_maps_playwright_scraper import strip_leading_business_name
 
 logger = logging.getLogger(__name__)
 

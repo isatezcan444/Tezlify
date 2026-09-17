@@ -35,9 +35,8 @@ import {
   TextInput, 
   FormSection 
 } from '../components/forms';
-import { SectorAutocomplete } from '../components/LeadFinder/SectorAutocomplete';
-import { LocationMultiSelect } from '../components/LeadFinder/LocationMultiSelect';
-import { CampaignGroupCard } from '../components/domain/CampaignGroupCard';
+import { SectorAutocomplete, LocationMultiSelect } from '../features/leads/components';
+import { CampaignGroupCard } from '../features/campaigns/components';
 import { useToast } from '../context/ToastContext';
 import { useI18n } from '../context/I18nContext';
 import { ApiClient } from '../api/client';

@@ -25,11 +25,11 @@ import {
   Users
 } from 'lucide-react';
 import { ApiClient } from '../api/client';
-import { startWaLatency } from '../lib/whatsappLatency';
-import { mergeDeliveryStatus, mergeWhatsAppMessages } from '../lib/whatsappMessageMerge';
-import { WhatsAppRepository } from '../data/whatsapp/whatsappRepository';
+import { startWaLatency } from '../features/whatsapp/lib/whatsappLatency';
+import { mergeDeliveryStatus, mergeWhatsAppMessages } from '../features/whatsapp/lib/whatsappMessageMerge';
+import { WhatsAppRepository } from '../features/whatsapp/data/whatsappRepository';
 import { WhatsAppSession, Conversation, ConversationStatus, ConversationMessageStatus, Lead, Message, LiveModeStatus, SessionSyncState } from '../types';
-import { WhatsAppApi, useLiveMode, probeLive, invalidateLiveProbe, isLiveCached, mapConversationItem, mapMessageItem } from '../api/whatsappApi';
+import { WhatsAppApi, useLiveMode, probeLive, invalidateLiveProbe, isLiveCached, mapConversationItem, mapMessageItem } from '../features/whatsapp/api/whatsappApi';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 import { Card } from '../components/ui/card';
@@ -42,11 +42,11 @@ import {
   ConversationList, 
   ChatThread, 
   ChatComposer, 
-  LeadDetailDrawer, 
   TemplateSelectModal, 
   NewChatModal 
-} from '../components/domain';
-import { FilterTab } from '../components/domain/ConversationList';
+} from '../features/whatsapp/components';
+import { LeadDetailDrawer } from '../features/leads/components';
+import { FilterTab } from '../features/whatsapp/components/ConversationList';
 import { Slider, Switch } from '../components/forms';
 import { 
   AntiBanConfig, 
@@ -60,7 +60,7 @@ import {
 } from '../utils/antiBanSettings';
 import { useToast } from '../context/ToastContext';
 import { useI18n } from '../context/I18nContext';
-import { buildChatPreview, normalizePreviewText, shouldApplyPreview } from '../lib/whatsappPreview';
+import { buildChatPreview, normalizePreviewText, shouldApplyPreview } from '../features/whatsapp/lib/whatsappPreview';
 import { parseServerTime } from '../lib/utils';
 
 
