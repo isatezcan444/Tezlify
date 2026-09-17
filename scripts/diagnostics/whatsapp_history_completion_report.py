@@ -190,17 +190,17 @@ async def run_history_audit(
     # Print Dashboard
     total_convs = len(classified_list)
     print("\n" + "=" * 80)
-    print(f"=== SESSION {session_id} PRODUCTION HISTORY DASHBOARD ===")
+    print(f"=== SESSION {session_id} ===")
     print("=" * 80)
     print(f"Total conversations: {total_convs}\n")
-    print(f"FULLY_EXHAUSTED : {counts['FULLY_EXHAUSTED']}")
-    print(f"HAS_MORE        : {counts['HAS_MORE']}")
-    print(f"TEMP_TIMEOUT    : {counts['TEMP_TIMEOUT']}")
-    print(f"CURSOR_STALLED  : {counts['CURSOR_STALLED']}")
-    print(f"NO_MESSAGES     : {counts['NO_MESSAGES']}")
-    print(f"ERROR           : {counts['ERROR']}")
-    print(f"NEVER_CHECKED   : {counts['NEVER_CHECKED']}")
-    print(f"UNKNOWN         : {counts['UNKNOWN']}")
+    print(f"FULLY_EXHAUSTED:\n  {counts['FULLY_EXHAUSTED']}\n")
+    print(f"HAS_MORE:\n  {counts['HAS_MORE']}\n")
+    print(f"TEMP_TIMEOUT:\n  {counts['TEMP_TIMEOUT']}\n")
+    print(f"CURSOR_STALLED:\n  {counts['CURSOR_STALLED']}\n")
+    print(f"ERROR:\n  {counts['ERROR']}\n")
+    print(f"NEVER_CHECKED:\n  {counts['NEVER_CHECKED']}\n")
+    print(f"UNKNOWN:\n  {counts['UNKNOWN']}\n")
+    print(f"NO_HISTORY:\n  {counts['NO_MESSAGES']}\n")
     print("-" * 80)
 
     # Sort to show 20 oldest conversations
@@ -209,15 +209,15 @@ async def run_history_audit(
     with_history.sort(key=lambda x: x["oldest_message"])
     top20 = with_history[:20]
 
-    print(f"\nTOP 20 OLDEST CONVERSATIONS (By Earliest Known Message):")
-    print("-" * 110)
-    print(f"{'ID':<6} {'Name':<24} {'Phone/JID':<30} {'Msgs':<6} {'Oldest':<19} {'State':<15} {'HasMore'}")
-    print("-" * 110)
+    print(f"\nEN ESKİ 20 SOHBET (Top 20 Oldest Conversations):")
+    print("-" * 135)
+    print(f"{'ID':<6} {'Name':<22} {'Phone/JID/LID':<30} {'Msgs':<5} {'Oldest':<19} {'Latest':<19} {'State':<15} {'HasMore'}")
+    print("-" * 135)
     for c in top20:
-        name_trunc = (c['name'][:22] + "..") if len(c['name']) > 24 else c['name']
+        name_trunc = (c['name'][:20] + "..") if len(c['name']) > 22 else c['name']
         jid_trunc = (c['phone_or_jid'][:28] + "..") if len(c['phone_or_jid']) > 30 else c['phone_or_jid']
-        print(f"{c['conversation_id']:<6} {name_trunc:<24} {jid_trunc:<30} {c['message_count']:<6} {c['oldest_message']:<19} {c['history_state']:<15} {c['has_more']}")
-    print("=" * 110)
+        print(f"{c['conversation_id']:<6} {name_trunc:<22} {jid_trunc:<30} {c['message_count']:<5} {c['oldest_message']:<19} {c['latest_message']:<19} {c['history_state']:<15} {c['has_more']}")
+    print("=" * 135)
 
     return {
         "total": total_convs,
