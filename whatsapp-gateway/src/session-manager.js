@@ -1224,8 +1224,9 @@ export function createSessionManager({
       }
       list.sort((a, b) => (a.id || 0) - (b.id || 0));
 
+      let providerStatus = 'NOT_REQUESTED';
       if (fetchProvider && session.sock && (list.length < limit || oldestMsgId)) {
-        await this.requestOlderHistory(sessionId, jid, {
+        const histResult = await this.requestOlderHistory(sessionId, jid, {
           count: limit,
           oldestMsgId: oldestMsgId || list[0]?.wa_message_id,
           oldestMsgFromMe: oldestMsgFromMe !== undefined ? oldestMsgFromMe : (list[0]?.direction === 'OUTBOUND' || list[0]?.from_me),
@@ -1233,6 +1234,7 @@ export function createSessionManager({
           before,
           timeoutMs,
         });
+        providerStatus = histResult?.status || 'OK';
         list = store.messagesByChat.get(key) || [];
         if (before) {
           list = list.filter((m) => m.id < before);
@@ -1240,8 +1242,12 @@ export function createSessionManager({
         list.sort((a, b) => (a.id || 0) - (b.id || 0));
       }
 
-      return list.slice(-limit);
+      const result = list.slice(-limit);
+      result.provider_status = providerStatus;
+      return result;
     },
+
+
 
     // Faz 10 (P5): initial-sync bulk kanali — TUM gecmisi tek kaynakta, zaman
     // damgasi sirali ve sayfalidir. Eski yol sohbet basina getMessages cagrisi

@@ -374,7 +374,16 @@ async def get_conversations(
         limit=limit,
         offset=offset,
     )
-    return WhatsAppConversationListResponse(items=items, total=total)
+    has_more = (offset + len(items)) < total
+
+    next_offset = (offset + len(items)) if has_more else None
+    return WhatsAppConversationListResponse(
+        items=items,
+        total=total,
+        has_more=has_more,
+        next_offset=next_offset,
+    )
+
 
 
 @router.get("/conversations/{conversation_id}/messages", response_model=WhatsAppMessagesResponse)

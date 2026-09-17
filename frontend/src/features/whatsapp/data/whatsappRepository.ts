@@ -132,7 +132,7 @@ export class WhatsAppRepository {
   // Conversations & messages (live-only)
   // -------------------------------------------------------------------------
 
-  static async getConversations(params?: {
+  static async getConversationsPage(params?: {
     status?: string;
     unread_only?: boolean;
     group_only?: boolean;
@@ -143,9 +143,14 @@ export class WhatsAppRepository {
     limit?: number;
     offset?: number;
     sync?: boolean;
-  }): Promise<Conversation[]> {
+  }): Promise<{
+    items: Conversation[];
+    total: number;
+    has_more: boolean;
+    next_offset?: number;
+  }> {
     await requireLive();
-    return WhatsAppApi.getConversations({
+    return WhatsAppApi.getConversationsPage({
       status: params?.status as ConversationStatus | undefined,
       unread_only: params?.unread_only,
       group_only: params?.group_only,
@@ -158,6 +163,23 @@ export class WhatsAppRepository {
       sync: params?.sync,
     });
   }
+
+  static async getConversations(params?: {
+    status?: string;
+    unread_only?: boolean;
+    group_only?: boolean;
+    archived_only?: boolean;
+    lead_id?: number;
+    conversation_id?: number;
+    search?: string;
+    limit?: number;
+    offset?: number;
+    sync?: boolean;
+  }): Promise<Conversation[]> {
+    const page = await this.getConversationsPage(params);
+    return page.items;
+  }
+
 
   static async getConversation(conversationId: number): Promise<ConversationDetail> {
     await requireLive();

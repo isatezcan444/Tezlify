@@ -341,7 +341,7 @@ app.get('/sessions/:sessionId/messages/bulk', withSession(async (req, res, sessi
 app.get('/sessions/:sessionId/conversations/:jid/messages', withSession(async (req, res, sessionId) => {
   const { limit, before, fetch_provider, oldest_msg_id, oldest_msg_from_me, oldest_msg_timestamp_ms } = req.query;
   const pageSize = limit ? parseInt(limit, 10) : 50;
-  const messages = await sessionManager.getMessages(sessionId, req.params.jid, {
+  const result = await sessionManager.getMessages(sessionId, req.params.jid, {
     limit: pageSize,
     before: before ? parseInt(before, 10) : undefined,
     fetchProvider: fetch_provider === 'true' || fetch_provider === '1',
@@ -349,8 +349,15 @@ app.get('/sessions/:sessionId/conversations/:jid/messages', withSession(async (r
     oldestMsgFromMe: oldest_msg_from_me !== undefined ? (oldest_msg_from_me === 'true' || oldest_msg_from_me === '1') : undefined,
     oldestMsgTimestampMs: oldest_msg_timestamp_ms ? parseInt(oldest_msg_timestamp_ms, 10) : undefined,
   });
-  res.json({ messages, has_more: messages.length === pageSize });
+  const messages = Array.isArray(result) ? result : (result?.messages || []);
+  const providerStatus = result?.provider_status || 'NOT_REQUESTED';
+  res.json({
+    messages,
+    has_more: messages.length === pageSize,
+    provider_status: providerStatus,
+  });
 }));
+
 
 // Request older history explicitly via provider
 app.post('/sessions/:sessionId/conversations/:jid/history', withSession(async (req, res, sessionId) => {

@@ -67,6 +67,7 @@ from backend.app.services.whatsapp.repositories.conversations import (
     apply_conversation_last_message as _apply_last_message,
     find_whatsapp_conversation as _find_whatsapp_conversation,
     get_conversation_by_id as _get_conversation_or_404,
+    get_conversation_lock as _get_conversation_lock,
     get_conversation_scope_filters as _conversation_scope_filters,
     resolve_conversation_jid as _resolve_jid,
 )
@@ -101,17 +102,7 @@ from backend.app.services.whatsapp.orchestration.sessions import (
 )
 
 
-_conversation_locks: Dict[Tuple[str, int], asyncio.Lock] = {}
 _in_flight_history_fetches: Dict[Tuple[int, Optional[int]], asyncio.Future] = {}
-
-
-def _get_conversation_lock(user_id: str, conversation_id: int) -> asyncio.Lock:
-    key = (str(user_id), int(conversation_id))
-    lock = _conversation_locks.get(key)
-    if lock is None:
-        lock = asyncio.Lock()
-        _conversation_locks[key] = lock
-    return lock
 
 
 # ---------------------------------------------------------------------------

@@ -455,6 +455,53 @@ export const WhatsAppApi = {
     return apiGet<WhatsAppSyncJob>('/whatsapp/sync/job');
   },
 
+  async getConversationsPage(params?: {
+    status?: ConversationStatus;
+    unread_only?: boolean;
+    group_only?: boolean;
+    archived_only?: boolean;
+    lead_id?: number;
+    conversation_id?: number;
+    search?: string;
+    limit?: number;
+    offset?: number;
+    sync?: boolean;
+  }): Promise<{
+    items: Conversation[];
+    total: number;
+    has_more: boolean;
+    next_offset?: number;
+  }> {
+    const qs = new URLSearchParams();
+    if (params?.status) qs.set('status', params.status);
+    if (params?.unread_only) qs.set('unread_only', 'true');
+    if (params?.group_only) qs.set('group_only', 'true');
+    if (params?.archived_only) qs.set('archived_only', 'true');
+    if (params?.lead_id) qs.set('lead_id', String(params.lead_id));
+    if (params?.conversation_id) qs.set('conversation_id', String(params.conversation_id));
+    const limit = params?.limit ?? 50;
+    qs.set('limit', String(limit));
+    if (params?.offset) qs.set('offset', String(params.offset));
+    if (params?.sync) qs.set('sync', 'true');
+    const suffix = qs.toString() ? `?${qs.toString()}` : '';
+    const data = await apiGet<{
+      items: BackendConversation[];
+      total: number;
+      has_more?: boolean;
+      next_offset?: number;
+    }>(`/whatsapp/conversations${suffix}`);
+    const items = (data.items || []).map(mapConversation);
+    const total = data.total ?? 0;
+    const currentOffset = params?.offset || 0;
+    const hasMore = data.has_more !== undefined ? data.has_more : (currentOffset + items.length < total);
+    return {
+      items,
+      total,
+      has_more: hasMore,
+      next_offset: data.next_offset ?? (hasMore ? currentOffset + items.length : undefined),
+    };
+  },
+
   async getConversations(params?: {
     status?: ConversationStatus;
     unread_only?: boolean;
@@ -467,21 +514,10 @@ export const WhatsAppApi = {
     offset?: number;
     sync?: boolean;
   }): Promise<Conversation[]> {
-    const qs = new URLSearchParams();
-    if (params?.status) qs.set('status', params.status);
-    if (params?.unread_only) qs.set('unread_only', 'true');
-    if (params?.group_only) qs.set('group_only', 'true');
-    if (params?.archived_only) qs.set('archived_only', 'true');
-    if (params?.lead_id) qs.set('lead_id', String(params.lead_id));
-    if (params?.conversation_id) qs.set('conversation_id', String(params.conversation_id));
-    const limit = params?.limit ?? 300;
-    qs.set('limit', String(limit));
-    if (params?.offset) qs.set('offset', String(params.offset));
-    if (params?.sync) qs.set('sync', 'true');
-    const suffix = qs.toString() ? `?${qs.toString()}` : '';
-    const data = await apiGet<{ items: BackendConversation[]; total: number }>(`/whatsapp/conversations${suffix}`);
-    return (data.items || []).map(mapConversation);
+    const page = await this.getConversationsPage(params);
+    return page.items;
   },
+
 
   async getMessages(
     conversationId: number,

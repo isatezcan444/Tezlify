@@ -14,3 +14,9 @@ class NoWhatsAppSession(LookupError):
 class EventOwnerUnresolved(Exception):
     """Gelen gateway olayi bir kullaniciya/oturuma eslenemedi."""
     pass
+
+
+class WhatsAppHistoryTimeout(TimeoutError):
+    """Provider history chunk istegi zaman asimina ugradi (gecici durum, cursor korunmali)."""
+    pass
+

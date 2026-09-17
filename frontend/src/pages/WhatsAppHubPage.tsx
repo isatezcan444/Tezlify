@@ -133,6 +133,11 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   const [convsLoading, setConvsLoading] = useState<boolean>(false);
   const [convSearch, setConvSearch] = useState<string>('');
   const [convFilter, setConvFilter] = useState<FilterTab>('ALL');
+  const [hasMoreConvs, setHasMoreConvs] = useState<boolean>(false);
+  const [loadingMoreConvs, setLoadingMoreConvs] = useState<boolean>(false);
+  const nextConvOffsetRef = useRef<number>(0);
+  const totalConvsRef = useRef<number>(0);
+
 
   // Lead Detail Drawer State for Conversation -> Lead navigation
   const [drawerLead, setDrawerLead] = useState<Lead | null>(null);
@@ -303,7 +308,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       // (is_group / is_archived || status=ARCHIVED) — istemcide eksik sayfa
       // riski yok. ALL sekmesi arşivlenmeleri dışlar (ConversationList filtresi
       // ile tutarlı), bu yüzden archived_only=false varsayılanı korunur.
-      const list = await WhatsAppRepository.getConversations({
+      const page = await WhatsAppRepository.getConversationsPage({
         status:
           convFilter === 'ALL' || convFilter === 'GROUPS' || convFilter === 'ARCHIVED'
             ? undefined
@@ -312,14 +317,20 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         group_only: convFilter === 'GROUPS' ? true : undefined,
         archived_only: convFilter === 'ARCHIVED' ? true : undefined,
         search: convSearch.trim() || undefined,
+        limit: 50,
+        offset: 0,
       });
       if (generation !== conversationsGenerationRef.current) return;
-      setConversations(list);
+      setConversations(page.items);
+      setHasMoreConvs(page.has_more);
+      nextConvOffsetRef.current = page.next_offset ?? page.items.length;
+      totalConvsRef.current = page.total;
+
       setSelectedConv((prev) => {
-        if (!prev && list.length > 0) return list[0];
+        if (!prev && page.items.length > 0) return page.items[0];
         if (prev) {
-          const updated = list.find((c) => c.id === prev.id);
-          return updated || (list.length > 0 ? list[0] : null);
+          const updated = page.items.find((c) => c.id === prev.id);
+          return updated || (page.items.length > 0 ? page.items[0] : null);
         }
         return null;
       });
@@ -340,6 +351,43 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       if (!isSilent && generation === conversationsGenerationRef.current) setConvsLoading(false);
     }
   }, [convFilter, convSearch]);
+
+  const loadMoreConversations = useCallback(async () => {
+    if (loadingMoreConvs || !hasMoreConvs) return;
+    const generation = conversationsGenerationRef.current;
+    setLoadingMoreConvs(true);
+    try {
+      const page = await WhatsAppRepository.getConversationsPage({
+        status:
+          convFilter === 'ALL' || convFilter === 'GROUPS' || convFilter === 'ARCHIVED'
+            ? undefined
+            : (convFilter as ConversationStatus),
+        unread_only: convFilter === 'UNREAD',
+        group_only: convFilter === 'GROUPS' ? true : undefined,
+        archived_only: convFilter === 'ARCHIVED' ? true : undefined,
+        search: convSearch.trim() || undefined,
+        limit: 50,
+        offset: nextConvOffsetRef.current,
+      });
+      if (generation !== conversationsGenerationRef.current) return;
+      setConversations((prev) => {
+        const existingIds = new Set(prev.map((c) => c.id));
+        const newItems = page.items.filter((c) => !existingIds.has(c.id));
+        const combined = [...prev, ...newItems];
+        // WhatsApp Web paritesi: kronolojik siralama kesin korunur
+        combined.sort(compareConversationsByActivityDesc);
+        return combined;
+      });
+      setHasMoreConvs(page.has_more);
+      nextConvOffsetRef.current = page.next_offset ?? (nextConvOffsetRef.current + page.items.length);
+      totalConvsRef.current = page.total;
+    } catch (err) {
+      console.warn('[WhatsAppHubPage] loadMoreConversations failed', err);
+    } finally {
+      setLoadingMoreConvs(false);
+    }
+  }, [convFilter, convSearch, hasMoreConvs, loadingMoreConvs]);
+
 
   // Faz 11: 4 sn'lik sync=true polling STORM'u kaldirildi. Sync durumu yalnizca
   // WS olaylariyla akir; mount/reconnect sirasinda TEK seferlik GET /sync/job
@@ -1825,7 +1873,11 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
               onSync={handleSyncChats}
               isSyncing={isSyncingChats}
               typingMap={peerTypingMap}
+              onLoadMore={loadMoreConversations}
+              hasMore={hasMoreConvs}
+              loadingMore={loadingMoreConvs}
               onSelect={(c) => {
+
                 setSelectedConv(c);
                 if (c.unread_count > 0) {
                   // Kullanici eylemi → gateway'e iletilemezse GORUNUR bildirim.

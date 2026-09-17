@@ -4,13 +4,27 @@ Read-only and persistence queries for WhatsApp conversations.
 DOES NOT own transaction lifecycle (no commit/rollback).
 """
 
+import asyncio
 import logging
 from datetime import datetime
-from typing import Any, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
+
+_conversation_locks: Dict[Tuple[str, int], asyncio.Lock] = {}
+
+
+def get_conversation_lock(user_id: str, conversation_id: int) -> asyncio.Lock:
+    """Tek bir sohbet basina async kilit (manual scroll + background hydration kesisimi)."""
+    key = (str(user_id), int(conversation_id))
+    lock = _conversation_locks.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _conversation_locks[key] = lock
+    return lock
+
 
 from backend.app.core.auth import get_user_filter
 from backend.app.models.contact import Contact

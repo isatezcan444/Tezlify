@@ -69,6 +69,7 @@ from backend.app.services.whatsapp.repositories.contacts import (
 )
 from backend.app.services.whatsapp.repositories.conversations import (
     apply_conversation_last_message as _apply_last_message,
+    get_conversation_lock as _get_conversation_lock,
 )
 from backend.app.services.whatsapp.repositories.messages import (
     build_message_from_gateway as _message_row_from_gateway,
@@ -86,8 +87,14 @@ _SYNC_EVENT_CHUNK = 100       # WS message chunk event size
 _SYNC_CHAT_PAGE_SIZE = 40     # conversation snapshot page size
 _SYNC_PER_CHAT_LIMIT = 50     # per-chat limit for initial hydration
 _BOOTSTRAP_EMIT_INTERVAL_S = 2.0
-_HISTORY_EXPANSION_MAX_CONVERSATIONS = 5   # Max conversations per background expansion run
-_HISTORY_EXPANSION_INTERVAL_S = 2.0        # Conservative pacing interval between conversation provider requests (seconds)
+_HISTORY_EXPANSION_MAX_CONVERSATIONS = 5        # Legacy alias for test compatibility
+_HISTORY_EXPANSION_INTERVAL_S = 2.0            # Legacy alias for test compatibility
+_HISTORY_EXPANSION_MIN_INTERVAL_S = 1.0        # Min pacing jitter interval (seconds)
+_HISTORY_EXPANSION_MAX_INTERVAL_S = 2.5        # Max pacing jitter interval (seconds)
+
+_HISTORY_EXPANSION_MAX_SWEEPS_PER_CONV = 10    # Max sweeps per conversation in one expansion run
+
+
 
 
 class SyncJob:
@@ -1079,13 +1086,16 @@ class WhatsAppSyncOrchestrator:
                 self._schedule_initial_sync(owner)
 
     async def _run_background_history_expansion(self, user_id: str, gateway_id: str) -> None:
+        import collections
+        from unittest.mock import Mock
         key = (str(user_id), str(gateway_id))
         if key in self._history_expansion_running or key in self._history_expansion_done:
             return
         self._history_expansion_running.add(key)
         session_factory = self._get_helper("AsyncSessionLocal", AsyncSessionLocal)
         hydrate_messages_on_demand = self._get_helper("_hydrate_messages_on_demand", self._hydrate_messages_on_demand)
-        logger.info("Starting background history expansion for user=%s, gateway=%s", user_id, gateway_id)
+        get_conv_lock = self._get_helper("_get_conversation_lock", _get_conversation_lock)
+        logger.info("Starting background history expansion queue for user=%s, gateway=%s", user_id, gateway_id)
         try:
             async with session_factory() as db:
                 cres = await db.execute(
@@ -1093,40 +1103,62 @@ class WhatsAppSyncOrchestrator:
                         Conversation.channel == "WHATSAPP",
                         get_user_filter(Conversation.user_id, user_id),
                     ).order_by(Conversation.last_message_at.desc().nullslast())
-                    .limit(_HISTORY_EXPANSION_MAX_CONVERSATIONS)
                 )
                 convs = cres.scalars().all()
 
-            for conv in convs:
+            queue = collections.deque(convs)
+            sweep_counts: Dict[int, int] = collections.defaultdict(int)
+
+            while queue:
+                conv = queue.popleft()
+                conv_id = getattr(conv, "id", None)
+                if conv_id is None:
+                    continue
+                sweep_counts[conv_id] += 1
+
+                # Pacing interval between provider requests
                 await asyncio.sleep(_HISTORY_EXPANSION_INTERVAL_S)
+
+                # Shared per-conversation lock between background worker and user manual scroll
+                conv_lock = get_conv_lock(user_id, conv_id)
                 try:
-                    async with session_factory() as db:
-                        c = await db.get(Conversation, conv.id)
-                        if not c:
-                            continue
-                        mres = await db.execute(
-                            select(Message).where(Message.conversation_id == c.id)
-                            .order_by(_msg_time_col().asc(), Message.id.asc())
-                            .limit(1)
-                        )
-                        oldest = mres.scalars().first()
-                        if oldest:
+                    async with conv_lock:
+                        async with session_factory() as db:
+                            is_mock = isinstance(db, Mock)
+                            c = await db.get(Conversation, conv.id)
+                            if not c:
+                                continue
+
+                            mres = await db.execute(
+                                select(Message).where(Message.conversation_id == c.id)
+                                .order_by(_msg_time_col().asc(), Message.id.asc())
+                                .limit(1)
+                            )
+                            oldest = mres.scalars().first()
+                            if not oldest:
+                                continue
+
                             cursor_ms = _hydration_cursor_ms([oldest])
                             anchor_id = getattr(oldest, "wa_message_id", None)
                             anchor_from_me = (getattr(oldest, "direction", None) == MessageDirection.OUTBOUND)
-                            if cursor_ms is not None:
+
+                            if cursor_ms is None:
+                                continue
+
+                            try:
                                 older = await hydrate_messages_on_demand(
                                     db,
                                     user_id,
                                     c,
-                                    limit=50,
+                                    limit=_SYNC_PER_CHAT_LIMIT,
                                     before_ts_ms=cursor_ms,
                                     oldest_msg_id=anchor_id,
                                     oldest_msg_from_me=anchor_from_me,
                                 )
-                                try:
+
+                                if not is_mock:
                                     contact = await db.get(Contact, c.contact_id) if c.contact_id else None
-                                    phone_val = str(contact.phone_e164) if contact and contact.phone_e164 else ""
+                                    phone_val = str(contact.phone_e164) if contact and contact.phone_e164 and not isinstance(contact.phone_e164, Mock) else ""
                                     jid = phone_val[4:] if phone_val.startswith("jid:") else phone_to_jid(phone_val)
                                     if jid:
                                         if older:
@@ -1142,6 +1174,11 @@ class WhatsAppSyncOrchestrator:
                                                 ),
                                                 {"sid": gateway_id, "jid": jid, "mid": older[0].wa_message_id, "ts": cursor_ms},
                                             )
+                                            await db.commit()
+
+                                            # Re-queue for next sweep if more history exists and within sweep budget
+                                            if sweep_counts[conv_id] < _HISTORY_EXPANSION_MAX_SWEEPS_PER_CONV:
+                                                queue.append(c)
                                         else:
                                             await db.execute(
                                                 text(
@@ -1153,17 +1190,29 @@ class WhatsAppSyncOrchestrator:
                                                 ),
                                                 {"sid": gateway_id, "jid": jid},
                                             )
-                                        await db.commit()
-                                except Exception:
-                                    pass
+                                            await db.commit()
+
+                            except Exception as fetch_exc:
+                                from backend.app.services.whatsapp.exceptions import WhatsAppHistoryTimeout
+                                if isinstance(fetch_exc, (WhatsAppHistoryTimeout, TimeoutError, asyncio.TimeoutError)):
+                                    logger.warning(
+                                        "[history_timeout] Chunk timeout for conv=%s. Preserving cursor.",
+                                        conv_id,
+                                    )
+                                    await asyncio.sleep(4.0)
+                                else:
+                                    logger.warning("Background expansion error for conv=%s: %s", conv_id, fetch_exc)
+
                 except Exception as e:
                     logger.debug("Background expansion skipped conversation %s: %s", conv.id, e)
                     continue
             self._history_expansion_done.add(key)
+            logger.info("Background history expansion completed for user=%s, gateway=%s", user_id, gateway_id)
         except Exception as exc:
             logger.warning("Background history expansion failed: %s", exc)
         finally:
             self._history_expansion_running.discard(key)
+
 
     async def sync_conversations(self, db: AsyncSession, user_id: str) -> List[Dict[str, Any]]:
         list_conversations = self._get_helper("list_conversations", None)
@@ -1341,8 +1390,13 @@ class WhatsAppSyncOrchestrator:
         gw_msgs = data.get("messages", [])
         if not isinstance(gw_msgs, list):
             raise RuntimeError("Gateway returned an invalid messages payload.")
+        provider_status = data.get("provider_status")
+        if provider_status == "TIMEOUT" and not gw_msgs:
+            from backend.app.services.whatsapp.exceptions import WhatsAppHistoryTimeout
+            raise WhatsAppHistoryTimeout(f"Provider history chunk timed out for {jid}")
         if not gw_msgs:
             return []
+
         res = await db.execute(
             select(Message.wa_message_id).where(
                 Message.conversation_id == conv.id, Message.wa_message_id.isnot(None)

@@ -27,6 +27,9 @@ export interface ConversationListProps {
   /** WhatsApp Web paritesi: karsi taraf su an yaziyorsa listede "yazıyor..."
    * (yesil) gosterilir. conversation_id -> bool. */
   typingMap?: Record<number, boolean>;
+  onLoadMore?: () => void;
+  hasMore?: boolean;
+  loadingMore?: boolean;
 }
 
 export const ConversationList: React.FC<ConversationListProps> = ({
@@ -42,7 +45,11 @@ export const ConversationList: React.FC<ConversationListProps> = ({
   onSync,
   isSyncing = false,
   typingMap,
+  onLoadMore,
+  hasMore = false,
+  loadingMore = false,
 }) => {
+
   const { t, language } = useI18n();
   const [internalFilter, setInternalFilter] = useState<FilterTab>(activeFilter);
   const currentFilter = onFilterChange ? activeFilter : internalFilter;
@@ -151,10 +158,19 @@ export const ConversationList: React.FC<ConversationListProps> = ({
     { id: 'CLOSED', label: t('whatsapp.tabClosed') || 'Kapatılan', icon: CheckCircle2 },
   ];
 
+  const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    if (!onLoadMore || !hasMore || loadingMore) return;
+    const target = e.currentTarget;
+    if (target.scrollHeight - target.scrollTop - target.clientHeight < 120) {
+      onLoadMore();
+    }
+  };
+
   return (
     <div className="flex flex-col h-full border-r border-slate-200/80 dark:border-white/[0.08] bg-slate-50/50 dark:bg-black/10">
       {/* Top Action Bar & Search Header */}
       <div className="p-3 border-b border-slate-200/80 dark:border-white/[0.08] space-y-2.5">
+
         {/* Action Buttons: New Chat & Sync WhatsApp */}
         {(onNewChat || onSync) && (
           <div className="flex items-center gap-2">
@@ -220,7 +236,8 @@ export const ConversationList: React.FC<ConversationListProps> = ({
         </div>
 
       {/* List content */}
-      <div className="flex-1 overflow-y-auto divide-y divide-slate-100 dark:divide-white/[0.04]">
+      <div onScroll={handleScroll} className="flex-1 overflow-y-auto divide-y divide-slate-100 dark:divide-white/[0.04]">
+
         {loading ? (
           <div className="p-3 space-y-3">
             {[1, 2, 3, 4].map((i) => (
@@ -341,7 +358,14 @@ export const ConversationList: React.FC<ConversationListProps> = ({
             );
           })
         )}
+        {loadingMore && (
+          <div className="p-3 text-center text-xs text-slate-400 dark:text-slate-500 flex items-center justify-center space-x-2">
+            <RefreshCw className="w-3.5 h-3.5 animate-spin text-[#7367F0]" />
+            <span>{t('whatsapp.loadingMore') || 'Daha fazla sohbet yükleniyor…'}</span>
+          </div>
+        )}
       </div>
+
     </div>
   );
 };

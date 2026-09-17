@@ -114,6 +114,9 @@ class WhatsAppConversationItem(BaseModel):
 class WhatsAppConversationListResponse(BaseModel):
     items: List[WhatsAppConversationItem] = Field(default_factory=list)
     total: int = 0
+    has_more: bool = False
+    next_offset: Optional[int] = None
+
 
 
 class WhatsAppMessageItem(BaseModel):
