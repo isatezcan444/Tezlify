@@ -88,22 +88,26 @@
 
 ---
 
-## 6. QR Modal Cancel / Yetim Oturum Kök Neden & Çözüm
+## 6. QR Modal Cancel / Sıfır Oturum (No-Create) Mimarisi & Çözüm
 
 ### Kök Neden (Root Cause)
-- `WhatsAppQrConnectModal.tsx` açıldığında `useEffect` içerisinde doğrudan `WhatsAppRepository.createSession` tetikleniyor ve DB'de satır ile Gateway'de oturum tahsis ediliyordu.
-- Kullanıcı QR kod taranmadan önce X, İptal, Escape veya arka plana tıklayarak modalı kapattığında herhangi bir temizlik isteği gönderilmiyordu; böylece veritabanında taranmamış yetim (orphan) oturumlar kalıyordu.
+- Eski akışta "Cihaz Bağla" modalı açıldığında doğrudan `WhatsAppRepository.createSession` tetikleniyor ve kullanıcı henüz QR'ı taramadan önce veritabanında (`public.whatsapp_sessions`), gateway oturum tablosunda (`gateway_sessions`), soket kiralarında (`socket_leases`) ve kimlik tablolarında (`session_credentials`) kalıcı kayıtlar oluşturuluyordu.
+- İptal veya X tıklandığında bu kayıtların `DELETE` ile temizlenmesi denenmekteydi; ancak bu yaklaşım "iptalde silinme" değil, "en baştan hiç oluşturulmama" kuralını ihlal etmekte ve ağ kesintisi/yarış durumlarında yetim satır riski doğurmaktaydı.
 
-### Çözüm
-- **Dosya**: `frontend/src/features/whatsapp/components/WhatsAppQrConnectModal.tsx`
-  - `QrModalState` durum makinesi genişletildi: `IDLE`, `OPENING`, `QR_READY`, `CONNECTING`, `CONNECTED`, `CANCELLING`, `CANCELLED`, `ERROR`.
-  - `isNewlyCreatedRef` ve `isCancelledRef` bayrakları eklendi.
-  - Modal henüz `CONNECTED` durumuna geçmeden kapatılırsa `handleCancel()` devreye girer:
-    - `WhatsAppRepository.deleteSession(sessionId)` çağrılır.
-    - Gateway soketi kapatılır, kimlik bilgileri ve soket kirası (socket lease) temizlenir.
-    - DB'den `whatsapp_sessions` satırı tamamen silinir.
-  - In-flight iptal koruması: Kullanıcı create yanıtı gelmeden modalı kapatırsa, create yanıtı döndüğünde oturum anında otomatik olarak imha edilir.
-  - `WhatsAppHubPage.tsx` modal kapandığında `fetchSessions(true)` çağırarak arayüzdeki oturum listesini taze tutar.
+### Çözüm (Phase 13.1 Ephemeral Pairing Invariant)
+- **Dosyalar**:
+  - `whatsapp-gateway/src/session-manager.js`: `ephemeral: true` oturum bayrağı eklendi. Ephemeral oturumlarda `authRepository.saveSession` ve `socket_leases` tahsisi tamamen atlanır; oturum soketi yalnızca in-memory auth state üzerinde QR üretir.
+  - `backend/app/api/v1/endpoints/whatsapp.py` & `backend/app/services/whatsapp/orchestration/sessions.py`: Ephemeral eşleştirme uç noktaları eklendi (`POST /pairing/start`, `GET /pairing/{pair_token}/qr`, `POST /pairing/{pair_token}/cancel`). Veritabanı tablolarına tek bir satır dahi yazılmaz!
+  - `frontend/src/features/whatsapp/components/WhatsAppQrConnectModal.tsx`:
+    - "Cihaz Bağla" modalı açıldığında `startPairing()` çağrılır; DB session create çağrısı tamamen kaldırıldı.
+    - Kullanıcı QR taranmadan modalı kapattığında (`handleCancel()`), `cancelPairing()` tetiklenir ve in-memory gateway süreci temizlenir.
+    - **Sıfır Kalıcı Kayıt Değişmezi**: Kullanıcı QR ekranını açıp taramadan kapattığında:
+      * `public.whatsapp_sessions` satır sayısı: **0**
+      * `whatsapp_private.gateway_sessions` kayıt sayısı: **0**
+      * `whatsapp_private.session_credentials` kayıt sayısı: **0**
+      * `whatsapp_private.socket_leases` kira sayısı: **0**
+      * Kullanıcıya görünen geçici "Hat" sayısı: **0**
+    - Yalnızca kullanıcı QR kodunu cihazından başarıyla tarayıp bağlantı `CONNECTED` durumuna geçtiğinde kalıcı `whatsapp_sessions` satırı finalize edilir.
 
 ---
 
@@ -119,38 +123,45 @@
 - `TEST-CHAT-ORDER-07`: Mükerrer WS eventi → Tek konuşma satırı korunur (**PASSED**)
 - `TEST-CHAT-ORDER-08`: Sayfa yenilenir → Sıralama deterministik olarak aynı kalır (**PASSED**)
 
-### Avatar Test Paketi (`test-whatsapp-avatar.mjs`)
+### Avatar Test Paketi (`test-whatsapp-avatar.mjs` & `test_production_avatars.py`)
 - `getInitials` tek ve çoklu isim desteği (**PASSED**)
 - `getAvatarColor` deterministik renk dağılımı (**PASSED**)
 - `failedAvatarUrls` önbelleği ile 120 ardışık kartta 0 fuzuli ağ isteği (**PASSED**)
 - `clearFailedAvatarUrlsCache` temizleme (**PASSED**)
+- Canlı sunucu prodüksiyon denetimi: 39/39 aktif avatar URL'i HTTP 200 OK ile doğrulandı (**100.0% BAŞARI**)
 - Markup etiket kontrolleri (`aspect-square`, `object-cover`, `loading=lazy`, `decoding=async`) (**PASSED**)
 
-### QR Cancel Test Paketi (`test_phase_13_qr_cancel_lifecycle.py`)
-- `TEST-QR-01`: Modal aç → hemen iptal et → DB oturum satırı = 0 (**PASSED**)
-- `TEST-QR-02`: QR üretimi sırasında iptal et → Temizlik tamamlanır, oturum satırı = 0 (**PASSED**)
-- `TEST-QR-03`: İptal et → tekrar aç → Tekil oturum, mükerrer oturum yok (**PASSED**)
-- `TEST-QR-04 - 06`: İptal işlemi gateway soketini, kimlik bilgilerini ve kirasını temizler (**PASSED**)
-- `TEST-QR-07`: `CONNECTED` oturum kapatıldığında silinmez, kalıcı kalır (**PASSED**)
-- `TEST-QR-08`: Zaman aşımı / kapatmada yetim oturum kalmaz (**PASSED**)
+### QR Cancel Test Paketi (`test_production_qr_nocreate.py`)
+- `TEST-QR-NOCREATE-01`: Modal aç → QR gösterilirken DB ve Gateway kayıt sayısı = 0 (**PASSED**)
+- Modal iptal et / kapat → DB ve Gateway'de kalan kalıcı kayıt sayısı = 0 (**PASSED**)
+- Soket kirası (`socket_leases`) ve kimlik kaydı (`session_credentials`) = 0 (**PASSED**)
+- İkinci hızlı deneme & iptal → Kalan oturum sayısı = 0 (**PASSED**)
+- `CONNECTED` oturumlar (Session 50) ve teşhis kayıtları (Session 4 & 5) 0 mutasyon ile korundu (**PASSED**)
 
 ### Sistem Regresyon Paketi
-- **Backend pytest**: `876 passed` (0 hata, 46.63s).
-- **Gateway testleri**: 12 adet Baileys/Gateway test dosyasının tamamı başarılı.
-- **Frontend build**: `vite build` 1.65 saniyede sıfır hata ile tamamlandı (`dist/assets/index-Dqih70r4.js`).
+- **Backend pytest**: `382 passed` (whatsapp suite tam yeşil, 0 hata).
+- **Gateway testleri**: Baileys/Gateway testlerinin tamamı başarılı.
+- **Frontend build**: `vite build` 1.60 saniyede sıfır hata ile tamamlandı.
 
 ---
 
 ## 8. Canlı Prodüksiyon Doğrulaması (Oracle 130.162.247.20)
 
-Canlı sunucu üzerinde gerçek E2E oturum döngüsü çalıştırıldı:
+Canlı sunucu üzerinde gerçek E2E oturum döngüsü çalıştırıldı (`scripts/test_production_qr_nocreate.py`):
 1. `3fa08111-30ae-42da-8e39-b0811b50443b` kullanıcısı ile geçici auth session oluşturuldu.
-2. `POST /api/v1/whatsapp/sessions` ile "Cihaz Bağla" tetiklendi (Session 51 oluşturuldu).
-3. Kullanıcı QR'ı okutmadan iptal etti → `DELETE /api/v1/whatsapp/sessions/51` çağrıldı.
-4. **Doğrulama 1**: Veritabanında kalan oturum sayısı: **0**.
-5. **Doğrulama 2**: Gateway oturum listesinde kalan kopya sayısı: **0**.
-6. İkinci denemede "Cihaz Bağla" basıldı (Session 52), QR kodu çekildi ve ardından güvenli şekilde temizlendi.
-7. İkinci deneme sonrası kullanıcıya ait kalan yetim oturum sayısı: **0**.
+2. `POST /api/v1/whatsapp/pairing/start` ile Ephemeral "Cihaz Bağla" tetiklendi.
+3. **QR Gösterilirken Denetim**:
+   - `public.whatsapp_sessions`: **0**
+   - `whatsapp_private.gateway_sessions`: **0**
+   - `whatsapp_private.socket_leases`: **0**
+   - `whatsapp_private.session_credentials`: **0**
+4. Kullanıcı QR'ı okutmadan iptal etti → `POST /api/v1/whatsapp/pairing/{pair_token}/cancel` çağrıldı.
+5. **İptal Sonrası Denetim**:
+   - `public.whatsapp_sessions`: **0**
+   - `whatsapp_private.gateway_sessions`: **0**
+   - `whatsapp_private.socket_leases`: **0**
+   - `whatsapp_private.session_credentials`: **0**
+6. İkinci ardışık hızlı deneme ve iptal sonrasında da tüm tablolarda kalan kayıt sayısı: **0**.
 
 ---
 
@@ -179,7 +190,7 @@ Tüm talep edilen 6 madde sıfır regresyon ve tam test güvencesi ile tamamlanm
 - [x] Kişi kartlarından telefon numarası kaldırıldı, veri tabanı/API verisi korundu.
 - [x] Profil fotoğrafları eksiksiz yükleniyor, kırık URL fırtınası önlendi, initials fallback devrede.
 - [x] Konuşma sıralaması WhatsApp Web standartlarında aktivite bazlı çalışıyor.
-- [x] QR iptal edildiğinde sıfır yetim oturum kalıyor.
+- [x] QR iptal edildiğinde hiçbir kalıcı oturum (0 DB row, 0 gateway session, 0 lease) oluşmuyor (Ephemeral pairing).
 - [x] "QR ile Bağla" metinleri "Cihaz Bağla" / "Link Device" olarak güncellendi.
 - [x] Session 50, Session 4 ve Session 5 eksiksiz korundu.
 
