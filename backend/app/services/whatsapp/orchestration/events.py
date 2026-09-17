@@ -804,18 +804,12 @@ class WhatsAppEventOrchestrator:
                     )
                 await db.commit()
 
-                if evt in ("session_sync_completed", "session_connected", "history_sync_completed"):
+                if evt in ("session_sync_completed", "session_connected"):
                     owner = result.get("user_id")
                     if owner and owner != SYSTEM_USER_ID and schedule_initial_sync is not None:
-                        if evt == "history_sync_completed":
-                            chats_synced = event.get("chats_synced") or 0
-                            messages_synced = event.get("messages_synced") or 0
-                            if (chats_synced > 0 or messages_synced > 0) and owner not in initial_sync_inflight:
-                                schedule_initial_sync(str(owner), reconcile=True)
-                        else:
-                            schedule_initial_sync(
-                                str(owner), reconcile=evt == "session_sync_completed"
-                            )
+                        schedule_initial_sync(
+                            str(owner), reconcile=evt == "session_sync_completed"
+                        )
                 return result
             except EventOwnerUnresolved as exc:
                 await db.rollback()

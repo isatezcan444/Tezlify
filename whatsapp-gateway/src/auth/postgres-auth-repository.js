@@ -65,8 +65,14 @@ export function createPostgresAuthRepository({
     async listRestorableSessions() {
       const result = await pool.query(
         `SELECT session_id, session_name
-         FROM whatsapp_private.gateway_sessions
-         WHERE is_active = TRUE ORDER BY created_at ASC`,
+         FROM (
+           SELECT gs.session_id, gs.session_name, gs.created_at
+           FROM whatsapp_private.gateway_sessions gs
+           INNER JOIN whatsapp_private.session_credentials sc ON sc.session_id = gs.session_id
+           INNER JOIN public.whatsapp_sessions ws ON ws.gateway_id::text = gs.session_id
+           WHERE gs.is_active = TRUE AND ws.is_active = TRUE
+         ) restorable
+         ORDER BY created_at ASC`,
       );
       return result.rows;
     },

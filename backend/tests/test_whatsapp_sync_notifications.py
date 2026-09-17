@@ -52,7 +52,7 @@ async def test_history_notifications_coalesce_while_connected_duplicates_do_not(
 
 
 @pytest.mark.asyncio
-async def test_message_only_history_chunk_requests_reconciliation(monkeypatch) -> None:
+async def test_message_only_history_chunk_does_not_request_reconciliation(monkeypatch) -> None:
     db = AsyncMock()
     db.bind = None
     context = AsyncMock()
@@ -67,7 +67,7 @@ async def test_message_only_history_chunk_requests_reconciliation(monkeypatch) -
         "event": "history_sync_completed", "chats_synced": 0, "messages_synced": 50,
     })
     db.commit.assert_awaited_once()
-    schedule.assert_called_once_with("notification-test", reconcile=True)
+    schedule.assert_not_called()
 
 
 def test_session_deletion_clears_queued_reconciliation() -> None:

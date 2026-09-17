@@ -85,6 +85,8 @@ _SYNC_EVENT_CHUNK = 100       # WS message chunk event size
 _SYNC_CHAT_PAGE_SIZE = 40     # conversation snapshot page size
 _SYNC_PER_CHAT_LIMIT = 50     # per-chat limit for initial hydration
 _BOOTSTRAP_EMIT_INTERVAL_S = 2.0
+_HISTORY_EXPANSION_MAX_CONVERSATIONS = 5   # Max conversations per background expansion run
+_HISTORY_EXPANSION_INTERVAL_S = 2.0        # Conservative pacing interval between conversation provider requests (seconds)
 
 
 class SyncJob:
@@ -965,7 +967,8 @@ class WhatsAppSyncOrchestrator:
                     round((job.finished_at - job.started_at).total_seconds(), 1),
                     job.stage_timings,
                 )
-                asyncio.create_task(run_background_history_expansion(owner, gateway_id))
+                if owner not in self._history_expansion_running and owner not in self._history_expansion_done:
+                    asyncio.create_task(run_background_history_expansion(owner, gateway_id))
         except WhatsAppRelinkRequired as exc:
             job.state = "FAILED"
             job.error = str(exc)
@@ -1054,11 +1057,12 @@ class WhatsAppSyncOrchestrator:
                         Conversation.channel == "WHATSAPP",
                         get_user_filter(Conversation.user_id, user_id),
                     ).order_by(Conversation.last_message_at.desc().nullslast())
+                    .limit(_HISTORY_EXPANSION_MAX_CONVERSATIONS)
                 )
                 convs = cres.scalars().all()
 
             for conv in convs:
-                await asyncio.sleep(0.05)
+                await asyncio.sleep(_HISTORY_EXPANSION_INTERVAL_S)
                 try:
                     async with session_factory() as db:
                         c = await db.get(Conversation, conv.id)
