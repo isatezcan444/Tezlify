@@ -150,6 +150,15 @@ app.get('/sessions', (_req, res) => {
   res.json({ sessions: sessionManager.listSessions() });
 });
 
+// Get session details / status
+app.get('/sessions/:id', (req, res) => {
+  const session = sessionManager.getSession(req.params.id);
+  if (!session) {
+    return res.status(404).json({ error: 'Session not found' });
+  }
+  res.json(session);
+});
+
 // Create a new session (returns QR code as data URI)
 app.post('/sessions', async (req, res) => {
   try {
