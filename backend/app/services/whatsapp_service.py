@@ -75,6 +75,22 @@ from backend.app.services.whatsapp.gateway import (
     extract_session_id,
     is_gateway_session_missing,
 )
+from backend.app.services.whatsapp.orchestration.sessions import (
+    _apply_gateway_live,
+    _gateway_op_or_mark_relink,
+    _list_sessions_internal,
+    _session_dict,
+    create_session,
+    delete_session as _orchestrated_delete_session,
+    get_session_qr,
+    list_sessions,
+    logout_session,
+    purge_whatsapp_data,
+    refresh_session_qr,
+    request_pairing_code,
+)
+
+_is_gateway_session_missing = is_gateway_session_missing
 
 
 _conversation_locks: Dict[Tuple[str, int], asyncio.Lock] = {}
@@ -111,47 +127,26 @@ from backend.app.services.whatsapp.identity import (
 # _set_contact_name is imported from backend.app.services.whatsapp.repositories.contacts
 
 
-def _serialize_message(row: Message) -> Dict[str, Any]:
-    # Gelen medya gateway'de durur; frontend kimlik doğrulamalı proxy üzerinden çeker.
-    media_url = f"/api/v1/whatsapp/media/{row.media_id}" if row.media_id else None
-    return {
-        "id": row.id,
-        "conversation_id": row.conversation_id,
-        "direction": row.direction.value if hasattr(row.direction, "value") else str(row.direction),
-        "message_type": row.message_type.value if hasattr(row.message_type, "value") else str(row.message_type),
-        "status": row.status.value if hasattr(row.status, "value") else str(row.status),
-        "body": row.body,
-        "media_id": row.media_id,
-        "media_mime_type": row.media_mime_type,
-        "media_filename": row.media_filename,
-        "media_caption": row.media_caption,
-        "media_url": media_url,
-        "wa_message_id": row.wa_message_id,
-        "client_message_id": row.client_message_id,
-        "sender_phone": row.sender_phone,
-        "sender_name": row.sender_name,
-        "recipient_phone": row.recipient_phone,
-        "error_message": row.error_message,
-        "created_at": row.external_timestamp.isoformat()
-        if row.external_timestamp
-        else (row.created_at.isoformat() if row.created_at else None),
-    }
+import sys
+
+# Messaging Orchestration (Phase 11.9)
+from backend.app.services.whatsapp.orchestration.messaging import (
+    WhatsAppMessagingOrchestrator,
+    _serialize_message,
+    get_media_bytes as _messaging_get_media_bytes,
+    mark_conversation_read as _messaging_mark_conversation_read,
+    send_media_message as _messaging_send_media_message,
+    send_text_message as _messaging_send_text_message,
+    send_typing as _messaging_send_typing,
+    serialize_message,
+)
+
+_messaging_orchestrator = WhatsAppMessagingOrchestrator(service=sys.modules[__name__])
 
 
-def _session_dict(row: WhatsAppSession) -> Dict[str, Any]:
-    return {
-        "id": row.id,
-        "session_name": row.session_name,
-        "status": row.status.value if hasattr(row.status, "value") else str(row.status),
-        "phone_number": row.phone_number,
-        "is_active": row.is_active,
-        "is_phone_online": row.is_phone_online,
-        "battery_level": row.battery_level,
-        "qr_code": row.qr_code,
-        "error_message": row.error_message,
-        "created_at": row.created_at,
-        "updated_at": row.updated_at,
-    }
+
+
+
 
 
 from backend.app.services.whatsapp.status_policy import (
@@ -175,142 +170,9 @@ from backend.app.services.whatsapp.preview_normalization import (
 
 
 
-def _apply_gateway_live(row: WhatsAppSession, data: Dict[str, Any]) -> None:
-    fields = extract_live_session_fields(data)
-    if fields["status"]:
-        row.status = _parse_status(fields["status"])
-    if fields["phone"]:
-        row.phone_number = fields["phone"]
-    if fields["error_message"] is not None:
-        row.error_message = fields["error_message"]
-    if fields["status"] in ("CONNECTED", "SCAN_QR"):
-        row.error_message = None
-    row.updated_at = datetime.utcnow()
-
-
-# ---------------------------------------------------------------------------
-# Missing gateway oturumu -> explicit relink, stable identity
-#
-# Kok neden (canli probe ile kanitlandi): Gateway yeniden basladiginda
-# bellekteki `sessions` Map'i (ve ephemeral auth dizini) sifirlanir; backend
-# DB'sindeki `whatsapp_sessions` satirlari ise BAYAT `gateway_id` UUID'lerini
-# saklamaya devam eder. Bu satirla yapilan her gateway cagrisi (QR cekme,
-# QR yenileme, pairing kodu) gateway'de "Session not found" -> 500/404 ->
-# backend 502 "WhatsApp gateway'e ulasilamadi" uretir. Bu, hem QR hem de
-# "Telefon No ile Baglan" akisini kirar.
-#
-# A missing in-memory gateway session is not proof that the WhatsApp identity
-# disappeared. Creating a new UUID here used to hide lost auth behind a fresh
-# QR and severed the durable identity. Keep gateway_id stable and require an
-# explicit relink until the persistent gateway registry can restore it.
-# ---------------------------------------------------------------------------
-
-_GATEWAY_SESSION_MISSING = "session not found"
-_is_gateway_session_missing = is_gateway_session_missing
-
-
-async def _gateway_op_or_mark_relink(
-    db: AsyncSession,
-    row: WhatsAppSession,
-    op: Callable[[str], Awaitable[Dict[str, Any]]],
-) -> Dict[str, Any]:
-    """Run a gateway operation without ever replacing the logical line id."""
-    try:
-        return await op(row.gateway_id)
-    except gw.WhatsAppGatewayError as exc:
-        if not _is_gateway_session_missing(exc):
-            raise
-        row.status = SessionStatus.RELINK_REQUIRED
-        row.is_phone_online = False
-        row.qr_code = None
-        row.error_message = "WHATSAPP_AUTH_RELINK_REQUIRED"
-        row.updated_at = datetime.utcnow()
-        await db.commit()
-        logger.warning(
-            "[WhatsApp] Durable session is not available in gateway (db_id=%s, gw_id=%s); relink required",
-            row.id,
-            row.gateway_id,
-        )
-        try:
-            from backend.app.core.websocket_manager import ws_manager
-            await ws_manager.broadcast(
-                {
-                    "event": "session_updated",
-                    "session": {
-                        "id": row.id,
-                        "session_id": row.id,
-                        "status": SessionStatus.RELINK_REQUIRED.value,
-                        "phone_number": row.phone_number,
-                        "is_active": row.is_active,
-                        "is_phone_online": False,
-                        "error_message": "WHATSAPP_AUTH_RELINK_REQUIRED",
-                    },
-                },
-                tenant_id=str(row.user_id),
-            )
-        except Exception as ws_err:
-            logger.debug("[WhatsApp] Relink broadcast ws error: %s", ws_err)
-        raise WhatsAppRelinkRequired(
-            "WhatsApp bağlantısı geri yüklenemedi. Aynı hattı yeniden eşleştirin."
-        ) from exc
-
-
-# ---------------------------------------------------------------------------
-# Session yonetimi
-# ---------------------------------------------------------------------------
-
-async def _list_sessions_internal(
-    db: AsyncSession, user_id: str
-) -> Tuple[List[Dict[str, Any]], Optional[str]]:
-    """Oturum listesi + (varsa) gateway erisim hatasi.
-
-    Faz 13: gateway hatasi ARTIK YUTULMAZ — cagirana dondurulur, karar
-    cagirana birakilir. `list_sessions` DB durumunu gostermeye devam eder
-    (kullanici oturumlarini gormeli), ancak `get_sync_status` bu hatayi
-    'unavailable' olarak yuzeye cikarir; "senkron yok" ile karistirilamaz.
-    """
-    stmt = select(WhatsAppSession).where(get_user_filter(WhatsAppSession.user_id, user_id))
-    res = await db.execute(stmt)
-    rows = res.scalars().all()
-    gw_sync: Dict[str, Any] = {}
-    gateway_error: Optional[str] = None
-    try:
-        gw_sessions = {s["id"]: s for s in await gw.list_sessions()}
-        for row in rows:
-            live = gw_sessions.get(row.gateway_id)
-            if live:
-                fields = extract_live_session_fields(live)
-                gw_sync[row.id] = fields["sync"]
-                if fields["status"] and fields["status"] != row.status.value:
-                    row.status = _parse_status(fields["status"])
-                    row.is_phone_online = bool(fields["is_phone_online"] if fields["is_phone_online"] is not None else row.is_phone_online)
-                    row.battery_level = fields["battery_level"] if fields["battery_level"] is not None else row.battery_level
-                    row.phone_number = fields["phone"] if fields["phone"] is not None else row.phone_number
-                live_qr = fields["qr_code"]
-                if live_qr:
-                    row.qr_code = live_qr
-                elif fields["status"] == "CONNECTED":
-                    row.qr_code = None
-                if fields["status"] in ("CONNECTED", "SCAN_QR"):
-                    row.error_message = None
-        await db.commit()
-    except Exception as exc:
-        gateway_error = str(exc)[:300]
-        logger.warning("Gateway canli durum tazelenemedi: %s", exc)
-    out: List[Dict[str, Any]] = []
-    for r in rows:
-        d = _session_dict(r)
-        # Faz 7: gercek initial-sync asamasi/ilerlemesi (gateway belleginden,
-        # sahte degil). Gateway'e ulasilamazsa `get_sync_status` bunu ayrica
-        # 'unavailable' olarak bildirir.
-        d["sync"] = gw_sync.get(r.id, {"phase": "idle", "progress": 0})
-        out.append(d)
-    return out, gateway_error
-
-
-async def list_sessions(db: AsyncSession, user_id: str) -> List[Dict[str, Any]]:
-    sessions, _gateway_error = await _list_sessions_internal(db, user_id)
-    return sessions
+# Session orchestration functions (_apply_gateway_live, _gateway_op_or_mark_relink,
+# _list_sessions_internal, list_sessions) are imported from
+# backend.app.services.whatsapp.orchestration.sessions
 
 
 async def get_sync_status(db: AsyncSession, user_id: str) -> Dict[str, Any]:
@@ -352,207 +214,15 @@ async def get_sync_status(db: AsyncSession, user_id: str) -> Dict[str, Any]:
     }
 
 
-async def create_session(db: AsyncSession, user_id: str, name: str) -> Dict[str, Any]:
-    gw_session = await gw.create_session(name)
-    gateway_id = extract_session_id(gw_session)
-    if not gateway_id:
-        raise gw.WhatsAppGatewayError("Gateway oturum kimligi dondurmedi.")
-    row = WhatsAppSession(
-        user_id=user_id,
-        gateway_id=gateway_id,
-        session_name=gw_session.get("session_name") or name,
-        status=_parse_status(gw_session.get("status")),
-        phone_number=gw_session.get("phone_number"),
-        is_phone_online=bool(gw_session.get("is_phone_online", False)),
-        battery_level=gw_session.get("battery_level"),
-        qr_code=gw_session.get("qr_code"),
-    )
-    db.add(row)
-    await db.commit()
-    await db.refresh(row)
-    logger.info("[WhatsApp] Yeni gateway oturumu: %s (%s)", row.session_name, gateway_id)
-    return _session_dict(row)
-
-
-# Session repository functions (_user_sessions, _require_user_session,
-# _conversation_gateway_id, _conversation_session, _get_session_or_404, NoWhatsAppSession)
-# are imported from backend.app.services.whatsapp.repositories.sessions and backend.app.services.whatsapp.exceptions
-
-
-async def get_session_qr(db: AsyncSession, user_id: str, session_id: int) -> Dict[str, Any]:
-    row = await _get_session_or_404(db, user_id, session_id)
-    data = await _gateway_op_or_mark_relink(db, row, gw.get_session_qr)
-    _apply_gateway_live(row, data)
-    await db.commit()
-    return {
-        "status": row.status.value if hasattr(row.status, "value") else str(row.status),
-        "qr_code": data.get("qr_code") or row.qr_code,
-        "phone": data.get("phone") or row.phone_number,
-        "error_message": data.get("error_message") or row.error_message,
-    }
-
-
-async def refresh_session_qr(db: AsyncSession, user_id: str, session_id: int) -> Dict[str, Any]:
-    row = await _get_session_or_404(db, user_id, session_id)
-    data = await _gateway_op_or_mark_relink(db, row, gw.refresh_session_qr)
-    _apply_gateway_live(row, data)
-    await db.commit()
-    return {
-        "status": row.status.value if hasattr(row.status, "value") else str(row.status),
-        "qr_code": data.get("qr_code") or row.qr_code,
-        "error_message": data.get("error_message") or row.error_message,
-    }
-
-
-async def request_pairing_code(db: AsyncSession, user_id: str, session_id: int, phone: str) -> Dict[str, Any]:
-    """'Telefon numarası ile bağlan' — gateway'den 8 haneli pairing kodu ister.
-
-    Hata durumunda WhatsAppGatewayError yukarı fırlar (fail-closed); asla
-    sahte kod/sahte başarı döndürülmez (AGENTS.md Truthfulness).
-    """
-    row = await _get_session_or_404(db, user_id, session_id)
-    data = await _gateway_op_or_mark_relink(
-        db, row, lambda gid: gw.request_pairing_code(gid, phone)
-    )
-    pairing_code = extract_pairing_code(data)
-    if not pairing_code:
-        raise gw.WhatsAppGatewayError("Gateway pairing kodu döndürmedi.")
-    if data.get("phone"):
-        row.phone_number = data["phone"]
-        await db.commit()
-    return {
-        "success": True,
-        "pairing_code": str(pairing_code),
-        "phone": data.get("phone") or row.phone_number,
-    }
-
-
-async def logout_session(db: AsyncSession, user_id: str, session_id: int) -> Dict[str, Any]:
-    row = await _get_session_or_404(db, user_id, session_id)
-    try:
-        await gw.logout_session(row.gateway_id)
-    except gw.WhatsAppGatewayError as exc:
-        # Redeploy sonrasi gateway belleginde oturum kalmadiysa hedef durum
-        # (baglanti yok) zaten saglanmistir; DB satiri asagida DISCONNECTED
-        # isaretlenir. Diger hatalar aynen yukselir (fail-closed).
-        if not _is_gateway_session_missing(exc):
-            raise
-        logger.warning(
-            "[WhatsApp] Gateway oturumu zaten yok (DB id=%s gateway_id=%s): %s",
-            row.id, row.gateway_id, exc,
-        )
-    row.status = SessionStatus.DISCONNECTED
-    row.is_active = False
-    row.is_phone_online = False
-    row.updated_at = datetime.utcnow()
-    await db.commit()
-    return {"success": True, "status": "DISCONNECTED"}
-
-
-async def purge_whatsapp_data(
-    db: AsyncSession, user_id: str, session_id: Optional[int] = None
-) -> Dict[str, int]:
-    """Bir WhatsApp hatti silindiginde O HATTIN esitlemelerini kalici olarak
-    temizler: mesajlar -> sohbetler -> (artik sohbeti kalmayan) kisiler.
-
-    Kapsam (duzeltme): `session_id` verildiginde YALNIZCA o hatta bagli
-    sohbetler silinir. Onceden kullanicinin `channel='WHATSAPP'` olan TUM
-    sohbetleri siliniyordu; iki hatti olan bir kullanici birini silince
-    digerinin sohbetleri de gidiyordu. Hat bagi olmayan (eski) satirlar,
-    kullanicinin baska hatti kalmadiysa temizlige dahil edilir — aksi halde
-    korunur (veri kaybi yerine artik satir tercih edilir).
-
-    Lead kayitlarina dokunulmaz. CRM/WhatsApp-disi sohbetler korunur.
-    """
-    purged = {"messages": 0, "conversations": 0, "contacts": 0}
-
-    # Bu kullanicinin (silinecek hat disinda) baska hatti kaldi mi?
-    other_sessions = await db.execute(
-        select(func.count()).select_from(WhatsAppSession).where(
-            get_user_filter(WhatsAppSession.user_id, user_id),
-            WhatsAppSession.id != session_id if session_id is not None else True,
-        )
-    )
-    has_other_session = (other_sessions.scalar_one() or 0) > 0
-
-    conv_ids: List[int] = []
-    for owner in (str(user_id), SYSTEM_USER_ID):
-        stmt = select(Conversation.id).where(
-            get_user_filter(Conversation.user_id, owner),
-            Conversation.channel == "WHATSAPP",
-        )
-        if session_id is not None:
-            if has_other_session:
-                # Baska hat duruyor: yalnizca BU hattin sohbetleri.
-                stmt = stmt.where(Conversation.session_id == session_id)
-            else:
-                # Son hat siliniyor: bu hattin sohbetleri + hat bagi olmayan
-                # (migration oncesi) eski satirlar.
-                stmt = stmt.where(
-                    or_(
-                        Conversation.session_id == session_id,
-                        Conversation.session_id.is_(None),
-                    )
-                )
-        res = await db.execute(stmt)
-        conv_ids.extend(int(r[0]) for r in res.all())
-
-    if not conv_ids:
-        return purged
-
-    msg_res = await db.execute(delete(Message).where(Message.conversation_id.in_(conv_ids)))
-    purged["messages"] = msg_res.rowcount or 0
-
-    con_res = await db.execute(
-        select(Conversation.contact_id).where(Conversation.id.in_(conv_ids))
-    )
-    contact_ids = [int(r[0]) for r in con_res.all() if r[0] is not None]
-
-    conv_res = await db.execute(delete(Conversation).where(Conversation.id.in_(conv_ids)))
-    purged["conversations"] = conv_res.rowcount or 0
-
-    if contact_ids:
-        # Yalnızca artık HİÇBİR sohbete bağlı olmayan kişileri sil (güvenlik
-        # payandası: başka bir kanal/sohbet referans veriyorsa koru).
-        remaining = select(Conversation.contact_id).where(Conversation.contact_id.isnot(None))
-        ct_res = await db.execute(
-            delete(Contact).where(
-                Contact.id.in_(contact_ids),
-                Contact.id.notin_(remaining),
-            )
-        )
-        purged["contacts"] = ct_res.rowcount or 0
-
-    return purged
+# Session orchestration functions (create_session, get_session_qr, refresh_session_qr,
+# request_pairing_code, logout_session, purge_whatsapp_data) are imported from
+# backend.app.services.whatsapp.orchestration.sessions
 
 
 async def delete_session(db: AsyncSession, user_id: str, session_id: int) -> Dict[str, Any]:
-    row = await _get_session_or_404(db, user_id, session_id)
-    # §26/§27: oturum silinirken süren initial-sync job'ı iptal edilir — eski
-    # gateway oturumuna karsi istek gondermeye devam etmez.
-    _cancel_stale_sync_jobs(user_id)
-    gateway_ok = True
-    gateway_error: Optional[str] = None
-    try:
-        await gw.delete_session(row.gateway_id)
-    except Exception as exc:
-        gateway_ok = False
-        gateway_error = str(exc)[:300]
-        logger.warning(
-            "Gateway oturum silinemedi; yerel veri temizlenecek (user=%s session=%s gateway=%s): %s",
-            user_id, session_id, row.gateway_id, exc,
-        )
-    purged = await purge_whatsapp_data(db, user_id, session_id=row.id)
-    await db.delete(row)
-    await db.commit()
-    logger.info(
-        "WhatsApp oturumu silindi (user=%s session=%s): %s eşitleme temizlendi",
-        user_id, session_id, purged,
+    return await _orchestrated_delete_session(
+        db, user_id, session_id, on_cancel_sync=_cancel_stale_sync_jobs
     )
-    result: Dict[str, Any] = {"success": gateway_ok, "purged": purged}
-    if gateway_error:
-        result["error"] = gateway_error
-    return result
 # ---------------------------------------------------------------------------
 # Kisiler (contacts)
 # ---------------------------------------------------------------------------
@@ -1655,202 +1325,26 @@ async def get_messages(
 async def send_text_message(
     db: AsyncSession, user_id: str, conversation_id: int, body: str, client_message_id: Optional[str] = None
 ) -> Dict[str, Any]:
-    conv, jid = await _resolve_jid(db, user_id, conversation_id)
-    clean = body.strip()
-    if not clean:
-        raise LookupError("Mesaj bos olamaz.")
-    _now = datetime.utcnow()
-    session_row = await _conversation_session(db, user_id, conv)
-    client_message_id = client_message_id or str(uuid.uuid4())
-    existing = await db.scalar(select(Message).where(
-        Message.client_message_id == client_message_id,
-        Message.conversation_id == conv.id,
-        get_user_filter(Message.user_id, user_id),
-    ))
-    if existing is not None:
-        return _serialize_message(existing)
-    row = Message(
-        user_id=user_id,
-        conversation_id=conv.id,
-        direction=MessageDirection.OUTBOUND,
-        message_type=MessageType.TEXT,
-        body=clean,
-        wa_message_id=None,
-        client_message_id=client_message_id,
-        sender_phone="ME",
-        recipient_phone=jid_to_phone(jid) or jid,
-        status=ConversationMessageStatus.PENDING,
-        # Gonderilen mesaj da ZAMAN EKSENINDE yer alir; aksi halde siralama
-        # ve keyset sayfalamasi disinda kalip sohbetten kayboluyordu.
-        external_timestamp=_now,
-    )
-    db.add(row)
-    await db.commit()
-    try:
-        gateway_result = await _gateway_op_or_mark_relink(
-            db, session_row, lambda gid: gw.send_text_message(gid, jid, clean, client_message_id)
-        )
-    except Exception as exc:
-        await db.refresh(row)
-        if row.status == ConversationMessageStatus.PENDING:
-            row.status = ConversationMessageStatus.FAILED
-            row.failed_at = datetime.utcnow()
-            row.error_message = str(exc)[:300]
-            await db.commit()
-        raise
-    await db.refresh(row)
-    send_res = extract_send_result(gateway_result)
-    row.wa_message_id = send_res["wa_message_id"] or row.wa_message_id
-    _advance_message_status(row, send_res["status"])
-    # Faz 10 (P2): gonderim yolu da paylasilan kurali kullanir (tek kaynak).
-    _apply_last_message(
-        conv,
-        datetime.utcnow(),
-        build_last_message_summary(
-            message_type="TEXT", body=clean, direction=MessageDirection.OUTBOUND.value
-        ),
-    )
-    await db.commit()
-    return _serialize_message(row)
+    return await _messaging_orchestrator.send_text_message(db, user_id, conversation_id, body, client_message_id)
 
 
 async def send_media_message(
     db: AsyncSession, user_id: str, conversation_id: int, media: Dict[str, Any]
 ) -> Dict[str, Any]:
-    conv, jid = await _resolve_jid(db, user_id, conversation_id)
-    session_row = await _conversation_session(db, user_id, conv)
-    media = {**media, "client_message_id": media.get("client_message_id") or str(uuid.uuid4())}
-    existing = await db.scalar(select(Message).where(
-        Message.client_message_id == media["client_message_id"],
-        Message.conversation_id == conv.id,
-        get_user_filter(Message.user_id, user_id),
-    ))
-    if existing is not None:
-        return _serialize_message(existing)
-    mtype_str = (media.get("media_type") or "document").upper()
-    try:
-        msg_type = MessageType[mtype_str] if mtype_str in MessageType.__members__ else MessageType.DOCUMENT
-    except (KeyError, TypeError) as exc:
-        logger.warning("Media message_type gecersiz; DOCUMENT fallback (value=%r): %s", mtype_str, exc)
-        msg_type = MessageType.DOCUMENT
-    caption = media.get("caption")
-    filename = media.get("filename")
-    _now = datetime.utcnow()
-    row = Message(
-        user_id=user_id,
-        conversation_id=conv.id,
-        direction=MessageDirection.OUTBOUND,
-        message_type=msg_type,
-        body=(caption or filename or media.get("media_url") or "")[:4000],
-        media_id=None,
-        media_filename=filename,
-        media_caption=caption,
-        wa_message_id=None,
-        client_message_id=media.get("client_message_id"),
-        sender_phone="ME",
-        recipient_phone=jid_to_phone(jid) or jid,
-        status=ConversationMessageStatus.PENDING,
-        external_timestamp=_now,
-    )
-    db.add(row)
-    # Faz 10 (P2): "[Medya]" yerine paylasilan kuralin tip etiketi.
-    await db.commit()
-    try:
-        gateway_result = await _gateway_op_or_mark_relink(
-            db, session_row, lambda gid: gw.send_media_message(gid, jid, media)
-        )
-    except Exception as exc:
-        await db.refresh(row)
-        if row.status == ConversationMessageStatus.PENDING:
-            row.status = ConversationMessageStatus.FAILED
-            row.failed_at = datetime.utcnow()
-            row.error_message = str(exc)[:300]
-            await db.commit()
-        raise
-    await db.refresh(row)
-    send_res = extract_send_result(gateway_result)
-    row.wa_message_id = send_res["wa_message_id"] or row.wa_message_id
-    _advance_message_status(row, send_res["status"])
-    _apply_last_message(
-        conv,
-        datetime.utcnow(),
-        build_last_message_summary(
-            message_type=mtype_str,
-            body=caption or filename,
-            direction=MessageDirection.OUTBOUND.value,
-        ),
-    )
-    await db.commit()
-    return _serialize_message(row)
+    return await _messaging_orchestrator.send_media_message(db, user_id, conversation_id, media)
 
 
 async def mark_conversation_read(db: AsyncSession, user_id: str, conversation_id: int) -> Dict[str, Any]:
-    """Sohbeti okundu isaretler.
-
-    Faz 13 (truthfulness): gateway'e okundu bilgisi ILETILEMEZSE `success=False`
-    doner. Onceden gateway hatasi yutulup her durumda `success: True` donuyordu
-    — karsi taraf mesaji hala "okunmadi" gorurken UI "okundu" gosteriyordu
-    (sahte basari). Yerel CRM sayaci yine sifirlanir (kullanici mesaji bu UI'da
-    gordu), ancak gercek iletim durumu cagirana DOGRU bildirilir.
-    """
-    conv, jid = await _resolve_jid(db, user_id, conversation_id)
-    gateway_ok = True
-    gateway_error: Optional[str] = None
-    try:
-        session_row = await _conversation_session(db, user_id, conv)
-        await _gateway_op_or_mark_relink(
-            db, session_row, lambda gid: gw.mark_conversation_read(gid, jid)
-        )
-    except WhatsAppRelinkRequired:
-        gateway_ok = False
-        gateway_error = "WHATSAPP_AUTH_RELINK_REQUIRED"
-    except Exception as exc:
-        gateway_ok = False
-        gateway_error = str(exc)[:300]
-        logger.warning("Gateway okundu isareti iletilemedi (conv=%s): %s", conversation_id, exc)
-    if conv.unread_count > 0 or conv.last_read_at is None:
-        conv.unread_count = 0
-        conv.last_read_at = datetime.utcnow()
-        await db.commit()
-    result: Dict[str, Any] = {"success": gateway_ok}
-    if gateway_error:
-        result["error"] = gateway_error
-    return result
+    return await _messaging_orchestrator.mark_conversation_read(db, user_id, conversation_id)
 
 
 async def send_typing(db: AsyncSession, user_id: str, conversation_id: int, typing: bool = True) -> Dict[str, Any]:
-    """Karsı tarafa 'yazıyor...' gostermesi gonderir (WhatsApp Web paritesi)."""
-    conv, jid = await _resolve_jid(db, user_id, conversation_id)
-    session_row = await _conversation_session(db, user_id, conv)
-    result = await _gateway_op_or_mark_relink(
-        db, session_row, lambda gid: gw.send_typing(gid, jid, typing=typing)
-    )
-    return {
-        "success": bool(result.get("success")) if isinstance(result, dict) else False,
-        "error": result.get("error") if isinstance(result, dict) else "Gateway returned an invalid typing response.",
-    }
+    return await _messaging_orchestrator.send_typing(db, user_id, conversation_id, typing=typing)
 
 
 async def get_media_bytes(db: AsyncSession, user_id: str, media_id: str) -> Tuple[bytes, Optional[str], Optional[str]]:
-    """Kullaniciya ait bir mesaja ait medyayi gateway'den proxy'ler.
+    return await _messaging_orchestrator.get_media_bytes(db, user_id, media_id)
 
-    Doner: (baytlar, mime_type, filename). Medya kaydi yoksa/erisim yoksa LookupError.
-    """
-    res = await db.execute(
-        select(Message).where(
-            Message.media_id == media_id,
-            get_user_filter(Message.user_id, user_id),
-        )
-    )
-    row = res.scalars().first()
-    if row is None:
-        raise LookupError(f"Medya bulunamadi: {media_id}")
-    conv = await db.get(Conversation, row.conversation_id)
-    if conv is None:
-        raise LookupError(f"Medya bulunamadi: {media_id}")
-    gateway_id = await _conversation_gateway_id(db, user_id, conv)
-    data = await gw.fetch_media(gateway_id, media_id)
-    return data, row.media_mime_type, row.media_filename
 
 
 # ---------------------------------------------------------------------------

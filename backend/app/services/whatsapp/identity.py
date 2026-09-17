@@ -7,6 +7,8 @@ Pure, deterministic, database-independent, network-independent identity function
 
 from typing import Any, Dict, Optional
 
+SYSTEM_USER_ID = "00000000-0000-0000-0000-000000000000"
+
 # Contact name precedence dictionary (WhatsApp Web parity)
 NAME_RANK: Dict[str, int] = {
     "addressbook": 5,
