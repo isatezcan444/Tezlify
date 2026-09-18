@@ -462,10 +462,12 @@ async def list_conversations(
             clean = c.phone_e164.replace("jid:", "").strip()
             candidate_lids.append(clean if "@" in clean else f"{clean}@lid")
     if candidate_lids:
+        raw_lids = [l.split("@")[0] for l in candidate_lids]
+        search_lids = list(set(candidate_lids + raw_lids + [f"{l}@lid" for l in raw_lids]))
         try:
             lid_res = await db.execute(
                 text("SELECT lid_jid, phone_jid FROM whatsapp_private.lid_mappings WHERE lid_jid = ANY(:lids)"),
-                {"lids": candidate_lids},
+                {"lids": search_lids},
             )
             for row in lid_res.fetchall():
                 if row[0] and row[1]:
@@ -473,10 +475,12 @@ async def list_conversations(
                     if pn:
                         lid_map[row[0]] = pn
                         lid_map[row[0].split("@")[0]] = pn
+                        lid_map[f"{row[0].split('@')[0]}@lid"] = pn
         except Exception as e:
             logger.warning("Failed to batch-resolve LID mappings in list_conversations: %s", e)
 
     seen_self_conversation = False
+    updated_contacts = False
     out: List[Dict[str, Any]] = []
     for r in rows:
         contact = r.contact or contacts_map.get(r.contact_id)
@@ -484,11 +488,19 @@ async def list_conversations(
 
         if phone and "@lid" in phone:
             clean_lid = phone.replace("jid:", "").strip()
-            resolved_pn = lid_map.get(clean_lid) or lid_map.get(clean_lid.split("@")[0])
+            resolved_pn = lid_map.get(clean_lid) or lid_map.get(clean_lid.split("@")[0]) or lid_map.get(f"{clean_lid.split('@')[0]}@lid")
             if resolved_pn:
                 phone = resolved_pn
                 if contact and contact.phone_e164 != resolved_pn:
                     contact.phone_e164 = resolved_pn
+                    updated_contacts = True
+                    try:
+                        await db.execute(
+                            text("UPDATE messages SET sender_phone = :pn WHERE conversation_id = :cid AND sender_phone LIKE '%@lid'"),
+                            {"pn": resolved_pn, "cid": r.id},
+                        )
+                    except Exception:
+                        pass
 
         if phone and active_sess_phone and _is_self_identity(phone, active_sess_phone):
             if seen_self_conversation:
@@ -536,6 +548,11 @@ async def list_conversations(
                 "status": r.status.value if hasattr(r.status, "value") else str(r.status),
             }
         )
+    if updated_contacts:
+        try:
+            await db.commit()
+        except Exception as e:
+            logger.warning("Failed to commit healed LID contacts in list_conversations: %s", e)
     return out, total
 # ---------------------------------------------------------------------------
 # Mesajlar & gonderme

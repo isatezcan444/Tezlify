@@ -166,10 +166,17 @@ export function isRealContactName(name?: string | null): boolean {
   const lower = trimmed.toLowerCase();
   if (
     lower === 'lead' ||
+    lower === 'kişi' ||
+    lower === 'kisi' ||
+    lower === 'contact' ||
+    lower === 'contacts' ||
     lower === 'isimsiz müşteri' ||
+    lower === 'isimsiz musteri' ||
     lower === 'whatsapp kişisi' ||
+    lower === 'whatsapp kisi' ||
     lower === 'whatsapp contact' ||
     lower.includes('kişi kimliği') ||
+    lower.includes('kisi kimligi') ||
     lower.includes('resolving identity')
   ) {
     return false;

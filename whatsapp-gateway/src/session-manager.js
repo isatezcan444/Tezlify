@@ -638,6 +638,75 @@ export function createSessionManager({
   const sessions = new Map(); // manager-local: no cross-instance/session leakage
   const mediaIndex = new Map(); // every entry is scoped by its owning session
 
+  async function syncLidMappingsFromDisk(sessionId, store) {
+    let count = 0;
+    const session = sessionManager.getSession(sessionId);
+    try {
+      const scanDirs = new Set();
+      if (sessionId) {
+        scanDirs.add(getSessionDir(sessionsDir, sessionId));
+      }
+      if (fs.existsSync(sessionsDir)) {
+        for (const item of fs.readdirSync(sessionsDir)) {
+          const itemPath = path.join(sessionsDir, item);
+          try {
+            if (fs.statSync(itemPath).isDirectory()) {
+              scanDirs.add(itemPath);
+            }
+          } catch { /* ignore */ }
+        }
+      }
+
+      for (const dir of scanDirs) {
+        if (!fs.existsSync(dir)) continue;
+        const dirSessionId = path.basename(dir);
+        let files = [];
+        try {
+          files = fs.readdirSync(dir);
+        } catch {
+          continue;
+        }
+        for (const file of files) {
+          if (!file.startsWith('lid-mapping-') || !file.endsWith('.json')) continue;
+          let pnUser = null;
+          let lidUser = null;
+          const fullPath = path.join(dir, file);
+          if (file.endsWith('_reverse.json')) {
+            lidUser = file.slice('lid-mapping-'.length, -'_reverse.json'.length);
+            try {
+              const raw = fs.readFileSync(fullPath, 'utf8').trim();
+              pnUser = JSON.parse(raw);
+            } catch { /* ignore */ }
+          } else {
+            pnUser = file.slice('lid-mapping-'.length, -'.json'.length);
+            try {
+              const raw = fs.readFileSync(fullPath, 'utf8').trim();
+              lidUser = JSON.parse(raw);
+            } catch { /* ignore */ }
+          }
+          if (pnUser && lidUser && typeof pnUser === 'string' && typeof lidUser === 'string' && !pnUser.includes('@') && !lidUser.includes('@')) {
+            const lidJid = `${lidUser}@lid`;
+            const phoneJid = `${pnUser}@s.whatsapp.net`;
+            if (store) {
+              rememberLidPair(store, lidJid, phoneJid);
+            }
+            void persistLidMappingToDb(sessionId || dirSessionId, lidJid, phoneJid);
+            if (session) {
+              sessionManager._applyLidMapping(session, lidJid, phoneJid);
+            }
+            count += 1;
+          }
+        }
+      }
+      if (count > 0) {
+        logger.info({ sessionId, count }, 'Synced LID mappings from disk to memory & DB');
+      }
+    } catch (diskErr) {
+      logger.warn({ err: diskErr?.message, sessionId }, 'Failed to sync LID mappings from disk');
+    }
+    return count;
+  }
+
   async function persistLidMappingToDb(sessionId, lid, phoneJid) {
     if (!pool || !sessionId || !lid || !phoneJid) return;
     try {
@@ -653,7 +722,10 @@ export function createSessionManager({
   }
 
   async function loadLidMappingsFromDb(sessionId, store) {
-    if (!pool || !sessionId || !store) return 0;
+    if (!sessionId || !store) return 0;
+    // 1. Sync any file-based LID mappings from disk first
+    await syncLidMappingsFromDisk(sessionId, store);
+    if (!pool) return 0;
     try {
       const res = await pool.query(
         `SELECT DISTINCT ON (lid_jid) lid_jid, phone_jid 
@@ -2214,6 +2286,41 @@ export function createSessionManager({
         ? await authRepository.createAuthState(id)
         : await useMultiFileAuthState(sessionDir);
       latency('auth_state_load_ms', authLoadStarted, id);
+
+      // Intercept state.keys.set to ensure any LID mappings discovered by Baileys are immediately persisted and applied
+      if (state?.keys?.set) {
+        const origKeysSet = state.keys.set.bind(state.keys);
+        state.keys.set = async (data) => {
+          await origKeysSet(data);
+          try {
+            const lidData = data && data['lid-mapping'];
+            if (lidData && typeof lidData === 'object') {
+              for (const [k, val] of Object.entries(lidData)) {
+                if (!val || typeof val !== 'string') continue;
+                let pnUser = null;
+                let lidUser = null;
+                if (k.endsWith('_reverse')) {
+                  lidUser = k.replace('_reverse', '');
+                  pnUser = val;
+                } else {
+                  pnUser = k;
+                  lidUser = val;
+                }
+                if (pnUser && lidUser && !pnUser.includes('@') && !lidUser.includes('@')) {
+                  const lidJid = `${lidUser}@lid`;
+                  const phoneJid = `${pnUser}@s.whatsapp.net`;
+                  rememberLidPair(session.store, lidJid, phoneJid);
+                  void persistLidMappingToDb(session.id, lidJid, phoneJid);
+                  sessionManager._applyLidMapping(session, lidJid, phoneJid);
+                }
+              }
+            }
+          } catch (interceptErr) {
+            logger.warn({ err: interceptErr?.message }, 'Failed to intercept lid-mapping in state.keys.set');
+          }
+        };
+      }
+
       diagnostic('auth_state_loaded', {
         session_ref: sessionRef(id),
         generation,
