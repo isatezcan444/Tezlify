@@ -29,7 +29,7 @@ import { ApiClient } from '../api/client';
 import { startWaLatency } from '../features/whatsapp/lib/whatsappLatency';
 import { mergeDeliveryStatus, mergeWhatsAppMessages } from '../features/whatsapp/lib/whatsappMessageMerge';
 import { WhatsAppRepository } from '../features/whatsapp/data/whatsappRepository';
-import { compareConversationsByActivityDesc } from '../features/whatsapp/lib/whatsappOrdering';
+import { compareConversationsByActivityDesc, getConversationActivityTimestamp } from '../features/whatsapp/lib/whatsappOrdering';
 import { WhatsAppSession, Conversation, ConversationStatus, ConversationMessageStatus, Lead, Message, LiveModeStatus, SessionSyncState } from '../types';
 import { WhatsAppApi, useLiveMode, probeLive, invalidateLiveProbe, isLiveCached, mapConversationItem, mapMessageItem } from '../features/whatsapp/api/whatsappApi';
 import { Button } from '../components/ui/button';
@@ -324,7 +324,30 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         offset: 0,
       });
       if (generation !== conversationsGenerationRef.current) return;
-      setConversations(page.items);
+      // Bu istek yalnizca ILK sayfayi (offset=0) getirir. Eskiden burada
+      // `setConversations(page.items)` ile listenin tamami degistiriliyordu;
+      // sonuc: kullanici 150 satir yukleyip kaydirdiktan sonra gelen sessiz bir
+      // yenileme (session olayi / WS reconnect / conversations_updated) 51-150
+      // arasi satirlari sessizce siliyordu. Artik ilk sayfa otoriter kabul
+      // edilir, yerel olarak yuklenmis DAHA ESKI sayfalar korunur.
+      setConversations((prev) => {
+        const pageIds = new Set(page.items.map((c) => c.id));
+        // has_more=false ise ilk sayfa zaten tum listedir -> hicbir sey korunmaz.
+        const pageTailTs =
+          page.has_more && page.items.length
+            ? getConversationActivityTimestamp(page.items[page.items.length - 1])
+            : Number.NEGATIVE_INFINITY;
+        const retained = prev.filter(
+          (c) =>
+            !pageIds.has(c.id) &&
+            // Yalnizca gercekten bu sayfanin ARDINDAN gelen (daha eski) satirlar
+            // korunur. Ilk sayfadan daha yeni bir satir sunucuda artik yok
+            // demektir; birakilir.
+            getConversationActivityTimestamp(c) <= pageTailTs
+        );
+        if (!retained.length) return page.items;
+        return [...page.items, ...retained].sort(compareByLastMessageDesc);
+      });
       setHasMoreConvs(page.has_more);
       nextConvOffsetRef.current = page.next_offset ?? page.items.length;
       totalConvsRef.current = page.total;
@@ -585,13 +608,51 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   };
 
   const handleStatusChange = async (convId: number, newStatus: ConversationStatus) => {
+    // Truthfulness (AGENTS.md §1.1): eskiden yalnizca yerel state degistirilip
+    // kosulsuz basari toast'i gosteriliyordu; kalici yazma YOKTU ve degisiklik
+    // bir sonraki yenilemede sessizce geri donuyordu. Artik gercek PATCH
+    // cagrisi yapilir; hata halinde gercek hata gosterilir ve yalnizca bu
+    // sohbetin durumu geri alinir (tum liste degil).
+    const previousStatus: ConversationStatus =
+      conversations.find((c) => c.id === convId)?.status || 'ACTIVE';
+    const previousSelectedStatus =
+      selectedConv && selectedConv.id === convId ? selectedConv.status : null;
+
     setConversations((prev) =>
       prev.map((c) => (c.id === convId ? { ...c, status: newStatus } : c))
     );
     if (selectedConv && selectedConv.id === convId) {
       setSelectedConv((prev) => (prev ? { ...prev, status: newStatus } : prev));
     }
-    toast.success(t('whatsapp.statusUpdated') || 'Durum güncellendi', t('common.success'));
+    try {
+      const res = await WhatsAppRepository.updateConversationStatus(convId, newStatus);
+      const applied = (res.status as ConversationStatus) || newStatus;
+      setConversations((prev) =>
+        prev.map((c) => (c.id === convId ? { ...c, status: applied } : c))
+      );
+      if (selectedConv && selectedConv.id === convId) {
+        setSelectedConv((prev) => (prev ? { ...prev, status: applied } : prev));
+      }
+      toast.success(t('whatsapp.statusUpdated'), t('common.success'));
+    } catch (err: any) {
+      setConversations((prev) =>
+        prev.map((c) => (c.id === convId ? { ...c, status: previousStatus } : c))
+      );
+      if (previousSelectedStatus !== null) {
+        setSelectedConv((prev) =>
+          prev && prev.id === convId ? { ...prev, status: previousSelectedStatus } : prev
+        );
+      }
+      console.warn('[WhatsAppHubPage] Conversation status update failed', {
+        conversationId: convId,
+        status: newStatus,
+        error: err?.message || String(err),
+      });
+      toast.error(
+        err?.message || t('whatsapp.statusUpdateFailed'),
+        t('common.error')
+      );
+    }
   };
 
   const activeSendMessage = async (text: string) => {
@@ -1259,13 +1320,18 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
 
       if (eventData.event === 'new_conversation' || eventData.event === 'conversations_updated') {
         if (eventData.conversation && eventData.conversation.id) {
-          // Targeted insertion without full list refetch
+          // Targeted insertion without full list refetch.
+          // `mapConversationItem` yalnizca payload'da GERCEKTEN gonderilen
+          // alanlari kopyalar (kismi realtime payload'larin mevcut ad/telefon
+          // bilgisini `undefined` ile silmesini engeller). Yeni bir satir
+          // eklenirken zorunlu alanlar burada varsayilanlanir.
           const mapped = mapConversationItem(eventData.conversation);
           setConversations((prev) => {
             if (prev.some((c) => c.id === mapped.id)) {
               return prev.map((c) => (c.id === mapped.id ? { ...c, ...mapped } : c)).sort(compareByLastMessageDesc);
             }
-            return [mapped, ...prev].sort(compareByLastMessageDesc);
+            const fresh = { status: 'ACTIVE' as ConversationStatus, unread_count: 0, ...mapped };
+            return [fresh, ...prev].sort(compareByLastMessageDesc);
           });
         } else if (eventData.conversation_id) {
           hydrateConversation(Number(eventData.conversation_id));

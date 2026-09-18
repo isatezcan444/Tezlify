@@ -14,6 +14,7 @@
 import 'dotenv/config';
 import express from 'express';
 import http from 'http';
+import pino from 'pino';
 import { WebSocketServer } from 'ws';
 import { createSessionManager } from './session-manager.js';
 import { createEventBridge } from './events.js';
@@ -27,6 +28,11 @@ import { createGatewayPostgresPool } from './database/postgres-pool.js';
 import { createPostgresSessionLease } from './lease/postgres-session-lease.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// `logger` asagidaki onLidMappingDiscovered handler'inda kullaniliyordu ama
+// hicbir yerde tanimli/import edilmemisti; LID uygulama hatasi oldugunda
+// `logger.warn` ReferenceError firlatiyor ve ASIL hatayi maskeliyordu.
+const logger = pino({ level: process.env.LOG_LEVEL || 'warn' });
 
 const PORT = parseInt(process.env.GATEWAY_PORT || '8787', 10);
 const HOST = process.env.GATEWAY_HOST || '127.0.0.1';

@@ -1504,14 +1504,21 @@ export function createSessionManager({
         gatewayError = err?.message || String(err);
         logger.warn({ err }, 'Mark read error');
       }
-      const chat = chats.get(key);
-      if (chat) chat.unread_count = 0;
-      emitEvent({
-        event: 'conversation_read',
-        conversation_id: key,
-        unread_count: 0,
-        gateway_session_id: session.id,
-      });
+      // Faz 13 sozlesmesi (yukaridaki yorum): okundu bilgisi WhatsApp'a
+      // ILETILEMEDIYSE basari donmeyiz. Ama eski kod basarisizlikta bile
+      // unread_count'u sifirliyor ve `conversation_read` yayinliyordu —
+      // yani UI "okundu" gosterirken karsi taraf mesaji okunmamis goruyordu.
+      // Artik yerel durum ve olay YALNIZCA gercek basari yolunda guncellenir.
+      if (gatewayOk) {
+        const chat = chats.get(key);
+        if (chat) chat.unread_count = 0;
+        emitEvent({
+          event: 'conversation_read',
+          conversation_id: key,
+          unread_count: 0,
+          gateway_session_id: session.id,
+        });
+      }
       return gatewayOk ? { success: true } : { success: false, error: gatewayError };
     },
 

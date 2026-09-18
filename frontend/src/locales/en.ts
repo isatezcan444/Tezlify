@@ -462,6 +462,7 @@ export const en = {
     close: 'Close',
     reopen: 'Reopen',
     statusUpdated: 'Conversation status updated',
+    statusUpdateFailed: 'Conversation status could not be updated',
     messageSent: 'Message sent successfully',
     closedComposerNotice: 'This conversation is closed. Please reopen it to send messages.',
     closedPlaceholder: 'Conversation is closed...',

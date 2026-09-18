@@ -15,6 +15,8 @@ from backend.app.schemas.whatsapp import (
     WhatsAppAvatarRefreshResponse,
     WhatsAppContactListResponse,
     WhatsAppConversationListResponse,
+    WhatsAppConversationStatusRequest,
+    WhatsAppConversationStatusResult,
     WhatsAppMessagesResponse,
     WhatsAppPairingCodeRequest,
     WhatsAppPairingCodeResponse,
@@ -517,6 +519,33 @@ async def send_typing(
         success=bool(result.get("success", True)),
         error=result.get("error"),
     )
+
+
+@router.patch(
+    "/conversations/{conversation_id}/status",
+    response_model=WhatsAppConversationStatusResult,
+)
+async def update_conversation_status(
+    conversation_id: int,
+    payload: WhatsAppConversationStatusRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+) -> WhatsAppConversationStatusResult:
+    """Sohbeti arsivle / kapat / yeniden ac (kalici).
+
+    Gateway'e ihtiyac duymaz: bu kullanicinin CRM seviyesindeki aksiyonudur.
+    """
+    try:
+        result = await whatsapp_service.update_conversation_status(
+            db, current_user.id, conversation_id, payload.status
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+    except LookupError as exc:
+        raise _not_found(exc) from exc
+    return WhatsAppConversationStatusResult(id=result["id"], status=result["status"])
 
 
 @router.get("/media/{media_id}")

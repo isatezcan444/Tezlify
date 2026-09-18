@@ -39,6 +39,7 @@ from backend.app.services.whatsapp.identity import (
     is_degenerate_jid,
     is_raw_jid_name as _is_raw_jid_name,
     is_self_identity as _is_self_identity,
+    resolve_contact_identity as _resolve_contact_identity,
     strip_jid_prefix as _strip_jid_prefix,
     jid_to_phone,
 )
@@ -172,6 +173,11 @@ class WhatsAppEventOrchestrator:
                 if _set_contact_name(self_contact, display_name, name_source):
                     await db.flush()
                 return self_contact
+            # Kendi kimligimize ait contact kaydi henuz yok: `phone_e164` bu
+            # dalda atanmadigi icin asagidaki sorgu UnboundLocalError ile
+            # patliyordu ve olay sessizce dusuyordu. Aday JID'in kendi
+            # telefonuna duserek devam et.
+            phone_e164 = _contact_phone_for_jid(clean_jid)
         else:
             if "@lid" in clean_jid:
                 # Check if this LID is already mapped in whatsapp_private.lid_mappings
@@ -210,13 +216,30 @@ class WhatsAppEventOrchestrator:
                     contact.phone_e164 = phone_e164
                     await db.flush()
         if not contact:
+            # Phase 15.4 paritesi: 'push' karsi tarafin KENDI sectigi profil
+            # takma adidir, kullanicinin rehber kaydi DEGILDIR. Bu yuzden
+            # `display_name` olarak ASLA yazilmaz — yalnizca
+            # `custom_attributes['push_name']` metadata'si olarak saklanir.
+            # `_set_contact_name` (repositories/contacts.py) ve bulk sync yolu
+            # (sync.py) bu kurali uyguluyordu; contact CREATE dali uygulamiyordu
+            # ve yabanci numaranin pushName'i veritabanina ad olarak yaziliyordu.
+            name_source_str = str(name_source or "")
+            is_push_name = name_source_str == "push"
+            clean_name = (
+                str(display_name).strip()
+                if display_name and not is_push_name and not _is_raw_jid_name(display_name)
+                else None
+            )
             contact = Contact(
                 user_id=user_id,
                 phone_e164=phone_e164,
-                display_name=(None if _is_raw_jid_name(display_name) else display_name) or jid_to_phone(clean_jid),
+                display_name=clean_name or jid_to_phone(clean_jid),
             )
-            if display_name and str(name_source or "") in _NAME_RANK:
-                contact.custom_attributes = {"name_source": str(name_source)}
+            if display_name and name_source_str in _NAME_RANK:
+                attrs: Dict[str, Any] = {"name_source": name_source_str}
+                if is_push_name and not _is_raw_jid_name(display_name):
+                    attrs["push_name"] = str(display_name).strip()[:150]
+                contact.custom_attributes = attrs
             try:
                 async with db.begin_nested():
                     db.add(contact)
@@ -645,12 +668,47 @@ class WhatsAppEventOrchestrator:
         if reconciled:
             event["reconciled_conversation_id"] = reconciled.id
             event["event"] = "conversations_updated"
+            # REST ve WebSocket AYNI conversation sozlesmesini tasimali.
+            # Onceden burada yalnizca `lead_phone` gonderiliyordu; frontend
+            # mapper'i (`mapConversationItem`) `phone` okudugu icin alan
+            # undefined kaliyor ve `{...existing, ...mapped}` birlestirmesi
+            # sohbetin adini VE telefonunu siliyordu (kimlik kaybi).
+            # Artik REST `list_conversations` ile ayni alan adlari uretilir.
+            rc_contact = reconciled.contact
+            rc_phone = rc_contact.phone_e164 if rc_contact else clean_phone
+            rc_is_group = bool(reconciled.is_group) or bool(rc_phone and "@g.us" in str(rc_phone))
+            rc_name, rc_id_state = _resolve_contact_identity(
+                rc_contact, phone=rc_phone, is_group=rc_is_group
+            )
             event["conversation"] = {
                 "id": reconciled.id,
                 "archived_lid": clean_lid,
-                "lead_phone": reconciled.contact.phone_e164 if reconciled.contact else clean_phone,
-                "last_message_preview": reconciled.last_message_preview,
-                "last_message_at": reconciled.last_message_at.isoformat() if reconciled.last_message_at else None,
+                "session_id": reconciled.session_id,
+                "contact_id": reconciled.contact_id,
+                "lead_id": reconciled.lead_id,
+                "name": rc_name,
+                "phone": rc_phone,
+                "identity_state": rc_id_state,
+                "is_group": rc_is_group,
+                "is_archived": bool(reconciled.is_archived),
+                "avatar_url": _get_contact_avatar(rc_contact),
+                "last_message_preview": _normalize_preview_text(
+                    None, reconciled.last_message_preview
+                )
+                or None,
+                "last_message_at": reconciled.last_message_at.isoformat()
+                if reconciled.last_message_at
+                else None,
+                "created_at": reconciled.created_at.isoformat()
+                if reconciled.created_at
+                else None,
+                "updated_at": reconciled.updated_at.isoformat()
+                if reconciled.updated_at
+                else None,
+                "unread_count": reconciled.unread_count,
+                "status": reconciled.status.value
+                if hasattr(reconciled.status, "value")
+                else str(reconciled.status),
             }
         return event
 

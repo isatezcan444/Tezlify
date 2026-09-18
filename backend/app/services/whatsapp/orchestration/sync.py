@@ -408,6 +408,14 @@ class WhatsAppSyncOrchestrator:
                 continue
             conv.last_message_preview = summary[:500]
             ts = _as_naive_utc(newest.external_timestamp or newest.sent_at or newest.created_at)
+            # NOT: burada monotonluk kontrolu BILEREK yoktur. Bu onarim yalnizca
+            # `last_message_preview` NULL/bos/legacy olan sohbetleri hedefler
+            # (bkz. yukaridaki aday filtresi) — yani senkronun hic yazmadigi,
+            # zaman damgasi guvenilmez kayitlari. Gecmisteki "zehirli"
+            # (ornegin utcnow() ile sismis) last_message_at tam olarak burada
+            # gercek en yeni mesaja GERI cekilir. Bu davranis
+            # test_whatsapp_faz10_preview_groupnames.py::test_repair_fixes_poisoned_timestamp
+            # ile sabitlenmistir.
             if ts is not None:
                 conv.last_message_at = ts
             fixed += 1

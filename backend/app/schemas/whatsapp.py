@@ -175,6 +175,21 @@ class WhatsAppTypingRequest(BaseModel):
     typing: bool = Field(default=True, description="True='yazıyor', False='duraklat'")
 
 
+class WhatsAppConversationStatusRequest(BaseModel):
+    """Kullanicinin acik sohbet aksiyonu (ACTIVE / ARCHIVED / CLOSED).
+
+    WhatsApp arsiv durumu (gateway metadata'sindan senkronlanan `is_archived`)
+    ile karistirilmamalidir.
+    """
+
+    status: str = Field(..., description="ACTIVE | ARCHIVED | CLOSED")
+
+
+class WhatsAppConversationStatusResult(BaseModel):
+    id: int
+    status: str
+
+
 class WhatsAppSendResult(BaseModel):
     id: Optional[Any] = None
     wa_message_id: Optional[str] = None

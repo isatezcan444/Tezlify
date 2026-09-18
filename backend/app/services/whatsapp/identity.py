@@ -105,17 +105,39 @@ def is_raw_jid_name(value: Optional[str]) -> bool:
 
 def safe_display_name(contact: Optional[Any]) -> Optional[str]:
     """UI icin guvenli gorunen ad: ham jid/lid sizarca None'a cevrilir
-    (frontend normalize edilmis telefona veya push_name fallback'ine duser)."""
+    (frontend normalize edilmis telefona veya push_name fallback'ine duser).
+
+    Phase 15.4: `name_source == 'push'` ise `display_name` karsi tarafin KENDI
+    profil takma adidir — kullanicinin rehber kaydi degildir. Telefon
+    cozulebiliyorsa ad olarak DONDURULMEZ (WhatsApp Web paritesi: yabanci
+    numarada `+90...` gosterilir). Bu, `resolve_contact_identity` adim 2/3 ile
+    ayni davranistir; boylece REST ve WebSocket ayni kimligi uretir.
+
+    Telefon cozulemiyorsa (ornegin eslesmemis LID) push adi fallback olarak
+    kullanilir — `resolve_contact_identity` adim 4 ile ayni kural.
+    """
     if contact is None:
         return None
+    custom = getattr(contact, "custom_attributes", None)
+    attrs = custom if isinstance(custom, dict) else {}
+    name_source = str(attrs.get("name_source") or "")
+
     name = getattr(contact, "display_name", None)
     if name and not is_raw_jid_name(name) and str(name).strip():
-        return str(name).strip()
-    custom = getattr(contact, "custom_attributes", None)
-    if isinstance(custom, dict):
-        push_name = custom.get("push_name")
-        if push_name and not is_raw_jid_name(push_name) and str(push_name).strip():
-            return str(push_name).strip()
+        if name_source != "push":
+            return str(name).strip()
+        # name_source == 'push': `display_name` karsi tarafin KENDI profil
+        # takma adidir. Telefon cozulebiliyorsa takma ad AD olarak
+        # dondurulmez — onun yerine normalize telefon doner. Bu, REST'in
+        # `resolve_contact_identity` adim 2/3 cikitisi (RESOLVED_PHONE) ile
+        # ayni sonucu verir, boylece REST ve WebSocket ayrisamaz.
+        # Telefon cozulemiyorsa (ornegin eslesmemis LID) takma ad fallback
+        # olur — `resolve_contact_identity` adim 4 ile ayni kural.
+        return extract_clean_phone(getattr(contact, "phone_e164", None)) or str(name).strip()
+
+    push_name = attrs.get("push_name")
+    if push_name and not is_raw_jid_name(push_name) and str(push_name).strip():
+        return str(push_name).strip()
     return None
 
 

@@ -111,9 +111,14 @@ async def _gateway_op_or_mark_relink(
             row.gateway_id,
         )
         try:
+            # `ws_manager.broadcast(message, target_user_id=...)` — parametre
+            # adi `tenant_id` DEGIL. Yanlis kwarg TypeError firlatiyor ve
+            # asagidaki except tarafindan yutuluyordu; sonuc: relink gerektiren
+            # hattin durumu UI'a HIC bildirilmiyordu.
             await ws_manager.broadcast(
                 {
                     "event": "session_updated",
+                    "user_id": str(row.user_id),
                     "session": {
                         "id": row.id,
                         "session_id": row.id,
@@ -124,10 +129,10 @@ async def _gateway_op_or_mark_relink(
                         "error_message": "WHATSAPP_AUTH_RELINK_REQUIRED",
                     },
                 },
-                tenant_id=str(row.user_id),
+                target_user_id=str(row.user_id),
             )
         except Exception as ws_err:
-            logger.debug("[WhatsApp] Relink broadcast ws error: %s", ws_err)
+            logger.warning("[WhatsApp] Relink broadcast ws error: %s", ws_err)
         raise WhatsAppRelinkRequired(
             "WhatsApp bağlantısı geri yüklenemedi. Aynı hattı yeniden eşleştirin."
         ) from exc

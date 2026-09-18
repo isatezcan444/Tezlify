@@ -575,6 +575,34 @@ async def _hydrate_messages_on_demand(
     )
 
 
+async def _history_evidence_session_id(
+    db: AsyncSession, user_id: str, conv: Conversation
+) -> Optional[str]:
+    """`whatsapp_private.history_sync_states.session_id` anahtari GATEWAY oturum
+    UUID'sidir (TEXT FK -> gateway_sessions.session_id), backend integer PK'si
+    DEGILDIR. Yazicilar `str(session_row.gateway_id)` kullanir (sync.py).
+
+    Okuma tarafinda `conv.session_id` (integer) kullanildigi surece hicbir satir
+    eslesmiyordu; bu da (a) exhaustion/stall short-circuit'ini etkisiz kiliyor,
+    (b) `has_more` degerini sonsuza kadar True'ya geri ceviriyordu.
+
+    Tek sorguyla dogru anahtari cozer; eski/kaynagi olmayan satirlar icin
+    fail-soft None doner (sorguyu kirmaz).
+    """
+    if not conv.session_id:
+        return None
+    try:
+        gw_id = await _conversation_gateway_id(db, user_id, conv)
+    except Exception as exc:  # noqa: BLE001 - legacy rows may have no session row
+        logger.debug(
+            "History evidence session id unresolved (conv=%s): %s", conv.id, exc
+        )
+        return None
+    if not gw_id or gw_id == "None":
+        return None
+    return gw_id
+
+
 # _msg_time_col, _msg_time, _hydration_cursor_ms are imported from backend.app.services.whatsapp.repositories.messages
 
 
@@ -613,6 +641,10 @@ async def get_messages(
     base = base.order_by(_msg_time_col().desc(), Message.id.desc()).limit(page_size)
     res = await db.execute(base)
     rows = list(res.scalars().all())
+    # Phase 17 kanit tablosu GATEWAY oturum UUID'siyle anahtarlanir; bir kez
+    # cozup hem exhaustion kontrolunde hem evidence okumasinda ayni anahtari
+    # kullaniyoruz (yazicilarin kullandigi anahtarla ayni).
+    history_session_id = await _history_evidence_session_id(db, user_id, conv)
     # If DB has fewer than page_size rows, check if an in-flight operation is already fetching this page.
     if len(rows) < page_size:
         flight_key = (conv.id, before)
@@ -638,8 +670,9 @@ async def get_messages(
                         p_val = cres.scalar_one_or_none()
                         if p_val:
                             j_val = p_val[4:] if p_val.startswith("jid:") else _phone_to_jid(p_val)
-                            sid_opt = str(conv.session_id) if conv.session_id else None
-                            if j_val and await is_history_exhausted_or_stalled(db, j_val, session_id=sid_opt):
+                            if j_val and history_session_id and await is_history_exhausted_or_stalled(
+                                db, j_val, session_id=history_session_id
+                            ):
                                 should_skip_provider = True
 
                     if len(rows) < page_size and not should_skip_provider:
@@ -708,14 +741,14 @@ async def get_messages(
         "provider_msgs_returned": 0,
     }
 
-    if conv.session_id and conv.contact_id:
+    if history_session_id and conv.contact_id:
         try:
             cres = await db.execute(select(Contact.phone_e164).where(Contact.id == conv.contact_id))
             phone_val = cres.scalar_one_or_none()
             if phone_val:
                 jid_val = phone_val[4:] if phone_val.startswith("jid:") else _phone_to_jid(phone_val)
                 if jid_val:
-                    evidence = await get_history_evidence(db, jid_val, session_id=str(conv.session_id))
+                    evidence = await get_history_evidence(db, jid_val, session_id=history_session_id)
                     history_evidence = {
                         "state": evidence.get("state", "NOT_CHECKED"),
                         "provider_checked": bool(evidence.get("provider_checked", False)),
@@ -766,6 +799,63 @@ async def mark_conversation_read(db: AsyncSession, user_id: str, conversation_id
 
 async def send_typing(db: AsyncSession, user_id: str, conversation_id: int, typing: bool = True) -> Dict[str, Any]:
     return await _messaging_orchestrator.send_typing(db, user_id, conversation_id, typing=typing)
+
+
+@profiled("conversation_status_update")
+async def update_conversation_status(
+    db: AsyncSession, user_id: str, conversation_id: int, status: str
+) -> Dict[str, Any]:
+    """Sohbetin CRM durumunu (ACTIVE / ARCHIVED / CLOSED) KALICI olarak yazar.
+
+    WhatsApp'in kendi arsiv durumu (`Conversation.is_archived`, gateway
+    metadata'sindan senkronlanir) ile karistirilmamalidir — bu kullanicinin
+    acik aksiyonudur.
+
+    Truthfulness (AGENTS.md §1.1): UI bu islemi eskiden yalnizca yerel state'te
+    uygulayip basari toast'i gosteriyordu; hicbir kalici yazma yoktu ve
+    degisiklik bir sonraki yenilemede kayboluyordu. Artik gercek yazma yapilir
+    ve sonuc ayni tenant'in diger sekmelerine yayinlanir.
+    """
+    try:
+        target = ConversationStatus(str(status).strip().upper())
+    except ValueError as exc:
+        raise ValueError(f"Gecersiz sohbet durumu: {status}") from exc
+
+    conv = await _get_conversation_or_404(db, user_id, conversation_id)
+    if conv.status != target:
+        now = datetime.utcnow()
+        conv.status = target
+        if target == ConversationStatus.ARCHIVED:
+            conv.archived_at = now
+            conv.closed_at = None
+        elif target == ConversationStatus.CLOSED:
+            conv.closed_at = now
+        else:
+            conv.archived_at = None
+            conv.closed_at = None
+        conv.updated_at = now
+        await db.commit()
+        await db.refresh(conv)
+
+    result = {
+        "id": conv.id,
+        "status": conv.status.value if hasattr(conv.status, "value") else str(conv.status),
+    }
+    try:
+        from backend.app.api.v1.websocket import ws_manager
+
+        await ws_manager.broadcast(
+            {
+                "event": "conversation_status_updated",
+                "user_id": user_id,
+                "conversation_id": conv.id,
+                "status": result["status"],
+            },
+            target_user_id=user_id,
+        )
+    except Exception as exc:  # noqa: BLE001 - broadcast is best-effort
+        logger.debug("Conversation status broadcast failed (conv=%s): %s", conv.id, exc)
+    return result
 
 
 async def get_media_bytes(db: AsyncSession, user_id: str, media_id: str) -> Tuple[bytes, Optional[str], Optional[str]]:

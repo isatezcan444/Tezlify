@@ -81,7 +81,7 @@ async function apiGet<T>(path: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-async function apiSend<T>(path: string, method: 'POST' | 'DELETE', body?: unknown): Promise<T> {
+async function apiSend<T>(path: string, method: 'POST' | 'PATCH' | 'DELETE', body?: unknown): Promise<T> {
   const res = await authFetch(`${API_BASE}${path}`, {
     method,
     headers: body !== undefined ? { 'Content-Type': 'application/json' } : undefined,
@@ -180,33 +180,52 @@ interface BackendConversation {
   identity_state?: string | null;
 }
 
+/**
+ * Maps a backend conversation payload onto the frontend `Conversation` model.
+ *
+ * The backend emits this shape at two different completeness levels: the full
+ * REST list payload, and *partial* realtime payloads (`conversation_updated`,
+ * `conversations_updated`, sync snapshots). Callers merge the result with
+ * `{ ...existing, ...mapped }`, so writing a value for a field the backend did
+ * NOT send silently wipes known state — that is exactly how a LID
+ * reconciliation used to erase a conversation's name and phone.
+ *
+ * Rule: copy a field only when it is present in the payload (`!== undefined`).
+ * An explicit `null` IS authoritative ("the backend says there is none").
+ * Required fields (`status`, `unread_count`) are defaulted by the caller when a
+ * genuinely new row is inserted.
+ */
 function mapConversation(c: BackendConversation): Conversation {
   const isGroup = Boolean(c.is_group) || Boolean(c.phone?.endsWith('@g.us'));
-  return {
-    id: c.id,
-    session_id: c.session_id ?? null,
-    lead_id: c.lead_id ?? null,
-    contact_id: c.contact_id ?? null,
-    channel: 'WHATSAPP',
-    status: (c.status as ConversationStatus) || 'ACTIVE',
-    unread_count: c.unread_count ?? 0,
-    lead_name: c.name || undefined,
-    lead_phone: c.phone || undefined,
-    identity_state: c.identity_state || undefined,
-    is_group: isGroup,
-    is_archived: Boolean(c.is_archived),
-    lead_avatar_url: c.avatar_url || undefined,
-    last_message_preview: c.last_message_preview || undefined,
-    message_count: c.message_count ?? 0,
-    last_message_state: c.last_message_state || undefined,
-    // Never synthesize "now" for server data. A conversation without a
-    // message must remain at the end of a chronological list.
-    last_message_at: c.last_message_at ?? undefined,
-    // Missing timestamps are a backend contract/data-integrity problem; keep
-    // them absent so chronology never presents fabricated epoch dates.
-    created_at: c.created_at ?? undefined,
-    updated_at: c.updated_at ?? undefined,
-  };
+  const conv: Partial<Conversation> = { id: c.id, channel: 'WHATSAPP' };
+
+  if (c.session_id !== undefined) conv.session_id = c.session_id ?? null;
+  if (c.contact_id !== undefined) conv.contact_id = c.contact_id ?? null;
+  if (c.lead_id !== undefined) conv.lead_id = c.lead_id ?? null;
+  if (c.status !== undefined) conv.status = (c.status as ConversationStatus) || 'ACTIVE';
+  if (c.unread_count !== undefined) conv.unread_count = c.unread_count ?? 0;
+  if (c.name !== undefined) conv.lead_name = c.name || undefined;
+  if (c.phone !== undefined) conv.lead_phone = c.phone || undefined;
+  if (c.identity_state !== undefined) conv.identity_state = c.identity_state || undefined;
+  if (c.is_group !== undefined || c.phone !== undefined) conv.is_group = isGroup;
+  if (c.is_archived !== undefined) conv.is_archived = Boolean(c.is_archived);
+  if (c.avatar_url !== undefined) conv.lead_avatar_url = c.avatar_url || undefined;
+  if (c.last_message_preview !== undefined) {
+    conv.last_message_preview = c.last_message_preview || undefined;
+  }
+  if (c.message_count !== undefined) conv.message_count = c.message_count ?? 0;
+  if (c.last_message_state !== undefined) {
+    conv.last_message_state = c.last_message_state || undefined;
+  }
+  // Never synthesize "now" for server data. A conversation without a message
+  // must remain at the end of a chronological list. Missing timestamps are a
+  // backend contract/data-integrity problem; keep them absent so chronology
+  // never presents fabricated epoch dates.
+  if (c.last_message_at !== undefined) conv.last_message_at = c.last_message_at ?? undefined;
+  if (c.created_at !== undefined) conv.created_at = c.created_at ?? undefined;
+  if (c.updated_at !== undefined) conv.updated_at = c.updated_at ?? undefined;
+
+  return conv as Conversation;
 }
 
 interface BackendMessage {
@@ -481,6 +500,11 @@ export const WhatsAppApi = {
     if (params?.archived_only) qs.set('archived_only', 'true');
     if (params?.lead_id) qs.set('lead_id', String(params.lead_id));
     if (params?.conversation_id) qs.set('conversation_id', String(params.conversation_id));
+    // `search` was declared in the signature and passed by every caller but
+    // never appended to the querystring, so server-side search silently did
+    // nothing (only the ≤limit rows already in memory were filtered). The
+    // backend fully supports it (Contact.display_name / phone_e164 LIKE).
+    if (params?.search && params.search.trim()) qs.set('search', params.search.trim());
     const limit = params?.limit ?? 50;
     qs.set('limit', String(limit));
     if (params?.offset) qs.set('offset', String(params.offset));
@@ -647,6 +671,25 @@ export const WhatsAppApi = {
     const data = await apiSend<{ success: boolean; error?: string }>(`/whatsapp/conversations/${conversationId}/typing`, 'POST', { typing });
     if (!data.success) throw new WhatsAppApiError(data.error || '');
     return data;
+  },
+
+  /**
+   * Sohbetin CRM durumunu (ACTIVE / ARCHIVED / CLOSED) kalici olarak yazar.
+   *
+   * Truthfulness (AGENTS.md §1.1): UI bu aksiyonu eskiden yalnizca yerel
+   * state'te uygulayip basari toast'i gosteriyordu; hicbir kalici yazma
+   * yoktu ve degisiklik bir sonraki yenilemede kayboluyordu.
+   * Gateway'e ihtiyac duymaz.
+   */
+  async updateConversationStatus(
+    conversationId: number,
+    status: ConversationStatus,
+  ): Promise<{ id: number; status: string }> {
+    return apiSend<{ id: number; status: string }>(
+      `/whatsapp/conversations/${conversationId}/status`,
+      'PATCH',
+      { status },
+    );
   },
 
   /**

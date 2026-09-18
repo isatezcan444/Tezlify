@@ -321,10 +321,18 @@ export class WhatsAppRepository {
     };
   }
 
+  /**
+   * Sohbetin CRM durumunu kalici olarak yazar (ACTIVE / ARCHIVED / CLOSED).
+   *
+   * Phase 15.4: eskiden burada kosulsuz `throw` vardi; UI ise yerel state'i
+   * degistirip basari toast'i gosteriyordu (sahte basari — AGENTS.md §1.1).
+   * Artik gercek `PATCH /conversations/{id}/status` cagrisi yapilir ve
+   * gateway gerektirmez.
+   */
   static async updateConversationStatus(
-    _conversationId: number,
-    _status: ConversationStatus,
-  ): Promise<Conversation> {
-    throw new WhatsAppApiError('Konu\u015fma durumu gateway taraf\u0131ndan sa\u011flan\u0131r.');
+    conversationId: number,
+    status: ConversationStatus,
+  ): Promise<{ id: number; status: string }> {
+    return WhatsAppApi.updateConversationStatus(conversationId, status);
   }
 }

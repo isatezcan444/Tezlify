@@ -462,6 +462,7 @@ export const tr = {
     close: 'Kapat',
     reopen: 'Yeniden Aç',
     statusUpdated: 'Diyalog durumu güncellendi',
+    statusUpdateFailed: 'Diyalog durumu güncellenemedi',
     messageSent: 'Mesaj başarıyla iletildi',
     closedComposerNotice: 'Bu diyalog kapatılmıştır. Mesaj göndermek için lütfen diyaloğu yeniden açın.',
     closedPlaceholder: 'Diyalog kapalı...',

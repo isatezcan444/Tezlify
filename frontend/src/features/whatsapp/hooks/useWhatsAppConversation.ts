@@ -33,12 +33,20 @@ export function useWhatsAppConversation({
   const [loadingOlder, setLoadingOlder] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const isFetchingOlderRef = useRef(false);
+  // Stale-response guard: hizli lead/sohbet degisiminde (A -> B) A'nin yavas
+  // donen cevabi B'nin basligi altina yazilabiliyordu. Her fetch kendi
+  // neslini tasir; yalnizca en guncel neslin sonucu state'e yazilir.
+  const fetchGenerationRef = useRef(0);
 
   const fetchConversation = useCallback(async () => {
     if (!enabled || (!leadId && !conversationId)) {
+      fetchGenerationRef.current += 1;
       setConversation(null);
       return;
     }
+
+    const generation = ++fetchGenerationRef.current;
+    const isStale = () => generation !== fetchGenerationRef.current;
 
     setLoading(true);
     setError(null);
@@ -51,6 +59,7 @@ export function useWhatsAppConversation({
       } else {
         return;
       }
+      if (isStale()) return;
       data.messages = sortMessagesChronologically(data.messages || []);
       setConversation(data);
 
@@ -58,6 +67,7 @@ export function useWhatsAppConversation({
       if (autoMarkAsRead && data.unread_count > 0) {
         try {
           const res = await WhatsAppRepository.markConversationAsRead(data.id);
+          if (isStale()) return;
           setConversation((prev) => (prev ? { ...prev, unread_count: 0 } : null));
           // Faz 13: yerel sayac sifirlandi ama gateway'e ILETILEMEDIYSE
           // sessizce yutmayiz — gercek neden loglanir.
@@ -72,10 +82,11 @@ export function useWhatsAppConversation({
         }
       }
     } catch (err: any) {
+      if (isStale()) return;
       console.error('[useWhatsAppConversation] Fetch error:', err);
       setError(err.message || 'Failed to load conversation');
     } finally {
-      setLoading(false);
+      if (!isStale()) setLoading(false);
     }
   }, [leadId, conversationId, enabled, autoMarkAsRead, initialLimit]);
 
