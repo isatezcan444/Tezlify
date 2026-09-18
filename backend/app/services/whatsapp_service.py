@@ -100,6 +100,10 @@ from backend.app.services.whatsapp.orchestration.sessions import (
     request_pairing_code,
     start_pairing_session,
 )
+from backend.app.services.whatsapp.orchestration.history_evidence import (
+    get_history_evidence,
+    is_history_exhausted_or_stalled,
+)
 
 
 _in_flight_history_fetches: Dict[Tuple[int, Optional[int]], asyncio.Future] = {}
@@ -120,6 +124,7 @@ from backend.app.services.whatsapp.identity import (
     safe_display_name as _safe_display_name,
     resolve_contact_identity as _resolve_contact_identity,
     IdentityResolutionState as _IdentityResolutionState,
+    phone_to_jid as _phone_to_jid,
 )
 
 import sys
@@ -577,7 +582,19 @@ async def get_messages(
                     # Double-check inside lock
                     res = await db.execute(base)
                     rows = list(res.scalars().all())
-                    if len(rows) < page_size:
+
+                    # Check if already conclusively exhausted or stalled before calling provider
+                    should_skip_provider = False
+                    if conv.contact_id:
+                        cres = await db.execute(select(Contact.phone_e164).where(Contact.id == conv.contact_id))
+                        p_val = cres.scalar_one_or_none()
+                        if p_val:
+                            j_val = p_val[4:] if p_val.startswith("jid:") else _phone_to_jid(p_val)
+                            sid_opt = str(conv.session_id) if conv.session_id else None
+                            if j_val and await is_history_exhausted_or_stalled(db, j_val, session_id=sid_opt):
+                                should_skip_provider = True
+
+                    if len(rows) < page_size and not should_skip_provider:
                         if not rows and before is None:
                             older = await _hydrate_messages_on_demand(db, user_id, conv, page_size)
                             if older:
@@ -636,27 +653,37 @@ async def get_messages(
             if older_exists is not None:
                 has_more = True
 
-        if not has_more and conv.session_id:
-            try:
-                cres = await db.execute(select(Contact.phone_e164).where(Contact.id == conv.contact_id))
-                phone_val = cres.scalar_one_or_none()
-                if phone_val:
-                    jid_val = phone_val[4:] if phone_val.startswith("jid:") else phone_to_jid(phone_val)
-                    if jid_val:
-                        state_res = await db.execute(
-                            text(
-                                "SELECT has_more, completed_at FROM whatsapp_private.history_sync_states "
-                                "WHERE jid = :jid AND completed_at IS NOT NULL"
-                            ),
-                            {"jid": jid_val},
-                        )
-                        state_row = state_res.fetchone()
-                        if state_row is None:
+    history_evidence: Dict[str, Any] = {
+        "state": "NOT_CHECKED",
+        "provider_checked": False,
+        "provider_exhausted": False,
+        "provider_msgs_returned": 0,
+    }
+
+    if conv.session_id and conv.contact_id:
+        try:
+            cres = await db.execute(select(Contact.phone_e164).where(Contact.id == conv.contact_id))
+            phone_val = cres.scalar_one_or_none()
+            if phone_val:
+                jid_val = phone_val[4:] if phone_val.startswith("jid:") else _phone_to_jid(phone_val)
+                if jid_val:
+                    evidence = await get_history_evidence(db, jid_val, session_id=str(conv.session_id))
+                    history_evidence = {
+                        "state": evidence.get("state", "NOT_CHECKED"),
+                        "provider_checked": bool(evidence.get("provider_checked", False)),
+                        "provider_exhausted": bool(evidence.get("provider_exhausted", False)),
+                        "provider_msgs_returned": int(evidence.get("provider_msgs_returned", 0)),
+                    }
+                    if not has_more:
+                        st = evidence.get("state")
+                        if st in ("FULLY_EXHAUSTED", "CURSOR_STALLED") or evidence.get("provider_exhausted"):
+                            has_more = False
+                        else:
                             has_more = True
-            except Exception as e:
-                logger.debug("history_sync_states check failed: %s", e)
-                if len(rows) >= page_size:
-                    has_more = True
+        except Exception as e:
+            logger.debug("history_sync_states check failed: %s", e)
+            if not has_more and len(rows) >= page_size:
+                has_more = True
 
     if len(rows) > page_size:
         rows = rows[-page_size:]
@@ -666,6 +693,7 @@ async def get_messages(
         "has_more": has_more,
         "oldest_message_id": messages[0]["id"] if messages else None,
         "newest_message_id": messages[-1]["id"] if messages else None,
+        "history_evidence": history_evidence,
     }
 
 

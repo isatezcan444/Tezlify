@@ -79,6 +79,10 @@ from backend.app.services.whatsapp.repositories.messages import (
     msg_time_col as _msg_time_col,
     get_sync_watermark_epoch as _sync_watermark_epoch,
 )
+from backend.app.services.whatsapp.orchestration.history_evidence import (
+    is_history_exhausted_or_stalled,
+    record_on_demand_provider_result,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -192,6 +196,8 @@ class WhatsAppSyncOrchestrator:
     def _get_helper(self, name: str, default: Any) -> Any:
         if self.service is not None:
             return getattr(self.service, name, default)
+        if hasattr(self, name):
+            return getattr(self, name)
         return default
 
     async def _bulk_channel_available(self, gateway_id: str) -> bool:
@@ -1589,8 +1595,18 @@ class WhatsAppSyncOrchestrator:
         jid = phone[4:] if phone.startswith("jid:") else phone_to_jid(phone)
         if not jid:
             return []
+        session_row = (await conversation_session(db, owner, conv)) if conversation_session else None
+        if session_row is None and conv.session_id:
+            s_res = await db.execute(select(WhatsAppSession).where(WhatsAppSession.id == conv.session_id))
+            session_row = s_res.scalar_one_or_none()
+        sid_str = str(session_row.gateway_id) if session_row and getattr(session_row, "gateway_id", None) else None
+
+        # Short-circuit if conversation history is already conclusively exhausted or stalled
+        if sid_str and await is_history_exhausted_or_stalled(db, jid, session_id=sid_str):
+            logger.info("On-demand provider request skipped for %s: already exhausted or stalled", jid)
+            return []
+
         try:
-            session_row = (await conversation_session(db, owner, conv)) if conversation_session else None
             if gateway_op_or_mark_relink is not None and session_row is not None:
                 data = await gateway_op_or_mark_relink(
                     db,
@@ -1608,7 +1624,7 @@ class WhatsAppSyncOrchestrator:
                 )
             else:
                 data = await gateway_client.get_messages(
-                    str(session_row.gateway_id) if session_row else "",
+                    sid_str or "",
                     jid,
                     limit=min(max(int(limit), 1), 100),
                     before=before_ts_ms,
@@ -1619,17 +1635,52 @@ class WhatsAppSyncOrchestrator:
                 )
         except Exception as exc:
             logger.warning("On-demand hydrasyon basarisiz (conv=%s): %s", conv.id, exc)
+            if sid_str:
+                try:
+                    await record_on_demand_provider_result(
+                        db,
+                        session_id=sid_str,
+                        jid=jid,
+                        requested_count=limit,
+                        provider_status="ERROR",
+                        error_msg=str(exc),
+                    )
+                    await db.commit()
+                except Exception as log_exc:
+                    logger.debug("Failed to record provider error: %s", log_exc)
             raise
+
         if not isinstance(data, dict):
             raise RuntimeError("Gateway returned an invalid messages response.")
         gw_msgs = data.get("messages", [])
         if not isinstance(gw_msgs, list):
             raise RuntimeError("Gateway returned an invalid messages payload.")
-        provider_status = data.get("provider_status")
+        provider_status = data.get("provider_status", "NOT_REQUESTED")
+
+        # Record durable provider evidence if a real provider round-trip occurred
+        if sid_str:
+            try:
+                await record_on_demand_provider_result(
+                    db,
+                    session_id=sid_str,
+                    jid=jid,
+                    requested_count=limit,
+                    provider_status=provider_status,
+                    gw_msgs=gw_msgs,
+                    oldest_msg_id=oldest_msg_id,
+                    before_ts_ms=before_ts_ms,
+                )
+                if provider_status == "TIMEOUT" and not gw_msgs:
+                    await db.commit()
+            except Exception as ev_exc:
+                logger.warning("Failed to record history evidence for %s: %s", jid, ev_exc)
+
         if provider_status == "TIMEOUT" and not gw_msgs:
             from backend.app.services.whatsapp.exceptions import WhatsAppHistoryTimeout
             raise WhatsAppHistoryTimeout(f"Provider history chunk timed out for {jid}")
+
         if not gw_msgs:
+            await db.commit()
             return []
 
         res = await db.execute(

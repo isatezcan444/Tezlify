@@ -1304,7 +1304,7 @@ async def ensure_whatsapp_private_lid_and_history_tables(engine: AsyncEngine) ->
         """,
         """
         ALTER TABLE whatsapp_private.history_sync_states
-        ADD COLUMN IF NOT EXISTS state VARCHAR(50) DEFAULT 'NEVER_CHECKED',
+        ADD COLUMN IF NOT EXISTS state VARCHAR(50) DEFAULT 'NOT_CHECKED',
         ADD COLUMN IF NOT EXISTS stall_count INTEGER DEFAULT 0,
         ADD COLUMN IF NOT EXISTS timeout_count INTEGER DEFAULT 0,
         ADD COLUMN IF NOT EXISTS error_count INTEGER DEFAULT 0,

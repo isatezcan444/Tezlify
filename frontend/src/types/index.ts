@@ -367,11 +367,19 @@ export interface ConversationDetail extends Conversation {
   newest_message_id?: number;
 }
 
+export interface HistoryEvidence {
+  state: string;
+  provider_checked: boolean;
+  provider_exhausted: boolean;
+  provider_msgs_returned: number;
+}
+
 export interface ConversationMessagesResponse {
   messages: Message[];
   has_more: boolean;
   oldest_message_id?: number;
   newest_message_id?: number;
+  history_evidence?: HistoryEvidence;
 }
 
 export type CategoryFitLevel = 'HIGH' | 'MEDIUM' | 'LOW' | 'ALTERNATIVE';

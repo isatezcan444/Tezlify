@@ -534,12 +534,19 @@ export const WhatsAppApi = {
       has_more: boolean;
       oldest_message_id?: number | string | null;
       newest_message_id?: number | string | null;
+      history_evidence?: {
+        state: string;
+        provider_checked: boolean;
+        provider_exhausted: boolean;
+        provider_msgs_returned: number;
+      };
     }>(`/whatsapp/conversations/${conversationId}/messages${suffix}`);
     return {
       messages: (data.messages || []).map((m) => mapMessage(m, conversationId)),
       has_more: data.has_more ?? false,
       oldest_message_id: data.oldest_message_id != null ? Number(data.oldest_message_id) : undefined,
       newest_message_id: data.newest_message_id != null ? Number(data.newest_message_id) : undefined,
+      history_evidence: data.history_evidence,
     };
   },
 

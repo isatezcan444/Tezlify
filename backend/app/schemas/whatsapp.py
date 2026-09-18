@@ -141,11 +141,19 @@ class WhatsAppMessageItem(BaseModel):
     created_at: Optional[str] = None
 
 
+class WhatsAppHistoryEvidence(BaseModel):
+    state: str = "NOT_CHECKED"
+    provider_checked: bool = False
+    provider_exhausted: bool = False
+    provider_msgs_returned: int = 0
+
+
 class WhatsAppMessagesResponse(BaseModel):
     messages: List[WhatsAppMessageItem] = Field(default_factory=list)
     has_more: bool = False
     oldest_message_id: Optional[Any] = None
     newest_message_id: Optional[Any] = None
+    history_evidence: Optional[WhatsAppHistoryEvidence] = None
 
 
 class WhatsAppSendTextRequest(BaseModel):

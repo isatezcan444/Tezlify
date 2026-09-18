@@ -72,6 +72,11 @@ from backend.app.services.whatsapp.orchestration.sync import (
     sync_contacts,
     sync_conversations,
 )
+from backend.app.services.whatsapp.orchestration.history_evidence import (
+    get_history_evidence,
+    is_history_exhausted_or_stalled,
+    record_on_demand_provider_result,
+)
 
 __all__ = [
     # Sessions
