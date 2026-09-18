@@ -198,6 +198,10 @@ def extract_clean_phone(value: Optional[str]) -> Optional[str]:
     digits = "".join(ch for ch in val if ch.isdigit())
     if not digits or len(digits) < 5 or set(digits) == {"0"}:
         return None
+    if len(digits) == 10 and digits.startswith("5"):
+        digits = f"90{digits}"
+    elif len(digits) == 11 and digits.startswith("05"):
+        digits = f"90{digits[1:]}"
     return f"+{digits}"
 
 

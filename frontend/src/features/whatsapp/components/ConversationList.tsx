@@ -37,8 +37,13 @@ export function extractCleanPhone(phone?: string | null): string | null {
   const raw = String(phone).replace(/^jid:/, '').trim();
   if (raw.endsWith('@lid') || raw.includes('@g.us')) return null;
   const userPart = (raw.includes('@') ? raw.split('@')[0] : raw).split(':')[0];
-  const digits = userPart.replace(/\D/g, '');
+  let digits = userPart.replace(/\D/g, '');
   if (digits.length < 5 || /^0+$/.test(digits)) return null;
+  if (digits.length === 10 && digits.startsWith('5')) {
+    digits = `90${digits}`;
+  } else if (digits.length === 11 && digits.startsWith('05')) {
+    digits = `90${digits.slice(1)}`;
+  }
   return `+${digits}`;
 }
 
@@ -85,7 +90,14 @@ export function getConversationDisplayName(
   conv: Conversation,
   t: (key: string) => string
 ): string {
-  const rawPhone = conv.lead_phone || (conv as any).phone || null;
+  const rawPhone =
+    conv.lead_phone ||
+    (conv as any).phone ||
+    (conv as any).jid ||
+    (conv as any).phone_number ||
+    (conv as any).recipient_phone ||
+    (conv as any).sender_phone ||
+    null;
   const rawName = conv.lead_name || (conv as any).name || null;
 
   // 1. Group conversation check
@@ -197,7 +209,7 @@ export const ConversationList: React.FC<ConversationListProps> = ({
     const seen = new Map<string, Conversation>();
     for (const c of sorted) {
       let key = '';
-      const rawPhone = c.lead_phone || (c as any).phone || '';
+      const rawPhone = c.lead_phone || (c as any).phone || (c as any).jid || (c as any).phone_number || '';
       if (c.is_group || rawPhone.endsWith('@g.us')) {
         key = `line_${c.session_id ?? 'legacy'}_grp_${rawPhone || c.id}`;
       } else {
