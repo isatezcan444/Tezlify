@@ -1404,15 +1404,9 @@ export function createSessionManager({
         this._failOutbound(session.id, key, messageId, error);
         throw error;
       }
-      // Promise resolution is NOT the separate messages.update SERVER_ACK.
       latency('provider_send_promise_ms', sendStarted, sessionId);
-      const msg = this._recordOutbound(key, {
-        body,
-        message_type: 'TEXT',
-        client_message_id: pending.client_message_id,
-        wa_message_id: result?.key?.id || messageId,
-        status: 'PENDING',
-      }, session.id);
+      const resolvedWaId = result?.key?.id || messageId;
+      const msg = this._confirmOutboundSent(session.id, key, resolvedWaId, pending.client_message_id);
       return msg;
     },
 
@@ -1448,16 +1442,8 @@ export function createSessionManager({
         this._failOutbound(session.id, key, messageId, error);
         throw error;
       }
-      const msg = this._recordOutbound(key, {
-        body: caption || filename || media_url || `[${type.toUpperCase()}]`,
-        message_type: type.toUpperCase(),
-        media_url: media_url || null,
-        media_filename: filename,
-        media_caption: caption,
-        client_message_id: pending.client_message_id,
-        wa_message_id: result?.key?.id || messageId,
-        status: 'PENDING',
-      }, session.id);
+      const resolvedWaId = result?.key?.id || messageId;
+      const msg = this._confirmOutboundSent(session.id, key, resolvedWaId, pending.client_message_id);
       return msg;
     },
 
@@ -1753,6 +1739,9 @@ export function createSessionManager({
         if (dup) {
           dup.client_message_id ||= data.client_message_id;
           dup.wa_message_id = data.wa_message_id || dup.wa_message_id;
+          if (data.status && (ACK_ORDER[data.status] ?? 0) > (ACK_ORDER[dup.status] ?? 0)) {
+            dup.status = data.status;
+          }
           return { ...dup };
         }
       }
@@ -1782,6 +1771,45 @@ export function createSessionManager({
         message: msg,
       });
       return { ...msg };
+    },
+
+    _confirmOutboundSent(sessionId, jid, waId, clientMessageId) {
+      const session = this._requireSession(sessionId);
+      const store = this._storeOf(session);
+      const key = resolveJidKey(store, jid);
+      const list = store.messagesByChat.get(key) || [];
+      const msg = list.find((m) =>
+        (waId && m.wa_message_id === waId) ||
+        (clientMessageId && m.client_message_id === clientMessageId)
+      );
+      const nowIso = new Date().toISOString();
+      const prevStatus = msg?.status || 'PENDING';
+      const shouldAdvance = (ACK_ORDER['SENT'] ?? 1) > (ACK_ORDER[prevStatus] ?? 0);
+      if (msg) {
+        if (shouldAdvance) {
+          msg.status = 'SENT';
+        }
+        msg.wa_message_id = waId || msg.wa_message_id;
+        msg.client_message_id ||= clientMessageId;
+        msg.sent_at = msg.sent_at || nowIso;
+      }
+      if (shouldAdvance || !msg) {
+        this._emit({
+          event: 'message_status_updated',
+          gateway_session_id: session.id,
+          conversation_id: key,
+          wa_message_id: waId || msg?.wa_message_id,
+          client_message_id: clientMessageId || msg?.client_message_id,
+          status: msg?.status || 'SENT',
+          timestamp: nowIso,
+        });
+      }
+      return msg ? { ...msg } : {
+        wa_message_id: waId,
+        client_message_id: clientMessageId,
+        status: 'SENT',
+        sent_at: nowIso,
+      };
     },
 
     _failOutbound(sessionId, jid, waId, error) {

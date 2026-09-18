@@ -132,8 +132,29 @@ class TestWhatsAppMessagingOrchestration:
                     res = await send_text_message(db, "usr-1", 10, "Test message", client_message_id="client-new-1")
                     assert res["body"] == "Test message"
                     assert res["client_message_id"] == "client-new-1"
+                    assert res["status"] == "SENT"
                     assert db.add.called
                     assert db.commit.called
+
+    @pytest.mark.asyncio
+    async def test_send_text_message_group_advances_to_sent_immediately(self):
+        """Group chats never receive aggregate delivery receipts; dispatch advances to SENT immediately."""
+        db = AsyncMock()
+        conv = MagicMock()
+        conv.id = 11
+        conv.is_group = True
+        conv.last_message_at = None
+        db.scalar.return_value = None
+        session_row = WhatsAppSession(id=1, user_id="usr-1", gateway_id="gw-1", status=SessionStatus.CONNECTED)
+
+        with patch("backend.app.services.whatsapp.orchestration.messaging._resolve_jid", return_value=(conv, "12345-67890@g.us")):
+            with patch("backend.app.services.whatsapp.orchestration.messaging._conversation_session", return_value=session_row):
+                # Even if gateway returns PENDING, group dispatch forces SENT
+                with patch("backend.app.services.whatsapp.orchestration.messaging._gateway_op_or_mark_relink", return_value={"wa_message_id": "wa_grp_1", "status": "PENDING"}):
+                    res = await send_text_message(db, "usr-1", 11, "Group test message", client_message_id="client-grp-1")
+                    assert res["body"] == "Group test message"
+                    assert res["status"] == "SENT"
+                    assert res["wa_message_id"] == "wa_grp_1"
 
     @pytest.mark.asyncio
     async def test_send_text_message_gateway_failure_marks_failed(self):

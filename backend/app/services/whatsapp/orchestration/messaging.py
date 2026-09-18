@@ -162,7 +162,11 @@ class WhatsAppMessagingOrchestrator:
         await db.refresh(row)
         send_res = extract_send_result(gateway_result)
         row.wa_message_id = send_res["wa_message_id"] or row.wa_message_id
-        advance_message_status(row, send_res["status"])
+        target_status = send_res.get("status")
+        is_group = bool(conv.is_group) or ("@g.us" in str(jid))
+        if is_group and target_status in (None, "PENDING"):
+            target_status = ConversationMessageStatus.SENT.value
+        advance_message_status(row, target_status)
         # Faz 10 (P2): gonderim yolu da paylasilan kurali kullanir (tek kaynak).
         apply_last_message(
             conv,
@@ -244,7 +248,11 @@ class WhatsAppMessagingOrchestrator:
         await db.refresh(row)
         send_res = extract_send_result(gateway_result)
         row.wa_message_id = send_res["wa_message_id"] or row.wa_message_id
-        advance_message_status(row, send_res["status"])
+        target_status = send_res.get("status")
+        is_group = bool(conv.is_group) or ("@g.us" in str(jid))
+        if is_group and target_status in (None, "PENDING"):
+            target_status = ConversationMessageStatus.SENT.value
+        advance_message_status(row, target_status)
         apply_last_message(
             conv,
             datetime.utcnow(),

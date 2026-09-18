@@ -41,7 +41,7 @@ try {
     }
   }
   session.sock = { async sendMessage(remoteJid, content, options) { return { key: { id: options.messageId } }; } };
-  assert.equal((await sm.sendTextMessage(sid, jid, 'body', 'no-ack')).status, 'PENDING');
+  assert.equal((await sm.sendTextMessage(sid, jid, 'body', 'no-ack')).status, 'SENT');
   session.sock = { async sendMessage() { throw new Error('provider unavailable'); } };
   await assert.rejects(sm.sendTextMessage(sid, jid, 'body', 'failed'), /provider unavailable/);
   assert.equal((await sm.getMessages(sid, jid)).find((m) => m.client_message_id === 'failed').status, 'FAILED');
