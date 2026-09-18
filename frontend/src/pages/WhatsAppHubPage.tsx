@@ -570,12 +570,13 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   };
 
   const handleOpenLead = async (leadId: number) => {
+    const rawPhone = selectedConv?.lead_phone || (selectedConv as any)?.phone || '';
     const displayName = selectedConv ? getConversationDisplayName(selectedConv, t) : 'Müşteri';
-    const cleanPhone = selectedConv ? extractCleanPhone(selectedConv.lead_phone) : null;
+    const cleanPhone = selectedConv ? extractCleanPhone(rawPhone) : null;
     setDrawerLead({
       id: leadId,
       name: selectedConv?.lead_name || displayName,
-      phone: cleanPhone || (!isRawWhatsAppIdentity(selectedConv?.lead_phone) ? selectedConv?.lead_phone : '') || '',
+      phone: cleanPhone || (!isRawWhatsAppIdentity(rawPhone) ? rawPhone : '') || '',
       category: 'WhatsApp Sohbeti',
       status: 'NEW',
     } as any);
@@ -941,7 +942,8 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
           const exactIdx = convId == null ? -1 : prev.findIndex((c) => c.id === convId);
           const phoneMatches = eventDigits
             ? prev.reduce<number[]>((matches, c, index) => {
-                if (c.lead_phone && c.lead_phone.replace(/\D/g, '').slice(-10) === eventDigits) matches.push(index);
+                const cPhone = c.lead_phone || (c as any).phone || '';
+                if (cPhone && cPhone.replace(/\D/g, '').slice(-10) === eventDigits) matches.push(index);
                 return matches;
               }, [])
             : [];
@@ -1257,11 +1259,12 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       if (eventData.event === 'new_conversation' || eventData.event === 'conversations_updated') {
         if (eventData.conversation && eventData.conversation.id) {
           // Targeted insertion without full list refetch
+          const mapped = mapConversationItem(eventData.conversation);
           setConversations((prev) => {
-            if (prev.some((c) => c.id === eventData.conversation.id)) {
-              return prev.map((c) => (c.id === eventData.conversation.id ? { ...c, ...eventData.conversation } : c));
+            if (prev.some((c) => c.id === mapped.id)) {
+              return prev.map((c) => (c.id === mapped.id ? { ...c, ...mapped } : c)).sort(compareByLastMessageDesc);
             }
-            return [eventData.conversation, ...prev].sort(compareByLastMessageDesc);
+            return [mapped, ...prev].sort(compareByLastMessageDesc);
           });
         } else if (eventData.conversation_id) {
           hydrateConversation(Number(eventData.conversation_id));
@@ -1918,14 +1921,15 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                     </button>
 
                     {(() => {
+                      const rawPhone = selectedConv.lead_phone || (selectedConv as any).phone;
                       const headerDisplayName = getConversationDisplayName(selectedConv, t);
-                      const headerCleanPhone = extractCleanPhone(selectedConv.lead_phone);
+                      const headerCleanPhone = extractCleanPhone(rawPhone);
                       return (
                         <>
                           <Avatar
                             name={headerDisplayName}
                             image={selectedConv.lead_avatar_url}
-                            phone={headerCleanPhone || (!isRawWhatsAppIdentity(selectedConv.lead_phone) ? selectedConv.lead_phone : undefined)}
+                            phone={headerCleanPhone || (!isRawWhatsAppIdentity(rawPhone) ? rawPhone : undefined)}
                             size="md"
                             shape="rounded"
                           />

@@ -37,7 +37,8 @@ def jid_to_phone(jid: Optional[str]) -> Optional[str]:
     # — yoksa UI'da `+1203632...` gibi sahte numaralar görünür (AGENTS.md).
     if "@g.us" in jid_str:
         return None
-    digits = "".join(ch for ch in jid_str.split("@")[0] if ch.isdigit())
+    head = jid_str.split("@")[0].split(":")[0]
+    digits = "".join(ch for ch in head if ch.isdigit())
     # Faz 9 (§4/§5, RC-2): dejenere JID'lerden (`0@s.whatsapp.net`) '+0' gibi
     # uydurma telefonlar üretilmez — en az 5 hane ve tümü sıfır olamaz.
     if not digits or len(digits) < 5 or set(digits) == {"0"}:
@@ -78,7 +79,13 @@ def is_phone_like(value: Optional[str]) -> bool:
     if not value:
         return True
     v = str(value).strip()
-    return (v.startswith("+") and v[1:].isdigit()) or v.startswith("jid:")
+    if (v.startswith("+") and v[1:].replace(" ", "").isdigit()) or v.startswith("jid:"):
+        return True
+    digits_only = "".join(ch for ch in v if ch.isdigit())
+    letters_only = "".join(ch for ch in v if ch.isalpha())
+    if len(digits_only) >= 5 and len(letters_only) == 0:
+        return True
+    return False
 
 
 def is_raw_jid_name(value: Optional[str]) -> bool:
@@ -186,6 +193,8 @@ def extract_clean_phone(value: Optional[str]) -> Optional[str]:
         return None
     if "@" in val:
         val = val.split("@")[0]
+    if ":" in val:
+        val = val.split(":")[0]
     digits = "".join(ch for ch in val if ch.isdigit())
     if not digits or len(digits) < 5 or set(digits) == {"0"}:
         return None

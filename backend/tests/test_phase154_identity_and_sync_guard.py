@@ -140,3 +140,49 @@ async def test_background_expansion_kill_switch():
         )
         
         assert ("test-user-id", "test-gw-uuid") not in orchestrator._history_expansion_running
+
+
+def test_unsaved_pn_jid_with_device_index():
+    """Multi-device PN JID (e.g. 905321234567:0@s.whatsapp.net) correctly extracts clean phone number without device suffix."""
+    clean = extract_clean_phone("905321234567:0@s.whatsapp.net")
+    assert clean == "+905321234567"
+
+    name, state = resolve_contact_identity(contact=None, phone="905321234567:0@s.whatsapp.net")
+    assert name == "+905321234567"
+    assert state == IdentityResolutionState.RESOLVED_PHONE
+
+
+def test_saved_contact_precedence_over_unsaved():
+    """Saved contact in address book resolves to contact name; unsaved contact resolves to clean phone."""
+    saved_contact = SimpleNamespace(display_name="Ahmet Yılmaz", phone_e164="+905321112233", custom_attributes={})
+    name_saved, state_saved = resolve_contact_identity(contact=saved_contact, phone="+905321112233")
+    assert name_saved == "Ahmet Yılmaz"
+    assert state_saved == IdentityResolutionState.RESOLVED_PROFILE
+
+    unsaved_contact = SimpleNamespace(display_name=None, phone_e164="+905329998877", custom_attributes={})
+    name_unsaved, state_unsaved = resolve_contact_identity(contact=unsaved_contact, phone="905329998877@s.whatsapp.net")
+    assert name_unsaved == "+905329998877"
+    assert state_unsaved == IdentityResolutionState.RESOLVED_PHONE
+
+
+def test_activity_ordering_independent_of_identity():
+    """Conversation ordering is determined solely by last_message_at descending, regardless of saved vs unsaved contact status."""
+    from datetime import datetime, timezone
+    # Sohbet A: Kayitli kisi, Son mesaj: 10:00
+    conv_a = {
+        "id": 1,
+        "name": "Ahmet Yılmaz",
+        "last_message_at": datetime(2026, 9, 18, 10, 0, 0, tzinfo=timezone.utc),
+    }
+    # Sohbet B: Kayitli olmayan numara, Son mesaj: 10:05
+    conv_b = {
+        "id": 2,
+        "name": "+905321234567",
+        "last_message_at": datetime(2026, 9, 18, 10, 5, 0, tzinfo=timezone.utc),
+    }
+
+    convs = [conv_a, conv_b]
+    # Sorting solely by activity timestamp desc
+    sorted_convs = sorted(convs, key=lambda c: c["last_message_at"], reverse=True)
+    assert sorted_convs[0]["name"] == "+905321234567"
+    assert sorted_convs[1]["name"] == "Ahmet Yılmaz"

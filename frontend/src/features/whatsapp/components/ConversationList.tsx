@@ -36,48 +36,95 @@ export function extractCleanPhone(phone?: string | null): string | null {
   if (!phone) return null;
   const raw = String(phone).replace(/^jid:/, '').trim();
   if (raw.endsWith('@lid') || raw.includes('@g.us')) return null;
-  const head = raw.includes('@') ? raw.split('@')[0] : raw;
-  const digits = head.replace(/\D/g, '');
+  const userPart = (raw.includes('@') ? raw.split('@')[0] : raw).split(':')[0];
+  const digits = userPart.replace(/\D/g, '');
   if (digits.length < 5 || /^0+$/.test(digits)) return null;
   return `+${digits}`;
+}
+
+export function isRawWhatsAppJid(value?: string | null): boolean {
+  if (!value) return false;
+  const v = String(value).trim();
+  return (
+    v.startsWith('jid:') ||
+    v.includes('@lid') ||
+    v.includes('@g.us') ||
+    v.includes('@s.whatsapp.net') ||
+    v.includes('@c.us')
+  );
+}
+
+export function isRealContactName(name?: string | null): boolean {
+  if (!name) return false;
+  const trimmed = String(name).trim();
+  if (!trimmed) return false;
+  if (isRawWhatsAppJid(trimmed)) return false;
+
+  const digitsOnly = trimmed.replace(/\D/g, '');
+  const lettersOnly = trimmed.replace(/[^a-zA-ZğüşıöçĞÜŞİÖÇ]/g, '');
+  if (digitsOnly.length >= 5 && lettersOnly.length === 0) {
+    return false;
+  }
+
+  const lower = trimmed.toLowerCase();
+  if (
+    lower === 'lead' ||
+    lower === 'isimsiz müşteri' ||
+    lower === 'whatsapp kişisi' ||
+    lower === 'whatsapp contact' ||
+    lower.includes('kişi kimliği') ||
+    lower.includes('resolving identity')
+  ) {
+    return false;
+  }
+
+  return true;
 }
 
 export function getConversationDisplayName(
   conv: Conversation,
   t: (key: string) => string
 ): string {
-  const isRawJid = Boolean(
-    conv.lead_phone &&
-      (conv.lead_phone.startsWith('jid:') ||
-        conv.lead_phone.includes('@lid') ||
-        conv.lead_phone.includes('@g.us') ||
-        conv.lead_phone.includes('@s.whatsapp.net') ||
-        conv.lead_phone.includes('@c.us'))
-  );
-  const cleanPhone = extractCleanPhone(conv.lead_phone);
-  const safePhone = cleanPhone || (!isRawJid ? conv.lead_phone : null);
+  const rawPhone = conv.lead_phone || (conv as any).phone || null;
+  const rawName = conv.lead_name || (conv as any).name || null;
 
-  // Phase 15.4: Strict 5-tier WhatsApp Web identity hierarchy:
-  // 1. Verified / Address-book / Profile name (conv.lead_name)
-  // 2. Normalized phone from lead_phone or PN JID
-  // 3. Group fallback ('Grup')
-  // 4. Clean LID contact fallback ('Kişi (XXXX)')
-  // 5. Transient resolving (ONLY if active resolution is in-flight)
-  // 6. Stable permanent fallback ('WhatsApp Kişisi')
-  let displayName = (conv.lead_name && !isRawJid) ? conv.lead_name : (conv.lead_name || safePhone);
-  if (!displayName) {
-    if (conv.is_group) {
-      displayName = t('whatsapp.groupFallback') || 'Group';
-    } else if (conv.lead_phone && conv.lead_phone.includes('@lid')) {
-      const cleanLid = conv.lead_phone.replace(/^jid:/, '').split('@')[0];
-      displayName = `${t('whatsapp.contactFallback') || 'Kişi'} (${cleanLid.slice(-4)})`;
-    } else if (conv.identity_state === 'RESOLVING_TRANSIENT') {
-      displayName = t('whatsapp.pendingIdentity') || 'Kişi kimliği çözülüyor…';
-    } else {
-      displayName = t('whatsapp.contactFallback') || 'WhatsApp Kişisi';
+  // 1. Group conversation check
+  const isGroup = Boolean(conv.is_group || (rawPhone && rawPhone.includes('@g.us')));
+  if (isGroup) {
+    if (rawName && !isRawWhatsAppJid(rawName)) {
+      return rawName;
     }
+    return t('whatsapp.groupFallback') || 'Grup';
   }
-  return displayName;
+
+  // 2. Saved contact in address book ("Kişi rehberde kayıtlıysa: Ahmet Yılmaz")
+  if (isRealContactName(rawName)) {
+    return rawName!;
+  }
+
+  // 3. Unsaved contact with resolvable phone number ("Kişi rehberde kayıtlı değilse: +905321234567")
+  // Extract clean phone from lead_phone, phone, or rawName (if it contains a PN JID/number)
+  const cleanPhone = extractCleanPhone(rawPhone) || extractCleanPhone(rawName);
+  if (cleanPhone) {
+    return cleanPhone;
+  }
+
+  // 4. LID contact without mapped phone number (@lid)
+  const lidCandidate = (rawPhone && rawPhone.includes('@lid')) ? rawPhone : (rawName && rawName.includes('@lid')) ? rawName : null;
+  if (lidCandidate) {
+    const cleanLid = lidCandidate.replace(/^jid:/, '').split('@')[0].split(':')[0];
+    return `${t('whatsapp.contactFallback') || 'Kişi'} (${cleanLid.slice(-4)})`;
+  }
+
+  // 5. Transient resolving (ONLY if active resolution is genuinely in-flight)
+  // Rehberde kayıt bulunmaması kesinlikle resolving kabul edilmeyecek.
+  // Kayıtlı olmayan PN JID için spinner/resolving asla gösterilmez (Case 3 handled above).
+  if (conv.identity_state === 'RESOLVING_TRANSIENT') {
+    return t('whatsapp.pendingIdentity') || 'Kişi kimliği çözülüyor…';
+  }
+
+  // 6. Stable permanent fallback
+  return t('whatsapp.contactFallback') || 'WhatsApp Kişisi';
 }
 
 export const ConversationList: React.FC<ConversationListProps> = ({
@@ -131,10 +178,14 @@ export const ConversationList: React.FC<ConversationListProps> = ({
     // 2. Search query filter
     if (!searchQuery) return true;
     const q = searchQuery.toLowerCase();
+    const rawPhone = c.lead_phone || (c as any).phone || '';
+    const rawName = c.lead_name || (c as any).name || '';
+    const cleanPhone = extractCleanPhone(rawPhone) || extractCleanPhone(rawName);
     return (
-      c.lead_name?.toLowerCase().includes(q) ||
-      c.lead_phone?.toLowerCase().includes(q) ||
-      c.last_message_preview?.toLowerCase().includes(q)
+      (rawName && rawName.toLowerCase().includes(q)) ||
+      (rawPhone && rawPhone.toLowerCase().includes(q)) ||
+      (cleanPhone && cleanPhone.toLowerCase().includes(q)) ||
+      (c.last_message_preview && c.last_message_preview.toLowerCase().includes(q))
     );
   });
 
@@ -146,10 +197,11 @@ export const ConversationList: React.FC<ConversationListProps> = ({
     const seen = new Map<string, Conversation>();
     for (const c of sorted) {
       let key = '';
-      if (c.is_group || c.lead_phone?.endsWith('@g.us')) {
-        key = `line_${c.session_id ?? 'legacy'}_grp_${c.lead_phone || c.id}`;
+      const rawPhone = c.lead_phone || (c as any).phone || '';
+      if (c.is_group || rawPhone.endsWith('@g.us')) {
+        key = `line_${c.session_id ?? 'legacy'}_grp_${rawPhone || c.id}`;
       } else {
-        const digits = c.lead_phone ? c.lead_phone.replace(/\D/g, '').slice(-10) : '';
+        const digits = rawPhone ? rawPhone.replace(/\D/g, '').slice(-10) : '';
         key = digits ? `line_${c.session_id ?? 'legacy'}_phone_${digits}` : `conv_${c.id}`;
       }
 
@@ -308,22 +360,16 @@ export const ConversationList: React.FC<ConversationListProps> = ({
             // Conversation id is globally unique; phone-only selection would
             // select both lines when the same contact exists on multiple lines.
             const isSelected = selectedId === conv.id;
-            const isRawJid = Boolean(
-              conv.lead_phone &&
-                (conv.lead_phone.startsWith('jid:') ||
-                  conv.lead_phone.includes('@lid') ||
-                  conv.lead_phone.includes('@g.us') ||
-                  conv.lead_phone.includes('@s.whatsapp.net') ||
-                  conv.lead_phone.includes('@c.us'))
-            );
-            const cleanPhone = extractCleanPhone(conv.lead_phone);
+            const rawPhone = conv.lead_phone || (conv as any).phone;
+            const isRawJid = isRawWhatsAppJid(rawPhone);
+            const cleanPhone = extractCleanPhone(rawPhone);
             const displayName = getConversationDisplayName(conv, t);
             return (
               <button
                 key={conv.id}
                 type="button"
                 data-conv-id={conv.id}
-                data-phone={conv.lead_phone}
+                data-phone={rawPhone}
                 onClick={() => onSelect(conv)}
                 className={`w-full text-left p-3.5 flex items-start space-x-3 transition-colors cursor-pointer ${
                   isSelected
@@ -334,7 +380,7 @@ export const ConversationList: React.FC<ConversationListProps> = ({
                 <Avatar
                   name={displayName}
                   image={conv.lead_avatar_url}
-                  phone={cleanPhone || (!isRawJid ? conv.lead_phone : undefined)}
+                  phone={cleanPhone || (!isRawJid && rawPhone ? rawPhone : undefined)}
                   size="md"
                   shape="rounded"
                 />
