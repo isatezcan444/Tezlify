@@ -216,8 +216,9 @@ async def test_contact_synced_updates_existing_low_rank():
         contact = (await db.execute(
             select(Contact).where(Contact.phone_e164 == MOCK_PHONE)
         )).scalar_one()
-    # mevcut satırın telefon görünümlü adı push ile düzelir
-    assert contact.display_name == "Profil Adı"
+    # Push adı asla display_name'i ezmez; custom_attributes['push_name']'de saklanır
+    assert contact.display_name == MOCK_PHONE
+    assert contact.custom_attributes.get("push_name") == "Profil Adı"
 
 
 # ---------------------------------------------------------------------------

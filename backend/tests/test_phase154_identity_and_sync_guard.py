@@ -21,7 +21,10 @@ from backend.app.services.whatsapp.identity import (
     is_raw_jid_name,
     is_self_identity,
     resolve_contact_identity,
+    safe_display_name,
 )
+from backend.app.services.whatsapp.repositories.contacts import set_contact_name
+from backend.app.models.contact import Contact
 from backend.app.core.config import settings
 from backend.app.services.whatsapp.orchestration.sync import _run_background_history_expansion
 
@@ -207,4 +210,46 @@ def test_lid_mapping_resolution_to_canonical_phone():
     name_tr, state_tr = resolve_contact_identity(contact=None, phone=tr_phone)
     assert name_tr == "+905322334968"
     assert state_tr == IdentityResolutionState.RESOLVED_PHONE
+
+
+def test_unsaved_phone_contact_with_push_name_resolves_to_phone():
+    """Stranger WhatsApp profile nickname (name_source = 'push') must never resolve to profile name."""
+    contact = SimpleNamespace(
+        display_name="+905322334968",
+        phone_e164="+905322334968",
+        custom_attributes={"name_source": "push", "push_name": "Fikret Bircan"},
+    )
+    name, state = resolve_contact_identity(contact=contact, phone="+905322334968")
+    assert name == "+905322334968"
+    assert state == IdentityResolutionState.RESOLVED_PHONE
+    assert safe_display_name(contact) == "+905322334968"
+
+
+def test_saved_addressbook_contact_resolves_to_profile():
+    """Real phone address book contact (name_source = 'addressbook') resolves to profile name."""
+    contact = SimpleNamespace(
+        display_name="Mehmet Kirkar",
+        phone_e164="+905324960912",
+        custom_attributes={"name_source": "addressbook"},
+    )
+    name, state = resolve_contact_identity(contact=contact, phone="+905324960912")
+    assert name == "Mehmet Kirkar"
+    assert state == IdentityResolutionState.RESOLVED_PROFILE
+    assert safe_display_name(contact) == "Mehmet Kirkar"
+
+
+def test_set_contact_name_push_does_not_pollute_display_name():
+    """set_contact_name with source='push' stores push_name metadata but never overwrites display_name."""
+    contact = Contact(
+        user_id="user-1",
+        phone_e164="+905322334968",
+        display_name="+905322334968",
+        custom_attributes={},
+    )
+    changed = set_contact_name(contact, "Fikret Bircan", "push")
+    assert changed is True
+    assert contact.display_name == "+905322334968"
+    assert contact.custom_attributes.get("push_name") == "Fikret Bircan"
+    assert contact.custom_attributes.get("name_source") == "push"
+
 

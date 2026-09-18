@@ -211,40 +211,55 @@ def resolve_contact_identity(
     is_group: bool = False,
     is_transient_resolving: bool = False,
 ) -> Tuple[Optional[str], str]:
-    """Resolves contact identity following the strict 5-tier WhatsApp Web parity hierarchy:
-    1. ADDRESS_BOOK_MATCH (real display_name) -> RESOLVED_PROFILE
-    2. WHATSAPP_PROFILE_MATCH (push_name from custom_attributes) -> RESOLVED_PROFILE
-    3. PHONE_JID (normalized +E.164 phone from contact.phone_e164 or PN JID) -> RESOLVED_PHONE
-    4. GROUP_JID / LID_JID -> RESOLVED_JID
-    5. STABLE_FALLBACK -> RESOLVING_TRANSIENT (only if active resolution in-flight) or UNRESOLVED_PERMANENT
+    """Resolves contact identity following strict WhatsApp Web parity:
+    1. GROUP_MATCH: For group conversations, returns group subject -> RESOLVED_PROFILE.
+    2. ADDRESS_BOOK_MATCH: For 1:1 chats, returns authentic address book or verified name.
+       Stranger pushName / profile nicknames (name_source == 'push') are NEVER treated
+       as contact names.
+    3. PHONE_JID: Normalized +E.164 phone from contact.phone_e164 or PN JID -> RESOLVED_PHONE.
+    4. LID_PROFILE_FALLBACK: Pure @lid without mapped phone may use push_name as profile fallback.
+    5. GROUP_JID / LID_JID -> RESOLVED_JID.
+    6. STABLE_FALLBACK -> RESOLVING_TRANSIENT (only if active resolution in-flight) or UNRESOLVED_PERMANENT.
     """
-    # 1. Address book / verified display_name
-    if contact is not None:
-        name = getattr(contact, "display_name", None)
-        if name and not is_raw_jid_name(name) and not is_phone_like(name) and str(name).strip():
-            return str(name).strip(), IdentityResolutionState.RESOLVED_PROFILE
-
-        # 2. WhatsApp profile push_name
-        custom = getattr(contact, "custom_attributes", None)
-        if isinstance(custom, dict):
-            push_name = custom.get("push_name")
-            if push_name and not is_raw_jid_name(push_name) and not is_phone_like(push_name) and str(push_name).strip():
-                return str(push_name).strip(), IdentityResolutionState.RESOLVED_PROFILE
-
-    # 3. Clean E.164 Phone from phone or contact.phone_e164
     clean_phone = extract_clean_phone(phone)
     if not clean_phone and contact is not None:
         clean_phone = extract_clean_phone(getattr(contact, "phone_e164", None))
+
+    # 1. Group conversation check
+    if is_group:
+        if contact is not None:
+            name = getattr(contact, "display_name", None)
+            if name and not is_raw_jid_name(name) and str(name).strip():
+                return str(name).strip(), IdentityResolutionState.RESOLVED_PROFILE
+        return None, IdentityResolutionState.RESOLVED_JID
+
+    # 2. Address book / verified display_name for 1:1 contacts
+    if contact is not None:
+        name = getattr(contact, "display_name", None)
+        attrs = getattr(contact, "custom_attributes", None) or {}
+        name_src = attrs.get("name_source") if isinstance(attrs, dict) else None
+
+        # Push name is a stranger's profile nickname — NOT an address book contact!
+        # If name_source is 'push', it must NEVER resolve to RESOLVED_PROFILE.
+        if name_src != "push":
+            if name and not is_raw_jid_name(name) and not is_phone_like(name) and str(name).strip():
+                return str(name).strip(), IdentityResolutionState.RESOLVED_PROFILE
+
+    # 3. Clean E.164 Phone from phone or contact.phone_e164
     if clean_phone:
         return clean_phone, IdentityResolutionState.RESOLVED_PHONE
 
-    # 4. Group JID
-    phone_val = str(phone or (contact.phone_e164 if contact else "") or "")
-    if is_group or "@g.us" in phone_val:
-        return None, IdentityResolutionState.RESOLVED_JID
+    # 4. Pure @lid fallback: if phone is unmapped, allow push_name before falling back to RESOLVED_JID
+    if contact is not None:
+        attrs = getattr(contact, "custom_attributes", None) or {}
+        if isinstance(attrs, dict):
+            push_name = attrs.get("push_name")
+            if push_name and not is_raw_jid_name(push_name) and not is_phone_like(push_name) and str(push_name).strip():
+                return str(push_name).strip(), IdentityResolutionState.RESOLVED_PROFILE
 
-    # 5. LID JID
-    if "@lid" in phone_val:
+    # 5. Group JID or LID JID
+    phone_val = str(phone or (contact.phone_e164 if contact else "") or "")
+    if "@g.us" in phone_val or "@lid" in phone_val:
         return None, IdentityResolutionState.RESOLVED_JID
 
     # 6. Transient resolving (only when genuinely in-flight)

@@ -48,6 +48,7 @@ from backend.app.services.whatsapp.identity import (
     contact_phone_for_jid as _contact_phone_for_jid,
     is_broadcast_only_jid,
     is_degenerate_jid,
+    is_phone_like as _is_phone_like,
     is_raw_jid_name as _is_raw_jid_name,
     jid_to_phone,
     phone_to_jid,
@@ -458,13 +459,20 @@ class WhatsAppSyncOrchestrator:
                     if contact is not None:
                         contact.phone_e164 = phone
             if contact is None:
+                is_push = str(source or "") == "push"
+                safe_name = (name if (not is_push and not _is_raw_jid_name(name) and not _is_phone_like(name)) else None) or jid_to_phone(jid_str)
                 contact = Contact(
                     user_id=user_id,
                     phone_e164=phone,
-                    display_name=(None if _is_raw_jid_name(name) else name) or jid_to_phone(jid_str),
+                    display_name=safe_name,
                 )
-                if name and str(source or "") in _NAME_RANK:
-                    contact.custom_attributes = {"name_source": str(source)}
+                custom_attrs = {}
+                if source and str(source) in _NAME_RANK:
+                    custom_attrs["name_source"] = str(source)
+                if is_push and name and not _is_raw_jid_name(name) and not _is_phone_like(name):
+                    custom_attrs["push_name"] = str(name).strip()[:150]
+                if custom_attrs:
+                    contact.custom_attributes = custom_attrs
                 by_phone[phone] = contact
                 pending_contacts.append(contact)
             else:

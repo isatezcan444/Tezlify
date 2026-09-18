@@ -41,10 +41,13 @@ def get_contact_avatar(contact: Optional[Contact]) -> Optional[str]:
 def set_contact_name(contact: Contact, name: Optional[str], source: Optional[str]) -> bool:
     """Oncelik-cozumumlu kisi adi guncellemesi; isim degistiyse True doner.
 
-    Kural: mevcut ad telefon gorunumunde/bossa her gercek ad yazar;
-    aksi halde yalnizca rutbesi (addressbook > verified > history > push)
-    mevcut rutbeyi saglayan ad yazilir. Boylece pushName rehber adini, ya da
-    eski bir pushName yeni rehber adini asla ezemez.
+    Kural:
+    - 'push' (WhatsApp profil adi): Karsi tarafin kendi sectigi takma addir;
+      kullanicinin telefon rehberinde kayitli degildir. Bu ad ASLA
+      `contact.display_name` olarak yazilmaz! Yalnizca `custom_attributes['push_name']`
+      olarak saklanir (WhatsApp Web paritesi: yabanci numaralar telefon gorunur).
+    - 'addressbook', 'verified', 'group_subject': Gercek rehber/isletme/grup adlari
+      `contact.display_name` olarak atanir.
     """
     if not name:
         return False
@@ -62,11 +65,27 @@ def set_contact_name(contact: Contact, name: Optional[str], source: Optional[str
     src = str(source) if str(source or "") in NAME_RANK else "history"
     attrs = dict(contact.custom_attributes or {})
     stored_source = str(attrs.get("name_source") or "")
+    phone_like = is_phone_like(contact.display_name) or contact.display_name == contact.phone_e164
     if stored_source in NAME_RANK:
         current_rank = NAME_RANK[stored_source]
     else:
-        # Kaynagi bilinmeyen eski kayitlar: gercek ad gibi varsay (history rutbesi).
-        current_rank = NAME_RANK["history"] if contact.display_name else 0
+        # Kaynagi bilinmeyen eski kayitlar: gercek ad gibi varsay (history rutbesi), telefon gibi ise 0.
+        current_rank = 0 if phone_like else (NAME_RANK["history"] if contact.display_name else 0)
+
+    # Push name: Karsi tarafin kendi profil takma adi. Asla rehber display_name'i ezmez/olusturmaz.
+    if src == "push":
+        if current_rank > NAME_RANK["push"]:
+            return False
+        changed = False
+        if attrs.get("push_name") != clean:
+            attrs["push_name"] = clean
+            changed = True
+        if not attrs.get("name_source"):
+            attrs["name_source"] = "push"
+            changed = True
+        if changed:
+            contact.custom_attributes = attrs
+        return changed
     phone_like = is_phone_like(contact.display_name) or contact.display_name == contact.phone_e164
     if phone_like or NAME_RANK[src] >= current_rank:
         changed = contact.display_name != clean

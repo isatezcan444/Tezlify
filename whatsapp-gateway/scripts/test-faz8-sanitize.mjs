@@ -71,6 +71,24 @@ check('mergeContactName: addressbook beats group_subject, group_subject beats hi
   assert.equal(b.name, 'Grup Adi');
   const c = mergeContactName({ name: 'Rehber Adi', name_source: 'addressbook' }, 'Push Adi', 'push');
   assert.equal(c.name, 'Rehber Adi');
+  assert.equal(c.push_name, 'Push Adi');
+});
+
+check('mergeContactName: push name never populates or overwrites contact name', () => {
+  const empty = mergeContactName({}, 'Stranger Nickname', 'push');
+  assert.equal(empty.name, undefined);
+  assert.equal(empty.push_name, 'Stranger Nickname');
+  assert.equal(empty.name_source, 'push');
+
+  const withPhone = mergeContactName({ phone: '+905321234567' }, 'Stranger Nickname', 'push');
+  assert.equal(withPhone.name, undefined);
+  assert.equal(withPhone.push_name, 'Stranger Nickname');
+
+  const withAddressbook = mergeContactName({ name: 'Ahmet Yılmaz', name_source: 'addressbook' }, 'Stranger Nickname', 'push');
+  assert.equal(withAddressbook.name, 'Ahmet Yılmaz');
+  assert.equal(withAddressbook.push_name, 'Stranger Nickname');
+  assert.equal(withAddressbook.name_source, 'addressbook');
 });
 
 console.log(`[test-faz8-sanitize] ${passed} assertions passed`);
+

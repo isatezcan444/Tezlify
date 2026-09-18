@@ -609,6 +609,13 @@ export { createBaileysLogger, extractBaileysErrorDetails, isRawIdentityName, san
 function mergeContactName(existing, name, source) {
   const base = existing || {};
   if (!name) return base;
+  if (source === 'push') {
+    return {
+      ...base,
+      push_name: name,
+      name_source: base.name_source || 'push',
+    };
+  }
   const currentRank = NAME_RANK[base.name_source] || (base.name ? NAME_RANK.history : 0);
   const newRank = NAME_RANK[source] || NAME_RANK.history;
   const phoneLike = !base.name || /^\+\d+$/.test(base.name) || base.name === base.phone;
@@ -1144,10 +1151,11 @@ export function createSessionManager({
     listContacts(sessionId) {
       const session = this._requireSession(sessionId);
       const { contacts } = this._storeOf(session);
-      // Telefon kimliği henüz çözülememiş LID-bekletme kayıtlarını dışarı
-      // verme — eşleşme öğrenilince _applyLidMapping telefona taşır.
+      // Telefon kimliği henüz çözülememiş LID-bekletme kayıtlarını dışarı verme.
+      // Sadece gerçek rehber (addressbook) veya onaylı işletme (verified)
+      // kişilerini dışarı ver — yabancı sohbetler rehbere dahil edilmez (§1.3).
       return [...contacts.values()]
-        .filter((c) => !isLidJid(c.id))
+        .filter((c) => !isLidJid(c.id) && (c.name_source === 'addressbook' || c.name_source === 'verified'))
         .map((c) => ({ ...c }));
     },
 
