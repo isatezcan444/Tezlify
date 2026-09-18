@@ -172,9 +172,23 @@ class WhatsAppEventOrchestrator:
                 if _set_contact_name(self_contact, display_name, name_source):
                     await db.flush()
                 return self_contact
-            phone_e164 = canonical_phone
         else:
-            phone_e164 = _contact_phone_for_jid(clean_jid)
+            if "@lid" in clean_jid:
+                # Check if this LID is already mapped in whatsapp_private.lid_mappings
+                try:
+                    lid_lookup = await db.execute(
+                        text("SELECT phone_jid FROM whatsapp_private.lid_mappings WHERE lid_jid = :lid ORDER BY created_at DESC LIMIT 1"),
+                        {"lid": clean_jid if "@" in clean_jid else f"{clean_jid}@lid"},
+                    )
+                    mapped_row = lid_lookup.first()
+                    if mapped_row and mapped_row[0]:
+                        phone_e164 = _contact_phone_for_jid(mapped_row[0])
+                    else:
+                        phone_e164 = _contact_phone_for_jid(clean_jid)
+                except Exception:
+                    phone_e164 = _contact_phone_for_jid(clean_jid)
+            else:
+                phone_e164 = _contact_phone_for_jid(clean_jid)
 
         stmt = select(Contact).where(
             Contact.phone_e164 == phone_e164,
@@ -461,9 +475,21 @@ class WhatsAppEventOrchestrator:
         clean_jid = _strip_jid_prefix(str(jid))
         if is_broadcast_only_jid(clean_jid):
             return _skip_event(event, f"contact_synced: broadcast-only jid ({clean_jid})")
-        if is_degenerate_jid(clean_jid):
-            return _skip_event(event, f"contact_synced: dejenere jid ({clean_jid})")
-        phone_e164 = _contact_phone_for_jid(clean_jid)
+        if "@lid" in clean_jid:
+            try:
+                lid_lookup = await db.execute(
+                    text("SELECT phone_jid FROM whatsapp_private.lid_mappings WHERE lid_jid = :lid ORDER BY created_at DESC LIMIT 1"),
+                    {"lid": clean_jid if "@" in clean_jid else f"{clean_jid}@lid"},
+                )
+                mapped_row = lid_lookup.first()
+                if mapped_row and mapped_row[0]:
+                    phone_e164 = _contact_phone_for_jid(mapped_row[0])
+                else:
+                    phone_e164 = _contact_phone_for_jid(clean_jid)
+            except Exception:
+                phone_e164 = _contact_phone_for_jid(clean_jid)
+        else:
+            phone_e164 = _contact_phone_for_jid(clean_jid)
         owner = await resolve_event_owner(db, clean_jid, event.get("gateway_session_id"))
         event["user_id"] = owner
 

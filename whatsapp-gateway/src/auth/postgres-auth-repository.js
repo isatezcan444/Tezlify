@@ -21,6 +21,7 @@ export function createPostgresAuthRepository({
   encryptionKey,
   poolMax = 2,
   pool: injectedPool = null,
+  onLidMappingDiscovered = null,
 }) {
   if (!connectionString && !injectedPool) {
     throw new Error('GATEWAY_DATABASE_URL is required for durable WhatsApp auth.');
@@ -174,6 +175,35 @@ export function createPostgresAuthRepository({
                 encrypted.keyVersion,
               ],
             );
+
+            if (keyType === 'lid-mapping' && value && typeof value === 'string') {
+              let pnUser = null;
+              let lidUser = null;
+              if (id.endsWith('_reverse')) {
+                lidUser = id.replace('_reverse', '');
+                pnUser = value;
+              } else {
+                pnUser = id;
+                lidUser = value;
+              }
+              if (pnUser && lidUser && !pnUser.includes('@') && !lidUser.includes('@')) {
+                const lidJid = `${lidUser}@lid`;
+                const phoneJid = `${pnUser}@s.whatsapp.net`;
+                await client.query(
+                  `INSERT INTO whatsapp_private.lid_mappings (session_id, lid_jid, phone_jid, created_at)
+                   VALUES ($1, $2, $3, NOW())
+                   ON CONFLICT (session_id, lid_jid) DO UPDATE SET phone_jid = EXCLUDED.phone_jid, created_at = NOW()`,
+                  [String(sessionId), lidJid, phoneJid],
+                );
+                if (typeof onLidMappingDiscovered === 'function') {
+                  try {
+                    onLidMappingDiscovered(sessionId, lidJid, phoneJid);
+                  } catch (cbErr) {
+                    // non-fatal callback failure
+                  }
+                }
+              }
+            }
           }
         }
         await client.query('COMMIT');

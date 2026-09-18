@@ -453,11 +453,42 @@ async def list_conversations(
     )
     active_sess_phone = (await db.execute(active_sess_stmt)).scalars().first()
 
+    # Phase 17.5: Auto-resolve any LID-keyed contacts from whatsapp_private.lid_mappings
+    lid_map: Dict[str, str] = {}
+    candidate_lids = []
+    for r in rows:
+        c = r.contact or contacts_map.get(r.contact_id)
+        if c and c.phone_e164 and "@lid" in c.phone_e164:
+            clean = c.phone_e164.replace("jid:", "").strip()
+            candidate_lids.append(clean if "@" in clean else f"{clean}@lid")
+    if candidate_lids:
+        try:
+            lid_res = await db.execute(
+                text("SELECT lid_jid, phone_jid FROM whatsapp_private.lid_mappings WHERE lid_jid = ANY(:lids)"),
+                {"lids": candidate_lids},
+            )
+            for row in lid_res.fetchall():
+                if row[0] and row[1]:
+                    pn = jid_to_phone(row[1])
+                    if pn:
+                        lid_map[row[0]] = pn
+                        lid_map[row[0].split("@")[0]] = pn
+        except Exception as e:
+            logger.warning("Failed to batch-resolve LID mappings in list_conversations: %s", e)
+
     seen_self_conversation = False
     out: List[Dict[str, Any]] = []
     for r in rows:
         contact = r.contact or contacts_map.get(r.contact_id)
         phone = contact.phone_e164 if contact else None
+
+        if phone and "@lid" in phone:
+            clean_lid = phone.replace("jid:", "").strip()
+            resolved_pn = lid_map.get(clean_lid) or lid_map.get(clean_lid.split("@")[0])
+            if resolved_pn:
+                phone = resolved_pn
+                if contact and contact.phone_e164 != resolved_pn:
+                    contact.phone_e164 = resolved_pn
 
         if phone and active_sess_phone and _is_self_identity(phone, active_sess_phone):
             if seen_self_conversation:

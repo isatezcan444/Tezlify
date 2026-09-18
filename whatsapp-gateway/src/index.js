@@ -67,6 +67,16 @@ if (DATABASE_URL) {
   authRepository = createPostgresAuthRepository({
     encryptionKey: aesKey,
     pool: gatewayPool,
+    onLidMappingDiscovered: (sessionId, lidJid, phoneJid) => {
+      try {
+        const session = sessionManager.getSession(sessionId);
+        if (session) {
+          sessionManager._applyLidMapping(session, lidJid, phoneJid);
+        }
+      } catch (err) {
+        logger.warn({ err: err?.message, sessionId, lidJid, phoneJid }, 'Failed to apply discovered LID mapping');
+      }
+    },
   });
   let lastError = null;
   for (let attempt = 1; attempt <= 30; attempt += 1) {

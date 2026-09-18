@@ -656,13 +656,19 @@ export function createSessionManager({
     if (!pool || !sessionId || !store) return 0;
     try {
       const res = await pool.query(
-        `SELECT lid_jid, phone_jid FROM whatsapp_private.lid_mappings WHERE session_id = $1`,
+        `SELECT DISTINCT ON (lid_jid) lid_jid, phone_jid 
+         FROM whatsapp_private.lid_mappings 
+         ORDER BY lid_jid, (session_id = $1) DESC, created_at DESC`,
         [String(sessionId)]
       );
       let count = 0;
+      const session = sessionManager.getSession(sessionId);
       for (const row of res.rows) {
         if (row.lid_jid && row.phone_jid) {
           rememberLidPair(store, row.lid_jid, row.phone_jid);
+          if (session) {
+            sessionManager._applyLidMapping(session, row.lid_jid, row.phone_jid);
+          }
           count += 1;
         }
       }

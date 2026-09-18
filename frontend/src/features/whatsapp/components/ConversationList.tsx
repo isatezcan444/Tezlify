@@ -32,6 +32,98 @@ export interface ConversationListProps {
   loadingMore?: boolean;
 }
 
+export function formatPhoneNumber(phone?: string | null): string {
+  if (!phone) return '';
+  let raw = String(phone).replace(/^jid:/, '').trim();
+  if (raw.endsWith('@s.whatsapp.net') || raw.endsWith('@c.us')) {
+    raw = raw.split('@')[0];
+  }
+  if (raw.includes(':')) {
+    raw = raw.split(':')[0];
+  }
+
+  let digits = raw.replace(/\D/g, '');
+  if (!digits || digits.length < 5) return raw;
+
+  // Turkish 10 digits starting with 5 (e.g. 5322334968) -> 905322334968
+  if (digits.length === 10 && digits.startsWith('5')) {
+    digits = `90${digits}`;
+  } else if (digits.length === 11 && digits.startsWith('05')) {
+    digits = `90${digits.slice(1)}`;
+  }
+
+  // 1. Turkey (+90) - Mobile: 12 digits (+90 5XX XXX XX XX)
+  if (digits.startsWith('90') && digits.length === 12) {
+    return `+90 ${digits.slice(2, 5)} ${digits.slice(5, 8)} ${digits.slice(8, 10)} ${digits.slice(10, 12)}`;
+  }
+
+  // 2. North America (+1) (USA, Canada) - 11 digits: +1 XXX XXX XXXX
+  if (digits.startsWith('1') && digits.length === 11) {
+    return `+1 ${digits.slice(1, 4)} ${digits.slice(4, 7)} ${digits.slice(7, 11)}`;
+  }
+
+  // 3. United Kingdom (+44) - Mobile (+44 7XXX XXXXXX) or standard
+  if (digits.startsWith('44')) {
+    if (digits.length === 12) {
+      return `+44 ${digits.slice(2, 6)} ${digits.slice(6, 12)}`;
+    }
+    if (digits.length === 11) {
+      return `+44 ${digits.slice(2, 5)} ${digits.slice(5, 11)}`;
+    }
+  }
+
+  // 4. Germany (+49)
+  if (digits.startsWith('49') && digits.length >= 11 && digits.length <= 13) {
+    return `+49 ${digits.slice(2, 5)} ${digits.slice(5)}`;
+  }
+
+  // 5. France (+33) - 11 digits: +33 X XX XX XX XX
+  if (digits.startsWith('33') && digits.length === 11) {
+    return `+33 ${digits.slice(2, 3)} ${digits.slice(3, 5)} ${digits.slice(5, 7)} ${digits.slice(7, 9)} ${digits.slice(9, 11)}`;
+  }
+
+  // 6. Generic international fallback:
+  let ccLength = 2;
+  if (digits.startsWith('1') || digits.startsWith('7')) {
+    ccLength = 1;
+  } else if (
+    digits.startsWith('971') || digits.startsWith('966') ||
+    digits.startsWith('351') || digits.startsWith('352') ||
+    digits.startsWith('353') || digits.startsWith('354') ||
+    digits.startsWith('358') || digits.startsWith('370') ||
+    digits.startsWith('371') || digits.startsWith('372') ||
+    digits.startsWith('380') || digits.startsWith('381') ||
+    digits.startsWith('385') || digits.startsWith('420') ||
+    digits.startsWith('421') || digits.startsWith('852') ||
+    digits.startsWith('886')
+  ) {
+    ccLength = 3;
+  }
+
+  if (digits.length > ccLength + 3) {
+    const cc = digits.slice(0, ccLength);
+    const rest = digits.slice(ccLength);
+    const chunks: string[] = [];
+    let i = 0;
+    while (i < rest.length) {
+      const remaining = rest.length - i;
+      if (remaining === 4) {
+        chunks.push(rest.slice(i, i + 4));
+        break;
+      } else if (remaining > 4) {
+        chunks.push(rest.slice(i, i + 3));
+        i += 3;
+      } else {
+        chunks.push(rest.slice(i));
+        break;
+      }
+    }
+    return `+${cc} ${chunks.join(' ')}`;
+  }
+
+  return `+${digits}`;
+}
+
 export function extractCleanPhone(phone?: string | null): string | null {
   if (!phone) return null;
   const raw = String(phone).replace(/^jid:/, '').trim();
@@ -114,28 +206,21 @@ export function getConversationDisplayName(
     return rawName!;
   }
 
-  // 3. Unsaved contact with resolvable phone number ("Kişi rehberde kayıtlı değilse: +905321234567")
-  // Extract clean phone from lead_phone, phone, or rawName (if it contains a PN JID/number)
+  // 3. Unsaved contact with resolvable phone number ("Kişi rehberde kayıtlı değilse: +90 532 233 49 68")
+  // Format according to location / country code (+90 5XX XXX XX XX, +1 XXX XXX XXXX, etc.)
   const cleanPhone = extractCleanPhone(rawPhone) || extractCleanPhone(rawName);
   if (cleanPhone) {
-    return cleanPhone;
+    return formatPhoneNumber(cleanPhone);
   }
 
-  // 4. LID contact without mapped phone number (@lid)
-  const lidCandidate = (rawPhone && rawPhone.includes('@lid')) ? rawPhone : (rawName && rawName.includes('@lid')) ? rawName : null;
-  if (lidCandidate) {
-    const cleanLid = lidCandidate.replace(/^jid:/, '').split('@')[0].split(':')[0];
-    return `${t('whatsapp.contactFallback') || 'Kişi'} (${cleanLid.slice(-4)})`;
-  }
-
-  // 5. Transient resolving (ONLY if active resolution is genuinely in-flight)
+  // 4. Transient resolving (ONLY if active resolution is genuinely in-flight)
   // Rehberde kayıt bulunmaması kesinlikle resolving kabul edilmeyecek.
   // Kayıtlı olmayan PN JID için spinner/resolving asla gösterilmez (Case 3 handled above).
   if (conv.identity_state === 'RESOLVING_TRANSIENT') {
     return t('whatsapp.pendingIdentity') || 'Kişi kimliği çözülüyor…';
   }
 
-  // 6. Stable permanent fallback
+  // 5. Stable permanent fallback (Never show "Kişi (XXXX)")
   return t('whatsapp.contactFallback') || 'WhatsApp Kişisi';
 }
 

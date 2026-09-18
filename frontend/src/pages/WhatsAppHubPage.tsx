@@ -44,6 +44,7 @@ import {
   ConversationList, 
   getConversationDisplayName,
   extractCleanPhone,
+  formatPhoneNumber,
   ChatThread, 
   ChatComposer, 
   TemplateSelectModal, 
@@ -1950,9 +1951,9 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                                 </span>
                               )}
                             </div>
-                            {headerCleanPhone && headerCleanPhone !== headerDisplayName && (
+                            {headerCleanPhone && formatPhoneNumber(headerCleanPhone) !== headerDisplayName && (
                               <p className="text-[11px] font-mono text-slate-400 font-medium truncate">
-                                {headerCleanPhone}
+                                {formatPhoneNumber(headerCleanPhone)}
                               </p>
                             )}
                           </div>

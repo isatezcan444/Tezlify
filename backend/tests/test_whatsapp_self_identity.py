@@ -133,7 +133,18 @@ async def test_self_03_upsert_contact_resolves_self_identity():
     mock_res_contact = MagicMock()
     mock_res_contact.scalars.return_value.first.return_value = canonical_contact
 
-    mock_db.execute = AsyncMock(side_effect=[mock_res_sess, mock_res_contact])
+    mock_res_lid = MagicMock()
+    mock_res_lid.first.return_value = None
+
+    def mock_exec(*args, **kwargs):
+        stmt_str = str(args[0]) if args else ""
+        if "whatsapp_sessions" in stmt_str:
+            return mock_res_sess
+        if "lid_mappings" in stmt_str:
+            return mock_res_lid
+        return mock_res_contact
+
+    mock_db.execute = AsyncMock(side_effect=mock_exec)
     mock_db.flush = AsyncMock()
 
     # Call with LID

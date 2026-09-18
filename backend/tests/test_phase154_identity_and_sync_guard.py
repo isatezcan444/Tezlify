@@ -186,3 +186,25 @@ def test_activity_ordering_independent_of_identity():
     sorted_convs = sorted(convs, key=lambda c: c["last_message_at"], reverse=True)
     assert sorted_convs[0]["name"] == "+905321234567"
     assert sorted_convs[1]["name"] == "Ahmet Yılmaz"
+
+
+def test_lid_mapping_resolution_to_canonical_phone():
+    """LID JIDs mapped to phone JIDs in lid_mappings resolve to canonical E.164 phone numbers."""
+    # US number test case
+    us_lid = "199076280832146@lid"
+    us_phone_jid = "16465894168@s.whatsapp.net"
+    us_phone = jid_to_phone(us_phone_jid)
+    assert us_phone == "+16465894168"
+    name, state = resolve_contact_identity(contact=None, phone=us_phone)
+    assert name == "+16465894168"
+    assert state == IdentityResolutionState.RESOLVED_PHONE
+
+    # TR number test case (+90 532 233 49 68)
+    tr_lid = "30039085178980@lid"
+    tr_phone_jid = "905322334968@s.whatsapp.net"
+    tr_phone = jid_to_phone(tr_phone_jid)
+    assert tr_phone == "+905322334968"
+    name_tr, state_tr = resolve_contact_identity(contact=None, phone=tr_phone)
+    assert name_tr == "+905322334968"
+    assert state_tr == IdentityResolutionState.RESOLVED_PHONE
+
