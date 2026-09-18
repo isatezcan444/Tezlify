@@ -211,7 +211,7 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
     } catch (err: any) {
       if (!isMountedRef.current) return;
       setModalState('ERROR');
-      setErrorMessage(err?.message || t('whatsapp.connectionErrorDesc') || 'Bağlantı başlatılamadı.');
+      setErrorMessage(err?.message || t('whatsapp.connectionErrorDesc'));
     } finally {
       isInitializingRef.current = false;
     }
@@ -272,7 +272,7 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
         }
       }
     } catch (err: any) {
-      toast.error(err?.message || t('whatsapp.refreshingQr') || 'QR kod yenilenemedi', t('common.error'));
+      toast.error(err?.message || t('whatsapp.refreshingQr'), t('common.error'));
     } finally {
       if (isMountedRef.current) {
         setIsRefreshing(false);
@@ -283,11 +283,19 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
   // Pairing code — "Telefon No ile Bağlan" tabisi. Fail-closed: hata gerçek
   // mesajla gösterilir, sahte kod/sahte başarı asla üretilmez (AGENTS.md).
   const handleGetPairingCode = useCallback(async () => {
-    let digits = pairingPhone.replace(/\D/g, '');
-    if (digits.startsWith('00')) digits = digits.slice(2);
-    if (/^0\d{10}$/.test(digits)) digits = `90${digits.slice(1)}`;
-    if (/^5\d{9}$/.test(digits)) digits = `90${digits}`;
-    if (digits.length < 10 || digits.length > 15) {
+    // G-8 / §31: the GATEWAY is the single authority for pairing-number
+    // normalization (`normalizePairingPhone` in session-manager.js), including
+    // the `isInternational` guard (`+` / `00` => never assume Turkey).
+    //
+    // This modal MUST NOT pre-normalize. Stripping `+` / `00` here destroyed the
+    // international marker before the request left the browser, so the gateway's
+    // guard could never fire and a foreign number was silently rewritten to
+    // `+90...` — e.g. `+1 512 345 6789` became `905123456789`, and
+    // `005512345678` (Brazil) became `905512345678` (AGENTS.md §1.1/§1.3).
+    //
+    // We send the RAW input and fail closed on the gateway's error.
+    const rawPhone = pairingPhone.trim();
+    if (!/\d/.test(rawPhone)) {
       setPairingError(t('whatsapp.pairingInvalidPhone'));
       return;
     }
@@ -305,7 +313,7 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
     setPairingCode(null);
     setPairingCopied(false);
     try {
-      const res = await WhatsAppRepository.requestPairingCode(sid, digits);
+      const res = await WhatsAppRepository.requestPairingCode(sid, rawPhone);
       if (!isMountedRef.current) return;
       setPairingCode(res.pairing_code);
     } catch (err: any) {
@@ -646,7 +654,7 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
           <button
             type="button"
             onClick={handleCancel}
-            aria-label={t('whatsapp.closeModal') || 'Kapat'}
+            aria-label={t('whatsapp.closeModal')}
             className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/[0.06] transition-colors cursor-pointer"
           >
             <X className="w-4 h-4" />
@@ -658,7 +666,7 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
           <div className="py-8 flex flex-col items-center justify-center space-y-3 animate-fade-in">
             <Loader2 className="w-8 h-8 animate-spin text-[#7367F0]" />
             <p className="text-xs font-bold text-slate-500 dark:text-slate-400">
-              {t('common.cancelling') || 'İptal ediliyor...'}
+              {t('common.cancelling')}
             </p>
           </div>
         )}

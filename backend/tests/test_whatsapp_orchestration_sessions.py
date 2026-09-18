@@ -155,6 +155,14 @@ class TestWhatsAppSessionOrchestrator:
 
     @pytest.mark.asyncio
     async def test_request_pairing_code(self):
+        """S-2: requesting a pairing code must NOT persist the phone as canonical.
+
+        The phone is only a CANDIDATE until pairing actually succeeds (the
+        `session_connected` event is what sets `row.phone_number`). Persisting it
+        here made every `phone_number`-keyed guard treat the session as already
+        belonging to that number — so a cancelled pairing, or a pairing completed
+        with a different number, left a false canonical phone behind.
+        """
         db = AsyncMock()
         row = WhatsAppSession(id=5, gateway_id="gw-5", status=SessionStatus.SCAN_QR)
         with patch("backend.app.services.whatsapp.orchestration.sessions._get_session_or_404", new_callable=AsyncMock, return_value=row), \
@@ -163,9 +171,12 @@ class TestWhatsAppSessionOrchestrator:
 
         assert res["success"] is True
         assert res["pairing_code"] == "1234-5678"
+        # The candidate is returned to the caller...
         assert res["phone"] == "+905551234567"
-        assert row.phone_number == "+905551234567"
-        db.commit.assert_awaited_once()
+        assert res["phone_pending"] is True
+        # ...but NOT persisted as the canonical phone.
+        assert row.phone_number is None
+        db.commit.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_logout_session(self):

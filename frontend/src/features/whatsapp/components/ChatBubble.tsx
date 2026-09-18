@@ -14,12 +14,13 @@ import {
   Loader2,
   Clock
 } from 'lucide-react';
-import { Message } from '../../../types';
+import { Conversation, Message } from '../../../types';
 import { Tooltip } from '../../../components/ui/Tooltip';
 import { Modal } from '../../../components/ui/Modal';
 import { useI18n } from '../../../context/I18nContext';
-import { parseServerTime, formatMessageTime } from '../../../lib/utils';
+import { formatMessageTime } from '../../../lib/utils';
 import { finishWaLatency } from '../lib/whatsappLatency';
+import { getConversationDisplayName } from '../lib/whatsappIdentity';
 
 export interface ChatBubbleProps {
   message: Message;
@@ -56,36 +57,56 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({ message, isGroup = false
     return formatMessageTime(dateStr, language);
   };
 
+  // I-5 / F-13: the group sender label is resolved by the SAME canonical
+  // display helper as the conversation identity. A raw technical JID
+  // (`jid:…`, `@lid`, `@g.us`, `@s.whatsapp.net`) is never rendered; the
+  // helper resolves a PN JID to its phone, a known contact to its name, an
+  // unmapped LID to a deterministic fallback.
+  const senderLabel = React.useMemo(() => {
+    if (!isInbound || !isGroup || !message.sender_name) return null;
+    const label = getConversationDisplayName(
+      {
+        id: 0,
+        lead_name: message.sender_name,
+        lead_phone: message.sender_phone,
+        is_group: false,
+      } as Conversation,
+      t,
+    );
+    if (!label || label === chatTitle) return null;
+    return label;
+  }, [isInbound, isGroup, message.sender_name, message.sender_phone, chatTitle, t]);
+
   const renderStatusIcon = () => {
     if (isInbound) return null;
     switch (message.status) {
       case 'PENDING':
         return (
-          <Tooltip content={t('whatsapp.msgPending') || 'Kuyrukta / Gönderiliyor'}>
+          <Tooltip content={t('whatsapp.msgPending')}>
             <Clock className="w-3.5 h-3.5 text-white/60 animate-pulse" />
           </Tooltip>
         );
       case 'SENT':
         return (
-          <Tooltip content={t('leads.msgSent') || 'Gönderildi'}>
+          <Tooltip content={t('leads.msgSent')}>
             <Check className="w-3.5 h-3.5 text-white/70" />
           </Tooltip>
         );
       case 'DELIVERED':
         return (
-          <Tooltip content={t('leads.msgDelivered') || 'Teslim edildi'}>
+          <Tooltip content={t('leads.msgDelivered')}>
             <CheckCheck className="w-3.5 h-3.5 text-white/70" />
           </Tooltip>
         );
       case 'READ':
         return (
-          <Tooltip content={t('leads.msgRead') || 'Okundu'}>
+          <Tooltip content={t('leads.msgRead')}>
             <CheckCheck className="w-3.5 h-3.5 text-cyan-200" />
           </Tooltip>
         );
       case 'FAILED':
         return (
-          <Tooltip content={t('whatsapp.msgFailed') || 'Mesaj gönderilemedi'}>
+          <Tooltip content={t('whatsapp.msgFailed')}>
             <AlertCircle className="w-3.5 h-3.5 text-rose-300" />
           </Tooltip>
         );
@@ -112,7 +133,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({ message, isGroup = false
               ) : (
                 <div className="flex flex-col items-center justify-center p-6 text-slate-500 dark:text-slate-400 bg-slate-200/50 dark:bg-white/[0.05]">
                   <ImageIcon className="w-10 h-10 mb-2 opacity-60" />
-                  <span className="text-[11px] font-bold">{t('leads.imagePreview') || 'Görsel Eki'}</span>
+                  <span className="text-[11px] font-bold">{t('leads.imagePreview')}</span>
                   <span className="text-[9px] opacity-70 font-mono mt-0.5">{message.media_mime_type || 'image/jpeg'}</span>
                 </div>
               )}
@@ -143,7 +164,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({ message, isGroup = false
                   {message.media_mime_type || 'application/pdf'}
                 </p>
               </div>
-              <Tooltip content={t('leads.documentReady') || 'Belge hazır'}>
+              <Tooltip content={t('leads.documentReady')}>
                 {message.media_url ? (
                   <a
                     href={message.media_url}
@@ -178,7 +199,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({ message, isGroup = false
                   <Music className="w-4 h-4" />
                 </div>
                 <div className="flex-1">
-                  <span className="text-[11px] font-bold block">{t('leads.voiceMessage') || 'Sesli Mesaj'}</span>
+                  <span className="text-[11px] font-bold block">{t('leads.voiceMessage')}</span>
                   <span className="text-[9px] font-mono text-slate-400">{message.media_mime_type || 'audio/ogg'}</span>
                 </div>
               </div>
@@ -199,7 +220,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({ message, isGroup = false
             ) : (
               <div className="rounded-xl overflow-hidden bg-slate-950/20 border border-black/5 dark:border-white/10 p-4 text-center">
                 <Video className="w-8 h-8 mx-auto text-[#7367F0] mb-1.5" />
-                <span className="text-xs font-bold block">{t('leads.videoMessage') || 'Video Eki'}</span>
+                <span className="text-xs font-bold block">{t('leads.videoMessage')}</span>
                 <span className="text-[10px] text-slate-400 font-mono">{message.media_mime_type || 'video/mp4'}</span>
               </div>
             )}
@@ -222,7 +243,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({ message, isGroup = false
         }
         return (
           <p className="whitespace-pre-wrap break-words">
-            {message.body || t('leads.mediaFallback') || '[Medya içeriği]'}
+            {message.body || t('leads.mediaFallback')}
           </p>
         );
 
@@ -230,7 +251,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({ message, isGroup = false
       default:
         return (
           <p className="whitespace-pre-wrap break-words">
-            {message.body || t('leads.mediaFallback') || '[Medya içeriği]'}
+            {message.body || t('leads.mediaFallback')}
           </p>
         );
     }
@@ -248,9 +269,9 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({ message, isGroup = false
         >
           {/* Faz 6a: gonderen yalnizca grup sohbetlerinde, sohbet adiyla ayni
               degilse gosterilir (WhatsApp Web paritesi). */}
-          {isInbound && isGroup && message.sender_name && message.sender_name !== chatTitle && (
+          {senderLabel && (
             <div className="text-[11px] font-bold text-[#7367F0] dark:text-[#a59bf5] mb-1 select-none flex items-center gap-1">
-              <span>{message.sender_name}</span>
+              <span>{senderLabel}</span>
             </div>
           )}
 
@@ -271,7 +292,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({ message, isGroup = false
           {!isInbound && message.status === 'FAILED' && onRetry && (
             <div className="flex items-center justify-between space-x-2 mt-1.5 pt-1.5 border-t border-white/20 select-none">
               <span className="text-[10px] text-rose-200 font-bold">
-                {t('whatsapp.msgFailed') || 'Gönderilemedi'}
+                {t('whatsapp.msgFailed')}
               </span>
               <button
                 type="button"
@@ -284,7 +305,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({ message, isGroup = false
                 ) : (
                   <RotateCcw className="w-3 h-3" />
                 )}
-                <span>{t('whatsapp.retryBtn') || 'Tekrar Dene'}</span>
+                <span>{t('whatsapp.retryBtn')}</span>
               </button>
             </div>
           )}
@@ -296,7 +317,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({ message, isGroup = false
         <Modal
           isOpen={isLightboxOpen}
           onClose={() => setIsLightboxOpen(false)}
-          title={t('leads.imagePreview') || 'Görsel Önizleme'}
+          title={t('leads.imagePreview')}
           subtitle={message.media_caption || undefined}
           icon={ImageIcon}
           maxWidth="lg"
@@ -311,7 +332,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({ message, isGroup = false
             ) : (
               <div className="py-12 text-center text-slate-400">
                 <ImageIcon className="w-12 h-12 mx-auto mb-2 opacity-50" />
-                <p className="text-sm font-bold">{t('leads.imageReady') || 'Görsel içeriği'}</p>
+                <p className="text-sm font-bold">{t('leads.imageReady')}</p>
               </div>
             )}
           </div>

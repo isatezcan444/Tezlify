@@ -31,7 +31,7 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({
     e.preventDefault();
     const cleanPhone = phone.trim();
     if (!cleanPhone) {
-      toast.error(t('whatsapp.phoneRequired') || 'Lütfen geçerli bir telefon numarası girin.');
+      toast.error(t('whatsapp.phoneRequired'));
       return;
     }
 
@@ -43,7 +43,7 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({
         message: message.trim() || undefined,
       });
 
-      toast.success(t('whatsapp.chatStarted') || 'Yeni sohbet başarıyla başlatıldı!');
+      toast.success(t('whatsapp.chatStarted'));
       setPhone('');
       setName('');
       setMessage('');
@@ -51,7 +51,7 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({
       onSuccess(newConv);
     } catch (err: any) {
       console.error('[NewChatModal] Failed to start conversation:', err);
-      toast.error(err.message || t('whatsapp.chatStartFailed') || 'Sohbet başlatılamadı');
+      toast.error(err.message || t('whatsapp.chatStartFailed'));
     } finally {
       setLoading(false);
     }
@@ -61,8 +61,8 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({
     <Modal
       isOpen={isOpen}
       onClose={onClose}
-      title={t('whatsapp.newChatModalTitle') || 'Yeni WhatsApp Sohbeti Başlat'}
-      subtitle={t('whatsapp.newChatModalSubtitle') || 'Rehberinizde veya veritabanında olmasa dahi herhangi bir numaraya doğrudan mesaj gönderin.'}
+      title={t('whatsapp.newChatModalTitle')}
+      subtitle={t('whatsapp.newChatModalSubtitle')}
       icon={MessageSquarePlus}
       maxWidth="md"
     >
@@ -71,7 +71,7 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({
         <div>
           <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5 flex items-center gap-1.5">
             <Phone className="w-3.5 h-3.5 text-[#25D366]" />
-            <span>{t('whatsapp.phoneLabel') || 'Telefon Numarası'}</span>
+            <span>{t('whatsapp.phoneLabel')}</span>
             <span className="text-red-500">*</span>
           </label>
           <TextInput
@@ -84,7 +84,7 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({
             className="font-mono text-sm"
           />
           <p className="text-[11px] text-slate-400 mt-1">
-            {t('whatsapp.phoneHint') || 'Ülke kodu ile birlikte girin (Örn: +905321234567).'}
+            {t('whatsapp.phoneHint')}
           </p>
         </div>
 
@@ -92,13 +92,13 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({
         <div>
           <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5 flex items-center gap-1.5">
             <User className="w-3.5 h-3.5 text-[#7367F0]" />
-            <span>{t('whatsapp.contactNameLabel') || 'Kişi / İşletme Adı (İsteğe Bağlı)'}</span>
+            <span>{t('whatsapp.contactNameLabel')}</span>
           </label>
           <TextInput
             type="text"
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder={t('whatsapp.contactNamePlaceholder') || 'Örn: Mehmet Bey veya XYZ Kuaför'}
+            placeholder={t('whatsapp.contactNamePlaceholder')}
           />
         </div>
 
@@ -106,12 +106,12 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({
         <div>
           <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5 flex items-center gap-1.5">
             <MessageSquare className="w-3.5 h-3.5 text-[#28C76F]" />
-            <span>{t('whatsapp.initialMessageLabel') || 'İlk Mesaj (İsteğe Bağlı)'}</span>
+            <span>{t('whatsapp.initialMessageLabel')}</span>
           </label>
           <textarea
             value={message}
             onChange={(e) => setMessage(e.target.value)}
-            placeholder={t('whatsapp.initialMessagePlaceholder') || 'Merhaba, görüşmek istediğiniz konuyu buraya yazabilirsiniz...'}
+            placeholder={t('whatsapp.initialMessagePlaceholder')}
             rows={3}
             className="w-full rounded-xl border border-slate-200 dark:border-white/[0.08] bg-slate-50/50 dark:bg-white/[0.04] p-3 text-xs text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-[#7367F0]/40 transition-all resize-none"
           />
@@ -126,7 +126,7 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({
             onClick={onClose}
             disabled={loading}
           >
-            {t('common.cancel') || 'İptal'}
+            {t('common.cancel')}
           </Button>
           <Button
             type="submit"
@@ -139,7 +139,7 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({
             ) : (
               <Send className="w-4 h-4" />
             )}
-            <span>{t('whatsapp.startChatBtn') || 'Sohbeti Başlat'}</span>
+            <span>{t('whatsapp.startChatBtn')}</span>
           </Button>
         </div>
       </form>

@@ -37,6 +37,7 @@ from backend.app.services.whatsapp.gateway import (
 from backend.app.services.whatsapp.orchestration.relink import (
     RelinkCandidateAmbiguous,
     RelinkCandidateNotFound,
+    find_existing_session_for_phone,
     perform_atomic_relink,
 )
 from backend.app.services.whatsapp.repositories.sessions import (
@@ -356,6 +357,40 @@ async def get_pairing_qr(db: AsyncSession, user_id: str, pair_token: str) -> Dic
                 raise ValueError("Eşleşme tamamlandı ancak hedef oturum doğrulanamadı.")
 
         # --- Scenario A-new: create new logical session (first QR for this phone) ---
+        # S-4: never mint a SECOND row for a phone that already has one.
+        # `phone_number` has no DB uniqueness constraint, so recheck transaction-safely
+        # right before the INSERT and rebind the existing row instead. This closes the
+        # duplicate-session window that a `skip_locked` candidate miss used to open
+        # (and also covers re-pairing a number whose session is already CONNECTED,
+        # which Scenario A does not match because it requires RELINK_REQUIRED).
+        existing = await find_existing_session_for_phone(
+            db, user_id=str(user_id), phone=phone, exclude_gateway_id=str(gateway_id)
+        )
+        if existing is not None:
+            existing.gateway_id = str(gateway_id)
+            existing.status = SessionStatus.CONNECTED
+            existing.is_active = True
+            existing.is_phone_online = True
+            existing.qr_code = None
+            existing.error_message = None
+            existing.updated_at = datetime.utcnow()
+            if pairing.get("session_name"):
+                existing.session_name = pairing["session_name"]
+            await db.commit()
+            await db.refresh(existing)
+            logger.info(
+                "[WhatsApp] Reused existing session id=%s for phone=%s instead of creating a duplicate.",
+                existing.id,
+                phone,
+            )
+            return {
+                "status": "CONNECTED",
+                "session_id": existing.id,
+                "phone": existing.phone_number,
+                "qr_code": None,
+                "error_message": None,
+            }
+
         row = WhatsAppSession(
             user_id=user_id,
             gateway_id=gateway_id,
@@ -594,7 +629,20 @@ async def refresh_session_qr(db: AsyncSession, user_id: str, session_id: int) ->
 async def request_pairing_code(
     db: AsyncSession, user_id: str, session_id: int, phone: str
 ) -> Dict[str, Any]:
-    """'Telefon numarası ile bağlan' — gateway'den 8 haneli pairing kodu ister."""
+    """'Telefon numarası ile bağlan' — gateway'den 8 haneli pairing kodu ister.
+
+    S-2: the phone is only a CANDIDATE at this point. Persisting it into
+    `whatsapp_sessions.phone_number` here made the session look like it already
+    belonged to that number before pairing had succeeded, which then fed every
+    `phone_number`-keyed guard (`_isRegistered`, self-identity reconciliation,
+    relink candidate matching). If the user cancelled, or completed pairing with a
+    DIFFERENT number, the row kept a false canonical phone.
+
+    Canonical persistence belongs to the success path — `session_connected` sets
+    `row.phone_number` from the number the provider actually reports. The
+    candidate is returned to the caller (and the ephemeral pairing registry
+    already carries it for owner resolution).
+    """
     row = await _get_session_or_404(db, user_id, session_id)
     data = await _gateway_op_or_mark_relink(
         db, row, lambda gid: gw.request_pairing_code(gid, phone)
@@ -602,13 +650,13 @@ async def request_pairing_code(
     pairing_code = extract_pairing_code(data)
     if not pairing_code:
         raise gw.WhatsAppGatewayError("Gateway pairing kodu döndürmedi.")
-    if data.get("phone"):
-        row.phone_number = data["phone"]
-        await db.commit()
+    candidate_phone = data.get("phone")
     return {
         "success": True,
         "pairing_code": str(pairing_code),
-        "phone": data.get("phone") or row.phone_number,
+        # NOT persisted: this is the requested number, not a verified one.
+        "phone": candidate_phone or row.phone_number,
+        "phone_pending": bool(candidate_phone),
     }
 
 

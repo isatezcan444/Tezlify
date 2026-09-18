@@ -90,15 +90,15 @@ export const TemplateSelectModal: React.FC<TemplateSelectModalProps> = ({
     <Modal
       isOpen={isOpen}
       onClose={onClose}
-      title={t('whatsapp.selectTemplateTitle') || 'WhatsApp Şablonu Seçin'}
-      subtitle={t('whatsapp.selectTemplateDesc') || 'Müşteriyle hızlı ve güvenli iletişim kurmak için hazır bir şablon seçin.'}
+      title={t('whatsapp.selectTemplateTitle')}
+      subtitle={t('whatsapp.selectTemplateDesc')}
       icon={LayoutTemplate}
       maxWidth="xl"
     >
       {loading ? (
         <div className="flex items-center justify-center p-12 space-x-2 text-slate-400">
           <Loader2 className="w-5 h-5 animate-spin text-[#7367F0]" />
-          <span className="text-xs font-bold">{t('common.loading') || 'Şablonlar yükleniyor...'}</span>
+          <span className="text-xs font-bold">{t('common.loading')}</span>
         </div>
       ) : (
         <div className="space-y-5">
@@ -146,7 +146,7 @@ export const TemplateSelectModal: React.FC<TemplateSelectModalProps> = ({
           {currentTemplate && currentTemplate.variables.length > 0 && (
             <div className="p-4 rounded-xl bg-slate-50 dark:bg-black/20 border border-slate-200/80 dark:border-white/[0.06] space-y-3">
               <h5 className="text-[11px] font-extrabold uppercase text-slate-400 dark:text-slate-500 tracking-wider">
-                {t('whatsapp.templateVariables') || 'Şablon Değişkenleri'}
+                {t('whatsapp.templateVariables')}
               </h5>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 {currentTemplate.variables.map((v) => (
@@ -172,7 +172,7 @@ export const TemplateSelectModal: React.FC<TemplateSelectModalProps> = ({
           {/* Real-time Message Preview Box */}
           <div className="space-y-1.5">
             <label className="text-[11px] font-extrabold uppercase text-slate-400 dark:text-slate-500 tracking-wider">
-              {t('whatsapp.messagePreview') || 'Mesaj Önizleme'}
+              {t('whatsapp.messagePreview')}
             </label>
             <div className="p-3.5 rounded-xl bg-[#25D366]/10 dark:bg-[#25D366]/15 border border-[#25D366]/25 text-slate-800 dark:text-slate-100 text-xs leading-relaxed font-medium">
               <p className="whitespace-pre-wrap">{getRenderedPreview()}</p>
@@ -189,7 +189,7 @@ export const TemplateSelectModal: React.FC<TemplateSelectModalProps> = ({
               disabled={sending}
               className="text-xs font-bold"
             >
-              {t('common.cancel') || 'İptal'}
+              {t('common.cancel')}
             </Button>
             <Button
               type="button"
@@ -203,7 +203,7 @@ export const TemplateSelectModal: React.FC<TemplateSelectModalProps> = ({
               ) : (
                 <Send className="w-3.5 h-3.5" />
               )}
-              <span>{t('whatsapp.sendTemplateBtn') || 'Şablonu Gönder'}</span>
+              <span>{t('whatsapp.sendTemplateBtn')}</span>
             </Button>
           </div>
         </div>

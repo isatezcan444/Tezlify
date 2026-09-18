@@ -14,9 +14,8 @@
 import 'dotenv/config';
 import express from 'express';
 import http from 'http';
-import pino from 'pino';
 import { WebSocketServer } from 'ws';
-import { createSessionManager } from './session-manager.js';
+import { createSessionManager, logger } from './session-manager.js';
 import { createEventBridge } from './events.js';
 import { fileURLToPath } from 'url';
 import path from 'path';
@@ -29,11 +28,11 @@ import { createPostgresSessionLease } from './lease/postgres-session-lease.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// `logger` asagidaki onLidMappingDiscovered handler'inda kullaniliyordu ama
-// hicbir yerde tanimli/import edilmemisti; LID uygulama hatasi oldugunda
-// `logger.warn` ReferenceError firlatiyor ve ASIL hatayi maskeliyordu.
-const logger = pino({ level: process.env.LOG_LEVEL || 'warn' });
-
+// G-2: `logger` bir zamanlar burada hic tanimli degildi; `logger.warn`
+// ReferenceError firlatip ASIL LID hatasini maskeliyordu. Artik gateway'in TEK
+// pino logger'i `session-manager.js`'ten import edilir — ikinci bir pino
+// ornegi/abstraksiyonu YOK. Global `console` degistirilmez; token/secret
+// loglanmaz.
 const PORT = parseInt(process.env.GATEWAY_PORT || '8787', 10);
 const HOST = process.env.GATEWAY_HOST || '127.0.0.1';
 const BACKEND_WS_URL = process.env.BACKEND_WS_URL || 'ws://127.0.0.1:8000/ws/gateway';

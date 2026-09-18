@@ -7,8 +7,20 @@ import { Button } from '../../../components/ui/button';
 import { SearchInput } from '../../../components/forms/SearchInput';
 import { Skeleton } from '../../../components/ui/Skeleton';
 import { useI18n } from '../../../context/I18nContext';
-import { parseServerTime, formatConversationTime } from '../../../lib/utils';
-import { compareConversationsByActivityDesc } from '../lib/whatsappOrdering';
+import { formatConversationTime } from '../../../lib/utils';
+import { compareConversationsByActivityDesc, dedupeConversationsByCanonicalIdentity } from '../lib/whatsappOrdering';
+import {
+  extractCleanPhone,
+  formatPhoneNumber,
+  getConversationDisplayName,
+  isRawWhatsAppJid,
+  stripJidPrefix,
+} from '../lib/whatsappIdentity';
+
+// Kanonik kimlik yardımcıları tek bir modülde yaşar (features/whatsapp/lib/
+// whatsappIdentity). Geriye dönük içe aktarımlar bozulmasın diye buradan
+// yeniden dışa aktarılır — ikinci bir kopya TANIMLANMAZ.
+export { extractCleanPhone, formatPhoneNumber, getConversationDisplayName, isRawWhatsAppJid, stripJidPrefix };
 
 export type FilterTab = 'ALL' | 'ACTIVE' | 'GROUPS' | 'ARCHIVED' | 'CLOSED' | 'UNREAD';
 
@@ -30,205 +42,6 @@ export interface ConversationListProps {
   onLoadMore?: () => void;
   hasMore?: boolean;
   loadingMore?: boolean;
-}
-
-export function formatPhoneNumber(phone?: string | null): string {
-  if (!phone) return '';
-  let raw = String(phone).replace(/^jid:/, '').trim();
-  if (raw.endsWith('@s.whatsapp.net') || raw.endsWith('@c.us')) {
-    raw = raw.split('@')[0];
-  }
-  if (raw.includes(':')) {
-    raw = raw.split(':')[0];
-  }
-
-  let digits = raw.replace(/\D/g, '');
-  if (!digits || digits.length < 5) return raw;
-
-  // Turkish 10 digits starting with 5 (e.g. 5322334968) -> 905322334968
-  if (digits.length === 10 && digits.startsWith('5')) {
-    digits = `90${digits}`;
-  } else if (digits.length === 11 && digits.startsWith('05')) {
-    digits = `90${digits.slice(1)}`;
-  }
-
-  // 1. Turkey (+90) - Mobile: 12 digits (+90 5XX XXX XX XX)
-  if (digits.startsWith('90') && digits.length === 12) {
-    return `+90 ${digits.slice(2, 5)} ${digits.slice(5, 8)} ${digits.slice(8, 10)} ${digits.slice(10, 12)}`;
-  }
-
-  // 2. North America (+1) (USA, Canada) - 11 digits: +1 XXX XXX XXXX
-  if (digits.startsWith('1') && digits.length === 11) {
-    return `+1 ${digits.slice(1, 4)} ${digits.slice(4, 7)} ${digits.slice(7, 11)}`;
-  }
-
-  // 3. United Kingdom (+44) - Mobile (+44 7XXX XXXXXX) or standard
-  if (digits.startsWith('44')) {
-    if (digits.length === 12) {
-      return `+44 ${digits.slice(2, 6)} ${digits.slice(6, 12)}`;
-    }
-    if (digits.length === 11) {
-      return `+44 ${digits.slice(2, 5)} ${digits.slice(5, 11)}`;
-    }
-  }
-
-  // 4. Germany (+49)
-  if (digits.startsWith('49') && digits.length >= 11 && digits.length <= 13) {
-    return `+49 ${digits.slice(2, 5)} ${digits.slice(5)}`;
-  }
-
-  // 5. France (+33) - 11 digits: +33 X XX XX XX XX
-  if (digits.startsWith('33') && digits.length === 11) {
-    return `+33 ${digits.slice(2, 3)} ${digits.slice(3, 5)} ${digits.slice(5, 7)} ${digits.slice(7, 9)} ${digits.slice(9, 11)}`;
-  }
-
-  // 6. Generic international fallback:
-  let ccLength = 2;
-  if (digits.startsWith('1') || digits.startsWith('7')) {
-    ccLength = 1;
-  } else if (
-    digits.startsWith('971') || digits.startsWith('966') ||
-    digits.startsWith('351') || digits.startsWith('352') ||
-    digits.startsWith('353') || digits.startsWith('354') ||
-    digits.startsWith('358') || digits.startsWith('370') ||
-    digits.startsWith('371') || digits.startsWith('372') ||
-    digits.startsWith('380') || digits.startsWith('381') ||
-    digits.startsWith('385') || digits.startsWith('420') ||
-    digits.startsWith('421') || digits.startsWith('852') ||
-    digits.startsWith('886')
-  ) {
-    ccLength = 3;
-  }
-
-  if (digits.length > ccLength + 3) {
-    const cc = digits.slice(0, ccLength);
-    const rest = digits.slice(ccLength);
-    const chunks: string[] = [];
-    let i = 0;
-    while (i < rest.length) {
-      const remaining = rest.length - i;
-      if (remaining === 4) {
-        chunks.push(rest.slice(i, i + 4));
-        break;
-      } else if (remaining > 4) {
-        chunks.push(rest.slice(i, i + 3));
-        i += 3;
-      } else {
-        chunks.push(rest.slice(i));
-        break;
-      }
-    }
-    return `+${cc} ${chunks.join(' ')}`;
-  }
-
-  return `+${digits}`;
-}
-
-export function extractCleanPhone(phone?: string | null): string | null {
-  if (!phone) return null;
-  const raw = String(phone).replace(/^jid:/, '').trim();
-  if (raw.endsWith('@lid') || raw.includes('@g.us')) return null;
-  const userPart = (raw.includes('@') ? raw.split('@')[0] : raw).split(':')[0];
-  let digits = userPart.replace(/\D/g, '');
-  if (digits.length < 5 || /^0+$/.test(digits)) return null;
-  if (digits.length === 10 && digits.startsWith('5')) {
-    digits = `90${digits}`;
-  } else if (digits.length === 11 && digits.startsWith('05')) {
-    digits = `90${digits.slice(1)}`;
-  }
-  return `+${digits}`;
-}
-
-export function isRawWhatsAppJid(value?: string | null): boolean {
-  if (!value) return false;
-  const v = String(value).trim();
-  return (
-    v.startsWith('jid:') ||
-    v.includes('@lid') ||
-    v.includes('@g.us') ||
-    v.includes('@s.whatsapp.net') ||
-    v.includes('@c.us')
-  );
-}
-
-export function isRealContactName(name?: string | null): boolean {
-  if (!name) return false;
-  const trimmed = String(name).trim();
-  if (!trimmed) return false;
-  if (isRawWhatsAppJid(trimmed)) return false;
-
-  const digitsOnly = trimmed.replace(/\D/g, '');
-  const lettersOnly = trimmed.replace(/[^a-zA-ZğüşıöçĞÜŞİÖÇ]/g, '');
-  if (digitsOnly.length >= 5 && lettersOnly.length === 0) {
-    return false;
-  }
-
-  const lower = trimmed.toLowerCase();
-  if (
-    lower === 'lead' ||
-    lower === 'kişi' ||
-    lower === 'kisi' ||
-    lower === 'contact' ||
-    lower === 'contacts' ||
-    lower === 'isimsiz müşteri' ||
-    lower === 'isimsiz musteri' ||
-    lower === 'whatsapp kişisi' ||
-    lower === 'whatsapp kisi' ||
-    lower === 'whatsapp contact' ||
-    lower.includes('kişi kimliği') ||
-    lower.includes('kisi kimligi') ||
-    lower.includes('resolving identity')
-  ) {
-    return false;
-  }
-
-  return true;
-}
-
-export function getConversationDisplayName(
-  conv: Conversation,
-  t: (key: string) => string
-): string {
-  const rawPhone =
-    conv.lead_phone ||
-    (conv as any).phone ||
-    (conv as any).jid ||
-    (conv as any).phone_number ||
-    (conv as any).recipient_phone ||
-    (conv as any).sender_phone ||
-    null;
-  const rawName = conv.lead_name || (conv as any).name || null;
-
-  // 1. Group conversation check
-  const isGroup = Boolean(conv.is_group || (rawPhone && rawPhone.includes('@g.us')));
-  if (isGroup) {
-    if (rawName && !isRawWhatsAppJid(rawName)) {
-      return rawName;
-    }
-    return t('whatsapp.groupFallback') || 'Grup';
-  }
-
-  // 2. Saved contact in address book ("Kişi rehberde kayıtlıysa: Ahmet Yılmaz")
-  if (isRealContactName(rawName)) {
-    return rawName!;
-  }
-
-  // 3. Unsaved contact with resolvable phone number ("Kişi rehberde kayıtlı değilse: +90 532 233 49 68")
-  // Format according to location / country code (+90 5XX XXX XX XX, +1 XXX XXX XXXX, etc.)
-  const cleanPhone = extractCleanPhone(rawPhone) || extractCleanPhone(rawName);
-  if (cleanPhone) {
-    return formatPhoneNumber(cleanPhone);
-  }
-
-  // 4. Transient resolving (ONLY if active resolution is genuinely in-flight)
-  // Rehberde kayıt bulunmaması kesinlikle resolving kabul edilmeyecek.
-  // Kayıtlı olmayan PN JID için spinner/resolving asla gösterilmez (Case 3 handled above).
-  if (conv.identity_state === 'RESOLVING_TRANSIENT') {
-    return t('whatsapp.pendingIdentity') || 'Kişi kimliği çözülüyor…';
-  }
-
-  // 5. Stable permanent fallback (Never show "Kişi (XXXX)")
-  return t('whatsapp.contactFallback') || 'WhatsApp Kişisi';
 }
 
 export const ConversationList: React.FC<ConversationListProps> = ({
@@ -295,38 +108,35 @@ export const ConversationList: React.FC<ConversationListProps> = ({
 
   const sorted = [...filtered].sort(compareConversationsByActivityDesc);
 
-  // Deduplicate only within the same WhatsApp line. The same contact can be
-  // present on multiple user-owned lines and must remain visible separately.
-  const deduplicated = React.useMemo(() => {
-    const seen = new Map<string, Conversation>();
-    for (const c of sorted) {
-      let key = '';
-      const rawPhone = c.lead_phone || (c as any).phone || (c as any).jid || (c as any).phone_number || '';
-      if (c.is_group || rawPhone.endsWith('@g.us')) {
-        key = `line_${c.session_id ?? 'legacy'}_grp_${rawPhone || c.id}`;
-      } else {
-        const digits = rawPhone ? rawPhone.replace(/\D/g, '').slice(-10) : '';
-        key = digits ? `line_${c.session_id ?? 'legacy'}_phone_${digits}` : `conv_${c.id}`;
-      }
+  // I-7: `conversation.id` is the primary authority for dedup — it is the
+  // backend's unique conversation key. The old key truncated the phone to its
+  // last 10 digits, which could merge two DIFFERENT people who share a suffix.
+  // A canonical full-E.164 / JID key is used only when a row has no id.
+  const deduplicated = React.useMemo(
+    () => dedupeConversationsByCanonicalIdentity(sorted),
+    [sorted],
+  );
 
-      if (!seen.has(key)) {
-        seen.set(key, { ...c });
-      } else {
-        const existing = seen.get(key)!;
-        const existingTime = existing.last_message_at ? parseServerTime(existing.last_message_at)?.getTime() ?? 0 : 0;
-        const currentTime = c.last_message_at ? parseServerTime(c.last_message_at)?.getTime() ?? 0 : 0;
-        if (currentTime > existingTime || (currentTime === existingTime && c.id > existing.id)) {
-          seen.set(key, {
-            ...c,
-            unread_count: (c.unread_count || 0) + (existing.unread_count || 0),
-          });
-        } else {
-          existing.unread_count = (existing.unread_count || 0) + (c.unread_count || 0);
-        }
-      }
+  // F-12: each filter has its OWN empty state. One generic message for
+  // "no conversations at all", "none unread", "no groups", "none archived"
+  // and "no search results" was misleading.
+  const emptyStateKey = (() => {
+    if (searchQuery.trim()) return 'whatsapp.emptySearch';
+    switch (currentFilter) {
+      case 'UNREAD':
+        return 'whatsapp.emptyUnread';
+      case 'GROUPS':
+        return 'whatsapp.emptyGroups';
+      case 'ARCHIVED':
+        return 'whatsapp.emptyArchived';
+      case 'ACTIVE':
+        return 'whatsapp.emptyActive';
+      case 'CLOSED':
+        return 'whatsapp.emptyClosed';
+      default:
+        return 'whatsapp.noConversations';
     }
-    return Array.from(seen.values());
-  }, [sorted]);
+  })();
 
   // Faz 10 (P2): son mesaj satiri — "Henüz WhatsApp Mesajı Yok" YALNIZCA
   // sohbetin hic mesaji olmadigi dogrulaninca (message_count===0 &&
@@ -353,13 +163,13 @@ export const ConversationList: React.FC<ConversationListProps> = ({
   };
 
   const filterTabs: { id: FilterTab; label: string; icon: React.FC<{ className?: string }> }[] = [
-    { id: 'ALL', label: t('whatsapp.tabAll') || 'Tümü', icon: Inbox },
-    { id: 'ACTIVE', label: t('whatsapp.tabActive') || 'Aktif', icon: MessageSquare },
+    { id: 'ALL', label: t('whatsapp.tabAll'), icon: Inbox },
+    { id: 'ACTIVE', label: t('whatsapp.tabActive'), icon: MessageSquare },
     // Sorun 4: grup sohbetleri ayri sekme (JID @g.us — backend is_group).
-    { id: 'GROUPS', label: t('whatsapp.tabGroups') || 'Gruplar', icon: Users },
-    { id: 'UNREAD', label: t('whatsapp.tabUnread') || 'Okunmamış', icon: Mail },
-    { id: 'ARCHIVED', label: t('whatsapp.tabArchived') || 'Arşiv', icon: Archive },
-    { id: 'CLOSED', label: t('whatsapp.tabClosed') || 'Kapatılan', icon: CheckCircle2 },
+    { id: 'GROUPS', label: t('whatsapp.tabGroups'), icon: Users },
+    { id: 'UNREAD', label: t('whatsapp.tabUnread'), icon: Mail },
+    { id: 'ARCHIVED', label: t('whatsapp.tabArchived'), icon: Archive },
+    { id: 'CLOSED', label: t('whatsapp.tabClosed'), icon: CheckCircle2 },
   ];
 
   const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
@@ -386,7 +196,7 @@ export const ConversationList: React.FC<ConversationListProps> = ({
                 className="flex-1 space-x-1.5 bg-[#25D366] hover:bg-[#20ba59] text-white font-bold text-xs cursor-pointer shadow-xs"
               >
                 <MessageSquarePlus className="w-3.5 h-3.5" />
-                <span>{t('whatsapp.newChat') || 'Yeni Sohbet'}</span>
+                <span>{t('whatsapp.newChat')}</span>
               </Button>
             )}
             {onSync && (
@@ -396,11 +206,11 @@ export const ConversationList: React.FC<ConversationListProps> = ({
                 size="sm"
                 onClick={onSync}
                 disabled={isSyncing}
-                title={t('whatsapp.syncChats') || "WhatsApp'tan Sohbetleri Güncelle"}
+                title={t('whatsapp.syncChats')}
                 className="px-2.5 space-x-1 text-xs font-bold border-slate-200 dark:border-white/[0.1] hover:bg-slate-100 dark:hover:bg-white/[0.06] cursor-pointer shrink-0"
               >
                 <RefreshCw className={`w-3.5 h-3.5 text-[#7367F0] ${isSyncing ? 'animate-spin' : ''}`} />
-                <span className="hidden sm:inline">{t('whatsapp.sync') || 'Eşitle'}</span>
+                <span className="hidden sm:inline">{t('whatsapp.sync')}</span>
               </Button>
             )}
           </div>
@@ -457,7 +267,7 @@ export const ConversationList: React.FC<ConversationListProps> = ({
         ) : deduplicated.length === 0 ? (
           <div className="p-6 text-center text-slate-400 dark:text-slate-500 text-xs">
             <MessageSquare className="w-8 h-8 mx-auto mb-2 opacity-40" />
-            <p>{t('whatsapp.noConversations')}</p>
+            <p>{t(emptyStateKey)}</p>
           </div>
         ) : (
           deduplicated.map((conv) => {
@@ -473,7 +283,9 @@ export const ConversationList: React.FC<ConversationListProps> = ({
                 key={conv.id}
                 type="button"
                 data-conv-id={conv.id}
-                data-phone={rawPhone}
+                // I-6: never leak a raw JID (`jid:…`, `@lid`, …) into the DOM.
+                // The attribute carries the canonical E.164 form, or is omitted.
+                data-phone={cleanPhone || undefined}
                 onClick={() => onSelect(conv)}
                 className={`w-full text-left p-3.5 flex items-start space-x-3 transition-colors cursor-pointer ${
                   isSelected
@@ -495,7 +307,7 @@ export const ConversationList: React.FC<ConversationListProps> = ({
                       {conv.is_group && (
                         <span className="shrink-0 inline-flex items-center gap-0.5 text-[9px] font-bold px-1.5 py-0.5 rounded-md bg-[#7367F0]/15 text-[#7367F0] dark:bg-[#7367F0]/25">
                           <Users className="w-2.5 h-2.5" />
-                          <span>{t('whatsapp.group') || 'Grup'}</span>
+                          <span>{t('whatsapp.group')}</span>
                         </span>
                       )}
                       <h4 className="font-bold text-xs text-slate-800 dark:text-slate-100 truncate">
@@ -513,7 +325,7 @@ export const ConversationList: React.FC<ConversationListProps> = ({
                       // WhatsApp Web: listede yesil "yazıyor..." gosterilir.
                       return (
                         <p className="text-[11px] text-[#25D366] dark:text-[#25D366] font-bold truncate mt-0.5 animate-pulse">
-                          {t('whatsapp.peerTyping') || 'yazıyor...'}
+                          {t('whatsapp.peerTyping')}
                         </p>
                       );
                     }
@@ -528,7 +340,7 @@ export const ConversationList: React.FC<ConversationListProps> = ({
                     <div className="flex items-center justify-end space-x-1.5 mt-1.5">
                       {conv.status !== 'ACTIVE' && (
                         <span className="text-[9px] font-bold uppercase px-1.5 py-0.5 rounded bg-slate-200 dark:bg-white/10 text-slate-500 dark:text-slate-400">
-                          {conv.status === 'ARCHIVED' ? (t('whatsapp.statusArchived') || 'Arşiv') : (t('whatsapp.statusClosed') || 'Kapalı')}
+                          {conv.status === 'ARCHIVED' ? t('whatsapp.statusArchived') : t('whatsapp.statusClosed')}
                         </span>
                       )}
                       {conv.unread_count > 0 && (
@@ -546,7 +358,7 @@ export const ConversationList: React.FC<ConversationListProps> = ({
         {loadingMore && (
           <div className="p-3 text-center text-xs text-slate-400 dark:text-slate-500 flex items-center justify-center space-x-2">
             <RefreshCw className="w-3.5 h-3.5 animate-spin text-[#7367F0]" />
-            <span>{t('whatsapp.loadingMore') || 'Daha fazla sohbet yükleniyor…'}</span>
+            <span>{t('whatsapp.loadingMore')}</span>
           </div>
         )}
       </div>

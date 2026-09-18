@@ -13,6 +13,29 @@ Strict Invariants:
    Step 2: A subsequent on-demand request with updated anchor returns exactly 0 messages with provider_status == 'OK'.
    Without this two-step confirmation, provider_exhausted is NEVER set to TRUE.
 6. 3 consecutive stalled anchors transitions to CURSOR_STALLED, breaking pagination loops.
+
+`provider_status` contract (Phase 2, H-4) — these three MUST stay distinguishable:
+
+- `NOT_REQUESTED`  → the provider was genuinely never called. This is a cache hit.
+                     INVARIANT 4: no evidence mutation whatsoever.
+- `NO_ANCHOR`      → a fetch was requested but there was no cursor to fetch from.
+                     Treated like NOT_REQUESTED: no evidence mutation (we learned nothing).
+- `SOCKET_UNAVAILABLE` → a fetch WAS requested but the gateway socket was unusable.
+                     This is a real provider failure, NOT a cache hit. It MUST be recorded
+                     (state=PROVIDER_ERROR, error_count += 1) so a socket-less gateway can
+                     never masquerade as a healthy "nothing to do".
+
+Partial-timeout contract (Phase 2, H-3) — `provider_status == 'TIMEOUT'` with a NON-EMPTY
+`gw_msgs` is a **partial** result, not a zero result:
+  - `timeout_count` still increments (the round-trip did time out).
+  - `provider_msgs_returned` records the messages we ACTUALLY received in this attempt, so the
+    evidence never claims 0 while the client was handed real messages.
+  - `provider_exhausted` is never set TRUE from a timeout, and an already-established
+    exhaustion is never cleared by a timeout (a timeout is not evidence about completeness).
+  - No exception is raised: the caller has usable data and pagination continues.
+
+Both the background sweep and the on-demand path MUST funnel through this module. Two
+independent exhaustion implementations is the bug this module exists to prevent.
 """
 
 import logging
@@ -107,13 +130,19 @@ async def record_on_demand_provider_result(
     oldest_msg_id: Optional[str] = None,
     before_ts_ms: Optional[int] = None,
     error_msg: Optional[str] = None,
+    increment_sweep_count: bool = False,
 ) -> Optional[Dict[str, Any]]:
-    """Records the outcome of an on-demand provider round-trip into history_sync_states.
+    """Records the outcome of a provider round-trip into history_sync_states.
+
+    This is the SINGLE authority for the Phase 17 exhaustion policy. The on-demand
+    scroll path and the (kill-switched) background sweep both call it, so they can
+    never disagree about what "exhausted" means.
 
     Follows the strict Phase 17 state machine:
-    - NOT_REQUESTED: Ignored (cache hit rule).
-    - TIMEOUT: Increments timeout_count, leaves retryable.
-    - ERROR: Increments error_count, state=PROVIDER_ERROR.
+    - NOT_REQUESTED / NO_ANCHOR: Ignored (cache-hit rule, INVARIANT 4).
+    - TIMEOUT: Increments timeout_count, leaves retryable. Partial results (gw_msgs
+      non-empty) record their real count; they are never treated as zero/exhausted.
+    - ERROR / SOCKET_UNAVAILABLE: Increments error_count, state=PROVIDER_ERROR.
     - OK + returned == requested: state=HAS_MORE.
     - OK + 0 < returned < requested: state=EXHAUSTION_CANDIDATE.
     - OK + returned == 0:
@@ -122,20 +151,27 @@ async def record_on_demand_provider_result(
         else:
             state=EXHAUSTION_CANDIDATE (requires second confirmation)
     - Stalled anchor: stall_count += 1. If stall_count >= 3: state=CURSOR_STALLED.
+
+    `increment_sweep_count` is used only by the background sweep to keep its own
+    `last_sweep_count` bookkeeping; it has no effect on the state machine.
     """
     if not session_id or not jid:
         return None
 
-    # INVARIANT 4: Cache hit NEVER mutates provider evidence
-    if provider_status == "NOT_REQUESTED":
+    # INVARIANT 4: Cache hit NEVER mutates provider evidence.
+    # NO_ANCHOR means the gateway never reached the provider either, so it carries
+    # no information about completeness — it must not touch evidence.
+    if provider_status in ("NOT_REQUESTED", "NO_ANCHOR"):
         return None
 
     tbl = _table_name(db)
     sid_str = str(session_id)
     jid_str = str(jid)
     now_dt = datetime.now(timezone.utc)
+    returned_count = len([m for m in (gw_msgs or []) if isinstance(m, dict)])
+    sweep_delta = 1 if increment_sweep_count else 0
 
-    # 1. Handle TIMEOUT
+    # 1. Handle TIMEOUT (full OR partial — a partial timeout is still a timeout)
     if provider_status == "TIMEOUT":
         err_text = error_msg or "Gateway timeout waiting for provider chunk"
         await db.execute(
@@ -143,11 +179,13 @@ async def record_on_demand_provider_result(
                 INSERT INTO {tbl} (
                     session_id, jid, has_more, state, timeout_count,
                     last_attempt_at, last_error, provider_checked,
-                    provider_exhausted, provider_signal, updated_at
+                    provider_exhausted, provider_signal, provider_msgs_returned,
+                    last_sweep_count, updated_at
                 ) VALUES (
-                    :sid, :jid, :has_more, 'TIMEOUT', 1,
+                    :sid, :jid, TRUE, 'TIMEOUT', 1,
                     :now, :err, :provider_checked,
-                    :provider_exhausted, 'TIMEOUT', :now
+                    FALSE, 'TIMEOUT', :msgs_returned,
+                    :sweep_delta, :now
                 )
                 ON CONFLICT (session_id, jid) DO UPDATE SET
                     timeout_count = COALESCE({tbl}.timeout_count, 0) + 1,
@@ -155,7 +193,10 @@ async def record_on_demand_provider_result(
                     last_error = :err,
                     state = 'TIMEOUT',
                     provider_signal = 'TIMEOUT',
-                    provider_exhausted = :provider_exhausted,
+                    provider_exhausted = COALESCE({tbl}.provider_exhausted, FALSE),
+                    has_more = COALESCE({tbl}.has_more, TRUE),
+                    provider_msgs_returned = :msgs_returned,
+                    last_sweep_count = COALESCE({tbl}.last_sweep_count, 0) + :sweep_delta,
                     updated_at = :now
             """),
             {
@@ -163,16 +204,16 @@ async def record_on_demand_provider_result(
                 "jid": jid_str,
                 "err": err_text[:255],
                 "now": now_dt,
-                "has_more": True,
                 "provider_checked": False,
-                "provider_exhausted": False,
+                "msgs_returned": returned_count,
+                "sweep_delta": sweep_delta,
             },
         )
         return {
             "state": "TIMEOUT",
             "provider_checked": False,
             "provider_exhausted": False,
-            "provider_msgs_returned": 0,
+            "provider_msgs_returned": returned_count,
             "has_more": True,
         }
 
@@ -184,11 +225,13 @@ async def record_on_demand_provider_result(
                 INSERT INTO {tbl} (
                     session_id, jid, has_more, state, error_count,
                     last_attempt_at, last_error, provider_checked,
-                    provider_exhausted, provider_signal, updated_at
+                    provider_exhausted, provider_signal, provider_msgs_returned,
+                    last_sweep_count, updated_at
                 ) VALUES (
-                    :sid, :jid, :has_more, 'PROVIDER_ERROR', 1,
+                    :sid, :jid, TRUE, 'PROVIDER_ERROR', 1,
                     :now, :err, :provider_checked,
-                    :provider_exhausted, 'ERROR', :now
+                    FALSE, 'ERROR', :msgs_returned,
+                    :sweep_delta, :now
                 )
                 ON CONFLICT (session_id, jid) DO UPDATE SET
                     error_count = COALESCE({tbl}.error_count, 0) + 1,
@@ -196,7 +239,10 @@ async def record_on_demand_provider_result(
                     last_error = :err,
                     state = 'PROVIDER_ERROR',
                     provider_signal = 'ERROR',
-                    provider_exhausted = :provider_exhausted,
+                    provider_exhausted = COALESCE({tbl}.provider_exhausted, FALSE),
+                    has_more = COALESCE({tbl}.has_more, TRUE),
+                    provider_msgs_returned = :msgs_returned,
+                    last_sweep_count = COALESCE({tbl}.last_sweep_count, 0) + :sweep_delta,
                     updated_at = :now
             """),
             {
@@ -204,16 +250,16 @@ async def record_on_demand_provider_result(
                 "jid": jid_str,
                 "err": err_text[:255],
                 "now": now_dt,
-                "has_more": True,
                 "provider_checked": False,
-                "provider_exhausted": False,
+                "msgs_returned": returned_count,
+                "sweep_delta": sweep_delta,
             },
         )
         return {
             "state": "PROVIDER_ERROR",
             "provider_checked": False,
             "provider_exhausted": False,
-            "provider_msgs_returned": 0,
+            "provider_msgs_returned": returned_count,
             "has_more": True,
         }
 
@@ -317,12 +363,14 @@ async def record_on_demand_provider_result(
                 session_id, jid, oldest_msg_id, oldest_timestamp_ms, has_more,
                 completed_at, updated_at, state, stall_count, last_attempt_at,
                 last_success_at, last_error, provider_checked, provider_checked_at,
-                provider_exhausted, provider_signal, provider_msgs_returned, provider_cursor_used
+                provider_exhausted, provider_signal, provider_msgs_returned, provider_cursor_used,
+                last_sweep_count
             ) VALUES (
                 :sid, :jid, :oldest_msg_id, :oldest_ts_ms, :has_more,
                 :completed_at, :now, :state, :stall_count, :now,
                 :now, NULL, :provider_checked, :now,
-                :provider_exhausted, :provider_signal, :provider_msgs_returned, :provider_cursor_used
+                :provider_exhausted, :provider_signal, :provider_msgs_returned, :provider_cursor_used,
+                :sweep_delta
             )
             ON CONFLICT (session_id, jid) DO UPDATE SET
                 oldest_msg_id = COALESCE(:oldest_msg_id, {tbl}.oldest_msg_id),
@@ -344,7 +392,8 @@ async def record_on_demand_provider_result(
                 provider_exhausted = :provider_exhausted,
                 provider_signal = :provider_signal,
                 provider_msgs_returned = :provider_msgs_returned,
-                provider_cursor_used = :provider_cursor_used
+                provider_cursor_used = :provider_cursor_used,
+                last_sweep_count = COALESCE({tbl}.last_sweep_count, 0) + :sweep_delta
         """),
         {
             "sid": sid_str,
@@ -360,6 +409,7 @@ async def record_on_demand_provider_result(
             "provider_signal": new_signal,
             "provider_msgs_returned": returned_count,
             "provider_cursor_used": cursor_used,
+            "sweep_delta": sweep_delta,
             "now": now_dt,
         },
     )

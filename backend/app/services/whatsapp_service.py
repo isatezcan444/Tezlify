@@ -480,7 +480,6 @@ async def list_conversations(
             logger.warning("Failed to batch-resolve LID mappings in list_conversations: %s", e)
 
     seen_self_conversation = False
-    updated_contacts = False
     out: List[Dict[str, Any]] = []
     for r in rows:
         contact = r.contact or contacts_map.get(r.contact_id)
@@ -490,17 +489,14 @@ async def list_conversations(
             clean_lid = phone.replace("jid:", "").strip()
             resolved_pn = lid_map.get(clean_lid) or lid_map.get(clean_lid.split("@")[0]) or lid_map.get(f"{clean_lid.split('@')[0]}@lid")
             if resolved_pn:
+                # C-5: normalize IN MEMORY only. A GET must never mutate persistence.
+                # Re-keying `contact.phone_e164` and rewriting `messages.sender_phone`
+                # used to happen right here, followed by a `db.commit()` from a read
+                # path — which can also flush and discard unrelated pending work on
+                # the same session. The repair now lives on the write path that
+                # actually learns the mapping: `_heal_lid_contact_identity`, invoked
+                # from the `lid_mapped` event handler.
                 phone = resolved_pn
-                if contact and contact.phone_e164 != resolved_pn:
-                    contact.phone_e164 = resolved_pn
-                    updated_contacts = True
-                    try:
-                        await db.execute(
-                            text("UPDATE messages SET sender_phone = :pn WHERE conversation_id = :cid AND sender_phone LIKE '%@lid'"),
-                            {"pn": resolved_pn, "cid": r.id},
-                        )
-                    except Exception:
-                        pass
 
         if phone and active_sess_phone and _is_self_identity(phone, active_sess_phone):
             if seen_self_conversation:
@@ -548,11 +544,6 @@ async def list_conversations(
                 "status": r.status.value if hasattr(r.status, "value") else str(r.status),
             }
         )
-    if updated_contacts:
-        try:
-            await db.commit()
-        except Exception as e:
-            logger.warning("Failed to commit healed LID contacts in list_conversations: %s", e)
     return out, total
 # ---------------------------------------------------------------------------
 # Mesajlar & gonderme
@@ -930,8 +921,12 @@ async def _run_bulk_message_sync(
     )
 
 
-def _schedule_initial_sync(owner: str, *, reconcile: bool = False) -> None:
-    return _sync_orchestrator._schedule_initial_sync(owner, reconcile=reconcile)
+def _schedule_initial_sync(
+    owner: str, *, reconcile: bool = False, session_key: Optional[str] = None
+) -> None:
+    return _sync_orchestrator._schedule_initial_sync(
+        owner, reconcile=reconcile, session_key=session_key
+    )
 
 
 async def _run_initial_sync(owner: str) -> None:

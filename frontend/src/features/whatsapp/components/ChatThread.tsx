@@ -60,6 +60,11 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
   const prevScrollHeightRef = useRef<number>(0);
   const prevScrollTopRef = useRef<number>(0);
   const isPrependingRef = useRef<boolean>(false);
+  // Snapshot of the thread at the moment a prepend was requested. It lets the
+  // restore effect tell a REAL prepend (older messages added at the front)
+  // apart from any other change, so an unrelated event can never apply a
+  // bogus scrollTop or leave the guard stuck.
+  const pendingPrependRef = useRef<{ firstId: string | number | null; count: number } | null>(null);
   const prevMessagesCountRef = useRef<number>(messages.length);
 
   const [isNearBottom, setIsNearBottom] = useState<boolean>(true);
@@ -98,21 +103,54 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
   // Trigger loading older messages and track previous scroll height
   const handleLoadOlder = () => {
     if (!onLoadOlder || loadingOlder || !containerRef.current) return;
+    const first = sortedMessages[0];
+    pendingPrependRef.current = {
+      firstId: first ? (first.wa_message_id || first.id) : null,
+      count: sortedMessages.length,
+    };
     isPrependingRef.current = true;
     prevScrollHeightRef.current = containerRef.current.scrollHeight;
     prevScrollTopRef.current = containerRef.current.scrollTop;
-    onLoadOlder();
+    try {
+      onLoadOlder();
+    } catch (err) {
+      // F-10: a synchronous throw must never leave the guard set.
+      isPrependingRef.current = false;
+      pendingPrependRef.current = null;
+      console.error('[ChatThread] onLoadOlder failed:', err);
+    }
   };
 
-  // Restore scroll position after prepending older messages
+  // Restore scroll position after prepending older messages.
+  //
+  // F-10: the guard is released on EVERY path:
+  //  - a real prepend restores the viewport and clears the guard;
+  //  - the no-more / error / zero-result path (nothing prepended once the
+  //    request is no longer in flight) clears the guard WITHOUT moving the
+  //    viewport, so a later unrelated message change cannot apply a bogus
+  //    scrollTop or suppress auto-scroll.
   useLayoutEffect(() => {
-    if (isPrependingRef.current && containerRef.current) {
+    if (!isPrependingRef.current) return;
+    const pending = pendingPrependRef.current;
+    const first = sortedMessages[0];
+    const firstId = first ? (first.wa_message_id || first.id) : null;
+    const didPrepend =
+      Boolean(pending) &&
+      sortedMessages.length > pending!.count &&
+      firstId !== pending!.firstId;
+    if (didPrepend && containerRef.current) {
       const newScrollHeight = containerRef.current.scrollHeight;
       const heightDiff = newScrollHeight - prevScrollHeightRef.current;
       containerRef.current.scrollTop = prevScrollTopRef.current + heightDiff;
       isPrependingRef.current = false;
+      pendingPrependRef.current = null;
+      return;
     }
-  }, [sortedMessages]);
+    if (!loadingOlder) {
+      isPrependingRef.current = false;
+      pendingPrependRef.current = null;
+    }
+  }, [sortedMessages, loadingOlder]);
 
   // Smart Auto-Scroll when new messages arrive at the end
   useEffect(() => {
@@ -171,7 +209,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
         />
         {peerTyping && (
           <div className="absolute bottom-3 left-4">
-            <TypingBubble label={t('whatsapp.peerTyping') || 'yazıyor...'} />
+            <TypingBubble label={t('whatsapp.peerTyping')} />
           </div>
         )}
       </div>
@@ -199,12 +237,12 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
               {loadingOlder ? (
                 <>
                   <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  <span>{t('leads.loadingOlderMessages') || 'Eski mesajlar yükleniyor...'}</span>
+                  <span>{t('leads.loadingOlderMessages')}</span>
                 </>
               ) : (
                 <>
                   <ArrowUp className="w-3.5 h-3.5" />
-                  <span>{t('leads.loadOlderMessages') || 'Daha Eski Mesajları Yükle'}</span>
+                  <span>{t('leads.loadOlderMessages')}</span>
                 </>
               )}
             </button>
@@ -233,7 +271,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
         })}
         {peerTyping && (
           <div className="flex justify-start pt-1">
-            <TypingBubble label={t('whatsapp.peerTyping') || 'yazıyor...'} />
+            <TypingBubble label={t('whatsapp.peerTyping')} />
           </div>
         )}
         <div ref={bottomRef} className="h-1" />
@@ -247,7 +285,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
             onClick={scrollToBottom}
             className="flex items-center space-x-1.5 px-3.5 py-1.5 rounded-full bg-[#25D366] hover:bg-[#1EBE5D] text-white text-xs font-bold shadow-lg shadow-[#25D366]/30 transition-all cursor-pointer"
           >
-            <span>{t('leads.newMessageAlert') || 'Yeni Mesaj'}</span>
+            <span>{t('leads.newMessageAlert')}</span>
             <ChevronDown className="w-3.5 h-3.5" />
           </button>
         </div>

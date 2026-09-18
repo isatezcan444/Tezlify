@@ -8,6 +8,7 @@
  */
 import { useCallback, useEffect, useState } from 'react';
 import { authFetch, API_BASE, parseError, ApiClient } from '../../../api/client';
+import { isRawWhatsAppJid } from '../lib/whatsappIdentity';
 import {
   Conversation,
   ConversationMessagesResponse,
@@ -159,7 +160,7 @@ function mapSession(s: BackendSession): WhatsAppSession {
   };
 }
 
-interface BackendConversation {
+export interface BackendConversation {
   id: number;
   session_id?: number | null;
   contact_id?: number | null;
@@ -287,6 +288,40 @@ function mapMessage(m: BackendMessage, convId: number): Message {
 // disariya acilir (chunk'lar HTTP yanitiyla birebir ayni seklidir).
 export const mapConversationItem = mapConversation;
 export const mapMessageItem = mapMessage;
+
+/**
+ * I-4 — normalize a gateway `conversation_updated` payload into the canonical
+ * `BackendConversation` shape consumed by `mapConversationItem`, so the WS path
+ * and the REST path cannot diverge (the divergence is what produced the
+ * "Kişi kimliği çözülüyor…" / lost-identity class of bug).
+ *
+ * Contract rules (must match the mapper's partial-merge rules):
+ *  - copy a field ONLY when the payload actually carries it (`!== undefined`);
+ *    a missing field must never become `undefined` and erase known state;
+ *  - an explicit `null` IS authoritative (`null !== undefined`);
+ *  - the payload's own `id` is the WhatsApp JID (a string), so the caller's
+ *    authoritative numeric conversation id is always used;
+ *  - a raw technical JID is never accepted as a display name.
+ */
+export function buildConversationUpdatedPayload(
+  conversationId: number,
+  payload: Record<string, any> | null | undefined,
+): BackendConversation {
+  const p = payload || {};
+  const canonical: BackendConversation = { id: conversationId };
+
+  if (typeof p.name === 'string') {
+    const name = p.name.trim();
+    if (name && !isRawWhatsAppJid(name)) canonical.name = name;
+  }
+  if (typeof p.phone === 'string' && p.phone) canonical.phone = p.phone;
+  else if (p.phone === null) canonical.phone = null;
+  if (p.identity_state !== undefined) canonical.identity_state = p.identity_state;
+  if (p.is_group !== undefined) canonical.is_group = p.is_group;
+  if (typeof p.avatar_url === 'string' && p.avatar_url) canonical.avatar_url = p.avatar_url;
+
+  return canonical;
+}
 
 // ---------------------------------------------------------------------------
 // Public API — repository'nin canlı katmanı buraya delege eder

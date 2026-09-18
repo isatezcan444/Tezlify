@@ -183,35 +183,9 @@ export function createEventBridge({ backendWsUrl, sessionManager, eventOutbox = 
     }
   }
 
-  async function publish(event) {
-    const sessionId = event?.gateway_session_id || event?.session_id;
-    const isDelete = String(event?.event || '').startsWith('session_deleted');
-    if (sessionId && !sessionManager.getSession(String(sessionId)) && !isDelete) return;
-
-    const eventType = String(event?.event || event?.event_type || '');
-    if (eventType === 'session_sync_progress') {
-      sendLocal(event);
-      if (isOpen()) {
-        backendSocket.send(JSON.stringify(event));
-      }
-      return;
-    }
-
-    if (eventOutbox) {
-      try {
-        const durableEvent = await eventOutbox.enqueue(event);
-        sendLocal(durableEvent);
-        await pumpOutbox();
-      } catch (error) {
-        diagnostic('event_outbox_enqueue_failed', {
-          event_type: String(event?.event || event?.event_type || 'unknown'),
-          error_name: error?.name || 'Error',
-          error_code: error?.code || null,
-        });
-      }
-      return;
-    }
-
+  // Kalici olmayan en-iyi-caba teslimi (outbox yokken ya da outbox yazimi
+  // basarisiz oldugunda). Kuyruk sinirlidir; tasma diagnostik ile raporlanir.
+  function deliverBestEffort(event) {
     sendLocal(event);
     if (isOpen()) {
       backendSocket.send(JSON.stringify(event));
@@ -227,6 +201,47 @@ export function createEventBridge({ backendWsUrl, sessionManager, eventOutbox = 
         });
       }
     }
+  }
+
+  async function publish(event) {
+    const sessionId = event?.gateway_session_id || event?.session_id;
+    const isDelete = String(event?.event || '').startsWith('session_deleted');
+    if (sessionId && !sessionManager.getSession(String(sessionId)) && !isDelete) return;
+
+    const eventType = String(event?.event || event?.event_type || '');
+    if (eventType === 'session_sync_progress') {
+      // NOT: ilerleme olayı kasıtlı olarak KALICI DEĞİLDİR (her history chunk'ı
+      // için üretilir; outbox'a yazmak kuyruğu sel basar). Ephemeral bir UI
+      // sinyalidir; kaybı veri kaybı değildir. Durable olaylar outbox yolundan
+      // gider.
+      sendLocal(event);
+      if (isOpen()) {
+        backendSocket.send(JSON.stringify(event));
+      }
+      return;
+    }
+
+    if (eventOutbox) {
+      try {
+        const durableEvent = await eventOutbox.enqueue(event);
+        sendLocal(durableEvent);
+        await pumpOutbox();
+      } catch (error) {
+        // G-10(c): outbox yazımı başarısızsa olay SESSİZCE DÜŞÜRÜLMEZ.
+        // Enqueue atomik olarak başarısız olduğu için kayıt YOKTUR (çift
+        // teslim riski yok); kalıcı olmayan yoldaki gibi en iyi çabayla
+        // ilet. Böylece yalnızca outbox DB'si bozukken olay kaybolmaz.
+        diagnostic('event_outbox_enqueue_failed', {
+          event_type: String(event?.event || event?.event_type || 'unknown'),
+          error_name: error?.name || 'Error',
+          error_code: error?.code || null,
+        });
+        deliverBestEffort(event);
+      }
+      return;
+    }
+
+    deliverBestEffort(event);
   }
 
   const unsubscribe = sessionManager.onEvent((event) => { void publish(event); });

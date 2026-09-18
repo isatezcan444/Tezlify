@@ -194,7 +194,11 @@ class WhatsAppSendResult(BaseModel):
     id: Optional[Any] = None
     wa_message_id: Optional[str] = None
     client_message_id: Optional[str] = None
-    status: str = "SENT"
+    # §1.1 (truthfulness): REQUIRED, with no default. A default of "SENT" would
+    # let any path that forgets to supply a status report a failed send as a
+    # success. The persisted `Message.status` is NOT NULL, so the endpoint always
+    # has a real value to forward.
+    status: str
     body: Optional[str] = None
 
 

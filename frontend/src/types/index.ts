@@ -154,6 +154,12 @@ export interface SessionSyncState {
   contacts_synced?: number;
   messages_total?: number;
   messages_synced?: number;
+  // G-6 handoff: `*_synced` are cumulative per-event counters (misleading as
+  // entity counts). These non-destructive fields carry the REAL unique
+  // entity counts and must be preferred by the progress screen when present.
+  chats_unique?: number;
+  contacts_unique?: number;
+  messages_cached?: number;
   started_at?: string | null;
   completed_at?: string | null;
 }

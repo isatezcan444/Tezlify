@@ -29,9 +29,11 @@ import { ApiClient } from '../api/client';
 import { startWaLatency } from '../features/whatsapp/lib/whatsappLatency';
 import { mergeDeliveryStatus, mergeWhatsAppMessages } from '../features/whatsapp/lib/whatsappMessageMerge';
 import { WhatsAppRepository } from '../features/whatsapp/data/whatsappRepository';
-import { compareConversationsByActivityDesc, getConversationActivityTimestamp } from '../features/whatsapp/lib/whatsappOrdering';
+import { compareConversationsByActivityDesc, getConversationActivityTimestamp, restoreConversationActivity } from '../features/whatsapp/lib/whatsappOrdering';
+import { isRawWhatsAppJid as isRawWhatsAppIdentity } from '../features/whatsapp/lib/whatsappIdentity';
+import { PEER_TYPING_TTL_MS, pruneExpiredTyping, resolveSyncDisplayCounts } from '../features/whatsapp/lib/whatsappSync';
 import { WhatsAppSession, Conversation, ConversationStatus, ConversationMessageStatus, Lead, Message, LiveModeStatus, SessionSyncState } from '../types';
-import { WhatsAppApi, useLiveMode, probeLive, invalidateLiveProbe, isLiveCached, mapConversationItem, mapMessageItem } from '../features/whatsapp/api/whatsappApi';
+import { WhatsAppApi, useLiveMode, probeLive, invalidateLiveProbe, isLiveCached, mapConversationItem, mapMessageItem, buildConversationUpdatedPayload } from '../features/whatsapp/api/whatsappApi';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 import { Card } from '../components/ui/card';
@@ -45,6 +47,7 @@ import {
   getConversationDisplayName,
   extractCleanPhone,
   formatPhoneNumber,
+  stripJidPrefix,
   ChatThread, 
   ChatComposer, 
   TemplateSelectModal, 
@@ -74,19 +77,8 @@ interface WhatsAppHubPageProps {
 }
 
 // Faz 8 (§3): ham WhatsApp kimligi (jid:/@lid/@g.us/@s.whatsapp.net) kullaniciya
-// ASLA isim veya telefon gibi gosterilmez — backend cozumuze kadar guvenli
-// fallback ('Kimlik cozuluyor...') kullanilir.
-function isRawWhatsAppIdentity(value?: string | null): boolean {
-  if (!value) return false;
-  const v = String(value);
-  return (
-    v.startsWith('jid:') ||
-    v.includes('@lid') ||
-    v.includes('@g.us') ||
-    v.includes('@s.whatsapp.net') ||
-    v.includes('@c.us')
-  );
-}
+// ASLA isim veya telefon gibi gosterilmez. Tek kanonik predicate
+// `features/whatsapp/lib/whatsappIdentity` içinde yaşar (burada kopya TANIMLANMAZ).
 
 // Faz 11 (§27): banner ilerlemesi GERÇEK job sayaçlarından türetilir — sahte
 // timer/progress üretilmez. Mesaj toplamı biliniyorsa oran, değilse asama.
@@ -191,10 +183,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         `[WhatsAppHubPage] Okundu bilgisi WhatsApp'a iletilemedi${opts?.label ? ` (${opts.label})` : ''}: ${detail}`
       );
       if (opts?.notify) {
-        toastRef.current.error(
-          tRef.current('whatsapp.readSyncFailed') || `Okundu bilgisi WhatsApp'a iletilemedi: ${detail}`,
-          tRef.current('common.error')
-        );
+        toastRef.current.error(tRef.current('whatsapp.readSyncFailed'), tRef.current('common.error'));
       }
     },
     []
@@ -254,7 +243,39 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
 
   // 'yazıyor...' durumu: conversation_id -> bool (gateway presence_updated ile)
   const [peerTypingMap, setPeerTypingMap] = useState<Record<number, boolean>>({});
-  const peerTypingTimersRef = useRef<Record<number, ReturnType<typeof setTimeout>>>({});
+  // F-11: TTL TÜM sohbetler için geçerlidir. Per-conversation `setTimeout`
+  // yerine tek bir expiry haritası + tek bir süpürme interval'i kullanılır;
+  // böylece kaybedilen bir 'paused' olayı arka plandaki bir sohbette asılı
+  // "yazıyor..." bırakamaz.
+  const peerTypingExpiryRef = useRef<Record<number, number>>({});
+  const clearPeerTyping = useCallback((convId: number) => {
+    delete peerTypingExpiryRef.current[convId];
+    setPeerTypingMap((prev) => {
+      if (!(convId in prev)) return prev;
+      const next = { ...prev };
+      delete next[convId];
+      return next;
+    });
+  }, []);
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const expired = pruneExpiredTyping(peerTypingExpiryRef.current, Date.now());
+      if (!expired.length) return;
+      for (const id of expired) delete peerTypingExpiryRef.current[id];
+      setPeerTypingMap((prev) => {
+        let changed = false;
+        const next = { ...prev };
+        for (const id of expired) {
+          if (id in next) {
+            delete next[id];
+            changed = true;
+          }
+        }
+        return changed ? next : prev;
+      });
+    }, 2000);
+    return () => clearInterval(timer);
+  }, []);
 
   // Live mode: probes backend WhatsApp gateway health on mount & periodically
   const { status: liveStatus, probe: probeLiveMode } = useLiveMode();
@@ -589,7 +610,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       // gerçek durum bir kez okunur ve hata maskelenmez.
       setIsSyncingChats(false);
       void refreshSyncStatus();
-      toast.error(err.message || t('whatsapp.syncFailed') || 'Sohbetler eşitlenemedi', t('common.error'));
+      toast.error(err.message || t('whatsapp.syncFailed'), t('common.error'));
     }
   };
 
@@ -674,6 +695,15 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       created_at: nowIso,
     };
 
+    // F-6: snapshot the pre-optimistic activity so a FAILED send can be rolled
+    // back — a message that never went out must not stay pinned at the top of
+    // the list as if it were the latest real activity.
+    const previousConversation = conversations.find((c) => c.id === selectedConv.id);
+    const previousActivity = {
+      last_message_preview: previousConversation?.last_message_preview,
+      last_message_at: previousConversation?.last_message_at,
+    };
+
     // Optimistic UI feedback (0ms perceived delay)
     setMessagesMap((prev) => ({
       ...prev,
@@ -714,12 +744,23 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
             : m
         ),
       }));
-      const msg = (err?.message || '').toLowerCase();
-      if (msg.includes('24 saat') || msg.includes('window') || msg.includes('expired')) {
-        toast.error(t('whatsapp.windowExpiredNotice') || 'Bu konuşmaya devam etmek için bir WhatsApp şablonu kullanın.', t('common.error'));
-      } else {
-        toast.error(err?.message || t('whatsapp.msgFailed') || 'Mesaj gönderilemedi', t('common.error'));
-      }
+      // F-6: undo the optimistic preview/timestamp (and re-sort) so the
+      // conversation reflects REAL activity again. If a real message
+      // superseded the optimistic write meanwhile, it is left untouched.
+      setConversations((prev) =>
+        prev
+          .map((c) =>
+            c.id === selectedConv.id
+              ? restoreConversationActivity(
+                  c,
+                  { last_message_preview: trimmed, last_message_at: nowIso },
+                  previousActivity,
+                )
+              : c,
+          )
+          .sort(compareConversationsByActivityDesc),
+      );
+      // F-7: no toast here — the UI caller owns the single user-facing toast.
       throw err;
     }
   };
@@ -737,8 +778,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         const clientMid = target?.client_message_id;
         if (!target || !clientMid || !target.body) {
           throw new Error(
-            t('whatsapp.msgNotPersisted') ||
-              'Mesaj henüz sunucuya kaydedilmedi. Lütfen önce gönderimin tamamlanmasını bekleyin.'
+            t('whatsapp.msgNotPersisted')
           );
         }
         const res = await WhatsAppRepository.sendMessage(convId, target.body, clientMid);
@@ -757,7 +797,6 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
               : m
           ),
         }));
-        toast.success(t('whatsapp.messageSent') || 'Mesaj tekrar gönderildi', t('common.success'));
         return;
       }
       const res = await WhatsAppRepository.retryMessage(convId, msgId);
@@ -767,9 +806,8 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
           m.id === msgId ? { ...m, status: res.status, error_message: undefined } : m
         ),
       }));
-      toast.success(t('whatsapp.messageSent') || 'Mesaj tekrar gönderildi', t('common.success'));
     } catch (err: any) {
-      toast.error(err?.message || t('whatsapp.msgFailed') || 'Tekrar gönderim başarısız', t('common.error'));
+      // F-7: no toast here — the UI caller owns the single user-facing toast.
       throw err;
     }
   };
@@ -942,7 +980,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
             : m
         ),
       }));
-      toast.error(err?.message || t('whatsapp.templateFailed') || 'Şablon gönderilemedi', t('common.error'));
+      // F-7: no toast here — the UI caller owns the single user-facing toast.
       throw err;
     }
   };
@@ -979,7 +1017,11 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
             : NaN;
         const convId = Number.isInteger(convIdNumber) && convIdNumber > 0 ? convIdNumber : null;
         const rawPhone = eventData.lead_phone || eventData.phone || eventData.recipient_phone || eventData.sender_phone || '';
-        const eventDigits = rawPhone.replace(/\D/g, '').slice(-10);
+        // I-7 (single authority): resolve the event's phone to its CANONICAL form
+        // and match on that. Matching on the last 10 digits is wrong — two
+        // different people can share their last 10 digits (+905321234567 and
+        // +1555551234567), so a message could be attributed to the wrong chat.
+        const eventPhone = extractCleanPhone(rawPhone);
 
         const msgObj0 = eventData.message && typeof eventData.message === 'object' ? eventData.message : null;
         const msgText = eventData.message?.body || (typeof eventData.message === 'string' ? eventData.message : '') || eventData.body || '';
@@ -1002,10 +1044,10 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         if (convId !== null && !knownConvIdsRef.current.has(convId)) hydrateConversation(convId);
         setConversations((prev) => {
           const exactIdx = convId == null ? -1 : prev.findIndex((c) => c.id === convId);
-          const phoneMatches = eventDigits
+          const phoneMatches = eventPhone
             ? prev.reduce<number[]>((matches, c, index) => {
                 const cPhone = c.lead_phone || (c as any).phone || '';
-                if (cPhone && cPhone.replace(/\D/g, '').slice(-10) === eventDigits) matches.push(index);
+                if (cPhone && extractCleanPhone(cPhone) === eventPhone) matches.push(index);
                 return matches;
               }, [])
             : [];
@@ -1082,12 +1124,17 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
           }
         });
 
+        // F-11: an inbound message ends the peer's typing state for THAT
+        // conversation regardless of which chat is currently open — a
+        // background conversation must not keep a stale "yazıyor...".
+        if (!isOutbound && convId != null) clearPeerTyping(convId);
+
         // If active conversation matches, append message to thread with deduplication
         const selectedPhoneIsUnambiguous = Boolean(
-          eventDigits &&
-          conversations.filter((c) => c.lead_phone && c.lead_phone.replace(/\D/g, '').slice(-10) === eventDigits).length === 1,
+          eventPhone &&
+          conversations.filter((c) => c.lead_phone && extractCleanPhone(c.lead_phone) === eventPhone).length === 1,
         );
-        if (convId != null && selectedConv && (selectedConv.id === convId || (selectedPhoneIsUnambiguous && selectedConv.lead_phone && selectedConv.lead_phone.replace(/\D/g, '').slice(-10) === eventDigits))) {
+        if (convId != null && selectedConv && (selectedConv.id === convId || (selectedPhoneIsUnambiguous && selectedConv.lead_phone && extractCleanPhone(selectedConv.lead_phone) === eventPhone))) {
           const msgObj = eventData.message && typeof eventData.message === 'object' ? eventData.message : null;
           const waId = msgObj?.wa_message_id || eventData.wa_message_id || eventData.message_id;
           const clientMid = msgObj?.client_message_id || eventData.client_message_id;
@@ -1140,14 +1187,6 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
 
           // Auto-mark conversation as read if user is actively viewing it
           if (!isOutbound) {
-            // Mesaj geldi → 'yazıyor...' göstergesini kapat
-            setPeerTypingMap((prev) => {
-              if (!(convId in prev)) return prev;
-              const n = { ...prev };
-              delete n[convId];
-              return n;
-            });
-            clearTimeout(peerTypingTimersRef.current[convId as number]);
             // Otomatik okundu: kullanici sohbeti acik tutuyor — basarisizlikta
             // toast GOSTERILMEZ (her gelen mesajda spam olur) ama konsola yazilir.
             WhatsAppRepository.markConversationAsRead(convId)
@@ -1224,44 +1263,39 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       // Faz 5: gateway'den canlı sohbet metadata'sı (isim/avatar/preview/unread)
       // — backend jid'yi sayısal conversation_id'ye çevirerek ileri iletir.
       if (eventData.event === 'conversation_updated') {
-        const convId = eventData.conversation_id;
+        const rawConvId = eventData.conversation_id;
+        const convId = typeof rawConvId === 'number' ? rawConvId : Number(rawConvId);
         const payload = eventData.conversation || {};
-        // Faz 8 (§3): frontend ham WhatsApp kimliginden (jid:/@lid/@g.us) isim
-        // URETMEZ ve boyle bir degeri isim olarak yazmaz — cozulmemis kimlikte
-        // mevcut ad korunur, UI guvenli fallback gosterir.
-        const rawName = typeof payload.name === 'string' ? payload.name : '';
-        const safeName =
-          rawName &&
-          !rawName.startsWith('jid:') &&
-          !rawName.includes('@lid') &&
-          !rawName.includes('@g.us') &&
-          !rawName.endsWith('@s.whatsapp.net') &&
-          !rawName.endsWith('@c.us')
-            ? rawName
-            : undefined;
-        if (typeof convId === 'number') {
+        if (Number.isInteger(convId) && convId > 0) {
+          // I-4: route the WS payload through the SAME mapper as REST via the
+          // shared normalizer. The normalizer copies a field ONLY when the
+          // payload carries it (`!== undefined`), so a partial event can never
+          // erase known-good state; an explicit `null` stays authoritative. A
+          // raw technical JID is never accepted as a name.
+          const mapped = mapConversationItem(buildConversationUpdatedPayload(convId, payload));
+
+          // Faz 10 (P2): gateway'den gelen gecikmeli ozet de paylasilan
+          // kuraldan gecer ('[IMAGE]' -> etiket); daha eski zaman damgali
+          // deger mevcut ozeti ezmez.
+          const gwPreview = payload.last_message_preview
+            ? normalizePreviewText(payload.message_type, String(payload.last_message_preview), t)
+            : '';
+          const gwTs = payload.last_message_at;
+
           const patch = (c: Conversation): Conversation => {
-            // Faz 10 (P2): gateway'den gelen gecikmeli ozet de paylasilan
-            // kuraldan gecer ('[IMAGE]' -> etiket); daha eski zaman damgali
-            // deger mevcut ozeti ezmez.
-            const gwPreview = payload.last_message_preview
-              ? normalizePreviewText(payload.message_type, String(payload.last_message_preview), t)
-              : '';
-            const gwTs = payload.last_message_at;
+            const next: Conversation = { ...c, ...mapped };
+            // Cozulmemis kimlikte mevcut ad korunur (gateway null gonderir).
+            if (!mapped.lead_name) next.lead_name = c.lead_name;
             const applyGw = Boolean(gwPreview) && shouldApplyPreview(gwTs, c.last_message_at);
-            return {
-              ...c,
-              lead_name: safeName || c.lead_name,
-              lead_avatar_url: payload.avatar_url || c.lead_avatar_url,
-              last_message_preview: applyGw ? gwPreview : c.last_message_preview,
-              last_message_at: applyGw ? gwTs || c.last_message_at : c.last_message_at,
-              last_message_state:
-                (applyGw ? gwPreview : c.last_message_preview) ? 'RESOLVED' : c.last_message_state,
-              unread_count:
-                payload.unread_count != null ? Math.max(c.unread_count || 0, payload.unread_count) : c.unread_count,
-            };
+            next.last_message_preview = applyGw ? gwPreview : c.last_message_preview;
+            next.last_message_at = applyGw ? gwTs || c.last_message_at : c.last_message_at;
+            next.last_message_state =
+              (applyGw ? gwPreview : c.last_message_preview) ? 'RESOLVED' : c.last_message_state;
+            next.unread_count =
+              payload.unread_count != null ? Math.max(c.unread_count || 0, payload.unread_count) : c.unread_count;
+            return next;
           };
-          if (!knownConvIdsRef.current.has(Number(convId))) hydrateConversation(Number(convId));
+          if (!knownConvIdsRef.current.has(convId)) hydrateConversation(convId);
           setConversations((prev) => {
             const next = prev.map((c) => (c.id === convId ? patch(c) : c));
             // Sorun 2: patch son mesaji/siralamayi degistirdiyse liste zaman
@@ -1286,17 +1320,19 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         };
         const avatarUrl = contact.avatar_url;
         const jid = contact.jid || contact.id;
-        const phone = contact.phone || (jid ? jid.replace(/^jid:/, '').split('@')[0] : null);
-        if (avatarUrl && (phone || jid)) {
-          const matchPhone = phone ? phone.replace(/\D/g, '') : null;
-          const cleanJid = jid ? jid.replace(/^jid:/, '') : null;
+        // §31: identity/phone normalization lives ONLY in `whatsappIdentity`.
+        // `matchPhone` is the canonical E.164 form; `rawJid` is the exact-JID
+        // fallback for identifiers that are not phone numbers (LID / group).
+        const rawJid = jid ? stripJidPrefix(jid) : null;
+        const matchPhone = extractCleanPhone(contact.phone || jid || null);
+        if (avatarUrl && (matchPhone || rawJid)) {
           setConversations((prev) =>
             prev.map((c) => {
-              const cPhone = c.lead_phone ? c.lead_phone.replace(/\D/g, '') : null;
-              const cCleanJid = c.lead_phone ? c.lead_phone.replace(/^jid:/, '') : null;
+              const cRaw = c.lead_phone || (c as any).phone || '';
+              const cPhone = extractCleanPhone(cRaw);
               if (
                 (matchPhone && cPhone === matchPhone) ||
-                (cleanJid && (c.lead_phone === cleanJid || cCleanJid === cleanJid))
+                (rawJid && cRaw && stripJidPrefix(cRaw) === rawJid)
               ) {
                 return { ...c, lead_avatar_url: avatarUrl };
               }
@@ -1305,11 +1341,11 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
           );
           setSelectedConv((prev) => {
             if (!prev) return prev;
-            const prevPhone = prev.lead_phone ? prev.lead_phone.replace(/\D/g, '') : null;
-            const prevCleanJid = prev.lead_phone ? prev.lead_phone.replace(/^jid:/, '') : null;
+            const pRaw = prev.lead_phone || (prev as any).phone || '';
+            const prevPhone = extractCleanPhone(pRaw);
             if (
               (matchPhone && prevPhone === matchPhone) ||
-              (cleanJid && (prev.lead_phone === cleanJid || prevCleanJid === cleanJid))
+              (rawJid && pRaw && stripJidPrefix(pRaw) === rawJid)
             ) {
               return { ...prev, lead_avatar_url: avatarUrl };
             }
@@ -1471,9 +1507,9 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
           activeSyncIdRef.current = null;
           if (eventData.error_code === 'RELINK_REQUIRED') {
             fetchSessions(true);
-            toast.error(t('whatsapp.syncRelinkRequired') || 'WhatsApp bağlantısı kayboldu. Lütfen hattı yeniden eşleştirin.', t('common.error'));
+            toast.error(t('whatsapp.syncRelinkRequired'), t('common.error'));
           } else {
-            toast.error(eventData.error || t('whatsapp.syncFailed') || 'Sohbetler eşitlenemedi', t('common.error'));
+            toast.error(eventData.error || t('whatsapp.syncFailed'), t('common.error'));
           }
         }
       }
@@ -1504,25 +1540,15 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         const convId = typeof rawId === 'number' ? rawId : parseInt(String(rawId), 10);
         if (!Number.isNaN(convId)) {
           const typing = !!eventData.typing;
-          setPeerTypingMap((prev) => {
-            const next = { ...prev };
-            if (typing) {
-              next[convId] = true;
-              // Güvenlik ağı: paused kaybolursa 10 sn sonra kendiliğinden sönsün
-              clearTimeout(peerTypingTimersRef.current[convId]);
-              peerTypingTimersRef.current[convId] = setTimeout(() => {
-                setPeerTypingMap((p) => {
-                  const n = { ...p };
-                  delete n[convId];
-                  return n;
-                });
-              }, 10000);
-            } else {
-              delete next[convId];
-              clearTimeout(peerTypingTimersRef.current[convId]);
-            }
-            return next;
-          });
+          if (typing) {
+            // F-11: TTL applies to ALL conversations. The single sweep interval
+            // (above) removes the indicator ~10s after the last update even if
+            // the 'paused' event never arrives.
+            peerTypingExpiryRef.current[convId] = Date.now() + PEER_TYPING_TTL_MS;
+            setPeerTypingMap((prev) => (prev[convId] ? prev : { ...prev, [convId]: true }));
+          } else {
+            clearPeerTyping(convId);
+          }
         }
       }
     };
@@ -1555,7 +1581,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       window.removeEventListener('tezlify:ws_event', handleWsEvent);
       window.removeEventListener('tezlify:ws_connected', handleReconnect);
     };
-  }, [selectedConv, loadConversations, refreshSyncStatus, reportReadSync, logBackgroundFetchFailure, hydrateConversation]);
+  }, [selectedConv, loadConversations, refreshSyncStatus, reportReadSync, logBackgroundFetchFailure, hydrateConversation, clearPeerTyping]);
 
   // Anti-Ban Timing & Change-Tracking State
   const [savedConfig, setSavedConfig] = useState<AntiBanConfig>(getStoredAntiBanConfig());
@@ -1612,9 +1638,12 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         refreshSyncStatus();
       } else if (
         eventData?.event === 'session_sync_started' ||
-        eventData?.event === 'session_sync_progress' ||
         eventData?.event === 'session_sync_completed'
       ) {
+        // Handoff: `session_sync_progress` fires on EVERY history chunk. The
+        // banner is fed by the progress event handler; refreshing sessions /
+        // sync status here too produced an API storm during a long sync, so
+        // these refreshes happen only on start and on completion.
         fetchSessions(true);
         onRefreshStatsRef.current();
         refreshSyncStatus();
@@ -1773,7 +1802,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       toast.success(t('whatsapp.deletedSuccess'), t('common.success'));
       onRefreshStats();
     } catch (err: any) {
-      toast.error(err?.message || t('whatsapp.deleteSessionFailed') || t('common.error'), t('common.error'));
+      toast.error(err?.message || t('whatsapp.deleteSessionFailed'), t('common.error'));
       await loadConversations(true);
     } finally {
       setDeletingSessionId(null);
@@ -1908,10 +1937,25 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                   />
                 </div>
                 <p className="mt-1 text-[10px] text-slate-500 dark:text-slate-400">
-                  {t(`whatsapp.syncStage.${sessionSync.stage || 'starting'}`) || t('whatsapp.syncingChats')}
-                  {` · ${t('whatsapp.syncingContactsCount', { count: sessionSync.contacts_synced ?? 0 })}`}
-                  {` · ${t('whatsapp.syncingChatsCount', { count: sessionSync.chats_synced ?? 0 })}`}
-                  {` · ${t('whatsapp.syncingMessagesCount', { count: sessionSync.messages_synced ?? 0 })}`}
+                  {(() => {
+                    // F-9: dynamic stage key must resolve; if an unforeseen
+                    // stage arrives, fall back to a real translation instead of
+                    // rendering the raw key.
+                    const stageKey = `whatsapp.syncStage.${sessionSync.stage || 'starting'}`;
+                    const stageLabel = t(stageKey);
+                    // G-6 handoff: prefer the gateway's real unique entity
+                    // counts; the legacy `*_synced` counters are cumulative
+                    // per-event totals and are misleading as entity counts.
+                    const counts = resolveSyncDisplayCounts(sessionSync);
+                    return (
+                      <>
+                        {stageLabel === stageKey ? t('whatsapp.syncingChats') : stageLabel}
+                        {` · ${t('whatsapp.syncingContactsCount', { count: counts.contacts })}`}
+                        {` · ${t('whatsapp.syncingChatsCount', { count: counts.chats })}`}
+                        {` · ${t('whatsapp.syncingMessagesCount', { count: counts.messages })}`}
+                      </>
+                    );
+                  })()}
                 </p>
               </div>
             )}
@@ -1959,7 +2003,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                     .then((res) => reportReadSync(res, { notify: true, label: `click#${c.id}` }))
                     .catch((err) => {
                       console.warn('[WhatsAppHubPage] Okundu istegi basarisiz:', err);
-                      toast.error(t('whatsapp.readSyncFailed') || t('common.error'), t('common.error'));
+                      toast.error(t('whatsapp.readSyncFailed'), t('common.error'));
                     });
                   setConversations((prev) =>
                     prev.map((item) => (item.id === c.id ? { ...item, unread_count: 0 } : item))
@@ -1981,8 +2025,8 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                       type="button"
                       onClick={() => setSelectedConv(null)}
                       className="md:hidden p-1.5 -ml-1 rounded-lg text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 hover:bg-slate-200/60 dark:hover:bg-white/[0.08] transition-all cursor-pointer shrink-0"
-                      aria-label={t('common.back') || 'Geri'}
-                      title={t('common.back') || 'Geri'}
+                      aria-label={t('common.back')}
+                      title={t('common.back')}
                     >
                       <ArrowLeft className="w-5 h-5" />
                     </button>
@@ -2005,7 +2049,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                               {selectedConv.is_group && (
                                 <span className="shrink-0 inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-md bg-[#7367F0]/15 text-[#7367F0] dark:bg-[#7367F0]/25">
                                   <Users className="w-3 h-3" />
-                                  <span>{t('whatsapp.group') || 'Grup'}</span>
+                                  <span>{t('whatsapp.group')}</span>
                                 </span>
                               )}
                               <h4 className="font-extrabold text-sm text-slate-800 dark:text-white truncate">
@@ -2013,7 +2057,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                               </h4>
                               {selectedConv.status !== 'ACTIVE' && (
                                 <span className="text-[9px] font-bold uppercase px-1.5 py-0.5 rounded bg-slate-200 dark:bg-white/10 text-slate-500 dark:text-slate-400 shrink-0">
-                                  {selectedConv.status === 'ARCHIVED' ? (t('whatsapp.statusArchived') || 'Arşiv') : (t('whatsapp.statusClosed') || 'Kapalı')}
+                                  {selectedConv.status === 'ARCHIVED' ? (t('whatsapp.statusArchived')) : (t('whatsapp.statusClosed'))}
                                 </span>
                               )}
                             </div>
@@ -2036,21 +2080,21 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                           variant="outline"
                           size="sm"
                           onClick={() => handleStatusChange(selectedConv.id, 'ARCHIVED')}
-                          title={t('whatsapp.archive') || 'Arşivle'}
+                          title={t('whatsapp.archive')}
                           className="space-x-1 text-xs font-bold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/[0.06] cursor-pointer px-2 sm:px-3"
                         >
                           <Archive className="w-3.5 h-3.5" />
-                          <span className="hidden sm:inline">{t('whatsapp.archive') || 'Arşivle'}</span>
+                          <span className="hidden sm:inline">{t('whatsapp.archive')}</span>
                         </Button>
                         <Button
                           variant="outline"
                           size="sm"
                           onClick={() => handleStatusChange(selectedConv.id, 'CLOSED')}
-                          title={t('whatsapp.close') || 'Kapat'}
+                          title={t('whatsapp.close')}
                           className="space-x-1 text-xs font-bold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/[0.06] cursor-pointer px-2 sm:px-3"
                         >
                           <CheckCircle2 className="w-3.5 h-3.5 text-slate-400" />
-                          <span className="hidden sm:inline">{t('whatsapp.close') || 'Kapat'}</span>
+                          <span className="hidden sm:inline">{t('whatsapp.close')}</span>
                         </Button>
                       </div>
                     ) : (
@@ -2061,7 +2105,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                         className="space-x-1 text-xs font-bold text-[#7367F0] border-[#7367F0]/30 hover:bg-[#7367F0]/10 cursor-pointer px-2 sm:px-3"
                       >
                         <RotateCcw className="w-3.5 h-3.5" />
-                        <span className="hidden sm:inline">{t('whatsapp.reopen') || 'Yeniden Aç'}</span>
+                        <span className="hidden sm:inline">{t('whatsapp.reopen')}</span>
                       </Button>
                     )}
 
@@ -2070,11 +2114,11 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                       size="sm"
                       onClick={() => handleOpenLead(selectedConv.lead_id)}
                       disabled={leadLoading}
-                      title={t('leads.openLeadDetail') || 'Müşteri Detayı'}
+                      title={t('leads.openLeadDetail')}
                       className="space-x-1.5 text-xs font-bold border-slate-200 dark:border-white/[0.1] hover:bg-slate-100 dark:hover:bg-white/[0.06] cursor-pointer px-2 sm:px-3"
                     >
                       <Building2 className="w-3.5 h-3.5 text-[#7367F0]" />
-                      <span className="hidden md:inline">{t('leads.openLeadDetail') || 'Müşteri Detayı'}</span>
+                      <span className="hidden md:inline">{t('leads.openLeadDetail')}</span>
                     </Button>
 
                     <span className="inline-flex items-center space-x-1 px-2 sm:px-2.5 py-1 rounded-full bg-[#25D366]/15 text-[#25D366] font-bold text-xs">
@@ -2098,9 +2142,9 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                   onRetry={async (msgId) => {
                     try {
                       await activeRetryMessage(msgId);
-                      toast.success(t('whatsapp.messageSent') || 'Mesaj tekrar gönderildi', t('common.success'));
+                      toast.success(t('whatsapp.messageSent'), t('common.success'));
                     } catch (err: any) {
-                      toast.error(t('whatsapp.msgFailed') || 'Tekrar gönderim başarısız', t('common.error'));
+                      toast.error(err?.message || t('whatsapp.msgFailed'), t('common.error'));
                       throw err;
                     }
                   }}
@@ -2111,13 +2155,13 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                   onSend={async (text) => {
                     try {
                       await activeSendMessage(text);
-                      toast.success(t('whatsapp.messageSent') || 'Mesaj başarıyla gönderildi', t('common.success'));
+                      toast.success(t('whatsapp.messageSent'), t('common.success'));
                     } catch (err: any) {
                       const msg = (err?.message || '').toLowerCase();
                       if (msg.includes('24 saat') || msg.includes('window')) {
-                        toast.error(t('whatsapp.windowExpiredNotice') || 'Bu konuşmaya devam etmek için bir WhatsApp şablonu kullanın.', t('common.error'));
+                        toast.error(t('whatsapp.windowExpiredNotice'), t('common.error'));
                       } else {
-                        toast.error(err?.message || t('whatsapp.msgFailed') || 'Mesaj gönderilemedi', t('common.error'));
+                        toast.error(err?.message || t('whatsapp.msgFailed'), t('common.error'));
                       }
                       throw err;
                     }
@@ -2126,9 +2170,9 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                   onSendMediaFile={async (file, caption) => {
                     try {
                       await activeSendMediaFile(file, caption);
-                      toast.success(t('whatsapp.mediaSent') || 'Medya başarıyla gönderildi', t('common.success'));
+                      toast.success(t('whatsapp.mediaSent'), t('common.success'));
                     } catch (err: any) {
-                      toast.error(err?.message || t('whatsapp.mediaFailed') || 'Medya gönderilemedi', t('common.error'));
+                      toast.error(err?.message || t('whatsapp.mediaFailed'), t('common.error'));
                       throw err;
                     }
                   }}
@@ -2150,9 +2194,9 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                   onSendMedia={async (type, url, caption, filename) => {
                     try {
                       await activeSendMedia(type, url, caption, filename);
-                      toast.success(t('whatsapp.mediaSent') || 'Medya başarıyla gönderildi', t('common.success'));
+                      toast.success(t('whatsapp.mediaSent'), t('common.success'));
                     } catch (err: any) {
-                      toast.error(t('whatsapp.mediaFailed') || 'Medya gönderilemedi', t('common.error'));
+                      toast.error(t('whatsapp.mediaFailed'), t('common.error'));
                       throw err;
                     }
                   }}
@@ -2169,9 +2213,9 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                   onSendTemplate={async (templateKey, variables) => {
                     try {
                       await activeSendTemplate(templateKey, variables);
-                      toast.success(t('whatsapp.templateSent') || 'Şablon mesajı başarıyla gönderildi', t('common.success'));
+                      toast.success(t('whatsapp.templateSent'), t('common.success'));
                     } catch (err: any) {
-                      toast.error(t('whatsapp.templateFailed') || 'Şablon gönderilemedi', t('common.error'));
+                      toast.error(err?.message || t('whatsapp.templateFailed'), t('common.error'));
                       throw err;
                     }
                   }}
@@ -2183,18 +2227,18 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                   icon={MessageSquare}
                   title={
                     conversations.length > 0
-                      ? (t('whatsapp.selectConversationTitle') || 'Bir Konuşma Seçin')
-                      : (t('whatsapp.noConversations') || 'Henüz Konuşma Yok')
+                      ? (t('whatsapp.selectConversationTitle'))
+                      : (t('whatsapp.noConversations'))
                   }
                   description={
                     conversations.length > 0
-                      ? (t('whatsapp.selectConversation') || 'Mesaj geçmişini görüntülemek ve yanıt vermek için soldaki listeden bir konuşma seçin.')
-                      : (t('whatsapp.noConversationsDesc') || 'Gelen müşteri yanıtları veya başlatılan diyaloglar burada listelenir.')
+                      ? (t('whatsapp.selectConversation'))
+                      : (t('whatsapp.noConversationsDesc'))
                   }
                   action={
                     conversations.length === 0
                       ? {
-                          label: t('whatsapp.newChat') || 'Yeni Sohbet Başlat',
+                          label: t('whatsapp.newChat'),
                           onClick: () => setIsNewChatModalOpen(true),
                           icon: MessageSquarePlus,
                         }
@@ -2219,7 +2263,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
               className="space-x-2 font-bold shadow-md shadow-[#28C76F]/20 cursor-pointer bg-[#28C76F] hover:bg-[#24B263] text-white"
             >
               <QrCode className="w-4 h-4" />
-              <span>{t('whatsapp.connectWithQr') || 'Cihaz Bağla'}</span>
+              <span>{t('whatsapp.connectWithQr')}</span>
             </Button>
 
           </div>
@@ -2231,7 +2275,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                 title={t('whatsapp.noSessions')}
                 description={t('whatsapp.noSessionsDesc')}
                 action={{
-                  label: t('whatsapp.connectWithQr') || 'Cihaz Bağla',
+                  label: t('whatsapp.connectWithQr'),
                   onClick: handleOpenQrConnect,
                   icon: QrCode,
                 }}

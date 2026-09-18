@@ -15,6 +15,7 @@
  *  - Uygulama zaman-damgalı sıralamayadır: daha eski mesaj yeniyi ezemez
  *    (`shouldApplyPreview`).
  */
+import { isRawWhatsAppJid } from './whatsappIdentity';
 
 export interface PreviewMessageLike {
   message_type?: string | null;
@@ -62,14 +63,10 @@ function labelForType(type: string, t?: PreviewTranslator): string {
 function isRawIdentityName(value: string): boolean {
   const v = value.trim();
   if (!v) return true;
-  return (
-    v.startsWith('jid:') ||
-    v.includes('@lid') ||
-    v.endsWith('@g.us') ||
-    v.endsWith('@s.whatsapp.net') ||
-    v.endsWith('@c.us') ||
-    /^\d+@/.test(v)
-  );
+  // §31: raw-identity detection lives ONLY in `whatsappIdentity`. The extra
+  // `^\d+@` rule catches user-less identifiers (`123@…`) that the canonical
+  // suffix check does not enumerate.
+  return isRawWhatsAppJid(v) || /^\d+@/.test(v);
 }
 
 function isPhoneLikeName(value: string): boolean {

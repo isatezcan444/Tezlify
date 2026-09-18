@@ -198,7 +198,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
         <div className="flex items-center justify-between mb-2.5 px-3 py-2 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-600 dark:text-rose-400 text-xs">
           <div className="flex items-center space-x-2">
             <Lock className="w-3.5 h-3.5 shrink-0" />
-            <span className="font-bold">{t('whatsapp.closedComposerNotice') || 'Bu diyalog kapatılmıştır.'}</span>
+            <span className="font-bold">{t('whatsapp.closedComposerNotice')}</span>
           </div>
           {onReopenConversation && (
             <button
@@ -207,7 +207,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
               className="flex items-center space-x-1 px-2.5 py-1 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-rose-700 dark:text-rose-300 font-extrabold text-[11px] transition-all cursor-pointer"
             >
               <RotateCcw className="w-3 h-3" />
-              <span>{t('whatsapp.reopen') || 'Diyaloğu Yeniden Aç'}</span>
+              <span>{t('whatsapp.reopen')}</span>
             </button>
           )}
         </div>
@@ -219,7 +219,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
           <div className="flex items-center space-x-2">
             <Sparkles className="w-3.5 h-3.5 text-amber-500 shrink-0" />
             <span className="font-medium">
-              {t('whatsapp.windowExpiredNotice') || 'Bu konuşmaya devam etmek için bir WhatsApp şablonu kullanın.'}
+              {t('whatsapp.windowExpiredNotice')}
             </span>
           </div>
           {onSendTemplate && (
@@ -230,7 +230,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
               className="bg-amber-500 hover:bg-amber-600 text-white font-bold text-[11px] py-1 px-2.5 h-auto space-x-1 shadow-xs cursor-pointer"
             >
               <LayoutTemplate className="w-3 h-3" />
-              <span>{t('whatsapp.useTemplateBtn') || 'Şablon Kullan'}</span>
+              <span>{t('whatsapp.useTemplateBtn')}</span>
             </Button>
           )}
         </div>
@@ -240,10 +240,10 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
       <form onSubmit={handleSubmit} className="flex items-center space-x-2">
         {/* Attachment '+' Button with Popover */}
         <div className="relative" ref={attachMenuRef}>
-          <Tooltip content={t('whatsapp.addAttachment') || 'Fotoğraf veya Belge Ekle'}>
+          <Tooltip content={t('whatsapp.addAttachment')}>
             <button
               type="button"
-              aria-label={t('whatsapp.addAttachment') || 'Fotoğraf veya Belge Ekle'}
+              aria-label={t('whatsapp.addAttachment')}
               disabled={isActionDisabled}
               onClick={() => setIsAttachMenuOpen(!isAttachMenuOpen)}
               className="p-2 rounded-xl text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 hover:bg-slate-200/60 dark:hover:bg-white/[0.08] transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
@@ -265,7 +265,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
                 <div className="w-7 h-7 rounded-lg bg-[#28C76F]/15 text-[#28C76F] flex items-center justify-center shrink-0">
                   <ImageIcon className="w-4 h-4" />
                 </div>
-                <span>{t('whatsapp.choosePhotoFile') || 'Fotoğraf / Video (Dosya)'}</span>
+                <span>{t('whatsapp.choosePhotoFile')}</span>
               </button>
 
               <button
@@ -279,7 +279,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
                 <div className="w-7 h-7 rounded-lg bg-[#7367F0]/15 text-[#7367F0] flex items-center justify-center shrink-0">
                   <FileText className="w-4 h-4" />
                 </div>
-                <span>{t('whatsapp.chooseDocFile') || 'Belge (Dosya Seç)'}</span>
+                <span>{t('whatsapp.chooseDocFile')}</span>
               </button>
 
               <button
@@ -293,7 +293,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
                 <div className="w-7 h-7 rounded-lg bg-slate-500/15 text-slate-500 flex items-center justify-center shrink-0">
                   <ImageIcon className="w-4 h-4" />
                 </div>
-                <span>{t('whatsapp.sendPhotoUrl') || 'Fotoğraf (URL)'}</span>
+                <span>{t('whatsapp.sendPhotoUrl')}</span>
               </button>
 
               <button
@@ -307,7 +307,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
                 <div className="w-7 h-7 rounded-lg bg-slate-500/15 text-slate-500 flex items-center justify-center shrink-0">
                   <FileText className="w-4 h-4" />
                 </div>
-                <span>{t('whatsapp.sendDocUrl') || 'Belge (URL)'}</span>
+                <span>{t('whatsapp.sendDocUrl')}</span>
               </button>
             </div>
           )}
@@ -336,10 +336,10 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
             onKeyDown={handleKeyDown}
             placeholder={
               isClosed
-                ? (t('whatsapp.closedPlaceholder') || 'Diyalog kapalı...')
+                ? (t('whatsapp.closedPlaceholder'))
                 : !isWindowOpen
-                ? (t('whatsapp.windowExpiredPlaceholder') || 'Devam etmek için bir şablon seçin...')
-                : (placeholder || t('leads.typeMessagePlaceholder') || 'Mesaj yaz...')
+                ? (t('whatsapp.windowExpiredPlaceholder'))
+                : (placeholder || t('leads.typeMessagePlaceholder'))
             }
             className={`w-full px-3.5 py-2.5 pr-20 text-xs rounded-xl vuexy-input transition-all ${
               isInputDisabled
@@ -351,16 +351,16 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
           {/* Quick Template Button inside Input */}
           {onSendTemplate && !isClosed && (
             <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center">
-              <Tooltip content={t('whatsapp.useTemplateBtn') || 'Şablon Kullan'}>
+              <Tooltip content={t('whatsapp.useTemplateBtn')}>
                 <button
                   type="button"
-                  aria-label={t('whatsapp.useTemplateBtn') || 'Şablon Kullan'}
+                  aria-label={t('whatsapp.useTemplateBtn')}
                   onClick={onSendTemplate}
                   disabled={isActionDisabled}
                   className="flex items-center space-x-1 px-2 py-1 rounded-lg bg-[#7367F0]/10 hover:bg-[#7367F0]/20 text-[#7367F0] text-[10px] font-bold transition-all cursor-pointer disabled:opacity-40"
                 >
                   <LayoutTemplate className="w-3 h-3" />
-                  <span className="hidden sm:inline">{t('whatsapp.templateShort') || 'Şablon'}</span>
+                  <span className="hidden sm:inline">{t('whatsapp.templateShort')}</span>
                 </button>
               </Tooltip>
             </div>
@@ -368,12 +368,12 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
         </div>
 
         {/* Send Button */}
-        <Tooltip content={isClosed ? t('whatsapp.closedComposerNotice') : !isWindowOpen ? t('whatsapp.windowExpiredNotice') : t('leads.sendNow') || 'Mesajı Gönder'}>
+        <Tooltip content={isClosed ? t('whatsapp.closedComposerNotice') : !isWindowOpen ? t('whatsapp.windowExpiredNotice') : t('leads.sendNow')}>
           <div>
             <Button
               type="submit"
               size="sm"
-              aria-label={t('leads.sendNow') || 'Mesajı Gönder'}
+              aria-label={t('leads.sendNow')}
               disabled={isInputDisabled || !text.trim()}
               className="bg-[#25D366] hover:bg-[#1EBE5D] text-white px-4 py-2.5 font-bold shadow-sm cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 h-auto"
             >
@@ -392,15 +392,15 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
         <Modal
           isOpen={!!mediaModalType}
           onClose={() => setMediaModalType(null)}
-          title={mediaModalType === 'IMAGE' ? (t('whatsapp.sendPhotoTitle') || 'Fotoğraf Gönder') : (t('whatsapp.sendDocTitle') || 'Belge / PDF Gönder')}
-          subtitle={t('whatsapp.mediaUrlPrompt') || 'Göndermek istediğiniz medyanın doğrudan erişilebilir bağlantısını girin.'}
+          title={mediaModalType === 'IMAGE' ? (t('whatsapp.sendPhotoTitle')) : (t('whatsapp.sendDocTitle'))}
+          subtitle={t('whatsapp.mediaUrlPrompt')}
           icon={mediaModalType === 'IMAGE' ? ImageIcon : FileText}
           maxWidth="md"
         >
           <form onSubmit={handleMediaSubmit} className="space-y-4">
             <div className="space-y-1.5">
               <label className="text-[11px] font-bold text-slate-700 dark:text-slate-300">
-                {t('whatsapp.mediaUrlLabel') || 'Medya Bağlantısı (URL)'}
+                {t('whatsapp.mediaUrlLabel')}
               </label>
               <input
                 type="url"
@@ -415,7 +415,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
             {mediaModalType === 'DOCUMENT' && (
               <div className="space-y-1.5">
                 <label className="text-[11px] font-bold text-slate-700 dark:text-slate-300">
-                  {t('whatsapp.filenameLabel') || 'Dosya Adı (İsteğe bağlı)'}
+                  {t('whatsapp.filenameLabel')}
                 </label>
                 <input
                   type="text"
@@ -429,13 +429,13 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
 
             <div className="space-y-1.5">
               <label className="text-[11px] font-bold text-slate-700 dark:text-slate-300">
-                {t('whatsapp.captionLabel') || 'Açıklama / Başlık (İsteğe bağlı)'}
+                {t('whatsapp.captionLabel')}
               </label>
               <input
                 type="text"
                 value={mediaCaption}
                 onChange={(e) => setMediaCaption(e.target.value)}
-                placeholder={t('whatsapp.captionPlaceholder') || 'Görsel hakkında kısa bilgi...'}
+                placeholder={t('whatsapp.captionPlaceholder')}
                 className="w-full px-3 py-2 text-xs rounded-xl vuexy-input font-medium"
               />
             </div>
@@ -449,7 +449,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
                 disabled={sendingMedia}
                 className="text-xs font-bold"
               >
-                {t('common.cancel') || 'İptal'}
+                {t('common.cancel')}
               </Button>
               <Button
                 type="submit"
@@ -462,7 +462,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
                 ) : (
                   <Send className="w-3.5 h-3.5" />
                 )}
-                <span>{t('whatsapp.sendMediaBtn') || 'Medyayı Gönder'}</span>
+                <span>{t('whatsapp.sendMediaBtn')}</span>
               </Button>
             </div>
           </form>
@@ -476,7 +476,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
           onClose={() => {
             if (!sendingFile) setIsFileModalOpen(false);
           }}
-          title={t('whatsapp.sendFileTitle') || 'Dosya Gönder'}
+          title={t('whatsapp.sendFileTitle')}
           subtitle={pendingFile.name}
           icon={pendingFile.type.startsWith('image/') ? ImageIcon : FileText}
           maxWidth="md"
@@ -493,13 +493,13 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
             )}
             <div className="space-y-1.5">
               <label className="text-[11px] font-bold text-slate-700 dark:text-slate-300">
-                {t('whatsapp.captionLabel') || 'Açıklama / Başlık (İsteğe bağlı)'}
+                {t('whatsapp.captionLabel')}
               </label>
               <input
                 type="text"
                 value={fileCaption}
                 onChange={(e) => setFileCaption(e.target.value)}
-                placeholder={t('whatsapp.captionPlaceholder') || 'Görsel hakkında kısa bilgi...'}
+                placeholder={t('whatsapp.captionPlaceholder')}
                 className="w-full px-3 py-2 text-xs rounded-xl vuexy-input font-medium"
               />
             </div>
@@ -515,7 +515,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
                 disabled={sendingFile}
                 className="text-xs font-bold"
               >
-                {t('common.cancel') || 'İptal'}
+                {t('common.cancel')}
               </Button>
               <Button
                 type="submit"
@@ -528,7 +528,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
                 ) : (
                   <Send className="w-3.5 h-3.5" />
                 )}
-                <span>{t('whatsapp.sendFileBtn') || 'Dosyayı Gönder'}</span>
+                <span>{t('whatsapp.sendFileBtn')}</span>
               </Button>
             </div>
           </form>

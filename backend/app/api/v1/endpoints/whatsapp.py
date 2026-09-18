@@ -435,7 +435,7 @@ async def send_message(
         id=msg.get("id"),
         wa_message_id=msg.get("wa_message_id"),
         client_message_id=msg.get("client_message_id"),
-        status=msg.get("status") or "SENT",
+        status=msg.get("status"),
         body=msg.get("body"),
     )
 
@@ -475,7 +475,7 @@ async def send_media(
         id=msg.get("id"),
         wa_message_id=msg.get("wa_message_id"),
         client_message_id=msg.get("client_message_id"),
-        status=msg.get("status") or "SENT",
+        status=msg.get("status"),
         body=msg.get("body"),
     )
 

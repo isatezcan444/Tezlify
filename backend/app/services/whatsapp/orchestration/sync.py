@@ -12,11 +12,12 @@ Coordinates multi-phase synchronization and on-demand history hydration:
 - Throttle-controlled live chats bootstrap (_schedule_chats_bootstrap)
 """
 import asyncio
+from collections import deque
 from datetime import datetime, timezone
 import logging
 import random
 import time
-from typing import Any, Callable, Dict, FrozenSet, List, Optional, Set, Tuple
+from typing import Any, Callable, Deque, Dict, FrozenSet, List, Optional, Set, Tuple
 import uuid
 
 from sqlalchemy import delete, func, insert, or_, select, text
@@ -81,8 +82,10 @@ from backend.app.services.whatsapp.repositories.messages import (
     get_sync_watermark_epoch as _sync_watermark_epoch,
 )
 from backend.app.services.whatsapp.orchestration.history_evidence import (
+    get_history_evidence,
     is_history_exhausted_or_stalled,
     record_on_demand_provider_result,
+    _table_name as history_table_name,
 )
 
 logger = logging.getLogger(__name__)
@@ -175,6 +178,67 @@ _history_expansion_cooldown: Dict[Tuple[str, str], float] = {}
 _history_jid_cooldown: Dict[Tuple[str, str], float] = {}
 _history_jid_attempts: Dict[Tuple[str, str], int] = {}
 
+# ---------------------------------------------------------------------------
+# S-5 — Per-session reconcile single-flight
+# ---------------------------------------------------------------------------
+# A transient disconnect/reconnect loop emits a BURST of `session_sync_completed`
+# events, each of which requests a reconcile. The owner-level single-flight
+# (`_initial_sync_inflight` / `_initial_sync_pending`) already bounds that burst to
+# at most one extra run — but it did not record WHICH session asked, so two
+# sessions shared one key and a storm was invisible in the logs.
+#
+# These guards make "one active reconcile per session" explicit and observable.
+# They are additive: the owner-level guard still bounds everything, and a
+# coalesced request is counted rather than dropped — the final reconcile always
+# runs, so no sync completion is lost.
+_reconcile_session_inflight: Set[Tuple[str, str]] = set()
+_reconcile_session_coalesced: Dict[Tuple[str, str], int] = {}
+
+# ---------------------------------------------------------------------------
+# H-5 — On-demand provider request budget (conversation-scoped, in-process)
+# ---------------------------------------------------------------------------
+# The scroll path already guarantees (a) a single in-flight provider request per
+# anchor via `_in_flight_history_fetches` and (b) no provider call at all when the
+# conversation is already exhausted/stalled. Neither of those bounds a FAST
+# scroll: every distinct `before` anchor yields a distinct flight key, so a user
+# flicking upwards produces A, B, C, D… and each one reaches the provider.
+#
+# This is a sliding-window budget keyed by (user_id, conversation_id). It only
+# suppresses *provider* round-trips — DB reads and the response to the client are
+# untouched, and no evidence is written for a suppressed call (nothing was
+# learned). Deliberately NOT a global lock: budgets are per conversation, so one
+# busy chat cannot starve another.
+_ON_DEMAND_PROVIDER_WINDOW_S = 10.0
+_ON_DEMAND_PROVIDER_MAX_PER_WINDOW = 6
+_on_demand_provider_calls: Dict[Tuple[str, int], Deque[float]] = {}
+
+
+def _on_demand_provider_budget_available(owner: str, conv_id: int, now: Optional[float] = None) -> bool:
+    """True if this conversation may spend another provider round-trip right now.
+
+    Purely advisory/read-only: the caller records the spend separately via
+    `_on_demand_provider_budget_spend` so a caller that decides to skip for a
+    different reason does not consume budget.
+    """
+    key = (str(owner), int(conv_id))
+    calls = _on_demand_provider_calls.get(key)
+    if not calls:
+        return True
+    ts = time.monotonic() if now is None else now
+    cutoff = ts - _ON_DEMAND_PROVIDER_WINDOW_S
+    while calls and calls[0] < cutoff:
+        calls.popleft()
+    if not calls:
+        _on_demand_provider_calls.pop(key, None)
+        return True
+    return len(calls) < _ON_DEMAND_PROVIDER_MAX_PER_WINDOW
+
+
+def _on_demand_provider_budget_spend(owner: str, conv_id: int) -> None:
+    """Records one provider round-trip against the conversation's budget."""
+    key = (str(owner), int(conv_id))
+    _on_demand_provider_calls.setdefault(key, deque()).append(time.monotonic())
+
 
 class WhatsAppSyncOrchestrator:
     """Coordinates multi-phase synchronization and on-demand history hydration."""
@@ -193,6 +257,9 @@ class WhatsAppSyncOrchestrator:
         self._history_expansion_cooldown = _history_expansion_cooldown
         self._history_jid_cooldown = _history_jid_cooldown
         self._history_jid_attempts = _history_jid_attempts
+        self._on_demand_provider_calls = _on_demand_provider_calls
+        self._reconcile_session_inflight = _reconcile_session_inflight
+        self._reconcile_session_coalesced = _reconcile_session_coalesced
 
     def _get_helper(self, name: str, default: Any) -> Any:
         if self.service is not None:
@@ -700,6 +767,19 @@ class WhatsAppSyncOrchestrator:
                 conv.is_archived = bool(item.get("archived"))
             conv.unread_count = max(conv.unread_count or 0, int(item.get("unread_count") or 0))
             jid_by_conv[conv.id] = jid_str
+            # H-6: the emitted payload MUST describe the PERSISTED conversation, not
+            # the incoming gateway snapshot.
+            #
+            # A gateway snapshot can carry an OLDER `last_message_at` than the one
+            # already stored (or a preview that `should_apply_last_message` correctly
+            # rejected). Echoing the gateway value here would hand the frontend a
+            # stale sort key, so the UI ordering would contradict the database —
+            # `conversation.last_message_at` is the canonical source of truth.
+            #
+            # This only affects the normal snapshot path. The intentional backward
+            # move in `_repair_last_message_previews` is a separate, test-pinned
+            # repair path and is deliberately untouched.
+            persisted_preview = _normalize_preview_text(None, conv.last_message_preview) or None
             out.append(
                 {
                     "id": conv.id,
@@ -711,12 +791,12 @@ class WhatsAppSyncOrchestrator:
                     "is_group": "@g.us" in jid_str,
                     "is_archived": bool(conv.is_archived),
                     "avatar_url": _get_contact_avatar(contact),
-                    "last_message_preview": gw_summary or None,
-                    "last_message_at": gw_ts.isoformat() if gw_ts else None,
+                    "last_message_preview": persisted_preview,
+                    "last_message_at": conv.last_message_at.isoformat() if conv.last_message_at else None,
                     "created_at": conv.created_at.isoformat() if conv.created_at else None,
                     "updated_at": conv.updated_at.isoformat() if conv.updated_at else None,
                     "message_count": 0,
-                    "last_message_state": "RESOLVED" if gw_summary else "REPAIRING",
+                    "last_message_state": "RESOLVED" if persisted_preview else "REPAIRING",
                     "unread_count": conv.unread_count,
                     "status": conv.status.value if hasattr(conv.status, "value") else str(conv.status),
                 }
@@ -1093,14 +1173,40 @@ class WhatsAppSyncOrchestrator:
         finally:
             job.done.set()
 
-    def _schedule_initial_sync(self, owner: str, *, reconcile: bool = False) -> None:
-        if owner in self._initial_sync_inflight:
+    def _schedule_initial_sync(
+        self, owner: str, *, reconcile: bool = False, session_key: Optional[str] = None
+    ) -> None:
+        """Schedules the single-flight initial sync / reconcile for an owner.
+
+        S-5: `session_key` (the gateway session UUID) attributes a reconcile to the
+        session that asked for it. While a reconcile for that session is already
+        inflight, further reconcile requests for the SAME session are coalesced
+        (counted, not spawned) so a reconnect storm cannot fan out. Requests for a
+        different session are unaffected.
+        """
+        owner_key = str(owner)
+        skey = (owner_key, str(session_key)) if session_key else None
+
+        if reconcile and skey is not None:
+            if skey in self._reconcile_session_inflight:
+                self._reconcile_session_coalesced[skey] = (
+                    self._reconcile_session_coalesced.get(skey, 0) + 1
+                )
+                logger.info(
+                    "Reconcile for session=%s coalesced: already inflight (%d coalesced so far)",
+                    skey[1],
+                    self._reconcile_session_coalesced[skey],
+                )
+                return
+            self._reconcile_session_inflight.add(skey)
+
+        if owner_key in self._initial_sync_inflight:
             if reconcile:
-                self._initial_sync_pending.add(owner)
+                self._initial_sync_pending.add(owner_key)
             return
-        self._initial_sync_inflight.add(owner)
+        self._initial_sync_inflight.add(owner_key)
         run_initial_sync = self._get_helper("_run_initial_sync", self._run_initial_sync)
-        asyncio.create_task(run_initial_sync(owner))
+        asyncio.create_task(run_initial_sync(owner_key))
 
     async def _run_initial_sync(self, owner: str) -> None:
         session_factory = self._get_helper("AsyncSessionLocal", AsyncSessionLocal)
@@ -1129,6 +1235,14 @@ class WhatsAppSyncOrchestrator:
             if owner in self._initial_sync_pending:
                 self._initial_sync_pending.discard(owner)
                 self._schedule_initial_sync(owner)
+            else:
+                # S-5: nothing further is queued for this owner, so every session
+                # marker belonging to it has been served by the runs above. Release
+                # them so a LATER genuine reconnect can reconcile again.
+                stale = [k for k in self._reconcile_session_inflight if k[0] == owner]
+                for k in stale:
+                    self._reconcile_session_inflight.discard(k)
+                    self._reconcile_session_coalesced.pop(k, None)
 
     async def _run_background_history_expansion(self, user_id: str, gateway_id: str) -> None:
         import collections
@@ -1157,6 +1271,7 @@ class WhatsAppSyncOrchestrator:
         try:
             async with session_factory() as db:
                 is_mock = isinstance(db, Mock)
+                tbl = history_table_name(db)
                 cres = await db.execute(
                     select(Conversation).where(
                         Conversation.channel == "WHATSAPP",
@@ -1180,12 +1295,12 @@ class WhatsAppSyncOrchestrator:
                         # state='NOT_CHECKED' means: conversation exists, provider not yet queried.
                         await db.execute(
                             text(
-                                "INSERT INTO whatsapp_private.history_sync_states "
+                                f"INSERT INTO {tbl} "
                                 "(session_id, jid, has_more, state, provider_checked, updated_at) "
-                                "VALUES (:sid, :jid, TRUE, 'NOT_CHECKED', FALSE, NOW()) "
+                                "VALUES (:sid, :jid, TRUE, 'NOT_CHECKED', FALSE, :now) "
                                 "ON CONFLICT (session_id, jid) DO NOTHING"
                             ),
-                            {"sid": gateway_id, "jid": jid},
+                            {"sid": gateway_id, "jid": jid, "now": datetime.now(timezone.utc)},
                         )
                     await db.commit()
 
@@ -1208,6 +1323,7 @@ class WhatsAppSyncOrchestrator:
                     async with conv_lock:
                         async with session_factory() as db:
                             is_mock = isinstance(db, Mock)
+                            tbl = history_table_name(db)
                             c = await db.get(Conversation, conv_id)
                             if not c:
                                 continue
@@ -1227,13 +1343,13 @@ class WhatsAppSyncOrchestrator:
                                     if self._history_jid_attempts.get(jid_key, 0) >= 3:
                                         continue
                                     s_res = await db.execute(
-                                        text("SELECT state, stall_count, timeout_count, error_count, oldest_timestamp_ms FROM whatsapp_private.history_sync_states WHERE session_id = :sid AND jid = :jid"),
+                                        text(f"SELECT state, stall_count, timeout_count, error_count, oldest_timestamp_ms FROM {tbl} WHERE session_id = :sid AND jid = :jid"),
                                         {"sid": gateway_id, "jid": jid},
                                     )
                                     s_row = s_res.first()
                                     if s_row:
                                         curr_state = s_row[0]
-                                        if curr_state in ("EXHAUSTED", "NO_MESSAGES", "CURSOR_STALLED") and sweep_counts[conv_id] > 1:
+                                        if curr_state in ("EXHAUSTED", "NO_MESSAGES", "CURSOR_STALLED", "FULLY_EXHAUSTED") and sweep_counts[conv_id] > 1:
                                             continue
 
                             mres = await db.execute(
@@ -1250,19 +1366,19 @@ class WhatsAppSyncOrchestrator:
                                 if not is_mock and jid:
                                     await db.execute(
                                         text(
-                                            "INSERT INTO whatsapp_private.history_sync_states "
+                                            f"INSERT INTO {tbl} "
                                             "(session_id, jid, has_more, state, provider_checked, provider_signal, updated_at) "
-                                            "VALUES (:sid, :jid, TRUE, 'NOT_CHECKED', FALSE, 'NO_ANCHOR', NOW()) "
+                                            "VALUES (:sid, :jid, TRUE, 'NOT_CHECKED', FALSE, 'NO_ANCHOR', :now) "
                                             "ON CONFLICT (session_id, jid) DO UPDATE SET "
-                                            "state = CASE WHEN whatsapp_private.history_sync_states.provider_checked = TRUE "
-                                            "         THEN whatsapp_private.history_sync_states.state "
+                                            "state = CASE WHEN {tbl}.provider_checked = TRUE "
+                                            "         THEN {tbl}.state "
                                             "         ELSE 'NOT_CHECKED' END, "
-                                            "provider_signal = CASE WHEN whatsapp_private.history_sync_states.provider_checked = TRUE "
-                                            "         THEN whatsapp_private.history_sync_states.provider_signal "
+                                            "provider_signal = CASE WHEN {tbl}.provider_checked = TRUE "
+                                            "         THEN {tbl}.provider_signal "
                                             "         ELSE 'NO_ANCHOR' END, "
-                                            "updated_at = NOW()"
+                                            "updated_at = :now"
                                         ),
-                                        {"sid": gateway_id, "jid": jid},
+                                        {"sid": gateway_id, "jid": jid, "now": datetime.now(timezone.utc)},
                                     )
                                     await db.commit()
                                 continue
@@ -1278,17 +1394,21 @@ class WhatsAppSyncOrchestrator:
                                 jid_key = (str(gateway_id), str(jid))
                                 self._history_jid_attempts[jid_key] = self._history_jid_attempts.get(jid_key, 0) + 1
                                 self._history_jid_cooldown[jid_key] = time.monotonic() + 10.0
-                                await db.execute(
-                                    text(
-                                        "UPDATE whatsapp_private.history_sync_states "
-                                        "SET state = 'IN_PROGRESS', last_attempt_at = NOW(), updated_at = NOW() "
-                                        "WHERE session_id = :sid AND jid = :jid"
-                                    ),
-                                    {"sid": gateway_id, "jid": jid},
-                                )
-                                await db.commit()
 
                             try:
+                                # H-2: the sweep does NOT implement its own exhaustion
+                                # policy. `_hydrate_messages_on_demand` already funnels the
+                                # provider outcome through the shared
+                                # `history_evidence.record_on_demand_provider_result`, so the
+                                # background path and the on-demand scroll path can never
+                                # disagree about what "exhausted" means.
+                                #
+                                # Previously this branch wrote `FULLY_EXHAUSTED` directly from
+                                # a single zero-message provider response, skipping the Phase 17
+                                # two-step confirmation (EXHAUSTION_CANDIDATE -> then
+                                # FULLY_EXHAUSTED). It also wrote an `IN_PROGRESS` state before
+                                # every fetch, which clobbered a pending EXHAUSTION_CANDIDATE and
+                                # made the second confirmation unreachable even if attempted.
                                 older = await hydrate_messages_on_demand(
                                     db,
                                     user_id,
@@ -1297,158 +1417,46 @@ class WhatsAppSyncOrchestrator:
                                     before_ts_ms=cursor_ms,
                                     oldest_msg_id=anchor_id,
                                     oldest_msg_from_me=anchor_from_me,
+                                    background_sweep=True,
                                 )
 
                                 if not is_mock and jid:
-                                    msgs_returned = len(older) if older else 0
-                                    if older:
-                                        new_oldest_ms = _hydration_cursor_ms(older)
-                                        # Cursor stall detection: if new_oldest_ms equals cursor_ms, cursor didn't advance
-                                        is_stalled = (new_oldest_ms is not None and new_oldest_ms >= cursor_ms)
-
-                                        # Get current stall count
-                                        st_res = await db.execute(
-                                            text("SELECT stall_count FROM whatsapp_private.history_sync_states WHERE session_id = :sid AND jid = :jid"),
-                                            {"sid": gateway_id, "jid": jid},
+                                    evidence = await get_history_evidence(
+                                        db, jid, session_id=str(gateway_id)
+                                    )
+                                    if evidence.get("state") == "CURSOR_STALLED":
+                                        logger.warning(
+                                            "[cursor_stalled] Conv %s (jid=%s) stalled at cursor %s after 3 attempts",
+                                            conv_id, jid, cursor_ms,
                                         )
-                                        prev_stalls = (st_res.scalar() or 0) if st_res else 0
+                                        continue
 
-                                        if is_stalled:
-                                            new_stalls = prev_stalls + 1
-                                            if new_stalls >= 3:
-                                                logger.warning("[cursor_stalled] Conv %s (jid=%s) stalled at cursor %s after 3 attempts", conv_id, jid, cursor_ms)
-                                                await db.execute(
-                                                    text(
-                                                        "UPDATE whatsapp_private.history_sync_states SET "
-                                                        "oldest_msg_id = :mid, oldest_timestamp_ms = :ts, "
-                                                        "has_more = TRUE, state = 'CURSOR_STALLED', stall_count = :stalls, "
-                                                        "provider_checked = TRUE, provider_signal = 'CURSOR_STALLED', "
-                                                        "provider_msgs_returned = :msgs_returned, "
-                                                        "provider_cursor_used = :cursor_used, "
-                                                        "provider_checked_at = NOW(), "
-                                                        "last_sweep_count = last_sweep_count + 1, "
-                                                        "last_error = 'Cursor stalled for 3 consecutive fetches', updated_at = NOW() "
-                                                        "WHERE session_id = :sid AND jid = :jid"
-                                                    ),
-                                                    {"sid": gateway_id, "jid": jid, "mid": older[0].wa_message_id, "ts": cursor_ms, "stalls": new_stalls,
-                                                     "msgs_returned": msgs_returned, "cursor_used": str(cursor_ms)},
-                                                )
-                                                await db.commit()
-                                                continue
-                                            else:
-                                                await db.execute(
-                                                    text(
-                                                        "UPDATE whatsapp_private.history_sync_states SET "
-                                                        "oldest_msg_id = :mid, oldest_timestamp_ms = :ts, "
-                                                        "has_more = TRUE, state = 'HAS_MORE', stall_count = :stalls, "
-                                                        "provider_checked = TRUE, provider_signal = 'HAS_MORE', "
-                                                        "provider_msgs_returned = :msgs_returned, "
-                                                        "provider_cursor_used = :cursor_used, "
-                                                        "provider_checked_at = NOW(), "
-                                                        "last_sweep_count = last_sweep_count + 1, "
-                                                        "last_success_at = NOW(), updated_at = NOW() "
-                                                        "WHERE session_id = :sid AND jid = :jid"
-                                                    ),
-                                                    {"sid": gateway_id, "jid": jid, "mid": older[0].wa_message_id, "ts": cursor_ms, "stalls": new_stalls,
-                                                     "msgs_returned": msgs_returned, "cursor_used": str(cursor_ms)},
-                                                )
-                                                await db.commit()
-                                        else:
-                                            # Cursor advanced successfully — reset stall_count
-                                            await db.execute(
-                                                text(
-                                                    "INSERT INTO whatsapp_private.history_sync_states "
-                                                    "(session_id, jid, oldest_msg_id, oldest_timestamp_ms, has_more, state, "
-                                                    " stall_count, provider_checked, provider_signal, provider_msgs_returned, "
-                                                    " provider_cursor_used, provider_checked_at, last_sweep_count, last_success_at, updated_at) "
-                                                    "VALUES (:sid, :jid, :mid, :ts, TRUE, 'HAS_MORE', 0, TRUE, 'HAS_MORE', "
-                                                    "        :msgs_returned, :cursor_used, NOW(), 1, NOW(), NOW()) "
-                                                    "ON CONFLICT (session_id, jid) DO UPDATE SET "
-                                                    "oldest_msg_id = EXCLUDED.oldest_msg_id, "
-                                                    "oldest_timestamp_ms = EXCLUDED.oldest_timestamp_ms, "
-                                                    "has_more = TRUE, state = 'HAS_MORE', stall_count = 0, "
-                                                    "provider_checked = TRUE, provider_signal = 'HAS_MORE', "
-                                                    "provider_msgs_returned = EXCLUDED.provider_msgs_returned, "
-                                                    "provider_cursor_used = EXCLUDED.provider_cursor_used, "
-                                                    "provider_checked_at = NOW(), "
-                                                    "last_sweep_count = whatsapp_private.history_sync_states.last_sweep_count + 1, "
-                                                    "last_success_at = NOW(), updated_at = NOW()"
-                                                ),
-                                                {"sid": gateway_id, "jid": jid, "mid": older[0].wa_message_id, "ts": cursor_ms,
-                                                 "msgs_returned": msgs_returned, "cursor_used": str(cursor_ms)},
-                                            )
-                                            await db.commit()
-
-                                        # Re-queue for next sweep if more history exists and within sweep budget
-                                        if sweep_counts[conv_id] < _HISTORY_EXPANSION_MAX_SWEEPS_PER_CONV:
-                                            queue.append(c)
-                                        else:
-                                            logger.info("[sweep_limit] Conv %s reached max sweep limit %d (retained as HAS_MORE)", conv_id, _HISTORY_EXPANSION_MAX_SWEEPS_PER_CONV)
+                                    # Re-queue for next sweep if more history exists and within sweep budget
+                                    if not older:
+                                        continue
+                                    if sweep_counts[conv_id] < _HISTORY_EXPANSION_MAX_SWEEPS_PER_CONV:
+                                        queue.append(c)
                                     else:
-                                        # Phase 15.3: Provider returned 0 messages — this IS real exhaustion evidence.
-                                        # Only mark FULLY_EXHAUSTED when provider_checked=True and returned 0.
-                                        # Never produce FULLY_EXHAUSTED from DB-only logic.
-                                        await db.execute(
-                                            text(
-                                                "INSERT INTO whatsapp_private.history_sync_states "
-                                                "(session_id, jid, has_more, state, completed_at, "
-                                                " provider_checked, provider_signal, provider_msgs_returned, "
-                                                " provider_cursor_used, provider_checked_at, last_sweep_count, last_success_at, updated_at) "
-                                                "VALUES (:sid, :jid, FALSE, 'FULLY_EXHAUSTED', NOW(), "
-                                                "        TRUE, 'EXHAUSTED', 0, :cursor_used, NOW(), 1, NOW(), NOW()) "
-                                                "ON CONFLICT (session_id, jid) DO UPDATE SET "
-                                                "has_more = FALSE, state = 'FULLY_EXHAUSTED', completed_at = NOW(), "
-                                                "provider_checked = TRUE, provider_signal = 'EXHAUSTED', "
-                                                "provider_msgs_returned = 0, "
-                                                "provider_cursor_used = EXCLUDED.provider_cursor_used, "
-                                                "provider_checked_at = NOW(), "
-                                                "last_sweep_count = whatsapp_private.history_sync_states.last_sweep_count + 1, "
-                                                "last_success_at = NOW(), updated_at = NOW()"
-                                            ),
-                                            {"sid": gateway_id, "jid": jid, "cursor_used": str(cursor_ms)},
-                                        )
-                                        await db.commit()
+                                        logger.info("[sweep_limit] Conv %s reached max sweep limit %d (retained as HAS_MORE)", conv_id, _HISTORY_EXPANSION_MAX_SWEEPS_PER_CONV)
 
                             except Exception as fetch_exc:
                                 had_transient_failure = True
                                 from backend.app.services.whatsapp.exceptions import WhatsAppHistoryTimeout
                                 if isinstance(fetch_exc, (WhatsAppHistoryTimeout, TimeoutError, asyncio.TimeoutError)):
+                                    # Evidence (state=TIMEOUT, timeout_count += 1, cursor and
+                                    # has_more preserved) was already committed durably by
+                                    # `_hydrate_messages_on_demand` BEFORE this exception was
+                                    # raised. Re-recording it here would double-count the timeout.
                                     logger.warning(
                                         "[history_timeout] Chunk timeout for conv=%s (jid=%s). Preserving cursor.",
                                         conv_id,
                                         jid,
                                     )
-                                    if not is_mock and jid:
-                                        # Phase 15.3: TEMPORARY_TIMEOUT preserves cursor and has_more=TRUE.
-                                        # NEVER set completed_at or has_more=FALSE on timeout — not evidence of exhaustion.
-                                        await db.execute(
-                                            text(
-                                                "UPDATE whatsapp_private.history_sync_states SET "
-                                                "state = 'TEMPORARY_TIMEOUT', timeout_count = timeout_count + 1, "
-                                                "has_more = TRUE, provider_signal = 'TIMEOUT', "
-                                                "last_sweep_count = last_sweep_count + 1, "
-                                                "last_error = :err, updated_at = NOW() "
-                                                "WHERE session_id = :sid AND jid = :jid"
-                                            ),
-                                            {"sid": gateway_id, "jid": jid, "err": str(fetch_exc)},
-                                        )
-                                        await db.commit()
                                     await asyncio.sleep(4.0)
                                 else:
+                                    # Same rule: `_hydrate_messages_on_demand` already recorded
+                                    # state=PROVIDER_ERROR / error_count += 1 before re-raising.
                                     logger.warning("Background expansion error for conv=%s: %s", conv_id, fetch_exc)
-                                    if not is_mock and jid:
-                                        await db.execute(
-                                            text(
-                                                "UPDATE whatsapp_private.history_sync_states SET "
-                                                "state = 'ERROR', error_count = error_count + 1, "
-                                                "provider_signal = 'ERROR', "
-                                                "last_sweep_count = last_sweep_count + 1, "
-                                                "last_error = :err, updated_at = NOW() "
-                                                "WHERE session_id = :sid AND jid = :jid"
-                                            ),
-                                            {"sid": gateway_id, "jid": jid, "err": str(fetch_exc)},
-                                        )
-                                        await db.commit()
 
                 except Exception as e:
                     logger.debug("Background expansion skipped conversation %s: %s", conv.id, e)
@@ -1594,7 +1602,20 @@ class WhatsAppSyncOrchestrator:
         before_ts_ms: Optional[int] = None,
         oldest_msg_id: Optional[str] = None,
         oldest_msg_from_me: Optional[bool] = None,
+        *,
+        background_sweep: bool = False,
     ) -> List[Message]:
+        """Fetches one older page from the provider and persists the evidence.
+
+        This is the SINGLE place that performs an on-demand provider round-trip.
+        It is called both by the user scroll path and by the (kill-switched)
+        background sweep, which is why the exhaustion policy lives in
+        `history_evidence.record_on_demand_provider_result` rather than here —
+        callers must never write evidence of their own.
+
+        `background_sweep` only marks the `last_sweep_count` bookkeeping; it has
+        no effect on the state machine.
+        """
         conversation_session = self._get_helper("_conversation_session", None)
         gateway_op_or_mark_relink = self._get_helper("_gateway_op_or_mark_relink", None)
         gateway_client = self._get_helper("gw", gw)
@@ -1622,6 +1643,19 @@ class WhatsAppSyncOrchestrator:
             logger.info("On-demand provider request skipped for %s: already exhausted or stalled", jid)
             return []
 
+        # H-5: bound provider round-trips per conversation during a fast scroll.
+        # Nothing is learned by a suppressed call, so no evidence is written and
+        # the caller simply sees "no new rows this time" — has_more stays TRUE.
+        if not _on_demand_provider_budget_available(owner, conv.id):
+            logger.info(
+                "On-demand provider request deferred (conv=%s): budget of %d requests / %.0fs exhausted",
+                conv.id,
+                _ON_DEMAND_PROVIDER_MAX_PER_WINDOW,
+                _ON_DEMAND_PROVIDER_WINDOW_S,
+            )
+            return []
+
+        _on_demand_provider_budget_spend(owner, conv.id)
         try:
             if gateway_op_or_mark_relink is not None and session_row is not None:
                 data = await gateway_op_or_mark_relink(
@@ -1673,7 +1707,16 @@ class WhatsAppSyncOrchestrator:
             raise RuntimeError("Gateway returned an invalid messages payload.")
         provider_status = data.get("provider_status", "NOT_REQUESTED")
 
-        # Record durable provider evidence if a real provider round-trip occurred
+        # Record durable provider evidence if a real provider round-trip occurred.
+        #
+        # H-3 contract — `TIMEOUT` is NOT the same thing as "zero messages":
+        #   * full timeout  (gw_msgs empty)     -> evidence TIMEOUT, count 0, then RAISE.
+        #     The evidence is committed BEFORE the exception so a retry cannot lose it.
+        #   * partial timeout (gw_msgs non-empty) -> evidence TIMEOUT carrying the REAL
+        #     count of messages we received, and NO exception: the caller has usable
+        #     data, so pagination continues. A partial timeout is never treated as
+        #     zero/exhausted — the policy module never sets provider_exhausted from a
+        #     timeout, and it preserves any previously established exhaustion.
         if sid_str:
             try:
                 await record_on_demand_provider_result(
@@ -1685,6 +1728,7 @@ class WhatsAppSyncOrchestrator:
                     gw_msgs=gw_msgs,
                     oldest_msg_id=oldest_msg_id,
                     before_ts_ms=before_ts_ms,
+                    increment_sweep_count=background_sweep,
                 )
                 if provider_status == "TIMEOUT" and not gw_msgs:
                     await db.commit()
@@ -1717,6 +1761,11 @@ class WhatsAppSyncOrchestrator:
                 have.add(str(wa))
             rows.append(row)
         if not rows:
+            # Every returned message was already persisted. The provider round-trip
+            # still happened, so its evidence must be committed — otherwise the
+            # session is discarded on close and the evidence is silently lost
+            # (a later retry would then re-request the same chunk forever).
+            await db.commit()
             return []
         rows.sort(key=lambda r: (r.external_timestamp or r.created_at, r.id or 0))
         db.add_all(rows)

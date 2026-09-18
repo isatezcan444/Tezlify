@@ -4,6 +4,14 @@
 **Companion document:** [`WHATSAPP_FORENSIC_AUDIT.md`](./WHATSAPP_FORENSIC_AUDIT.md) (17-section forensic audit)
 **Method:** forensic audit → root cause → minimal fix → regression test → executed verification. No report claim was accepted as evidence; every finding was re-read from this checkout.
 
+> **⚠️ SUPERSEDED IN PART — see [`WHATSAPP_PHASE2_REPORT.md`](./WHATSAPP_PHASE2_REPORT.md).**
+> This is the **Phase 1** report; the counts and "Fixed" list below describe Phase 1 only.
+> Phase 2 then closed the remaining concrete, non-product-decision defects.
+> **Current state:** backend `1010 passed`, gateway `17/17`, frontend build PASS / logic `23/23`.
+> **Still open:** `F-5` and `G-3` (product decisions) and live paired-device E2E (**NOT RUN**).
+> Verdict remains **`RELEASE CANDIDATE`**.
+
+
 ---
 
 ## EXECUTIVE SUMMARY

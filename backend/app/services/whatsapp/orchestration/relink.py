@@ -88,9 +88,8 @@ async def resolve_relink_candidate(
     clean_digits = phone.split("@")[0].lstrip("+")
     clean_e164 = f"+{clean_digits}"
 
-    stmt = (
-        select(WhatsAppSession)
-        .where(
+    def _candidate_filters() -> list:
+        return [
             WhatsAppSession.user_id == user_id,
             or_(
                 WhatsAppSession.phone_number == phone,
@@ -99,7 +98,11 @@ async def resolve_relink_candidate(
             ),
             WhatsAppSession.status == SessionStatus.RELINK_REQUIRED,
             WhatsAppSession.gateway_id != new_gateway_id,
-        )
+        ]
+
+    stmt = (
+        select(WhatsAppSession)
+        .where(*_candidate_filters())
         .with_for_update(skip_locked=True)  # advisory lock — prevent concurrent relink race
     )
     try:
@@ -111,6 +114,41 @@ async def resolve_relink_candidate(
         ) from exc
 
     if len(rows) == 0:
+        # S-4: `skip_locked=True` makes two very different situations produce the
+        # SAME empty result set:
+        #   (a) no candidate exists at all, and
+        #   (b) a candidate exists but another transaction currently holds its row
+        #       lock (a concurrent relink for the same logical session).
+        # Conflating them is dangerous: callers treat RelinkCandidateNotFound as
+        # "first-time pairing" and INSERT a brand-new WhatsAppSession for a phone
+        # that already has one — a duplicate session row.
+        #
+        # Re-check WITHOUT the lock so (b) is distinguishable from (a). We do not
+        # block on the row lock: the caller's own transaction would be waiting on a
+        # peer that is waiting for us. A global lock is explicitly out of scope.
+        try:
+            res2 = await db.execute(select(WhatsAppSession).where(*_candidate_filters()))
+            recheck = res2.scalars().all()
+        except Exception as exc:
+            raise RelinkCandidateNotFound(
+                f"Candidate re-check failed for user={user_id}, phone={phone}: {exc}"
+            ) from exc
+
+        if len(recheck) > 1:
+            ids = [r.id for r in recheck]
+            raise RelinkCandidateAmbiguous(
+                f"Relink failed: {len(recheck)} RELINK_REQUIRED sessions share phone={phone} "
+                f"for user={user_id} (ids={ids}). Resolve manually before relinking."
+            )
+        if len(recheck) == 1:
+            logger.info(
+                "[relink] Candidate session id=%s for user=%s phone=%s was row-locked by a "
+                "concurrent relink; reusing it instead of creating a duplicate session.",
+                recheck[0].id,
+                user_id,
+                phone,
+            )
+            return recheck[0]
         raise RelinkCandidateNotFound(
             f"No RELINK_REQUIRED session found for user={user_id}, phone={phone}."
         )
@@ -126,6 +164,52 @@ async def resolve_relink_candidate(
 # ---------------------------------------------------------------------------
 # Atomic relink transaction
 # ---------------------------------------------------------------------------
+
+async def find_existing_session_for_phone(
+    db: AsyncSession,
+    *,
+    user_id: str,
+    phone: str,
+    exclude_gateway_id: Optional[str] = None,
+) -> Optional[WhatsAppSession]:
+    """The newest existing session row for this user + phone, if any.
+
+    S-4 (creation-site guard). `whatsapp_sessions.phone_number` carries NO DB
+    uniqueness constraint, so "first-time QR pairing" could mint a second row for
+    a number that already had one — a duplicate logical session. This is a
+    transaction-safe application-level recheck performed immediately before the
+    INSERT so the existing row is reused instead.
+
+    Fails OPEN: any lookup problem returns None, which sends the caller back to
+    its normal INSERT path. A lookup failure must never turn into a lost pairing.
+    """
+    if not phone:
+        return None
+    clean_digits = phone.split("@")[0].lstrip("+")
+    if not clean_digits:
+        return None
+    filters = [
+        WhatsAppSession.user_id == user_id,
+        or_(
+            WhatsAppSession.phone_number == phone,
+            WhatsAppSession.phone_number == f"+{clean_digits}",
+            WhatsAppSession.phone_number == clean_digits,
+        ),
+    ]
+    if exclude_gateway_id:
+        filters.append(WhatsAppSession.gateway_id != exclude_gateway_id)
+    try:
+        res = await db.execute(
+            select(WhatsAppSession)
+            .where(*filters)
+            .order_by(WhatsAppSession.id.desc())
+            .limit(1)
+        )
+        return res.scalars().first()
+    except Exception as exc:  # noqa: BLE001 - fail open to the INSERT path
+        logger.debug("Existing-session lookup failed for phone=%s: %s", phone, exc)
+        return None
+
 
 async def perform_atomic_relink(
     db: AsyncSession,

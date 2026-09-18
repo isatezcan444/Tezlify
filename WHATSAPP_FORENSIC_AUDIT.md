@@ -5,6 +5,15 @@
 **Method:** source + test + control-flow verification. Previous reports ("PASS"/"FIXED"/"PRODUCTION READY") were treated as **non-evidence**. Every claim below is anchored to `file:line` and was re-read from this checkout.
 **Baseline test run (this checkout):** `975 passed` (backend pytest, 54.8s) — reproduced independently.
 
+> **⚠️ SUPERSEDED IN PART — see [`WHATSAPP_PHASE2_REPORT.md`](WHATSAPP_PHASE2_REPORT.md).**
+> This document is the **Phase 1** audit and is preserved as written at audit time. A Phase 2
+> workstream then resolved every concrete, non-product-decision defect listed here.
+> **Current state:** backend `1010 passed`, gateway `17/17`, frontend build PASS / logic `23/23`.
+> **Still open:** `F-5` and `G-3` (both need a product decision) and live paired-device E2E
+> (**NOT RUN** — no device available). The §15 and §16 matrices below carry a **Phase 2** column
+> with the updated status. Verdict remains **`RELEASE CANDIDATE`**.
+
+
 ---
 
 ## 1. CURRENT ARCHITECTURE (verified)
@@ -378,28 +387,33 @@ No double-add: state dedups on the unique numeric `conversation.id`. Backend cre
 
 ## 15. KNOWN BUGS — THE 20-ITEM REGRESSION LIST (status re-verified)
 
-| # | Reported problem | Status | Evidence |
-|---|---|---|---|
-| 1 | "Kişi kimliği çözülüyor…" for unsaved contacts | **FIXED (by unreachability)** | Backend never emits `RESOLVING_TRANSIENT` (`identity.py:212,266`; sole call site `whatsapp_service.py:522`). Unresolved → `contactFallback` `"Kişi"`. *No escape hatch exists* (latent P2, §6.2) |
-| 2 | Unsaved contacts shown with a wrong pushName | **PARTIALLY FIXED** | REST read path guarded (`identity.py:244`) ✅; DB write path not (`events.py:212-219`) ❌; WS `safe_display_name` not (`identity.py:106-119`) ❌ |
-| 3 | pushName overwriting an addressbook contact | **FIXED on update, BROKEN on create** | `set_contact_name` guards (`contacts.py:76-88`) ✅; create branch does not ❌ |
-| 4 | Ordering broken by identity state | **FIXED** | `whatsapp_service.py:409`, `whatsappOrdering.ts:31-48`; identity updates don't touch `last_message_at` ✅ (residual: `_repair_last_message_previews` non-monotonic, `sync.py:410-412`) |
-| 5 | WS payload producing different identity than REST | **STILL BROKEN** | `events.py:648-654` (`lead_phone`) vs `whatsappApi.ts:195-196` (`phone`); `conversation_updated` carries no `phone`/`identity_state` |
-| 6 | Duplicate conversation | **FIXED** | `events.py:298-325`, `sync.py:572-595`, DB constraint; frontend dedups by `id` ✅ (residual: display dedup key divergence, P2) |
-| 7 | Raw LID JID displayed | **MOSTLY FIXED** | `jid_to_phone` nulls `@lid`; `is_raw_jid_name` guards; residual leak in `ChatBubble.tsx:251-254` |
-| 8 | Group ID instead of group name | **FIXED** | `is_group` branch in `resolve_contact_identity`; frontend group fallback ✅ (residual: gateway sender-prefix suppression, P2) |
-| 9 | `+0` / broken phone contacts | **MOSTLY FIXED** | `is_degenerate_jid` + `jid_to_phone` guards; residual: `contacts.update` missing the guard (G-4) |
-| 10 | Conversations missing after initial sync | **NOT VERIFIED** | requires live runtime; `schedule_chats_bootstrap` + `whatsapp_sync_chats_bootstrap` path exists but was not exercised |
-| 11 | Manual history pagination | **STILL BROKEN** | H-1 session key mismatch → `has_more` always `True` |
-| 12 | Provider timeout losing evidence | **FIXED** | `sync.py:1681-1688` commits before raising ✅ (residual: partial-timeout inconsistency, H-3) |
-| 13 | `FULLY_EXHAUSTED` from a single call | **FIXED on-demand / BROKEN in sweep (flag OFF)** | `history_evidence.py:282-296` ✅; `sync.py:1383-1402` ❌ but unreachable |
-| 14 | Cursor stall infinite loop | **STILL BROKEN (amplified)** | `CURSOR_STALLED` can never be read back because of H-1 |
-| 15 | Background sweep breaking Chrome sync | **FIXED (disabled)** | `config.py:180` default `False`, double-gated; gateway has no sweep |
-| 16 | Session reconnect / relink races | **PARTIALLY FIXED** | socket generation guard + leases ✅; relink UI notification dead (S-1), duplicate-session race (S-4), premature pairing phone (S-2) |
-| 17 | Outbound self-echo duplication | **FIXED** | `:1657-1662`, `:1743-1755` + permutation tests |
-| 18 | ACK reconciliation | **FIXED** | monotonic `ACK_RANK`/`_applyMessageAck`/`_confirmOutboundSent` |
-| 19 | Message ordering | **FIXED** | 4 equivalent sort implementations (drift risk only) |
-| 20 | Scroll restoration | **PARTIALLY FIXED** | `isPrependingRef` can stick (F-10) |
+> **Phase 2 update:** the **Phase 2** column was added by the Phase 2 workstream. See
+> [`WHATSAPP_PHASE2_REPORT.md`](WHATSAPP_PHASE2_REPORT.md) for root causes, gates and the
+> full matrix. The Phase 1 column is preserved verbatim as the audit-time finding.
+
+| # | Reported problem | Phase 1 status | **Phase 2** | Evidence |
+|---|---|---|---|---|
+| 1 | "Kişi kimliği çözülüyor…" for unsaved contacts | **FIXED (by unreachability)** | **FIXED** | Backend never emits `RESOLVING_TRANSIENT` (`identity.py:212,266`; sole call site `whatsapp_service.py:522`). Unresolved → `contactFallback` `"Kişi"`. Canonical helper carries the step-4 branch. *No escape hatch exists* (latent P2, §6.2) |
+| 2 | Unsaved contacts shown with a wrong pushName | **PARTIALLY FIXED** | **FIXED** | REST read path guarded (`identity.py:244`) ✅; DB write path fixed in Phase 1 (`events.py`) ✅; WS now emits canonical `name` via `_resolve_contact_identity`, and `safe_display_name` verified guarded (`identity.py:127-136`) ✅ |
+| 3 | pushName overwriting an addressbook contact | **FIXED on update, BROKEN on create** | **FIXED** | `set_contact_name` guards (`contacts.py:76-88`) ✅; Phase 1 fixed the create branch ✅ |
+| 4 | Ordering broken by identity state | **FIXED** | **FIXED** | `whatsapp_service.py:409`, `whatsappOrdering.ts:31-48`; H-6 removed the last payload/DB timestamp divergence ✅ |
+| 5 | WS payload producing different identity than REST | **STILL BROKEN** | **FIXED** | §32 contract: `events.py` emits the canonical REST shape on `conversation_updated`; asserted field-by-field in `test_whatsapp_forensic_phase2.py` ✅ |
+| 6 | Duplicate conversation | **FIXED** | **FIXED** | `events.py:298-325`, `sync.py:572-595`, DB constraint; I-7 removed the last-10-digit display dedup (residual closed) ✅ |
+| 7 | Raw LID JID displayed | **MOSTLY FIXED** | **FIXED** | I-5 (`ChatBubble`), I-6 (`ConversationList data-phone`), F-13 (all surfaces) route through `whatsappIdentity.ts` ✅ |
+| 8 | Group ID instead of group name | **FIXED** | **FIXED** | `is_group` branch in `resolve_contact_identity`; frontend group fallback ✅ |
+| 9 | `+0` / broken phone contacts | **MOSTLY FIXED** | **FIXED** | G-4 added the degenerate-JID guard to `contacts.update` ✅ |
+| 10 | Conversations missing after initial sync | **NOT VERIFIED** | **NOT_VERIFIED** | requires a live paired device; not exercised in Phase 2 either |
+| 11 | Manual history pagination | **STILL BROKEN** | **FIXED** | H-1 (Phase 1) + H-2/H-4/H-5 (Phase 2) |
+| 12 | Provider timeout losing evidence | **FIXED** | **FIXED** | `sync.py:1681-1688` commits before raising ✅; H-3 closed the partial-timeout inconsistency ✅ |
+| 13 | `FULLY_EXHAUSTED` from a single call | **FIXED on-demand / BROKEN in sweep (flag OFF)** | **FIXED** | H-2: the sweep now delegates to the shared two-step policy; flag remains `False` |
+| 14 | Cursor stall infinite loop | **STILL BROKEN (amplified)** | **FIXED** | H-2 removed the `state='IN_PROGRESS'` write that clobbered `EXHAUSTION_CANDIDATE` |
+| 15 | Background sweep breaking Chrome sync | **FIXED (disabled)** | **FIXED** | `config.py:180` default `False`, double-gated; gateway has no sweep |
+| 16 | Session reconnect / relink races | **PARTIALLY FIXED** | **FIXED** | S-2 (pairing phone), S-4 (duplicate session), S-5 (reconcile storm) all closed with tests |
+| 17 | Outbound self-echo duplication | **FIXED** | **FIXED** | `:1657-1662`, `:1743-1755` + permutation tests; G-5 added the inbound counterpart at the gateway |
+| 18 | ACK reconciliation | **FIXED** | **FIXED** | monotonic `ACK_RANK`/`_applyMessageAck`/`_confirmOutboundSent` |
+| 19 | Message ordering | **FIXED** | **FIXED** | F-6 keeps ordering tied to real activity; failed sends no longer rank as latest |
+| 20 | Scroll restoration | **PARTIALLY FIXED** | **FIXED** | F-10: `isPrependingRef` released on success, no-more and error |
+
 
 ---
 
@@ -409,24 +423,74 @@ No double-add: state dedups on the unique numeric `conversation.id`. Backend cre
 **None confirmed.** No path was found where a failed send is reported as success in the live send flow, no message loss, no wrong-session send, no conversation loss. (The send FSM at `messaging.py:150-179` + `session-manager.js:1593-1601` is truthful and fail-closed.)
 
 ### P1 — High
-| ID | Bug |
-|---|---|
-| H-1 | History evidence session-key mismatch → dead exhaustion short-circuit, `has_more` always `True`, provider re-requested on every scroll |
-| I-1 | push name written to `contact.display_name` on contact create (+ `safe_display_name` blind to `name_source`) |
-| I-3 | `conversations_updated` emits `lead_phone` while the mapper reads `phone` → name+phone wiped on LID reconcile |
-| S-1 | relink `session_updated` broadcast raises `TypeError` (wrong kwarg) → UI never told a relink is required |
-| G-1 | gateway reports read + emits `conversation_read: 0` when the WhatsApp read receipt failed |
-| F-1 | archive/close/reopen is a phantom action with a fake success toast (no backend support) |
-| F-2 | conversation `search` param never sent (server-side search effectively disabled) |
-| F-3 | `loadConversations` replaces the list, discarding loaded pages |
-| F-4 | stale-response race in `useWhatsAppConversation` (wrong chat shown) |
-| F-5 | New Chat always fails (unconditional `throw`) |
-| H-2' | background sweep violates two-step exhaustion — **latent, flag OFF** |
+> **Phase 2: all closed.** Every P1 below is now `FIXED` except the two marked as product decisions.
+
+| ID | Bug | Phase 2 |
+|---|---|---|
+| H-1 | History evidence session-key mismatch → dead exhaustion short-circuit, `has_more` always `True`, provider re-requested on every scroll | **FIXED** (Phase 1) |
+| I-1 | push name written to `contact.display_name` on contact create (+ `safe_display_name` blind to `name_source`) | **FIXED** (Phase 1; `safe_display_name` verified guarded) |
+| I-3 | `conversations_updated` emits `lead_phone` while the mapper reads `phone` → name+phone wiped on LID reconcile | **FIXED** (Phase 1 + §32) |
+| S-1 | relink `session_updated` broadcast raises `TypeError` (wrong kwarg) → UI never told a relink is required | **FIXED** (Phase 1) |
+| G-1 | gateway reports read + emits `conversation_read: 0` when the WhatsApp read receipt failed | **FIXED** (Phase 1) |
+| F-1 | archive/close/reopen is a phantom action with a fake success toast (no backend support) | **FIXED** |
+| F-2 | conversation `search` param never sent (server-side search effectively disabled) | **FIXED** |
+| F-3 | `loadConversations` replaces the list, discarding loaded pages | **FIXED** |
+| F-4 | stale-response race in `useWhatsAppConversation` (wrong chat shown) | **FIXED** |
+| F-5 | New Chat always fails (unconditional `throw`) | **OPEN — PRODUCT DECISION** |
+| H-2' | background sweep violates two-step exhaustion — **latent, flag OFF** | **FIXED** at source; flag still `False` |
 
 ### P2 — Medium
-I-4, I-5, I-6, I-7, C-1 (`UnboundLocalError`), C-2, C-3, C-4, C-5, S-2, S-3, S-4, S-5, H-2, H-3, H-4, H-5, H-6, G-2 (`logger`), G-3, G-4, G-5, G-6, G-7, G-8, G-9, G-10, F-6…F-13, `status or "SENT"` fallback, missing `wa_message_id` unique constraint.
+> **Phase 2: all closed** except `G-3` (product decision) and item 10 of §15 (needs a live device).
 
-> **Withdrawn (verified false positive):** the "non-monotonic `last_message_at` in `_repair_last_message_previews`" finding. The backward move is intentional and test-pinned — see §5.
+| ID | Bug | Phase 2 |
+|---|---|---|
+| I-4 | WS `conversation_updated` bypassed the shared mapper | **FIXED** |
+| I-5 | `ChatBubble` rendered a raw `@lid` / `jid:` sender label | **FIXED** |
+| I-6 | `ConversationList` leaked a raw JID into `data-phone` | **FIXED** |
+| I-7 | frontend dedup by last 10 digits could merge two people | **FIXED** |
+| C-1 | `_upsert_contact` `UnboundLocalError` | **FIXED** (Phase 1) |
+| C-2 | `contacts.update` missing the degenerate-JID guard → ghost `0@s.whatsapp.net` | **FIXED** — this **is G-4**; the same guard, fixed once |
+| C-3 | `@c.us` not canonicalized → same person in two store keys | **FIXED** — this **is G-7**; `@c.us` → `@s.whatsapp.net` |
+| C-4 | no DB uniqueness on `messages.wa_message_id`; inbound dedup is SELECT-then-INSERT | **PARTIALLY_FIXED** — the *sequential* dedup contract is now pinned by 2 tests, but the **concurrent** SELECT-then-INSERT window is still open (the column is nullable + non-unique by design). A `UNIQUE (conversation_id, wa_message_id)` partial index would close it, but that is a migration and was explicitly out of scope (§39). Documented, not fixed. |
+| C-5 | `list_conversations` (a GET) mutated `contact.phone_e164` / `message.sender_phone` and committed | **FIXED** — moved to the `lid_mapped` write path |
+| S-2 | pairing code persisted the phone before pairing succeeded | **FIXED** |
+| S-3 | `deleteSession` emits nothing although the bridge and emit-guard special-case `session_deleted` | **WITHDRAWN (verified false positive)** — the backend owns deletion (`sessions.delete_session` → `gw.delete_session` → `purge_whatsapp_data`) and has **no** `session_deleted` handler. Emitting it would only produce the backend's `"Bilinmeyen gateway olayi yayinlanmadi"` error log. The *guards* are vestigial; the missing emit is correct. |
+| S-4 | `skip_locked` conflated "absent" with "locked" → duplicate session | **FIXED** |
+| S-5 | reconnect burst spawned a sync-job storm | **FIXED** |
+| H-2 | sweep wrote `FULLY_EXHAUSTED` from one call + clobbered `EXHAUSTION_CANDIDATE` | **FIXED** |
+| H-3 | `TIMEOUT` + messages: evidence contradicted the client response | **FIXED** |
+| H-4 | `SOCKET_UNAVAILABLE` unreachable; conflated with `NOT_REQUESTED` | **FIXED** |
+| H-5 | no on-demand provider request budget | **FIXED** (conversation-scoped) |
+| H-6 | snapshot payload let the gateway timestamp override the persisted one | **FIXED** |
+| G-2 | `index.js` logger | **FIXED** |
+| G-3 | LID session scoping | **OPEN — PRODUCT DECISION** |
+| G-4 | `contacts.update` missing the degenerate-JID guard | **FIXED** (== C-2) |
+| G-5 | live inbound path lacked `wa_message_id` dedup | **FIXED** |
+| G-6 | `*_synced` counters conflated with unique entity counts | **FIXED** |
+| G-7 | `@c.us` and `@s.whatsapp.net` produced different keys for one PN | **FIXED** (== C-3) |
+| G-8 | 10-digit `5…` auto-assumed Turkish | **FIXED** — gateway guard **and** the frontend modal that was defeating it (it pre-normalized away the `+`/`00` marker before the request left the browser) |
+| G-9 | `mediaIndex` / `avatarFetchAttemptedAt` unbounded growth | **FIXED** |
+| G-10 | some progress events bypassed the durable outbox; duplicate `lid_mapped` events | **FIXED** |
+| F-6, F-9, F-11, F-12, F-13 | frontend defects | **FIXED** |
+| F-7 | one user action produced two toasts | **FIXED** — verified: the three send handlers carry an explicit "no toast here — the UI caller owns the single user-facing toast", and the caller fires once |
+| F-10 | `isPrependingRef` could stick | **FIXED** — verified: cleared on a synchronous throw, on a real prepend, and on the `!loadingOlder` (no-more/error/zero-result) path; a `pendingPrependRef` snapshot stops an unrelated change being read as a prepend |
+| — | `status or "SENT"` fallback | **HARDENED** — traced: unreachable, because `Message.status` is `NOT NULL` and `serialize_message` always emits a real value, so it never fabricated a success. The audit's "latent false-success fallback" characterisation was therefore **not** a live bug. Removed anyway (endpoint + the response model's `status: str = "SENT"` default, now required + the gateway's `_recordOutbound` default now `PENDING`) and pinned by 4 tests, because a `"SENT"` default is exactly what AGENTS.md §1.1 forbids if the column ever becomes nullable. |
+| — | missing `wa_message_id` unique constraint | **ANALYSED** — nullable, non-unique, conversation-scoped dedup is application-level and pinned by test; no migration added (deliberate). Same finding as C-4. |
+
+> **Withdrawn (verified false positives):**
+> 1. The "non-monotonic `last_message_at` in `_repair_last_message_previews`" finding — the backward
+>    move is intentional and test-pinned, see §5. Re-confirmed in Phase 2 (H-6 changed only the
+>    emitted payload).
+> 2. **S-3** — the missing `session_deleted` emit is correct; the backend owns deletion and has no
+>    handler for it. The guards are vestigial, not a symptom of a dropped event.
+> 3. The `status or "SENT"` "false-success fallback" — unreachable (`Message.status` is `NOT NULL`).
+>    Hardened anyway as a latent hazard, but it was never a live bug.
+>
+> **Also corrected:** an earlier draft of this matrix marked `C-2, C-3, C-4` and `S-3` as `FIXED`
+> in one bulk row without tracing them. On tracing: `C-2` = `G-4` (fixed), `C-3` = `G-7` (fixed),
+> `C-4` = the `wa_message_id` concurrency window (**partially fixed**, migration out of scope), and
+> `S-3` a false positive. Do not bulk-label IDs.
+
 
 ---
 

@@ -126,7 +126,10 @@ function createSessionStore() {
     jidToLid: new Map(), // phone jid -> lid jid
     // Faz 5: profil/grup resmi fetch durum takibi (retry storm önleme)
     avatarFetchInFlight: new Set(),
-    avatarFetchAttemptedAt: new Map(), // jid -> ms timestamp
+    // G-9: jid -> son deneme ms. Yalnızca 10 dk'lık retry penceresi için
+    // gereklidir; uzun ömürlü bir oturumda sınırsız büyümemesi için TTL +
+    // üst sınır taşıyan bounded cache kullanılır (aynı get/set sözleşmesi).
+    avatarFetchAttemptedAt: createBoundedCache({ maxEntries: 10_000, ttlMs: 60 * 60 * 1000 }),
     rawMessagesByChat: new Map(), // jid -> Map<waMessageId, proto.IMessage>
     rawMessageCount: 0,
   };
@@ -278,7 +281,10 @@ function asLid(v) {
 
 function asPn(v) {
   if (!v || typeof v !== 'string') return null;
-  return v.includes('@') ? v : `${v}@s.whatsapp.net`;
+  if (!v.includes('@')) return `${v}@s.whatsapp.net`;
+  // G-7: `@c.us` eski/kisa yazimdir — kanonik `@s.whatsapp.net`'e cevrilir,
+  // boylece LID haritasina da tek bicim yazilir (split identity olmaz).
+  return v.endsWith('@c.us') ? `${v.slice(0, -'@c.us'.length)}@s.whatsapp.net` : v;
 }
 
 // Baileys v7 uses `phoneNumber` for the phone-side identity of a contact
@@ -335,19 +341,34 @@ function jidToPhone(jid) {
 // üretilmez, pipeline'ın her katmanında bu tek kriterle atlanır.
 function isDegenerateJid(jid) {
   if (!jid) return false;
-  const m = String(jid).match(/^(\d+)@/);
-  if (!m) return false;
-  const digits = m[1];
-  return digits.length < 5 || /^0+$/.test(digits);
+  const clean = String(jid).replace(/^jid:/, '').trim();
+  const at = clean.indexOf('@');
+  if (at < 0) return false;
+  // Cihaz indeksi (`:12`) yerel parçanın parçası değildir.
+  const local = clean.slice(0, at).replace(/:\d+$/, '');
+  // Kullanıcısız (`@g.us`, `@lid`) ya da sayısal olmayan (`status@broadcast`)
+  // yerel parça gerçek bir kimlik DEĞİLDİR. Geçerli LID/grup/telefon JID'leri
+  // her zaman en az 5 haneli sayısal bir yerel parça taşır.
+  if (!/^\d+$/.test(local)) return true;
+  return local.length < 5 || /^0+$/.test(local);
 }
 
 function normalizePairingPhone(phone) {
-  let digits = String(phone || '').replace(/\D/g, '');
+  const raw = String(phone || '').trim();
+  // G-8: `+` ya da `00` ULUSLARARASI işarettir — numara zaten ülke koduyla
+  // girilmiştir. Bu durumda TR varsayımı UYGULANMAZ; yabancı bir numara
+  // sessizce `+90...`'a çevrilmez (AGENTS.md §1.1/§1.3). Örn. `005512345678`
+  // (Brezilya) eskiden `905512345678` oluyordu.
+  const isInternational = raw.startsWith('+') || raw.startsWith('00');
+  let digits = raw.replace(/\D/g, '');
   if (digits.startsWith('00')) digits = digits.slice(2);
-  // TR formatı "05XX..." (11 hane) -> "905XX..."
-  if (/^0\d{10}$/.test(digits)) digits = `90${digits.slice(1)}`;
-  // TR formatı "5XX..." (10 hane, başında 0 veya 90 olmayan TR cep nosu) -> "905XX..."
-  if (/^5\d{9}$/.test(digits)) digits = `90${digits}`;
+  if (!isInternational) {
+    // TR ulusal formatları (yalnızca uluslararası işaret YOKken):
+    // "05XX..." (11 hane) -> "905XX..."
+    if (/^0\d{10}$/.test(digits)) digits = `90${digits.slice(1)}`;
+    // "5XX..." (10 hane, başında 0/90 olmayan TR cep nosu) -> "905XX..."
+    if (/^5\d{9}$/.test(digits)) digits = `90${digits}`;
+  }
   if (digits.length < 10 || digits.length > 15) {
     throw new Error('Geçersiz telefon numarası. Ülke kodu ile birlikte girin (örn. +90 5XX XXX XX XX).');
   }
@@ -361,7 +382,11 @@ function normalizePairingPhone(phone) {
 // kapatma YOK — tamamlanma yalnızca veri sinyaline bağlıdır. Progress
 // monotonik artar; ilk tamamlanmada completed_at set edilir.
 function resolveSyncState(prevSync, { progress, isLatest }) {
-  const prev = prevSync || { phase: 'syncing', progress: 0, chats_synced: 0, contacts_synced: 0, messages_synced: 0 };
+  const prev = prevSync || {
+    phase: 'syncing', progress: 0,
+    chats_synced: 0, contacts_synced: 0, messages_synced: 0,
+    chats_unique: 0, contacts_unique: 0, messages_cached: 0,
+  };
   const realProgress = typeof progress === 'number' && Number.isFinite(progress) ? Math.min(100, Math.round(progress)) : null;
   const done = !!isLatest || realProgress === 100;
   const alreadyDone = prev.phase === 'ready';
@@ -534,6 +559,10 @@ function resolveJidKey(store, jid) {
   let clean = String(jid).replace(/^jid:/, '').trim();
   if (clean.includes('@g.us')) return clean; // group
   clean = clean.replace(/(:\d+)?(@.*)$/, '$2');
+  // G-7: `905321234567@c.us` ve `905321234567@s.whatsapp.net` AYNI kişinin iki
+  // yazımıdır. Tek kanonik anahtar `@s.whatsapp.net`'tir (asPn ile aynı şema);
+  // aksi halde aynı kişi iki ayrı store anahtarı işgal eder (split identity).
+  if (clean.endsWith('@c.us')) clean = `${clean.slice(0, -'@c.us'.length)}@s.whatsapp.net`;
   // LID kimliği eşleşmesi biliniyorsa telefon JID'ine çöz — sohbetler,
   // kişiler ve mesajlar her zaman telefon anahtarıyla tutulur (WhatsApp
   // Web paritesi: rehber adı telefon-anahtarlı sohbete işlenir).
@@ -604,7 +633,7 @@ function sanitizeOutboundEvent(event) {
 // Faz 8: birim testleri icin sanitizasyon yardimcilari disa aktarilir
 // (createSessionManager factory'si ayrica export edilir; index.js ikisini de
 // kullanabilir).
-export { createBaileysLogger, extractBaileysErrorDetails, isRawIdentityName, sanitizeChatForEmit, sanitizeOutboundEvent, mergeContactName, NAME_RANK, jidToPhone, isDegenerateJid, resolveSyncState, normalizePreviewText, buildChatPreview, isPhoneLikeName, summarizeWaMessage, classifyMessageType, hasRecognizedContent, resolveDownloadableMedia, contactPhoneJid, normalizePairingPhone };
+export { logger, createBaileysLogger, extractBaileysErrorDetails, isRawIdentityName, sanitizeChatForEmit, sanitizeOutboundEvent, mergeContactName, NAME_RANK, jidToPhone, isDegenerateJid, resolveSyncState, normalizePreviewText, buildChatPreview, isPhoneLikeName, summarizeWaMessage, classifyMessageType, hasRecognizedContent, resolveDownloadableMedia, contactPhoneJid, normalizePairingPhone, resolveJidKey };
 
 function mergeContactName(existing, name, source) {
   const base = existing || {};
@@ -644,6 +673,22 @@ export function createSessionManager({
 }) {
   const sessions = new Map(); // manager-local: no cross-instance/session leakage
   const mediaIndex = new Map(); // every entry is scoped by its owning session
+  // G-9: medya indeksi oturum silinene kadar sınırsız büyüyebiliyordu (her
+  // gelen medya bir kayıt + disk dosyası demek). FIFO üst sınır uygulanır;
+  // taşan en eski kaydın dosyası da silinir. Mesaj cache sınırları DEĞİŞMEZ.
+  const MEDIA_INDEX_MAX = 2000;
+  function evictOverflowMedia() {
+    while (mediaIndex.size > MEDIA_INDEX_MAX) {
+      const oldestId = mediaIndex.keys().next().value;
+      const entry = mediaIndex.get(oldestId);
+      mediaIndex.delete(oldestId);
+      try {
+        if (entry?.filePath && fs.existsSync(entry.filePath)) fs.rmSync(entry.filePath, { force: true });
+      } catch (err) {
+        logger.warn({ err, mediaId: oldestId }, 'Media eviction cleanup failed');
+      }
+    }
+  }
 
   async function syncLidMappingsFromDisk(sessionId, store) {
     let count = 0;
@@ -963,7 +1008,25 @@ export function createSessionManager({
         _pairingPhone: null,
         _pairingRequestedAt: 0,
         _pairingSocket: null,
-        sync: { phase: 'idle', progress: 0, chats_synced: 0, contacts_synced: 0, messages_synced: 0, started_at: null, completed_at: null },
+        // G-6 — SAYAÇ SEMANTİĞİ (frontend yanlış sayı göstermesin diye AÇIK):
+        //   * `chats_synced` / `messages_synced`: KÜMÜLATİF per-event sayaçlar.
+        //     Aynı sohbet/mesaj yeniden işlense veya per-chat cache (2000)
+        //     taşsa bile ARTMAYA DEVAM EDER → benzersiz varlık sayısı DEĞİLDİR.
+        //   * `contacts_synced`: bellekteki benzersiz kişi sayısı (contacts.size).
+        //   * `chats_unique` / `contacts_unique`: bellekteki GERÇEK benzersiz
+        //     sohbet/kişi sayısı (store boyutu) — ilerleme ekranı BUNLARI
+        //     kullanmalıdır.
+        //   * `messages_cached`: bellekte tutulan benzersiz mesaj kaydı sayısı
+        //     (dedup edilmiş, per-chat 2000 ile sınırlı).
+        // Kümülatif sayaçlar DESTRUCTIVE olarak değiştirilmez (geriye dönük
+        // tüketiciler bozulmaz); benzersiz karşılıkları yeni alanlar olarak
+        // eklenir.
+        sync: {
+          phase: 'idle', progress: 0,
+          chats_synced: 0, contacts_synced: 0, messages_synced: 0,
+          chats_unique: 0, contacts_unique: 0, messages_cached: 0,
+          started_at: null, completed_at: null,
+        },
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
         sock: null,
@@ -1313,22 +1376,37 @@ export function createSessionManager({
       }
       list.sort((a, b) => (a.id || 0) - (b.id || 0));
 
+      // H-4: `NOT_REQUESTED` YALNIZCA saglayici hic cagrilmadiginda doner
+      // (fetchProvider=false ya da cache yeterli ve anchor yok). Cagri
+      // GEREKLI oldugu halde soket kullanilamazsa bu bir saglayici hatasidir —
+      // `SOCKET_UNAVAILABLE`. Cagri gerekli ama anchor yoksa `NO_ANCHOR`.
+      // Eskiden soket yoklugu `NOT_REQUESTED` (cache hit) gibi raporlanip
+      // backend'in "kanit degistirme" kararini yaniltiyordu.
       let providerStatus = 'NOT_REQUESTED';
-      if (fetchProvider && session.sock && (list.length < limit || oldestMsgId)) {
-        const histResult = await this.requestOlderHistory(sessionId, jid, {
-          count: limit,
-          oldestMsgId: oldestMsgId || list[0]?.wa_message_id,
-          oldestMsgFromMe: oldestMsgFromMe !== undefined ? oldestMsgFromMe : (list[0]?.direction === 'OUTBOUND' || list[0]?.from_me),
-          oldestMsgTimestampMs: oldestMsgTimestampMs || (list[0]?.timestamp_s ? list[0].timestamp_s * 1000 : undefined),
-          before,
-          timeoutMs,
-        });
-        providerStatus = histResult?.status || 'OK';
-        list = store.messagesByChat.get(key) || [];
-        if (before) {
-          list = list.filter((m) => m.id < before);
+      const providerFetchNeeded = fetchProvider && (list.length < limit || Boolean(oldestMsgId));
+      if (providerFetchNeeded) {
+        const sockUsable = Boolean(session.sock) && typeof session.sock.fetchMessageHistory === 'function';
+        if (!sockUsable) {
+          // Saglayici cagrisi ISTENDI ama soket yok/kullanilamaz — cache hit
+          // DEGIL. requestOlderHistory'i zorlamiyoruz (defence in depth: o da
+          // ayni durumda SOCKET_UNAVAILABLE doner).
+          providerStatus = 'SOCKET_UNAVAILABLE';
+        } else {
+          const histResult = await this.requestOlderHistory(sessionId, jid, {
+            count: limit,
+            oldestMsgId: oldestMsgId || list[0]?.wa_message_id,
+            oldestMsgFromMe: oldestMsgFromMe !== undefined ? oldestMsgFromMe : (list[0]?.direction === 'OUTBOUND' || list[0]?.from_me),
+            oldestMsgTimestampMs: oldestMsgTimestampMs || (list[0]?.timestamp_s ? list[0].timestamp_s * 1000 : undefined),
+            before,
+            timeoutMs,
+          });
+          providerStatus = histResult?.status || 'OK';
+          list = store.messagesByChat.get(key) || [];
+          if (before) {
+            list = list.filter((m) => m.id < before);
+          }
+          list.sort((a, b) => (a.id || 0) - (b.id || 0));
         }
-        list.sort((a, b) => (a.id || 0) - (b.id || 0));
       }
 
       const result = list.slice(-limit);
@@ -1573,6 +1651,7 @@ export function createSessionManager({
           filename,
           sizeBytes: buffer.length,
         });
+        evictOverflowMedia(); // G-9: sınırsız büyümeyi engelle
         return { media_id: mediaId, mime_type: mimeType, filename, size_bytes: buffer.length };
       } catch (err) {
         logger.warn({ err }, 'Failed to store incoming media');
@@ -1658,10 +1737,15 @@ export function createSessionManager({
       }
       const key = normalizeJid(jid);
       if (isBroadcastOnlyJid(key)) return null;
-      // Gateway API'siyle (sendTextMessage/sendMediaMessage) gonderilen
-      // mesaj _recordOutbound ile zaten messagesByChat'e eklendi; Baileys
-      // ayni mesaji fromMe upsert ile tekrar yayinladiginda atla.
-      if (fromMe && msg.key?.id) {
+      // G-5: ayni `wa_message_id` iki kez islenmez — TEK store kaydi, TEK
+      // backend event'i. History yolu zaten wa_message_id ile dedup ediyordu;
+      // canli inbound yolu (provider replay / reconnect yarisi) etmiyordu ve
+      // mukerrer kayit + event uretiyordu. Dedup per-chat mesaj listesi
+      // uzerinden yapilir; liste zaten sohbet basina 2000 kayitla sinirli
+      // oldugu icin ek sinirsiz Set/Map YOK (bellek sinirlari degismez).
+      // Hem gateway API'siyle gonderilen fromMe echo'su hem de inbound replay
+      // ayni kriterle elenir.
+      if (msg.key?.id) {
         const dup = (messagesByChat.get(key) || []).some(
           (m) => m.wa_message_id && m.wa_message_id === msg.key.id
         );
@@ -1736,6 +1820,58 @@ export function createSessionManager({
       return record;
     },
 
+    // G-4: `contacts.update` ingestion'i soket isleyicisinden ayrildi
+    // (`_ingestUpsertMessage` ile ayni desen) — boylece dejenere JID guard'i
+    // gercek kayit yolunda test edilebilir. Diger TUM ingestion yollari
+    // (contacts.upsert / chats.update / history sync) `isDegenerateJid` +
+    // `isBroadcastOnlyJid` uyguluyordu; bu yol uygulamiyordu ve
+    // `0@s.whatsapp.net` gibi hayalet contact uretebiliyordu. Gecerli LID
+    // (telefona eslenen) bu kontrolden gecer; LID cozumlemesi bozulmaz.
+    _ingestContactUpdates(sessionOrId, updates) {
+      const session = this._sess(sessionOrId);
+      const store = this._storeOf(session);
+      const { contacts } = store;
+      const normalizeJid = (jid) => resolveJidKey(store, jid);
+      const applyLidMapping = (lid, phoneJid) => this._applyLidMapping(session, lid, phoneJid);
+      const emitEvent = (event) => this._emit({ gateway_session_id: session.id, ...event });
+      for (const update of updates || []) {
+        if (!update || !update.id) continue;
+        // Durum (`status@broadcast`) / kanal (`@newsletter`) kisileri
+        // rehbere/sohbet listesine karismaz.
+        if (isBroadcastOnlyJid(update.id)) continue;
+        // Dejenere/kullanicisiz JID'lerden (`0@s.whatsapp.net`, bos `@g.us`/
+        // `@lid`) contact URETILMEZ.
+        if (isDegenerateJid(update.id)) continue;
+        const phoneJid = contactPhoneJid(update);
+        if (phoneJid && isLidJid(update.id)) applyLidMapping(update.id, phoneJid);
+        if (update.lid && !isLidJid(update.id)) applyLidMapping(update.lid, update.id);
+        // LID doneminde remoteJid/participant @lid olabilir — eslesme
+        // biliniyorsa telefona coz, degilse lid anahtarinda beklet
+        // (_applyLidMapping ogrendiginde telefona tasir).
+        const jid = normalizeJid(update.id);
+        if (!jid) continue;
+        if (isBroadcastOnlyJid(jid)) continue;
+        // Eslesmesi henuz bilinmeyen LID anahtarini backend'e yayma —
+        // kayit LID altinda bekler, _applyLidMapping ogrendiginde telefona
+        // tasir (backend'de jid:@lid hayalet satir olusmaz).
+        const lidHold = isLidJid(jid);
+        let merged = contacts.get(jid) || {};
+        if (update.name) merged = mergeContactName(merged, update.name, 'addressbook');
+        if (update.verifiedName) merged = mergeContactName(merged, update.verifiedName, 'verified');
+        if (update.notify) merged = mergeContactName(merged, update.notify, 'push');
+        contacts.set(jid, {
+          ...merged,
+          id: jid,
+          jid,
+          name: merged.name || jidToPhone(jid) || jid,
+          phone: jidToPhone(jid) || merged.phone || '',
+          avatar_url: update.imgUrl || merged.avatar_url || null,
+          updated_at: new Date().toISOString(),
+        });
+        if (!lidHold) emitEvent({ event: 'contact_synced', contact: contacts.get(jid) });
+      }
+    },
+
     _recordOutbound(jid, data, sessionId) {
       // Faz 13: gonderim belirli bir oturumun soketinden yapildi — olay
       // `gateway_session_id` tasir, backend sahibi tahmin etmez. Oturum
@@ -1765,7 +1901,12 @@ export function createSessionManager({
         conversation_id: key,
         direction: 'OUTBOUND',
         message_type: data.message_type || 'TEXT',
-        status: data.status || 'SENT',
+        // §1.1 (truthfulness): default to PENDING, never SENT. Every current
+        // caller passes an explicit status, but a default of 'SENT' would report
+        // an unconfirmed outbound message as delivered. Only
+        // `_confirmOutboundSent` (which runs after Baileys accepts the send) may
+        // set SENT.
+        status: data.status || 'PENDING',
         body: data.body || '',
         media_url: data.media_url,
         media_filename: data.media_filename,
@@ -2908,38 +3049,7 @@ export function createSessionManager({
       // profil adi) — rehber adini asla ezmemeli; mergeContactName onceligi korur.
       sock.ev.on('contacts.update', (updates) => {
         if (ignoreStaleSocketEvent('contacts.update')) return;
-        for (const update of updates) {
-          // Sorun (prod): Durum (`status@broadcast`) / kanal (`@newsletter`)
-          // kisileri rehbere/sohbet listesine karismaz.
-          if (update.id && isBroadcastOnlyJid(update.id)) continue;
-          const phoneJid = contactPhoneJid(update);
-          if (phoneJid && isLidJid(update.id)) applyLidMapping(update.id, phoneJid);
-          if (update.lid && !isLidJid(update.id)) applyLidMapping(update.lid, update.id);
-          // LID döneminde remoteJid/participant @lid olabilir — eşleşme
-          // biliniyorsa telefona çöz, değilse lid anahtarında beklet
-          // (_applyLidMapping öğrendiğinde telefona taşır).
-          const jid = normalizeJid(update.id);
-          if (!jid) continue;
-          if (isBroadcastOnlyJid(jid)) continue;
-          // Eşleşmesi henüz bilinmeyen LID anahtarını backend'e yayma —
-          // kayıt LID altında bekler, _applyLidMapping öğrendiğinde telefona
-          // taşır (backend'de jid:@lid hayalet satır oluşmaz).
-          const lidHold = isLidJid(jid);
-          let merged = contacts.get(jid) || {};
-          if (update.name) merged = mergeContactName(merged, update.name, 'addressbook');
-          if (update.verifiedName) merged = mergeContactName(merged, update.verifiedName, 'verified');
-          if (update.notify) merged = mergeContactName(merged, update.notify, 'push');
-          contacts.set(jid, {
-            ...merged,
-            id: jid,
-            jid,
-            name: merged.name || jidToPhone(jid) || jid,
-            phone: jidToPhone(jid) || merged.phone || '',
-            avatar_url: update.imgUrl || merged.avatar_url || null,
-            updated_at: new Date().toISOString(),
-          });
-          if (!lidHold) emitEvent({ event: 'contact_synced', contact: contacts.get(jid) });
-        }
+        this._ingestContactUpdates(session, updates);
       });
 
       // --- Address book (W:Contact app-state) — WhatsApp Web paritesinin asıl
@@ -3247,12 +3357,20 @@ export function createSessionManager({
             if (!merged.avatar_url && storedChats <= 5) void ensureChatAvatar(key);
             emitEvent({ event: 'conversation_updated', conversation: merged });
           }
+          // G-6: kümülatif sayaçların yanında GERÇEK benzersiz varlık sayıları.
+          const cachedMessages = [...messagesByChat.values()].reduce((n, l) => n + l.length, 0);
           emitEvent({
             event: 'history_sync_completed',
             progress: progress ?? null,
             is_latest: !!isLatest,
+            // Bu chunk'ta işlenen per-event sayılar — kümülatif
+            // `session.sync.*` ile AYNI DEĞİLDİR. Benzersiz varlık sayısı için
+            // `*_unique` alanlarını kullanın.
             chats_synced: storedChats,
             messages_synced: storedMessages,
+            chats_unique: chats.size,
+            contacts_unique: contacts.size,
+            messages_cached: cachedMessages,
           });
           if (isLatest || progress === 100) {
             sessionManager._scheduleBackgroundAvatarFetch(session);
@@ -3265,9 +3383,16 @@ export function createSessionManager({
           // yalnızca veri sinyaline bağlı.
           if (session.sync) {
             const { next, justCompleted } = resolveSyncState(session.sync, { progress, isLatest });
+            // KÜMÜLATİF per-event sayaçlar (benzersiz varlık DEĞİL — cache
+            // taşması/yeniden işleme sonrası artmaya devam eder).
             next.chats_synced = (session.sync.chats_synced || 0) + storedChats;
             next.messages_synced = (session.sync.messages_synced || 0) + storedMessages;
             next.contacts_synced = contacts.size;
+            // G-6: ilerleme ekranının göstermesi gereken GERÇEK benzersiz
+            // varlık sayıları (bellek deposunun o anki boyutu).
+            next.chats_unique = chats.size;
+            next.contacts_unique = contacts.size;
+            next.messages_cached = cachedMessages;
             session.sync = next;
             emitEvent({ event: 'session_sync_progress', session_id: id, session_name: session.session_name, sync: session.sync });
             if (justCompleted) {

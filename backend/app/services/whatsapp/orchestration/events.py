@@ -654,6 +654,78 @@ class WhatsAppEventOrchestrator:
                 return await _do_reconciliation()
         return await _do_reconciliation()
 
+    async def _heal_lid_contact_identity(
+        self,
+        db: AsyncSession,
+        user_id: str,
+        lid_jid: str,
+        phone_jid: str,
+    ) -> int:
+        """Write-path repair: re-keys a LID-keyed contact onto its canonical PN.
+
+        Phase 2 (C-5). This repair used to live inside `list_conversations`, i.e.
+        inside a GET. A read endpoint must normalize in memory and must NOT mutate
+        persistence: besides being a read/write conflation, committing from a read
+        path can silently flush and discard unrelated pending work on the same
+        session. The repair belongs where the mapping is LEARNED — the `lid_mapped`
+        event — which is this method's only caller.
+
+        Legacy rows whose mapping was learned before this path existed are a
+        data-remediation concern, deliberately out of scope here.
+
+        Returns the number of contacts re-keyed.
+        """
+        canonical_phone = _contact_phone_for_jid(phone_jid)
+        if not canonical_phone:
+            return 0
+        lid_phone = lid_jid if str(lid_jid).startswith("jid:") else f"jid:{lid_jid}"
+        if lid_phone == canonical_phone:
+            return 0
+
+        # If the canonical contact already exists, the two rows must be MERGED,
+        # not re-keyed — `reconcile_legacy_split_conversation` owns that case.
+        # Re-keying here would collide on the (user_id, phone_e164) uniqueness.
+        existing = await db.execute(
+            select(Contact.id).where(
+                Contact.phone_e164 == canonical_phone,
+                get_user_filter(Contact.user_id, user_id),
+            )
+        )
+        if existing.first() is not None:
+            return 0
+
+        res = await db.execute(
+            select(Contact).where(
+                Contact.phone_e164 == lid_phone,
+                get_user_filter(Contact.user_id, user_id),
+            )
+        )
+        healed = 0
+        for contact in res.scalars().all():
+            contact.phone_e164 = canonical_phone
+            healed += 1
+            conv_res = await db.execute(
+                select(Conversation.id).where(
+                    Conversation.contact_id == contact.id,
+                    get_user_filter(Conversation.user_id, user_id),
+                )
+            )
+            for conv_id in conv_res.scalars().all():
+                await db.execute(
+                    text(
+                        "UPDATE messages SET sender_phone = :pn "
+                        "WHERE conversation_id = :cid AND sender_phone LIKE '%@lid'"
+                    ),
+                    {"pn": canonical_phone, "cid": conv_id},
+                )
+        if healed:
+            await db.flush()
+            logger.info(
+                "[lid_heal] %d LID contact(s) re-keyed to %s (owner=%s)",
+                healed, canonical_phone, user_id,
+            )
+        return healed
+
     async def _ingest_lid_mapped(self, db: AsyncSession, event: Dict[str, Any]) -> Dict[str, Any]:
         resolve_event_owner = self._get_helper("_resolve_event_owner", _resolve_event_owner)
         lid = event.get("lid")
@@ -664,6 +736,11 @@ class WhatsAppEventOrchestrator:
         clean_phone = _strip_jid_prefix(str(phone_jid))
         owner = await resolve_event_owner(db, clean_phone, event.get("gateway_session_id"))
         event["user_id"] = owner
+        # C-5: heal LID-keyed contacts on the WRITE path (here), never on a GET.
+        try:
+            await self._heal_lid_contact_identity(db, owner, clean_lid, clean_phone)
+        except Exception as heal_exc:  # noqa: BLE001 - healing must not drop the event
+            logger.warning("lid_mapped: LID contact heal skipped (%s): %s", clean_lid, heal_exc)
         reconciled = await self.reconcile_legacy_split_conversation(db, owner, clean_lid, clean_phone)
         if reconciled:
             event["reconciled_conversation_id"] = reconciled.id
@@ -977,6 +1054,46 @@ class WhatsAppEventOrchestrator:
             await db.commit()
             if owner != SYSTEM_USER_ID and schedule_chats_bootstrap is not None:
                 schedule_chats_bootstrap(owner)
+            # Phase 2 (single authority): emit the SAME canonical conversation shape
+            # that REST `list_conversations` emits. Previously the raw gateway object
+            # was forwarded verbatim, which used different field names (e.g.
+            # `lead_phone`) than the REST payload — so REST and WebSocket disagreed
+            # about a conversation's identity, and the frontend merge
+            # `{...existing, ...mapped}` could blank out known state.
+            canonical_contact = (
+                await db.get(Contact, conv.contact_id) if conv.contact_id else None
+            )
+            canonical_phone = canonical_contact.phone_e164 if canonical_contact else None
+            canonical_is_group = bool(conv.is_group) or bool(
+                canonical_phone and "@g.us" in str(canonical_phone)
+            )
+            canonical_name, canonical_id_state = _resolve_contact_identity(
+                canonical_contact, phone=canonical_phone, is_group=canonical_is_group
+            )
+            canonical_preview = _normalize_preview_text(None, conv.last_message_preview) or None
+            event["conversation"] = {
+                "id": conv.id,
+                "session_id": conv.session_id,
+                "contact_id": conv.contact_id,
+                "lead_id": conv.lead_id,
+                "name": canonical_name,
+                "phone": canonical_phone,
+                "identity_state": canonical_id_state,
+                "is_group": canonical_is_group,
+                "is_archived": bool(conv.is_archived),
+                "avatar_url": _get_contact_avatar(canonical_contact),
+                "last_message_preview": canonical_preview,
+                "last_message_at": conv.last_message_at.isoformat()
+                if conv.last_message_at
+                else None,
+                "created_at": conv.created_at.isoformat() if conv.created_at else None,
+                "updated_at": conv.updated_at.isoformat() if conv.updated_at else None,
+                "unread_count": conv.unread_count,
+                "last_message_state": "RESOLVED" if canonical_preview else "REPAIRING",
+                "status": conv.status.value
+                if hasattr(conv.status, "value")
+                else str(conv.status),
+            }
             return event
         if event.get("event") == "conversation_read":
             if (conv.unread_count or 0) > 0:
@@ -1247,8 +1364,13 @@ class WhatsAppEventOrchestrator:
                 if evt in ("session_sync_completed", "session_connected"):
                     owner = result.get("user_id")
                     if owner and owner != SYSTEM_USER_ID and schedule_initial_sync is not None:
+                        # S-5: attribute the reconcile to the session that asked for
+                        # it, so a reconnect storm coalesces per session instead of
+                        # fanning out into parallel sync jobs.
                         schedule_initial_sync(
-                            str(owner), reconcile=evt == "session_sync_completed"
+                            str(owner),
+                            reconcile=evt == "session_sync_completed",
+                            session_key=event.get("gateway_session_id"),
                         )
                 return result
             except EventOwnerUnresolved as exc:

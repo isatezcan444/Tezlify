@@ -233,6 +233,11 @@ async def test_lid_01_unresolved_lid_creates_conversation():
     service = MagicMock()
     mock_conv = MagicMock()
     mock_conv.id = 9741
+    # The canonical payload now reports the PERSISTED preview (REST parity), so the
+    # mock must carry a realistic value for the column the production code reads —
+    # same as `mock_reconciled_conv` in test_lid_02 below.
+    mock_conv.last_message_preview = None
+    mock_conv.last_message_at = None
     service._ensure_conversation_race_safe = AsyncMock(return_value=mock_conv)
     service._resolve_event_owner_and_session = AsyncMock(return_value=("test-user", 1))
 
