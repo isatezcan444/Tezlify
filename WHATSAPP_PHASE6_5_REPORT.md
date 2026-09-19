@@ -1,6 +1,6 @@
 # PHASE 6.5 — QR PAIRING REGRESSION RECOVERY
 
-**Branch:** `main` @ `c512755` (uncommitted Phase 6.5 work in the tree — see §19)
+**Branch:** `main` @ `5f8d25d` (Phase 6.5 work committed and pushed — see §19)
 **Baseline of last known-good pre-6.4:** `ce68359`
 **Phase 6.4 commits under suspicion:** `bf6b0ce` (A) → `bd55f2f` (B) → `0c497b1` (C) → `e031a3a` (D) → `671d911` (E) → `c512755` (F)
 
@@ -380,7 +380,16 @@ assumes it holds no other sessions). It is unrelated to Phase 6.4/6.5 and was le
 
 ## §19 — Commit status
 
-**Nothing committed. Nothing pushed.** The tree contains Phase 6.5 work only:
+**COMMITTED AND PUSHED** — the user lifted the §19 hold and authorised commit + push, choosing a
+**single commit**.
+
+```
+5f8d25d  fix(whatsapp): ephemeral pairing lost a lease it never held (Phase 6.5)
+         main -> origin/main   (c512755..5f8d25d)
+         13 files changed, 1670 insertions(+), 197 deletions(-)
+```
+
+The commit contains exactly this Phase 6.5 work:
 
 ```
  M frontend/scripts/verify-whatsapp-pairing-browser.mjs   (scenarios D/E/F, open/clickAria, startFails/qrFails)
@@ -388,22 +397,26 @@ assumes it holds no other sessions). It is unrelated to Phase 6.4/6.5 and was le
  M whatsapp-gateway/scripts/pairing-harness.mjs           (injectable leaseRepository/pool/authRepository)
  M whatsapp-gateway/scripts/test-session-lease.mjs        (uses the shared fake pool)
  M whatsapp-gateway/src/session-manager.js                (THE FIX — armLeaseRenewal, 2 call sites)
-?? backend/tests/test_whatsapp_phase6_5_qr_live_seam.py
-?? backend/tests/fixtures/real_gateway_qr_events.json
-?? whatsapp-gateway/scripts/register-baileys-stub.mjs
-?? whatsapp-gateway/scripts/fake-lease-pool.mjs
-?? whatsapp-gateway/scripts/test-phase6-5-ephemeral-lease.mjs
-?? WHATSAPP_PHASE6_5_REPORT.md                            (this file)
+ A backend/tests/test_whatsapp_phase6_5_qr_live_seam.py
+ A backend/tests/fixtures/real_gateway_qr_events.json
+ A whatsapp-gateway/scripts/register-baileys-stub.mjs
+ A whatsapp-gateway/scripts/fake-lease-pool.mjs
+ A whatsapp-gateway/scripts/test-phase6-5-ephemeral-lease.mjs
+ A WHATSAPP_PHASE6_5_REPORT.md                            (this file)
 ```
 
 The blocking condition was: *QR = PASS, phone pairing = PASS, tenant isolation = PASS, browser*.
-All four hold (§18), and the QR breakage now has a named cause and a fail→pass proof (§20) — so the
-original reason for holding back ("we would be committing tests for a bug that was never found") no
-longer applies: a bug **was** found, and it is fixed.
+All four hold (§18), and the QR breakage has a named cause and a fail→pass proof (§20).
 
-**The decision to commit is still the user's**, and it should be taken together with the deploy
-question: the fix is worthless to the reporter until `f6ec68d` is replaced, and production
-**remains broken** until then.
+### ⚠️ Pushing is not deploying
+
+The fix is on `main`, but **production still runs `f6ec68d`** and still carries the defect. QR pairing
+stays broken for real users until a deploy happens. The commit changes nothing about that, and no
+deploy is performed or proposed by this phase.
+
+Pre-push gate (run against the committed tree, not the working tree):
+`node --check session-manager.js` OK · `test-session-lease` 7 assertions · `test-phase6-5-ephemeral-lease`
+6 checks.
 
 ---
 

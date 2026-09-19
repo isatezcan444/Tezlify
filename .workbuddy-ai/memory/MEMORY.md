@@ -186,9 +186,10 @@ Correct behaviour; also why the backend suite is DB-state sensitive (see H).
   SSH user **`ubuntu`**, key `~/.ssh/id_tezlify_oracle` (`opc` rejected).
 - **Read-only pattern:** `ssh … "docker exec -i -e PGOPTIONS='-c default_transaction_read_only=on'
   tezlify-db psql -U tezlify -d tezlify"`; assert `SHOW default_transaction_read_only;` → `on`.
-- **Deploy gap:** production `f6ec68d`; local HEAD is `c512755`. Production lacks C-4, G-3, P5-1/2/3,
-  P6-1…P6-9 **and the G-LEASE fix**. **Local test results and production health are different claims —
-  never conflate them.**
+- **Deploy gap:** production `f6ec68d`; local HEAD is `5f8d25d` (Phase 6.5 committed + pushed
+  2026-09-19). Production lacks C-4, G-3, P5-1/2/3, P6-1…P6-9 **and the G-LEASE fix**.
+  **Local test results and production health are different claims — never conflate them.** Pushing is
+  not deploying.
 - **Production symptom measured 2026-09-19 (read-only):** 5 gateway sessions — 1 `CONNECTED`, **4
   `UNAVAILABLE` with `WHATSAPP_SESSION_LEASE_LOST`**; `socket_leases` held **1** row (the CONNECTED
   session only); **4 × `socket_lease_lost`, 0 × `session_qr_updated`**; `socket_connect_started` →
@@ -214,7 +215,9 @@ Correct behaviour; also why the backend suite is DB-state sensitive (see H).
   availability passes at all six revisions `ce68359`→`c512755`, and the phone pairing code is what went
   `FAIL → PASS` (at `0c497b1`). (2) "Why was QR pairing dead in production?" — **G-LEASE**, proven by
   code + production DB + production logs, fixed locally with a fail→pass test.
-  **Production still runs the broken `f6ec68d`; the fix is uncommitted and undeployed.**
+  **Committed and pushed as `5f8d25d`** (user lifted the §19 hold on 2026-09-19). Production still runs
+  the broken `f6ec68d`, so **QR pairing remains broken for real users until a deploy** — a push is not
+  a deploy.
 - **Asymmetric-guard sweep (2026-09-19): the lease renewal was the ONLY instance of the class.**
   `session-manager.js` has one resource-guarded timer; `events.js:250/252` guard on the
   constructor-injected `eventOutbox`; the backend has no lease lifecycle at all.
