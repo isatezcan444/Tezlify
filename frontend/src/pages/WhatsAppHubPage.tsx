@@ -32,6 +32,7 @@ import { WhatsAppRepository } from '../features/whatsapp/data/whatsappRepository
 import { compareConversationsByActivityDesc, getConversationActivityTimestamp, restoreConversationActivity } from '../features/whatsapp/lib/whatsappOrdering';
 import { isRawWhatsAppJid as isRawWhatsAppIdentity } from '../features/whatsapp/lib/whatsappIdentity';
 import { PEER_TYPING_TTL_MS, pruneExpiredTyping, resolveSyncDisplayCounts } from '../features/whatsapp/lib/whatsappSync';
+import { applyConversationEvent } from '../features/whatsapp/lib/whatsappConversationPatch';
 import { WhatsAppSession, Conversation, ConversationStatus, ConversationMessageStatus, Lead, Message, LiveModeStatus, SessionSyncState } from '../types';
 import { WhatsAppApi, useLiveMode, probeLive, invalidateLiveProbe, isLiveCached, mapConversationItem, mapMessageItem, buildConversationUpdatedPayload } from '../features/whatsapp/api/whatsappApi';
 import { Button } from '../components/ui/button';
@@ -1159,30 +1160,13 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
           };
 
           setMessagesMap((prev) => {
-            const list = prev[convId] || [];
-            // Check for duplicate by wa_message_id, client_message_id, or id
-            const existingIdx = list.findIndex((m) =>
-              (waId && m.wa_message_id === waId) ||
-              (clientMid && m.client_message_id === clientMid) ||
-              (msgId && m.id === msgId)
-            );
-            if (existingIdx !== -1) {
-              const updatedList = [...list];
-              updatedList[existingIdx] = { ...updatedList[existingIdx], ...newMsg,
-                status: mergeDeliveryStatus(updatedList[existingIdx].status, newMsg.status) };
-              return { ...prev, [convId]: updatedList };
-            }
-            return {
-              ...prev,
-              [convId]: [...list, newMsg].sort((a, b) => {
-                const tA = new Date(a.created_at || a.external_timestamp || 0).getTime();
-                const tB = new Date(b.created_at || b.external_timestamp || 0).getTime();
-                if (tA !== tB) return tA - tB;
-                const nA = typeof a.id === 'number' ? a.id : 0;
-                const nB = typeof b.id === 'number' ? b.id : 0;
-                return nA - nB;
-              }),
-            };
+            // P6-6: ONE canonical merge for every path. The previous inline
+            // `findIndex` could not collapse two slots when a later event linked
+            // both identities (optimistic row + provider echo), so the sent
+            // message stayed rendered twice — once DELIVERED, once stuck SENT.
+            // `mergeWhatsAppMessages` is what refresh, reconnect, sync-chunk
+            // and pagination already use; using it here makes live WS agree.
+            return { ...prev, [convId]: mergeWhatsAppMessages(prev[convId] || [], [newMsg]) };
           });
 
           // Auto-mark conversation as read if user is actively viewing it
@@ -1267,34 +1251,10 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         const convId = typeof rawConvId === 'number' ? rawConvId : Number(rawConvId);
         const payload = eventData.conversation || {};
         if (Number.isInteger(convId) && convId > 0) {
-          // I-4: route the WS payload through the SAME mapper as REST via the
-          // shared normalizer. The normalizer copies a field ONLY when the
-          // payload carries it (`!== undefined`), so a partial event can never
-          // erase known-good state; an explicit `null` stays authoritative. A
-          // raw technical JID is never accepted as a name.
-          const mapped = mapConversationItem(buildConversationUpdatedPayload(convId, payload));
-
-          // Faz 10 (P2): gateway'den gelen gecikmeli ozet de paylasilan
-          // kuraldan gecer ('[IMAGE]' -> etiket); daha eski zaman damgali
-          // deger mevcut ozeti ezmez.
-          const gwPreview = payload.last_message_preview
-            ? normalizePreviewText(payload.message_type, String(payload.last_message_preview), t)
-            : '';
-          const gwTs = payload.last_message_at;
-
-          const patch = (c: Conversation): Conversation => {
-            const next: Conversation = { ...c, ...mapped };
-            // Cozulmemis kimlikte mevcut ad korunur (gateway null gonderir).
-            if (!mapped.lead_name) next.lead_name = c.lead_name;
-            const applyGw = Boolean(gwPreview) && shouldApplyPreview(gwTs, c.last_message_at);
-            next.last_message_preview = applyGw ? gwPreview : c.last_message_preview;
-            next.last_message_at = applyGw ? gwTs || c.last_message_at : c.last_message_at;
-            next.last_message_state =
-              (applyGw ? gwPreview : c.last_message_preview) ? 'RESOLVED' : c.last_message_state;
-            next.unread_count =
-              payload.unread_count != null ? Math.max(c.unread_count || 0, payload.unread_count) : c.unread_count;
-            return next;
-          };
+          // I-4 / Faz 5 / Faz 6: the merge lives in ONE pure helper so the list
+          // row, the selected conversation and the DOM tests all run the same
+          // code. See `applyConversationEvent` for the invariants.
+          const patch = (c: Conversation): Conversation => applyConversationEvent(c, payload, t);
           if (!knownConvIdsRef.current.has(convId)) hydrateConversation(convId);
           setConversations((prev) => {
             const next = prev.map((c) => (c.id === convId ? patch(c) : c));
@@ -2128,8 +2088,15 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                   </div>
                 </div>
 
-                {/* Chat Thread with Pagination */}
+                {/* Chat Thread with Pagination
+                    P6-4: keyed by conversation id. Without it, switching
+                    conversations reuses the same instance, so the viewport and
+                    `isNearBottom` of the previous thread carry over and the new
+                    chat opens mid-history (or with a spurious new-message
+                    pill). Reordering keeps the same id, so it does NOT
+                    remount — the active chat survives a new inbound. */}
                 <ChatThread
+                  key={selectedConv.id}
                   messages={activeMessages}
                   loading={activeChatLoading}
                   hasMore={activeHasMore}
@@ -2151,7 +2118,14 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                 />
 
                 {/* Active Chat Composer */}
+                {/* P6-5: keyed by conversation id. The composer owns the draft
+                    (`text`, `pendingFile`, captions) in internal state and
+                    receives no conversation identifier, so an unkeyed instance
+                    carries the draft into the next chat — and `onSend`
+                    delivers to the SELECTED conversation, so it would send to
+                    the wrong person. Keying clears it on switch. */}
                 <ChatComposer
+                  key={selectedConv.id}
                   onSend={async (text) => {
                     try {
                       await activeSendMessage(text);

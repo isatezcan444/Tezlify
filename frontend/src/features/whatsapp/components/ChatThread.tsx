@@ -66,6 +66,10 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
   // bogus scrollTop or leave the guard stuck.
   const pendingPrependRef = useRef<{ firstId: string | number | null; count: number } | null>(null);
   const prevMessagesCountRef = useRef<number>(messages.length);
+  // P6-7: pagination must not fire before the thread has taken its initial
+  // position. On mount `scrollTop` is still 0, so any scroll event raised while
+  // the initial scroll is running looks exactly like "the user is at the top".
+  const initialScrollDoneRef = useRef<boolean>(false);
 
   const [isNearBottom, setIsNearBottom] = useState<boolean>(true);
   const [showNewMessagePill, setShowNewMessagePill] = useState<boolean>(false);
@@ -95,7 +99,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
     }
 
     // Scroll upward -> older page request
-    if (scrollTop < 60 && hasMore && !loadingOlder) {
+    if (scrollTop < 60 && hasMore && !loadingOlder && initialScrollDoneRef.current) {
       handleLoadOlder();
     }
   };
@@ -152,10 +156,26 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
     }
   }, [sortedMessages, loadingOlder]);
 
+  // Identity of the NEWEST rendered message. Loading an older page grows the
+  // list but leaves the newest message untouched; only a genuinely new message
+  // changes it. The count alone is not enough: the prepend-restore layout
+  // effect above clears `isPrependingRef` before this passive effect runs, so
+  // a prepend would otherwise be reported to the user as "new messages".
+  const newestKey = sortedMessages.length
+    ? String(
+        sortedMessages[sortedMessages.length - 1].wa_message_id ||
+          sortedMessages[sortedMessages.length - 1].id
+      )
+    : null;
+  const prevNewestKeyRef = useRef<string | null>(newestKey);
+
   // Smart Auto-Scroll when new messages arrive at the end
   useEffect(() => {
-    const isNewMessageAdded = sortedMessages.length > prevMessagesCountRef.current;
+    const isNewMessageAdded =
+      sortedMessages.length > prevMessagesCountRef.current &&
+      newestKey !== prevNewestKeyRef.current;
     prevMessagesCountRef.current = sortedMessages.length;
+    prevNewestKeyRef.current = newestKey;
 
     if (isNewMessageAdded && !isPrependingRef.current) {
       if (isNearBottom) {
@@ -167,11 +187,19 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
     }
   }, [sortedMessages, isNearBottom]);
 
-  // Initial scroll to bottom on mount or load
+  // Initial scroll to bottom on mount or load.
+  //
+  // P6-7: `behavior: 'auto'` DEFERS TO CSS, and the container carries
+  // `scroll-smooth`, so the initial jump was actually animated from scrollTop 0
+  // up through the < 60px pagination trigger — opening ANY chat fired an
+  // older-page request, whose prepend-restore then knocked the viewport off the
+  // newest message. `'instant'` forces a real jump (and is what WhatsApp Web
+  // does: opening a chat should not animate through the whole history).
   useEffect(() => {
     if (!loading && sortedMessages.length > 0 && isNearBottom) {
-      bottomRef.current?.scrollIntoView({ behavior: 'auto' });
+      bottomRef.current?.scrollIntoView({ behavior: 'instant' });
     }
+    initialScrollDoneRef.current = true;
   }, [loading]);
 
   const scrollToBottom = () => {
