@@ -109,6 +109,16 @@ export class WhatsAppRepository {
     return WhatsAppApi.requestPairingCode(sessionId, phone);
   }
 
+  /**
+   * P6-8: the same gateway pairing-code call for a NEW (ephemeral) pairing,
+   * addressed by `pair_token` instead of a numeric session id — no numeric id
+   * exists until the pairing actually connects.
+   */
+  static async requestPairingCodeForToken(pairToken: string, phone: string): Promise<{ success: boolean; pairing_code: string; phone: string | null }> {
+    await requireLive();
+    return WhatsAppApi.requestPairingCodeForToken(pairToken, phone);
+  }
+
   static async disconnectSession(sessionId: number): Promise<any> {
     await requireLive();
     return WhatsAppApi.logoutSession(sessionId);

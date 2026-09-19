@@ -85,6 +85,7 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
 
   const hasInitializedRef = useRef<boolean>(false);
   const isInitializingRef = useRef<boolean>(false);
+  const pairingInFlightRef = useRef<boolean>(false);
   const activeSessionIdRef = useRef<number | null>(existingSessionId || null);
   const isNewlyCreatedRef = useRef<boolean>(false);
   const isCancelledRef = useRef<boolean>(false);
@@ -299,30 +300,51 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
       setPairingError(t('whatsapp.pairingInvalidPhone'));
       return;
     }
-    const targetSessionId = activeSessionIdRef.current || sessionId;
-    if (!targetSessionId) {
-      // Oturum henüz hazırlanamadı — QR akışıyla aynı init tekrar denenir.
-      await initSession();
-      if (!activeSessionIdRef.current) return;
-    }
-    const sid = activeSessionIdRef.current || sessionId;
-    if (!sid) return;
-
-    setIsPairingLoading(true);
-    setPairingError(null);
-    setPairingCode(null);
-    setPairingCopied(false);
+    // §12 SINGLE-FLIGHT: `disabled={isPairingLoading}` is not enough — React
+    // has not re-rendered yet when a second click lands, so three rapid clicks
+    // used to fire three pairing-code requests. WhatsApp invalidates the
+    // earlier code on each new request, so the user could end up entering a
+    // dead code. A synchronous ref closes that window.
+    if (pairingInFlightRef.current) return;
+    pairingInFlightRef.current = true;
     try {
-      const res = await WhatsAppRepository.requestPairingCode(sid, rawPhone);
+      // P6-8: a NEW pairing has a `pair_token` but NO numeric session id — that
+      // is the point of the ephemeral lifecycle (zero rows until connected).
+      // The old code required a session id, never found one, and returned
+      // BEFORE setting any loading/state: "Kod Al" was a silent no-op that also
+      // fired a second startPairing as a side effect. Both flows now reach the
+      // SAME gateway pairing-code implementation, addressed by whichever
+      // identity the pairing actually has.
+      const sid = activeSessionIdRef.current || sessionId;
+      const pToken = pairTokenRef.current || pairToken;
+      if (!sid && !pToken) {
+        // No pairing of any kind yet — initialise one, then let the user retry.
+        await initSession();
+        // This bail-out MUST fall through to the `finally` below. Returning
+        // from the guarded region directly would latch the single-flight ref
+        // at `true` forever, silently killing "Kod Al" for the rest of the
+        // modal's life after a single failed initialisation.
+        if (!activeSessionIdRef.current && !pairTokenRef.current) return;
+      }
+
+      setIsPairingLoading(true);
+      setPairingError(null);
+      setPairingCode(null);
+      setPairingCopied(false);
+      const useToken = !sid && (pairTokenRef.current || pairToken);
+      const res = useToken
+        ? await WhatsAppRepository.requestPairingCodeForToken(String(useToken), rawPhone)
+        : await WhatsAppRepository.requestPairingCode(Number(sid), rawPhone);
       if (!isMountedRef.current) return;
       setPairingCode(res.pairing_code);
     } catch (err: any) {
       if (!isMountedRef.current) return;
       setPairingError(err?.message || t('whatsapp.pairingCodeErrorTitle'));
     } finally {
+      pairingInFlightRef.current = false;
       if (isMountedRef.current) setIsPairingLoading(false);
     }
-  }, [pairingPhone, sessionId, initSession, t]);
+  }, [pairingPhone, sessionId, pairToken, initSession, t]);
 
   const handleCopyPairingCode = useCallback(async () => {
     if (!pairingCode) return;

@@ -463,6 +463,26 @@ export const WhatsAppApi = {
     return { success: true, pairing_code: data.pairing_code, phone: data.phone ?? null };
   },
 
+  /**
+   * P6-8: pairing code for a NEW (ephemeral) pairing. A first-time pairing has
+   * no numeric session id yet, so it is addressed by `pair_token`. Same gateway
+   * call, same lifecycle (promotion happens on connection.open).
+   */
+  async requestPairingCodeForToken(
+    pairToken: string,
+    phone: string
+  ): Promise<{ success: boolean; pairing_code: string; phone: string | null }> {
+    const data = await apiSend<{ success: boolean; pairing_code: string | null; phone?: string | null }>(
+      `/whatsapp/pairing/${encodeURIComponent(pairToken)}/pair`,
+      'POST',
+      { phone }
+    );
+    if (!data.pairing_code) {
+      throw new WhatsAppApiError('Gateway eşleştirme kodu döndürmedi.');
+    }
+    return { success: true, pairing_code: data.pairing_code, phone: data.phone ?? null };
+  },
+
   async logoutSession(sessionId: number): Promise<{ success: boolean; status: string }> {
     return apiSend<{ success: boolean; status: string }>(`/whatsapp/sessions/${sessionId}/logout`, 'POST');
   },
