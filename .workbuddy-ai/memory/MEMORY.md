@@ -10,12 +10,12 @@ that satisfies them.
   history:3, push:2, phone:1}`. `name_source=="push"` = counterparty's own WA profile name — never a
   stranger's display name (show `+90...`); store in `custom_attributes["push_name"]`, never
   `display_name`. `_set_contact_name` won't overwrite at `current_rank > 2`, and `2 > 2` is False, so
-  it can't clear push pollution either → **guard at the writer**.
+  it can't clear push pollution → **guard at the writer**.
 - **A2. REST/WS canonical payload ("I-3" class):** both transports use the same field names —
   `session_id, contact_id, lead_id, name, phone, identity_state, is_group, is_archived, avatar_url,
   last_message_preview, last_message_at, created_at, updated_at, unread_count, status`. **Never
-  `lead_phone`.** `mapConversation` copies a field only when present: merge is
-  `{...existing, ...mapped}`, so explicit `undefined` ERASES known state ("Kişi kimliği çözülüyor…").
+  `lead_phone`.** `mapConversation` copies a field only when present: merge is `{...existing,
+  ...mapped}`, so explicit `undefined` ERASES known state ("Kişi kimliği çözülüyor…").
 - **A3. `identity != ordering`.** Sort = activity only: `last_message_at` → `created_at` → `id`.
   Contact existence / identity state / name+phone presence never affect sort. Message-less
   conversations sort last.
@@ -29,12 +29,12 @@ The gateway **owns** `unread_count` and reports DECREASES (read on phone → 0),
   `apply_conversation_unread_count()` (`repositories/conversations.py`).
 - **Staleness guard must be SYMMETRIC** (`inc_ts < cur_ts` blocks both directions). Anchoring only on
   `last_read_at` is not enough — an EXTERNAL read never sets it (P6-1).
-- **P6-2: an authoritative drop to 0 IS read evidence** → stamp
-  `last_read_at = last_message_at`. An external read changes neither field, so a same-ts snapshot was
-  evidence-identical and resurrected the badge (8→0→8). Not `utcnow()`: wall-clock now is newer than
-  every provider ts and blocks all later raises. Do NOT instead require "a raise needs strictly newer
-  activity" (`inc_ts <= cur_ts`) — broke 3 tests; a snapshot legitimately reporting the full count
-  (0→5, 1→7) at an unchanged ts is normal. Discriminator is READ EVIDENCE, not value+ts.
+- **P6-2: an authoritative drop to 0 IS read evidence** → stamp `last_read_at = last_message_at`. An
+  external read changes neither field, so a same-ts snapshot was evidence-identical and resurrected
+  the badge (8→0→8). Not `utcnow()`: wall-clock now is newer than every provider ts and blocks all
+  later raises. Do NOT require "a raise needs strictly newer activity" (`inc_ts <= cur_ts`) — broke 3
+  tests; a snapshot legitimately reporting the full count (0→5, 1→7) at an unchanged ts is normal.
+  Discriminator is READ EVIDENCE, not value+ts.
 - `mark_conversation_read()` writes only inside the success path (`gateway_ok`) — fail closed. The
   `conversation_read` handler must stamp `last_read_at` or the guard has nothing to compare.
 - **Fix in BOTH layers:** `WhatsAppHubPage.tsx` routes the badge through `resolveUnreadCount()`
@@ -45,7 +45,7 @@ The gateway **owns** `unread_count` and reports DECREASES (read on phone → 0),
 
 Root cause class: **per-conversation state in an unkeyed / length-based component**.
 
-- **P6-3 (pill):** "new message" must be decided by the identity of the **newest** message, not list
+- **P6-3 (pill):** "new message" is decided by the identity of the **newest** message, not list
   length. The prepend-restore `useLayoutEffect` clears `isPrependingRef`, and layout effects run
   before passive effects in the same commit, so auto-scroll sees the guard gone → spurious pill on
   every older-page load.
@@ -58,16 +58,15 @@ Root cause class: **per-conversation state in an unkeyed / length-based componen
 - Second call site **VERIFIED NOT AFFECTED:** `LeadDetailDrawer.tsx:321/340` — `Drawer.tsx:52` returns
   null when closed, `:66-67` backdrop `onClose` means `lead` can't change while open, `:188` gates
   chat on `activeTab==='chat'`. Lesson: check EVERY sibling in the pane before claiming a bug.
-- **P6-6: ONE canonical merge.** Live WS must use
-  `mergeWhatsAppMessages(prev[convId] || [], [newMsg])` — never its own `findIndex`. Only the helper
-  collapses two slots when a later event links both identities (optimistic `C1` + echo `W1` + later
-  `C1`+`W1`); an inline match orphans a row → sent message renders twice with a duplicate React key.
-  `mergeDeliveryStatus` is status-only and may stay direct.
+- **P6-6: ONE canonical merge.** Live WS must use `mergeWhatsAppMessages(prev[convId] || [], [newMsg])`
+  — never its own `findIndex`. Only the helper collapses two slots when a later event links both
+  identities (optimistic `C1` + echo `W1` + later `C1`+`W1`); an inline match orphans a row → sent
+  message renders twice with a duplicate React key. `mergeDeliveryStatus` is status-only.
 - **P6-7: `scrollIntoView({behavior:'auto'})` DEFERS TO CSS.** The thread container carries
-  `scroll-smooth`, so the initial jump to the newest message animated from `scrollTop 0` through the
-  `< 60` pagination trigger → a spurious older-page fetch per open, whose prepend-restore then knocked
-  the viewport off the newest message (defeated P6-4 in production). Fix: `behavior:'instant'` +
-  `initialScrollDoneRef` guard. **jsdom cannot see this** — the one place browser ≠ jsdom.
+  `scroll-smooth`, so the initial jump animated from `scrollTop 0` through the `< 60` pagination
+  trigger → a spurious older-page fetch per open, whose prepend-restore then knocked the viewport off
+  the newest message (defeated P6-4 in production). Fix: `behavior:'instant'` + `initialScrollDoneRef`.
+  **jsdom cannot see this** — the one place browser ≠ jsdom.
 - `ChatThread` arms its prepend-restore guard ONLY inside `handleLoadOlder`, so an older page must
   arrive via the `onLoadOlder` prop; mutating the array directly gets no restore.
 
@@ -100,11 +99,11 @@ Safe unscoped reads only for synthetic globally-unique keys. `processed_events.e
 
 Route (`gateway_sessions` has NO `user_id`): `lid_mappings.session_id` → `gateway_sessions.session_id`
 → `whatsapp_sessions.gateway_id` → `whatsapp_sessions.user_id`. Order: own session → same user's other
-session → never another user. Orphans readable by nobody. Resolver:
-`repositories/lid_mappings.py`. **Never `get_user_filter`** here (matches `IS NULL` under pytest).
-Gateway: `lidScopeSessionIds()`. Legitimately global, do NOT "fix": admin aggregates, `recovery.py:118`
-orphan scan, gateway `listRestorableSessions`/`claimPending`/`socket_leases`. `get_history_evidence`
-REQUIRES `session_id` (fail-closed `NOT_CHECKED`).
+session → never another user. Orphans readable by nobody. Resolver: `repositories/lid_mappings.py`.
+**Never `get_user_filter`** here (matches `IS NULL` under pytest). Gateway: `lidScopeSessionIds()`.
+Legitimately global, do NOT "fix": admin aggregates, `recovery.py:118` orphan scan, gateway
+`listRestorableSessions`/`claimPending`/`socket_leases`. `get_history_evidence` REQUIRES `session_id`
+(fail-closed `NOT_CHECKED`).
 
 ## F. Gateway / provider contracts
 
@@ -117,18 +116,38 @@ REQUIRES `session_id` (fail-closed `NOT_CHECKED`).
 - **F3.** `ws_manager.broadcast` param is `target_user_id` (not `tenant_id`) — wrong kwarg raises
   `TypeError`, easy to swallow in a broad `except`. Never log a broadcast failure at `debug`.
 
-## G. Test baselines and harness
+## G. Pairing (Phase 6.4) — ephemeral lifecycle
 
-- **Backend `pytest backend/tests -q` → 1081 passed** (2026-09-19, after Phase 6.3). Scope matters:
-  `pytest backend -q` also collects `backend/scripts/test_staging_playwright_auth.py`, a manual
-  staging script with no `@pytest.mark.asyncio` — fails at setup on a clean checkout too.
-- **Gateway 19/19** (`node whatsapp-gateway/scripts/test-*.mjs`).
+- **No-Create lifecycle:** zero `public.whatsapp_sessions` rows until the QR is scanned and the
+  connection opens. Ephemeral pairing lives in the in-memory registry `_ephemeral_pairings`, keyed by
+  `pair_token` (UUID). Promotion to a real row is atomic (`perform_atomic_relink`).
+- **S-2 invariant:** a candidate phone must never be persisted before successful pairing — record it
+  only in the registry.
+- **P6-8 (FIXED):** a *new* pairing has no DB session id, so the id-addressed code endpoint could never
+  serve it and "Kod Al" was a silent no-op that also re-fired `startPairing`. Fix: owner-scoped
+  `POST /whatsapp/pairing/{pair_token}/pair` → `request_pairing_code_for_token`.
+- **P6-9 (FIXED):** `_map_session_event` resolves the owner from a DB row, and the relink branch fires
+  only for `session_connected`; so `session_qr_updated` for an ephemeral pairing raised
+  `EventOwnerUnresolved` → `ingest_gateway_event` returned `None` → `main.py` counted it `skipped` and
+  never broadcast (Case A). Fix: resolve owner from `_ephemeral_pairings` by gateway id — **owner
+  association, NEVER a global broadcast** (would regress G-3).
+- **§12 single-flight:** `pairingCodeInFlight` map in `session-manager.js`; `pairingInFlightRef` in
+  `WhatsAppQrConnectModal.tsx`. Concurrent requests collapse to one provider call.
+- `normalizePairingPhone` (gateway) is correct and is the ONLY normalizer — React must forward the RAW
+  phone. `+90…`/`90…`/`0090…`/`0541…` → `905413749073`; it must NOT rewrite `+1…`/`0055…`.
+
+## H. Test baselines and harness
+
+- **Backend `pytest backend/tests -q` → 1088 passed** (2026-09-19, after P6-8/P6-9 fixes). Scope
+  matters: `pytest backend -q` also collects `backend/scripts/test_staging_playwright_auth.py`, a
+  manual staging script with no `@pytest.mark.asyncio` — fails at setup on a clean checkout too.
+- **Gateway 19/19** (`node whatsapp-gateway/scripts/test-*.mjs`), +7 in `test-pairing-lifecycle.mjs`.
 - **Frontend:** `npx tsc --noEmit` 0; `npm run build` ok; `verify:logic` → **43**; `verify:dom` →
-  **20**; `verify:merge` + `verify:merge-equivalence` → PASS; `verify:browser` → **7/7**.
-  No vitest/jest.
-- **Real browser harness (`npm run verify:browser`).** No Playwright/e2e in the repo and none
-  installed: drives installed Google Chrome over CDP using **Node's built-in WebSocket**, serving real
-  components bundled into `os.tmpdir()` with the real built CSS from `dist/assets/*.css`.
+  **20**; `verify:merge` + `verify:merge-equivalence` → PASS; `verify:browser` → **7/7**. No
+  vitest/jest — see the `esbuild-frontend-verification` skill.
+- **Real browser harness (`npm run verify:browser`).** No Playwright/e2e installed: drives installed
+  Google Chrome over CDP using **Node's built-in WebSocket**, serving real components bundled into
+  `os.tmpdir()` with the real built CSS from `dist/assets/*.css`.
   - Chrome needs **`--no-sandbox`** here (its own sandbox fails → GPU/network die → CDP never
     replies). Also `--disable-dev-shm-usage --disable-software-rasterizer`.
   - Connect to a `/json/list` **page** target's `webSocketDebuggerUrl`, not `/json/version`
@@ -148,36 +167,38 @@ REQUIRES `session_id` (fail-closed `NOT_CHECKED`).
   - Node 22: `navigator` is a getter-only global → `Object.defineProperty`; expose `localStorage`,
     `matchMedia`, `ResizeObserver`, `IntersectionObserver`; stub `scrollIntoView`.
   - npm **workspace root**: `npm install` from `frontend/` hoists to ROOT `node_modules`.
-  - **Build into `os.tmpdir()`** (crashed runs otherwise leave `.tmp-*` in the tree — 25 once); then
-    esbuild needs `absWorkingDir: frontendRoot` + `nodePaths` and React **bundled, not external**.
-- **"No DOM" ≠ "frontend untestable".** React *state* is pure; only rendered DOM *measurement* is not.
-  `mergeWhatsAppMessages` serves refresh/reconnect/sync-chunk (`WhatsAppHubPage.tsx`).
-- **Cross-layer:** `main.py:319` broadcasts exactly the dict `ingest_gateway_event` returns — no WS
-  mock needed. `scratch/p6_dump_ws_payloads.py` dumps real payloads to
-  `frontend/scripts/fixtures/phase6-ws-payloads.json`. **Falsification control:** break the invariant,
-  see it fail, restore. Delayed provider: block on an `asyncio.Event`.
+  - **Build into `os.tmpdir()`** (crashed runs leave `.tmp-*` in the tree); esbuild needs
+    `absWorkingDir: frontendRoot` + `nodePaths` and React **bundled, not external**.
+  - Modal uses `createPortal(…, document.body)` → query `document.body`, not the host. Provider order
+    is `I18nProvider > ToastProvider` (Toast consumes i18n).
 - **Test-infra gotchas.** Module globals keyed by DB ids break test order (SQLite REUSES ids) →
   autouse `reset_whatsapp_module_globals`. Clear `"$TMPDIR"pytest-of-root`/`pytest-of-unknown` before
-  reruns (else `PermissionError: EEXIST`). `processed_events` dedup is PostgreSQL-only. Cleaning test
+  reruns (else `PermissionError: EEXIST`). `processed_events` dedup is PostgreSQL-only.
+  `ingest_gateway_event` requires `event_id` to be a real UUID — a non-UUID returns `None` SILENTLY and
+  looks exactly like a dropped event (this once caused a false "CONFIRMED bug"). Cleaning test
   tenants: delete BOTH uuid forms (dashed + hex) and children before parents.
+- **Falsification control:** break the invariant, see it fail, restore. Delayed provider: block on an
+  `asyncio.Event`. Cross-layer: `main.py:319` broadcasts exactly the dict `ingest_gateway_event`
+  returns — no WS mock needed. `scratch/p6_dump_ws_payloads.py` → `scripts/fixtures/phase6-ws-payloads.json`.
 
-## H. Production topology
+## I. Production topology
 
 - Host `130.162.247.20` (hostname `tezlify-oracle` does NOT resolve from this shell), Oracle Always
   Free. Repo `/opt/tezlify`. Containers `tezlify-gateway`, `-backend`, `-caddy`, `-db`
   (postgres:17-alpine). SSH user **`ubuntu`**, key `~/.ssh/id_tezlify_oracle` (`opc` rejected).
 - **Read-only pattern:** `ssh … "docker exec -i -e PGOPTIONS='-c default_transaction_read_only=on'
   tezlify-db psql -U tezlify -d tezlify"`; assert `SHOW default_transaction_read_only;` → `on`.
-- **Deploy gap:** production `f6ec68d`. All Phase 3–6 work was committed locally as 4 commits
-  (backend/core/gateway → frontend fixes → harnesses → reports) but is **still NOT deployed**.
-  Production lacks C-4 (`uq_msg_conv_wa_message_id` absent), G-3, P5-1/2/3, P6-1…P6-7. Live: 1832
-  messages, `RECEIVED 970 / SENT 837 / READ 23 / FAILED 2` (the 2 = P5-1 media sends). **Local test
-  results and production health are different claims — never conflate them.**
+- **Deploy gap:** production `f6ec68d`. All Phase 3–6.4 work is committed locally but **NOT
+  deployed**. Production lacks C-4, G-3, P5-1/2/3, P6-1…P6-9. Live: 1832 messages, `RECEIVED 970 /
+  SENT 837 / READ 23 / FAILED 2`. **Local test results and production health are different claims —
+  never conflate them.**
 
-## I. Known-open — need a decision, do not silently "fix"
+## J. Known-open — need a decision, do not silently "fix"
 
 - **New Chat** (`startConversation`) is an unconditional `throw` — `PRODUCT DECISION` (F-5).
 - Background sweep promotes `FULLY_EXHAUSTED` from a single provider call — fix before enabling the
   flag. Production has 10 such rows (4 with no provider evidence); pre-existing.
 - P5-1 has no live end-to-end confirmation: one media send to a self-owned number after deploy.
 - `jsdom` is a new devDependency — deliberate, needs review.
+- **No live-device pairing was ever run** — QR and phone-code are verified against a faked network
+  boundary only. Report `LIVE DEVICE E2E = NOT RUN`; never imply otherwise.
