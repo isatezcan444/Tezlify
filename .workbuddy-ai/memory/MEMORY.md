@@ -133,6 +133,9 @@ Legitimately global, do NOT "fix": admin aggregates, `recovery.py:118` orphan sc
   association, NEVER a global broadcast** (would regress G-3).
 - **§12 single-flight:** `pairingCodeInFlight` map in `session-manager.js`; `pairingInFlightRef` in
   `WhatsAppQrConnectModal.tsx`. Concurrent requests collapse to one provider call.
+  **ARM AN IN-FLIGHT REF ONLY INSIDE A `try` WHOSE `finally` RELEASES IT.** An early `return`
+  between the arm and the release latches the guard forever — one failed `initSession()` would
+  have killed "Kod Al" permanently. Audit every early return in such a function.
 - `normalizePairingPhone` (gateway) is correct and is the ONLY normalizer — React must forward the RAW
   phone. `+90…`/`90…`/`0090…`/`0541…` → `905413749073`; it must NOT rewrite `+1…`/`0055…`.
 
