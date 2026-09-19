@@ -14,7 +14,9 @@
     "verify:dom": "node scripts/verify-whatsapp-dom.mjs",
     "verify:merge": "node scripts/test-whatsapp-message-merge.mjs",
     "verify:merge-equivalence": "node scripts/verify-whatsapp-merge-equivalence.mjs",
-    "verify:browser": "node scripts/verify-whatsapp-browser.mjs"
+    "verify:browser": "node scripts/verify-whatsapp-browser.mjs",
+    "verify:pairing": "node scripts/verify-whatsapp-pairing.mjs",
+    "verify:pairing-browser": "node scripts/verify-whatsapp-pairing-browser.mjs"
   },
   "dependencies": {
     "class-variance-authority": "^0.7.1",

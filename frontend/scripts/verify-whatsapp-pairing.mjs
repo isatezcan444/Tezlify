@@ -83,6 +83,7 @@ function makeBackend(opts = {}) {
     if (process.env.TRACE) console.log('   TRACE', u);
     if (u.includes('/whatsapp/pairing/start')) {
       calls.start += 1;
+      if (opts.startFails) return json({ detail: 'gateway unavailable' }, 503);
       token = `tok-${calls.start}`;
       return json({ pair_token: token, gateway_id: `gw-${token}`, session_name: 'Hat 1', status: 'SCAN_QR', qr_code: state.qr }, 201);
     }
@@ -94,6 +95,11 @@ function makeBackend(opts = {}) {
     if (u.includes('/whatsapp/pairing/') && u.includes('/cancel')) {
       calls.cancel += 1;
       return json({ success: true });
+    }
+    if (u.includes('/whatsapp/pairing/') && u.endsWith('/pair')) {
+      calls.pair += 1;
+      if (opts.pairFails) return json({ detail: opts.pairErrorMessage || 'WhatsApp soketi hazırlanamadı.' }, 500);
+      return json({ success: true, pairing_code: opts.pairingCode || '12345678', phone: '+905413749073' });
     }
     if (u.includes('/pair')) {
       calls.pair += 1;
@@ -176,6 +182,9 @@ const installFetch = () => { const f = async (...args) => backend.fetchImpl(...a
 installFetch();
 
 async function mount(props = {}) {
+  // The modal portals into document.body; stale portals from a previous
+  // scenario would make every query ambiguous.
+  while (window.document.body.firstChild) window.document.body.removeChild(window.document.body.firstChild);
   const host = window.document.createElement('div');
   window.document.body.appendChild(host);
   const root = createRoot(host);
@@ -202,7 +211,36 @@ async function mount(props = {}) {
 // must run against the document — not the React root host.
 const body = () => window.document.body;
 const qrImg = () => body().querySelector('img[alt="WhatsApp QR Code"]');
-const codeDigits = () => Array.from(body().querySelectorAll('span.font-mono')).map((s) => s.textContent).join('');
+// Only the 8 CODE cells count. The modal header also uses `font-mono` for the
+// session name ("Hat 1"), which would otherwise be concatenated into the code.
+const codeDigits = () => Array.from(body().querySelectorAll('span.font-mono'))
+  .map((s) => (s.textContent || '').trim())
+  .filter((txt) => txt.length === 1 && /\d/.test(txt))
+  .join('');
+
+// The tab labels and the submit label differ per locale ("8 Haneli Kodu Al" in
+// tr, "Get 8-Digit Code" in en), so match BOTH. The tab button must be
+// excluded: "Link with Phone Number" / "Telefon No ile Bağlan" is not a submit.
+const buttonByText = (re) => Array.from(body().querySelectorAll('button'))
+  .find((b) => b.getAttribute('role') !== 'tab' && !b.disabled && re.test((b.textContent || '').trim()));
+
+const openPairTab = async () => {
+  const tabs = Array.from(body().querySelectorAll('[role="tab"]'));
+  if (tabs.length < 2) throw new Error(`pair tab not rendered; text=${(body().textContent || '').slice(0, 120)}`);
+  await act(async () => { tabs[1].dispatchEvent(new window.MouseEvent('click', { bubbles: true })); });
+  await tick(120);
+};
+
+const typePhone = async (value) => {
+  const input = body().querySelector('#pairing-phone-input');
+  if (!input) throw new Error(`pair tab did not render the phone input; text=${(body().textContent || '').slice(0, 120)}`);
+  await act(async () => {
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    setter.call(input, value);
+    input.dispatchEvent(new window.Event('input', { bubbles: true }));
+  });
+  return input;
+};
 
 
 console.log('\n=== WhatsApp pairing UI verification ===');
@@ -212,8 +250,10 @@ await check('QR: a new session shows the QR once the gateway produces one', asyn
   backend = makeBackend();
   installFetch();
   const v = await mount();
-  // startPairing returns no QR yet -> INITIALIZING -> poll must fetch it.
+  // startPairing returns no QR yet -> INITIALIZING -> the 2.5s fallback poll
+  // must fetch it. One tick is not enough; wait past a full poll interval.
   backend.state.qr = QR_A;
+  await tick(2700);
   assert.ok(backend.calls.qrPoll >= 1, `the modal must poll for the QR (calls=${backend.calls.qrPoll})`);
   assert.ok(qrImg(), 'QR must be rendered once polling returns it');
   assert.equal(qrImg().getAttribute('src'), QR_A);
@@ -253,17 +293,10 @@ await check('PHONE: requesting a code shows it in full', async () => {
   backend = makeBackend({ pairingCode: '12345678' });
   installFetch();
   const v = await mount({ existingSessionId: 7 });
-  // switch to the pairing tab
-  const tabs = Array.from(body().querySelectorAll('[role="tab"]'));
-  await act(async () => { tabs[1].dispatchEvent(new window.MouseEvent('click', { bubbles: true })); });
-  await tick(30);
-  const phoneInput = body().querySelector('#pairing-phone-input');
-  await act(async () => {
-    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-    setter.call(phoneInput, '+905413749073');
-    phoneInput.dispatchEvent(new window.Event('input', { bubbles: true }));
-  });
-  const submit = Array.from(body().querySelectorAll('button')).find((b) => (b.textContent||'').trim().length > 0 && !b.disabled && !/^(Scan QR Code|Link with Phone Number)$/.test((b.textContent||'').trim()));
+  await openPairTab();
+  await typePhone('+905413749073');
+  const submit = buttonByText(/kod|code/i);
+  assert.ok(submit, `submit button not found; buttons=${JSON.stringify(Array.from(body().querySelectorAll('button')).map((b) => (b.textContent || '').trim()))}`);
   await act(async () => { submit.dispatchEvent(new window.MouseEvent('click', { bubbles: true })); });
   await tick(120);
   assert.equal(backend.calls.pair, 1, `one pairing request (got ${backend.calls.pair})`);
@@ -272,43 +305,93 @@ await check('PHONE: requesting a code shows it in full', async () => {
 });
 
 await check('PHONE: a NEW session (no existing id) can also request a code', async () => {
+  // THE ORIGINAL P6-8 DEFECT: no numeric session id exists yet, so the old
+  // code path returned before doing anything — "Kod Al" was a silent no-op.
   backend = makeBackend({ pairingCode: '87654321' });
   installFetch();
   const v = await mount();
-  const tabs = Array.from(body().querySelectorAll('[role="tab"]'));
-  await act(async () => { tabs[1].dispatchEvent(new window.MouseEvent('click', { bubbles: true })); });
-  await tick(30);
-  const phoneInput = body().querySelector('#pairing-phone-input');
-  await act(async () => {
-    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-    setter.call(phoneInput, '+905413749073');
-    phoneInput.dispatchEvent(new window.Event('input', { bubbles: true }));
-  });
-  const submit = Array.from(body().querySelectorAll('button')).find((b) => /kod/i.test(b.textContent || ''));
+  await openPairTab();
+  await typePhone('+905413749073');
+  const submit = buttonByText(/kod|code/i);
+  assert.ok(submit, 'submit button not found');
   await act(async () => { submit.dispatchEvent(new window.MouseEvent('click', { bubbles: true })); });
   await tick(200);
   assert.equal(backend.calls.pair, 1, `a new session must be able to request a code (got ${backend.calls.pair})`);
   assert.equal(codeDigits(), '87654321', 'the code must be displayed');
+  // And it must have gone through the pair_token route, not a numeric id.
+  assert.equal(backend.calls.start, 1, 'the pairing must already exist from mount');
   await v.unmount();
 });
 
-await check('PHONE: a failure surfaces an error and leaves a retry', async () => {
-  backend = makeBackend({ pairFails: true, pairErrorMessage: 'WhatsApp soketi hazırlanamadı.' });
+await check('PHONE: three rapid clicks issue ONE request (§12 single-flight)', async () => {
+  // `disabled={isPairingLoading}` is not enough on its own: React has not
+  // re-rendered when the second click lands, so the guard must be a ref.
+  backend = makeBackend({ pairingCode: '11223344' });
   installFetch();
   const v = await mount({ existingSessionId: 7 });
-  const tabs = Array.from(body().querySelectorAll('[role="tab"]'));
-  await act(async () => { tabs[1].dispatchEvent(new window.MouseEvent('click', { bubbles: true })); });
-  await tick(30);
-  const phoneInput = body().querySelector('#pairing-phone-input');
+  await openPairTab();
+  await typePhone('+905413749073');
+  const submit = buttonByText(/kod|code/i);
+  assert.ok(submit, 'submit button not found');
   await act(async () => {
-    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-    setter.call(phoneInput, '+905413749073');
-    phoneInput.dispatchEvent(new window.Event('input', { bubbles: true }));
+    const ev = () => new window.MouseEvent('click', { bubbles: true });
+    submit.dispatchEvent(ev());
+    submit.dispatchEvent(ev());
+    submit.dispatchEvent(ev());
   });
-  const submit = Array.from(body().querySelectorAll('button')).find((b) => /kod/i.test(b.textContent || ''));
+  await tick(200);
+  assert.equal(backend.calls.pair, 1, `rapid clicks must collapse to one request (got ${backend.calls.pair})`);
+  assert.equal(codeDigits(), '11223344');
+  await v.unmount();
+});
+
+await check('PHONE: a failed init must not latch the single-flight guard', async () => {
+  // §12 REGRESSION: the guard is armed BEFORE `initSession()` runs. If the
+  // bail-out returned from inside the guarded region, `pairingInFlightRef`
+  // would stay `true` and every later click would be swallowed — "Kod Al"
+  // would be permanently dead after one failed start. The guard must be
+  // released on every exit path, including this one.
+  backend = makeBackend({ pairingCode: '43218765', startFails: true });
+  installFetch();
+  const v = await mount();
+  await openPairTab();
+  await typePhone('+905413749073');
+  const first = buttonByText(/kod|code/i);
+  assert.ok(first, 'submit button not found');
+  await act(async () => { first.dispatchEvent(new window.MouseEvent('click', { bubbles: true })); });
+  await tick(200);
+  assert.equal(backend.calls.pair, 0, 'no code can be requested without a pairing');
+
+  // The gateway recovers: the second attempt must actually go through.
+  backend = makeBackend({ pairingCode: '43218765' });
+  installFetch();
+  await openPairTab();
+  await typePhone('+905413749073');
+  const second = buttonByText(/kod|code/i);
+  assert.ok(second, 'submit button must still be live');
+  await act(async () => { second.dispatchEvent(new window.MouseEvent('click', { bubbles: true })); });
+  await tick(300);
+  assert.equal(backend.calls.pair, 1, `the retry must issue a request (got ${backend.calls.pair})`);
+  assert.equal(codeDigits(), '43218765', 'the code must be displayed after the retry');
+  await v.unmount();
+});
+
+await check('PHONE: a failure surfaces the real error and leaves a retry', async () => {
+  const ERR = 'WhatsApp soketi hazırlanamadı.';
+  backend = makeBackend({ pairFails: true, pairErrorMessage: ERR });
+  installFetch();
+  const v = await mount({ existingSessionId: 7 });
+  await openPairTab();
+  await typePhone('+905413749073');
+  const submit = buttonByText(/kod|code/i);
+  assert.ok(submit, 'submit button not found');
   await act(async () => { submit.dispatchEvent(new window.MouseEvent('click', { bubbles: true })); });
   await tick(200);
-  assert.ok((body().textContent || '').includes('hazırlanamadı'), 'the real error must be visible');
+  assert.ok((body().textContent || '').includes(ERR), 'the real gateway error must be visible');
+  assert.equal(backend.calls.pair, 1);
+  // Retry must be possible: the input is still there and the button is live.
+  assert.ok(body().querySelector('#pairing-phone-input'), 'the phone input must remain for a retry');
+  assert.ok(buttonByText(/kod|code/i), 'the submit button must be live again for a retry');
   await v.unmount();
 });
 

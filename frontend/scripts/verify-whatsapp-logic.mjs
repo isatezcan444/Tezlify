@@ -613,9 +613,16 @@ try {
       !/\^5\\d\{9\}\$/.test(src),
       'the modal must not re-implement the Turkish 5XXXXXXXXX assumption'
     );
+    // P6-8: there are now TWO call sites — the numeric-session route and the
+    // pair_token route for a new pairing. Both must forward `rawPhone`
+    // untouched; neither may normalize.
     assert.ok(
-      /requestPairingCode\(sid,\s*rawPhone\)/.test(src),
-      'the modal must forward the raw phone to the gateway'
+      /requestPairingCode\(\s*Number\(sid\)\s*,\s*rawPhone\s*\)/.test(src),
+      'the numeric-session route must forward the raw phone to the gateway'
+    );
+    assert.ok(
+      /requestPairingCodeForToken\([^,]+,\s*rawPhone\s*\)/.test(src),
+      'the pair_token route must forward the raw phone to the gateway'
     );
   });
 
