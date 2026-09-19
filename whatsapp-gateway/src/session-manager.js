@@ -760,6 +760,7 @@ export function createSessionManager({
   pool = null,
 }) {
   const sessions = new Map(); // manager-local: no cross-instance/session leakage
+  const pairingCodeInFlight = new Map(); // §12: id -> in-flight pairing-code promise
   const mediaIndex = new Map(); // every entry is scoped by its owning session
   // G-9: medya indeksi oturum silinene kadar sınırsız büyüyebiliyordu (her
   // gelen medya bir kayıt + disk dosyası demek). FIFO üst sınır uygulanır;
@@ -1215,7 +1216,23 @@ export function createSessionManager({
     // ekranına girer. Hata durumları fail-closed olarak yukarı fırlatılır
     // (AGENTS.md Truthfulness) — asla sahte başarı döndürülmez.
     // -----------------------------------------------------------------------
+    // §12 SINGLE-FLIGHT: WhatsApp invalidates the previously issued code every
+    // time a new `requestPairingCode` is sent, so two concurrent requests leave
+    // the user holding a dead code (and can each start a socket). Collapse
+    // concurrent callers onto ONE operation; a later, deliberate retry is
+    // unaffected because the entry is removed as soon as the first settles.
     async requestPairingCode(id, phone) {
+      if (pairingCodeInFlight.has(id)) return pairingCodeInFlight.get(id);
+      const op = this._requestPairingCodeOnce(id, phone);
+      pairingCodeInFlight.set(id, op);
+      try {
+        return await op;
+      } finally {
+        pairingCodeInFlight.delete(id);
+      }
+    },
+
+    async _requestPairingCodeOnce(id, phone) {
       const session = sessions.get(id);
       if (!session) throw new Error('Session not found');
       if (session.status === 'CONNECTED') {

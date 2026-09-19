@@ -39,6 +39,25 @@ export function makeWASocket(options = {}) {
       if (registry.pairingImpl) return registry.pairingImpl(phone, this);
       return '12345678';
     },
+    /**
+     * Emulate Baileys' pairing side-effect on the AUTH STATE, which is the one
+     * thing `makeWASocket` does that a pure event-firing stub would miss.
+     *
+     * Real Baileys mutates `auth.creds` in place during the pairing handshake —
+     * it sets `creds.me = {id, name, lid}` and `creds.registered = true` — and
+     * only then emits `creds.update` followed by `connection.update {open}`.
+     * Those credentials are what `useMultiFileAuthState` writes to
+     * `creds.json`, and their presence on disk is exactly what suppresses the
+     * QR on a later restart. Without this method a "restart" test would assert
+     * on credentials that were never registered and prove nothing.
+     */
+    completePairing(jid = '905413749073@s.whatsapp.net') {
+      const creds = options && options.auth && options.auth.creds;
+      if (!creds) throw new Error('fake socket was not given an auth state');
+      creds.me = { id: jid, name: 'Test Device', lid: '100000000000001@lid' };
+      creds.registered = true;
+      return creds;
+    },
     async sendMessage() { return { key: { id: randomUUID() } }; },
     async sendPresenceUpdate() {},
     async readMessages() {},
