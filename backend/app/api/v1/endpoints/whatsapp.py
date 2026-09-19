@@ -124,6 +124,31 @@ async def get_pairing_qr(
         raise _bad_gateway(exc) from exc
 
 
+@router.post("/pairing/{pair_token}/pair", response_model=WhatsAppPairingCodeResponse)
+async def request_pairing_code_for_token(
+    pair_token: str,
+    payload: WhatsAppPairingCodeRequest,
+    current_user: AuthUser = Depends(get_current_user),
+) -> WhatsAppPairingCodeResponse:
+    """P6-8: 'Telefon numarası ile bağlan' for a NEW (ephemeral) pairing.
+
+    `/sessions/{id}/pair` needs a numeric session id, which does not exist until
+    the QR is scanned — so a first-time phone-code pairing had no endpoint at
+    all and the UI silently did nothing. This is the same gateway call,
+    addressed by the ephemeral pairing's gateway session, on the same lifecycle
+    as QR pairing (promotion still happens on connection.open).
+    """
+    try:
+        data = await whatsapp_service.request_pairing_code_for_token(
+            current_user.id, pair_token, payload.phone
+        )
+        return WhatsAppPairingCodeResponse(**data)
+    except LookupError as exc:
+        raise _not_found(exc) from exc
+    except Exception as exc:
+        raise _bad_gateway(exc) from exc
+
+
 @router.post("/pairing/{pair_token}/cancel")
 async def cancel_pairing(
     pair_token: str,

@@ -268,6 +268,9 @@ async def start_pairing_session(
         "session_name": gw_session.get("session_name") or line_name,
         "logical_session_id": logical_session_id,
         "created_at": datetime.utcnow(),
+        # P6-9: keep the token on the record so the event resolver can hand it
+        # back to the owner's UI for correlation.
+        "pair_token": pair_token,
     }
     if logical_session_id:
         _logical_to_ephemeral[logical_session_id] = pair_token
@@ -657,6 +660,43 @@ async def request_pairing_code(
         # NOT persisted: this is the requested number, not a verified one.
         "phone": candidate_phone or row.phone_number,
         "phone_pending": bool(candidate_phone),
+    }
+
+
+async def request_pairing_code_for_token(
+    user_id: str, pair_token: str, phone: str
+) -> Dict[str, Any]:
+    """'Telefon numarası ile bağlan' for a NEW (ephemeral) pairing (P6-8).
+
+    A first-time pairing has a `pair_token` but NO numeric session id — that is
+    the entire point of the ephemeral lifecycle (zero rows until connected). The
+    old UI path needed `session_id`, could never obtain one, and silently did
+    nothing. This is the same gateway call, addressed by the ephemeral gateway
+    session instead.
+
+    S-2 still applies: the number is a CANDIDATE. It is recorded only in the
+    in-memory ephemeral registry (where owner resolution can use it) and is
+    never written to `whatsapp_sessions.phone_number`. Canonical persistence
+    stays on the success path (`session_connected`), so a failed or cancelled
+    attempt cannot leave a false canonical phone behind.
+    """
+    pairing = _ephemeral_pairings.get(pair_token)
+    if not pairing or pairing["user_id"] != str(user_id):
+        raise LookupError("Eşleşme oturumu bulunamadı veya süresi doldu.")
+
+    data = await gw.request_pairing_code(pairing["gateway_id"], phone)
+    pairing_code = extract_pairing_code(data)
+    if not pairing_code:
+        raise gw.WhatsAppGatewayError("Gateway pairing kodu döndürmedi.")
+
+    candidate = (data.get("phone") or "").strip() or None
+    pairing["phone"] = candidate
+    return {
+        "success": True,
+        "pairing_code": str(pairing_code),
+        # NOT persisted: requested number, not a verified one.
+        "phone": candidate,
+        "phone_pending": bool(candidate),
     }
 
 

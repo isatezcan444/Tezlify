@@ -1282,6 +1282,30 @@ class WhatsAppEventOrchestrator:
                         raise EventOwnerUnresolved(str(exc)) from exc
                     except RelinkCandidateNotFound:
                         pass  # Fall through to EventOwnerUnresolved below
+            # P6-9: a NEW (ephemeral) pairing has NO `whatsapp_sessions` row —
+            # that is the point of the lifecycle (zero rows until connected).
+            # Its owner was recorded in the ephemeral registry when the pairing
+            # was started, so resolve the tenant THERE.
+            #
+            # This must NOT become a global broadcast: the event is attributed
+            # to the single recorded owner and to nobody else. Anything that
+            # cannot be attributed still fails closed below.
+            from backend.app.services.whatsapp.orchestration.sessions import (
+                find_ephemeral_pairing_by_gateway_id,
+            )
+
+            eph = find_ephemeral_pairing_by_gateway_id(str(gw_session_id))
+            if eph and eph.get("user_id"):
+                event["user_id"] = str(eph["user_id"])
+                event["session_name"] = (
+                    event.get("session_name") or eph.get("session_name")
+                )
+                event["pair_token"] = event.get("pair_token") or eph.get("pair_token")
+                # No DB row exists yet, so there is nothing to mutate: the event
+                # is only routed to its owner. (QR is intentionally not
+                # persisted — the UI shows it straight from the socket.)
+                return event
+
             raise EventOwnerUnresolved(
                 f"Bilinmeyen gateway oturumu (session_id={gw_session_id}, event={evt}) — "
                 "gateway yeniden baslatilmis olabilir; QR ile yeniden eslestirin."

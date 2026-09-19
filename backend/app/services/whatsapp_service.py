@@ -101,6 +101,7 @@ from backend.app.services.whatsapp.orchestration.sessions import (
     refresh_contact_avatar,
     refresh_session_qr,
     request_pairing_code,
+    request_pairing_code_for_token,
     start_pairing_session,
 )
 from backend.app.services.whatsapp.orchestration.history_evidence import (
