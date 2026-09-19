@@ -55,17 +55,31 @@ PHASE 2 FIXED (third pass, truthfulness hardening):
        and pinned by 3 tests; the gateway's `_recordOutbound` default is now
        PENDING instead of SENT
 
-PHASE 2 STILL OPEN:
+PHASE 2 STILL OPEN (at the time of this report):
 - C-4 (concurrency half)  messages.wa_message_id SELECT-then-INSERT race — needs a
                           UNIQUE (conversation_id, wa_message_id) migration, which
                           §39 forbids in this task. Sequential dedup IS fixed+tested.
+                          >> CLOSED IN PHASE 3 — see WHATSAPP_PHASE3_REPORT.md §1.
+                             Migration `ensure_messages_wa_message_id_unique` adds the
+                             conversation-scoped PARTIAL unique index, with a BLOCKED
+                             path that refuses to build it when duplicates exist and
+                             destroys nothing. Pinned by 10 tests in
+                             `backend/tests/test_whatsapp_forensic_phase3.py`.
+                          >> The `§34` test in this suite was REWRITTEN in Phase 3:
+                             `test_34_wa_message_id_has_no_unique_db_constraint` ->
+                             `test_34_wa_message_id_uniqueness_is_conversation_scoped_and_partial`
+                             (it asserted the ABSENCE of a constraint, which is no
+                             longer true; it now pins both halves of the contract).
 
 PRODUCT DECISIONS NEEDED:
-- F-5
-- G-3
+- F-5   (still open — see WHATSAPP_PHASE3_REPORT.md §2)
+- G-3   (still open — see WHATSAPP_PHASE3_REPORT.md §3)
 
 LIVE E2E:
 NOT RUN
+
+CURRENT SNAPSHOT (supersedes the numbers in this report; see Phase 3 §0):
+backend 1023 passed | gateway 17/17 | frontend tsc 0 / build 0 / logic 29/29
 
 BACKEND:
 1013 passed
