@@ -805,10 +805,13 @@ async def test_ws_conversation_updated_emits_canonical_contract():
 async def test_34_wa_message_id_dedup_is_conversation_scoped_and_reliable():
     """§34: the live inbound path must dedup by `wa_message_id` (per conversation).
 
-    There is NO unique DB constraint on `messages.wa_message_id` (see
-    `ensure_messages_wa_message_id` — it creates a plain, non-unique index), so the
-    ONLY thing preventing a duplicate row is application-level dedup. This test
-    proves that guard is real and that its scope is per conversation.
+    Two independent guards exist and both matter:
+      * application-level dedup — this SELECT-then-INSERT path, the fast path;
+      * a conversation-scoped PARTIAL unique index (`uq_msg_conv_wa_message_id`,
+        added in Phase 3 / C-4) — the backstop for concurrent deliveries.
+    This test proves the APPLICATION guard is real and that its scope is per
+    conversation; `test_c4_db_constraint_rejects_a_duplicate_conversation_scoped_
+    insert` proves the DB backstop.
 
     Contract:
       * same `wa_message_id` delivered twice to the SAME conversation -> 1 row
@@ -873,13 +876,26 @@ async def test_34_wa_message_id_dedup_is_conversation_scoped_and_reliable():
 
 
 @pytest.mark.asyncio
-async def test_34_wa_message_id_has_no_unique_db_constraint():
-    """§34: document the real schema — the column is nullable and NOT unique.
+async def test_34_wa_message_id_uniqueness_is_conversation_scoped_and_partial():
+    """§34 / C-4: document the real schema contract for `wa_message_id`.
 
-    This is why application-level dedup is load-bearing. If a future migration
-    adds a UNIQUE constraint it must be `(conversation_id, wa_message_id)` (or a
-    partial index excluding NULLs), because `wa_message_id` is NULL for locally
-    created rows that were never acknowledged by the provider.
+    Two separate facts must both hold, and they pull in opposite directions:
+
+      1. The column itself stays NULLABLE and its single-column index stays
+         NON-unique. Locally-created rows carry no provider id until the
+         provider acknowledges them, so a unique index on `wa_message_id` alone
+         would reject the second unacknowledged row in a conversation.
+
+      2. A conversation-scoped PARTIAL unique index
+         (`uq_msg_conv_wa_message_id` on `(conversation_id, wa_message_id)`
+         WHERE `wa_message_id IS NOT NULL`) closes the concurrent
+         SELECT-then-INSERT race that application-level dedup alone cannot.
+         Its scope is deliberately per conversation: the same provider id may
+         legitimately appear in a different conversation (LID -> PN re-keying),
+         so a GLOBAL unique index would be wrong.
+
+    Phase 2 asserted only fact 1 (the gap). Phase 3 added fact 2. This test now
+    pins both so neither can be silently undone.
     """
     async with AsyncSessionLocal() as db:
         col = (
@@ -895,20 +911,40 @@ async def test_34_wa_message_id_has_no_unique_db_constraint():
         assert wa_col[0][5] == 0, "wa_message_id must not be the primary key"
 
         indexes = (await db.execute(text("PRAGMA index_list(messages)"))).all()
+        meta = {}
         for idx in indexes:
             name = idx[1]
             unique = bool(idx[2])
+            partial = bool(idx[4]) if len(idx) > 4 else False
             cols = [
                 r[2]
                 for r in (
                     await db.execute(text(f"PRAGMA index_info({name})"))
                 ).all()
             ]
-            if cols == ["wa_message_id"]:
-                assert unique is False, (
-                    "the wa_message_id index must remain NON-unique until a "
-                    "conversation-scoped partial index is introduced"
-                )
+            meta[name] = (unique, partial, cols)
+
+    # Fact 1: the single-column index must stay NON-unique.
+    for name, (unique, _partial, cols) in meta.items():
+        if cols == ["wa_message_id"]:
+            assert unique is False, (
+                f"{name} must stay NON-unique on wa_message_id alone, otherwise "
+                f"two unacknowledged local rows would collide"
+            )
+
+    # Fact 2 (C-4): the conversation-scoped partial unique index must exist.
+    assert "uq_msg_conv_wa_message_id" in meta, (
+        "the C-4 conversation-scoped unique index is missing; the concurrent "
+        "SELECT-then-INSERT race would be open again"
+    )
+    unique, partial, cols = meta["uq_msg_conv_wa_message_id"]
+    assert unique is True, "uq_msg_conv_wa_message_id must be unique"
+    assert partial is True, (
+        "uq_msg_conv_wa_message_id must be PARTIAL (wa_message_id IS NOT NULL)"
+    )
+    assert cols == ["conversation_id", "wa_message_id"], (
+        f"uq_msg_conv_wa_message_id must be conversation-scoped, got {cols}"
+    )
 
 
 # ---------------------------------------------------------------------------

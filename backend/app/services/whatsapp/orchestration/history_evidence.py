@@ -59,7 +59,25 @@ def _table_name(db: AsyncSession) -> str:
 async def get_history_evidence(
     db: AsyncSession, jid: str, session_id: Optional[str] = None
 ) -> Dict[str, Any]:
-    """Retrieves current durable history evidence for a canonical JID and session."""
+    """Retrieves current durable history evidence for a canonical JID and session.
+
+    G-3 hardening: ``history_sync_states`` is keyed by ``(session_id, jid)`` where
+    ``session_id`` is the GATEWAY session UUID. ``jid`` is a **natural key** -- the
+    same counterparty phone number legitimately appears under more than one
+    tenant's line -- so an unscoped ``WHERE jid = :jid`` returns *another
+    tenant's* row (their exhaustion state, their provider message count).
+
+    Contrast ``processed_events.event_id``: that is a synthetic
+    ``crypto.randomUUID()``, globally unique by construction, so treating it as a
+    global idempotency key is correct. The discriminator is synthetic-and-unique
+    (safe to read globally) vs natural-and-repeating (never safe to read
+    globally).
+
+    A ``session_id`` is therefore REQUIRED. Without one this returns the
+    fail-closed default rather than falling back to a cross-tenant read. All
+    current callers already guard on a resolved session id; this makes that an
+    enforced invariant instead of a convention repeated at three call sites.
+    """
     default_resp = {
         "state": "NOT_CHECKED",
         "provider_checked": False,
@@ -69,28 +87,18 @@ async def get_history_evidence(
         "stall_count": 0,
         "completed_at": None,
     }
-    if not jid:
+    if not jid or not session_id:
         return default_resp
 
     try:
         tbl = _table_name(db)
-        if session_id:
-            stmt = text(f"""
-                SELECT state, provider_checked, provider_exhausted, provider_msgs_returned,
-                       has_more, stall_count, completed_at
-                FROM {tbl}
-                WHERE session_id = :sid AND jid = :jid
-            """)
-            res = await db.execute(stmt, {"sid": str(session_id), "jid": str(jid)})
-        else:
-            stmt = text(f"""
-                SELECT state, provider_checked, provider_exhausted, provider_msgs_returned,
-                       has_more, stall_count, completed_at
-                FROM {tbl}
-                WHERE jid = :jid
-                ORDER BY updated_at DESC LIMIT 1
-            """)
-            res = await db.execute(stmt, {"jid": str(jid)})
+        stmt = text(f"""
+            SELECT state, provider_checked, provider_exhausted, provider_msgs_returned,
+                   has_more, stall_count, completed_at
+            FROM {tbl}
+            WHERE session_id = :sid AND jid = :jid
+        """)
+        res = await db.execute(stmt, {"sid": str(session_id), "jid": str(jid)})
 
         row = res.fetchone()
         if not row:

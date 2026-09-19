@@ -222,6 +222,7 @@ class TestWhatsAppMessagingOrchestration:
         conv.id = 10
         conv.last_message_at = None
         conv.unread_count = 2
+        conv.last_read_at = None
 
         with patch("backend.app.services.whatsapp.orchestration.messaging._resolve_jid", return_value=(conv, "90555@s.whatsapp.net")):
             with patch("backend.app.services.whatsapp.orchestration.messaging._conversation_session", return_value=MagicMock()):
@@ -229,8 +230,12 @@ class TestWhatsAppMessagingOrchestration:
                     res = await mark_conversation_read(db, "usr-1", 10)
                     assert res["success"] is False
                     assert res["error"] == "WHATSAPP_AUTH_RELINK_REQUIRED"
-                    # Local unread count is still cleared for user UI truthfulness
-                    assert conv.unread_count == 0
+                    # §11 truthfulness: the provider never received the read, so
+                    # the local record must NOT claim the chat was read. A local
+                    # "read" for a receipt that was never delivered is a silent
+                    # lie, and it also suppressed the honest reconnect snapshot.
+                    assert conv.unread_count == 2
+                    assert conv.last_read_at is None
 
     @pytest.mark.asyncio
     async def test_send_typing_success(self):

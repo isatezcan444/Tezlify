@@ -292,7 +292,13 @@ class WhatsAppMessagingOrchestrator:
             gateway_ok = False
             gateway_error = str(exc)[:300]
             logger.warning("Gateway okundu isareti iletilemedi (conv=%s): %s", conversation_id, exc)
-        if conv.unread_count > 0 or conv.last_read_at is None:
+        # §11 truthfulness: yerel "okundu" durumu YALNIZCA gercek basari yolunda
+        # yazilir. Onceden gateway cagrisi patlasa bile `unread_count` sifirlanip
+        # `last_read_at` damgalanıyordu: veritabani "okundu" diyordu, karsi taraf
+        # ise mesaji okunmamis goruyordu. Bu sessiz bir yalandi ve `last_read_at`
+        # damgasi, gec gelen dogru snapshot'in rozeti geri getirmesini de
+        # engelliyordu (`should_apply_unread_count` okuma korumasi).
+        if gateway_ok and (conv.unread_count > 0 or conv.last_read_at is None):
             conv.unread_count = 0
             conv.last_read_at = datetime.utcnow()
             await db.commit()

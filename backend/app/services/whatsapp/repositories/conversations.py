@@ -30,7 +30,11 @@ from backend.app.core.auth import get_user_filter
 from backend.app.models.contact import Contact
 from backend.app.models.conversation import Conversation, ConversationStatus
 from backend.app.services.whatsapp.identity import contact_phone_for_jid, phone_to_jid
-from backend.app.services.whatsapp.preview_normalization import as_naive_utc, should_apply_last_message
+from backend.app.services.whatsapp.preview_normalization import (
+    as_naive_utc,
+    should_apply_last_message,
+    should_apply_unread_count,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -161,6 +165,48 @@ def apply_conversation_last_message(
     ts_naive = as_naive_utc(ts)
     if ts_naive is not None:
         conv.last_message_at = ts_naive
+    return True
+
+
+def apply_conversation_unread_count(
+    conv: Conversation,
+    incoming: Optional[int],
+    *,
+    incoming_activity_ts: Optional[datetime] = None,
+) -> bool:
+    """Sohbetin okunmamis sayacini paylasilan kurala gore gunceller.
+
+    Tek karar noktasi `preview_normalization.should_apply_unread_count`.
+    Gateway okunmamis sayisinin SAHIBIDIR ve dususleri de bildirir (telefondan
+    okunan sohbet 0'a iner). Bu yuzden yerel deger ASAGI inebilmelidir; salt
+    `max()` kurali baska bir cihazda yapilan okumayi kalici olarak gorunmez
+    kiliyordu. Yalnizca KANITLANABILIR sekilde eski olan snapshot'lar engellenir.
+    """
+    if not should_apply_unread_count(
+        conv.unread_count,
+        incoming,
+        current_activity_ts=conv.last_message_at,
+        incoming_activity_ts=incoming_activity_ts,
+        last_read_at=conv.last_read_at,
+    ):
+        return False
+    new_value = max(0, int(incoming))
+    previous = conv.unread_count or 0
+
+    # P6-2: an authoritative drop to zero IS read evidence — including a read
+    # performed on another device, which never goes through our own
+    # `mark_conversation_read` and therefore never stamped `last_read_at`.
+    # Without this, a snapshot produced BEFORE that read but carrying the same
+    # `last_message_at` is indistinguishable from the current state (an
+    # external read changes neither timestamp) and resurrects the badge.
+    #
+    # The stamp is the newest activity we know about, not wall-clock now: that
+    # keeps the read guard comparable with provider timestamps, so a message
+    # that genuinely arrives later still raises the badge normally.
+    if new_value == 0 and previous > 0:
+        conv.last_read_at = conv.last_message_at or conv.last_read_at
+
+    conv.unread_count = new_value
     return True
 
 

@@ -60,8 +60,12 @@ from backend.app.services.whatsapp.repositories.contacts import (
 )
 from backend.app.services.whatsapp.repositories.conversations import (
     apply_conversation_last_message as _apply_last_message,
+    apply_conversation_unread_count as _apply_unread_count,
     find_whatsapp_conversation as _find_whatsapp_conversation,
     get_conversation_scope_filters as _conversation_scope_filters,
+)
+from backend.app.services.whatsapp.repositories.lid_mappings import (
+    resolve_lid_phone as _resolve_lid_phone,
 )
 from backend.app.services.whatsapp.repositories.messages import (
     build_message_from_gateway as _message_row_from_gateway,
@@ -141,6 +145,7 @@ class WhatsAppEventOrchestrator:
         jid: str,
         display_name: Optional[str],
         name_source: Optional[str] = None,
+        gateway_session_id: Optional[str] = None,
     ) -> Contact:
         clean_jid = _strip_jid_prefix(jid)
         if is_degenerate_jid(clean_jid):
@@ -180,19 +185,21 @@ class WhatsAppEventOrchestrator:
             phone_e164 = _contact_phone_for_jid(clean_jid)
         else:
             if "@lid" in clean_jid:
-                # Check if this LID is already mapped in whatsapp_private.lid_mappings
-                try:
-                    lid_lookup = await db.execute(
-                        text("SELECT phone_jid FROM whatsapp_private.lid_mappings WHERE lid_jid = :lid ORDER BY created_at DESC LIMIT 1"),
-                        {"lid": clean_jid if "@" in clean_jid else f"{clean_jid}@lid"},
-                    )
-                    mapped_row = lid_lookup.first()
-                    if mapped_row and mapped_row[0]:
-                        phone_e164 = _contact_phone_for_jid(mapped_row[0])
-                    else:
-                        phone_e164 = _contact_phone_for_jid(clean_jid)
-                except Exception:
-                    phone_e164 = _contact_phone_for_jid(clean_jid)
+                # G-3: tenant-scoped resolution. `lid_mappings` carries no
+                # `user_id`; the mapping row belongs to a gateway session and
+                # that session belongs to exactly one user. A lookup for THIS
+                # user must never read another user's row, so the resolver
+                # prefers the caller's own session and then the caller's other
+                # sessions -- and stops there. Previously this was a bare
+                # `WHERE lid_jid = :lid` global scan, which let tenant A resolve
+                # a LID using tenant B's mapping row.
+                mapped_phone_jid = await _resolve_lid_phone(
+                    db,
+                    clean_jid if "@" in clean_jid else f"{clean_jid}@lid",
+                    user_id=user_id,
+                    gateway_session_id=gateway_session_id,
+                )
+                phone_e164 = _contact_phone_for_jid(mapped_phone_jid or clean_jid)
             else:
                 phone_e164 = _contact_phone_for_jid(clean_jid)
 
@@ -268,6 +275,17 @@ class WhatsAppEventOrchestrator:
     ) -> Conversation:
         upsert_contact = self._get_helper("_upsert_contact", self._upsert_contact)
         contact = await upsert_contact(db, user_id, jid, contact_name, contact_source)
+        # "once SELECT, sonra INSERT" kalibi. Es zamanli iki olay ikisi de
+        # SELECT'te "yok" gorup IKI sohbet uretmeye calisabilir; yarisi kapatan
+        # sey VERITABANI kisitidir (`uq_conv_user_session_contact_channel`) ve
+        # `_ensure_conversation_race_safe` icindeki
+        # IntegrityError -> rollback -> yeniden cozumleme -> retry yoludur.
+        #
+        # NOT (Faz 5): bu fonksiyona uygulama ici bir asyncio kilidi eklenmedi.
+        # Boyle bir kilit yarisi KAPATMAZ: iki olay farkli DB oturumu
+        # kullandiginda ilk oturumun `flush()` ettigi satir henuz commit
+        # edilmedigi icin ikinci oturum onu goremez; kilit serbest kaldiktan
+        # sonra yapilan SELECT yine "yok" der. Olculerek dogrulandi.
         filters = _conversation_scope_filters(user_id, contact.id, session_id)
         stmt = select(Conversation).where(*filters).order_by(Conversation.id.asc())
         res = await db.execute(stmt)
@@ -498,23 +516,25 @@ class WhatsAppEventOrchestrator:
         clean_jid = _strip_jid_prefix(str(jid))
         if is_broadcast_only_jid(clean_jid):
             return _skip_event(event, f"contact_synced: broadcast-only jid ({clean_jid})")
-        if "@lid" in clean_jid:
-            try:
-                lid_lookup = await db.execute(
-                    text("SELECT phone_jid FROM whatsapp_private.lid_mappings WHERE lid_jid = :lid ORDER BY created_at DESC LIMIT 1"),
-                    {"lid": clean_jid if "@" in clean_jid else f"{clean_jid}@lid"},
-                )
-                mapped_row = lid_lookup.first()
-                if mapped_row and mapped_row[0]:
-                    phone_e164 = _contact_phone_for_jid(mapped_row[0])
-                else:
-                    phone_e164 = _contact_phone_for_jid(clean_jid)
-            except Exception:
-                phone_e164 = _contact_phone_for_jid(clean_jid)
-        else:
-            phone_e164 = _contact_phone_for_jid(clean_jid)
+        # G-3: resolve the owning tenant BEFORE the LID lookup so the mapping
+        # read can be scoped to that tenant. Resolving it afterwards is what
+        # forced the old global `WHERE lid_jid = :lid` scan, which let one
+        # tenant's session resolve a LID from another tenant's mapping row.
+        # `resolve_event_owner` is fail-closed (EventOwnerUnresolved) and was
+        # already called unconditionally on this path -- only its position moved.
         owner = await resolve_event_owner(db, clean_jid, event.get("gateway_session_id"))
         event["user_id"] = owner
+
+        if "@lid" in clean_jid:
+            mapped_phone_jid = await _resolve_lid_phone(
+                db,
+                clean_jid if "@" in clean_jid else f"{clean_jid}@lid",
+                user_id=owner,
+                gateway_session_id=event.get("gateway_session_id"),
+            )
+            phone_e164 = _contact_phone_for_jid(mapped_phone_jid or clean_jid)
+        else:
+            phone_e164 = _contact_phone_for_jid(clean_jid)
 
         sess_stmt = (
             select(WhatsAppSession)
@@ -542,7 +562,14 @@ class WhatsAppEventOrchestrator:
         if contact is None:
             high_rank = source in ("addressbook", "verified", "group_subject")
             if (high_rank and name and not _is_raw_jid_name(name)) or avatar_url:
-                contact = await upsert_contact(db, owner, clean_jid, name, source)
+                contact = await upsert_contact(
+                    db,
+                    owner,
+                    clean_jid,
+                    name,
+                    source,
+                    gateway_session_id=event.get("gateway_session_id"),
+                )
                 if avatar_url:
                     _set_contact_avatar(contact, avatar_url)
                 await db.commit()
@@ -948,6 +975,7 @@ class WhatsAppEventOrchestrator:
         )
         advance_message_status = self._get_helper("_advance_message_status", _advance_message_status)
         apply_last_message = self._get_helper("_apply_last_message", _apply_last_message)
+        apply_unread_count = self._get_helper("_apply_unread_count", _apply_unread_count)
         find_whatsapp_conversation = self._get_helper("_find_whatsapp_conversation", _find_whatsapp_conversation)
         schedule_chats_bootstrap = self._get_helper("_schedule_chats_bootstrap", None)
 
@@ -1043,9 +1071,21 @@ class WhatsAppEventOrchestrator:
             last_at = _as_naive_utc(_parse_dt(payload.get("last_message_at")))
             if last_at and (conv.last_message_at is None or last_at > conv.last_message_at):
                 conv.last_message_at = last_at
+            # Tek karar noktasi: `should_apply_unread_count`. Eski `max()` kurali
+            # okunmamis sayisinin ASLA dusmemesine yol aciyordu — baska bir
+            # cihazda (telefon/WhatsApp Web) okunan sohbetin rozeti hic
+            # temizlenmiyordu. Kural artik dususu kabul eder; yalnizca
+            # kanitlanabilir sekilde ESKI snapshot'lari (bizim okumamizdan ya da
+            # elimizdeki en yeni mesajdan once uretilmis) reddeder.
             try:
                 if payload.get("unread_count") is not None:
-                    conv.unread_count = max(conv.unread_count or 0, int(payload["unread_count"]))
+                    apply_unread_count(
+                        conv,
+                        int(payload["unread_count"]),
+                        incoming_activity_ts=_as_naive_utc(
+                            _parse_dt(payload.get("last_message_at"))
+                        ),
+                    )
             except (TypeError, ValueError) as exc:
                 logger.warning(
                     "Gateway unread_count gecersiz; mevcut deger korundu (conv=%s value=%r): %s",
@@ -1096,9 +1136,16 @@ class WhatsAppEventOrchestrator:
             }
             return event
         if event.get("event") == "conversation_read":
+            # `last_read_at` MUST be stamped alongside the counter: it is the
+            # only record of WHEN the read happened, and
+            # `should_apply_unread_count` uses it to reject a snapshot that was
+            # produced before the read. Only stamping it on an already-nonzero
+            # counter meant a read of an already-empty badge left no evidence,
+            # so the next stale snapshot could resurrect the badge.
             if (conv.unread_count or 0) > 0:
                 conv.unread_count = 0
-                await db.commit()
+            conv.last_read_at = datetime.utcnow()
+            await db.commit()
         elif event.get("event") == "message_status_updated":
             wa_id = event.get("wa_message_id")
             new_status = (event.get("status") or "").upper()

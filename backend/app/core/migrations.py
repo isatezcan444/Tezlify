@@ -853,6 +853,130 @@ async def ensure_messages_wa_message_id(engine: AsyncEngine) -> None:
             logger.info("[MIGRATION] messages.wa_message_id eklendi (sqlite)")
         await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_messages_wa_message_id ON messages (wa_message_id)"))
 
+
+# ---------------------------------------------------------------------------
+# C-4: messages (conversation_id, wa_message_id) kismen tekil indeksi
+# ---------------------------------------------------------------------------
+
+# NOT: `ensure_contacts_unique_phone` ile ayni ad semasi (uq_*) kullanilir.
+_WA_MSG_UNIQUE_INDEX = "uq_msg_conv_wa_message_id"
+
+
+async def ensure_messages_wa_message_id_unique(engine: AsyncEngine) -> str:
+    """C-4: `messages` icin (conversation_id, wa_message_id) KISMI TEKILIGINI kurar.
+
+    Sorun
+    -----
+    `messages.wa_message_id` nullable'di ve yalnizca DUZ (non-unique) indeksliydi
+    (`ix_messages_wa_message_id`). Uygulama seviyesindeki dedup
+    (`_ingest_message` icindeki SELECT, `message_exists_by_wa_id`) sira
+    bagimlidir: "once SELECT, sonra INSERT". Ayni `wa_message_id` ile iki
+    inbound olayi es zamanli geldiginde ikisi de SELECT'te "yok" gorup iki satir
+    yazabiliyordu. Bu gecis o yarisi DB seviyesinde kapatir — uygulama dedup'i
+    kalir (hizli yol), kisit ise son savunma hattidir.
+
+    Kapsam KASITLI olarak sohbet bazlidir
+    ------------------------------------
+    Anahtar `(conversation_id, wa_message_id)`'dir; yalniz `wa_message_id` DEGIL.
+    Bir WhatsApp mesaj kimligi bir mesaji tanimlar ve o mesaj tam olarak bir
+    sohbete aittir. Ayni `wa_message_id`'nin FARKLI bir sohbette gorulmesi
+    mesrudur (ornegin LID -> PN anahtar degisimi); o durumu
+    `reconcile_legacy_split_conversation` kendi icinde birlestirir. Bu yuzden
+    `wa_message_id` uzerinde GLOBAL bir tekillik YANLIS olurdu.
+
+    NULL semantigi
+    --------------
+    Indeks KISMIDIR (`WHERE wa_message_id IS NOT NULL`): provider tarafindan
+    henuz onaylanmamis yerel satirlar (`wa_message_id IS NULL`) sinirsiz sayida
+    olabilir. Bu, iki dialectte de ayni davranisi acikca garanti eder ve
+    PostgreSQL'in NULL benzersizlik semantigine bagimli kalmaz.
+
+    Veri guvenligi (KESIN)
+    ----------------------
+    Mevcut veride `(conversation_id, wa_message_id)` mukerreri varsa:
+      * HICBIR satir silinmez / birlestirilmez (otomatik destructive cleanup YOK),
+      * indeks OLUSTURULMAZ,
+      * durum `BLOCKED` olarak ERROR seviyesinde, ornek gruplarla birlikte loglanir.
+    Bu bilincli bir tercihtir: `ensure_contacts_unique_phone` mukerrerleri
+    birlestirir cunku orada kanonik satir (en kucuk id) guvenle belirlenebilir.
+    Mesajlarda "hangi kopya dogru" sorusunun guvenli bir cevabi yoktur — silme
+    karari operatore aittir.
+
+    Donus: "ALREADY_PRESENT" | "CREATED" | "BLOCKED" | "SKIPPED" | "ERROR".
+    Cagiran taraf degeri yok sayabilir; deger test ve gozlemlenebilirlik icin var.
+    """
+    dialect = engine.dialect.name
+    if dialect not in ("postgresql", "sqlite"):
+        logger.warning(
+            "[MIGRATION] ensure_messages_wa_message_id_unique bilinmeyen dialect %r", dialect)
+        return "SKIPPED"
+
+    try:
+        async with engine.begin() as conn:
+            # 0) Tablo var mi? (create_all sirasinda `messages` henuz olmayabilir)
+            if dialect == "postgresql":
+                table_exists = (await conn.execute(text(
+                    "SELECT 1 FROM information_schema.tables WHERE table_name = 'messages'"
+                ))).first()
+            else:
+                table_exists = (await conn.execute(text(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages'"
+                ))).first()
+            if table_exists is None:
+                logger.debug(
+                    "[MIGRATION] ensure_messages_wa_message_id_unique: messages tablosu yok, atlandi.")
+                return "SKIPPED"
+
+            # 1) Idempotans: indeks zaten varsa mukerrer de olamaz.
+            if dialect == "postgresql":
+                idx = (await conn.execute(text(
+                    "SELECT 1 FROM pg_indexes WHERE indexname = :n"
+                ), {"n": _WA_MSG_UNIQUE_INDEX})).first()
+            else:
+                idx = (await conn.execute(text(
+                    "SELECT 1 FROM sqlite_master WHERE type='index' AND name = :n"
+                ), {"n": _WA_MSG_UNIQUE_INDEX})).first()
+            if idx is not None:
+                return "ALREADY_PRESENT"
+
+            # 2) READ-ONLY mukerrer taramasi. Bu adimda hicbir sey yazilmaz/silinmez.
+            dup_rows = (await conn.execute(text("""
+                SELECT conversation_id, wa_message_id, COUNT(*) AS n
+                FROM messages
+                WHERE wa_message_id IS NOT NULL
+                GROUP BY conversation_id, wa_message_id
+                HAVING COUNT(*) > 1
+            """))).fetchall()
+
+            if dup_rows:
+                extra = sum(int(r[2]) for r in dup_rows) - len(dup_rows)
+                sample = "; ".join(
+                    f"conv={r[0]} wa_id={r[1]!r} x{r[2]}" for r in dup_rows[:5]
+                )
+                logger.error(
+                    "[MIGRATION][BLOCKED] %s olusturulamadi: mevcut veride %d mukerrer "
+                    "(conversation_id, wa_message_id) grubu var (%d fazla satir). "
+                    "Otomatik temizlik YAPILMADI — manuel karar gerekiyor. Ornekler: %s",
+                    _WA_MSG_UNIQUE_INDEX, len(dup_rows), extra, sample,
+                )
+                return "BLOCKED"
+
+            # 3) Kismi tekil indeks. Ad idempotent; ayni isim modelde de tanimlidir.
+            await conn.execute(text(
+                f"CREATE UNIQUE INDEX IF NOT EXISTS {_WA_MSG_UNIQUE_INDEX} "
+                "ON messages (conversation_id, wa_message_id) "
+                "WHERE wa_message_id IS NOT NULL"
+            ))
+            logger.info(
+                "[MIGRATION] %s olusturuldu (kismi tekil indeks; NULL wa_message_id haric).",
+                _WA_MSG_UNIQUE_INDEX,
+            )
+            return "CREATED"
+    except Exception as e:  # noqa: BLE001 — startup'i dusurmez, gorunur loglanir
+        logger.warning("[MIGRATION] ensure_messages_wa_message_id_unique: %s", e)
+        return "ERROR"
+
+
 # ---------------------------------------------------------------------------
 # Faz 7: Ham LID/JID hayalet verilerinin temizliği (idempotent)
 # ---------------------------------------------------------------------------

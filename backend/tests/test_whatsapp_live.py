@@ -1344,14 +1344,31 @@ async def test_mark_conversation_read_endpoint(auth_headers, mock_gateway):
 
 @pytest.mark.asyncio
 async def test_mark_conversation_read_survives_gateway_failure(auth_headers, mock_gateway):
-    """Gateway erisilemezse: DB okundu isareti YINE temizlenir (fail-soft),
-    ancak yanit SAHTE basari dondurmez — `success=False` + `error` verir.
+    """Gateway erisilemezse yanit SAHTE basari dondurmez — `success=False` +
+    `error` verir (Faz 13).
 
-    Faz 13: onceki davranis gateway cagrisi patlasa bile `success: True`
-    donuyordu; UI "okundu olarak isaretlendi" diyor, WhatsApp tarafinda ise
-    hicbir sey olmuyordu (sessiz yalan). Artik gercek sonuc raporlanir.
+    Faz 5 (§11): Faz 13 yalnizca YANITI duzeltmisti; yerel kayit hala
+    `unread_count = 0` + `last_read_at = now` yaziyordu. Yani veritabani
+    "okundu" diyordu, karsi taraf ise mesaji okunmamis goruyordu — sessiz bir
+    yalan. Ayrica `last_read_at` damgasi, gec gelen DOGRU snapshot'in rozeti
+    geri getirmesini de engelliyordu. Artik yerel okundu durumu yalnizca gercek
+    basari yolunda yazilir.
     """
-    conv_id = await _make_conv()
+    # Okunmamis sayaci SIFIRDAN FARKLI bir sohbet: aksi halde "temizlenmedi"
+    # iddiasi hicbir sey kanitlamaz.
+    async with AsyncSessionLocal() as db:
+        contact = Contact(user_id=TEST_USER, phone_e164=MOCK_PHONE, display_name="Test Lead")
+        db.add(contact)
+        await db.flush()
+        conv = Conversation(
+            user_id=TEST_USER, contact_id=contact.id, channel="WHATSAPP",
+            status=ConversationStatus.ACTIVE, unread_count=5,
+        )
+        db.add(conv)
+        await db.flush()
+        conv_id = conv.id
+        await db.commit()
+
     mock_gateway.mark_conversation_read.side_effect = Exception("gateway down")
 
     transport = ASGITransport(app=app)
@@ -1359,18 +1376,19 @@ async def test_mark_conversation_read_survives_gateway_failure(auth_headers, moc
         res = await client.post(
             f"/api/v1/whatsapp/conversations/{conv_id}/read", headers=auth_headers
         )
-        # Kullanici icin yerel okundu islemi yine de tamamlanir (fail-soft).
         assert res.status_code == 200
         body = res.json()
         assert body["success"] is False
         assert "gateway down" in (body.get("error") or "")
 
-    # DB gercegi: yerel okundu isareti temizlendi.
+    # DB gercegi: provider okundu bilgisini alamadi, yerel kayit da bunu
+    # "okundu" olarak isaretlemedi.
     async with AsyncSessionLocal() as db:
         conv = (await db.execute(
             select(Conversation).where(Conversation.id == conv_id)
         )).scalar_one()
-        assert conv.unread_count == 0
+        assert conv.unread_count == 5
+        assert conv.last_read_at is None
 
 
 @pytest.mark.asyncio

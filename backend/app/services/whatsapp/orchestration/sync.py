@@ -72,6 +72,7 @@ from backend.app.services.whatsapp.repositories.contacts import (
 )
 from backend.app.services.whatsapp.repositories.conversations import (
     apply_conversation_last_message as _apply_last_message,
+    apply_conversation_unread_count as _apply_unread_count,
     get_conversation_lock as _get_conversation_lock,
 )
 from backend.app.services.whatsapp.repositories.messages import (
@@ -721,6 +722,7 @@ class WhatsAppSyncOrchestrator:
         bulk_upsert_contacts = self._get_helper("_bulk_upsert_contacts", self._bulk_upsert_contacts)
         ensure_conversations_bulk = self._get_helper("_ensure_conversations_bulk", self._ensure_conversations_bulk)
         apply_last_message = self._get_helper("_apply_last_message", _apply_last_message)
+        apply_unread_count = self._get_helper("_apply_unread_count", _apply_unread_count)
 
         candidates: List[Dict[str, Any]] = []
         for item in items:
@@ -765,7 +767,7 @@ class WhatsAppSyncOrchestrator:
             conv.is_group = bool(item.get("is_group")) or "@g.us" in jid_str
             if "archived" in item:
                 conv.is_archived = bool(item.get("archived"))
-            conv.unread_count = max(conv.unread_count or 0, int(item.get("unread_count") or 0))
+            apply_unread_count(conv, item.get("unread_count"), incoming_activity_ts=gw_ts)
             jid_by_conv[conv.id] = jid_str
             # H-6: the emitted payload MUST describe the PERSISTED conversation, not
             # the incoming gateway snapshot.
@@ -1502,6 +1504,7 @@ class WhatsAppSyncOrchestrator:
         ensure_conversation = self._get_helper("_ensure_conversation", None)
         persist_gateway_message = self._get_helper("_persist_gateway_message", None)
         apply_last_message = self._get_helper("_apply_last_message", _apply_last_message)
+        apply_unread_count = self._get_helper("_apply_unread_count", _apply_unread_count)
         repair_last_message_previews = self._get_helper("_repair_last_message_previews", self._repair_last_message_previews)
         list_conversations = self._get_helper("list_conversations", None)
 
@@ -1583,8 +1586,7 @@ class WhatsAppSyncOrchestrator:
             conv.is_group = bool(item.get("is_group")) or "@g.us" in jid_str
             if "archived" in item:
                 conv.is_archived = bool(item.get("archived"))
-            unread = int(item.get("unread_count") or 0)
-            conv.unread_count = max(conv.unread_count or 0, unread)
+            apply_unread_count(conv, item.get("unread_count"), incoming_activity_ts=gw_ts)
             await db.flush()
         await repair_last_message_previews(db, user_id)
         await db.commit()

@@ -630,10 +630,98 @@ function sanitizeOutboundEvent(event) {
   }
 }
 
+/**
+ * Outbound media payload builder (pure).
+ *
+ * Kept out of `sendMediaMessage` so the exact object handed to Baileys can be
+ * asserted by unit tests against the REAL Baileys media primitives.
+ */
+function buildMediaContent({
+  media_type,
+  media_url,
+  media_base64,
+  mime_type,
+  caption,
+  filename,
+}) {
+  const type = (media_type || 'document').toLowerCase();
+  // Base64 payload (frontend upload) wins over URL.
+  //
+  // BAILEYS CONTRACT (lib/Utils/messages-media.js `getStream`): the media value
+  // may be a raw Buffer, `{ stream }`, or `{ url: <string|URL> }`. It is NOT
+  // legal to put a Buffer inside `{ url }` — `item.url.toString()` does not
+  // match `data:`/`http(s):`, so Baileys falls through to
+  // `createReadStream(<Buffer>)`, which throws
+  //   ERR_INVALID_ARG_VALUE: The argument 'path' must be a string, Uint8Array,
+  //   or URL without null bytes. Received <Buffer 89 50 4e 47 ...>
+  // That is exactly the production failure of the two FAILED outbound IMAGE
+  // sends. A Buffer must therefore be handed over DIRECTLY.
+  //
+  // `mimetype` is a SIBLING key on the content object: `prepareWAMessageMedia`
+  // reads `uploadData.mimetype`, never `media.mimetype`.
+  const buffer = media_base64 ? Buffer.from(media_base64, 'base64') : null;
+  const source = buffer || { url: media_url };
+  if (type === 'image') {
+    return { image: source, mimetype: mime_type || undefined, caption: caption || '' };
+  }
+  if (type === 'audio') {
+    return { audio: source, mimetype: mime_type || 'audio/mpeg', ptt: false };
+  }
+  if (type === 'video') {
+    return { video: source, mimetype: mime_type || undefined, caption: caption || '' };
+  }
+  return {
+    document: source,
+    mimetype: mime_type || 'application/octet-stream',
+    fileName: filename || 'belge.bin',
+    caption: caption || '',
+  };
+}
+
 // Faz 8: birim testleri icin sanitizasyon yardimcilari disa aktarilir
 // (createSessionManager factory'si ayrica export edilir; index.js ikisini de
 // kullanabilir).
-export { logger, createBaileysLogger, extractBaileysErrorDetails, isRawIdentityName, sanitizeChatForEmit, sanitizeOutboundEvent, mergeContactName, NAME_RANK, jidToPhone, isDegenerateJid, resolveSyncState, normalizePreviewText, buildChatPreview, isPhoneLikeName, summarizeWaMessage, classifyMessageType, hasRecognizedContent, resolveDownloadableMedia, contactPhoneJid, normalizePairingPhone, resolveJidKey };
+export { logger, createBaileysLogger, extractBaileysErrorDetails, isRawIdentityName, sanitizeChatForEmit, sanitizeOutboundEvent, mergeContactName, NAME_RANK, jidToPhone, isDegenerateJid, resolveSyncState, normalizePreviewText, buildChatPreview, isPhoneLikeName, summarizeWaMessage, classifyMessageType, hasRecognizedContent, resolveDownloadableMedia, contactPhoneJid, normalizePairingPhone, resolveJidKey, lidScopeSessionIds, buildMediaContent };
+
+/**
+ * G-3: which gateway sessions may answer a LID lookup for `sessionId`?
+ *
+ * `whatsapp_private.lid_mappings` is keyed by the *gateway* session UUID and
+ * carries no `user_id`. The only route from a mapping row to a tenant is
+ *
+ *   lid_mappings.session_id
+ *     -> public.whatsapp_sessions.gateway_id
+ *     -> public.whatsapp_sessions.user_id
+ *
+ * A LID -> phone pair is a global WhatsApp protocol fact (the same LID denotes
+ * the same account for every tenant), but the DB row is NOT globally readable:
+ * it belongs to exactly one tenant. Serving `sessionId` may therefore use
+ *
+ *   1. the caller's own gateway session      -> always
+ *   2. another line of the SAME user         -> yes
+ *   3. a line owned by another user          -> NEVER
+ *
+ * An unowned (orphan) gateway session gets its own line only -- never a global
+ * scan. Fail-closed: no `ownerId` means no siblings.
+ *
+ * @param {string} sessionId gateway session UUID being served
+ * @param {string|null} ownerId tenant user_id owning `sessionId`
+ * @param {Array<{sessionId: string, ownerId: string|null}>} sessions every known line
+ * @returns {Set<string>} allowed gateway session ids (always contains sessionId)
+ */
+function lidScopeSessionIds(sessionId, ownerId, sessions) {
+  const scope = new Set();
+  if (!sessionId) return scope;
+  scope.add(String(sessionId));
+  if (!ownerId) return scope;
+  for (const s of sessions || []) {
+    if (!s || !s.sessionId) continue;
+    if (s.ownerId && String(s.ownerId) === String(ownerId)) {
+      scope.add(String(s.sessionId));
+    }
+  }
+  return scope;
+}
 
 function mergeContactName(existing, name, source) {
   const base = existing || {};
@@ -690,11 +778,40 @@ export function createSessionManager({
     }
   }
 
+  // G-3: resolve which gateway sessions may answer a LID lookup for `sessionId`.
+  // `whatsapp_private.*` carries no `user_id`; the tenant route is
+  //   gateway_sessions.session_id -> public.whatsapp_sessions.gateway_id -> user_id
+  // Fail-closed: if the owner cannot be resolved, the scope collapses to the
+  // caller's own line instead of degrading to a global scan.
+  async function loadSessionOwners() {
+    if (!pool) return [];
+    try {
+      const res = await pool.query(
+        `SELECT gateway_id, user_id FROM public.whatsapp_sessions WHERE gateway_id IS NOT NULL`
+      );
+      return res.rows.map((r) => ({
+        sessionId: String(r.gateway_id),
+        ownerId: r.user_id ? String(r.user_id) : null,
+      }));
+    } catch (err) {
+      logger.warn({ err: err?.message }, 'Failed to load session owners for LID scoping');
+      return [];
+    }
+  }
+
+  async function lidScopeFor(sessionId) {
+    const sessions = await loadSessionOwners();
+    const own = sessions.find((s) => s.sessionId === String(sessionId));
+    const ownerId = own ? own.ownerId : null;
+    return { scope: lidScopeSessionIds(sessionId, ownerId, sessions), ownerId, sessions };
+  }
+
   async function syncLidMappingsFromDisk(sessionId, store) {
     let count = 0;
     const session = sessionManager.getSession(sessionId);
     try {
       const scanDirs = new Set();
+      const { scope } = await lidScopeFor(sessionId);
       if (sessionId) {
         scanDirs.add(getSessionDir(sessionsDir, sessionId));
       }
@@ -702,10 +819,15 @@ export function createSessionManager({
         for (const item of fs.readdirSync(sessionsDir)) {
           const itemPath = path.join(sessionsDir, item);
           try {
-            if (fs.statSync(itemPath).isDirectory()) {
-              scanDirs.add(itemPath);
-            }
-          } catch { /* ignore */ }
+            if (!fs.statSync(itemPath).isDirectory()) continue;
+          } catch {
+            continue;
+          }
+          // G-3: only the caller's own line and lines owned by the SAME tenant.
+          // Scanning every directory mixed other tenants' LID mappings into this
+          // session's in-memory store and into this session's DB rows.
+          if (sessionId && !scope.has(String(item))) continue;
+          scanDirs.add(itemPath);
         }
       }
 
@@ -779,11 +901,20 @@ export function createSessionManager({
     await syncLidMappingsFromDisk(sessionId, store);
     if (!pool) return 0;
     try {
+      // G-3: bound the read to the caller's own line plus lines owned by the
+      // SAME tenant. This used to be an unfiltered `DISTINCT ON (lid_jid)` over
+      // every tenant's rows, so one user's session loaded another user's LID
+      // mappings into its in-memory store. `DISTINCT ON` and the
+      // `(session_id = $1)` ordering are preserved exactly -- only the row set
+      // is now bounded. A LID -> phone pair is a global protocol fact, but the
+      // row still belongs to one tenant and must not be readable across tenants.
+      const { scope } = await lidScopeFor(sessionId);
       const res = await pool.query(
         `SELECT DISTINCT ON (lid_jid) lid_jid, phone_jid 
          FROM whatsapp_private.lid_mappings 
+         WHERE session_id = ANY($2::text[])
          ORDER BY lid_jid, (session_id = $1) DESC, created_at DESC`,
-        [String(sessionId)]
+        [String(sessionId), Array.from(scope)]
       );
       let count = 0;
       const session = sessionManager.getSession(sessionId);
@@ -1500,21 +1631,9 @@ export function createSessionManager({
       const session = this._requireConnectedSession(sessionId);
       const key = resolveJidKey(this._storeOf(session), jid);
       const type = (media_type || 'document').toLowerCase();
-      // Base64 payload (frontend upload) wins over URL; Baileys accepts Buffers.
-      const buffer = media_base64 ? Buffer.from(media_base64, 'base64') : null;
-      const source = buffer
-        ? { url: buffer, mimetype: mime_type || undefined }
-        : { url: media_url };
-      let content;
-      if (type === 'image') {
-        content = { image: source, caption: caption || '' };
-      } else if (type === 'audio') {
-        content = { audio: source, mimetype: mime_type || 'audio/mpeg', ptt: false };
-      } else if (type === 'video') {
-        content = { video: source, caption: caption || '' };
-      } else {
-        content = { document: source, mimetype: mime_type || 'application/octet-stream', fileName: filename || 'belge.bin', caption: caption || '' };
-      }
+      const content = buildMediaContent({
+        media_type, media_url, media_base64, mime_type, caption, filename,
+      });
       const messageId = crypto.randomBytes(16).toString('hex').toUpperCase();
       const pending = this._recordOutbound(key, {
         body: caption || filename || media_url || '', message_type: type.toUpperCase(),

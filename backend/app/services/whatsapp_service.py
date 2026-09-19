@@ -37,7 +37,7 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple
 
-from sqlalchemy import select, func, or_, and_, text
+from sqlalchemy import select, func, or_, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, contains_eager
 
@@ -76,6 +76,9 @@ from backend.app.services.whatsapp.repositories.messages import (
     hydration_cursor_ms as _hydration_cursor_ms,
     msg_time as _msg_time,
     msg_time_col as _msg_time_col,
+)
+from backend.app.services.whatsapp.repositories.lid_mappings import (
+    resolve_lid_phones as _resolve_lid_phones,
 )
 from backend.app.services.whatsapp.repositories.sessions import (
     conversation_gateway_id as _conversation_gateway_id,
@@ -254,8 +257,11 @@ async def _upsert_contact(
     jid: str,
     display_name: Optional[str],
     name_source: Optional[str] = None,
+    gateway_session_id: Optional[str] = None,
 ) -> Contact:
-    return await _event_orchestrator._upsert_contact(db, user_id, jid, display_name, name_source)
+    return await _event_orchestrator._upsert_contact(
+        db, user_id, jid, display_name, name_source, gateway_session_id
+    )
 
 
 async def _ensure_conversation(
@@ -464,20 +470,18 @@ async def list_conversations(
     if candidate_lids:
         raw_lids = [l.split("@")[0] for l in candidate_lids]
         search_lids = list(set(candidate_lids + raw_lids + [f"{l}@lid" for l in raw_lids]))
-        try:
-            lid_res = await db.execute(
-                text("SELECT lid_jid, phone_jid FROM whatsapp_private.lid_mappings WHERE lid_jid = ANY(:lids)"),
-                {"lids": search_lids},
-            )
-            for row in lid_res.fetchall():
-                if row[0] and row[1]:
-                    pn = jid_to_phone(row[1])
-                    if pn:
-                        lid_map[row[0]] = pn
-                        lid_map[row[0].split("@")[0]] = pn
-                        lid_map[f"{row[0].split('@')[0]}@lid"] = pn
-        except Exception as e:
-            logger.warning("Failed to batch-resolve LID mappings in list_conversations: %s", e)
+        # G-3: tenant-scoped batch read. This used to be a bare
+        # `WHERE lid_jid = ANY(:lids)` scan over every tenant's mapping rows.
+        # A LID -> phone pair is a global WhatsApp protocol fact, but the row
+        # itself is not globally readable: only this user's own sessions may
+        # answer for this user's conversations.
+        resolved_lids = await _resolve_lid_phones(db, search_lids, user_id=user_id)
+        for lid_jid, phone_jid in resolved_lids.items():
+            pn = jid_to_phone(phone_jid)
+            if pn:
+                lid_map[lid_jid] = pn
+                lid_map[lid_jid.split("@")[0]] = pn
+                lid_map[f"{lid_jid.split('@')[0]}@lid"] = pn
 
     seen_self_conversation = False
     out: List[Dict[str, Any]] = []

@@ -1,6 +1,6 @@
 import enum
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, DateTime, Text, Enum, ForeignKey, Index, Uuid
+from sqlalchemy import Column, Integer, String, DateTime, Text, Enum, ForeignKey, Index, Uuid, text
 from sqlalchemy.orm import relationship
 from backend.app.core.database import Base
 
@@ -91,4 +91,22 @@ class Message(Base):
         Index("idx_msg_conv_created", "conversation_id", "created_at"),
         Index("idx_msg_conv_id", "conversation_id", "id"),
         Index("idx_msg_client_id", "client_message_id"),
+        # C-4: ayni WhatsApp mesaji bir sohbette YALNIZCA bir kez bulunur.
+        # Kismi indeks — `wa_message_id IS NULL` (provider onayi bekleyen yerel
+        # satirlar) sinirsiz sayida olabilir. Kapsam sohbet bazlidir; ayni
+        # `wa_message_id` farkli bir sohbette mesru olabilir (LID -> PN anahtar
+        # degisimi; bkz. reconcile_legacy_split_conversation). `wa_message_id`
+        # uzerinde GLOBAL tekillik yanlis olurdu.
+        # Runtime karsiligi: `ensure_messages_wa_message_id_unique` (bkz.
+        # app/core/migrations.py). Ikisi ayni indeks adini ve ayni WHERE'i
+        # kullanmalidir; aksi halde taze kurulum ile migrate edilmis kurulum
+        # birbirinden sapar.
+        Index(
+            "uq_msg_conv_wa_message_id",
+            "conversation_id",
+            "wa_message_id",
+            unique=True,
+            sqlite_where=text("wa_message_id IS NOT NULL"),
+            postgresql_where=text("wa_message_id IS NOT NULL"),
+        ),
     )

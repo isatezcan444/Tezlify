@@ -124,3 +124,68 @@ def should_apply_last_message(
     if ts is not None and cur is not None and ts <= cur:
         return False
     return True
+
+
+def should_apply_unread_count(
+    current: Optional[int],
+    incoming: Optional[int],
+    *,
+    current_activity_ts: Optional[datetime] = None,
+    incoming_activity_ts: Optional[datetime] = None,
+    last_read_at: Optional[datetime] = None,
+) -> bool:
+    """Pure decision logic for the unread badge after a gateway snapshot/event.
+
+    The gateway owns `unread_count` and reports it VERBATIM, including decreases
+    (a chat read on the phone drops to 0 — see the gateway's `chats.update`
+    handler). The local value must therefore be able to go DOWN; a monotonic
+    `max(local, incoming)` makes a read performed anywhere else permanently
+    invisible, so the badge never clears.
+
+    Two guards keep a *stale* snapshot from undoing newer local knowledge:
+
+    - **Decrease guard.** A snapshot whose activity timestamp is OLDER than the
+      newest message we already hold cannot account for that message, so it must
+      never LOWER the badge.
+    - **Read guard.** A snapshot whose activity timestamp is at or before our own
+      successful read describes the pre-read state, so it must never RAISE the
+      badge back.
+
+    Anything else is applied verbatim — that is how a read performed on another
+    device reaches us.
+
+    Note: an absent `incoming_activity_ts` carries no staleness evidence, so the
+    snapshot is treated as fresh (fail-open). The gateway always populates
+    `last_message_at`, so this branch is a boundary case, not the norm.
+    """
+    if incoming is None:
+        return False
+    if current is None:
+        return True
+
+    cur = max(0, int(current))
+    inc = max(0, int(incoming))
+    if inc == cur:
+        return False
+
+    inc_ts = as_naive_utc(incoming_activity_ts)
+    cur_ts = as_naive_utc(current_activity_ts)
+    read_ts = as_naive_utc(last_read_at)
+
+    # Staleness guard, applied symmetrically to BOTH directions:
+    # a snapshot whose activity timestamp predates the newest message we
+    # already hold cannot know about that message, so it may not move the
+    # badge in EITHER direction.
+    if inc_ts is not None and cur_ts is not None and inc_ts < cur_ts:
+        return False
+
+    # Anything at or after our newest known activity is fresh enough to be
+    # believed, so a decrease is applied verbatim.
+    if inc < cur:
+        return True
+
+    # An increase describing the pre-read state must not resurrect the badge.
+    if read_ts is not None and inc_ts is not None and inc_ts <= read_ts:
+        return False
+
+    return True
