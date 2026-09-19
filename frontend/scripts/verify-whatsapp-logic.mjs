@@ -29,21 +29,27 @@ import { build } from 'esbuild';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const frontendRoot = path.resolve(here, '..');
+const SRC = path.join(frontendRoot, 'src');
 
-const tmp = await mkdtemp(path.join(frontendRoot, '.tmp-verify-'));
+// Build OUTSIDE the working tree: a crashed or killed run would otherwise leave
+// `.tmp-verify-*` directories behind in the repo, ready to be committed.
+const tmp = await mkdtemp(path.join(os.tmpdir(), 'tezlify-logic-'));
 const entry = path.join(tmp, 'entry.ts');
 const out = path.join(tmp, 'bundle.mjs');
 
 await writeFile(
   entry,
   [
-    `export { mapConversationItem, buildConversationUpdatedPayload } from '../src/features/whatsapp/api/whatsappApi';`,
-    `export { compareConversationsByActivityDesc, getConversationActivityTimestamp, getConversationIdentityKey, dedupeConversationsByCanonicalIdentity, restoreConversationActivity } from '../src/features/whatsapp/lib/whatsappOrdering';`,
-    `export { getConversationDisplayName, extractCleanPhone, formatPhoneNumber, isRawWhatsAppJid, stripJidPrefix } from '../src/features/whatsapp/lib/whatsappIdentity';`,
-    `export { PEER_TYPING_TTL_MS, pruneExpiredTyping, resolveSyncDisplayCounts } from '../src/features/whatsapp/lib/whatsappSync';`,
-    `export { buildChatPreview } from '../src/features/whatsapp/lib/whatsappPreview';`,
-    `export { en } from '../src/locales/en';`,
-    `export { tr } from '../src/locales/tr';`,
+    `export { mapConversationItem, buildConversationUpdatedPayload } from '${SRC}/features/whatsapp/api/whatsappApi';`,
+    `export { compareConversationsByActivityDesc, getConversationActivityTimestamp, getConversationIdentityKey, dedupeConversationsByCanonicalIdentity, restoreConversationActivity } from '${SRC}/features/whatsapp/lib/whatsappOrdering';`,
+    `export { getConversationDisplayName, extractCleanPhone, formatPhoneNumber, isRawWhatsAppJid, stripJidPrefix } from '${SRC}/features/whatsapp/lib/whatsappIdentity';`,
+    `export { PEER_TYPING_TTL_MS, pruneExpiredTyping, resolveSyncDisplayCounts } from '${SRC}/features/whatsapp/lib/whatsappSync';`,
+    `export { buildChatPreview, normalizePreviewText, shouldApplyPreview } from '${SRC}/features/whatsapp/lib/whatsappPreview';`,
+    `export { resolveUnreadCount } from '${SRC}/features/whatsapp/lib/whatsappUnread';`,
+    `export { mergeWhatsAppMessages, mergeDeliveryStatus } from '${SRC}/features/whatsapp/lib/whatsappMessageMerge';`,
+    `export { applyConversationEvent } from '${SRC}/features/whatsapp/lib/whatsappConversationPatch';`,
+    `export { en } from '${SRC}/locales/en';`,
+    `export { tr } from '${SRC}/locales/tr';`,
   ].join('\n'),
   'utf8'
 );
@@ -82,6 +88,15 @@ const flattenKeys = (obj, prefix = '') => {
 try {
   await build({
     entryPoints: [entry],
+    // Resolve node_modules against the repo: the entry itself lives in the
+    // OS temp dir so a crashed run cannot litter the working tree.
+    absWorkingDir: frontendRoot,
+    // The entry lives in the OS temp dir, so node_modules is not reachable by
+    // walking up from it. Search the workspace roots explicitly.
+    nodePaths: [
+      path.join(frontendRoot, 'node_modules'),
+      path.resolve(frontendRoot, '..', 'node_modules'),
+    ],
     outfile: out,
     bundle: true,
     format: 'esm',
@@ -91,7 +106,6 @@ try {
       'import.meta.env': '{}',
       'process.env.NODE_ENV': '"test"',
     },
-    external: ['react', 'react-dom'],
   });
 
   const {
@@ -108,6 +122,12 @@ try {
     isRawWhatsAppJid,
     stripJidPrefix,
     buildChatPreview,
+    normalizePreviewText,
+    shouldApplyPreview,
+    resolveUnreadCount,
+    mergeWhatsAppMessages,
+    mergeDeliveryStatus,
+    applyConversationEvent,
     PEER_TYPING_TTL_MS,
     pruneExpiredTyping,
     resolveSyncDisplayCounts,
@@ -625,6 +645,217 @@ try {
     assert.equal(buildChatPreview({ ...base, sender_name: '+90 532 123 45 67' }, true), 'merhaba');
     // Non-group conversations never get a prefix.
     assert.equal(buildChatPreview({ ...base, sender_name: 'Ahmet Yılmaz' }, false), 'merhaba');
+  });
+
+  check('§32: the unread badge can go DOWN — a read on another device clears it', () => {
+    // The gateway owns unread_count and reports decreases; the backend persists
+    // the policy-applied value and emits it, so the UI must accept it verbatim.
+    assert.equal(resolveUnreadCount(5, 0), 0, 'explicit 0 must clear the badge');
+    assert.equal(resolveUnreadCount(5, 2), 2, 'a decrease must be honoured');
+    assert.equal(resolveUnreadCount(1, 4), 4, 'an increase must be honoured');
+    assert.equal(resolveUnreadCount(0, 0), 0, 'already-read stays read');
+  });
+
+  check('§32: a partial event with no unread_count never erases known state', () => {
+    assert.equal(resolveUnreadCount(3, undefined), 3);
+    assert.equal(resolveUnreadCount(3, null), 3);
+    assert.equal(resolveUnreadCount(0, undefined), 0);
+  });
+
+  await checkAsync('§32: the WS merge no longer clamps the badge with Math.max', async () => {
+    const [hubSrc, patchSrc] = await Promise.all([
+      readFile(path.join(frontendRoot, 'src/pages/WhatsAppHubPage.tsx'), 'utf8'),
+      readFile(
+        path.join(frontendRoot, 'src/features/whatsapp/lib/whatsappConversationPatch.ts'),
+        'utf8'
+      ),
+    ]);
+    assert.ok(
+      !/Math\.max\([^)]*unread_count/.test(hubSrc),
+      'the WS conversation_updated merge must not clamp unread_count with Math.max'
+    );
+    assert.ok(
+      !/Math\.max\([^)]*unread_count/.test(patchSrc),
+      'the shared merge helper must not clamp unread_count with Math.max'
+    );
+    // The hub page must delegate to the single shared merge path (P6.2), and
+    // that path must route the badge through the shared policy helper.
+    assert.ok(
+      /applyConversationEvent\(c,\s*payload/.test(hubSrc),
+      'the merge must delegate to the shared applyConversationEvent helper'
+    );
+    assert.ok(
+      /resolveUnreadCount\(current\.unread_count,\s*payload\.unread_count\)/.test(patchSrc),
+      'the shared merge must route the badge through resolveUnreadCount'
+    );
+  });
+
+  // -----------------------------------------------------------------------
+  // Phase 6.1 — cross-layer: apply REAL backend WebSocket payloads to the
+  // shipped frontend mappers.
+  //
+  // `phase6-ws-payloads.json` is produced by running the real ingest path
+  // (scratch/p6_dump_ws_payloads.py); main.py:319 broadcasts exactly those
+  // dicts. So these checks compare DB-produced state against React state.
+  // -----------------------------------------------------------------------
+  const fx = JSON.parse(
+    await readFile(path.join(frontendRoot, 'scripts/fixtures/phase6-ws-payloads.json'), 'utf8')
+  );
+
+  /** Mirrors WhatsAppHubPage's conversation_updated merge with the shipped helpers. */
+  const mergeConversation = (current, wsPayload) => {
+    const payload = wsPayload.conversation || wsPayload;
+    const mapped = mapConversationItem(buildConversationUpdatedPayload(current.id, payload));
+    const next = { ...current, ...mapped };
+    next.unread_count = resolveUnreadCount(current.unread_count, payload.unread_count);
+    const gwPreview = payload.last_message_preview
+      ? normalizePreviewText(payload.message_type, String(payload.last_message_preview), fakeT)
+      : '';
+    const applyGw = Boolean(gwPreview) && shouldApplyPreview(payload.last_message_at, current.last_message_at);
+    next.last_message_preview = applyGw ? gwPreview : current.last_message_preview;
+    next.last_message_at = applyGw ? payload.last_message_at || current.last_message_at : current.last_message_at;
+    return next;
+  };
+
+  const baseUi = {
+    id: fx.conversation_id,
+    unread_count: fx.baseline.unread_count,
+    lead_name: fx.baseline.name,
+    avatar_url: 'https://cdn.example/a.png',
+    last_message_preview: 'son mesaj',
+    last_message_at: '2026-09-18T10:02:00.000Z',
+    is_group: false,
+  };
+
+  check('§P6/I: an external read produced by the backend really clears the UI badge 5 -> 0', () => {
+    assert.equal(fx.ws_external_read.conversation.unread_count, 0, 'backend must emit 0');
+    const next = mergeConversation(baseUi, fx.ws_external_read);
+    assert.equal(next.unread_count, 0, `UI badge must reach 0, got ${next.unread_count}`);
+  });
+
+  check('§P6/§20: a partial event preserves name / avatar / preview / timestamp / is_group', () => {
+    const next = mergeConversation(baseUi, fx.ws_partial_unread_zero);
+    assert.equal(next.unread_count, 0, 'unread must still be applied');
+    assert.equal(next.lead_name, baseUi.lead_name, 'name must be preserved');
+    assert.equal(next.avatar_url, baseUi.avatar_url, 'avatar must be preserved');
+    assert.equal(next.last_message_preview, baseUi.last_message_preview, 'preview must be preserved');
+    assert.equal(next.last_message_at, baseUi.last_message_at, 'last_message_at must be preserved');
+    assert.equal(next.is_group, baseUi.is_group, 'is_group must be preserved');
+  });
+
+  check('§P6/§21: DB(WS payload) and frontend agree on unread / preview / last_message_at', () => {
+    const ws = fx.ws_external_read.conversation;
+    const next = mergeConversation(baseUi, fx.ws_external_read);
+    // unread_count: exact equality across all three layers
+    assert.equal(next.unread_count, ws.unread_count, 'frontend unread != WS unread');
+    assert.equal(ws.unread_count, fx.ws_external_read.conversation.unread_count);
+    // last_message_at: the payload is the DB value; the UI keeps it when the
+    // gateway preview is absent (no newer activity evidence).
+    assert.equal(
+      next.last_message_at,
+      baseUi.last_message_at,
+      'frontend last_message_at diverged from the persisted value'
+    );
+    assert.equal(next.last_message_preview, baseUi.last_message_preview, 'preview diverged');
+  });
+
+  // ---- Pagination / merge layer: the React state half of Scenarios D, F, N ----
+  // These run the shipped `mergeWhatsAppMessages`, i.e. exactly the function
+  // `WhatsAppHubPage` calls on refresh, reconnect and sync-chunk merges.
+  const T0 = Date.UTC(2026, 8, 18, 0, 0, 0);
+  const ts = (n) => new Date(T0 + n * 1000).toISOString();
+  const mkMsg = (n, extra = {}) => ({
+    id: n,
+    conversation_id: 1,
+    body: `m${n}`,
+    direction: 'INBOUND',
+    status: 'RECEIVED',
+    created_at: ts(n),
+    external_timestamp: ts(n),
+    wa_message_id: `W${n}`,
+    ...extra,
+  });
+  const page2 = Array.from({ length: 50 }, (_, i) => mkMsg(i + 1)); // older  (1..50)
+  const page1 = Array.from({ length: 50 }, (_, i) => mkMsg(i + 51)); // newer (51..100)
+
+  check('§P6/N: page 1 + page 2 are both retained and chronologically ordered', () => {
+    const loaded = mergeWhatsAppMessages(page1, page2);
+    assert.equal(loaded.length, 100, `expected 100, got ${loaded.length}`);
+    assert.equal(loaded[0].id, 1, 'oldest message must be first');
+    assert.equal(loaded[99].id, 100, 'newest message must be last');
+  });
+
+  check('§P6/N: a refresh during pagination keeps the older pages and appends new activity', () => {
+    const loaded = mergeWhatsAppMessages(page1, page2);
+    const live = mkMsg(101);
+    // Reconnect/sync path: `mergeWhatsAppMessages(prev, [...res.messages, ...buf])`
+    const afterRefresh = mergeWhatsAppMessages(loaded, [...page1, live]);
+    assert.equal(afterRefresh.length, 101, `expected 101, got ${afterRefresh.length}`);
+    assert.ok(afterRefresh.some((m) => m.id === 1), 'page 2 must not disappear');
+    assert.ok(afterRefresh.some((m) => m.id === 50), 'page 2 must not disappear');
+    assert.equal(afterRefresh[100].id, 101, 'new activity must be last');
+    assert.equal(new Set(afterRefresh.map((m) => m.wa_message_id)).size, 101, 'duplicate wa_message_id');
+  });
+
+  check('§P6/N: replaying the same refresh or the same sync chunk does not duplicate', () => {
+    const loaded = mergeWhatsAppMessages(page1, page2);
+    const once = mergeWhatsAppMessages(loaded, [...page1, mkMsg(101)]);
+    const twice = mergeWhatsAppMessages(once, [...page1, mkMsg(101)]);
+    assert.equal(twice.length, 101, `replay changed the count: ${twice.length}`);
+  });
+
+  check('§P6/D: history and realtime carrying the same wa_message_id are one bubble', () => {
+    const historyRow = mkMsg(10, { wa_message_id: 'WSAME', status: 'RECEIVED' });
+    const realtimeRow = mkMsg(77, { wa_message_id: 'WSAME', status: 'READ' });
+    const merged = mergeWhatsAppMessages([historyRow], [realtimeRow]);
+    assert.equal(merged.length, 1, `expected 1 bubble, got ${merged.length}`);
+    assert.equal(merged[0].status, 'READ', 'the higher delivery rank must win');
+  });
+
+  check('§P6/F: delivery status is monotonic — retry advances, a late FAILED never downgrades', () => {
+    assert.equal(mergeDeliveryStatus('FAILED', 'PENDING'), 'FAILED', 'FAILED must not become PENDING');
+    assert.equal(mergeDeliveryStatus('FAILED', 'SENT'), 'SENT', 'a retry must advance');
+    assert.equal(mergeDeliveryStatus('SENT', 'FAILED'), 'SENT', 'a late FAILED must not downgrade');
+    assert.equal(mergeDeliveryStatus('DELIVERED', 'PENDING'), 'DELIVERED', 'stale PENDING must not rewind');
+    assert.equal(mergeDeliveryStatus('READ', 'DELIVERED'), 'READ', 'an older ACK must not rewind READ');
+  });
+
+  // The hub page's inline merge was extracted into `applyConversationEvent`
+  // (Phase 6.2) so the DOM tests can drive the real path. Prove the extraction
+  // is behaviour-identical: run both on the same REAL backend payloads.
+  check('§P6.2: the extracted merge agrees with the pre-extraction implementation', () => {
+    for (const key of ['ws_external_read', 'ws_partial_unread_zero', 'ws_stale_snapshot_older', 'ws_stale_snapshot_same_ts']) {
+      const payload = fx[key].conversation;
+      const extracted = applyConversationEvent({ ...baseUi }, payload, fakeT);
+      const reference = mergeConversation({ ...baseUi }, fx[key]);
+      assert.equal(extracted.unread_count, reference.unread_count, `${key}: unread diverged`);
+      assert.equal(extracted.last_message_preview, reference.last_message_preview, `${key}: preview diverged`);
+      assert.equal(extracted.last_message_at, reference.last_message_at, `${key}: last_message_at diverged`);
+    }
+  });
+
+  await checkAsync('§P6.4/§P6.5: the hub page keys ChatThread and ChatComposer by conversation id', async () => {
+    const src = await readFile(path.join(frontendRoot, 'src/pages/WhatsAppHubPage.tsx'), 'utf8');
+    // ChatThread: without a key, switching reuses the instance, so the viewport
+    // and `isNearBottom` of the previous chat carry over and the new chat opens
+    // mid-history or with a spurious new-message pill.
+    assert.ok(
+      /<ChatThread\s+key=\{selectedConv\.id\}/.test(src),
+      'ChatThread must be keyed by conversation id so a switch remounts it'
+    );
+    // ChatComposer: it owns the draft in internal state and gets no
+    // conversation identifier, so unkeyed it leaks the draft into the next chat
+    // — and `onSend` delivers to the SELECTED conversation (wrong recipient).
+    assert.ok(
+      /<ChatComposer\s+key=\{selectedConv\.id\}/.test(src),
+      'ChatComposer must be keyed by conversation id so a draft cannot leak to another chat'
+    );
+  });
+
+  check('§P6.2: the extracted merge keeps the known name when the payload carries none', () => {
+    const patched = applyConversationEvent({ ...baseUi }, { id: baseUi.id, unread_count: 0 }, fakeT);
+    assert.equal(patched.lead_name, baseUi.lead_name, 'an unresolved identity must keep the known name');
+    assert.equal(patched.unread_count, 0, 'the badge must still be applied');
   });
 
   console.log(`\nWhatsApp frontend identity + ordering verification: PASS (${passed} checks)`);

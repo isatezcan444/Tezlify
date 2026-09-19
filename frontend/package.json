@@ -9,7 +9,12 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "verify:logic": "node scripts/verify-whatsapp-logic.mjs",
+    "verify:dom": "node scripts/verify-whatsapp-dom.mjs",
+    "verify:merge": "node scripts/test-whatsapp-message-merge.mjs",
+    "verify:merge-equivalence": "node scripts/verify-whatsapp-merge-equivalence.mjs",
+    "verify:browser": "node scripts/verify-whatsapp-browser.mjs"
   },
   "dependencies": {
     "class-variance-authority": "^0.7.1",
@@ -24,6 +29,7 @@
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.0",
     "autoprefixer": "^10.5.4",
+    "jsdom": "^30.1.0",
     "postcss": "^8.5.26",
     "tailwindcss": "^3.4.19",
     "typescript": "^5.4.5",

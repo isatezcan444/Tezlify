@@ -1,0 +1,111 @@
+{
+  "conversation_id": 1,
+  "baseline": {
+    "unread_count": 5,
+    "name": "Ayse Demir"
+  },
+  "ws_external_read": {
+    "event": "conversation_updated",
+    "event_id": "1d558de8-60c0-4b5a-b547-cb88f39a9546",
+    "gateway_session_id": "gw-p6-dump",
+    "conversation_id": 1,
+    "conversation": {
+      "id": 1,
+      "session_id": 2,
+      "contact_id": 56,
+      "lead_id": null,
+      "name": "Ayse Demir",
+      "phone": "+905550000777",
+      "identity_state": "RESOLVED_PROFILE",
+      "is_group": false,
+      "is_archived": false,
+      "avatar_url": null,
+      "last_message_preview": "son mesaj",
+      "last_message_at": "2026-09-18T10:02:00",
+      "created_at": "2026-09-19T12:18:48.599909",
+      "updated_at": "2026-09-19T12:18:48.610160",
+      "unread_count": 0,
+      "last_message_state": "RESOLVED",
+      "status": "ACTIVE"
+    },
+    "user_id": "abcd1234-0000-0000-0000-00000000d0e5"
+  },
+  "ws_partial_unread_zero": {
+    "event": "conversation_updated",
+    "event_id": "d5878f1a-44fc-4f54-8589-950db40f15df",
+    "gateway_session_id": "gw-p6-dump",
+    "conversation_id": 1,
+    "conversation": {
+      "id": 1,
+      "session_id": 2,
+      "contact_id": 56,
+      "lead_id": null,
+      "name": "Ayse Demir",
+      "phone": "+905550000777",
+      "identity_state": "RESOLVED_PROFILE",
+      "is_group": false,
+      "is_archived": false,
+      "avatar_url": null,
+      "last_message_preview": "son mesaj",
+      "last_message_at": "2026-09-18T10:02:00",
+      "created_at": "2026-09-19T12:18:48.599909",
+      "updated_at": "2026-09-19T12:18:48.614499",
+      "unread_count": 0,
+      "last_message_state": "RESOLVED",
+      "status": "ACTIVE"
+    },
+    "user_id": "abcd1234-0000-0000-0000-00000000d0e5"
+  },
+  "ws_stale_snapshot_older": {
+    "event": "conversation_updated",
+    "event_id": "7369f5ca-3c89-466e-b8ed-751d372f339b",
+    "gateway_session_id": "gw-p6-dump",
+    "conversation_id": 1,
+    "conversation": {
+      "id": 1,
+      "session_id": 2,
+      "contact_id": 56,
+      "lead_id": null,
+      "name": "Ayse Demir",
+      "phone": "+905550000777",
+      "identity_state": "RESOLVED_PROFILE",
+      "is_group": false,
+      "is_archived": false,
+      "avatar_url": null,
+      "last_message_preview": "son mesaj",
+      "last_message_at": "2026-09-18T10:02:00",
+      "created_at": "2026-09-19T12:18:48.599909",
+      "updated_at": "2026-09-19T12:18:48.614499",
+      "unread_count": 0,
+      "last_message_state": "RESOLVED",
+      "status": "ACTIVE"
+    },
+    "user_id": "abcd1234-0000-0000-0000-00000000d0e5"
+  },
+  "ws_stale_snapshot_same_ts": {
+    "event": "conversation_updated",
+    "event_id": "2a50662f-86b3-48ee-ae9c-81a348820a51",
+    "gateway_session_id": "gw-p6-dump",
+    "conversation_id": 1,
+    "conversation": {
+      "id": 1,
+      "session_id": 2,
+      "contact_id": 56,
+      "lead_id": null,
+      "name": "Ayse Demir",
+      "phone": "+905550000777",
+      "identity_state": "RESOLVED_PROFILE",
+      "is_group": false,
+      "is_archived": false,
+      "avatar_url": null,
+      "last_message_preview": "son mesaj",
+      "last_message_at": "2026-09-18T10:02:00",
+      "created_at": "2026-09-19T12:18:48.599909",
+      "updated_at": "2026-09-19T12:18:48.614499",
+      "unread_count": 0,
+      "last_message_state": "RESOLVED",
+      "status": "ACTIVE"
+    },
+    "user_id": "abcd1234-0000-0000-0000-00000000d0e5"
+  }
+}
