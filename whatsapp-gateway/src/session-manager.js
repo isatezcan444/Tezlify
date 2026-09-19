@@ -2784,20 +2784,31 @@ export function createSessionManager({
       }
       session.sock = sock;
       latency('socket_initialization_ms', socketStarted, id);
-      if (leaseRepository) {
+      const loseLease = () => {
+        if (!session.lifecycle.isCurrent(generation, sock)) return;
+        session.lifecycle.invalidate();
+        clearLeaseTimers(session);
+        try { sock.ev?.removeAllListeners(); } catch (err) { /* ignore */ }
+        try { sock.end(undefined); } catch (err) { /* ignore */ }
+        session.sock = null;
+        session.status = 'UNAVAILABLE';
+        session.is_phone_online = false;
+        session.error_message = 'WHATSAPP_SESSION_LEASE_LOST';
+        diagnostic('socket_lease_lost', { session_ref: sessionRef(id), generation });
+      };
+      // Renewal may only be armed for a lease this process ACTUALLY holds.
+      // `_connectSocket` skips `acquire` for an ephemeral pairing (see the
+      // `leaseRepository && !session.ephemeral` guard above), so an ephemeral
+      // session has no `socket_leases` row. Arming unconditionally made the
+      // first tick call renew() on a row that does not exist; the adapter
+      // returns `rowCount === 1` -> false, which called loseLease() and drove
+      // the session to UNAVAILABLE / WHATSAPP_SESSION_LEASE_LOST one renewal
+      // interval (TTL/3 = 15s at the default 45s TTL) after the socket opened
+      // — i.e. BEFORE any QR was ever issued. Promotion below arms it once the
+      // ephemeral pairing has connected and actually taken its lease.
+      const armLeaseRenewal = () => {
+        if (!leaseRepository || session._leaseRenewTimer) return;
         const renewalMs = Math.max(10_000, Math.floor(leaseRepository.ttlSeconds * 1000 / 3));
-        const loseLease = () => {
-          if (!session.lifecycle.isCurrent(generation, sock)) return;
-          session.lifecycle.invalidate();
-          clearLeaseTimers(session);
-          try { sock.ev?.removeAllListeners(); } catch (err) { /* ignore */ }
-          try { sock.end(undefined); } catch (err) { /* ignore */ }
-          session.sock = null;
-          session.status = 'UNAVAILABLE';
-          session.is_phone_online = false;
-          session.error_message = 'WHATSAPP_SESSION_LEASE_LOST';
-          diagnostic('socket_lease_lost', { session_ref: sessionRef(id), generation });
-        };
         session._leaseRenewTimer = setInterval(async () => {
           if (session._leaseRenewing || !session.lifecycle.isCurrent(generation, sock)) return;
           session._leaseRenewing = true;
@@ -2815,7 +2826,8 @@ export function createSessionManager({
             session._leaseRenewing = false;
           }
         }, renewalMs);
-      }
+      };
+      if (!session.ephemeral) armLeaseRenewal();
 
       // Faz 13 (tenant izolasyonu): bu oturumun soketinden cikan TUM olaylar
       // `gateway_session_id` tasir. Backend, olayi hangi tenant'a yazacagini
@@ -3013,6 +3025,10 @@ export function createSessionManager({
               const acquired = await leaseRepository.acquire(id, instanceId, generation);
               if (acquired) {
                 session._leaseValidUntil = Date.now() + leaseRepository.ttlSeconds * 1000;
+                // This socket was opened while the session was still ephemeral,
+                // so it armed no renewal at attach time. The lease exists now,
+                // and it must be renewed from here on.
+                armLeaseRenewal();
               }
             }
           }

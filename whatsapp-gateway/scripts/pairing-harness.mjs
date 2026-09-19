@@ -42,9 +42,11 @@ export async function createHarness(opts = {}) {
     mediaDir: path.join(root, 'media'),
     aesKey: opts.aesKey || TEST_AES_KEY,
     backendWsUrl: null,
-    authRepository: null,
-    leaseRepository: null,
-    pool: null,
+    authRepository: opts.authRepository || null,
+    // Phase 6.5: injectable so the ephemeral/lease interaction can be exercised
+    // against the REAL manager. Default stays null (no lease, as before).
+    leaseRepository: opts.leaseRepository || null,
+    pool: opts.pool || null,
     instanceId: opts.instanceId || 'test-instance',
   });
 

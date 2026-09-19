@@ -71,6 +71,52 @@ export function makeWASocket(options = {}) {
   };
 
   registry.sockets.push(sock);
+
+  if (process.env.FAKE_BAILEYS_TRACE === '1') {
+    console.log(
+      `[fake-baileys] makeWASocket #${registry.sockets.length} id=${sock.id} ` +
+        `autoQr=${process.env.FAKE_BAILEYS_AUTO_QR || '0'} ` +
+        `autoConnectMs=${process.env.FAKE_BAILEYS_AUTO_CONNECT_MS || '0'} ` +
+        `registered=${Boolean(options?.auth?.creds?.registered)}`
+    );
+  }
+
+  // Standalone-server mode: when the REAL gateway is launched as a process
+  // (`src/index.js`) there is no test in-process to drive the socket, so the
+  // double must behave like a provider that actually issues a QR. Only enabled
+  // by an explicit env flag, and it never touches product code.
+  if (process.env.FAKE_BAILEYS_AUTO_QR === '1') {
+    const delayMs = parseInt(process.env.FAKE_BAILEYS_AUTO_QR_DELAY_MS || '60', 10);
+    let n = 0;
+    const emit = () => {
+      if (sock.ended) return;
+      n += 1;
+      ev.emit('connection.update', { qr: `2@FAKE-QR-${sock.id}-${n},${Date.now()}` });
+    };
+    setTimeout(emit, delayMs);
+    if (process.env.FAKE_BAILEYS_AUTO_QR_ROTATE === '1') {
+      setInterval(emit, parseInt(process.env.FAKE_BAILEYS_AUTO_QR_INTERVAL_MS || '2500', 10));
+    }
+    // Stand-in for the user actually scanning: complete the handshake and open
+    // the connection, exactly as real Baileys would after a genuine scan.
+    const connectMs = parseInt(process.env.FAKE_BAILEYS_AUTO_CONNECT_MS || '0', 10);
+    if (connectMs > 0) {
+      setTimeout(() => {
+        if (process.env.FAKE_BAILEYS_TRACE === '1') {
+          console.log(`[fake-baileys] auto-connect firing for ${sock.id} (ended=${sock.ended})`);
+        }
+        if (sock.ended) return;
+        const creds = options && options.auth && options.auth.creds;
+        if (creds) {
+          creds.me = { id: '905413749073@s.whatsapp.net', name: 'Fake Phone', lid: '100000000000001@lid' };
+          creds.registered = true;
+        }
+        ev.emit('creds.update', {});
+        ev.emit('connection.update', { connection: 'open' });
+      }, connectMs);
+    }
+  }
+
   if (registry.onCreate) registry.onCreate(sock, options);
   return sock;
 }
