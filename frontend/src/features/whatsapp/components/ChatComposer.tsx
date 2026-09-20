@@ -324,7 +324,9 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
         />
 
         {/* Text Input */}
-        <div className="relative flex-1">
+        {/* Sorun 11/12: min-w-0 — composer flex çocuğu asla chat alanını
+            yatay genişletemez. */}
+        <div className="relative flex-1 min-w-0">
           <input
             type="text"
             value={text}

@@ -428,6 +428,16 @@ export const tr = {
     syncingMessagesCount: '{count} mesaj',
     syncFailedTitle: 'Senkronizasyon başarısız',
     syncRetry: 'Tekrar dene',
+    // Sorun 1/16/17: LOADING ≠ EMPTY ≠ ERROR — sohbet listesinin ilk yuklemesi
+    // tamamlanmadan "sohbet yok" gosterilmez; gercek hata ayri error state'tir.
+    loadingChats: 'Sohbetler yükleniyor...',
+    loadingChatsDesc: 'Diyaloglar, gruplar ve mesaj önizlemeleri hazırlanıyor.',
+    loadFailedChats: 'Sohbetler yüklenemedi',
+    syncInProgressBanner: 'Sohbetler eşitleniyor...',
+    syncCompletedBanner: 'Sohbetler eşitlendi',
+    discardChanges: 'Taslak silindi — sohbet değiştirildi.',
+    msgNotPersisted: 'Mesaj kaydedilemedi ve GÖNDERİLMEDİ.',
+    loadingMore: 'Daha fazla yükleniyor...',
     syncStage: {
       idle: 'Senkronizasyon bekleniyor...',
       starting: 'Senkronizasyon hazırlanıyor...',

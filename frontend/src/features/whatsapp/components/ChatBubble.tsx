@@ -235,14 +235,16 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({ message, isGroup = false
       case 'OTHER':
         if (message.body && message.body.startsWith('Konum:')) {
           return (
-            <div className="flex items-center space-x-2.5 p-2.5 rounded-xl bg-slate-200/60 dark:bg-white/[0.06] border border-black/5 dark:border-white/10">
+            <div className="flex items-center space-x-2.5 p-2.5 rounded-xl bg-slate-200/60 dark:bg-white/[0.06] border border-black/5 dark:border-white/10 min-w-0">
               <MapPin className="w-5 h-5 text-rose-500 shrink-0" />
-              <span className="text-xs font-bold">{message.body}</span>
+              <span className="text-xs font-bold [overflow-wrap:anywhere] break-words min-w-0">{message.body}</span>
             </div>
           );
         }
         return (
-          <p className="whitespace-pre-wrap break-words">
+          // Sorun 11: overflow-wrap:anywhere — uzun URL/JID mesaj govdesi
+          // baloncuğu asla yatay olarak genişletemez (WhatsApp Web davranışı).
+          <p className="whitespace-pre-wrap [overflow-wrap:anywhere] break-words min-w-0">
             {message.body || t('leads.mediaFallback')}
           </p>
         );
@@ -250,7 +252,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({ message, isGroup = false
       case 'TEXT':
       default:
         return (
-          <p className="whitespace-pre-wrap break-words">
+          <p className="whitespace-pre-wrap [overflow-wrap:anywhere] break-words min-w-0">
             {message.body || t('leads.mediaFallback')}
           </p>
         );
@@ -261,7 +263,9 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({ message, isGroup = false
     <>
       <div className={`flex w-full mb-3 ${isInbound ? 'justify-start' : 'justify-end'}`}>
         <div
-          className={`relative group max-w-[85%] sm:max-w-[75%] px-4 py-2.5 shadow-sm text-xs leading-relaxed transition-all duration-200 ${
+          // Sorun 11/12: baloncuk genişliği icerige bagli ama ust siniri
+          // viewport'a gore (%75); asla mesaj metniyle yatay buyume YOK.
+          className={`relative group max-w-[85%] sm:max-w-[75%] min-w-0 px-4 py-2.5 shadow-sm text-xs leading-relaxed transition-all duration-200 ${
             isInbound
               ? 'bg-slate-100 dark:bg-white/[0.08] text-slate-800 dark:text-slate-100 rounded-2xl rounded-tl-sm border border-slate-200/60 dark:border-white/[0.04]'
               : 'bg-[#7367F0] text-white rounded-2xl rounded-tr-sm shadow-[#7367F0]/20'

@@ -1,5 +1,5 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { ChevronDown, Loader2, ArrowUp } from 'lucide-react';
+import { AlertTriangle, ChevronDown, Loader2, ArrowUp, RotateCcw } from 'lucide-react';
 import { Message } from '../../../types';
 import { ChatBubble } from './ChatBubble';
 import { EmptyState } from '../../../components/ui/EmptyState';
@@ -37,6 +37,14 @@ export interface ChatThreadProps {
   isGroup?: boolean;
   onRetry?: (messageId: number | string) => Promise<void> | void;
   peerTyping?: boolean;
+  /** Sorun 2 (LOADING ≠ EMPTY ≠ ERROR): bu sohbetin MESAJ hidrasyonu
+   * basarisiz olduysa hata mesaji. Yalnizca BU sohbeti etkiler — diger
+   * sohbetler ve liste etkilenmez; mevcut mesajlar varsa silinmez. */
+  error?: string | null;
+  /** Hidrasyon hatasindan sonra "tekrar dene". */
+  onRetryLoad?: () => void;
+  /** Eski sayfa (history pagination) basarisiz mi — mevcut mesajlar korunur. */
+  pagingError?: boolean;
 }
 
 export const ChatThread: React.FC<ChatThreadProps> = ({
@@ -49,6 +57,9 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
   isGroup = false,
   onRetry,
   peerTyping = false,
+  error = null,
+  onRetryLoad,
+  pagingError = false,
 }) => {
   const { t, language } = useI18n();
   const containerRef = useRef<HTMLDivElement>(null);
@@ -213,7 +224,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
 
   if (loading) {
     return (
-      <div className="flex-1 p-4 space-y-4 overflow-y-auto">
+      <div className="flex-1 min-w-0 p-4 space-y-4 overflow-y-auto overflow-x-hidden">
         <div className="flex justify-start">
           <Skeleton className="w-48 h-12 rounded-2xl rounded-tl-sm" />
         </div>
@@ -228,8 +239,31 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
   }
 
   if (!sortedMessages || sortedMessages.length === 0) {
+    // Sorun 2: hidrasyon GERÇEKTEN basarisiz olduysa "mesaj yok" DEGIL —
+    // ayri error state + retry. Bu yalnizca BU sohbetin durumudur.
+    if (error) {
+      return (
+        <div className="relative flex-1 min-w-0 flex flex-col items-center justify-center p-6 min-h-0">
+          <EmptyState
+            icon={AlertTriangle}
+            title={t('whatsapp.messagesLoadFailed')}
+            description={error}
+            action={
+              onRetryLoad
+                ? { label: t('whatsapp.retryBtn'), onClick: onRetryLoad, icon: RotateCcw }
+                : undefined
+            }
+          />
+          {peerTyping && (
+            <div className="absolute bottom-3 left-4">
+              <TypingBubble label={t('whatsapp.peerTyping')} />
+            </div>
+          )}
+        </div>
+      );
+    }
     return (
-      <div className="relative flex-1 flex flex-col items-center justify-center p-6 min-h-0">
+      <div className="relative flex-1 min-w-0 flex flex-col items-center justify-center p-6 min-h-0">
         <EmptyState
           icon={WhatsAppIcon}
           title={t('leads.noMessagesTitle')}
@@ -247,11 +281,30 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
   let lastDate = '';
 
   return (
-    <div className="relative flex-1 flex flex-col min-h-0">
+    // Sorun 11/12: thread kökü `min-w-0` — flex parent içindeki mesaj içeriği
+    // (uzun URL/JID) asla main chat alanını yatay olarak genişletemez.
+    <div className="relative flex-1 min-w-0 flex flex-col min-h-0">
+      {/* Sorun 2: eski mesaj sayfasi basarisizsa mevcut mesajlar SİLİNMEZ —
+          ustte retry edilebilir bir bilgi seridi gosterilir. */}
+      {pagingError && (
+        <div className="shrink-0 flex items-center justify-center gap-2 px-4 py-2 bg-rose-500/10 border-b border-rose-500/20 text-rose-600 dark:text-rose-400 text-[11px] font-bold">
+          <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+          <span>{t('whatsapp.messagesLoadFailed')}</span>
+          {onLoadOlder && (
+            <button
+              type="button"
+              onClick={onLoadOlder}
+              className="underline underline-offset-2 hover:opacity-80 cursor-pointer"
+            >
+              {t('leads.loadOlderMessages')}
+            </button>
+          )}
+        </div>
+      )}
       <div
         ref={containerRef}
         onScroll={handleScroll}
-        className="flex-1 p-4 overflow-y-auto space-y-1 scroll-smooth"
+        className="flex-1 min-w-0 p-4 overflow-y-auto overflow-x-hidden space-y-1 scroll-smooth"
       >
         {/* Load older messages button */}
         {hasMore && (

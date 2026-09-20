@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { MessageSquare, Archive, CheckCircle2, Inbox, Mail, MessageSquarePlus, RefreshCw, Users } from 'lucide-react';
+import { MessageSquare, Archive, CheckCircle2, Inbox, Mail, MessageSquarePlus, RefreshCw, RotateCcw, Users, AlertTriangle } from 'lucide-react';
 import { Conversation, ConversationStatus } from '../../../types';
 import { Avatar } from '../../../components/ui/Avatar';
 import { Badge } from '../../../components/ui/badge';
@@ -42,6 +42,19 @@ export interface ConversationListProps {
   onLoadMore?: () => void;
   hasMore?: boolean;
   loadingMore?: boolean;
+  /** Sorun 1/16/17: LOADING ≠ EMPTY ≠ ERROR. Liste bileşenine AÇIK yükleme
+   * durumu verilir:
+   *  - 'loading': ilk conversation snapshot henüz gelmedi → skeleton,
+   *    asla "sohbet yok" gösterilmez.
+   *  - 'ready':   ilk yükleme tamamlandı → normal liste / gerçek empty state.
+   *  - 'error':   GERÇEK initial-load hatası → ayrı error ekranı + retry.
+   * Verilmemişse (eski çağıranlar) mevcut davranış korunur: `loading`
+   * prop'u skeleton'u yönetir, boş liste 'ready' kabul edilir. */
+  loadState?: 'loading' | 'ready' | 'error';
+  /** loadState === 'error' iken gösterilecek gerçek hata mesajı. */
+  loadError?: string | null;
+  /** Error state'teki "tekrar dene" eylemi. */
+  onRetryLoad?: () => void;
 }
 
 export const ConversationList: React.FC<ConversationListProps> = ({
@@ -60,6 +73,9 @@ export const ConversationList: React.FC<ConversationListProps> = ({
   onLoadMore,
   hasMore = false,
   loadingMore = false,
+  loadState,
+  loadError = null,
+  onRetryLoad,
 }) => {
 
   const { t, language } = useI18n();
@@ -180,6 +196,15 @@ export const ConversationList: React.FC<ConversationListProps> = ({
     }
   };
 
+  // Sorun 1/16/17: liste durumu ÜÇ ayrı state olarak çözülür —
+  //   LOADING (ilk snapshot bekleniyor) ≠ EMPTY (gerçekten 0 sohbet) ≠ ERROR.
+  // `loadState` verilmediyse eski davranış: `loading` prop'u skeleton'u,
+  // boş liste ise 'ready' (gerçek empty state) anlamına gelir.
+  const effectiveLoadState: 'loading' | 'ready' | 'error' =
+    loadState ?? (loading ? 'loading' : 'ready');
+  const showSkeleton = effectiveLoadState === 'loading' || (loading && effectiveLoadState !== 'error');
+  const showError = effectiveLoadState === 'error';
+
   return (
     <div className="flex flex-col h-full border-r border-slate-200/80 dark:border-white/[0.08] bg-slate-50/50 dark:bg-black/10">
       {/* Top Action Bar & Search Header */}
@@ -252,7 +277,33 @@ export const ConversationList: React.FC<ConversationListProps> = ({
       {/* List content */}
       <div onScroll={handleScroll} className="flex-1 overflow-y-auto divide-y divide-slate-100 dark:divide-white/[0.04]">
 
-        {loading ? (
+        {showError ? (
+          // GERÇEK initial-load hatası: "sohbet yok" veya skeleton DEĞİL —
+          // hata + retry. Mevcut mesajlar/liste verisi silinmez.
+          <div className="p-6 text-center">
+            <AlertTriangle className="w-8 h-8 mx-auto mb-2 text-rose-500/70" />
+            <p className="text-xs font-bold text-rose-600 dark:text-rose-400">
+              {t('whatsapp.loadFailedChats')}
+            </p>
+            {loadError && (
+              <p className="mt-1 text-[10px] text-slate-500 dark:text-slate-400 break-words">{loadError}</p>
+            )}
+            {onRetryLoad && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={onRetryLoad}
+                className="mt-3 space-x-1.5 text-xs font-bold cursor-pointer"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span>{t('whatsapp.syncRetry')}</span>
+              </Button>
+            )}
+          </div>
+        ) : showSkeleton ? (
+          // LOADING state: ilk conversation snapshot gelene kadar skeleton —
+          // araya asla "sohbet bulunamadı" / "mesajlar yüklenemedi" girmez.
           <div className="p-3 space-y-3">
             {[1, 2, 3, 4].map((i) => (
               <div key={i} className="flex items-center space-x-3 p-2">
@@ -265,6 +316,8 @@ export const ConversationList: React.FC<ConversationListProps> = ({
             ))}
           </div>
         ) : deduplicated.length === 0 ? (
+          // EMPTY state: yalnızca ilk yükleme GERÇEKTEN tamamlandığında ve
+          // aktif filtrede gerçekten 0 sonuç olduğunda gösterilir.
           <div className="p-6 text-center text-slate-400 dark:text-slate-500 text-xs">
             <MessageSquare className="w-8 h-8 mx-auto mb-2 opacity-40" />
             <p>{t(emptyStateKey)}</p>

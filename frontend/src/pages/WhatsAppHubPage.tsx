@@ -109,6 +109,13 @@ const compareByLastMessageDesc = compareConversationsByActivityDesc;
 // tutulan son gorulen wa_message_id kumesinin ust siniri.
 const SEEN_WA_IDS_MAX = 1000;
 
+// Faz 16 (Sorun 3/9): ilk sohbet sayfasi 200 satir getirir (backend tavani
+// 1000). Kalan sayfalar ARKA PLANDA sinirli sayida tamamlanir — WhatsApp
+// Web'in sohbet listesini kademeli doldurmasi gibi. Sonsuz polling YOK,
+// yalnizca sunucunun `has_more` sinyaline bagli bounded bir doldurma.
+const CONVERSATION_PAGE_SIZE = 200;
+const MAX_BACKGROUND_CONVERSATION_PAGES = 5;
+
 export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats }) => {
   const toast = useToast();
   const { t } = useI18n();
@@ -125,7 +132,18 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selectedConv, setSelectedConv] = useState<Conversation | null>(null);
   const [messagesMap, setMessagesMap] = useState<Record<number, Message[]>>({});
-  const [messagePaging, setMessagePaging] = useState<Record<number, { hasMore: boolean; oldest?: number; loading: boolean }>>({});
+  // `error`: sayfalama (history) istegi basarisiz oldu — mevcut mesajlar SILINMEZ,
+  // yalnizca bu sayfa icin retry edilebilir durum isaretlenir (Sorun 2).
+  const [messagePaging, setMessagePaging] = useState<Record<number, { hasMore: boolean; oldest?: number; loading: boolean; error?: boolean }>>({});
+  // Faz 16 (Sorun 1/2/10/17): LOADING ≠ EMPTY ≠ ERROR ayrimi.
+  //  - convLoadState: sohbet LISTESININ ilk yuklemesi (empty state yalnizca
+  //    'ready' iken gosterilir; hata ayri bir error state'tir).
+  //  - messageLoadState: sohbet BASINA mesaj hidrasyonu (bir sohbetin hatasi
+  //    tum chat UI'ini error'a dusurmez).
+  const [convLoadState, setConvLoadState] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [convLoadError, setConvLoadError] = useState<string | null>(null);
+  const [messageLoadState, setMessageLoadState] = useState<Record<number, 'loading' | 'ready' | 'error'>>({});
+  const [messageLoadError, setMessageLoadError] = useState<Record<number, string>>({});
   const [convsLoading, setConvsLoading] = useState<boolean>(false);
   const [convSearch, setConvSearch] = useState<string>('');
   const [convFilter, setConvFilter] = useState<FilterTab>('ALL');
@@ -283,10 +301,17 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   const isLive = liveStatus === LiveModeStatus.LIVE_CONNECTED;
 
   const activeMessages = selectedConv ? (messagesMap[selectedConv.id] || []) : [];
-  const activeChatLoading = false;
   const activePaging = selectedConv ? messagePaging[selectedConv.id] : undefined;
   const activeHasMore = Boolean(activePaging?.hasMore && activePaging.oldest);
   const activeLoadingOlder = Boolean(activePaging?.loading);
+  const activePagingError = Boolean(activePaging?.error);
+  // Faz 16 (Sorun 2/10): ilk hidrasyon SURERKEN "mesaj yok" gosterilmez —
+  // skeleton gosterilir. Hata ayri bir in-thread error + retry durumudur;
+  // mevcut mesajlar varsa hicbir zaman loading/empty ekranina dusulmez.
+  const activeChatLoading = Boolean(
+    selectedConv && activeMessages.length === 0 && messageLoadState[selectedConv.id] === 'loading',
+  );
+  const activeMessagesError = selectedConv ? (messageLoadError[selectedConv.id] || null) : null;
   const activeConv = selectedConv;
 
   const activeLoadOlder = useCallback(async () => {
@@ -319,15 +344,46 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         },
       }));
     } catch (err) {
-      setMessagePaging((prev) => ({ ...prev, [convId]: { ...(prev[convId] || activePaging), loading: false } }));
+      // Sorun 2: history sayfasi basarisiz → mevcut mesajlar SILINMEZ,
+      // yalnizca retry edilebilir bir hata isareti konur. Global hata toast'i
+      // yok: tek sayfa hatasi tum sohbet ekranini hata gibi gostermez.
+      setMessagePaging((prev) => ({
+        ...prev,
+        [convId]: { ...(prev[convId] || activePaging), loading: false, error: true },
+      }));
       console.warn('[WhatsAppHubPage] Older messages fetch failed:', err);
-      toastRef.current.error(tRef.current('whatsapp.messagesLoadFailed') || tRef.current('common.error'), tRef.current('common.error'));
     }
   }, [selectedConv, activePaging]);
 
+  // Faz 16 (Sorun 3/9): sohbet listesi sayfa boyutu / arka plan doldurma
+  // sabitleri modul seviyesinde yasar (CONVERSATION_PAGE_SIZE, ...
+  const loadMoreConversationsRef = useRef<((isBackground?: boolean) => Promise<void>) | null>(null);
+  const backgroundBackfillRef = useRef<{ pages: number; timer: ReturnType<typeof setTimeout> | null }>({ pages: 0, timer: null });
+  const scheduleBackgroundBackfill = useCallback(() => {
+    const state = backgroundBackfillRef.current;
+    if (state.timer || state.pages >= MAX_BACKGROUND_CONVERSATION_PAGES) return;
+    state.timer = setTimeout(() => {
+      state.timer = null;
+      state.pages += 1;
+      void loadMoreConversationsRef.current?.(true);
+    }, 800);
+  }, []);
+
   const loadConversations = useCallback(async (isSilent: boolean = false) => {
     const generation = conversationsGenerationRef.current;
-    if (!isSilent) setConvsLoading(true);
+    if (!isSilent) {
+      setConvsLoading(true);
+      // LOADING ≠ EMPTY ≠ ERROR (Sorun 1/16/17): ilk yukleme boyunca liste
+      // "sohbet yok" DEMEZ; yanlis ara durum gosterilmez.
+      setConvLoadState('loading');
+      setConvLoadError(null);
+      // Yeni (kullanici kaynakli) yuklemede arka plan doldurma sayaci sifirlanir.
+      backgroundBackfillRef.current.pages = 0;
+      if (backgroundBackfillRef.current.timer) {
+        clearTimeout(backgroundBackfillRef.current.timer);
+        backgroundBackfillRef.current.timer = null;
+      }
+    }
     try {
       // Sorun 4: GROUPS / ARCHIVED sekmeleri sunucu tarafı filtreyle yüklenir
       // (is_group / is_archived || status=ARCHIVED) — istemcide eksik sayfa
@@ -342,7 +398,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         group_only: convFilter === 'GROUPS' ? true : undefined,
         archived_only: convFilter === 'ARCHIVED' ? true : undefined,
         search: convSearch.trim() || undefined,
-        limit: 50,
+        limit: CONVERSATION_PAGE_SIZE,
         offset: 0,
       });
       if (generation !== conversationsGenerationRef.current) return;
@@ -350,23 +406,17 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       // `setConversations(page.items)` ile listenin tamami degistiriliyordu;
       // sonuc: kullanici 150 satir yukleyip kaydirdiktan sonra gelen sessiz bir
       // yenileme (session olayi / WS reconnect / conversations_updated) 51-150
-      // arasi satirlari sessizce siliyordu. Artik ilk sayfa otoriter kabul
-      // edilir, yerel olarak yuklenmis DAHA ESKI sayfalar korunur.
+      // arasi satirlari sessizce siliyordu.
+      //
+      // Sorun 4: `has_more=true` iken sunucu "listede daha fazla sohbet var"
+      // demektedir; bu yuzden ilk sayfada GORUNMEYEN yerel satirlar ARTIK
+      // SILINMEZ (siralama tie'i ya da henuz kalici yazilmamis canli aktivite
+      // yuzunden bir sohbetin kaybolmasi onlenir). `has_more=false` ise ilk
+      // sayfa otoriter TAM listedir — sunucuda olmayan satir birakilir.
       setConversations((prev) => {
         const pageIds = new Set(page.items.map((c) => c.id));
-        // has_more=false ise ilk sayfa zaten tum listedir -> hicbir sey korunmaz.
-        const pageTailTs =
-          page.has_more && page.items.length
-            ? getConversationActivityTimestamp(page.items[page.items.length - 1])
-            : Number.NEGATIVE_INFINITY;
-        const retained = prev.filter(
-          (c) =>
-            !pageIds.has(c.id) &&
-            // Yalnizca gercekten bu sayfanin ARDINDAN gelen (daha eski) satirlar
-            // korunur. Ilk sayfadan daha yeni bir satir sunucuda artik yok
-            // demektir; birakilir.
-            getConversationActivityTimestamp(c) <= pageTailTs
-        );
+        if (!page.has_more) return page.items;
+        const retained = prev.filter((c) => !pageIds.has(c.id));
         if (!retained.length) return page.items;
         return [...page.items, ...retained].sort(compareByLastMessageDesc);
       });
@@ -382,6 +432,13 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         }
         return null;
       });
+
+      // LOADING ≠ EMPTY ≠ ERROR: empty state yalnizca gercek veri geldikten
+      // sonra gosterilir (bkz. ConversationList).
+      setConvLoadState('ready');
+      setConvLoadError(null);
+      // Arka planda kalan sayfalar kademeli olarak getirilir (Sorun 3/9).
+      if (page.has_more) scheduleBackgroundBackfill();
     } catch (err: any) {
       console.warn('[WhatsAppHubPage] Conversation list load failed', {
         silent: isSilent,
@@ -389,7 +446,13 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         search: convSearch.trim() || null,
         error: err instanceof Error ? err.message : String(err),
       });
+      // GERCEK hata → ayri error state (empty/liste durumu ile karismaz).
+      // Sessiz yenileme hatasi mevcut calisan listeyi ERROR'a DUSURMEZ.
       if (!isSilent) {
+        setConvLoadState('error');
+        setConvLoadError(
+          err?.message || tRef.current('whatsapp.conversationsLoadFailed') || tRef.current('common.error'),
+        );
         toastRef.current.error(
           err?.message || tRef.current('whatsapp.conversationsLoadFailed') || tRef.current('common.error'),
           tRef.current('common.error'),
@@ -398,9 +461,9 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     } finally {
       if (!isSilent && generation === conversationsGenerationRef.current) setConvsLoading(false);
     }
-  }, [convFilter, convSearch]);
+  }, [convFilter, convSearch, scheduleBackgroundBackfill]);
 
-  const loadMoreConversations = useCallback(async () => {
+  const loadMoreConversations = useCallback(async (isBackground: boolean = false) => {
     if (loadingMoreConvs || !hasMoreConvs) return;
     const generation = conversationsGenerationRef.current;
     setLoadingMoreConvs(true);
@@ -414,7 +477,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         group_only: convFilter === 'GROUPS' ? true : undefined,
         archived_only: convFilter === 'ARCHIVED' ? true : undefined,
         search: convSearch.trim() || undefined,
-        limit: 50,
+        limit: CONVERSATION_PAGE_SIZE,
         offset: nextConvOffsetRef.current,
       });
       if (generation !== conversationsGenerationRef.current) return;
@@ -429,12 +492,20 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       setHasMoreConvs(page.has_more);
       nextConvOffsetRef.current = page.next_offset ?? (nextConvOffsetRef.current + page.items.length);
       totalConvsRef.current = page.total;
+      // Arka plan doldurma devam eder (bounded; kullanici kaydirmasini beklemez).
+      if (isBackground && page.has_more) scheduleBackgroundBackfill();
     } catch (err) {
       console.warn('[WhatsAppHubPage] loadMoreConversations failed', err);
     } finally {
       setLoadingMoreConvs(false);
     }
-  }, [convFilter, convSearch, hasMoreConvs, loadingMoreConvs]);
+  }, [convFilter, convSearch, hasMoreConvs, loadingMoreConvs, scheduleBackgroundBackfill]);
+
+  // Ref uzerinden en guncel surum: arka plan doldurma zinciri bayat closure
+  // kullanmaz (hasMoreConvs/loadingMoreConvs state'leri her cagride guncel).
+  useEffect(() => {
+    loadMoreConversationsRef.current = loadMoreConversations;
+  }, [loadMoreConversations]);
 
 
   // Faz 11: 4 sn'lik sync=true polling STORM'u kaldirildi. Sync durumu yalnizca
@@ -447,6 +518,44 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   // alinmiyordu; banner son bilinen degerde (tipik olarak contacts asamasinin
   // sabit %60'i) SONSUZA asili kaliyordu. Artik job yoksa/IDLE ise senkron
   // bitmis kabul edilir: banner KAPATILIR ve liste DB gerceginden yuklenir.
+  // Faz 16 (Sorun 8): retained (kalici) FAILED sync job'i her sayfa acilisinda
+  // ayni hatayi tekrar gostermemeli. Kullanici bir kez gordukten sonra bu
+  // sync_id (fallback: finished_at) "acknowledged" olarak isaretlenir ve
+  // sonraki mount'larda banner'i yeniden acmaz — yeni bir sync denemesi yeni
+  // bir sync_id urettigi icin GERCEK yeni hatalar yine gosterilir.
+  const FAILED_SYNC_ACK_KEY = 'tezlify_wa_failed_sync_ack';
+  const acknowledgedFailedSyncId = useRef<string | null>(null);
+  // Banner'daki "tekrar dene" ayni basarisizligi ack edebilsin diye gosterilen
+  // hatanin anahtari saklanir (sync_id yoksa finished_at).
+  const failedSyncKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    try {
+      acknowledgedFailedSyncId.current = window.sessionStorage.getItem(FAILED_SYNC_ACK_KEY);
+    } catch {
+      acknowledgedFailedSyncId.current = null;
+    }
+  }, []);
+  const acknowledgeFailedSync = useCallback((syncId: string | null) => {
+    if (!syncId) return;
+    acknowledgedFailedSyncId.current = syncId;
+    try {
+      window.sessionStorage.setItem(FAILED_SYNC_ACK_KEY, syncId);
+    } catch {
+      /* sessionStorage kapali — bellek ici ref yeterli */
+    }
+  }, []);
+
+  // "Sohbetler esitlendi" bildirimi gercek tamamlanmadan sonra kisa sure
+  // gorunur ve kendiliginden kapanir (hata MASKELENMEZ — yalnizca tamamlanma
+  // mesajinin omru sinirlidir).
+  useEffect(() => {
+    if (sessionSync?.phase !== 'ready') return;
+    const timer = setTimeout(() => {
+      setSessionSync((prev) => (prev && prev.phase === 'ready' ? null : prev));
+    }, 4000);
+    return () => clearTimeout(timer);
+  }, [sessionSync?.phase]);
+
   const refreshSyncStatus = useCallback(async () => {
     try {
       const job = await WhatsAppApi.getSyncJob();
@@ -465,7 +574,20 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       } else if (job.state === 'COMPLETED') {
         setSessionSync((prev) => (prev ? { ...prev, phase: 'ready', progress: 100, stage: 'complete' } : prev));
       } else if (job.state === 'FAILED') {
-        setSessionSync({ phase: 'error', stage: job.stage, error: job.error ?? null, progress: 0 });
+        // Sorun 8: FAILED job backend'de (in-process kayit) tutulabilir ve
+        // sayfa her acildiginda ayni hata yeniden render edilirdi. Kullanici
+        // tarafindan bir kez gorulmus (acknowledged) bir basarisizlik ARTIK
+        // normal initial-load durumunu bozmaz; yeni bir sync denemesi yeni
+        // sync_id uretir ve yeni hatalar normal sekilde gosterilir.
+        const failureKey = job.sync_id || job.finished_at || null;
+        if (failureKey && acknowledgedFailedSyncId.current === failureKey) {
+          activeSyncIdRef.current = null;
+          setIsSyncingChats(false);
+          setSessionSync((prev) => (prev && prev.phase !== 'syncing' ? null : prev));
+        } else {
+          failedSyncKeyRef.current = failureKey;
+          setSessionSync({ phase: 'error', stage: job.stage, error: job.error ?? null, progress: 0 });
+        }
       } else {
         // IDLE ya da taninmayan durum: calisan/bilinen bir job YOK. Bu, isin
         // bittigi (veya backend'in yeniden basladigi) anlamina gelir — banner
@@ -509,10 +631,83 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     return () => clearTimeout(timer);
   }, [loadConversations, convSearch]);
 
+  // Faz 16 (Sorun 2/10): secilen sohbetin mesaj hidrasyonu sohbet BASINA
+  // izlenir. Basarisizlik YALNIZCA o sohbeti error durumuna alir; mevcut
+  // mesajlar SILINMEZ ve tum chat UI'i hata ekranina dusmez.
+  const hydrateConversationMessages = useCallback(async (convId: number) => {
+    setMessageLoadState((prev) => (prev[convId] === 'loading' ? prev : { ...prev, [convId]: 'loading' }));
+    try {
+      const res = await WhatsAppRepository.getConversationMessages(convId, { limit: 50 });
+      if (!res?.messages) return;
+      setMessagePaging((prev) => ({
+        ...prev,
+        [convId]: {
+          hasMore: Boolean(res.has_more),
+          oldest: res.oldest_message_id,
+          loading: false,
+          error: false,
+        },
+      }));
+      setMessagesMap((prev) => {
+        const existing = prev[convId] || [];
+        // Merge strategy: prevent wiping messages received via realtime while GET was in flight
+        const fetchedIds = new Set(res.messages.map((m) => m.id));
+        const fetchedWaIds = new Set(res.messages.map((m) => m.wa_message_id).filter(Boolean));
+        const fetchedClientIds = new Set(res.messages.map((m) => m.client_message_id).filter(Boolean));
+
+        const inFlightOrRealtime = existing.filter((m) => {
+          if (m.id && fetchedIds.has(m.id)) return false;
+          if (m.wa_message_id && fetchedWaIds.has(m.wa_message_id)) return false;
+          if (m.client_message_id && fetchedClientIds.has(m.client_message_id)) return false;
+          return true;
+        });
+
+        const merged = [...res.messages, ...inFlightOrRealtime].sort((a, b) => {
+          const tA = new Date(a.created_at || a.external_timestamp || 0).getTime();
+          const tB = new Date(b.created_at || b.external_timestamp || 0).getTime();
+          if (tA !== tB) return tA - tB;
+          const nA = typeof a.id === 'number' ? a.id : 0;
+          const nB = typeof b.id === 'number' ? b.id : 0;
+          return nA - nB;
+        });
+
+        return {
+          ...prev,
+          [convId]: merged,
+        };
+      });
+      setMessageLoadState((prev) => ({ ...prev, [convId]: 'ready' }));
+      setMessageLoadError((prev) => {
+        if (!(convId in prev)) return prev;
+        const next = { ...prev };
+        delete next[convId];
+        return next;
+      });
+    } catch (err) {
+      // Tek sohbetin hidrasyon hatasi tum chat UI'ini error'a dusurmez:
+      // mesajlar korunur, yalnizca bu sohbet icin retry edilebilir state olur.
+      console.warn('[WhatsAppHubPage] Conversation messages load failed', {
+        conversation_id: convId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      setMessageLoadState((prev) => ({ ...prev, [convId]: 'error' }));
+      setMessageLoadError((prev) => ({
+        ...prev,
+        [convId]: (err as any)?.message || tRef.current('whatsapp.messagesLoadFailed') || tRef.current('common.error'),
+      }));
+    }
+  }, []);
+
+  // Kullanici kaynakli retry: yalnizca secili sohbetin hidrasyonunu tekrarlar.
+  const retrySelectedConversationMessages = useCallback(() => {
+    const convId = selectedConv?.id;
+    if (!convId) return;
+    void hydrateConversationMessages(convId);
+  }, [selectedConv?.id, hydrateConversationMessages]);
+
   // Load messages whenever selected conversation changes (with race condition mitigation)
   useEffect(() => {
     if (!selectedConv?.id) return;
-    let isMounted = true;
     const convId = selectedConv.id;
 
     // Faz 5: secilen sohbeti acmak okundu sayilir (WhatsApp Web paritesi) —
@@ -530,61 +725,8 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       );
     }
 
-    WhatsAppRepository.getConversationMessages(convId, { limit: 50 })
-      .then((res) => {
-        if (isMounted && res?.messages) {
-          setMessagePaging((prev) => ({
-            ...prev,
-            [convId]: {
-              hasMore: Boolean(res.has_more),
-              oldest: res.oldest_message_id,
-              loading: false,
-            },
-          }));
-          setMessagesMap((prev) => {
-            const existing = prev[convId] || [];
-            // Merge strategy: prevent wiping messages received via realtime while GET was in flight
-            const fetchedIds = new Set(res.messages.map((m) => m.id));
-            const fetchedWaIds = new Set(res.messages.map((m) => m.wa_message_id).filter(Boolean));
-            const fetchedClientIds = new Set(res.messages.map((m) => m.client_message_id).filter(Boolean));
-
-            const inFlightOrRealtime = existing.filter((m) => {
-              if (m.id && fetchedIds.has(m.id)) return false;
-              if (m.wa_message_id && fetchedWaIds.has(m.wa_message_id)) return false;
-              if (m.client_message_id && fetchedClientIds.has(m.client_message_id)) return false;
-              return true;
-            });
-
-            const merged = [...res.messages, ...inFlightOrRealtime].sort((a, b) => {
-              const tA = new Date(a.created_at || a.external_timestamp || 0).getTime();
-              const tB = new Date(b.created_at || b.external_timestamp || 0).getTime();
-              if (tA !== tB) return tA - tB;
-              const nA = typeof a.id === 'number' ? a.id : 0;
-              const nB = typeof b.id === 'number' ? b.id : 0;
-              return nA - nB;
-            });
-
-            return {
-              ...prev,
-              [convId]: merged,
-            };
-          });
-        }
-      })
-      .catch((err) => {
-        console.warn('[WhatsAppHubPage] Conversation messages load failed', {
-          conversation_id: convId,
-          error: err instanceof Error ? err.message : String(err),
-        });
-        toastRef.current.error(
-          tRef.current('whatsapp.messagesLoadFailed') || tRef.current('common.error'),
-          tRef.current('common.error'),
-        );
-      });
-    return () => {
-      isMounted = false;
-    };
-  }, [selectedConv?.id, reportReadSync]);
+    void hydrateConversationMessages(convId);
+  }, [selectedConv?.id, reportReadSync, hydrateConversationMessages]);
 
   // Faz 11: Manuel "Eşitle" artık ağır sync'i HTTP'de BEKLEMİYOR — POST /sync
   // kısa ömürlü job'ı tetikler (202); tüm ilerleme ve tamamlama mevcut WS
@@ -1255,7 +1397,22 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
           // row, the selected conversation and the DOM tests all run the same
           // code. See `applyConversationEvent` for the invariants.
           const patch = (c: Conversation): Conversation => applyConversationEvent(c, payload, t);
-          if (!knownConvIdsRef.current.has(convId)) hydrateConversation(convId);
+          if (!knownConvIdsRef.current.has(convId)) {
+            // Sorun 4/5 (grup dahil her sohbet first-class): gateway'den gelen
+            // YENI sohbet, hedefli GET yanitini BEKLEMEDEN listeye eklenir.
+            // Eskiden yalnizca `hydrateConversation` calisiyordu; o istek
+            // yavasladiginda/basarisiz oldugunda satir listede HIC olusmuyordu
+            // (ornegin yeni bir grup "3Hacker" sohbet listesinde kayboluyordu).
+            // Burada WS payload'i kanonik alan adlariyla gelir; gecici olarak
+            // gosterilir, hedefli GET satiri DB gercegiyle mutabik kilar.
+            const seeded = mapConversationItem({ ...payload, id: convId });
+            setConversations((prev) => {
+              if (prev.some((c) => c.id === convId)) return prev;
+              const fresh: Conversation = { status: 'ACTIVE' as ConversationStatus, unread_count: 0, ...seeded };
+              return [fresh, ...prev].sort(compareByLastMessageDesc);
+            });
+            hydrateConversation(convId);
+          }
           setConversations((prev) => {
             const next = prev.map((c) => (c.id === convId ? patch(c) : c));
             // Sorun 2: patch son mesaji/siralamayi degistirdiyse liste zaman
@@ -1267,7 +1424,15 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
             }
             return next;
           });
-          setSelectedConv((prev) => (prev && prev.id === convId ? patch(prev) : prev));
+          setSelectedConv((prev) => {
+            if (!prev) {
+              // Sorun 3 (WhatsApp Web akisi): ilk secilebilir sohbet, liste
+              // dolarken hazirlanir — kullanici bos ekranla kalmaz.
+              const seeded = mapConversationItem({ ...payload, id: convId });
+              return { status: 'ACTIVE' as ConversationStatus, unread_count: 0, ...seeded };
+            }
+            return prev.id === convId ? patch(prev) : prev;
+          });
         }
       }
 
@@ -1462,6 +1627,11 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
           fetchSessions(true);
           onRefreshStatsRef.current();
         } else if (eventData.event === 'whatsapp_sync_failed') {
+          // Sorun 8: basarisizlik kullaniciya BIR KEZ gosterilir ve
+          // acknowledged olarak isaretlenir — backend'de tutulan ayni job
+          // sonraki sayfa acilisinda banner'i yeniden acmaz.
+          acknowledgeFailedSync(syncId);
+          failedSyncKeyRef.current = syncId;
           setSessionSync({ phase: 'error', stage: eventData.stage || 'failed', error: eventData.error || null, progress: 0 });
           setIsSyncingChats(false);
           activeSyncIdRef.current = null;
@@ -1541,7 +1711,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       window.removeEventListener('tezlify:ws_event', handleWsEvent);
       window.removeEventListener('tezlify:ws_connected', handleReconnect);
     };
-  }, [selectedConv, loadConversations, refreshSyncStatus, reportReadSync, logBackgroundFetchFailure, hydrateConversation, clearPeerTyping]);
+  }, [selectedConv, loadConversations, refreshSyncStatus, reportReadSync, logBackgroundFetchFailure, hydrateConversation, clearPeerTyping, acknowledgeFailedSync, scheduleBootstrapFetch]);
 
   // Anti-Ban Timing & Change-Tracking State
   const [savedConfig, setSavedConfig] = useState<AntiBanConfig>(getStoredAntiBanConfig());
@@ -1875,9 +2045,11 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       {/* 1. CANLI DİYALOGLAR (CONVERSATIONS) PANELİ */}
       {/* ========================================================================= */}
       {hubTab === 'conversations' && (
-        <Card className="h-[520px] sm:h-[600px] md:h-[calc(100dvh-16.5rem)] md:min-h-[480px] md:max-h-[calc(100dvh-15.5rem)] p-0 flex flex-col md:flex-row overflow-hidden border border-slate-200/80 dark:border-white/[0.08] shadow-sm">
-          {/* Left: Conversation List */}
-          <div className={`w-full md:w-80 lg:w-96 shrink-0 h-full flex flex-col min-w-0 ${selectedConv ? 'hidden md:flex' : 'flex'}`}>
+        <Card className="w-full max-w-full h-[520px] sm:h-[600px] md:h-[calc(100dvh-16.5rem)] md:min-h-[480px] md:max-h-[calc(100dvh-15.5rem)] p-0 flex flex-col md:flex-row overflow-hidden border border-slate-200/80 dark:border-white/[0.08] shadow-sm">
+          {/* Left: Conversation List — SABIT genislik (Sorun 11/12/13):
+              secilen sohbet sayisindan bagimsiz olarak sidebar ve chat alani
+              ayni genislikte kalir. */}
+          <div className={`w-full md:w-80 lg:w-96 md:max-w-80 lg:max-w-96 shrink-0 grow-0 h-full flex flex-col min-w-0 ${selectedConv ? 'hidden md:flex' : 'flex'}`}>
             {/* Faz 7/11: GERCEK initial-sync banneri — yalnizca backend'den
                 gelen asama/sayaclar gosterilir (sahte progress yok); job
                 gercekten tamamlaninca (whatsapp_sync_complete) kapanir. */}
@@ -1886,7 +2058,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                 <div className="flex items-center space-x-2">
                   <Loader2 className="w-3.5 h-3.5 animate-spin text-[#7367F0] shrink-0" />
                   <span className="text-[11px] font-bold text-[#7367F0] dark:text-[#a29bfe]">
-                    {t('whatsapp.syncingTitle')}
+                    {t('whatsapp.syncInProgressBanner')}
                   </span>
                   <span className="ml-auto text-[10px] font-extrabold text-[#7367F0]">{Math.max(0, Math.min(100, Math.round(sessionSync.progress || 0)))}%</span>
                 </div>
@@ -1919,6 +2091,16 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                 </p>
               </div>
             )}
+            {/* Sorun 8: tamamlanma GERCEK bitise baglidir; bildirim kisaca
+                gosterilip kaybolur (sahte progress degil, tamamlanma mesaji). */}
+            {sessionSync?.phase === 'ready' && (
+              <div className="mx-3 mt-3 rounded-xl border border-[#28C76F]/40 bg-[#28C76F]/5 dark:bg-[#28C76F]/10 px-3 py-2.5 shrink-0 flex items-center space-x-2">
+                <CheckCircle2 className="w-3.5 h-3.5 text-[#28C76F] shrink-0" />
+                <span className="text-[11px] font-bold text-[#28C76F]">
+                  {t('whatsapp.syncCompletedBanner')}
+                </span>
+              </div>
+            )}
             {sessionSync?.phase === 'error' && (
               <div className="mx-3 mt-3 rounded-xl border border-rose-400/40 bg-rose-500/5 dark:bg-rose-500/10 px-3 py-2.5 shrink-0">
                 <div className="flex items-center space-x-2">
@@ -1928,7 +2110,13 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                   </span>
                   <button
                     type="button"
-                    onClick={() => { setSessionSync(null); void handleSyncChats(); }}
+                    onClick={() => {
+                      // Retry: ayni basarisizlik bir daha banner acmasin; yeni
+                      // deneme yeni sync_id uretir (Sorun 8).
+                      acknowledgeFailedSync(failedSyncKeyRef.current ?? activeSyncIdRef.current);
+                      setSessionSync(null);
+                      void handleSyncChats();
+                    }}
                     className="ml-auto text-[10px] font-extrabold text-rose-600 dark:text-rose-400 hover:underline cursor-pointer"
                   >
                     {t('whatsapp.syncRetry')}
@@ -1943,6 +2131,14 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
               conversations={conversations}
               selectedId={selectedConv?.id}
               loading={convsLoading}
+              // Sorun 1/16/17: LOADING ≠ EMPTY ≠ ERROR — liste bilesenine
+              // acik yukleme durumu verilir; ilk yukleme bitmeden "sohbet yok"
+              // gosterilmez, gercek hata ayri error ekranidir.
+              loadState={convLoadState}
+              loadError={convLoadError}
+              onRetryLoad={() => {
+                void loadConversations();
+              }}
               searchQuery={convSearch}
               onSearchChange={setConvSearch}
               activeFilter={convFilter}
@@ -1973,8 +2169,11 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
             />
           </div>
 
-          {/* Right: Active Chat View */}
-          <div className={`flex-1 flex flex-col h-full bg-white dark:bg-[#181C28] min-w-0 ${selectedConv ? 'flex' : 'hidden md:flex'}`}>
+          {/* Right: Active Chat View — Sorun 11/12/13: SABIT layout. Bu tek
+              container her secimde AYNI genislikte kalir; `min-w-0` +
+              `overflow-hidden` yatay buyumeyi engeller ve secim yeni bir pane
+              EKLEMEZ, yalnizca icerigi degistirir. */}
+          <div className={`flex-1 w-0 min-w-0 overflow-hidden flex flex-col h-full bg-white dark:bg-[#181C28] ${selectedConv ? 'flex' : 'hidden md:flex'}`}>
             {selectedConv ? (
               <>
                 {/* Active Chat Header */}
@@ -2095,12 +2294,24 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                     chat opens mid-history (or with a spurious new-message
                     pill). Reordering keeps the same id, so it does NOT
                     remount — the active chat survives a new inbound. */}
+                {/* Chat Thread with Pagination
+                    P6-4: keyed by conversation id. Without it, switching
+                    conversations reuses the same instance, so the viewport and
+                    `isNearBottom` of the previous thread carry over and the new
+                    chat opens mid-history (or with a spurious new-message
+                    pill). Reordering keeps the same id, so it does NOT
+                    remount — the active chat survives a new inbound.
+                    Sorun 11/12: TEK bir thread instance vardir; secim yalnizca
+                    bu instance'in icerigini degistirir, yeni pane EKLEMEZ. */}
                 <ChatThread
                   key={selectedConv.id}
                   messages={activeMessages}
                   loading={activeChatLoading}
+                  error={activeMessagesError}
+                  onRetryLoad={retrySelectedConversationMessages}
                   hasMore={activeHasMore}
                   loadingOlder={activeLoadingOlder}
+                  pagingError={activePagingError}
                   onLoadOlder={activeLoadOlder}
                   leadName={selectedConv.lead_name}
                   leadPhone={selectedConv.lead_phone}
@@ -2197,28 +2408,50 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
               </>
             ) : (
               <div className="flex-1 flex items-center justify-center p-8">
-                <EmptyState
-                  icon={MessageSquare}
-                  title={
-                    conversations.length > 0
-                      ? (t('whatsapp.selectConversationTitle'))
-                      : (t('whatsapp.noConversations'))
-                  }
-                  description={
-                    conversations.length > 0
-                      ? (t('whatsapp.selectConversation'))
-                      : (t('whatsapp.noConversationsDesc'))
-                  }
-                  action={
-                    conversations.length === 0
-                      ? {
-                          label: t('whatsapp.newChat'),
-                          onClick: () => setIsNewChatModalOpen(true),
-                          icon: MessageSquarePlus,
-                        }
-                      : undefined
-                  }
-                />
+                {/* Sorun 1/17: ilk yukleme surerken "sohbet yok" DENMEZ —
+                    loading ile empty karismaz. */}
+                {convLoadState === 'loading' ? (
+                  <div className="flex flex-col items-center gap-3 text-slate-400 dark:text-slate-500">
+                    <Loader2 className="w-6 h-6 animate-spin text-[#7367F0]" />
+                    <p className="text-xs font-bold">{t('whatsapp.loadingChats')}</p>
+                  </div>
+                ) : convLoadState === 'error' ? (
+                  <EmptyState
+                    icon={AlertTriangle}
+                    title={t('whatsapp.loadFailedChats')}
+                    description={convLoadError || t('whatsapp.conversationsLoadFailed')}
+                    action={{
+                      label: t('whatsapp.retryBtn'),
+                      onClick: () => {
+                        void loadConversations();
+                      },
+                      icon: RotateCcw,
+                    }}
+                  />
+                ) : (
+                  <EmptyState
+                    icon={MessageSquare}
+                    title={
+                      conversations.length > 0
+                        ? (t('whatsapp.selectConversationTitle'))
+                        : (t('whatsapp.noConversations'))
+                    }
+                    description={
+                      conversations.length > 0
+                        ? (t('whatsapp.selectConversation'))
+                        : (t('whatsapp.noConversationsDesc'))
+                    }
+                    action={
+                      conversations.length === 0
+                        ? {
+                            label: t('whatsapp.newChat'),
+                            onClick: () => setIsNewChatModalOpen(true),
+                            icon: MessageSquarePlus,
+                          }
+                        : undefined
+                    }
+                  />
+                )}
               </div>
             )}
           </div>

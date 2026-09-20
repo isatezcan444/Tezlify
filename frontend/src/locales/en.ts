@@ -428,6 +428,16 @@ export const en = {
     syncingMessagesCount: '{count} messages',
     syncFailedTitle: 'Sync failed',
     syncRetry: 'Try again',
+    // Sorun 1/16/17: LOADING ≠ EMPTY ≠ ERROR — sohbet listesinin ilk yuklemesi
+    // tamamlanmadan "sohbet yok" gosterilmez; gercek hata ayri error state'tir.
+    loadingChats: 'Loading chats...',
+    loadingChatsDesc: 'Conversations, groups and message previews are being prepared.',
+    loadFailedChats: 'Chats could not be loaded',
+    syncInProgressBanner: 'Syncing chats...',
+    syncCompletedBanner: 'Chats synced',
+    discardChanges: 'Draft discarded — switching chats.',
+    msgNotPersisted: 'Message could not be saved. It was NOT delivered.',
+    loadingMore: 'Loading more...',
     syncStage: {
       idle: 'Waiting to sync...',
       starting: 'Preparing sync...',

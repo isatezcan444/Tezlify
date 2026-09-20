@@ -2445,6 +2445,43 @@ export function createSessionManager({
           const subject = typeof meta?.subject === 'string' ? meta.subject.trim() : '';
           if (!jid || !jid.includes('@g.us') || !subject) continue;
           resolvedKeys.add(resolveJidKey(store, jid));
+          // Sorun 4/5 (groups first-class): katılımcısı olduğumuz her grup
+          // sohbet listesinde OLMALIDIR — WhatsApp Web de böyle yapar. Sadece
+          // MESAJ gelmiş gruplar chats Map'e düşüyordu; history sync'in
+          // kaçırdığı (yeni kurulmuş / pencere dışı) gruplar (ör. "3Hacker")
+          // listede hiç görünmüyordu. Burada provider'ın GERÇEK metadata'sıyla
+          // sohbet kaydı OLUŞTURULUR (mock/hardcode değil) ve gerçek zamanlı
+          // yayınlanır — backend conversation/contact üretir.
+          const key = resolveJidKey(store, jid);
+          if (!chats.has(key)) {
+            const nowIso = new Date().toISOString();
+            const created = {
+              id: key,
+              jid: key,
+              name: subject,
+              name_source: 'group_subject',
+              phone: '',
+              is_group: true,
+              archived: false,
+              avatar_url: meta?.imgUrl || null,
+              last_message_at: null,
+              last_message_preview: '',
+              unread_count: 0,
+              created_at: nowIso,
+              updated_at: nowIso,
+            };
+            chats.set(key, created);
+            contacts.set(key, {
+              id: key,
+              jid: key,
+              name: subject,
+              name_source: 'group_subject',
+              phone: '',
+              is_group: true,
+              updated_at: nowIso,
+            });
+            emitEvent({ event: 'conversation_updated', conversation: { ...created } });
+          }
           applySubject(jid, subject);
         }
       } catch (err) {
