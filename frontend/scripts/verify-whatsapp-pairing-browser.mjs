@@ -58,7 +58,7 @@ const QR_A = 'data:image/png;base64,QRAAA';
 const QR_B = 'data:image/png;base64,QRBBB';
 
 const calls = { start: 0, qrPoll: 0, pair: 0, cancel: 0 };
-const st = { qr: null, status: 'SCAN_QR', sessionId: null, phone: null, pairingCode: '12345678', pairFails: false, startFails: false, qrFails: false };
+const st = { qr: null, status: 'SCAN_QR', sessionId: null, phone: null, errorMessage: null, pairingCode: '12345678', pairFails: false, startFails: false, qrFails: false };
 let tokenSeq = 0;
 let closes = 0;
 
@@ -87,7 +87,7 @@ const fetchImpl = async (url) => {
     if (st.qrFails) {
       return json({ status: 'ERROR', qr_code: null, phone: null, session_id: null, error_message: 'QR uretilemedi.' });
     }
-    return json({ status: st.status, qr_code: st.qr, phone: st.phone, session_id: st.sessionId, error_message: null });
+    return json({ status: st.status, qr_code: st.qr, phone: st.phone, session_id: st.sessionId, error_message: st.errorMessage });
   }
   if (u.indexOf('/pair') >= 0) {
     calls.pair += 1;
@@ -526,6 +526,38 @@ await check('D: cancelling twice never reuses the first pair_token', async () =>
   assert.ok(s2.calls.cancel >= 2, `the second pairing must also be purged (cancel=${s2.calls.cancel})`);
 });
 
+await check('G: closing after CONNECTED must NOT cancel the promoted pairing', async () => {
+  // Phase 6.8 — THE PRODUCTION RACE, in a real browser.
+  // The modal auto-closes shortly after `session_connected`; the effect cleanup
+  // that fires on that close used to cancel the pairing, deleting the gateway
+  // socket the phone had just been promoted into. Closing the UI after a scan
+  // must never do that.
+  await call('window.__h.reset({})');
+  await wait(400);
+  await call(`window.__h.set({ qr: ${JSON.stringify('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==')} })`);
+  await settle();
+  let s = await state();
+  assert.equal(s.calls.start, 1, `the pairing must have started (got ${s.calls.start})`);
+  assert.ok(s.qrSrc, 'a QR must be painted before the scan');
+
+  // The phone scans: the gateway reports the session CONNECTED.
+  await call("window.__h.set({ status: 'CONNECTED', phone: '+905413749073', sessionId: 42 })");
+  await settle();
+  s = await state();
+  const cancelsBefore = s.calls.cancel;
+
+  // The modal closes (isOpen -> false) exactly as it does after `onClose`.
+  await call('window.__h.open(false)');
+  await wait(700);
+
+  const s2 = await state();
+  assert.equal(
+    s2.calls.cancel, cancelsBefore,
+    `closing the QR UI after CONNECTED cancelled the promoted pairing `
+    + `(cancel went ${cancelsBefore} -> ${s2.calls.cancel})`,
+  );
+});
+
 await check('E: a failed start shows the real error and leaves a working retry', async () => {
   await call('window.__h.reset({}, { startFails: true })');
   await wait(600);
@@ -600,6 +632,45 @@ await check('F: a failed pairing code does not destroy the QR state or latch the
   s = await state();
   assert.equal(s.calls.pair, 2, `the retry must reach the backend (got ${s.calls.pair})`);
   assert.equal(s.code, '12345678', `the retry must render the code, got "${s.code}"`);
+});
+
+// -------------------------------------- H. terminal gateway status (finding 7)
+await check('H: a terminal gateway status removes the dead QR and releases the socket', async () => {
+  // Phase 6.8 finding 7, in a real browser. The gateway can go terminal while an
+  // ephemeral pairing is on screen — and report it with NO `error_message`, the
+  // exact shape the old poll silently ignored, leaving a QR that could never
+  // work. The dead QR must actually disappear from the paint, and the socket
+  // must still be releasable: a terminal pairing is NOT a promotion.
+  await call('window.__h.reset({})');
+  await wait(400);
+  await call(`window.__h.set({ qr: ${JSON.stringify('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==')} })`);
+  await settle();
+  let s = await state();
+  assert.ok(s.qrPainted, 'a real QR must be painted before the gateway dies');
+  // A residual cancel is EXPECTED here: `reset()` unmounts the previous check's
+  // modal, whose pairing was still waiting, and its cleanup correctly cancels it.
+  // Capture the baseline rather than assume zero.
+  const cancelsBefore = s.calls.cancel;
+
+  // The gateway dies: terminal status, no fresh QR, and st.errorMessage stays
+  // null — the poll must still learn it (finding 7).
+  await call("window.__h.set({ qr: null, status: 'RELINK_REQUIRED' })");
+  await settle();
+  s = await state();
+  assert.equal(s.qrSrc, null, `the dead QR must be removed once the gateway is terminal (qrSrc=${s.qrSrc})`);
+  assert.equal(s.qrPainted, false, 'no QR box may survive the terminal status');
+  assert.ok(
+    /relink|yeniden/i.test(s.text),
+    `the terminal reason must be visible, got: ${s.text}`,
+  );
+
+  // The user closes the UI. The ephemeral socket must be released — and this
+  // must NOT be mistaken for a promotion (the gateway never said CONNECTED).
+  assert.equal(await call("window.__h.clickAria('close|kapat')"), true, 'the close button must exist');
+  await wait(700);
+  const s2 = await state();
+  assert.ok(s2.calls.cancel > cancelsBefore, `a terminal pairing must release its gateway socket (cancel ${cancelsBefore} -> ${s2.calls.cancel})`);
+  assert.ok(s2.closes >= 1, 'the modal must ask to be dismissed');
 });
 
 await cleanup();

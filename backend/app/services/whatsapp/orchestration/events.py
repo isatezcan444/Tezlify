@@ -1204,6 +1204,9 @@ class WhatsAppEventOrchestrator:
                     find_ephemeral_pairing_by_gateway_id,
                     remove_ephemeral_pairing_by_gateway_id,
                 )
+                from backend.app.services.whatsapp.orchestration.promotion import (
+                    promote_ephemeral_pairing,
+                )
 
                 phone_from_event = (event.get("phone") or event.get("phone_number") or "").strip()
                 user_id_from_event = (event.get("user_id") or "").strip()
@@ -1214,6 +1217,40 @@ class WhatsAppEventOrchestrator:
                     user_id_from_event = user_id_from_event or pairing.get("user_id")
                     if not phone_from_event and pairing.get("phone"):
                         phone_from_event = pairing["phone"]
+
+                # 1b. P6-8: AUTHORITATIVE PROMOTION. Before this branch existed the
+                #     ONLY code path able to CREATE a durable row for a first-time
+                #     pairing was `get_pairing_qr` polling, so a phone that really
+                #     connected produced no row unless the browser kept polling.
+                #     `promote_ephemeral_pairing` completes the promotion from this
+                #     event alone (create OR relink), resolving the owner from the
+                #     in-memory registry, the DURABLE pairing record, or the
+                #     explicit owner on the event — and fails closed otherwise.
+                promoted = await promote_ephemeral_pairing(
+                    db,
+                    gateway_session_id=str(gw_session_id),
+                    user_id=str(user_id_from_event) if user_id_from_event else None,
+                    phone=phone_from_event or None,
+                    session_name=event.get("session_name"),
+                    self_jid=event.get("self_jid"),
+                    self_lid=event.get("self_lid"),
+                    in_memory_pairing=pairing,
+                )
+                if promoted is not None:
+                    remove_ephemeral_pairing_by_gateway_id(str(gw_session_id))
+                    event["session_id"] = promoted.id
+                    event["session_name"] = event.get("session_name") or promoted.session_name
+                    event["user_id"] = str(promoted.user_id) if promoted.user_id else None
+                    if promoted.user_id and promoted.phone_number:
+                        try:
+                            await self.reconcile_self_identity(
+                                db, str(promoted.user_id), promoted, self_lid=event.get("self_lid")
+                            )
+                        except Exception as rec_err:
+                            logger.warning(
+                                "[WhatsApp] Self identity reconciliation warning: %s", rec_err
+                            )
+                    return event
 
                 # 2. If user_id is still unknown, resolve deterministically via phone + RELINK_REQUIRED
                 # Section 10: 0 -> fail closed, 1 -> valid, >1 -> fail closed

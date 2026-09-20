@@ -15,11 +15,21 @@ let orderSource = fs.readFileSync(new URL('../src/features/whatsapp/lib/whatsapp
 // Remove the imports
 orderSource = orderSource
   .replace("import { Conversation } from '../../../types';", '')
-  .replace("import { parseServerTime } from '../../../lib/utils';", '');
+  .replace("import { parseServerTime } from '../../../lib/utils';", '')
+  .replace("import { extractCleanPhone } from './whatsappIdentity';", '');
 
-// Combine parseServerTime with orderSource
+// `whatsappOrdering.ts` keys the canonical identity through `extractCleanPhone`, so the
+// module it lives in must be inlined too — a bare `data:` URL cannot resolve a relative
+// specifier. Only its type-only import needs stripping; its helpers are self-contained.
+const identitySource = fs.readFileSync(
+  new URL('../src/features/whatsapp/lib/whatsappIdentity.ts', import.meta.url),
+  'utf8',
+).replace("import { Conversation } from '../../../types';", '');
+
+// Combine parseServerTime with the identity helpers and orderSource
 const combinedSource = `
 ${parseServerTimeMatch[0]}
+${identitySource}
 ${orderSource}
 `;
 

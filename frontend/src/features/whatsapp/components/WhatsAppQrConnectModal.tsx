@@ -33,6 +33,54 @@ export type QrModalState =
   | 'LOGGED_OUT'
   | 'ERROR';
 
+/**
+ * Phase 6.8 — the explicit pairing lifecycle.
+ *
+ * The production defect was a CANCELLATION RACE, and it was invisible to the
+ * modal's `modalState` because that machine describes the *view*, not the
+ * *pairing*. The view reaches CONNECTED the instant the `session_connected`
+ * event arrives, but the backend promotion is still completing — and the modal
+ * auto-closes 1.5 s later, whose effect cleanup then cancelled the pairing and
+ * destroyed the socket the gateway had just promoted.
+ *
+ * So the pairing gets its own state, advanced only by real signals, and the
+ * decision to cancel is made against THIS — never against a timer or a guess.
+ */
+export type PairingLifecycle =
+  | 'IDLE'
+  | 'CREATING'
+  | 'SCAN_QR'
+  | 'PAIRING_IN_PROGRESS'
+  | 'PROMOTION_PENDING'
+  | 'CONNECTED'
+  | 'CANCELLED'
+  | 'FAILED';
+
+/**
+ * The lifecycle states in which the gateway already holds a socket that is
+ * becoming — or has become — a durable session: either `connection.open` has
+ * fired, or the scan that precedes it has.
+ *
+ * A UI lifecycle event (modal close, effect re-run, an explicit Cancel press)
+ * must NEVER tear a pairing down in one of these states. Doing exactly that is
+ * what lost real pairings in production: the modal reached CONNECTED, closed
+ * 1.5 s later, and its effect cleanup cancelled the socket the phone had just
+ * been promoted into.
+ *
+ * This is deliberately NOT the complement of "still waiting for a scan". IDLE,
+ * CANCELLED and FAILED belong to neither set: in those states nothing has been
+ * promoted, so tearing the ephemeral socket down is both safe and necessary —
+ * otherwise an abandoned pairing leaks its gateway session forever. Expressing
+ * the guard as `!CANCELLABLE.includes(state)` would classify those three as
+ * "promoted", which leaks the socket on FAILED and makes an explicit Cancel on
+ * a failed pairing report CONNECTED.
+ */
+export const PROMOTED_OR_PROMOTING_STATES: readonly PairingLifecycle[] = [
+  'PAIRING_IN_PROGRESS',
+  'PROMOTION_PENDING',
+  'CONNECTED',
+];
+
 export interface WhatsAppQrConnectModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -90,6 +138,13 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
   const isNewlyCreatedRef = useRef<boolean>(false);
   const isCancelledRef = useRef<boolean>(false);
 
+  // Phase 6.8 — pairing lifecycle + idempotent cancellation.
+  // A ref (not state): the effect cleanups must read the LATEST value
+  // synchronously, without being re-created by a dependency change — a re-run
+  // of the lifecycle effect is itself one of the triggers we must survive.
+  const pairingLifecycleRef = useRef<PairingLifecycle>('IDLE');
+  const cancelledPairTokensRef = useRef<Set<string>>(new Set());
+
   // Sync ref with existingSessionId prop if changed
   useEffect(() => {
     if (existingSessionId) {
@@ -110,6 +165,55 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
     }
   }, []);
 
+  /**
+   * Phase 6.8 — advance the pairing lifecycle.
+   *
+   * Monotonic on purpose: a late `session_qr_updated` must not drag a pairing
+   * that already reached PROMOTION_PENDING back to SCAN_QR and re-open the
+   * cancel window.
+   */
+  const setPairingLifecycle = useCallback((next: PairingLifecycle) => {
+    const order: PairingLifecycle[] = [
+      'IDLE', 'CREATING', 'SCAN_QR', 'PAIRING_IN_PROGRESS', 'PROMOTION_PENDING', 'CONNECTED',
+    ];
+    const current = pairingLifecycleRef.current;
+    if (order.indexOf(current) === -1 || order.indexOf(next) === -1) {
+      // CANCELLED / FAILED are terminal — always writable.
+      pairingLifecycleRef.current = next;
+      return;
+    }
+    if (order.indexOf(next) >= order.indexOf(current)) {
+      pairingLifecycleRef.current = next;
+    }
+  }, []);
+
+  /**
+   * Phase 6.8 — the ONE place a pairing may be cancelled.
+   *
+   * Replaces three unguarded `cancelPairing(...)` call sites (the in-flight
+   * create bail-out, the modal-close branch, and the lifecycle-effect cleanup).
+   * All three fired on ordinary React lifecycle events, and all three could hit
+   * a pairing whose socket the gateway had ALREADY promoted via
+   * `connection.open` — which is what destroyed the promotion in production.
+   *
+   * Rules:
+   *  - never cancel a pairing that is at or past PAIRING_IN_PROGRESS;
+   *  - never cancel the same token twice (the cleanup can run more than once);
+   *  - the decision is made from the explicit lifecycle, never from a timeout.
+   */
+  const cancelPairingIfStillWaiting = useCallback((token: string | null | undefined) => {
+    if (!token) return;
+    if (cancelledPairTokensRef.current.has(token)) return;
+    if (PROMOTED_OR_PROMOTING_STATES.includes(pairingLifecycleRef.current)) {
+      // The scan already happened (or the promotion is in flight). The gateway
+      // socket is on its way to a durable session: a UI lifecycle event must
+      // not destroy it. Leaving the token alone is the correct action.
+      return;
+    }
+    cancelledPairTokensRef.current.add(token);
+    void WhatsAppRepository.cancelPairing(token).catch(() => {});
+  }, []);
+
   const resetCountdown = useCallback(() => {
     if (timerRef.current) clearInterval(timerRef.current);
     setSecondsLeft(25);
@@ -127,6 +231,8 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
   const applyTerminalGatewayStatus = useCallback((status: string | undefined, message?: string | null) => {
     if (!['RELINK_REQUIRED', 'UNAVAILABLE', 'ERROR', 'BANNED'].includes(String(status))) return false;
     clearTimers();
+    // Phase 6.8: a terminal gateway status ends the pairing — never cancellable.
+    setPairingLifecycle('FAILED');
     setModalState('ERROR');
     setErrorMessage(message || ({
       RELINK_REQUIRED: t('whatsapp.statusRelinkRequired'),
@@ -135,7 +241,7 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
       ERROR: t('whatsapp.statusError'),
     } as Record<string, string>)[String(status)]);
     return true;
-  }, [clearTimers, t]);
+  }, [clearTimers, t, setPairingLifecycle]);
 
   // Initialize or connect session (strictly idempotent)
   const initSession = useCallback(async () => {
@@ -188,17 +294,21 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
         // Ephemeral pairing via backend: ZERO persistent rows until QR is scanned and connected!
         const nameToUse = initialSessionName?.trim() || 'Hat 1';
         setSessionName(nameToUse);
+        setPairingLifecycle('CREATING');
 
         const pairing = await WhatsAppRepository.startPairing(nameToUse);
         if (isCancelledRef.current || !isMountedRef.current) {
-          // Modal was closed or cancelled while pairing creation was in flight!
-          void WhatsAppRepository.cancelPairing(pairing.pair_token).catch(() => {});
+          // Modal was closed or cancelled while pairing creation was in flight.
+          // The lifecycle is still CREATING, so this one IS genuinely
+          // cancellable — nothing has scanned anything yet.
+          cancelPairingIfStillWaiting(pairing.pair_token);
           return;
         }
 
         pairTokenRef.current = pairing.pair_token;
         setPairToken(pairing.pair_token);
         setSessionName(pairing.session_name || nameToUse);
+        setPairingLifecycle('SCAN_QR');
 
         if (pairing.qr_code) {
           setQrCode(pairing.qr_code);
@@ -211,12 +321,13 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
       }
     } catch (err: any) {
       if (!isMountedRef.current) return;
+      setPairingLifecycle('FAILED');
       setModalState('ERROR');
       setErrorMessage(err?.message || t('whatsapp.connectionErrorDesc'));
     } finally {
       isInitializingRef.current = false;
     }
-  }, [existingSessionId, initialSessionName, clearTimers, resetCountdown, t, applyTerminalGatewayStatus]);
+  }, [existingSessionId, initialSessionName, clearTimers, resetCountdown, t, applyTerminalGatewayStatus, setPairingLifecycle, cancelPairingIfStillWaiting]);
 
   // Manual QR Refresh - strictly operates on current session_id or ephemeral pair_token
   const handleRefreshQr = useCallback(async () => {
@@ -252,6 +363,9 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
         if (!isMountedRef.current) return;
 
         if (res.status === 'CONNECTED' && res.session_id) {
+          // Phase 6.8: an explicit refresh observed the promotion. Record it so
+          // any later UI lifecycle event cannot cancel the socket.
+          setPairingLifecycle('CONNECTED');
           setConnectedPhone(res.phone);
           setModalState('CONNECTED');
           clearTimers();
@@ -270,6 +384,12 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
           setQrCode(res.qr_code);
           setModalState('QR_READY');
           resetCountdown();
+        } else {
+          // Phase 6.8 (finding 7): an EPHEMERAL pairing must also learn that the
+          // gateway went terminal. Only the existing-session branch above called
+          // this, so a dead ephemeral pairing kept painting a QR that could
+          // never work. Now symmetric with that branch.
+          applyTerminalGatewayStatus(res.status, res.error_message);
         }
       }
     } catch (err: any) {
@@ -279,7 +399,7 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
         setIsRefreshing(false);
       }
     }
-  }, [sessionId, pairToken, isRefreshing, resetCountdown, clearTimers, toast, t, applyTerminalGatewayStatus, onClose]);
+  }, [sessionId, pairToken, isRefreshing, resetCountdown, clearTimers, toast, t, applyTerminalGatewayStatus, onClose, setPairingLifecycle]);
 
   // Pairing code — "Telefon No ile Bağlan" tabisi. Fail-closed: hata gerçek
   // mesajla gösterilir, sahte kod/sahte başarı asla üretilmez (AGENTS.md).
@@ -379,7 +499,9 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
       if (pairTokenRef.current) {
         const token = pairTokenRef.current;
         pairTokenRef.current = null;
-        void WhatsAppRepository.cancelPairing(token).catch(() => {});
+        // Phase 6.8: guarded — closing the UI may only cancel a pairing that is
+        // still genuinely waiting for a scan. See `cancelPairingIfStillWaiting`.
+        cancelPairingIfStillWaiting(token);
       }
       setPairToken(null);
       hasInitializedRef.current = false;
@@ -404,10 +526,15 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
       if (pairTokenRef.current) {
         const token = pairTokenRef.current;
         pairTokenRef.current = null;
-        void WhatsAppRepository.cancelPairing(token).catch(() => {});
+        // Phase 6.8: this cleanup fires on EVERY dependency change
+        // (`isOpen, initSession, clearTimers, existingSessionId`), so it must
+        // never be allowed to destroy a promoted / promoting pairing. The guard
+        // makes it a no-op for anything past SCAN_QR, and idempotent for the
+        // tokens it does cancel.
+        cancelPairingIfStillWaiting(token);
       }
     };
-  }, [isOpen, initSession, clearTimers, existingSessionId]);
+  }, [isOpen, initSession, clearTimers, existingSessionId, cancelPairingIfStillWaiting]);
 
   // Unified safe cancellation handler: ensures that unlinked ephemeral sessions are purged
   const handleCancel = useCallback(async () => {
@@ -419,20 +546,39 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
 
     isCancelledRef.current = true;
     clearTimers();
-    setModalState('CANCELLING');
 
     const activePair = pairTokenRef.current || pairToken;
+
+    // Phase 6.8: if the phone already scanned, the pairing is past the point of
+    // no return — the gateway socket is becoming a durable session. Tearing it
+    // down here is what lost real pairings in production, so close the UI and
+    // let the promotion finish. The user's line still appears.
+    //
+    // Only a genuinely promoted/promoting pairing is preserved. A FAILED or
+    // IDLE pairing falls through to the real cancel below — otherwise pressing
+    // Cancel on an errored pairing would both leak its gateway socket and
+    // falsely report CONNECTED.
+    if (activePair && PROMOTED_OR_PROMOTING_STATES.includes(pairingLifecycleRef.current)) {
+      pairTokenRef.current = null;
+      setPairToken(null);
+      setModalState('CONNECTED');
+      onClose();
+      return;
+    }
+
+    setModalState('CANCELLING');
+
     pairTokenRef.current = null;
     setPairToken(null);
     activeSessionIdRef.current = null;
     setSessionId(null);
 
     if (activePair) {
-      try {
-        await WhatsAppRepository.cancelPairing(activePair);
-      } catch (err) {
-        console.warn('[WhatsAppQrConnectModal] Failed to clean up ephemeral pairing:', err);
-      }
+      // ORDER MATTERS: cancel FIRST, then mark the lifecycle terminal. Marking
+      // it CANCELLED before the call would make `cancelPairingIfStillWaiting`
+      // see a non-cancellable state and skip its own cancellation.
+      cancelPairingIfStillWaiting(activePair);
+      setPairingLifecycle('CANCELLED');
     }
 
     setModalState('CANCELLED');
@@ -440,7 +586,7 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
       setModalState('IDLE');
       onClose();
     }, 50);
-  }, [modalState, pairToken, clearTimers, onClose]);
+  }, [modalState, pairToken, clearTimers, onClose, cancelPairingIfStillWaiting, setPairingLifecycle]);
 
   // Real-time WebSocket Event Listener
   useEffect(() => {
@@ -487,6 +633,9 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
 
       // 1c. Phone scanned QR / Connection in progress
       if (detail.event === 'session_connecting' || detail.event_type === 'CONNECTING') {
+        // Phase 6.8: the scan HAS happened. From here the gateway socket is
+        // becoming a real session and must not be cancelled by the UI.
+        setPairingLifecycle('PAIRING_IN_PROGRESS');
         if (modalState === 'QR_READY' || modalState === 'INITIALIZING') {
           setModalState('CONNECTING');
         }
@@ -495,6 +644,10 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
       // 2. Session Connected
       if (detail.event === 'session_connected' || detail.event_type === 'CONNECTED') {
         const phone = detail.phone || detail.phone_number;
+        // Phase 6.8: the gateway has promoted the socket (`connection.open`),
+        // but the backend's durable row may still be committing. Mark the
+        // promotion as pending FIRST so the auto-close below cannot cancel it.
+        setPairingLifecycle('PROMOTION_PENDING');
         setConnectedPhone(phone || null);
         setModalState('CONNECTED');
         setQrCode(null);
@@ -507,6 +660,7 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
             session_name: sessionName 
           } as any);
         }
+        setPairingLifecycle('CONNECTED');
         setTimeout(() => {
           if (isMountedRef.current) onClose();
         }, 1500);
@@ -537,7 +691,7 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
     return () => {
       window.removeEventListener('tezlify:ws_event', handleWsEvent);
     };
-  }, [isOpen, sessionId, sessionName, modalState, resetCountdown, clearTimers, t, toast]);
+  }, [isOpen, sessionId, sessionName, modalState, resetCountdown, clearTimers, t, toast, setPairingLifecycle]);
 
   // Gentle Fallback Polling (Every 2.5 seconds while waiting for pairing/connection)
   useEffect(() => {
@@ -555,11 +709,13 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
             const res = await WhatsAppRepository.getPairingQr(pToken);
             if (!isMountedRef.current) return;
             if (res.status === 'CONNECTED' && res.session_id) {
+              setPairingLifecycle('PROMOTION_PENDING');
               setConnectedPhone(res.phone);
               setModalState('CONNECTED');
               pairTokenRef.current = null;
               setPairToken(null);
               setSessionId(res.session_id);
+              setPairingLifecycle('CONNECTED');
               if (fallbackPollRef.current) clearInterval(fallbackPollRef.current);
               toast.success(t('whatsapp.connectedState'), t('common.success'));
               if (onSuccessRef.current) onSuccessRef.current({ id: res.session_id, phone_number: res.phone } as any);
@@ -567,11 +723,25 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
                 if (isMountedRef.current) onClose();
               }, 1500);
             } else if (res.status === 'CONNECTING') {
+              setPairingLifecycle('PAIRING_IN_PROGRESS');
               setModalState('CONNECTING');
             } else if (res.qr_code && res.qr_code !== qrCode) {
               setQrCode(res.qr_code);
               setModalState('QR_READY');
               resetCountdown();
+            } else if (applyTerminalGatewayStatus(res.status, res.error_message)) {
+              // Phase 6.8 (finding 7): an EPHEMERAL pairing must learn that the
+              // gateway went terminal (RELINK_REQUIRED / UNAVAILABLE / ERROR /
+              // BANNED), not only when an `error_message` happens to accompany
+              // it. Without this a dead ephemeral pairing kept showing a QR that
+              // could never work until the countdown expired.
+              //
+              // Deliberately checked BEFORE the `error_message` branch (which the
+              // existing-session branch below places first): only this ordering
+              // marks the pairing lifecycle FAILED when a terminal status also
+              // carries a message, and the lifecycle is what governs whether the
+              // ephemeral socket may still be cancelled.
+              if (fallbackPollRef.current) clearInterval(fallbackPollRef.current);
             } else if (res.error_message) {
               setErrorMessage(res.error_message);
               setModalState('ERROR');
@@ -621,7 +791,7 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
         fallbackPollRef.current = null;
       }
     };
-  }, [isOpen, sessionId, pairToken, modalState, qrCode, resetCountdown, applyTerminalGatewayStatus, t, toast, onClose]);
+  }, [isOpen, sessionId, pairToken, modalState, qrCode, resetCountdown, applyTerminalGatewayStatus, t, toast, onClose, setPairingLifecycle]);
 
   // Keyboard accessibility: Escape to close / cancel
   useEffect(() => {

@@ -100,10 +100,14 @@ async def get_sessions(
 @router.post("/pairing/start", response_model=WhatsAppPairingStartResponse, status_code=status.HTTP_201_CREATED)
 async def start_pairing(
     payload: WhatsAppPairingStartRequest,
+    db: AsyncSession = Depends(get_db),
     current_user: AuthUser = Depends(get_current_user),
 ) -> WhatsAppPairingStartResponse:
     try:
-        data = await whatsapp_service.start_pairing_session(current_user.id, payload.name)
+        # Phase 6.8: the durable `ephemeral_pairings` record is written here, so a
+        # later `session_connected` can resolve the owner even if this process
+        # loses `_ephemeral_pairings` (restart, cancel, popped token).
+        data = await whatsapp_service.start_pairing_session(current_user.id, payload.name, db=db)
         return WhatsAppPairingStartResponse(**data)
     except Exception as exc:
         raise _bad_gateway(exc) from exc
@@ -152,10 +156,14 @@ async def request_pairing_code_for_token(
 @router.post("/pairing/{pair_token}/cancel")
 async def cancel_pairing(
     pair_token: str,
+    db: AsyncSession = Depends(get_db),
     current_user: AuthUser = Depends(get_current_user),
 ) -> Dict[str, Any]:
     try:
-        return await whatsapp_service.cancel_pairing_session(current_user.id, pair_token)
+        # Phase 6.8: promotion-aware. A cancel that arrives after the gateway
+        # already reached CONNECTED finalises the pairing instead of deleting
+        # the promoted socket.
+        return await whatsapp_service.cancel_pairing_session(current_user.id, pair_token, db=db)
     except Exception as exc:
         logger.warning("[WhatsApp] cancel_pairing error: %s", exc)
         return {"success": True}

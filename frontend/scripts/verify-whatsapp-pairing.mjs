@@ -124,13 +124,28 @@ const entry = path.join(tmp, 'entry.tsx');
 const outfile = path.join(tmp, 'bundle.js');
 
 await writeFile(entry, `
-import React from 'react';
+import React, { useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { act } from 'react';
 import { WhatsAppQrConnectModal } from ${JSON.stringify(path.join(SRC, 'features/whatsapp/components/WhatsAppQrConnectModal.tsx'))};
 import { I18nProvider } from ${JSON.stringify(path.join(SRC, 'context/I18nContext.tsx'))};
 import { ToastProvider } from ${JSON.stringify(path.join(SRC, 'context/ToastContext.tsx'))};
-window.__P = { React, createRoot, act, WhatsAppQrConnectModal, I18nProvider, ToastProvider };
+
+// Phase 6.8 harness: a parent that ACTUALLY honours onClose, so the modal's own
+// lifecycle runs exactly as it does in the app (isOpen -> false -> effect
+// cleanup). The plain mount() below pins isOpen=true and can never reproduce
+// the production race.
+function ConnectHarness(props) {
+  const [isOpen, setIsOpen] = useState(true);
+  window.__closeModal = () => setIsOpen(false);
+  return React.createElement(WhatsAppQrConnectModal, {
+    ...props,
+    isOpen,
+    onClose: () => setIsOpen(false),
+  });
+}
+
+window.__P = { React, createRoot, act, WhatsAppQrConnectModal, I18nProvider, ToastProvider, ConnectHarness };
 `);
 
 await build({
@@ -150,7 +165,7 @@ await build({
 
 const code = await (await import('node:fs/promises')).readFile(outfile, 'utf8');
 window.eval(code);
-const { React, createRoot, act, WhatsAppQrConnectModal, I18nProvider, ToastProvider } = window.__P;
+const { React, createRoot, act, WhatsAppQrConnectModal, I18nProvider, ToastProvider, ConnectHarness } = window.__P;
 const h = React.createElement;
 
 // ------------------------------------------------------------------ harness
@@ -206,6 +221,40 @@ async function mount(props = {}) {
   currentView = view;
   return view;
 }
+
+/**
+ * Phase 6.8 — mount inside a parent that honours `onClose`.
+ *
+ * `mount()` pins `isOpen: true`, so the modal's lifecycle effect can never
+ * re-run and its cleanup can never fire — which is precisely the production
+ * trigger. This variant closes for real, so the cancellation path is exercised.
+ */
+async function mountHarness(props = {}) {
+  while (window.document.body.firstChild) window.document.body.removeChild(window.document.body.firstChild);
+  const host = window.document.createElement('div');
+  window.document.body.appendChild(host);
+  const root = createRoot(host);
+  let latest = props;
+  const render = async (next = latest) => {
+    latest = { ...latest, ...next };
+    await act(async () => {
+      root.render(h(I18nProvider, null, h(ToastProvider, null, h(ConnectHarness, latest))));
+    });
+  };
+  await render();
+  for (let i = 0; i < 40 && backend.calls.start === 0; i += 1) await tick(50);
+  await tick(50);
+  const view = { host, root, render, unmount: async () => { await act(async () => root.unmount()); host.remove(); } };
+  currentView = view;
+  return view;
+}
+
+/** Deliver a gateway WS event the way `wsManager` does in the app. */
+const emitWs = async (detail) => {
+  await act(async () => {
+    window.dispatchEvent(new window.CustomEvent('tezlify:ws_event', { detail }));
+  });
+};
 
 // The modal renders through createPortal(..., document.body), so every query
 // must run against the document — not the React root host.
@@ -392,6 +441,165 @@ await check('PHONE: a failure surfaces the real error and leaves a retry', async
   // Retry must be possible: the input is still there and the button is live.
   assert.ok(body().querySelector('#pairing-phone-input'), 'the phone input must remain for a retry');
   assert.ok(buttonByText(/kod|code/i), 'the submit button must be live again for a retry');
+  await v.unmount();
+});
+
+// ------------------------------------------- C. Phase 6.8 promotion race
+await check('PROMOTION: auto-close after session_connected must NOT cancel the pairing', async () => {
+  // THE PRODUCTION DEFECT. The real order was:
+  //   real phone scans -> Baileys 515 -> connection.open -> gateway promotes
+  //   -> `session_connected` -> modal flips to CONNECTED and schedules onClose
+  //   -> 1.5 s later the modal closes -> effect cleanup cancels the pairing
+  //   -> gateway socket deleted ~1.8 s after the phone connected
+  //   -> no durable CONNECTED row, every later event "unknown gateway session".
+  backend = makeBackend();
+  installFetch();
+  const v = await mountHarness();
+  backend.state.qr = QR_A;
+  await tick(2700);
+  assert.ok(qrImg(), 'the QR must be rendered before the scan');
+
+  await emitWs({ event: 'session_connected', session_name: 'Hat 1', phone: '+905413749073' });
+  await tick(200);
+  // The modal auto-closes 1.5 s after `session_connected`; the close is what
+  // used to run the cleanup that destroyed the promotion.
+  await tick(2200);
+
+  assert.equal(
+    backend.calls.cancel, 0,
+    'closing the QR UI after the scan cancelled the pairing — this is the defect that lost real pairings',
+  );
+  await v.unmount();
+});
+
+await check('PROMOTION: a React effect re-run after the scan must NOT cancel the pairing', async () => {
+  // The lifecycle effect cleanup fires on EVERY dependency change
+  // (`isOpen, initSession, clearTimers, existingSessionId`), so an ordinary
+  // re-render during the promotion window was enough to kill it.
+  backend = makeBackend();
+  installFetch();
+  const v = await mountHarness();
+  backend.state.qr = QR_A;
+  await tick(2700);
+
+  await emitWs({ event: 'session_connecting', session_name: 'Hat 1' });
+  await tick(120);
+  const before = backend.calls.cancel;
+
+  await v.render({ existingSessionId: 9 }); // forces the lifecycle effect to re-run
+  await tick(300);
+
+  assert.equal(
+    backend.calls.cancel, before,
+    'an effect re-run cancelled a pairing whose socket is already progressing toward CONNECTED',
+  );
+  await v.unmount();
+});
+
+await check('CANCEL: a pairing still waiting for a scan IS still cancelled', async () => {
+  // Regression guard for the fix itself: it must not turn cancel into a no-op,
+  // or every abandoned ephemeral gateway session leaks forever.
+  backend = makeBackend();
+  installFetch();
+  const v = await mountHarness();
+  backend.state.qr = QR_A;
+  await tick(2700);
+  assert.ok(qrImg(), 'the QR must be rendered');
+
+  await act(async () => { window.__closeModal(); });
+  await tick(300);
+
+  assert.equal(
+    backend.calls.cancel, 1,
+    `a genuinely waiting pairing must still be torn down (got ${backend.calls.cancel})`,
+  );
+  await v.unmount();
+});
+
+await check('CANCEL: the pairing is cancelled at most once', async () => {
+  backend = makeBackend();
+  installFetch();
+  const v = await mountHarness();
+  backend.state.qr = QR_A;
+  await tick(2700);
+
+  await act(async () => { window.__closeModal(); });
+  await tick(150);
+  await v.render({ existingSessionId: 3 }); // a second cleanup must be a no-op
+  await tick(300);
+
+  assert.equal(backend.calls.cancel, 1, `cancel must be idempotent (got ${backend.calls.cancel})`);
+  await v.unmount();
+});
+
+// ------------------------------- C2. Phase 6.8 finding 7 — terminal gateway status
+//
+// These two checks were written during the §11 review, found VACUOUS (they passed
+// under a deliberately-broken guard predicate), and removed — because at that time
+// `applyTerminalGatewayStatus` was never reached for an ephemeral pairing, so the
+// `FAILED` lifecycle was unreachable while a pair token was held and the guard's
+// behaviour on it was unobservable. Finding 7 fixed exactly that: the ephemeral
+// poll and the ephemeral refresh now both call `applyTerminalGatewayStatus`. The
+// state is reachable now, so the checks are restored — and they are falsifiable.
+await check('TERMINAL: an errored pairing is still torn down, not mistaken for a promotion', async () => {
+  // Regression guard for the guard itself: a `!CANCELLABLE.includes(state)`
+  // predicate classified FAILED as "promoted", so an errored pairing refused to
+  // release its gateway socket and leaked it forever.
+  backend = makeBackend();
+  installFetch();
+  const v = await mountHarness();
+  backend.state.qr = QR_A;
+  await tick(2700);
+  assert.ok(qrImg(), 'the QR must be rendered before the gateway errors');
+
+  // The gateway drops the socket: it has no QR any more, and reports a terminal
+  // status. The ephemeral poll must learn this (finding 7).
+  backend.state.qr = null;
+  backend.state.status = 'RELINK_REQUIRED';
+  await tick(3000);
+
+  // Finding 7's own mechanism, pinned. Pre-finding-7 the poll reacted only to
+  // `error_message`, so a terminal status carrying none was ignored and a QR
+  // that could never work stayed on screen. This assertion is what fails when
+  // the `applyTerminalGatewayStatus` call site is missing — the cancel guard
+  // below alone would NOT have noticed (a never-terminal pairing stays
+  // cancellable, so `cancel === 1` would still hold).
+  assert.ok(!qrImg(), 'the dead QR must be removed once the gateway is terminal');
+
+  await act(async () => { window.__closeModal(); });
+  await tick(400);
+
+  assert.equal(
+    backend.calls.cancel, 1,
+    `an errored pairing must still release its gateway socket (cancel=${backend.calls.cancel})`,
+  );
+  await v.unmount();
+});
+
+await check('TERMINAL: pressing Cancel on an errored pairing must not claim CONNECTED', async () => {
+  // The same mis-classification from the other guard site: `handleCancel`
+  // preserved the pairing, set modalState CONNECTED and skipped the cancel — so an
+  // explicit Cancel on a failed pairing told the user their line had connected,
+  // and left the gateway socket running.
+  backend = makeBackend();
+  installFetch();
+  const v = await mountHarness();
+  backend.state.qr = QR_A;
+  await tick(2700);
+
+  backend.state.qr = null;
+  backend.state.status = 'RELINK_REQUIRED';
+  await tick(3000);
+
+  const closeBtn = body().querySelector('button[aria-label="Close"]');
+  assert.ok(closeBtn, 'the modal must expose its Close control');
+  await act(async () => { closeBtn.click(); });
+  await tick(400);
+
+  assert.equal(
+    backend.calls.cancel, 1,
+    `Cancel on an errored pairing must release the socket, not preserve it (cancel=${backend.calls.cancel})`,
+  );
   await v.unmount();
 });
 

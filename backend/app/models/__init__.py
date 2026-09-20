@@ -14,6 +14,7 @@ from backend.app.models.conversation import Conversation, ConversationStatus
 from backend.app.models.message import Message, MessageDirection, MessageType, ConversationMessageStatus
 from backend.app.models.profile import Profile
 from backend.app.models.whatsapp_session import WhatsAppSession, SessionStatus
+from backend.app.models.ephemeral_pairing import EphemeralPairing
 
 __all__ = [
     "Base",
@@ -43,4 +44,5 @@ __all__ = [
     "Profile",
     "WhatsAppSession",
     "SessionStatus",
+    "EphemeralPairing",
 ]

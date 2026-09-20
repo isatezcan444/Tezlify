@@ -34,6 +34,7 @@ from backend.app.services.whatsapp.gateway import (
     extract_session_id,
     is_gateway_session_missing,
 )
+from backend.app.services.whatsapp.orchestration import pairing_registry
 from backend.app.services.whatsapp.orchestration.relink import (
     RelinkCandidateAmbiguous,
     RelinkCandidateNotFound,
@@ -252,9 +253,16 @@ async def start_pairing_session(
     user_id: str,
     name: Optional[str] = None,
     logical_session_id: Optional[int] = None,
+    db: Optional[AsyncSession] = None,
 ) -> Dict[str, Any]:
     """Starts an ephemeral pairing session in gateway without persisting any row in public.whatsapp_sessions.
     Guarantees ZERO persistent database rows until the QR code is truly scanned and connected.
+
+    Phase 6.8: the pairing is ALSO written to the durable `ephemeral_pairings`
+    record (tenant-scoped, in the private/application schema — NOT
+    `public.whatsapp_sessions`, so the No-Create QR invariant is untouched).
+    That record is what lets a later `session_connected` resolve the owner even
+    if this process loses `_ephemeral_pairings` (restart, cancel, popped token).
     """
     line_name = name or f"Hat {datetime.utcnow().strftime('%H:%M')}"
     gw_session = await gw.create_session(line_name, ephemeral=True)
@@ -274,6 +282,15 @@ async def start_pairing_session(
     }
     if logical_session_id:
         _logical_to_ephemeral[logical_session_id] = pair_token
+    if db is not None:
+        await pairing_registry.record_pairing(
+            db,
+            pair_token=pair_token,
+            gateway_session_id=gateway_id,
+            user_id=str(user_id),
+            session_name=gw_session.get("session_name") or line_name,
+            logical_session_id=logical_session_id,
+        )
     return {
         "pair_token": pair_token,
         "gateway_id": gateway_id,
@@ -427,22 +444,102 @@ async def get_pairing_qr(db: AsyncSession, user_id: str, pair_token: str) -> Dic
     }
 
 
-async def cancel_pairing_session(user_id: str, pair_token: str) -> Dict[str, Any]:
-    """Cancels an ephemeral pairing attempt, terminating gateway socket and freeing memory.
-    Guarantees that ZERO rows were ever created in public.whatsapp_sessions and
-    ZERO history states are mutated.
+async def cancel_pairing_session(
+    user_id: str, pair_token: str, db: Optional[AsyncSession] = None
+) -> Dict[str, Any]:
+    """Cancels an ephemeral pairing attempt that is STILL WAITING for a scan.
+
+    Phase 6.8 — this used to be the last link in the production defect chain.
+    `WhatsAppQrConnectModal` auto-closes 1.5 s after the `session_connected`
+    event (and its lifecycle-effect cleanup fires on any re-render), and every
+    one of those paths called this endpoint. It then unconditionally ran
+    `gw.delete_session(gateway_id)` — destroying the socket that `connection.open`
+    had *just* promoted, ~1.8 s after the real phone connected. The durable
+    session then never existed, so every later event was rejected as an
+    "unknown gateway session" (2 904 dropped in 60 s in production).
+
+    A user closing the QR UI is allowed to cancel a pairing that is genuinely
+    still waiting for pairing. It must NOT destroy an already-promoted or
+    promotion-in-progress session. So the gateway's own status decides:
+
+    * status `CONNECTED` -> the pairing already succeeded. Finalise it
+      (idempotent promotion) and return WITHOUT deleting the socket.
+    * anything else -> a genuine cancel: terminate the ephemeral socket.
+
+    The operation is idempotent: the second call finds neither an in-memory
+    entry nor an unconsumed durable record and does nothing at all.
     """
-    pairing = _ephemeral_pairings.pop(pair_token, None)
-    if pairing:
-        log_id = pairing.get("logical_session_id")
-        if log_id and _logical_to_ephemeral.get(log_id) == pair_token:
-            _logical_to_ephemeral.pop(log_id, None)
-        if pairing["user_id"] == str(user_id):
-            try:
-                await gw.delete_session(pairing["gateway_id"])
-            except Exception as exc:
-                logger.warning("[WhatsApp] Ephemeral gateway oturumu silinirken hata: %s", exc)
-    return {"success": True}
+    pairing: Optional[Dict[str, Any]] = _ephemeral_pairings.pop(pair_token, None)
+    if pairing is None:
+        # Already cancelled/consumed in this process, or the in-memory map was
+        # lost (restart). The durable record is the fallback — and if it is gone
+        # or already consumed, this call is a no-op rather than a second delete.
+        if db is None:
+            return {"success": True, "cancelled": False}
+        pairing = await pairing_registry.resolve_open_pairing_by_token(db, pair_token)
+        if pairing is None:
+            return {"success": True, "cancelled": False}
+
+    log_id = pairing.get("logical_session_id")
+    if log_id and _logical_to_ephemeral.get(log_id) == pair_token:
+        _logical_to_ephemeral.pop(log_id, None)
+
+    gateway_id = str(pairing.get("gateway_id") or "")
+    if not gateway_id or str(pairing.get("user_id")) != str(user_id):
+        return {"success": True, "cancelled": False}
+
+    # --- PROMOTION-AWARE (Phase 6.8) -------------------------------------
+    gateway_data: Dict[str, Any] = {}
+    try:
+        data = await gw.get_session_qr(gateway_id)
+        if isinstance(data, dict):
+            gateway_data = data
+    except Exception as exc:  # noqa: BLE001 - a missing socket is still cancellable
+        logger.warning("[WhatsApp] Ephemeral oturum durumu okunamadi (%s): %s", gateway_id, exc)
+
+    if str(gateway_data.get("status") or "").upper() == "CONNECTED":
+        phone = str(
+            gateway_data.get("phone") or gateway_data.get("phone_number") or ""
+        ).strip()
+        promoted = False
+        if db is not None:
+            # Lazy import: `promotion` pulls in the relink layer, and this module
+            # is imported very early (endpoint -> whatsapp_service -> sessions).
+            from backend.app.services.whatsapp.orchestration.promotion import (
+                promote_ephemeral_pairing,
+            )
+
+            row = await promote_ephemeral_pairing(
+                db,
+                gateway_session_id=gateway_id,
+                user_id=str(user_id),
+                phone=phone or None,
+                session_name=pairing.get("session_name"),
+                in_memory_pairing=pairing,
+            )
+            promoted = row is not None
+        else:
+            # No session to promote with — but the socket is provably connected,
+            # so it must still not be destroyed by a UI lifecycle event.
+            promoted = True
+
+        if db is not None:
+            await pairing_registry.consume_pairing(db, gateway_id)
+        logger.info(
+            "[WhatsApp] Cancel saw an already-CONNECTED pairing for gateway=%s "
+            "(promoted=%s); gateway socket preserved.",
+            gateway_id,
+            promoted,
+        )
+        return {"success": True, "cancelled": False, "promoted": promoted}
+
+    try:
+        await gw.delete_session(gateway_id)
+    except Exception as exc:
+        logger.warning("[WhatsApp] Ephemeral gateway oturumu silinirken hata: %s", exc)
+    if db is not None:
+        await pairing_registry.consume_pairing(db, gateway_id)
+    return {"success": True, "cancelled": True}
 
 
 async def refresh_contact_avatar(db: AsyncSession, user_id: str, phone: str) -> Dict[str, Any]:

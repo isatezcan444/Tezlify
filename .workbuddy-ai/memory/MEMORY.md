@@ -1,28 +1,25 @@
-# Tezlify — Project Memory (index)
+# Tezlify — project index
 
-**Full detail: `.workbuddy-ai/memory/reference/whatsapp-subsystem-invariants.md`** (§A–§J).
-Every entry verified against source or a read-only production query. Do not "fix" code that satisfies them.
+Details: `reference/whatsapp-subsystem-invariants.md`; daily logs: `YYYY-MM-DD.md`.
 
-| § | Topic | One-line anchor |
-|---|---|---|
-| A | Identity / ordering / payload | `resolve_contact_identity` is the only name authority; REST+WS share field names (**never `lead_phone`**); sort = activity only |
-| B | Unread badge | Gateway owns `unread_count` and reports decreases → `Math.max` is always wrong; staleness guard symmetric; drop-to-0 IS read evidence (P6-1/P6-2) |
-| C | Frontend React (Phase 6) | Per-conversation state in an **unkeyed** component: P6-3 pill, P6-4 viewport, **P6-5 composer draft → wrong chat**, P6-6 one canonical merge, P6-7 `behavior:'instant'` |
-| D | Dedup / uniqueness | C-4 = `UNIQUE (conversation_id, wa_message_id) WHERE NOT NULL`; conversation constraint already solved; history cursor `(wa_message_id, from_me, timestamp_ms)` |
-| E | Tenant isolation (G-3) | Route `lid_mappings → gateway_sessions → whatsapp_sessions.user_id`; **never** `get_user_filter`; owner resolution fails closed when ambiguous |
-| F | Gateway contracts | P5-1 `buildMediaContent` (never wrap a Buffer in `{url}`); delivery ranks strictly-greater; broadcast kwarg is `target_user_id` |
-| G | Pairing (6.4/6.5) | Ephemeral No-Create + `_ephemeral_pairings`; P6-8 pair-token code route; P6-9 owner association (**never global broadcast**); dual-path QR; **G-LEASE** |
-| H | Test baselines | backend **1089 pass / 4 skip** (needs a session-free DB), gateway **21/21**, frontend logic 43 / dom 20 / browser 7/7 / pairing 8 / pairing-browser 12/12 |
-| I | Production topology | `130.162.247.20`, `/opt/tezlify`, ssh `ubuntu`; **prod = `f6ec68d`, lacks the G-LEASE fix**; push ≠ deploy |
-| J | Known-open | New Chat throws (F-5); background sweep over-promotes `FULLY_EXHAUSTED`; monitoring blind to a session dying holding no lease |
+## Invariants
+- Identity: `resolve_contact_identity` owns names. REST/WS fields match (never `lead_phone`); sort by activity only.
+- Gateway owns unread count, including decreases; no `Math.max`. Drop to zero is read evidence. Preserve per-conversation drafts/viewport and canonical merge; use instant scroll.
+- Message uniqueness: `(conversation_id, wa_message_id) WHERE NOT NULL`; cursor includes direction/time.
+- G-3 owner route: `lid_mappings -> gateway_sessions -> whatsapp_sessions.user_id`; never relaxed tenant filters; ambiguous/unknown ownership fails closed.
+- Media: never wrap a Buffer in `{url}`; delivery rank increases only; broadcasts use `target_user_id`.
+- No-Create means no `whatsapp_sessions` row before actual connection. G-LEASE renews only held leases.
 
-## Load-bearing facts to keep in head
+## State recorded 2026-09-20
+- Production last verified at `6f4aa00`: Oracle `130.162.247.20`, `/opt/tezlify`, SSH key `~/.ssh/id_tezlify_oracle`, user ubuntu. Push is not deploy. Frontend built off-box; Caddy bind mount resolves `frontend_candidate` symlink at creation, requiring Caddy recreation on swap.
+- QR-start latency improved ~21.6 s -> ~0.21 s after scoped LID lookup deployment. See production deploy and QR latency reports.
+- Phase 6.8 local promotion changes remain UNCOMMITTED/UNDEPLOYED. Event promotion adds CREATE path; durable pairing registry plus modal cancellation guards. Backend reproduction: HEAD 15 fail/9 pass -> 24 pass.
+- `WHATSAPP_PHASE6_8_PROMOTION_REPORT.md` contains results; LIVE DEVICE E2E NOT RUN. Phase incomplete. Recorded production row 68 needs user-driven relink, not DB edits. A controlled local live test does not inherently require production writes.
+- Terminal-status follow-up **DONE** (report §12): ephemeral poll + refresh now learn terminal status; predicate corrected to the documented 3-state set (handed-over tree still had the six-state complement — live false-CONNECTED/socket-leak once `FAILED` became reachable); both TERMINAL checks restored **and falsified** in vivo; real-Chrome check `H` added. Frontend-only, still uncommitted/undeployed.
 
-- **G-LEASE is the real QR killer** and is **fixed locally** (`armLeaseRenewal()` armed only where a
-  lease is held, plus the promotion branch). Production still runs the broken revision.
-- **Real FK:** `socket_leases.session_id → whatsapp_private.gateway_sessions(session_id)`. `acquire`
-  INSERT fails **23503**; `renew` UPDATE is a **silent** `rowCount 0`. That silence is the defect's cover.
-- **Never conflate local test results with production health.**
-- **No live-device pairing has ever been run** → report `LIVE DEVICE E2E = NOT RUN`.
-- Local real stack (2026-09-19): PostgreSQL 17.11 on `:5432`, db `tezlify`; managed Node 22.22.2;
-  backend venv at `./venv`; **no container runtime** on this machine.
+## Verification
+- Last backend: 1113 pass/4 skip on isolated SQLite copy (re-confirmed after the §12 follow-up); gateway previously 22/22. Frontend current: logic 43, DOM 20, Chrome 7, pairing 14, pairing-Chrome 14, merge/equivalence, chat-order 10.
+- Never run pytest on dev `tezlify.db`: leftover CONNECTED owners cause 28 fail-closed failures. Copy via SQLite backup, remove test-conflicting sessions/pairing records ONLY in copy, set DATABASE_URL; use a fresh pytest basetemp instead of broad temp deletion.
+- Seven npm verify scripts omit chat-order; run that script separately. Bundle relative imports with esbuild, not data-URL string stripping.
+- Compare actual exit codes; browser assertions and sandbox housekeeping failures are distinct. Failed auxiliary ORM writes/rollback expire loaded rows: capture PK before rollback and reload asynchronously.
+- Falsify a restored regression check against the real broken mechanism before trusting it — counter-only assertions can pass under a missing call site (assert the mechanism-specific signal too). Counter checks after a shared-harness reset need an explicit baseline, never zero.
