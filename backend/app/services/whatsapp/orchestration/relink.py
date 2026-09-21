@@ -32,6 +32,19 @@ from backend.app.models.whatsapp_session import SessionStatus, WhatsAppSession
 logger = logging.getLogger(__name__)
 
 
+def _is_sqlite_bind(db: AsyncSession) -> bool:
+    """True only when the session is bound to a real SQLite engine.
+
+    Anything else (PostgreSQL, or a mock/`None` bind with no readable dialect)
+    is treated as Postgres so raw SQL keeps its original PostgreSQL semantics
+    under unit-test mocks.
+    """
+    bind = getattr(db, "bind", None)
+    dialect = getattr(bind, "dialect", None) if bind is not None else None
+    name = getattr(dialect, "name", None) if dialect is not None else None
+    return isinstance(name, str) and name == "sqlite"
+
+
 # ---------------------------------------------------------------------------
 # Exceptions
 # ---------------------------------------------------------------------------
@@ -100,11 +113,14 @@ async def resolve_relink_candidate(
             WhatsAppSession.gateway_id != new_gateway_id,
         ]
 
-    stmt = (
-        select(WhatsAppSession)
-        .where(*_candidate_filters())
-        .with_for_update(skip_locked=True)  # advisory lock — prevent concurrent relink race
-    )
+    # advisory lock — prevent concurrent relink race. FOR UPDATE SKIP LOCKED is
+    # Postgres-only; SQLite cannot execute it, so there we fall back to the plain
+    # select (single-writer local deployments don't need the row lock).
+    # Dialect detection defaults to Postgres: a session with no usable bind
+    # (e.g. unit-test mocks) keeps the original FOR UPDATE semantics.
+    stmt = select(WhatsAppSession).where(*_candidate_filters())
+    if not _is_sqlite_bind(db):
+        stmt = stmt.with_for_update(skip_locked=True)
     try:
         res = await db.execute(stmt)
         rows = res.scalars().all()
@@ -263,8 +279,25 @@ async def perform_atomic_relink(
     #   a) session_id = old gateway UUID
     #   b) provider_checked = FALSE (evidence integrity — verified rows MUST NOT be migrated)
     #   c) NOT EXISTS for same jid under new gateway (idempotency — no duplicate rows)
-    migrate_result = await db.execute(
-        text(
+    #
+    # Dialect-aware: SQLite has no schema, no NOW(), and no UPDATE ... AS alias —
+    # the same semantics are expressed with the bare table name,
+    # CURRENT_TIMESTAMP, and an unaliased correlated NOT EXISTS subquery
+    # (same pattern as history_evidence._table_name). Defaults to the Postgres
+    # statement when the bind/dialect is unreadable (unit-test mocks).
+    if _is_sqlite_bind(db):
+        migrate_sql = (
+            "UPDATE history_sync_states "
+            "SET session_id = :new_gw_id, updated_at = CURRENT_TIMESTAMP "
+            "WHERE session_id = :old_gw_id "
+            "  AND provider_checked = 0 "
+            "  AND NOT EXISTS ("
+            "    SELECT 1 FROM history_sync_states hss2 "
+            "    WHERE hss2.session_id = :new_gw_id AND hss2.jid = history_sync_states.jid"
+            ")"
+        )
+    else:
+        migrate_sql = (
             "UPDATE whatsapp_private.history_sync_states AS hss "
             "SET session_id = :new_gw_id, updated_at = NOW() "
             "WHERE hss.session_id = :old_gw_id "
@@ -273,7 +306,9 @@ async def perform_atomic_relink(
             "    SELECT 1 FROM whatsapp_private.history_sync_states hss2 "
             "    WHERE hss2.session_id = :new_gw_id AND hss2.jid = hss.jid"
             ")"
-        ),
+        )
+    migrate_result = await db.execute(
+        text(migrate_sql),
         {"old_gw_id": old_gateway_id, "new_gw_id": new_gateway_id},
     )
     migrated = migrate_result.rowcount or 0

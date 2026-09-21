@@ -1,4 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { useI18n } from '../../../context/I18nContext';
+import { translateApiError } from '../lib/translateError';
 import { WhatsAppRepository } from '../data/whatsappRepository';
 import { ConversationDetail, Message, ConversationStatus } from '../../../types';
 
@@ -28,6 +30,7 @@ export function useWhatsAppConversation({
   autoMarkAsRead = true,
   initialLimit = 50,
 }: UseWhatsAppConversationOptions) {
+  const { t } = useI18n();
   const [conversation, setConversation] = useState<ConversationDetail | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
   const [loadingOlder, setLoadingOlder] = useState<boolean>(false);
@@ -84,7 +87,7 @@ export function useWhatsAppConversation({
     } catch (err: any) {
       if (isStale()) return;
       console.error('[useWhatsAppConversation] Fetch error:', err);
-      setError(err.message || 'Failed to load conversation');
+      setError(translateApiError(err, t) || t('whatsapp.messagesLoadFailed'));
     } finally {
       if (!isStale()) setLoading(false);
     }
@@ -240,7 +243,7 @@ export function useWhatsAppConversation({
           ...prev,
           messages: prev.messages.map((m) =>
             m.id === tempId
-              ? { ...m, status: 'FAILED', error_message: err.message || 'Gönderilemedi' }
+              ? { ...m, status: 'FAILED', error_message: translateApiError(err, t) || t('whatsapp.msgFailed') }
               : m
           ),
         };

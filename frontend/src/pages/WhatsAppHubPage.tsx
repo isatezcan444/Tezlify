@@ -27,6 +27,7 @@ import {
 } from 'lucide-react';
 import { ApiClient } from '../api/client';
 import { startWaLatency } from '../features/whatsapp/lib/whatsappLatency';
+import { translateApiError } from '../features/whatsapp/lib/translateError';
 import { mergeDeliveryStatus, mergeWhatsAppMessages } from '../features/whatsapp/lib/whatsappMessageMerge';
 import { WhatsAppRepository } from '../features/whatsapp/data/whatsappRepository';
 import { compareConversationsByActivityDesc, getConversationActivityTimestamp, restoreConversationActivity } from '../features/whatsapp/lib/whatsappOrdering';
@@ -119,6 +120,8 @@ const MAX_BACKGROUND_CONVERSATION_PAGES = 5;
 export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats }) => {
   const toast = useToast();
   const { t } = useI18n();
+  // D7: outbound optimistic mesajlarin gonderen etiketi i18n'den gelir.
+  const youName = t('whatsapp.youLabel');
   const [sessions, setSessions] = useState<WhatsAppSession[]>([]);
   const [isQrConnectModalOpen, setIsQrConnectModalOpen] = useState<boolean>(false);
   const [reconnectSessionId, setReconnectSessionId] = useState<number | undefined>(undefined);
@@ -451,10 +454,10 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       if (!isSilent) {
         setConvLoadState('error');
         setConvLoadError(
-          err?.message || tRef.current('whatsapp.conversationsLoadFailed') || tRef.current('common.error'),
+          translateApiError(err, tRef.current) || tRef.current('whatsapp.conversationsLoadFailed'),
         );
         toastRef.current.error(
-          err?.message || tRef.current('whatsapp.conversationsLoadFailed') || tRef.current('common.error'),
+          translateApiError(err, tRef.current) || tRef.current('whatsapp.conversationsLoadFailed'),
           tRef.current('common.error'),
         );
       }
@@ -759,7 +762,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
 
   const handleOpenLead = async (leadId: number) => {
     const rawPhone = selectedConv?.lead_phone || (selectedConv as any)?.phone || '';
-    const displayName = selectedConv ? getConversationDisplayName(selectedConv, t) : 'Müşteri';
+    const displayName = selectedConv ? getConversationDisplayName(selectedConv, t) : t('whatsapp.customerLabel');
     const cleanPhone = selectedConv ? extractCleanPhone(rawPhone) : null;
     setDrawerLead({
       id: leadId,
@@ -834,7 +837,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       status: 'PENDING',
       body: trimmed,
       client_message_id: tempClientMid,
-      sender_name: 'Siz',
+      sender_name: youName,
       created_at: nowIso,
     };
 
@@ -883,7 +886,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         ...prev,
         [selectedConv.id]: (prev[selectedConv.id] || []).map((m) =>
           m.id === tempId || m.client_message_id === tempClientMid
-            ? { ...m, status: 'FAILED', error_message: err.message || 'Gönderilemedi' }
+            ? { ...m, status: 'FAILED', error_message: translateApiError(err, t) || t('whatsapp.msgFailed') }
             : m
         ),
       }));
@@ -972,7 +975,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       media_url: url,
       media_filename: filename,
       media_caption: caption,
-      sender_name: 'Siz',
+      sender_name: youName,
       created_at: nowIso,
     };
     setMessagesMap((prev) => ({
@@ -1036,7 +1039,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       media_filename: file.name,
       media_mime_type: file.type || undefined,
       media_caption: caption,
-      sender_name: 'Siz',
+      sender_name: youName,
       created_at: nowIso,
     };
     setMessagesMap((prev) => ({
@@ -1086,9 +1089,9 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       direction: 'OUTBOUND',
       message_type: 'TEMPLATE',
       status: 'PENDING',
-      body: `[Şablon: ${templateKey}]`,
+      body: `[${t('whatsapp.previewTemplate')} · ${templateKey}]`,
       client_message_id: tempClientMid,
-      sender_name: 'Siz',
+      sender_name: youName,
       created_at: nowIso,
     };
 
@@ -1119,7 +1122,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         ...prev,
         [selectedConv.id]: (prev[selectedConv.id] || []).map((m) =>
           m.id === tempId || m.client_message_id === tempClientMid
-            ? { ...m, status: 'FAILED', error_message: err.message || 'Şablon gönderilemedi' }
+            ? { ...m, status: 'FAILED', error_message: translateApiError(err, t) || t('whatsapp.templateFailed') }
             : m
         ),
       }));
@@ -1144,14 +1147,10 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
 
       // 1. INBOUND MESSAGE & OUTBOUND CONFIRMATION
       // Faz 10 (P3): gateway'in gercek olay adi 'message_new'tir (hem gelen hem
-      // telefondan gonderilen mesajlar icin); eskiden yalnizca mock/legacy
-      // olay adlari dinleniyordu → canli mesajlar listeye hic düsmüyordu.
-      if (
-        eventData.event === 'message_new' ||
-        eventData.event === 'inbound_reply' ||
-        eventData.event === 'new_message' ||
-        eventData.event === 'outbound_message_sent'
-      ) {
+      // telefondan gonderilen mesajlar icin). D5: 'inbound_reply',
+      // 'new_message' ve 'outbound_message_sent' adlarini HICBIR yerde ne
+      // gateway ne backend yayinlamiyordu — o lu dallar kaldirildi.
+      if (eventData.event === 'message_new') {
         const convIdRaw = eventData.conversation_id;
         const convIdNumber = typeof convIdRaw === 'number'
           ? convIdRaw
@@ -1169,13 +1168,14 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         const msgObj0 = eventData.message && typeof eventData.message === 'object' ? eventData.message : null;
         const msgText = eventData.message?.body || (typeof eventData.message === 'string' ? eventData.message : '') || eventData.body || '';
         const msgTime = msgObj0?.created_at || eventData.created_at || eventData.timestamp || new Date().toISOString();
+        // D5: 'outbound_message_sent' hicbir yerde yayinlanmadi; yon her
+        // zaman olay payload'indaki direction alanindan cozulur.
         const isOutbound =
-          eventData.event === 'outbound_message_sent' ||
           msgObj0?.direction === 'OUTBOUND' ||
           eventData.direction === 'OUTBOUND';
         // Faz 10 (P3): canli sohbette balonun gondereni — outbound'ta backend
         // 'ME' yayinlar; balon sagda 'Siz' olarak etiketlenir.
-        const senderLabel = isOutbound ? 'Siz' : msgObj0?.sender_name || eventData.sender_name;
+        const senderLabel = isOutbound ? t('whatsapp.youLabel') : msgObj0?.sender_name || eventData.sender_name;
 
         // Faz 12 (Sorun 2): ayni mesajin tekrar oynatilmasi (WS replay / cift
         // emit) liste sayaclarini SISIRMEZ. `wa_message_id` yoksa (nadir:
@@ -1292,7 +1292,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
             body: typeof msgText === 'string' ? msgText : '',
             wa_message_id: waId,
             client_message_id: clientMid,
-            sender_name: senderLabel || (isOutbound ? 'Siz' : undefined),
+            sender_name: senderLabel || (isOutbound ? t('whatsapp.youLabel') : undefined),
             sender_phone: msgObj?.sender_phone || eventData.phone || '',
             media_id: msgObj?.media_id || eventData.media_id,
             media_mime_type: msgObj?.media_mime_type || eventData.media_mime_type,
@@ -1479,7 +1479,9 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         }
       }
 
-      if (eventData.event === 'new_conversation' || eventData.event === 'conversations_updated') {
+      // D5: 'new_conversation' hicbir yerde yayinlanmadi — gercek olay adi
+      // 'conversations_updated'tir.
+      if (eventData.event === 'conversations_updated') {
         if (eventData.conversation && eventData.conversation.id) {
           // Targeted insertion without full list refetch.
           // `mapConversationItem` yalnizca payload'da GERCEKTEN gonderilen
@@ -1750,16 +1752,17 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   useEffect(() => {
     fetchSessions();
 
-    // Listen to real-time inbound messages and WhatsApp session events
+    // Listen to real-time WhatsApp session events.
+    // D5: 'inbound_reply', 'number_updated' ve 'conversations_cleared'
+    // adlarini ne gateway ne backend HICBIR yerde yayinlar (gercek akis
+    // message_new / conversations_updated / session_* uzerindendir) — lu
+    // dallar kaldirildi.
     const handleWs = (e: Event) => {
       const eventData = (e as CustomEvent<any>).detail;
-      if (eventData?.event === 'inbound_reply') {
-        // Handled locally
-      } else if (
+      if (
         eventData?.event === 'session_connected' ||
         eventData?.event === 'session_disconnected' ||
-        eventData?.event === 'session_updated' ||
-        eventData?.event === 'number_updated'
+        eventData?.event === 'session_updated'
       ) {
         fetchSessions(true);
         onRefreshStatsRef.current();
@@ -1777,11 +1780,6 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         fetchSessions(true);
         onRefreshStatsRef.current();
         refreshSyncStatus();
-      } else if (eventData?.event === 'conversations_cleared') {
-        conversationsGenerationRef.current += 1;
-        setConversations([]);
-        setSelectedConv(null);
-        setMessagesMap({});
       }
     };
     window.addEventListener('tezlify:ws_event', handleWs);
@@ -1932,7 +1930,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       toast.success(t('whatsapp.deletedSuccess'), t('common.success'));
       onRefreshStats();
     } catch (err: any) {
-      toast.error(err?.message || t('whatsapp.deleteSessionFailed'), t('common.error'));
+      toast.error(translateApiError(err, t) || t('whatsapp.deleteSessionFailed'), t('common.error'));
       await loadConversations(true);
     } finally {
       setDeletingSessionId(null);
@@ -2322,7 +2320,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                       await activeRetryMessage(msgId);
                       toast.success(t('whatsapp.messageSent'), t('common.success'));
                     } catch (err: any) {
-                      toast.error(err?.message || t('whatsapp.msgFailed'), t('common.error'));
+                      toast.error(translateApiError(err, t) || t('whatsapp.msgFailed'), t('common.error'));
                       throw err;
                     }
                   }}
@@ -2346,7 +2344,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                       if (msg.includes('24 saat') || msg.includes('window')) {
                         toast.error(t('whatsapp.windowExpiredNotice'), t('common.error'));
                       } else {
-                        toast.error(err?.message || t('whatsapp.msgFailed'), t('common.error'));
+                        toast.error(translateApiError(err, t) || t('whatsapp.msgFailed'), t('common.error'));
                       }
                       throw err;
                     }
@@ -2357,7 +2355,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                       await activeSendMediaFile(file, caption);
                       toast.success(t('whatsapp.mediaSent'), t('common.success'));
                     } catch (err: any) {
-                      toast.error(err?.message || t('whatsapp.mediaFailed'), t('common.error'));
+                      toast.error(translateApiError(err, t) || t('whatsapp.mediaFailed'), t('common.error'));
                       throw err;
                     }
                   }}
@@ -2400,7 +2398,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                       await activeSendTemplate(templateKey, variables);
                       toast.success(t('whatsapp.templateSent'), t('common.success'));
                     } catch (err: any) {
-                      toast.error(err?.message || t('whatsapp.templateFailed'), t('common.error'));
+                      toast.error(translateApiError(err, t) || t('whatsapp.templateFailed'), t('common.error'));
                       throw err;
                     }
                   }}

@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { LayoutTemplate, Send, CheckCircle2, Loader2, Sparkles } from 'lucide-react';
+import { LayoutTemplate, Send, CheckCircle2, Loader2, Sparkles, AlertTriangle } from 'lucide-react';
 import { WhatsAppTemplate } from '../../../types';
 import { WhatsAppRepository } from '../data/whatsappRepository';
+import { translateApiError } from '../lib/translateError';
 import { Modal } from '../../../components/ui/Modal';
 import { Button } from '../../../components/ui/button';
 import { useI18n } from '../../../context/I18nContext';
@@ -22,6 +23,9 @@ export const TemplateSelectModal: React.FC<TemplateSelectModalProps> = ({
   const { t, language } = useI18n();
   const [templates, setTemplates] = useState<WhatsAppTemplate[]>([]);
   const [loading, setLoading] = useState<boolean>(false);
+  // A6: getTemplates fail-closed ise sessiz bos grid GOSTERILMEZ — gercek
+  // hata durumu kullaniciya gosterilir.
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [selectedKey, setSelectedKey] = useState<string>('welcome_intro');
   const [variables, setVariables] = useState<Record<string, string>>({});
   const [sending, setSending] = useState<boolean>(false);
@@ -29,6 +33,7 @@ export const TemplateSelectModal: React.FC<TemplateSelectModalProps> = ({
   useEffect(() => {
     if (isOpen) {
       setLoading(true);
+      setLoadError(null);
       WhatsAppRepository.getTemplates()
         .then((data) => {
           setTemplates(data);
@@ -37,11 +42,15 @@ export const TemplateSelectModal: React.FC<TemplateSelectModalProps> = ({
             initVariables(data[0], leadName);
           }
         })
-        .catch((err) => {
+        .catch((err: any) => {
           console.error('[TemplateSelectModal] Failed to load templates:', err);
+          setLoadError(
+            translateApiError(err, t) || t('whatsapp.templatesNotAvailable'),
+          );
         })
         .finally(() => setLoading(false));
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, leadName]);
 
   const initVariables = (tmpl: WhatsAppTemplate, name: string) => {
@@ -99,6 +108,14 @@ export const TemplateSelectModal: React.FC<TemplateSelectModalProps> = ({
         <div className="flex items-center justify-center p-12 space-x-2 text-slate-400">
           <Loader2 className="w-5 h-5 animate-spin text-[#7367F0]" />
           <span className="text-xs font-bold">{t('common.loading')}</span>
+        </div>
+      ) : loadError ? (
+        <div className="flex flex-col items-center justify-center p-10 space-y-3 text-center">
+          <AlertTriangle className="w-8 h-8 text-[#EA5455]" />
+          <p className="text-xs font-bold text-slate-700 dark:text-slate-200">{loadError}</p>
+          <Button type="button" variant="outline" size="sm" onClick={onClose} className="text-xs font-bold">
+            {t('common.close')}
+          </Button>
         </div>
       ) : (
         <div className="space-y-5">

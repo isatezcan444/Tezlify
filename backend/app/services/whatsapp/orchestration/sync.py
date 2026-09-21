@@ -1735,7 +1735,15 @@ class WhatsAppSyncOrchestrator:
                 if provider_status == "TIMEOUT" and not gw_msgs:
                     await db.commit()
             except Exception as ev_exc:
-                logger.warning("Failed to record history evidence for %s: %s", jid, ev_exc)
+                # Truthfulness (AGENTS.md): an evidence-write failure must NEVER be
+                # swallowed as a warning while the state silently stays NOT_CHECKED.
+                # Re-raise so both callers (background sweep and on-demand scroll)
+                # treat this round-trip as a genuine provider failure instead of a
+                # fake success.
+                logger.exception("Failed to record history evidence for %s", jid)
+                raise RuntimeError(
+                    f"History evidence write failed for jid={jid}: {ev_exc}"
+                ) from ev_exc
 
         if provider_status == "TIMEOUT" and not gw_msgs:
             from backend.app.services.whatsapp.exceptions import WhatsAppHistoryTimeout

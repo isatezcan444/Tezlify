@@ -409,7 +409,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
                 required
                 value={mediaUrl}
                 onChange={(e) => setMediaUrl(e.target.value)}
-                placeholder={mediaModalType === 'IMAGE' ? 'https://example.com/gorsel.jpg' : 'https://example.com/katalog.pdf'}
+                placeholder={mediaModalType === 'IMAGE' ? t('whatsapp.mediaUrlImagePlaceholder') : t('whatsapp.mediaUrlDocumentPlaceholder')}
                 className="w-full px-3 py-2 text-xs rounded-xl vuexy-input font-medium"
               />
             </div>
@@ -423,7 +423,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
                   type="text"
                   value={mediaFilename}
                   onChange={(e) => setMediaFilename(e.target.value)}
-                  placeholder="Fiyat_Teklifi_2026.pdf"
+                  placeholder={t('whatsapp.filenamePlaceholder')}
                   className="w-full px-3 py-2 text-xs rounded-xl vuexy-input font-medium"
                 />
               </div>

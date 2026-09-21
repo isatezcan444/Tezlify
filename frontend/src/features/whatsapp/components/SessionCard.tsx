@@ -41,9 +41,15 @@ export const SessionCard: React.FC<SessionCardProps> = ({
     ERROR: t('whatsapp.statusError'),
     BANNED: t('whatsapp.statusBanned'),
   };
-  const quotaPercent = session.max_daily_limit > 0
-    ? Math.round((session.daily_sent_count / session.max_daily_limit) * 100)
-    : 0;
+  // D1: warm-up day and daily quota are rendered ONLY when the backend
+  // actually sends them. Fabricated client-side defaults were removed from
+  // the mapper, so absent values must never paint fake quota/warm-up data.
+  const hasQuotaMetrics =
+    typeof session.daily_sent_count === 'number' && typeof session.max_daily_limit === 'number';
+  const quotaPercent =
+    hasQuotaMetrics && (session.max_daily_limit as number) > 0
+      ? Math.round(((session.daily_sent_count as number) / (session.max_daily_limit as number)) * 100)
+      : 0;
 
   const isConnected = session.status === 'CONNECTED';
 
@@ -84,24 +90,30 @@ export const SessionCard: React.FC<SessionCardProps> = ({
           <div className="flex items-center justify-between text-xs">
             <span className="text-slate-500 dark:text-[#7E7F96] flex items-center gap-1.5 font-bold">
               <Flame className="w-3.5 h-3.5 text-[#FF9F43]" />
-              {t('whatsapp.warmUpDay', { day: session.warm_up_day })}:
+              {t('whatsapp.warmUpDayLabel')}:
             </span>
-            <span className="font-extrabold text-[#FF9F43] font-mono">#{session.warm_up_day}</span>
+            <span className="font-extrabold text-[#FF9F43] font-mono">
+              {typeof session.warm_up_day === 'number' ? `#${session.warm_up_day}` : '—'}
+            </span>
           </div>
 
           <div>
             <div className="flex justify-between text-[11px] font-bold text-slate-700 dark:text-slate-300 mb-1">
               <span>{t('whatsapp.dailyLimit')}</span>
               <span className="font-mono text-[#7367F0]">
-                {session.daily_sent_count} / {session.max_daily_limit}
+                {hasQuotaMetrics
+                  ? `${session.daily_sent_count} / ${session.max_daily_limit}`
+                  : '—'}
               </span>
             </div>
-            <div className="h-1.5 w-full bg-slate-200 dark:bg-slate-800 rounded-full overflow-hidden p-0.5">
-              <div
-                className="h-full bg-gradient-to-r from-[#7367F0] to-[#28C76F] rounded-full transition-all duration-300"
-                style={{ width: `${Math.min(quotaPercent, 100)}%` }}
-              />
-            </div>
+            {hasQuotaMetrics && (
+              <div className="h-1.5 w-full bg-slate-200 dark:bg-slate-800 rounded-full overflow-hidden p-0.5">
+                <div
+                  className="h-full bg-gradient-to-r from-[#7367F0] to-[#28C76F] rounded-full transition-all duration-300"
+                  style={{ width: `${Math.min(quotaPercent, 100)}%` }}
+                />
+              </div>
+            )}
           </div>
 
           <div className="flex items-center justify-between text-[10px] text-slate-400 pt-1 font-semibold">

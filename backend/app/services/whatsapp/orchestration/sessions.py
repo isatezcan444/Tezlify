@@ -335,9 +335,16 @@ async def get_pairing_qr(db: AsyncSession, user_id: str, pair_token: str) -> Dic
     if status_val == "CONNECTED":
         phone = (data.get("phone") or data.get("phone_number") or "").strip()
         log_id = pairing.get("logical_session_id")
-        if log_id and _logical_to_ephemeral.get(log_id) == pair_token:
-            _logical_to_ephemeral.pop(log_id, None)
-        _ephemeral_pairings.pop(pair_token, None)
+
+        def _consume_pairing() -> None:
+            # Pairing is consumed ONLY after a terminal success (relink OK,
+            # existing-row reuse, or new-row insert). If a later step raises,
+            # the token stays intact so the user can retry instead of getting
+            # "Eşleşme oturumu bulunamadı" while the phone is still connected
+            # on the gateway.
+            if log_id and _logical_to_ephemeral.get(log_id) == pair_token:
+                _logical_to_ephemeral.pop(log_id, None)
+            _ephemeral_pairings.pop(pair_token, None)
 
         # --- Scenario A: try to bind to existing RELINK_REQUIRED logical session ---
         try:
@@ -355,6 +362,7 @@ async def get_pairing_qr(db: AsyncSession, user_id: str, pair_token: str) -> Dic
                 result.new_gateway_id,
                 result.history_rows_migrated,
             )
+            _consume_pairing()
             return {
                 "status": "CONNECTED",
                 "session_id": result.session_id,
@@ -403,6 +411,7 @@ async def get_pairing_qr(db: AsyncSession, user_id: str, pair_token: str) -> Dic
                 existing.id,
                 phone,
             )
+            _consume_pairing()
             return {
                 "status": "CONNECTED",
                 "session_id": existing.id,
@@ -428,6 +437,7 @@ async def get_pairing_qr(db: AsyncSession, user_id: str, pair_token: str) -> Dic
             row.id,
             gateway_id,
         )
+        _consume_pairing()
         return {
             "status": "CONNECTED",
             "session_id": row.id,
@@ -654,8 +664,10 @@ async def get_session_qr(db: AsyncSession, user_id: str, session_id: int) -> Dic
                     or row.phone_number
                     or ""
                 ).strip()
-                _ephemeral_pairings.pop(pair_token, None)
-                _logical_to_ephemeral.pop(row.id, None)
+                # Pairing is consumed ONLY after relink succeeds. On failure the
+                # token stays intact so the user can retry (the phone is already
+                # connected on the gateway — losing the pairing would leave the
+                # session stranded with "Eşleşme oturumu bulunamadı").
                 relink_result = await perform_atomic_relink(
                     db,
                     user_id=str(user_id),
@@ -663,6 +675,8 @@ async def get_session_qr(db: AsyncSession, user_id: str, session_id: int) -> Dic
                     new_gateway_id=ephemeral_gid,
                     session_name=row.session_name,
                 )
+                _ephemeral_pairings.pop(pair_token, None)
+                _logical_to_ephemeral.pop(row.id, None)
                 return {
                     "status": "CONNECTED",
                     "session_id": relink_result.session_id,
@@ -933,9 +947,12 @@ class WhatsAppSessionOrchestrator:
         return await list_sessions(db, user_id)
 
     async def create_session(
-        self, db: AsyncSession, user_id: str, session_name: str = "default", phone_number: Optional[str] = None
+        self, db: AsyncSession, user_id: str, session_name: str = "default"
     ) -> Dict[str, Any]:
-        return await create_session(db, user_id, session_name, phone_number)
+        # D4: the module-level create_session(db, user_id, name) takes exactly
+        # 3 params; passing a 4th (phone_number) raised TypeError whenever this
+        # class method was invoked.
+        return await create_session(db, user_id, session_name)
 
     async def get_session_qr(self, db: AsyncSession, user_id: str, session_id: int) -> Dict[str, Any]:
         return await get_session_qr(db, user_id, session_id)

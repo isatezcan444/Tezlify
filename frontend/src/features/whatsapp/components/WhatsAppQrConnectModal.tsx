@@ -666,18 +666,23 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
         }, 1500);
       }
 
-      // 3. Temporary Disconnect
+      // 3/4. Disconnect vs Logged-Out.
+      //
+      // A4: the gateway bridge ALWAYS broadcasts `session_disconnected`; when
+      // the phone unlinked the session (or WhatsApp banned the number) the
+      // same event carries `reason: 'LOGGED_OUT' | 'BANNED'`. There is no
+      // separate `session_logged_out` event anywhere in the backend or
+      // gateway — the old literal check was dead and the LOGGED_OUT UI state
+      // could never render. Route by `reason` so it actually does.
       if (detail.event === 'session_disconnected' || detail.event_type === 'DISCONNECTED') {
-        if (modalState !== 'CONNECTED' && modalState !== 'LOGGED_OUT') {
+        const reason = String(detail.reason || detail.error_reason || '').toUpperCase();
+        if (reason === 'LOGGED_OUT' || reason === 'BANNED') {
+          setModalState('LOGGED_OUT');
+          setQrCode(null);
+          clearTimers();
+        } else if (modalState !== 'CONNECTED' && modalState !== 'LOGGED_OUT') {
           setModalState('DISCONNECTED');
         }
-      }
-
-      // 4. Logged Out
-      if (detail.event === 'session_logged_out' || detail.event_type === 'LOGGED_OUT') {
-        setModalState('LOGGED_OUT');
-        setQrCode(null);
-        clearTimers();
       }
 
       // 5. Connection Error
@@ -813,12 +818,13 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
 
   if (!isOpen || typeof document === 'undefined') return null;
 
-  // Format QR source
-  const qrImageSrc = qrCode
-    ? (qrCode.startsWith('data:image') || qrCode.startsWith('http')
-        ? qrCode
-        : `https://api.qrserver.com/v1/create-qr-code/?size=260x260&margin=4&data=${encodeURIComponent(qrCode)}`)
-    : null;
+  // B3: the QR payload is pairing material — it must NEVER be shipped to a
+  // third-party rendering service. The gateway always returns a data: URL;
+  // render it directly. Anything else (raw text, http URL, empty) is an
+  // invalid state: show an honest error instead of sending it anywhere.
+  const qrIsDataUrl = Boolean(qrCode && qrCode.startsWith('data:'));
+  const qrImageSrc = qrIsDataUrl ? qrCode : null;
+  const qrInvalid = Boolean(qrCode && !qrIsDataUrl);
 
   return createPortal(
     <div 
@@ -957,6 +963,13 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
                     className="w-full h-full object-contain select-none"
                     style={{ imageRendering: 'pixelated' }}
                   />
+                ) : qrInvalid ? (
+                  <div className="flex flex-col items-center justify-center gap-2 p-3 text-center">
+                    <AlertTriangle className="w-8 h-8 text-[#EA5455]" />
+                    <span className="text-xs font-bold text-slate-700 dark:text-slate-200">
+                      {t('whatsapp.qrInvalidFormat')}
+                    </span>
+                  </div>
                 ) : (
                   <Loader2 className="w-8 h-8 animate-spin text-[#7367F0]" />
                 )}

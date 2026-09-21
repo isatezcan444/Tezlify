@@ -24,6 +24,7 @@ from backend.app.core.migrations import (
     ensure_conversations_columns,
     ensure_messages_media_columns,
     ensure_message_status_enum,
+    ensure_messages_sender_phone_nullable,
     ensure_user_id_columns,
     ensure_whatsapp_sessions_table,
     ensure_whatsapp_gateway_private_schema,
@@ -109,6 +110,7 @@ async def lifespan(app: FastAPI):
     await ensure_contacts_unique_phone(engine)
     await ensure_conversations_columns(engine)
     await ensure_messages_media_columns(engine)
+    await ensure_messages_sender_phone_nullable(engine)
     await ensure_message_status_enum(engine)
     await ensure_user_id_columns(engine)
     await ensure_whatsapp_sessions_table(engine)
@@ -293,6 +295,17 @@ async def gateway_websocket_endpoint(
                 # kullanicinin gordugu mesaj DB'de hic yokmus gibi olur (sahte veri).
                 counters["failed"] += 1
                 logger.exception("[WS-GATEWAY] Olay persist edilemedi, yayinlanmadi: %s", ingest_err)
+                # NACK gonderilmezse olay gateway outbox'inda IN_FLIGHT kalir ve
+                # dead-letter'a kadar yeniden iletilmeyi bekler. Persist hatalari
+                # (orn. serilestirme bug'i) kalicidir — permanent=True ile NACK'la.
+                event_id = event_data.get("event_id")
+                if event_id:
+                    await websocket.send_json({
+                        "type": "gateway_event_nack",
+                        "event_id": str(event_id),
+                        "permanent": True,
+                    })
+                    counters["nacked"] += 1
                 continue
             if persisted is None:
                 # Sahibi KESIN cozulemeyen ya da bilinmeyen olay: genis yayin

@@ -89,8 +89,9 @@ async def _cleanup():
                 "DELETE FROM contacts WHERE user_id IN (:h1, :h2) AND (phone_e164 IN (:p, :jl, :g) OR phone_e164 LIKE 'jid:%@lid')"
             ), {"h1": TEST_USER_HEX, "h2": SYS_USER_HEX, "p": MOCK_PHONE, "jl": f"jid:{LID_JID}", "g": f"jid:{GROUP_JID}"})
             await db.execute(text(
-                "DELETE FROM whatsapp_sessions WHERE user_id IN (:h1, :h2)"
-            ), {"h1": TEST_USER_HEX, "h2": SYS_USER_HEX})
+                "DELETE FROM whatsapp_sessions WHERE user_id IN (:h1, :h2, :p65)"
+            ), {"h1": TEST_USER_HEX, "h2": SYS_USER_HEX,
+                "p65": "67890123678967896789678901234567"})
             await db.commit()
 
 
@@ -172,9 +173,10 @@ async def test_upsert_contact_real_name_is_kept():
 @pytest.mark.asyncio
 async def test_ingest_message_with_lid_sender_name_does_not_store_name():
     """Canlı diyalog: sender_name='xxx@lid' mesajı isim olarak yazılmamalı."""
+    gw_id = str(_uuid.uuid4())
     async with AsyncSessionLocal() as db:
         session = WhatsAppSession(
-            user_id=TEST_USER, gateway_id=str(_uuid.uuid4()),
+            user_id=TEST_USER, gateway_id=gw_id,
             session_name="Connected", status=SessionStatus.CONNECTED, is_active=True,
         )
         db.add(session)
@@ -182,6 +184,7 @@ async def test_ingest_message_with_lid_sender_name_does_not_store_name():
 
     event = {
         "event": "message_new",
+        "gateway_session_id": gw_id,
         "conversation_id": LID_JID,
         "message": {
             "body": "Merhaba",

@@ -102,8 +102,9 @@ async def _cleanup_whatsapp_tables():
                 text("DELETE FROM conversations WHERE (user_id IN (:h1, :h2, :l1, :l2)) AND channel = 'WHATSAPP'"),
                 {"h1": TEST_USER_HEX, "h2": SYS_USER_HEX, "l1": "testuserwa", "l2": "system"},
             )
-            await db.execute(text("DELETE FROM whatsapp_sessions WHERE user_id IN (:h1, :h2, :l1, :l2)"),
-                             {"h1": TEST_USER_HEX, "h2": SYS_USER_HEX, "l1": "testuserwa", "l2": "system"})
+            await db.execute(text("DELETE FROM whatsapp_sessions WHERE user_id IN (:h1, :h2, :l1, :l2, :p65)"),
+                             {"h1": TEST_USER_HEX, "h2": SYS_USER_HEX, "l1": "testuserwa", "l2": "system",
+                              "p65": "67890123678967896789678901234567"})
             await db.execute(
                 text("DELETE FROM contacts WHERE (user_id IN (:h1, :h2, :l1, :l2)) AND phone_e164 = :phone"),
                 {"h1": TEST_USER_HEX, "h2": SYS_USER_HEX, "l1": "testuserwa", "l2": "system", "phone": MOCK_PHONE},
@@ -678,6 +679,7 @@ async def test_send_text_empty_body_rejected_by_validation(auth_headers, mock_ga
 @pytest.mark.asyncio
 async def test_ingest_message_new_maps_jid_to_conversation():
     """ingest_gateway_event('message_new') maps jid → numeric conversation_id."""
+    gw_id = str(_uuid.uuid4())
     async with AsyncSessionLocal() as db:
         contact = Contact(user_id=TEST_USER, phone_e164=MOCK_PHONE, display_name="Test Lead")
         db.add(contact)
@@ -691,7 +693,7 @@ async def test_ingest_message_new_maps_jid_to_conversation():
 
         # CONNECTED session so _resolve_event_owner resolves to TEST_USER
         session = WhatsAppSession(
-            user_id=TEST_USER, gateway_id=str(_uuid.uuid4()),
+            user_id=TEST_USER, gateway_id=gw_id,
             session_name="Connected", status=SessionStatus.CONNECTED, is_active=True,
         )
         db.add(session)
@@ -701,6 +703,7 @@ async def test_ingest_message_new_maps_jid_to_conversation():
 
     event = {
         "event": "message_new",
+        "gateway_session_id": gw_id,
         "conversation_id": MOCK_JID,
         "message": {
             "body": "Hello from gateway",
@@ -766,6 +769,7 @@ async def test_ingest_session_event_maps_gateway_id():
 @pytest.mark.asyncio
 async def test_ingest_message_dedup_by_wa_message_id():
     """Duplicate wa_message_id should not create a second message."""
+    gw_id = str(_uuid.uuid4())
     async with AsyncSessionLocal() as db:
         contact = Contact(user_id=TEST_USER, phone_e164=MOCK_PHONE, display_name="Test Lead")
         db.add(contact)
@@ -780,7 +784,7 @@ async def test_ingest_message_dedup_by_wa_message_id():
         # Create a CONNECTED session so _resolve_event_owner resolves to TEST_USER
         session = WhatsAppSession(
             user_id=TEST_USER,
-            gateway_id=str(_uuid.uuid4()),
+            gateway_id=gw_id,
             session_name="Connected Test",
             status=SessionStatus.CONNECTED,
             is_active=True,
@@ -805,6 +809,7 @@ async def test_ingest_message_dedup_by_wa_message_id():
 
     event = {
         "event": "message_new",
+        "gateway_session_id": gw_id,
         "conversation_id": MOCK_JID,
         "message": {
             "body": "Duplicate",
@@ -827,6 +832,7 @@ async def test_ingest_message_dedup_by_wa_message_id():
 @pytest.mark.asyncio
 async def test_ingest_conversation_event_maps_jid():
     """ingest_gateway_event('conversation_read') maps jid → numeric conversation_id."""
+    gw_id = str(_uuid.uuid4())
     async with AsyncSessionLocal() as db:
         contact = Contact(user_id=TEST_USER, phone_e164=MOCK_PHONE, display_name="Test Lead")
         db.add(contact)
@@ -838,7 +844,7 @@ async def test_ingest_conversation_event_maps_jid():
         db.add(conv)
         # CONNECTED session so _resolve_event_owner resolves to TEST_USER
         session = WhatsAppSession(
-            user_id=TEST_USER, gateway_id=str(_uuid.uuid4()),
+            user_id=TEST_USER, gateway_id=gw_id,
             session_name="Connected", status=SessionStatus.CONNECTED, is_active=True,
         )
         db.add(session)
@@ -847,6 +853,7 @@ async def test_ingest_conversation_event_maps_jid():
 
     event = {
         "event": "conversation_read",
+        "gateway_session_id": gw_id,
         "conversation_id": MOCK_JID,
     }
 
@@ -1043,6 +1050,7 @@ async def test_serialize_message_exposes_media_proxy_url():
 @pytest.mark.asyncio
 async def test_ingest_message_status_updated_persists_acks():
     """message_status_updated events move outbound status forward: SENT→DELIVERED→READ."""
+    gw_id = str(_uuid.uuid4())
     async with AsyncSessionLocal() as db:
         contact = Contact(user_id=TEST_USER, phone_e164=MOCK_PHONE, display_name="Test Lead")
         db.add(contact)
@@ -1054,7 +1062,7 @@ async def test_ingest_message_status_updated_persists_acks():
         db.add(conv)
         await db.flush()
         session = WhatsAppSession(
-            user_id=TEST_USER, gateway_id=str(_uuid.uuid4()),
+            user_id=TEST_USER, gateway_id=gw_id,
             session_name="Connected", status=SessionStatus.CONNECTED, is_active=True,
         )
         db.add(session)
@@ -1071,6 +1079,7 @@ async def test_ingest_message_status_updated_persists_acks():
     async def _ingest(status: str):
         return await ingest_gateway_event({
             "event": "message_status_updated",
+            "gateway_session_id": gw_id,
             "conversation_id": MOCK_JID,
             "wa_message_id": "wamid_ack_1",
             "status": status,
@@ -1101,6 +1110,7 @@ async def test_ingest_presence_updated_maps_jid_and_types():
     """ingest_gateway_event('presence_updated') maps jid → numeric id and adds typing flag."""
     import uuid as _uuid2
 
+    gw_id = str(_uuid2.uuid4())
     async with AsyncSessionLocal() as db:
         contact = Contact(user_id=TEST_USER, phone_e164=MOCK_PHONE, display_name="Test Lead")
         db.add(contact)
@@ -1111,7 +1121,7 @@ async def test_ingest_presence_updated_maps_jid_and_types():
         )
         db.add(conv)
         session = WhatsAppSession(
-            user_id=TEST_USER, gateway_id=str(_uuid2.uuid4()),
+            user_id=TEST_USER, gateway_id=gw_id,
             session_name="Connected", status=SessionStatus.CONNECTED, is_active=True,
         )
         db.add(session)
@@ -1120,6 +1130,7 @@ async def test_ingest_presence_updated_maps_jid_and_types():
 
     result = await ingest_gateway_event({
         "event": "presence_updated",
+        "gateway_session_id": gw_id,
         "conversation_id": MOCK_JID,
         "presence": "composing",
     })
@@ -1128,6 +1139,7 @@ async def test_ingest_presence_updated_maps_jid_and_types():
 
     result_paused = await ingest_gateway_event({
         "event": "presence_updated",
+        "gateway_session_id": gw_id,
         "conversation_id": MOCK_JID,
         "presence": "paused",
     })
@@ -1245,9 +1257,10 @@ async def test_ingest_conversation_updated_persists_fields():
     """ingest_gateway_event('conversation_updated') persists name/preview/unread from history sync."""
     import uuid as _uuid3
 
+    gw_id = str(_uuid3.uuid4())
     async with AsyncSessionLocal() as db:
         session = WhatsAppSession(
-            user_id=TEST_USER, gateway_id=str(_uuid3.uuid4()),
+            user_id=TEST_USER, gateway_id=gw_id,
             session_name="Connected", status=SessionStatus.CONNECTED, is_active=True,
         )
         db.add(session)
@@ -1255,6 +1268,7 @@ async def test_ingest_conversation_updated_persists_fields():
 
     event = await ingest_gateway_event({
         "event": "conversation_updated",
+        "gateway_session_id": gw_id,
         "conversation_id": MOCK_JID,
         "conversation": {
             "name": "Mehmet Demir",
@@ -1455,9 +1469,10 @@ async def test_ingest_contact_synced_persists_avatar():
     """ingest_gateway_event('contact_synced') writes name + avatar onto an existing contact."""
     import uuid as _uuid4
 
+    gw_id = str(_uuid4.uuid4())
     async with AsyncSessionLocal() as db:
         session = WhatsAppSession(
-            user_id=TEST_USER, gateway_id=str(_uuid4.uuid4()),
+            user_id=TEST_USER, gateway_id=gw_id,
             session_name="Connected", status=SessionStatus.CONNECTED, is_active=True,
         )
         db.add(session)
@@ -1468,6 +1483,7 @@ async def test_ingest_contact_synced_persists_avatar():
 
     await ingest_gateway_event({
         "event": "contact_synced",
+        "gateway_session_id": gw_id,
         "contact": {"id": MOCK_JID, "name": "Ayse Kaya", "avatar_url": "https://cdn/a.jpg"},
     })
 
@@ -1484,9 +1500,10 @@ async def test_ingest_conversation_updated_persists_avatar():
     """conversation_updated with avatar_url persists it to the contact for live UI updates."""
     import uuid as _uuid5
 
+    gw_id = str(_uuid5.uuid4())
     async with AsyncSessionLocal() as db:
         session = WhatsAppSession(
-            user_id=TEST_USER, gateway_id=str(_uuid5.uuid4()),
+            user_id=TEST_USER, gateway_id=gw_id,
             session_name="Connected", status=SessionStatus.CONNECTED, is_active=True,
         )
         db.add(session)
@@ -1495,6 +1512,7 @@ async def test_ingest_conversation_updated_persists_avatar():
     # jid lives only inside the conversation object (gateway omits top-level id)
     event = await ingest_gateway_event({
         "event": "conversation_updated",
+        "gateway_session_id": gw_id,
         "conversation": {
             "id": MOCK_JID, "jid": MOCK_JID,
             "name": "Fatma Sel",
@@ -1519,9 +1537,10 @@ async def test_ingest_conversation_updated_persists_avatar():
 async def test_ingest_group_message_persists_participant_name():
     """Faz 6a: live group message_new with participant_name stores the pushname
     as the message sender_name (bubble shows the real sender, not the group)."""
+    gw_id = str(_uuid.uuid4())
     async with AsyncSessionLocal() as db:
         session = WhatsAppSession(
-            user_id=TEST_USER, gateway_id=str(_uuid.uuid4()),
+            user_id=TEST_USER, gateway_id=gw_id,
             session_name="Connected", status=SessionStatus.CONNECTED, is_active=True,
         )
         db.add(session)
@@ -1529,6 +1548,7 @@ async def test_ingest_group_message_persists_participant_name():
 
     await ingest_gateway_event({
         "event": "message_new",
+        "gateway_session_id": gw_id,
         "conversation_id": GROUP_JID,
         "message": {
             "body": "Fiyat listesi geldi",
@@ -1552,12 +1572,13 @@ async def test_ingest_group_message_persists_participant_name():
 @pytest.mark.asyncio
 async def test_ingest_direct_message_keeps_contact_name():
     """Faz 6a: 1:1 messages without participant_name keep the contact display name."""
+    gw_id = str(_uuid.uuid4())
     async with AsyncSessionLocal() as db:
         contact = Contact(user_id=TEST_USER, phone_e164=MOCK_PHONE, display_name="Test Lead")
         db.add(contact)
         await db.flush()
         session = WhatsAppSession(
-            user_id=TEST_USER, gateway_id=str(_uuid.uuid4()),
+            user_id=TEST_USER, gateway_id=gw_id,
             session_name="Connected", status=SessionStatus.CONNECTED, is_active=True,
         )
         db.add(session)
@@ -1565,6 +1586,7 @@ async def test_ingest_direct_message_keeps_contact_name():
 
     await ingest_gateway_event({
         "event": "message_new",
+        "gateway_session_id": gw_id,
         "conversation_id": MOCK_JID,
         "message": {
             "body": "Merhaba",
@@ -1632,9 +1654,10 @@ async def test_contact_synced_addressbook_upgrades_pushname():
     """A stored pushName (rank 'push') must be upgraded by the address-book name."""
     import uuid as _u1
 
+    gw_id = str(_u1.uuid4())
     async with AsyncSessionLocal() as db:
         session = WhatsAppSession(
-            user_id=TEST_USER, gateway_id=str(_u1.uuid4()),
+            user_id=TEST_USER, gateway_id=gw_id,
             session_name="Connected", status=SessionStatus.CONNECTED, is_active=True,
         )
         db.add(session)
@@ -1649,6 +1672,7 @@ async def test_contact_synced_addressbook_upgrades_pushname():
     # Gateway W:Contact app-state sync delivers the real address-book name.
     await ingest_gateway_event({
         "event": "contact_synced",
+        "gateway_session_id": gw_id,
         "contact": {"id": MOCK_JID, "name": "Ayse Kaya", "name_source": "addressbook"},
     })
 
@@ -1697,9 +1721,10 @@ async def test_conversation_updated_phone_name_upgraded_by_addressbook():
     """A '+90...' display name is upgraded by an address-book conversation name."""
     import uuid as _u3
 
+    gw_id = str(_u3.uuid4())
     async with AsyncSessionLocal() as db:
         session = WhatsAppSession(
-            user_id=TEST_USER, gateway_id=str(_u3.uuid4()),
+            user_id=TEST_USER, gateway_id=gw_id,
             session_name="Connected", status=SessionStatus.CONNECTED, is_active=True,
         )
         db.add(session)
@@ -1707,6 +1732,7 @@ async def test_conversation_updated_phone_name_upgraded_by_addressbook():
 
     await ingest_gateway_event({
         "event": "conversation_updated",
+        "gateway_session_id": gw_id,
         "conversation": {
             "id": MOCK_JID2, "jid": MOCK_JID2,
             "name": "Mehmet Demir", "name_source": "addressbook",

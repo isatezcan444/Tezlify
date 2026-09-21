@@ -187,9 +187,11 @@ export interface WhatsAppSession {
   status: SessionStatus;
   qr_code?: string;
   is_active: boolean;
-  warm_up_day: number;
-  daily_sent_count: number;
-  max_daily_limit: number;
+  // D1: these metrics are only real when the backend actually sends them.
+  // They are optional so the UI never renders fabricated quota/warm-up data.
+  warm_up_day?: number;
+  daily_sent_count?: number;
+  max_daily_limit?: number;
   is_phone_online: boolean;
   battery_level?: number;
   error_message?: string;
@@ -289,7 +291,7 @@ export interface BlacklistPaginationResponse {
 
 export type ConversationStatus = 'ACTIVE' | 'ARCHIVED' | 'CLOSED';
 export type MessageDirection = 'INBOUND' | 'OUTBOUND';
-export type MessageType = 'TEXT' | 'IMAGE' | 'DOCUMENT' | 'AUDIO' | 'VIDEO' | 'TEMPLATE' | 'OTHER';
+export type MessageType = 'TEXT' | 'IMAGE' | 'DOCUMENT' | 'AUDIO' | 'VIDEO' | 'STICKER' | 'LOCATION' | 'CONTACT' | 'TEMPLATE' | 'UNKNOWN' | 'OTHER';
 export type ConversationMessageStatus = 'PENDING' | 'RECEIVED' | 'SENT' | 'DELIVERED' | 'READ' | 'FAILED';
 
 export interface Message {

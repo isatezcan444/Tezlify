@@ -78,8 +78,9 @@ async def _isolate():
                 "DELETE FROM contacts WHERE user_id IN (:h1, :h2)"),
                 {"h1": TEST_USER_HEX, "h2": SYS_USER_HEX})
             await db.execute(text(
-                "DELETE FROM whatsapp_sessions WHERE user_id IN (:h1, :h2)"),
-                {"h1": TEST_USER_HEX, "h2": SYS_USER_HEX})
+                "DELETE FROM whatsapp_sessions WHERE user_id IN (:h1, :h2, :p65)"),
+                {"h1": TEST_USER_HEX, "h2": SYS_USER_HEX,
+                 "p65": "67890123678967896789678901234567"})
             await db.commit()
 
     async def _seed_session():
@@ -934,6 +935,7 @@ async def test_29_conversation_updated_emits_throttled_bootstrap_signal(mock_gat
         async with AsyncSessionLocal() as db:
             await ws._map_conversation_event(db, {
                 "event": "conversation_updated",
+                "gateway_session_id": MOCK_GW_ID,
                 "conversation_id": MOCK_JID,
                 "conversation": {
                     "id": MOCK_JID, "name": "Canli Kisi",
@@ -944,6 +946,7 @@ async def test_29_conversation_updated_emits_throttled_bootstrap_signal(mock_gat
             # ikinci olay throttle araliginda — ikinci sinyal OLMAMALI
             await ws._map_conversation_event(db, {
                 "event": "conversation_updated",
+                "gateway_session_id": MOCK_GW_ID,
                 "conversation_id": MOCK_JID,
                 "conversation": {
                     "id": MOCK_JID, "name": "Canli Kisi",
@@ -1242,6 +1245,7 @@ async def test_37_conversation_updated_archived_flag_persisted(mock_gateway, eve
     async with AsyncSessionLocal() as db:
         await ws._map_conversation_event(db, {
             "event": "conversation_updated",
+            "gateway_session_id": MOCK_GW_ID,
             "conversation_id": MOCK_JID,
             "conversation": {"id": MOCK_JID, "name": "Kisi", "archived": True},
         })
@@ -1257,6 +1261,7 @@ async def test_37_conversation_updated_archived_flag_persisted(mock_gateway, eve
     async with AsyncSessionLocal() as db:
         await ws._map_conversation_event(db, {
             "event": "conversation_updated",
+            "gateway_session_id": MOCK_GW_ID,
             "conversation_id": MOCK_JID,
             "conversation": {"id": MOCK_JID, "name": "Kisi 2"},
         })
@@ -1269,6 +1274,7 @@ async def test_37_conversation_updated_archived_flag_persisted(mock_gateway, eve
     async with AsyncSessionLocal() as db:
         await ws._map_conversation_event(db, {
             "event": "conversation_updated",
+            "gateway_session_id": MOCK_GW_ID,
             "conversation_id": MOCK_JID,
             "conversation": {"id": MOCK_JID, "archived": False},
         })

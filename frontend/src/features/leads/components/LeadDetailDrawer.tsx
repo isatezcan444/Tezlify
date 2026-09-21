@@ -24,6 +24,7 @@ import { ChatComposer } from '../../whatsapp/components/ChatComposer';
 import { TemplateSelectModal } from '../../whatsapp/components/TemplateSelectModal';
 import { useWhatsAppConversation } from '../../whatsapp/hooks/useWhatsAppConversation';
 import { useI18n } from '../../../context/I18nContext';
+import { translateApiError } from '../../whatsapp/lib/translateError';
 import { useToast } from '../../../context/ToastContext';
 
 export interface LeadDetailDrawerProps {
@@ -331,7 +332,7 @@ export const LeadDetailDrawer: React.FC<LeadDetailDrawerProps> = ({
                   await retryMessage(msgId);
                   toast.success(t('whatsapp.messageSent') || 'Mesaj tekrar gönderildi', t('common.success'));
                 } catch (err: any) {
-                  toast.error(t('whatsapp.msgFailed') || 'Tekrar gönderim başarısız', t('common.error'));
+                  toast.error(translateApiError(err, t) || t('whatsapp.msgFailed'), t('common.error'));
                 }
               }}
             />
@@ -382,7 +383,7 @@ export const LeadDetailDrawer: React.FC<LeadDetailDrawerProps> = ({
                   await sendTemplate(templateKey, variables);
                   toast.success(t('whatsapp.templateSent') || 'Şablon başarıyla gönderildi', t('common.success'));
                 } catch (err: any) {
-                  toast.error(t('whatsapp.templateFailed') || 'Şablon gönderilemedi', t('common.error'));
+                  toast.error(translateApiError(err, t) || t('whatsapp.templateFailed'), t('common.error'));
                 }
               }}
             />

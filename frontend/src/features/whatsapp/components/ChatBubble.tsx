@@ -232,12 +232,24 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({ message, isGroup = false
           </div>
         );
 
-      case 'OTHER':
-        if (message.body && message.body.startsWith('Konum:')) {
+      case 'LOCATION':
+      case 'OTHER': {
+        // D6: konum render'i artik ONCE message_type==='LOCATION'a bakar
+        // (backend/gateway `classifyMessageType` bunu uretir). Eski kontrol
+        // yalnizca Turkce 'Konum:' literaline bakıyordu; sunucu tarafi
+        // isareti (📍 Konum) de tolere edilir — bunlar VERI isaretleridir,
+        // UI metni degil (UI metni i18n'den gelir).
+        const bodyText = message.body || '';
+        const isLocation =
+          message.message_type === 'LOCATION' ||
+          /^📍?\s*Konum\b/i.test(bodyText);
+        if (isLocation) {
           return (
             <div className="flex items-center space-x-2.5 p-2.5 rounded-xl bg-slate-200/60 dark:bg-white/[0.06] border border-black/5 dark:border-white/10 min-w-0">
               <MapPin className="w-5 h-5 text-rose-500 shrink-0" />
-              <span className="text-xs font-bold [overflow-wrap:anywhere] break-words min-w-0">{message.body}</span>
+              <span className="text-xs font-bold [overflow-wrap:anywhere] break-words min-w-0">
+                {bodyText || t('whatsapp.previewLocation')}
+              </span>
             </div>
           );
         }
@@ -248,6 +260,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({ message, isGroup = false
             {message.body || t('leads.mediaFallback')}
           </p>
         );
+      }
 
       case 'TEXT':
       default:

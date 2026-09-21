@@ -21,6 +21,7 @@ import { fileURLToPath } from 'url';
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
+import { requireGatewayToken, verifyWsToken } from './security/gateway-auth.js';
 import { createPostgresAuthRepository } from './auth/postgres-auth-repository.js';
 import { createPostgresEventOutbox } from './outbox/postgres-event-outbox.js';
 import { createGatewayPostgresPool } from './database/postgres-pool.js';
@@ -111,7 +112,9 @@ const app = express();
 app.use(express.json({ limit: '10mb' }));
 
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server, path: '/ws' });
+// noServer mode: the raw HTTP upgrade is inspected below so we can reject
+// unauthenticated WebSocket clients BEFORE the socket is attached.
+const wss = new WebSocketServer({ noServer: true });
 
 // ---------------------------------------------------------------------------
 // Session Manager (Baileys)
@@ -149,7 +152,7 @@ const eventBridge = createEventBridge({
 // REST API
 // ---------------------------------------------------------------------------
 
-// Health check
+// Health check — the ONLY unauthenticated route (returns counts, no secrets).
 app.get('/health', (_req, res) => {
   const sessions = sessionManager.listSessions();
   const connected = sessions.filter((s) => s.status === 'CONNECTED').length;
@@ -160,6 +163,11 @@ app.get('/health', (_req, res) => {
     sessions: { total: sessions.length, connected, pending_qr: pending },
   });
 });
+
+// Security: every other REST route requires the shared gateway token
+// (Authorization: Bearer <WHATSAPP_GATEWAY_SECRET> or ?token=...). Fail-closed:
+// if the secret is not configured, all requests are rejected with 503.
+app.use(requireGatewayToken);
 
 // List sessions
 app.get('/sessions', (_req, res) => {
@@ -435,6 +443,32 @@ app.get('/sessions/:sessionId/media/:mediaId', withSession(async (req, res, sess
 // ---------------------------------------------------------------------------
 // WebSocket — realtime events to connected clients (FastAPI backend)
 // ---------------------------------------------------------------------------
+// Security: the upgrade request is authenticated BEFORE the socket is attached.
+// Invalid/missing token → HTTP 401 on the upgrade; unset secret → fail-closed 503.
+server.on('upgrade', (req, socket, head) => {
+  let pathname = '';
+  try {
+    pathname = new URL(req.url || '', 'http://localhost').pathname;
+  } catch {
+    pathname = '';
+  }
+  if (pathname !== '/ws') {
+    socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
+    socket.destroy();
+    return;
+  }
+  if (!verifyWsToken(req)) {
+    const secretConfigured = Boolean(process.env.WHATSAPP_GATEWAY_SECRET);
+    const statusLine = secretConfigured ? '401 Unauthorized' : '503 Service Unavailable';
+    socket.write(`HTTP/1.1 ${statusLine}\r\n\r\n`);
+    socket.destroy();
+    return;
+  }
+  wss.handleUpgrade(req, socket, head, (ws) => {
+    wss.emit('connection', ws, req);
+  });
+});
+
 wss.on('connection', (ws) => {
   eventBridge.attachClient(ws);
   ws.on('close', () => eventBridge.detachClient(ws));

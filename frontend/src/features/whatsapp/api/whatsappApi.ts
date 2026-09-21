@@ -60,12 +60,23 @@ export function invalidateLiveProbe(): void {
 export async function probeLive(): Promise<boolean> {
   const cached = isLiveCached();
   if (cached !== null) return cached;
+  // A7: the real liveness signal is the backend's gateway health check.
+  // `GET /whatsapp/sessions` returns 200 even when the Baileys gateway is
+  // down (sessions are persisted), so probing it falsely reports "live".
+  // Contract: GET /whatsapp/gateway/health -> 200 { gateway_available: true }
+  // when the gateway is healthy, 503 { gateway_available: false, error }
+  // otherwise. Fail CLOSED on any error / non-ok / missing flag.
   try {
-    const res = await authFetch(`${API_BASE}/whatsapp/sessions`, { method: 'GET' });
-    liveProbe = { value: res.ok, checkedAt: Date.now() };
+    const res = await authFetch(`${API_BASE}/whatsapp/gateway/health`, { method: 'GET' });
+    if (!res.ok) {
+      liveProbe = { value: false, checkedAt: Date.now() };
+      return false;
+    }
+    const data = (await res.json()) as { gateway_available?: boolean } | null;
+    liveProbe = { value: data?.gateway_available === true, checkedAt: Date.now() };
   } catch (error) {
     console.warn('[WhatsAppApi] Live probe failed', {
-      endpoint: `${API_BASE}/whatsapp/sessions`,
+      endpoint: `${API_BASE}/whatsapp/gateway/health`,
       error: error instanceof Error ? error.message : String(error),
     });
     liveProbe = { value: false, checkedAt: Date.now() };
@@ -134,6 +145,9 @@ interface BackendSession {
   qr_code?: string | null;
   error_message?: string | null;
   sync?: SessionSyncState | null;
+  warm_up_day?: number | null;
+  daily_sent_count?: number | null;
+  max_daily_limit?: number | null;
   created_at?: string | null;
   updated_at?: string | null;
 }
@@ -146,13 +160,19 @@ function mapSession(s: BackendSession): WhatsAppSession {
     status: (s.status as WhatsAppSession['status']) || 'DISCONNECTED',
     qr_code: s.qr_code ?? undefined,
     is_active: s.is_active ?? true,
-    warm_up_day: 1,
-    daily_sent_count: 0,
-    max_daily_limit: 50,
+    // D1: warm-up / quota metrics are REAL server data or absent. Fabricated
+    // defaults (warm_up_day: 1, daily_sent_count: 0, max_daily_limit: 50) made
+    // the SessionCard present fake quota/warm-up state for every line.
+    warm_up_day: s.warm_up_day ?? undefined,
+    daily_sent_count: s.daily_sent_count ?? undefined,
+    max_daily_limit: s.max_daily_limit ?? undefined,
     is_phone_online: s.is_phone_online ?? false,
     battery_level: s.battery_level ?? undefined,
     error_message: s.error_message ?? undefined,
-    sync: s.sync ?? undefined,
+    // A8: pass the backend `sync` state through unchanged. `?? undefined`
+    // would hide a legitimate `sync: null`; only a truly absent field maps
+    // to undefined.
+    sync: s.sync,
     // Preserve missing server timestamps; fabricating "now" hides a broken
     // session contract and can reorder line status displays.
     created_at: s.created_at ?? undefined,
@@ -629,6 +649,18 @@ export const WhatsAppApi = {
     };
   },
 
+  /**
+   * Fetches a single persisted message row (needed for retrying FAILED
+   * messages: the FAILED row carries the original body + client_message_id,
+   * and the send path is idempotent on client_message_id).
+   */
+  async getMessage(conversationId: number, messageId: number): Promise<Message> {
+    const data = await apiGet<BackendMessage>(
+      `/whatsapp/conversations/${conversationId}/messages/${messageId}`
+    );
+    return mapMessage(data, conversationId);
+  },
+
   async sendMessage(conversationId: number, body: string, clientMessageId?: string): Promise<Message> {
     const data = await apiSend<{
       id?: number | string | null;
@@ -785,11 +817,9 @@ export const WhatsAppApi = {
       const detail = (e as CustomEvent<any>).detail;
       if (!detail) return;
       if (detail.conversation_id !== conversationId) return;
-      if (
-        detail.event === 'message_new' ||
-        detail.event === 'inbound_reply' ||
-        detail.event === 'outbound_message_sent'
-      ) {
+      // D5: the gateway emits `message_new` for both inbound and outbound
+      // messages; `inbound_reply` / `outbound_message_sent` were dead names.
+      if (detail.event === 'message_new') {
         const msgData = detail.message && typeof detail.message === 'object' ? detail.message : detail;
         onMessage(mapMessage(msgData, conversationId));
       }

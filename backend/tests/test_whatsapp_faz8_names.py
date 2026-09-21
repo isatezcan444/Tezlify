@@ -62,8 +62,9 @@ async def _cleanup():
                 "DELETE FROM contacts WHERE user_id IN (:h1, :h2)"
             ), {"h1": TEST_USER_HEX, "h2": SYS_USER_HEX})
             await db.execute(text(
-                "DELETE FROM whatsapp_sessions WHERE user_id IN (:h1, :h2)"
-            ), {"h1": TEST_USER_HEX, "h2": SYS_USER_HEX})
+                "DELETE FROM whatsapp_sessions WHERE user_id IN (:h1, :h2, :p65)"
+            ), {"h1": TEST_USER_HEX, "h2": SYS_USER_HEX,
+                "p65": "67890123678967896789678901234567"})
             await db.commit()
 
 
@@ -163,6 +164,7 @@ async def test_contact_synced_creates_row_for_high_rank_name():
 
     event = {
         "event": "contact_synced",
+        "gateway_session_id": gw_id,
         "contact": {"id": MOCK_JID, "name": "Rehberdeki Ayşe", "name_source": "addressbook"},
     }
     await ingest_gateway_event(event)
@@ -198,8 +200,9 @@ async def test_contact_synced_does_not_create_for_low_rank_push():
 
 @pytest.mark.asyncio
 async def test_contact_synced_updates_existing_low_rank():
+    gw_id = str(_uuid.uuid4())
     async with AsyncSessionLocal() as db:
-        db.add(WhatsAppSession(user_id=TEST_USER, gateway_id=str(_uuid.uuid4()),
+        db.add(WhatsAppSession(user_id=TEST_USER, gateway_id=gw_id,
                                session_name="S", status=SessionStatus.CONNECTED, is_active=True))
         existing = Contact(user_id=TEST_USER, phone_e164=MOCK_PHONE, display_name=MOCK_PHONE,
                            custom_attributes={"name_source": "phone"})
@@ -208,6 +211,7 @@ async def test_contact_synced_updates_existing_low_rank():
 
     event = {
         "event": "contact_synced",
+        "gateway_session_id": gw_id,
         "contact": {"id": MOCK_JID, "name": "Profil Adı", "name_source": "push"},
     }
     await ingest_gateway_event(event)
@@ -342,8 +346,9 @@ async def test_sync_1000_contacts_perf():
 
 @pytest.mark.asyncio
 async def test_group_rename_updates_subject_keeps_addressbook():
+    gw_id = str(_uuid.uuid4())
     async with AsyncSessionLocal() as db:
-        db.add(WhatsAppSession(user_id=TEST_USER, gateway_id=str(_uuid.uuid4()),
+        db.add(WhatsAppSession(user_id=TEST_USER, gateway_id=gw_id,
                                session_name="S", status=SessionStatus.CONNECTED, is_active=True))
         contact = Contact(user_id=TEST_USER, phone_e164=GROUP_PHONE_SENTINEL,
                           display_name="İstanbul İş Grubu",
@@ -354,6 +359,7 @@ async def test_group_rename_updates_subject_keeps_addressbook():
     # group_subject → group_subject: eşit rütbe (>= kuralı), yeni ad yazılır
     await ingest_gateway_event({
         "event": "conversation_updated",
+        "gateway_session_id": gw_id,
         "conversation_id": GROUP_JID,
         "conversation": {"id": GROUP_JID, "name": "Ankara Ekip Grubu", "name_source": "group_subject"},
     })
@@ -364,6 +370,7 @@ async def test_group_rename_updates_subject_keeps_addressbook():
     # addressbook daha yüksek rütbe: subject'i ezebilir (rehber adı öncelikli)
     await ingest_gateway_event({
         "event": "conversation_updated",
+        "gateway_session_id": gw_id,
         "conversation_id": GROUP_JID,
         "conversation": {"id": GROUP_JID, "name": "Rehberdeki Grup", "name_source": "addressbook"},
     })
@@ -374,6 +381,7 @@ async def test_group_rename_updates_subject_keeps_addressbook():
     # düşük rütbeli push mevcut addressbook adını ezmez
     await ingest_gateway_event({
         "event": "conversation_updated",
+        "gateway_session_id": gw_id,
         "conversation_id": GROUP_JID,
         "conversation": {"id": GROUP_JID, "name": "Push Grup", "name_source": "push"},
     })

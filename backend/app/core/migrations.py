@@ -248,6 +248,86 @@ def _create_leads_only(sync_conn: Any) -> None:
     Lead.__table__.create(sync_conn, checkfirst=True)
 
 
+def _create_messages_only(sync_conn: Any) -> None:
+    """Yalnızca `messages` tablosunu model metadata'sından oluşturur."""
+    from backend.app.models.message import Message
+
+    Message.__table__.create(sync_conn, checkfirst=True)
+
+
+async def ensure_messages_sender_phone_nullable(engine: AsyncEngine) -> None:
+    """D3: `messages.sender_phone` kolonunu nullable yapar.
+
+    LID (privacy-mode) gönderenlerin çözülebilir bir telefon numarası yoktur;
+    AGENTS.md'nin açık ihlali olan sahte numara/literal ("unknown", "+90000...")
+    üretmek yerine bilinmeyen gönderenler için NULL persist edilir. Mevcut
+    satırlara dokunulmaz.
+
+    - PostgreSQL: bilgi şeması kontrolü + kilitli ALTER COLUMN DROP NOT NULL.
+    - SQLite: ALTER COLUMN desteklenmediği için yedek tablo üzerinden rebuild
+      (aynı desen: ensure_leads_phone_nullable).
+    """
+    if engine.dialect.name == "postgresql":
+        try:
+            async with engine.connect() as conn:
+                res = await conn.execute(
+                    text("SELECT is_nullable FROM information_schema.columns WHERE table_name = 'messages' AND column_name = 'sender_phone'")
+                )
+                row = res.first()
+                if row and row[0] == "YES":
+                    return  # Zaten nullable; kilit gerektiren ALTER TABLE atlandı
+
+            async with engine.begin() as conn:
+                await conn.execute(text("SET LOCAL lock_timeout = '3s'"))
+                await conn.execute(
+                    text("ALTER TABLE messages ALTER COLUMN sender_phone DROP NOT NULL")
+                )
+            logger.info("[MIGRATION] messages.sender_phone -> NULLABLE (postgresql)")
+        except Exception as e:
+            logger.warning("[MIGRATION] messages.sender_phone kontrolü/geçişi atlandı: %s", e)
+        return
+
+    if engine.dialect.name != "sqlite":
+        logger.warning("[MIGRATION] Bilinmeyen dialect %r; sender_phone kontrolü atlandı.", engine.dialect.name)
+        return
+
+    async with engine.begin() as conn:
+        exists = await conn.execute(
+            text("SELECT name FROM sqlite_master WHERE type='table' AND name='messages'")
+        )
+        if exists.first() is None:
+            return  # Tablo henüz yok; create_all yeni şemayı doğru kurar.
+
+        info_rows = (await conn.execute(text("PRAGMA table_info(messages)"))).fetchall()
+        columns = _sqlite_columns_legacy(info_rows)
+        if "sender_phone" not in columns:
+            return
+        if not columns["sender_phone"]:
+            return  # Zaten nullable.
+
+        # Rebuild: yedekle -> düşür -> model şemasıyla yeniden oluştur -> geri yükle.
+        await conn.execute(text("DROP TABLE IF EXISTS _messages_migrate_backup"))
+        await conn.execute(text("CREATE TABLE _messages_migrate_backup AS SELECT * FROM messages"))
+        await conn.execute(text("DROP TABLE messages"))
+
+        await conn.run_sync(_create_messages_only)
+
+        backup_info = (await conn.execute(text("PRAGMA table_info(_messages_migrate_backup)"))).fetchall()
+        backup_cols = {row[1] for row in backup_info}
+
+        new_info = (await conn.execute(text("PRAGMA table_info(messages)"))).fetchall()
+        new_cols = {row[1] for row in new_info}
+
+        shared = [c for c in new_cols if c in backup_cols]
+        shared_sorted = sorted(shared)
+        col_list = ", ".join(shared_sorted)
+        await conn.execute(
+            text(f"INSERT INTO messages ({col_list}) SELECT {col_list} FROM _messages_migrate_backup")
+        )
+        await conn.execute(text("DROP TABLE _messages_migrate_backup"))
+        logger.info("[MIGRATION] messages.sender_phone -> NULLABLE (sqlite rebuild, %d kolon taşındı)", len(shared_sorted))
+
+
 def _create_conversations_only(sync_conn: Any) -> None:
     """Yalnızca `conversations` tablosunu model metadata'sından oluşturur."""
     from backend.app.models.conversation import Conversation
@@ -1394,10 +1474,114 @@ async def ensure_phase_10_7_indexes(engine: AsyncEngine) -> None:
         logger.warning("[MIGRATION] ensure_phase_10_7_indexes: %s", e)
 
 
+async def _ensure_sqlite_lid_and_history_tables(engine: AsyncEngine) -> None:
+    """SQLite (dev/test) version of the LID + history evidence tables.
+
+    SQLite has no schema support, and `whatsapp_private.gateway_sessions` is a
+    Postgres-only table, so the same logical tables are created without
+    qualification and without foreign keys (same naming convention as
+    `history_evidence._table_name` and `lid_mappings._tables`). Idempotent:
+    CREATE TABLE IF NOT EXISTS for new databases, and for existing stale
+    tables that have only some of the columns, each missing column is filled
+    in via PRAGMA table_info + ALTER TABLE ADD COLUMN.
+    """
+    history_columns: list[tuple[str, str]] = [
+        ("oldest_msg_id", "VARCHAR(100)"),
+        ("oldest_timestamp_ms", "BIGINT"),
+        ("has_more", "BOOLEAN NOT NULL DEFAULT 1"),
+        ("completed_at", "TIMESTAMP"),
+        ("updated_at", "TIMESTAMP"),
+        ("state", "VARCHAR(50) DEFAULT 'NOT_CHECKED'"),
+        ("stall_count", "INTEGER DEFAULT 0"),
+        ("timeout_count", "INTEGER DEFAULT 0"),
+        ("error_count", "INTEGER DEFAULT 0"),
+        ("last_attempt_at", "TIMESTAMP"),
+        ("last_success_at", "TIMESTAMP"),
+        ("last_error", "TEXT"),
+        ("provider_checked", "BOOLEAN NOT NULL DEFAULT 0"),
+        ("provider_checked_at", "TIMESTAMP"),
+        ("provider_exhausted", "BOOLEAN"),
+        ("provider_signal", "VARCHAR(32)"),
+        ("provider_msgs_returned", "INTEGER"),
+        ("provider_cursor_used", "VARCHAR(255)"),
+        ("last_sweep_count", "INTEGER NOT NULL DEFAULT 0"),
+    ]
+    lid_columns: list[tuple[str, str]] = [
+        ("phone_jid", "VARCHAR(100) NOT NULL DEFAULT ''"),
+        ("created_at", "TIMESTAMP"),
+    ]
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text(
+                """
+                CREATE TABLE IF NOT EXISTS history_sync_states (
+                    session_id TEXT NOT NULL,
+                    jid VARCHAR(100) NOT NULL,
+                    oldest_msg_id VARCHAR(100),
+                    oldest_timestamp_ms BIGINT,
+                    has_more BOOLEAN NOT NULL DEFAULT 1,
+                    completed_at TIMESTAMP,
+                    updated_at TIMESTAMP,
+                    state VARCHAR(50) DEFAULT 'NOT_CHECKED',
+                    stall_count INTEGER DEFAULT 0,
+                    timeout_count INTEGER DEFAULT 0,
+                    error_count INTEGER DEFAULT 0,
+                    last_attempt_at TIMESTAMP,
+                    last_success_at TIMESTAMP,
+                    last_error TEXT,
+                    provider_checked BOOLEAN NOT NULL DEFAULT 0,
+                    provider_checked_at TIMESTAMP,
+                    provider_exhausted BOOLEAN,
+                    provider_signal VARCHAR(32),
+                    provider_msgs_returned INTEGER,
+                    provider_cursor_used VARCHAR(255),
+                    last_sweep_count INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (session_id, jid)
+                )
+                """
+            ))
+            await conn.execute(text(
+                """
+                CREATE TABLE IF NOT EXISTS lid_mappings (
+                    session_id TEXT NOT NULL,
+                    lid_jid VARCHAR(100) NOT NULL,
+                    phone_jid VARCHAR(100) NOT NULL DEFAULT '',
+                    created_at TIMESTAMP,
+                    PRIMARY KEY (session_id, lid_jid)
+                )
+                """
+            ))
+
+            # Recovering stale local tables: SQLite supports ADD COLUMN, so for
+            # each column missing from PRAGMA table_info, we fill it in one by one.
+            for table, columns in (
+                ("history_sync_states", history_columns),
+                ("lid_mappings", lid_columns),
+            ):
+                info = (await conn.execute(text(f"PRAGMA table_info({table})"))).fetchall()
+                existing = {row[1] for row in info}
+                for col_name, col_ddl in columns:
+                    if col_name not in existing:
+                        await conn.execute(text(
+                            f"ALTER TABLE {table} ADD COLUMN {col_name} {col_ddl}"
+                        ))
+
+            # Index AFTER the stale-table backfill: on a pre-existing
+            # lid_mappings without phone_jid the CREATE INDEX would fail.
+            await conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_wa_lid_mappings_phone "
+                "ON lid_mappings (session_id, phone_jid)"
+            ))
+        logger.info("[MIGRATION] sqlite lid_mappings & history_sync_states verified")
+    except Exception as e:
+        logger.warning("[MIGRATION] _ensure_sqlite_lid_and_history_tables: %s", e)
+
+
 async def ensure_whatsapp_private_lid_and_history_tables(engine: AsyncEngine) -> None:
     """Ensures persistent tables in whatsapp_private for LID mappings and history cursor states."""
     dialect = engine.dialect.name
     if dialect != "postgresql":
+        await _ensure_sqlite_lid_and_history_tables(engine)
         return
 
     statements = [

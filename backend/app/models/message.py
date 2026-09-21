@@ -61,7 +61,10 @@ class Message(Base):
     media_filename = Column(String(255), nullable=True)
     media_caption = Column(Text, nullable=True)
 
-    sender_phone = Column(String(50), nullable=False, index=True)
+    # D3: nullable — LID (privacy-mode) senders have no resolvable phone number.
+    # Hard invariant (AGENTS.md): never synthesize fake phone numbers; unknown
+    # senders persist NULL instead of a placeholder literal.
+    sender_phone = Column(String(50), nullable=True, index=True)
     recipient_phone = Column(String(50), nullable=False, index=True)
     sender_name = Column(String(100), nullable=True)
 

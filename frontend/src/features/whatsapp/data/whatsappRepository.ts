@@ -50,7 +50,7 @@ async function requireLive(): Promise<void> {
   const live = await probeLive();
   if (!live) {
     invalidateLiveProbe();
-    throw new WhatsAppApiError('WhatsApp gateway ba\u011flant\u0131s\u0131 yok. L\u00fctfen gateway servisini ba\u015flat\u0131n.');
+    throw new WhatsAppApiError('whatsapp.gatewayDown');
   }
 }
 
@@ -198,7 +198,7 @@ export class WhatsAppRepository {
     // basarisiz). Ayni tenant filtresi sunucuda uygulanir.
     const list = await WhatsAppApi.getConversations({ conversation_id: conversationId, limit: 1 });
     const conv = list[0];
-    if (!conv) throw new WhatsAppApiError('Konu\u015fma bulunamad\u0131');
+    if (!conv) throw new WhatsAppApiError('whatsapp.conversationNotFound');
     // Keep detail and paginated list views on the same bounded first page.
     // Older history is fetched explicitly with the cursor by the UI.
     const messages = await WhatsAppApi.getMessages(conversationId, { limit: 50 });
@@ -235,11 +235,18 @@ export class WhatsAppRepository {
     return WhatsAppApi.markConversationRead(conversationId, known);
   }
 
+  /**
+   * A9 — resolve the lead's conversation via the SAME lead_id filter that
+   * `getLeadConversation` uses. The old implementation searched with
+   * `search: String(leadId)` (a LIKE on name/phone) plus a `c.id === leadId`
+   * fallback, which could mark the WRONG conversation read.
+   */
   static async markLeadConversationAsRead(leadId: number): Promise<ConversationReadResult> {
-    const convs = await WhatsAppRepository.getConversations({ search: String(leadId), limit: 50 });
-    const conv = convs.find((c) => c.lead_id === leadId || c.id === leadId);
-    if (!conv) throw new WhatsAppApiError('Lead konu\u015fmas\u0131 bulunamad\u0131');
-    return WhatsAppRepository.markConversationAsRead(conv.id, conv);
+    await requireLive();
+    const convs = await WhatsAppApi.getConversations({ lead_id: leadId, limit: 1 });
+    const conv = convs[0];
+    if (!conv) throw new WhatsAppApiError('whatsapp.leadConversationNotFound');
+    return WhatsAppApi.markConversationRead(conv.id, conv);
   }
 
   static async sendMessage(
@@ -283,8 +290,15 @@ export class WhatsAppRepository {
     await WhatsAppApi.sendTyping(conversationId, typing);
   }
 
+  /**
+   * A6 — WhatsApp Business API templates (Cloud API) are NOT part of the
+   * Baileys gateway contract; the backend exposes no template endpoint.
+   * Fail CLOSED and honestly: the error propagates to the UI, which must
+   * surface a real toast/error state instead of a silent empty grid.
+   * (Error message is an i18n key — the UI layer translates it.)
+   */
   static async getTemplates(): Promise<WhatsAppTemplate[]> {
-    throw new WhatsAppApiError('Mesaj \u015fablonlar\u0131 Meta Cloud API i\u00e7in gereklidir.');
+    throw new WhatsAppApiError('whatsapp.templatesNotAvailable');
   }
 
   static async sendTemplate(
@@ -293,15 +307,53 @@ export class WhatsAppRepository {
     _variables: Record<string, string> = {},
     _idempotencyKey?: string,
   ): Promise<any> {
-    throw new WhatsAppApiError('Mesaj \u015fablonlar\u0131 Meta Cloud API i\u00e7in gereklidir.');
+    throw new WhatsAppApiError('whatsapp.templatesNotAvailable');
   }
 
-  static async retryMessage(_conversationId: number, _messageId: number | string): Promise<any> {
-    throw new WhatsAppApiError('Bu \u00f6zellik kald\u0131r\u0131ld\u0131.');
+  /**
+   * A5 — real retry for persisted FAILED outbound messages.
+   *
+   * The backend has no dedicated retry endpoint; retry means resending the
+   * ORIGINAL content through the existing send path. A persisted FAILED row
+   * carries `body` + `client_message_id`, and `send_text_message` is
+   * idempotent on `client_message_id`, so the resend reuses the same
+   * idempotency key (no duplicate rows). Media-only messages (media_id but
+   * no body) cannot be resent by the backend yet — fail closed with an
+   * honest error; never fake success.
+   *
+   * The caller owns optimistic state transitions (set PENDING before, restore
+   * FAILED + toast.error on rejection).
+   */
+  static async retryMessage(conversationId: number, messageId: number | string): Promise<any> {
+    await requireLive();
+    const numericId = typeof messageId === 'number' ? messageId : Number(messageId);
+    if (!Number.isInteger(numericId) || numericId <= 0) {
+      throw new WhatsAppApiError('whatsapp.msgNotPersisted');
+    }
+    const original = await WhatsAppApi.getMessage(conversationId, numericId);
+    if (!original || String(original.direction).toUpperCase() !== 'OUTBOUND') {
+      throw new WhatsAppApiError('whatsapp.msgNotPersisted');
+    }
+    if (original.media_id && !original.body) {
+      // Media resend of a persisted FAILED media row is not supported by the
+      // API contract yet — fail closed and honestly.
+      throw new WhatsAppApiError('whatsapp.retryMediaNotSupported');
+    }
+    if (!original.body) {
+      throw new WhatsAppApiError('whatsapp.msgNotPersisted');
+    }
+    return WhatsAppApi.sendMessage(conversationId, original.body, original.client_message_id);
   }
 
+  /**
+   * A6 — conversation creation by phone number is NOT a backend capability:
+   * conversations are created exclusively by the gateway sync / inbound
+   * message flow, and the send endpoint requires an existing conversation id.
+   * Fail CLOSED and honestly (i18n key; the UI translates and toasts it).
+   * Never fabricate a conversation or a message.
+   */
   static async startConversation(_data: { phone: string; name?: string; message?: string }): Promise<ConversationDetail> {
-    throw new WhatsAppApiError('Yeni konu\u015fma ba\u015flatmak i\u00e7in canl\u0131 gateway gereklidir.');
+    throw new WhatsAppApiError('whatsapp.startConversationNotAvailable');
   }
 
   /**
@@ -319,7 +371,7 @@ export class WhatsAppRepository {
     const list = await WhatsAppApi.getConversations({ lead_id: leadId, limit: 1 });
     const conv = list[0];
     if (!conv) {
-      throw new WhatsAppApiError('Bu lead icin WhatsApp sohbeti bulunamadi.');
+      throw new WhatsAppApiError('whatsapp.leadConversationNotFound');
     }
     const messages = await WhatsAppApi.getMessages(conv.id, { limit: 50 });
     return {

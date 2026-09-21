@@ -479,7 +479,9 @@ class WhatsAppEventOrchestrator:
             media_caption=msg.get("media_caption"),
             wa_message_id=wa_id,
             client_message_id=msg.get("client_message_id"),
-            sender_phone=msg.get("sender_phone") or jid_to_phone(jid_str) or "unknown",
+            # D3: no fake phone numbers (hard invariant). LID senders have no
+            # resolvable phone, so persist NULL instead of the literal "unknown".
+            sender_phone=msg.get("sender_phone") or jid_to_phone(jid_str) or None,
             sender_name=(
                 "ME"
                 if direction == MessageDirection.OUTBOUND
@@ -942,7 +944,9 @@ class WhatsAppEventOrchestrator:
                         deleted_msgs += 1
                     else:
                         msg.conversation_id = canonical_conv.id
-                        msg.contact_id = canonical_contact.id
+                        # D2: `msg.contact_id` was assigned here but the Message
+                        # model has no such column (silent no-op). Ownership
+                        # lives on the Conversation; removed the dead assignment.
                         if msg.wa_message_id:
                             existing_wa_ids.add(msg.wa_message_id)
                         moved_msgs += 1
@@ -1377,8 +1381,20 @@ class WhatsAppEventOrchestrator:
                 except Exception as rec_err:
                     logger.warning("[WhatsApp] Self identity auto-reconciliation warning: %s", rec_err)
         elif evt == "session_disconnected":
+            # A4: gateway emits reason ('LOGGED_OUT' | 'BANNED') but the
+            # broadcast payload used to drop it, so the UI could never tell a
+            # logout/ban from a transient disconnect. Copy reason into the
+            # event dict so the broadcast carries it (frontend contract:
+            # event name stays "session_disconnected", payload gains "reason").
+            reason = event.get("reason")
+            if reason:
+                event["reason"] = str(reason)
             row.status = SessionStatus.DISCONNECTED
             row.is_phone_online = False
+            if str(reason or "") == "LOGGED_OUT":
+                # SessionStatus has no LOGGED_OUT member; keep DISCONNECTED and
+                # surface the cause via error_message so the UI can react.
+                row.error_message = "WHATSAPP_LOGGED_OUT"
             row.updated_at = datetime.utcnow()
         elif evt == "session_qr_updated":
             row.status = SessionStatus.SCAN_QR

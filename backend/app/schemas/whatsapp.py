@@ -23,6 +23,9 @@ class WhatsAppSessionResponse(BaseModel):
     battery_level: Optional[int] = None
     qr_code: Optional[str] = None
     error_message: Optional[str] = None
+    # A8: `_list_sessions_internal` computes d["sync"] per session; without this
+    # field the list endpoint's response_model silently stripped it.
+    sync: Optional[Dict[str, Any]] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 

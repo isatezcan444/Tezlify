@@ -46,9 +46,22 @@ def gateway_timeout() -> float:
     return float(getattr(settings, "WHATSAPP_GATEWAY_TIMEOUT", 30.0) or 30.0)
 
 
+def _auth_headers() -> Dict[str, str]:
+    """Gateway shared-secret auth header (fail-closed: gateway rejects when unset)."""
+    secret = getattr(settings, "WHATSAPP_GATEWAY_SECRET", "") or ""
+    if secret:
+        return {"Authorization": f"Bearer {secret}"}
+    return {}
+
+
 async def _request(method: str, path: str, **kwargs: Any) -> Any:
     url = f"{gateway_base()}{path}"
     route = _diagnostic_route(path)
+    auth = _auth_headers()
+    if auth:
+        headers = dict(kwargs.get("headers") or {})
+        headers.update(auth)
+        kwargs["headers"] = headers
     started = time.monotonic()
     try:
         async with httpx.AsyncClient(timeout=gateway_timeout()) as client:
@@ -309,7 +322,7 @@ async def fetch_media(gateway_id: str, media_id: str) -> bytes:
     url = f"{gateway_base()}{_s(gateway_id)}/media/{media_id}"
     try:
         async with httpx.AsyncClient(timeout=gateway_timeout()) as client:
-            res = await client.get(url)
+            res = await client.get(url, headers=_auth_headers())
     except httpx.HTTPError as exc:
         raise WhatsAppGatewayError(f"Medya indirilemedi: {exc}") from exc
     if res.status_code >= 400:

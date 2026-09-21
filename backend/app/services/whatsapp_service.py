@@ -213,6 +213,20 @@ async def get_sync_status(db: AsyncSession, user_id: str) -> Dict[str, Any]:
     }
 
 
+async def gateway_health_probe() -> Dict[str, Any]:
+    """A7: fail-closed gateway reachability probe (GET /whatsapp/gateway/health).
+
+    Returns a summary dict on success. Raises ``gw.WhatsAppGatewayError`` (or a
+    wrapped transport error) when the gateway is unreachable -- the thin router
+    layer maps that to a 503 with ``gateway_available=False``. Never masks the
+    failure as healthy; response carries no secrets.
+    """
+    data = await gw.health()
+    if not isinstance(data, dict):
+        raise gw.WhatsAppGatewayError("Gateway health response is invalid.")
+    return {"gateway_available": True, "status": "ok", **data}
+
+
 # Session orchestration functions (create_session, get_session_qr, refresh_session_qr,
 # request_pairing_code, logout_session, purge_whatsapp_data) are imported from
 # backend.app.services.whatsapp.orchestration.sessions

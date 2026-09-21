@@ -20,6 +20,7 @@ from backend.app.models.message import (
     MessageType,
 )
 from backend.app.services.whatsapp.identity import jid_to_phone
+from backend.app.services.whatsapp.identity import jid_to_phone
 from backend.app.services.whatsapp.preview_normalization import as_naive_utc, parse_dt
 
 logger = logging.getLogger(__name__)
@@ -176,7 +177,9 @@ def build_message_from_gateway(
         media_caption=msg.get("media_caption"),
         wa_message_id=msg.get("wa_message_id"),
         client_message_id=msg.get("client_message_id"),
-        sender_phone=msg.get("sender_phone") or jid_to_phone(jid_str) or "unknown",
+        # D3: no fake phone numbers (hard invariant). LID senders have no
+        # resolvable phone, so persist NULL instead of the literal "unknown".
+        sender_phone=msg.get("sender_phone") or jid_to_phone(jid_str) or None,
         sender_name=msg.get("participant_name") or msg.get("sender_name"),
         recipient_phone=msg.get("recipient_phone") or "ME",
         status=status,

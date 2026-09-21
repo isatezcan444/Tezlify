@@ -7,6 +7,7 @@ import { useI18n } from '../../../context/I18nContext';
 import { useToast } from '../../../context/ToastContext';
 import { WhatsAppRepository } from '../data/whatsappRepository';
 import { ConversationDetail } from '../../../types';
+import { translateApiError } from '../lib/translateError';
 
 export interface NewChatModalProps {
   isOpen: boolean;
@@ -51,7 +52,9 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({
       onSuccess(newConv);
     } catch (err: any) {
       console.error('[NewChatModal] Failed to start conversation:', err);
-      toast.error(err.message || t('whatsapp.chatStartFailed'));
+      // A6: repository fail-closed i18n-anahtari firlatir (ornek
+      // whatsapp.startConversationNotAvailable) — cevirmeden gosterme.
+      toast.error(translateApiError(err, t) || t('whatsapp.chatStartFailed'));
     } finally {
       setLoading(false);
     }
@@ -78,7 +81,7 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({
             type="tel"
             value={phone}
             onChange={(e) => setPhone(e.target.value)}
-            placeholder="+90 5XX XXX XX XX"
+            placeholder={t('whatsapp.phonePlaceholder')}
             required
             autoFocus
             className="font-mono text-sm"

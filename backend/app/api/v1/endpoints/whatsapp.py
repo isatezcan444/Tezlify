@@ -7,6 +7,7 @@ from typing import Optional, Dict, Any
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.auth import AuthUser, get_current_user
@@ -80,6 +81,29 @@ def _relink_required(exc: Exception) -> HTTPException:
         detail=str(exc),
         headers={"X-WhatsApp-State": "RELINK_REQUIRED"},
     )
+
+
+# ---------------------------------------------------------------------------
+# Gateway probe (A7)
+# ---------------------------------------------------------------------------
+@router.get("/gateway/health")
+async def gateway_health() -> JSONResponse:
+    """Fail-closed gateway reachability probe.
+
+    Thin router: delegates to `whatsapp_service.gateway_health_probe`. On any
+    failure returns 503 with `gateway_available=False` — the gateway being
+    unreachable is NEVER masked as healthy. No response_model so the gateway
+    summary fields pass through untouched; response carries no secrets.
+    """
+    try:
+        data = await whatsapp_service.gateway_health_probe()
+    except Exception as exc:
+        logger.warning("[WhatsApp] Gateway health probe failed: %s", exc)
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"gateway_available": False, "error": "WhatsApp gateway'e ulaşılamadı."},
+        )
+    return JSONResponse(content=data)
 
 
 # ---------------------------------------------------------------------------
@@ -198,8 +222,6 @@ async def get_session_qr(
         raise _no_session(exc) from exc
     except LookupError as exc:
         raise _not_found(exc) from exc
-    except NoWhatsAppSession as exc:
-        raise _no_session(exc) from exc
     except Exception as exc:
         raise _bad_gateway(exc) from exc
 
@@ -218,8 +240,6 @@ async def refresh_session_qr(
         raise _no_session(exc) from exc
     except LookupError as exc:
         raise _not_found(exc) from exc
-    except NoWhatsAppSession as exc:
-        raise _no_session(exc) from exc
     except Exception as exc:
         raise _bad_gateway(exc) from exc
 
@@ -239,8 +259,6 @@ async def request_pairing_code(
         raise _no_session(exc) from exc
     except LookupError as exc:
         raise _not_found(exc) from exc
-    except NoWhatsAppSession as exc:
-        raise _no_session(exc) from exc
     except Exception as exc:
         raise _bad_gateway(exc) from exc
     return WhatsAppPairingCodeResponse(**result)
@@ -259,8 +277,6 @@ async def logout_session(
         raise _no_session(exc) from exc
     except LookupError as exc:
         raise _not_found(exc) from exc
-    except NoWhatsAppSession as exc:
-        raise _no_session(exc) from exc
     except Exception as exc:
         raise _bad_gateway(exc) from exc
 
@@ -283,8 +299,6 @@ async def delete_session(
         raise _no_session(exc) from exc
     except LookupError as exc:
         raise _not_found(exc) from exc
-    except NoWhatsAppSession as exc:
-        raise _no_session(exc) from exc
     except Exception as exc:
         raise _bad_gateway(exc) from exc
 
@@ -594,8 +608,6 @@ async def get_media(
         raise _no_session(exc) from exc
     except LookupError as exc:
         raise _not_found(exc) from exc
-    except NoWhatsAppSession as exc:
-        raise _no_session(exc) from exc
     except Exception as exc:
         raise _bad_gateway(exc) from exc
     headers = {}

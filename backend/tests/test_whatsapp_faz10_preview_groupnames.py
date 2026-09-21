@@ -74,8 +74,9 @@ async def _cleanup():
                 "DELETE FROM contacts WHERE user_id IN (:h1, :h2)"
             ), {"h1": TEST_USER_HEX, "h2": SYS_USER_HEX})
             await db.execute(text(
-                "DELETE FROM whatsapp_sessions WHERE user_id IN (:h1, :h2)"
-            ), {"h1": TEST_USER_HEX, "h2": SYS_USER_HEX})
+                "DELETE FROM whatsapp_sessions WHERE user_id IN (:h1, :h2, :p65)"
+            ), {"h1": TEST_USER_HEX, "h2": SYS_USER_HEX,
+                "p65": "67890123678967896789678901234567"})
             await db.commit()
 
 
@@ -145,6 +146,7 @@ async def test_delayed_metadata_updates_unresolved_group():
     contact_id, conv_id = await _seed_session_and_group()
     event = {
         "event": "conversation_updated",
+        "gateway_session_id": "gw-seed-test",
         "conversation_id": GROUP_JID,
         "conversation": {"id": GROUP_JID, "name": "Aile", "name_source": "group_subject"},
     }
@@ -333,6 +335,7 @@ async def test_realtime_ingest_persists_summary():
     await _seed_session_and_group()
     event = {
         "event": "message_new",
+        "gateway_session_id": "gw-seed-test",
         "conversation_id": GROUP_JID,
         "message": {
             "conversation_id": GROUP_JID,
@@ -600,6 +603,7 @@ async def _seed_session_and_person(display_name="Ali Ekincioğlu"):
 def _sg_event(wa_id="SGID1", direction="OUTBOUND", body="Sg", ts="2026-02-10T18:49:00"):
     return {
         "event": "message_new",
+        "gateway_session_id": "gw-seed-test",
         "conversation_id": PN_JID,
         "message": {
             "conversation_id": PN_JID,
