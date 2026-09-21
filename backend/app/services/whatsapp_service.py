@@ -273,9 +273,16 @@ async def _upsert_contact(
     display_name: Optional[str],
     name_source: Optional[str] = None,
     gateway_session_id: Optional[str] = None,
+    session_id: Optional[int] = None,
 ) -> Contact:
     return await _event_orchestrator._upsert_contact(
-        db, user_id, jid, display_name, name_source, gateway_session_id
+        db,
+        user_id,
+        jid,
+        display_name,
+        name_source,
+        gateway_session_id,
+        session_id,
     )
 
 
@@ -999,9 +1006,12 @@ async def reconcile_legacy_split_conversation(
     user_id: str,
     lid_jid: str,
     phone_jid: str,
+    session_id: Optional[int] = None,
 ) -> Optional[Conversation]:
     """Non-destructively reconciles and unifies legacy split conversations."""
-    return await _event_orchestrator.reconcile_legacy_split_conversation(db, user_id, lid_jid, phone_jid)
+    return await _event_orchestrator.reconcile_legacy_split_conversation(
+        db, user_id, lid_jid, phone_jid, session_id=session_id
+    )
 
 
 async def _map_conversation_event(db: AsyncSession, event: Dict[str, Any]) -> Dict[str, Any]:

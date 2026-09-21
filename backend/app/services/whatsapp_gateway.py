@@ -46,26 +46,25 @@ def gateway_timeout() -> float:
     return float(getattr(settings, "WHATSAPP_GATEWAY_TIMEOUT", 30.0) or 30.0)
 
 
-def _auth_headers() -> Dict[str, str]:
-    """Gateway shared-secret auth header (fail-closed: gateway rejects when unset)."""
-    secret = getattr(settings, "WHATSAPP_GATEWAY_SECRET", "") or ""
-    if secret:
-        return {"Authorization": f"Bearer {secret}"}
-    return {}
+def gateway_auth_headers() -> Dict[str, str]:
+    """Return the mandatory gateway credential without ever logging it."""
+    secret = str(getattr(settings, "WHATSAPP_GATEWAY_SECRET", "") or "").strip()
+    if not secret:
+        raise WhatsAppGatewayError("WHATSAPP_GATEWAY_SECRET yapılandırılmalıdır.")
+    if len(secret.encode("utf-8")) < 32:
+        raise WhatsAppGatewayError("WHATSAPP_GATEWAY_SECRET en az 32 bayt olmalıdır.")
+    return {"X-Gateway-Secret": secret}
 
 
 async def _request(method: str, path: str, **kwargs: Any) -> Any:
     url = f"{gateway_base()}{path}"
     route = _diagnostic_route(path)
-    auth = _auth_headers()
-    if auth:
-        headers = dict(kwargs.get("headers") or {})
-        headers.update(auth)
-        kwargs["headers"] = headers
     started = time.monotonic()
+    supplied_headers = dict(kwargs.pop("headers", {}) or {})
+    supplied_headers.update(gateway_auth_headers())
     try:
         async with httpx.AsyncClient(timeout=gateway_timeout()) as client:
-            res = await client.request(method, url, **kwargs)
+            res = await client.request(method, url, headers=supplied_headers, **kwargs)
     except httpx.HTTPError as exc:
         elapsed_ms = round((time.monotonic() - started) * 1000)
         logger.warning(
@@ -106,7 +105,9 @@ async def health() -> Dict[str, Any]:
 
 async def list_sessions() -> List[Dict[str, Any]]:
     data = await _request("GET", "/sessions")
-    return data.get("sessions", []) if isinstance(data, dict) else []
+    if not isinstance(data, dict) or not isinstance(data.get("sessions"), list):
+        raise WhatsAppGatewayError("Gateway sessions response is invalid.")
+    return data["sessions"]
 
 
 async def create_session(name: str, ephemeral: bool = False) -> Dict[str, Any]:
@@ -322,7 +323,7 @@ async def fetch_media(gateway_id: str, media_id: str) -> bytes:
     url = f"{gateway_base()}{_s(gateway_id)}/media/{media_id}"
     try:
         async with httpx.AsyncClient(timeout=gateway_timeout()) as client:
-            res = await client.get(url, headers=_auth_headers())
+            res = await client.get(url, headers=gateway_auth_headers())
     except httpx.HTTPError as exc:
         raise WhatsAppGatewayError(f"Medya indirilemedi: {exc}") from exc
     if res.status_code >= 400:

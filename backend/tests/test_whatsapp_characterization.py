@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from fastapi import WebSocketDisconnect
 
+from backend.app.core.config import settings
 from backend.app.main import gateway_websocket_endpoint, ws_manager
 from backend.app.models.whatsapp_session import SessionStatus
 from backend.app.services import whatsapp_service
@@ -37,6 +38,7 @@ class MockGatewaySocket:
         self._events = [json.dumps(e) for e in events]
         self.sent: list[dict] = []
         self.accepted = False
+        self.closed: int | None = None
 
     async def accept(self) -> None:
         self.accepted = True
@@ -48,6 +50,9 @@ class MockGatewaySocket:
 
     async def send_json(self, payload: dict) -> None:
         self.sent.append(payload)
+
+    async def close(self, code: int = 1000) -> None:
+        self.closed = code
 
 
 # ==============================================================================
@@ -91,8 +96,10 @@ async def test_duplicate_inbound_event_is_acked_without_broadcast(monkeypatch):
     )
     broadcast = AsyncMock()
     monkeypatch.setattr(ws_manager, "broadcast", broadcast)
+    secret = "a" * 32
+    monkeypatch.setattr(settings, "WHATSAPP_GATEWAY_SECRET", secret)
 
-    await gateway_websocket_endpoint(socket, token=None)
+    await gateway_websocket_endpoint(socket, token=secret)
 
     assert socket.accepted is True
     broadcast.assert_not_awaited()
@@ -125,8 +132,10 @@ async def test_message_status_updated_event_emits_ack_and_broadcasts(monkeypatch
     )
     broadcast = AsyncMock()
     monkeypatch.setattr(ws_manager, "broadcast", broadcast)
+    secret = "a" * 32
+    monkeypatch.setattr(settings, "WHATSAPP_GATEWAY_SECRET", secret)
 
-    await gateway_websocket_endpoint(socket, token=None)
+    await gateway_websocket_endpoint(socket, token=secret)
 
     assert socket.accepted is True
     broadcast.assert_awaited_once_with(persisted_payload)

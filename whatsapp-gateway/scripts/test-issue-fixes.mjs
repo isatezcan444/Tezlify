@@ -49,6 +49,24 @@ check('Issue 3: extendedTextMessage (reply/quote) classifies as TEXT, not media'
   assert.equal(linkPreview, 'TEXT');
 });
 
+check('Issue 3: ephemeral/view-once wrappers are parsed like their inner message', () => {
+  const ephemeral = {
+    ephemeralMessage: { message: { extendedTextMessage: { text: 'guncel metin' } } },
+  };
+  const viewOnce = {
+    viewOnceMessageV2: { message: { imageMessage: { caption: 'guncel fotograf' } } },
+  };
+  assert.equal(classifyMessageType(ephemeral), 'TEXT');
+  assert.equal(hasRecognizedContent(ephemeral), true);
+  assert.deepEqual(summarizeWaMessage({ message: ephemeral }), {
+    message_type: 'TEXT', body: 'guncel metin',
+  });
+  assert.equal(classifyMessageType(viewOnce), 'IMAGE');
+  assert.deepEqual(summarizeWaMessage({ message: viewOnce }), {
+    message_type: 'IMAGE', body: 'guncel fotograf',
+  });
+});
+
 check('Issue 3: plain conversation stays TEXT; real media keeps its type', () => {
   assert.equal(classifyMessageType({ conversation: 'merhaba' }), 'TEXT');
   assert.equal(classifyMessageType({ imageMessage: { caption: 'selam' } }), 'IMAGE');

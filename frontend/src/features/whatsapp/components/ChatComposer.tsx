@@ -54,6 +54,19 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
   const [fileCaption, setFileCaption] = useState('');
   const [sendingFile, setSendingFile] = useState(false);
   const [isFileModalOpen, setIsFileModalOpen] = useState(false);
+  const [filePreviewUrl, setFilePreviewUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!pendingFile || !pendingFile.type.startsWith('image/')) {
+      setFilePreviewUrl(null);
+      return;
+    }
+    const url = URL.createObjectURL(pendingFile);
+    setFilePreviewUrl(url);
+    return () => {
+      URL.revokeObjectURL(url);
+    };
+  }, [pendingFile]);
 
   const attachMenuRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -476,7 +489,10 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
         <Modal
           isOpen={isFileModalOpen}
           onClose={() => {
-            if (!sendingFile) setIsFileModalOpen(false);
+            if (!sendingFile) {
+              setIsFileModalOpen(false);
+              setPendingFile(null);
+            }
           }}
           title={t('whatsapp.sendFileTitle')}
           subtitle={pendingFile.name}
@@ -484,10 +500,10 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
           maxWidth="md"
         >
           <form onSubmit={handleFileSend} className="space-y-4">
-            {pendingFile.type.startsWith('image/') && (
+            {pendingFile.type.startsWith('image/') && filePreviewUrl && (
               <div className="rounded-xl overflow-hidden border border-black/5 dark:border-white/10 bg-slate-950/5 dark:bg-black/20 flex items-center justify-center p-2">
                 <img
-                  src={URL.createObjectURL(pendingFile)}
+                  src={filePreviewUrl}
                   alt={pendingFile.name}
                   className="max-h-52 w-auto object-contain"
                 />
@@ -513,7 +529,10 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
                 type="button"
                 variant="outline"
                 size="sm"
-                onClick={() => setIsFileModalOpen(false)}
+                onClick={() => {
+                  setIsFileModalOpen(false);
+                  setPendingFile(null);
+                }}
                 disabled={sendingFile}
                 className="text-xs font-bold"
               >

@@ -219,7 +219,10 @@ async def test_self_04_reconcile_self_identity_merges_duplicate_conversation():
 
     assert result["status"] == "reconciled"
     assert 9638 in result["merged_conversations"]
-    assert 5243 in result["deleted_contacts"]
+    # Contact rows are tenant-global and may still be referenced by another
+    # WhatsApp line. Reconciliation deletes only the current line's duplicate
+    # conversation; contact cleanup is reference-aware.
+    assert result["deleted_contacts"] == []
     assert result["deleted_duplicate_messages"] == 1
     assert result["moved_messages"] == 1
     # Check that canonical contact received the avatar
@@ -264,7 +267,7 @@ async def test_lid_01_unresolved_lid_creates_conversation():
 async def test_lid_02_lid_mapped_event_triggers_reconciliation():
     """LID-02: lid_mapped event triggers reconcile_legacy_split_conversation and broadcasts."""
     service = MagicMock()
-    service._resolve_event_owner = AsyncMock(return_value="test-user")
+    service._resolve_event_owner_and_session = AsyncMock(return_value=("test-user", 54))
 
     orchestrator = WhatsAppEventOrchestrator(service=service)
     mock_db = AsyncMock(spec=AsyncSession)
@@ -285,6 +288,13 @@ async def test_lid_02_lid_mapped_event_triggers_reconciliation():
     }
 
     result = await orchestrator._ingest_lid_mapped(mock_db, event)
+    orchestrator.reconcile_legacy_split_conversation.assert_awaited_once_with(
+        mock_db,
+        "test-user",
+        "97418884436079@lid",
+        "905525372434@s.whatsapp.net",
+        session_id=54,
+    )
     assert result.get("event") == "conversations_updated"
     assert result.get("reconciled_conversation_id") == 9764
     assert result.get("conversation", {}).get("archived_lid") == "97418884436079@lid"

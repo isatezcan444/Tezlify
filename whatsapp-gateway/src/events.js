@@ -146,10 +146,17 @@ export function createEventBridge({ backendWsUrl, sessionManager, eventOutbox = 
           if (message?.type === 'pong') return;
           if (!eventOutbox) return;
           if (message?.type === 'gateway_event_ack' && message.event_id) {
-            void eventOutbox.acknowledge(message.event_id).then(pumpOutbox);
+            void eventOutbox.acknowledge(message.event_id)
+              .then(pumpOutbox)
+              .catch((err) => {
+                diagnostic('event_bridge_ack_error', { error_name: err?.name || 'Error', error_message: err?.message });
+              });
           } else if (message?.type === 'gateway_event_nack' && message.event_id) {
             void eventOutbox.reject(message.event_id, { permanent: message.permanent === true })
-              .then(pumpOutbox);
+              .then(pumpOutbox)
+              .catch((err) => {
+                diagnostic('event_bridge_nack_error', { error_name: err?.name || 'Error', error_message: err?.message });
+              });
           }
         } catch (error) {
           diagnostic('event_bridge_invalid_ack', { error_name: error?.name || 'Error' });

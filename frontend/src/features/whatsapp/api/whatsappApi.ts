@@ -72,7 +72,7 @@ export async function probeLive(): Promise<boolean> {
       liveProbe = { value: false, checkedAt: Date.now() };
       return false;
     }
-    const data = (await res.json()) as { gateway_available?: boolean } | null;
+    const data = (await res.json().catch(() => null)) as { gateway_available?: boolean } | null;
     liveProbe = { value: data?.gateway_available === true, checkedAt: Date.now() };
   } catch (error) {
     console.warn('[WhatsAppApi] Live probe failed', {
@@ -281,8 +281,15 @@ function mapMessage(m: BackendMessage, convId: number): Message {
         return tok ? `${base}?token=${encodeURIComponent(tok)}` : base;
       })()
     : undefined;
+
+  const fallbackId = m.wa_message_id
+    ? `wa_${m.wa_message_id}`
+    : m.client_message_id
+    ? `cmsg_${m.client_message_id}`
+    : `srv_${convId}_${m.created_at || 'unknown'}`;
+
   return {
-    id: m.id ?? `srv_${Date.now()}`,
+    id: m.id ?? fallbackId,
     conversation_id: (m.conversation_id as number) ?? convId,
     direction: (m.direction as Message['direction']) || 'INBOUND',
     message_type: (m.message_type as Message['message_type']) || 'TEXT',
@@ -300,7 +307,7 @@ function mapMessage(m: BackendMessage, convId: number): Message {
     recipient_phone: m.recipient_phone ?? undefined,
     error_message: m.error_message ?? undefined,
     external_timestamp: m.created_at ?? undefined,
-    created_at: m.created_at || new Date().toISOString(),
+    created_at: m.created_at || '',
   };
 }
 
@@ -816,10 +823,14 @@ export const WhatsAppApi = {
     const handler = (e: Event) => {
       const detail = (e as CustomEvent<any>).detail;
       if (!detail) return;
-      if (detail.conversation_id !== conversationId) return;
-      // D5: the gateway emits `message_new` for both inbound and outbound
-      // messages; `inbound_reply` / `outbound_message_sent` were dead names.
-      if (detail.event === 'message_new') {
+      const targetId = detail.conversation_id ?? detail.message?.conversation_id;
+      if (Number(targetId) !== Number(conversationId)) return;
+      if (
+        detail.event === 'message_new' ||
+        detail.event === 'new_message' ||
+        detail.event === 'inbound_reply' ||
+        detail.event === 'outbound_message_sent'
+      ) {
         const msgData = detail.message && typeof detail.message === 'object' ? detail.message : detail;
         onMessage(mapMessage(msgData, conversationId));
       }

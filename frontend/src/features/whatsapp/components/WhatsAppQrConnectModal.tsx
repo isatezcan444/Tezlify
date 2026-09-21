@@ -144,6 +144,7 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
   // of the lifecycle effect is itself one of the triggers we must survive.
   const pairingLifecycleRef = useRef<PairingLifecycle>('IDLE');
   const cancelledPairTokensRef = useRef<Set<string>>(new Set());
+  const pollFailuresRef = useRef<number>(0);
 
   // Sync ref with existingSessionId prop if changed
   useEffect(() => {
@@ -211,7 +212,9 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
       return;
     }
     cancelledPairTokensRef.current.add(token);
-    void WhatsAppRepository.cancelPairing(token).catch(() => {});
+    void WhatsAppRepository.cancelPairing(token).catch((err) => {
+      console.warn('[WhatsAppQrConnectModal] cancelPairing failed:', err);
+    });
   }, []);
 
   const resetCountdown = useCallback(() => {
@@ -601,7 +604,7 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
         (activeSessionIdRef.current && detail.session_id && String(detail.session_id) === String(activeSessionIdRef.current)) ||
         (sessionName && detail.session_name && detail.session_name === sessionName);
 
-      if (!targetMatches && detail.session_id) return;
+      if (!targetMatches) return;
 
       // 1. QR Code Updated
       if (detail.event === 'session_qr_updated' || detail.event_type === 'QR_UPDATED') {
@@ -785,8 +788,13 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
               if (fallbackPollRef.current) clearInterval(fallbackPollRef.current);
             }
           }
-        } catch {
-          // Silent catch in fallback poll
+        } catch (pollErr: any) {
+          pollFailuresRef.current += 1;
+          if (pollFailuresRef.current >= 5) {
+            if (fallbackPollRef.current) clearInterval(fallbackPollRef.current);
+            setErrorMessage(pollErr?.message || t('whatsapp.connectionFailed'));
+            setModalState('ERROR');
+          }
         }
       }, 2500);
     } else {

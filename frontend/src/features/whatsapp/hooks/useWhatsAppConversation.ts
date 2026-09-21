@@ -177,6 +177,7 @@ export function useWhatsAppConversation({
       setConversation((prev) => (prev ? { ...prev, status } : null));
     } catch (e) {
       console.warn('[useWhatsAppConversation] Update status failed:', e);
+      throw e;
     }
   }, [conversation]);
 

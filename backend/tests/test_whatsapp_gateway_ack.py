@@ -6,8 +6,11 @@ from unittest.mock import AsyncMock
 import pytest
 from fastapi import WebSocketDisconnect
 
+from backend.app.core.config import settings
 from backend.app.main import gateway_websocket_endpoint, ws_manager
 from backend.app.services import whatsapp_service
+
+TEST_GATEWAY_SECRET = "a" * 32
 
 
 class FakeGatewaySocket:
@@ -15,9 +18,13 @@ class FakeGatewaySocket:
         self._messages = [json.dumps(event)]
         self.sent: list[dict] = []
         self.accepted = False
+        self.closed_code: int | None = None
 
     async def accept(self) -> None:
         self.accepted = True
+
+    async def close(self, code: int = 1000) -> None:
+        self.closed_code = code
 
     async def receive_text(self) -> str:
         if self._messages:
@@ -26,6 +33,11 @@ class FakeGatewaySocket:
 
     async def send_json(self, payload: dict) -> None:
         self.sent.append(payload)
+
+
+@pytest.fixture(autouse=True)
+def _configure_gateway_secret(monkeypatch):
+    monkeypatch.setattr(settings, "WHATSAPP_GATEWAY_SECRET", TEST_GATEWAY_SECRET)
 
 
 @pytest.mark.asyncio
@@ -37,7 +49,7 @@ async def test_gateway_event_is_acked_only_after_persist_and_broadcast(monkeypat
     monkeypatch.setattr(whatsapp_service, "ingest_gateway_event", ingest)
     monkeypatch.setattr(ws_manager, "broadcast", broadcast)
 
-    await gateway_websocket_endpoint(socket, token=None)
+    await gateway_websocket_endpoint(socket, token=TEST_GATEWAY_SECRET)
 
     assert socket.accepted is True
     ingest.assert_awaited_once()
@@ -57,7 +69,7 @@ async def test_unpersisted_gateway_event_is_nacked_and_not_broadcast(monkeypatch
     broadcast = AsyncMock()
     monkeypatch.setattr(ws_manager, "broadcast", broadcast)
 
-    await gateway_websocket_endpoint(socket, token=None)
+    await gateway_websocket_endpoint(socket, token=TEST_GATEWAY_SECRET)
 
     broadcast.assert_not_awaited()
     assert socket.sent == [{
@@ -78,7 +90,7 @@ async def test_gateway_pong_frame_is_silently_ignored(monkeypatch) -> None:
     ingest = AsyncMock()
     monkeypatch.setattr(whatsapp_service, "ingest_gateway_event", ingest)
 
-    await gateway_websocket_endpoint(socket, token=None)
+    await gateway_websocket_endpoint(socket, token=TEST_GATEWAY_SECRET)
 
     assert socket.accepted is True
     ingest.assert_not_awaited()
@@ -92,7 +104,7 @@ async def test_gateway_pong_message_is_handled(monkeypatch) -> None:
     ingest = AsyncMock()
     monkeypatch.setattr(whatsapp_service, "ingest_gateway_event", ingest)
 
-    await gateway_websocket_endpoint(socket, token=None)
+    await gateway_websocket_endpoint(socket, token=TEST_GATEWAY_SECRET)
 
     assert socket.accepted is True
     ingest.assert_not_awaited()
@@ -105,9 +117,10 @@ async def test_gateway_ping_message_responds_with_pong(monkeypatch) -> None:
     ingest = AsyncMock()
     monkeypatch.setattr(whatsapp_service, "ingest_gateway_event", ingest)
 
-    await gateway_websocket_endpoint(socket, token=None)
+    await gateway_websocket_endpoint(socket, token=TEST_GATEWAY_SECRET)
 
     assert socket.accepted is True
     ingest.assert_not_awaited()
     assert socket.sent == [{"type": "pong"}]
+
 
