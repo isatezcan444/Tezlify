@@ -163,7 +163,10 @@ check('a line owned by nobody is never a sibling of a real tenant', () => {
 // --- source guards: the unscoped forms must not come back ---
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const SRC = fs.readFileSync(path.join(here, '..', 'src', 'session-manager.js'), 'utf8');
+const targetFile = fs.existsSync(path.join(here, '..', 'src', 'lid', 'lid-repository.js'))
+  ? path.join(here, '..', 'src', 'lid', 'lid-repository.js')
+  : path.join(here, '..', 'src', 'session-manager.js');
+const SRC = fs.readFileSync(targetFile, 'utf8');
 
 check('loadLidMappingsFromDb bounds its read by the tenant scope', () => {
   assert.match(

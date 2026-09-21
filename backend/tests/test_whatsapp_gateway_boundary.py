@@ -33,7 +33,7 @@ from backend.app.services.whatsapp.gateway.responses import (
     normalize_sessions_payload,
     normalize_sync_job_status,
 )
-from backend.app.services.whatsapp_gateway import WhatsAppGatewayError
+from backend.app.services.whatsapp_gateway import WhatsAppGatewayError, gateway_auth_headers
 
 
 class TestGatewayPayloadBuilders:
@@ -123,6 +123,20 @@ class TestGatewayPayloadBuilders:
     def test_build_conversations_query_params(self):
         p = build_conversations_query_params(search="Tezlify", limit=30, offset=60)
         assert p == {"search": "Tezlify", "limit": 30, "offset": 60}
+
+    def test_gateway_auth_headers_are_fail_closed(self, monkeypatch):
+        from backend.app.core.config import settings
+
+        monkeypatch.setattr(settings, "WHATSAPP_GATEWAY_SECRET", "")
+        with pytest.raises(WhatsAppGatewayError, match="WHATSAPP_GATEWAY_SECRET"):
+            gateway_auth_headers()
+
+    def test_gateway_auth_headers_carry_shared_secret(self, monkeypatch):
+        from backend.app.core.config import settings
+
+        secret = "test-shared-secret-with-at-least-32-bytes"
+        monkeypatch.setattr(settings, "WHATSAPP_GATEWAY_SECRET", secret)
+        assert gateway_auth_headers() == {"X-Gateway-Secret": secret}
 
 
 class TestGatewayResponseNormalizers:

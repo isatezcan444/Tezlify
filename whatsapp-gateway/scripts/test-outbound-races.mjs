@@ -45,6 +45,30 @@ try {
   session.sock = { async sendMessage() { throw new Error('provider unavailable'); } };
   await assert.rejects(sm.sendTextMessage(sid, jid, 'body', 'failed'), /provider unavailable/);
   assert.equal((await sm.getMessages(sid, jid)).find((m) => m.client_message_id === 'failed').status, 'FAILED');
+
+  let retryCalls = 0;
+  const providerIds = [];
+  session.sock = { async sendMessage(remoteJid, content, options) {
+    retryCalls += 1;
+    providerIds.push(options.messageId);
+    return { key: { remoteJid, id: options.messageId, fromMe: true } };
+  } };
+  const first = await sm.sendTextMessage(sid, jid, 'once', 'stable-client-id');
+  const replay = await sm.sendTextMessage(sid, jid, 'once', 'stable-client-id');
+  assert.equal(retryCalls, 1, 'terminal idempotent replay must not call the provider twice');
+  assert.equal(replay.wa_message_id, first.wa_message_id);
+
+  let failedAttemptId = null;
+  session.sock = { async sendMessage(remoteJid, content, options) {
+    failedAttemptId = options.messageId;
+    throw new Error('transient');
+  } };
+  await assert.rejects(sm.sendTextMessage(sid, jid, 'retry', 'retry-stable-id'), /transient/);
+  session.sock = { async sendMessage(remoteJid, content, options) {
+    assert.equal(options.messageId, failedAttemptId, 'provider message id must be stable across retries');
+    return { key: { remoteJid, id: options.messageId, fromMe: true } };
+  } };
+  assert.equal((await sm.sendTextMessage(sid, jid, 'retry', 'retry-stable-id')).status, 'SENT');
   console.log('Outbound text/media ACK/echo permutations, duplicate ACKs, promise-only and failure: PASS');
 } finally {
   await rm(dir, { recursive: true, force: true });

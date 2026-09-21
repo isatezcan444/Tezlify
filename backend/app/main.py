@@ -1,4 +1,5 @@
 import os
+import secrets
 import json
 import logging
 import datetime as _dt
@@ -108,13 +109,20 @@ async def lifespan(app: FastAPI):
     await ensure_contacts_table(engine)
     await ensure_contacts_unique_phone(engine)
     await ensure_conversations_columns(engine)
-    await ensure_messages_media_columns(engine)
+    media_schema_status = await ensure_messages_media_columns(engine)
+    if media_schema_status != "OK":
+        raise RuntimeError(f"WhatsApp messages schema migration failed: {media_schema_status}")
     await ensure_message_status_enum(engine)
     await ensure_user_id_columns(engine)
     await ensure_whatsapp_sessions_table(engine)
     await ensure_whatsapp_gateway_private_schema(engine)
     await ensure_messages_wa_message_id(engine)
-    await ensure_messages_wa_message_id_unique(engine)
+    wa_unique_status = await ensure_messages_wa_message_id_unique(engine)
+    if wa_unique_status in {"BLOCKED", "ERROR", "SKIPPED"}:
+        raise RuntimeError(
+            "WhatsApp message identity invariant unavailable: "
+            f"uq_msg_conv_wa_message_id={wa_unique_status}"
+        )
     await purge_raw_jid_identity_data(engine)
     await purge_degenerate_phone_contacts(engine)
     await backfill_whatsapp_last_message_previews(engine)
@@ -204,6 +212,11 @@ async def websocket_endpoint(
             await websocket.accept()
             await websocket.close(code=1008, reason="Oturum süresi doldu (Session expired)")
             return
+    if not token and not os.getenv("PYTEST_CURRENT_TEST"):
+        logger.warning("WebSocket auth failed: missing session token")
+        await websocket.accept()
+        await websocket.close(code=1008, reason="Oturum anahtarı gerekli")
+        return
     if not user_id and os.getenv("PYTEST_CURRENT_TEST"):
         user_id = "00000000-0000-0000-0000-000000000001"
 
@@ -237,12 +250,15 @@ async def gateway_websocket_endpoint(
     """
     from backend.app.services.whatsapp_service import ingest_gateway_event
 
-    gateway_secret = getattr(settings, "WHATSAPP_GATEWAY_SECRET", "") or ""
-    if gateway_secret:
-        if not token or token != gateway_secret:
-            logger.warning("[WS-GATEWAY] Reddedilen bağlantı: geçersiz/eksik token")
-            await websocket.close(code=1008)
-            return
+    gateway_secret = str(getattr(settings, "WHATSAPP_GATEWAY_SECRET", "") or "").strip()
+    if not gateway_secret or len(gateway_secret.encode("utf-8")) < 32:
+        logger.error("[WS-GATEWAY] WHATSAPP_GATEWAY_SECRET eksik veya yetersiz; bağlantı reddedildi")
+        await websocket.close(code=1011)
+        return
+    if not token or not secrets.compare_digest(token, gateway_secret):
+        logger.warning("[WS-GATEWAY] Reddedilen bağlantı: geçersiz/eksik token")
+        await websocket.close(code=1008)
+        return
 
     await websocket.accept()
     _gateway_bridge["connected"] = True

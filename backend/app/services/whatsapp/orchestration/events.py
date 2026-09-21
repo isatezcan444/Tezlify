@@ -146,6 +146,7 @@ class WhatsAppEventOrchestrator:
         display_name: Optional[str],
         name_source: Optional[str] = None,
         gateway_session_id: Optional[str] = None,
+        session_id: Optional[int] = None,
     ) -> Contact:
         clean_jid = _strip_jid_prefix(jid)
         if is_degenerate_jid(clean_jid):
@@ -154,16 +155,21 @@ class WhatsAppEventOrchestrator:
             raise ValueError(f"Broadcast-only WhatsApp JID reddedildi: {jid}")
 
         # Check if clean_jid is the authenticated user's self identity
-        sess_stmt = (
-            select(WhatsAppSession)
-            .where(
-                get_user_filter(WhatsAppSession.user_id, user_id),
-                WhatsAppSession.status == SessionStatus.CONNECTED,
-                WhatsAppSession.is_active.is_(True),
-            )
-            .order_by(WhatsAppSession.id.desc())
+        session_filters = [
+            get_user_filter(WhatsAppSession.user_id, user_id),
+            WhatsAppSession.status == SessionStatus.CONNECTED,
+            WhatsAppSession.is_active.is_(True),
+        ]
+        if session_id is not None:
+            session_filters.append(WhatsAppSession.id == session_id)
+        elif gateway_session_id:
+            session_filters.append(WhatsAppSession.gateway_id == str(gateway_session_id))
+        sess_rows = list(
+            (await db.execute(select(WhatsAppSession).where(*session_filters))).scalars().all()
         )
-        active_sess = (await db.execute(sess_stmt)).scalars().first()
+        # Without an explicit line identity, self-detection is safe only for a
+        # genuinely single-line user. Never guess between multiple sessions.
+        active_sess = sess_rows[0] if len(sess_rows) == 1 else None
         if active_sess and active_sess.phone_number and _is_self_identity(clean_jid, active_sess.phone_number):
             canonical_phone = active_sess.phone_number
             self_contact = (
@@ -274,7 +280,14 @@ class WhatsAppEventOrchestrator:
         contact_source: Optional[str] = None,
     ) -> Conversation:
         upsert_contact = self._get_helper("_upsert_contact", self._upsert_contact)
-        contact = await upsert_contact(db, user_id, jid, contact_name, contact_source)
+        contact = await upsert_contact(
+            db,
+            user_id,
+            jid,
+            contact_name,
+            contact_source,
+            session_id=session_id,
+        )
         # "once SELECT, sonra INSERT" kalibi. Es zamanli iki olay ikisi de
         # SELECT'te "yok" gorup IKI sohbet uretmeye calisabilir; yarisi kapatan
         # sey VERITABANI kisitidir (`uq_conv_user_session_contact_channel`) ve
@@ -434,7 +447,14 @@ class WhatsAppEventOrchestrator:
         )
         contact = getattr(conv, "_contact", None)
         if contact is None:
-            contact = await upsert_contact(db, owner, jid_str, name_for_contact, source_for_contact)
+            contact = await upsert_contact(
+                db,
+                owner,
+                jid_str,
+                name_for_contact,
+                source_for_contact,
+                session_id=ws_session_id,
+            )
 
         wa_id = msg.get("wa_message_id")
         client_id = msg.get("client_message_id")
@@ -507,7 +527,9 @@ class WhatsAppEventOrchestrator:
         return event
 
     async def _ingest_contact_synced(self, db: AsyncSession, event: Dict[str, Any]) -> Dict[str, Any]:
-        resolve_event_owner = self._get_helper("_resolve_event_owner", _resolve_event_owner)
+        resolve_event_owner_and_session = self._get_helper(
+            "_resolve_event_owner_and_session", _resolve_event_owner_and_session
+        )
         upsert_contact = self._get_helper("_upsert_contact", self._upsert_contact)
         contact_payload = event.get("contact") or {}
         jid = contact_payload.get("id") or contact_payload.get("jid")
@@ -522,7 +544,9 @@ class WhatsAppEventOrchestrator:
         # tenant's session resolve a LID from another tenant's mapping row.
         # `resolve_event_owner` is fail-closed (EventOwnerUnresolved) and was
         # already called unconditionally on this path -- only its position moved.
-        owner = await resolve_event_owner(db, clean_jid, event.get("gateway_session_id"))
+        owner, ws_session_id = await resolve_event_owner_and_session(
+            db, clean_jid, event.get("gateway_session_id")
+        )
         event["user_id"] = owner
 
         if "@lid" in clean_jid:
@@ -536,16 +560,7 @@ class WhatsAppEventOrchestrator:
         else:
             phone_e164 = _contact_phone_for_jid(clean_jid)
 
-        sess_stmt = (
-            select(WhatsAppSession)
-            .where(
-                get_user_filter(WhatsAppSession.user_id, owner),
-                WhatsAppSession.status == SessionStatus.CONNECTED,
-                WhatsAppSession.is_active.is_(True),
-            )
-            .order_by(WhatsAppSession.id.desc())
-        )
-        active_sess = (await db.execute(sess_stmt)).scalars().first()
+        active_sess = await db.get(WhatsAppSession, ws_session_id) if ws_session_id else None
         if active_sess and active_sess.phone_number and _is_self_identity(clean_jid, active_sess.phone_number):
             phone_e164 = active_sess.phone_number
 
@@ -569,6 +584,7 @@ class WhatsAppEventOrchestrator:
                     name,
                     source,
                     gateway_session_id=event.get("gateway_session_id"),
+                    session_id=ws_session_id,
                 )
                 if avatar_url:
                     _set_contact_avatar(contact, avatar_url)
@@ -586,6 +602,7 @@ class WhatsAppEventOrchestrator:
         user_id: str,
         lid_jid: str,
         phone_jid: str,
+        session_id: Optional[int] = None,
     ) -> Optional[Conversation]:
         get_conversation_lock = self._get_helper("_get_conversation_lock", None)
         lid_phone = f"jid:{lid_jid}" if not str(lid_jid).startswith("jid:") else str(lid_jid)
@@ -619,6 +636,11 @@ class WhatsAppEventOrchestrator:
             select(Conversation).where(
                 Conversation.contact_id.in_([lid_contact.id, canonical_contact.id]),
                 get_user_filter(Conversation.user_id, user_id),
+                *(
+                    [Conversation.session_id == session_id]
+                    if session_id is not None
+                    else []
+                ),
             )
         )
         convs = {c.contact_id: c for c in conv_res.scalars().all()}
@@ -754,21 +776,31 @@ class WhatsAppEventOrchestrator:
         return healed
 
     async def _ingest_lid_mapped(self, db: AsyncSession, event: Dict[str, Any]) -> Dict[str, Any]:
-        resolve_event_owner = self._get_helper("_resolve_event_owner", _resolve_event_owner)
+        resolve_event_owner_and_session = self._get_helper(
+            "_resolve_event_owner_and_session", _resolve_event_owner_and_session
+        )
         lid = event.get("lid")
         phone_jid = event.get("phone_jid")
         if not lid or not phone_jid:
             return _skip_event(event, "lid_mapped: lid veya phone_jid eksik")
         clean_lid = _strip_jid_prefix(str(lid))
         clean_phone = _strip_jid_prefix(str(phone_jid))
-        owner = await resolve_event_owner(db, clean_phone, event.get("gateway_session_id"))
+        owner, ws_session_id = await resolve_event_owner_and_session(
+            db, clean_phone, event.get("gateway_session_id")
+        )
         event["user_id"] = owner
         # C-5: heal LID-keyed contacts on the WRITE path (here), never on a GET.
         try:
             await self._heal_lid_contact_identity(db, owner, clean_lid, clean_phone)
         except Exception as heal_exc:  # noqa: BLE001 - healing must not drop the event
             logger.warning("lid_mapped: LID contact heal skipped (%s): %s", clean_lid, heal_exc)
-        reconciled = await self.reconcile_legacy_split_conversation(db, owner, clean_lid, clean_phone)
+        reconciled = await self.reconcile_legacy_split_conversation(
+            db,
+            owner,
+            clean_lid,
+            clean_phone,
+            session_id=ws_session_id,
+        )
         if reconciled:
             event["reconciled_conversation_id"] = reconciled.id
             event["event"] = "conversations_updated"
@@ -864,6 +896,7 @@ class WhatsAppEventOrchestrator:
             await db.execute(
                 select(Conversation).where(
                     Conversation.contact_id == canonical_contact.id,
+                    Conversation.session_id == session.id,
                     get_user_filter(Conversation.user_id, user_id),
                 ).order_by(Conversation.id.asc())
             )
@@ -911,6 +944,7 @@ class WhatsAppEventOrchestrator:
                 await db.execute(
                     select(Conversation).where(
                         Conversation.contact_id == dup_c.id,
+                        Conversation.session_id == session.id,
                         get_user_filter(Conversation.user_id, user_id),
                     )
                 )
@@ -950,8 +984,12 @@ class WhatsAppEventOrchestrator:
                 await db.delete(dup_conv)
                 merged_convs.append(dup_conv.id)
 
-            await db.delete(dup_c)
-            deleted_contacts.append(dup_c.id)
+            remaining_ref = await db.execute(
+                select(Conversation.id).where(Conversation.contact_id == dup_c.id).limit(1)
+            )
+            if remaining_ref.first() is None:
+                await db.delete(dup_c)
+                deleted_contacts.append(dup_c.id)
 
         await db.commit()
         if merged_convs or deleted_contacts:
@@ -1027,6 +1065,11 @@ class WhatsAppEventOrchestrator:
                             Message.client_message_id == client_mid if client_mid else False,
                         ),
                         get_user_filter(Conversation.user_id, owner),
+                        *(
+                            [Conversation.session_id == ws_session_id]
+                            if ws_session_id is not None
+                            else []
+                        ),
                     )
                 )
                 first_pair = msg_res.first()

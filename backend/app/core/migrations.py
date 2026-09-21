@@ -472,7 +472,7 @@ async def ensure_conversations_columns(engine: AsyncEngine) -> None:
     await ensure_messages_media_columns(engine)
 
 
-async def ensure_messages_media_columns(engine: AsyncEngine) -> None:
+async def ensure_messages_media_columns(engine: AsyncEngine) -> str:
     """Adds media_id, client_message_id, and lifecycle timestamps to messages if missing, and ensures indexes."""
     if engine.dialect.name == "postgresql":
         try:
@@ -484,13 +484,29 @@ async def ensure_messages_media_columns(engine: AsyncEngine) -> None:
                 await conn.execute(text("ALTER TABLE messages ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMP"))
                 await conn.execute(text("ALTER TABLE messages ADD COLUMN IF NOT EXISTS read_at TIMESTAMP"))
                 await conn.execute(text("ALTER TABLE messages ADD COLUMN IF NOT EXISTS failed_at TIMESTAMP"))
-                await conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS idx_msg_client_id ON messages (client_message_id)"))
+                # Idempotency belongs to one conversation/line. A global
+                # client_message_id constraint lets tenant A collide with
+                # tenant B and contradicts the scoped lookup in messaging.py.
+                await conn.execute(text(
+                    "ALTER TABLE messages DROP CONSTRAINT IF EXISTS messages_client_message_id_key"
+                ))
+                await conn.execute(text("DROP INDEX IF EXISTS idx_msg_client_id"))
+                await conn.execute(text("DROP INDEX IF EXISTS ix_messages_client_message_id"))
+                await conn.execute(text(
+                    "CREATE INDEX IF NOT EXISTS idx_msg_client_id ON messages (client_message_id)"
+                ))
+                await conn.execute(text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_msg_conv_client_message_id "
+                    "ON messages (conversation_id, client_message_id) "
+                    "WHERE client_message_id IS NOT NULL"
+                ))
         except Exception as e:
             logger.warning("[MIGRATION] messages PostgreSQL columns: %s", e)
-        return
+            return "ERROR"
+        return "OK"
 
     if engine.dialect.name != "sqlite":
-        return
+        return "SKIPPED"
 
     async with engine.begin() as conn:
         exists_msgs = await conn.execute(
@@ -530,9 +546,16 @@ async def ensure_messages_media_columns(engine: AsyncEngine) -> None:
                 await conn.execute(text("ALTER TABLE messages ADD COLUMN failed_at DATETIME"))
                 logger.info("[MIGRATION] Added messages.failed_at")
 
-            # Composite cursor index and client_message_id unique index
+            # Composite cursor index and conversation-scoped idempotency key.
             await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_msg_conv_id ON messages (conversation_id, id)"))
-            await conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS idx_msg_client_id ON messages (client_message_id)"))
+            await conn.execute(text("DROP INDEX IF EXISTS idx_msg_client_id"))
+            await conn.execute(text("DROP INDEX IF EXISTS ix_messages_client_message_id"))
+            await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_msg_client_id ON messages (client_message_id)"))
+            await conn.execute(text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_msg_conv_client_message_id "
+                "ON messages (conversation_id, client_message_id) "
+                "WHERE client_message_id IS NOT NULL"
+            ))
 
         # Unique partial index on active conversations to prevent race condition duplicates
         exists_convs = await conn.execute(
@@ -553,6 +576,7 @@ async def ensure_messages_media_columns(engine: AsyncEngine) -> None:
             if "group_id" not in columns:
                 await conn.execute(text("ALTER TABLE campaigns ADD COLUMN group_id INTEGER"))
                 logger.info("[MIGRATION] Added campaigns.group_id")
+    return "OK"
 
 
 async def ensure_message_status_enum(engine: AsyncEngine) -> None:
@@ -1316,17 +1340,25 @@ async def ensure_contacts_unique_phone(engine: AsyncEngine) -> None:
                 await conn.execute(text(
                     f"UPDATE conversations SET contact_id = :keep WHERE contact_id IN ({ids_csv})"
                 ), {"keep": keep_id})
-                # 3) Kanonik kiside ayni kanaldan birden fazla sohbet olustuysa birlestir.
+                # 3) Kanonik kiside AYNI HAT + kanal icin birden fazla sohbet
+                # olustuysa birlestir. session_id farkli sohbetler ayni kisiye
+                # ait olsa bile farkli WhatsApp hatlarinin bagimsiz kayitlaridir.
                 chan_rows = (await conn.execute(text("""
-                    SELECT channel, MIN(id) AS keep_conv, COUNT(*) AS n
+                    SELECT channel, session_id, MIN(id) AS keep_conv, COUNT(*) AS n
                     FROM conversations WHERE contact_id = :keep
-                    GROUP BY channel HAVING COUNT(*) > 1
+                    GROUP BY channel, session_id HAVING COUNT(*) > 1
                 """), {"keep": keep_id})).fetchall()
-                for channel, keep_conv, _cn in chan_rows:
+                for channel, session_id, keep_conv, _cn in chan_rows:
                     extra = [r[0] for r in (await conn.execute(text("""
                         SELECT id FROM conversations
                         WHERE contact_id = :keep AND channel = :ch AND id <> :kc
-                    """), {"keep": keep_id, "ch": channel, "kc": keep_conv})).fetchall()]
+                          AND (session_id = :sid OR (session_id IS NULL AND :sid IS NULL))
+                    """), {
+                        "keep": keep_id,
+                        "ch": channel,
+                        "sid": session_id,
+                        "kc": keep_conv,
+                    })).fetchall()]
                     if not extra:
                         continue
                     extra_csv = ",".join(str(int(i)) for i in extra)

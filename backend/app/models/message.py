@@ -36,7 +36,7 @@ class ConversationMessageStatus(str, enum.Enum):
 class Message(Base):
     """
     Represents an individual message exchanged within a Conversation.
-    Enforces idempotency via a unique client_message_id.
+    Enforces idempotency per conversation via a composite partial index.
     """
     __tablename__ = "messages"
 
@@ -49,7 +49,7 @@ class Message(Base):
     body = Column(Text, nullable=True)
 
     # Outbound Client Request Idempotency Key (UUID from Frontend)
-    client_message_id = Column(String(100), unique=True, index=True, nullable=True)
+    client_message_id = Column(String(100), nullable=True)
 
     # WhatsApp Web mesaj kimliği (Baileys gateway): inbound/outbound dedup ve
     # status güncelleme eşleştirmesi için.
@@ -91,6 +91,14 @@ class Message(Base):
         Index("idx_msg_conv_created", "conversation_id", "created_at"),
         Index("idx_msg_conv_id", "conversation_id", "id"),
         Index("idx_msg_client_id", "client_message_id"),
+        Index(
+            "uq_msg_conv_client_message_id",
+            "conversation_id",
+            "client_message_id",
+            unique=True,
+            sqlite_where=text("client_message_id IS NOT NULL"),
+            postgresql_where=text("client_message_id IS NOT NULL"),
+        ),
         # C-4: ayni WhatsApp mesaji bir sohbette YALNIZCA bir kez bulunur.
         # Kismi indeks — `wa_message_id IS NULL` (provider onayi bekleyen yerel
         # satirlar) sinirsiz sayida olabilir. Kapsam sohbet bazlidir; ayni

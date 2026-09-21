@@ -25,6 +25,7 @@ from backend.app.models.message import (
     MessageType,
 )
 from backend.app.services import whatsapp_gateway as gw
+from backend.app.services.whatsapp_gateway import WhatsAppGatewayError
 from backend.app.services.whatsapp.exceptions import WhatsAppRelinkRequired
 from backend.app.services.whatsapp.gateway import extract_send_result
 from backend.app.services.whatsapp.identity import jid_to_phone
@@ -48,6 +49,22 @@ from backend.app.services.whatsapp.status_policy import (
 )
 
 logger = logging.getLogger(__name__)
+
+_TERMINAL_OUTBOUND_STATUSES = {
+    ConversationMessageStatus.SENT,
+    ConversationMessageStatus.DELIVERED,
+    ConversationMessageStatus.READ,
+}
+_ACCEPTED_GATEWAY_STATUSES = {"PENDING", "SENT", "DELIVERED", "READ"}
+
+
+def _validated_send_result(raw: Any) -> Dict[str, str]:
+    parsed = extract_send_result(raw)
+    wa_message_id = parsed.get("wa_message_id")
+    status = str(parsed.get("status") or "").upper()
+    if not wa_message_id or status not in _ACCEPTED_GATEWAY_STATUSES:
+        raise WhatsAppGatewayError("Gateway geçersiz gönderim yanıtı döndürdü.")
+    return {"wa_message_id": str(wa_message_id), "status": status}
 
 
 def serialize_message(row: Message) -> Dict[str, Any]:
@@ -129,28 +146,38 @@ class WhatsAppMessagingOrchestrator:
             )
         )
         if existing is not None:
-            return self.serialize_message(existing)
-        row = Message(
-            user_id=user_id,
-            conversation_id=conv.id,
-            direction=MessageDirection.OUTBOUND,
-            message_type=MessageType.TEXT,
-            body=clean,
-            wa_message_id=None,
-            client_message_id=client_message_id,
-            sender_phone="ME",
-            recipient_phone=jid_to_phone(jid) or jid,
-            status=ConversationMessageStatus.PENDING,
-            # Gonderilen mesaj da ZAMAN EKSENINDE yer alir; aksi halde siralama
-            # ve keyset sayfalamasi disinda kalip sohbetten kayboluyordu.
-            external_timestamp=_now,
-        )
-        db.add(row)
-        await db.commit()
+            if existing.body != clean or existing.message_type != MessageType.TEXT:
+                raise ValueError("client_message_id farklı bir mesaj için yeniden kullanılamaz.")
+            if existing.status in _TERMINAL_OUTBOUND_STATUSES:
+                return self.serialize_message(existing)
+            row = existing
+            row.status = ConversationMessageStatus.PENDING
+            row.failed_at = None
+            row.error_message = None
+            await db.commit()
+        else:
+            row = Message(
+                user_id=user_id,
+                conversation_id=conv.id,
+                direction=MessageDirection.OUTBOUND,
+                message_type=MessageType.TEXT,
+                body=clean,
+                wa_message_id=None,
+                client_message_id=client_message_id,
+                sender_phone="ME",
+                recipient_phone=jid_to_phone(jid) or jid,
+                status=ConversationMessageStatus.PENDING,
+                # Gonderilen mesaj da ZAMAN EKSENINDE yer alir; aksi halde siralama
+                # ve keyset sayfalamasi disinda kalip sohbetten kayboluyordu.
+                external_timestamp=_now,
+            )
+            db.add(row)
+            await db.commit()
         try:
             gateway_result = await gateway_op_or_mark_relink(
                 db, session_row, lambda gid: gateway_client.send_text_message(gid, jid, clean, client_message_id)
             )
+            send_res = _validated_send_result(gateway_result)
         except Exception as exc:
             await db.refresh(row)
             if row.status == ConversationMessageStatus.PENDING:
@@ -160,8 +187,7 @@ class WhatsAppMessagingOrchestrator:
                 await db.commit()
             raise
         await db.refresh(row)
-        send_res = extract_send_result(gateway_result)
-        row.wa_message_id = send_res["wa_message_id"] or row.wa_message_id
+        row.wa_message_id = send_res["wa_message_id"]
         target_status = send_res.get("status")
         is_group = bool(conv.is_group) or ("@g.us" in str(jid))
         if is_group and target_status in (None, "PENDING"):
@@ -203,8 +229,6 @@ class WhatsAppMessagingOrchestrator:
                 get_user_filter(Message.user_id, user_id),
             )
         )
-        if existing is not None:
-            return self.serialize_message(existing)
         mtype_str = (media.get("media_type") or "document").upper()
         try:
             msg_type = MessageType[mtype_str] if mtype_str in MessageType.__members__ else MessageType.DOCUMENT
@@ -214,29 +238,42 @@ class WhatsAppMessagingOrchestrator:
         caption = media.get("caption")
         filename = media.get("filename")
         _now = datetime.utcnow()
-        row = Message(
-            user_id=user_id,
-            conversation_id=conv.id,
-            direction=MessageDirection.OUTBOUND,
-            message_type=msg_type,
-            body=(caption or filename or media.get("media_url") or "")[:4000],
-            media_id=None,
-            media_filename=filename,
-            media_caption=caption,
-            wa_message_id=None,
-            client_message_id=media.get("client_message_id"),
-            sender_phone="ME",
-            recipient_phone=jid_to_phone(jid) or jid,
-            status=ConversationMessageStatus.PENDING,
-            external_timestamp=_now,
-        )
-        db.add(row)
-        # Faz 10 (P2): "[Medya]" yerine paylasilan kuralin tip etiketi.
-        await db.commit()
+        expected_body = (caption or filename or media.get("media_url") or "")[:4000]
+        if existing is not None:
+            if existing.body != expected_body or existing.message_type != msg_type:
+                raise ValueError("client_message_id farklı bir medya için yeniden kullanılamaz.")
+            if existing.status in _TERMINAL_OUTBOUND_STATUSES:
+                return self.serialize_message(existing)
+            row = existing
+            row.status = ConversationMessageStatus.PENDING
+            row.failed_at = None
+            row.error_message = None
+            await db.commit()
+        else:
+            row = Message(
+                user_id=user_id,
+                conversation_id=conv.id,
+                direction=MessageDirection.OUTBOUND,
+                message_type=msg_type,
+                body=expected_body,
+                media_id=None,
+                media_filename=filename,
+                media_caption=caption,
+                wa_message_id=None,
+                client_message_id=media.get("client_message_id"),
+                sender_phone="ME",
+                recipient_phone=jid_to_phone(jid) or jid,
+                status=ConversationMessageStatus.PENDING,
+                external_timestamp=_now,
+            )
+            db.add(row)
+            # Faz 10 (P2): "[Medya]" yerine paylasilan kuralin tip etiketi.
+            await db.commit()
         try:
             gateway_result = await gateway_op_or_mark_relink(
                 db, session_row, lambda gid: gateway_client.send_media_message(gid, jid, media)
             )
+            send_res = _validated_send_result(gateway_result)
         except Exception as exc:
             await db.refresh(row)
             if row.status == ConversationMessageStatus.PENDING:
@@ -246,8 +283,7 @@ class WhatsAppMessagingOrchestrator:
                 await db.commit()
             raise
         await db.refresh(row)
-        send_res = extract_send_result(gateway_result)
-        row.wa_message_id = send_res["wa_message_id"] or row.wa_message_id
+        row.wa_message_id = send_res["wa_message_id"]
         target_status = send_res.get("status")
         is_group = bool(conv.is_group) or ("@g.us" in str(jid))
         if is_group and target_status in (None, "PENDING"):

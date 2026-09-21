@@ -62,7 +62,17 @@ export async function probeLive(): Promise<boolean> {
   if (cached !== null) return cached;
   try {
     const res = await authFetch(`${API_BASE}/whatsapp/sessions`, { method: 'GET' });
-    liveProbe = { value: res.ok, checkedAt: Date.now() };
+    if (!res.ok) {
+      liveProbe = { value: false, checkedAt: Date.now() };
+      return false;
+    }
+    const data = await res.json().catch(() => null);
+    const sessions = Array.isArray(data) ? data : data?.sessions;
+    if (!sessions) {
+      liveProbe = { value: false, checkedAt: Date.now() };
+      return false;
+    }
+    liveProbe = { value: true, checkedAt: Date.now() };
   } catch (error) {
     console.warn('[WhatsAppApi] Live probe failed', {
       endpoint: `${API_BASE}/whatsapp/sessions`,
@@ -261,8 +271,15 @@ function mapMessage(m: BackendMessage, convId: number): Message {
         return tok ? `${base}?token=${encodeURIComponent(tok)}` : base;
       })()
     : undefined;
+
+  const fallbackId = m.wa_message_id
+    ? `wa_${m.wa_message_id}`
+    : m.client_message_id
+    ? `cmsg_${m.client_message_id}`
+    : `srv_${convId}_${m.created_at || 'unknown'}`;
+
   return {
-    id: m.id ?? `srv_${Date.now()}`,
+    id: m.id ?? fallbackId,
     conversation_id: (m.conversation_id as number) ?? convId,
     direction: (m.direction as Message['direction']) || 'INBOUND',
     message_type: (m.message_type as Message['message_type']) || 'TEXT',
@@ -280,7 +297,7 @@ function mapMessage(m: BackendMessage, convId: number): Message {
     recipient_phone: m.recipient_phone ?? undefined,
     error_message: m.error_message ?? undefined,
     external_timestamp: m.created_at ?? undefined,
-    created_at: m.created_at || new Date().toISOString(),
+    created_at: m.created_at || '',
   };
 }
 
@@ -784,9 +801,11 @@ export const WhatsAppApi = {
     const handler = (e: Event) => {
       const detail = (e as CustomEvent<any>).detail;
       if (!detail) return;
-      if (detail.conversation_id !== conversationId) return;
+      const targetId = detail.conversation_id ?? detail.message?.conversation_id;
+      if (Number(targetId) !== Number(conversationId)) return;
       if (
         detail.event === 'message_new' ||
+        detail.event === 'new_message' ||
         detail.event === 'inbound_reply' ||
         detail.event === 'outbound_message_sent'
       ) {

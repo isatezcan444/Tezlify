@@ -63,6 +63,14 @@ class TestWhatsAppMessagingOrchestration:
         assert serialized["client_message_id"] == "client_uuid_456"
         assert serialized["created_at"] == "2026-09-17T12:00:00"
 
+    def test_client_message_id_uniqueness_is_conversation_scoped(self):
+        column = Message.__table__.c.client_message_id
+        assert column.unique is not True
+        indexes = {idx.name: idx for idx in Message.__table__.indexes}
+        scoped = indexes["uq_msg_conv_client_message_id"]
+        assert scoped.unique is True
+        assert [col.name for col in scoped.columns] == ["conversation_id", "client_message_id"]
+
     def test_serialize_message_with_media_url(self):
         row = Message(
             id=43,
@@ -116,6 +124,62 @@ class TestWhatsAppMessagingOrchestration:
                 assert res["client_message_id"] == "client-dup-123"
                 # Should not call gateway or add new row
                 db.add.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_pending_idempotent_retry_redispatches_same_client_id(self):
+        """A crash after the PENDING commit must not strand the message forever."""
+        db = AsyncMock()
+        conv = MagicMock(id=10, is_group=False, last_message_at=None)
+        pending = Message(
+            id=102,
+            user_id="usr-1",
+            conversation_id=10,
+            direction=MessageDirection.OUTBOUND,
+            message_type=MessageType.TEXT,
+            body="Retry me",
+            client_message_id="client-pending-1",
+            status=ConversationMessageStatus.PENDING,
+            sender_phone="ME",
+            recipient_phone="+90555",
+        )
+        db.scalar.return_value = pending
+        session_row = WhatsAppSession(id=1, user_id="usr-1", gateway_id="gw-1")
+
+        with patch("backend.app.services.whatsapp.orchestration.messaging._resolve_jid", return_value=(conv, "90555@s.whatsapp.net")), \
+             patch("backend.app.services.whatsapp.orchestration.messaging._conversation_session", return_value=session_row), \
+             patch(
+                 "backend.app.services.whatsapp.orchestration.messaging._gateway_op_or_mark_relink",
+                 return_value={"wa_message_id": "wa-retry-1", "status": "SENT"},
+             ) as dispatch:
+            result = await send_text_message(
+                db, "usr-1", 10, "Retry me", client_message_id="client-pending-1"
+            )
+
+        dispatch.assert_awaited_once()
+        assert result["status"] == "SENT"
+        assert result["wa_message_id"] == "wa-retry-1"
+        db.add.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_malformed_gateway_send_response_fails_closed(self):
+        db = AsyncMock()
+        conv = MagicMock(id=10, is_group=False, last_message_at=None)
+        db.scalar.return_value = None
+        session_row = WhatsAppSession(id=1, user_id="usr-1", gateway_id="gw-1")
+
+        with patch("backend.app.services.whatsapp.orchestration.messaging._resolve_jid", return_value=(conv, "90555@s.whatsapp.net")), \
+             patch("backend.app.services.whatsapp.orchestration.messaging._conversation_session", return_value=session_row), \
+             patch(
+                 "backend.app.services.whatsapp.orchestration.messaging._gateway_op_or_mark_relink",
+                 return_value={"success": True},
+             ):
+            with pytest.raises(Exception, match="geçersiz gönderim yanıtı"):
+                await send_text_message(
+                    db, "usr-1", 10, "Do not fake success", client_message_id="client-malformed-1"
+                )
+
+        created = db.add.call_args.args[0]
+        assert created.status == ConversationMessageStatus.FAILED
 
     @pytest.mark.asyncio
     async def test_send_text_message_success_flow(self):

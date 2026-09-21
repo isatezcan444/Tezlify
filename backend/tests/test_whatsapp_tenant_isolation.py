@@ -689,9 +689,10 @@ async def test_send_routes_through_the_conversations_own_session():
         conv_id = conv.id
 
     async with AsyncSessionLocal() as db:
-        with _p("backend.app.services.whatsapp_service.gw.send_text_message",
-                new_callable=AsyncMock, return_value={"wa_message_id": "wamid_x"}) as st:
-            await ws.send_text_message(db, U1, conv_id, "merhaba")
+            with _p("backend.app.services.whatsapp_service.gw.send_text_message",
+                    new_callable=AsyncMock,
+                    return_value={"wa_message_id": "wamid_x", "status": "SENT"}) as st:
+                await ws.send_text_message(db, U1, conv_id, "merhaba")
 
     used = st.await_args.args[0]
     assert used == gw_b, f"sohbetin kendi hatti kullanilmali: {used}"
@@ -863,7 +864,8 @@ async def test_duplicate_contacts_are_merged_and_uniqueness_enforced():
                 "phone_e164 TEXT NOT NULL, display_name TEXT)"
             ))
             await conn.execute(_text(
-                "CREATE TABLE conversations (id INTEGER PRIMARY KEY, contact_id INTEGER, channel TEXT)"
+                "CREATE TABLE conversations (id INTEGER PRIMARY KEY, contact_id INTEGER, "
+                "channel TEXT, session_id INTEGER)"
             ))
             await conn.execute(_text(
                 "CREATE TABLE messages (id INTEGER PRIMARY KEY, conversation_id INTEGER, body TEXT)"
@@ -873,8 +875,8 @@ async def test_duplicate_contacts_are_merged_and_uniqueness_enforced():
                 "(1, :u, :p, 'dup1'), (2, :u, :p, 'dup2')"
             ), {"u": U1, "p": phone})
             await conn.execute(_text(
-                "INSERT INTO conversations (id, contact_id, channel) VALUES "
-                "(11, 1, 'WHATSAPP'), (12, 2, 'WHATSAPP')"
+                "INSERT INTO conversations (id, contact_id, channel, session_id) VALUES "
+                "(11, 1, 'WHATSAPP', 101), (12, 2, 'WHATSAPP', 202)"
             ))
             await conn.execute(_text(
                 "INSERT INTO messages (id, conversation_id, body) VALUES "
@@ -889,10 +891,13 @@ async def test_duplicate_contacts_are_merged_and_uniqueness_enforced():
             ), {"u": U1, "p": phone})).scalar_one() == 1
             assert (await conn.execute(_text(
                 "SELECT COUNT(*) FROM conversations WHERE contact_id=1"
-            ))).scalar_one() == 1
+            ))).scalar_one() == 2
             assert (await conn.execute(_text(
                 "SELECT COUNT(*) FROM messages WHERE conversation_id=11"
-            ))).scalar_one() == 2
+            ))).scalar_one() == 1
+            assert (await conn.execute(_text(
+                "SELECT COUNT(*) FROM messages WHERE conversation_id=12"
+            ))).scalar_one() == 1
 
         with pytest.raises(_IntegrityError):
             async with legacy_engine.begin() as conn:

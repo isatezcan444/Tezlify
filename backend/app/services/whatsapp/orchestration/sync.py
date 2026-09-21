@@ -1025,9 +1025,11 @@ class WhatsAppSyncOrchestrator:
                 conv_out: List[Dict[str, Any]] = []
                 jid_by_conv: Dict[int, str] = {}
                 contacts: List[Dict[str, Any]] = []
+                expansion_gateway_ids: List[str] = []
 
                 for ws_session in sessions_to_sync:
                     gateway_id = str(ws_session.gateway_id)
+                    expansion_gateway_ids.append(gateway_id)
                     job.stage = "chats"
                     if gateway_op_or_mark_relink is not None:
                         data = await gateway_op_or_mark_relink(
@@ -1093,7 +1095,7 @@ class WhatsAppSyncOrchestrator:
                         await run_bulk_message_sync(db, job, session_jids, gateway_id, ws_session=ws_session)
                     else:
                         logger.warning("Gateway bulk kanali yok — legacy per-chat sync (owner=%s)", owner)
-                        await sync_conversations_impl(db, owner)
+                        await sync_conversations_impl(db, owner, session=ws_session)
                     if job.cancel_requested:
                         raise asyncio.CancelledError()
                     _mark_phase("messages")
@@ -1130,14 +1132,17 @@ class WhatsAppSyncOrchestrator:
                     round((job.finished_at - job.started_at).total_seconds(), 1),
                     job.stage_timings,
                 )
-                expansion_key = (str(owner), str(gateway_id))
-                if (
-                    getattr(settings, "WHATSAPP_BACKGROUND_HISTORY_EXPANSION_ENABLED", False)
-                    and expansion_key not in self._history_expansion_running
-                    and expansion_key not in self._history_expansion_done
-                    and time.monotonic() >= self._history_expansion_cooldown.get(expansion_key, 0.0)
-                ):
-                    asyncio.create_task(run_background_history_expansion(owner, gateway_id))
+                if getattr(settings, "WHATSAPP_BACKGROUND_HISTORY_EXPANSION_ENABLED", False):
+                    for expansion_gateway_id in expansion_gateway_ids:
+                        expansion_key = (str(owner), str(expansion_gateway_id))
+                        if (
+                            expansion_key not in self._history_expansion_running
+                            and expansion_key not in self._history_expansion_done
+                            and time.monotonic() >= self._history_expansion_cooldown.get(expansion_key, 0.0)
+                        ):
+                            asyncio.create_task(
+                                run_background_history_expansion(owner, expansion_gateway_id)
+                            )
         except WhatsAppRelinkRequired as exc:
             job.state = "FAILED"
             job.error = str(exc)
@@ -1495,7 +1500,12 @@ class WhatsAppSyncOrchestrator:
         finally:
             self._sync_conversations_inflight.discard(user_id)
 
-    async def _sync_conversations_impl(self, db: AsyncSession, user_id: str) -> List[Dict[str, Any]]:
+    async def _sync_conversations_impl(
+        self,
+        db: AsyncSession,
+        user_id: str,
+        session: Optional[WhatsAppSession] = None,
+    ) -> List[Dict[str, Any]]:
         require_user_session = self._get_helper("_require_user_session", None)
         sync_contacts = self._get_helper("sync_contacts", self.sync_contacts)
         gateway_op_or_mark_relink = self._get_helper("_gateway_op_or_mark_relink", None)
@@ -1508,7 +1518,9 @@ class WhatsAppSyncOrchestrator:
         repair_last_message_previews = self._get_helper("_repair_last_message_previews", self._repair_last_message_previews)
         list_conversations = self._get_helper("list_conversations", None)
 
-        session_row = await require_user_session(db, user_id)
+        session_row = session or await require_user_session(db, user_id)
+        if str(session_row.user_id) != str(user_id):
+            raise NoWhatsAppSession("WhatsApp hattı bu kullanıcıya ait değil.")
         gateway_id = str(session_row.gateway_id)
         try:
             await sync_contacts(db, user_id, session=session_row)
@@ -1546,7 +1558,15 @@ class WhatsAppSyncOrchestrator:
                 continue
             preview_raw = item.get("last_message_preview") or ""
             chat_name = item.get("name")
-            contact = await upsert_contact(db, user_id, jid_str, chat_name, item.get("name_source"))
+            contact = await upsert_contact(
+                db,
+                user_id,
+                jid_str,
+                chat_name,
+                item.get("name_source"),
+                gateway_session_id=gateway_id,
+                session_id=session_row.id,
+            )
             _set_contact_avatar(contact, item.get("avatar_url"))
             stmt = select(Conversation).where(
                 Conversation.contact_id == contact.id,

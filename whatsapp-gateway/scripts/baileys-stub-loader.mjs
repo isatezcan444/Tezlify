@@ -16,7 +16,7 @@ export async function resolve(specifier, context, nextResolve) {
   if (
     specifier === '@whiskeysockets/baileys' &&
     context.parentURL &&
-    context.parentURL.includes('session-manager.js')
+    (context.parentURL.includes('session-manager.js') || context.parentURL.includes('socket-connector.js'))
   ) {
     return { url: STUB, shortCircuit: true, format: 'module' };
   }

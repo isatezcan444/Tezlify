@@ -150,13 +150,26 @@ const eventBridge = createEventBridge({
 // ---------------------------------------------------------------------------
 
 // Health check
-app.get('/health', (_req, res) => {
+app.get('/health', async (_req, res) => {
   const sessions = sessionManager.listSessions();
   const connected = sessions.filter((s) => s.status === 'CONNECTED').length;
   const pending = sessions.filter((s) => s.status === 'SCAN_QR').length;
-  res.json({
-    status: 'ok',
+  let dbOk = true;
+  let poolStats = null;
+  if (gatewayPool) {
+    try {
+      await gatewayPool.query('SELECT 1');
+      poolStats = { total: gatewayPool.totalCount, idle: gatewayPool.idleCount, waiting: gatewayPool.waitingCount };
+    } catch {
+      dbOk = false;
+    }
+  }
+  const isHealthy = dbOk;
+  res.status(isHealthy ? 200 : 503).json({
+    status: isHealthy ? 'ok' : 'degraded',
     service: 'tezlify-whatsapp-gateway',
+    database: gatewayPool ? (dbOk ? 'connected' : 'error') : 'disabled',
+    pool: poolStats,
     sessions: { total: sessions.length, connected, pending_qr: pending },
   });
 });
@@ -268,10 +281,11 @@ app.post('/sessions/:id/pair', async (req, res) => {
 // Disconnect / logout a session
 app.post('/sessions/:id/logout', async (req, res) => {
   try {
-    await sessionManager.logoutSession(req.params.id);
-    res.json({ success: true });
+    const force = req.body?.force === true;
+    const result = await sessionManager.logoutSession(req.params.id, { force });
+    res.json({ success: true, ...result });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
@@ -333,8 +347,8 @@ app.get('/sessions/:sessionId/conversations', withSession(async (req, res, sessi
 app.post('/sessions/:sessionId/conversations/sync-groups', withSession(async (req, res, sessionId) => {
   const force = req.body && req.body.force === true;
   const result = await sessionManager._ensureGroupSubjects({ sessionId, force });
-  // Faz 13 (truthfulness): cozumleme yapilmadiysa SAHTE basari donme.
-  res.json({ success: true, force, applied: result ? result.applied : false, reason: result ? result.reason : null });
+  const applied = result ? result.applied : false;
+  res.json({ success: applied, force, applied, reason: result ? result.reason : null });
 }));
 
 // Faz 10 (P5): toplu gecmis kanali — backend initial-sync job'i sohbet basina

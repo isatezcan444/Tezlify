@@ -130,6 +130,10 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
 
   // Live Conversations State (connected directly to WhatsApp session)
   const [conversations, setConversations] = useState<Conversation[]>([]);
+  const conversationsRef = useRef<Conversation[]>(conversations);
+  useEffect(() => {
+    conversationsRef.current = conversations;
+  }, [conversations]);
   const [selectedConv, setSelectedConv] = useState<Conversation | null>(null);
   const [messagesMap, setMessagesMap] = useState<Record<number, Message[]>>({});
   // `error`: sayfalama (history) istegi basarisiz oldu — mevcut mesajlar SILINMEZ,
@@ -235,10 +239,11 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   // wa_message_id'ler sinirli bir kume (ring) ile tutulur; tekrar gelen olay
   // sayaclari ARTIRMAZ (mesaj balonlari zaten messagesMap'te dedup edilir).
   const seenWaMessageIdsRef = useRef<Set<string>>(new Set());
-  const rememberWaMessageId = useCallback((waId: string): boolean => {
+  const rememberWaMessageId = useCallback((waId: string, convId?: number | string): boolean => {
+    const key = convId != null ? `${convId}:${waId}` : waId;
     const seen = seenWaMessageIdsRef.current;
-    if (seen.has(waId)) return false; // tekrar oynatilan olay
-    seen.add(waId);
+    if (seen.has(key)) return false; // tekrar oynatilan olay
+    seen.add(key);
     if (seen.size > SEEN_WA_IDS_MAX) {
       // Bellek siniri: en eski girdileri dusur (Set ekleme sirasini korur).
       const it = seen.values();
@@ -428,7 +433,9 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         if (!prev && page.items.length > 0) return page.items[0];
         if (prev) {
           const updated = page.items.find((c) => c.id === prev.id);
-          return updated || (page.items.length > 0 ? page.items[0] : null);
+          if (updated) return updated;
+          if (conversationsRef.current.some((c) => c.id === prev.id)) return prev;
+          return page.items.length > 0 ? page.items[0] : null;
         }
         return null;
       });
@@ -999,6 +1006,14 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
             : m
         ),
       }));
+      const previewText = caption || filename || (type.toUpperCase() === 'IMAGE' ? '📷 Fotoğraf' : '📄 Dosya');
+      setConversations((prev) =>
+        prev.map((c) =>
+          c.id === selectedConv.id
+            ? { ...c, last_message_preview: previewText, last_message_at: new Date().toISOString() }
+            : c
+        ).sort(compareByLastMessageDesc)
+      );
     } catch (err: any) {
       setMessagesMap((prev) => ({
         ...prev,
@@ -1061,6 +1076,14 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
             : m
         ),
       }));
+      const previewText = caption || file.name || (msgType === 'IMAGE' ? '📷 Fotoğraf' : '📄 Dosya');
+      setConversations((prev) =>
+        prev.map((c) =>
+          c.id === selectedConv.id
+            ? { ...c, last_message_preview: previewText, last_message_at: nowIso }
+            : c
+        ).sort(compareByLastMessageDesc)
+      );
     } catch (err: any) {
       setMessagesMap((prev) => ({
         ...prev,
@@ -1181,7 +1204,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         // emit) liste sayaclarini SISIRMEZ. `wa_message_id` yoksa (nadir:
         // optimistic/eski olay) eski davranis korunur — sessizce yutmayiz.
         const waIdForDedup = msgObj0?.wa_message_id || eventData.wa_message_id || eventData.message_id;
-        const isReplayedEvent = Boolean(waIdForDedup) && !rememberWaMessageId(String(waIdForDedup));
+        const isReplayedEvent = Boolean(waIdForDedup) && !rememberWaMessageId(String(waIdForDedup), convId);
 
         // Update Conversation in list
         if (convId !== null && !knownConvIdsRef.current.has(convId)) hydrateConversation(convId);
@@ -1275,7 +1298,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         // If active conversation matches, append message to thread with deduplication
         const selectedPhoneIsUnambiguous = Boolean(
           eventPhone &&
-          conversations.filter((c) => c.lead_phone && extractCleanPhone(c.lead_phone) === eventPhone).length === 1,
+          conversationsRef.current.filter((c) => c.lead_phone && extractCleanPhone(c.lead_phone) === eventPhone).length === 1,
         );
         if (convId != null && selectedConv && (selectedConv.id === convId || (selectedPhoneIsUnambiguous && selectedConv.lead_phone && extractCleanPhone(selectedConv.lead_phone) === eventPhone))) {
           const msgObj = eventData.message && typeof eventData.message === 'object' ? eventData.message : null;
