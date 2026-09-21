@@ -682,6 +682,12 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
 
       // 5. Connection Error
       if (detail.event === 'connection_error' || detail.event_type === 'CONNECTION_ERROR') {
+        // QR izolasyonu (Finding 7 kuralı): telefon tarama yaptıktan sonra
+        // (PAIRING_IN_PROGRESS / PROMOTION_PENDING / CONNECTED) pairing geri
+        // dönüş noktasını geçmiştir — bayat ya da başka hatta ait bir
+        // connection_error, promotion sürerken modalı ERROR'a düşürüp QR'ı
+        // öldüremez. Chat/sync/grup hatası pairing hatası DEĞİLDİR.
+        if (PROMOTED_OR_PROMOTING_STATES.includes(pairingLifecycleRef.current)) return;
         setModalState('ERROR');
         setErrorMessage(detail.error || detail.error_message || t('whatsapp.connectionErrorDesc'));
       }

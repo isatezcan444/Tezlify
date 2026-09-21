@@ -2438,13 +2438,17 @@ export function createSessionManager({
         }
       };
       const resolvedKeys = new Set();
-      try {
-        const all = await session.sock.groupFetchAllParticipating();
-        for (const meta of Object.values(all || {})) {
-          const jid = meta?.id;
-          const subject = typeof meta?.subject === 'string' ? meta.subject.trim() : '';
-          if (!jid || !jid.includes('@g.us') || !subject) continue;
-          resolvedKeys.add(resolveJidKey(store, jid));
+      // Pairing isolation (QR regresyon koruması): grup discovery İKİNCİL
+      // enrichment'tir — kritik A/B/C lifecycle'dan (soket/QR/lease) bağımsız
+      // çalışır. `seedGroupChat` kendi try/catch'ine sahiptir: tek bir bozuk
+      // grup ne kalan grupları ne subject çözümeyi ne de pairing'i etkiler.
+      // GROUP DISCOVERY FAILURE ≠ PAIRING FAILURE.
+      const seedGroupChat = (jid, subject, meta) => {
+        // Ephemeral (henüz eşleşmekte olan) sokete asla seed yazılmaz — grup
+        // seeding yalnızca promotion sonrası CONNECTED oturumlar içindir.
+        if (session.ephemeral) return;
+        try {
+          const key = resolveJidKey(store, jid);
           // Sorun 4/5 (groups first-class): katılımcısı olduğumuz her grup
           // sohbet listesinde OLMALIDIR — WhatsApp Web de böyle yapar. Sadece
           // MESAJ gelmiş gruplar chats Map'e düşüyordu; history sync'in
@@ -2452,36 +2456,47 @@ export function createSessionManager({
           // listede hiç görünmüyordu. Burada provider'ın GERÇEK metadata'sıyla
           // sohbet kaydı OLUŞTURULUR (mock/hardcode değil) ve gerçek zamanlı
           // yayınlanır — backend conversation/contact üretir.
-          const key = resolveJidKey(store, jid);
-          if (!chats.has(key)) {
-            const nowIso = new Date().toISOString();
-            const created = {
-              id: key,
-              jid: key,
-              name: subject,
-              name_source: 'group_subject',
-              phone: '',
-              is_group: true,
-              archived: false,
-              avatar_url: meta?.imgUrl || null,
-              last_message_at: null,
-              last_message_preview: '',
-              unread_count: 0,
-              created_at: nowIso,
-              updated_at: nowIso,
-            };
-            chats.set(key, created);
-            contacts.set(key, {
-              id: key,
-              jid: key,
-              name: subject,
-              name_source: 'group_subject',
-              phone: '',
-              is_group: true,
-              updated_at: nowIso,
-            });
-            emitEvent({ event: 'conversation_updated', conversation: { ...created } });
-          }
+          if (chats.has(key)) return;
+          const nowIso = new Date().toISOString();
+          const created = {
+            id: key,
+            jid: key,
+            name: subject,
+            name_source: 'group_subject',
+            phone: '',
+            is_group: true,
+            archived: false,
+            avatar_url: meta?.imgUrl || null,
+            last_message_at: null,
+            last_message_preview: '',
+            unread_count: 0,
+            created_at: nowIso,
+            updated_at: nowIso,
+          };
+          chats.set(key, created);
+          contacts.set(key, {
+            id: key,
+            jid: key,
+            name: subject,
+            name_source: 'group_subject',
+            phone: '',
+            is_group: true,
+            updated_at: nowIso,
+          });
+          emitEvent({ event: 'conversation_updated', conversation: { ...created } });
+        } catch (seedErr) {
+          // Tek grubun seed hatası discovery'nin geri kalanını durdurmaz.
+          logger.warn({ err: seedErr }, 'group chat seeding failed for one group');
+        }
+      };
+      try {
+        const all = await session.sock.groupFetchAllParticipating();
+        for (const meta of Object.values(all || {})) {
+          const jid = meta?.id;
+          const subject = typeof meta?.subject === 'string' ? meta.subject.trim() : '';
+          if (!jid || !jid.includes('@g.us') || !subject) continue;
+          resolvedKeys.add(resolveJidKey(store, jid));
+          seedGroupChat(jid, subject, meta);
           applySubject(jid, subject);
         }
       } catch (err) {
