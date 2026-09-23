@@ -354,9 +354,19 @@ app.get('/sessions/:sessionId/conversations', withSession(async (req, res, sessi
 // grupları yeniden dener (cache poisoning: "Grup" asla kalıcı değer olmaz).
 app.post('/sessions/:sessionId/conversations/sync-groups', withSession(async (req, res, sessionId) => {
   const force = req.body && req.body.force === true;
-  const result = await sessionManager._ensureGroupSubjects({ sessionId, force });
+  // Phase 2.1.A: optional DB-known @g.us jid list forwarded by the backend
+  // bootstrap. The list is the source of truth for known groups whose
+  // subjects the gateway has not yet been able to resolve (zero-message
+  // groups, archived groups, etc.). The list is generic — it is not a
+  // hardcoded fixture and it does not replace `groupFetchAllParticipating`.
+  const rawExtraJids = (req.body && Array.isArray(req.body.extraJids)) ? req.body.extraJids : [];
+  const extraJids = rawExtraJids
+    .map((j) => (typeof j === 'string' ? j.trim() : ''))
+    .filter((j) => j && j.includes('@g.us'))
+    .slice(0, 200);
+  const result = await sessionManager._ensureGroupSubjects({ sessionId, force, extraJids });
   const applied = result ? result.applied : false;
-  res.json({ success: applied, force, applied, reason: result ? result.reason : null });
+  res.json({ success: applied, force, applied, reason: result ? result.reason : null, extraJids_count: extraJids.length });
 }));
 
 // Faz 10 (P5): toplu gecmis kanali — backend initial-sync job'i sohbet basina

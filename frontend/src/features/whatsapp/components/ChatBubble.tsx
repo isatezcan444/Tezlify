@@ -31,7 +31,7 @@ export interface ChatBubbleProps {
   onRetry?: (messageId: number | string) => Promise<void> | void;
 }
 
-export const ChatBubble: React.FC<ChatBubbleProps> = ({ message, isGroup = false, chatTitle, onRetry }) => {
+const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({ message, isGroup = false, chatTitle, onRetry }) => {
   const { t, language } = useI18n();
   const isInbound = message.direction === 'INBOUND';
   const [isLightboxOpen, setIsLightboxOpen] = useState(false);
@@ -358,3 +358,6 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({ message, isGroup = false
     </>
   );
 };
+
+// PHASE 2.K single-variable experiment: default shallow-compare memo (no custom comparator).
+export const ChatBubble = React.memo(ChatBubbleComponent);

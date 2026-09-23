@@ -406,6 +406,132 @@ class WhatsAppSyncOrchestrator:
 
         self._metadata_tasks[gateway_id] = asyncio.create_task(enrich())
 
+    # ------------------------------------------------------------------
+    # Phase 2.1.A: known @g.us group hydration.
+    #
+    # A zero-message @g.us group whose jid is NOT in `store.chats` (because
+    # `groupFetchAllParticipating` omitted it, failed, or the group has
+    # never had a message in this session) has no path to a `groupMetadata`
+    # call. The gateway-side `_pendingGroupJids` set (Phase 2.A) only
+    # collects jids that `_touchChat` has already seen, so it cannot help
+    # a true zero-message group.
+    #
+    # The closing seam is: the DB is the source of truth for known @g.us
+    # jids. The backend reads them and forwards them to the gateway as
+    # `extraJids`. The gateway's `_ensureGroupSubjects({extraJids})` then
+    # calls `groupMetadata` on each, populating `store.chats` via
+    # `seedGroupChat` / `applySubject` and emitting `conversation_updated`
+    # so the backend persists the conversation.
+    #
+    # This is generic — no hardcoded 3Hacker, no hardcoded jid, no global
+    # re-sync, no extra polling. It only widens the input to a function
+    # the gateway already exposes.
+    # ------------------------------------------------------------------
+    async def _hydrate_known_groups(self, db: AsyncSession, owner: str) -> List[str]:
+        """Return the list of DB-known @g.us jids for the given owner.
+
+        The Conversation row does not carry the JID directly; the JID lives
+        on the joined Contact.phone_e164 (group JIDs are stored as
+        `120363...@g.us`, i.e. the raw jid form). We join Conversation →
+        Contact and read the phone column, filtering to is_group=true,
+        channel=WHATSAPP, owner-scoped, and phone ending with `@g.us`.
+        Deduplicated and returned as a list of raw @g.us jids.
+
+        Generic — filters on the row shape, not on any specific jid. The
+        list is the seed for `gw._ensureGroupSubjects(extraJids=...)`.
+        """
+        try:
+            res = await db.execute(
+                select(Contact.phone_e164)
+                .join(Conversation, Conversation.contact_id == Contact.id)
+                .where(
+                    get_user_filter(Conversation.user_id, owner),
+                    Conversation.channel == "WHATSAPP",
+                    Conversation.is_group.is_(True),
+                    Contact.phone_e164.like("%@g.us"),
+                )
+            )
+            # Guard against `jid:120363...@g.us` sentinel shape (the backend
+            # store may have a `jid:` prefix from `contact_phone_for_jid`).
+            # Always emit the bare 120363...@g.us form for the gateway.
+            seen: Set[str] = set()
+            for row in res.fetchall():
+                if not row or not row[0]:
+                    continue
+                phone = str(row[0])
+                if phone.startswith("jid:"):
+                    phone = phone[4:]
+                if "@g.us" in phone:
+                    seen.add(phone)
+            return sorted(seen)
+        except Exception as exc:  # noqa: BLE001
+            # Fail-closed: the helper must not raise — its caller falls
+            # back to an empty list and the gateway's existing paths
+            # (`groupFetchAllParticipating`, `_pendingGroupJids`) still
+            # run. A DB read failure MUST NOT be interpreted as "no
+            # known groups" (Phase 1.1 closure invariant); we return
+            # `[]` with a warning.
+            logger.warning(
+                "[WhatsApp] _hydrate_known_groups failed; downstream "
+                "group hydration deferred until next successful read: %s",
+                exc,
+            )
+            return []
+
+    async def _schedule_group_hydration(
+        self, db: AsyncSession, owner: str, gateway_id: str, force: bool = False
+    ) -> Dict[str, Any]:
+        """Forward DB-known @g.us jids to the gateway as `extraJids`.
+
+        Generic: reads the list from the DB, calls
+        `gw._ensureGroupSubjects(extraJids=...)` (or the REST equivalent
+        `sync_group_subjects(extraJids=...)`). No hardcoded jid, no global
+        re-sync, no extra polling. Idempotent — duplicate jids in the
+        DB do not produce duplicate `groupMetadata` calls because the
+        gateway builds a Set before iterating.
+
+        Phase 2.A closure: the gateway call happens even when the DB has
+        no known groups (`extraJids=[]`) so the broad
+        `groupFetchAllParticipating` pass still runs exactly once per
+        invocation — skipping it for an empty DB would regress group
+        subject resolution for chats already in the gateway store.
+        `force=True` is used by the runtime sync path, which needs the
+        pass to run immediately (the gateway's 10-minute throttle would
+        otherwise silently swallow the `extraJids` right after a prior
+        forced pass).
+        """
+        gateway_client = self._get_helper("gw", gw)
+        known_jids = await self._hydrate_known_groups(db, owner)
+        try:
+            # The gateway REST endpoint `POST /sessions/:id/conversations/
+            # sync-groups` accepts `extraJids` (Phase 2.1.A). The body
+            # shape is `{"force": bool, "extraJids": [...]}`. The gateway
+            # forwarder `_ensureGroupSubjects({sessionId, force, extraJids})`
+            # then iterates the union of `chats.values() ∪ _pendingGroupJids
+            # ∪ extraJids` for the targeted fallback, seeding any group whose
+            # targeted `groupMetadata` succeeds but that is absent from
+            # store.chats.
+            return await gateway_client.sync_group_subjects(
+                gateway_id,
+                force=force,
+                extraJids=known_jids,
+            )
+        except WhatsAppRelinkRequired:
+            # Relink-required MUST propagate so the runtime sync path can
+            # mark the session for relink (same contract as the direct
+            # sync_group_subjects call this helper replaced).
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[WhatsApp] _schedule_group_hydration failed for owner=%s "
+                "gateway_id=%s (len=%d): %s",
+                owner,
+                gateway_id,
+                len(known_jids),
+                exc,
+            )
+            return {"applied": False, "reason": "gateway_error", "error": str(exc)}
+
     def _schedule_chats_bootstrap(self, owner: str) -> None:
         now = time.monotonic()
         last = self._last_bootstrap_emit.get(owner)
@@ -1529,12 +1655,20 @@ class WhatsAppSyncOrchestrator:
         except Exception as exc:
             logger.warning("Rehber senkronu atlandi (sohbet senkronu suruyor): %s", exc)
         try:
+            # Phase 2.A closure: route the group-subjects sync through
+            # `_schedule_group_hydration` so DB-known @g.us jids are
+            # forwarded to the gateway as `extraJids` on the SAME call.
+            # Pre-fix the runtime path called `sync_group_subjects(gid,
+            # force=True)` bare — `extraJids` existed on the gateway and in
+            # tests, but NO production caller ever sent it (test-only fix).
             if gateway_op_or_mark_relink is not None:
                 await gateway_op_or_mark_relink(
-                    db, session_row, lambda gid: gateway_client.sync_group_subjects(gid, force=True)
+                    db,
+                    session_row,
+                    lambda gid: self._schedule_group_hydration(db, user_id, gid, force=True),
                 )
             else:
-                await gateway_client.sync_group_subjects(gateway_id, force=True)
+                await self._schedule_group_hydration(db, user_id, gateway_id, force=True)
         except WhatsAppRelinkRequired:
             raise
         except Exception as exc:
@@ -1836,6 +1970,8 @@ _schedule_initial_sync = _default_sync_orchestrator._schedule_initial_sync
 _run_initial_sync = _default_sync_orchestrator._run_initial_sync
 _schedule_chats_bootstrap = _default_sync_orchestrator._schedule_chats_bootstrap
 _schedule_metadata_enrichment = _default_sync_orchestrator._schedule_metadata_enrichment
+_hydrate_known_groups = _default_sync_orchestrator._hydrate_known_groups
+_schedule_group_hydration = _default_sync_orchestrator._schedule_group_hydration
 _reapply_chat_names = _default_sync_orchestrator._reapply_chat_names
 _run_background_history_expansion = _default_sync_orchestrator._run_background_history_expansion
 _bulk_channel_available = _default_sync_orchestrator._bulk_channel_available

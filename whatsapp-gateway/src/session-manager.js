@@ -373,6 +373,7 @@ export function createSessionManager({
     async _requestPairingCodeOnce(id, phone) {
       const session = sessions.get(id);
       if (!session) throw new Error('Session not found');
+      if (session._deleted) throw new Error('Session was deleted');
       if (session.status === 'CONNECTED') {
         throw new Error('Bu oturum zaten bağlı. Kod istemek için önce oturumu ayırın.');
       }
@@ -383,7 +384,34 @@ export function createSessionManager({
         this._startSocket(id);
       }
       const deadline = Date.now() + 15000;
-      while ((!session.sock || session.status !== 'SCAN_QR') && Date.now() < deadline) {
+      // Phase 1 §1: exit early on three failure modes the original loop ignored:
+      //   - the session was deleted / refreshed / logged out (no more work to do);
+      //   - the lifecycle generation was invalidated (a new socket is in flight,
+      //     this one is no longer the right one to issue a pairing code on);
+      //   - the session transitioned to a terminal/error state (BANNED,
+      //     DISCONNECTED) that can never produce a QR pairing code.
+      const initialGeneration = session.lifecycle.generation;
+      while (Date.now() < deadline) {
+        const live = sessions.get(id);
+        if (!live || live._deleted) {
+          throw new Error('Eşleştirme iptal edildi.');
+        }
+        if (live.lifecycle.generation !== initialGeneration) {
+          throw new Error('Soket yeniden başlatıldı, tekrar deneyin.');
+        }
+        if (live.status === 'SCAN_QR' && live.sock) break;
+        if (live.status === 'BANNED') {
+          throw new Error(live.error_message || 'Bu oturum WhatsApp tarafından engellenmiş.');
+        }
+        if (live.status === 'DISCONNECTED' && live.error_reason === 'LOGGED_OUT') {
+          throw new Error('Bu oturum telefondan çıkış yapılmış.');
+        }
+        if (live.status === 'UNAVAILABLE' || live.status === 'FAILED' || live.status === 'DISCONNECTED') {
+          throw new Error(
+            live.error_message ||
+            'WhatsApp bağlantısı henüz kurulamadı. Birkaç saniye sonra tekrar deneyin.'
+          );
+        }
         await new Promise((r) => setTimeout(r, 300));
       }
       if (!session.sock) {
@@ -453,6 +481,11 @@ export function createSessionManager({
       const session = sessions.get(id);
       if (session) {
         session._deleted = true;
+        // Phase 2.1.A: stop any in-flight targeted group-discovery pass for
+        // this dying session. The targeted loop checks the 'cancelled'
+        // sentinel between groupMetadata calls; without this, a deleted
+        // session's pass kept issuing doomed fetches (bounded, but wasted).
+        session._groupSubjectsInFlight = 'cancelled';
         session.lifecycle.invalidate();
         await leaseCoordinator.releaseLease(session);
         if (session.sock?.ev) {
@@ -1245,6 +1278,17 @@ export function createSessionManager({
         created_at: existing.created_at || new Date().toISOString(),
         updated_at: new Date().toISOString(),
       });
+      // Phase 2.A: track @g.us jids that arrived via _touchChat without group
+      // metadata. If `groupFetchAllParticipating` does not return them (omit /
+      // fail / throttle / archived), the next _ensureGroupSubjects call will
+      // pull them from this set and call `groupMetadata` on each. This closes
+      // the 3Hacker bug where a group missing from store.chats had no path to
+      // a `seedGroupChat` / targeted fallback.
+      if (key.includes('@g.us')) {
+        if (!session._pendingGroupJids) session._pendingGroupJids = new Set();
+        const isResolved = existing.name && !isRawIdentityName(existing.name);
+        if (!isResolved) session._pendingGroupJids.add(key);
+      }
       if (!chats.get(key)?.avatar_url) void this._ensureChatAvatar(session, key);
     },
 
@@ -1345,7 +1389,7 @@ export function createSessionManager({
       }
     },
 
-    async _ensureGroupSubjects({ sessionId, force = false } = {}) {
+    async _ensureGroupSubjects({ sessionId, force = false, extraJids = [] } = {}) {
       const session = sessionId ? sessions.get(String(sessionId)) : null;
       if (!session) return { applied: false, reason: 'no_session' };
       if (session.status !== 'CONNECTED' || !session.sock) {
@@ -1440,18 +1484,95 @@ export function createSessionManager({
       }
 
       try {
-        const unresolved = [...chats.values()].filter(
-          (c) => c.jid && c.jid.includes('@g.us') && !resolvedKeys.has(resolveJidKey(store, c.jid)) && (isRawIdentityName(c.name) || !c.name)
-        ).slice(0, 10);
-        for (const chat of unresolved) {
-          if (session._groupSubjectsInFlight === 'cancelled') break;
-          try {
-            const meta = await session.sock.groupMetadata(chat.jid);
-            const subject = typeof meta?.subject === 'string' ? meta.subject.trim() : '';
-            if (subject) applySubject(meta.id || chat.jid, subject);
-          } catch { /* ignored */ }
-          await new Promise((r) => setTimeout(r, 500));
+        // Phase 2.A: union three sources for the targeted-fallback pass.
+        // Pre-fix: only `chats.values()` was iterated, so a group that never
+        // entered `store.chats` (because `groupFetchAllParticipating` omitted
+        // it, failed, or the group has zero messages) had NO path to a
+        // `groupMetadata` call. The 3Hacker bug is exactly this: the group
+        // exists in the user's phone, has a subject, but the gateway could
+        // not discover it because it never reached `chats`.
+        //
+        // Sources, in priority order:
+        //   1. `chats.values()` — groups that already exist in store.chats
+        //      (e.g. via a single message arriving) but lack a subject.
+        //   2. `session._pendingGroupJids` — @g.us jids that `_touchChat` saw
+        //      arrive without a subject. These may NOT be in `store.chats`
+        //      yet (zero-message archived group that just produced a sync
+        //      hint) and would otherwise be invisible to the targeted pass.
+        //   3. `extraJids` — caller-supplied list (e.g. backend forwarding
+        //      DB-known @g.us jids). Reserved for Phase 2.B/C; currently
+        //      empty for internal callers.
+        const unresolvedKeys = new Set();
+        for (const c of chats.values()) {
+          if (c.jid && c.jid.includes('@g.us') && !resolvedKeys.has(resolveJidKey(store, c.jid)) && (isRawIdentityName(c.name) || !c.name)) {
+            unresolvedKeys.add(resolveJidKey(store, c.jid));
+          }
         }
+        // Phase 2.1.A: pending/extra jids must honour the SAME resolution
+        // predicate as the chats.values() branch. Pre-fix, a jid forwarded
+        // via extraJids (or seen by _touchChat) that the broad pass omits
+        // was re-fetched with groupMetadata on EVERY forced pass — even
+        // after a prior targeted pass had already resolved and seeded it.
+        // Cross-pass dedup now matches within-pass dedup.
+        const isUnresolvedGroupJid = (jid) => {
+          const key = resolveJidKey(store, jid);
+          if (resolvedKeys.has(key)) return false;
+          const chat = chats.get(key);
+          if (chat && chat.name && !isRawIdentityName(chat.name)) return false;
+          return true;
+        };
+        if (session._pendingGroupJids) {
+          for (const jid of session._pendingGroupJids) {
+            if (jid && jid.includes('@g.us') && isUnresolvedGroupJid(jid)) {
+              unresolvedKeys.add(resolveJidKey(store, jid));
+            }
+          }
+        }
+        for (const jid of extraJids) {
+          if (jid && jid.includes('@g.us') && isUnresolvedGroupJid(jid)) {
+            unresolvedKeys.add(resolveJidKey(store, jid));
+          }
+        }
+        const unresolved = [...unresolvedKeys].slice(0, 10);
+        let nextUnresolvedIndex = 0;
+        const processUnresolvedGroup = async () => {
+          while (true) {
+            if (session._groupSubjectsInFlight === 'cancelled') return;
+            const index = nextUnresolvedIndex++;
+            if (index >= unresolved.length) return;
+            const jid = unresolved[index];
+            try {
+              const meta = await session.sock.groupMetadata(jid);
+              if (session._groupSubjectsInFlight === 'cancelled') return;
+              const subject = typeof meta?.subject === 'string' ? meta.subject.trim() : '';
+              if (subject) {
+                // Phase 2.A closure: seed the chat if the group is absent from
+                // store.chats. Pre-fix, the targeted pass only called
+                // `applySubject` — a no-op for an absent chat — so a group whose
+                // `groupMetadata` succeeded still never became a conversation
+                // (it silently waited for a later `chats.update` event that
+                // might never come). `seedGroupChat` is a no-op when the chat
+                // already exists (`chats.has` guard) and emits
+                // `conversation_updated`, which the backend persists into
+                // public.conversations. Mirrors the broad pass (seed + apply).
+                seedGroupChat(meta.id || jid, subject, meta);
+                applySubject(meta.id || jid, subject);
+              }
+            } catch { /* ignored */ }
+            if (session._groupSubjectsInFlight === 'cancelled') return;
+            await new Promise((r) => setTimeout(r, 500));
+          }
+        };
+        await Promise.all(
+          Array.from(
+            { length: Math.min(2, unresolved.length) },
+            () => processUnresolvedGroup(),
+          ),
+        );
+        // Once the targeted pass has run, the pending set has been honoured.
+        // Clear it: the next pass must rebuild it from current state, not
+        // carry stale entries across restarts.
+        if (session._pendingGroupJids) session._pendingGroupJids.clear();
       } catch (err) {
         logger.warn({ err }, 'targeted groupMetadata fallback failed');
       } finally {
@@ -1512,7 +1633,7 @@ export function createSessionManager({
     // -----------------------------------------------------------------------
     _startSocket(id) {
       const session = sessions.get(id);
-      if (!session) return;
+      if (!session || session._deleted) return;
       this._connectSocket(id).catch((error) => {
         const current = sessions.get(id);
         if (!current || current._deleted) return;
@@ -1540,44 +1661,99 @@ export function createSessionManager({
 
     async _connectSocket(id) {
       const session = sessions.get(id);
-      if (!session) return;
+      // Phase 1 §1: a deleted or restarted session must not start a new socket.
+      // `lifecycle.invalidate()` (called by deleteSession / refreshQr / logoutSession /
+      // cancelPairing-finalize) bumps the generation AND nulls the lifecycle socket.
+      // If a stale `_connectSocket` invocation arrives after the session is gone
+      // or after the lifecycle was invalidated, we MUST NOT acquire a lease,
+      // MUST NOT instantiate a new socket, and MUST NOT arm renewal.
+      if (!session || session._deleted) return;
+      if (session.lifecycle._reconnectTimer !== null) {
+        diagnostic('connect_skipped_reconnect_timer_pending', { session_ref: sessionRef(id) });
+        return;
+      }
       const generation = session.lifecycle.beginAttempt();
       session._diagnosticSocketGeneration = generation;
       leaseCoordinator.clearLeaseTimers(session);
 
+      // On-contended callback: the lease-coordinator will retry after 5–6s. By
+      // that time the session may have been deleted; check the live session
+      // each time, not the closure.
       const acquired = await leaseCoordinator.acquireLease(session, generation, () => {
+        const live = sessions.get(id);
+        if (!live || live._deleted) {
+          diagnostic('lease_contention_callback_skipped_deleted', { session_ref: sessionRef(id), generation });
+          return;
+        }
+        // Only retry if THIS socket's generation is still current — otherwise
+        // a newer `_connectSocket` is already in flight.
+        if (live.lifecycle.generation !== generation) {
+          diagnostic('lease_contention_callback_stale_generation', {
+            session_ref: sessionRef(id),
+            callback_generation: generation,
+            current_generation: live.lifecycle.generation,
+          });
+          return;
+        }
         this._startSocket(id);
       });
       if (!acquired) return;
 
-      const { sock, state, saveCreds, connectStarted, sessionDir } = await createSocketForSession({
-        id,
-        session,
-        generation,
-        sessionsDir,
-        aesKey,
-        authRepository,
-        logger,
-        retryCounterCacheFor,
-        onLidMappingDiscovered: (lid, phoneJid) => {
-          rememberLidPair(session.store, lid, phoneJid);
-          void lidRepository.persistLidMappingToDb(session.id, lid, phoneJid);
-          this._applyLidMapping(session, lid, phoneJid);
-        },
-      });
+      // Phase 1 §1 (Defect 1): the session may have been deleted, refreshed, or
+      // logged-out during the `acquireLease` await. If so, the lease is now
+      // held by a session that is going away — release it and stop.
+      if (session._deleted || !sessions.has(id)) {
+        diagnostic('socket_start_aborted_after_lease_acquire', {
+          session_ref: sessionRef(id),
+          generation,
+          reason: session._deleted ? 'deleted' : 'missing_from_registry',
+        });
+        try { await leaseCoordinator.releaseLease(session); } catch (err) { /* ignore */ }
+        return;
+      }
 
-      if (session.lifecycle.generation !== generation) {
+      let created;
+      try {
+        created = await createSocketForSession({
+          id,
+          session,
+          generation,
+          sessionsDir,
+          aesKey,
+          authRepository,
+          logger,
+          retryCounterCacheFor,
+          onLidMappingDiscovered: (lid, phoneJid) => {
+            // Re-read the session on every LID callback; the closure may be stale.
+            const live = sessions.get(id);
+            if (!live || live._deleted) return;
+            rememberLidPair(live.store, lid, phoneJid);
+            void lidRepository.persistLidMappingToDb(live.id, lid, phoneJid);
+            this._applyLidMapping(live, lid, phoneJid);
+          },
+        });
+      } catch (err) {
+        // Phase 1 §1: a thrown createSocketForSession leaves the lease HELD but
+        // no socket attached. Release the lease and surface the error so the
+        // caller (`_startSocket` catch) can mark UNAVAILABLE.
+        try { await leaseCoordinator.releaseLease(session); } catch (releaseErr) { /* ignore */ }
+        throw err;
+      }
+
+      if (session._deleted || session.lifecycle.generation !== generation) {
         diagnostic('stale_socket_attach_rejected', {
           session_ref: sessionRef(id),
           generation,
           current_generation: session.lifecycle.generation,
+          deleted: session._deleted,
         });
-        try { sock.ev?.removeAllListeners(); } catch (err) { /* ignore */ }
-        try { sock.end(undefined); } catch (err) { /* ignore */ }
+        try { created.sock.ev?.removeAllListeners(); } catch (err) { /* ignore */ }
+        try { created.sock.end(undefined); } catch (err) { /* ignore */ }
+        try { await leaseCoordinator.releaseLease(session); } catch (err) { /* ignore */ }
         return;
       }
 
-      const replacedSocket = session.lifecycle.attach(generation, sock);
+      const replacedSocket = session.lifecycle.attach(generation, created.sock);
       if (replacedSocket) {
         diagnostic('socket_owner_replaced', {
           session_ref: sessionRef(id),
@@ -1588,45 +1764,60 @@ export function createSessionManager({
         try { replacedSocket.end(undefined); } catch (err) { /* ignore */ }
       }
 
-      if (!session.lifecycle.isCurrent(generation, sock)) {
+      if (!session.lifecycle.isCurrent(generation, created.sock)) {
         diagnostic('stale_socket_attach_rejected', {
           session_ref: sessionRef(id),
           generation,
           current_generation: session.lifecycle.generation,
         });
-        try { sock.ev?.removeAllListeners(); } catch (err) { /* ignore */ }
-        try { sock.end(undefined); } catch (err) { /* ignore */ }
+        try { created.sock.ev?.removeAllListeners(); } catch (err) { /* ignore */ }
+        try { created.sock.end(undefined); } catch (err) { /* ignore */ }
         return;
       }
 
-      session.sock = sock;
-      latency('socket_initialization_ms', connectStarted, id);
+      session.sock = created.sock;
+      latency('socket_initialization_ms', created.connectStarted, id);
 
       const loseLease = () => {
-        if (!session.lifecycle.isCurrent(generation, sock)) return;
-        session.lifecycle.invalidate();
-        leaseCoordinator.clearLeaseTimers(session);
-        try { sock.ev?.removeAllListeners(); } catch (err) { /* ignore */ }
-        try { sock.end(undefined); } catch (err) { /* ignore */ }
-        session.sock = null;
-        session.status = 'UNAVAILABLE';
-        session.is_phone_online = false;
-        session.error_message = 'WHATSAPP_SESSION_LEASE_LOST';
+        // Phase 1 §1: a lease-lost callback may fire AFTER the session was
+        // deleted. In that case, do nothing — deleteSession already cleaned up
+        // the lease, the socket, the auth, and the registry row.
+        const live = sessions.get(id);
+        if (!live || live._deleted) {
+          diagnostic('lease_lost_callback_skipped_deleted', { session_ref: sessionRef(id), generation });
+          return;
+        }
+        if (!live.lifecycle.isCurrent(generation, created.sock)) {
+          diagnostic('lease_lost_callback_stale_generation', {
+            session_ref: sessionRef(id),
+            callback_generation: generation,
+            current_generation: live.lifecycle.generation,
+          });
+          return;
+        }
+        live.lifecycle.invalidate();
+        leaseCoordinator.clearLeaseTimers(live);
+        try { created.sock.ev?.removeAllListeners(); } catch (err) { /* ignore */ }
+        try { created.sock.end(undefined); } catch (err) { /* ignore */ }
+        live.sock = null;
+        live.status = 'UNAVAILABLE';
+        live.is_phone_online = false;
+        live.error_message = 'WHATSAPP_SESSION_LEASE_LOST';
         diagnostic('socket_lease_lost', { session_ref: sessionRef(id), generation });
       };
 
-      const armLease = () => leaseCoordinator.armLeaseRenewal(session, generation, sock, loseLease);
+      const armLease = () => leaseCoordinator.armLeaseRenewal(session, generation, created.sock, loseLease);
       if (!session.ephemeral) armLease();
 
       bindSocketEvents({
         id,
         session,
         generation,
-        sock,
-        state,
-        saveCreds,
-        connectStarted,
-        sessionDir,
+        sock: created.sock,
+        state: created.state,
+        saveCreds: created.saveCreds,
+        connectStarted: created.connectStarted,
+        sessionDir: created.sessionDir,
         manager: this,
         sessions,
         leaseCoordinator,

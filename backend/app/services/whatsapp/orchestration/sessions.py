@@ -53,6 +53,46 @@ logger = logging.getLogger(__name__)
 _GATEWAY_SESSION_MISSING = "session not found"
 
 
+async def fetch_held_lease_gateway_ids(db: AsyncSession) -> Optional[set]:
+    """Return the set of `gateway_id`s whose socket lease is currently held,
+    or `None` if the DB read itself failed.
+
+    Contract (Phase 1.1 closure — distinct from the pre-closure behaviour):
+
+      return set()  → query SUCCEEDED, zero valid leases exist.
+                       Consumer MUST treat this as truthful "no lease held"
+                       and may demote CONNECTED rows that match it.
+
+      return None   → query FAILED (DB unreachable, schema missing,
+                       timeout, permission, etc.).
+                       Consumer MUST NOT interpret this as "no lease held";
+                       it must skip the lease-truthfulness demote for this
+                       call and let the next successful read do the work.
+
+    Conflating these two cases is the Phase 1.1 closure bug: a transient
+    DB hiccup would mass-demote every healthy CONNECTED row to
+    WHATSAPP_LEASE_LOST and broadcast DISCONNECTED to every UI.
+    """
+    try:
+        from sqlalchemy import text
+        result = await db.execute(
+            text("SELECT session_id FROM whatsapp_private.socket_leases WHERE expires_at > NOW()")
+        )
+        return {str(row[0]) for row in result.fetchall() if row and row[0] is not None}
+    except Exception as exc:  # noqa: BLE001
+        # The private schema may not exist in test/legacy environments, or
+        # the DB may be temporarily unreachable. The lease-truthfulness
+        # check is DEFERRED in this case — NOT silently answered as "no
+        # lease held". The list call still returns the session rows so the
+        # UI does not lose the rest of the page.
+        logger.warning(
+            "[WhatsApp] fetch_held_lease_gateway_ids failed; lease "
+            "truthfulness demote is deferred until the next successful read: %s",
+            exc,
+        )
+        return None
+
+
 def _session_dict(row: WhatsAppSession) -> Dict[str, Any]:
     """Serializes WhatsAppSession ORM entity to API dictionary."""
     return {
@@ -156,6 +196,21 @@ async def _list_sessions_internal(
     gateway_error: Optional[str] = None
     try:
         gw_sessions = {s["id"]: s for s in await gw.list_sessions()}
+        # Phase 1.1: source-of-truth for "is this session's socket currently
+        # held by SOME gateway instance?" is the DB row in
+        # `whatsapp_private.socket_leases`. A row whose `gateway_id` is
+        # present in the held-lease set IS actively bound; a row whose
+        # `gateway_id` is NOT in the set has lost its right to the socket
+        # (TTL expired, lost to a contending instance, or never acquired).
+        #
+        # We deliberately do NOT call this per-row; the DB read happens once
+        # per list call and feeds every row's lease check in O(1) per row.
+        #
+        # Phase 1.1 CLOSURE: a DB read failure is NOT interpreted as "no
+        # lease held". `None` means "lease truth unknown for this call";
+        # `set()` means "query succeeded, no lease held". Only the latter
+        # is allowed to trigger the demote below.
+        held_lease_gateway_ids: Optional[set] = await fetch_held_lease_gateway_ids(db)
         for row in rows:
             live = gw_sessions.get(row.gateway_id)
             if live:
@@ -183,6 +238,111 @@ async def _list_sessions_internal(
                     row.qr_code = None
                 if fields["status"] in ("CONNECTED", "SCAN_QR"):
                     row.error_message = None
+                # Phase 1.1 §4: lease truthfulness check. After the
+                # gateway-status update above has settled, the row MUST NOT
+                # remain CONNECTED if no gateway instance holds the lease
+                # for its `gateway_id`. The DB is the source of truth; the
+                # gateway's in-memory `_leaseValidUntil` is a cache that
+                # can be wrong after a TTL expiry, a contending acquire, or
+                # a process restart.
+                #
+                # We ONLY apply this check when the gateway currently
+                # reports the session as CONNECTED. A transient reconnect
+                # (E/F — 500ms or backoff) keeps the lease for the duration
+                # of the in-flight socket replacement; the gateway reports
+                # CONNECTING during that window and we must NOT demote the
+                # row to RELINK_REQUIRED. A RESTORING or DISCONNECTED
+                # gateway report also exempts the check — the existing
+                # status update above already moved the row to that state.
+                #
+                # Phase 1.1 CLOSURE: `held_lease_gateway_ids is None`
+                # means the DB read itself failed; in that case we cannot
+                # answer the lease-truthfulness question and we MUST NOT
+                # demote. The reconciliation is deferred to the next
+                # successful read.
+                if (
+                    held_lease_gateway_ids is not None
+                    and row.status == SessionStatus.CONNECTED
+                    and fields["status"] == "CONNECTED"
+                    and row.gateway_id not in held_lease_gateway_ids
+                ):
+                    logger.warning(
+                        "[WhatsApp] Verified lease-missing CONNECTED row "
+                        "(DB read succeeded, gateway_id not in socket_leases); "
+                        "demoting to DISCONNECTED (db_id=%s, gateway_id=%s)",
+                        row.id,
+                        row.gateway_id,
+                    )
+                    row.status = SessionStatus.DISCONNECTED
+                    row.is_active = False
+                    row.is_phone_online = False
+                    row.qr_code = None
+                    row.error_message = "WHATSAPP_LEASE_LOST"
+                    row.error_reason = "LEASE_LOST"
+                    row.updated_at = datetime.utcnow()
+                    try:
+                        await ws_manager.broadcast(
+                            {
+                                "event": "session_updated",
+                                "user_id": str(row.user_id),
+                                "session": {
+                                    "id": row.id,
+                                    "session_id": row.id,
+                                    "status": SessionStatus.DISCONNECTED.value,
+                                    "phone_number": row.phone_number,
+                                    "is_active": False,
+                                    "is_phone_online": False,
+                                    "error_message": "WHATSAPP_LEASE_LOST",
+                                    "error_reason": "LEASE_LOST",
+                                },
+                            },
+                            target_user_id=str(row.user_id),
+                        )
+                    except Exception as ws_err:
+                        logger.warning("[WhatsApp] lease-lost broadcast ws error: %s", ws_err)
+            else:
+                # Phase 1 §13: a `status=CONNECTED` row whose gateway_id is
+                # absent from the gateway's session list is stale. This
+                # happens after a gateway restart when
+                # `WHATSAPP_AUTO_RESTORE=false` (so `restoreSessions` was NOT
+                # called) or when the gateway has not yet been told about the
+                # durable row. We must NOT keep reporting `CONNECTED` for a
+                # session that has no live socket and no live lease — the
+                # UI will believe the line is healthy, fail to deliver, and
+                # silently drop events. Demote to RELINK_REQUIRED so the UI
+                # can re-pair, and broadcast so connected UIs learn
+                # immediately rather than at the next poll.
+                if row.status == SessionStatus.CONNECTED:
+                    logger.warning(
+                        "[WhatsApp] Stale CONNECTED row detected (no live gateway session); demoting to RELINK_REQUIRED (db_id=%s, gateway_id=%s)",
+                        row.id,
+                        row.gateway_id,
+                    )
+                    row.status = SessionStatus.RELINK_REQUIRED
+                    row.is_active = False
+                    row.is_phone_online = False
+                    row.qr_code = None
+                    row.error_message = "WHATSAPP_GATEWAY_SESSION_MISSING"
+                    row.updated_at = datetime.utcnow()
+                    try:
+                        await ws_manager.broadcast(
+                            {
+                                "event": "session_updated",
+                                "user_id": str(row.user_id),
+                                "session": {
+                                    "id": row.id,
+                                    "session_id": row.id,
+                                    "status": SessionStatus.RELINK_REQUIRED.value,
+                                    "phone_number": row.phone_number,
+                                    "is_active": False,
+                                    "is_phone_online": False,
+                                    "error_message": "WHATSAPP_GATEWAY_SESSION_MISSING",
+                                },
+                            },
+                            target_user_id=str(row.user_id),
+                        )
+                    except Exception as ws_err:
+                        logger.warning("[WhatsApp] Stale-session broadcast ws error: %s", ws_err)
         await db.commit()
     except Exception as exc:
         gateway_error = str(exc)[:300]

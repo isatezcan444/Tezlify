@@ -196,16 +196,26 @@ async def list_conversations(
     return await _request("GET", f"{_s(gateway_id)}/conversations", params=params)
 
 
-async def sync_group_subjects(gateway_id: str, force: bool = False) -> Dict[str, Any]:
+async def sync_group_subjects(gateway_id: str, force: bool = False, extraJids: Optional[List[str]] = None) -> Dict[str, Any]:
     """Faz 8: gateway'den tüm katılımcı grupların subject'ini tek toplu
     istekte çözer (oturum bazında TTL gateway içinde). Hata fail-closed:
     WhatsAppGatewayError yükselir, çağıran yutar ama isim uydurmaz.
 
     Faz 10 (P1): ``force=True`` gateway'deki 10 dakikalık TTL'i atlar —
     "Eşitle" ve initial-sync böylece daha önce çözülememiş ("Grup" kalan)
-    grupları her seferinde yeniden dener.
+    grupları her seferinde yeniden dener (cache poisoning: "Grup" asla
+    kalıcı değer olmaz).
+
+    Phase 2.1.A: ``extraJids`` is an optional list of DB-known @g.us jids
+    that the backend has not yet been able to hydrate (zero-message
+    groups, archived groups, etc.). The gateway uses this list as an
+    additional input to the targeted-fallback pass — it does NOT
+    replace ``groupFetchAllParticipating`` and it does NOT widen the
+    10-cap on the pass.
     """
     payload: Dict[str, Any] = {"force": bool(force)}
+    if extraJids:
+        payload["extraJids"] = [str(j) for j in extraJids if j and "@g.us" in str(j)]
     return await _request("POST", f"{_s(gateway_id)}/conversations/sync-groups", json=payload)
 
 

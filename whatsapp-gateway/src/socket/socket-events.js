@@ -189,39 +189,42 @@ export function bindSocketEvents({
     }
     if (connection === 'open') {
       latency('socket_start_to_ready_ms', connectStarted, id);
-      session.status = 'CONNECTED';
-      session.qr_code = null;
-      session.error_message = null;
-      session.error_reason = null;
-      session._connFailures = 0;
-      session._pairingPhone = null;
-      session._pairingRequestedAt = 0;
-      session._pairingSocket = null;
-      session.is_phone_online = true;
-      session.updated_at = new Date().toISOString();
+      // Phase 1 §6 (Defect 3): `session.status = 'CONNECTED'` MUST be written
+      // AFTER every `await` on this code path. The previous code set the
+      // status synchronously and then awaited `authRepository.registerSession`
+      // and `leaseRepository.acquire`; an error on either path would either
+      // revert the status to FAILED after a window in which it briefly read
+      // CONNECTED, or (worse) emit `session_connected` after a failure path
+      // intended to return early. The fix is: compute self-identity and
+      // ephemeral-promotion prerequisites in a local context, attempt every
+      // side-effecting await, and ONLY THEN commit the visible state.
       const meJid = sock.user?.id || state?.creds?.me?.id;
       const meLid = sock.user?.lid || state?.creds?.me?.lid;
-      if (meJid) {
-        const cleanJid = resolveJidKey(store, meJid);
-        session.self_jid = cleanJid;
-        session.phone_number = jidToPhone(cleanJid) || session.phone_number;
+      const selfJid = meJid ? resolveJidKey(store, meJid) : null;
+      const selfLid = meLid ? resolveJidKey(store, meLid) : null;
+      const selfPhone = selfJid ? (jidToPhone(selfJid) || session.phone_number) : session.phone_number;
+
+      // Phase 1 §15: a late `connection.open` arriving on a session that was
+      // already deleted, refreshed, or logged-out must NOT commit visible
+      // state. The lifecycle guard at the top of this handler already filters
+      // stale-socket events; we additionally refuse to commit when the
+      // session is gone or the lifecycle generation has been invalidated.
+      if (!sessions.has(id) || (sessions.get(id) && sessions.get(id)._deleted)) {
+        diagnostic('open_ignored_session_deleted', { session_ref: sessionRef(id), generation });
+        return;
       }
-      if (meLid) {
-        session.self_lid = resolveJidKey(store, meLid);
-      }
-      if (session.self_lid && session.self_jid) {
-        rememberLidPair(store, session.self_lid, session.self_jid);
-        manager._applyLidMapping(session, session.self_lid, session.self_jid);
-      }
-      if (!authRepository) {
-        safeWriteEncrypted(sessionDir + '/auth.json', { creds: state.creds, keys: state.keys }, aesKey);
-        diagnostic('legacy_auth_snapshot_written', {
+      if (!session.lifecycle.isCurrent(generation, sock)) {
+        diagnostic('open_ignored_lifecycle_not_current', {
           session_ref: sessionRef(id),
           generation,
-          auth_updates: session._diagnosticAuthUpdates || 0,
-          keys_value_type: typeof state.keys,
+          current_generation: session.lifecycle.generation,
         });
+        return;
       }
+
+      // Ephemeral-session promotion side-effects MUST happen BEFORE we commit
+      // status. Each branch below either commits to the next step or returns
+      // WITHOUT touching the session-visible state.
       if (session.ephemeral) {
         if (authRepository) {
           try {
@@ -261,6 +264,56 @@ export function bindSocketEvents({
           }
         }
         session.ephemeral = false;
+      }
+
+      if (!authRepository) {
+        safeWriteEncrypted(sessionDir + '/auth.json', { creds: state.creds, keys: state.keys }, aesKey);
+        diagnostic('legacy_auth_snapshot_written', {
+          session_ref: sessionRef(id),
+          generation,
+          auth_updates: session._diagnosticAuthUpdates || 0,
+          keys_value_type: typeof state.keys,
+        });
+      }
+
+      // Re-validate the session after every await above: a `deleteSession` /
+      // `logoutSession` / `refreshQr` that landed during the awaits MUST
+      // short-circuit before we commit the visible state.
+      if (!sessions.has(id) || (sessions.get(id) && sessions.get(id)._deleted)) {
+        diagnostic('open_committed_aborted_session_deleted', { session_ref: sessionRef(id), generation });
+        return;
+      }
+      if (!session.lifecycle.isCurrent(generation, sock)) {
+        diagnostic('open_committed_aborted_lifecycle_not_current', {
+          session_ref: sessionRef(id),
+          generation,
+          current_generation: session.lifecycle.generation,
+        });
+        return;
+      }
+
+      // Commit visible state — all in one synchronous block. After this point
+      // the backend's `_map_session_event` is allowed to promote.
+      session.status = 'CONNECTED';
+      session.qr_code = null;
+      session.error_message = null;
+      session.error_reason = null;
+      session._connFailures = 0;
+      session._pairingPhone = null;
+      session._pairingRequestedAt = 0;
+      session._pairingSocket = null;
+      session.is_phone_online = true;
+      session.updated_at = new Date().toISOString();
+      if (selfJid) {
+        session.self_jid = selfJid;
+        session.phone_number = selfPhone;
+      }
+      if (selfLid) {
+        session.self_lid = selfLid;
+      }
+      if (session.self_lid && session.self_jid) {
+        rememberLidPair(store, session.self_lid, session.self_jid);
+        manager._applyLidMapping(session, session.self_lid, session.self_jid);
       }
       emitEvent({
         event: 'session_connected',
