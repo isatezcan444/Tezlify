@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useCallback } from 'react';
 import { MessageSquare, Archive, CheckCircle2, Inbox, Mail, MessageSquarePlus, RefreshCw, RotateCcw, Users, AlertTriangle } from 'lucide-react';
 import { Conversation, ConversationStatus } from '../../../types';
 import { Avatar } from '../../../components/ui/Avatar';
@@ -57,7 +57,116 @@ export interface ConversationListProps {
   onRetryLoad?: () => void;
 }
 
-export const ConversationList: React.FC<ConversationListProps> = ({
+// PHASE 2.K.6 experiment: the conversation row extracted from the inline map, but
+// fed PRIMITIVE / value props (the render-affecting `conv.*` fields) instead of the
+// cloned `conv` object — so default React.memo shallow comparison can bail out
+// unchanged rows. Behavior, JSX and formatting are preserved verbatim; only the
+// prop contract changed. name is derived in the parent (getConversationDisplayName)
+// and passed as a stable string. onSelect receives the row id; the parent maps it
+// back to the real conversation so the click behavior is identical.
+interface ConversationRowProps {
+  id: number;
+  name: string;
+  avatarUrl?: string;
+  phone?: string;
+  lastMessagePreview?: string;
+  lastMessageAt?: string;
+  lastMessageState?: string;
+  messageCount?: number;
+  status: ConversationStatus;
+  unreadCount: number;
+  isGroup?: boolean;
+  selected: boolean;
+  typing: boolean;
+  isSyncing: boolean;
+  onSelect: (id: number) => void;
+}
+
+const ConversationRowComponent: React.FC<ConversationRowProps> = ({ id, name, avatarUrl, phone, lastMessagePreview, lastMessageAt, lastMessageState, messageCount, status, unreadCount, isGroup, selected, typing, isSyncing, onSelect }) => {
+  const { t, language } = useI18n();
+  const isRawJid = isRawWhatsAppJid(phone);
+  const cleanPhone = extractCleanPhone(phone);
+  const formatTime = (dateStr?: string) => formatConversationTime(dateStr, language);
+  let lastMsg: string;
+  if (typing) lastMsg = '__typing__';
+  else if (lastMessagePreview) lastMsg = lastMessagePreview;
+  else if (isSyncing) lastMsg = t('whatsapp.lastMessageSyncing');
+  else if (lastMessageState === 'NO_MESSAGES' || (messageCount === 0 && lastMessageState !== 'REPAIRING' && lastMessageState !== 'LOADING')) lastMsg = t('leads.noMessagesTitle');
+  else if (lastMessageState === 'REPAIRING' || lastMessageState === 'LOADING' || (typeof messageCount === 'number' && messageCount > 0)) lastMsg = t('whatsapp.lastMessageSyncing');
+  else lastMsg = t('leads.noMessagesTitle');
+  return (
+    <button
+      type="button"
+      data-conv-id={id}
+      data-phone={cleanPhone || undefined}
+      onClick={() => onSelect(id)}
+      className={`w-full text-left p-3.5 flex items-start space-x-3 transition-colors cursor-pointer ${
+        selected
+          ? 'bg-[#7367F0]/10 dark:bg-[#7367F0]/15 border-l-4 border-[#7367F0]'
+          : 'hover:bg-slate-100/60 dark:hover:bg-white/[0.04]'
+      }`}
+    >
+      <Avatar
+        name={name}
+        image={avatarUrl}
+        phone={cleanPhone || (!isRawJid && phone ? phone : undefined)}
+        size="md"
+        shape="rounded"
+      />
+
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center space-x-1.5 truncate">
+            {isGroup && (
+              <span className="shrink-0 inline-flex items-center gap-0.5 text-[9px] font-bold px-1.5 py-0.5 rounded-md bg-[#7367F0]/15 text-[#7367F0] dark:bg-[#7367F0]/25">
+                <Users className="w-2.5 h-2.5" />
+                <span>{t('whatsapp.group')}</span>
+              </span>
+            )}
+            <h4 className="font-bold text-xs text-slate-800 dark:text-slate-100 truncate">
+              {name}
+            </h4>
+          </div>
+          <span className="text-[10px] text-slate-400 font-medium shrink-0 ml-1">
+            {lastMessageAt ? formatTime(lastMessageAt) : ''}
+          </span>
+        </div>
+
+        {lastMsg === '__typing__' ? (
+          <p className="text-[11px] text-[#25D366] dark:text-[#25D366] font-bold truncate mt-0.5 animate-pulse">
+            {t('whatsapp.peerTyping')}
+          </p>
+        ) : (
+          <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate mt-0.5">
+            {lastMsg}
+          </p>
+        )}
+
+        {(status !== 'ACTIVE' || unreadCount > 0) && (
+          <div className="flex items-center justify-end space-x-1.5 mt-1.5">
+            {status !== 'ACTIVE' && (
+              <span className="text-[9px] font-bold uppercase px-1.5 py-0.5 rounded bg-slate-200 dark:bg-white/10 text-slate-500 dark:text-slate-400">
+                {status === 'ARCHIVED' ? t('whatsapp.statusArchived') : t('whatsapp.statusClosed')}
+              </span>
+            )}
+            {unreadCount > 0 && (
+              <Badge variant="primary">
+                {unreadCount}
+              </Badge>
+            )}
+          </div>
+        )}
+      </div>
+    </button>
+  );
+};
+
+// PHASE 2.K.6 arm switch (single variable = memoization; primitive props identical both arms):
+//   CONTROL   : const ConversationRow = ConversationRowComponent;
+//   CANDIDATE : const ConversationRow = React.memo(ConversationRowComponent);
+const ConversationRow = React.memo(ConversationRowComponent);
+
+const ConversationListComponent: React.FC<ConversationListProps> = ({
   conversations,
   selectedId,
   onSelect,
@@ -79,6 +188,16 @@ export const ConversationList: React.FC<ConversationListProps> = ({
 }) => {
 
   const { t, language } = useI18n();
+  // Stable row-select handler: the row gets an id (primitive), the parent maps it
+  // back to the real conversation so onSelect(conv) behaves exactly as before.
+  // Reads the latest `conversations` via a ref and depends only on the (already
+  // stable) onSelect -> handleSelectById identity never changes -> row memo bails.
+  const conversationsRef = useRef(conversations);
+  conversationsRef.current = conversations;
+  const handleSelectById = useCallback((cid: number) => {
+    const c = conversationsRef.current.find((x) => x.id === cid);
+    if (c) onSelect?.(c);
+  }, [onSelect]);
   const [internalFilter, setInternalFilter] = useState<FilterTab>(activeFilter);
   const currentFilter = onFilterChange ? activeFilter : internalFilter;
 
@@ -323,90 +442,26 @@ export const ConversationList: React.FC<ConversationListProps> = ({
             <p>{t(emptyStateKey)}</p>
           </div>
         ) : (
-          deduplicated.map((conv) => {
-            // Conversation id is globally unique; phone-only selection would
-            // select both lines when the same contact exists on multiple lines.
-            const isSelected = selectedId === conv.id;
-            const rawPhone = conv.lead_phone || (conv as any).phone;
-            const isRawJid = isRawWhatsAppJid(rawPhone);
-            const cleanPhone = extractCleanPhone(rawPhone);
-            const displayName = getConversationDisplayName(conv, t);
-            return (
-              <button
-                key={conv.id}
-                type="button"
-                data-conv-id={conv.id}
-                // I-6: never leak a raw JID (`jid:…`, `@lid`, …) into the DOM.
-                // The attribute carries the canonical E.164 form, or is omitted.
-                data-phone={cleanPhone || undefined}
-                onClick={() => onSelect(conv)}
-                className={`w-full text-left p-3.5 flex items-start space-x-3 transition-colors cursor-pointer ${
-                  isSelected
-                    ? 'bg-[#7367F0]/10 dark:bg-[#7367F0]/15 border-l-4 border-[#7367F0]'
-                    : 'hover:bg-slate-100/60 dark:hover:bg-white/[0.04]'
-                }`}
-              >
-                <Avatar
-                  name={displayName}
-                  image={conv.lead_avatar_url}
-                  phone={cleanPhone || (!isRawJid && rawPhone ? rawPhone : undefined)}
-                  size="md"
-                  shape="rounded"
-                />
-
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center space-x-1.5 truncate">
-                      {conv.is_group && (
-                        <span className="shrink-0 inline-flex items-center gap-0.5 text-[9px] font-bold px-1.5 py-0.5 rounded-md bg-[#7367F0]/15 text-[#7367F0] dark:bg-[#7367F0]/25">
-                          <Users className="w-2.5 h-2.5" />
-                          <span>{t('whatsapp.group')}</span>
-                        </span>
-                      )}
-                      <h4 className="font-bold text-xs text-slate-800 dark:text-slate-100 truncate">
-                        {displayName}
-                      </h4>
-                    </div>
-                    <span className="text-[10px] text-slate-400 font-medium shrink-0 ml-1">
-                      {conv.last_message_at ? formatTime(conv.last_message_at) : ''}
-                    </span>
-                  </div>
-
-                  {(() => {
-                    const lastMsg = renderLastMessage(conv);
-                    if (lastMsg === '__typing__') {
-                      // WhatsApp Web: listede yesil "yazıyor..." gosterilir.
-                      return (
-                        <p className="text-[11px] text-[#25D366] dark:text-[#25D366] font-bold truncate mt-0.5 animate-pulse">
-                          {t('whatsapp.peerTyping')}
-                        </p>
-                      );
-                    }
-                    return (
-                      <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate mt-0.5">
-                        {lastMsg}
-                      </p>
-                    );
-                  })()}
-
-                  {(conv.status !== 'ACTIVE' || conv.unread_count > 0) && (
-                    <div className="flex items-center justify-end space-x-1.5 mt-1.5">
-                      {conv.status !== 'ACTIVE' && (
-                        <span className="text-[9px] font-bold uppercase px-1.5 py-0.5 rounded bg-slate-200 dark:bg-white/10 text-slate-500 dark:text-slate-400">
-                          {conv.status === 'ARCHIVED' ? t('whatsapp.statusArchived') : t('whatsapp.statusClosed')}
-                        </span>
-                      )}
-                      {conv.unread_count > 0 && (
-                        <Badge variant="primary">
-                          {conv.unread_count}
-                        </Badge>
-                      )}
-                    </div>
-                  )}
-                </div>
-              </button>
-            );
-          })
+          deduplicated.map((conv) => (
+            <ConversationRow
+              key={conv.id}
+              id={conv.id}
+              name={getConversationDisplayName(conv, t)}
+              avatarUrl={conv.lead_avatar_url}
+              phone={conv.lead_phone || (conv as any).phone}
+              lastMessagePreview={conv.last_message_preview}
+              lastMessageAt={conv.last_message_at}
+              lastMessageState={conv.last_message_state}
+              messageCount={conv.message_count}
+              status={conv.status}
+              unreadCount={conv.unread_count}
+              isGroup={conv.is_group}
+              selected={selectedId === conv.id}
+              typing={!!typingMap?.[conv.id]}
+              isSyncing={isSyncing}
+              onSelect={handleSelectById}
+            />
+          ))
         )}
         {loadingMore && (
           <div className="p-3 text-center text-xs text-slate-400 dark:text-slate-500 flex items-center justify-center space-x-2">
@@ -419,3 +474,7 @@ export const ConversationList: React.FC<ConversationListProps> = ({
     </div>
   );
 };
+
+// PHASE 2.K.4 single-variable experiment (part 2 of 2): default shallow-compare memo.
+// Effective only together with the stabilized callback props in WhatsAppHubPage.
+export const ConversationList = React.memo(ConversationListComponent);

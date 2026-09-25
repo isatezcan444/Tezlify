@@ -139,6 +139,14 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   }, [conversations]);
   const [selectedConv, setSelectedConv] = useState<Conversation | null>(null);
   const [messagesMap, setMessagesMap] = useState<Record<number, Message[]>>({});
+  // PHASE 2.K.1 (single variable = onRetry prop identity): dependency-safe refs
+  // mirroring the existing conversationsRef/toastRef idiom. They let the retry
+  // handler be a STABLE useCallback that reads the LATEST selectedConv/messagesMap
+  // at call time (no stale closure). The state declarations above are unchanged.
+  const selectedConvRef = useRef(selectedConv);
+  selectedConvRef.current = selectedConv;
+  const messagesMapRef = useRef(messagesMap);
+  messagesMapRef.current = messagesMap;
   // `error`: sayfalama (history) istegi basarisiz oldu — mevcut mesajlar SILINMEZ,
   // yalnizca bu sayfa icin retry edilebilir durum isaretlenir (Sorun 2).
   const [messagePaging, setMessagePaging] = useState<Record<number, { hasMore: boolean; oldest?: number; loading: boolean; error?: boolean }>>({});
@@ -742,7 +750,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   // kısa ömürlü job'ı tetikler (202); tüm ilerleme ve tamamlama mevcut WS
   // üzerinden whatsapp_sync_* olaylarıyla akar. 502/polling storm sona erdi.
   // Banner'ın kapanması job'ın GERÇEK tamamlanmasina bağlıdır (§20).
-  const handleSyncChats = async () => {
+  const handleSyncChats = useCallback(async () => {
     setIsSyncingChats(true);
     try {
       const job = await WhatsAppApi.startSync();
@@ -763,9 +771,36 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       // gerçek durum bir kez okunur ve hata maskelenmez.
       setIsSyncingChats(false);
       void refreshSyncStatus();
-      toast.error(err.message || t('whatsapp.syncFailed'), t('common.error'));
+      toastRef.current.error(err.message || tRef.current('whatsapp.syncFailed'), tRef.current('common.error'));
     }
-  };
+  }, [refreshSyncStatus]);
+
+  // PHASE 2.K.4 (single variable: ConversationList callback identity stabilization):
+  // stable handlers so React.memo(ConversationList) can bail out on events that do NOT
+  // change `conversations` (status/typing/sync). Each reads the latest toast/t via the
+  // existing refs and depends only on already-stable callbacks (reportReadSync deps [],
+  // loadConversations, refreshSyncStatus deps []) -> stable identity, no stale closure.
+  const handleSelectConversation = useCallback((c: Conversation) => {
+    setSelectedConv(c);
+    if (c.unread_count > 0) {
+      // Kullanici eylemi → gateway'e iletilemezse GORUNUR bildirim.
+      WhatsAppRepository.markConversationAsRead(c.id, c)
+        .then((res) => reportReadSync(res, { notify: true, label: `click#${c.id}` }))
+        .catch((err) => {
+          console.warn('[WhatsAppHubPage] Okundu istegi basarisiz:', err);
+          toastRef.current.error(tRef.current('whatsapp.readSyncFailed'), tRef.current('common.error'));
+        });
+      setConversations((prev) =>
+        prev.map((item) => (item.id === c.id ? { ...item, unread_count: 0 } : item))
+      );
+    }
+  }, [reportReadSync]);
+
+  const handleNewChat = useCallback(() => setIsNewChatModalOpen(true), []);
+
+  const handleRetryLoadConversations = useCallback(() => {
+    void loadConversations();
+  }, [loadConversations]);
 
   const handleOpenLead = async (leadId: number) => {
     const rawPhone = selectedConv?.lead_phone || (selectedConv as any)?.phone || '';
@@ -918,20 +953,25 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     }
   };
 
-  const activeRetryMessage = async (msgId: number | string) => {
+  const activeRetryMessage = useCallback(async (msgId: number | string) => {
+    // PHASE 2.K.1: reads the LATEST selectedConv/messagesMap via refs so this
+    // handler is a STABLE reference (deps []) with NO stale closure — behavior
+    // is identical to the previous render-scoped closure (which was recreated
+    // every render and therefore also saw the latest state at call time).
+    const selectedConv = selectedConvRef.current;
     if (!selectedConv) return;
     // Optimistic rows (client-only string ids) must never hit /retry. Re-POST
     // with the existing client_message_id so idempotency holds and the row is
     // reconciled with the real numeric DB id.
     const convId = selectedConv.id;
-    const target = (messagesMap[convId] || []).find((m) => m.id === msgId);
+    const target = (messagesMapRef.current[convId] || []).find((m) => m.id === msgId);
     const isRealDbId = typeof msgId === 'number' && Number.isInteger(msgId) && msgId > 0;
     try {
       if (!isRealDbId) {
         const clientMid = target?.client_message_id;
         if (!target || !clientMid || !target.body) {
           throw new Error(
-            t('whatsapp.msgNotPersisted')
+            tRef.current('whatsapp.msgNotPersisted')
           );
         }
         const res = await WhatsAppRepository.sendMessage(convId, target.body, clientMid);
@@ -963,7 +1003,22 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       // F-7: no toast here — the UI caller owns the single user-facing toast.
       throw err;
     }
-  };
+  }, []);
+
+  // PHASE 2.K.1 (single variable): STABLE onRetry handler. Same behavior as the
+  // previous inline lambda — wraps the retry with the single user-facing toast —
+  // but reads toast/t from refs (existing idiom) and depends only on the now
+  // stable `activeRetryMessage`, so its reference NEVER changes across renders.
+  // This is what lets ChatBubble's React.memo bail out unchanged rows.
+  const handleRetryMessage = useCallback(async (msgId: number | string) => {
+    try {
+      await activeRetryMessage(msgId);
+      toastRef.current.success(tRef.current('whatsapp.messageSent'), tRef.current('common.success'));
+    } catch (err: any) {
+      toastRef.current.error(translateApiError(err, tRef.current) || tRef.current('whatsapp.msgFailed'), tRef.current('common.error'));
+      throw err;
+    }
+  }, [activeRetryMessage]);
 
   const activeSendMedia = async (type: string, url: string, caption?: string, filename?: string) => {
     if (!selectedConv) return;
@@ -2157,36 +2212,19 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
               // gosterilmez, gercek hata ayri error ekranidir.
               loadState={convLoadState}
               loadError={convLoadError}
-              onRetryLoad={() => {
-                void loadConversations();
-              }}
+              onRetryLoad={handleRetryLoadConversations}
               searchQuery={convSearch}
               onSearchChange={setConvSearch}
               activeFilter={convFilter}
               onFilterChange={setConvFilter}
-              onNewChat={() => setIsNewChatModalOpen(true)}
+              onNewChat={handleNewChat}
               onSync={handleSyncChats}
               isSyncing={isSyncingChats}
               typingMap={peerTypingMap}
               onLoadMore={loadMoreConversations}
               hasMore={hasMoreConvs}
               loadingMore={loadingMoreConvs}
-              onSelect={(c) => {
-
-                setSelectedConv(c);
-                if (c.unread_count > 0) {
-                  // Kullanici eylemi → gateway'e iletilemezse GORUNUR bildirim.
-                  WhatsAppRepository.markConversationAsRead(c.id, c)
-                    .then((res) => reportReadSync(res, { notify: true, label: `click#${c.id}` }))
-                    .catch((err) => {
-                      console.warn('[WhatsAppHubPage] Okundu istegi basarisiz:', err);
-                      toast.error(t('whatsapp.readSyncFailed'), t('common.error'));
-                    });
-                  setConversations((prev) =>
-                    prev.map((item) => (item.id === c.id ? { ...item, unread_count: 0 } : item))
-                  );
-                }
-              }}
+              onSelect={handleSelectConversation}
             />
           </div>
 
@@ -2338,15 +2376,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                   leadPhone={selectedConv.lead_phone}
                   isGroup={Boolean(selectedConv.is_group)}
                   peerTyping={!!peerTypingMap[selectedConv.id]}
-                  onRetry={async (msgId) => {
-                    try {
-                      await activeRetryMessage(msgId);
-                      toast.success(t('whatsapp.messageSent'), t('common.success'));
-                    } catch (err: any) {
-                      toast.error(translateApiError(err, t) || t('whatsapp.msgFailed'), t('common.error'));
-                      throw err;
-                    }
-                  }}
+                  onRetry={handleRetryMessage}
                 />
 
                 {/* Active Chat Composer */}
