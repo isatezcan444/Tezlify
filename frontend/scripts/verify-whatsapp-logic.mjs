@@ -841,14 +841,21 @@ try {
     }
   });
 
-  await checkAsync('§P6.4/§P6.5: the hub page keys ChatThread and ChatComposer by conversation id', async () => {
+  await checkAsync('§P6.4/§P6.5: the hub page resets the thread by conversation id and keys the composer', async () => {
     const src = await readFile(path.join(frontendRoot, 'src/pages/WhatsAppHubPage.tsx'), 'utf8');
-    // ChatThread: without a key, switching reuses the instance, so the viewport
-    // and `isNearBottom` of the previous chat carry over and the new chat opens
-    // mid-history or with a spurious new-message pill.
+    // ChatThread: the pane must keep ONE instance for its whole lifetime. A
+    // keyed ChatThread means every switch destroys a huge subtree, and a
+    // destruction that does not complete leaves the stale root on screen — that
+    // is the stacked-chat defect (one chat per clicked person). The instance is
+    // now told WHICH conversation it renders so it resets its own viewport and
+    // pagination state instead.
     assert.ok(
-      /<ChatThread\s+key=\{selectedConv\.id\}/.test(src),
-      'ChatThread must be keyed by conversation id so a switch remounts it'
+      /<ChatThread\s+conversationKey=\{selectedConv\.id\}/.test(src),
+      'ChatThread must receive conversationKey so a switch resets it in place'
+    );
+    assert.ok(
+      !/<ChatThread\s+key=\{/.test(src),
+      'ChatThread must never be keyed by conversation id: a switch must not destroy it'
     );
     // ChatComposer: it owns the draft in internal state and gets no
     // conversation identifier, so unkeyed it leaks the draft into the next chat

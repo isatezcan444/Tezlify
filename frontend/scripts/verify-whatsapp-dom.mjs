@@ -266,6 +266,8 @@ try {
     return el;
   };
   const pill = (host) => host.querySelector('.bottom-4.right-4');
+  // A switch must never leave a second thread behind in the pane.
+  const scrollerCount = (host) => host.querySelectorAll('div.overflow-y-auto').length;
   const rowsWithText = (container, text) =>
     Array.from(container.children).filter((c) => (c.textContent || '').includes(text)).length;
   const fireScroll = async (el) => {
@@ -606,7 +608,9 @@ try {
   await check('conversation-switch: opening another chat lands on the newest message', async () => {
     const convA = Array.from({ length: 30 }, (_, i) => mkMsg(i + 1));
     const convB = Array.from({ length: 50 }, (_, i) => mkMsg(i + 1000));
-    const view = await mount(h(ChatThread, { messages: convA, hasMore: false, leadName: 'A' }));
+    const view = await mount(
+      h(ChatThread, { messages: convA, hasMore: false, leadName: 'A', conversationKey: 'A' })
+    );
     const el = threadContainer(view.host);
 
     // The user scrolled up to read history in conversation A.
@@ -614,19 +618,66 @@ try {
     await fireScroll(el);
     assert.notEqual(el.scrollTop, el.scrollHeight - el.clientHeight, 'precondition: reading history');
 
-    // Now switch to conversation B the way the hub page does: `ChatThread` is
-    // keyed by conversation id, so React unmounts A and mounts a fresh B.
-    await view.update(h(ChatThread, { key: 900, messages: convB, hasMore: false, leadName: 'B' }));
+    // Now switch to conversation B the way the hub page does: the instance is
+    // kept and told which conversation it now renders, so it resets itself.
+    // Rebuilding it instead was what allowed a stale thread root to survive in
+    // the pane, one per clicked conversation.
+    const callsBefore = el[SIM].scrollIntoViewCalls;
+    await view.update(
+      h(ChatThread, { messages: convB, hasMore: false, leadName: 'B', conversationKey: 'B' })
+    );
     const elB = threadContainer(view.host);
 
-    assert.notEqual(elB, el, 'switching conversations must mount a fresh thread');
+    assert.equal(elB, el, 'a switch must reuse the thread DOM node, never replace it');
+    assert.equal(scrollerCount(view.host), 1, 'the pane must hold exactly one thread');
     assert.ok((elB.textContent || '').includes('mesaj-1049#'), 'the newest message must be rendered');
+    assert.ok(!(elB.textContent || '').includes('mesaj-30#'), "the previous chat's messages must be gone");
     assert.equal(
       elB.scrollTop,
       elB.scrollHeight - elB.clientHeight,
       'switching conversations must land at the bottom, not inherit A\'s viewport'
     );
+    assert.ok(elB[SIM].scrollIntoViewCalls > callsBefore, 'the switch must re-run the scroll to newest');
     assert.equal(pill(view.host), null, 'no spurious new-message pill on switch');
+    await view.unmount();
+  });
+
+  // A reused instance must still take a fresh position when the chat it shows
+  // goes empty and then receives its first message with NO `loading` transition
+  // (a realtime inbound into an empty chat). The old keyed remount covered this
+  // by accident; with one persistent instance it needs its own trigger.
+  await check('conversation-emptied-then-filled: content arriving with no loading transition still opens at the newest', async () => {
+    const convA = Array.from({ length: 30 }, (_, i) => mkMsg(i + 1));
+    const view = await mount(
+      h(ChatThread, { messages: convA, hasMore: false, leadName: 'A', conversationKey: 'A' })
+    );
+    threadContainer(view.host);
+
+    // --- switch to an empty conversation ---
+    await view.update(
+      h(ChatThread, { messages: [], hasMore: false, leadName: 'B', conversationKey: 'B' })
+    );
+    assert.equal(scrollerCount(view.host), 0, 'an empty conversation must not keep the previous scroller');
+    assert.ok(!(view.host.textContent || '').includes('mesaj-30#'), "the previous chat's messages must be gone");
+
+    // --- B's first page of messages arrives: no loading flag ever moved, same key ---
+    const convB = Array.from({ length: 40 }, (_, i) => mkMsg(i + 7000));
+    await view.update(
+      h(ChatThread, { messages: convB, hasMore: false, leadName: 'B', conversationKey: 'B' })
+    );
+    const elB = threadContainer(view.host);
+    assert.ok((elB.textContent || '').includes('mesaj-7039#'), 'the newest message of B must be rendered');
+    assert.ok(elB[SIM].scrollIntoViewCalls >= 1, 'the chat must position itself when its content appears');
+    assert.equal(elB.scrollTop, elB.scrollHeight - elB.clientHeight, 'and show the newest message');
+
+    // --- back to A: the reused instance re-positions for A ---
+    await view.update(
+      h(ChatThread, { messages: convA, hasMore: false, leadName: 'A', conversationKey: 'A' })
+    );
+    const elA = threadContainer(view.host);
+    assert.equal(scrollerCount(view.host), 1, 'still exactly one thread in the pane');
+    assert.ok(elA[SIM].scrollIntoViewCalls >= 1, 'switching back must re-run the initial positioning');
+    assert.equal(elA.scrollTop, elA.scrollHeight - elA.clientHeight, 'switching back lands on A\'s newest message');
     await view.unmount();
   });
 
@@ -742,12 +793,15 @@ try {
     await view.unmount();
   });
 
-  // §8 — switch and reorder in ONE test: a switch must remount and land at the
-  // newest message; a reorder of the SAME conversation must NOT remount.
-  await check('conversation-switch-and-reorder: switch remounts, reorder does not', async () => {
+  // §8 — switch and reorder in ONE test: a switch must reset the SAME instance
+  // and land at the newest message (never replace, never stack); a reorder of
+  // the SAME conversation must not reset anything.
+  await check('conversation-switch-and-reorder: switch resets in place, reorder does not', async () => {
     const convA = Array.from({ length: 30 }, (_, i) => mkMsg(i + 1));
     const convB = Array.from({ length: 50 }, (_, i) => mkMsg(i + 1000));
-    const view = await mount(h(ChatThread, { key: 1, messages: convA, hasMore: false, leadName: 'A' }));
+    const view = await mount(
+      h(ChatThread, { messages: convA, hasMore: false, leadName: 'A', conversationKey: 'A' })
+    );
     const elA = threadContainer(view.host);
 
     // Read history in A.
@@ -756,9 +810,12 @@ try {
     assert.notEqual(elA.scrollTop, elA.scrollHeight - elA.clientHeight, 'precondition: reading history');
 
     // --- switch to B ---
-    await view.update(h(ChatThread, { key: 2, messages: convB, hasMore: false, leadName: 'B' }));
+    await view.update(
+      h(ChatThread, { messages: convB, hasMore: false, leadName: 'B', conversationKey: 'B' })
+    );
     const elB = threadContainer(view.host);
-    assert.notEqual(elB, elA, 'a switch must mount a fresh thread');
+    assert.equal(elB, elA, 'a switch must keep the thread instance and its DOM node');
+    assert.equal(scrollerCount(view.host), 1, 'a switch must not add a second thread to the pane');
     assert.equal(
       elB.scrollTop,
       elB.scrollHeight - elB.clientHeight,
@@ -766,9 +823,11 @@ try {
     );
     assert.equal(pill(view.host), null, 'no spurious pill on switch');
 
-    // --- reorder: new activity in B moves it in the sidebar, id unchanged ---
+    // --- reorder: new activity in B moves it in the sidebar, key unchanged ---
     const withNew = [...convB, mkMsg(2000)];
-    await view.update(h(ChatThread, { key: 2, messages: withNew, hasMore: false, leadName: 'B' }));
+    await view.update(
+      h(ChatThread, { messages: withNew, hasMore: false, leadName: 'B', conversationKey: 'B' })
+    );
     const elB2 = threadContainer(view.host);
     assert.equal(elB2, elB, 'a reorder must NOT remount the active chat');
     assert.ok((elB2.textContent || '').includes('mesaj-2000#'), 'the new message must be rendered');

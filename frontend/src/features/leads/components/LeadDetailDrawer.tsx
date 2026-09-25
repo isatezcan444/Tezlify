@@ -320,6 +320,7 @@ export const LeadDetailDrawer: React.FC<LeadDetailDrawerProps> = ({
           <div className="flex-1 flex flex-col min-h-0 bg-white dark:bg-[#181C28]">
             {/* Live Chat Thread */}
             <ChatThread
+              conversationKey={lead.id}
               messages={messages}
               loading={chatLoading}
               hasMore={hasMore}

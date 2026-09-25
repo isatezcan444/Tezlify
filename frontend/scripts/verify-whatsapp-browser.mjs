@@ -97,7 +97,14 @@ function App() {
     React.createElement('div', { style: { display: 'flex', flexDirection: 'column', height: 420 } },
       React.createElement('div', { id: 'thread', style: { flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' } },
         React.createElement(ChatThread, {
-          key: convId + ':' + mountSeq,
+          // Production contract: the thread is NOT keyed by conversation id.
+          // A switch reuses the instance and the conversationKey prop resets it,
+          // so the pane can never accumulate one stale thread root per chat.
+          // mountSeq still remounts, because a real remount here means "the pane
+          // was unmounted and built again" (fresh scenario / tab change), which
+          // is a different event from a conversation switch.
+          key: mountSeq,
+          conversationKey: convId,
           messages: threads[convId],
           hasMore: hasMoreState,
           loading: false,
@@ -230,6 +237,10 @@ window.__h = {
       clientHeight: el ? el.clientHeight : null,
       atBottom: el ? (el.scrollHeight - el.clientHeight - el.scrollTop) <= 2 : null,
       pill: !!pill,
+      // Anti-stacking counters: the pane must hold exactly one ChatThread root
+      // and one scroller, no matter how many conversations were opened.
+      threadRoots: document.querySelectorAll('#thread > div').length,
+      scrollers: document.querySelectorAll('#thread div.overflow-y-auto').length,
       composerValue: input ? input.value : null,
       rows: el ? el.children.length : null,
       // The scroller can carry a trailing non-message element (pill anchor /
@@ -566,12 +577,17 @@ await check('E: loading an older page keeps the same message in view', async () 
   );
 });
 
-// remount semantics: switch remounts, same-conversation update does not
-await check('F: a switch remounts the thread, an update in the same chat does not', async () => {
+// remount semantics: a switch must never destroy the thread (a destroyed root is
+// what used to be able to survive in the pane); it must reset in place instead.
+await check('F: a switch resets the same thread instance, an update in the same chat does not even that', async () => {
   await call('window.__h.select(1)');
   await call('window.__h.markEl()');
   await call('window.__h.select(2)');
-  assert.equal(await call('window.__h.sameEl()'), false, 'a switch must remount the thread');
+  assert.equal(await call('window.__h.sameEl()'), true, 'a switch must reuse the thread DOM node, never replace it');
+  const b = await state();
+  assert.ok(b.atBottom, `the reused thread must still open on the newest message (scrollTop=${b.scrollTop}, max=${b.scrollHeight - b.clientHeight})`);
+  assert.ok((b.threadText || '').includes('mesaj-1049#'), 'the new chat content must be rendered');
+  assert.ok(!(b.threadText || '').includes('mesaj-30#'), "the previous chat's messages must be gone");
 
   await call('window.__h.markEl()');
   await call('window.__h.inject()');
@@ -602,6 +618,22 @@ await check('G: opening a conversation must not fetch an older page', async () =
     0,
     `opening a chat fired ${after.olderRequests} older-page request(s) with no user scroll`
   );
+});
+
+// H — the production defect: opening several conversations in a row left ONE
+// stale thread root in the pane per clicked conversation (stacked chats).
+await check('H: opening 6 conversations in a row leaves exactly one thread root in the pane', async () => {
+  await call('window.__h.reset()');
+  for (const id of [2, 1, 2, 1, 2]) await call(`window.__h.select(${id})`);
+  const s = await state();
+  assert.equal(s.threadRoots, 1, `the pane must hold one thread root, found ${s.threadRoots}`);
+  assert.equal(s.scrollers, 1, `the pane must hold one scroll container, found ${s.scrollers}`);
+  const inputs = await call('document.querySelectorAll(\'input[type="text"]\').length');
+  assert.equal(inputs, 1, `the composer must not stack either, found ${inputs}`);
+  assert.equal(s.convId, 2);
+  assert.ok((s.threadText || '').includes('mesaj-1049#'), 'the visible chat must be the selected one');
+  assert.ok(!(s.threadText || '').includes('mesaj-30#'), 'no other conversation may stay rendered');
+  assert.ok(s.atBottom, 'the last opened conversation must be on its newest message');
 });
 
 await cleanup();

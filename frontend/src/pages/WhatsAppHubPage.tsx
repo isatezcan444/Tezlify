@@ -2347,23 +2347,19 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                 </div>
 
                 {/* Chat Thread with Pagination
-                    P6-4: keyed by conversation id. Without it, switching
-                    conversations reuses the same instance, so the viewport and
-                    `isNearBottom` of the previous thread carry over and the new
-                    chat opens mid-history (or with a spurious new-message
-                    pill). Reordering keeps the same id, so it does NOT
-                    remount — the active chat survives a new inbound. */}
-                {/* Chat Thread with Pagination
-                    P6-4: keyed by conversation id. Without it, switching
-                    conversations reuses the same instance, so the viewport and
-                    `isNearBottom` of the previous thread carry over and the new
-                    chat opens mid-history (or with a spurious new-message
-                    pill). Reordering keeps the same id, so it does NOT
-                    remount — the active chat survives a new inbound.
-                    Sorun 11/12: TEK bir thread instance vardir; secim yalnizca
-                    bu instance'in icerigini degistirir, yeni pane EKLEMEZ. */}
+                    P6-4 (revised): a conversation switch must NOT remount the
+                    thread. Remounting is a deletion, and a deletion that does
+                    not complete leaves the old root behind in the pane — one
+                    extra chat per clicked person. Instead the pane keeps a
+                    single thread instance and `conversationKey` makes that
+                    instance reset its own viewport/pagination state for the new
+                    chat, so the previous chat's `isNearBottom` and scroll position
+                    can never carry over. Reordering keeps the same id, so an
+                    inbound in the active chat still does not disturb the view.
+                    Sorun 11/12: pane'de TEK thread kökü vardır; secim onun
+                    icerigini degistirir, yeni pane EKLEMEZ. */}
                 <ChatThread
-                  key={selectedConv.id}
+                  conversationKey={selectedConv.id}
                   messages={activeMessages}
                   loading={activeChatLoading}
                   error={activeMessagesError}

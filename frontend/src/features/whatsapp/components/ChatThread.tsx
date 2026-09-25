@@ -87,6 +87,13 @@ export interface ChatThreadProps {
   onRetryLoad?: () => void;
   /** Eski sayfa (history pagination) basarisiz mi — mevcut mesajlar korunur. */
   pagingError?: boolean;
+  /**
+   * Identity of the conversation currently rendered. When it changes, THIS
+   * instance resets itself for the new conversation instead of being destroyed
+   * and rebuilt: the host pane keeps exactly one thread root for its whole
+   * lifetime. Omitting it preserves the previous behaviour (no reset).
+   */
+  conversationKey?: string | number | null;
 }
 
 export const ChatThread: React.FC<ChatThreadProps> = ({
@@ -102,6 +109,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
   error = null,
   onRetryLoad,
   pagingError = false,
+  conversationKey = null,
 }) => {
   const { t, language } = useI18n();
   const containerRef = useRef<HTMLDivElement>(null);
@@ -126,6 +134,11 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
 
   const [isNearBottom, setIsNearBottom] = useState<boolean>(true);
   const [showNewMessagePill, setShowNewMessagePill] = useState<boolean>(false);
+  // Bumped by the conversation-switch reset below so the "open at the newest
+  // message" effect re-runs for a conversation the instance was NOT mounted
+  // with — the instance survives switches, so mount alone is no longer a
+  // position event.
+  const [convEpoch, setConvEpoch] = useState<number>(0);
 
   // Guarantee strictly chronological message order in the thread
   const sortedMessages = React.useMemo(() => {
@@ -630,6 +643,46 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
   const newestKey = sortedMessages.length ? rowKeyOf(sortedMessages[sortedMessages.length - 1]) : null;
   const prevNewestKeyRef = useRef<string | null>(newestKey);
 
+  // ------------------------------------------------------ conversation reset
+  // Switching conversations must NOT destroy and rebuild this subtree. A
+  // rebuild is a deletion, and a deletion that does not complete leaves the
+  // stale root in the pane — production showed one extra ChatThread per
+  // clicked conversation, each frozen on its own chat. Here the instance stays
+  // mounted for the pane's whole lifetime and clears its own per-conversation
+  // state instead, which is exactly the state a fresh mount would have started
+  // with. This is a render-phase state adjustment (React's documented
+  // "adjust state when a prop changes" pattern): React re-renders before
+  // committing, so no intermediate state ever paints.
+  const prevConversationKeyRef = useRef(conversationKey);
+  if (conversationKey !== prevConversationKeyRef.current) {
+    prevConversationKeyRef.current = conversationKey;
+    // legacy scroll/prepend guards
+    isPrependingRef.current = false;
+    pendingPrependRef.current = null;
+    prevScrollHeightRef.current = 0;
+    prevScrollTopRef.current = 0;
+    initialScrollDoneRef.current = false;
+    // inbound detection must not read the switch as a new message
+    prevMessagesCountRef.current = messages.length;
+    prevNewestKeyRef.current = newestKey;
+    setIsNearBottom(true);
+    setShowNewMessagePill(false);
+    // K.19 geometry model
+    heightsRef.current.clear();
+    elsRef.current.clear();
+    scrollTopRef.current = 0;
+    anchorRef.current = null;
+    busyRef.current = false;
+    programmaticRef.current = false;
+    pendingPrependK19Ref.current = null;
+    pendingPinRef.current = null;
+    bottomDistRef.current = Number.POSITIVE_INFINITY;
+    pendingRORef.current = false;
+    winRef.current = { start: 0, end: -1 };
+    setWin({ start: 0, end: -1 });
+    setConvEpoch((n) => n + 1);
+  }
+
   // Smart Auto-Scroll when new messages arrive at the end
   useEffect(() => {
     const isNewMessageAdded =
@@ -649,7 +702,12 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
     }
   }, [sortedMessages, isNearBottom, geomOp]);
 
-  // Initial scroll to bottom on mount or load.
+  // Initial scroll to bottom on mount, on load finishing, on a conversation
+  // switch (convEpoch) — the instance is reused across switches — and on the
+  // chat first getting content. The last one is not redundant: a message can
+  // arrive in an empty chat with no `loading` transition (realtime inbound),
+  // and nothing else would take the thread to its newest message there.
+  const hasContent = sortedMessages.length > 0;
   useEffect(() => {
     if (!loading && sortedMessages.length > 0 && isNearBottom) {
       if (virtualizeRef.current) { fsCtxRef.current = 'passive'; geomOp('initial', { pin: 'bottom', affected: [] }); }
@@ -657,7 +715,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
     }
     initialScrollDoneRef.current = true;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loading, virtualize]);
+  }, [loading, virtualize, convEpoch, hasContent]);
 
   const scrollToBottom = () => {
     if (virtualizeRef.current) geomOp('bottom', { pin: 'bottom' });
