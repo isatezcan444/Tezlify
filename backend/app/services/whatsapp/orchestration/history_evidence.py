@@ -13,6 +13,10 @@ Strict Invariants:
    Step 2: A subsequent on-demand request with updated anchor returns exactly 0 messages with provider_status == 'OK'.
    Without this two-step confirmation, provider_exhausted is NEVER set to TRUE.
 6. 3 consecutive stalled anchors transitions to CURSOR_STALLED, breaking pagination loops.
+7. UNAVAILABLE != EXHAUSTED. A recent TIMEOUT/PROVIDER_ERROR licenses
+   `is_provider_recently_unresponsive` (skip a round-trip that is known to be futile
+   right now) but NEVER licenses exhaustion. The two predicates are deliberately
+   separate and must not be merged.
 
 `provider_status` contract (Phase 2, H-4) — these three MUST stay distinguishable:
 
@@ -56,6 +60,61 @@ def _table_name(db: AsyncSession) -> str:
     return "whatsapp_private.history_sync_states"
 
 
+# How long a (session, jid) whose last provider round-trip ended in TIMEOUT /
+# PROVIDER_ERROR is treated as "provider currently unresponsive".
+#
+# This is NOT an exhaustion signal and MUST never be confused with one (H-3):
+# a timeout says nothing about whether older messages exist, so it must never
+# set `provider_exhausted`. What it DOES say is that asking again right now will
+# burn the gateway's full provider wait (observed ~15 s) and fail the same way.
+# Observed live: 26 rows stuck in state=TIMEOUT with timeout_count up to 5, each
+# request paying ~15 s and surfacing a 502, because nothing ever acted on the
+# recorded timeouts. The cooldown lets a later attempt retry once the phone may
+# be reachable again, while refusing to re-pay the stall on every single open.
+PROVIDER_UNAVAILABLE_COOLDOWN_S = 300
+
+
+async def is_provider_recently_unresponsive(
+    db: AsyncSession, jid: str, session_id: Optional[str] = None,
+    cooldown_s: int = PROVIDER_UNAVAILABLE_COOLDOWN_S,
+) -> bool:
+    """True if the LAST provider round-trip for this (session, jid) failed and is recent.
+
+    Deliberately separate from `is_history_exhausted_or_stalled`: that predicate
+    answers "is there provably nothing older?", which a timeout can never prove.
+    This one answers "is asking again right now known to be futile?", which a
+    recent timeout/error DOES establish.
+
+    Callers must only use this to skip a round-trip when they already have local
+    rows to serve. Skipping while holding zero rows would turn a retryable
+    provider outage into a false "this conversation is empty".
+    """
+    if not jid or not session_id:
+        return False
+    try:
+        evidence = await get_history_evidence(db, jid, session_id=session_id)
+    except Exception as exc:  # fail-open: never let an evidence read block serving rows
+        logger.debug("Provider-unresponsive check failed for %s: %s", jid, exc)
+        return False
+
+    if evidence.get("state") not in ("TIMEOUT", "PROVIDER_ERROR"):
+        return False
+
+    last_attempt = evidence.get("last_attempt_at")
+    if last_attempt is None:
+        return False
+    if isinstance(last_attempt, str):
+        try:
+            last_attempt = datetime.fromisoformat(last_attempt)
+        except ValueError:
+            return False
+    if last_attempt.tzinfo is None:
+        last_attempt = last_attempt.replace(tzinfo=timezone.utc)
+
+    age_s = (datetime.now(timezone.utc) - last_attempt).total_seconds()
+    return 0 <= age_s < cooldown_s
+
+
 async def get_history_evidence(
     db: AsyncSession, jid: str, session_id: Optional[str] = None
 ) -> Dict[str, Any]:
@@ -86,6 +145,7 @@ async def get_history_evidence(
         "has_more": True,
         "stall_count": 0,
         "completed_at": None,
+        "last_attempt_at": None,
     }
     if not jid or not session_id:
         return default_resp
@@ -94,7 +154,7 @@ async def get_history_evidence(
         tbl = _table_name(db)
         stmt = text(f"""
             SELECT state, provider_checked, provider_exhausted, provider_msgs_returned,
-                   has_more, stall_count, completed_at
+                   has_more, stall_count, completed_at, last_attempt_at
             FROM {tbl}
             WHERE session_id = :sid AND jid = :jid
         """)
@@ -104,7 +164,7 @@ async def get_history_evidence(
         if not row:
             return default_resp
 
-        st, p_checked, p_exhausted, p_msgs, h_more, stalls, comp_at = row
+        st, p_checked, p_exhausted, p_msgs, h_more, stalls, comp_at, last_attempt = row
         normalized_st = "NOT_CHECKED" if (not st or st in ("NOT_CHECKED", "NEVER_CHECKED")) else st
         return {
             "state": normalized_st,
@@ -114,6 +174,7 @@ async def get_history_evidence(
             "has_more": bool(h_more),
             "stall_count": int(stalls or 0),
             "completed_at": comp_at,
+            "last_attempt_at": last_attempt,
         }
     except Exception as exc:
         logger.debug("Failed to retrieve history evidence for %s: %s", jid, exc)

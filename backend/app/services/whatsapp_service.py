@@ -57,6 +57,7 @@ logger = logging.getLogger(__name__)
 from backend.app.services.whatsapp.exceptions import (
     EventOwnerUnresolved,
     NoWhatsAppSession,
+    WhatsAppHistoryTimeout,
     WhatsAppRelinkRequired,
 )
 from backend.app.services.whatsapp.repositories.contacts import (
@@ -107,6 +108,7 @@ from backend.app.services.whatsapp.orchestration.sessions import (
 from backend.app.services.whatsapp.orchestration.history_evidence import (
     get_history_evidence,
     is_history_exhausted_or_stalled,
+    is_provider_recently_unresponsive,
 )
 
 
@@ -592,6 +594,46 @@ async def _hydrate_messages_on_demand(
     )
 
 
+async def _hydrate_or_tolerate_provider_timeout(
+    db: AsyncSession, owner: str, conv: Conversation, limit: int,
+    *, have_rows: bool,
+    before_ts_ms: Optional[int] = None,
+    oldest_msg_id: Optional[str] = None,
+    oldest_msg_from_me: Optional[bool] = None,
+) -> List[Message]:
+    """One on-demand provider round-trip, where a timeout must not destroy local data.
+
+    H-3 keeps a full provider timeout retryable (a timeout proves nothing about
+    completeness), and that is preserved: the evidence still records TIMEOUT and
+    the round-trip is still re-attempted later.
+
+    What a timeout must NOT do is throw away messages we already loaded. The
+    endpoint maps an escaping exception to 502, so a provider outage used to make
+    a conversation with real local rows render as an error — the rows existed but
+    were discarded. When `have_rows` is true we therefore serve what we have and
+    leave `has_more` untouched (still true: we genuinely do not know).
+
+    With `have_rows` false the exception still propagates, because there the
+    alternative is returning an empty list — i.e. claiming "no messages exist" —
+    which is exactly the falsehood the 502 exists to prevent.
+    """
+    try:
+        return await _hydrate_messages_on_demand(
+            db, owner, conv, limit,
+            before_ts_ms=before_ts_ms,
+            oldest_msg_id=oldest_msg_id,
+            oldest_msg_from_me=oldest_msg_from_me,
+        )
+    except WhatsAppHistoryTimeout:
+        if not have_rows:
+            raise
+        logger.warning(
+            "Provider history timed out (conv=%s); serving local rows instead of failing",
+            conv.id,
+        )
+        return []
+
+
 async def _history_evidence_session_id(
     db: AsyncSession, user_id: str, conv: Conversation
 ) -> Optional[str]:
@@ -691,10 +733,36 @@ async def get_messages(
                                 db, j_val, session_id=history_session_id
                             ):
                                 should_skip_provider = True
+                            # A recent provider TIMEOUT/PROVIDER_ERROR means asking again
+                            # right now would re-pay the gateway's whole provider wait
+                            # (~15 s observed) and fail identically. Skipping is allowed
+                            # ONLY while we hold local rows: with zero rows the request
+                            # must stay a retryable failure rather than a false "empty".
+                            #
+                            # Distinct from sync.py's in-memory `_history_jid_cooldown`,
+                            # which only guards the kill-switched background sweep. This
+                            # one guards the user-facing on-demand path and is backed by
+                            # durable evidence, so it survives restarts and is shared
+                            # across workers.
+                            elif (
+                                rows
+                                and j_val
+                                and history_session_id
+                                and await is_provider_recently_unresponsive(
+                                    db, j_val, session_id=history_session_id
+                                )
+                            ):
+                                logger.info(
+                                    "On-demand provider request skipped (conv=%s): provider recently unresponsive",
+                                    conv.id,
+                                )
+                                should_skip_provider = True
 
                     if len(rows) < page_size and not should_skip_provider:
                         if not rows and before is None:
-                            older = await _hydrate_messages_on_demand(db, user_id, conv, page_size)
+                            older = await _hydrate_or_tolerate_provider_timeout(
+                                db, user_id, conv, page_size, have_rows=False
+                            )
                             if older:
                                 res = await db.execute(base)
                                 rows = list(res.scalars().all())
@@ -709,11 +777,12 @@ async def get_messages(
                             anchor_id = anchor.wa_message_id if anchor else None
                             anchor_from_me = (anchor.direction == MessageDirection.OUTBOUND) if anchor else None
                             if cursor_ms is not None:
-                                older = await _hydrate_messages_on_demand(
+                                older = await _hydrate_or_tolerate_provider_timeout(
                                     db,
                                     user_id,
                                     conv,
                                     page_size - len(rows),
+                                    have_rows=bool(rows),
                                     before_ts_ms=cursor_ms,
                                     oldest_msg_id=anchor_id,
                                     oldest_msg_from_me=anchor_from_me,

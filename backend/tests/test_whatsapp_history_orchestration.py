@@ -20,6 +20,10 @@ from backend.app.models.conversation import Conversation, ConversationStatus
 from backend.app.models.message import Message, MessageDirection, ConversationMessageStatus, MessageType
 from backend.app.models.whatsapp_session import WhatsAppSession, SessionStatus
 from backend.app.services import whatsapp_service as ws
+from backend.app.services.whatsapp.exceptions import WhatsAppHistoryTimeout
+from backend.app.services.whatsapp.orchestration.history_evidence import (
+    record_on_demand_provider_result,
+)
 
 
 @asynccontextmanager
@@ -28,6 +32,37 @@ async def make_test_db(tmp_path, name="orch_test.db"):
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # history_sync_states is created by migration, not by a SQLAlchemy model,
+        # so raw-SQL readers/writers need it present explicitly.
+        from sqlalchemy import text
+        await conn.execute(
+            text("""
+                CREATE TABLE IF NOT EXISTS history_sync_states (
+                    session_id TEXT NOT NULL,
+                    jid VARCHAR(100) NOT NULL,
+                    oldest_msg_id VARCHAR(100),
+                    oldest_timestamp_ms BIGINT,
+                    has_more BOOLEAN NOT NULL DEFAULT 1,
+                    completed_at TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    state VARCHAR(50) DEFAULT 'NOT_CHECKED',
+                    stall_count INTEGER DEFAULT 0,
+                    timeout_count INTEGER DEFAULT 0,
+                    error_count INTEGER DEFAULT 0,
+                    last_attempt_at TIMESTAMP,
+                    last_success_at TIMESTAMP,
+                    last_error TEXT,
+                    provider_checked BOOLEAN NOT NULL DEFAULT 0,
+                    provider_checked_at TIMESTAMP,
+                    provider_exhausted BOOLEAN DEFAULT 0,
+                    provider_signal VARCHAR(32),
+                    provider_msgs_returned INTEGER DEFAULT 0,
+                    provider_cursor_used VARCHAR(255),
+                    last_sweep_count INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (session_id, jid)
+                )
+            """)
+        )
     try:
         yield sessions
     finally:
@@ -1038,3 +1073,171 @@ async def test_realtime_delivery_guarantee_sequence(tmp_path, monkeypatch):
                 assert "seq-msg-C" in ids
                 assert "seq-hist-1" in ids
                 assert len(ids) == 4, "Zero messages must be lost during the sequence"
+
+
+# ---------------------------------------------------------------------------
+# Provider-outage resilience (regression: a provider TIMEOUT used to destroy
+# local messages and surface a 502 on every conversation open)
+# ---------------------------------------------------------------------------
+
+async def _seed_conversation_with_rows(sessions, owner, rows: int):
+    """Creates a connected line + a contact + a conversation holding `rows` messages."""
+    async with sessions() as db:
+        line = WhatsAppSession(
+            user_id=owner,
+            gateway_id=str(uuid.uuid4()),
+            session_name="Test Line",
+            status=SessionStatus.CONNECTED,
+            phone_number="+905551112233",
+            is_active=True,
+        )
+        db.add(line)
+        await db.flush()
+        contact = Contact(user_id=owner, phone_e164="+905551112233")
+        db.add(contact)
+        await db.flush()
+        conv = Conversation(
+            user_id=owner, contact_id=contact.id, channel="WHATSAPP", session_id=line.id
+        )
+        db.add(conv)
+        await db.flush()
+        t0 = datetime(2026, 1, 1, 10, 0, 0)
+        for i in range(rows):
+            db.add(Message(
+                user_id=owner,
+                conversation_id=conv.id,
+                direction=MessageDirection.INBOUND,
+                status=ConversationMessageStatus.RECEIVED,
+                sender_phone="+905551112233",
+                recipient_phone="ME",
+                external_timestamp=t0 + timedelta(seconds=i),
+                body=f"msg-{i}",
+                wa_message_id=f"wa-{i}",
+            ))
+        await db.commit()
+        return conv.id
+
+
+def _timeout_gateway():
+    """A gateway whose on-demand provider fetch always times out with zero rows.
+
+    This is the observed production shape: the phone never answers the
+    fetchMessageHistory PDO, so the gateway waits its full provider window and
+    reports provider_status=TIMEOUT with no messages.
+    """
+    return AsyncMock(return_value={"messages": [], "provider_status": "TIMEOUT"})
+
+
+@pytest.mark.asyncio
+async def test_21_provider_timeout_serves_local_rows(tmp_path, monkeypatch):
+    """21. A provider TIMEOUT must not discard messages we already have.
+
+    Before the fix the timeout propagated out of get_messages and the endpoint
+    turned it into a 502, so a conversation whose rows were sitting in the DB
+    rendered as an error instead of showing them.
+    """
+    owner = str(uuid.uuid4())
+    async with make_test_db(tmp_path) as sessions:
+        conv_id = await _seed_conversation_with_rows(sessions, owner, rows=8)
+        async with sessions() as db:
+            monkeypatch.setattr(
+                ws, "_history_evidence_session_id", AsyncMock(return_value=str(uuid.uuid4()))
+            )
+            gw_mock = _timeout_gateway()
+            monkeypatch.setattr(ws.gw, "get_messages", gw_mock)
+
+            res = await ws.get_messages(db, owner, conv_id, limit=50)
+
+            assert gw_mock.called, "the provider round-trip must still be attempted"
+            assert len(res["messages"]) == 8, "local rows must survive a provider timeout"
+            assert res["messages"][-1]["body"] == "msg-7"
+            # A timeout says nothing about completeness, so we must not claim the
+            # history is complete (H-3 preserved).
+            assert res["has_more"] is True
+
+
+@pytest.mark.asyncio
+async def test_22_provider_timeout_without_rows_still_fails(tmp_path, monkeypatch):
+    """22. With nothing to show, a timeout must stay an explicit retryable failure.
+
+    Returning an empty page here would assert "this conversation has no
+    messages", which a timeout cannot prove — that is the falsehood the 502
+    exists to prevent.
+    """
+    owner = str(uuid.uuid4())
+    async with make_test_db(tmp_path) as sessions:
+        conv_id = await _seed_conversation_with_rows(sessions, owner, rows=0)
+        async with sessions() as db:
+            monkeypatch.setattr(ws.gw, "get_messages", _timeout_gateway())
+
+            with pytest.raises(WhatsAppHistoryTimeout):
+                await ws.get_messages(db, owner, conv_id, limit=50)
+
+
+@pytest.mark.asyncio
+async def test_23_recent_timeout_skips_provider_round_trip(tmp_path, monkeypatch):
+    """23. A provider that just timed out is not re-asked while local rows exist.
+
+    Every open used to pay the gateway's full provider wait (~15 s in production)
+    and then fail, because nothing acted on the recorded timeouts. The cooldown
+    skips a round-trip that is known to be futile right now — without ever
+    treating the timeout as exhaustion.
+    """
+    owner = str(uuid.uuid4())
+    async with make_test_db(tmp_path) as sessions:
+        conv_id = await _seed_conversation_with_rows(sessions, owner, rows=8)
+        async with sessions() as db:
+            sid = str(uuid.uuid4())
+            jid = ws._phone_to_jid("+905551112233")
+            monkeypatch.setattr(ws, "_history_evidence_session_id", AsyncMock(return_value=sid))
+
+            # A timeout recorded moments ago for exactly this (session, jid).
+            await record_on_demand_provider_result(
+                db, session_id=sid, jid=jid, requested_count=50,
+                provider_status="TIMEOUT", gw_msgs=[],
+            )
+            await db.commit()
+
+            gw_mock = _timeout_gateway()
+            monkeypatch.setattr(ws.gw, "get_messages", gw_mock)
+
+            res = await ws.get_messages(db, owner, conv_id, limit=50)
+
+            assert not gw_mock.called, "provider must be skipped while recently unresponsive"
+            assert len(res["messages"]) == 8
+            assert res["has_more"] is True
+
+
+@pytest.mark.asyncio
+async def test_24_cooldown_never_masks_a_real_exhaustion(tmp_path, monkeypatch):
+    """24. The cooldown is an availability signal only — it never sets exhaustion.
+
+    A genuinely exhausted conversation must still be reported as exhausted, and a
+    timeout must never flip provider_exhausted to true.
+    """
+    owner = str(uuid.uuid4())
+    async with make_test_db(tmp_path) as sessions:
+        conv_id = await _seed_conversation_with_rows(sessions, owner, rows=8)
+        async with sessions() as db:
+            sid = str(uuid.uuid4())
+            jid = ws._phone_to_jid("+905551112233")
+            monkeypatch.setattr(ws, "_history_evidence_session_id", AsyncMock(return_value=sid))
+
+            await record_on_demand_provider_result(
+                db, session_id=sid, jid=jid, requested_count=50,
+                provider_status="TIMEOUT", gw_msgs=[],
+            )
+            await db.commit()
+
+            from backend.app.services.whatsapp.orchestration.history_evidence import (
+                get_history_evidence,
+                is_history_exhausted_or_stalled,
+                is_provider_recently_unresponsive,
+            )
+
+            evidence = await get_history_evidence(db, jid, session_id=sid)
+            assert evidence["state"] == "TIMEOUT"
+            assert evidence["provider_exhausted"] is False
+            # Availability: yes, skip. Exhaustion: no, never.
+            assert await is_provider_recently_unresponsive(db, jid, session_id=sid) is True
+            assert await is_history_exhausted_or_stalled(db, jid, session_id=sid) is False
