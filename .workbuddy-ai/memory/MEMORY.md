@@ -104,4 +104,6 @@ no test runner), `real-browser-cdp-verification`, `stack-latency-parity-diagnosi
 `cross-tenant-lookup-isolation`, `symlink-served-release-fast-forward-deploy`,
 `bootstrap-model-registration-parity` (a hand-provisioned test DB must import **every** model module,
 not just `app/models/` — otherwise tables are silently absent and unrelated tests die on "no such table";
-add a `Base.metadata.tables - actual` hard gate).
+add a `Base.metadata.tables - actual` hard gate), `tezlify-push-verification-gate` (the exact 3-suite
+pre-push sequence + the four sandbox traps that fake a signal: dev-DB prohibition, `tmp_path` EEXIST,
+the Vite bulk-delete guard, and piped output masking the exit code).
