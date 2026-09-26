@@ -81,8 +81,9 @@ Curated index only. Detail lives elsewhere, deliberately:
 
 ## Skills covering reusable procedures
 
-`git-checkout-prod-partial-service-deploy` (subset/deferred deploy, rebase-and-delta, `--no-deps`, scoped
-`git stash push -- <path>` falsification), `esbuild-frontend-verification` (executed frontend checks with
+`git-checkout-prod-partial-service-deploy` (subset/deferred deploy, rebase-and-delta, `--no-deps`),
+`scoped-stash-falsification` (prove a fix is load-bearing / a failure is pre-existing by stashing only
+the source and re-running), `esbuild-frontend-verification` (executed frontend checks with
 no test runner), `real-browser-cdp-verification`, `stack-latency-parity-diagnosis`,
 `non-destructive-schema-constraint-migration`, `hermetic-service-process-harness`,
 `asymmetric-resource-guard-detection`, `client-lifecycle-cancels-server-promotion`,
