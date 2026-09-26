@@ -158,14 +158,35 @@ async def find_whatsapp_conversation(
 def apply_conversation_last_message(
     conv: Conversation, ts: Optional[datetime], summary: str
 ) -> bool:
-    """Sohbetin son mesaj alanlarini ZAMAN DAMGALI kurala gore gunceller."""
-    if not should_apply_last_message(conv.last_message_at, ts, summary):
-        return False
-    conv.last_message_preview = summary[:500]
+    """Sohbetin son mesaj alanlarini ZAMAN DAMGALI kurala gore gunceller.
+
+    `last_message_at` ve `last_message_preview` IKI AYRI karardir ve tek bir
+    boolean'a baglanmamalidir:
+
+    - `last_message_at` = AKTIVITE damgasi. Her mesaj bir aktivitedir — metni
+      olsun olmasin. Bir ifade, "bu mesaji sildiniz", grup ayari uyarisi,
+      "X gruba eklendi" bildirimi, kullanici adi duyurusu veya arama kaydi
+      metin tasimaz. Eski kod bos ozette damgayi da reddediyordu; bu yuzden
+      tam olarak o sohbetler listede eski yerinde donuyordu (canli olcum
+      2026-09-26: "Hat 1" 09:35:56'da kilitli kaldi, en yeni mesaji 09:44:25).
+    - `last_message_preview` = METIN onizlemesi. Bos ozet mevcut onizlemeyi
+      KORUR; karar noktasi `should_apply_last_message`.
+
+    `ts is None` (realtime mesaj veya onizleme tamiri) damgayi ILERLETMEZ, boylece
+    "gelecek zaman damgasi tohumlama" yasagi (Faz 10 RC-1) korunur.
+    """
+    previous_ts = conv.last_message_at
     ts_naive = as_naive_utc(ts)
-    if ts_naive is not None:
+    apply_preview = should_apply_last_message(previous_ts, ts, summary)
+
+    changed = False
+    if ts_naive is not None and (previous_ts is None or ts_naive > previous_ts):
         conv.last_message_at = ts_naive
-    return True
+        changed = True
+    if apply_preview:
+        conv.last_message_preview = summary[:500]
+        changed = True
+    return changed
 
 
 def apply_conversation_unread_count(

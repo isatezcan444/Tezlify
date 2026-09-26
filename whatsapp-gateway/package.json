@@ -9,7 +9,7 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
-    "test": "node scripts/test-gateway-auth.mjs && node scripts/test-issue-fixes.mjs && node scripts/test-outbound-races.mjs && node scripts/test-bounded-cache.mjs && node scripts/test-contact-cache.mjs && node scripts/test-contact-hydration.mjs && node scripts/test-chat-activity-order.mjs && node scripts/test-diagnostics.mjs"
+    "test": "node scripts/test-gateway-auth.mjs && node scripts/test-issue-fixes.mjs && node scripts/test-outbound-races.mjs && node scripts/test-bounded-cache.mjs && node scripts/test-contact-cache.mjs && node scripts/test-contact-hydration.mjs && node scripts/test-chat-activity-order.mjs && node scripts/test-system-content-preview.mjs && node scripts/test-diagnostics.mjs"
   },
   "dependencies": {
     "@whiskeysockets/baileys": "7.0.0-rc14",

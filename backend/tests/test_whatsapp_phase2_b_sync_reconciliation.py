@@ -248,6 +248,40 @@ async def test_conversation_only_chunk_persists_state():
 
 
 # ---------------------------------------------------------------------------
+# Metinsiz son mesaj (sistem bildirimi / ifade / arama) — damga YINE de uygulanir
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_snapshot_with_empty_preview_still_applies_timestamp():
+    """Onizlemesi bos bir snapshot aktivite damgasini DUSURMEMELI.
+
+    Son mesaji bir grup ayari bildirimi, "X gruba eklendi", kullanici adi
+    duyurusu, bir ifade, "bu mesaji sildiniz" veya bir arama kaydi olan sohbet
+    metinsiz gelir (`normalize_preview_text('TEXT','')` -> ""). Damgayi
+    `gw_summary` kapisinin arkasina koymak tam olarak o sohbetleri hic damgasiz
+    birakiyordu; frontend/backend `NULLS LAST` ile siraladigi icin liste
+    dibine dusuyorlardi. Prod olcumu 2026-09-26: 113 sohbetin 21'i bos
+    onizlemeli, 5'i hic damgasiz.
+    """
+    jid = generic_jid()
+    t1 = datetime.now(timezone.utc) - timedelta(minutes=30)
+    orch = WhatsAppSyncOrchestrator()
+    async with AsyncSessionLocal() as db:
+        await orch._persist_chat_snapshot(
+            db,
+            U1,
+            [{"jid": jid, "name": "System Only", "last_message_at": iso(t1), "last_message_preview": ""}],
+        )
+    state = await snapshot_conversation(jid)
+    got = state["last_message_at"]
+    assert got is not None, "bos onizleme aktivite damgasini dusurmemeli"
+    expected = t1.replace(tzinfo=None).replace(microsecond=0)
+    assert got.replace(microsecond=0) == expected, (
+        f"damga gateway degeri olmali: beklenen {expected!r}, alinan {got!r}"
+    )
+    assert not state["last_message_preview"], "onizleme uydurulmamali"
+
+
+# ---------------------------------------------------------------------------
 # C — message-only chunk: mapped + unmapped conversations
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio

@@ -500,13 +500,45 @@ def test_apply_last_message_ignores_older_timestamp():
     assert conv.last_message_at == newer
 
 
-def test_apply_last_message_empty_summary_is_noop():
+def test_apply_last_message_empty_summary_keeps_preview_but_advances_stamp():
+    """Metinsiz mesaj da bir AKTIVITEDIR.
+
+    Bos ozet yalnizca ONIZLEMEYI korur; `last_message_at` ilerler. Eski kod tek
+    bir boolean ile ikisini birlikte reddediyordu; bu yuzden son mesaji bir
+    ifade / "bu mesaji sildiniz" / grup ayari bildirimi / arama kaydi olan
+    sohbetler listede eski yerinde donuyordu (canli olcum 2026-09-26: "Hat 1"
+    09:35:56'da kilitli kaldi, en yeni mesaji 09:44:25).
+    """
     from datetime import datetime
 
     conv = _conv()
     ws._apply_last_message(conv, datetime(2025, 3, 1, 12, 0, 0), "DOLU")
-    assert ws._apply_last_message(conv, datetime(2025, 3, 2, 12, 0, 0), "") is False
+    newer = datetime(2025, 3, 2, 12, 0, 0)
+
+    assert ws._apply_last_message(conv, newer, "") is True
+    assert conv.last_message_preview == "DOLU", "bos ozet mevcut onizlemeyi KORUR"
+    assert conv.last_message_at == newer, "metinsiz mesaj aktivite damgasini ilerletir"
+
+
+def test_apply_last_message_empty_summary_older_ts_is_noop():
+    """Metinsiz + eski zaman damgasi hicbir seyi degistirmez."""
+    from datetime import datetime
+
+    conv = _conv()
+    newer = datetime(2025, 3, 2, 12, 0, 0)
+    ws._apply_last_message(conv, newer, "DOLU")
+
+    assert ws._apply_last_message(conv, datetime(2025, 3, 1, 12, 0, 0), "") is False
+    assert conv.last_message_at == newer
     assert conv.last_message_preview == "DOLU"
+
+
+def test_apply_last_message_no_timestamp_never_seeds_stamp():
+    """`ts=None` (onizleme tamiri) damgayi TOHUMLAMAZ — Faz 10 RC-1 korunur."""
+    conv = _conv()
+    assert ws._apply_last_message(conv, None, "Tamir") is True
+    assert conv.last_message_preview == "Tamir"
+    assert conv.last_message_at is None, "gelecek zaman damgasi tohumlanmamali"
 
 
 def test_apply_last_message_newer_timestamp_wins():

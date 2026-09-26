@@ -55,6 +55,7 @@ import {
   classifyMessageType,
   hasRecognizedContent,
   summarizeWaMessage,
+  systemContentMarker,
   buildMediaContent,
 } from './messages/message-classifier.js';
 
@@ -1004,7 +1005,13 @@ export function createSessionManager({
       if (chatMsgs.length > 2000) {
         chatMsgs.splice(0, chatMsgs.length - 2000);
       }
-      this._touchChat(session, key, buildChatPreview(record, isGroup), record.created_at);
+      // Metinsiz sistem turleri (arama / ifade / silinmis mesaj / grup bildirimi)
+      // `buildChatPreview`ten BOS doner. Onizlemeyi bos birakmak satiri UI'da bos
+      // gosterir VE backend'in aktivite damgasi kapisini tetikler.
+      const chatPreview =
+        buildChatPreview(record, isGroup) ||
+        normalizePreviewText('TEXT', systemContentMarker(msg) || '');
+      this._touchChat(session, key, chatPreview, record.created_at);
       const chat = chats.get(key);
       if (chat && !fromMe) chat.unread_count = (chat.unread_count || 0) + 1;
       if (!lidHold) {

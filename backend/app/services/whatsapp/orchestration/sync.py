@@ -890,6 +890,15 @@ class WhatsAppSyncOrchestrator:
                     apply_last_message(conv, gw_ts, gw_summary)
                 elif not conv.last_message_preview:
                     apply_last_message(conv, None, gw_summary)
+            elif gw_ts is not None and (conv.last_message_at is None or gw_ts > conv.last_message_at):
+                # Bos onizleme "aktivite yok" DEMEK DEGILDIR. Son mesaji bir sistem
+                # bildirimi (grup ayari, "X eklendi", kullanici adi duyurusu), bir
+                # ifade, "bu mesaji sildiniz" veya bir arama kaydi olan sohbet
+                # metinsiz gelir ama gecerli bir damga tasir. Damgayi `gw_summary`
+                # kapisinin arkasina koymak tam olarak o sohbetleri listenin dibine
+                # atiyordu (prod olcumu 2026-09-26: 113 sohbetin 21'i bos
+                # onizlemeli). Onizleme korunur; damga ilerler.
+                conv.last_message_at = gw_ts
             conv.is_group = bool(item.get("is_group")) or "@g.us" in jid_str
             if "archived" in item:
                 conv.is_archived = bool(item.get("archived"))
@@ -1737,6 +1746,9 @@ class WhatsAppSyncOrchestrator:
                     apply_last_message(conv, gw_ts, gw_summary)
                 elif not conv.last_message_preview:
                     apply_last_message(conv, None, gw_summary)
+            elif gw_ts is not None and (conv.last_message_at is None or gw_ts > conv.last_message_at):
+                # Bkz. bulk snapshot yolu: metinsiz son mesaj da bir aktivitedir.
+                conv.last_message_at = gw_ts
             conv.is_group = bool(item.get("is_group")) or "@g.us" in jid_str
             if "archived" in item:
                 conv.is_archived = bool(item.get("archived"))

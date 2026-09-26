@@ -560,17 +560,24 @@ async def test_list_conversations_no_n_plus_one():
 async def test_apply_last_message_rules():
     async with AsyncSessionLocal() as db:
         conv = await _ensure_conversation(db, TEST_USER, MOCK_JID)
-        # bos ozet yazmaz
-        assert _apply_last_message(conv, _ts(10, 0), "") is False
-        # ilk ozet yazilir
-        assert _apply_last_message(conv, _ts(10, 0), "Selam") is True
-        # esit/eski zaman damgasi ezmez (duplicate-safe)
-        assert _apply_last_message(conv, _ts(10, 0), "Selam tekrar") is False
+        # 1) Metinsiz mesaj (ifade / silinmis mesaj / grup bildirimi / arama):
+        #    onizleme YAZILMAZ ama aktivite damgasi ILERLER.
+        assert _apply_last_message(conv, _ts(10, 0), "") is True
+        assert conv.last_message_at == _ts(10, 0)
+        assert not conv.last_message_preview
+        # 2) Ayni damgada gelen ozet yazilmaz — `should_apply_last_message` esit
+        #    damgayi "kanitlanabilir sekilde yeni degil" sayar (duplicate-safe).
+        assert _apply_last_message(conv, _ts(10, 0), "Selam") is False
+        # 3) Daha yeni damgali ozet yazilir
+        assert _apply_last_message(conv, _ts(10, 1), "Selam") is True
+        assert conv.last_message_preview == "Selam"
+        # 4) esit/eski zaman damgasi ezmez (duplicate-safe)
+        assert _apply_last_message(conv, _ts(10, 1), "Selam tekrar") is False
         assert _apply_last_message(conv, _ts(9, 59), "Eski") is False
-        # daha yeni yazar
-        assert _apply_last_message(conv, _ts(10, 1), "Görüşürüz") is True
+        # 5) daha yeni yazar
+        assert _apply_last_message(conv, _ts(10, 2), "Görüşürüz") is True
         assert conv.last_message_preview == "Görüşürüz"
-        assert conv.last_message_at == _ts(10, 1)
+        assert conv.last_message_at == _ts(10, 2)
         await db.rollback()
 
 

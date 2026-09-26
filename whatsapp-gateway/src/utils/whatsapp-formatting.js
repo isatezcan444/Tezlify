@@ -15,6 +15,16 @@ export const TYPE_PREVIEW_LABELS = {
   LOCATION: '📍 Konum',
   CONTACT: '👤 Kişi kartı',
   TEMPLATE: 'Şablon mesajı',
+  // Metinsiz sistem turleri. Bunlar `classifyMessageType`ta 'TEXT'e duserdi,
+  // bos govdeyle birlikte preview BOS kalirdi; bu yuzden son mesaji bir arama /
+  // ifade / silinmis mesaj / grup bildirimi olan sohbetler listede ne bir sey
+  // gosteriyordu ne de aktivite damgasini ilerletiyordu.
+  CALL: '📞 Arama',
+  REACTION: '❤️ İfade',
+  REVOKED: 'Silinmiş mesaj',
+  SYSTEM: 'Sistem mesajı',
+  POLL: '📊 Anket',
+  EVENT: '📅 Etkinlik',
   UNKNOWN: 'Mesaj',
   OTHER: 'Mesaj',
 };

@@ -36,6 +36,16 @@ const TYPE_LABEL_KEYS: Record<string, string> = {
   LOCATION: 'whatsapp.previewLocation',
   CONTACT: 'whatsapp.previewContact',
   TEMPLATE: 'whatsapp.previewTemplate',
+  // Metinsiz sistem türleri. Gateway `summarizeWaMessage` bunları `[CALL]`,
+  // `[REACTION]`, `[REVOKED]`, `[SYSTEM]`, `[POLL]`, `[EVENT]` işaretleriyle
+  // bildirir. Bu satırlar olmadan işaret tanınmaz ve önizleme sessizce genel
+  // 'Mesaj' etiketine düşerdi — backend ve gateway tablolarıyla parite bozulurdu.
+  CALL: 'whatsapp.previewCall',
+  REACTION: 'whatsapp.previewReaction',
+  REVOKED: 'whatsapp.previewRevoked',
+  SYSTEM: 'whatsapp.previewSystem',
+  POLL: 'whatsapp.previewPoll',
+  EVENT: 'whatsapp.previewEvent',
   UNKNOWN: 'whatsapp.previewGeneric',
   OTHER: 'whatsapp.previewGeneric',
 };
@@ -49,6 +59,12 @@ const FALLBACK_LABELS: Record<string, string> = {
   'whatsapp.previewLocation': '📍 Konum',
   'whatsapp.previewContact': '👤 Kişi kartı',
   'whatsapp.previewTemplate': 'Şablon mesajı',
+  'whatsapp.previewCall': '📞 Arama',
+  'whatsapp.previewReaction': '❤️ İfade',
+  'whatsapp.previewRevoked': 'Silinmiş mesaj',
+  'whatsapp.previewSystem': 'Sistem mesajı',
+  'whatsapp.previewPoll': '📊 Anket',
+  'whatsapp.previewEvent': '📅 Etkinlik',
   'whatsapp.previewGeneric': 'Mesaj',
 };
 

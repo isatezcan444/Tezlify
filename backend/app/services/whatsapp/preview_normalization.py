@@ -24,6 +24,15 @@ TYPE_PREVIEW_LABELS: Dict[str, str] = {
     "LOCATION": "📍 Konum",
     "CONTACT": "👤 Kişi kartı",
     "TEMPLATE": "Şablon mesajı",
+    # Metinsiz sistem turleri (gateway `summarizeWaMessage` bunlari `[CALL]`,
+    # `[REACTION]`, `[REVOKED]`, `[SYSTEM]`, `[POLL]`, `[EVENT]` isaretleriyle
+    # bildirir). Bu etiketler olmadan isaret taninmiyor ve onizleme bos kaliyordu.
+    "CALL": "📞 Arama",
+    "REACTION": "❤️ İfade",
+    "REVOKED": "Silinmiş mesaj",
+    "SYSTEM": "Sistem mesajı",
+    "POLL": "📊 Anket",
+    "EVENT": "📅 Etkinlik",
     "UNKNOWN": "Mesaj",
     "OTHER": "Mesaj",
 }
