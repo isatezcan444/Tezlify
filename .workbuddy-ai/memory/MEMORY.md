@@ -87,10 +87,15 @@ evidence live in `YYYY-MM-DD.md`** (read the most recent first); subsystem deep-
   patches applied as uncommitted working-tree changes. **That dirt is the deploy marker** — never run
   `git checkout .` / `git reset --hard` / `git clean` there. A later full deploy of `ddbfbf4` should
   find those files already matching.
-- Deployed and live (details in the daily logs): frontend `5916ff1` chat-thread singleton;
-  backend `9981298` 502-on-short-conversation; `6c7214a` ~4 s open-path bound; naming fix
-  `55f994e`/`1030850`/`4bd7791`. Gateway/backend restarts are routine and the line re-attaches via
-  `POST /sessions/restore`.
+- Deployed and live (details in the daily logs): frontend `5916ff1` chat-thread singleton and
+  `8177a2b` i18n missing keys; backend `9981298` 502-on-short-conversation; `6c7214a` ~4 s open-path
+  bound; naming fix `55f994e`/`1030850`/`4bd7791`. Gateway/backend restarts are routine and the line
+  re-attaches via `POST /sessions/restore`.
+- **Frontend release handle:** `frontend_candidate` -> `releases/v20260926_i18n_missing_keys`
+  (live bundle `index-y-X3DlGp.js`, sha256 `52cead01…`); rollback target
+  `v20260926_phase6_8_chatthread_singleton` (`index-3UEtgr4K.js`). Release dirs are **build output
+  only** (`index.html` + `assets/`, ~960 KB) — there is no `node_modules` and no git repo on the host,
+  so the dist is built locally and uploaded with `rsync`.
 - **Residual, by design:** 19 zero-row conversations still 502 (17 no evidence row, 4 NOT_CHECKED,
   2 NO_MESSAGES; `is_history_exhausted_or_stalled` does not treat `NO_MESSAGES` as exhausted). All
   stale (newest 2026-08-27, oldest 2026-03-24) and none in the top 8 by recency.
