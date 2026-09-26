@@ -17,7 +17,55 @@ that satisfies them. `MEMORY.md` is the index; this file is the detail.
   `lead_phone`.** `mapConversation` copies a field only when present: merge is `{...existing, ...mapped}`,
   so an explicit `undefined` ERASES known state ("Kişi kimliği çözülüyor…").
 - **A3 `identity != ordering`.** Sort = activity only: `last_message_at` → `created_at` → `id`.
-  Identity/name/phone presence never affect sort. Message-less conversations sort last.
+  Identity/name/phone presence never affect sort. Message-less conversations sort last. The three tiers
+  agree: gateway `sessionManager.listConversations`, backend `whatsapp_service.list_conversations`
+  (`ORDER BY last_message_at DESC NULLS LAST, id DESC`), frontend `compareConversationsByActivityDesc`
+  (`whatsappOrdering.ts`). `GetConversationActivityTimestamp` returns `0` for a missing
+  `last_message_at` so message-less chats sink — it does NOT fall back to `updated_at`.
+- **A4 The ordering VALUE must be the ABSOLUTE last message, not the last RECEIVED one** (fixed
+  `4fc791a`). WhatsApp Web sorts by `proto.Conversation.conversationTimestamp` (field 12). Baileys' own
+  type doc: `lastMsgRecvTimestamp` = "the last message received from the other party";
+  `lastMsgTimestamp` = "the absolute last message in the chat". `socket-events.js`'s
+  `messaging-history.set` handler used `Number(chat.lastMessageRecvTimestamp || newest?.timestamp_s)` as
+  its FIRST choice, so every chat whose newest message was OUTBOUND sank below its WhatsApp Web
+  position. Precedence is now `resolveChatActivitySeconds()` in `message-store.js`:
+  `conversationTimestamp -> lastMsgTimestamp -> newest local message (sent OR received) ->
+  lastMessageRecvTimestamp`. Coerce via `toPositiveSeconds` — `Number(Long)` is `NaN`, which silently
+  discards a valid stamp. Guard the SCALE too: these are uint64 SECONDS, and the backend only moves
+  `last_message_at` FORWARD (`sync.py` `gw_ts > conv.last_message_at`; `events.py` `last_at >
+  conv.last_message_at`, applied unconditionally outside the preview gate), so a millisecond value would
+  latch a chat to the top permanently.
+- **A5 `messaging-history.set` must apply the same monotonic rule as `chats.update` and `_touchChat`.**
+  History sync arrives in many chunks (28 ingests in one day on production); a late chunk carrying an
+  older stamp must never drag a chat back down. Those two already refused to move a stamp backwards;
+  history sync did not, until `4fc791a`.
+- **A6 The gateway's `chats` and `messagesByChat` are memory-only and are NOT rebuilt on reconnect.**
+  WhatsApp does not resend a history sync for an existing session (log: `First connection, awaiting
+  history sync notification with a 20s timeout` → `History sync finalized`, **0** `History sync
+  ingested`). Measured 2026-09-26: after a restart the gateway held **12 of 113** chats and no messages.
+  So (a) a restart silently discards ordering data and the DB is the only durable copy, (b) a fix whose
+  effect flows through history sync cannot be observed in vivo in the same session, and (c) the
+  gateway's list must never be read as "the current chats".
+- **A7 Sender labels come from the message row, not the contact record.** `ChatBubble.tsx` renders
+  `message.sender_name` / `sender_phone`, frozen at ingest by `_resolveDisplayName()` =
+  `store.contacts` name → `msg.pushName` → phone. `store.contacts` is memory-only too, so a restart used
+  to downgrade group labels to raw phones. Two durable paths: `<sessionDir>/contacts-cache.json` (fast
+  path, loaded before the socket) and `contacts/contact-repository.js` hydration from `public.contacts`
+  scoped by `whatsapp_sessions.gateway_id → user_id` (backstop). Hydrated names enter at `history` rank,
+  so a live `addressbook`/`group_subject` name is never downgraded. `backfill_phone_sender_names`
+  repairs already-degraded rows.
+- **A8 `GET /sessions/{sid}/contacts` is NOT a store health check.** `listContacts()` returns only
+  `name_source in ('addressbook','verified')`, so it reads **0** even with hundreds of `history`-rank
+  names present. Prove store contents via `contacts-cache.json` (mirrors the store) or the `Hydrated
+  contact names from backend database` / `Restored contact names from disk cache` log lines.
+- **A9 Ordering-value provenance in the DB:** message-derived when the chat has local messages
+  (`external_timestamp` is always populated — all 529 rows had it, so the `created_at` ingest fallback is
+  NOT in play), otherwise inherited from the gateway. Measured 2026-09-26 across 113 chats: 24 stamps
+  older than their own newest message (23 with an OUTBOUND newest; worst 36 days), 4 newer, 18 with no
+  local messages. Those message-less chats are exactly where gateway-derived (and previously wrong)
+  stamps live.
+- **A10 `contacts` has no `name_source` column** (`phone_e164`, `display_name`, `lead_id`,
+  `custom_attributes`); source/rank lives only in the gateway store and `mergeContactName()`.
 
 ## B. Unread badge — one policy, two places
 
