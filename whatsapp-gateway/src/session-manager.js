@@ -218,6 +218,9 @@ export function createSessionManager({
         try { session.sock?.end(undefined); } catch (err) { /* ignore */ }
         session.sock = null;
         session.is_phone_online = false;
+        // Persist any name learned since the last debounced write, otherwise a
+        // restart loses exactly the names this cache exists to keep.
+        try { session.store?.contactCache?.flush(); } catch (err) { /* ignore */ }
         if (leaseRepository) leaseReleases.push(leaseCoordinator.releaseLease(session));
       }
       await Promise.allSettled(leaseReleases);
@@ -321,7 +324,10 @@ export function createSessionManager({
         _leaseRetryTimer: null,
         _leaseRenewing: false,
         _leaseValidUntil: 0,
-        store: createSessionStore(),
+        store: createSessionStore({
+          sessionDir: getSessionDir(sessionsDir, id),
+          logger,
+        }),
       };
       await lidRepository.loadLidMappingsFromDb(id, session.store);
       sessions.set(id, session);
@@ -463,7 +469,13 @@ export function createSessionManager({
         session._historyQuietTimer = null;
       }
       session.updated_at = new Date().toISOString();
-      session.store = createSessionStore();
+      // Logout means the next link may be a different WhatsApp account, so the
+      // cached names must not survive onto it.
+      session.store?.contactCache?.clear();
+      session.store = createSessionStore({
+        sessionDir: getSessionDir(sessionsDir, id),
+        logger,
+      });
       mediaStore.clearSessionMedia(id);
       clearSessionHistoryFetches(id);
       resetRetryCounterCache(id);
@@ -907,7 +919,13 @@ export function createSessionManager({
 
     _storeOf(sessionOrId) {
       const session = this._sess(sessionOrId);
-      if (!session.store) session.store = createSessionStore();
+      if (!session.store) {
+        session.store = createSessionStore({
+          sessionDir: getSessionDir(sessionsDir, session.id),
+          sessionPhone: session.phone_number || null,
+          logger,
+        });
+      }
       return session.store;
     },
 

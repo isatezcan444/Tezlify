@@ -102,7 +102,8 @@ The WhatsApp subsystem spans four processes: the **browser frontend**, the **Fas
 | `domain/bounded-cache.js` | Bounded LRU/TTL cache used by retry counter caches. | — |
 | `domain/socket-lifecycle.js` | Generation-based socket-attachment guard. | `SocketLifecycle` |
 | `messages/message-classifier.js` | `classifyMessageType`, `summarizeWaMessage`, `hasRecognizedContent`, `buildMediaContent`. | — |
-| `messages/message-store.js` | `createSessionStore`, `rememberRawMessage`, `lookupRawMessage`, `messageTimestampMs`. `RAW_MESSAGE_STORE_MAX` bounds the in-memory raw-message store. | — |
+| `messages/message-store.js` | `createSessionStore`, `rememberRawMessage`, `lookupRawMessage`, `messageTimestampMs`. `RAW_MESSAGE_STORE_MAX` bounds the in-memory raw-message store. When `sessionDir` is supplied the `contacts` map is wrapped so any mutation schedules a debounced save (see `messages/contact-cache.js`); the store then also carries `contactCache`. | — |
+| `messages/contact-cache.js` | Durable mirror of `store.contacts` at `<sessionDir>/contacts-cache.json`. Exists because `_resolveDisplayName()` resolves a sender label as contact-store name → `msg.pushName` → phone, and the store used to be memory-only, so every restart downgraded labels to raw phone numbers. Only entries with a usable *name* are written; raw identities and phone-shaped names are rejected on both save and load. A cached `session_phone` that differs from the current one discards the cache, and logout/`LOGGED_OUT`/`BANNED` clears it. | `createContactCache`, `CONTACTS_CACHE_FILE` |
 | `media/media-store.js` | Media file storage. | `storeIncomingMedia`, `clearSessionMedia` |
 | `auth/postgres-auth-repository.js` | Encrypted auth credentials persistence (`creds` + `keys` AES-GCM at rest). | `registerSession`, `saveCredentials`, `clearAuth`, `setSessionActive` |
 | `auth/encrypted-codec.js` | AES-GCM codec. | — |

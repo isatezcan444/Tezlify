@@ -32,6 +32,7 @@ from backend.app.core.migrations import (
     ensure_messages_wa_message_id,
     ensure_messages_wa_message_id_unique,
     purge_raw_jid_identity_data,
+    backfill_phone_sender_names,
     purge_degenerate_phone_contacts,
     backfill_whatsapp_last_message_previews,
     ensure_phase_10_7_indexes,
@@ -126,6 +127,7 @@ async def lifespan(app: FastAPI):
             f"uq_msg_conv_wa_message_id={wa_unique_status}"
         )
     await purge_raw_jid_identity_data(engine)
+    await backfill_phone_sender_names(engine)
     await purge_degenerate_phone_contacts(engine)
     await backfill_whatsapp_last_message_previews(engine)
     await ensure_phase_10_7_indexes(engine)

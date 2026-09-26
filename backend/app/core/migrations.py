@@ -1165,6 +1165,87 @@ async def purge_raw_jid_identity_data(engine: AsyncEngine) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Sohbet isimleri: telefon olarak kalmış mesaj gönderen adlarının onarımı
+# ---------------------------------------------------------------------------
+
+_SENDER_NAME_PHONE_MATCH = (
+    "(ct.phone_e164 = messages.sender_name OR ct.phone_e164 = '+' || messages.sender_name)"
+)
+# Ad olarak kabul edilebilir mi: telefon görünümlü değil, ham jid değil.
+_SENDER_NAME_REAL_NAME = (
+    "ct.display_name IS NOT NULL "
+    "AND ct.display_name <> ct.phone_e164 "
+    "AND ct.display_name NOT LIKE '+%' "
+    "AND ct.display_name NOT LIKE 'jid:%' "
+    "AND ct.display_name NOT LIKE '%@%'"
+)
+
+
+async def backfill_phone_sender_names(engine: AsyncEngine) -> None:
+    """`messages.sender_name` telefon olarak kalmışsa kişi kaydındaki adla onarır.
+
+    Sebep: gateway, mesaj gönderen etiketini `store.contacts` adı -> `pushName`
+    -> telefon sırasıyla çözer. Kişi deposu yalnızca bellekte tutulduğu için her
+    gateway restart'ında boşalıyordu; `pushName` taşımayan mesajların etiketi ham
+    telefona düşüyordu. Örnek (üretim): grup 14010'da aynı kişi restart öncesi
+    "Cevat Aydın", restart sonrası "+905076382749" olarak kaydedildi.
+
+    Depo artık diske yazılıp açılışta geri yüklendiği için bu bozulma tekrar
+    oluşmaz; ancak o ana kadar yazılmış satırlar bozuk kalır. Bu migration
+    yalnızca **telefon numarası olan** `sender_name` değerlerini, AYNI kiracıya
+    ait ve gerçek adı bilinen kişi kaydıyla eşleştirip adı yazar.
+
+    Güvenlik (AGENTS.md kiracı izolasyonu):
+    - Eşleşme `ct.user_id = messages.user_id` ile kiracıya kilitlidir; başka
+      kiracının kişi kaydı asla ad kaynağı olamaz.
+    - Yalnızca `sender_name` tam olarak bir `phone_e164` değerine eşitse
+      çalışır — yani hedef satır zaten bir telefon; gerçek bir ad asla ezilmez.
+    - Kişinin `display_name`'i telefon görünümlü/ham jid ise atlanır (o kişi için
+      bilinen gerçek ad yoktur).
+
+    Idempotenttir: onarımdan sonra `sender_name` artık telefona eşit olmadığı
+    için ikinci çalıştırma hiçbir satıra dokunmaz. Hata startup'ı düşürmez.
+    """
+    try:
+        async with engine.begin() as conn:
+            res = await conn.execute(
+                text(
+                    f"""
+                    UPDATE messages
+                    SET sender_name = (
+                        SELECT ct.display_name
+                        FROM contacts ct
+                        WHERE ct.user_id = messages.user_id
+                          AND {_SENDER_NAME_PHONE_MATCH}
+                          AND {_SENDER_NAME_REAL_NAME}
+                        ORDER BY ct.id
+                        LIMIT 1
+                    )
+                    WHERE messages.sender_name IS NOT NULL
+                      AND EXISTS (
+                        SELECT 1
+                        FROM contacts ct
+                        WHERE ct.user_id = messages.user_id
+                          AND {_SENDER_NAME_PHONE_MATCH}
+                          AND {_SENDER_NAME_REAL_NAME}
+                      )
+                    """
+                )
+            )
+            repaired = res.rowcount or 0
+            if repaired:
+                logger.info(
+                    "[MIGRATION] backfill_phone_sender_names: %d mesaj gönderen adı "
+                    "telefondan kişi adına çevrildi.",
+                    repaired,
+                )
+            else:
+                logger.debug("[MIGRATION] backfill_phone_sender_names: onarılacak satır yok.")
+    except Exception as e:  # noqa: BLE001 - startup'ı düşürmez, loglanır
+        logger.warning("[MIGRATION] backfill_phone_sender_names atlandı: %s", e)
+
+
+# ---------------------------------------------------------------------------
 # Faz 9 (§5, RC-2): Dejenere '+0' telefonlu WhatsApp kayıtlarının temizliği
 # ---------------------------------------------------------------------------
 

@@ -375,7 +375,10 @@ export function bindSocketEvents({
         session.updated_at = new Date().toISOString();
         await leaseCoordinator.releaseLease(session);
         await deactivatePersistentSession(id);
-        session.store = createSessionStore();
+        // LOGGED_OUT / BANNED means the next link may be a different WhatsApp
+        // account; a cached name from the old one would be actively wrong.
+        session.store?.contactCache?.clear();
+        session.store = createSessionStore({ sessionDir, logger });
         mediaStore.clearSessionMedia(id);
         clearSessionHistoryFetches(id);
         resetRetryCounterCache(id);
