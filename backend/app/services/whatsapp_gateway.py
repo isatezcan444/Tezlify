@@ -228,6 +228,7 @@ async def get_messages(
     oldest_msg_id: Optional[str] = None,
     oldest_msg_from_me: Optional[bool] = None,
     oldest_msg_ts_ms: Optional[int] = None,
+    timeout_ms: Optional[int] = None,
 ) -> Dict[str, Any]:
     params: Dict[str, Any] = {"limit": limit}
     if before is not None:
@@ -240,6 +241,10 @@ async def get_messages(
         params["oldest_msg_from_me"] = "true" if oldest_msg_from_me else "false"
     if oldest_msg_ts_ms is not None:
         params["oldest_msg_timestamp_ms"] = int(oldest_msg_ts_ms)
+    # Budget the gateway may spend waiting for the phone to answer the history
+    # PDO. Omitted -> the gateway's own default (~15 s) applies.
+    if timeout_ms is not None:
+        params["timeout_ms"] = int(timeout_ms)
     return await _request("GET", f"{_s(gateway_id)}/conversations/{jid}/messages", params=params)
 
 

@@ -585,13 +585,28 @@ async def _hydrate_messages_on_demand(
     before_ts_ms: Optional[int] = None,
     oldest_msg_id: Optional[str] = None,
     oldest_msg_from_me: Optional[bool] = None,
+    provider_timeout_ms: Optional[int] = None,
 ) -> List[Message]:
     return await _sync_orchestrator._hydrate_messages_on_demand(
         db, owner, conv, limit,
         before_ts_ms=before_ts_ms,
         oldest_msg_id=oldest_msg_id,
         oldest_msg_from_me=oldest_msg_from_me,
+        provider_timeout_ms=provider_timeout_ms,
     )
+
+
+# Budget for the provider round-trip that runs while the user is WAITING for a
+# conversation to open. In that case we already hold local rows, so the only
+# thing a longer wait buys is "maybe some older messages" -- while the cost is a
+# blank pane for the gateway's full budget (~15 s observed live). Older messages
+# are still fetched on the explicit pagination path, which keeps the full budget
+# because there the user is actively asking for them.
+#
+# A short budget cannot create a false state: the round-trip is still recorded as
+# TIMEOUT, which is retryable and never exhaustion (H-3), so the only effect is
+# that we stop waiting sooner.
+OPEN_PATH_PROVIDER_TIMEOUT_MS = 4000
 
 
 async def _hydrate_or_tolerate_provider_timeout(
@@ -600,6 +615,7 @@ async def _hydrate_or_tolerate_provider_timeout(
     before_ts_ms: Optional[int] = None,
     oldest_msg_id: Optional[str] = None,
     oldest_msg_from_me: Optional[bool] = None,
+    provider_timeout_ms: Optional[int] = None,
 ) -> List[Message]:
     """One on-demand provider round-trip, where a timeout must not destroy local data.
 
@@ -616,6 +632,12 @@ async def _hydrate_or_tolerate_provider_timeout(
     With `have_rows` false the exception still propagates, because there the
     alternative is returning an empty list — i.e. claiming "no messages exist" —
     which is exactly the falsehood the 502 exists to prevent.
+
+    `provider_timeout_ms` is chosen by the CALLER, because only the caller knows
+    whether the user is waiting on a plain open (short budget, we already hold
+    rows) or on an explicit "load older" (full budget). It cannot be inferred
+    here: `before_ts_ms` is set in both cases, since it is the anchor timestamp
+    of the oldest local row, not the client's pagination cursor.
     """
     try:
         return await _hydrate_messages_on_demand(
@@ -623,6 +645,7 @@ async def _hydrate_or_tolerate_provider_timeout(
             before_ts_ms=before_ts_ms,
             oldest_msg_id=oldest_msg_id,
             oldest_msg_from_me=oldest_msg_from_me,
+            provider_timeout_ms=provider_timeout_ms,
         )
     except WhatsAppHistoryTimeout:
         if not have_rows:
@@ -786,6 +809,15 @@ async def get_messages(
                                     before_ts_ms=cursor_ms,
                                     oldest_msg_id=anchor_id,
                                     oldest_msg_from_me=anchor_from_me,
+                                    # A plain open (no cursor from the client) gets the
+                                    # short budget: we already hold rows, so the provider
+                                    # is only adding older messages and the pane must not
+                                    # sit blank on a slow phone. An explicit "load older"
+                                    # keeps the gateway's full budget, because there the
+                                    # user is actively asking for those older messages.
+                                    provider_timeout_ms=(
+                                        OPEN_PATH_PROVIDER_TIMEOUT_MS if before is None else None
+                                    ),
                                 )
                                 if older:
                                     res = await db.execute(base)

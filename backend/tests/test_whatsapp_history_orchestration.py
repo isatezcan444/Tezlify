@@ -1241,3 +1241,100 @@ async def test_24_cooldown_never_masks_a_real_exhaustion(tmp_path, monkeypatch):
             # Availability: yes, skip. Exhaustion: no, never.
             assert await is_provider_recently_unresponsive(db, jid, session_id=sid) is True
             assert await is_history_exhausted_or_stalled(db, jid, session_id=sid) is False
+
+
+@pytest.mark.asyncio
+async def test_25_plain_open_bounds_the_provider_wait(tmp_path, monkeypatch):
+    """25. Opening a conversation must not block the pane on the full provider window.
+
+    Live, the gateway waits ~15 s for the phone to answer the history PDO, and the
+    open path used to inherit that whole budget before rendering rows it already
+    had. With rows in hand the provider is only adding OLDER messages, so the open
+    path passes a short budget and the pane fills immediately.
+    """
+    owner = str(uuid.uuid4())
+    async with make_test_db(tmp_path) as sessions:
+        conv_id = await _seed_conversation_with_rows(sessions, owner, rows=8)
+        async with sessions() as db:
+            monkeypatch.setattr(
+                ws, "_history_evidence_session_id", AsyncMock(return_value=str(uuid.uuid4()))
+            )
+            gw_mock = _timeout_gateway()
+            monkeypatch.setattr(ws.gw, "get_messages", gw_mock)
+
+            res = await ws.get_messages(db, owner, conv_id, limit=50)
+
+            assert gw_mock.called, "the provider round-trip must still be attempted"
+            assert gw_mock.call_args.kwargs.get("timeout_ms") == ws.OPEN_PATH_PROVIDER_TIMEOUT_MS, (
+                "a plain open with rows in hand must bound the provider wait"
+            )
+            # Bounding the wait changes only how long we wait, never the outcome.
+            assert len(res["messages"]) == 8
+            assert res["has_more"] is True
+
+
+@pytest.mark.asyncio
+async def test_26_full_budget_kept_where_the_wait_is_the_point(tmp_path, monkeypatch):
+    """26. An explicit "load older" keeps the gateway's full provider budget.
+
+    Only a plain open gets the short budget. When the client sends a cursor the
+    user is actively asking for older messages, so waiting longer is the point.
+    The distinction lives in the REQUEST's cursor, not in `before_ts_ms` -- that
+    is the oldest local row's timestamp and is set on both paths.
+    """
+    owner = str(uuid.uuid4())
+    async with make_test_db(tmp_path) as sessions:
+        conv_id = await _seed_conversation_with_rows(sessions, owner, rows=8)
+        async with sessions() as db:
+            monkeypatch.setattr(
+                ws, "_history_evidence_session_id", AsyncMock(return_value=str(uuid.uuid4()))
+            )
+            gw_mock = _timeout_gateway()
+            monkeypatch.setattr(ws.gw, "get_messages", gw_mock)
+
+            first = await ws.get_messages(db, owner, conv_id, limit=50)
+            assert gw_mock.call_args.kwargs.get("timeout_ms") == ws.OPEN_PATH_PROVIDER_TIMEOUT_MS
+
+            cursor = first["oldest_message_id"]
+            assert cursor is not None, "the page must expose a pagination cursor"
+            calls_before = gw_mock.call_count
+
+            # Nothing older is stored, so a timed-out provider still surfaces as a
+            # retryable error (unchanged behaviour) -- the point here is only which
+            # budget the gateway was given.
+            with pytest.raises(WhatsAppHistoryTimeout):
+                await ws.get_messages(db, owner, conv_id, limit=50, before=cursor)
+
+            assert gw_mock.call_count > calls_before, "pagination must still consult the provider"
+            # `in` matters: the budget must actually be threaded to the gateway.
+            # `.get(...) is None` alone cannot tell "passed None" from "never sent".
+            assert "timeout_ms" in gw_mock.call_args.kwargs
+            assert gw_mock.call_args.kwargs["timeout_ms"] is None, (
+                "an explicit load-older must keep the gateway's full provider budget"
+            )
+
+
+@pytest.mark.asyncio
+async def test_27_zero_row_conversation_keeps_full_budget(tmp_path, monkeypatch):
+    """27. With nothing to show, the full budget stays — no early give-up.
+
+    A short budget here would convert a merely slow phone into a false failure
+    (the 502 the caller relies on), because there are no local rows to fall back
+    on. So the zero-row path must keep the gateway's full window.
+    """
+    owner = str(uuid.uuid4())
+    async with make_test_db(tmp_path) as sessions:
+        conv_id = await _seed_conversation_with_rows(sessions, owner, rows=0)
+        async with sessions() as db:
+            gw_mock = _timeout_gateway()
+            monkeypatch.setattr(ws.gw, "get_messages", gw_mock)
+
+            with pytest.raises(WhatsAppHistoryTimeout):
+                await ws.get_messages(db, owner, conv_id, limit=50)
+
+            # `in` matters: `.get(...) is None` cannot tell "passed None" from
+            # "never sent", and only the former proves the plumbing exists.
+            assert "timeout_ms" in gw_mock.call_args.kwargs
+            assert gw_mock.call_args.kwargs["timeout_ms"] is None, (
+                "a conversation with zero rows must not give up early"
+            )

@@ -1760,6 +1760,7 @@ class WhatsAppSyncOrchestrator:
         oldest_msg_from_me: Optional[bool] = None,
         *,
         background_sweep: bool = False,
+        provider_timeout_ms: Optional[int] = None,
     ) -> List[Message]:
         """Fetches one older page from the provider and persists the evidence.
 
@@ -1771,6 +1772,11 @@ class WhatsAppSyncOrchestrator:
 
         `background_sweep` only marks the `last_sweep_count` bookkeeping; it has
         no effect on the state machine.
+
+        `provider_timeout_ms` caps how long the gateway may wait for the phone to
+        answer the history PDO. `None` leaves the gateway's own default (~15 s).
+        It does NOT change what a timeout means: the result is still recorded as
+        TIMEOUT, still retryable, and still never exhaustion (H-3).
         """
         conversation_session = self._get_helper("_conversation_session", None)
         gateway_op_or_mark_relink = self._get_helper("_gateway_op_or_mark_relink", None)
@@ -1826,6 +1832,7 @@ class WhatsAppSyncOrchestrator:
                         oldest_msg_id=oldest_msg_id,
                         oldest_msg_from_me=oldest_msg_from_me,
                         oldest_msg_ts_ms=before_ts_ms,
+                        timeout_ms=provider_timeout_ms,
                     ),
                 )
             else:
@@ -1838,6 +1845,7 @@ class WhatsAppSyncOrchestrator:
                     oldest_msg_id=oldest_msg_id,
                     oldest_msg_from_me=oldest_msg_from_me,
                     oldest_msg_ts_ms=before_ts_ms,
+                    timeout_ms=provider_timeout_ms,
                 )
         except Exception as exc:
             logger.warning("On-demand hydrasyon basarisiz (conv=%s): %s", conv.id, exc)
