@@ -66,6 +66,36 @@ that satisfies them. `MEMORY.md` is the index; this file is the detail.
   stamps live.
 - **A10 `contacts` has no `name_source` column** (`phone_e164`, `display_name`, `lead_id`,
   `custom_attributes`); source/rank lives only in the gateway store and `mergeContactName()`.
+- **A11 `last_message_at` and `last_message_preview` are TWO INDEPENDENT decisions — an empty preview
+  must never gate the activity timestamp.** `should_apply_last_message` decides the **preview only**;
+  `apply_conversation_last_message` advances the stamp on `ts is strictly newer` regardless of the
+  summary, and both snapshot sites in `sync.py` (`_persist_chat_snapshot` ~L887,
+  `sync_session_history` ~L1733) apply `gw_ts` in an `elif` **outside** `if gw_summary:`. A text-less
+  last message — reaction, `protocolMessage` REVOKE, call log, `messageStubType` group notice (settings
+  change / participant added / username created), audio-only — has an empty summary, so the old
+  coupling froze exactly those chats at their old list position while the rest of the list stayed
+  correct. Live proof 2026-09-26: 21/113 chats empty-preview and 5 with a null stamp, conv 14458
+  ("Hat 1") pinned at 09:35:56 against a newest message at 09:44:25. The tell is the **asymmetry** —
+  `events.py::_map_conversation_event` always applied the stamp unconditionally, which is why only
+  notification-only chats were wrong. `ts is None` never seeds a stamp (Faz 10 RC-1).
+- **A12 Text-less system content gets a bracketed preview MARKER, never a new `message_type`.**
+  `MessageType` has no `SYSTEM`/`REACTION` member and adding one needs a migration, so the marker
+  travels in `body` and `normalizePreviewText` resolves it through the label table:
+  `[CALL]`, `[REACTION]`, `[REVOKED]`, `[SYSTEM]`, `[POLL]`, `[EVENT]`. `systemContentMarker()`
+  (`messages/message-classifier.js`) is the single producer; the live path
+  (`session-manager.js::_ingestUpsertMessage`) falls back to it when `buildChatPreview` yields nothing.
+  Trigger = `messageStubType > 0` (may be a protobuf `Long` — use `toNumber()`) or `protocolMessage`
+  (`type === 0` = REVOKE) or reaction/call/poll/event content. `messageStubType` `0`/absent must produce
+  **no** marker. **Three parallel label tables must stay in parity** — gateway
+  `utils/whatsapp-formatting.js`, backend `preview_normalization.py`, frontend
+  `whatsappPreview.ts` (+ `locales/{en,tr}.ts`); the frontend copy had drifted six labels behind and
+  would have rendered the generic "Mesaj". Guard: `whatsapp-gateway/scripts/test-system-content-preview.mjs`
+  (14 checks, wired into `npm test`).
+- **A13 A chat learned ONLY from a group subject has no timestamp at all.** `_ensureGroupSubjects` /
+  `seedGroupChat` create the row from `groupFetchAllParticipating` with `last_message_at: null` and
+  `name_source: "group_subject"` (live 2026-09-26: 5 chats, `created_at == updated_at`). WhatsApp
+  supplied neither a message nor a timestamp, so no code path can recover one — they sort last
+  (`NULLS LAST`) by design. Distinguish this class from A11 (stamp frozen by a bug) before "fixing".
 
 ## B. Unread badge — one policy, two places
 
