@@ -228,6 +228,22 @@ Correct behaviour; also why the backend suite is DB-state sensitive (see H).
   `acquire` (INSERT) fails **23503** for a session with no `gateway_sessions` row; `renew` (UPDATE) is a
   silent no-op returning `rowCount 0`. This is why G-LEASE surfaced as a *silent* lease loss.
   Real-PG guard: `scripts/test-phase6-6-lease-real-pg.mjs` (7 checks, needs `GATEWAY_LEASE_TEST_URL`).
+- **G-PROMOTION-SINGLE-WRITER (fixed 2026-09-26): the durable `public.whatsapp_sessions` row has exactly
+  ONE writer — `promote_ephemeral_pairing`.** `GET /pairing/{token}/qr` must NEVER relink, reuse or INSERT;
+  on a gateway `CONNECTED` it delegates (lazy import, the same pattern `cancel_pairing_session` uses).
+  It used to hand-roll the sequence, making it a **second writer** for the same `gateway_id`; the
+  event-driven promotion fires on the very same `connection.open`, so both read "no row yet" and then
+  wrote, and the poll died on `ix_whatsapp_sessions_gateway_id`. Live **2026-09-26 11:43:56 UTC**: the poll
+  returned **502** (`UniqueViolationError … Key (gateway_id)=(f157eca0-…) already exists`) while promotion
+  committed session 87 for that same gateway id **7 ms later** — i.e. the pairing had SUCCEEDED and the
+  modal showed a false failure. The hand-rolled branches logged **zero** hits in 7 days, and its rebind
+  branch contradicted promotion.py's own documented invariant ("a session already CONNECTED under a
+  different gateway id is never overwritten"). A refusal now raises `PairingPromotionRefused` → **409**,
+  never 502. Guards: `test_p68_qr_poll_survives_concurrent_promotion`,
+  `test_p68_qr_poll_refusal_is_409_not_502`.
+- **Two writers on one unique key is the generalisable lesson.** Whenever two code paths can both INSERT a
+  row guarded by a unique index (here `gateway_id`), the loser must **roll back and adopt** the winner's
+  row, never surface the IntegrityError. Check BOTH writers when only one has the try/except.
 
 ## H. Test baselines (procedural detail → the skills)
 

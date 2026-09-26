@@ -49,6 +49,10 @@ Curated index only. Detail lives elsewhere, deliberately:
 - **A group known only from its subject has no timestamp at all** (A13) — `_ensureGroupSubjects` seeds it
   with `last_message_at: null` and WhatsApp never sent one, so it sorts last by design. Distinguish this
   class from A11 (stamp frozen by a bug) before "fixing" it.
+- **The durable `whatsapp_sessions` row has exactly ONE writer** — `promote_ephemeral_pairing` (G). The QR
+  poll (`GET /pairing/{token}/qr`) delegates; it must never relink/reuse/INSERT. It used to be a second
+  writer for the same `gateway_id`, so a live 502 landed on a pairing that had actually SUCCEEDED (the
+  modal showed a false failure). A refusal is a 409, never a 502.
 - Gateway owns the unread count **including decreases**; never `Math.max` (B). Message uniqueness
   `(conversation_id, wa_message_id) WHERE NOT NULL` (D); tenant routing G-3 (E); No-Create/lease rules
   (G); media, provider contracts and known-open items: F, J.
@@ -64,19 +68,20 @@ Curated index only. Detail lives elsewhere, deliberately:
   compared `en` against `tr`, so 19 keys absent from *both* dictionaries passed it while the UI rendered
   raw key paths (`useI18n` warns and returns `path`). Derive the required set from the **consumer** (the
   `t('...')` call sites), not the sibling copy. Same trap for any "these two lists must match" assertion.
+- **Two writers on one unique key: the loser must ADOPT, not fail.** When two code paths can both INSERT a
+  row guarded by a unique index, whichever loses has to roll back and re-read the winner's row. If only one
+  writer has the try/except, **that other writer is the bug** — check both before trusting either. And
+  before "fixing" a duplicate implementation, measure whether its branches have ever actually run.
 
 ## Operational quick hits — full detail in `reference/production-ops.md`
 
-- **Push is not deploy**, and production is a **PostgreSQL** host (`docker exec tezlify-db psql -U tezlify
-  -d tezlify`); the repo-root `tezlify.db` is stale. Prod `/opt/tezlify` is a git checkout **deliberately
-  left dirty** as the deploy marker — never `git checkout .` / `git reset --hard` / `git clean` there.
-- The gateway container has **no `curl`**; probe it with `node` inside the container. Gateway REST auth is
-  `Authorization: Bearer <WHATSAPP_GATEWAY_SECRET>` (not `X-Gateway-Secret`).
-- Run API probes **from the production host** — the local sandbox proxy turns `app.tezlify.com` into a 502.
-- **Never run pytest on the dev DB.** Build it schema-only (`sqlite3 tezlify.db .schema > s.sql && sqlite3
-  /tmp/empty.db < s.sql` → 22 tables / 0 rows); some tests assert **global** row counts.
-- **Falsify before trusting:** stash the source fix (`git stash push -- <path>`), require the new test to
-  fail on the *precise* assertion, then restore.
+- **Push is not deploy.** Prod `/opt/tezlify` is a git checkout **deliberately left dirty** as the deploy
+  marker — never `git checkout .` / `git reset --hard` / `git clean` there. Production is **PostgreSQL**
+  (`docker exec tezlify-db psql -U tezlify -d tezlify`); the repo-root `tezlify.db` is stale.
+- The gateway container has **no `curl`**; probe it with `node` inside it. Run API probes **from the
+  production host** — the local sandbox proxy turns `app.tezlify.com` into a 502.
+- **Never run pytest on the dev DB** (schema-only copy instead; some tests assert global row counts), and
+  **falsify before trusting** — see the `scoped-stash-falsification` skill.
 - **Parallel `Edit` calls on one file clobber each other** — edit sequentially or rewrite with one `Write`.
 
 ## Skills covering reusable procedures

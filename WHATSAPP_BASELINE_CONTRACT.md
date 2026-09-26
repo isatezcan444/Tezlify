@@ -246,7 +246,7 @@ This section lists the behaviour that **MUST NOT REGRESS**. Each invariant state
 ### PAIRING
 
 - **INVARIANT: Zero `public.whatsapp_sessions` rows exist for a pairing that has not yet reached `connection.open`.**
-  - CURRENT IMPLEMENTATION: `_ephemeral_pairings` + `public.ephemeral_pairings` (durable). `start_pairing_session` never INSERTs into `public.whatsapp_sessions`. The first INSERT happens in `promote_ephemeral_pairing` step 4 (Phase 6.8) or in `_map_session_event`'s relink branch, both gated by `connection.open`.
+  - CURRENT IMPLEMENTATION: `_ephemeral_pairings` + `public.ephemeral_pairings` (durable). `start_pairing_session` never INSERTs into `public.whatsapp_sessions`, and neither does `get_pairing_qr` (it delegates — see the single-writer invariant below). The first INSERT happens in `promote_ephemeral_pairing` step 4 (Phase 6.8) or in `_map_session_event`'s relink branch, both gated by `connection.open`.
   - SOURCE: `backend/app/services/whatsapp/orchestration/sessions.py`, `backend/app/services/whatsapp/orchestration/promotion.py`, `backend/app/services/whatsapp/orchestration/pairing_registry.py`.
   - MUST NOT REGRESS: YES. Violating this lets a "paired but not connected" session pollute the Sessions tab and break the CONNECTED-only state machine.
 
@@ -259,6 +259,12 @@ This section lists the behaviour that **MUST NOT REGRESS**. Each invariant state
   - CURRENT IMPLEMENTATION: `orchestration.sessions.cancel_pairing_session` checks the gateway's own status; if `CONNECTED`, it calls `promote_ephemeral_pairing` and `consume_pairing`, then returns `{success: true, cancelled: false, promoted}`.
   - SOURCE: `backend/app/services/whatsapp/orchestration/sessions.py::cancel_pairing_session` (lines 457–552).
   - MUST NOT REGRESS: YES. Phase 6.8 was the production incident that demonstrated the previous behaviour destroyed a freshly-promoted socket 1.8 s after `connection.open`.
+
+- **INVARIANT: `GET /pairing/{pair_token}/qr` is NOT a writer of the durable row. When the gateway reports `CONNECTED` it DELEGATES to `promote_ephemeral_pairing` — the single writer. It never relinks, never reuses, never INSERTs.**
+  - CURRENT IMPLEMENTATION: `orchestration.sessions.get_pairing_qr` does a lazy `from … promotion import promote_ephemeral_pairing` (same pattern as `cancel_pairing_session`) and returns `{status: CONNECTED, session_id: row.id, phone: row.phone_number}` from the returned row. A `None` return (owner unprovable / cross-tenant / a live session bound to another gateway) raises `PairingPromotionRefused`, which `endpoints/whatsapp.py` maps to **409** — never 502.
+  - WHY: this endpoint used to hand-roll the relink / reuse / INSERT sequence, making it a SECOND writer for the same `gateway_id`. Its INSERT was the only one not race-tolerant, and the event-driven promotion fires on the very same `connection.open`, so both writers read "no row yet" and then wrote — the event path won and the browser's poll died on `ix_whatsapp_sessions_gateway_id`. Live 2026-09-26 11:43:56 UTC: the poll returned 502 while `promote_ephemeral_pairing` committed session 87 for that same gateway id 7 ms later. The pairing had actually SUCCEEDED, so the user saw a false failure. The hand-rolled branches logged **zero** hits in 7 days of production logs, and its rebind branch contradicted this module's documented invariant ("a session already CONNECTED under a different gateway id is never overwritten").
+  - SOURCE: `backend/app/services/whatsapp/orchestration/sessions.py::get_pairing_qr`, `backend/app/services/whatsapp/orchestration/promotion.py`, `backend/app/services/whatsapp/exceptions.py::PairingPromotionRefused`, `backend/tests/test_whatsapp_phase6_4_pairing.py::test_p68_qr_poll_survives_concurrent_promotion`, `…::test_p68_qr_poll_refusal_is_409_not_502`.
+  - MUST NOT REGRESS: YES. Re-adding a second writer re-opens the 502 race; reporting a refusal as 502 tells the user to check a healthy gateway (AGENTS.md §1.1).
 
 - **INVARIANT: The lease for a non-ephemeral session is acquired INSIDE the `connection.open` handler; ephemeral sessions acquire the lease during the promotion path.**
   - CURRENT IMPLEMENTATION: `socket/socket-events.js::connection.update` `if (connection === 'open')` block.
