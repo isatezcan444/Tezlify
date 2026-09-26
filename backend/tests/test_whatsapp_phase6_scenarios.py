@@ -488,8 +488,16 @@ async def test_scenario_c_delayed_provider_with_live_inbound_in_flight(monkeypat
     monkeypatch.setattr(ws, "_hydrate_messages_on_demand", slow_hydrate)
 
     async def history_request():
+        # A cursor is passed on purpose: the on-demand provider round-trip lives on
+        # the pagination path now. A plain open with local rows returns them
+        # immediately instead of blocking the pane on a provider that (measured
+        # live 2026-09-26) answered late or not at all — see
+        # test_whatsapp_history_orchestration.py::test_25. The INTERLEAVING this
+        # test is about (a provider page landing while a newer live inbound
+        # arrives) is identical on both paths.
+        seed = (await _messages(conv_id))[0]
         async with AsyncSessionLocal() as db:
-            return await ws.get_messages(db, P6_USER, conv_id, limit=20)
+            return await ws.get_messages(db, P6_USER, conv_id, limit=20, before=seed.id)
 
     async def live_inbound():
         await asyncio.sleep(0.01)  # lands while the provider call is still open

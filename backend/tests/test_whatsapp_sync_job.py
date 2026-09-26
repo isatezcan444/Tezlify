@@ -438,7 +438,9 @@ async def test_07_batched_dedup_single_select_per_batch(mock_gateway, events):
     total_message_selects = sum(s.message_selects for s in sessions)
     # Legacy yol 300 dedup SELECT atardi; yeni yol: 1 batch dedup (+ onarim 0 — preview'ler var)
     # + 1 P0.13 delta suucu SELECT'i (MAX external_timestamp, job basi tek seferlik).
-    assert total_message_selects <= 3, f"mesaj SELECT sayisi: {total_message_selects}"
+    # + 1 gonderen-adi onarimi aday SELECT'i (finalizing fazi,
+    #   `_repair_phone_sender_names`; adi bilinen kisi sayisiyla sinirli tek sorgu).
+    assert total_message_selects <= 4, f"mesaj SELECT sayisi: {total_message_selects}"
 
 
 # ---------------------------------------------------------------------------
@@ -900,7 +902,15 @@ async def test_28_bulk_dedup_select_once_per_conversation_across_pages(mock_gate
 
     def _count(conn, cursor, statement, parameters, context, executemany):
         s = statement.lower().replace('"', "")
-        if "from messages" in s and "wa_message_id" in s and "in (" in s:
+        # Yalnizca DEDUP sorgusunun KENDISI sayilir: dar projeksiyon
+        # (`conversation_id, wa_message_id`). `messages` tablosunu okuyan
+        # alakasiz sorgular (ornegin finalizing fazindaki gonderen-adi
+        # onarimi `_repair_phone_sender_names`) bu sayaca girmemeli — yoksa
+        # test "dedup onbellegi" yerine "kac sorgu attik" olcer.
+        if (
+            s.lstrip().startswith("select messages.conversation_id, messages.wa_message_id")
+            and "from messages" in s
+        ):
             dedup_selects.append(statement)
 
     sa_event.listen(engine.sync_engine, "before_cursor_execute", _count)

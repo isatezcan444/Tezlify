@@ -4,7 +4,7 @@ Curated index only. Detail lives elsewhere, deliberately:
 
 | Where | What |
 | --- | --- |
-| `reference/whatsapp-subsystem-invariants.md` | WhatsApp subsystem invariants, sections **A–J** (the numbered `A11`-style refs below point here) |
+| `reference/whatsapp-subsystem-invariants.md` | WhatsApp subsystem invariants, sections **A–K** (the numbered `A11`-style refs below point here) |
 | `reference/production-ops.md` | Production topology, deploy state, release mechanics, test baselines |
 | `YYYY-MM-DD.md` | Deploy narratives, timings, falsification evidence (most recent first) |
 | the skills listed at the end | Reusable procedures — never duplicate them into memory |
@@ -56,6 +56,15 @@ Curated index only. Detail lives elsewhere, deliberately:
 - Gateway owns the unread count **including decreases**; never `Math.max` (B). Message uniqueness
   `(conversation_id, wa_message_id) WHERE NOT NULL` (D); tenant routing G-3 (E); No-Create/lease rules
   (G); media, provider contracts and known-open items: F, J.
+- **Archive state: "unknown" must never be written as `false`** (K). The backend contract is *omit the
+  key* — all three write sites guard on key presence (`events.py:1104`, `sync.py:985,1847`), so it already
+  preserves a stored `is_archived` when the gateway stays silent. The gateway's four writers used to
+  default to `?? false`, making that guard **dead** and asserting `false` for chats it knew nothing about
+  (live: 112/112 chats carried the key, 111 `false`). Archive state can **only** arrive via app-state,
+  never history sync (`Utils/history.js` has no `archived` mapping) — and on an initial sync the update is
+  conditional and gets **swallowed forever** for any chat absent from `historySets`. Since the store is
+  memory-only (A6), a restart then wiped known state. Fixed via `archivedPatch()`; recovering the already
+  lost rows is a **product decision** (needs a forced app-state resync that can clear unread badges).
 
 ### Cross-cutting
 

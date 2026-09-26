@@ -618,6 +618,88 @@ class WhatsAppSyncOrchestrator:
             logger.info("Faz 10 preview onarimi: %d sohbet guncellendi (owner=%s)", fixed, user_id)
         return fixed
 
+    async def _repair_phone_sender_names(self, db: AsyncSession, user_id: str) -> int:
+        """`messages.sender_name` telefon olarak donduysa, ayni kiracinin adiyla onarir.
+
+        Neden burada, startup migration'inin YANINDA: `backfill_phone_sender_names`
+        (`core/migrations.py`) yalnizca uygulama acilisinda kosar. Taze bir QR
+        eslesmesinde ise mesaj satirlari history sync sirasinda, adlar ise ayni
+        sync'in sonunda yazilir — yani onarim tam olarak ihtiyac duyuldugu anda
+        hic kosmaz. Olculdu (uretim, 2026-09-26): `+905076382749` icin
+        `contacts.display_name = 'Cevat Aydin'` (name_source=addressbook)
+        mevcutken, o numaranin grup mesajlarinin `sender_name`'i hala
+        `+905076382749` idi; 72 grup gelen mesajinin 28'i boyleydi.
+
+        Guvenlik (AGENTS.md §1.3 kiraci izolasyonu), startup surumuyle ayni:
+        - Eslesme `Contact.user_id == Message.user_id` ile kiracıya kilitlidir;
+          baska kiracinin kisi kaydi asla ad kaynagi olamaz.
+        - Yalnizca `sender_name` TAM OLARAK bir `phone_e164` degerine (ya da
+          bastaki `+` farkiyla ayni degerine) esitse calisir — gercek bir ad
+          asla ezilmez, `'ME'` gibi yer tutucular eslesmez.
+        - `display_name` telefon gorunumlu / ham jid ise atlanir: o kisi icin
+          bilinen gercek ad yoktur.
+        - Birden fazla aday varsa en kucuk `contacts.id` kazanir (deterministik;
+          migration'daki `ORDER BY ct.id LIMIT 1` ile ayni kural).
+
+        Idempotenttir: onarimdan sonra `sender_name` artik telefona esit olmadigi
+        icin ikinci cagri hicbir satira dokunmaz.
+
+        Python'da yapilir (SQL'de degil): telefon->ad eslesmesi hem `+905...`
+        hem `905...` yazimini kabul etmeli, ve SQL'de bunu tasinabilir kilmak
+        (`||` / `concat`) lehceye gore degisir. Aday kumesi kiracinin GERCEK ADI
+        BILINEN kisileriyle sinirli oldugu icin IN listesi kucuk kalir.
+        """
+        contact_res = await db.execute(
+            select(Contact.phone_e164, Contact.display_name)
+            .where(
+                get_user_filter(Contact.user_id, user_id),
+                Contact.phone_e164.isnot(None),
+                Contact.display_name.isnot(None),
+                Contact.display_name != Contact.phone_e164,
+                ~Contact.display_name.like("+%"),
+                ~Contact.display_name.like("jid:%"),
+                ~Contact.display_name.like("%@%"),
+            )
+            .order_by(Contact.id)
+        )
+        variants: Dict[str, str] = {}
+        for phone, name in contact_res.all():
+            key = str(phone or "").strip()
+            real = str(name or "").strip()
+            if not key or not real:
+                continue
+            # En kucuk `contacts.id` kazanir (deterministik; migration'daki
+            # `ORDER BY ct.id LIMIT 1` ile ayni kural).
+            if key.startswith("+"):
+                variants.setdefault(key, real)
+                variants.setdefault(key[1:], real)
+            else:
+                variants.setdefault(key, real)
+                variants.setdefault("+" + key, real)
+        if not variants:
+            return 0
+
+        msg_res = await db.execute(
+            select(Message).where(
+                get_user_filter(Message.user_id, user_id),
+                Message.sender_name.in_(sorted(variants.keys())),
+            )
+        )
+        repaired = 0
+        for msg in msg_res.scalars().all():
+            name = variants.get(str(msg.sender_name or ""))
+            if name:
+                msg.sender_name = name
+                repaired += 1
+        if repaired:
+            await db.flush()
+            logger.info(
+                "Gonderen adi onarimi: %d mesaj telefondan kisi adina cevrildi (owner=%s)",
+                repaired,
+                user_id,
+            )
+        return repaired
+
     async def _bulk_upsert_contacts(
         self,
         db: AsyncSession,
@@ -1130,6 +1212,9 @@ class WhatsAppSyncOrchestrator:
         run_bulk_message_sync = self._get_helper("_run_bulk_message_sync", self._run_bulk_message_sync)
         sync_conversations_impl = self._get_helper("_sync_conversations_impl", self._sync_conversations_impl)
         repair_last_message_previews = self._get_helper("_repair_last_message_previews", self._repair_last_message_previews)
+        repair_phone_sender_names = self._get_helper(
+            "_repair_phone_sender_names", self._repair_phone_sender_names
+        )
         list_conversations = self._get_helper("list_conversations", None)
         schedule_metadata_enrichment = self._get_helper("_schedule_metadata_enrichment", self._schedule_metadata_enrichment)
         run_background_history_expansion = self._get_helper("_run_background_history_expansion", self._run_background_history_expansion)
@@ -1238,6 +1323,15 @@ class WhatsAppSyncOrchestrator:
                 items = all_items
                 job.stage = "finalizing"
                 await repair_last_message_previews(db, owner)
+                # Rehber adlari bu noktada yazilmis olur (contacts fazi + history
+                # sync). Bu yuzden "telefon olarak donmus" gonderen etiketleri
+                # TAM BURADA onarilir — startup migration'i taze bir eslesmede
+                # mesajlar yazildiktan cok sonra, yani bir sonraki restart'ta
+                # kosardi.
+                try:
+                    await repair_phone_sender_names(db, owner)
+                except Exception as exc:
+                    logger.warning("Gonderen adi onarimi atlandi (owner=%s): %s", owner, exc)
                 await db.commit()
                 result, _total = (await list_conversations(db, owner)) if list_conversations else ([], 0)
                 _mark_phase("finalizing")
@@ -1985,6 +2079,7 @@ _persist_chat_snapshot = _default_sync_orchestrator._persist_chat_snapshot
 _bulk_upsert_contacts = _default_sync_orchestrator._bulk_upsert_contacts
 _ensure_conversations_bulk = _default_sync_orchestrator._ensure_conversations_bulk
 _repair_last_message_previews = _default_sync_orchestrator._repair_last_message_previews
+_repair_phone_sender_names = _default_sync_orchestrator._repair_phone_sender_names
 _cancel_stale_sync_jobs = _default_sync_orchestrator._cancel_stale_sync_jobs
 _schedule_initial_sync = _default_sync_orchestrator._schedule_initial_sync
 _run_initial_sync = _default_sync_orchestrator._run_initial_sync

@@ -72,6 +72,31 @@ export function sanitizeChatForEmit(chat) {
   return out;
 }
 
+/**
+ * Bilinmeyen arsiv durumu `false` olarak IDDIA EDILMEMELIDIR.
+ *
+ * Backend sozlesmesi: `is_archived` YALNIZCA payload'da `archived` anahtari
+ * VARSA yazilir (`events.py`, `sync.py` — `if "archived" in payload:`), boylece
+ * gateway'in bilmedigi bir sohbetin DB'deki bilinen durumu korunur. Dort
+ * gateway yazicisi da `?? false` / sabit `false` ile bu sozlesmeyi ihlal
+ * ediyordu; sonuc: anahtar HER ZAMAN gonderiliyor ve backend'in korumasi
+ * olu kaliyordu. Canli olcum 2026-09-26: gateway'in 112 sohbetinin 112'si
+ * `archived` anahtari tasiyordu, 111'i `false` — oysa gateway bu sohbetlerin
+ * arsiv durumunu HIC ogrenmemisti (bkz. `getChatUpdateConditional` asagida).
+ *
+ * Bu yuzden: durum biliniyorsa anahtar gonderilir, bilinmiyorsa anahtar
+ * HIC gonderilmez (`JSON.stringify` undefined'i zaten dusurur; backend de
+ * anahtar yoksa mevcut degeri korur).
+ *
+ * Neden bu kadar onemli: gateway'in `chats` store'u yalnizca bellekte yasar
+ * ve restart'ta bosalir. `?? false` ile, bir restart sonrasi gelen history
+ * chunk'i DB'de `is_archived = true` olan bir sohbeti `false` ile EZIYORDU.
+ */
+export function archivedPatch(known) {
+  if (known === undefined || known === null) return {};
+  return { archived: Boolean(known) };
+}
+
 export function sanitizeOutboundEvent(event) {
   if (!event || typeof event !== 'object') return event;
   switch (event.event) {

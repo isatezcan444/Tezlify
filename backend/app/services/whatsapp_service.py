@@ -326,6 +326,17 @@ async def _repair_last_message_previews(db: AsyncSession, user_id: str) -> int:
     return await _sync_orchestrator._repair_last_message_previews(db, user_id)
 
 
+async def _repair_phone_sender_names(db: AsyncSession, user_id: str) -> int:
+    """Gonderen etiketi telefon olarak donmus mesajlari kisi adiyla onarir.
+
+    `core/migrations.py::backfill_phone_sender_names` yalnizca acilista kosar;
+    taze bir QR eslesmesinde mesajlar history sync sirasinda, adlar ise ayni
+    sync'in sonunda yazildigi icin o migration tam olarak gerektigi anda
+    calismaz. Sync job'inin `finalizing` fazindan cagrilir.
+    """
+    return await _sync_orchestrator._repair_phone_sender_names(db, user_id)
+
+
 async def sync_conversations(db: AsyncSession, user_id: str) -> List[Dict[str, Any]]:
     """LEGACY senkron hatti (chat basina gateway round-trip + tek commit)."""
     return await _sync_orchestrator.sync_conversations(db, user_id)
@@ -596,17 +607,11 @@ async def _hydrate_messages_on_demand(
     )
 
 
-# Budget for the provider round-trip that runs while the user is WAITING for a
-# conversation to open. In that case we already hold local rows, so the only
-# thing a longer wait buys is "maybe some older messages" -- while the cost is a
-# blank pane for the gateway's full budget (~15 s observed live). Older messages
-# are still fetched on the explicit pagination path, which keeps the full budget
-# because there the user is actively asking for them.
-#
-# A short budget cannot create a false state: the round-trip is still recorded as
-# TIMEOUT, which is retryable and never exhaustion (H-3), so the only effect is
-# that we stop waiting sooner.
-OPEN_PATH_PROVIDER_TIMEOUT_MS = 4000
+# A plain open no longer runs a provider round-trip at all, so there is no open
+# path budget to tune: the local page is returned immediately and the older page
+# arrives through the explicit pagination path, which keeps the gateway's own
+# full budget. The former `OPEN_PATH_PROVIDER_TIMEOUT_MS = 4000` constant was
+# removed with that change — see `list_messages`.
 
 
 async def _hydrate_or_tolerate_provider_timeout(
@@ -633,11 +638,12 @@ async def _hydrate_or_tolerate_provider_timeout(
     alternative is returning an empty list — i.e. claiming "no messages exist" —
     which is exactly the falsehood the 502 exists to prevent.
 
-    `provider_timeout_ms` is chosen by the CALLER, because only the caller knows
-    whether the user is waiting on a plain open (short budget, we already hold
-    rows) or on an explicit "load older" (full budget). It cannot be inferred
-    here: `before_ts_ms` is set in both cases, since it is the anchor timestamp
-    of the oldest local row, not the client's pagination cursor.
+    `provider_timeout_ms` is chosen by the CALLER. Today only the explicit
+    "load older" path reaches this helper, and it passes `None` so the gateway's
+    own full window applies — the user is actively asking for those older
+    messages. A plain open with local rows never gets here at all (see
+    `list_messages`); the parameter is kept because a zero-row open still needs
+    the full window and because the budget must stay a caller decision.
     """
     try:
         return await _hydrate_messages_on_demand(
@@ -783,12 +789,31 @@ async def get_messages(
 
                     if len(rows) < page_size and not should_skip_provider:
                         if not rows and before is None:
+                            # Nothing local to show: waiting is the only honest
+                            # answer (an empty pane would claim "no messages").
                             older = await _hydrate_or_tolerate_provider_timeout(
                                 db, user_id, conv, page_size, have_rows=False
                             )
                             if older:
                                 res = await db.execute(base)
                                 rows = list(res.scalars().all())
+                        elif before is None:
+                            # Plain open WITH local rows in hand: never block the
+                            # first paint on the provider. Measured live
+                            # 2026-09-26: the gateway's history PDO answered late
+                            # or not at all, so this awaited round-trip burned its
+                            # whole budget on EVERY open (elapsed_ms 3005 / 3225 /
+                            # 4016 / 4018 / 4311 — i.e. the pane sat blank for
+                            # ~4 s before showing rows the backend already had).
+                            # Returning the local page immediately lets the thread
+                            # paint; the older page still arrives through the
+                            # client's own "load older" call, which keeps the
+                            # gateway's full budget because there the user is
+                            # actively asking for those messages. `has_more` is
+                            # computed below from local rows + durable history
+                            # evidence, so it stays True and the thread's existing
+                            # auto-load trigger fires as before.
+                            pass
                         else:
                             cursor_src = list(rows) + ([before_row] if before_row else [])
                             cursor_ms = _hydration_cursor_ms(cursor_src)
@@ -809,15 +834,11 @@ async def get_messages(
                                     before_ts_ms=cursor_ms,
                                     oldest_msg_id=anchor_id,
                                     oldest_msg_from_me=anchor_from_me,
-                                    # A plain open (no cursor from the client) gets the
-                                    # short budget: we already hold rows, so the provider
-                                    # is only adding older messages and the pane must not
-                                    # sit blank on a slow phone. An explicit "load older"
-                                    # keeps the gateway's full budget, because there the
-                                    # user is actively asking for those older messages.
-                                    provider_timeout_ms=(
-                                        OPEN_PATH_PROVIDER_TIMEOUT_MS if before is None else None
-                                    ),
+                                    # Reached only for an explicit "load older"
+                                    # (`before is not None`), where the user is
+                                    # actively asking for those messages, so the
+                                    # gateway's own full budget applies.
+                                    provider_timeout_ms=None,
                                 )
                                 if older:
                                     res = await db.execute(base)

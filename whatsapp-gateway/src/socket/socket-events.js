@@ -24,6 +24,7 @@ import {
   normalizePreviewText,
   buildChatPreview,
   resolveSyncState,
+  archivedPatch,
 } from '../utils/whatsapp-formatting.js';
 import { summarizeWaMessage } from '../messages/message-classifier.js';
 import { createSessionStore, messageTimestampMs, resolveChatActivitySeconds, rememberRawMessage } from '../messages/message-store.js';
@@ -572,7 +573,8 @@ export function bindSocketEvents({
         name_source: contact?.name_source || existing.name_source || null,
         phone: jidToPhone(key) || existing.phone || '',
         is_group: key.includes('@g.us'),
-        archived: update.archived ?? existing.archived ?? false,
+        // Arsiv durumu bilinmiyorsa anahtar HIC gonderilmez (bkz. `archivedPatch`).
+        ...archivedPatch(update.archived ?? existing.archived),
         last_message_at: updTs && !tsOlder ? updTs : existing.last_message_at,
         last_message_preview: updPreview && !tsOlder ? updPreview : existing.last_message_preview || '',
         unread_count: update.unreadCount ?? existing.unread_count ?? 0,
@@ -692,7 +694,8 @@ export function bindSocketEvents({
           name_source: contact?.name_source || existing.name_source || null,
           phone: jidToPhone(key) || existing.phone || '',
           is_group: key.includes('@g.us'),
-          archived: chat.archived ?? existing.archived ?? false,
+          // Arsiv durumu bilinmiyorsa anahtar HIC gonderilmez (bkz. `archivedPatch`).
+          ...archivedPatch(chat.archived ?? existing.archived),
           avatar_url: chat.avatar_url || contact?.avatar_url || existing.avatar_url || null,
           last_message_at: stampOlder ? existing.last_message_at : nextLastMessageAt,
           last_message_preview:

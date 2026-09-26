@@ -41,6 +41,7 @@ import {
   sanitizeChatForEmit,
   sanitizeOutboundEvent,
   resolveSyncState,
+  archivedPatch,
 } from './utils/whatsapp-formatting.js';
 
 import {
@@ -1302,7 +1303,8 @@ export function createSessionManager({
         name_source: contact?.name_source || existing.name_source || null,
         phone: jidToPhone(key) || existing.phone || '',
         is_group: key.includes('@g.us'),
-        archived: existing.archived ?? false,
+        // Arsiv durumu bilinmiyorsa anahtar HIC gonderilmez (bkz. `archivedPatch`).
+        ...archivedPatch(existing.archived),
         last_message_at: nextTs,
         last_message_preview: nextPreview,
         unread_count: existing.unread_count || 0,
@@ -1459,6 +1461,17 @@ export function createSessionManager({
             emitEvent({ event: 'contact_synced', contact: { ...contact } });
           }
         }
+        // A group known only from its subject has no message of its own, so
+        // `_touchChat` never runs for it and `seedGroupChat` stores
+        // `avatar_url: null` — nothing else in the gateway ever asks WhatsApp
+        // for that group's picture, and the one-shot background avatar sweep
+        // (armed at history-sync progress 100) has already finished by the time
+        // this pass seeds the chat. Measured live 2026-09-26: 9 of 12 group
+        // chats held no avatar and 5 of those DID have one on the server (a
+        // forced `profilePictureUrl` returned a URL). `_ensureChatAvatar` is
+        // in-flight guarded and throttled to one attempt per jid per 10 min, so
+        // requesting it on every pass is safe and self-healing.
+        if (!chats.get(key)?.avatar_url) void this._ensureChatAvatar(session, key);
       };
 
       const resolvedKeys = new Set();
@@ -1475,7 +1488,10 @@ export function createSessionManager({
             name_source: 'group_subject',
             phone: '',
             is_group: true,
-            archived: false,
+            // Yalnizca konusundan bilinen grup: arsiv durumu BILINMIYOR.
+            // Sabit `false` yazmak, backend'in `"archived" in payload`
+            // korumasini devre disi birakip bilinen bir arsivi ezerdi.
+            ...archivedPatch(undefined),
             avatar_url: meta?.imgUrl || null,
             last_message_at: null,
             last_message_preview: '',

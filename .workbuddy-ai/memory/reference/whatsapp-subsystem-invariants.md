@@ -323,3 +323,46 @@ Correct behaviour; also why the backend suite is DB-state sensitive (see H).
   asyncio.Lock]` — a *different* class (unbounded cache), intentional.
 - **No live-device pairing was ever run** — QR and phone-code are verified against a faked network
   boundary only. Report `LIVE DEVICE E2E = NOT RUN`; never imply otherwise.
+
+## K. Archive state — "unknown" must never be written as `false`
+
+**The backend contract is "omit the key, don't assert a value."** All three write sites guard on key
+presence — `events.py:1104` (`if "archived" in payload:`), `sync.py:985` and `sync.py:1847`
+(`if "archived" in item:`). So the backend already preserves its stored `is_archived` when the gateway
+says nothing. **The gateway used to violate this in all four writers** (`socket-events.js:575,695`,
+`session-manager.js:1305,1489` — `?? false` / a hardcoded `false`), which made the backend's guard a
+**dead guard** and asserted `false` for chats the gateway knew nothing about. Live proof 2026-09-26:
+`has_archived_key=112` of 112 chats, 111 of them `false`.
+
+- **Archive state can ONLY arrive via app-state, never via history sync.** `Utils/history.js` in
+  Baileys has **no `archived` mapping at all**. So the sole source is `processSyncAction` →
+  `chats.update` (`chat-utils.js:694`).
+- **On an initial sync that update is conditional and can be swallowed forever.** `chats.js:998` calls
+  `resyncAppState(ALL_WA_PATCH_NAMES, true)`. `getChatUpdateConditional` (`chat-utils.js:856`) returns a
+  condition **only when `isInitialSync`**, and that condition returns `undefined` when the chat is absent
+  from `historySets.chats`/`chatUpserts`. `event-buffer.js` `append()` (`conditionMatches === undefined`)
+  parks the update in `chatUpdates`; `flush()` moves it into `newData` and **never emits it** — carried
+  indefinitely. Chats with no history payload (large / zero-message groups) therefore never deliver their
+  archive state. Live: `resyncing regular from v0` **6× in 72 h**, each one a full snapshot with
+  `isInitialSync=true`.
+- **Consequence of the `?? false` default: a restart silently wipes known archive state.** The gateway's
+  `chats` store is memory-only (see A6). After a restart the store is empty, so the next history pass sees
+  `existing.archived === undefined` and used to emit `archived: false` for a chat the DB held as `true`.
+- **Fix:** `archivedPatch(known)` in `utils/whatsapp-formatting.js` — returns `{}` when unknown (so
+  `JSON.stringify` drops the key and the backend's guard fires) and `{archived: Boolean(known)}` when
+  known, so an explicit **unarchive still propagates**. Guard:
+  `whatsapp-gateway/scripts/test-archive-state-contract.mjs` (8 checks; H is structural — no source line
+  may reintroduce `archived ... ?? false`).
+- **Honest limit — this stops future loss, it does NOT recover the 111 already-lost chats** (the gateway
+  never learned them). Recovery needs a re-delivery of app state: zero the `regular` collection's
+  `app-state-sync-version` and call `resyncAppState(ALL_WA_PATCH_NAMES, false)` (version 0 ⇒ the server
+  sends a full snapshot; `isInitialSync=false` ⇒ the condition is `undefined` ⇒ archive updates are
+  released unconditionally). **Side effect:** every app-state mutation re-fires, and read chats emit
+  `unreadCount: 0` — unread badges can be cleared. Hence a **product decision**, not a silent fix. The
+  zero-risk alternative: have the user re-archive the affected chats (that path is now durable, because
+  non-initial-sync mutations are unconditional).
+- **Live 2026-09-26:** prod DB `111 false + 1 true`; the gateway's own store agrees (1 of 112). Symptom
+  seen from both sides: archived chats appear in the "All" tab *and* are missing from "Archived" — one
+  root cause, two faces. The frontend tab logic (`ConversationList.tsx:216-228`) was already correct;
+  do not "fix" it.
+

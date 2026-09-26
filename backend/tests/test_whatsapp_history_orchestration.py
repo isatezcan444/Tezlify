@@ -1134,7 +1134,10 @@ async def test_21_provider_timeout_serves_local_rows(tmp_path, monkeypatch):
 
     Before the fix the timeout propagated out of get_messages and the endpoint
     turned it into a 502, so a conversation whose rows were sitting in the DB
-    rendered as an error instead of showing them.
+    rendered as an error instead of showing them. The open path no longer even
+    consults the provider when it holds rows, so the timeout can no longer reach
+    this response at all — which is a strictly stronger guarantee than surviving
+    it, and is asserted here.
     """
     owner = str(uuid.uuid4())
     async with make_test_db(tmp_path) as sessions:
@@ -1148,7 +1151,9 @@ async def test_21_provider_timeout_serves_local_rows(tmp_path, monkeypatch):
 
             res = await ws.get_messages(db, owner, conv_id, limit=50)
 
-            assert gw_mock.called, "the provider round-trip must still be attempted"
+            assert not gw_mock.called, (
+                "a plain open holding local rows must not wait on the provider"
+            )
             assert len(res["messages"]) == 8, "local rows must survive a provider timeout"
             assert res["messages"][-1]["body"] == "msg-7"
             # A timeout says nothing about completeness, so we must not claim the
@@ -1244,13 +1249,15 @@ async def test_24_cooldown_never_masks_a_real_exhaustion(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_25_plain_open_bounds_the_provider_wait(tmp_path, monkeypatch):
-    """25. Opening a conversation must not block the pane on the full provider window.
+async def test_25_plain_open_does_not_block_on_the_provider(tmp_path, monkeypatch):
+    """25. Opening a conversation must not wait on the provider at all.
 
-    Live, the gateway waits ~15 s for the phone to answer the history PDO, and the
-    open path used to inherit that whole budget before rendering rows it already
-    had. With rows in hand the provider is only adding OLDER messages, so the open
-    path passes a short budget and the pane fills immediately.
+    Measured live 2026-09-26: the gateway's history PDO answered late or not at
+    all, so the awaited round-trip burned its whole budget on EVERY open
+    (elapsed_ms 3005 / 3225 / 4016 / 4018 / 4311) — the pane sat blank for ~4 s
+    before showing rows the backend already had. With rows in hand the local page
+    is returned immediately; the older page arrives through the client's own
+    "load older" call, which still consults the provider (test 26).
     """
     owner = str(uuid.uuid4())
     async with make_test_db(tmp_path) as sessions:
@@ -1264,23 +1271,24 @@ async def test_25_plain_open_bounds_the_provider_wait(tmp_path, monkeypatch):
 
             res = await ws.get_messages(db, owner, conv_id, limit=50)
 
-            assert gw_mock.called, "the provider round-trip must still be attempted"
-            assert gw_mock.call_args.kwargs.get("timeout_ms") == ws.OPEN_PATH_PROVIDER_TIMEOUT_MS, (
-                "a plain open with rows in hand must bound the provider wait"
+            assert not gw_mock.called, (
+                "a plain open with rows in hand must paint from local rows, "
+                "not block the pane on a provider round-trip"
             )
-            # Bounding the wait changes only how long we wait, never the outcome.
             assert len(res["messages"]) == 8
+            # The page is short but not claimed to be complete: the client can
+            # still pull older messages.
             assert res["has_more"] is True
+            assert res["oldest_message_id"] is not None
 
 
 @pytest.mark.asyncio
 async def test_26_full_budget_kept_where_the_wait_is_the_point(tmp_path, monkeypatch):
     """26. An explicit "load older" keeps the gateway's full provider budget.
 
-    Only a plain open gets the short budget. When the client sends a cursor the
-    user is actively asking for older messages, so waiting longer is the point.
-    The distinction lives in the REQUEST's cursor, not in `before_ts_ms` -- that
-    is the oldest local row's timestamp and is set on both paths.
+    Only a plain open skips the provider. When the client sends a cursor the
+    user is actively asking for older messages, so waiting is the point and the
+    gateway's own full window applies (`timeout_ms` stays unset).
     """
     owner = str(uuid.uuid4())
     async with make_test_db(tmp_path) as sessions:
@@ -1293,7 +1301,6 @@ async def test_26_full_budget_kept_where_the_wait_is_the_point(tmp_path, monkeyp
             monkeypatch.setattr(ws.gw, "get_messages", gw_mock)
 
             first = await ws.get_messages(db, owner, conv_id, limit=50)
-            assert gw_mock.call_args.kwargs.get("timeout_ms") == ws.OPEN_PATH_PROVIDER_TIMEOUT_MS
 
             cursor = first["oldest_message_id"]
             assert cursor is not None, "the page must expose a pagination cursor"
@@ -1337,4 +1344,175 @@ async def test_27_zero_row_conversation_keeps_full_budget(tmp_path, monkeypatch)
             assert "timeout_ms" in gw_mock.call_args.kwargs
             assert gw_mock.call_args.kwargs["timeout_ms"] is None, (
                 "a conversation with zero rows must not give up early"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Gonderen adi onarimi (sender_name telefon olarak donmus)
+# ---------------------------------------------------------------------------
+
+
+async def _seed_group_sender_scenario(sessions, owner: str):
+    """Bir grup sohbeti + iki gelen mesaj + adi bilinen bir kisi kaydi kurar.
+
+    Senaryo uretimden alinmistir (2026-09-26): grup mesajlarinin `sender_name`'i
+    ham telefon olarak yazilmis, ama `contacts` tablosunda AYNI numara icin
+    gercek ad (name_source=addressbook) mevcut.
+    """
+    async with sessions() as db:
+        line = WhatsAppSession(
+            user_id=owner,
+            gateway_id=str(uuid.uuid4()),
+            session_name="Test Line",
+            status=SessionStatus.CONNECTED,
+            phone_number="+905551112233",
+            is_active=True,
+        )
+        db.add(line)
+        await db.flush()
+        group = Contact(user_id=owner, phone_e164="jid:120363000000000001@g.us")
+        sender = Contact(
+            user_id=owner,
+            phone_e164="+905076382749",
+            display_name="Cevat Aydin",
+            custom_attributes={"name_source": "addressbook"},
+        )
+        db.add_all([group, sender])
+        await db.flush()
+        conv = Conversation(
+            user_id=owner, contact_id=group.id, channel="WHATSAPP", session_id=line.id,
+            is_group=True,
+        )
+        db.add(conv)
+        await db.flush()
+        t0 = datetime(2026, 1, 1, 10, 0, 0)
+        for i in range(3):
+            db.add(Message(
+                user_id=owner,
+                conversation_id=conv.id,
+                direction=MessageDirection.INBOUND,
+                status=ConversationMessageStatus.RECEIVED,
+                message_type=MessageType.TEXT,
+                body=f"grup-{i}",
+                sender_phone="+905076382749",
+                sender_name="+905076382749",
+                recipient_phone="ME",
+                external_timestamp=t0 + timedelta(seconds=i),
+                created_at=t0 + timedelta(seconds=i),
+            ))
+        # Zaten gercek adi tasiyan bir satir: onarim bunu ASLA ezmemeli.
+        db.add(Message(
+            user_id=owner,
+            conversation_id=conv.id,
+            direction=MessageDirection.INBOUND,
+            status=ConversationMessageStatus.RECEIVED,
+            message_type=MessageType.TEXT,
+            body="isimli",
+            sender_phone="+905076382749",
+            sender_name="Cevat Aydin",
+            recipient_phone="ME",
+            external_timestamp=t0 + timedelta(seconds=9),
+            created_at=t0 + timedelta(seconds=9),
+        ))
+        # Baska kiracinin ayni numarali kisi kaydi ad kaynagi OLAMAZ.
+        other = str(uuid.uuid4())
+        db.add(Contact(
+            user_id=other,
+            phone_e164="+905076382749",
+            display_name="Baska Kiracinin Adi",
+            custom_attributes={"name_source": "addressbook"},
+        ))
+        await db.commit()
+        return conv.id
+
+
+@pytest.mark.asyncio
+async def test_28_phone_sender_names_repaired_from_contacts(tmp_path, monkeypatch):
+    """28. Telefon olarak donmus gonderen etiketleri kisi adiyla onarilir.
+
+    `backfill_phone_sender_names` yalnizca acilista kosar; taze bir QR
+    eslesmesinde mesajlar history sync sirasinda, adlar ise ayni sync'in sonunda
+    yazilir — yani onarim tam olarak gerektigi anda calismaz. Olculdu (uretim,
+    2026-09-26): 72 grup gelen mesajinin 28'i ham telefon tasiyordu ve en az
+    birinin kisi kaydi mevcuttu.
+    """
+    owner = str(uuid.uuid4())
+    async with make_test_db(tmp_path) as sessions:
+        conv_id = await _seed_group_sender_scenario(sessions, owner)
+        async with sessions() as db:
+            repaired = await ws._repair_phone_sender_names(db, owner)
+            await db.commit()
+
+            assert repaired == 3, "yalnizca telefon tasiyan satirlar onarilmali"
+
+            rows = (await db.execute(
+                select(Message).where(Message.conversation_id == conv_id).order_by(Message.id)
+            )).scalars().all()
+            by_body = {r.body: r.sender_name for r in rows}
+            assert by_body["grup-0"] == "Cevat Aydin"
+            assert by_body["grup-2"] == "Cevat Aydin"
+            # Gercek ad asla ezilmez.
+            assert by_body["isimli"] == "Cevat Aydin"
+
+            # Idempotent: ikinci cagri hicbir satira dokunmaz.
+            assert await ws._repair_phone_sender_names(db, owner) == 0
+
+
+@pytest.mark.asyncio
+async def test_29_sender_name_repair_is_tenant_scoped(tmp_path, monkeypatch):
+    """29. Onarim kiracıya kilitlidir: baska kiracinin adi sizmaz.
+
+    `contacts` tablosunda ayni numara icin baska bir kiracinin kaydi olabilir
+    (uretimde goruldu: SYSTEM_USER_ID satiri). Eslesme `user_id` ile
+    sinirlanmazsa yanlis ad yazilirdi.
+    """
+    owner = str(uuid.uuid4())
+    other = str(uuid.uuid4())
+    async with make_test_db(tmp_path) as sessions:
+        async with sessions() as db:
+            line = WhatsAppSession(
+                user_id=owner,
+                gateway_id=str(uuid.uuid4()),
+                session_name="Test Line",
+                status=SessionStatus.CONNECTED,
+                phone_number="+905551112233",
+                is_active=True,
+            )
+            db.add(line)
+            await db.flush()
+            conv = Conversation(
+                user_id=owner, contact_id=None, channel="WHATSAPP", session_id=line.id,
+                is_group=True,
+            )
+            db.add(conv)
+            await db.flush()
+            t0 = datetime(2026, 1, 1, 10, 0, 0)
+            db.add(Message(
+                user_id=owner,
+                conversation_id=conv.id,
+                direction=MessageDirection.INBOUND,
+                status=ConversationMessageStatus.RECEIVED,
+                message_type=MessageType.TEXT,
+                body="yalniz",
+                sender_phone="+905076382749",
+                sender_name="+905076382749",
+                recipient_phone="ME",
+                external_timestamp=t0,
+                created_at=t0,
+            ))
+            # Yalnizca BASKA kiracinin kisi kaydi var -> onarim yapilmamali.
+            db.add(Contact(
+                user_id=other,
+                phone_e164="+905076382749",
+                display_name="Baska Kiracinin Adi",
+                custom_attributes={"name_source": "addressbook"},
+            ))
+            await db.commit()
+
+            assert await ws._repair_phone_sender_names(db, owner) == 0
+            row = (await db.execute(
+                select(Message).where(Message.conversation_id == conv.id)
+            )).scalars().one()
+            assert row.sender_name == "+905076382749", (
+                "baska kiracinin kisi kaydi ad kaynagi olamaz"
             )
