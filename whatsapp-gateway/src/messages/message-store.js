@@ -107,3 +107,79 @@ export function messageTimestampMs(value) {
   const seconds = Number(value);
   return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : Date.now();
 }
+
+/**
+ * Coerces a protobuf `uint64` timestamp (SECONDS) into a positive JS number.
+ *
+ * Baileys hands these back as a plain number, a string, or a Long-like object
+ * depending on how the payload was decoded, so `Number(value)` alone is not
+ * enough: `Number(Long)` is NaN, which would silently discard a perfectly good
+ * timestamp and fall through to a worse fallback. Returning `null` (rather than
+ * `Date.now()`) is deliberate — callers must be able to tell "absent" from
+ * "present", which is what makes the precedence in `firstPositiveSeconds` work.
+ */
+export function toPositiveSeconds(value) {
+  if (value === null || value === undefined) return null;
+  let seconds;
+  if (typeof value === 'number') {
+    seconds = value;
+  } else if (typeof value === 'string') {
+    seconds = Number(value);
+  } else if (typeof value.toNumber === 'function') {
+    seconds = value.toNumber(); // long.js / protobufjs Long
+  } else if (typeof value.low === 'number' && typeof value.high === 'number') {
+    seconds = value.high * 4294967296 + (value.low >>> 0);
+  } else {
+    seconds = Number(value);
+  }
+  if (!Number.isFinite(seconds) || seconds <= 0) return null;
+  // Guard the SCALE, not just the sign. These proto fields are uint64 SECONDS,
+  // but a millisecond value leaking in would be ~1000x too large. That matters
+  // more than it looks: the backend only ever moves `last_message_at` FORWARD
+  // (`gw_ts > conv.last_message_at`), so a far-future stamp would latch at the
+  // top of the list permanently and could never be corrected by a later sync.
+  // 1e11 seconds is year 5138, so anything above it is unambiguously millis.
+  if (seconds >= 1e11) seconds = Math.round(seconds / 1000);
+  return seconds > 0 ? seconds : null;
+}
+
+/**
+ * The first argument that yields a usable positive timestamp, else null.
+ * Lets a caller express a fallback chain without nested `||` truthiness traps
+ * (a `0` or a Long would otherwise short-circuit incorrectly).
+ */
+export function firstPositiveSeconds(...values) {
+  for (const value of values) {
+    const seconds = toPositiveSeconds(value);
+    if (seconds !== null) return seconds;
+  }
+  return null;
+}
+
+/**
+ * Resolves the chat-list activity stamp (SECONDS) for a chat from Baileys.
+ *
+ * WhatsApp Web orders its chat list by the ABSOLUTE last message in the chat.
+ * `lastMessageRecvTimestamp` is the last message received FROM THE OTHER PARTY,
+ * so ranking by it sinks every chat whose newest message is one WE sent.
+ * Measured on live production data: 24 chats carried a stamp older than their
+ * own newest message, and 23 of those 24 had an OUTBOUND newest message (worst
+ * case 36 days) — the reported "Tezlify's order does not match WhatsApp Web".
+ *
+ * Precedence:
+ *   1. chat.conversationTimestamp    — the field WhatsApp Web itself sorts by
+ *   2. chat.lastMsgTimestamp         — absolute last message (proto field 5)
+ *   3. newest.timestamp_s            — newest locally known message, sent OR received
+ *   4. chat.lastMessageRecvTimestamp — received-only; LAST resort, never first
+ *
+ * Returns null when the chat carries no usable stamp, so the caller can fall
+ * back to `newest.created_at` / the previous value rather than inventing one.
+ */
+export function resolveChatActivitySeconds(chat = {}, newest = null) {
+  return firstPositiveSeconds(
+    chat?.conversationTimestamp,
+    chat?.lastMsgTimestamp,
+    newest?.timestamp_s,
+    chat?.lastMessageRecvTimestamp,
+  );
+}

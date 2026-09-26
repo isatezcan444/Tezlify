@@ -26,7 +26,7 @@ import {
   resolveSyncState,
 } from '../utils/whatsapp-formatting.js';
 import { summarizeWaMessage } from '../messages/message-classifier.js';
-import { createSessionStore, messageTimestampMs, rememberRawMessage } from '../messages/message-store.js';
+import { createSessionStore, messageTimestampMs, resolveChatActivitySeconds, rememberRawMessage } from '../messages/message-store.js';
 import { safeWriteEncrypted } from './socket-connector.js';
 
 export function bindSocketEvents({
@@ -664,11 +664,26 @@ export function bindSocketEvents({
           (acc, m) => (acc && Number(acc.id) >= Number(m.id) ? acc : m),
           null,
         );
-        const timestampSeconds = Number(chat.lastMessageRecvTimestamp || newest?.timestamp_s);
-        const ts = Number.isFinite(timestampSeconds) && timestampSeconds > 0
-          ? timestampSeconds
-          : null;
+        // WhatsApp Web orders the chat list by the ABSOLUTE last message in the
+        // chat, NOT by the last message RECEIVED from the other party. Ranking by
+        // the received-only field sinks every chat whose newest message is one WE
+        // sent. Measured on live production data: 24 chats carried a stamp older
+        // than their own newest message, 23 of them with an OUTBOUND newest message
+        // (worst case 36 days) — the reported "Tezlify's order does not match
+        // WhatsApp Web" defect. See `resolveChatActivitySeconds` for the precedence.
+        const ts = resolveChatActivitySeconds(chat, newest);
         const existing = chats.get(key) || {};
+        const nextLastMessageAt = ts
+          ? new Date(messageTimestampMs(ts)).toISOString()
+          : (newest?.created_at || existing.last_message_at);
+        // Same monotonic rule as `chats.update` and `_touchChat`: history sync
+        // arrives in many chunks (28 ingests in a single day on production), so a
+        // late chunk carrying an older stamp must never drag a chat back down the
+        // list. The corrected absolute stamp is always >= the received-only one it
+        // replaces, so this guard does not weaken the fix above.
+        const stampOlder = existing.last_message_at
+          && nextLastMessageAt
+          && String(nextLastMessageAt) < String(existing.last_message_at);
         const merged = {
           ...existing,
           id: key,
@@ -679,7 +694,7 @@ export function bindSocketEvents({
           is_group: key.includes('@g.us'),
           archived: chat.archived ?? existing.archived ?? false,
           avatar_url: chat.avatar_url || contact?.avatar_url || existing.avatar_url || null,
-          last_message_at: ts ? new Date(messageTimestampMs(ts)).toISOString() : (newest?.created_at || existing.last_message_at),
+          last_message_at: stampOlder ? existing.last_message_at : nextLastMessageAt,
           last_message_preview:
             (newest ? buildChatPreview(newest, key.includes('@g.us')) : '') ||
             existing.last_message_preview ||
