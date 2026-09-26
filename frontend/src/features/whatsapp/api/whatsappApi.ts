@@ -145,6 +145,8 @@ interface BackendSession {
   qr_code?: string | null;
   error_message?: string | null;
   sync?: SessionSyncState | null;
+  // Faz 14: hattin ilk senkronu tamamlandi mi (backend'de kalici damga).
+  initial_sync_completed?: boolean | null;
   warm_up_day?: number | null;
   daily_sent_count?: number | null;
   max_daily_limit?: number | null;
@@ -173,6 +175,10 @@ function mapSession(s: BackendSession): WhatsAppSession {
     // would hide a legitimate `sync: null`; only a truly absent field maps
     // to undefined.
     sync: s.sync,
+    // Faz 14: kalici ilk-senkron damgasi. Alan gelmezse `undefined` kalir —
+    // "bilinmiyor" ile "tamamlanmadi" ayrimi UI'da korunur ve kapi yalnizca
+    // gercek bir senkron calisirken kapanir (sonsuza kadar kapanmaz).
+    initial_sync_completed: s.initial_sync_completed ?? undefined,
     // Preserve missing server timestamps; fabricating "now" hides a broken
     // session contract and can reorder line status displays.
     created_at: s.created_at ?? undefined,

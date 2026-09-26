@@ -53,7 +53,8 @@ import {
   ChatThread, 
   ChatComposer, 
   TemplateSelectModal, 
-  NewChatModal 
+  NewChatModal,
+  WhatsAppSyncGate,
 } from '../features/whatsapp/components';
 import { LeadDetailDrawer } from '../features/leads/components';
 import { FilterTab } from '../features/whatsapp/components/ConversationList';
@@ -102,6 +103,12 @@ function computeSyncProgress(
   if (stage === 'chats') return chatsSynced > 0 ? 50 : 30;
   return 4;
 }
+
+// Faz 14: uzun suren ilk senkron sonrasi "yine de devam et" cikisi gorunur
+// olur — kullanici kapida asla kilitli kalmaz (WhatsApp Web'de bu cikis yok
+// ama orada baglanti yereldir; burada ag/telefon yavassa kullaniciyi rehin
+// tutmak yanlis olurdu).
+const SYNC_GATE_ESCAPE_MS = 60_000;
 
 // WhatsApp Web kronolojik siralama standardi (last_message_at -> updated_at -> created_at)
 const compareByLastMessageDesc = compareConversationsByActivityDesc;
@@ -275,6 +282,21 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   // Sync mesaj tamponu: conversation_id -> Message[] chunk chunk birikir; her
   // chunk icin TAM liste yeniden render edilmez (§29) — yalnizca acik sohbet.
   const syncMsgBufferRef = useRef<Record<number, Message[]>>({});
+
+  // Faz 14 — QR sonrasi senkron kapisi (WhatsApp Web paritesi). WhatsApp Web
+  // eslestirme sonrasi sohbet listesini HEMEN acmaz; tum sohbetler ve kisiler
+  // inene kadar tam ekran senkron ekrani gosterir. Ayni davranis burada: kapi
+  // acilmadan canli sohbetler render EDILMEZ, boylece bir sohbete tiklamak
+  // "o an indirme" (on-demand provider cagrisi) gecikmesi uretemez.
+  //
+  // Kapi YALNIZCA hattin ILK senkronu icin kapanir. `initial_sync_completed`
+  // backend'de kalici bir damgadir (gateway'in bellek ici sync durumu ve sync
+  // job'i restart'ta kaybolur, bu damga kaybolmaz) — bu yuzden kullanici
+  // sohbetleri gordukten sonra yaptigi manuel "Esitle" UI'i KILITLEMEZ.
+  const [syncGateDismissed, setSyncGateDismissed] = useState(false);
+  // Kullaniciyi kapida asla kilitli birakma: uzun suren senkron sonrasi
+  // "yine de devam et" cikisi gorunur hale gelir.
+  const [syncGateEscapeVisible, setSyncGateEscapeVisible] = useState(false);
 
   // 'yazıyor...' durumu: conversation_id -> bool (gateway presence_updated ile)
   const [peerTypingMap, setPeerTypingMap] = useState<Record<number, boolean>>({});
@@ -573,6 +595,53 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     }, 4000);
     return () => clearTimeout(timer);
   }, [sessionSync?.phase]);
+
+  // Faz 14 — kapi kosulu. Dort sartin TAMAMI gerekir:
+  //   1) bagli bir hat var (kapi yalnizca eslesmis bir hat icin anlamli),
+  //   2) o hat ilk senkronunu HENUZ tamamlamadi (kalici damga),
+  //   3) gercek senkron su an calisiyor,
+  //   4) kullanici kapiyi kapatmadi (kacis cikisi).
+  // `initial_sync_completed` kalici oldugu icin, sohbetler goruldukten sonraki
+  // manuel "Esitle" UI'i kilitlemez.
+  const connectedSession = sessions.find((s) => s.status === 'CONNECTED') || null;
+  const initialSyncPending = Boolean(connectedSession) && connectedSession?.initial_sync_completed !== true;
+  // Hata durumu da kapiya dahildir: ilk senkron basarisiz olduysa kullanici
+  // sessizce bos bir sohbet listesine dusmez, gercek hatayi gorur ve
+  // yeniden deneyebilir / devam edebilir.
+  const syncGateActive =
+    hubTab === 'conversations' &&
+    initialSyncPending &&
+    !syncGateDismissed &&
+    (sessionSync?.phase === 'syncing' || sessionSync?.phase === 'error');
+
+  // Uzun suren senkron kullaniciyi kapida kilitli birakmasin: bir esikten
+  // sonra "yine de devam et" cikisi gorunur olur. Hata durumunda zaten
+  // aninda gosterilir (bkz. render).
+  useEffect(() => {
+    if (!syncGateActive || sessionSync?.phase === 'error') {
+      setSyncGateEscapeVisible(false);
+      return;
+    }
+    const timer = setTimeout(() => setSyncGateEscapeVisible(true), SYNC_GATE_ESCAPE_MS);
+    return () => clearTimeout(timer);
+  }, [syncGateActive, sessionSync?.phase]);
+
+  // Yeni bir senkron BASLADIGINDA onceki "kapatma" karari sifirlanir: kullanici
+  // kapiyi bir kez kapatmis olsa bile yeni bir eslesmenin ilk senkronu yine
+  // kapiyi kapatir. Yalnizca 'syncing' durumuna GECISTE sifirlanir — her
+  // progress olayinda degil, aksi halde "yine de devam et" hic ise yaramazdi.
+  const prevSyncPhaseRef = useRef<string | null>(null);
+  useEffect(() => {
+    const phase = sessionSync?.phase ?? null;
+    if (phase === 'syncing' && prevSyncPhaseRef.current !== 'syncing') {
+      setSyncGateDismissed(false);
+    }
+    prevSyncPhaseRef.current = phase;
+  }, [sessionSync?.phase]);
+
+  const handleSyncGateContinueAnyway = useCallback(() => {
+    setSyncGateDismissed(true);
+  }, []);
 
   const refreshSyncStatus = useCallback(async () => {
     try {
@@ -2122,6 +2191,19 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       {/* ========================================================================= */}
       {hubTab === 'conversations' && (
         <Card className="w-full max-w-full h-[520px] sm:h-[600px] md:h-[calc(100dvh-16.5rem)] md:min-h-[480px] md:max-h-[calc(100dvh-15.5rem)] p-0 flex flex-col md:flex-row overflow-hidden border border-slate-200/80 dark:border-white/[0.08] shadow-sm">
+          {/* Faz 14 — QR sonrasi senkron kapisi (WhatsApp Web paritesi): ilk
+              senkron surerken sohbet listesi ve sohbet paneli HIC render
+              EDILMEZ. Boylece bir sohbete tiklamak "o an indirme" yoluna
+              dusemez; kullanici listeyi ancak veri hazir oldugunda gorur. */}
+          {syncGateActive ? (
+            <WhatsAppSyncGate
+              sync={sessionSync}
+              showEscape={syncGateEscapeVisible}
+              onContinueAnyway={handleSyncGateContinueAnyway}
+              onRetry={handleSyncChats}
+            />
+          ) : (
+          <>
           {/* Left: Conversation List — SABIT genislik (Sorun 11/12/13):
               secilen sohbet sayisindan bagimsiz olarak sidebar ve chat alani
               ayni genislikte kalir. */}
@@ -2502,6 +2584,8 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
               </div>
             )}
           </div>
+          </>
+          )}
         </Card>
       )}
 

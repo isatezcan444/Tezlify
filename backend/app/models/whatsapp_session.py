@@ -41,6 +41,16 @@ class WhatsAppSession(Base):
     qr_code = Column(Text, nullable=True)
     error_message = Column(Text, nullable=True)
 
+    # Faz 14 (QR sonrasi sync kapisi): bu hattin ILK senkronu gercekten
+    # tamamlandi mi? Ne gateway'in `session.sync` durumu ne de backend'in sync
+    # job'i kalicidir — ikisi de surec belleğinde yasar, restart'tan sonra
+    # "senkron yok" derler. Bu yuzden "hic senkronlanmadi" ile "gunler once
+    # senkronlandi" ancak kalici bir damgayla ayirt edilebilir. UI canli
+    # sohbetleri bu damga dolana kadar KAPALI tutar (WhatsApp Web paritesi:
+    # tum sohbetler + kisiler hazir olmadan kullanim acilmaz). Yeni bir
+    # eslesme yeni satir uretirse kapi kendiliginden yeniden kapanir.
+    initial_sync_completed_at = Column(DateTime, nullable=True)
+
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 

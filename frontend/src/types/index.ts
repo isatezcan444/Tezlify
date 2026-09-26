@@ -196,6 +196,11 @@ export interface WhatsAppSession {
   battery_level?: number;
   error_message?: string;
   sync?: SessionSyncState;
+  // Faz 14: hattin ILK senkronu tamamlandi mi (backend'de kalici). QR sonrasi
+  // canli sohbetler bu alan `true` olana kadar kapali tutulur (WhatsApp Web
+  // paritesi). Optional: alan gelmezse "bilinmiyor" sayilir ve kapi yalnizca
+  // gercek bir senkron calisirken kapanir — asla sonsuza kadar kapanmaz.
+  initial_sync_completed?: boolean;
   created_at: string;
   updated_at: string;
 }

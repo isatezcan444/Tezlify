@@ -233,6 +233,11 @@ src/
 - **Props**: `isOpen: boolean`, `onClose: () => void`, `session: WhatsAppSession | null`, `onConnected: () => void`.
 - **Import**: `import { WhatsAppQrConnectModal } from '@/features/whatsapp/components';`
 
+#### `WhatsAppSyncGate`
+- **Purpose**: WhatsApp Web parity — full-panel "syncing" screen shown after QR pairing while the initial sync (all chats + contacts + recent messages) is still running. The live conversation list and chat pane are NOT rendered until the sync completes, so opening a chat can never fall through to an on-demand provider fetch. Progress comes only from real job/gateway counters (no fake timers), the error variant surfaces the real message with retry, and a secondary "continue anyway" escape (controlled by the parent) guarantees the user is never trapped.
+- **Props**: `sync: SessionSyncState | null`, `showEscape?: boolean`, `onContinueAnyway?: () => void`, `onRetry?: () => void`.
+- **Import**: `import { WhatsAppSyncGate } from '@/features/whatsapp/components';`
+
 ---
 
 ### Campaign Feature Components (`features/campaigns/components/`)

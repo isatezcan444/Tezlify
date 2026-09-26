@@ -26,6 +26,10 @@ class WhatsAppSessionResponse(BaseModel):
     # A8: `_list_sessions_internal` computes d["sync"] per session; without this
     # field the list endpoint's response_model silently stripped it.
     sync: Optional[Dict[str, Any]] = None
+    # Faz 14: hattin ilk senkronu tamamlandi mi (kalici). UI, QR sonrasi canli
+    # sohbetleri bu alan `True` olana kadar kapali tutar — WhatsApp Web paritesi.
+    # response_model bu alani listelemezse sessizce silinir (bkz. A8 notu).
+    initial_sync_completed: bool = False
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 

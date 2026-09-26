@@ -440,6 +440,13 @@ export const tr = {
     loadFailedChats: 'Sohbetler yüklenemedi',
     syncInProgressBanner: 'Sohbetler eşitleniyor...',
     syncCompletedBanner: 'Sohbetler eşitlendi',
+    // QR sonrası senkron kapısı (WhatsApp Web paritesi): tüm sohbetler ve
+    // kişiler inene kadar canlı sohbetler açılmaz.
+    syncGateTitle: 'WhatsApp',
+    syncGateEncryption: 'Uçtan uca şifreleme ile korunuyor',
+    syncGateDescription:
+      'Tüm sohbetler, kişiler ve son mesajlar indiriliyor. Bu işlem tamamlanınca canlı sohbetler otomatik olarak açılır.',
+    syncGateContinueAnyway: 'Yine de devam et',
     discardChanges: 'Taslak silindi — sohbet değiştirildi.',
     msgNotPersisted: 'Mesaj kaydedilemedi ve GÖNDERİLMEDİ.',
     templatesNotAvailable: 'Şablon mesajları mevcut WhatsApp gateway bağlantısı tarafından desteklenmiyor.',

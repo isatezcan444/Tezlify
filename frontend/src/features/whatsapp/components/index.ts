@@ -6,3 +6,4 @@ export * from './NewChatModal';
 export * from './SessionCard';
 export * from './TemplateSelectModal';
 export * from './WhatsAppQrConnectModal';
+export * from './WhatsAppSyncGate';

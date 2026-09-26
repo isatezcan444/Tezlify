@@ -103,6 +103,11 @@ def _session_dict(row: WhatsAppSession) -> Dict[str, Any]:
         "battery_level": row.battery_level,
         "qr_code": row.qr_code,
         "error_message": row.error_message,
+        # Faz 14 (QR sonrasi sync kapisi): hattin ILK senkronu tamamlandi mi?
+        # UI canli sohbetleri bu `True` olana kadar kapali tutar. Kalici
+        # damga — gateway'in bellek ici sync durumundan farkli olarak restart
+        # sonrasi da dogruyu soyler.
+        "initial_sync_completed": row.initial_sync_completed_at is not None,
         "created_at": row.created_at,
         "updated_at": row.updated_at,
     }

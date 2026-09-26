@@ -1363,3 +1363,91 @@ async def test_38_lazy_hydration_older_history_keyset_ordering(mock_gateway, eve
         n = (await db.execute(select(func.count()).select_from(Message).where(
             Message.conversation_id == cid))).scalar()
     assert n == 60
+
+
+# ---------------------------------------------------------------------------
+# Faz 14 — QR sonrasi sync kapisi (kalici "ilk senkron bitti" damgasi)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_39_initial_sync_marker_written_once_on_completion(mock_gateway, events):
+    """Hattin ilk senkronu GERCEKTEN tamamlaninca kalici damga yazilir.
+
+    Neden kalici olmali: UI canli sohbetleri bu damga dolana kadar kapali tutar
+    (WhatsApp Web paritesi). Ne gateway'in `session.sync` durumu ne de sync
+    job'i kalicidir — ikisi de surec belleginde yasar ve restart sonrasi "senkron
+    yok" der. Damga olmadan "hic senkronlanmadi" ile "gunler once senkronlandi"
+    ayirt edilemezdi.
+
+    Damga YALNIZCA bir kez yazilir: sonraki manuel "Esitle" ilk tamamlanma anini
+    degistirmez, yani kapi kendiliginden yeniden kapanmaz.
+    """
+    mock_gateway.list_conversations.return_value = {
+        "items": [_chat(MOCK_JID, "Kapi")], "total": 1}
+
+    async with AsyncSessionLocal() as db:
+        before = (await db.execute(select(WhatsAppSession).where(
+            WhatsAppSession.gateway_id == MOCK_GW_ID))).scalar_one()
+        assert before.initial_sync_completed_at is None, (
+            "taze hat damgasiz baslamali — aksi halde kapi hic kapanmaz")
+
+    job1 = await ws.request_sync(None, TEST_USER)
+    await job1.done.wait()
+    assert job1.state == "COMPLETED", job1.error
+
+    async with AsyncSessionLocal() as db:
+        after1 = (await db.execute(select(WhatsAppSession).where(
+            WhatsAppSession.gateway_id == MOCK_GW_ID))).scalar_one()
+        first_stamp = after1.initial_sync_completed_at
+    assert first_stamp is not None, (
+        "senkron tamamlandi ama ilk-tamamlanma damgasi yazilmadi")
+
+    # Ikinci (manuel) esitleme damgayi DEGISTIRMEMELI.
+    job2 = await ws.request_sync(None, TEST_USER)
+    await job2.done.wait()
+    assert job2.state == "COMPLETED", job2.error
+
+    async with AsyncSessionLocal() as db:
+        after2 = (await db.execute(select(WhatsAppSession).where(
+            WhatsAppSession.gateway_id == MOCK_GW_ID))).scalar_one()
+    assert after2.initial_sync_completed_at == first_stamp, (
+        "ilk tamamlanma ani tek seferliktir; manuel esitleme onu degistirmemeli")
+
+
+def test_40_session_payload_exposes_initial_sync_completed():
+    """Serializer alani tasir VE response_model onu SILMEZ.
+
+    A8'de tam bu sekilde bir alan (`sync`) sessizce silinmisti: serializer
+    uretiyordu ama response_model listelemedigi icin API'den hic cikmiyordu.
+    Bu test o tuzagi bu alan icin kapatir.
+    """
+    from datetime import datetime
+
+    from backend.app.services.whatsapp.orchestration.sessions import _session_dict
+    from backend.app.schemas.whatsapp import WhatsAppSessionResponse
+
+    fresh = WhatsAppSession(
+        user_id=TEST_USER, gateway_id="gw-fresh", session_name="Yeni Hat",
+        status=SessionStatus.CONNECTED, is_active=True)
+    # Python-side Column default'lari ancak INSERT'te uygulanir; bellekteki bir
+    # ornekte id/is_phone_online None kalir ve response_model'i kirar. Test
+    # yalnizca `initial_sync_completed` eslemesini dogruladigi icin bunlari
+    # acikca veriyoruz.
+    fresh.id = 1
+    fresh.is_phone_online = False
+    assert fresh.initial_sync_completed_at is None
+    d_fresh = _session_dict(fresh)
+    assert d_fresh["initial_sync_completed"] is False
+    assert WhatsAppSessionResponse(**d_fresh).initial_sync_completed is False
+
+    synced = WhatsAppSession(
+        user_id=TEST_USER, gateway_id="gw-synced", session_name="Eski Hat",
+        status=SessionStatus.CONNECTED, is_active=True)
+    synced.id = 2
+    synced.is_phone_online = False
+    synced.initial_sync_completed_at = datetime(2026, 9, 26, 12, 0, 0)
+    d_synced = _session_dict(synced)
+    assert d_synced["initial_sync_completed"] is True
+    assert WhatsAppSessionResponse(**d_synced).initial_sync_completed is True, (
+        "response_model bu alani listelemezse API'den sessizce silinir (A8)")
+

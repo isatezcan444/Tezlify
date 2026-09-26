@@ -440,6 +440,13 @@ export const en = {
     loadFailedChats: 'Chats could not be loaded',
     syncInProgressBanner: 'Syncing chats...',
     syncCompletedBanner: 'Chats synced',
+    // QR sonrasi senkron kapisi (WhatsApp Web paritesi): tum sohbetler ve
+    // kisiler inene kadar canli sohbetler acilmaz.
+    syncGateTitle: 'WhatsApp',
+    syncGateEncryption: 'Protected with end-to-end encryption',
+    syncGateDescription:
+      'Downloading all chats, contacts and recent messages. Live conversations open automatically once this finishes.',
+    syncGateContinueAnyway: 'Continue anyway',
     discardChanges: 'Draft discarded — switching chats.',
     msgNotPersisted: 'Message could not be saved. It was NOT delivered.',
     templatesNotAvailable: 'Template messages are not supported by the current WhatsApp gateway connection.',

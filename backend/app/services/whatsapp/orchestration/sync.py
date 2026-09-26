@@ -1332,6 +1332,17 @@ class WhatsAppSyncOrchestrator:
                     await repair_phone_sender_names(db, owner)
                 except Exception as exc:
                     logger.warning("Gonderen adi onarimi atlandi (owner=%s): %s", owner, exc)
+                # Faz 14 (QR sonrasi sync kapisi): buraya gelindi ise sohbetler,
+                # rehber VE mesajlar asamalari tamamlanmis demektir — yani hattin
+                # ilk senkronu gercekten bitti. Damga YALNIZCA bir kez yazilir:
+                # sonraki manuel "Esitle" calismalari ilk tamamlanma anini
+                # degistirmez ve UI kapisini yeniden kapatmaz. Damga olmadan
+                # "hic senkronlanmadi" ile "gunler once senkronlandi" ayirt
+                # edilemezdi (her iki bellek ici sinyal de restart'ta kaybolur).
+                _initial_sync_now = datetime.now(timezone.utc).replace(tzinfo=None)
+                for _ws in sessions_to_sync:
+                    if _ws.initial_sync_completed_at is None:
+                        _ws.initial_sync_completed_at = _initial_sync_now
                 await db.commit()
                 result, _total = (await list_conversations(db, owner)) if list_conversations else ([], 0)
                 _mark_phase("finalizing")

@@ -792,6 +792,48 @@ async def ensure_whatsapp_sessions_table(engine: AsyncEngine) -> None:
     logger.info("[MIGRATION] ensure_whatsapp_sessions_table verified")
 
 
+async def ensure_whatsapp_session_sync_columns(engine: AsyncEngine) -> None:
+    """`whatsapp_sessions.initial_sync_completed_at` sütununu güvence altına alır.
+
+    Neden gerekli: UI, canli sohbetleri hattin ILK senkronu bitene kadar kapali
+    tutar (WhatsApp Web paritesi). Bu karar icin gereken sinyal kalici olmali —
+    gateway'in `session.sync` durumu da backend'in sync job'i da yalnizca surec
+    belleğinde yasar ve restart sonrasi "senkron yok" der. Sütun olmadan
+    "hic senkronlanmadi" ile "gunler once senkronlandi" ayirt edilemez.
+
+    Idempotent: Postgres'te `ADD COLUMN IF NOT EXISTS`, SQLite'ta sütun
+    varligi kontrolü. Tablo henuz yoksa dokunmaz — `create_all` onu zaten
+    guncel semayla kurar.
+    """
+    if engine.dialect.name == "postgresql":
+        async with engine.begin() as conn:
+            await conn.execute(text("SET LOCAL lock_timeout = '3s'"))
+            await conn.execute(text(
+                "ALTER TABLE whatsapp_sessions "
+                "ADD COLUMN IF NOT EXISTS initial_sync_completed_at TIMESTAMP"
+            ))
+        logger.info("[MIGRATION] whatsapp_sessions.initial_sync_completed_at verified (postgresql)")
+        return
+
+    if engine.dialect.name != "sqlite":
+        return
+
+    async with engine.begin() as conn:
+        exists = await conn.execute(
+            text("SELECT name FROM sqlite_master WHERE type='table' AND name='whatsapp_sessions'")
+        )
+        if exists.first() is None:
+            # Tablo yok; create_all onu en guncel semayla olusturacak.
+            return
+        info_rows = (await conn.execute(text("PRAGMA table_info(whatsapp_sessions)"))).fetchall()
+        columns = {row[1] for row in info_rows}
+        if "initial_sync_completed_at" not in columns:
+            await conn.execute(text(
+                "ALTER TABLE whatsapp_sessions ADD COLUMN initial_sync_completed_at DATETIME"
+            ))
+            logger.info("[MIGRATION] Added whatsapp_sessions.initial_sync_completed_at (sqlite)")
+
+
 async def ensure_whatsapp_gateway_private_schema(engine: AsyncEngine) -> None:
     """Create the durable gateway store for persistent credentials and leases.
 

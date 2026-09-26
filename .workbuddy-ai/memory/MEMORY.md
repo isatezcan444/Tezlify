@@ -101,4 +101,7 @@ the source and re-running), `esbuild-frontend-verification` (executed frontend c
 no test runner), `real-browser-cdp-verification`, `stack-latency-parity-diagnosis`,
 `non-destructive-schema-constraint-migration`, `hermetic-service-process-harness`,
 `asymmetric-resource-guard-detection`, `client-lifecycle-cancels-server-promotion`,
-`cross-tenant-lookup-isolation`, `symlink-served-release-fast-forward-deploy`.
+`cross-tenant-lookup-isolation`, `symlink-served-release-fast-forward-deploy`,
+`bootstrap-model-registration-parity` (a hand-provisioned test DB must import **every** model module,
+not just `app/models/` — otherwise tables are silently absent and unrelated tests die on "no such table";
+add a `Base.metadata.tables - actual` hard gate).
