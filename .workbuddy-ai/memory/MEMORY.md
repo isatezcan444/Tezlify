@@ -16,6 +16,24 @@ evidence live in `YYYY-MM-DD.md`** (read the most recent first); subsystem deep-
   promising a rollback, restore into a scratch DB and **count rows** — dump size proves nothing.
 - Identity: `resolve_contact_identity` owns names. REST/WS fields match (never `lead_phone`); sort by
   activity only.
+- **Chat-list ordering = the ABSOLUTE last message, never the last RECEIVED one.** WhatsApp Web sorts
+  by `conversationTimestamp`; Baileys' `lastMessageRecvTimestamp` is "the last message received from
+  the other party", so ranking by it sinks every chat whose newest message is one *we* sent. The
+  gateway used it as the FIRST choice until `4fc791a`; precedence is now
+  `conversationTimestamp -> lastMsgTimestamp -> newest local message (sent OR received) ->
+  lastMessageRecvTimestamp`. Coerce the uint64 with `toPositiveSeconds` (`Number(Long)` is NaN) and
+  guard the scale — the backend only moves `last_message_at` FORWARD, so a millisecond value would
+  latch a chat to the top permanently.
+- **The gateway's `chats` and `messagesByChat` are memory-only and do NOT rebuild on reconnect.**
+  WhatsApp does not resend a history sync when an existing session reconnects (log:
+  `First connection, awaiting history sync notification with a 20s timeout` then
+  `History sync finalized` with **0** ingests). After the 09:21 restart the gateway held only
+  **12 of 113** chats and no messages. So a gateway restart silently discards ordering data and the
+  DB's values are the only durable copy. Do not read the gateway's list as "the current chats".
+- Ordering values in the DB: message-derived when the chat has local messages (`external_timestamp`
+  is always populated — all 529 rows had it, so the `created_at` ingest fallback is NOT in play),
+  otherwise inherited from the gateway. The ~17 chats with **no local messages** are exactly where
+  gateway-derived (and therefore previously wrong) stamps live.
 - Gateway owns the unread count **including decreases**; never `Math.max`. A drop to zero is read
   evidence. Preserve per-conversation drafts/viewport and the canonical merge; use instant scroll.
 - Message uniqueness: `(conversation_id, wa_message_id) WHERE NOT NULL`; cursor includes direction/time.
@@ -89,8 +107,10 @@ evidence live in `YYYY-MM-DD.md`** (read the most recent first); subsystem deep-
   find those files already matching.
 - Deployed and live (details in the daily logs): frontend `5916ff1` chat-thread singleton and
   `8177a2b` i18n missing keys; backend `9981298` 502-on-short-conversation; `6c7214a` ~4 s open-path
-  bound; naming fix `55f994e`/`1030850`/`4bd7791`. Gateway/backend restarts are routine and the line
-  re-attaches via `POST /sessions/restore`.
+  bound; naming fix `55f994e`/`1030850`/`4bd7791`; gateway `4fc791a` chat-ordering stamp
+  (`conversationTimestamp`, not `lastMessageRecvTimestamp`). Gateway/backend restarts are routine and
+  the line re-attaches via `POST /sessions/restore` (no QR) — proven again 2026-09-26 09:21
+  (`restored:1`, CONNECTED, +905413749073).
 - **Frontend release handle:** `frontend_candidate` -> `releases/v20260926_i18n_missing_keys`
   (live bundle `index-y-X3DlGp.js`, sha256 `52cead01…`); rollback target
   `v20260926_phase6_8_chatthread_singleton` (`index-3UEtgr4K.js`). Release dirs are **build output
