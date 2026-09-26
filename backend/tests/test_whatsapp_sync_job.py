@@ -192,7 +192,7 @@ def _fake_bulk(all_msgs: List[Dict[str, Any]], data_delay: float = 0.0,
     kronolojisine gore). Varsayilan False = kap'i desteklemeyen gateway
     (eski/generic senaryo): service gelen kume neyse onu sayfalar."""
     async def _bulk(gateway_id=None, limit: int = 1000, offset: int = 0, since=None,
-                    per_chat_limit=None):
+                    per_chat_limit=None, jids=None):
         if limit == 1:
             return {"messages": [], "total": len(all_msgs), "offset": 0, "limit": 1}
         if data_delay:
@@ -203,6 +203,10 @@ def _fake_bulk(all_msgs: List[Dict[str, Any]], data_delay: float = 0.0,
             return datetime.fromisoformat(str(m["created_at"]).replace("Z", "+00:00"))
 
         pool = all_msgs
+        # Kapsamli geri doldurma turu: gateway yalnizca istenen jid'leri doner.
+        if jids:
+            wanted = {str(j) for j in jids}
+            pool = [m for m in pool if str(m.get("conversation_id") or "") in wanted]
         if since is not None:
             pool = [m for m in pool if _ts(m).timestamp() >= since]
         if apply_per_chat and per_chat_limit is not None and per_chat_limit > 0:
@@ -440,7 +444,11 @@ async def test_07_batched_dedup_single_select_per_batch(mock_gateway, events):
     # + 1 P0.13 delta suucu SELECT'i (MAX external_timestamp, job basi tek seferlik).
     # + 1 gonderen-adi onarimi aday SELECT'i (finalizing fazi,
     #   `_repair_phone_sender_names`; adi bilinen kisi sayisiyla sinirli tek sorgu).
-    assert total_message_selects <= 4, f"mesaj SELECT sayisi: {total_message_selects}"
+    # + 1 bos-sohbet geri doldurma aday SELECT'i (NOT EXISTS alt sorgusu metin
+    #   olarak "FROM messages" icerdigi icin sayaca dahil olur; sohbet SAYISIYLA
+    #   olceklenmez, job basi tek sorgudur). Bu testin amaci "dedup mesaj basina
+    #   SELECT atmaz" — asil korunan sey bu; sabit yalnizca o regresyonu yakalar.
+    assert total_message_selects <= 5, f"mesaj SELECT sayisi: {total_message_selects}"
 
 
 # ---------------------------------------------------------------------------
@@ -543,7 +551,7 @@ async def test_11_session_delete_cancels_running_job(auth_headers, mock_gateway,
     calls: List[Dict[str, Any]] = []
 
     async def _hanging_bulk(gateway_id=None, limit: int = 1000, offset: int = 0, since=None,
-                            per_chat_limit=None):
+                            per_chat_limit=None, jids=None):
         if limit == 1:
             return {"messages": [], "total": 1, "offset": 0, "limit": 1}
         calls.append({"limit": limit, "offset": offset})
@@ -1451,3 +1459,250 @@ def test_40_session_payload_exposes_initial_sync_completed():
     assert WhatsAppSessionResponse(**d_synced).initial_sync_completed is True, (
         "response_model bu alani listelemezse API'den sessizce silinir (A8)")
 
+
+# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Bos sohbet geri doldurmasi (Issue: "kisiye tiklayinca sohbet yavas yukleniyor")
+# ---------------------------------------------------------------------------
+# Kok neden (uretimde olculdu 2026-09-26): `_run_bulk_message_sync` `since`
+# parametresine KULLANICI GENELINDEKI en yeni INBOUND zaman damgasini (-300s
+# pay) verir; gateway bu filtreyi SOHBET BASINA uygular. En yeni mesaji bu
+# esikten eski olan her sohbet SIFIR mesaj doner. Dolayisiyla ilk senkronda
+# satir alamamis bir sohbet (gateway bellegi yalnizca-RAM — A6) SONRAKI
+# senkronlarda asla doldurulamaz: esik yalnizca ILERI gider. Uretimde 112
+# sohbetin 19'u boyleydi ve hepsinin last_message_at'i esikten eskiydi.
+#
+# Saglayici (provider) YOLU ISE YARAMAZ — canli dogrulandi: hic mesaji olmayan
+# bir sohbet icin `fetchMessageHistory` capa bulamaz ve ~3 ms'de NO_ANCHOR
+# doner (WhatsApp gecmisi BILINEN bir mesajdan geriye dogru sayfalar). 19
+# sohbetin 13'u tam bu durumda. Bu yuzden geri doldurma PROVIDER'A DEGIL,
+# gateway BELLEGINE dayanir: `since=None` + kapsamli `jids` ile bir bulk turu.
+
+OTHER_JID = "905551112233@s.whatsapp.net"
+
+
+def _other_msgs(jid: str, n: int = 3) -> List[Dict[str, Any]]:
+    return [
+        _msg(jid, f"wamid_bf{i}", body=f"bf{i}", ts=f"2025-01-10T0{i}:00:00.000Z")
+        for i in range(n)
+    ]
+
+
+def _phased_bulk(main_jid: str, extra_jid: str, extra_msgs: List[Dict[str, Any]],
+                 available: Dict[str, bool], *, fail_recovery: bool = False):
+    """Gercek gateway davranisini modeller:
+      * `since` verilince YALNIZCA `main_jid`'in mesajlari doner (suuc diger
+        sohbetleri dislar — istegin kok nedeni bu);
+      * `since=None` iken bellektekiler doner, ama `available[extra_jid]` ancak
+        gateway o sohbeti ogrendikten SONRA True olur;
+      * `jids` verilirse yalnizca o jid'ler doner.
+    """
+    async def _bulk(gateway_id=None, limit=1000, offset=0, since=None,
+                    per_chat_limit=None, jids=None):
+        if limit == 1:
+            return {"messages": [], "total": 0, "offset": 0, "limit": 1}
+        if fail_recovery and since is None:
+            raise RuntimeError("gateway bulk recovery exploded")
+        pool = list(_msg_series(main_jid, 2))
+        if available.get(extra_jid):
+            pool += list(extra_msgs)
+        if since is not None:
+            pool = [m for m in pool if str(m.get("conversation_id")) == main_jid]
+        if jids:
+            wanted = {str(j) for j in jids}
+            pool = [m for m in pool if str(m.get("conversation_id") or "") in wanted]
+        return {"messages": pool[offset:offset + limit], "total": len(pool),
+                "offset": offset, "limit": limit}
+    return _bulk
+
+
+async def _conv_by_jid(jid: str) -> Conversation:
+    async with AsyncSessionLocal() as db:
+        return (await db.execute(select(Conversation).where(
+            Conversation.user_id == TEST_USER,
+            Conversation.channel == "WHATSAPP",
+            Conversation.contact_id.in_(
+                select(Contact.id).where(Contact.phone_e164.like(f"%{jid.split('@')[0]}%"))
+            )))).scalars().first()
+
+
+async def _msg_count(conv_id: int) -> int:
+    async with AsyncSessionLocal() as db:
+        return (await db.execute(select(func.count()).select_from(Message).where(
+            Message.conversation_id == conv_id))).scalar()
+
+
+def _bulk_calls(gw):
+    return [c for c in gw.list_all_messages.call_args_list if c.kwargs.get("limit") != 1]
+
+
+def _recovery_calls(gw):
+    """Suucsuz (since=None) bulk turlari = geri doldurma turlari."""
+    return [c for c in _bulk_calls(gw) if c.kwargs.get("since") is None]
+
+
+async def _run_sync():
+    job = await ws.request_sync(None, TEST_USER)
+    await job.done.wait()
+    assert job.state == "COMPLETED", job.error
+    return job
+
+
+@pytest.mark.asyncio
+async def test_41_sync_backfills_conversations_with_zero_messages(mock_gateway, events):
+    """SUUCUN DISLADIGI (hic satiri olmayan) sohbet, SONRAKI senkronda suucsuz
+    kapsamli bir bulk turuyla kurtarilir — kullanici tikladiginda eksik kalmaz."""
+    mock_gateway.list_conversations.return_value = {
+        "items": [_chat(MOCK_JID, "Dolu"), _chat(OTHER_JID, "Bos")], "total": 2}
+    available = {OTHER_JID: False}
+    mock_gateway.list_all_messages.side_effect = _phased_bulk(
+        MOCK_JID, OTHER_JID, _other_msgs(OTHER_JID, 3), available)
+
+    # 1. senkron: gateway bu sohbeti HENUZ bilmiyor → 0 satir (uretimdeki durum).
+    # Bos sohbet DOGRU sekilde TESPIT edilir, ama kurtarilamaz (bellekte yok):
+    # durust sonuc `hydrated == 0`.
+    job1 = await _run_sync()
+    assert job1.backfill_total == 1, job1.snapshot()
+    assert job1.backfill_hydrated == 0, "bellekte olmayan sohbet 'kurtarildi' denildi"
+    conv = await _conv_by_jid(OTHER_JID)
+    assert conv is not None and await _msg_count(conv.id) == 0
+
+    # Gateway belleği doldu; artik suuc onu disliyor ama bellek onu biliyor.
+    available[OTHER_JID] = True
+    mock_gateway.list_all_messages.reset_mock()
+
+    job2 = await _run_sync()
+    assert job2.backfill_total == 1, job2.snapshot()
+    assert job2.backfill_done == 1, job2.snapshot()
+    assert job2.backfill_hydrated == 1, job2.snapshot()
+
+    recovery = _recovery_calls(mock_gateway)
+    assert recovery, "suucsuz (since=None) kurtarma turu hic yapilmadi"
+    assert any(c.kwargs.get("jids") for c in recovery), (
+        "kurtarma turu jids ile sinirlanmadi (tum sohbetleri yeniden cekerdi)")
+
+    # Provider'a HIC gidilmedi: o yol NO_ANCHOR oldugu icin ise yaramaz.
+    assert not [c for c in mock_gateway.get_messages.call_args_list
+                if c.kwargs.get("fetch_provider")], "gereksiz provider turu yapildi"
+
+    assert await _msg_count(conv.id) == 3, "geri doldurma satir yazmadi"
+    assert any(e.get("event") == "whatsapp_sync_backfill_started" for e in events)
+    assert any(e.get("event") == "whatsapp_sync_backfill_progress" for e in events)
+
+
+@pytest.mark.asyncio
+async def test_42_backfill_skips_conversations_that_already_have_rows(mock_gateway, events):
+    """Her sohbetin satiri varsa kurtarma turu YAPILMAZ — bosuna tur maliyeti yok."""
+    mock_gateway.list_conversations.return_value = {
+        "items": [_chat(MOCK_JID, "Dolu")], "total": 1}
+    mock_gateway.list_all_messages.side_effect = _fake_bulk(
+        _msg_series(MOCK_JID, 4), apply_per_chat=True)
+
+    job1 = await _run_sync()
+    assert job1.backfill_total == 0
+    mock_gateway.list_all_messages.reset_mock()
+
+    job2 = await _run_sync()
+    assert job2.backfill_total == 0, "satiri olan sohbet bos sayildi"
+    assert not _recovery_calls(mock_gateway), "satiri olmayan sohbet yokken tur atildi"
+
+
+@pytest.mark.asyncio
+async def test_43_backfill_failure_does_not_fail_the_sync(mock_gateway, events):
+    """Kurtarma turu patlarsa senkron DUSMEZ: en kotu durum, sohbetin eski
+    (lazy) davranisinda kalmasi — regresyon degil."""
+    mock_gateway.list_conversations.return_value = {
+        "items": [_chat(MOCK_JID, "Dolu"), _chat(OTHER_JID, "Bos")], "total": 2}
+    available = {OTHER_JID: False}
+    mock_gateway.list_all_messages.side_effect = _phased_bulk(
+        MOCK_JID, OTHER_JID, _other_msgs(OTHER_JID, 3), available)
+
+    await _run_sync()
+    conv = await _conv_by_jid(OTHER_JID)
+    assert conv is not None
+
+    available[OTHER_JID] = True
+    mock_gateway.list_all_messages.side_effect = _phased_bulk(
+        MOCK_JID, OTHER_JID, _other_msgs(OTHER_JID, 3), available, fail_recovery=True)
+
+    job2 = await _run_sync()
+    assert job2.backfill_total == 1
+    assert job2.backfill_hydrated == 0, "hata olmasina ragmen 'dolduruldu' denildi"
+    # Durustluk: satir yazilmadi ve bu saklanmadi.
+    assert await _msg_count(conv.id) == 0
+
+
+@pytest.mark.asyncio
+async def test_44_backfill_respects_max_chat_cap(mock_gateway, events, monkeypatch):
+    """Sinir: bir senkronda EN FAZLA `_BACKFILL_MAX_CHATS` sohbet kurtarilir."""
+    from backend.app.services.whatsapp.orchestration import sync as _sync_mod
+    monkeypatch.setattr(_sync_mod, "_BACKFILL_MAX_CHATS", 1)
+    empty_jids = [f"90555000000{i}@s.whatsapp.net" for i in range(3)]
+    mock_gateway.list_conversations.return_value = {
+        "items": [_chat(MOCK_JID, "Dolu")] + [_chat(j, f"Bos{i}") for i, j in enumerate(empty_jids)],
+        "total": 4}
+    available = {j: False for j in empty_jids}
+    extra = [m for j in empty_jids for m in _other_msgs(j, 2)]
+
+    mock_gateway.list_all_messages.side_effect = _phased_bulk(
+        MOCK_JID, "", [], {})  # ilk tur: yalnizca MOCK_JID
+    await _run_sync()
+
+    for j in empty_jids:
+        available[j] = True
+    mock_gateway.list_all_messages.side_effect = _phased_bulk(
+        MOCK_JID, empty_jids[0], extra, available)
+    mock_gateway.list_all_messages.reset_mock()
+
+    job2 = await _run_sync()
+    assert job2.backfill_total == 1, f"kap uygulanmadi: {job2.backfill_total}"
+    recovery = _recovery_calls(mock_gateway)
+    assert len(recovery) == 1, len(recovery)
+    scoped = recovery[0].kwargs.get("jids") or []
+    assert len(scoped) == 1, f"kapsam kapa uymadi: {scoped}"
+
+
+@pytest.mark.asyncio
+async def test_45_backfill_never_touches_the_provider(mock_gateway, events):
+    """Kurtarma turu SAGLAYICIYA HIC gitmez. Canli dogrulama: hic mesaji olmayan
+    sohbet icin `fetchMessageHistory` capa bulamaz ve ~3 ms'de NO_ANCHOR doner;
+    capasi olan sohbet icin ise saglayici turu yalnizca zaten bellekte olan
+    veriyi geri getirmek icin harcanir. Bulk bellek okumasi ikisini de cozer."""
+    mock_gateway.list_conversations.return_value = {
+        "items": [_chat(MOCK_JID, "Dolu"), _chat(OTHER_JID, "Bos")], "total": 2}
+    available = {OTHER_JID: False}
+    mock_gateway.list_all_messages.side_effect = _phased_bulk(
+        MOCK_JID, OTHER_JID, _other_msgs(OTHER_JID, 2), available)
+
+    await _run_sync()
+    available[OTHER_JID] = True
+    job2 = await _run_sync()
+    assert job2.backfill_hydrated == 1, job2.snapshot()
+
+    provider_calls = [c for c in mock_gateway.get_messages.call_args_list
+                      if c.kwargs.get("fetch_provider")]
+    assert not provider_calls, (
+        f"kurtarma turu saglayiciya gitti: {[c.args[1] for c in provider_calls]}")
+
+
+@pytest.mark.asyncio
+async def test_46_no_recovery_pass_when_bulk_channel_is_unavailable(mock_gateway, events):
+    """Onkosul: bulk kanali YOKKEN (legacy per-chat yolu) geri doldurma turu
+    atilmaz — kanal calismiyorsa ekstra bir bulk turu anlamsizdir. Ayrica sinyal
+    'yeni satir yazildi mi' DEGIL, 'kanal var mi' olmali: artimli bir senkron
+    hicbir yeni satir yazmasa bile bos sohbetler kurtarilmayi bekler."""
+    mock_gateway.list_conversations.return_value = {
+        "items": [_chat(MOCK_JID, "Dolu"), _chat(OTHER_JID, "Bos")], "total": 2}
+
+    async def _no_bulk_channel(gateway_id=None, limit=1000, offset=0, since=None,
+                               per_chat_limit=None, jids=None):
+        # Probe ("messages" anahtari YOK) → kanal yok sayilir.
+        if limit == 1:
+            return {"total": 0}
+        return {"messages": [], "total": 0, "offset": 0, "limit": limit}
+
+    mock_gateway.list_all_messages.side_effect = _no_bulk_channel
+
+    job = await _run_sync()
+    assert job.backfill_total == 0
+    assert not _recovery_calls(mock_gateway), "kanal yokken kurtarma turu atildi"

@@ -196,12 +196,26 @@ export class WhatsAppRepository {
     // Faz 12: hedefli tek-sohbet sorgusu — eskiden TUM liste (limit=200)
     // indirilip istemcide filtreleniyordu (agir + 200 sohbetten sonra sessizce
     // basarisiz). Ayni tenant filtresi sunucuda uygulanir.
-    const list = await WhatsAppApi.getConversations({ conversation_id: conversationId, limit: 1 });
+    //
+    // Latency: these two requests are INDEPENDENT, so they run concurrently.
+    // Awaiting them in sequence made a click cost `list + messages`; now it
+    // costs `max(list, messages)`. The sibling is started BEFORE the not-found
+    // check, but its rejection is swallowed on that path so the canonical
+    // `conversationNotFound` error is still the one that surfaces (a 404 from
+    // /messages must not mask it) — and so it never becomes an unhandled
+    // rejection when we bail out early.
+    const listPromise = WhatsAppApi.getConversations({ conversation_id: conversationId, limit: 1 });
+    const messagesPromise = WhatsAppApi.getMessages(conversationId, { limit: 50 });
+
+    const list = await listPromise;
     const conv = list[0];
-    if (!conv) throw new WhatsAppApiError('whatsapp.conversationNotFound');
+    if (!conv) {
+      await messagesPromise.catch(() => undefined);
+      throw new WhatsAppApiError('whatsapp.conversationNotFound');
+    }
     // Keep detail and paginated list views on the same bounded first page.
     // Older history is fetched explicitly with the cursor by the UI.
-    const messages = await WhatsAppApi.getMessages(conversationId, { limit: 50 });
+    const messages = await messagesPromise;
     return {
       ...conv,
       messages: messages.messages,

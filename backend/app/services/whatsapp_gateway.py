@@ -278,6 +278,7 @@ async def list_all_messages(
     offset: int = 0,
     since: Optional[int] = None,
     per_chat_limit: Optional[int] = None,
+    jids: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """Faz 10 (P5): gateway belleğindeki TÜM geçmişi zaman damgası sıralı,
     deterministik offset sayfalamasıyla toplu çeker. initial-sync job'ı
@@ -301,6 +302,11 @@ async def list_all_messages(
         params["since"] = int(since)
     if per_chat_limit is not None:
         params["perChatLimit"] = int(per_chat_limit)
+    if jids:
+        # Kapsamli geri doldurma: yalnizca bu sohbetler sorulur. Parametre
+        # verilmezse davranis degismez (tum sohbetler) — eski gateway de
+        # bilinmeyen parametreyi yok sayar, yani geriye donuk uyumlu.
+        params["jids"] = ",".join(str(j) for j in jids)
     return await _request("GET", f"{_s(gateway_id)}/messages/bulk", params=params)
 
 

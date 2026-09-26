@@ -467,6 +467,8 @@ export const en = {
       contacts: 'Reading contacts...',
       chats: 'Transferring chats...',
       messages: 'Loading messages...',
+      group_subjects: 'Reading group details...',
+      backfill: 'Loading conversation history...',
       finalizing: 'Finalizing...',
       complete: 'Sync completed',
       failed: 'Sync failed',

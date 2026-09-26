@@ -467,6 +467,8 @@ export const tr = {
       contacts: 'Kişiler okunuyor...',
       chats: 'Sohbetler aktarılıyor...',
       messages: 'Mesajlar yükleniyor...',
+      group_subjects: 'Grup bilgileri okunuyor...',
+      backfill: 'Sohbet geçmişi yükleniyor...',
       finalizing: 'Tamamlanıyor...',
       complete: 'Senkronizasyon tamamlandı',
       failed: 'Senkronizasyon başarısız',

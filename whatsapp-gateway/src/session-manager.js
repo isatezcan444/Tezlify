@@ -728,7 +728,7 @@ export function createSessionManager({
       return result;
     },
 
-    listAllMessages(sessionId, { limit = 1000, offset = 0, since = null, perChatLimit = null } = {}) {
+    listAllMessages(sessionId, { limit = 1000, offset = 0, since = null, perChatLimit = null, jids = null } = {}) {
       const session = this._requireSession(sessionId);
       const { messagesByChat } = this._storeOf(session);
       const sinceMs = Number.isFinite(Number(since)) && since !== null && since !== ''
@@ -737,8 +737,13 @@ export function createSessionManager({
       const perChat = Number.isFinite(Number(perChatLimit)) && Number(perChatLimit) > 0
         ? Number(perChatLimit)
         : null;
+      // Opsiyonel jid filtresi: backend, `since` suucunun disladigi (yani hic
+      // satiri olmayan) sohbetler icin yalnizca O jid'leri sorar. Filtre
+      // verilmezse davranis DEGISMEZ (tum sohbetler).
+      const wanted = Array.isArray(jids) && jids.length > 0 ? new Set(jids.map(String)) : null;
       const all = [];
-      for (const list of messagesByChat.values()) {
+      for (const [chatKey, list] of messagesByChat.entries()) {
+        if (wanted && !wanted.has(String(chatKey))) continue;
         let group = list;
         if (sinceMs !== null) {
           group = group.filter((m) => {

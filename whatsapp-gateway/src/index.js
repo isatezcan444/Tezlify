@@ -374,13 +374,17 @@ app.post('/sessions/:sessionId/conversations/sync-groups', withSession(async (re
 // Sorun 1: `perChatLimit` verildiginde her sohbet icin yalnizca en yeni N mesaj
 // dondurulur — ilk senkronun maliyetini sinirlar; gecmis lazy hydration ile gelir.
 app.get('/sessions/:sessionId/messages/bulk', withSession(async (req, res, sessionId) => {
-  const { limit, offset, since, perChatLimit } = req.query;
+  const { limit, offset, since, perChatLimit, jids } = req.query;
   res.json(sessionManager.listAllMessages(sessionId, {
     limit: limit ? parseInt(limit, 10) : 1000,
     offset: offset ? parseInt(offset, 10) : 0,
     // Faz 6 (P0.13): opsiyonel delta suucusu (epoch saniye).
     since: since !== undefined && since !== '' ? parseInt(since, 10) : null,
     perChatLimit: perChatLimit !== undefined && perChatLimit !== '' ? parseInt(perChatLimit, 10) : null,
+    // Kapsamli geri doldurma: `since` suucunun disladigi sohbetler icin
+    // yalnizca bu jid'ler sorulur (virgulle ayrilmis). Bos/verilmemis →
+    // davranis degismez (tum sohbetler).
+    jids: jids !== undefined && jids !== '' ? String(jids).split(',').filter(Boolean) : null,
   }));
 }));
 

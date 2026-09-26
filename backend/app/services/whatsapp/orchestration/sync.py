@@ -20,7 +20,7 @@ import time
 from typing import Any, Callable, Deque, Dict, FrozenSet, List, Optional, Set, Tuple
 import uuid
 
-from sqlalchemy import delete, func, insert, or_, select, text
+from sqlalchemy import delete, exists, func, insert, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -96,6 +96,30 @@ _SYNC_PERSIST_BATCH = 200     # dedup-SELECT + INSERT chunk size
 _SYNC_EVENT_CHUNK = 100       # WS message chunk event size
 _SYNC_CHAT_PAGE_SIZE = 40     # conversation snapshot page size
 _SYNC_PER_CHAT_LIMIT = 50     # per-chat limit for initial hydration
+
+# --- Empty-conversation provider backfill -----------------------------------
+# WHY THIS EXISTS (measured on production 2026-09-26):
+# `_run_bulk_message_sync` passes `since = get_sync_watermark_epoch(...)`, which is
+# the GLOBAL newest INBOUND timestamp for the owner minus a 5-minute overlap. The
+# gateway applies that filter PER CHAT, so any chat whose newest message is older
+# than the global watermark returns zero messages. A chat that ended up with zero
+# local rows (e.g. the gateway's memory-only store did not hold it at first-sync
+# time — A6) can therefore NEVER be backfilled by a later sync: the gap is
+# permanent, because the watermark only ever moves forward.
+#
+# Live evidence: 112 conversations, 19 with ZERO message rows, and all 19 had
+# `last_message_at` older than the cutoff (2026-01-26 .. 2026-08-27 vs a
+# 2026-09-26 11:49:50 cutoff). Opening any of them fell through to the blocking
+# provider round-trip in `get_messages` (~4 s observed), which is exactly the
+# "clicking a contact is extremely slow" report.
+#
+# The gateway's own memory held messages for only 6 of those 19, so the rest are
+# unreachable on demand: WhatsApp's `fetchMessageHistory` pages BACKWARDS FROM a
+# known message key, so a chat with no anchor at all returns `NO_ANCHOR` in ~3 ms
+# (verified live). Only a phone-side history sync can supply those, which is out
+# of our control. This stage therefore recovers exactly the chats that ARE
+# recoverable — from gateway memory, with no provider round-trip at all.
+_BACKFILL_MAX_CHATS = 60          # hard cap on conversations per sync run
 _BOOTSTRAP_EMIT_INTERVAL_S = 2.0
 _HISTORY_EXPANSION_MAX_CONVERSATIONS = 5        # Legacy alias for test compatibility
 _HISTORY_EXPANSION_INTERVAL_S = 2.0            # Legacy alias for test compatibility
@@ -122,6 +146,9 @@ class SyncJob:
         "contacts_synced",
         "messages_total",
         "messages_synced",
+        "backfill_total",
+        "backfill_done",
+        "backfill_hydrated",
         "started_at",
         "finished_at",
         "done",
@@ -141,6 +168,10 @@ class SyncJob:
         self.contacts_synced = 0
         self.messages_total = 0
         self.messages_synced = 0
+        # Empty-conversation provider backfill (see `_BACKFILL_*` constants).
+        self.backfill_total = 0
+        self.backfill_done = 0
+        self.backfill_hydrated = 0
         self.started_at = datetime.now(timezone.utc)
         self.finished_at: Optional[datetime] = None
         self.done = asyncio.Event()
@@ -159,6 +190,9 @@ class SyncJob:
             "contacts_synced": self.contacts_synced,
             "messages_total": self.messages_total,
             "messages_synced": self.messages_synced,
+            "backfill_total": self.backfill_total,
+            "backfill_done": self.backfill_done,
+            "backfill_hydrated": self.backfill_hydrated,
             "started_at": self.started_at.isoformat(),
             "finished_at": self.finished_at.isoformat() if self.finished_at else None,
             "stage_timings": dict(self.stage_timings),
@@ -1030,7 +1064,25 @@ class WhatsAppSyncOrchestrator:
         jid_by_conv: Dict[int, str],
         gateway_id: str,
         ws_session: Optional[WhatsAppSession] = None,
+        *,
+        recovery_pass: bool = False,
+        only_conv_ids: Optional[Set[int]] = None,
     ) -> None:
+        """Pulls messages from the gateway's bulk channel and persists them.
+
+        `recovery_pass=True` is the "fill the holes the watermark left" mode used
+        by `_backfill_empty_conversations`:
+          * the `since` watermark is NOT applied (`since=None`), because the whole
+            point is to reach chats the watermark excluded;
+          * `job.messages_total` is NOT overwritten, so the progress the user sees
+            still describes the real initial sync rather than this small recovery
+            sweep;
+          * `only_conv_ids` restricts the request to those conversations. The jid
+            list is derived from `conv_by_jid` BELOW, so it automatically carries
+            the LID aliases too — the gateway's store may key a chat by either its
+            phone jid or its LID, and matching on the phone jid alone would miss
+            the LID-keyed ones.
+        """
         gateway_client = self._get_helper("gw", gw)
         gateway_op_or_mark_relink = self._get_helper("_gateway_op_or_mark_relink", None)
         message_row_from_gateway = self._get_helper("_message_row_from_gateway", _message_row_from_gateway)
@@ -1062,7 +1114,15 @@ class WhatsAppSyncOrchestrator:
         existing_ids: Dict[int, Set[str]] = {}
         dedup_loaded: Set[int] = set()
 
-        since_epoch = await _sync_watermark_epoch(db, job.user_id)
+        since_epoch = None if recovery_pass else await _sync_watermark_epoch(db, job.user_id)
+
+        # Geri doldurma turunda istek YALNIZCA hedef sohbetlerle sinirlanir.
+        # jid listesi `conv_by_jid`'ten turetilir → LID takma adlari da kapsanir.
+        request_jids: Optional[List[str]] = None
+        if only_conv_ids is not None:
+            request_jids = [j for j, cid in conv_by_jid.items() if cid in only_conv_ids]
+            if not request_jids:
+                return
 
         offset = 0
         first_page = True
@@ -1077,6 +1137,7 @@ class WhatsAppSyncOrchestrator:
                         offset=offset,
                         since=since_epoch,
                         per_chat_limit=_SYNC_PER_CHAT_LIMIT,
+                        jids=request_jids,
                     ),
                 )
             else:
@@ -1086,11 +1147,15 @@ class WhatsAppSyncOrchestrator:
                     offset=offset,
                     since=since_epoch,
                     per_chat_limit=_SYNC_PER_CHAT_LIMIT,
+                    jids=request_jids,
                 )
             msgs = page.get("messages", []) if isinstance(page, dict) else []
             total = int(page.get("total") or 0) if isinstance(page, dict) else 0
             if first_page:
-                job.messages_total = total
+                # Geri doldurma turu ilerleme sayaclarini EZMEZ: kullanicinin
+                # gordugu "mesajlar" ilerlemesi gercek ilk senkronu anlatmali.
+                if not recovery_pass:
+                    job.messages_total = total
                 first_page = False
             if not msgs:
                 break
@@ -1210,6 +1275,9 @@ class WhatsAppSyncOrchestrator:
         reapply_chat_names = self._get_helper("_reapply_chat_names", self._reapply_chat_names)
         bulk_channel_available = self._get_helper("_bulk_channel_available", self._bulk_channel_available)
         run_bulk_message_sync = self._get_helper("_run_bulk_message_sync", self._run_bulk_message_sync)
+        run_backfill_empty = self._get_helper(
+            "_backfill_empty_conversations", self._backfill_empty_conversations
+        )
         sync_conversations_impl = self._get_helper("_sync_conversations_impl", self._sync_conversations_impl)
         repair_last_message_previews = self._get_helper("_repair_last_message_previews", self._repair_last_message_previews)
         repair_phone_sender_names = self._get_helper(
@@ -1311,7 +1379,10 @@ class WhatsAppSyncOrchestrator:
                         logger.warning("Sync job ad onarimi atlandi (owner=%s): %s", owner, exc)
 
                     job.stage = "messages"
-                    if await bulk_channel_available(gateway_id):
+                    # Kanali BIR kez yokla: hem ana turun hem de geri doldurma
+                    # turunun onkosulu bu (bkz. `_backfill_empty_conversations`).
+                    bulk_ok = await bulk_channel_available(gateway_id)
+                    if bulk_ok:
                         await run_bulk_message_sync(db, job, session_jids, gateway_id, ws_session=ws_session)
                     else:
                         logger.warning("Gateway bulk kanali yok — legacy per-chat sync (owner=%s)", owner)
@@ -1319,6 +1390,29 @@ class WhatsAppSyncOrchestrator:
                     if job.cancel_requested:
                         raise asyncio.CancelledError()
                     _mark_phase("messages")
+
+                    # Geri doldurma turu: `since` suucunun disladigi, yani hic
+                    # satiri olmayan sohbetler icin SUUCSLU bir bulk turu daha.
+                    # Maliyet BURADA, kullanicinin zaten bekledigi senkron
+                    # icinde odenir; boylece "tiklayinca sohbet gec yukleniyor"
+                    # sikayeti tekrarlanmaz. Yalnizca bulk kanali CALISIRKEN
+                    # kosar — kanal yoksa zaten legacy yoldayiz ve ekstra tur
+                    # anlamsiz olurdu. Best-effort: basarisizlik senkronu
+                    # DUSURMEZ (bkz. `_backfill_empty_conversations` docstring).
+                    if bulk_ok:
+                        job.stage = "backfill"
+                        try:
+                            await run_backfill_empty(
+                                db, job, owner, session_jids, gateway_id,
+                                ws_session=ws_session,
+                            )
+                        except Exception as exc:  # noqa: BLE001 - must not fail the sync
+                            logger.warning(
+                                "Bos sohbet geri doldurma asamasi atlandi (owner=%s): %s", owner, exc
+                            )
+                        if job.cancel_requested:
+                            raise asyncio.CancelledError()
+                        _mark_phase("backfill")
 
                 items = all_items
                 job.stage = "finalizing"
@@ -2073,6 +2167,152 @@ class WhatsAppSyncOrchestrator:
         )
         await db.commit()
         return list(reversed(rows))
+
+    async def _backfill_empty_conversations(
+        self,
+        db: AsyncSession,
+        job: SyncJob,
+        owner: str,
+        jid_by_conv: Dict[int, str],
+        gateway_id: str,
+        *,
+        ws_session: Optional[WhatsAppSession] = None,
+    ) -> int:
+        """Recover conversations the `since` watermark excluded, from gateway memory.
+
+        THE PROBLEM (measured on production 2026-09-26). `_run_bulk_message_sync`
+        passes `since = get_sync_watermark_epoch(...)` — the owner's GLOBAL newest
+        INBOUND timestamp minus a 5-minute overlap. The gateway applies that filter
+        PER CHAT, so any chat whose newest message predates it returns zero
+        messages. A chat that ended up with zero local rows (the gateway's store is
+        memory-only and is not rebuilt after a restart — A6) can therefore NEVER be
+        recovered by a later sync: the watermark only ever moves forward. Live: 112
+        conversations, 19 with zero rows, ALL 19 with `last_message_at` older than
+        the cutoff (2026-01-26 .. 2026-08-27 vs a 2026-09-26 11:49:50 cutoff).
+
+        WHY THE BULK CHANNEL AND NOT THE PROVIDER. The obvious remedy — ask the
+        provider for those chats' history — does not work, and this was verified
+        live rather than assumed:
+          * A chat with NO anchor message returns `provider_status=NO_ANCHOR` in
+            ~3 ms. WhatsApp's `fetchMessageHistory` pages BACKWARDS FROM a known
+            message key, so with zero messages anywhere there is nothing to anchor
+            on. 13 of the 19 prod chats are in exactly this state — the messages
+            exist only on WhatsApp's servers and no on-demand call can retrieve
+            them. Only a phone-side history sync can, which is out of our control.
+          * For the 6 chats whose messages ARE in gateway memory, asking the
+            provider triggers a real anchored round-trip (the gateway fetches when
+            `list.length < limit`) purely to hand back memory we already had.
+        So this stage reads the bulk channel with `since=None`, scoped to the empty
+        conversations. It costs one bounded HTTP call, never touches the provider,
+        and recovers precisely the chats that are recoverable.
+
+        PRECONDITION. The caller only invokes this while the bulk channel is
+        available. When it is not, we are on the legacy per-chat path and an extra
+        bulk round-trip would be meaningless. Note the signal is CHANNEL
+        availability, deliberately NOT "did the main pass insert rows": an ordinary
+        incremental sync that inserts nothing new still leaves genuinely empty
+        conversations in need of recovery, so gating on inserted-row count would
+        silently disable this exactly when it matters.
+
+        Best-effort by construction: any failure is logged and the sync continues.
+        A conversation we do not recover simply keeps today's lazy behaviour, so the
+        worst case is the status quo rather than a regression.
+
+        Returns the number of conversations that gained messages.
+        """
+        broadcast_sync_event = self._get_helper("_broadcast_sync_event", self._broadcast_sync_event)
+        sync_event = self._get_helper("_sync_event", self._sync_event)
+        run_bulk = self._get_helper("_run_bulk_message_sync", self._run_bulk_message_sync)
+
+        candidate_ids = set(jid_by_conv.keys())
+        if not candidate_ids:
+            return 0
+
+        empty_ids = set(
+            (
+                await db.execute(
+                    select(Conversation.id)
+                    .where(
+                        Conversation.id.in_(candidate_ids),
+                        get_user_filter(Conversation.user_id, owner),
+                        ~exists(
+                            select(Message.id).where(
+                                Message.conversation_id == Conversation.id
+                            )
+                        ),
+                    )
+                    .order_by(Conversation.last_message_at.desc().nullslast())
+                    .limit(_BACKFILL_MAX_CHATS)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        job.backfill_total = len(empty_ids)
+        if not empty_ids:
+            return 0
+
+        logger.info(
+            "Bos sohbet geri doldurma basliyor (owner=%s adet=%s, suucsuz bulk turu)",
+            owner, job.backfill_total,
+        )
+        await broadcast_sync_event(
+            sync_event(job, "whatsapp_sync_backfill_started", total=job.backfill_total),
+            owner,
+        )
+
+        try:
+            await run_bulk(
+                db,
+                job,
+                jid_by_conv,
+                gateway_id,
+                ws_session=ws_session,
+                recovery_pass=True,
+                only_conv_ids=empty_ids,
+            )
+        except Exception as exc:  # noqa: BLE001 - best-effort stage
+            logger.warning(
+                "Bos sohbet geri doldurma turu basarisiz (owner=%s): %s", owner, exc
+            )
+            return 0
+
+        # Report what ACTUALLY changed — never claim a recovery that did not land.
+        still_empty = set(
+            (
+                await db.execute(
+                    select(Conversation.id).where(
+                        Conversation.id.in_(empty_ids),
+                        ~exists(
+                            select(Message.id).where(
+                                Message.conversation_id == Conversation.id
+                            )
+                        ),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        hydrated = len(empty_ids) - len(still_empty)
+        job.backfill_hydrated = hydrated
+        job.backfill_done = job.backfill_total
+        await broadcast_sync_event(
+            sync_event(
+                job,
+                "whatsapp_sync_backfill_progress",
+                total=job.backfill_total,
+                done=job.backfill_done,
+                hydrated=hydrated,
+            ),
+            owner,
+        )
+        logger.info(
+            "Bos sohbet geri doldurma bitti (owner=%s taranan=%s doldurulan=%s "
+            "hala-bos=%s)",
+            owner, job.backfill_total, hydrated, len(still_empty),
+        )
+        return hydrated
 
 
 # Module-level default instance

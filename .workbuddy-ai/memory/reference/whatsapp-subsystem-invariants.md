@@ -366,3 +366,49 @@ says nothing. **The gateway used to violate this in all four writers** (`socket-
   root cause, two faces. The frontend tab logic (`ConversationList.tsx:216-228`) was already correct;
   do not "fix" it.
 
+
+## L. Initial-sync message coverage — the watermark is global, the filter is per-chat
+
+- **`since` is a GLOBAL watermark applied PER CHAT — that combination creates permanent holes.**
+  `_run_bulk_message_sync` passes `since = get_sync_watermark_epoch(...)` = the owner's newest INBOUND
+  `external_timestamp` − 300 s. The gateway applies it inside its per-chat loop
+  (`session-manager.js` `listAllMessages`). So every chat whose newest message predates the cutoff
+  returns **zero** messages. A chat that ended up with zero local rows — e.g. the gateway's memory-only
+  store did not hold it at first-sync time (A6) — can then **never** be recovered by a later sync,
+  because the watermark only moves forward.
+  **Live 2026-09-26:** 112 conversations, **19 with 0 message rows**, and all 19 had `last_message_at`
+  older than the cutoff (2026-01-26 … 2026-08-27 vs a 2026-09-26 11:49:50 cutoff). `zero_older_than_cutoff = 19`.
+
+- **The provider CANNOT fill that hole — `NO_ANCHOR`.** Verified live: for a chat with no message
+  anywhere, `GET /conversations/{jid}/messages?fetch_provider=true` returns
+  **`provider_status=NO_ANCHOR`, 0 messages, ~3 ms** (no network round-trip). `requestOlderHistory`
+  (`session-manager.js:584`) feeds WhatsApp's `fetchMessageHistory`, which pages **backwards from a known
+  message key**; with no message there is no anchor. 13 of the 19 prod chats are in exactly this state —
+  only a phone-side history sync can supply them, and that is not under our control. The other 6 *are* in
+  gateway memory, and for those a provider call would spend a real anchored round-trip merely to hand back
+  data we already had. **Do not "fix" an empty conversation by asking the provider.**
+
+- **The recovery path is a scoped, watermark-free bulk read.** The `backfill` stage re-reads the bulk
+  channel with `since=None` and `jids=<only the empty chats>`; no provider contact at all. New surface:
+  gateway `listAllMessages({jids})` + `/messages/bulk?jids=` (comma-separated), backend
+  `list_all_messages(jids=...)`, and `_run_bulk_message_sync(recovery_pass, only_conv_ids)` where
+  `recovery_pass` also means "do not overwrite `job.messages_total`".
+  `only_conv_ids` → the jid list is derived from the pass's own `conv_by_jid`, so **LID aliases are
+  covered** — the store may key a chat by either its phone jid or its LID, and matching on the phone jid
+  alone would silently miss the LID-keyed ones.
+
+- **The stage's precondition is CHANNEL availability, never "did we insert rows".** Gating on
+  `job.messages_synced` looks natural and is wrong: an ordinary incremental sync that inserts nothing new
+  still leaves genuinely empty conversations in need of recovery, so that gate disables the stage exactly
+  when it matters. The call site checks `_bulk_channel_available(gateway_id)` once and uses it for both
+  the main pass and the recovery pass. §21 ("the initial sync must not issue a request per chat") is
+  preserved: the recovery pass is one scoped bulk call, never N per-chat calls.
+
+- **`_get_helper(name, fallback)` prefers the SERVICE attribute over the orchestrator's own method.**
+  `whatsapp_service` therefore carries same-named shims that shadow orchestrator methods, and a shim whose
+  signature has drifted fails only at runtime, only on the code path that reaches it:
+  `TypeError: unexpected keyword argument`. Two such bugs existed (both fixed 2026-09-26):
+  `_sync_conversations_impl` did not accept `session=` — so **the legacy no-bulk-channel sync failed
+  outright**, and it was already broken at HEAD; and `_run_bulk_message_sync` did not forward
+  `recovery_pass`/`only_conv_ids`. When adding a parameter to an orchestrator method, grep for a shim of
+  the same name and mirror the signature exactly.

@@ -261,6 +261,13 @@ class WhatsAppSyncJobResponse(BaseModel):
     contacts_synced: int = 0
     messages_total: int = 0
     messages_synced: int = 0
+    # Bos sohbet geri doldurmasi (bkz. sync.py `_BACKFILL_*`): satiri olmayan
+    # sohbetler icin saglayicidan gecmis cekilir. Bu alanlar `snapshot()`'ta
+    # ZATEN uretiliyor; response_model'da listelenmezlerse API'den sessizce
+    # silinirler (A8 tuzagi) — bu yuzden burada acikca bildirilirler.
+    backfill_total: int = 0
+    backfill_done: int = 0
+    backfill_hydrated: int = 0
     started_at: Optional[str] = None
     finished_at: Optional[str] = None
     # Faz 6 (P0.1): faz bazinda gecen sure (sn, gercek olcum — time.monotonic

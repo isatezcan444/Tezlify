@@ -153,6 +153,7 @@ _event_orchestrator = WhatsAppEventOrchestrator(service=sys.modules[__name__])
 
 # Sync Orchestration (Phase 11.10)
 from backend.app.services.whatsapp.orchestration.sync import (
+    _BACKFILL_MAX_CHATS,
     _SYNC_PER_CHAT_LIMIT,
     SyncJob,
     WhatsAppSyncOrchestrator,
@@ -342,8 +343,15 @@ async def sync_conversations(db: AsyncSession, user_id: str) -> List[Dict[str, A
     return await _sync_orchestrator.sync_conversations(db, user_id)
 
 
-async def _sync_conversations_impl(db: AsyncSession, user_id: str) -> List[Dict[str, Any]]:
-    return await _sync_orchestrator._sync_conversations_impl(db, user_id)
+async def _sync_conversations_impl(
+    db: AsyncSession, user_id: str, session: Optional[WhatsAppSession] = None
+) -> List[Dict[str, Any]]:
+    # `session` ONCEDEN yoktu ve bu shim orkestratordaki metodu GOLGELEDIGI icin
+    # bulk kanali olmayan bir gateway'de legacy yol her zaman
+    # `TypeError: unexpected keyword argument 'session'` ile patliyor, yani
+    # senkron tamamen DUSUYORDU (fail-closed, ama islevsiz). Orkestratorun kendi
+    # metodu parametreyi zaten kabul ediyor; burada da iletilir.
+    return await _sync_orchestrator._sync_conversations_impl(db, user_id, session=session)
 
 
 
@@ -1063,9 +1071,20 @@ async def _run_bulk_message_sync(
     jid_by_conv: Dict[int, str],
     gateway_id: str,
     ws_session: Optional[WhatsAppSession] = None,
+    *,
+    recovery_pass: bool = False,
+    only_conv_ids: Optional[Set[int]] = None,
 ) -> None:
+    # DIKKAT — bu shim orkestratorun ayni adli metodunu GOLGELER
+    # (`_get_helper` once servis niteligini tercih eder). Bu yuzden imza
+    # birebir uyusmali: eksik bir parametre, cagri aninda
+    # `TypeError: unexpected keyword argument` olarak patlar ve yalnizca o kod
+    # yoluna girildiginde gorunur (bkz. `_sync_conversations_impl`'deki ayni
+    # tuzagin duzeltmesi). `recovery_pass`/`only_conv_ids` bos sohbet geri
+    # doldurma turu icin ZORUNLUDUR.
     return await _sync_orchestrator._run_bulk_message_sync(
-        db, job, jid_by_conv, gateway_id, ws_session=ws_session
+        db, job, jid_by_conv, gateway_id, ws_session=ws_session,
+        recovery_pass=recovery_pass, only_conv_ids=only_conv_ids,
     )
 
 
