@@ -369,6 +369,11 @@ app.post('/sessions/:sessionId/conversations/sync-groups', withSession(async (re
   res.json({ success: applied, force, applied, reason: result ? result.reason : null, extraJids_count: extraJids.length });
 }));
 
+app.post('/sessions/:sessionId/resync-app-state', withSession(async (req, res, sessionId) => {
+  const result = await sessionManager.resyncAppState(sessionId);
+  res.json(result);
+}));
+
 // Faz 10 (P5): toplu gecmis kanali — backend initial-sync job'i sohbet basina
 // ayri ayri HTTP turu atmak yerine bunu kullanir (deterministik offset sayfalama).
 // Sorun 1: `perChatLimit` verildiginde her sohbet icin yalnizca en yeni N mesaj

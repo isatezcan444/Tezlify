@@ -222,7 +222,7 @@ const ConversationListComponent: React.FC<ConversationListProps> = ({
     const archivedLike = Boolean(c.is_archived) || c.status === 'ARCHIVED';
     if (currentFilter === 'ALL' && archivedLike) return false;
     if (currentFilter === 'ACTIVE' && (c.status !== 'ACTIVE' || archivedLike)) return false;
-    if (currentFilter === 'GROUPS' && !c.is_group) return false;
+    if (currentFilter === 'GROUPS' && (!c.is_group || archivedLike)) return false;
     if (currentFilter === 'ARCHIVED' && !archivedLike) return false;
     if (currentFilter === 'CLOSED' && c.status !== 'CLOSED') return false;
     if (currentFilter === 'UNREAD' && ((c.unread_count || 0) <= 0 || archivedLike)) return false;

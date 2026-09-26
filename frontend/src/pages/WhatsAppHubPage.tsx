@@ -152,6 +152,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   // at call time (no stale closure). The state declarations above are unchanged.
   const selectedConvRef = useRef(selectedConv);
   selectedConvRef.current = selectedConv;
+  const lastMarkedReadConvIdRef = useRef<number | null>(null);
   const messagesMapRef = useRef(messagesMap);
   messagesMapRef.current = messagesMap;
   // `error`: sayfalama (history) istegi basarisiz oldu — mevcut mesajlar SILINMEZ,
@@ -800,7 +801,8 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     // Faz 5: secilen sohbeti acmak okundu sayilir (WhatsApp Web paritesi) —
     // tiklama ya da otomatik secim yoluyla gelmesi farketmez; okundu boylece
     // telefona da geri yazilir.
-    if ((selectedConv.unread_count ?? 0) > 0) {
+    if ((selectedConv.unread_count ?? 0) > 0 && lastMarkedReadConvIdRef.current !== convId) {
+      lastMarkedReadConvIdRef.current = convId;
       // Faz 12: sohbet elimizde — `known` geçilir; ekstra 200 satırlık liste
       // GET'i YOK.
       // Faz 13: sonuc GERCEK — gateway'e iletilemezse sessizce yutulmaz.
@@ -852,6 +854,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   const handleSelectConversation = useCallback((c: Conversation) => {
     setSelectedConv(c);
     if (c.unread_count > 0) {
+      lastMarkedReadConvIdRef.current = c.id;
       // Kullanici eylemi → gateway'e iletilemezse GORUNUR bildirim.
       WhatsAppRepository.markConversationAsRead(c.id, c)
         .then((res) => reportReadSync(res, { notify: true, label: `click#${c.id}` }))
@@ -1839,14 +1842,15 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       console.log('[WhatsAppHubPage] WebSocket reconnected. Performing silent reconciliation...');
       void refreshSyncStatus();
       loadConversations(true);
-      if (selectedConv?.id) {
-        WhatsAppRepository.getConversationMessages(selectedConv.id, { limit: 50 })
+      const activeId = selectedConvRef.current?.id;
+      if (activeId) {
+        WhatsAppRepository.getConversationMessages(activeId, { limit: 50 })
           .then((res) => {
             if (res?.messages) {
               setMessagesMap((prev) => {
-                const buf = syncMsgBufferRef.current[selectedConv.id] || [];
-                return { ...prev, [selectedConv.id]: mergeWhatsAppMessages(
-                  prev[selectedConv.id] || [], [...res.messages, ...buf]) };
+                const buf = syncMsgBufferRef.current[activeId] || [];
+                return { ...prev, [activeId]: mergeWhatsAppMessages(
+                  prev[activeId] || [], [...res.messages, ...buf]) };
               });
             }
           })
@@ -1860,7 +1864,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       window.removeEventListener('tezlify:ws_event', handleWsEvent);
       window.removeEventListener('tezlify:ws_connected', handleReconnect);
     };
-  }, [selectedConv, loadConversations, refreshSyncStatus, reportReadSync, logBackgroundFetchFailure, hydrateConversation, clearPeerTyping, acknowledgeFailedSync, scheduleBootstrapFetch]);
+  }, [loadConversations, refreshSyncStatus, reportReadSync, logBackgroundFetchFailure, hydrateConversation, clearPeerTyping, acknowledgeFailedSync, scheduleBootstrapFetch]);
 
   // Anti-Ban Timing & Change-Tracking State
   const [savedConfig, setSavedConfig] = useState<AntiBanConfig>(getStoredAntiBanConfig());

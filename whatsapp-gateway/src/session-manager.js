@@ -1360,7 +1360,9 @@ export function createSessionManager({
           }
         }
       } catch {
-        // Picture not accessible - expected
+        // Picture not accessible or rate-limited.
+        // Instead of locking out for 10 minutes on failure, allow retry after 30 seconds.
+        avatarFetchAttemptedAt.set(key, Date.now() - (10 * 60 * 1000 - 30 * 1000));
       } finally {
         store.avatarFetchInFlight.delete(key);
       }
@@ -1424,6 +1426,22 @@ export function createSessionManager({
         return { success: true, jid: key, avatar_url: url };
       } catch (err) {
         return { success: false, jid: key, error: err.message };
+      }
+    },
+
+    async resyncAppState(sessionId) {
+      const session = this._requireSession(sessionId);
+      if (!session.sock || session.status !== 'CONNECTED') {
+        return { success: false, error: 'Session not connected' };
+      }
+      if (typeof session.sock.resyncAppState !== 'function') {
+        return { success: false, error: 'resyncAppState not available on socket' };
+      }
+      try {
+        await session.sock.resyncAppState(['regular_low', 'regular_high'], false);
+        return { success: true };
+      } catch (err) {
+        return { success: false, error: err?.message || String(err) };
       }
     },
 
@@ -1630,6 +1648,15 @@ export function createSessionManager({
       } finally {
         session._groupSubjectsInFlight = false;
       }
+      if (typeof session.sock?.resyncAppState === 'function') {
+        try {
+          await session.sock.resyncAppState(['regular_low', 'regular_high'], false);
+          logger.info({ sessionId: session.id }, 'App state resync completed for regular collections');
+        } catch (resyncErr) {
+          logger.warn({ err: resyncErr?.message, sessionId: session.id }, 'App state resync failed after group subjects');
+        }
+      }
+      this._scheduleBackgroundAvatarFetch(session);
       return { applied: true, reason: null };
     },
 
