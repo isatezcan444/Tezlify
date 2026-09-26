@@ -38,6 +38,7 @@ from backend.app.schemas.whatsapp import (
     WhatsAppTypingRequest,
 )
 from backend.app.services import whatsapp_service
+from backend.app.services.whatsapp.exceptions import PairingPromotionRefused
 from backend.app.services.whatsapp_service import NoWhatsAppSession, WhatsAppRelinkRequired
 
 router = APIRouter()
@@ -81,6 +82,18 @@ def _relink_required(exc: Exception) -> HTTPException:
         detail=str(exc),
         headers={"X-WhatsApp-State": "RELINK_REQUIRED"},
     )
+
+
+def _pairing_refused(exc: Exception) -> HTTPException:
+    """Eşleşme tamamlandı ama kalıcı oturum bağlanamadı -> 409.
+
+    `promote_ephemeral_pairing` None döndürdüğünde (sahip kanıtlanamadı, telefon
+    başka kiracıda, ya da canlı oturum başka gateway'de) yükseltilir. Bu bir
+    gateway arızası DEĞİLDİR; 502 "gateway'e ulaşılamadı" demek kullanıcıyı
+    yanlış yöne yönlendirir — `_no_session` ile aynı gerekçe.
+    """
+    logger.warning("WhatsApp eşleşmesi reddedildi: %s", exc)
+    return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
 
 
 # ---------------------------------------------------------------------------
@@ -148,6 +161,10 @@ async def get_pairing_qr(
         return WhatsAppPairingQrResponse(**data)
     except LookupError as exc:
         raise _not_found(exc) from exc
+    except PairingPromotionRefused as exc:
+        # The pairing DID complete on the gateway, but the durable row could not
+        # be bound safely. That is a conflict, not a gateway outage.
+        raise _pairing_refused(exc) from exc
     except Exception as exc:
         raise _bad_gateway(exc) from exc
 

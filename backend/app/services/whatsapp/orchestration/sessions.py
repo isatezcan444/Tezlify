@@ -26,6 +26,7 @@ from backend.app.models.whatsapp_session import WhatsAppSession, SessionStatus
 from backend.app.services import whatsapp_gateway as gw
 from backend.app.services.whatsapp.exceptions import (
     NoWhatsAppSession,
+    PairingPromotionRefused,
     WhatsAppRelinkRequired,
 )
 from backend.app.services.whatsapp.gateway import (
@@ -36,9 +37,6 @@ from backend.app.services.whatsapp.gateway import (
 )
 from backend.app.services.whatsapp.orchestration import pairing_registry
 from backend.app.services.whatsapp.orchestration.relink import (
-    RelinkCandidateAmbiguous,
-    RelinkCandidateNotFound,
-    find_existing_session_for_phone,
     perform_atomic_relink,
 )
 from backend.app.services.whatsapp.repositories.sessions import (
@@ -497,106 +495,57 @@ async def get_pairing_qr(db: AsyncSession, user_id: str, pair_token: str) -> Dic
         log_id = pairing.get("logical_session_id")
 
         def _consume_pairing() -> None:
-            # Pairing is consumed ONLY after a terminal success (relink OK,
-            # existing-row reuse, or new-row insert). If a later step raises,
-            # the token stays intact so the user can retry instead of getting
-            # "Eşleşme oturumu bulunamadı" while the phone is still connected
-            # on the gateway.
+            # Pairing is consumed ONLY after a terminal success. If a later step
+            # raises, the token stays intact so the user can retry instead of
+            # getting "Eşleşme oturumu bulunamadı" while the phone is still
+            # connected on the gateway.
             if log_id and _logical_to_ephemeral.get(log_id) == pair_token:
                 _logical_to_ephemeral.pop(log_id, None)
             _ephemeral_pairings.pop(pair_token, None)
 
-        # --- Scenario A: try to bind to existing RELINK_REQUIRED logical session ---
-        try:
-            result = await perform_atomic_relink(
-                db,
-                user_id=str(user_id),
-                phone=phone,
-                new_gateway_id=str(gateway_id),
-                session_name=pairing["session_name"],
-            )
-            logger.info(
-                "[WhatsApp] Relink Scenario A: session=%s gateway %s→%s (%d history rows migrated)",
-                result.session_id,
-                result.old_gateway_id,
-                result.new_gateway_id,
-                result.history_rows_migrated,
-            )
-            _consume_pairing()
-            return {
-                "status": "CONNECTED",
-                "session_id": result.session_id,
-                "phone": result.phone_number,
-                "qr_code": None,
-                "error_message": None,
-            }
-        except RelinkCandidateAmbiguous as exc:
-            # Fail closed — multiple matching sessions, cannot safely bind.
-            logger.error("[WhatsApp] Relink failed — ambiguous candidate: %s", exc)
-            raise ValueError(str(exc)) from exc
-        except RelinkCandidateNotFound:
-            if log_id:
-                # If pairing was targeted at a specific logical session, fail closed
-                logger.error(
-                    "[WhatsApp] Targeted relink failed for logical_session_id=%s, phone=%s",
-                    log_id,
-                    phone,
-                )
-                raise ValueError("Eşleşme tamamlandı ancak hedef oturum doğrulanamadı.")
+        # The durable row has exactly ONE writer: `promote_ephemeral_pairing`
+        # (Phase 6.8). This endpoint used to hand-roll the same
+        # relink / reuse / INSERT sequence, which made it a SECOND writer for the
+        # same gateway id — and its INSERT was the only one that was NOT
+        # race-tolerant. The event-driven promotion is triggered by the very same
+        # `connection.open`, so both writers read "no row for this gateway id" and
+        # then wrote; the event path won and the browser's poll died on
+        # `ix_whatsapp_sessions_gateway_id`, surfacing as a 502 on
+        # `GET /pairing/{token}/qr` (live 2026-09-26 11:43:56 UTC: the poll 502'd
+        # while promotion committed session 87 for the same gateway).
+        #
+        # Delegating is lossless: the hand-rolled branches logged ZERO hits in 7
+        # days of production logs, and the targeted-relink branch is unreachable
+        # because no HTTP caller ever sets `logical_session_id`. It also removes a
+        # policy conflict — this path rebound an already-CONNECTED row to the new
+        # gateway id, while promotion deliberately refuses to overwrite a live
+        # session. `cancel_pairing_session` already delegates here, so both paths
+        # now share one policy instead of two that disagreed.
+        #
+        # Lazy import: `promotion` pulls in the relink layer, and this module is
+        # imported very early (endpoint -> whatsapp_service -> sessions).
+        from backend.app.services.whatsapp.orchestration.promotion import (
+            promote_ephemeral_pairing,
+        )
 
-        # --- Scenario A-new: create new logical session (first QR for this phone) ---
-        # S-4: never mint a SECOND row for a phone that already has one.
-        # `phone_number` has no DB uniqueness constraint, so recheck transaction-safely
-        # right before the INSERT and rebind the existing row instead. This closes the
-        # duplicate-session window that a `skip_locked` candidate miss used to open
-        # (and also covers re-pairing a number whose session is already CONNECTED,
-        # which Scenario A does not match because it requires RELINK_REQUIRED).
-        existing = await find_existing_session_for_phone(
-            db, user_id=str(user_id), phone=phone, exclude_gateway_id=str(gateway_id)
+        row = await promote_ephemeral_pairing(
+            db,
+            gateway_session_id=str(gateway_id),
+            user_id=str(user_id),
+            phone=phone or None,
+            session_name=pairing.get("session_name"),
+            in_memory_pairing=pairing,
         )
-        if existing is not None:
-            existing.gateway_id = str(gateway_id)
-            existing.status = SessionStatus.CONNECTED
-            existing.is_active = True
-            existing.is_phone_online = True
-            existing.qr_code = None
-            existing.error_message = None
-            existing.updated_at = datetime.utcnow()
-            if pairing.get("session_name"):
-                existing.session_name = pairing["session_name"]
-            await db.commit()
-            await db.refresh(existing)
-            logger.info(
-                "[WhatsApp] Reused existing session id=%s for phone=%s instead of creating a duplicate.",
-                existing.id,
-                phone,
+        if row is None:
+            # Fail closed. Promotion refuses when it cannot prove the owner, when
+            # the phone resolves to another tenant, or when a live session is
+            # already bound to a different gateway. None of those is a gateway
+            # outage, so raise the dedicated type the endpoint maps to 409 —
+            # reporting 502 ("gateway'e ulaşılamadı") here would be a lie.
+            raise PairingPromotionRefused(
+                "Eşleşme tamamlandı ancak kalıcı oturum güvenli biçimde bağlanamadı."
             )
-            _consume_pairing()
-            return {
-                "status": "CONNECTED",
-                "session_id": existing.id,
-                "phone": existing.phone_number,
-                "qr_code": None,
-                "error_message": None,
-            }
 
-        row = WhatsAppSession(
-            user_id=user_id,
-            gateway_id=gateway_id,
-            session_name=pairing["session_name"],
-            status=SessionStatus.CONNECTED,
-            phone_number=phone or None,
-            is_active=True,
-            is_phone_online=True,
-        )
-        db.add(row)
-        await db.commit()
-        await db.refresh(row)
-        logger.info(
-            "[WhatsApp] First-time QR pairing — new session created: id=%s (%s)",
-            row.id,
-            gateway_id,
-        )
         _consume_pairing()
         return {
             "status": "CONNECTED",

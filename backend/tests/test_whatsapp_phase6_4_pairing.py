@@ -295,6 +295,115 @@ class TestP68PhonePairingCode:
                 )
                 assert count == 1, f"exactly one persistent session expected, found {count}"
 
+    @pytest.mark.asyncio
+    async def test_p68_qr_poll_survives_concurrent_promotion(self, auth_headers):
+        """REGRESSION — live 2026-09-26 11:43:56 UTC: the QR poll 502'd.
+
+        `GET /pairing/{token}/qr` returned 502 with
+        `UniqueViolationError: duplicate key value violates unique constraint
+        "ix_whatsapp_sessions_gateway_id"` (Key (gateway_id)=(f157eca0-…) already
+        exists) while `promote_ephemeral_pairing` committed session 87 for that
+        very same gateway id 7 ms later.
+
+        Two writers create the durable row for a freshly-connected gateway
+        session: the event-driven promotion (triggered by the same
+        `connection.open`) and this endpoint, which used to hand-roll the same
+        relink / reuse / INSERT sequence. Both read "no row yet" and then wrote,
+        so one lost on the unique index. The event path was race-tolerant; the
+        endpoint's INSERT was not, and the loser's 502 reached the browser.
+
+        Losing the race is NOT an error: the winner committed the row this
+        gateway session is supposed to have. Simulate the winner by committing
+        the row for this exact gateway id first, then poll — the endpoint must
+        return 200 with THAT row and mint no duplicate.
+        """
+        gw_id = f"gw-p68race-{uuid.uuid4()}"
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            start = await _start_pairing(client, auth_headers, gw_id)
+            pair_token = start["pair_token"]
+
+            # The concurrent writer (event-driven promotion) already committed.
+            async with AsyncSessionLocal() as db:
+                winner = WhatsAppSession(
+                    user_id=TEST_UID_HEX,
+                    gateway_id=gw_id,
+                    session_name="Hat 1",
+                    status=SessionStatus.CONNECTED,
+                    phone_number="+905413749073",
+                    is_active=True,
+                    is_phone_online=True,
+                )
+                db.add(winner)
+                await db.commit()
+                winner_id = winner.id
+
+            connected = _mock_gw_session(gw_id, status="CONNECTED")
+            with patch(
+                "backend.app.services.whatsapp_gateway.get_session_qr",
+                new_callable=AsyncMock,
+                return_value=connected,
+            ):
+                res = await client.get(
+                    f"/api/v1/whatsapp/pairing/{pair_token}/qr", headers=auth_headers
+                )
+
+            assert res.status_code == 200, (
+                "QR poll must adopt the concurrently-committed row for its own "
+                f"gateway id, got {res.status_code}: {res.text}"
+            )
+            body = res.json()
+            assert body["status"] == "CONNECTED"
+            assert body["session_id"] == winner_id, (
+                "the poll must report the row the winner committed, not a new one"
+            )
+
+            async with AsyncSessionLocal() as db:
+                count = await db.scalar(
+                    select(func.count(WhatsAppSession.id)).where(
+                        WhatsAppSession.user_id == TEST_UID_HEX
+                    )
+                )
+                assert count == 1, f"no duplicate row may be minted, found {count}"
+
+    @pytest.mark.asyncio
+    async def test_p68_qr_poll_refusal_is_409_not_502(self, auth_headers):
+        """A promotion REFUSAL must not be reported as a gateway outage.
+
+        `promote_ephemeral_pairing` returns None when it cannot prove the owner,
+        when the phone belongs to another tenant, or when a live session is bound
+        to a different gateway. None of those is a gateway failure, so the poll
+        must answer 409 — a 502 ("WhatsApp gateway'e ulaşılamadı") would send the
+        user to check a service that is perfectly healthy (AGENTS.md §1.1).
+        """
+        gw_id = f"gw-p68refuse-{uuid.uuid4()}"
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            start = await _start_pairing(client, auth_headers, gw_id)
+            pair_token = start["pair_token"]
+
+            connected = _mock_gw_session(gw_id, status="CONNECTED")
+            with patch(
+                "backend.app.services.whatsapp_gateway.get_session_qr",
+                new_callable=AsyncMock,
+                return_value=connected,
+            ), patch(
+                "backend.app.services.whatsapp.orchestration.promotion.promote_ephemeral_pairing",
+                new_callable=AsyncMock,
+                return_value=None,
+            ):
+                res = await client.get(
+                    f"/api/v1/whatsapp/pairing/{pair_token}/qr", headers=auth_headers
+                )
+
+            assert res.status_code == 409, (
+                "a policy refusal is a conflict, not a gateway outage; got "
+                f"{res.status_code}: {res.text}"
+            )
+            assert "gateway" not in res.json()["detail"].lower(), (
+                "the detail must not blame the gateway for a policy refusal"
+            )
+
 
 # ---------------------------------------------------------------------------
 # P6-9 — QR delivery for an ephemeral (new) pairing

@@ -452,8 +452,24 @@ async def test_cancel_does_not_destroy_recovered_lineage():
 
 @pytest.mark.asyncio
 async def test_no_duplicate_public_session():
-    """11. Reconnecting an existing RELINK_REQUIRED session does NOT create a duplicate public session row."""
+    """11. Reconnecting an existing RELINK_REQUIRED session does NOT create a duplicate public session row.
+
+    The QR poll no longer promotes by itself — it delegates to
+    `promote_ephemeral_pairing`, the single writer introduced in Phase 6.8. So
+    the relink is now driven from `promotion`, and this test pins the delegation:
+    same intent (no duplicate row, the relinked logical session is reported),
+    new wiring. The previous version patched
+    `sessions.perform_atomic_relink`, i.e. it asserted the implementation that
+    was removed.
+    """
     db = AsyncMock(spec=AsyncSession)
+    relinked = MagicMock()
+    relinked.id = 59
+    relinked.phone_number = "+905413749073"
+    # 1st scalar: "is this gateway id already bound?" -> no.
+    # 2nd scalar: re-read the row the relink returned.
+    db.scalar = AsyncMock(side_effect=[None, relinked])
+
     pair_token = "pair-tok-xyz"
     _ephemeral_pairings[pair_token] = {
         "user_id": "f65642ab-4ae5-4d69-945c-8f30c8454bac",
@@ -463,8 +479,17 @@ async def test_no_duplicate_public_session():
     }
     _logical_to_ephemeral[59] = pair_token
 
+    relink_result = RelinkResult(
+        session_id=59,
+        old_gateway_id="7ca58b14...",
+        new_gateway_id="ephemeral-gw-xyz",
+        phone_number="+905413749073",
+        history_rows_migrated=98,
+        was_already_linked=False,
+    )
+
     with patch("backend.app.services.whatsapp_gateway.get_session_qr", AsyncMock(return_value={"status": "CONNECTED", "phone": "+905413749073"})), \
-         patch("backend.app.services.whatsapp.orchestration.sessions.perform_atomic_relink", AsyncMock(return_value=RelinkResult(session_id=59, old_gateway_id="7ca58b14...", new_gateway_id="ephemeral-gw-xyz", phone_number="+905413749073", history_rows_migrated=98, was_already_linked=False))):
+         patch("backend.app.services.whatsapp.orchestration.promotion.perform_atomic_relink", AsyncMock(return_value=relink_result)):
 
         res = await get_pairing_qr(db, "f65642ab-4ae5-4d69-945c-8f30c8454bac", pair_token)
 
