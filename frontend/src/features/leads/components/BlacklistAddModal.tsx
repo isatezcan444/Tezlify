@@ -104,7 +104,7 @@ export const BlacklistAddModal: React.FC<BlacklistAddModalProps> = ({
 
     const phone = selectedLead.phone_e164 || selectedLead.phone;
     if (!phone) {
-      toast.error(t('blacklist.leadHasNoPhoneError'));
+      toast.error(t('blacklist.noPhoneInLead'), t('common.error'));
       return;
     }
 

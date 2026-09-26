@@ -21,7 +21,7 @@
  *    reachable dynamic `whatsapp.syncStage.*` key exists (F-9).
  */
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, readdir, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -531,6 +531,72 @@ try {
     for (const key of ['emptyUnread', 'emptyGroups', 'emptyArchived', 'emptyActive', 'emptyClosed', 'emptySearch']) {
       assert.equal(typeof en.whatsapp?.[key], 'string', `en.whatsapp.${key} is missing`);
       assert.equal(typeof tr.whatsapp?.[key], 'string', `tr.whatsapp.${key} is missing`);
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // 8b. Every t('...') call site must resolve in BOTH dictionaries.
+  //
+  // The parity check above only compares en against tr, so a key missing from
+  // BOTH passes it silently — while `useI18n` warns and returns the raw key
+  // path, so the UI renders `whatsapp.warmUpDayLabel` as literal text. A
+  // hand-written allowlist (as used for syncStage) only covers the keys someone
+  // remembered. Deriving the required set from the call sites is the only way
+  // to catch the whole class: 19 keys were missing this way.
+  // -------------------------------------------------------------------------
+  await checkAsync('every static t(...) call site resolves in both dictionaries', async () => {
+    const walk = async (dir) => {
+      const out = [];
+      for (const entry of await readdir(dir, { withFileTypes: true })) {
+        const p = path.join(dir, entry.name);
+        if (entry.isDirectory()) out.push(...(await walk(p)));
+        else if (/\.tsx?$/.test(entry.name)) out.push(p);
+      }
+      return out;
+    };
+
+    const enKeys = new Set(flattenKeys(en));
+    const trKeys = new Set(flattenKeys(tr));
+    const files = await walk(SRC);
+
+    const missing = [];
+    let callSites = 0;
+    for (const file of files) {
+      const src = await readFile(file, 'utf8');
+      const rel = path.relative(frontendRoot, file);
+      // Matches `t('a.b')` and `t("a.b", { params })`. Template-literal sites
+      // start with a backtick and are deliberately not matched here.
+      for (const m of src.matchAll(/\bt\(\s*(['"])([^'"]+)\1/g)) {
+        const key = m[2];
+        callSites += 1;
+        const inEn = enKeys.has(key);
+        const inTr = trKeys.has(key);
+        if (!inEn || !inTr) {
+          missing.push(`${key} @ ${rel}${inEn ? '' : ' [missing in en]'}${inTr ? '' : ' [missing in tr]'}`);
+        }
+      }
+    }
+
+    assert.ok(callSites > 500, `expected many t() call sites, saw ${callSites}`);
+    assert.deepEqual(missing, [], `t() keys with no dictionary entry:\n    ${missing.join('\n    ')}`);
+    console.log(`     (${callSites} call sites across ${files.length} files)`);
+  });
+
+  await checkAsync('every reachable dynamic t(`...`) key family exists', async () => {
+    const src = await readFile(
+      path.join(SRC, 'features/whatsapp/components/WhatsAppQrConnectModal.tsx'),
+      'utf8'
+    );
+    // Pin the assumption: if the step range changes, this check must change too.
+    assert.ok(
+      /\[1,\s*2,\s*3,\s*4\]\.map\(\(n\)/.test(src),
+      'pairing-code step range changed; update this check to match'
+    );
+    const m = src.match(/t\(`([A-Za-z.]+)\$\{n\}`\)/);
+    assert.ok(m, 'expected the pairingCodeStep template-literal site to still exist');
+    for (const n of [1, 2, 3, 4]) {
+      assert.equal(typeof en.whatsapp?.[`pairingCodeStep${n}`], 'string', `en ${m[1]}${n} is missing`);
+      assert.equal(typeof tr.whatsapp?.[`pairingCodeStep${n}`], 'string', `tr ${m[1]}${n} is missing`);
     }
   });
 

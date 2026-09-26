@@ -481,11 +481,11 @@ export const CampaignCreateWizard: React.FC<CampaignCreateWizardProps> = ({
   const handleCreateCampaign = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) {
-      toast.warning(t('campaigns.nameRequiredWarning') || 'Lütfen kampanya adını girin.', t('common.warning'));
+      toast.warning(t('campaigns.nameRequiredWarning'), t('common.warning'));
       return;
     }
     if (!template.trim()) {
-      toast.warning(t('campaigns.templateRequiredWarning') || 'Lütfen mesaj şablonu oluşturun veya girin.', t('common.warning'));
+      toast.warning(t('campaigns.templateRequiredWarning'), t('common.warning'));
       return;
     }
 
