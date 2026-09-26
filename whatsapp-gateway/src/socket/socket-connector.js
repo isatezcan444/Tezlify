@@ -155,6 +155,10 @@ export async function createSocketForSession({
     const cleanJid = resolveJidKey(store, state.creds.me.id);
     session.self_jid = cleanJid;
     session.phone_number = jidToPhone(cleanJid) || session.phone_number;
+    // Stamp the persisted name cache with the number this session is actually
+    // linked to, so a later re-link onto a DIFFERENT number on the same session
+    // id discards stale names instead of showing another account's contacts.
+    try { store?.contactCache?.setSessionPhone(session.phone_number); } catch { /* best-effort */ }
   }
   if (state?.creds?.me?.lid) {
     session.self_lid = resolveJidKey(store, state.creds.me.lid);

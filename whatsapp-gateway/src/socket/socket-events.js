@@ -307,6 +307,9 @@ export function bindSocketEvents({
       if (selfJid) {
         session.self_jid = selfJid;
         session.phone_number = selfPhone;
+        // Fallback stamp for sessions whose creds carried no `me.id`: the phone
+        // is only known here. Idempotent, so the connector's earlier stamp wins.
+        try { session.store?.contactCache?.setSessionPhone(session.phone_number); } catch { /* best-effort */ }
       }
       if (selfLid) {
         session.self_lid = selfLid;

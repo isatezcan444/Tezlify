@@ -68,6 +68,7 @@ export function createContactCache({ sessionDir, logger = null, sessionPhone = n
   const file = sessionDir ? path.join(sessionDir, CONTACTS_CACHE_FILE) : null;
   let timer = null;
   let pendingStore = null;
+  let lastStore = null;
   let loading = false;
   let phoneStamp = sessionPhone || null;
 
@@ -111,6 +112,7 @@ export function createContactCache({ sessionDir, logger = null, sessionPhone = n
 
   function schedule(store) {
     if (loading) return;
+    lastStore = store;
     pendingStore = store;
     if (timer) return;
     timer = setTimeout(() => {
@@ -149,6 +151,7 @@ export function createContactCache({ sessionDir, logger = null, sessionPhone = n
       return 0;
     }
     phoneStamp = currentPhone || cachedPhone || phoneStamp;
+    lastStore = store;
     loading = true;
     let restored = 0;
     try {
@@ -173,6 +176,8 @@ export function createContactCache({ sessionDir, logger = null, sessionPhone = n
   function clear() {
     clearTimer();
     pendingStore = null;
+    lastStore = null;
+    phoneStamp = null;
     if (!file) return false;
     try {
       if (fs.existsSync(file)) fs.unlinkSync(file);
@@ -183,8 +188,19 @@ export function createContactCache({ sessionDir, logger = null, sessionPhone = n
     }
   }
 
+  /**
+   * Records the linked phone number once the socket learns it.
+   *
+   * Without this the stamp stays null (the store is created before the phone is
+   * known), which silently disables the mismatch guard in `load()`: it only
+   * discards when BOTH sides are present. Stamping here makes that guard live,
+   * and re-schedules a save so the stamp reaches disk.
+   */
   function setSessionPhone(phone) {
-    if (phone) phoneStamp = phone;
+    if (!phone || String(phone) === String(phoneStamp)) return false;
+    phoneStamp = phone;
+    if (lastStore) schedule(lastStore);
+    return true;
   }
 
   return { file, load, schedule, flush, clear, setSessionPhone };

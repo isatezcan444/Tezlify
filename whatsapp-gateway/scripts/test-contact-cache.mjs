@@ -152,6 +152,35 @@ const logger = { warn: (o) => warnings.push(o), info: () => {}, debug: () => {} 
   assert.equal(store.contacts.get(JID).name, 'Cevat Aydın', 'plain store still works');
 }
 
+// --- J. the live flow stamps the phone AFTER the store exists ---------------
+// On a real restore the store is built before the phone is known, so
+// `sessionPhone` is null at construction and `setSessionPhone()` is what makes
+// the mismatch guard in load() reachable. Without it the guard is inert.
+{
+  const dir = tmpSessionDir('stamp');
+  const store = createSessionStore({ sessionDir: dir, logger }); // no sessionPhone
+  store.contacts.set(JID, { name: 'Cevat Aydın' });
+  store.contactCache.flush();
+  const file = path.join(dir, CONTACTS_CACHE_FILE);
+  assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).session_phone, null,
+    'unstamped cache records no phone (this is why the guard used to be dead)');
+
+  assert.equal(store.contactCache.setSessionPhone('+905413749073'), true,
+    'stamping a new phone reports a change');
+  await sleep(CONTACTS_CACHE_SAVE_DEBOUNCE_MS + 250);
+  assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).session_phone, '+905413749073',
+    'the stamp reached disk without an explicit flush');
+  assert.equal(store.contactCache.setSessionPhone('+905413749073'), false,
+    're-stamping the same phone is a no-op');
+
+  const samePhone = createSessionStore({ sessionDir: dir, sessionPhone: '+905413749073', logger });
+  assert.equal(samePhone.contacts.get(JID)?.name, 'Cevat Aydın', 'matching stamp keeps names');
+
+  const relinked = createSessionStore({ sessionDir: dir, sessionPhone: '+15556599459', logger });
+  assert.equal(relinked.contacts.has(JID), false,
+    'a stamped cache is now discarded when the line is re-linked to another phone');
+}
+
 assert.equal(warnings.length, 0, `no warnings expected: ${JSON.stringify(warnings)}`);
 
-console.log('[test-contact-cache] 31 assertions passed');
+console.log('[test-contact-cache] 37 assertions passed');
