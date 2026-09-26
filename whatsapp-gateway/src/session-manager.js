@@ -71,6 +71,7 @@ import { createMediaStore } from './media/media-store.js';
 // Lease & LID
 import { createLeaseCoordinator } from './lease/lease-coordinator.js';
 import { createLidRepository, lidScopeSessionIds } from './lid/lid-repository.js';
+import { createContactRepository } from './contacts/contact-repository.js';
 
 // Socket
 import {
@@ -139,6 +140,7 @@ export function createSessionManager({
   const mediaStore = createMediaStore({ mediaDir, logger });
   const leaseCoordinator = createLeaseCoordinator({ leaseRepository, instanceId, logger });
   const lidRepository = createLidRepository({ pool, sessionsDir, logger });
+  const contactRepository = createContactRepository({ pool, logger });
 
   function clearSessionHistoryFetches(sessionId) {
     for (const [flightKey, waiter] of pendingHistoryWaiters.entries()) {
@@ -330,6 +332,10 @@ export function createSessionManager({
         }),
       };
       await lidRepository.loadLidMappingsFromDb(id, session.store);
+      // The backend `contacts` table is the durable record of the names this
+      // gateway learned earlier. Without this the store starts empty on every
+      // restart and sender labels degrade to raw phone numbers.
+      await contactRepository.hydrateContactNames(id, session.store);
       sessions.set(id, session);
       if (autoStart) this._startSocket(id);
       return this.getSession(id);
