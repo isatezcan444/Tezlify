@@ -1,47 +1,131 @@
 # Tezlify — project index
 
-Details: `reference/whatsapp-subsystem-invariants.md`; daily logs: `YYYY-MM-DD.md`.
+Durable invariants and operational facts only. **Deploy narratives, timings and falsification
+evidence live in `YYYY-MM-DD.md`** (read the most recent first); subsystem deep-dives in
+`reference/`. Reusable procedures are skills, not memory — see the pointer list at the end.
 
 ## Invariants
-- **Deleting a WhatsApp line is destructive and cascades.** `DELETE /api/v1/whatsapp/sessions/{id}` removes that line's `conversations` and their `messages` (`cascade="all, delete-orphan"`), the `whatsapp_sessions` row, AND the gateway auth dir under the `tezlify_whatsapp_sessions` volume. Since every conversation belongs to exactly one line, deleting the only connected line wipes the entire WhatsApp dataset and forces a QR re-link. Confirmed live 2026-09-25 23:17:04 UTC on session 81. Treat this endpoint as irreversible data loss, never as a "disconnect".
-- **No backup currently covers WhatsApp conversations/messages.** The Sep 19 dump is schema-only for those tables; the Sep 16 dump restores but has 0 rows in them; `archive_mode=off` and no replication slots, so no PITR. Before promising any rollback, restore the dump into a scratch DB and count rows — dump size proves nothing.
-- Identity: `resolve_contact_identity` owns names. REST/WS fields match (never `lead_phone`); sort by activity only.
-- Gateway owns unread count, including decreases; no `Math.max`. Drop to zero is read evidence. Preserve per-conversation drafts/viewport and canonical merge; use instant scroll.
+
+- **Deleting a WhatsApp line is irreversible data loss, never a "disconnect".**
+  `DELETE /api/v1/whatsapp/sessions/{id}` cascades (`all, delete-orphan`) to that line's
+  `conversations` + `messages`, drops the `whatsapp_sessions` row, and deletes the gateway auth dir
+  under the `tezlify_whatsapp_sessions` volume. Every conversation belongs to exactly one line, so
+  deleting the only connected line wipes the whole WhatsApp dataset and forces a QR re-link.
+- **No backup covers WhatsApp conversations/messages.** Sep 19 dump is schema-only for those tables;
+  Sep 16 restores but has 0 rows; `archive_mode=off`, no replication slots, so no PITR. Before
+  promising a rollback, restore into a scratch DB and **count rows** — dump size proves nothing.
+- Identity: `resolve_contact_identity` owns names. REST/WS fields match (never `lead_phone`); sort by
+  activity only.
+- Gateway owns the unread count **including decreases**; never `Math.max`. A drop to zero is read
+  evidence. Preserve per-conversation drafts/viewport and the canonical merge; use instant scroll.
 - Message uniqueness: `(conversation_id, wa_message_id) WHERE NOT NULL`; cursor includes direction/time.
-- G-3 owner route: `lid_mappings -> gateway_sessions -> whatsapp_sessions.user_id`; never relaxed tenant filters; ambiguous/unknown ownership fails closed.
+- G-3 owner route: `lid_mappings -> gateway_sessions -> whatsapp_sessions.user_id`. Never relax tenant
+  filters; ambiguous/unknown ownership fails closed.
 - Media: never wrap a Buffer in `{url}`; delivery rank increases only; broadcasts use `target_user_id`.
-- No-Create means no `whatsapp_sessions` row before actual connection. G-LEASE renews only held leases.
-- **Sender labels come from the message row, not the contact record.** `ChatBubble.tsx` renders `message.sender_name` / `sender_phone`, which the gateway froze at ingest via `_resolveDisplayName()` = `store.contacts` name -> `msg.pushName` -> phone. The gateway's `store.contacts` is **memory-only** and is **NOT repopulated on reconnect** ("Reconnection with existing sync data, skipping history sync wait"), so every restart used to downgrade group labels to raw phones. Two durable paths now cover it: `<sessionDir>/contacts-cache.json` (fast path, restored before the socket starts) and `contacts/contact-repository.js` hydration from `public.contacts` scoped by `whatsapp_sessions.gateway_id -> user_id` (backstop). Hydrated names enter at `history` rank, so a live `addressbook`/`group_subject` name is never downgraded. Backend `backfill_phone_sender_names` repairs already-degraded rows.
-- **`GET /sessions/{sid}/contacts` is NOT a health check for the store.** `listContacts()` returns only `name_source in ('addressbook','verified')`, so it reads **0** even when the store holds hundreds of `history`-rank names. Prove store contents via `contacts-cache.json` (mirrors the store) or the `Hydrated contact names from backend database` / `Restored contact names from disk cache` log lines — never by that endpoint's count.
-- An exported-but-never-called guard is a dead guard. `setSessionPhone()` shipped without a call site, so the cache's phone stamp stayed `null` and its mismatch check (`cachedPhone && currentPhone`) could never fire. Grep for the call site before trusting any defensive branch.
+- No-Create means no `whatsapp_sessions` row before an actual connection. G-LEASE renews only held leases.
+- **Sender labels come from the message row, not the contact record.** `ChatBubble.tsx` renders
+  `message.sender_name` / `sender_phone`, frozen at ingest by `_resolveDisplayName()` =
+  `store.contacts` name -> `msg.pushName` -> phone. The gateway's `store.contacts` is **memory-only and
+  is NOT repopulated on reconnect**, so a restart used to downgrade group labels to raw phones. Two
+  durable paths cover it: `<sessionDir>/contacts-cache.json` (fast path, loaded before the socket) and
+  `contacts/contact-repository.js` hydration from `public.contacts` scoped by
+  `whatsapp_sessions.gateway_id -> user_id` (backstop). Hydrated names enter at `history` rank, so a
+  live `addressbook`/`group_subject` name is never downgraded. `backfill_phone_sender_names` repairs
+  already-degraded rows.
+- **`GET /sessions/{sid}/contacts` is NOT a store health check.** `listContacts()` returns only
+  `name_source in ('addressbook','verified')`, so it reads **0** even with hundreds of `history`-rank
+  names present. Prove store contents via `contacts-cache.json` (mirrors the store) or the
+  `Hydrated contact names from backend database` / `Restored contact names from disk cache` log lines.
+- **An exported-but-never-called guard is a dead guard.** `setSessionPhone()` shipped with no call
+  site, so the cache's phone stamp stayed `null` and its mismatch check could never fire. Grep for the
+  call site before trusting any defensive branch.
+- **A parity check between two mirrors cannot detect something missing from both.** The i18n check
+  compared `en` against `tr`, so 19 keys absent from *both* dictionaries passed it while the UI
+  rendered raw key paths (`useI18n` warns and returns `path`). Derive the required set from the
+  **consumer** (the `t('...')` call sites), not from the sibling copy. Same trap for any
+  "these two lists must match" assertion.
+- `contacts` has **no `name_source` column** (`phone_e164`, `display_name`, `lead_id`,
+  `custom_attributes`). Source/rank lives only in the gateway store and `mergeContactName()`.
 
-## State recorded 2026-09-26
-- **Frontend deployed to production.** HEAD `5916ff1` (chat-thread singleton fix) is now live. Release `v20260926_phase6_8_chatthread_singleton`; `frontend_candidate` symlink swapped atomically (`ln -sfn` + `mv -T`) and Caddy force-recreated. Served bundle `index-Cs6w41Hr.js` -> `index-3UEtgr4K.js`. Backend/gateway/db **not** restarted (`StartedAt` unchanged) — WhatsApp socket preserved. Previous release `v20260919_phase6_5_lid_scope_and_lease` retained for rollback.
-- Release dirs live at `/opt/tezlify/releases/` (NOT `/opt/tezlify/frontend/releases/` — that older path exists but is unused by the symlinks). Caddy service name in `docker-compose.prod.yml` is `caddy`; only one frontend site block (`api.tezlify.com`, `api.130.162.247.20.sslip.io`, `130.162.247.20.sslip.io`), which also answers any unmatched Host.
-- `frontend/package-lock.json` does **not** exist -> `npm ci` is structurally impossible; builds use `npm install` / existing `node_modules`. `.env.production` overrides `.env.local` and both blank `VITE_API_URL`, but production always resolves same-origin `/api/v1` because `resolveApiBase()` short-circuits on `isRemoteHost`. Baked URL set verified identical old vs new bundle.
-- Cache policy already correct: entry document `no-cache, no-store, must-revalidate`, hashed assets `immutable, max-age=31536000`. A plain reload picks up a new deploy; no hard-refresh needed.
-- **502 defect — FIXED and DEPLOYED to production 2026-09-25 23:46 UTC (`9981298`).** `GET /api/v1/whatsapp/conversations/{id}/messages` 502'd whenever local rows < page size. Local rows < 50 -> on-demand provider hydration -> gateway `?fetch_provider=true` returns 200 after **~15,013 ms** -> backend's 15 s ceiling trips -> `WhatsAppHistoryTimeout` -> 502. Conversations with >= 50 stored rows never called the gateway, which is why the defect looked conversation-specific. The fix keeps H-3 intact (a TIMEOUT is still retryable and still never sets `provider_exhausted`) and adds three guarantees: (a) a timeout with `have_rows=True` serves the local rows instead of discarding them; (b) a recent TIMEOUT/PROVIDER_ERROR (`is_provider_recently_unresponsive`, durable `last_attempt_at`, 300 s cooldown) skips the futile round-trip **only** while local rows exist; (c) with zero rows the exception still propagates to a 502 — never a false "empty". Files: `backend/app/services/whatsapp_service.py` (`_hydrate_or_tolerate_provider_timeout`), `backend/app/services/whatsapp/orchestration/history_evidence.py`. Falsified: tests 21-24 in `test_whatsapp_history_orchestration.py` fail without the fix (21 with the exact production exception), pass with it.
-- **Deploy method (reusable):** production `/opt/tezlify` is a **clean git checkout** on `main`, and it sat at `359fe6d` while local was 4 commits ahead. A plain `git pull` would have dragged in **unrelated** backend changes (`orchestration/sessions.py` +160, `orchestration/sync.py` +140, `whatsapp_gateway.py`, all from `ddbfbf4`) into a live WhatsApp system — so deploy a **file subset** instead: `git fetch origin && git checkout origin/main -- <paths>`, confirm sha256 matches local, then `docker compose -f docker-compose.prod.yml build backend` + `up -d --no-deps backend`. `--no-deps` is mandatory: the gateway sets `WHATSAPP_AUTO_RESTORE: "false"`, so restarting it would strand the linked line. Prove scope by diffing `docker inspect <ctr> --format '{{.State.StartedAt}}'` across all four containers before/after — only backend changed (23:46:28); gateway/db/caddy untouched. **The prod checkout is now intentionally dirty**: HEAD is still `359fe6d` with exactly those 3 files staged from `origin/main` (2ae4549). That dirt is the deploy marker — do not `git checkout .` or `git reset --hard` there, and when the pending `ddbfbf4` backend work is eventually deployed, expect those files to already match.
-- **Live verification of the fix (2026-09-25 23:47 UTC, session 82 `CONNECTED`):** conv 14010 (16 rows) -> 200 in 2.6 s, hydrated to 50, evidence `HAS_MORE`; conv 14045 (15 rows) -> **200 in 15.04 s serving its own 15 rows** with evidence `TIMEOUT` (was a 502). Immediate re-request -> **200 in 0.024 s** (600x faster) with the log line `On-demand provider request skipped (conv=14045): provider recently unresponsive`. Sweep of 6 conversations -> all 200, none 5xx. `provider_exhausted` stayed `f` on the timed-out jid, so H-3 held in vivo.
-- **First-open latency bound — FIXED and DEPLOYED 2026-09-26 00:11/00:12 UTC (`6c7214a`).** A plain open of a conversation holding local rows used to block the first paint on the gateway's provider wait. The GET route in `whatsapp-gateway/src/index.js:389` ignored `timeout_ms`, so `session-manager.js:660`'s hardcoded `timeoutMs = 15000` always applied. Now the route forwards `timeoutMs: parseInt(timeout_ms, 10)`, `whatsapp_gateway.get_messages()` gained `timeout_ms`, `sync._hydrate_messages_on_demand()` gained `provider_timeout_ms`, and `whatsapp_service.get_messages()` sends `OPEN_PATH_PROVIDER_TIMEOUT_MS = 4000` **only when the request has no `before` cursor**. An explicit "load older" keeps the full 15000. **The budget must be decided at the call site, not inside the hydration helper** — in that branch `before_ts_ms` is always the oldest local row's timestamp on both paths, so it cannot discriminate. Measured from the production host: four plain opens that timed out returned **4045–4190 ms** (was ~15 s), repeats inside the 300 s cooldown **21–57 ms**, and an explicit pagination **15046 ms → 502** (unchanged, by design: with a cursor the base query yields 0 rows, `have_rows=False`, so the timeout re-raises rather than faking "no older messages"). `provider_exhausted = False` throughout. UI (real Chrome): 0→15 bubbles at 4387 / 4382 / 4376 ms on convs 14020/14024/14025, `threadCount = 1` for the whole timeline.
-- **Deploy scope for this change:** 4 files (`whatsapp_service.py`, `whatsapp_gateway.py`, `orchestration/sync.py`, `whatsapp-gateway/src/index.js`), backend `--no-deps` at 00:11:14 and gateway `--no-deps` at 00:12:16; db/caddy untouched. Restarting the gateway does **not** re-attach the line (`WHATSAPP_AUTO_RESTORE=false`) — `POST /sessions/restore` re-attached from persisted creds with **no QR** (`{"status":"ok","discovered":1,"restored":1}`, session `4b69b1c0-...` CONNECTED `+905413749073`).
-- **Conversation/sender naming — FIXED and DEPLOYED 2026-09-26 00:47 / 01:01 UTC (`55f994e`, `1030850`, `4bd7791`).** Root cause was two distinct things: (1) a real defect — the memory-only gateway contact store lost every name on restart, so group 14010 showed `Cevat Aydın` in pre-restart rows and `+905076382749` in post-restart rows; (2) **not** a defect — 8 conversations titled by phone (14039/14041/14042/14055/14056/14058/14064/14067) are genuinely unsaved contacts with no name anywhere (4 have zero messages), and showing the phone matches WhatsApp Web parity. The user explicitly chose to leave those alone. Deployed by rebasing onto `359fe6d` and applying `git diff d8b9add 5231b5a` = **3 files, +51/-2**; `socket-events.js` was deliberately excluded because `ddbfbf4` rewrote it (+105) and prod's copy has no `selfJid` block, so the fallback stamp there does not fit prod's code shape. Live proof: restart 1 (no cache) logged `written=197` from the DB — exactly the pre-computed prediction for owner `f65642ab-…`; restart 2 (cache present) logged `restored=197` from disk with DB hydration writing 0, i.e. cache is the fast path and the DB the backstop; `session_phone` went `null` -> `"+905413749073"`; and `905076382749@s.whatsapp.net -> "Cevat Aydın" [history]` is the exact JID that had degraded. Migration logged `backfill_phone_sender_names: 41` rows (predicted 41); the repair predicate then matched **0** and group 14010 consolidated to `Cevat Aydın 32 / Tolga Cebeci 15 / Lazury 1`.
-- **Residual, by design:** the **19 zero-row conversations still 502** (17 have no evidence row, 4 NOT_CHECKED, only 2 NO_MESSAGES; `is_history_exhausted_or_stalled` does not treat `NO_MESSAGES` as exhausted). All are stale (newest `last_message_at` 2026-08-27, oldest 2026-03-24, 4 with none) and none are in the top 8 by recency.
-- **Production is PostgreSQL, not SQLite.** `DATABASE_URL=postgresql://tezlify:...@db:5432/tezlify`; the `tezlify.db` at the repo/host root is stale and `sqlite3` is not installed on the host. Use `docker exec tezlify-db psql -U tezlify -d tezlify`. `history_sync_states` is keyed `(session_id, jid)` — joining on `jid` alone multiplies rows across sessions and inflates `count(m.id)`; aggregate messages in a separate subquery.
-- **Local sandbox has `HTTP_PROXY/HTTPS_PROXY=http://127.0.0.1:59508`**, which tunnels `app.tezlify.com` into a 502 — run API probes from the production host (Caddy is local there). Playwright exists only in the repo `venv` (`venv/bin/python`), not in the managed Python.
-- Production browser probes: use `scripts/auth_helper.get_ephemeral_auth_token()` (inserts a 2-hour `auth_staging_sessions` row for user `f65642ab-...`) + Playwright with real Chrome, `--host-resolver-rules=MAP app.tezlify.com 130.162.247.20`. The app is tab-based, not routed: enter the hub via `button[data-tab-id="whatsapp"]`; conversation rows are `button[data-conv-id]`. Count `ChatThread` instances name-independently by walking the fiber tree from the `__reactContainer$` root and matching `memoizedProps.messages` + `leadName` — minified names change per build, never hardcode them.
+## Operational facts
 
-## State recorded 2026-09-20
-- Production last verified at `6f4aa00`: Oracle `130.162.247.20`, `/opt/tezlify`, SSH key `~/.ssh/id_tezlify_oracle`, user ubuntu. Push is not deploy. Frontend built off-box; Caddy bind mount resolves `frontend_candidate` symlink at creation, requiring Caddy recreation on swap.
-- QR-start latency improved ~21.6 s -> ~0.21 s after scoped LID lookup deployment. See production deploy and QR latency reports.
-- Phase 6.8 local promotion changes remain UNCOMMITTED/UNDEPLOYED. Event promotion adds CREATE path; durable pairing registry plus modal cancellation guards. Backend reproduction: HEAD 15 fail/9 pass -> 24 pass.
-- `WHATSAPP_PHASE6_8_PROMOTION_REPORT.md` contains results; LIVE DEVICE E2E NOT RUN. Phase incomplete. Recorded production row 68 needs user-driven relink, not DB edits. A controlled local live test does not inherently require production writes.
-- Terminal-status follow-up **DONE** (report §12): ephemeral poll + refresh now learn terminal status; predicate corrected to the documented 3-state set (handed-over tree still had the six-state complement — live false-CONNECTED/socket-leak once `FAILED` became reachable); both TERMINAL checks restored **and falsified** in vivo; real-Chrome check `H` added. Frontend-only. (Superseded 2026-09-26: committed and deployed — see the 2026-09-26 state below.)
+- Production: Oracle `130.162.247.20`, `/opt/tezlify`, user `ubuntu`, SSH key
+  `~/.ssh/id_tezlify_oracle`. **Push is not deploy.** Compose file `docker-compose.prod.yml`;
+  services `backend`, `gateway`, `db`, `caddy`. Gateway listens on **8787** (`GATEWAY_PORT`).
+- **Production is PostgreSQL, not SQLite.** `DATABASE_URL=postgresql://tezlify:...@db:5432/tezlify`;
+  the repo-root `tezlify.db` is stale and `sqlite3` is absent on the host. Use
+  `docker exec tezlify-db psql -U tezlify -d tezlify`. `history_sync_states` is keyed
+  `(session_id, jid)` — joining on `jid` alone multiplies rows and inflates `count(m.id)`.
+- **`WHATSAPP_AUTO_RESTORE=false`**: a gateway restart does **not** re-attach the linked line.
+  `POST /sessions/restore` (gateway, `X-Gateway-Secret`, no body) re-attaches from persisted creds
+  with **no QR**. `listRestorableSessions()` only returns sessions active in both `gateway_sessions`
+  and `whatsapp_sessions` with stored credentials — check that count before firing it.
+- The gateway container has **no `curl`** — query it with `node` inside the container reading
+  `process.env.WHATSAPP_GATEWAY_SECRET`, so the secret never leaves its own environment.
+- Local sandbox sets `HTTP_PROXY/HTTPS_PROXY=http://127.0.0.1:59508`, which tunnels
+  `app.tezlify.com` into a 502 — run API probes **from the production host** (Caddy is local there).
+  Playwright exists only in the repo `venv` (`venv/bin/python`).
+- Production browser probes: `scripts/auth_helper.get_ephemeral_auth_token()` (2-hour
+  `auth_staging_sessions` row for user `f65642ab-...`) + Playwright real Chrome with
+  `--host-resolver-rules=MAP app.tezlify.com 130.162.247.20`. The app is tab-based, not routed: enter
+  via `button[data-tab-id="whatsapp"]`; conversation rows are `button[data-conv-id]`. Count
+  `ChatThread` instances name-independently by walking the fiber tree from the `__reactContainer$`
+  root and matching `memoizedProps.messages` + `leadName` — minified names change per build.
+- Frontend releases live at `/opt/tezlify/releases/` (NOT `/opt/tezlify/frontend/releases/` — that
+  older path exists but is unused). Swap the `frontend_candidate` symlink atomically
+  (`ln -sfn` + `mv -T`) then **force-recreate Caddy** (its bind mount resolves the symlink at
+  creation). Cache policy is already right: entry document `no-cache, no-store, must-revalidate`,
+  hashed assets `immutable, max-age=31536000` — a plain reload picks up a deploy.
+- `frontend/package-lock.json` does **not** exist -> `npm ci` is impossible; use `npm install` /
+  existing `node_modules`. `.env.production` and `.env.local` both blank `VITE_API_URL`, but
+  production always resolves same-origin `/api/v1` (`resolveApiBase()` short-circuits on
+  `isRemoteHost`).
+
+## Deploy state
+
+- Prod `/opt/tezlify` is a **git checkout deliberately left dirty** at `359fe6d` with the deployed
+  patches applied as uncommitted working-tree changes. **That dirt is the deploy marker** — never run
+  `git checkout .` / `git reset --hard` / `git clean` there. A later full deploy of `ddbfbf4` should
+  find those files already matching.
+- Deployed and live (details in the daily logs): frontend `5916ff1` chat-thread singleton;
+  backend `9981298` 502-on-short-conversation; `6c7214a` ~4 s open-path bound; naming fix
+  `55f994e`/`1030850`/`4bd7791`. Gateway/backend restarts are routine and the line re-attaches via
+  `POST /sessions/restore`.
+- **Residual, by design:** 19 zero-row conversations still 502 (17 no evidence row, 4 NOT_CHECKED,
+  2 NO_MESSAGES; `is_history_exhausted_or_stalled` does not treat `NO_MESSAGES` as exhausted). All
+  stale (newest 2026-08-27, oldest 2026-03-24) and none in the top 8 by recency.
+- `ddbfbf4`'s large `session-manager.js` (+299) / `socket-events.js` (+105) rewrite remains
+  **undeployed** by explicit choice. Prod's `socket-events.js` has no `selfJid` block in its connect
+  handler, so patches authored against `ddbfbf4`'s shape do not apply there.
 
 ## Verification
-- Last backend: **1166 pass / 4 skip / 0 fail** on a schema-only SQLite copy (2026-09-26; includes the 502-regression tests, tests 25–27 for the open-path budget, and `test_whatsapp_sender_name_backfill.py`). Gateway: all **7** `npm test` scripts pass — `test-contact-cache.mjs` **37 assertions** and `test-contact-hydration.mjs` **26**. Frontend current: logic 43, DOM 21, Chrome 8, pairing 14, pairing-Chrome 14, merge/equivalence, chat-order 10.
-- Never run pytest on dev `tezlify.db` — but a **data** copy is also wrong. Build the test DB **schema-only**: `sqlite3 tezlify.db .schema > s.sql && sqlite3 /tmp/empty.db < s.sql` → 22 tables, 0 rows, and crucially it includes the raw-SQL tables (`history_sync_states`, `lid_mappings`, `auth_staging_*`) that `Base.metadata.create_all` never builds (a bare `create_all` yields only 16 tables). Some modules assert **GLOBAL** row counts — `test_whatsapp_faz9_group_phone_banner.py` asserts zero WHATSAPP conversations while its own `_cleanup` wipes only two synthetic users — so any foreign WhatsApp data fails them for reasons unrelated to the code under test. Diagnose such a failure by running it against an empty schema before blaming a change. Use a fresh pytest basetemp.
-- `Scoutify` is a **symlink to `Tezlify`** (`/Users/isatezcan/Documents/Github/Scoutify -> .../Tezlify`), so pytest tracebacks printing `../Scoutify/backend/...` are the same files, not a second checkout.
-- Seven npm verify scripts omit chat-order; run that script separately. Bundle relative imports with esbuild, not data-URL string stripping.
-- Compare actual exit codes; browser assertions and sandbox housekeeping failures are distinct. Failed auxiliary ORM writes/rollback expire loaded rows: capture PK before rollback and reload asynchronously.
-- Falsify a restored regression check against the real broken mechanism before trusting it — counter-only assertions can pass under a missing call site (assert the mechanism-specific signal too). Counter checks after a shared-harness reset need an explicit baseline, never zero.
+
+- Last run (2026-09-26): backend **1166 pass / 4 skip / 0 fail**; gateway all **7** `npm test`
+  scripts pass (`test-contact-cache.mjs` 37 assertions, `test-contact-hydration.mjs` 26);
+  frontend `verify:logic` **45/45** (incl. the two i18n checks), `tsc --noEmit` clean,
+  `npm run build` exit 0.
+- **`verify:pairing` fails 2 checks both with and without recent changes** (`the modal must poll for
+  the QR (calls=0)`, `Cancel on an errored pairing must release the socket (cancel=0)`) — a harness
+  failure, not a product one. Confirmed by stashing and re-running. Do not attribute it to your change.
+- Never run pytest on dev `tezlify.db` — and a **data** copy is also wrong. Build the test DB
+  **schema-only**: `sqlite3 tezlify.db .schema > s.sql && sqlite3 /tmp/empty.db < s.sql` → 22 tables,
+  0 rows, and it includes the raw-SQL tables (`history_sync_states`, `lid_mappings`, `auth_staging_*`)
+  that `Base.metadata.create_all` never builds (bare `create_all` yields only 16). Some modules assert
+  **global** row counts (`test_whatsapp_faz9_group_phone_banner.py` asserts zero WHATSAPP
+  conversations while its cleanup wipes only two synthetic users), so foreign WhatsApp data fails them
+  for reasons unrelated to the code under test — re-run against an empty schema before blaming a
+  change. Use a fresh pytest basetemp.
+- `Scoutify` is a **symlink to `Tezlify`** — pytest tracebacks printing `../Scoutify/backend/...` are
+  the same files.
+- Compare actual exit codes (piping through `tail`/`head` masks them). Falsify a restored regression
+  check against the real broken mechanism before trusting it: counter-only assertions can pass under a
+  missing call site, and post-reset counters need an explicit baseline, never zero.
+
+## Skills covering reusable procedures
+
+`git-checkout-prod-partial-service-deploy` (subset/deferred deploy, rebase-and-delta, `--no-deps`),
+`esbuild-frontend-verification` (executed frontend checks with no test runner),
+`real-browser-cdp-verification`, `stack-latency-parity-diagnosis`,
+`non-destructive-schema-constraint-migration`, `hermetic-service-process-harness`,
+`asymmetric-resource-guard-detection`, `client-lifecycle-cancels-server-promotion`,
+`cross-tenant-lookup-isolation`, `symlink-served-release-fast-forward-deploy`.
