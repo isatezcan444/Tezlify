@@ -134,7 +134,7 @@ try {
   // G-4 — degenerate JIDs must never create a contact via contacts.update.
   // =========================================================================
   await check('G-4: isDegenerateJid rejects degenerate/bare JIDs and keeps valid ones', () => {
-    assert.equal(isDegenerateJid('0@s.whatsapp.net'), true);
+    assert.equal(isDegenerateJid('0@s.whatsapp.net'), false, 'WhatsApp official announcements chat');
     assert.equal(isDegenerateJid('000@s.whatsapp.net'), true);
     assert.equal(isDegenerateJid('123@s.whatsapp.net'), true, 'fewer than 5 digits');
     assert.equal(isDegenerateJid('@g.us'), true, 'bare group JID');
@@ -145,6 +145,7 @@ try {
     assert.equal(isDegenerateJid('905321002030@s.whatsapp.net'), false);
     assert.equal(isDegenerateJid('62771114836011@lid'), false, 'valid LID');
     assert.equal(isDegenerateJid('120363012345678901@g.us'), false, 'valid group');
+    assert.equal(isDegenerateJid('905326203420-1536168983@g.us'), false, 'valid hyphenated group');
     assert.equal(isDegenerateJid('905321002030:12@s.whatsapp.net'), false, 'device index');
     assert.equal(isDegenerateJid(null), false);
   });

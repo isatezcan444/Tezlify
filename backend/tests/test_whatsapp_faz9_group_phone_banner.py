@@ -43,7 +43,7 @@ MOCK_PHONE = "+905321002030"
 MOCK_JID = "905321002030@s.whatsapp.net"
 GROUP_JID = "120363012345678901@g.us"
 GROUP_PHONE_SENTINEL = f"jid:{GROUP_JID}"
-DEGENERATE_JID = "0@s.whatsapp.net"
+DEGENERATE_JID = "000@s.whatsapp.net"
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -101,8 +101,8 @@ def test_jid_to_phone_rejects_degenerate_jids(bad_jid):
 
 
 @pytest.mark.parametrize("bad_jid", [
-    "0@s.whatsapp.net",
     "000@s.whatsapp.net",
+    "00000@s.whatsapp.net",
     "123@s.whatsapp.net",   # çok kısa → dejenere
 ])
 def test_is_degenerate_jid_flags_bad(bad_jid):
@@ -111,8 +111,10 @@ def test_is_degenerate_jid_flags_bad(bad_jid):
 
 @pytest.mark.parametrize("good_jid", [
     MOCK_JID,               # 905321002030
+    "0@s.whatsapp.net",     # Resmi WhatsApp sohbeti
     "15556599459@s.whatsapp.net",
     "12345@s.whatsapp.net",
+    "905326203420-1536168983@g.us",
 ])
 def test_is_degenerate_jid_allows_valid(good_jid):
     assert is_degenerate_jid(good_jid) is False
@@ -202,7 +204,10 @@ async def test_ingest_message_new_degenerate_no_conv():
 
     async with AsyncSessionLocal() as db:
         n = (await db.execute(
-            select(func.count()).select_from(Conversation).where(Conversation.channel == "WHATSAPP")
+            select(func.count()).select_from(Conversation).where(
+                Conversation.channel == "WHATSAPP",
+                Conversation.user_id == TEST_USER_HEX,
+            )
         )).scalar_one()
         nc = (await db.execute(
             select(func.count()).select_from(Contact).where(Contact.phone_e164 == "+0")

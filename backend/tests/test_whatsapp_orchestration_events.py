@@ -96,7 +96,7 @@ async def test_ingest_message_broadcast_jid_skipped(orchestrator):
 async def test_ingest_message_degenerate_jid_skipped(orchestrator):
     event = {
         "event": "message_new",
-        "conversation_id": "0@s.whatsapp.net",
+        "conversation_id": "000@s.whatsapp.net",
         "message": {"body": "hello"},
     }
     mock_db = AsyncMock(spec=AsyncSession)

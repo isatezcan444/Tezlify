@@ -483,13 +483,13 @@ async def test_08_idempotent_rerun_no_duplicate_rows(mock_gateway, events):
 
 @pytest.mark.asyncio
 async def test_09_degenerate_jid_never_persisted_no_plus_zero(mock_gateway, events):
-    """0@s.whatsapp.net DB'ye hic yazilmaz; +0 telefon/sihirli 'Grup' uretilmez."""
+    """000@s.whatsapp.net DB'ye hic yazilmaz; +0 telefon/sihirli 'Grup' uretilmez."""
     mock_gateway.list_conversations.return_value = {
-        "items": [_chat("0@s.whatsapp.net", "Status"), _chat(MOCK_JID, "Gercek")],
+        "items": [_chat("000@s.whatsapp.net", "Status"), _chat(MOCK_JID, "Gercek")],
         "total": 2,
     }
     mock_gateway.list_contacts.return_value = [
-        {"id": "0@s.whatsapp.net", "name": "WhatsApp"},
+        {"id": "000@s.whatsapp.net", "name": "Status"},
         {"id": MOCK_JID, "name": "Ali Ekincioğlu", "name_source": "addressbook"},
     ]
 

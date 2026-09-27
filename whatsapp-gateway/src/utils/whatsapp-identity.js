@@ -55,9 +55,22 @@ export function jidToPhone(jid) {
 export function isDegenerateJid(jid) {
   if (!jid) return false;
   const clean = String(jid).replace(/^jid:/, '').trim();
+  // WhatsApp official announcements channel
+  if (clean === '0@s.whatsapp.net') return false;
   const at = clean.indexOf('@');
   if (at < 0) return false;
+  const domain = clean.slice(at + 1);
   const local = clean.slice(0, at).replace(/:\d+$/, '');
+  if (!local) return true;
+  // Group JIDs can be digits or digits-timestamp
+  if (domain === 'g.us') {
+    return !/^\d+(?:-\d+)?$/.test(local);
+  }
+  // Newsletter JIDs
+  if (domain === 'newsletter') {
+    return !/^\d+$/.test(local);
+  }
+  // User phone / LID JIDs
   if (!/^\d+$/.test(local)) return true;
   return local.length < 5 || /^0+$/.test(local);
 }
@@ -66,6 +79,7 @@ export function isRawIdentityName(value) {
   if (!value || typeof value !== 'string') return true;
   const v = value.trim();
   if (!v) return true;
+  if (v.toLowerCase() === 'whatsapp') return false;
   return (
     v.startsWith('jid:') ||
     v.includes('@lid') ||

@@ -569,8 +569,8 @@ export function bindSocketEvents({
         ...existing,
         id: key,
         jid: key,
-        name: contact?.name || existing.name || (lidHold ? '' : jidToPhone(key) || key),
-        name_source: contact?.name_source || existing.name_source || null,
+        name: contact?.name || existing.name || (key === '0@s.whatsapp.net' ? 'WhatsApp' : (lidHold ? '' : jidToPhone(key) || key)),
+        name_source: contact?.name_source || existing.name_source || (key === '0@s.whatsapp.net' ? 'system' : null),
         phone: jidToPhone(key) || existing.phone || '',
         is_group: key.includes('@g.us'),
         // Arsiv durumu bilinmiyorsa anahtar HIC gonderilmez (bkz. `archivedPatch`).
@@ -690,8 +690,8 @@ export function bindSocketEvents({
           ...existing,
           id: key,
           jid: key,
-          name: contact?.name || chat.name || existing.name || jidToPhone(key) || key,
-          name_source: contact?.name_source || existing.name_source || null,
+          name: contact?.name || chat.name || existing.name || (key === '0@s.whatsapp.net' ? 'WhatsApp' : jidToPhone(key) || key),
+          name_source: contact?.name_source || existing.name_source || (key === '0@s.whatsapp.net' ? 'system' : null),
           phone: jidToPhone(key) || existing.phone || '',
           is_group: key.includes('@g.us'),
           // Arsiv durumu bilinmiyorsa anahtar HIC gonderilmez (bkz. `archivedPatch`).
@@ -724,6 +724,7 @@ export function bindSocketEvents({
       });
       if (isLatest || progress === 100) {
         manager._scheduleBackgroundAvatarFetch(session);
+        manager._applyArchivedState?.(session);
       }
       if (session.sync) {
         const { next, justCompleted } = resolveSyncState(session.sync, { progress, isLatest });

@@ -47,13 +47,23 @@ def jid_to_phone(jid: Optional[str]) -> Optional[str]:
 
 
 def is_degenerate_jid(jid: Optional[str]) -> bool:
-    """Faz 9 (§5): WhatsApp sistem/dejenere JID'leri (`0@s.whatsapp.net`,
-    `000@...`) gercek bir kisi/sohbet DEGILDIR — contact/conversation
-    kaydi uretilmez (kapida '+0' chat'in kaynagi buydu). Gateway ile
-    ayni kural: 5+ hane ve tamami sifir degil."""
+    """Faz 9 (§5): WhatsApp dejenere JID'leri (`000@...`) gercek bir kisi/sohbet
+    DEGILDIR — contact/conversation kaydi uretilmez.
+    NOT: 0@s.whatsapp.net resmi WhatsApp sistem sohbetidir (dejenere degil).
+    Gruplar (@g.us) grup kimligidir (telefon numarasi degildir).
+    """
     if not jid:
         return False
-    head = str(jid).split("@")[0]
+    clean = str(jid).strip()
+    if clean.startswith("jid:"):
+        clean = clean[4:]
+    if clean == "0@s.whatsapp.net":
+        return False
+    if clean.endswith("@g.us"):
+        head = clean.split("@")[0]
+        parts = head.split("-")
+        return not (all(p.isdigit() for p in parts) and len(parts) in (1, 2) and head != "")
+    head = clean.split("@")[0].split(":")[0]
     digits = "".join(ch for ch in head if ch.isdigit())
     if not digits or digits != head.strip():
         return False

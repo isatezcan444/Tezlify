@@ -13,6 +13,8 @@ import { performance } from 'perf_hooks';
 import { diagnostic, sessionRef, latency } from './observability.js';
 import { SocketLifecycle } from './domain/socket-lifecycle.js';
 import { createBoundedCache } from './domain/bounded-cache.js';
+import { expandAppStateKeys } from 'whatsapp-rust-bridge';
+import { hmacSign } from '@whiskeysockets/baileys/lib/Utils/crypto.js';
 
 // Utils
 import {
@@ -545,6 +547,7 @@ export function createSessionManager({
 
     listConversations(sessionId, { search, limit, offset } = {}) {
       const session = this._requireSession(sessionId);
+      this._applyArchivedState(session);
       const store = this._storeOf(session);
       const { chats, contacts } = store;
       let list = [...chats.values()].sort((a, b) => {
@@ -1304,8 +1307,8 @@ export function createSessionManager({
         ...existing,
         id: key,
         jid: key,
-        name: contact?.name || existing.name || jidToPhone(key) || key,
-        name_source: contact?.name_source || existing.name_source || null,
+        name: contact?.name || existing.name || (key === '0@s.whatsapp.net' ? 'WhatsApp' : jidToPhone(key) || key),
+        name_source: contact?.name_source || existing.name_source || (key === '0@s.whatsapp.net' ? 'system' : null),
         phone: jidToPhone(key) || existing.phone || '',
         is_group: key.includes('@g.us'),
         // Arsiv durumu bilinmiyorsa anahtar HIC gonderilmez (bkz. `archivedPatch`).
@@ -1429,16 +1432,126 @@ export function createSessionManager({
       }
     },
 
+    _resolveArchivedJids(session) {
+      if (!session) return new Set();
+      session = this._sess(session);
+      try {
+        const sessionDir = getSessionDir(sessionsDir, session.id);
+        const regLowFile = path.join(sessionDir, 'app-state-sync-version-regular_low.json');
+        if (!fs.existsSync(regLowFile)) return new Set();
+        const regLow = JSON.parse(fs.readFileSync(regLowFile, 'utf8'));
+        const indexMacs = new Set(Object.keys(regLow?.indexValueMap || {}));
+        if (!indexMacs.size) return new Set();
+
+        const keyFiles = fs.readdirSync(sessionDir).filter((f) => f.startsWith('app-state-sync-key-'));
+        const syncKeys = [];
+        for (const kf of keyFiles) {
+          try {
+            const raw = JSON.parse(fs.readFileSync(path.join(sessionDir, kf), 'utf8'));
+            if (raw?.keyData) {
+              const buf = typeof raw.keyData === 'string'
+                ? Buffer.from(raw.keyData, 'base64')
+                : Buffer.from(raw.keyData.data || raw.keyData);
+              syncKeys.push(buf);
+            }
+          } catch { /* ignore */ }
+        }
+        if (!syncKeys.length) return new Set();
+
+        const store = this._storeOf(session);
+        const candidates = new Set([
+          ...store.chats.keys(),
+          ...store.contacts.keys(),
+          '0@s.whatsapp.net',
+        ]);
+        if (session._pendingGroupJids) {
+          for (const j of session._pendingGroupJids) candidates.add(j);
+        }
+
+        const archivedSet = new Set();
+        for (const jid of candidates) {
+          const indexBuffer = Buffer.from(JSON.stringify(['archive', jid]));
+          for (const keyData of syncKeys) {
+            try {
+              const keys = expandAppStateKeys(keyData);
+              const indexMac = hmacSign(indexBuffer, keys.indexKey).toString('base64');
+              if (indexMacs.has(indexMac)) {
+                archivedSet.add(jid);
+                break;
+              }
+            } catch { /* ignore */ }
+          }
+        }
+        return archivedSet;
+      } catch (err) {
+        logger.warn({ err: err?.message, sessionId: session.id }, 'Failed to resolve archived JIDs from local app state');
+        return new Set();
+      }
+    },
+
+    _applyArchivedState(session) {
+      if (!session) return;
+      session = this._sess(session);
+      const store = this._storeOf(session);
+      const archivedSet = this._resolveArchivedJids(session);
+      if (!archivedSet.size) return;
+
+      const emitEvent = (event) => this._emit({ gateway_session_id: session.id, ...event });
+
+      // Seed 0@s.whatsapp.net (WhatsApp system chat) if archived and not present
+      if (archivedSet.has('0@s.whatsapp.net') && !store.chats.has('0@s.whatsapp.net')) {
+        const nowIso = new Date().toISOString();
+        const waChat = {
+          id: '0@s.whatsapp.net',
+          jid: '0@s.whatsapp.net',
+          name: 'WhatsApp',
+          name_source: 'system',
+          phone: '',
+          is_group: false,
+          archived: true,
+          avatar_url: null,
+          last_message_at: null,
+          last_message_preview: '',
+          unread_count: 0,
+          created_at: nowIso,
+          updated_at: nowIso,
+        };
+        store.chats.set('0@s.whatsapp.net', waChat);
+        store.contacts.set('0@s.whatsapp.net', {
+          id: '0@s.whatsapp.net',
+          jid: '0@s.whatsapp.net',
+          name: 'WhatsApp',
+          name_source: 'system',
+          phone: '',
+          is_group: false,
+          updated_at: nowIso,
+        });
+        emitEvent({ event: 'conversation_updated', conversation: { ...waChat } });
+      }
+
+      for (const jid of archivedSet) {
+        const key = resolveJidKey(store, jid);
+        const chat = store.chats.get(key);
+        if (chat && !chat.archived) {
+          chat.archived = true;
+          chat.updated_at = new Date().toISOString();
+          emitEvent({ event: 'conversation_updated', conversation: { ...chat } });
+        }
+      }
+    },
+
     async resyncAppState(sessionId) {
       const session = this._requireSession(sessionId);
       if (!session.sock || session.status !== 'CONNECTED') {
         return { success: false, error: 'Session not connected' };
       }
+      this._applyArchivedState(session);
       if (typeof session.sock.resyncAppState !== 'function') {
-        return { success: false, error: 'resyncAppState not available on socket' };
+        return { success: true };
       }
       try {
         await session.sock.resyncAppState(['regular_low', 'regular_high'], false);
+        this._applyArchivedState(session);
         return { success: true };
       } catch (err) {
         return { success: false, error: err?.message || String(err) };
@@ -1656,6 +1769,7 @@ export function createSessionManager({
           logger.warn({ err: resyncErr?.message, sessionId: session.id }, 'App state resync failed after group subjects');
         }
       }
+      this._applyArchivedState(session);
       this._scheduleBackgroundAvatarFetch(session);
       return { applied: true, reason: null };
     },

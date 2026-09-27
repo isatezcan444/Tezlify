@@ -35,10 +35,11 @@ check('jidToPhone keeps valid numbers (regression: name/phone çalışması bozu
 });
 
 check('isDegenerateJid flags only degenerate numeric JIDs', () => {
-  assert.equal(isDegenerateJid('0@s.whatsapp.net'), true);
+  assert.equal(isDegenerateJid('0@s.whatsapp.net'), false, 'WhatsApp official announcements chat');
   assert.equal(isDegenerateJid('000@s.whatsapp.net'), true);
   assert.equal(isDegenerateJid('905321002030@s.whatsapp.net'), false);
   assert.equal(isDegenerateJid('120363012345678901@g.us'), false);
+  assert.equal(isDegenerateJid('905326203420-1536168983@g.us'), false);
   assert.equal(isDegenerateJid('62771114836011@lid'), false);
   assert.equal(isDegenerateJid(null), false);
 });

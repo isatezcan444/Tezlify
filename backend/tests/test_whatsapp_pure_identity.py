@@ -67,10 +67,11 @@ def test_jid_to_phone_empty_and_none():
 # ==============================================================================
 
 def test_is_degenerate_jid():
-    assert is_degenerate_jid("0@s.whatsapp.net") is True
+    assert is_degenerate_jid("0@s.whatsapp.net") is False
     assert is_degenerate_jid("00000@s.whatsapp.net") is True
     assert is_degenerate_jid("1234@s.whatsapp.net") is True
     assert is_degenerate_jid("905551234567@s.whatsapp.net") is False
+    assert is_degenerate_jid("905326203420-1536168983@g.us") is False
     assert is_degenerate_jid(None) is False
     assert is_degenerate_jid("") is False
 

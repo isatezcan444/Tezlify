@@ -39,7 +39,7 @@ U3_HEX = U3.replace("-", "")
 ALL_HEX = [U1_HEX, U2_HEX, U3_HEX]
 
 # Dejenere JID: `is_degenerate_jid` bunu gercek kisi saymaz (5'ten az hane).
-DEGENERATE_JID = "0@s.whatsapp.net"
+DEGENERATE_JID = "000@s.whatsapp.net"
 REAL_JID = "905321004040@s.whatsapp.net"
 
 
