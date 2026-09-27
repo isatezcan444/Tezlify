@@ -1339,7 +1339,8 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
 
           if (idx !== -1) {
             const existing = prev[idx];
-            const isCurrentSelected = selectedConv && (selectedConv.id === existing.id || selectedConv.id === convId);
+            const activeConv = selectedConvRef.current;
+            const isCurrentSelected = Boolean(activeConv && (activeConv.id === existing.id || activeConv.id === convId));
             // Faz 10 (P2): sohbet ozeti paylasilan kuraldan gecer — medyada
             // tip etiketi (📷 Fotoğraf), gruplarda cozulmus gonderen on eki
             // ("Ahmet: ..."), ham JID on ek ASLA; daha eski mesaj mevcut
@@ -1411,12 +1412,18 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         // background conversation must not keep a stale "yazıyor...".
         if (!isOutbound && convId != null) clearPeerTyping(convId);
 
-        // If active conversation matches, append message to thread with deduplication
+        const activeConv = selectedConvRef.current;
         const selectedPhoneIsUnambiguous = Boolean(
           eventPhone &&
           conversationsRef.current.filter((c) => c.lead_phone && extractCleanPhone(c.lead_phone) === eventPhone).length === 1,
         );
-        if (convId != null && selectedConv && (selectedConv.id === convId || (selectedPhoneIsUnambiguous && selectedConv.lead_phone && extractCleanPhone(selectedConv.lead_phone) === eventPhone))) {
+        const isActiveConversation = Boolean(
+          convId != null &&
+          activeConv &&
+          (activeConv.id === convId || (selectedPhoneIsUnambiguous && activeConv.lead_phone && extractCleanPhone(activeConv.lead_phone) === eventPhone))
+        );
+
+        if (convId != null) {
           const msgObj = eventData.message && typeof eventData.message === 'object' ? eventData.message : null;
           const waId = msgObj?.wa_message_id || eventData.wa_message_id || eventData.message_id;
           const clientMid = msgObj?.client_message_id || eventData.client_message_id;
@@ -1441,19 +1448,15 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
           };
 
           setMessagesMap((prev) => {
-            // P6-6: ONE canonical merge for every path. The previous inline
-            // `findIndex` could not collapse two slots when a later event linked
-            // both identities (optimistic row + provider echo), so the sent
-            // message stayed rendered twice — once DELIVERED, once stuck SENT.
-            // `mergeWhatsAppMessages` is what refresh, reconnect, sync-chunk
-            // and pagination already use; using it here makes live WS agree.
-            return { ...prev, [convId]: mergeWhatsAppMessages(prev[convId] || [], [newMsg]) };
+            // Update if active or if thread is already in memory
+            if (isActiveConversation || prev[convId]) {
+              return { ...prev, [convId]: mergeWhatsAppMessages(prev[convId] || [], [newMsg]) };
+            }
+            return prev;
           });
 
           // Auto-mark conversation as read if user is actively viewing it
-          if (!isOutbound) {
-            // Otomatik okundu: kullanici sohbeti acik tutuyor — basarisizlikta
-            // toast GOSTERILMEZ (her gelen mesajda spam olur) ama konsola yazilir.
+          if (!isOutbound && isActiveConversation) {
             WhatsAppRepository.markConversationAsRead(convId)
               .then((res) => reportReadSync(res, { label: `auto#${convId}` }))
               .catch((err) => console.warn('[WhatsAppHubPage] Otomatik okundu istegi basarisiz:', err));
@@ -1510,7 +1513,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         setConversations((prev) =>
           prev.map((c) => (c.id === convId ? { ...c, status: newStatus } : c))
         );
-        if (selectedConv && selectedConv.id === convId) {
+        if (selectedConvRef.current && selectedConvRef.current.id === convId) {
           setSelectedConv((prev) => (prev ? { ...prev, status: newStatus } : prev));
         }
       }
@@ -1520,7 +1523,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         setConversations((prev) =>
           prev.map((c) => (c.id === convId ? { ...c, unread_count: 0 } : c))
         );
-        if (selectedConv && selectedConv.id === convId) {
+        if (selectedConvRef.current && selectedConvRef.current.id === convId) {
           setSelectedConv((prev) => (prev ? { ...prev, unread_count: 0 } : prev));
         }
       }
