@@ -1,4 +1,5 @@
 import type { Message, ConversationMessageStatus } from '../../../types';
+import { compareMessagesChronological } from './whatsappOrdering';
 
 export function mergeDeliveryStatus(current: ConversationMessageStatus, incoming: ConversationMessageStatus): ConversationMessageStatus {
   const rank: Record<ConversationMessageStatus, number> = { PENDING: 0, FAILED: 0, SENT: 1, DELIVERED: 2, READ: 3, RECEIVED: 3 };
@@ -34,8 +35,5 @@ export function mergeWhatsAppMessages(current: Message[], incoming: Message[]): 
       status: mergeDeliveryStatus(previous.status, message.status) } : message;
     for (const key of keys) identities.set(key, slot);
   }
-  return result.filter((message): message is Message => message !== undefined).sort((a, b) => {
-    const time = (m: Message) => new Date(m.external_timestamp || m.created_at || 0).getTime() || 0;
-    return time(a) - time(b) || Number(a.id) - Number(b.id);
-  });
+  return result.filter((message): message is Message => message !== undefined).sort(compareMessagesChronological);
 }

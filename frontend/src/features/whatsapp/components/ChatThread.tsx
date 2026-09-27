@@ -9,6 +9,7 @@ import { WhatsAppIcon } from '../../../components/ui/whatsapp-icon';
 import { useI18n } from '../../../context/I18nContext';
 import { parseServerTime, formatMessageDate } from '../../../lib/utils';
 import { finishWaLatency } from '../lib/whatsappLatency';
+import { compareMessagesChronological } from '../lib/whatsappOrdering';
 
 /** WhatsApp Web tarzı 'yazıyor...' balonu (üç zıplayan nokta). */
 const TypingBubble: React.FC<{ label: string }> = ({ label }) => (
@@ -142,14 +143,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
 
   // Guarantee strictly chronological message order in the thread
   const sortedMessages = React.useMemo(() => {
-    return [...messages].sort((a, b) => {
-      const tA = new Date(a.created_at || a.external_timestamp || 0).getTime();
-      const tB = new Date(b.created_at || b.external_timestamp || 0).getTime();
-      if (tA !== tB) return tA - tB;
-      const nA = typeof a.id === 'number' ? a.id : 0;
-      const nB = typeof b.id === 'number' ? b.id : 0;
-      return nA - nB;
-    });
+    return [...messages].sort(compareMessagesChronological);
   }, [messages]);
 
   // ------------------------------------------------------------- K.19 state

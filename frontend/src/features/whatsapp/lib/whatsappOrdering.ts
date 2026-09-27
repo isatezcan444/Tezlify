@@ -1,6 +1,44 @@
-import { Conversation } from '../../../types';
+import { Conversation, Message } from '../../../types';
 import { parseServerTime } from '../../../lib/utils';
 import { extractCleanPhone } from './whatsappIdentity';
+
+/**
+ * Returns epoch milliseconds for a message timestamp honoring server UTC parsing.
+ */
+export function getMessageTimestampMs(m: Partial<Message> | null | undefined): number {
+  if (!m) return 0;
+  const raw = m.external_timestamp || m.created_at;
+  const d = parseServerTime(raw);
+  if (d && !isNaN(d.getTime())) return d.getTime();
+  return 0;
+}
+
+/**
+ * Deterministically sorts messages chronologically ascending (oldest first, newest last).
+ * Handles tie-breaks by database integer ID, then client message id.
+ */
+export function compareMessagesChronological(a: Message, b: Message): number {
+  const timeA = getMessageTimestampMs(a);
+  const timeB = getMessageTimestampMs(b);
+
+  if (timeA !== timeB) {
+    return timeA - timeB;
+  }
+
+  const idA = typeof a.id === 'number' ? a.id : Number(a.id);
+  const idB = typeof b.id === 'number' ? b.id : Number(b.id);
+  const validA = !isNaN(idA) && idA > 0;
+  const validB = !isNaN(idB) && idB > 0;
+
+  if (validA && validB && idA !== idB) {
+    return idA - idB;
+  }
+
+  if (validA && !validB) return -1;
+  if (!validA && validB) return 1;
+
+  return 0;
+}
 
 /**
  * Resolves the true activity timestamp of a conversation following WhatsApp Web parity:

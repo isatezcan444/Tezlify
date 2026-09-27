@@ -30,7 +30,7 @@ import { startWaLatency } from '../features/whatsapp/lib/whatsappLatency';
 import { translateApiError } from '../features/whatsapp/lib/translateError';
 import { mergeDeliveryStatus, mergeWhatsAppMessages } from '../features/whatsapp/lib/whatsappMessageMerge';
 import { WhatsAppRepository } from '../features/whatsapp/data/whatsappRepository';
-import { compareConversationsByActivityDesc, getConversationActivityTimestamp, restoreConversationActivity } from '../features/whatsapp/lib/whatsappOrdering';
+import { compareConversationsByActivityDesc, compareMessagesChronological, getConversationActivityTimestamp, restoreConversationActivity } from '../features/whatsapp/lib/whatsappOrdering';
 import { isRawWhatsAppJid as isRawWhatsAppIdentity } from '../features/whatsapp/lib/whatsappIdentity';
 import { PEER_TYPING_TTL_MS, pruneExpiredTyping, resolveSyncDisplayCounts } from '../features/whatsapp/lib/whatsappSync';
 import { applyConversationEvent } from '../features/whatsapp/lib/whatsappConversationPatch';
@@ -367,11 +367,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         const existing = prev[convId] || [];
         const seen = new Set(existing.map((m) => `${m.wa_message_id || ''}:${m.id}`));
         const older = res.messages.filter((m) => !seen.has(`${m.wa_message_id || ''}:${m.id}`));
-        const merged = [...older, ...existing].sort((a, b) => {
-          const ta = new Date(a.created_at || a.external_timestamp || 0).getTime() || 0;
-          const tb = new Date(b.created_at || b.external_timestamp || 0).getTime() || 0;
-          return ta !== tb ? ta - tb : Number(a.id) - Number(b.id);
-        });
+        const merged = [...older, ...existing].sort(compareMessagesChronological);
         return { ...prev, [convId]: merged };
       });
       setMessagePaging((prev) => ({
@@ -750,14 +746,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
           return true;
         });
 
-        const merged = [...res.messages, ...inFlightOrRealtime].sort((a, b) => {
-          const tA = new Date(a.created_at || a.external_timestamp || 0).getTime();
-          const tB = new Date(b.created_at || b.external_timestamp || 0).getTime();
-          if (tA !== tB) return tA - tB;
-          const nA = typeof a.id === 'number' ? a.id : 0;
-          const nB = typeof b.id === 'number' ? b.id : 0;
-          return nA - nB;
-        });
+        const merged = [...res.messages, ...inFlightOrRealtime].sort(compareMessagesChronological);
 
         return {
           ...prev,

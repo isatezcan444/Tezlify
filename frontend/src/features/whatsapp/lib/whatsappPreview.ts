@@ -16,6 +16,7 @@
  *    (`shouldApplyPreview`).
  */
 import { isRawWhatsAppJid } from './whatsappIdentity';
+import { parseServerTime } from '../../../lib/utils';
 
 export interface PreviewMessageLike {
   message_type?: string | null;
@@ -140,8 +141,8 @@ export function shouldApplyPreview(
 ): boolean {
   if (!currentTs) return true;
   if (!newTs) return true; // timestampsiz realtime güncelleme: yaz
-  const n = typeof newTs === 'number' ? newTs : new Date(newTs).getTime();
-  const c = typeof currentTs === 'number' ? currentTs : new Date(currentTs).getTime();
-  if (Number.isNaN(n) || Number.isNaN(c)) return true;
+  const n = typeof newTs === 'number' ? newTs : parseServerTime(newTs)?.getTime() || 0;
+  const c = typeof currentTs === 'number' ? currentTs : parseServerTime(currentTs)?.getTime() || 0;
+  if (Number.isNaN(n) || Number.isNaN(c) || n === 0 || c === 0) return true;
   return n >= c;
 }

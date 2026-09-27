@@ -12,9 +12,12 @@ export function cn(...inputs: ClassValue[]) {
  * that as browser-local time (3h off in TRT). Appending 'Z' recovers UTC.
  * Strings already carrying a zone/offset pass through untouched.
  */
-export function parseServerTime(dateStr?: string | null): Date | null {
-  if (!dateStr) return null;
+export function parseServerTime(dateStr?: string | number | null): Date | null {
+  if (dateStr === null || dateStr === undefined || dateStr === '') return null;
+  if (typeof dateStr === 'number') return new Date(dateStr);
   const s = String(dateStr).trim().replace(' ', 'T');
+  if (!s) return null;
+  if (/^\d+$/.test(s)) return new Date(Number(s));
   if (/[zZ]$/.test(s) || /[+-]\d{2}:?\d{2}$/.test(s)) return new Date(s);
   return new Date(`${s}Z`);
 }
