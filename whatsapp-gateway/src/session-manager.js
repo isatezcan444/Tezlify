@@ -12,7 +12,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { performance } from 'perf_hooks';
 import { diagnostic, sessionRef, latency } from './observability.js';
 import { SocketLifecycle } from './domain/socket-lifecycle.js';
-import { createBoundedCache } from './domain/bounded-cache.js';
+import { createBoundedCache, isAvatarUrlExpired } from './domain/bounded-cache.js';
 import { expandAppStateKeys } from 'whatsapp-rust-bridge';
 import { hmacSign } from '@whiskeysockets/baileys/lib/Utils/crypto.js';
 
@@ -1356,7 +1356,7 @@ export function createSessionManager({
         const isResolved = existing.name && !isRawIdentityName(existing.name);
         if (!isResolved) session._pendingGroupJids.add(key);
       }
-      if (!chats.get(key)?.avatar_url) void this._ensureChatAvatar(session, key);
+      if (isAvatarUrlExpired(chats.get(key)?.avatar_url)) void this._ensureChatAvatar(session, key);
     },
 
     async _ensureChatAvatar(session, key) {
@@ -1436,8 +1436,13 @@ export function createSessionManager({
       }
       store._backgroundAvatarFetchRunning = true;
 
+      // ROOT CAUSE (avatar 403/timeout): a WhatsApp profile-picture URL is a
+      // SIGNED link that expires on its own. The old test was `!c.avatar_url`,
+      // which treated an EXPIRED url as "we already have it" — so those chats
+      // were never re-queried and the UI kept rendering a dead image (403)
+      // until a manual refresh. Expiry is now part of "missing".
       const isMissingAvatar = (c) =>
-        c && c.jid && !c.avatar_url && !isBroadcastOnlyJid(c.jid) && !isDegenerateJid(c.jid);
+        c && c.jid && isAvatarUrlExpired(c.avatar_url) && !isBroadcastOnlyJid(c.jid) && !isDegenerateJid(c.jid);
       const missingChats = () =>
         Array.from(store.chats.values())
           .filter(isMissingAvatar)
@@ -1518,7 +1523,7 @@ export function createSessionManager({
       const store = this._storeOf(session);
       let missing = 0;
       for (const c of store.chats.values()) {
-        if (c && c.jid && !c.avatar_url && !isBroadcastOnlyJid(c.jid) && !isDegenerateJid(c.jid)) missing += 1;
+        if (c && c.jid && isAvatarUrlExpired(c.avatar_url) && !isBroadcastOnlyJid(c.jid) && !isDegenerateJid(c.jid)) missing += 1;
       }
       const connected = session.status === 'CONNECTED' && Boolean(session.sock);
       if (missing && connected) this._scheduleBackgroundAvatarFetch(session);
@@ -1735,7 +1740,7 @@ export function createSessionManager({
         // forced `profilePictureUrl` returned a URL). `_ensureChatAvatar` is
         // in-flight guarded and throttled to one attempt per jid per 10 min, so
         // requesting it on every pass is safe and self-healing.
-        if (!chats.get(key)?.avatar_url) void this._ensureChatAvatar(session, key);
+        if (isAvatarUrlExpired(chats.get(key)?.avatar_url)) void this._ensureChatAvatar(session, key);
       };
 
       const resolvedKeys = new Set();
