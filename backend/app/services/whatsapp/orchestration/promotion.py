@@ -345,6 +345,7 @@ async def promote_ephemeral_pairing(
             candidate.is_phone_online = True
             candidate.qr_code = None
             candidate.error_message = None
+            candidate.initial_sync_completed_at = None
             candidate.session_name = resolved_name
             candidate.updated_at = datetime.utcnow()
             await db.commit()

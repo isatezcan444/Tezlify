@@ -270,6 +270,7 @@ async def perform_atomic_relink(
     candidate.is_phone_online = True
     candidate.qr_code = None
     candidate.error_message = None
+    candidate.initial_sync_completed_at = None
     candidate.updated_at = datetime.utcnow()
     if session_name:
         candidate.session_name = session_name

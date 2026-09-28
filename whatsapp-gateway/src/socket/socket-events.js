@@ -722,9 +722,11 @@ export function bindSocketEvents({
         contacts_unique: contacts.size,
         messages_cached: cachedMessages,
       });
-      if (isLatest || progress === 100) {
+      if (storedChats > 0 || isLatest || progress === 100) {
         manager._scheduleBackgroundAvatarFetch(session);
-        manager._applyArchivedState?.(session);
+        if (isLatest || progress === 100) {
+          manager._applyArchivedState?.(session);
+        }
       }
       if (session.sync) {
         const { next, justCompleted } = resolveSyncState(session.sync, { progress, isLatest });

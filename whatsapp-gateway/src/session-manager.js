@@ -1364,10 +1364,20 @@ export function createSessionManager({
       const lastAttempt = avatarFetchAttemptedAt.get(key) || 0;
       if (Date.now() - lastAttempt < 10 * 60 * 1000) return;
       if (session.status !== 'CONNECTED' || !session.sock) return;
+      if (typeof session.sock.profilePictureUrl !== 'function') return;
       avatarFetchInFlight.add(key);
       avatarFetchAttemptedAt.set(key, Date.now());
+      let timer = null;
       try {
-        const url = await session.sock.profilePictureUrl(key, 'preview');
+        const timeoutPromise = new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error('profile_picture_query_timeout')), 3500);
+          if (typeof timer.unref === 'function') timer.unref();
+        });
+        timeoutPromise.catch(() => {});
+
+        const queryPromise = Promise.resolve().then(() => session.sock.profilePictureUrl(key, 'preview'));
+        const url = await Promise.race([queryPromise, timeoutPromise]);
+
         if (url) {
           const chat = chats.get(key);
           if (chat && chat.avatar_url !== url) {
@@ -1386,15 +1396,22 @@ export function createSessionManager({
         }
       } catch (err) {
         // Ayristirma: "item-not-found" sunucuda profil resmi YOK demektir —
-        // bunu 30 sn'de bir yeniden denemek rate-limit israfidir. Gecici
-        // hatalar (ag/kisitlama) 30 sn sonra tekrar denenir.
+        // bunu 30 sn'de bir yeniden denemek rate-limit israfidir. Negatif onbellek
+        // uygulanir (1 saat boyunca tekrar sorulmaz). Gecici hatalar (ag/timeout)
+        // backoff ile kisa sure sonra tekrar denenir.
         const errMsg = String(err?.message || err);
+        const isTimeout = /timeout|timed out|408/i.test(errMsg);
         const noPicture = /item-not-found|not-acceptable|40[46]/i.test(errMsg);
         avatarFetchAttemptedAt.set(
           key,
-          noPicture ? Date.now() : Date.now() - (10 * 60 * 1000 - 30 * 1000),
+          noPicture
+            ? Date.now() + 50 * 60 * 1000
+            : isTimeout
+              ? Date.now() - (10 * 60 * 1000 - 45 * 1000)
+              : Date.now() - (10 * 60 * 1000 - 30 * 1000),
         );
       } finally {
+        if (timer) clearTimeout(timer);
         store.avatarFetchInFlight.delete(key);
       }
     },

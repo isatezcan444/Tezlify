@@ -298,6 +298,8 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   // Kullaniciyi kapida asla kilitli birakma: uzun suren senkron sonrasi
   // "yine de devam et" cikisi gorunur hale gelir.
   const [syncGateEscapeVisible, setSyncGateEscapeVisible] = useState(false);
+  // QR basarili oldugunda kapiyi hemen acan ve veri hazir olana kadar tutan durum
+  const [isPostQrSyncing, setIsPostQrSyncing] = useState<boolean>(false);
 
   // 'yazıyor...' durumu: conversation_id -> bool (gateway presence_updated ile)
   const [peerTypingMap, setPeerTypingMap] = useState<Record<number, boolean>>({});
@@ -600,29 +602,27 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   // mesajinin omru sinirlidir).
   useEffect(() => {
     if (sessionSync?.phase !== 'ready') return;
+    setIsPostQrSyncing(false);
+    loadConversations(true);
     const timer = setTimeout(() => {
       setSessionSync((prev) => (prev && prev.phase === 'ready' ? null : prev));
     }, 4000);
     return () => clearTimeout(timer);
-  }, [sessionSync?.phase]);
+  }, [sessionSync?.phase, loadConversations]);
 
-  // Faz 14 — kapi kosulu. Dort sartin TAMAMI gerekir:
-  //   1) bagli bir hat var (kapi yalnizca eslesmis bir hat icin anlamli),
-  //   2) o hat ilk senkronunu HENUZ tamamlamadi (kalici damga),
-  //   3) gercek senkron su an calisiyor,
-  //   4) kullanici kapiyi kapatmadi (kacis cikisi).
-  // `initial_sync_completed` kalici oldugu icin, sohbetler goruldukten sonraki
-  // manuel "Esitle" UI'i kilitlemez.
+  // Faz 14 — kapi kosulu. WhatsApp Web paritesi senkron kapisi.
+  //   1) QR okutulup yeni baglanti yapildiginda (`isPostQrSyncing`),
+  //   2) Ilk senkronu henuz tamamlanmamis hatta senkron suresince,
+  //   3) Hata veya devam eden gercek senkron asamasinda,
+  // Kullanici kapiyi kapatmadigi surece WhatsApp Web yukleme ekrani gosterilir.
   const connectedSession = sessions.find((s) => s.status === 'CONNECTED') || null;
   const initialSyncPending = Boolean(connectedSession) && connectedSession?.initial_sync_completed !== true;
-  // Hata durumu da kapiya dahildir: ilk senkron basarisiz olduysa kullanici
-  // sessizce bos bir sohbet listesine dusmez, gercek hatayi gorur ve
-  // yeniden deneyebilir / devam edebilir.
   const syncGateActive =
     hubTab === 'conversations' &&
-    initialSyncPending &&
     !syncGateDismissed &&
-    (sessionSync?.phase === 'syncing' || sessionSync?.phase === 'error');
+    (isPostQrSyncing ||
+      (initialSyncPending && (sessionSync?.phase === 'syncing' || sessionSync?.phase === 'error')) ||
+      (sessionSync?.phase === 'syncing' && isSyncingChats));
 
   // Uzun suren senkron kullaniciyi kapida kilitli birakmasin: bir esikten
   // sonra "yine de devam et" cikisi gorunur olur. Hata durumunda zaten
@@ -650,6 +650,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   }, [sessionSync?.phase]);
 
   const handleSyncGateContinueAnyway = useCallback(() => {
+    setIsPostQrSyncing(false);
     setSyncGateDismissed(true);
   }, []);
 
@@ -1972,6 +1973,10 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   }, [t, toast]);
 
   const handleQrSuccess = useCallback(() => {
+    // QR eslesmesi sonrasi otomatik olarak Canli Diyaloglar sekmesine gec
+    setHubTab('conversations');
+    setIsPostQrSyncing(true);
+    setSyncGateDismissed(false);
     fetchSessions(true);
     onRefreshStats();
     // Faz 6 (PHASE-17 cache-first): QR sonrasi ONCE DB'deki kalici sohbet
@@ -2295,7 +2300,11 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
               sync={sessionSync}
               showEscape={syncGateEscapeVisible}
               onContinueAnyway={handleSyncGateContinueAnyway}
-              onRetry={handleSyncChats}
+              onRetry={() => {
+                setIsPostQrSyncing(true);
+                setSyncGateDismissed(false);
+                void handleSyncChats();
+              }}
             />
           ) : (
           <>
