@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import uuid
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.contact import Contact
@@ -127,3 +128,165 @@ async def test_map_session_event_fails_closed_when_session_not_found(orchestrato
     event = {"event": "session_connected", "gateway_session_id": "unknown-gw-id"}
     with pytest.raises(EventOwnerUnresolved):
         await orchestrator._map_session_event(mock_db, event)
+
+
+class _FakeSessionFactory:
+    """`async with session_factory() as db` sozlesmesini karsilar."""
+
+    def __init__(self, db: Any) -> None:
+        self._db = db
+
+    def __call__(self) -> "_FakeSessionFactory":
+        return self
+
+    async def __aenter__(self) -> Any:
+        return self._db
+
+    async def __aexit__(self, *args: Any) -> bool:
+        return False
+
+
+def _winning_message_row() -> Message:
+    return Message(
+        user_id="user-1",
+        conversation_id=42,
+        direction=MessageDirection.INBOUND,
+        message_type=MessageType.TEXT,
+        status=ConversationMessageStatus.RECEIVED,
+        wa_message_id="WAPP-1",
+        body="merhaba",
+        recipient_phone="+905551112233",
+    )
+
+
+@pytest.mark.asyncio
+async def test_recover_message_new_after_integrity_error_reselects_row(orchestrator):
+    """IntegrityError sonrasi kurtarma: kazanan satir yeniden secilip olay
+    broadcast edilebilir hale gelir — olay dusurulmez (canli balon kaybi)."""
+    winning = _winning_message_row()
+    mock_service = MagicMock(spec=["_resolve_event_owner_and_session"])
+    mock_service._resolve_event_owner_and_session = AsyncMock(return_value=("user-1", 7))
+    orch = WhatsAppEventOrchestrator(service=mock_service)
+
+    mock_db = AsyncMock(spec=AsyncSession)
+    mock_result = MagicMock()
+    mock_result.scalars.return_value.first.return_value = winning
+    mock_db.execute = AsyncMock(return_value=mock_result)
+
+    event: Dict[str, Any] = {
+        "event": "message_new",
+        "conversation_id": "905551112233@s.whatsapp.net",
+        "gateway_session_id": "gw-1",
+        "message": {
+            "conversation_id": "905551112233@s.whatsapp.net",
+            "wa_message_id": "WAPP-1",
+            "body": "merhaba",
+            "status": "DELIVERED",
+        },
+    }
+    res = await orch._recover_message_new_after_integrity_error(mock_db, event)
+
+    assert res is not None
+    assert res.get("_skip") is None
+    assert res["user_id"] == "user-1"
+    # Broadcast, satirin GERCEK konusmasini tasiyacak sekilde yeniden hedeflenir.
+    assert res["conversation_id"] == 42
+    assert isinstance(res["message"], dict)
+    assert res["message"]["wa_message_id"] == "WAPP-1"
+    mock_service._resolve_event_owner_and_session.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_recover_message_new_after_integrity_error_without_ids_returns_none(orchestrator):
+    """wa_message_id / client_message_id olmayan olay icin kurtarma girisimi
+    yoktur — sorgu hic atilmaz, olay bilincli olarak dusulur."""
+    mock_service = MagicMock(spec=["_resolve_event_owner_and_session"])
+    mock_service._resolve_event_owner_and_session = AsyncMock(return_value=("user-1", 7))
+    orch = WhatsAppEventOrchestrator(service=mock_service)
+
+    mock_db = AsyncMock(spec=AsyncSession)
+    mock_db.execute = AsyncMock()
+
+    event: Dict[str, Any] = {
+        "event": "message_new",
+        "conversation_id": "905551112233@s.whatsapp.net",
+        "message": {"conversation_id": "905551112233@s.whatsapp.net", "body": "merhaba"},
+    }
+    res = await orch._recover_message_new_after_integrity_error(mock_db, event)
+
+    assert res is None
+    mock_db.execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ingest_gateway_event_integrity_error_recovers_message_new():
+    """Koordinator sozlesmesi (uca sabitlenen akis): message_new ingest'i
+    IntegrityError ile yarisi kaybettiginde olay None'a dusurulmez; kazanan
+    satirla yeniden serilestirilir ve main.py'deki ws_manager.broadcast
+    yayinina geri dondurulur (satir 352 sozlesmesi: dict -> broadcast)."""
+    winning = _winning_message_row()
+
+    mock_db = AsyncMock(spec=AsyncSession)
+    mock_db.bind = MagicMock()
+    mock_db.bind.dialect.name = "sqlite"
+    mock_result = MagicMock()
+    mock_result.scalars.return_value.first.return_value = winning
+    mock_db.execute = AsyncMock(return_value=mock_result)
+
+    mock_service = MagicMock(spec=["_ingest_message", "_resolve_event_owner_and_session", "AsyncSessionLocal"])
+    mock_service._ingest_message = AsyncMock(
+        side_effect=IntegrityError("INSERT INTO messages ...", {}, Exception("uq_msg_conv_wa_message_id"))
+    )
+    mock_service._resolve_event_owner_and_session = AsyncMock(return_value=("user-1", 7))
+    mock_service.AsyncSessionLocal = _FakeSessionFactory(mock_db)
+    orch = WhatsAppEventOrchestrator(service=mock_service)
+
+    event: Dict[str, Any] = {
+        "event": "message_new",
+        "event_id": str(uuid.uuid4()),
+        "conversation_id": "905551112233@s.whatsapp.net",
+        "gateway_session_id": "gw-1",
+        "message": {
+            "conversation_id": "905551112233@s.whatsapp.net",
+            "wa_message_id": "WAPP-1",
+            "body": "merhaba",
+            "status": "DELIVERED",
+        },
+    }
+    res = await orch.ingest_gateway_event(event)
+
+    assert res is not None
+    assert res.get("_skip") is None
+    assert res["conversation_id"] == 42
+    assert isinstance(res["message"], dict)
+    assert res["message"]["wa_message_id"] == "WAPP-1"
+    # rollback (yaris) + commit (kurtarilan olay isaretlenip kapanir).
+    mock_db.rollback.assert_awaited_once()
+    mock_db.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_ingest_gateway_event_integrity_error_still_drops_unrecoverable():
+    """Kurtarilamayan IntegrityError (id'siz mesaj) onceki gibi fail-closed
+    None dondurur — davranis gerilemesi yok."""
+    mock_db = AsyncMock(spec=AsyncSession)
+    mock_db.bind = MagicMock()
+    mock_db.bind.dialect.name = "sqlite"
+
+    mock_service = MagicMock(spec=["_ingest_message", "AsyncSessionLocal"])
+    mock_service._ingest_message = AsyncMock(
+        side_effect=IntegrityError("INSERT INTO messages ...", {}, Exception("uq_msg_conv_client_message_id"))
+    )
+    mock_service.AsyncSessionLocal = _FakeSessionFactory(mock_db)
+    orch = WhatsAppEventOrchestrator(service=mock_service)
+
+    event: Dict[str, Any] = {
+        "event": "message_new",
+        "event_id": str(uuid.uuid4()),
+        "conversation_id": "905551112233@s.whatsapp.net",
+        "message": {"conversation_id": "905551112233@s.whatsapp.net", "body": "merhaba"},
+    }
+    res = await orch.ingest_gateway_event(event)
+
+    assert res is None
+    mock_db.rollback.assert_awaited_once()

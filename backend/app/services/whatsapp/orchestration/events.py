@@ -1453,6 +1453,73 @@ class WhatsAppEventOrchestrator:
             row.updated_at = datetime.utcnow()
         return event
 
+    async def _recover_message_new_after_integrity_error(
+        self,
+        db: AsyncSession,
+        event: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        """message_new icin IntegrityError sonrasi canli broadcast kurtarmasi.
+
+        Senkron-job'un bulk ingest'i ile gercek zamanli ingest ayni
+        (conversation_id, wa_message_id)/(conversation_id, client_message_id)
+        satiri icin yarisabilir; kaybeden taraf IntegrityError alir. Mesaj o
+        anda DB'ye YAZILMISTIR — olayi dusurmek, sohbet listesi
+        conversation_updated ile guncellenirken acik thread'deki balonun
+        sessizce kaybolmasi demektir. Kazanan satir yeniden secilip olay yine
+        de yayinlanir; satir bulunamazsa None doner (olay bilincli dusulur).
+        """
+        resolve_event_owner_and_session = self._get_helper(
+            "_resolve_event_owner_and_session", _resolve_event_owner_and_session
+        )
+        advance_message_status = self._get_helper("_advance_message_status", _advance_message_status)
+        serialize_message = self._get_helper("_serialize_message", _serialize_message)
+
+        msg = event.get("message") or {}
+        jid = msg.get("conversation_id") or event.get("conversation_id")
+        if not jid or "@" not in str(jid):
+            return None
+        wa_id = msg.get("wa_message_id")
+        client_id = msg.get("client_message_id")
+        if not wa_id and not client_id:
+            return None
+        # Sahip tercihen olaydan okunur: `_ingest_message`, INSERT'e girmeden
+        # once `event["user_id"]` yazmistir; yeniden cozumlemek hem gereksiz
+        # bir tur hem de sahibi cozumleme noktasina bagli senkronizasyon
+        # yardimcilarinin (test barrier'lari) yeniden girilmesi riskidir.
+        owner = event.get("user_id")
+        if owner is None:
+            try:
+                owner, _ws_session_id = await resolve_event_owner_and_session(
+                    db, str(jid), event.get("gateway_session_id")
+                )
+            except EventOwnerUnresolved:
+                return None
+            event["user_id"] = owner
+
+        # Konusma kimligi cozumlenmez: kazanan satir kendi conversation_id'sini
+        # tasir (LID -> PN baristirmasinda kardes konusmaya tasinmis olabilir)
+        # ve yayın o kimlikle yapilir — API'den yeniden cekim her zaman ayni
+        # satiri gosterir, sahte veri uretilmez.
+        res = await db.execute(
+            select(Message)
+            .where(
+                or_(
+                    Message.wa_message_id == wa_id if wa_id else False,
+                    Message.client_message_id == client_id if client_id else False,
+                ),
+                get_user_filter(Message.user_id, owner),
+            )
+            .order_by(Message.id.desc())
+            .limit(1)
+        )
+        canonical = res.scalars().first()
+        if canonical is None:
+            return None
+        advance_message_status(canonical, msg.get("status"))
+        event["conversation_id"] = canonical.conversation_id
+        event["message"] = serialize_message(canonical)
+        return event
+
 
 
     @profiled("gateway_event")
@@ -1551,6 +1618,35 @@ class WhatsAppEventOrchestrator:
                 return None
             except IntegrityError as exc:
                 await db.rollback()
+                # Yaris kaybedildi demek mesajin YOK oldugu anlamina gelmez:
+                # kazanan taraf zaten yazdi. message_new icin olay dusurulmez —
+                # kazanan satir yeniden secilip broadcast edilir; aksi halde
+                # liste conversation_updated ile guncellenirken acik thread'deki
+                # balon sessizce kaybolur.
+                recovered_event: Optional[Dict[str, Any]] = None
+                if evt == "message_new":
+                    try:
+                        recovered_event = await self._recover_message_new_after_integrity_error(db, event)
+                    except Exception as rec_exc:
+                        await db.rollback()
+                        logger.warning("message_new IntegrityError kurtarmasi basarisiz (event=%s): %s", evt, rec_exc)
+                        recovered_event = None
+                if recovered_event is not None:
+                    if event_id and db.bind is not None and db.bind.dialect.name == "postgresql":
+                        await db.execute(
+                            text(
+                                "INSERT INTO whatsapp_private.processed_events (event_id) "
+                                "VALUES (:event_id) ON CONFLICT (event_id) DO NOTHING"
+                            ),
+                            {"event_id": event_id},
+                        )
+                    await db.commit()
+                    logger.info(
+                        "message_new DB yarisi kazanan satirla yeniden yayinlandi "
+                        "(event=%s, conversation_id=%s)",
+                        evt, recovered_event.get("conversation_id"),
+                    )
+                    return recovered_event
                 logger.warning("Gateway olayi atlandi (DB yarisi, event=%s): %s", evt, exc)
                 return None
             except Exception as exc:

@@ -1714,7 +1714,10 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
               (buf[cid] = buf[cid] || []).push(mapped);
               (byConv[cid] = byConv[cid] || []).push(mapped);
             }
-            const openId = selectedConv?.id;
+            // Bu dinleyici bilinçli olarak stabil tutulur (deps'te selectedConv
+            // YOK); state'e kapanan erisim bayat kalir. Acik sohbet kimligi
+            // message_new isleyicisiyle ayni sekilde ref'ten okunmalidir.
+            const openId = selectedConvRef.current?.id;
             if (openId && byConv[openId]) {
               setMessagesMap((prev) => {
                 return { ...prev, [openId]: mergeWhatsAppMessages(prev[openId] || [], byConv[openId]) };
