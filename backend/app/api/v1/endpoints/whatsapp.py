@@ -20,6 +20,7 @@ from backend.app.schemas.whatsapp import (
     WhatsAppConversationListResponse,
     WhatsAppConversationStatusRequest,
     WhatsAppConversationStatusResult,
+    WhatsAppLoadingGateResponse,
     WhatsAppMessageItem,
     WhatsAppMessagesResponse,
     WhatsAppPairingCodeRequest,
@@ -346,6 +347,26 @@ async def get_sync_status(
     except Exception as exc:
         raise _bad_gateway(exc) from exc
     return WhatsAppSyncStatusResponse(**data)
+
+
+@router.get("/loading-gate", response_model=WhatsAppLoadingGateResponse)
+async def get_loading_gate(
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+) -> WhatsAppLoadingGateResponse:
+    """QR sonrasi Loading Gate — tek-authority yukleme kapisi (WhatsApp Web paritesi).
+
+    Faz 0 kontrakt: frontend QR sonrasi `hubTab`'i ve kapiyi YALNIZCA bu
+    endpoint'in `phase`'ine gore surer. `phase` backend SyncJob + gateway
+    sync + avatar counts birlesiminden turetilir; sahte progress uretilmez.
+    """
+    try:
+        data = await whatsapp_service.get_loading_gate(db, current_user.id)
+    except NoWhatsAppSession as exc:
+        raise _no_session(exc) from exc
+    except Exception as exc:
+        raise _bad_gateway(exc) from exc
+    return WhatsAppLoadingGateResponse(**data)
 
 
 @router.post("/sync", response_model=WhatsAppSyncJobResponse, status_code=status.HTTP_202_ACCEPTED)

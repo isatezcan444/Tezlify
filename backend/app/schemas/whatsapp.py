@@ -301,3 +301,42 @@ class WhatsAppSyncJobResponse(BaseModel):
     # Faz 6 (P0.1): faz bazinda gecen sure (sn, gercek olcum — time.monotonic
     # delta). Benchmark/raporlama icin; UI icin zorunlu degil.
     stage_timings: Dict[str, float] = Field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# Loading Gate — QR sonrası WhatsApp Web paritesi (Faz 0 kontrakt)
+# ---------------------------------------------------------------------------
+class WhatsAppLoadingGateCounts(BaseModel):
+    """QR sonrasi yukleme kapisi icin sayaclar (tek-authority DTO).
+
+    chats/messages : backend SyncJob + gateway sync'in birlesimi.
+    avatars_*      : gateway bellegindeki eksik avatar sayisi (backfill ilerlemesi).
+    """
+
+    chats_total: int = 0
+    chats_synced: int = 0
+    messages_total: int = 0
+    messages_synced: int = 0
+    avatars_total: int = 0
+    avatars_fetched: int = 0
+    avatars_missing: int = 0
+
+
+class WhatsAppLoadingGateResponse(BaseModel):
+    """Tek-authority yukleme kapisi durumu (WhatsApp Web paritesi).
+
+    phase: idle | qr | connecting | syncing_history | loading_profiles | ready | error
+    stage: backend SyncJob stage'i ile eslesir (starting|chats|messages|finalizing...)
+    progress: 0-100 deterministik yuzde (backend + gateway birlesimi)
+    counts: yukaridaki sayaclar
+    gateway_available/gateway_error: fail-closed sinyal (AGENTS.md §1.1)
+    """
+
+    session_id: Optional[int] = None
+    phase: str = Field(default="idle", description="idle|qr|connecting|syncing_history|loading_profiles|ready|error")
+    stage: str = "idle"
+    progress: int = Field(default=0, ge=0, le=100)
+    counts: WhatsAppLoadingGateCounts = Field(default_factory=WhatsAppLoadingGateCounts)
+    gateway_available: bool = True
+    gateway_error: Optional[str] = None
+    error: Optional[str] = None

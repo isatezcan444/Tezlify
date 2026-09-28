@@ -2,7 +2,7 @@ import React from 'react';
 import { AlertTriangle, Lock, RefreshCw } from 'lucide-react';
 import { Button } from '../../../components/ui/button';
 import { useI18n } from '../../../context/I18nContext';
-import { SessionSyncState } from '../../../types';
+import { SessionSyncState, WhatsAppLoadingGate } from '../../../types';
 import { resolveSyncDisplayCounts } from '../lib/whatsappSync';
 import { WhatsAppIcon } from '../../../components/ui/whatsapp-icon';
 
@@ -21,10 +21,16 @@ import { WhatsAppIcon } from '../../../components/ui/whatsapp-icon';
  * - Kullanici asla kapida kilitli kalmaz: hata halinde ve uzun suren senkron
  *   sonrasi "yine de devam et" cikisi sunulur (ust bilesen `showEscape` ile
  *   kontrol eder).
+ *
+ * Faz 3: `loadingGate` prop'u tek-authority WhatsAppLoadingGate durumunu tasir
+ * (bagli degilse eski `sync` davranisi korunur — geriye donuk uyumlu). Profil
+ * fotograflari asamasi (`loading_profiles`) avatar sayaclariyla gosterilir.
  */
 export interface WhatsAppSyncGateProps {
   /** Gercek senkron durumu (backend job'i ve/veya gateway history sync). */
   sync: SessionSyncState | null;
+  /** Faz 3: tek-authority loading gate durumu (avatars dahil). */
+  loadingGate?: WhatsAppLoadingGate | null;
   /** Kacis cikisi gorunsun mu (hata ya da uzun suren senkron). */
   showEscape?: boolean;
   onContinueAnyway?: () => void;
@@ -34,18 +40,26 @@ export interface WhatsAppSyncGateProps {
 
 export const WhatsAppSyncGate: React.FC<WhatsAppSyncGateProps> = ({
   sync,
+  loadingGate,
   showEscape = false,
   onContinueAnyway,
   onRetry,
 }) => {
   const { t } = useI18n();
 
-  const isError = sync?.phase === 'error';
-  const progress = Math.max(0, Math.min(100, Math.round(sync?.progress || 0)));
+  const isError = sync?.phase === 'error' || loadingGate?.phase === 'error';
+  const progress = Math.max(
+    0,
+    Math.min(100, Math.round(loadingGate?.progress ?? sync?.progress ?? 0)),
+  );
   const counts = resolveSyncDisplayCounts(sync);
+  const avatarCounts = loadingGate?.counts;
+  const isProfileStage = loadingGate?.phase === 'loading_profiles';
 
   // F-9: dinamik asama anahtari cozulmezse ham anahtar yolu gosterilmez.
-  const stageKey = `whatsapp.syncStage.${sync?.stage || 'starting'}`;
+  const stageKey = isProfileStage
+    ? 'whatsapp.syncStage.loading_profiles'
+    : `whatsapp.syncStage.${sync?.stage || 'starting'}`;
   const stageLabel = t(stageKey);
   const resolvedStage = stageLabel === stageKey ? t('whatsapp.syncingChats') : stageLabel;
 
@@ -89,10 +103,12 @@ export const WhatsAppSyncGate: React.FC<WhatsAppSyncGateProps> = ({
             </div>
 
             <p className="text-[11px] text-[#667781] mt-1">
-              {`${t('whatsapp.syncingContactsCount', { count: counts.contacts })} · ${t(
-                'whatsapp.syncingChatsCount',
-                { count: counts.chats },
-              )} · ${t('whatsapp.syncingMessagesCount', { count: counts.messages })}`}
+              {isProfileStage && avatarCounts
+                ? t('whatsapp.syncingAvatarsCount', { count: avatarCounts.avatars_missing })
+                : `${t('whatsapp.syncingContactsCount', { count: counts.contacts })} · ${t(
+                    'whatsapp.syncingChatsCount',
+                    { count: counts.chats },
+                  )} · ${t('whatsapp.syncingMessagesCount', { count: counts.messages })}`}
             </p>
           </div>
         )}

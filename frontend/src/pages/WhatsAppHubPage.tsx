@@ -36,6 +36,7 @@ import { PEER_TYPING_TTL_MS, pruneExpiredTyping, resolveSyncDisplayCounts } from
 import { applyConversationEvent } from '../features/whatsapp/lib/whatsappConversationPatch';
 import { WhatsAppSession, Conversation, ConversationStatus, ConversationMessageStatus, Lead, Message, LiveModeStatus, SessionSyncState } from '../types';
 import { WhatsAppApi, useLiveMode, probeLive, invalidateLiveProbe, isLiveCached, mapConversationItem, mapMessageItem, buildConversationUpdatedPayload } from '../features/whatsapp/api/whatsappApi';
+import { useWhatsAppLoadingGate } from '../features/whatsapp/hooks/useWhatsAppLoadingGate';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 import { Card } from '../components/ui/card';
@@ -300,6 +301,23 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   const [syncGateEscapeVisible, setSyncGateEscapeVisible] = useState(false);
   // QR basarili oldugunda kapiyi hemen acan ve veri hazir olana kadar tutan durum
   const [isPostQrSyncing, setIsPostQrSyncing] = useState<boolean>(false);
+
+  // Faz 3/4 — tek-authority Loading Gate (backend GET /whatsapp/loading-gate +
+  // WS whatsapp_loading_gate / session_sync_* sinyalleri). `ready` aninda:
+  // kapı kapanır, Canlı Diyaloglar'a otomatik geçilir ve sohbetler eager yüklenir.
+  // Not: `loadConversations` bu bloktan SONRA tanimlanir; cagri sirasinda en
+  // guncel kopyayi okumak icin mevcut `loadConversationsRef` kalibi kullanilir.
+  const {
+    gate: loadingGate,
+    dismiss: dismissLoadingGate,
+    refresh: refreshLoadingGate,
+  } = useWhatsAppLoadingGate(
+    useCallback(() => {
+      setIsPostQrSyncing(false);
+      setHubTab('conversations');
+      loadConversationsRef.current?.(true);
+    }, []),
+  );
 
   // 'yazıyor...' durumu: conversation_id -> bool (gateway presence_updated ile)
   const [peerTypingMap, setPeerTypingMap] = useState<Record<number, boolean>>({});
@@ -614,13 +632,18 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   //   1) QR okutulup yeni baglanti yapildiginda (`isPostQrSyncing`),
   //   2) Ilk senkronu henuz tamamlanmamis hatta senkron suresince,
   //   3) Hata veya devam eden gercek senkron asamasinda,
+  //   4) Faz 3: tek-authority loading gate `syncing_history`/`loading_profiles`
+  //      asamasindayken (profil fotograflari dahil).
   // Kullanici kapiyi kapatmadigi surece WhatsApp Web yukleme ekrani gosterilir.
   const connectedSession = sessions.find((s) => s.status === 'CONNECTED') || null;
   const initialSyncPending = Boolean(connectedSession) && connectedSession?.initial_sync_completed !== true;
+  const loadingGateActive =
+    loadingGate?.phase === 'syncing_history' || loadingGate?.phase === 'loading_profiles';
   const syncGateActive =
     hubTab === 'conversations' &&
     !syncGateDismissed &&
     (isPostQrSyncing ||
+      loadingGateActive ||
       (initialSyncPending && (sessionSync?.phase === 'syncing' || sessionSync?.phase === 'error')) ||
       (sessionSync?.phase === 'syncing' && isSyncingChats));
 
@@ -652,7 +675,8 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   const handleSyncGateContinueAnyway = useCallback(() => {
     setIsPostQrSyncing(false);
     setSyncGateDismissed(true);
-  }, []);
+    dismissLoadingGate();
+  }, [dismissLoadingGate]);
 
   const refreshSyncStatus = useCallback(async () => {
     try {
@@ -1987,9 +2011,12 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     // Faz 7/11: QR sonrasi initial-sync hemen izlenmeye baslanir — devam eden
     // job varsa GET /sync/job ile benimsenir, ilerleme WS olaylarinda akar.
     refreshSyncStatus();
+    // Faz 4: tek-authority loading gate de ayni anda beslenir (avatar sayaclari
+    // dahil); `ready` aninda hook otomatik gecisi tetikler.
+    void refreshLoadingGate();
     // Sıfır tıklama eşitleme: QR eşleşmesi tamamlanır tamamlanmaz canlı veri çekimini başlat
     void handleSyncChats();
-  }, [fetchSessions, onRefreshStats, refreshSyncStatus, loadConversations, handleSyncChats]);
+  }, [fetchSessions, onRefreshStats, refreshSyncStatus, loadConversations, handleSyncChats, refreshLoadingGate]);
 
   const handleOpenQrConnect = useCallback(() => {
     setReconnectSessionId(undefined);
@@ -2298,11 +2325,13 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
           {syncGateActive ? (
             <WhatsAppSyncGate
               sync={sessionSync}
+              loadingGate={loadingGate}
               showEscape={syncGateEscapeVisible}
               onContinueAnyway={handleSyncGateContinueAnyway}
               onRetry={() => {
                 setIsPostQrSyncing(true);
                 setSyncGateDismissed(false);
+                void refreshLoadingGate();
                 void handleSyncChats();
               }}
             />

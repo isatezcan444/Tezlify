@@ -232,6 +232,117 @@ async def gateway_health_probe() -> Dict[str, Any]:
     return {"gateway_available": True, "status": "ok", **data}
 
 
+async def get_loading_gate(db: AsyncSession, user_id: str) -> Dict[str, Any]:
+    """Faz 0 — Loading Gate: tek-authority QR sonrasi yukleme kapisi.
+
+    WhatsApp Web paritesi: `phase` sirasi `qr -> connecting -> syncing_history
+    -> loading_profiles -> ready` seklindedir. Kaynaklar (uydurma YOK):
+      - `_list_sessions_internal` (DB satiri + gateway canli status/sync)
+      - `_sync_orchestrator.get_sync_job` (backend SyncJob stage/sayaclar)
+      - `gw.request_avatar_backfill` (gateway'deki eksik avatar sayisi)
+    Gateway erisilemezse fail-closed: `gateway_available=False` + `phase=error`
+    (AGENTS.md §1.1 — "senkron yok" ile karistirilamaz).
+    """
+    sessions, gateway_error = await _list_sessions_internal(db, user_id)
+    if gateway_error:
+        return {
+            "session_id": sessions[0]["id"] if sessions else None,
+            "phase": "error",
+            "stage": "unavailable",
+            "progress": 0,
+            "counts": {
+                "chats_total": 0, "chats_synced": 0,
+                "messages_total": 0, "messages_synced": 0,
+                "avatars_total": 0, "avatars_fetched": 0, "avatars_missing": 0,
+            },
+            "gateway_available": False,
+            "gateway_error": gateway_error,
+        }
+
+    connected = [s for s in sessions if s.get("status") == "CONNECTED"]
+    active = connected or sessions
+    if not active:
+        return {
+            "session_id": None, "phase": "idle", "stage": "idle", "progress": 0,
+            "counts": {"chats_total": 0, "chats_synced": 0, "messages_total": 0, "messages_synced": 0,
+                        "avatars_total": 0, "avatars_fetched": 0, "avatars_missing": 0},
+            "gateway_available": True, "gateway_error": None,
+        }
+    session = active[0]
+    sync: Dict[str, Any] = session.get("sync") or {"phase": "idle", "progress": 0}
+    job_snap = _sync_orchestrator.get_sync_job(user_id) or {}
+
+    counts: Dict[str, int] = {
+        "chats_total": int(job_snap.get("chats_total", 0) or 0),
+        "chats_synced": int(job_snap.get("chats_synced", 0) or 0),
+        "messages_total": int(job_snap.get("messages_total", 0) or 0),
+        "messages_synced": int(job_snap.get("messages_synced", 0) or 0),
+        "avatars_total": 0, "avatars_fetched": 0, "avatars_missing": 0,
+    }
+
+    # Gateway avatar durumu (fail-closed: hata yutulmaz, avatars_missing=0
+    # iddia edilmez — alan bilgisi "bilinmiyor" sayilir ve kapilmez).
+    # `_session_dict` gateway_id tasimadigi icin kimlik ayri sorgulanir.
+    avatar_state: Optional[Dict[str, Any]] = None
+    gid_row = await db.execute(
+        select(WhatsAppSession.gateway_id).where(WhatsAppSession.id == session["id"])
+    )
+    gid = gid_row.scalar_one_or_none()
+    if gid and session.get("status") == "CONNECTED":
+        try:
+            avatar_state = await gw.request_avatar_backfill(gid)
+        except Exception as exc:  # noqa: BLE001 — fail-closed bubble-up in payload
+            logger.warning("[WhatsApp] loading-gate avatar probe failed: %s", exc)
+            avatar_state = None
+    if avatar_state and isinstance(avatar_state.get("missing"), int):
+        counts["avatars_missing"] = int(avatar_state["missing"])
+        counts["avatars_total"] = counts["chats_synced"] or counts["chats_total"] or 0
+        counts["avatars_fetched"] = max(0, counts["avatars_total"] - counts["avatars_missing"])
+
+    gw_phase = str(sync.get("phase", "idle"))
+    job_state = str(job_snap.get("state") or "IDLE")
+    job_stage = str(job_snap.get("stage") or "idle")
+    job_error = job_snap.get("error")
+
+    if job_state == "FAILED":
+        phase = "error"
+        stage = job_stage
+    elif job_state == "SYNCING":
+        phase = "syncing_history"
+        stage = job_stage
+    elif gw_phase == "syncing":
+        phase = "syncing_history"
+        stage = job_stage if job_stage != "idle" else "chats"
+    elif counts["avatars_missing"] > 0:
+        phase = "loading_profiles"
+        stage = "avatars"
+    elif gw_phase == "ready" and (job_state in ("COMPLETED", "IDLE")):
+        phase = "ready"
+        stage = "complete"
+    else:
+        phase = "connecting" if session.get("status") in ("CONNECTING", "RESTORING") else "idle"
+        stage = "connecting" if phase == "connecting" else "idle"
+
+    progress = int(sync.get("progress") or 0)
+    if phase == "ready":
+        progress = 100
+    elif phase == "loading_profiles" and counts["avatars_total"] > 0:
+        progress = 90 + int(10 * counts["avatars_fetched"] / counts["avatars_total"])
+    elif job_state == "SYNCING" and counts["chats_total"] > 0:
+        progress = max(progress, min(90, int(90 * counts["chats_synced"] / counts["chats_total"])))
+
+    return {
+        "session_id": session.get("id"),
+        "phase": phase,
+        "stage": stage,
+        "progress": max(0, min(100, progress)),
+        "counts": counts,
+        "gateway_available": True,
+        "gateway_error": None,
+        "error": job_error,
+    }
+
+
 # Session orchestration functions (create_session, get_session_qr, refresh_session_qr,
 # request_pairing_code, logout_session, purge_whatsapp_data) are imported from
 # backend.app.services.whatsapp.orchestration.sessions

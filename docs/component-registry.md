@@ -234,9 +234,14 @@ src/
 - **Import**: `import { WhatsAppQrConnectModal } from '@/features/whatsapp/components';`
 
 #### `WhatsAppSyncGate`
-- **Purpose**: WhatsApp Web parity — full-panel "syncing" screen shown after QR pairing while the initial sync (all chats + contacts + recent messages) is still running. The live conversation list and chat pane are NOT rendered until the sync completes, so opening a chat can never fall through to an on-demand provider fetch. Progress comes only from real job/gateway counters (no fake timers), the error variant surfaces the real message with retry, and a secondary "continue anyway" escape (controlled by the parent) guarantees the user is never trapped.
-- **Props**: `sync: SessionSyncState | null`, `showEscape?: boolean`, `onContinueAnyway?: () => void`, `onRetry?: () => void`.
+- **Purpose**: WhatsApp Web parity — full-panel "syncing" screen shown after QR pairing while the initial sync (all chats + contacts + recent messages) is still running. The live conversation list and chat pane are NOT rendered until the sync completes, so opening a chat can never fall through to an on-demand provider fetch. Progress comes only from real job/gateway counters (no fake timers), the error variant surfaces the real message with retry, and a secondary "continue anyway" escape (controlled by the parent) guarantees the user is never trapped. Faz 3: the optional `loadingGate` prop feeds the single-authority `WhatsAppLoadingGate` state (avatar counters + `loading_profiles` stage) without breaking the legacy `sync`-only behavior.
+- **Props**: `sync: SessionSyncState | null`, `loadingGate?: WhatsAppLoadingGate | null`, `showEscape?: boolean`, `onContinueAnyway?: () => void`, `onRetry?: () => void`.
 - **Import**: `import { WhatsAppSyncGate } from '@/features/whatsapp/components';`
+
+#### `useWhatsAppLoadingGate` (hook)
+- **Purpose**: Single-authority QR post-pairing loading gate state (WhatsApp Web parity). Fed only by real signals — backend `GET /whatsapp/loading-gate` (REST bootstrap on mount + WS reconnect) and WS `whatsapp_loading_gate` / `session_sync_*` events. No polling, no fake timers. Fires the `onReady` callback exactly once when `phase` transitions to `ready`, so the hub can auto-switch to the Live Conversations tab and eagerly load chats.
+- **Signature**: `useWhatsAppLoadingGate(onReady?: () => void) => { gate, dismiss, refresh }`.
+- **Import**: `import { useWhatsAppLoadingGate } from '@/features/whatsapp/hooks/useWhatsAppLoadingGate';`
 
 ---
 

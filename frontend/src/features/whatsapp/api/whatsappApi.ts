@@ -564,6 +564,11 @@ export const WhatsAppApi = {
     return apiGet<WhatsAppSyncJob>('/whatsapp/sync/job');
   },
 
+  // Faz 0: Loading Gate — tek-authority yukleme kapisi (WhatsApp Web paritesi).
+  async getLoadingGate(): Promise<import('../../../types').WhatsAppLoadingGate> {
+    return apiGet<import('../../../types').WhatsAppLoadingGate>('/whatsapp/loading-gate');
+  },
+
   async getConversationsPage(params?: {
     status?: ConversationStatus;
     unread_only?: boolean;

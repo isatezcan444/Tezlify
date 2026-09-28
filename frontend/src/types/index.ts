@@ -179,6 +179,28 @@ export interface WhatsAppSyncJob {
   finished_at?: string | null;
 }
 
+// Faz 0 kontrakt — Loading Gate (WhatsApp Web paritesi): tek-authority yukleme kapisi.
+export type LoadingGatePhase = 'idle' | 'qr' | 'connecting' | 'syncing_history' | 'loading_profiles' | 'ready' | 'error';
+export interface LoadingGateCounts {
+  chats_total: number;
+  chats_synced: number;
+  messages_total: number;
+  messages_synced: number;
+  avatars_total: number;
+  avatars_fetched: number;
+  avatars_missing: number;
+}
+export interface WhatsAppLoadingGate {
+  session_id: number | null;
+  phase: LoadingGatePhase | string;
+  stage: string;
+  progress: number;
+  counts: LoadingGateCounts;
+  gateway_available: boolean;
+  gateway_error?: string | null;
+  error?: string | null;
+}
+
 export interface WhatsAppSession {
   id: number;
   whatsapp_number_id?: number | null;

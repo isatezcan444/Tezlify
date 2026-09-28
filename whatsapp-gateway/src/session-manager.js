@@ -94,10 +94,14 @@ const ACK_ORDER = { PENDING: 0, SENT: 1, DELIVERED: 2, READ: 3, FAILED: 0 };
 // tek geçişli olduğu için kısılanan sohbetlerin avatarı KALICI eksik kalıyordu.
 // Jitterlı ~2-3 istek/sn esigin altinda kalir; sweep eksik kalmayana dek
 // backoff'lu turlarla tekrarlanir (bkz. `_scheduleBackgroundAvatarFetch`).
+// Faz 1 (Loading Gate): ilk senkron icin avatar sorgusu 3500ms -> 8000ms,
+// history PDO timeout 15000ms -> 25000ms; negatif onbellek timeout'ta 45s
+// retry korunur. Throttle 10dk korunur ama ilk pass rate-limit'in altinda.
 const AVATAR_SWEEP_BATCH = 2;
 const AVATAR_SWEEP_PAUSE_MS = 400;
 const AVATAR_SWEEP_MAX_PASSES = 8;
 const AVATAR_SWEEP_RETRY_DELAYS_MS = [30_000, 60_000, 120_000, 300_000, 300_000, 300_000, 300_000];
+const AVATAR_QUERY_TIMEOUT_MS = 8000;
 
 function getSessionDir(sessionsDir, sessionId) {
   return path.join(sessionsDir, sessionId);
@@ -597,7 +601,7 @@ export function createSessionManager({
     async requestOlderHistory(
       sessionId,
       jid,
-      { count = 50, oldestMsgId, oldestMsgFromMe, oldestMsgTimestampMs, before, timeoutMs = 15000 } = {}
+      { count = 50, oldestMsgId, oldestMsgFromMe, oldestMsgTimestampMs, before, timeoutMs = 25000 } = {}
     ) {
       const session = this._requireSession(sessionId);
       const store = this._storeOf(session);
@@ -690,7 +694,7 @@ export function createSessionManager({
     async getMessages(
       sessionId,
       jid,
-      { limit = 50, before, fetchProvider = false, oldestMsgId, oldestMsgFromMe, oldestMsgTimestampMs, timeoutMs = 15000 } = {}
+      { limit = 50, before, fetchProvider = false, oldestMsgId, oldestMsgFromMe, oldestMsgTimestampMs, timeoutMs = 25000 } = {}
     ) {
       const session = this._requireSession(sessionId);
       const store = this._storeOf(session);
@@ -1370,7 +1374,7 @@ export function createSessionManager({
       let timer = null;
       try {
         const timeoutPromise = new Promise((_, reject) => {
-          timer = setTimeout(() => reject(new Error('profile_picture_query_timeout')), 3500);
+          timer = setTimeout(() => reject(new Error('profile_picture_query_timeout')), AVATAR_QUERY_TIMEOUT_MS);
           if (typeof timer.unref === 'function') timer.unref();
         });
         timeoutPromise.catch(() => {});
