@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.core.auth import AuthUser, get_current_user
 from backend.app.core.database import get_db
 from backend.app.schemas.whatsapp import (
+    WhatsAppAvatarBackfillResponse,
     WhatsAppAvatarRefreshResponse,
     WhatsAppContactListResponse,
     WhatsAppConversationItem,
@@ -407,6 +408,29 @@ async def refresh_contact_avatar(
         return WhatsAppAvatarRefreshResponse(**res)
     except Exception as exc:
         raise _bad_gateway(exc) from exc
+
+
+@router.post("/avatars/refresh", response_model=WhatsAppAvatarBackfillResponse)
+async def refresh_all_avatars(
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+) -> WhatsAppAvatarBackfillResponse:
+    """Sohbet listesindeki TÜM eksik profil fotoğrafları için backfill tetikler.
+
+    WhatsApp Web paritesi: QR eşleşmesi sonrası kimi fotoğraflar (rate limit,
+    geç hydration vb.) ilk sweep'te düşebilir; bu uç nokta gateway'de eksik
+    kalmayana dek backoff'lu turlarla çalışan sweep'i başlatır. Yeni
+    avatarlar `conversation_updated` olaylarıyla sohbet listesine canlı akar.
+    """
+    try:
+        data = await whatsapp_service.refresh_all_avatars(db, current_user.id)
+    except NoWhatsAppSession as exc:
+        raise _no_session(exc) from exc
+    except WhatsAppRelinkRequired as exc:
+        raise _relink_required(exc) from exc
+    except Exception as exc:
+        raise _bad_gateway(exc) from exc
+    return WhatsAppAvatarBackfillResponse(**data)
 
 
 @router.get("/conversations", response_model=WhatsAppConversationListResponse)

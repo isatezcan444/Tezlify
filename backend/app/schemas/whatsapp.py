@@ -72,6 +72,17 @@ class WhatsAppAvatarRefreshResponse(BaseModel):
     error: Optional[str] = None
 
 
+class WhatsAppAvatarBackfillResponse(BaseModel):
+    """Toplu avatar backfill tetikleyicisinin GERÇEK sonucu.
+
+    `missing`: gateway belleğinde avatarı hâlâ olmayan sohbet sayısı.
+    Gateway sweep'i eksik kalmayana dek backoff'lu turlarla çalıştırır.
+    """
+
+    success: bool = True
+    missing: int = 0
+
+
 class WhatsAppPairingCodeRequest(BaseModel):
     phone: str = Field(min_length=7, max_length=24, description="Ülke kodu dahil telefon (örn. +90 5XX XXX XX XX)")
 

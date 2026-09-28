@@ -1438,6 +1438,23 @@ class WhatsAppSyncOrchestrator:
                     if _ws.initial_sync_completed_at is None:
                         _ws.initial_sync_completed_at = _initial_sync_now
                 await db.commit()
+                # Avatar backfill (QR sonrasi parite): kimi profil fotoğrafları
+                # rate limit / geç hydration nedeniyle ilk sweep'te düşer ve
+                # tek geçişli sweep'te başka retry tetikleyicisi olmadığından
+                # KALICI eksik kalıyordu. Senkron tamamlanır tamamlanmaz
+                # gateway'de eksik kalmayana dek backoff'lu turlarla çalışan
+                # sweep tetiklenir; yeni avatarlar `conversation_updated`
+                # olaylarıyla UI'a canlı akar. Fail-soft: backfill hatası
+                # senkron sonucunu bozmaz.
+                for _ws in sessions_to_sync:
+                    try:
+                        await gateway_client.request_avatar_backfill(str(_ws.gateway_id))
+                    except Exception as avatar_exc:
+                        logger.warning(
+                            "Avatar backfill tetiklenemedi (gateway=%s): %s",
+                            _ws.gateway_id,
+                            avatar_exc,
+                        )
                 result, _total = (await list_conversations(db, owner)) if list_conversations else ([], 0)
                 _mark_phase("finalizing")
                 job.state = "COMPLETED"

@@ -236,6 +236,14 @@ app.post('/sessions/:id/avatar/refresh', async (req, res) => {
   }
 });
 
+// Eksik sohbet avatarları için backfill sweep'i tetikler (WhatsApp Web
+// paritesi: QR sonrası tüm profil fotoğrafları kademeli olarak iner).
+// Sweep, eksik kalmayana dek backoff'lu turlarla çalışır (session-manager).
+app.post('/sessions/:sessionId/avatars/backfill', withSession(async (req, res, sessionId) => {
+  const result = sessionManager.requestAvatarBackfill(sessionId);
+  res.json(result);
+}));
+
 // Explicitly trigger session restoration (used for controlled cutover)
 app.post('/sessions/restore', async (req, res) => {
   try {

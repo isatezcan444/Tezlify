@@ -89,6 +89,16 @@ import { bindSocketEvents } from './socket/socket-events.js';
 const ACK_RANK = { 2: 'SENT', 3: 'DELIVERED', 4: 'READ', 5: 'READ' };
 const ACK_ORDER = { PENDING: 0, SENT: 1, DELIVERED: 2, READ: 3, FAILED: 0 };
 
+// Avatar sweep pacing. WhatsApp `profilePictureUrl` çağrılarını kısıtlar:
+// 3'lü batch + 100 ms tempo (~30 istek/sn) toplu kisitlama üretiyor ve sweep
+// tek geçişli olduğu için kısılanan sohbetlerin avatarı KALICI eksik kalıyordu.
+// Jitterlı ~2-3 istek/sn esigin altinda kalir; sweep eksik kalmayana dek
+// backoff'lu turlarla tekrarlanir (bkz. `_scheduleBackgroundAvatarFetch`).
+const AVATAR_SWEEP_BATCH = 2;
+const AVATAR_SWEEP_PAUSE_MS = 400;
+const AVATAR_SWEEP_MAX_PASSES = 8;
+const AVATAR_SWEEP_RETRY_DELAYS_MS = [30_000, 60_000, 120_000, 300_000, 300_000, 300_000, 300_000];
+
 function getSessionDir(sessionsDir, sessionId) {
   return path.join(sessionsDir, sessionId);
 }
@@ -1374,10 +1384,16 @@ export function createSessionManager({
             this._emit({ event: 'contact_synced', contact: { ...contact }, gateway_session_id: session.id });
           }
         }
-      } catch {
-        // Picture not accessible or rate-limited.
-        // Instead of locking out for 10 minutes on failure, allow retry after 30 seconds.
-        avatarFetchAttemptedAt.set(key, Date.now() - (10 * 60 * 1000 - 30 * 1000));
+      } catch (err) {
+        // Ayristirma: "item-not-found" sunucuda profil resmi YOK demektir —
+        // bunu 30 sn'de bir yeniden denemek rate-limit israfidir. Gecici
+        // hatalar (ag/kisitlama) 30 sn sonra tekrar denenir.
+        const errMsg = String(err?.message || err);
+        const noPicture = /item-not-found|not-acceptable|40[46]/i.test(errMsg);
+        avatarFetchAttemptedAt.set(
+          key,
+          noPicture ? Date.now() : Date.now() - (10 * 60 * 1000 - 30 * 1000),
+        );
       } finally {
         store.avatarFetchInFlight.delete(key);
       }
@@ -1387,30 +1403,105 @@ export function createSessionManager({
       if (!session) return;
       session = this._sess(session);
       const store = this._storeOf(session);
-      if (!store || store._backgroundAvatarFetchRunning) return;
+      if (!store) return;
+      // Bir sweep zaten calisirken gelen tetikleyiciler YUTULMAZ: "yeniden
+      // kos" isteği işaretlenir. Eskiden ikinci tetikleyici (finalizeHistorySync
+      // + isLatest ayni anda ateslenir) sessizce dusüyordu; rate-limit'e
+      // takilan sohbetler icin baska retry tetikleyicisi olmadigindan
+      // avatarlari KALICI eksik kaliyordu.
+      if (store._backgroundAvatarFetchRunning) {
+        store._backgroundAvatarFetchRerunRequested = true;
+        return;
+      }
       store._backgroundAvatarFetchRunning = true;
 
-      setImmediate(async () => {
-        try {
-          const chatsToFetch = Array.from(store.chats.values())
-            .filter((c) => c && c.jid && !c.avatar_url && !isBroadcastOnlyJid(c.jid) && !isDegenerateJid(c.jid))
-            .sort((a, b) => (b.last_message_at ? new Date(b.last_message_at).getTime() : 0) - (a.last_message_at ? new Date(a.last_message_at).getTime() : 0));
+      const isMissingAvatar = (c) =>
+        c && c.jid && !c.avatar_url && !isBroadcastOnlyJid(c.jid) && !isDegenerateJid(c.jid);
+      const missingChats = () =>
+        Array.from(store.chats.values())
+          .filter(isMissingAvatar)
+          .sort((a, b) => (b.last_message_at ? new Date(b.last_message_at).getTime() : 0) - (a.last_message_at ? new Date(a.last_message_at).getTime() : 0));
 
-          const BATCH_SIZE = 3;
-          for (let i = 0; i < chatsToFetch.length; i += BATCH_SIZE) {
+      // unref'li uyku: sweep'in backoff beklemeleri Node sürecini ALIKOYMAZ.
+      // Gerçek gateway'de HTTP sunucusu süreci zaten canlı tutar; ama test
+      // harness'ları gibi kısa ömürlü süreçlerde ref'li timer, olay yayıldıktan
+      // sonra çıkışı dakikalarca geciktiriyordu (subprocess timeout).
+      const unrefSleep = (ms) => {
+        let timer;
+        const p = new Promise((resolve) => { timer = setTimeout(resolve, ms); });
+        if (typeof timer.unref === 'function') timer.unref();
+        return p;
+      };
+
+      setImmediate(async () => {
+        let pass = 0;
+        try {
+          for (;;) {
+            if (session._deleted || session._shuttingDown) break;
             if (session.status !== 'CONNECTED' || !session.sock) break;
-            const batch = chatsToFetch.slice(i, i + BATCH_SIZE);
-            await Promise.all(
-              batch.map((chat) => this._ensureChatAvatar(session, chat.jid).catch(() => null))
+            // Snapshot HER TURDA yeniden taranir: LID->PN gocu yeni chat
+            // anahtarlari uretir; tek atimlik snapshot o anahtarlari kacirirdi.
+            const chatsToFetch = missingChats();
+            if (!chatsToFetch.length) break;
+            pass += 1;
+            for (let i = 0; i < chatsToFetch.length; i += AVATAR_SWEEP_BATCH) {
+              if (session._deleted || session._shuttingDown) break;
+              if (session.status !== 'CONNECTED' || !session.sock) break;
+              const batch = chatsToFetch.slice(i, i + AVATAR_SWEEP_BATCH);
+              await Promise.all(
+                batch.map((chat) => this._ensureChatAvatar(session, chat.jid).catch(() => null))
+              );
+              // WhatsApp `profilePictureUrl` cagrlarini kisitlar. 3+100ms
+              // tempo (~30 istek/sn) toplu kisitlama üretiyordu; jitterli
+              // ~2-3 istek/sn esigin altinda kalir ve sweep artik EKSIK
+              // KALMAYANA DEK backoff'lu turlarla tekrarlanir.
+              const jitter = Math.floor(Math.random() * 200);
+              await unrefSleep(AVATAR_SWEEP_PAUSE_MS + jitter);
+            }
+            const remaining = missingChats().length;
+            if (!remaining) break;
+            if (pass >= AVATAR_SWEEP_MAX_PASSES) {
+              logger.info(
+                { session_ref: sessionRef(session.id), pass, remaining },
+                'Avatar sweep pass limit reached; retry on next trigger'
+              );
+              break;
+            }
+            const delay = AVATAR_SWEEP_RETRY_DELAYS_MS[
+              Math.min(pass - 1, AVATAR_SWEEP_RETRY_DELAYS_MS.length - 1)
+            ];
+            logger.debug(
+              { session_ref: sessionRef(session.id), pass, remaining, delay_ms: delay },
+              'Avatar sweep pass done; scheduling backoff retry pass'
             );
-            await new Promise((resolve) => setTimeout(resolve, 100));
+            await unrefSleep(delay);
           }
         } catch (err) {
           logger.warn({ err, sessionId: session.id }, 'Background avatar fetch encountered error');
         } finally {
           store._backgroundAvatarFetchRunning = false;
+          if (store._backgroundAvatarFetchRerunRequested) {
+            store._backgroundAvatarFetchRerunRequested = false;
+            this._scheduleBackgroundAvatarFetch(session);
+          }
         }
       });
+    },
+
+    /**
+     * REST tetikleyicisi: eksik avatar sayisini raporlar ve (varsa) sweep'i
+     * baslatir. Backend sync-job tamamlaninda ve manuel refresh'te kullanir.
+     */
+    requestAvatarBackfill(sessionId) {
+      const session = this._requireSession(sessionId);
+      const store = this._storeOf(session);
+      let missing = 0;
+      for (const c of store.chats.values()) {
+        if (c && c.jid && !c.avatar_url && !isBroadcastOnlyJid(c.jid) && !isDegenerateJid(c.jid)) missing += 1;
+      }
+      const connected = session.status === 'CONNECTED' && Boolean(session.sock);
+      if (missing && connected) this._scheduleBackgroundAvatarFetch(session);
+      return { success: true, missing, scheduled: Boolean(missing && connected) };
     },
 
     async refreshAvatar(sessionId, jid) {
@@ -1421,8 +1512,12 @@ export function createSessionManager({
       const store = this._storeOf(session);
       const key = resolveJidKey(store, jid);
       try {
-        const url = await session.sock.profilePictureUrl(key, 'preview').catch(() => null);
-        if (store) {
+        // Bilinçli olarak `.catch(() => null)` YOK: başarısız ile "profil
+        // resmi yok" ayrımı korunur. Başarısızlıkta mevcut avatar ASLA
+        // null ile EZİLMEZ — eskiden null yazılıp `conversation_updated`
+        // yayınlanıyordu ve sohbet listesindeki bilinen fotoğraf kayboluyordu.
+        const url = await session.sock.profilePictureUrl(key, 'preview');
+        if (store && url) {
           const chat = store.chats.get(key);
           if (chat) {
             chat.avatar_url = url;
@@ -1438,7 +1533,7 @@ export function createSessionManager({
             this._emit({ event: 'contact_synced', contact: { jid: key, avatar_url: url }, gateway_session_id: session.id });
           }
         }
-        return { success: true, jid: key, avatar_url: url };
+        return { success: true, jid: key, avatar_url: url || null };
       } catch (err) {
         return { success: false, jid: key, error: err.message };
       }

@@ -117,3 +117,49 @@ async def test_start_conversation_without_message_skips_send():
         res = await whatsapp_service.start_conversation(db, "usr-1", "+905551234567")
     assert res["id"] == 56
     send_mock.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Avatar backfill (WhatsApp Web paritesi: tüm profil fotoğrafları iner)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_refresh_all_avatars_reports_missing_count():
+    db = AsyncMock()
+    session = MagicMock(gateway_id="gw-uuid-1")
+    with patch(
+        "backend.app.services.whatsapp_service._require_user_session", return_value=session
+    ), patch(
+        "backend.app.services.whatsapp_service.gw.request_avatar_backfill",
+        new=AsyncMock(return_value={"success": True, "missing": 4}),
+    ) as backfill_mock:
+        res = await whatsapp_service.refresh_all_avatars(db, "usr-1")
+    assert res == {"success": True, "missing": 4}
+    backfill_mock.assert_awaited_once_with("gw-uuid-1")
+
+
+@pytest.mark.asyncio
+async def test_refresh_all_avatars_requires_connected_session():
+    db = AsyncMock()
+    with patch(
+        "backend.app.services.whatsapp_service._require_user_session",
+        side_effect=NoWhatsAppSession("no line"),
+    ):
+        with pytest.raises(NoWhatsAppSession):
+            await whatsapp_service.refresh_all_avatars(db, "usr-1")
+
+
+@pytest.mark.asyncio
+async def test_refresh_all_avatars_invalid_gateway_response_fails_closed():
+    db = AsyncMock()
+    session = MagicMock(gateway_id="gw-uuid-2")
+    from backend.app.services.whatsapp_gateway import WhatsAppGatewayError
+
+    with patch(
+        "backend.app.services.whatsapp_service._require_user_session", return_value=session
+    ), patch(
+        "backend.app.services.whatsapp_service.gw.request_avatar_backfill",
+        new=AsyncMock(return_value=None),
+    ):
+        with pytest.raises(WhatsAppGatewayError):
+            await whatsapp_service.refresh_all_avatars(db, "usr-1")

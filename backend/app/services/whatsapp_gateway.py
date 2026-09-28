@@ -121,6 +121,16 @@ async def refresh_avatar(gateway_id: str, jid: str) -> Dict[str, Any]:
     return await _request("POST", f"{_s(gateway_id)}/avatar/refresh", json={"jid": jid})
 
 
+async def request_avatar_backfill(gateway_id: str) -> Dict[str, Any]:
+    """Eksik sohbet avatarları için gateway'de backfill sweep'i tetikler.
+
+    Gateway sweep'i eksik kalmayana dek backoff'lu turlarla çalışır; yeni
+    avatarlar `conversation_updated` / `contact_synced` olaylarıyla backend'e
+    ve UI'a canlı akar. Hata fail-closed: WhatsAppGatewayError yükselir.
+    """
+    return await _request("POST", f"{_s(gateway_id)}/avatars/backfill")
+
+
 async def get_session_status(session_id: str) -> Dict[str, Any]:
     """Gateway oturum durumunu döndürür (CONNECTED/SCAN_QR/CONNECTING ya da 404 ise hata)."""
     return await _request("GET", f"/sessions/{session_id}")
