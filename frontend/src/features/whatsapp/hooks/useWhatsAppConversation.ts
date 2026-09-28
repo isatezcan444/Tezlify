@@ -2,18 +2,15 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { useI18n } from '../../../context/I18nContext';
 import { translateApiError } from '../lib/translateError';
 import { WhatsAppRepository } from '../data/whatsappRepository';
+import { mapMessageItem } from '../api/whatsappApi';
 import { ConversationDetail, Message, ConversationStatus } from '../../../types';
+import { compareMessagesChronological } from '../lib/whatsappOrdering';
 
-const numericId = (id: number | string | undefined): number => (typeof id === 'number' && Number.isFinite(id) ? id : 0);
-
-export const sortMessagesChronologically = (list: Message[]): Message[] => {
-  return [...list].sort((a, b) => {
-    const tA = new Date(a.created_at || a.external_timestamp || 0).getTime();
-    const tB = new Date(b.created_at || b.external_timestamp || 0).getTime();
-    if (tA !== tB) return tA - tB;
-    return numericId(a.id) - numericId(b.id);
-  });
-};
+// Kanonik kronolojik siralama `lib/whatsappOrdering.compareMessagesChronological`
+// içinde yaşar (tek kaynak); buradaki kopya kaldırıldı (AGENTS.md component/
+// helper registry invariant).
+const sortMessagesChronologically = (list: Message[]): Message[] =>
+  [...list].sort(compareMessagesChronological);
 
 interface UseWhatsAppConversationOptions {
   leadId?: number;
@@ -395,6 +392,28 @@ export function useWhatsAppConversation({
       // Handle conversation read event
       if (eventData.event === 'conversation_read' && matchesConv) {
         setConversation((prev) => (prev ? { ...prev, unread_count: 0 } : null));
+      }
+
+      // WhatsApp Web paritesi: sohbet AÇIKKEN gelen mesaj anında balon olarak
+      // düşer. LeadDetailDrawer bu hook'u kullandığı için eskiden sadece hub
+      // sayfası canlı mesaj alıyordu — çekmecedeki sohbet sekmesi sessiz
+      // kalıyordu. Kimlik (numeric id / wa_message_id / client_message_id)
+      // üzerinden dedup edilir; diliyse REST snapshot ile çakışma olmaz.
+      if (eventData.event === 'message_new' && matchesConv) {
+        const raw = eventData.message && typeof eventData.message === 'object' ? eventData.message : eventData;
+        if (!raw || typeof raw !== 'object') return;
+        const incoming = mapMessageItem(raw as any, (conversationId ?? conversation?.id) as number);
+        setConversation((prev) => {
+          if (!prev) return prev;
+          const exists = prev.messages.some((m) => {
+            if (incoming.wa_message_id && m.wa_message_id === incoming.wa_message_id) return true;
+            if (incoming.client_message_id && m.client_message_id === incoming.client_message_id) return true;
+            return typeof incoming.id === 'number' && m.id === incoming.id;
+          });
+          if (exists) return prev;
+          const messages = [...prev.messages, incoming].sort(compareMessagesChronological);
+          return { ...prev, messages };
+        });
       }
     };
 

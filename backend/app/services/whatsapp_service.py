@@ -123,6 +123,7 @@ from backend.app.services.whatsapp.identity import (
     NAME_RANK as _NAME_RANK,
     is_broadcast_only_jid,
     is_degenerate_jid,
+    is_phone_like as _is_phone_like,
     is_raw_jid_name as _is_raw_jid_name,
     is_self_identity as _is_self_identity,
     strip_jid_prefix as _strip_jid_prefix,
@@ -131,6 +132,7 @@ from backend.app.services.whatsapp.identity import (
     resolve_contact_identity as _resolve_contact_identity,
     IdentityResolutionState as _IdentityResolutionState,
     phone_to_jid as _phone_to_jid,
+    extract_clean_phone as _extract_clean_phone,
 )
 
 import sys
@@ -946,6 +948,78 @@ async def mark_conversation_read(db: AsyncSession, user_id: str, conversation_id
 
 async def send_typing(db: AsyncSession, user_id: str, conversation_id: int, typing: bool = True) -> Dict[str, Any]:
     return await _messaging_orchestrator.send_typing(db, user_id, conversation_id, typing=typing)
+
+
+async def get_message(
+    db: AsyncSession, user_id: str, conversation_id: int, message_id: int
+) -> Dict[str, Any]:
+    return await _messaging_orchestrator.get_message(db, user_id, conversation_id, message_id)
+
+
+async def start_conversation(
+    db: AsyncSession,
+    user_id: str,
+    phone: str,
+    name: Optional[str] = None,
+    message: Optional[str] = None,
+) -> Dict[str, Any]:
+    """WhatsApp Web paritesi: numara ile yeni sohbet baslat (A6 kapanisi).
+
+    Eskiden repository'de kosulsuz throw vardi; UI'daki "Yeni Sohbet" akisi
+    (NewChatModal) her denemede hata uretiyordu. Artik gercek davranis:
+      1. Bagli hat zorunlu (NoWhatsAppSession -> 409, sahte basari yok).
+      2. Numara `extract_clean_phone` ile E.164'e normalize edilir; cozulemezse
+         ValueError (422) — LID/grup kimliklerinden telefon sentezlenmez.
+      3. Contact + Conversation satirlari olusturulur/yeniden kullanilir.
+      4. `message` verildiyse bagli hattan GERCEK olarak gönderilir; gönderim
+         başarısızsa sohbet yine kaydedilir ama hata yükseltilir (truthfulness).
+      5. Canonical REST sozlugu `list_conversations(conversation_id=...)` ile
+         üretilir — WS ve REST aynı contract'ı taşır.
+    """
+    clean_phone = _extract_clean_phone(phone)
+    if not clean_phone:
+        raise ValueError(
+            "Geçerli bir telefon numarası girin (ülke kodu dahil, örn. +90 5XX XXX XX XX)."
+        )
+
+    ws_session = await _require_user_session(db, user_id)
+    jid = _phone_to_jid(clean_phone)
+    contact_name: Optional[str] = None
+    if name and name.strip():
+        trimmed = name.strip()
+        if not _is_raw_jid_name(trimmed) and not _is_phone_like(trimmed):
+            contact_name = trimmed
+    conv = await _ensure_conversation(
+        db,
+        user_id,
+        jid,
+        session_id=ws_session.id,
+        contact_name=contact_name,
+    )
+    await db.commit()
+
+    if message and message.strip():
+        # Fail-closed: gönderim başarısızsa hata çağırana taşınır (HTTP 502/409),
+        # "sohbet açıldı ama mesaj gitti" yalanı üretilmez.
+        await send_text_message(db, user_id, conv.id, message.strip())
+
+    items, _total = await list_conversations(db, user_id, conversation_id=conv.id)
+    payload = items[0] if items else {"id": conv.id}
+    try:
+        from backend.app.api.v1.websocket import ws_manager
+
+        await ws_manager.broadcast(
+            {
+                "event": "conversation_updated",
+                "user_id": user_id,
+                "conversation_id": conv.id,
+                "conversation": payload,
+            },
+            target_user_id=user_id,
+        )
+    except Exception as exc:  # noqa: BLE001 - broadcast is best-effort
+        logger.debug("start_conversation broadcast failed (conv=%s): %s", conv.id, exc)
+    return payload
 
 
 @profiled("conversation_status_update")

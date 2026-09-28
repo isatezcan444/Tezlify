@@ -38,11 +38,14 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({
 
     setLoading(true);
     try {
-      const newConv = await WhatsAppRepository.startConversation({
+      const conv = await WhatsAppRepository.startConversation({
         phone: cleanPhone,
         name: name.trim() || undefined,
         message: message.trim() || undefined,
       });
+      // Sohbet az olusturuldu; mesaj listesi bos (varsa mesaj backend'de
+      // kalıcı yazıldı ve WS `message_new` ile akar — istemcide uydurulmaz).
+      const newConv: ConversationDetail = { ...conv, messages: [] };
 
       toast.success(t('whatsapp.chatStarted'));
       setPhone('');
@@ -52,8 +55,6 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({
       onSuccess(newConv);
     } catch (err: any) {
       console.error('[NewChatModal] Failed to start conversation:', err);
-      // A6: repository fail-closed i18n-anahtari firlatir (ornek
-      // whatsapp.startConversationNotAvailable) — cevirmeden gosterme.
       toast.error(translateApiError(err, t) || t('whatsapp.chatStartFailed'));
     } finally {
       setLoading(false);

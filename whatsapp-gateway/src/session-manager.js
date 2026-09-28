@@ -782,7 +782,13 @@ export function createSessionManager({
         if (existing.body !== body || existing.message_type !== 'TEXT') {
           throw new Error('client_message_id cannot be reused for a different message');
         }
-        if (existing.status !== 'FAILED') return { ...existing };
+        // Yalnizca KESINLESMIS ack'ler (SENT/DELIVERED/READ) kisayoludur.
+        // PENDING (soket asilmasi / backend timeout) ve FAILED satirlari
+        // yeniden GONDERILMEK ZORUNDADIR: eskiden takili bir PENDING satir
+        // geri donduruluyor ama yeniden gönderilMIYORDU — backend retry
+        // akisi sonsuza kadar PENDING'e kilitleniyordu.
+        const st = String(existing.status || '').toUpperCase();
+        if (st === 'SENT' || st === 'DELIVERED' || st === 'READ') return { ...existing };
       }
       const messageId = crypto.createHash('sha256')
         .update(`${session.id}\0${key}\0${clientMessageId}`)
@@ -816,7 +822,9 @@ export function createSessionManager({
         if (existing.body !== expectedBody || existing.message_type !== type.toUpperCase()) {
           throw new Error('client_message_id cannot be reused for different media');
         }
-        if (existing.status !== 'FAILED') return { ...existing };
+        // sendTextMessage ile ayni kural: PENDING/FAILED yeniden gönderilir.
+        const st = String(existing.status || '').toUpperCase();
+        if (st === 'SENT' || st === 'DELIVERED' || st === 'READ') return { ...existing };
       }
       const content = buildMediaContent({
         media_type, media_url, media_base64, mime_type, caption, filename,
@@ -873,12 +881,16 @@ export function createSessionManager({
           if (keys.length) {
             await session.sock.readMessages(keys);
           } else {
-            await session.sock.readMessages([{ remoteJid: key, id: undefined, fromMe: false }]);
+            // Okunacak bilinen gelen mesaj yok: gecersiz `{id: undefined}`
+            // anahtari Baileys'i patlatir. Gonderilecek kanaat YOKTUR —
+            // yerel sifirlama asagida yapilir, saglayiciya bayrak gitmez.
           }
-        } else {
+        } else if (inbound.length) {
           const newest = inbound[inbound.length - 1];
-          await session.sock.readMessages([{ remoteJid: key, id: newest?.wa_message_id, fromMe: false }]);
+          await session.sock.readMessages([{ remoteJid: key, id: newest.wa_message_id, fromMe: false }]);
         }
+        // 1:1 sohbette bilinen gelen mesaj yoksa da saglayiciya gecersiz
+        // anahtar gonderilmez (yukaridaki grup dalindaki ayni kural).
       } catch (err) {
         gatewayOk = false;
         gatewayError = err?.message || String(err);

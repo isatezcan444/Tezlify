@@ -980,6 +980,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                 client_message_id: res.client_message_id || tempClientMid,
                 wa_message_id: res.wa_message_id ?? m.wa_message_id,
                 status: res.status,
+                created_at: res.created_at || m.created_at,
               }
             : m
         ),
@@ -1121,11 +1122,11 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         ...prev,
         [selectedConv.id]: (prev[selectedConv.id] || []).map((m) =>
           m.id === tempId || m.client_message_id === tempClientMid
-            ? { ...m, id: res.id, client_message_id: res.client_message_id || tempClientMid, status: res.status }
+            ? { ...m, id: res.id, client_message_id: res.client_message_id || tempClientMid, status: res.status, created_at: res.created_at || m.created_at }
             : m
         ),
       }));
-      const previewText = caption || filename || (type.toUpperCase() === 'IMAGE' ? '📷 Fotoğraf' : '📄 Dosya');
+      const previewText = caption || filename || (type.toUpperCase() === 'IMAGE' ? t('whatsapp.previewImage') : t('whatsapp.previewDocument'));
       setConversations((prev) =>
         prev.map((c) =>
           c.id === selectedConv.id
@@ -1191,11 +1192,12 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                 wa_message_id: res.wa_message_id ?? m.wa_message_id,
                 media_url: res.media_url ?? m.media_url,
                 status: res.status,
+                created_at: res.created_at || m.created_at,
               }
             : m
         ),
       }));
-      const previewText = caption || file.name || (msgType === 'IMAGE' ? '📷 Fotoğraf' : '📄 Dosya');
+      const previewText = caption || file.name || (msgType === 'IMAGE' ? t('whatsapp.previewImage') : t('whatsapp.previewDocument'));
       setConversations((prev) =>
         prev.map((c) =>
           c.id === selectedConv.id

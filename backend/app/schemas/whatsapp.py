@@ -207,6 +207,23 @@ class WhatsAppSendResult(BaseModel):
     # has a real value to forward.
     status: str
     body: Optional[str] = None
+    # Sunucu zaman damgasi: optimistic satirin istemci saatiyle "simdi"
+    # uydurmasini engeller (frontend sunucu verisini asla uydurmaz).
+    created_at: Optional[str] = None
+    message_type: Optional[str] = None
+
+
+class WhatsAppStartConversationRequest(BaseModel):
+    """WhatsApp Web paritesi: numara ile yeni sohbet baslatma.
+
+    `phone` zorunlu (ülke kodu dahil); `name` opsiyonel rehber adi;
+    `message` opsiyonel ilk mesaj — verilirse bagli hattan GERCEK olarak
+    gönderilir (sahte basari yok: gönderim başarısızsa uç nokta başarısız olur).
+    """
+
+    phone: str = Field(..., min_length=5, max_length=32, description="Ülke kodu dahil telefon (örn. +90 5XX XXX XX XX)")
+    name: Optional[str] = Field(None, max_length=150)
+    message: Optional[str] = Field(None, max_length=4000)
 
 
 class WhatsAppReadResult(BaseModel):

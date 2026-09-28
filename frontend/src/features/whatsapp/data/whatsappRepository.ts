@@ -360,14 +360,17 @@ export class WhatsAppRepository {
   }
 
   /**
-   * A6 — conversation creation by phone number is NOT a backend capability:
-   * conversations are created exclusively by the gateway sync / inbound
-   * message flow, and the send endpoint requires an existing conversation id.
-   * Fail CLOSED and honestly (i18n key; the UI translates and toasts it).
-   * Never fabricate a conversation or a message.
+   * A6 kapanisi — WhatsApp Web paritesi: numara ile yeni sohbet baslat.
+   *
+   * Eskiden burada kosulsuz `throw` vardi ve "Yeni Sohbet" akisi her
+   * denemede hataya dusüyordu. Artik backend `POST /whatsapp/conversations`
+   * contact + conversation satirlarini olusturur; `message` verildiyse
+   * bagli hattan GERCEK olarak gönderilir. Fail-closed: hata çağırana
+   * taşınır, sahte sohbet/mesaj üretilmez (AGENTS.md §1.1).
    */
-  static async startConversation(_data: { phone: string; name?: string; message?: string }): Promise<ConversationDetail> {
-    throw new WhatsAppApiError('whatsapp.startConversationNotAvailable');
+  static async startConversation(data: { phone: string; name?: string; message?: string }): Promise<Conversation> {
+    await requireLive();
+    return WhatsAppApi.startConversation(data.phone, data.name, data.message);
   }
 
   /**

@@ -15,9 +15,11 @@ from backend.app.core.database import get_db
 from backend.app.schemas.whatsapp import (
     WhatsAppAvatarRefreshResponse,
     WhatsAppContactListResponse,
+    WhatsAppConversationItem,
     WhatsAppConversationListResponse,
     WhatsAppConversationStatusRequest,
     WhatsAppConversationStatusResult,
+    WhatsAppMessageItem,
     WhatsAppMessagesResponse,
     WhatsAppPairingCodeRequest,
     WhatsAppPairingCodeResponse,
@@ -32,6 +34,7 @@ from backend.app.schemas.whatsapp import (
     WhatsAppSessionCreate,
     WhatsAppSessionListResponse,
     WhatsAppSessionResponse,
+    WhatsAppStartConversationRequest,
     WhatsAppStatusResult,
     WhatsAppSyncJobResponse,
     WhatsAppSyncStatusResponse,
@@ -205,9 +208,14 @@ async def cancel_pairing(
         # already reached CONNECTED finalises the pairing instead of deleting
         # the promoted socket.
         return await whatsapp_service.cancel_pairing_session(current_user.id, pair_token, db=db)
+    except LookupError as exc:
+        raise _not_found(exc) from exc
     except Exception as exc:
+        # §1.1 (truthfulness): beklenmeyen bir arıza basari gibi RAPORLANMAZ.
+        # İstemci bu yanıtı fire-and-forget kullanır; yalnızca gerçek neden
+        # artık logla sınırlı kalmayıp yanıtta taşınır.
         logger.warning("[WhatsApp] cancel_pairing error: %s", exc)
-        return {"success": True}
+        return {"success": False, "cancelled": False, "error": str(exc)[:300]}
 
 
 @router.post("/sessions", response_model=WhatsAppSessionResponse, status_code=status.HTTP_201_CREATED)
@@ -452,6 +460,38 @@ async def get_conversations(
 
 
 
+@router.post("/conversations", response_model=WhatsAppConversationItem, status_code=status.HTTP_201_CREATED)
+async def start_conversation(
+    payload: WhatsAppStartConversationRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+) -> WhatsAppConversationItem:
+    """WhatsApp Web paritesi: numara ile yeni sohbet baslat.
+
+    `message` verilirse bagli hattan GERCEK olarak gönderilir; gönderim
+    başarısızsa uç nokta başarısız olur (sahte "sohbet açıldı" yok, §1.1).
+    """
+    try:
+        data = await whatsapp_service.start_conversation(
+            db,
+            current_user.id,
+            payload.phone,
+            name=payload.name,
+            message=payload.message,
+        )
+    except NoWhatsAppSession as exc:
+        raise _no_session(exc) from exc
+    except WhatsAppRelinkRequired as exc:
+        raise _relink_required(exc) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+    except Exception as exc:
+        raise _bad_gateway(exc) from exc
+    return WhatsAppConversationItem(**data)
+
+
 @router.get("/conversations/{conversation_id}/messages", response_model=WhatsAppMessagesResponse)
 async def get_messages(
     conversation_id: int,
@@ -474,6 +514,32 @@ async def get_messages(
         # state instead of claiming that no messages exist.
         raise _bad_gateway(exc) from exc
     return WhatsAppMessagesResponse(**data)
+
+
+@router.get(
+    "/conversations/{conversation_id}/messages/{message_id}",
+    response_model=WhatsAppMessageItem,
+)
+async def get_message_detail(
+    conversation_id: int,
+    message_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """Tek bir kalici mesaj satiri (FAILED retry akisinin kaynagi).
+
+    Frontend `WhatsAppApi.getMessage` bu uç noktayı çağırır; endpoint yokken
+    retry her denemede 404'e düşüyordu (contract kopması). Kiracı doğrulaması
+    servis katmanında (`_resolve_jid` + user filtresi) yapılır.
+    """
+    try:
+        return await whatsapp_service.get_message(
+            db, current_user.id, conversation_id, message_id
+        )
+    except LookupError as exc:
+        raise _not_found(exc) from exc
+    except Exception as exc:
+        raise _bad_gateway(exc) from exc
 
 
 @router.post("/conversations/{conversation_id}/messages", response_model=WhatsAppSendResult)
@@ -501,6 +567,8 @@ async def send_message(
         client_message_id=msg.get("client_message_id"),
         status=msg.get("status"),
         body=msg.get("body"),
+        created_at=msg.get("created_at"),
+        message_type=msg.get("message_type"),
     )
 
 
@@ -541,6 +609,8 @@ async def send_media(
         client_message_id=msg.get("client_message_id"),
         status=msg.get("status"),
         body=msg.get("body"),
+        created_at=msg.get("created_at"),
+        message_type=msg.get("message_type"),
     )
 
 

@@ -366,6 +366,32 @@ class WhatsAppMessagingOrchestrator:
             "error": result.get("error") if isinstance(result, dict) else "Gateway returned an invalid typing response.",
         }
 
+    async def get_message(
+        self,
+        db: AsyncSession,
+        user_id: str,
+        conversation_id: int,
+        message_id: int,
+    ) -> Dict[str, Any]:
+        """Tek bir kalici mesaj satirini dondurur (FAILED retry akisinin kaynagi).
+
+        Sohbet kiraci dogrulamali cozer (`_resolve_jid`); mesaj o sohbete ait
+        olmak zorundadir — yoksa LookupError (404). Sahte/bos mesaj uydurulmaz.
+        """
+        resolve_jid = self._get_helper("_resolve_jid", _resolve_jid)
+
+        conv, _jid = await resolve_jid(db, user_id, conversation_id)
+        row = await db.scalar(
+            select(Message).where(
+                Message.id == message_id,
+                Message.conversation_id == conv.id,
+                get_user_filter(Message.user_id, user_id),
+            )
+        )
+        if row is None:
+            raise LookupError(f"Mesaj bulunamadi (conversation={conversation_id}, message={message_id}).")
+        return self.serialize_message(row)
+
     async def get_media_bytes(
         self,
         db: AsyncSession,
@@ -400,4 +426,5 @@ send_text_message = _default_orchestrator.send_text_message
 send_media_message = _default_orchestrator.send_media_message
 mark_conversation_read = _default_orchestrator.mark_conversation_read
 send_typing = _default_orchestrator.send_typing
+get_message = _default_orchestrator.get_message
 get_media_bytes = _default_orchestrator.get_media_bytes

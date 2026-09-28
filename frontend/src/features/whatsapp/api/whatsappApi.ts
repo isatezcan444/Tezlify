@@ -681,6 +681,8 @@ export const WhatsAppApi = {
       client_message_id?: string | null;
       status: string;
       body?: string | null;
+      created_at?: string | null;
+      message_type?: string | null;
     }>(`/whatsapp/conversations/${conversationId}/messages`, 'POST', {
       body,
       client_message_id: clientMessageId,
@@ -690,13 +692,16 @@ export const WhatsAppApi = {
         id: data.id,
         conversation_id: conversationId,
         direction: 'OUTBOUND',
-        message_type: 'TEXT',
+        message_type: data.message_type || 'TEXT',
         status: data.status,
         body: data.body ?? body,
         wa_message_id: data.wa_message_id,
         client_message_id: data.client_message_id ?? clientMessageId,
         sender_phone: 'ME',
-        created_at: new Date().toISOString(),
+        // Sunucu zaman damgasi onceliklidir; gelmezse optimistic satirin
+        // istemci saati kullanilir (kendi gönderim eylemi — sunucu verisi
+        // uydurma DEGIL, aksi halde created_at bosalir ve siralama kirilir).
+        created_at: data.created_at || new Date().toISOString(),
       },
       conversationId
     );
@@ -716,6 +721,7 @@ export const WhatsAppApi = {
       client_message_id?: string | null;
       status: string;
       body?: string | null;
+      created_at?: string | null;
     }>(`/whatsapp/conversations/${conversationId}/media`, 'POST', {
       media_type: media.media_type.toLowerCase(),
       media_url: media.media_url,
@@ -738,10 +744,31 @@ export const WhatsAppApi = {
         wa_message_id: data.wa_message_id,
         client_message_id: data.client_message_id ?? clientMessageId,
         sender_phone: 'ME',
-        created_at: new Date().toISOString(),
+        created_at: data.created_at || new Date().toISOString(),
       },
       conversationId
     );
+  },
+
+  /**
+   * WhatsApp Web paritesi: numara ile yeni sohbet baslat.
+   *
+   * Backend `POST /whatsapp/conversations` contact+conversation satirlarini
+   * olusturur; `message` verildiyse bagli hattan GERCEK olarak gönderilir.
+   * Yanıt, REST liste contract'ıyla AYNI sohbet sözlüğüdür — ayrı bir
+   * "sahte sohbet nesnesi" üretilmez (AGENTS.md §1.1).
+   */
+  async startConversation(
+    phone: string,
+    name?: string,
+    message?: string
+  ): Promise<Conversation> {
+    const data = await apiSend<BackendConversation>('/whatsapp/conversations', 'POST', {
+      phone,
+      name: name || undefined,
+      message: message || undefined,
+    });
+    return mapConversation(data);
   },
 
   /** Bir dosyayi okuyup base64 medya mesaji olarak gonderir (WhatsApp Web dosya secimi). */
