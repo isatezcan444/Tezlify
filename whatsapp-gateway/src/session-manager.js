@@ -89,19 +89,73 @@ import { bindSocketEvents } from './socket/socket-events.js';
 const ACK_RANK = { 2: 'SENT', 3: 'DELIVERED', 4: 'READ', 5: 'READ' };
 const ACK_ORDER = { PENDING: 0, SENT: 1, DELIVERED: 2, READ: 3, FAILED: 0 };
 
-// Avatar sweep pacing. WhatsApp `profilePictureUrl` çağrılarını kısıtlar:
-// 3'lü batch + 100 ms tempo (~30 istek/sn) toplu kisitlama üretiyor ve sweep
-// tek geçişli olduğu için kısılanan sohbetlerin avatarı KALICI eksik kalıyordu.
-// Jitterlı ~2-3 istek/sn esigin altinda kalir; sweep eksik kalmayana dek
-// backoff'lu turlarla tekrarlanir (bkz. `_scheduleBackgroundAvatarFetch`).
-// Faz 1 (Loading Gate): ilk senkron icin avatar sorgusu 3500ms -> 8000ms,
-// history PDO timeout 15000ms -> 25000ms; negatif onbellek timeout'ta 45s
-// retry korunur. Throttle 10dk korunur ama ilk pass rate-limit'in altinda.
-const AVATAR_SWEEP_BATCH = 2;
-const AVATAR_SWEEP_PAUSE_MS = 400;
+// Avatar sweep pacing.
+//
+// Canlı ölçüm (production gateway, 8 ardışık `profilePictureUrl` çağrısı):
+//   min 55ms · medyan 149ms · max 248ms · 0 hata · 0 rate-limit
+// Yani istek başına ~150ms; 94 sohbetlik bir tur teorik olarak ~14-30 saniye.
+//
+// Buradaki değerler iki deneyimden türetildi:
+//  1) Eskiden 3'lük batch + 100ms tempo (~30 istek/sn) WhatsApp'ın tek
+//     geçişli throttle'una takılıyor ve bu sohbetlerin avatarı KALICI eksik
+//     kalıyordu. O yüzden istek/sn EŞZAMANLILIK artırılarak değil, tempo
+//     düşürülerek yönetilir: batch 4 + 250ms ≈ 3.2 istek/sn, yani 30/sn'in
+//     onda biri. Bu, ölçülen ~150ms istek süresinin üstünde bir taban bırakır
+//     (asla boşta bekleyen batch üretmez) ama throttle eşiğinin altında kalır.
+//  2) Gerçek gecikme pacing'de değil geri çekilmedeydi: ilk başarısız turdan
+//     sonra 30sn+60sn+120sn+5dk×4 = ~23.5dk bekleniyordu. İlk turlar kısa
+//     tutuldu; kalıcı eksikler ancak çok sonra (5dk) yeniden denenir.
+const AVATAR_SWEEP_BATCH = 4;
+const AVATAR_SWEEP_PAUSE_MS = 250;
 const AVATAR_SWEEP_MAX_PASSES = 8;
-const AVATAR_SWEEP_RETRY_DELAYS_MS = [30_000, 60_000, 120_000, 300_000, 300_000, 300_000, 300_000];
+// İlk turlar hızlı (bir tur ~30sn), sonra mesafeli. Toplam bekleme ~8dk yerine
+// ilk turda 8sn: kullanıcı fotoğrafı dakikalarca beklemez.
+const AVATAR_SWEEP_RETRY_DELAYS_MS = [8_000, 15_000, 30_000, 60_000, 300_000, 300_000, 300_000];
 const AVATAR_QUERY_TIMEOUT_MS = 8000;
+
+// ---------------------------------------------------------------------------
+// Sweep re-arm while the store is still filling.
+//
+// The store is filled asynchronously by Baileys (`chats.update`, history sync).
+// A sweep armed at that moment sees zero chats and exits, so nothing ever asks
+// WhatsApp for the pictures unless an unrelated event re-triggers it. These two
+// helpers keep the sweep alive across that window WITHOUT becoming a busy loop:
+// a bounded number of re-arms, spaced by a growing delay, and only while the
+// session is still connected with an empty store.
+// ---------------------------------------------------------------------------
+const AVATAR_REARM_MAX = 5;
+const AVATAR_REARM_DELAYS_MS = [2_000, 4_000, 8_000, 15_000, 30_000];
+
+/** Re-arm only while connected and the store has not produced chats yet. */
+function shouldRearmWhenEmpty(store, session) {
+  if (!store || !session) return false;
+  if (session._deleted || session._shuttingDown) return false;
+  if (session.status !== 'CONNECTED' || !session.sock) return false;
+  if (store.chats && store.chats.size > 0) return false;
+  const attempts = Number(store._avatarRearmCount) || 0;
+  return attempts < AVATAR_REARM_MAX;
+}
+
+function scheduleRearm(manager, session, store) {
+  const attempts = Number(store._avatarRearmCount) || 0;
+  if (attempts >= AVATAR_REARM_MAX) return;
+  const delay = AVATAR_REARM_DELAYS_MS[Math.min(attempts, AVATAR_REARM_DELAYS_MS.length - 1)];
+  store._avatarRearmCount = attempts + 1;
+  const timer = setTimeout(() => {
+    // Chats landed in the meantime -> the sweep will find them and this
+    // re-arm chain is finished.
+    if (shouldRearmWhenEmpty(store, session)) {
+      logger.debug(
+        { session_ref: sessionRef(session.id), attempt: attempts + 1 },
+        'Re-arming avatar sweep: store still empty',
+      );
+      manager._scheduleBackgroundAvatarFetch(session);
+    } else {
+      store._avatarRearmCount = 0;
+    }
+  }, delay);
+  if (typeof timer.unref === 'function') timer.unref();
+}
 
 function getSessionDir(sessionsDir, sessionId) {
   return path.join(sessionsDir, sessionId);
@@ -1435,6 +1489,9 @@ export function createSessionManager({
         return;
       }
       store._backgroundAvatarFetchRunning = true;
+      // A sweep that actually found chats is doing its job; clear the re-arm
+      // budget so a later empty store (e.g. after a reconnect) can re-arm again.
+      if (store.chats && store.chats.size > 0) store._avatarRearmCount = 0;
 
       // ROOT CAUSE (avatar 403/timeout): a WhatsApp profile-picture URL is a
       // SIGNED link that expires on its own. The old test was `!c.avatar_url`,
@@ -1509,6 +1566,17 @@ export function createSessionManager({
           if (store._backgroundAvatarFetchRerunRequested) {
             store._backgroundAvatarFetchRerunRequested = false;
             this._scheduleBackgroundAvatarFetch(session);
+          } else if (shouldRearmWhenEmpty(store, session)) {
+            // ROOT CAUSE (photos arriving late): the sweep runs ONCE and exits
+            // as soon as `missingChats()` is empty. The store is populated
+            // asynchronously (Baileys `chats.update` / history sync), so a
+            // sweep that is armed while the store is still empty finds nothing,
+            // logs nothing, and never runs again — the photos then only appear
+            // when an unrelated event happens to re-trigger it, which is what
+            // users perceive as "gecikmeli". Re-arm on a short delay while the
+            // store is still empty so the sweep picks the chats up as soon as
+            // they land. Bounded so it cannot become a busy loop.
+            scheduleRearm(this, session, store);
           }
         }
       });

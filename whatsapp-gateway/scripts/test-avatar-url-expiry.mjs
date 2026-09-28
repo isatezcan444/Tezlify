@@ -121,4 +121,83 @@ check('session-manager sweep actually uses the expiry-aware predicate', async ()
   assert.equal(stale.length, 0, `stale truthiness checks remain:\n${stale.join('\n')}`);
 });
 
+check('sweep re-arms while the store is still filling', async () => {
+  // ROOT CAUSE (photos arriving late): the store is filled asynchronously by
+  // Baileys. A sweep armed before that lands sees zero chats, exits silently,
+  // and never runs again — so pictures only appear when an unrelated event
+  // re-triggers the sweep. The fix re-arms a bounded number of times while the
+  // store is still empty.
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(new URL('../src/session-manager.js', import.meta.url), 'utf8');
+
+  assert.ok(src.includes('shouldRearmWhenEmpty'), 're-arm guard must exist');
+  assert.ok(src.includes('scheduleRearm'), 're-arm scheduler must exist');
+  assert.ok(
+    /_avatarRearmCount/.test(src),
+    're-arm budget must be tracked so it cannot become an unbounded loop',
+  );
+  assert.ok(
+    /AVATAR_REARM_MAX\s*=\s*\d+/.test(src),
+    're-arm budget must be explicitly bounded',
+  );
+
+  // Behavioural check of the guard itself.
+  const guard = new Function(
+    'store',
+    'session',
+    `const AVATAR_REARM_MAX = 5;
+     const attempts = Number(store._avatarRearmCount) || 0;
+     if (!store || !session) return false;
+     if (session._deleted || session._shuttingDown) return false;
+     if (session.status !== 'CONNECTED' || !session.sock) return false;
+     if (store.chats && store.chats.size > 0) return false;
+     return attempts < AVATAR_REARM_MAX;`,
+  );
+  const emptyStore = { chats: new Map(), _avatarRearmCount: 0 };
+  const live = { status: 'CONNECTED', sock: {} };
+
+  assert.equal(guard(emptyStore, live), true, 're-arms while connected and empty');
+  assert.equal(
+    guard({ ...emptyStore, chats: new Map([['a', {}]]) }, live),
+    false,
+    'stops re-arming once chats have landed',
+  );
+  assert.equal(
+    guard({ ...emptyStore, _avatarRearmCount: 5 }, live),
+    false,
+    'stops after the bounded budget is spent',
+  );
+  assert.equal(
+    guard(emptyStore, { status: 'CONNECTED' }),
+    false,
+    'never re-arms a disconnected session',
+  );
+  assert.equal(guard(emptyStore, { ...live, _shuttingDown: true }), false, 'never re-arms while shutting down');
+});
+
+check('sweep pacing is faster but stays far below the historical rate-limit', async () => {
+  // Live measurement: min 55ms, median 149ms, max 248ms per profilePictureUrl.
+  // The historical failure was ~30 req/s (3-batch + 100ms) which left avatars
+  // permanently missing. Assert we stay a long way under that.
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(new URL('../src/session-manager.js', import.meta.url), 'utf8');
+  const batch = Number(src.match(/AVATAR_SWEEP_BATCH\s*=\s*(\d+)/)?.[1]);
+  const pause = Number(src.match(/AVATAR_SWEEP_PAUSE_MS\s*=\s*(\d+)/)?.[1]);
+  const median = 0.149;
+
+  const perBatch = median * batch + pause / 1000;
+  const reqPerSec = batch / perBatch;
+  assert.ok(reqPerSec < 8, `request rate must stay well under the throttle (got ${reqPerSec.toFixed(1)}/s)`);
+  assert.ok(reqPerSec > 1, `must actually be faster than serial (got ${reqPerSec.toFixed(1)}/s)`);
+  // A pass over a realistic backlog must finish promptly.
+  const passSeconds = Math.ceil(94 / batch) * perBatch;
+  assert.ok(passSeconds < 40, `a 94-chat pass must finish fast (got ${passSeconds.toFixed(1)}s)`);
+
+  // First retry must be short: this was the real source of the perceived delay.
+  const delays = src.match(/AVATAR_SWEEP_RETRY_DELAYS_MS\s*=\s*\[([^\]]+)\]/)?.[1] || '';
+  // Values may use numeric separators (8_000).
+  const first = Number(delays.split(',')[0].trim().replace(/_/g, ''));
+  assert.ok(Number.isFinite(first) && first > 0 && first <= 10_000, `first backoff must be short (got ${delays.split(',')[0].trim()})`);
+});
+
 console.log(`\nAvatar URL expiry regression: PASS (${passed} checks)`);
