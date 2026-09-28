@@ -525,6 +525,9 @@ class WhatsAppEventOrchestrator:
         await db.flush()
 
         event["conversation_id"] = conv.id
+        event["jid"] = jid_str
+        event["is_group"] = is_group_jid
+        event["lead_phone"] = contact.phone_e164 if contact else None
         event["message"] = serialize_message(row)
         return event
 
@@ -1517,6 +1520,7 @@ class WhatsAppEventOrchestrator:
             return None
         advance_message_status(canonical, msg.get("status"))
         event["conversation_id"] = canonical.conversation_id
+        event["jid"] = str(jid)
         event["message"] = serialize_message(canonical)
         return event
 

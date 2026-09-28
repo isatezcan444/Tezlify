@@ -449,11 +449,15 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       // yuzunden bir sohbetin kaybolmasi onlenir). `has_more=false` ise ilk
       // sayfa otoriter TAM listedir — sunucuda olmayan satir birakilir.
       setConversations((prev) => {
-        const pageIds = new Set(page.items.map((c) => c.id));
-        if (!page.has_more) return page.items;
+        const activeId = selectedConvRef.current?.id;
+        const sanitizedItems = page.items.map((item) =>
+          activeId && Number(item.id) === Number(activeId) ? { ...item, unread_count: 0 } : item
+        );
+        const pageIds = new Set(sanitizedItems.map((c) => c.id));
+        if (!page.has_more) return sanitizedItems;
         const retained = prev.filter((c) => !pageIds.has(c.id));
-        if (!retained.length) return page.items;
-        return [...page.items, ...retained].sort(compareByLastMessageDesc);
+        if (!retained.length) return sanitizedItems;
+        return [...sanitizedItems, ...retained].sort(compareByLastMessageDesc);
       });
       setHasMoreConvs(page.has_more);
       nextConvOffsetRef.current = page.next_offset ?? page.items.length;
@@ -462,9 +466,18 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       setSelectedConv((prev) => {
         if (!prev && page.items.length > 0) return page.items[0];
         if (prev) {
-          const updated = page.items.find((c) => c.id === prev.id);
-          if (updated) return updated;
-          if (conversationsRef.current.some((c) => c.id === prev.id)) return prev;
+          const updated = page.items.find((c) => Number(c.id) === Number(prev.id));
+          if (updated) {
+            const sanitized = { ...updated, unread_count: 0 };
+            const currentMsgs = messagesMapRef.current?.[prev.id] || [];
+            const lastMsg = currentMsgs[currentMsgs.length - 1];
+            const isNewer = sanitized.last_message_at && (!lastMsg?.created_at || new Date(sanitized.last_message_at).getTime() > new Date(lastMsg.created_at).getTime());
+            if (isNewer) {
+              void hydrateConversationMessages(prev.id);
+            }
+            return sanitized;
+          }
+          if (conversationsRef.current.some((c) => Number(c.id) === Number(prev.id))) return prev;
           return page.items.length > 0 ? page.items[0] : null;
         }
         return null;
@@ -1292,19 +1305,44 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       // 'new_message' ve 'outbound_message_sent' adlarini HICBIR yerde ne
       // gateway ne backend yayinlamiyordu — o lu dallar kaldirildi.
       if (eventData.event === 'message_new') {
-        const convIdRaw = eventData.conversation_id;
+        const convIdRaw = eventData.conversation_id ?? eventData.conversation?.id ?? eventData.message?.conversation_id;
         const convIdNumber = typeof convIdRaw === 'number'
           ? convIdRaw
-          : typeof convIdRaw === 'string' && convIdRaw.trim() !== ''
+          : typeof convIdRaw === 'string' && convIdRaw.trim() !== '' && !Number.isNaN(Number(convIdRaw))
             ? Number(convIdRaw)
             : NaN;
-        const convId = Number.isInteger(convIdNumber) && convIdNumber > 0 ? convIdNumber : null;
+        const numericConvId = Number.isInteger(convIdNumber) && convIdNumber > 0 ? convIdNumber : null;
         const rawPhone = eventData.lead_phone || eventData.phone || eventData.recipient_phone || eventData.sender_phone || '';
         // I-7 (single authority): resolve the event's phone to its CANONICAL form
         // and match on that. Matching on the last 10 digits is wrong — two
         // different people can share their last 10 digits (+905321234567 and
         // +1555551234567), so a message could be attributed to the wrong chat.
         const eventPhone = extractCleanPhone(rawPhone);
+
+        // Group JID or remote JID resolution
+        const rawJid = typeof convIdRaw === 'string' && convIdRaw.includes('@')
+          ? stripJidPrefix(convIdRaw)
+          : (eventData.jid ? stripJidPrefix(eventData.jid) : (eventData.message?.conversation_id && String(eventData.message.conversation_id).includes('@') ? stripJidPrefix(eventData.message.conversation_id) : null));
+
+        // Resolve conversation ID: prefer numericConvId, fall back to matching conversation in memory by JID or phone
+        let convId: number | null = numericConvId;
+        if (convId === null && (rawJid || eventPhone)) {
+          const match = conversationsRef.current.find((c) => {
+            const cJid = c.lead_phone ? stripJidPrefix(c.lead_phone) : '';
+            const cPhone = (c as any).phone ? stripJidPrefix((c as any).phone) : '';
+            if (rawJid && (cJid === rawJid || cPhone === rawJid)) return true;
+            if (eventPhone && extractCleanPhone(c.lead_phone) === eventPhone) return true;
+            return false;
+          });
+          if (match && Number(match.id) > 0) {
+            convId = Number(match.id);
+          } else if (selectedConvRef.current && (
+            (rawJid && (stripJidPrefix(selectedConvRef.current.lead_phone || '') === rawJid || stripJidPrefix((selectedConvRef.current as any).phone || '') === rawJid)) ||
+            (eventPhone && extractCleanPhone(selectedConvRef.current.lead_phone) === eventPhone)
+          )) {
+            convId = Number(selectedConvRef.current.id);
+          }
+        }
 
         const msgObj0 = eventData.message && typeof eventData.message === 'object' ? eventData.message : null;
         const msgText = eventData.message?.body || (typeof eventData.message === 'string' ? eventData.message : '') || eventData.body || '';
@@ -1322,12 +1360,40 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         // emit) liste sayaclarini SISIRMEZ. `wa_message_id` yoksa (nadir:
         // optimistic/eski olay) eski davranis korunur — sessizce yutmayiz.
         const waIdForDedup = msgObj0?.wa_message_id || eventData.wa_message_id || eventData.message_id;
-        const isReplayedEvent = Boolean(waIdForDedup) && !rememberWaMessageId(String(waIdForDedup), convId);
+        const isReplayedEvent = Boolean(waIdForDedup) && !rememberWaMessageId(String(waIdForDedup), convId ?? undefined);
+
+        const activeConv = selectedConvRef.current;
+        const selectedPhoneIsUnambiguous = Boolean(
+          eventPhone &&
+          conversationsRef.current.filter((c) => c.lead_phone && extractCleanPhone(c.lead_phone) === eventPhone).length === 1,
+        );
+        const isCurrentSelected = Boolean(
+          activeConv && (
+            (convId != null && Number(activeConv.id) === Number(convId)) ||
+            (rawJid && (
+              stripJidPrefix(activeConv.lead_phone || '') === rawJid ||
+              stripJidPrefix((activeConv as any).phone || '') === rawJid
+            ))
+          )
+        );
+        const isActiveConversation = Boolean(
+          isCurrentSelected || (
+            activeConv &&
+            selectedPhoneIsUnambiguous &&
+            activeConv.lead_phone &&
+            extractCleanPhone(activeConv.lead_phone) === eventPhone
+          )
+        );
 
         // Update Conversation in list
         if (convId !== null && !knownConvIdsRef.current.has(convId)) hydrateConversation(convId);
         setConversations((prev) => {
-          const exactIdx = convId == null ? -1 : prev.findIndex((c) => c.id === convId);
+          const exactIdx = convId == null ? -1 : prev.findIndex((c) => Number(c.id) === Number(convId));
+          const jidIdx = exactIdx !== -1 || !rawJid ? -1 : prev.findIndex((c) => {
+            const cJid = c.lead_phone ? stripJidPrefix(c.lead_phone) : '';
+            const cPhone = (c as any).phone ? stripJidPrefix((c as any).phone) : '';
+            return cJid === rawJid || cPhone === rawJid;
+          });
           const phoneMatches = eventPhone
             ? prev.reduce<number[]>((matches, c, index) => {
                 const cPhone = c.lead_phone || (c as any).phone || '';
@@ -1337,12 +1403,10 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
             : [];
           // A phone-only fallback is safe only when exactly one line matches.
           // With multiple lines, guessing would update the wrong tenant/line.
-          const idx = exactIdx !== -1 ? exactIdx : phoneMatches.length === 1 ? phoneMatches[0] : -1;
+          const idx = exactIdx !== -1 ? exactIdx : jidIdx !== -1 ? jidIdx : phoneMatches.length === 1 ? phoneMatches[0] : -1;
 
           if (idx !== -1) {
             const existing = prev[idx];
-            const activeConv = selectedConvRef.current;
-            const isCurrentSelected = Boolean(activeConv && (activeConv.id === existing.id || activeConv.id === convId));
             // Faz 10 (P2): sohbet ozeti paylasilan kuraldan gecer — medyada
             // tip etiketi (📷 Fotoğraf), gruplarda cozulmus gonderen on eki
             // ("Ahmet: ..."), ham JID on ek ASLA; daha eski mesaj mevcut
@@ -1414,18 +1478,9 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         // background conversation must not keep a stale "yazıyor...".
         if (!isOutbound && convId != null) clearPeerTyping(convId);
 
-        const activeConv = selectedConvRef.current;
-        const selectedPhoneIsUnambiguous = Boolean(
-          eventPhone &&
-          conversationsRef.current.filter((c) => c.lead_phone && extractCleanPhone(c.lead_phone) === eventPhone).length === 1,
-        );
-        const isActiveConversation = Boolean(
-          convId != null &&
-          activeConv &&
-          (activeConv.id === convId || (selectedPhoneIsUnambiguous && activeConv.lead_phone && extractCleanPhone(activeConv.lead_phone) === eventPhone))
-        );
+        const targetConvId = convId ?? (isActiveConversation && activeConv ? Number(activeConv.id) : null);
 
-        if (convId != null) {
+        if (targetConvId != null) {
           const msgObj = eventData.message && typeof eventData.message === 'object' ? eventData.message : null;
           const waId = msgObj?.wa_message_id || eventData.wa_message_id || eventData.message_id;
           const clientMid = msgObj?.client_message_id || eventData.client_message_id;
@@ -1433,7 +1488,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
 
           const newMsg: Message = {
             id: msgId || Date.now(),
-            conversation_id: convId,
+            conversation_id: targetConvId,
             direction: isOutbound ? 'OUTBOUND' : 'INBOUND',
             message_type: (msgObj?.message_type || eventData.message_type || 'TEXT').toUpperCase() as any,
             status: msgObj?.status || (isOutbound ? 'PENDING' : 'RECEIVED'),
@@ -1451,16 +1506,16 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
 
           setMessagesMap((prev) => {
             // Update if active or if thread is already in memory
-            if (isActiveConversation || prev[convId]) {
-              return { ...prev, [convId]: mergeWhatsAppMessages(prev[convId] || [], [newMsg]) };
+            if (isActiveConversation || prev[targetConvId]) {
+              return { ...prev, [targetConvId]: mergeWhatsAppMessages(prev[targetConvId] || [], [newMsg]) };
             }
             return prev;
           });
 
           // Auto-mark conversation as read if user is actively viewing it
           if (!isOutbound && isActiveConversation) {
-            WhatsAppRepository.markConversationAsRead(convId)
-              .then((res) => reportReadSync(res, { label: `auto#${convId}` }))
+            WhatsAppRepository.markConversationAsRead(targetConvId)
+              .then((res) => reportReadSync(res, { label: `auto#${targetConvId}` }))
               .catch((err) => console.warn('[WhatsAppHubPage] Otomatik okundu istegi basarisiz:', err));
           }
         }
@@ -1534,14 +1589,33 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       // — backend jid'yi sayısal conversation_id'ye çevirerek ileri iletir.
       if (eventData.event === 'conversation_updated') {
         const rawConvId = eventData.conversation_id;
-        const convId = typeof rawConvId === 'number' ? rawConvId : Number(rawConvId);
+        const convIdNumber = typeof rawConvId === 'number' ? rawConvId : Number(rawConvId);
         const payload = eventData.conversation || {};
-        if (Number.isInteger(convId) && convId > 0) {
+        const rawJid = payload.jid || payload.phone || (typeof rawConvId === 'string' && rawConvId.includes('@') ? rawConvId : null);
+        let convId = Number.isInteger(convIdNumber) && convIdNumber > 0 ? convIdNumber : null;
+        if (convId === null && rawJid) {
+          const match = conversationsRef.current.find((c) => {
+            const cJid = c.lead_phone ? stripJidPrefix(c.lead_phone) : '';
+            const cPhone = (c as any).phone ? stripJidPrefix((c as any).phone) : '';
+            return cJid === stripJidPrefix(rawJid) || cPhone === stripJidPrefix(rawJid);
+          });
+          if (match && Number(match.id) > 0) convId = Number(match.id);
+        }
+
+        if (Number.isInteger(convId) && convId! > 0) {
+          const resolvedId = convId!;
+          const activeConv = selectedConvRef.current;
+          const isCurrentSelected = Boolean(activeConv && Number(activeConv.id) === Number(resolvedId));
           // I-4 / Faz 5 / Faz 6: the merge lives in ONE pure helper so the list
           // row, the selected conversation and the DOM tests all run the same
           // code. See `applyConversationEvent` for the invariants.
-          const patch = (c: Conversation): Conversation => applyConversationEvent(c, payload, t);
-          if (!knownConvIdsRef.current.has(convId)) {
+          const patch = (c: Conversation): Conversation => {
+            const patched = applyConversationEvent(c, payload, t);
+            return isCurrentSelected && Number(c.id) === Number(resolvedId)
+              ? { ...patched, unread_count: 0 }
+              : patched;
+          };
+          if (!knownConvIdsRef.current.has(resolvedId)) {
             // Sorun 4/5 (grup dahil her sohbet first-class): gateway'den gelen
             // YENI sohbet, hedefli GET yanitini BEKLEMEDEN listeye eklenir.
             // Eskiden yalnizca `hydrateConversation` calisiyordu; o istek
@@ -1549,20 +1623,20 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
             // (ornegin yeni bir grup "3Hacker" sohbet listesinde kayboluyordu).
             // Burada WS payload'i kanonik alan adlariyla gelir; gecici olarak
             // gosterilir, hedefli GET satiri DB gercegiyle mutabik kilar.
-            const seeded = mapConversationItem({ ...payload, id: convId });
+            const seeded = mapConversationItem({ ...payload, id: resolvedId });
             setConversations((prev) => {
-              if (prev.some((c) => c.id === convId)) return prev;
-              const fresh: Conversation = { status: 'ACTIVE' as ConversationStatus, unread_count: 0, ...seeded };
+              if (prev.some((c) => Number(c.id) === Number(resolvedId))) return prev;
+              const fresh: Conversation = { status: 'ACTIVE' as ConversationStatus, unread_count: isCurrentSelected ? 0 : (seeded.unread_count ?? 0), ...seeded };
               return [fresh, ...prev].sort(compareByLastMessageDesc);
             });
-            hydrateConversation(convId);
+            hydrateConversation(resolvedId);
           }
           setConversations((prev) => {
-            const next = prev.map((c) => (c.id === convId ? patch(c) : c));
+            const next = prev.map((c) => (Number(c.id) === Number(resolvedId) ? patch(c) : c));
             // Sorun 2: patch son mesaji/siralamayi degistirdiyse liste zaman
             // damgasina gore yeniden siralanir (API sirasiyla ayni kural).
-            const patched = next.find((c) => c.id === convId);
-            const before = prev.find((c) => c.id === convId);
+            const patched = next.find((c) => Number(c.id) === Number(resolvedId));
+            const before = prev.find((c) => Number(c.id) === Number(resolvedId));
             if (patched && before && patched.last_message_at !== before.last_message_at) {
               return [...next].sort(compareByLastMessageDesc);
             }
@@ -1572,11 +1646,31 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
             if (!prev) {
               // Sorun 3 (WhatsApp Web akisi): ilk secilebilir sohbet, liste
               // dolarken hazirlanir — kullanici bos ekranla kalmaz.
-              const seeded = mapConversationItem({ ...payload, id: convId });
+              const seeded = mapConversationItem({ ...payload, id: resolvedId });
               return { status: 'ACTIVE' as ConversationStatus, unread_count: 0, ...seeded };
             }
-            return prev.id === convId ? patch(prev) : prev;
+            return Number(prev.id) === Number(resolvedId) ? patch(prev) : prev;
           });
+
+          // LIVE CHAT THREAD UPDATE:
+          // If the currently open conversation received an update, check if messagesMap has the latest message.
+          // If not (e.g. message_new raced or was not yet merged), hydrate messages immediately!
+          if (isCurrentSelected) {
+            const currentMsgs = messagesMapRef.current?.[resolvedId] || [];
+            const lastMsg = currentMsgs[currentMsgs.length - 1];
+            const payloadTime = payload.last_message_at;
+            const isNewer = Boolean(
+              payloadTime && (!lastMsg?.created_at || new Date(payloadTime).getTime() > new Date(lastMsg.created_at).getTime())
+            );
+            if (isNewer || currentMsgs.length === 0) {
+              void hydrateConversationMessages(resolvedId);
+            }
+            if ((payload.unread_count ?? 0) > 0) {
+              WhatsAppRepository.markConversationAsRead(resolvedId)
+                .then((res) => reportReadSync(res, { label: `cu#${resolvedId}` }))
+                .catch((err) => console.warn('[WhatsAppHubPage] Read sync failed on conversation_updated:', err));
+            }
+          }
         }
       }
 
