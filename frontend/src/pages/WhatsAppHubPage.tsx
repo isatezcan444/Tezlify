@@ -31,7 +31,7 @@ import { translateApiError } from '../features/whatsapp/lib/translateError';
 import { mergeDeliveryStatus, mergeWhatsAppMessages } from '../features/whatsapp/lib/whatsappMessageMerge';
 import { WhatsAppRepository } from '../features/whatsapp/data/whatsappRepository';
 import { compareConversationsByActivityDesc, compareMessagesChronological, getConversationActivityTimestamp, restoreConversationActivity } from '../features/whatsapp/lib/whatsappOrdering';
-import { isRawWhatsAppJid as isRawWhatsAppIdentity } from '../features/whatsapp/lib/whatsappIdentity';
+import { isRawWhatsAppJid as isRawWhatsAppIdentity, identityKeys } from '../features/whatsapp/lib/whatsappIdentity';
 import { PEER_TYPING_TTL_MS, pruneExpiredTyping, resolveSyncDisplayCounts } from '../features/whatsapp/lib/whatsappSync';
 import { applyConversationEvent } from '../features/whatsapp/lib/whatsappConversationPatch';
 import { WhatsAppSession, Conversation, ConversationStatus, ConversationMessageStatus, Lead, Message, LiveModeStatus, SessionSyncState } from '../types';
@@ -1338,34 +1338,58 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
             : NaN;
         const numericConvId = Number.isInteger(convIdNumber) && convIdNumber > 0 ? convIdNumber : null;
         const rawPhone = eventData.lead_phone || eventData.phone || eventData.recipient_phone || eventData.sender_phone || '';
-        // I-7 (single authority): resolve the event's phone to its CANONICAL form
-        // and match on that. Matching on the last 10 digits is wrong — two
-        // different people can share their last 10 digits (+905321234567 and
-        // +1555551234567), so a message could be attributed to the wrong chat.
-        const eventPhone = extractCleanPhone(rawPhone);
+        // I-7 (single authority): the event's phone/JID identity is resolved
+        // ONCE below into a canonical alias set (`eventKeys`). Matching on the
+        // last 10 digits is wrong — two different people can share their last
+        // 10 digits (+905321234567 and +1555551234567) — so identity is always
+        // compared through `extractCleanPhone`/canonical JID, never by suffix.
 
         // Group JID or remote JID resolution
         const rawJid = typeof convIdRaw === 'string' && convIdRaw.includes('@')
           ? stripJidPrefix(convIdRaw)
           : (eventData.jid ? stripJidPrefix(eventData.jid) : (eventData.message?.conversation_id && String(eventData.message.conversation_id).includes('@') ? stripJidPrefix(eventData.message.conversation_id) : null));
 
-        // Resolve conversation ID: prefer numericConvId, fall back to matching conversation in memory by JID or phone
+        // KOK NEDENI FIX: the event's conversation identity is resolved ONCE,
+        // into a canonical alias set. Previously the conversation list compared
+        // `c.lead_phone || c.phone` while the open thread compared only
+        // `c.lead_phone`, and BOTH compared it with `stripJidPrefix` — a helper
+        // that merely removes a `jid:` prefix and therefore can never equate a
+        // stored phone (`+905550000777`) with an event JID
+        // (`905550000777@s.whatsapp.net`). A JID-only inbound event therefore
+        // updated the list row and was then dropped before the thread merge.
+        // One resolution now feeds the list, the active-chat test and the
+        // message merge, so they can no longer disagree.
+        const eventKeys = identityKeys(convIdRaw ?? rawJid);
+        for (const candidate of [eventData.jid, eventData.lead_phone, eventData.phone, rawPhone]) {
+          for (const key of identityKeys(candidate)) eventKeys.add(key);
+        }
+        const matchesEvent = (row: Conversation | null | undefined): boolean => {
+          if (!row) return false;
+          for (const key of identityKeys(row)) if (eventKeys.has(key)) return true;
+          return false;
+        };
+        // Ambiguity guard (preserved from the previous phone-only fallback):
+        // a non-exact identity match is trusted only when it selects exactly
+        // one row, or when that row is the conversation already on screen.
+        // Guessing between two rows would file an inbound message under the
+        // wrong person, which is worse than not rendering it.
+        const selectedId = selectedConvRef.current ? Number(selectedConvRef.current.id) : null;
+        const pickEventRow = <T extends { id: number }>(rows: T[]): T | null => {
+          const hits = rows.filter((r) => matchesEvent(r as unknown as Conversation));
+          if (hits.length === 1) return hits[0];
+          if (selectedId != null) {
+            const open = hits.find((r) => Number(r.id) === selectedId);
+            if (open) return open;
+          }
+          return null;
+        };
+
+        // Resolve conversation ID: prefer numericConvId, fall back to matching conversation in memory by canonical identity
         let convId: number | null = numericConvId;
-        if (convId === null && (rawJid || eventPhone)) {
-          const match = conversationsRef.current.find((c) => {
-            const cJid = c.lead_phone ? stripJidPrefix(c.lead_phone) : '';
-            const cPhone = (c as any).phone ? stripJidPrefix((c as any).phone) : '';
-            if (rawJid && (cJid === rawJid || cPhone === rawJid)) return true;
-            if (eventPhone && extractCleanPhone(c.lead_phone) === eventPhone) return true;
-            return false;
-          });
+        if (convId === null && eventKeys.size > 0) {
+          const match = pickEventRow(conversationsRef.current) || (matchesEvent(selectedConvRef.current) ? selectedConvRef.current : null);
           if (match && Number(match.id) > 0) {
             convId = Number(match.id);
-          } else if (selectedConvRef.current && (
-            (rawJid && (stripJidPrefix(selectedConvRef.current.lead_phone || '') === rawJid || stripJidPrefix((selectedConvRef.current as any).phone || '') === rawJid)) ||
-            (eventPhone && extractCleanPhone(selectedConvRef.current.lead_phone) === eventPhone)
-          )) {
-            convId = Number(selectedConvRef.current.id);
           }
         }
 
@@ -1388,47 +1412,25 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         const isReplayedEvent = Boolean(waIdForDedup) && !rememberWaMessageId(String(waIdForDedup), convId ?? undefined);
 
         const activeConv = selectedConvRef.current;
-        const selectedPhoneIsUnambiguous = Boolean(
-          eventPhone &&
-          conversationsRef.current.filter((c) => c.lead_phone && extractCleanPhone(c.lead_phone) === eventPhone).length === 1,
-        );
+        // The active chat is recognised through the SAME canonical identity
+        // resolution as the list, so an event that updates a list row can no
+        // longer be dropped before it reaches the open thread.
         const isCurrentSelected = Boolean(
           activeConv && (
             (convId != null && Number(activeConv.id) === Number(convId)) ||
-            (rawJid && (
-              stripJidPrefix(activeConv.lead_phone || '') === rawJid ||
-              stripJidPrefix((activeConv as any).phone || '') === rawJid
-            ))
+            matchesEvent(activeConv)
           )
         );
-        const isActiveConversation = Boolean(
-          isCurrentSelected || (
-            activeConv &&
-            selectedPhoneIsUnambiguous &&
-            activeConv.lead_phone &&
-            extractCleanPhone(activeConv.lead_phone) === eventPhone
-          )
-        );
+        const isActiveConversation = isCurrentSelected;
 
         // Update Conversation in list
         if (convId !== null && !knownConvIdsRef.current.has(convId)) hydrateConversation(convId);
         setConversations((prev) => {
           const exactIdx = convId == null ? -1 : prev.findIndex((c) => Number(c.id) === Number(convId));
-          const jidIdx = exactIdx !== -1 || !rawJid ? -1 : prev.findIndex((c) => {
-            const cJid = c.lead_phone ? stripJidPrefix(c.lead_phone) : '';
-            const cPhone = (c as any).phone ? stripJidPrefix((c as any).phone) : '';
-            return cJid === rawJid || cPhone === rawJid;
-          });
-          const phoneMatches = eventPhone
-            ? prev.reduce<number[]>((matches, c, index) => {
-                const cPhone = c.lead_phone || (c as any).phone || '';
-                if (cPhone && extractCleanPhone(cPhone) === eventPhone) matches.push(index);
-                return matches;
-              }, [])
-            : [];
-          // A phone-only fallback is safe only when exactly one line matches.
-          // With multiple lines, guessing would update the wrong tenant/line.
-          const idx = exactIdx !== -1 ? exactIdx : jidIdx !== -1 ? jidIdx : phoneMatches.length === 1 ? phoneMatches[0] : -1;
+          // Same canonical identity resolution as the thread: the list and the
+          // open chat must never disagree about which row an event belongs to.
+          const hit = exactIdx !== -1 ? prev[exactIdx] : pickEventRow(prev);
+          const idx = hit ? prev.indexOf(hit) : -1;
 
           if (idx !== -1) {
             const existing = prev[idx];

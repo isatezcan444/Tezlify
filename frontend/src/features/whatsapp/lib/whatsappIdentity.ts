@@ -224,3 +224,85 @@ export function getConversationDisplayName(
   // 5. Stable permanent fallback (Never show "Kişi (XXXX)")
   return t('whatsapp.contactFallback');
 }
+
+// ---------------------------------------------------------------------------
+// Canonical conversation identity (single authority for "is this the SAME
+// conversation?").
+//
+// Why this exists: a WhatsApp conversation is identified by a JID
+// (`905550000777@s.whatsapp.net`, `905550000777:12@s.whatsapp.net`,
+// `123456789:12@lid`) while the database row usually stores a phone
+// (`+905550000777`). A raw string comparison between those two forms NEVER
+// matches, so realtime events that carry only a JID silently failed to match
+// the open chat.
+//
+// `stripJidPrefix` above is deliberately only a display/unwrapping helper —
+// it is NOT a comparator. These helpers are the comparator, and they live here
+// so the conversation list and the open chat thread cannot drift apart again.
+//
+// Contract:
+//  * `identityKeys` returns a SET of aliases for one identity. Two identities
+//    are the same conversation iff their key sets intersect.
+//  * A bare phone and its PN JID collapse onto the same `jid:` key, so
+//    `+905550000777` and `905550000777@s.whatsapp.net` match.
+//  * A device suffix (`:12`) is stripped, so the same person always matches.
+//  * `@lid` is preserved verbatim and NEVER collapsed onto a phone: LID -> PN
+//    reconciliation stays owned by the backend, which broadcasts the already
+//    reconciled numeric `conversation_id`. We only ever compare a LID to a LID.
+// ---------------------------------------------------------------------------
+
+/** Canonical `local@domain` form; strips `jid:`, the device suffix and `+`. */
+export function canonicalJid(value?: string | null): string | null {
+  if (!value) return null;
+  let raw = String(value).replace(/^jid:/, '').trim();
+  if (!raw) return null;
+  const at = raw.indexOf('@');
+  const localRaw = at >= 0 ? raw.slice(0, at) : raw;
+  let domain = at >= 0 ? raw.slice(at + 1).toLowerCase() : '';
+  const local = localRaw.replace(/^\+/, '').replace(/:\d+$/, '');
+  if (!local) return null;
+  // `@c.us` is the legacy spelling of the phone JID — one identity.
+  if (domain === 'c.us' || domain === 's.whatsapp.net') domain = 's.whatsapp.net';
+  if (!domain) return local;
+  return `${local}@${domain}`;
+}
+
+/**
+ * All aliases of a single identity value. Accepts a JID, a bare phone, or a
+ * conversation-ish object carrying `lead_phone` / `phone`.
+ */
+export function identityKeys(value?: string | null | Record<string, any>): Set<string> {
+  const keys = new Set<string>();
+  if (value == null) return keys;
+
+  const candidates: string[] = [];
+  if (typeof value === 'string') {
+    candidates.push(value);
+  } else {
+    if (value.lead_phone) candidates.push(String(value.lead_phone));
+    if (value.phone) candidates.push(String(value.phone));
+  }
+
+  for (const candidate of candidates) {
+    const jid = canonicalJid(candidate);
+    if (!jid) continue;
+    const domain = jid.includes('@') ? jid.slice(jid.indexOf('@')) : '';
+    // A phone-number JID and a bare phone are the same identity.
+    keys.add(`jid:${domain && domain !== '@lid' ? jid : `${jid}@s.whatsapp.net`}`);
+    const phone = extractCleanPhone(candidate);
+    if (phone) keys.add(`phone:${phone}`);
+  }
+  return keys;
+}
+
+/** True when two identities describe the same conversation. */
+export function isSameConversation(
+  a?: string | null | Record<string, any>,
+  b?: string | null | Record<string, any>,
+): boolean {
+  const left = identityKeys(a);
+  if (left.size === 0) return false;
+  for (const key of identityKeys(b)) if (left.has(key)) return true;
+  return false;
+}
+
