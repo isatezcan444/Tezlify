@@ -8,6 +8,63 @@ function eventContext(sessionId, eventId) {
   return `tezlify-wa-v1:event:${sessionId}:${eventId}`;
 }
 
+/**
+ * PostgreSQL foreign-key error code. 23503 is raised when a referenced row does
+ * not exist — for these tables that always means "the session row is gone".
+ */
+export const PG_FOREIGN_KEY_VIOLATION = '23503';
+
+/**
+ * Report that the gateway is writing rows for a session the database no longer
+ * knows about.
+ *
+ * WHY THIS IS NOT JUST A LOG LINE
+ * --------------------------------
+ * The production symptom was an outbox that silently stayed empty while
+ * PostgreSQL printed one foreign-key violation per event. Every caller caught
+ * the error and fell back to the non-durable socket path, so the product looked
+ * alive while losing every durability guarantee it claims. An operator reading
+ * the logs had no way to connect "the queue never fills" with "this number was
+ * re-paired and the old session row was deleted".
+ *
+ * So the diagnosis is reported ONCE per (table, session) rather than on every
+ * event — a repeating foreign-key error is one problem, not thousands — and the
+ * message names the cause and the remedy. Every OTHER error still propagates.
+ */
+const reportedOrphans = new Set();
+
+export function reportOrphanedSession(table, sessionId, detail, logger) {
+  const key = `${table}:${sessionId}`;
+  if (reportedOrphans.has(key)) return false;
+  reportedOrphans.add(key);
+  (logger?.error || console.error)(
+    {
+      table,
+      session_id: sessionId,
+      detail: detail ?? null,
+      code: PG_FOREIGN_KEY_VIOLATION,
+    },
+    'Writing for a session that no longer exists in the database. Every durable ' +
+    'write for this session is being DISCARDED — events reach the backend over ' +
+    'the live socket only and are LOST on any restart. The usual cause is that ' +
+    'the number was re-paired: the previous session row was deleted while this ' +
+    'gateway session stayed connected. Re-pair the number (or restart this ' +
+    'gateway) so a live session id is registered. Further writes for this ' +
+    'session will not be reported again.',
+  );
+  return true;
+}
+
+/** Test seam: forget which orphans have been reported. */
+export function resetOrphanReports() {
+  reportedOrphans.clear();
+}
+
+/** Test seam: the orphans reported so far. */
+export function orphanReports() {
+  return [...reportedOrphans];
+}
+
 export function createPostgresEventOutbox({
   connectionString,
   encryptionKey,
@@ -36,14 +93,31 @@ export function createPostgresEventOutbox({
       const eventType = String(event?.event || event?.event_type || 'unknown');
       const payload = { ...event, event_id: eventId };
       const encrypted = codec.encrypt(JSON.stringify(payload), eventContext(sessionId, eventId));
-      await pool.query(
-        `INSERT INTO whatsapp_private.event_outbox
-           (event_id, session_id, event_type, ciphertext, nonce, auth_tag, key_version)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
-         ON CONFLICT (event_id) DO NOTHING`,
-        [eventId, sessionId, eventType, encrypted.ciphertext, encrypted.nonce,
-          encrypted.authTag, encrypted.keyVersion],
-      );
+      try {
+        await pool.query(
+          `INSERT INTO whatsapp_private.event_outbox
+             (event_id, session_id, event_type, ciphertext, nonce, auth_tag, key_version)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)
+           ON CONFLICT (event_id) DO NOTHING`,
+          [eventId, sessionId, eventType, encrypted.ciphertext, encrypted.nonce,
+            encrypted.authTag, encrypted.keyVersion],
+        );
+      } catch (err) {
+        // A foreign-key violation here means the session row is gone: the
+        // operator re-paired the number, so this gateway session's id was
+        // deleted while the in-memory session object kept emitting. Retrying
+        // cannot succeed and, because the caller falls back to the best-effort
+        // path, the error was previously invisible — it looked like a slow
+        // queue. Say so explicitly and permanently, so the operator sees WHY
+        // the durable outbox is empty instead of guessing.
+        if (err?.code === PG_FOREIGN_KEY_VIOLATION) {
+          reportOrphanedSession('event_outbox', sessionId, eventType);
+          // The event is not durable, but the socket path still delivers it,
+          // so returning the payload keeps in-flight state correct.
+          return payload;
+        }
+        throw err;
+      }
       return payload;
     },
 

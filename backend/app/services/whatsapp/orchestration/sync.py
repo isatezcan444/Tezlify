@@ -97,6 +97,96 @@ _SYNC_EVENT_CHUNK = 100       # WS message chunk event size
 _SYNC_CHAT_PAGE_SIZE = 40     # conversation snapshot page size
 _SYNC_PER_CHAT_LIMIT = 50     # per-chat limit for initial hydration
 
+
+async def _insert_messages_resilient(db: AsyncSession, rows: List[Message]) -> List[Message]:
+    """Insert message rows, surviving `uq_msg_conv_wa_message_id` races.
+
+    WHY NOT A PLAIN `add_all`
+    -------------------------
+    Production 2026-09-29, immediately after a re-pair:
+        UniqueViolationError: duplicate key value violates unique constraint
+        "uq_msg_conv_wa_message_id"
+    raised out of both the sync job AND the initial-sync hydration, so both
+    aborted.
+
+    The in-memory `have` set is only a pre-filter: a history replay racing a
+    live `message_new`, or two sync workers overlapping, both pass it and the
+    loser then violates the unique index. Because the violation propagates out
+    of the flush, SQLAlchemy marks the whole transaction failed and EVERY other
+    message in that chunk is lost with it — one duplicate message silently
+    discards a burst of real ones. That is the "mask the failure" failure mode
+    in its purest form: a retry looked safe, but the batch was already dead.
+
+    So: try the fast bulk path, and only if it loses the race fall back to
+    inserting row by row inside a savepoint. Each duplicate then costs exactly
+    itself.
+
+    Returns the rows that were ACTUALLY inserted, in input order.
+    """
+    if not rows:
+        return []
+    try:
+        db.add_all(rows)
+        await db.flush()
+        return list(rows)
+    except IntegrityError:
+        # The session is now in a failed state; discard the pending unit of work
+        # so the following savepoints start from a clean transaction.
+        await db.rollback()
+
+    inserted: List[Message] = []
+    duplicates = 0
+    for row in rows:
+        try:
+            async with db.begin_nested():
+                db.add(row)
+                await db.flush()
+            inserted.append(row)
+        except IntegrityError:
+            duplicates += 1
+            logger.info(
+                "Duplicate WhatsApp message ignored during sync: "
+                "conversation_id=%s wa_message_id=%s",
+                row.conversation_id, row.wa_message_id,
+            )
+    if duplicates:
+        logger.info(
+            "Sync inserted %d message(s); %d duplicate(s) lost a concurrent race "
+            "and were ignored.",
+            len(inserted), duplicates,
+        )
+    return inserted
+
+
+async def _persist_sync_batch_safely(
+    db: AsyncSession, values: List[Dict[str, Any]]
+) -> List[Message]:
+    """Insert a batch of message dicts one at a time, skipping duplicates.
+
+    The recovery path for a bulk insert that lost a `uq_msg_conv_wa_message_id`
+    race. Each row gets its own savepoint, so a single duplicate rolls back
+    only itself and its neighbours are still stored. Returns the rows that were
+    actually written, so the caller reports and counts only real work.
+    """
+    inserted: List[Message] = []
+    duplicates = 0
+    for value in values:
+        try:
+            async with db.begin_nested():
+                result = await db.scalars(
+                    insert(Message).returning(Message), [value]
+                )
+                inserted.extend(result.all())
+        except IntegrityError:
+            duplicates += 1
+    if duplicates:
+        logger.info(
+            "Sync batch recovered: %d message(s) stored, %d duplicate(s) ignored.",
+            len(inserted), duplicates,
+        )
+    return inserted
+
+
 # --- Empty-conversation provider backfill -----------------------------------
 # WHY THIS EXISTS (measured on production 2026-09-26):
 # `_run_bulk_message_sync` passes `since = get_sync_watermark_epoch(...)`, which is
@@ -1216,6 +1306,10 @@ class WhatsAppSyncOrchestrator:
                 touched.add(cid)
             serialized: List[Dict[str, Any]] = []
             if rows:
+                # Per-batch resilient insert: a duplicate wa_message_id racing a
+                # live ingest must cost only ITSELF. A plain bulk `insert()`
+                # raises out of the flush, which fails the whole transaction
+                # and discards every other message in the batch with it.
                 persisted_rows: List[Message] = []
                 for batch_start in range(0, len(rows), _SYNC_PERSIST_BATCH):
                     values = [
@@ -1226,12 +1320,24 @@ class WhatsAppSyncOrchestrator:
                         }
                         for row, _ in rows[batch_start:batch_start + _SYNC_PERSIST_BATCH]
                     ]
-                    inserted = await db.scalars(insert(Message).returning(Message), values)
-                    persisted_rows.extend(inserted.all())
+                    try:
+                        inserted = await db.scalars(
+                            insert(Message).returning(Message), values
+                        )
+                        persisted_rows.extend(inserted.all())
+                    except IntegrityError:
+                        await db.rollback()
+                        # Retry the batch row by row inside savepoints so one
+                        # duplicate cannot discard its neighbours.
+                        recovered = await _persist_sync_batch_safely(db, values)
+                        persisted_rows.extend(recovered)
                 await db.flush()
                 await db.commit()
                 serialized = [serialize_message(r) for r in persisted_rows]
-                job.messages_synced += len(rows)
+                # Count what was really stored, not what we attempted: a
+                # duplicate is not a synced message and inflating this counter
+                # would make the progress bar lie.
+                job.messages_synced += len(persisted_rows)
             for chunk_start in range(0, len(serialized), _SYNC_EVENT_CHUNK):
                 await broadcast_sync_event(
                     sync_event(
@@ -2168,9 +2274,20 @@ class WhatsAppSyncOrchestrator:
             await db.commit()
             return []
         rows.sort(key=lambda r: (r.external_timestamp or r.created_at, r.id or 0))
-        db.add_all(rows)
-        await db.flush()
-        summary_src = rows[-1]
+        inserted = await _insert_messages_resilient(db, rows)
+        if not inserted:
+            # Every row was a duplicate that lost the race. The provider
+            # round-trip still happened, so its evidence must be committed —
+            # otherwise the session is discarded on close and the evidence is
+            # silently lost (a later retry would re-request the same chunk
+            # forever).
+            await db.commit()
+            return []
+        # Summarise from the newest row that was ACTUALLY inserted. Using the
+        # last candidate would let a duplicate push the conversation's
+        # last_message_at backwards (or onto a message we did not write),
+        # because a duplicate is not the newest message we stored.
+        summary_src = inserted[-1]
         apply_last_message(
             conv,
             summary_src.external_timestamp,
@@ -2183,7 +2300,7 @@ class WhatsAppSyncOrchestrator:
             ),
         )
         await db.commit()
-        return list(reversed(rows))
+        return list(reversed(inserted))
 
     async def _backfill_empty_conversations(
         self,

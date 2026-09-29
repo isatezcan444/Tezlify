@@ -8,6 +8,7 @@ import fs from 'fs';
 import path from 'path';
 import { sessionRef } from '../observability.js';
 import { rememberLidPair } from '../utils/whatsapp-identity.js';
+import { PG_FOREIGN_KEY_VIOLATION, reportOrphanedSession } from '../outbox/postgres-event-outbox.js';
 
 export function lidScopeSessionIds(sessionId, ownerId, sessions) {
   const scope = new Set();
@@ -61,6 +62,15 @@ export function createLidRepository({ pool, sessionsDir, logger }) {
         [String(sessionId), String(lid), String(phoneJid)]
       );
     } catch (err) {
+      // 23503: the session row was deleted (the number was re-paired) while
+      // this gateway session stayed connected. Previously this was a bare
+      // `logger.warn` on a path that can fire for every contact in a group, so
+      // it produced a wall of identical lines that hid the actual diagnosis.
+      // Report the orphan once, with the cause and the remedy.
+      if (err?.code === PG_FOREIGN_KEY_VIOLATION) {
+        reportOrphanedSession('lid_mappings', String(sessionId), `lid=${String(lid)}`, logger);
+        return;
+      }
       logger.warn(
         { err: err?.message, session_ref: sessionRef(sessionId) },
         'Failed to persist LID mapping to PostgreSQL'

@@ -939,3 +939,86 @@ async def test_duplicate_contacts_are_merged_and_uniqueness_enforced():
                 ), {"u": U1, "p": phone})
     finally:
         await legacy_engine.dispose()
+
+
+# ------------------------------------------- duplicate ingest must not poison
+@pytest.mark.asyncio
+async def test_duplicate_message_race_rolls_back_only_the_duplicate():
+    """A duplicate wa_message_id must not roll back the rest of the batch.
+
+    Production 2026-09-29: a re-pair produced
+    `duplicate key value violates unique constraint "uq_msg_conv_wa_message_id"`.
+    The existence pre-check in `_persist_gateway_message` is a TOCTOU filter —
+    two concurrent ingests (history replay racing a live `message_new`) both
+    pass it, and the loser then violates the unique index. Without a savepoint
+    that IntegrityError invalidates the whole transaction, so every remaining
+    event in the batch is lost with it. One duplicate must cost exactly one
+    message.
+    """
+    import inspect
+
+    from backend.app.services.whatsapp.orchestration import events as events_mod
+
+    src = inspect.getsource(events_mod.WhatsAppEventOrchestrator._persist_gateway_message)
+    assert "begin_nested" in src, "the insert must run inside a savepoint"
+    assert "IntegrityError" in src, "the duplicate must be caught, not propagated"
+    # The savepoint must wrap ONLY the insert: the conversation summary update
+    # has to still run for real messages.
+    # The savepoint must wrap ONLY the insert. `_apply_last_message` appears
+    # earlier in the source as a helper lookup, so compare against the CALL that
+    # mutates the conversation, not the first textual match.
+    nested = src.index("begin_nested")
+    summary_call = src.rindex("apply_last_message(conv, ts, summary)")
+    assert nested < summary_call, (
+        "the savepoint must wrap the insert, not the whole method"
+    )
+    # And the conversation summary must still be applied on the success path.
+    assert "return True" in src, "a successful insert must still be reported as ingested"
+
+
+def test_sync_insert_paths_survive_a_duplicate_race():
+    """Both bulk sync insert paths must isolate a duplicate to its own row.
+
+    Production 2026-09-29 log (caught from the backend, not the browser):
+        WARNING - Sync job basarisiz (...): UniqueViolationError: duplicate key
+                  value violates unique constraint "uq_msg_conv_wa_message_id"
+        WARNING - Initial-sync hydration basarisiz (...): same
+
+    Two distinct write paths raised: the initial-sync bulk `insert()` and the
+    per-chat `_fetch_*` ORM insert. A bare IntegrityError leaves the SQLAlchemy
+    session in a failed state, so the whole transaction — and every other
+    message in the batch — is lost. Each path must therefore fall back to a
+    savepoint-per-row insert, and must report/count only what was really
+    stored.
+    """
+    import inspect
+
+    from backend.app.services.whatsapp.orchestration import sync as sync_mod
+
+    # The shared helpers must exist and isolate per row.
+    assert hasattr(sync_mod, "_insert_messages_resilient")
+    assert hasattr(sync_mod, "_persist_sync_batch_safely")
+    for helper in ("_insert_messages_resilient", "_persist_sync_batch_safely"):
+        src = inspect.getsource(getattr(sync_mod, helper))
+        assert "begin_nested" in src, f"{helper} must use a savepoint per row"
+        assert "IntegrityError" in src, f"{helper} must catch the duplicate"
+
+    # The call sites must use them rather than add_all/insert unguarded.
+    bulk = inspect.getsource(sync_mod)
+    assert "_insert_messages_resilient(db, rows)" in bulk, (
+        "the per-chat ORM insert must go through the resilient helper"
+    )
+    assert "_persist_sync_batch_safely(db, values)" in bulk, (
+        "the initial-sync bulk insert must fall back to the safe path"
+    )
+
+    # Progress must reflect reality: counting attempted rows would make the
+    # sync bar overstate how much was actually stored.
+    assert "job.messages_synced += len(persisted_rows)" in bulk, (
+        "the synced counter must count persisted rows, not attempted rows"
+    )
+    # And the conversation summary must be built from an INSERTED row, never a
+    # duplicate, which could move last_message_at onto a row we did not write.
+    assert "summary_src = inserted[-1]" in bulk, (
+        "the last-message summary must come from an inserted row"
+    )

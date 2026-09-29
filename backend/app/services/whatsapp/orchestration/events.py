@@ -396,7 +396,6 @@ class WhatsAppEventOrchestrator:
         if row is None:
             return False
         ts = _as_naive_utc(_parse_dt(msg.get("created_at")))
-        db.add(row)
         summary = build_last_message_summary(
             message_type=row.message_type.value,
             body=row.body,
@@ -404,8 +403,31 @@ class WhatsAppEventOrchestrator:
             is_group="@g.us" in jid_str,
             direction=row.direction.value,
         )
+        # The existence check above is a pre-filter, not a guarantee: two
+        # concurrent ingests of the same WhatsApp message (history replay racing
+        # a live `message_new`) both pass it, and the loser then violates
+        # `uq_msg_conv_wa_message_id`. Without a savepoint that IntegrityError
+        # poisons the whole transaction — every remaining event in the batch is
+        # rolled back with it, which is how a single duplicate could drop a
+        # burst of real messages. Inside a nested block only THIS insert rolls
+        # back, and the duplicate is correctly treated as "already have it".
+        if wa_id:
+            try:
+                async with db.begin_nested():
+                    db.add(row)
+                    await db.flush()
+            except IntegrityError:
+                logger.info(
+                    "Duplicate WhatsApp message ignored (concurrent ingest race): "
+                    "conversation_id=%s wa_message_id=%s",
+                    conv.id, wa_id,
+                )
+                return False
+        else:
+            db.add(row)
         apply_last_message(conv, ts, summary)
-        await db.flush()
+        if not wa_id:
+            await db.flush()
         return True
 
     async def _ingest_message(self, db: AsyncSession, event: Dict[str, Any]) -> Dict[str, Any]:
