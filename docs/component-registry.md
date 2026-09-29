@@ -396,6 +396,7 @@ restarting a service and shipping code are different risk classes.
 ### `OpsLogsPanel`
 - **Purpose**: Per-service log tail with level filtering. Logs are fetched on demand, never in a loop.
 - **Props**: `{ services: string[]; activeService: string; lines: string[]; loading?: boolean; error?: string | null; onServiceChange: (service: string) => void; onReload: () => void; logsByService?: Record<string, string[]> }`
+- **Level detection**: delegated to `logLevel.ts::classifyLogLevel`, shared with `ErrorFeed` so the viewer and the feed can never disagree. It parses the STRUCTURED level first — the gateway emits pino `{"level":50,...}` and caddy `{"level":"error",...}` — and only falls back to a keyword heuristic for non-JSON output. A keyword-only match filed `{"level":50,"msg":"transaction failed, rolling back"}` as INFO, so the Error feed looked empty while the gateway was throwing.
 - **Export**: two client-side downloads — `tezlify-logs-<ts>.txt` (everything visible) and `tezlify-errors-<ts>.txt` (error lines only, disabled when there are none). Both export the FILTERED view, not the raw buffer, so a download can never bypass a level filter or search the operator is relying on. A merged export groups the already-loaded per-service buffers under `===== service (n lines) =====` headers. The object URL is revoked on the next tick, because revoking it in the same task aborts the download in Safari and Firefox.
 - **Import**: `import { OpsLogsPanel } from '@/components/admin/ops';`
 

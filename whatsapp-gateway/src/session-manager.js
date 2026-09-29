@@ -126,6 +126,71 @@ const AVATAR_QUERY_TIMEOUT_MS = 8000;
 const AVATAR_REARM_MAX = 5;
 const AVATAR_REARM_DELAYS_MS = [2_000, 4_000, 8_000, 15_000, 30_000];
 
+// ---------------------------------------------------------------------------
+// App-state sync recovery
+// ---------------------------------------------------------------------------
+// WHY THIS IS NEEDED
+// ------------------
+// Baileys parks an app-state collection that is missing a decryption key:
+//   "regular blocked on missing key from v0, parking after 2 attempts"
+// It adds the collection to a module-level `blockedCollections` set and only
+// retries it when `myAppStateKeyId` arrives via `creds.update`. In production
+// that key never arrived (verified: zero "app state sync key arrived" lines in
+// the gateway log), so `regular` stayed parked for the life of the process and
+// the chat list never populated — the `chats: 0` symptom.
+//
+// Baileys clears the block on a full sync or on line 1057, but neither happens
+// on a long-lived connected session. So we own the retry: periodically ask for
+// a resync while the store has no chats. This mirrors the existing avatar
+// re-arm chain deliberately — same counters, same backoff, same unref, same
+// "stop once the store fills up" condition.
+const APPSTATE_REARM_MAX = 6;
+const APPSTATE_REARM_DELAYS_MS = [5_000, 15_000, 30_000, 60_000, 120_000, 300_000];
+
+/** Retry the app-state sync while the chat store is still empty. */
+function shouldRearmAppState(session, store) {
+  if (!store || !session) return false;
+  if (session._deleted || session._shuttingDown) return false;
+  if (session.status !== 'CONNECTED' || !session.sock) return false;
+  if (typeof session.sock.resyncAppState !== 'function') return false;
+  // Once chats have landed there is nothing to recover; a resync would be pure
+  // load on the WhatsApp side.
+  if (store.chats && store.chats.size > 0) return false;
+  const attempts = Number(store._appStateRearmCount) || 0;
+  return attempts < APPSTATE_REARM_MAX;
+}
+
+function scheduleAppStateRearm(manager, session, store) {
+  const attempts = Number(store._appStateRearmCount) || 0;
+  if (attempts >= APPSTATE_REARM_MAX) return;
+  const delay = APPSTATE_REARM_DELAYS_MS[Math.min(attempts, APPSTATE_REARM_DELAYS_MS.length - 1)];
+  store._appStateRearmCount = attempts + 1;
+  const timer = setTimeout(async () => {
+    if (!shouldRearmAppState(session, store)) {
+      store._appStateRearmCount = 0;
+      return;
+    }
+    try {
+      await session.sock.resyncAppState(['regular', 'regular_low', 'regular_high'], false);
+      logger.info(
+        { session_ref: sessionRef(session.id), attempt: attempts + 1 },
+        'App-state re-arm resync completed',
+      );
+    } catch (err) {
+      logger.warn(
+        { session_ref: sessionRef(session.id), attempt: attempts + 1, err: err?.message },
+        'App-state re-arm resync failed; will retry',
+      );
+    }
+    if (shouldRearmAppState(session, store)) {
+      scheduleAppStateRearm(manager, session, store);
+    } else {
+      store._appStateRearmCount = 0;
+    }
+  }, delay);
+  if (typeof timer.unref === 'function') timer.unref();
+}
+
 /** Re-arm only while connected and the store has not produced chats yet. */
 function shouldRearmWhenEmpty(store, session) {
   if (!store || !session) return false;
@@ -1757,6 +1822,22 @@ export function createSessionManager({
       } catch (err) {
         return { success: false, error: err?.message || String(err) };
       }
+    },
+
+    /**
+     * Arm the app-state sync recovery chain.
+     *
+     * Public counterpart of the module-level `scheduleAppStateRearm`, called
+     * once a session reaches CONNECTED. See that function for why a Baileys
+     * "parked" collection otherwise strands the chat list for the life of the
+     * process.
+     */
+    _scheduleAppStateRearm(session) {
+      session = this._sess(session);
+      if (!session) return;
+      const store = this._storeOf(session);
+      if (!shouldRearmAppState(session, store)) return;
+      scheduleAppStateRearm(this, session, store);
     },
 
     async _ensureGroupSubjects({ sessionId, force = false, extraJids = [] } = {}) {

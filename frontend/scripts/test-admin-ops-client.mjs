@@ -20,6 +20,7 @@ const check = (label, fn) => {
 };
 
 const read = (p) => fs.readFileSync(new URL(p, import.meta.url), 'utf8');
+
 const apiSrc = read('../src/api/admin.ts');
 const typeSrc = read('../src/types/admin.ts');
 const trSrc = read('../src/locales/tr.ts');
@@ -311,6 +312,34 @@ check('the errors tab can be exported too', () => {
   // them; without this the file would only ever contain the visible service.
   assert.ok(/logsByService=\{logsByService\}/.test(ops),
     'the logs panel must receive the loaded service buffers');
+});
+
+check('log levels are read from the structured field, not just keywords', () => {
+  const lvl = read('../src/components/admin/ops/logLevel.ts');
+  // The gateway (pino) logs {"level":50,...} and caddy logs {"level":"error"}.
+  // A keyword-only regex filed {"level":50,"msg":"transaction failed, rolling
+  // back"} as INFO, so the Error feed looked empty while the gateway threw.
+  assert.ok(lvl.includes('PINO_ERROR'), 'pino numeric levels must be understood');
+  assert.ok(lvl.includes('JSON.parse'), 'the structured level must be parsed');
+  assert.ok(lvl.includes('"level"'), 'the JSON fast-path guard must be present');
+  // Both surfaces must share ONE classifier, or they drift apart again.
+  const panel = read('../src/components/admin/ops/OpsLogsPanel.tsx');
+  const feed = read('../src/components/admin/ops/ErrorFeed.tsx');
+  assert.ok(panel.includes('classifyLogLevel'), 'the log viewer must use the shared classifier');
+  assert.ok(feed.includes('classifyLogLevel'), 'the error feed must use the shared classifier');
+});
+
+check('the caddy config no longer requests a certificate for a dead domain', () => {
+  // The Caddyfile is a repo-root file: two levels above this script.
+  const caddy = fs.readFileSync(new URL('../../Caddyfile', import.meta.url), 'utf8');
+  // api.tezlify.com has no DNS record, so every ACME attempt failed with
+  // NXDOMAIN and Caddy retried forever, burying the real signals.
+  assert.ok(!caddy.includes('api.tezlify.com,') && !caddy.includes(', api.tezlify.com'),
+    'the dead domain must not be served');
+  // The sslip host must use the internal CA so no external ACME call is made.
+  const publicBlock = caddy.slice(caddy.indexOf('api.130.162.247.20.sslip.io, 130.162'));
+  assert.ok(publicBlock.slice(0, 200).includes('tls internal'),
+    'the sslip host must use the internal CA');
 });
 
 console.log(`\nAdmin ops client contract: PASS (${passed} checks)`);

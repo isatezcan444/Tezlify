@@ -13,7 +13,24 @@
     }
 }
 
-api.tezlify.com, api.130.162.247.20.sslip.io, 130.162.247.20.sslip.io {
+# Domains served over the PUBLIC virtual hosts.
+#
+# `api.tezlify.com` was previously listed here with no `tls` directive, which
+# made Caddy attempt a Let's Encrypt certificate for it. The domain has no DNS
+# record, so every request-free ACME attempt failed with NXDOMAIN and Caddy
+# retried on an exponential backoff for the life of the container — an endless
+# stream of "level":"error" lines that buried the real operational signals and
+# made the Error feed useless.
+#
+# Two fixes, both needed:
+#   1. the dead domain is removed, and re-add it ONLY together with an A record;
+#   2. the sslip.io host uses Caddy's internal CA, so it never contacts an
+#      external ACME server at all. sslip.io is a public DNS name that resolves
+#      to the host IP, which means public-CA validation (DNS-01) is impossible
+#      for it anyway — an internal certificate is the correct and only workable
+#      option here, and the admin trusts it explicitly.
+api.130.162.247.20.sslip.io, 130.162.247.20.sslip.io {
+    tls internal
     import security_headers
     encode zstd gzip
 

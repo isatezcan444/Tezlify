@@ -336,6 +336,13 @@ export function bindSocketEvents({
         emitEvent({ event: 'session_sync_completed', session_id: id, session_name: session.session_name, sync: session.sync });
         void ensureGroupSubjects();
         manager._scheduleBackgroundAvatarFetch(session);
+        // Baileys parks an app-state collection whose decryption key is
+        // missing and only un-parks it when `myAppStateKeyId` arrives via
+        // `creds.update`. In production that never arrived, so `regular` stayed
+        // parked for the life of the process and the chat list never filled
+        // (the `chats: 0` symptom). Arm our own bounded retry so a connected
+        // session recovers its history without needing another QR pairing.
+        manager._scheduleAppStateRearm(session);
       } else {
         emitEvent({ event: 'session_sync_started', session_id: id, session_name: session.session_name, sync: session.sync });
         if (session._historyQuietTimer) clearTimeout(session._historyQuietTimer);

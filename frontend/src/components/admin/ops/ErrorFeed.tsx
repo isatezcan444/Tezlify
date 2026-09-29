@@ -13,6 +13,7 @@ import { useI18n } from '../../../context/I18nContext';
 import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
 import { Button } from '../../ui/button';
 import { OpsCatalogueEntry } from '../../../types/admin';
+import { classifyLogLevel } from './logLevel';
 
 export interface ErrorEntry {
   id: string;
@@ -30,12 +31,11 @@ export interface ErrorFeedProps {
   onViewLogs: (service: string) => void;
 }
 
-/** Classify a log line. Mirrors OpsLogsPanel so the two agree. */
+/** Classify a log line. Delegates to the shared classifier so the feed and the
+ * log viewer can never disagree about what counts as an error. */
 export function classifyError(line: string): 'ERROR' | 'WARN' | null {
-  const l = line.toLowerCase();
-  if (/\b(error|err|fatal|critical|exception|traceback|failed)\b/.test(l)) return 'ERROR';
-  if (/\b(warn|warning)\b/.test(l)) return 'WARN';
-  return null;
+  const level = classifyLogLevel(line);
+  return level === 'INFO' ? null : level;
 }
 
 /** Build the feed from the log buffers. Pure so it is directly testable. */

@@ -13,6 +13,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
 import { Button } from '../../ui/button';
 import { Skeleton } from '../../ui/Skeleton';
 import { buildLogExport, downloadTextFile } from './exportLogs';
+import { classifyLogLevel } from './logLevel';
 
 export interface OpsLogsPanelProps {
   services: string[];
@@ -32,12 +33,9 @@ export interface OpsLogsPanelProps {
 
 const LEVELS = ['ALL', 'ERROR', 'WARN', 'INFO'];
 
-function levelOf(line: string): 'ERROR' | 'WARN' | 'INFO' {
-  const l = line.toLowerCase();
-  if (/\b(error|err|fatal|critical|exception|traceback|failed)\b/.test(l)) return 'ERROR';
-  if (/\b(warn|warning)\b/.test(l)) return 'WARN';
-  return 'INFO';
-}
+// Level detection lives in logLevel.ts: the gateway and caddy emit different
+// level conventions and a text-only regex silently missed the gateway's.
+const levelOf = classifyLogLevel;
 
 function lineTone(line: string): string {
   const level = levelOf(line);
