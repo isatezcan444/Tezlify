@@ -169,13 +169,27 @@ console.log('\nTypography');
     }
   }
 
-  // 3. display=swap makes the FIRST paint use the system fallback, so the text
-  //    visibly reflows once the webfont arrives. That is the "font looks wrong"
-  //    an operator reports with nothing to find in the diff.
-  if (/&display=swap/.test(html)) {
-    fail('font', 'the webfont loads with display=swap: the first paint uses the system fallback and the text visibly reflows on every cold load');
+  // 3. The webfont MUST eventually be applied.
+  //
+  //    `display=optional` looks like it removes the first-paint reflow, and it
+  //    does — by never loading the font at all. On a cold cache the browser
+  //    silently keeps the fallback, so every panel is drawn in the system font
+  //    and stays that way. For a design built around Plus Jakarta Sans that is
+  //    far worse than the brief reflow, and it looks like the whole UI broke.
+  //    Verified by hand: switching to `optional` visibly degraded the admin
+  //    panels and was reverted.
+  //
+  //    `swap` is correct here. The reflow is one frame on first load; a
+  //    permanently wrong typeface is not.
+  const display = html.match(/display=([a-z]+)/)?.[1];
+  if (display === 'optional') {
+    fail('font', 'the webfont uses display=optional: on a cold cache the font is never applied and the whole UI falls back to the system typeface');
+  } else if (display === 'swap') {
+    pass('the webfont is display=swap (applied after load, with a brief first-paint fallback)');
+  } else if (display) {
+    fail('font', `the webfont uses display=${display}, which hides text or delays it in a way the admin panels were not designed for`);
   } else {
-    pass('the webfont does not force a fallback flash');
+    fail('font', 'the webfont link declares no display strategy');
   }
 }
 
