@@ -333,3 +333,82 @@ export interface AdminSecurityResponse {
   kernel?: AdminKernelSecurity | null;
   warnings?: string[];
 }
+
+// ---------------------------------------------------------------------------
+// WhatsApp Operations Center
+//
+// These mirror `backend/app/schemas/ops.py` one-for-one. Note the deliberate
+// absence of any "command" field: the API can only be asked to start an
+// operation BY NAME, from the catalogue the server itself returns.
+// ---------------------------------------------------------------------------
+
+export type OpsOperationStatus = 'running' | 'succeeded' | 'failed';
+
+export interface OpsServiceStatus {
+  name: string;
+  status: string;
+  state?: string | null;
+  image?: string | null;
+  /** 'healthy' | 'unhealthy' | 'starting' | null when no healthcheck is defined. */
+  health?: string | null;
+  uptime?: string | null;
+  started_at?: string | null;
+  restart_count?: number | null;
+  oom_killed: boolean;
+  rss_mb?: number | null;
+}
+
+export interface OpsHealthCheck {
+  /** Service name -> healthy. */
+  checks: Record<string, boolean>;
+  all_healthy: boolean;
+  checked_at: string;
+}
+
+export interface OpsOperation {
+  id: string;
+  name: string;
+  label: string;
+  status: OpsOperationStatus;
+  step?: string | null;
+  started_at?: string | null;
+  finished_at?: string | null;
+  duration_ms?: number | null;
+  actor?: string | null;
+  destructive: boolean;
+  error?: string | null;
+  exit_code?: number | null;
+  /** Already redacted server-side. */
+  logs: string[];
+  health?: OpsHealthCheck | null;
+}
+
+export interface OpsCatalogueEntry {
+  name: string;
+  label: string;
+  destructive: boolean;
+}
+
+export interface OpsAuditEntry {
+  id: string;
+  at: string;
+  action: string;
+  actor?: string | null;
+  result: string;
+  detail?: string | null;
+}
+
+export interface OpsStatusResponse {
+  services: OpsServiceStatus[];
+  health: OpsHealthCheck;
+  operations: OpsOperation[];
+  running?: OpsOperation | null;
+  catalogue: OpsCatalogueEntry[];
+  audit: OpsAuditEntry[];
+}
+
+export interface OpsLogsResponse {
+  service: string;
+  lines: string[];
+  error?: string | null;
+}
