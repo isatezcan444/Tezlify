@@ -89,7 +89,26 @@ services:
       GATEWAY_PORT: 8787
       GATEWAY_HOST: 0.0.0.0
       BACKEND_WS_URL: ws://backend:8000/ws/gateway
-      WHATSAPP_AUTO_RESTORE: "false"
+      # Restore WhatsApp sessions on gateway start (default).
+      #
+      # This was "false" in production, and the cost was invisible until it was
+      # measured: every gateway restart left ZERO live sessions while the
+      # database still reported the line as CONNECTED. The UI showed a healthy
+      # session that could not receive a single message — the state behind the
+      # unexplained `chats: 0`.
+      #
+      # The concern that motivated disabling it was "26 session directories on
+      # disk would all reconnect". That is not what would happen:
+      # `listRestorableSessions` INNER JOINs `whatsapp_sessions` and requires
+      # `is_active` on BOTH the gateway row and the public row, so a deleted or
+      # inactive session is filtered out in SQL and never reaches the gateway.
+      # Verified against production: 26 directories, 1 restorable.
+      #
+      # Concurrency is 2 (GATEWAY_RESTORE_CONCURRENCY) and each reconnect is an
+      # ordinary WhatsApp connection, so rate-limit behaviour is no worse than
+      # an operator re-pairing by hand.
+      WHATSAPP_AUTO_RESTORE: "true"
+      GATEWAY_RESTORE_CONCURRENCY: "2"
       LOG_LEVEL: info
     depends_on:
       backend:

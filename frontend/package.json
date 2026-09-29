@@ -19,7 +19,8 @@
     "verify:pairing": "node scripts/verify-whatsapp-pairing.mjs",
     "verify:pairing-browser": "node scripts/verify-whatsapp-pairing-browser.mjs",
     "verify:ops-client": "node scripts/test-admin-ops-client.mjs",
-    "verify:ops-dom": "node scripts/verify-admin-ops-dom.mjs"
+    "verify:ops-dom": "node scripts/verify-admin-ops-dom.mjs",
+    "audit:admin-i18n": "node scripts/audit-admin-i18n.mjs"
   },
   "dependencies": {
     "class-variance-authority": "^0.7.1",

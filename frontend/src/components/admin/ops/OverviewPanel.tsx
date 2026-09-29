@@ -209,9 +209,9 @@ function ServiceList({ services, loading }: { services: OpsServiceStatus[]; load
       </CardHeader>
       <CardContent className="pt-4">
         {loading ? (
-          <p className="text-sm text-slate-400">{t('common.loading')}</p>
+          <p className="text-sm text-slate-400 dark:text-slate-500">{t('common.loading')}</p>
         ) : services.length === 0 ? (
-          <p className="text-sm text-slate-400">{t('admin.ops.overviewNoServices')}</p>
+          <p className="text-sm text-slate-400 dark:text-slate-500">{t('admin.ops.overviewNoServices')}</p>
         ) : (
           <ul className="divide-y divide-slate-100 dark:divide-white/[0.06]">
             {services.map((s) => (
@@ -243,7 +243,7 @@ function RecentOperations({ operations }: { operations: OpsOperation[] }) {
       </CardHeader>
       <CardContent className="pt-4">
         {operations.length === 0 ? (
-          <p className="text-sm text-slate-400">{t('admin.ops.noOperations')}</p>
+          <p className="text-sm text-slate-400 dark:text-slate-500">{t('admin.ops.noOperations')}</p>
         ) : (
           <ul className="divide-y divide-slate-100 dark:divide-white/[0.06]">
             {operations.slice(0, 5).map((o) => (

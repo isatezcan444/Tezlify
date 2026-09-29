@@ -197,7 +197,7 @@ export const OpsHistoryPanel: React.FC<OpsHistoryPanelProps> = ({
               >
                 {t('admin.ops.previousPage')}
               </Button>
-              <span className="text-[11px] text-slate-400">
+              <span className="text-[11px] text-slate-400 dark:text-slate-500">
                 {offset + 1}-{Math.min(offset + operations.length, totalOperations)} / {totalOperations}
               </span>
               <Button
@@ -239,7 +239,7 @@ export const OpsHistoryPanel: React.FC<OpsHistoryPanelProps> = ({
                     )}
                     <div className="min-w-0 flex-1">
                       <p className="text-xs font-bold text-slate-700 dark:text-slate-200">{op.label}</p>
-                      <p className="text-[10px] text-slate-400">
+                      <p className="text-[10px] text-slate-400 dark:text-slate-500">
                         {op.actor || '-'} · {stepLabel(op, t)}
                         {progressLabel(op, t) && (
                           <span className="ml-1.5 text-[10px] font-bold uppercase tracking-wide text-vuexy-primary">
@@ -264,7 +264,7 @@ export const OpsHistoryPanel: React.FC<OpsHistoryPanelProps> = ({
                         <p className="text-[11px] text-rose-600 dark:text-rose-400">{op.error}</p>
                       )}
                       {op.health && (
-                        <p className="text-[11px] text-slate-500">
+                        <p className="text-[11px] text-slate-500 dark:text-[#7E7F96]">
                           {t('admin.ops.stepHealthCheck')}: {op.health.all_healthy ? 'OK' : 'FAIL'}
                         </p>
                       )}
@@ -273,7 +273,7 @@ export const OpsHistoryPanel: React.FC<OpsHistoryPanelProps> = ({
                           {op.logs.slice(-200).join('\n')}
                         </pre>
                       ) : (
-                        <p className="text-[11px] text-slate-400">{t('admin.ops.noData')}</p>
+                        <p className="text-[11px] text-slate-400 dark:text-slate-500">{t('admin.ops.noData')}</p>
                       )}
                     </div>
                   )}
@@ -297,7 +297,7 @@ export const OpsHistoryPanel: React.FC<OpsHistoryPanelProps> = ({
             <div className="divide-y divide-slate-100 dark:divide-white/[0.06]">
               {audit.slice(0, 50).map((a) => (
                 <div key={a.id} className="px-4 py-2.5 flex items-center gap-3 text-[11px]">
-                  <span className="font-mono text-slate-400 shrink-0">
+                  <span className="font-mono text-slate-400 dark:text-slate-500 shrink-0">
                     {new Date(a.at).toLocaleTimeString()}
                   </span>
                   <span className="font-bold text-slate-700 dark:text-slate-200 shrink-0">
