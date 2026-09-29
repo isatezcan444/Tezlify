@@ -72,6 +72,7 @@ await writeFile(
     `export { OverviewPanel } from '${SRC}/components/admin/ops/OverviewPanel';`,
     `export { ConnectionPanel } from '${SRC}/components/admin/ops/ConnectionPanel';`,
     `export { LiveChatsLink } from '${SRC}/components/admin/ops/LiveChatsLink';`,
+    `export { DeployPanel } from '${SRC}/components/admin/ops/DeployPanel';`,
   ].join('\n'),
   'utf8',
 );
@@ -117,7 +118,7 @@ try {
     const {
     React, domAct, createRoot, I18nProvider, ToastProvider,
     ServiceStatusPanel, ErrorFeed, buildErrorFeed, classifyError, OpsLogsPanel,
-    OverviewPanel, ConnectionPanel, LiveChatsLink,
+    OverviewPanel, ConnectionPanel, LiveChatsLink, DeployPanel,
   } = mod;
   const h = React.createElement;
   const text = () => window.document.body.textContent || '';
@@ -272,6 +273,29 @@ try {
     assert.ok(btn, 'must offer a hand-off button');
     await domAct(async () => { btn.dispatchEvent(new window.MouseEvent('click', { bubbles: true })); });
     assert.ok(opened, 'clicking must navigate to the WhatsApp hub');
+  });
+
+  await check('DeployPanel offers ONE pipeline action and blocks it while busy', async () => {
+    const catalogue = [
+      { name: 'deploy_full', label: 'Deploy latest', destructive: true, description: 'pull, build, restart' },
+      { name: 'deploy_pull', label: 'Pull', destructive: true },
+      { name: 'deploy_build', label: 'Build', destructive: true },
+    ];
+    await mount(h(DeployPanel, { catalogue, running: null, busyName: null, onRun: () => {} }));
+    let labels = buttons().map((b) => (b.textContent || '').trim());
+    const deployButtons = labels.filter((l) => /deploy latest/i.test(l));
+    assert.equal(deployButtons.length, 1, 'exactly one deploy action, not three loose ones');
+    // The granular operations must not be offered as separate buttons.
+    assert.ok(!labels.some((l) => /^(pull|build)$/i.test(l.trim())),
+      'pull/build must not be separate buttons');
+
+    // A running operation must disable the control: the server would reject it.
+    await mount(h(DeployPanel, {
+      catalogue, running: { id: 'x', name: 'restart_gateway', label: 'r', status: 'running', destructive: true, logs: [] },
+      busyName: null, onRun: () => {},
+    }));
+    const btn = buttons().find((b) => /deploy latest/i.test(b.textContent || ''));
+    assert.ok(btn.disabled, 'the deploy button must be disabled while another operation runs');
   });
 
   console.log(`\nAdmin operations DOM verification: PASS (${passed} checks)`);

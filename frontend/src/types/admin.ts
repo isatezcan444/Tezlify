@@ -388,6 +388,10 @@ export interface OpsOperation {
   exit_code?: number | null;
   /** Already redacted server-side. */
   logs: string[];
+  /** Which step of a multi-step pipeline is in flight (pull / build / restart). */
+  current_step?: string | null;
+  /** Total steps; 1 for a single-command operation. */
+  total_steps?: number;
   health?: OpsHealthCheck | null;
 }
 
@@ -395,6 +399,8 @@ export interface OpsCatalogueEntry {
   name: string;
   label: string;
   destructive: boolean;
+  /** What the operation will actually do, shown in the confirmation dialog. */
+  description?: string;
 }
 
 export interface OpsAuditEntry {

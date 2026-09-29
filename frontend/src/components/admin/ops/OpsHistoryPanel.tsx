@@ -18,16 +18,53 @@ export interface OpsHistoryPanelProps {
   audit: OpsAuditEntry[];
 }
 
+/** Human label for a step, including the multi-step deploy pipeline names. */
 function stepLabel(op: OpsOperation, t: (k: string) => string): string {
+  // A multi-step operation reports `failed:<step>` so the operator can see
+  // which stage stopped the pipeline instead of a bare "failed".
+  if (op.step?.startsWith('failed:')) {
+    return `${t('admin.ops.stepFailed')} (${stepName(op.step.slice('failed:'.length), t)})`;
+  }
   switch (op.step) {
     case 'starting': return t('admin.ops.stepStarting');
     case 'running': return t('admin.ops.stepRunning');
     case 'completed': return t('admin.ops.stepCompleted');
     case 'failed': return t('admin.ops.stepFailed');
+    case 'interrupted': return t('admin.ops.stepInterrupted');
     case 'health_check': return t('admin.ops.stepHealthCheck');
     case 'health_check_failed': return t('admin.ops.stepHealthFailed');
-    default: return op.step || '-';
+    default: return stepName(op.step, t) || '-';
   }
+}
+
+/** Translate a server-side step id (pull / build / restart) for display. */
+function stepName(step: string | null | undefined, t: (k: string) => string): string {
+  if (!step) return '';
+  const known: Record<string, string> = {
+    pull: 'admin.ops.stagePull',
+    build: 'admin.ops.stageBuild',
+    restart: 'admin.ops.stageRestart',
+    run: 'admin.ops.stepRunning',
+  };
+  const key = known[step];
+  return key ? t(key) : step;
+}
+
+/**
+ * "Step 2 of 3 — build" for a pipeline, empty for a single-command operation.
+ * A deploy takes minutes, so without this the panel shows an undifferentiated
+ * "running" and the operator cannot tell a normal build from a hung one.
+ */
+function progressLabel(op: OpsOperation, t: (k: string) => string): string {
+  const total = op.total_steps || 1;
+  if (total <= 1) return '';
+  const current = op.current_step;
+  if (!current) return '';
+  const index = (['pull', 'build', 'restart'] as const).indexOf(current as never);
+  const pos = index >= 0 ? index + 1 : 0;
+  return pos > 0
+    ? `${t('admin.ops.stageProgress')} ${pos}/${total} — ${stepName(current, t)}`
+    : `${t('admin.ops.stageProgress')} ${total}/${total}`;
 }
 
 function statusOf(op: OpsOperation) {
@@ -81,6 +118,11 @@ export const OpsHistoryPanel: React.FC<OpsHistoryPanelProps> = ({ operations, au
                       <p className="text-xs font-bold text-slate-700 dark:text-slate-200">{op.label}</p>
                       <p className="text-[10px] text-slate-400">
                         {op.actor || '-'} · {stepLabel(op, t)}
+                        {progressLabel(op, t) && (
+                          <span className="ml-1.5 text-[10px] font-bold uppercase tracking-wide text-vuexy-primary">
+                            {progressLabel(op, t)}
+                          </span>
+                        )}
                         {typeof op.duration_ms === 'number' ? ` · ${op.duration_ms}ms` : ''}
                       </p>
                     </div>

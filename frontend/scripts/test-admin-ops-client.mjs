@@ -124,6 +124,9 @@ check('ops block covers every tab the Operations Center needs', () => {
     'bridgeStatus', 'gatewayHealth', 'reconnectCount',
     'connected', 'disconnected', 'sessionsTitle', 'sessionsEmpty',
     'pairingActive', 'pairingNeeded', 'chatsScopedNote', 'chatsOpenHub',
+    'stagePull', 'stageBuild', 'stageRestart', 'stageProgress', 'stepInterrupted',
+    'deployFull', 'deployFullDesc', 'deploymentUnavailable', 'deployBlocked',
+    'deployRestartsBackendNote',
   ];
   for (const key of required) {
     assert.ok(trOps.has(key), `missing ops key: ${key}`);
@@ -225,6 +228,60 @@ check('the overview tab surfaces an unwritable state directory', () => {
   assert.ok(/persistenceOk/.test(panel), 'must render the persistence warning');
   const page = read('../src/pages/admin/AdminWhatsAppPage.tsx');
   assert.ok(/persistence_ok !== false/.test(page), 'page must read the server flag');
+});
+
+check('the deploy action is one cohesive pipeline, not three loose buttons', () => {
+  const panel = read('../src/components/admin/ops/DeployPanel.tsx');
+  // Pull, build and restart as separate controls let an operator deploy a
+  // rebuild of the PREVIOUS commit. The panel must look the action up from the
+  // catalogue so the allowlist stays the single source of truth.
+  assert.ok(/catalogue\.find\(\(c\) => c\.name === 'deploy_full'\)/.test(panel),
+    'the deploy action must come from the catalogue');
+  assert.ok(!/deploy_pull/.test(panel) && !/deploy_build/.test(panel),
+    'the granular deploy operations must not be offered as separate buttons');
+});
+
+check('a multi-step operation shows which stage is running', () => {
+  const history = read('../src/components/admin/ops/OpsHistoryPanel.tsx');
+  // A deploy takes minutes. Without the stage the operator cannot tell a normal
+  // build from a hung one.
+  assert.ok(/current_step/.test(history), 'must read the in-flight step');
+  assert.ok(/total_steps/.test(history), 'must show progress out of the total');
+  for (const stage of ['pull', 'build', 'restart']) {
+    assert.ok(new RegExp(`'${stage}'`).test(history) || new RegExp(`\\b${stage}\\b`).test(history),
+      `stage ${stage} must be displayable`);
+  }
+  // An interrupted operation (backend restarted mid-deploy) needs its own label.
+  assert.ok(/interrupted/.test(history), 'must label the interrupted state');
+});
+
+check('the deploy button is disabled while another operation runs', () => {
+  const panel = read('../src/components/admin/ops/DeployPanel.tsx');
+  assert.ok(/const blocked = Boolean\(running\)/.test(panel),
+    'the deploy control must be blocked while an operation is running');
+  assert.ok(/disabled=\{!action \|\| blocked \|\| busy\}/.test(panel),
+    'the button must actually be disabled');
+});
+
+check('the TR and EN ops dictionaries have identical key sets', () => {
+  // Two apostrophe-escaping bugs slipped into the TR block during this work and
+  // only surfaced at compile time. This compares the key sets directly so a
+  // key added to one language and forgotten in the other fails here instead.
+  const blockOf = (src) => src.slice(src.indexOf('    ops: {'));
+  const keysOf = (src) => {
+    const out = new Set();
+    for (const line of blockOf(src).split('\n')) {
+      const m = line.match(/^\s{6}([A-Za-z0-9_]+):/);
+      if (m) out.add(m[1]);
+    }
+    return out;
+  };
+  const tr = keysOf(trSrc);
+  const en = keysOf(enSrc);
+  const missingInEn = [...tr].filter((k) => !en.has(k));
+  const missingInTr = [...en].filter((k) => !tr.has(k));
+  assert.deepEqual(missingInEn, [], `EN is missing ops keys: ${missingInEn.join(', ')}`);
+  assert.deepEqual(missingInTr, [], `TR is missing ops keys: ${missingInTr.join(', ')}`);
 });
 
 console.log(`\nAdmin ops client contract: PASS (${passed} checks)`);

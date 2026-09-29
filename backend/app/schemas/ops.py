@@ -57,6 +57,10 @@ class OpsOperation(BaseModel):
     exit_code: Optional[int] = None
     logs: List[str] = Field(default_factory=list)
     health: Optional[OpsHealthCheck] = None
+    # Multi-step progress. `deploy_full` runs pull -> build -> restart, so the
+    # operator needs to see WHICH step is in flight, not just a spinner.
+    current_step: Optional[str] = None
+    total_steps: int = 1
 
 
 class OpsCatalogueEntry(BaseModel):
@@ -65,6 +69,9 @@ class OpsCatalogueEntry(BaseModel):
     name: str
     label: str
     destructive: bool
+    # What the operation will actually do, so the confirmation dialog can show
+    # the operator the real steps instead of a bare verb like "Deploy".
+    description: str = ""
 
 
 class OpsAuditEntry(BaseModel):

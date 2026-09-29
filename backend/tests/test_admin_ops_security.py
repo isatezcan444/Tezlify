@@ -25,22 +25,29 @@ def test_operations_are_named_not_freeform():
     """Every callable action is a fixed key; there is no command parameter."""
     assert set(ops.OPERATIONS) == {
         "restart_backend", "restart_gateway", "restart_caddy", "restart_all",
-        "deploy_build", "deploy_pull", "git_status",
+        "deploy_build", "deploy_pull", "deploy_full", "git_status",
     }
     for name, spec in ops.OPERATIONS.items():
-        argv = spec.build_argv()
-        assert isinstance(argv, list), f"{name} must build a list argv"
-        assert all(isinstance(part, str) for part in argv), f"{name} argv must be str-only"
+        # steps() is the single resolution path for both single- and multi-step
+        # operations, so it is what must be proven free of caller input.
+        steps = spec.steps()
+        assert steps, f"{name} must resolve to at least one step"
+        for label, argv in steps:
+            assert isinstance(label, str) and label, f"{name} step needs a label"
+            assert isinstance(argv, list), f"{name} must build a list argv"
+            assert all(isinstance(part, str) for part in argv), f"{name} argv must be str-only"
         # The builder takes no arguments: a caller cannot smuggle input in.
-        assert inspect.signature(spec.build_argv).parameters == {}, (
+        builder = spec.build_argv or spec.build_steps
+        assert inspect.signature(builder).parameters == {}, (
             f"{name} argv builder must accept no parameters"
         )
 
 
 def test_argv_never_contains_shell_metacharacters():
     for name, spec in ops.OPERATIONS.items():
-        for part in spec.build_argv():
-            assert not any(c in part for c in ";&|`$><\n"), f"{name} argv looks like a shell string"
+        for _label, argv in spec.steps():
+            for part in argv:
+                assert not any(c in part for c in ";&|`$><\n"), f"{name} argv looks like a shell string"
 
 # ---------------------------------------------------------------- redaction
 @pytest.mark.parametrize("secret", [
@@ -333,3 +340,129 @@ def test_http_probe_distinguishes_unreachable_from_unhealthy():
     finally:
         asyncio.create_subprocess_exec = original
     assert result is None, "an unreachable probe returns None, not False"
+
+
+# ------------------------------------------------------- multi-step deploy
+def test_deploy_full_is_one_ordered_pipeline():
+    """Pull, build and recreate must be a single ordered operation.
+
+    As three separate buttons an operator could pull, forget to build, and be
+    left running the old image while the panel showed the new commit. As one
+    pipeline the order is fixed and each step is observable.
+    """
+    labels = [label for label, _ in ops.OPERATIONS["deploy_full"].steps()]
+    assert labels == ["pull", "build", "restart"], labels
+    # The deploy recreates containers: the database must not be in that list.
+    for _label, argv in ops.OPERATIONS["deploy_full"].steps():
+        assert "db" not in argv, "a deploy must never recreate the database"
+
+
+def test_a_failing_step_stops_the_pipeline():
+    """A failed pull must NOT be followed by a build.
+
+    Otherwise a failed pull builds and ships the PREVIOUS commit while the
+    operation reports success — the worst possible outcome for a deploy.
+    """
+    spec = ops.OPERATIONS["deploy_full"]
+    op = {
+        "id": "op1", "name": "deploy_full", "label": "Deploy", "status": "running",
+        "step": "starting", "started_at": ops._now_iso(), "finished_at": None,
+        "duration_ms": None, "actor": "admin", "destructive": True, "error": None,
+        "logs": [], "exit_code": None, "current_step": None, "total_steps": 0,
+    }
+    ran: list = []
+
+    async def fake_run(_op, argv, _cwd, _uid):
+        ran.append(argv)
+        return 1  # first step fails
+
+    original = ops._run_command
+    ops._run_command = fake_run
+    try:
+        asyncio.run(ops._execute(op, spec, None))
+    finally:
+        ops._run_command = original
+
+    assert len(ran) == 1, f"the pipeline must stop after the first failure, ran {len(ran)}"
+    assert op["status"] == "failed"
+    assert op["step"] == "failed:pull", op["step"]
+    assert "pull" in op["error"], "the failing step must be named"
+
+
+def test_a_successful_pipeline_reports_the_last_step_and_total():
+    spec = ops.OPERATIONS["deploy_full"]
+    op = {
+        "id": "op2", "name": "deploy_full", "label": "Deploy", "status": "running",
+        "step": "starting", "started_at": ops._now_iso(), "finished_at": None,
+        "duration_ms": None, "actor": "admin", "destructive": True, "error": None,
+        "logs": [], "exit_code": None, "current_step": None, "total_steps": 0,
+    }
+    ran: list = []
+
+    async def fake_run(_op, argv, _cwd, _uid):
+        ran.append(argv)
+        return 0
+
+    async def fake_health():
+        return {"checks": {}, "all_healthy": True, "checked_at": "", "details": {}, "whatsapp": {}}
+
+    original_run, original_health = ops._run_command, ops.run_health_check
+    ops._run_command = fake_run
+    ops.run_health_check = fake_health
+    try:
+        asyncio.run(ops._execute(op, spec, None))
+    finally:
+        ops._run_command, ops.run_health_check = original_run, original_health
+
+    assert len(ran) == 3, f"all three steps must run, got {len(ran)}"
+    assert op["status"] == "succeeded"
+    assert op["total_steps"] == 3
+    assert op["current_step"] == "restart", "the UI needs the in-flight step"
+
+
+def test_interrupted_operation_names_the_step_it_died_in():
+    """A restart must report WHERE it was interrupted, not just that it was.
+
+    For a self-restart the interruption is expected, so a bare "failed" would
+    be both wrong and alarmist; naming the step is what lets an operator judge.
+    """
+    import tempfile
+    from pathlib import Path
+
+    redirected = Path(tempfile.mkdtemp()) / "ops-state"
+    original_file, original_dir = ops._STATE_FILE, ops._STATE_DIR
+    ops._STATE_DIR = redirected
+    ops._STATE_FILE = redirected / "operations.json"
+    ops._op_registry.clear()
+    ops._order.clear()
+    ops._audit.clear()
+    try:
+        ops._op_registry["op9"] = {
+            "id": "op9", "name": "deploy_full", "label": "Deploy", "status": "running",
+            "step": "build", "current_step": "build", "total_steps": 3,
+            "started_at": ops._now_iso(), "finished_at": None, "duration_ms": None,
+            "actor": "admin", "destructive": True, "error": None, "logs": [],
+            "exit_code": None,
+        }
+        ops._order.append("op9")
+        ops._persist_state()
+        ops._op_registry.clear()
+        ops._order.clear()
+        ops._audit.clear()
+
+        ops.init_ops_state()
+        restored = ops.get_operation("op9")
+        assert restored is not None
+        assert restored["step"] == "interrupted"
+        assert "build" in restored["error"], restored["error"]
+        assert "unknown" in restored["error"], "the verdict must be honest about the result"
+    finally:
+        ops._op_registry.clear()
+        ops._order.clear()
+        ops._audit.clear()
+        ops._STATE_FILE, ops._STATE_DIR = original_file, original_dir
+        try:
+            import shutil
+            shutil.rmtree(redirected, ignore_errors=True)
+        except Exception:
+            pass

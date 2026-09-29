@@ -37,6 +37,7 @@ import { ErrorFeed } from '../../components/admin/ops/ErrorFeed';
 import { OverviewPanel } from '../../components/admin/ops/OverviewPanel';
 import { ConnectionPanel } from '../../components/admin/ops/ConnectionPanel';
 import { LiveChatsLink } from '../../components/admin/ops/LiveChatsLink';
+import { DeployPanel } from '../../components/admin/ops/DeployPanel';
 import { OpsApi } from '../../api/admin';
 import { useToast } from '../../context/ToastContext';
 import { useOpsEvents } from '../../hooks/useOpsEvents';
@@ -637,6 +638,12 @@ export const AdminWhatsAppPage: React.FC<AdminWhatsAppPageProps> = ({ onNavigate
     }
     return (
       <div className="space-y-6">
+        <DeployPanel
+          catalogue={opsStatus?.catalogue || []}
+          running={opsStatus?.running || null}
+          busyName={busyName}
+          onRun={runOperation}
+        />
         {opLogs && (
           <Card>
             <CardHeader>

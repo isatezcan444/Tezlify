@@ -412,6 +412,11 @@ WhatsApp Operations Center composites, rendered inside
 - **Props**: `{ onOpenChats: () => void }`
 - **Import**: `import { LiveChatsLink } from '@/components/admin/ops';`
 
+### `DeployPanel`
+- **Purpose**: The cohesive deploy action — pull, rebuild, recreate, verify, as ONE ordered pipeline. Replaces the three separate `deploy_pull` / `deploy_build` / restart controls, which let an operator pull and forget to build (panel shows the new commit while the old image serves) or build without pulling (shipping a rebuild of the previous commit). A failure at any stage stops the rest. The action is resolved from the catalogue so the allowlist stays the single source of truth, and it is disabled whenever another operation is running.
+- **Props**: `{ catalogue: OpsCatalogueEntry[]; running: OpsOperation | null; busyName: string | null; onRun: (entry: OpsCatalogueEntry) => void }`
+- **Import**: `import { DeployPanel } from '@/components/admin/ops';`
+
 ### `useOpsEvents` (hook)
 - **Purpose**: Subscribes to `operation.*` events on the shared `/ws` stream so operation progress is realtime. Reuses the managed `createWebSocket` factory, so auth-refresh and backoff behaviour stay identical to the rest of the product. Polling remains only as a fallback when the socket is down.
 - **Props**: `(enabled: boolean, { onOperation: (op: OpsOperation, event: string) => void; onConnectionChange?: (connected: boolean) => void })`

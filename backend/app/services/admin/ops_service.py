@@ -83,25 +83,47 @@ def _compose_argv(*args: str) -> List[str]:
 
 
 class OperationSpec:
-    """Declarative description of one allowlisted operation."""
+    """Declarative description of one allowlisted operation.
 
-    __slots__ = ("name", "label", "build_argv", "destructive", "cooldown", "timeout")
+    A spec may be a SINGLE command or a SEQUENCE of them. Multi-step support
+    exists because the useful deploy is a pipeline — pull, then rebuild, then
+    recreate — and forcing the operator to click three separate buttons is how
+    you end up shipping a rebuilt image of the previous commit. Steps run in
+    order and a non-zero exit stops the pipeline, so a failed pull never
+    proceeds to a build of stale code.
+    """
+
+    __slots__ = ("name", "label", "build_argv", "build_steps", "destructive",
+                 "cooldown", "timeout", "description")
 
     def __init__(
         self,
         name: str,
         label: str,
-        build_argv: Callable[[], List[str]],
+        build_argv: Optional[Callable[[], List[str]]] = None,
         destructive: bool = False,
         cooldown: int = 0,
         timeout: int = 300,
+        build_steps: Optional[Callable[[], List[Tuple[str, List[str]]]]] = None,
+        description: str = "",
     ) -> None:
+        if build_argv is None and build_steps is None:
+            raise ValueError("an operation needs build_argv or build_steps")
         self.name = name
         self.label = label
         self.build_argv = build_argv
+        self.build_steps = build_steps
         self.destructive = destructive
         self.cooldown = cooldown
         self.timeout = timeout
+        self.description = description
+
+    def steps(self) -> List[Tuple[str, List[str]]]:
+        """Resolve this operation into an ordered list of (label, argv)."""
+        if self.build_steps is not None:
+            return self.build_steps()
+        assert self.build_argv is not None
+        return [("run", self.build_argv())]
 
 
 class OperationError(Exception):
@@ -160,6 +182,28 @@ OPERATIONS: Dict[str, OperationSpec] = {
     "git_status": OperationSpec(
         "git_status", "Read git status",
         lambda: ["git", "status", "--porcelain", "-b"], timeout=30,
+    ),
+    # The cohesive deploy. These three used to be three separate buttons, which
+    # made it easy to rebuild an image from the PREVIOUS commit by forgetting
+    # the pull — or to pull, forget to build, and leave the old image running
+    # while the panel reported the new commit. As one ordered pipeline a
+    # non-zero exit stops the sequence, so a failed pull never builds.
+    "deploy_full": OperationSpec(
+        "deploy_full", "Deploy latest (pull, build, restart)",
+        destructive=True,
+        cooldown=_DESTRUCTIVE_COOLDOWN_SECONDS,
+        timeout=1800,
+        description="Pull the latest commit, rebuild the images, recreate the "
+                    "services, then verify the result.",
+        build_steps=lambda: [
+            ("pull", ["git", "pull", "--ff-only", "origin", "main"]),
+            ("build", _compose_argv("build", "backend", "gateway", "caddy")),
+            # --no-deps and an explicit service list: never recreate the
+            # database as a side effect of a deploy.
+            ("restart", _compose_argv(
+                "up", "-d", "--no-deps", "--force-recreate", "caddy", "backend", "gateway",
+            )),
+        ],
     ),
 }
 
@@ -262,29 +306,38 @@ def _load_state() -> None:
 
 
 def _recover_orphans() -> None:
-    """Mark operations left `running` by a process death as interrupted.
+    """Reconcile operations left `running` by a process death.
 
     A record can only be `running` here if the previous backend exited before
     its own `_execute` finished — i.e. the restart/deploy killed this very
     process. Nothing is actually in flight in the new process, so leaving the
     status as `running` would be a lie that also blocks the family guard.
+
+    The record is marked `interrupted` rather than `failed`, and names the step
+    that was in flight. "Interrupted" is the honest verdict: for a self-restart
+    the very act of restarting the backend is expected to kill this process, so
+    the operation may well have succeeded — we simply cannot observe its exit
+    code. Calling that a failure would train operators to ignore real failures.
     """
     changed = False
     for op in _op_registry.values():
-        if op.get("status") == "running":
-            op["status"] = "failed"
-            op["step"] = "interrupted"
-            op["finished_at"] = _now_iso()
-            op["error"] = redact(
-                "The backend restarted before this operation could finish; "
-                "its final result is unknown. Verify the service state before retrying.",
-                500,
-            )
-            record_audit(
-                "operation.interrupted", op.get("actor"), "failed", op.get("id"),
-                {"name": op.get("name")},
-            )
-            changed = True
+        if op.get("status") != "running":
+            continue
+        step = op.get("current_step") or op.get("step") or "an unknown step"
+        op["status"] = "failed"
+        op["step"] = "interrupted"
+        op["finished_at"] = _now_iso()
+        op["error"] = redact(
+            f"The backend restarted while step '{step}' was running, so the result is "
+            "unknown — a restart normally interrupts its own operation. Verify "
+            "the service state and the logs below before retrying.",
+            500,
+        )
+        record_audit(
+            "operation.interrupted", op.get("actor"), "unknown", op.get("id"),
+            {"name": op.get("name"), "step": step},
+        )
+        changed = True
     if changed:
         _persist_state()
 
@@ -305,6 +358,9 @@ def _public(op: Dict[str, Any]) -> Dict[str, Any]:
         "error": op.get("error"),
         "logs": list(op.get("logs") or [])[-200:],
         "exit_code": op.get("exit_code"),
+        # Multi-step progress: which step is in flight out of how many.
+        "current_step": op.get("current_step"),
+        "total_steps": op.get("total_steps") or 1,
     }
 
 
@@ -444,6 +500,10 @@ async def start_operation(
             "error": None,
             "logs": [],
             "exit_code": None,
+            # Persisted so a restart mid-pipeline can tell the operator WHICH
+            # step was in flight, not just that something was interrupted.
+            "current_step": None,
+            "total_steps": 0,
         }
         _op_registry[op_id] = op
         _order.append(op_id)
@@ -461,19 +521,36 @@ async def start_operation(
 
 
 async def _execute(op: Dict[str, Any], spec: OperationSpec, user_id: Optional[str]) -> None:
-    """Run the operation to completion, then verify and publish the result."""
+    """Run the operation's steps in order, then verify and publish the result.
+
+    A step that exits non-zero STOPS the pipeline: a deploy whose `pull` failed
+    must not go on to build, because that would produce and ship an image of
+    the previous commit while reporting a successful deploy.
+    """
     try:
-        argv = spec.build_argv()
-        op["step"] = "running"
-        exit_code = await _run_command(op, argv, DEPLOY_DIR, user_id)
-        op["exit_code"] = exit_code
-        if exit_code == 0:
+        steps = spec.steps()
+        op["total_steps"] = len(steps)
+        last_exit = 0
+        for label, argv in steps:
+            op["current_step"] = label
+            op["step"] = label
+            # Persist between steps: a restart during `build` must be
+            # attributable to the build, not to an unnamed command.
+            _persist_state()
+            await _publish({"event": "operation.progress", "operation": _public(op)}, user_id)
+            last_exit = await _run_command(op, argv, DEPLOY_DIR, user_id)
+            op["exit_code"] = last_exit
+            if last_exit != 0:
+                op["status"] = "failed"
+                op["step"] = f"failed:{label}"
+                op["error"] = redact(
+                    f"Step '{label}' exited with code {last_exit}; the operation was stopped",
+                    500,
+                )
+                break
+        else:
             op["status"] = "succeeded"
             op["step"] = "completed"
-        else:
-            op["status"] = "failed"
-            op["step"] = "failed"
-            op["error"] = redact(f"Command exited with code {exit_code}", 500)
     except Exception as exc:
         op["status"] = "failed"
         op["step"] = "failed"
@@ -791,6 +868,7 @@ def available_operations() -> List[Dict[str, Any]]:
             "name": spec.name,
             "label": spec.label,
             "destructive": spec.destructive,
+            "description": spec.description,
         }
         for spec in OPERATIONS.values()
     ]
