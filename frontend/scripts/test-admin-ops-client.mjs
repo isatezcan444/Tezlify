@@ -336,10 +336,16 @@ check('the caddy config no longer requests a certificate for a dead domain', () 
   // NXDOMAIN and Caddy retried forever, burying the real signals.
   assert.ok(!caddy.includes('api.tezlify.com,') && !caddy.includes(', api.tezlify.com'),
     'the dead domain must not be served');
-  // The sslip host must use the internal CA so no external ACME call is made.
-  const publicBlock = caddy.slice(caddy.indexOf('api.130.162.247.20.sslip.io, 130.162'));
-  assert.ok(publicBlock.slice(0, 200).includes('tls internal'),
-    'the sslip host must use the internal CA');
+  // The sslip host must NOT pin `tls internal`: switching the issuing CA broke
+  // every client that trusted the existing chain, and stopping the ACME loop
+  // does not require it. Removing the dead domain is sufficient.
+  const siteStart = caddy.indexOf('api.130.162.247.20.sslip.io, 130.162');
+  const siteBlock = caddy.slice(siteStart, caddy.indexOf('\n}', siteStart));
+  assert.ok(!siteBlock.includes('tls internal'),
+    'the sslip site must not switch the issuing CA');
+  // The site must still exist and still serve the API.
+  assert.ok(siteBlock.includes('reverse_proxy backend:8000'),
+    'the sslip site must still proxy the backend');
 });
 
 console.log(`\nAdmin ops client contract: PASS (${passed} checks)`);
