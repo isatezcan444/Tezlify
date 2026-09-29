@@ -4,23 +4,32 @@ WORKDIR /app
 
 # Install minimal system dependencies for building C extensions and healthcheck.
 #
-# `docker.io` is the CLI only (no daemon): the Operations Center needs to run
-# ALLOWLISTED `docker compose` operations against the mounted host socket
+# The Operations Center needs the docker CLI (no daemon) to run ALLOWLISTED
+# `docker compose` operations against the mounted host socket
 # (/var/run/docker.sock). It is NOT a general command runner — every operation
 # is a fixed, code-defined action in backend/app/services/admin/ops_service.py,
 # never caller-supplied argv. Installing only the client keeps the attack
 # surface minimal; the socket mount is what actually grants host access and is
 # granted deliberately in docker-compose.prod.yml.
 #
-# The compose PLUGIN is not installed: `docker.io` ships the CLI, and the
-# daemon's built-in `docker compose` subcommand is what the operations invoke.
-# (The `docker-compose-v2` apt package does not exist on this base image.)
+# Package split (Debian trixie): `docker.io` installs the DAEMON and only
+# contributes /usr/bin/docker-init — it does NOT ship the client binary. The
+# CLI lives in `docker-cli`. Installing only `docker.io` produces an image where
+# `docker` is "executable file not found", so both are required.
+#
+# The compose PLUGIN is not installed from apt: the daemon provides the
+# `docker compose` subcommand that the operations invoke.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     curl \
     ca-certificates \
     docker.io \
+    docker-cli \
     && rm -rf /var/lib/apt/lists/*
+
+# Fail the build, not production, if the CLI is absent: without it every
+# Operations Center action would fail at runtime with a confusing message.
+RUN docker --version
 
 # Copy requirements and install
 COPY backend/requirements.txt .
