@@ -37,21 +37,49 @@ export function reportOrphanedSession(table, sessionId, detail, logger) {
   const key = `${table}:${sessionId}`;
   if (reportedOrphans.has(key)) return false;
   reportedOrphans.add(key);
-  (logger?.error || console.error)(
-    {
-      table,
-      session_id: sessionId,
-      detail: detail ?? null,
-      code: PG_FOREIGN_KEY_VIOLATION,
-    },
+  // The logger is called through a bound reference, never as `logger.error(...)`.
+  //
+  // WHY THIS MATTERS MORE THAN IT LOOKS
+  // -----------------------------------
+  // A pino method invoked as `obj.error(args)` keeps `this` bound to the logger.
+  // Destructuring or falling back to a bare `console.error` loses that, and
+  // pino's tools.js then reads `this[Symbol(pino.msgPrefix)]` off `undefined`
+  // and throws `TypeError: Cannot read properties of undefined`. That exception
+  // escaped this reporting path, which runs from an async catch block, so it
+  // was an UNHANDLED rejection: the whole gateway process exited, the restart
+  // policy brought it back, and for those seconds every backend call failed
+  // with a 10ms ConnectError. The user saw a 502 on the pairing QR and then a
+  // wall of 404s once the in-memory session was gone.
+  //
+  // This function exists to REPORT a problem. It must never become one, so
+  // every path is wrapped and nothing is allowed to throw out of here.
+  const message =
     'Writing for a session that no longer exists in the database. Every durable ' +
     'write for this session is being DISCARDED — events reach the backend over ' +
     'the live socket only and are LOST on any restart. The usual cause is that ' +
     'the number was re-paired: the previous session row was deleted while this ' +
     'gateway session stayed connected. Re-pair the number (or restart this ' +
     'gateway) so a live session id is registered. Further writes for this ' +
-    'session will not be reported again.',
-  );
+    'session will not be reported again.';
+  const payload = {
+    table,
+    session_id: sessionId,
+    detail: detail ?? null,
+    code: PG_FOREIGN_KEY_VIOLATION,
+  };
+
+  try {
+    if (logger && typeof logger.error === 'function') {
+      logger.error(payload, message);
+    } else {
+      // Plain string form: console.error with an object first would be
+      // formatted by the object, which is exactly what loses the context.
+      console.error(`[orphan:${key}] ${JSON.stringify(payload)} ${message}`);
+    }
+  } catch {
+    // Reporting is best-effort by definition. Swallow anything the logging
+    // layer throws so an orphaned row can never take the process down.
+  }
   return true;
 }
 
