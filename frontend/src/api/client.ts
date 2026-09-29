@@ -652,6 +652,15 @@ export interface ManagedWebSocket {
   readonly socket: WebSocket | null;
 }
 
+/**
+ * A subscriber's handle on the shared socket. Deliberately narrower than
+ * ManagedWebSocket: a subscriber owns its own registration, not the underlying
+ * socket, so it must not be able to read or interfere with the transport.
+ */
+export interface RealtimeSubscription {
+  close: () => void;
+}
+
 // Faz 13 (düzeltme — Render log: `WebSocket auth failed: 401: Oturum süresi
 // doldu` 55 kez): kopan soket sabit 3 sn'de bir, AYNI (süresi dolmuş) token'la
 // yeniden deneniyordu — sonsuz 401 döngüsü. Soket hiç kurulamadığı için
@@ -688,6 +697,13 @@ export function createWebSocket(
 ): ManagedWebSocket {
   let ws: WebSocket | null = null;
   let isManuallyClosed = false;
+  // Incremented by close(). handleAuthRejection is async: it awaits a token
+  // refresh, so a close() issued while that await is in flight would otherwise
+  // be followed by scheduleReconnect() opening a FRESH socket for a component
+  // that no longer exists. Under React StrictMode (which mounts, unmounts and
+  // remounts every effect) that leaked one live connection per mount — visible
+  // in the backend logs as connect/disconnect/connect pairs that never settle.
+  let closeGeneration = 0;
   let reconnectTimeout: any = null;
   let attempt = 0;
   let authFailures = 0;
@@ -701,7 +717,13 @@ export function createWebSocket(
   function scheduleReconnect() {
     if (isManuallyClosed) return;
     if (reconnectTimeout) clearTimeout(reconnectTimeout);
-    reconnectTimeout = setTimeout(connect, backoffMs());
+    const generation = closeGeneration;
+    reconnectTimeout = setTimeout(() => {
+      // Re-check at FIRE time, not only at schedule time: the gap between the
+      // two is exactly where a close() (or a component unmount) lands.
+      if (isManuallyClosed || generation !== closeGeneration) return;
+      connect();
+    }, backoffMs());
   }
 
   /** Döngüyü tamamen durdur ve kullanıcıya görünür hata ver. */
@@ -719,6 +741,11 @@ export function createWebSocket(
   // Yetki reddi: önce oturumu yenile, sonra yeni token'la bağlan.
   // Yenileme başarısızsa ESKİ token'la denemeye DEVAM ETME — döngüyü durdur.
   async function handleAuthRejection() {
+    // Captured before the await below: if close() happens while the token
+    // refresh is in flight, every path out of this function must stop rather
+    // than open a socket for a caller that has already gone away.
+    const generation = closeGeneration;
+    if (isManuallyClosed) return;
     authFailures += 1;
     if (authFailures > WS_MAX_AUTH_FAILURES) {
       stopAndWarn();
@@ -727,6 +754,7 @@ export function createWebSocket(
     if (tokenRefresher) {
       try {
         const fresh = await tokenRefresher();
+        if (generation !== closeGeneration || isManuallyClosed) return;
         if (fresh) {
           currentAuthToken = fresh;
           attempt = 0;
@@ -737,6 +765,8 @@ export function createWebSocket(
         console.warn('[Tezlify WS] Oturum yenileme başarısız:', e);
       }
     }
+    // Closed while we were refreshing: there is nobody left to reconnect for.
+    if (generation !== closeGeneration || isManuallyClosed) return;
     // Yenileme yok veya başarısız: eski token'la sonsuz deneme YAPMA.
     // Eğer authFailures henüz sınırı aşmadıysa, birkaç deneme daha yapıp
     // sonra duracaktır (üstel geri çekilme ile).
@@ -746,6 +776,13 @@ export function createWebSocket(
   function connect() {
     if (isManuallyClosed) return;
     try {
+      // A previous socket can still be CONNECTING when a reconnect fires (the
+      // backoff is shorter than the handshake on a slow link). Opening a
+      // second one would leave the first orphaned but still authenticated, and
+      // the backend counts both as active.
+      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+        return;
+      }
       const wsUrlWithAuth = currentAuthToken ? `${WS_URL}${WS_URL.includes('?') ? '&' : '?'}token=${encodeURIComponent(currentAuthToken)}` : WS_URL;
       ws = new WebSocket(wsUrlWithAuth);
 
@@ -809,11 +846,93 @@ export function createWebSocket(
   return {
     close: () => {
       isManuallyClosed = true;
+      // Bump first: any reconnect already in flight compares against this and
+      // bails instead of resurrecting the socket we are closing.
+      closeGeneration += 1;
       if (reconnectTimeout) clearTimeout(reconnectTimeout);
-      if (ws) ws.close();
+      reconnectTimeout = null;
+      if (ws) {
+        ws.onclose = null;
+        ws.onerror = null;
+        ws.onmessage = null;
+        ws.onopen = null;
+        ws.close();
+        ws = null;
+      }
     },
     get socket() {
       return ws;
     },
   };
 }
+
+/* ------------------------------------------------------------------ *
+ * Shared realtime stream
+ * ------------------------------------------------------------------ */
+
+/**
+ * One socket for the whole app, fanned out to many subscribers.
+ *
+ * WHY
+ * ---
+ * App, useOpsEvents and LeadFinderPage each called createWebSocket directly,
+ * so a single logged-in page held 3+ live connections to the same backend,
+ * each with its own reconnect loop, its own backoff state and its own
+ * duplicate delivery of every event. Under StrictMode the double-mount made it
+ * five. The backend counts them all as active, and every reconnect storm was
+ * multiplied accordingly.
+ *
+ * The first caller's reference count keeps the socket alive; the last release
+ * closes it. Subscribers are held in a Set, so a component that mounts twice
+ * under StrictMode registers once (the same handler is deduped) and one
+ * release removes it.
+ *
+ * This does NOT replace the dispatching in App.tsx: that listener is the
+ * reason the shared socket exists, and it re-broadcasts to
+ * `tezlify:ws_event` for the code that already listens there.
+ */
+let sharedSocket: ManagedWebSocket | null = null;
+let sharedRefCount = 0;
+const sharedSubscribers = new Set<(data: unknown) => void>();
+const sharedStatusSubscribers = new Set<(connected: boolean) => void>();
+
+export function subscribeRealtime(
+  onMessage: (data: any) => void,
+  onStatusChange?: (connected: boolean) => void,
+): RealtimeSubscription {
+  sharedSubscribers.add(onMessage);
+  if (onStatusChange) sharedStatusSubscribers.add(onStatusChange);
+
+  sharedRefCount += 1;
+  if (!sharedSocket) {
+    sharedSocket = createWebSocket(
+      (data) => {
+        // Copy before iterating: a handler that unsubscribes during dispatch
+        // would otherwise mutate the Set mid-iteration.
+        for (const fn of Array.from(sharedSubscribers)) fn(data);
+      },
+      (connected) => {
+        for (const fn of Array.from(sharedStatusSubscribers)) fn(connected);
+      },
+    );
+  }
+
+  let released = false;
+  return {
+    close: () => {
+      // Idempotent: a StrictMode teardown can call the same cleanup twice, and
+      // without this the second call would decrement past zero and close a
+      // socket another component is still using.
+      if (released) return;
+      released = true;
+      sharedSubscribers.delete(onMessage);
+      if (onStatusChange) sharedStatusSubscribers.delete(onStatusChange);
+      sharedRefCount = Math.max(0, sharedRefCount - 1);
+      if (sharedRefCount === 0 && sharedSocket) {
+        sharedSocket.close();
+        sharedSocket = null;
+      }
+    },
+  };
+}
+

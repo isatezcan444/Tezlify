@@ -20,7 +20,24 @@ import {
   WhatsAppSyncJob,
 } from '../../../types';
 
-export class WhatsAppApiError extends Error {}
+/**
+ * Carries the HTTP status alongside the message.
+ *
+ * The status was dropped here, so a caller could only ever see the human
+ * message. That made it impossible to tell a TRANSIENT 404 (the gateway is
+ * rebuilding its socket after WhatsApp's restartRequired) from a genuinely
+ * dead pairing — the QR poll needs exactly that distinction to avoid showing a
+ * red error for a session that is about to succeed.
+ */
+export class WhatsAppApiError extends Error {
+  readonly status?: number;
+
+  constructor(message: string, status?: number) {
+    super(message);
+    this.name = 'WhatsAppApiError';
+    this.status = status;
+  }
+}
 
 /**
  * Sohbeti okundu isaretleme sonucu (Faz 13 — truthfulness).
@@ -89,7 +106,7 @@ export async function probeLive(): Promise<boolean> {
 // ---------------------------------------------------------------------------
 async function apiGet<T>(path: string): Promise<T> {
   const res = await authFetch(`${API_BASE}${path}`);
-  if (!res.ok) throw new WhatsAppApiError(await parseError(res, 'WhatsApp API hatası'));
+  if (!res.ok) throw new WhatsAppApiError(await parseError(res, 'WhatsApp API hatası'), res.status);
   return res.json() as Promise<T>;
 }
 
@@ -99,7 +116,7 @@ async function apiSend<T>(path: string, method: 'POST' | 'PATCH' | 'DELETE', bod
     headers: body !== undefined ? { 'Content-Type': 'application/json' } : undefined,
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
-  if (!res.ok) throw new WhatsAppApiError(await parseError(res, 'WhatsApp API hatası'));
+  if (!res.ok) throw new WhatsAppApiError(await parseError(res, 'WhatsApp API hatası'), res.status);
   return res.json() as Promise<T>;
 }
 
@@ -556,7 +573,7 @@ export const WhatsAppApi = {
   // (202), GET /sync/job reconnect kurtarmasi icin gercek durumu donerur.
   async startSync(): Promise<WhatsAppSyncJob> {
     const res = await authFetch(`${API_BASE}/whatsapp/sync`, { method: 'POST' });
-    if (!res.ok) throw new WhatsAppApiError(await parseError(res, 'WhatsApp API hatası'));
+    if (!res.ok) throw new WhatsAppApiError(await parseError(res, 'WhatsApp API hatası'), res.status);
     return res.json() as Promise<WhatsAppSyncJob>;
   },
 

@@ -145,6 +145,12 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
   const pairingLifecycleRef = useRef<PairingLifecycle>('IDLE');
   const cancelledPairTokensRef = useRef<Set<string>>(new Set());
   const pollFailuresRef = useRef<number>(0);
+  // Consecutive 404s from GET /sessions/{id}/qr. Tolerated briefly because
+  // WhatsApp's restartRequired (515) makes the gateway drop and rebuild the
+  // socket right after the QR is scanned, and the QR endpoint is absent for the
+  // duration of that rebuild. At 2.5s per poll this window is ~15s of grace.
+  const qrNotFoundStreakRef = useRef<number>(0);
+  const MAX_TRANSIENT_QR_404S = 6;
 
   // Sync ref with existingSessionId prop if changed
   useEffect(() => {
@@ -396,7 +402,13 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
         }
       }
     } catch (err: any) {
-      toast.error(err?.message || t('whatsapp.refreshingQr'), t('common.error'));
+      // Same transient 404 as the poll: the gateway is mid-rebuild. A toast per
+      // failure would stack one notification per attempt, which is how one
+      // restart turned into five red toasts. Only the manual refresh reports,
+      // and only once — the poll path handles its own backoff.
+      if (err?.status !== 404) {
+        toast.error(err?.message || t('whatsapp.refreshingQr'), t('common.error'));
+      }
     } finally {
       if (isMountedRef.current) {
         setIsRefreshing(false);
@@ -722,6 +734,11 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
           if (pToken) {
             const res = await WhatsAppRepository.getPairingQr(pToken);
             if (!isMountedRef.current) return;
+            // The gateway answered, so both counters must clear. Without this a
+            // transient 404 during an earlier reconnect could survive and later
+            // trip the failure threshold on an otherwise healthy session.
+            pollFailuresRef.current = 0;
+            qrNotFoundStreakRef.current = 0;
             if (res.status === 'CONNECTED' && res.session_id) {
               setPairingLifecycle('PROMOTION_PENDING');
               setConnectedPhone(res.phone);
@@ -764,6 +781,8 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
           } else if (sid) {
             const res = await WhatsAppRepository.getSessionQr(sid);
             if (!isMountedRef.current) return;
+            pollFailuresRef.current = 0;
+            qrNotFoundStreakRef.current = 0;
             if (res.status === 'CONNECTED') {
               setConnectedPhone(res.phone);
               setModalState('CONNECTED');
@@ -789,7 +808,23 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
             }
           }
         } catch (pollErr: any) {
+          // A 404 here is usually TRANSIENT, not fatal. After the QR is scanned
+          // WhatsApp answers with a restartRequired (515) and the gateway tears
+          // the socket down and rebuilds it; for those few seconds
+          // GET /sessions/{id}/qr genuinely does not exist. Treating that as a
+          // dead pairing showed the user a red error for a session that was
+          // about to succeed, and logged a 404 per poll.
+          if (pollErr?.status === 404) {
+            qrNotFoundStreakRef.current += 1;
+            // Give the gateway room to finish rebuilding the socket. A session
+            // that is genuinely gone stays gone well past this window.
+            if (qrNotFoundStreakRef.current <= MAX_TRANSIENT_QR_404S) return;
+          }
           pollFailuresRef.current += 1;
+          // Reset the not-found streak: the gateway answered again, so whatever
+          // was missing is back (this is what stops a stale 404 from
+          // accumulating across a long healthy session).
+          if (pollErr?.status !== 404) qrNotFoundStreakRef.current = 0;
           if (pollFailuresRef.current >= 5) {
             if (fallbackPollRef.current) clearInterval(fallbackPollRef.current);
             setErrorMessage(pollErr?.message || t('whatsapp.connectionFailed'));

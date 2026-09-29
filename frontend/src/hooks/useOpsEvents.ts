@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { createWebSocket, type ManagedWebSocket } from '../api/client';
+import { subscribeRealtime, type RealtimeSubscription } from '../api/client';
 import type { OpsOperation, OpsRealtimeEvent } from '../types/admin';
 
 export interface OpsEventHandlers {
@@ -50,9 +50,9 @@ export function useOpsEvents(
       return;
     }
 
-    let socket: ManagedWebSocket | null = null;
+    let socket: RealtimeSubscription | null = null;
     try {
-      socket = createWebSocket(
+      socket = subscribeRealtime(
         (data: unknown) => {
           const msg = data as Partial<OpsRealtimeEvent> | null;
           if (!msg || typeof msg.event !== 'string') return;

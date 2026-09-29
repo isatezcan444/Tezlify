@@ -24,7 +24,8 @@
     "lint": "eslint src --ext .ts,.tsx --resolve-plugins-relative-to . --max-warnings 0",
     "lint:report": "eslint src --ext .ts,.tsx --resolve-plugins-relative-to .",
     "verify:dialog-a11y": "node scripts/verify-dialog-a11y-dom.mjs",
-    "verify:url-sync": "node scripts/verify-url-sync.mjs"
+    "verify:url-sync": "node scripts/verify-url-sync.mjs",
+    "verify:ws-lifecycle": "node scripts/verify-ws-lifecycle.mjs"
   },
   "dependencies": {
     "class-variance-authority": "^0.7.1",

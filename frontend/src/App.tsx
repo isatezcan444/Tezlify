@@ -5,7 +5,7 @@ import { I18nProvider, useI18n } from './context/I18nContext';
 import { Sidebar } from './components/Layout/Sidebar';
 import { TopHeader } from './components/Layout/TopHeader';
 import { DashboardPage } from './pages/DashboardPage';
-import { ApiClient, createWebSocket } from './api/client';
+import { ApiClient, subscribeRealtime } from './api/client';
 import { DashboardStats } from './types';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { LoginPage } from './pages/LoginPage';
@@ -186,7 +186,7 @@ const AppContent: React.FC = () => {
     // Setup Realtime WebSocket connection with automatic reconnect
     let ws: { close: () => void } | null = null;
     try {
-      ws = createWebSocket(
+      ws = subscribeRealtime(
         (eventData) => {
           // Broadcast to hooks/subscribers
           window.dispatchEvent(new CustomEvent('tezlify:ws_event', { detail: eventData }));

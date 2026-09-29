@@ -15,7 +15,7 @@ import {
   Save,
   Database
 } from 'lucide-react';
-import { ApiClient, createWebSocket, type ManagedWebSocket } from '../api/client';
+import { ApiClient, subscribeRealtime, type RealtimeSubscription } from '../api/client';
 import {
   Button,
   Badge,
@@ -264,13 +264,13 @@ export const LeadFinderPage: React.FC<LeadFinderPageProps> = ({ onNavigate, onRe
       // "Cannot access 'ws' before initialization" and took the whole scrape
       // down with it. Closing is also funnelled through one helper so no path
       // can close it twice.
-      let ws: ManagedWebSocket | null = null;
+      let ws: RealtimeSubscription | null = null;
       const closeSocket = () => {
         try { ws?.close(); } catch { /* already closed */ }
         ws = null;
       };
 
-      ws = createWebSocket((eventData) => {
+      ws = subscribeRealtime((eventData) => {
         if (eventData.job_id !== undefined && eventData.job_id !== activeJobIdRef.current) {
           return;
         }
