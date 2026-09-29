@@ -20,7 +20,11 @@
     "verify:pairing-browser": "node scripts/verify-whatsapp-pairing-browser.mjs",
     "verify:ops-client": "node scripts/test-admin-ops-client.mjs",
     "verify:ops-dom": "node scripts/verify-admin-ops-dom.mjs",
-    "audit:admin-i18n": "node scripts/audit-admin-i18n.mjs"
+    "audit:admin-i18n": "node scripts/audit-admin-i18n.mjs",
+    "lint": "eslint src --ext .ts,.tsx --resolve-plugins-relative-to . --max-warnings 0",
+    "lint:report": "eslint src --ext .ts,.tsx --resolve-plugins-relative-to .",
+    "verify:dialog-a11y": "node scripts/verify-dialog-a11y-dom.mjs",
+    "verify:url-sync": "node scripts/verify-url-sync.mjs"
   },
   "dependencies": {
     "class-variance-authority": "^0.7.1",
@@ -33,8 +37,13 @@
   "devDependencies": {
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
+    "@typescript-eslint/eslint-plugin": "^7.18.0",
+    "@typescript-eslint/parser": "^7.18.0",
     "@vitejs/plugin-react": "^4.3.0",
     "autoprefixer": "^10.5.4",
+    "eslint": "^8.57.1",
+    "eslint-plugin-react-hooks": "^4.6.2",
+    "eslint-plugin-react-refresh": "^0.4.14",
     "jsdom": "^30.1.0",
     "postcss": "^8.5.26",
     "tailwindcss": "^3.4.19",

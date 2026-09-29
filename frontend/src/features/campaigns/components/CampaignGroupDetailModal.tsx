@@ -56,7 +56,7 @@ export const CampaignGroupDetailModal: React.FC<CampaignGroupDetailModalProps> =
     return () => {
       isMounted = false;
     };
-  }, [isOpen, groupId]);
+  }, [isOpen, groupId, toast, onClose]);
 
   return (
     <Modal

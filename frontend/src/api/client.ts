@@ -117,7 +117,7 @@ export class ApiClient {
     categories?: string[];
     status?: string;
     whatsapp_eligible_only?: boolean;
-  }): Promise<{ items: Lead[]; total: number; page: number; size: number; pages: number }> {
+  }, signal?: AbortSignal): Promise<{ items: Lead[]; total: number; page: number; size: number; pages: number }> {
     const query = new URLSearchParams();
     if (params.page) query.set('page', params.page.toString());
     if (params.size) query.set('size', params.size.toString());
@@ -134,7 +134,10 @@ export class ApiClient {
     if (params.status) query.set('status', params.status);
     if (params.whatsapp_eligible_only) query.set('whatsapp_eligible_only', 'true');
 
-    const res = await authFetch(`${API_BASE}/leads?${query.toString()}`);
+    // `signal` lets a debounced search cancel the request it superseded. Without
+    // it, typing "kahve" fires four overlapping searches whose responses can
+    // land out of order and show results for "kah" under the "kaha" query.
+    const res = await authFetch(`${API_BASE}/leads?${query.toString()}`, { signal });
     if (!res.ok) throw new Error('Failed to fetch leads');
     return res.json();
   }

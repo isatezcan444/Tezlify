@@ -1,6 +1,7 @@
 import * as React from 'react';
 import { AlertCircle, CheckCircle2, AlertTriangle, Info, X } from 'lucide-react';
 import { cn } from '../../lib/utils';
+import { useI18n } from '../../context/I18nContext';
 
 export interface AlertProps {
   variant?: 'info' | 'success' | 'warning' | 'danger';
@@ -19,6 +20,9 @@ export const Alert: React.FC<AlertProps> = ({
   onClose,
   className,
 }) => {
+  // Used for the icon-only close button's accessible name; `title` alone is a
+  // mouse-only hint and is not reliably announced by screen readers.
+  const { t } = useI18n();
   const variantStyles = {
     info: {
       box: 'bg-[#00CFE8]/10 border-[#00CFE8]/25 text-[#00CFE8]',
@@ -70,6 +74,7 @@ export const Alert: React.FC<AlertProps> = ({
         <button
           type="button"
           onClick={onClose}
+          aria-label={t("common.close")}
           className="p-1 rounded-lg hover:bg-black/5 dark:hover:bg-white/10 text-slate-400 hover:text-slate-700 dark:hover:text-white transition-colors cursor-pointer shrink-0"
         >
           <X className="w-4 h-4" />

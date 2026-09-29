@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { 
   Send, 
   Lock, 
@@ -89,13 +89,16 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
     }
   };
 
-  const stopTypingSignal = () => {
+  // Memoised because the pause timer below depends on it: without a stable
+  // identity the 4s timer would be torn down and restarted on every render,
+  // so the "typing" indicator could never actually stop.
+  const stopTypingSignal = useCallback(() => {
     if (!onTyping) return;
     if (typingActiveRef.current) {
       typingActiveRef.current = false;
       onTyping(false);
     }
-  };
+  }, [onTyping]);
 
   const isInputDisabledSafe = () => disabled || isClosed || !isWindowOpen;
 
@@ -108,7 +111,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
       }
     }, 4000);
     return () => clearTimeout(timer);
-  }, [text]);
+  }, [text, stopTypingSignal]);
 
   // Unmount / konuşma değişimi durumunda 'yazıyor' sinyali askıda kalmasın
   useEffect(() => {

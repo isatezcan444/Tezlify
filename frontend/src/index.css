@@ -104,3 +104,32 @@
 .live-dot {
   animation: live-pulse 2s infinite cubic-bezier(0.4, 0, 0.6, 1);
 }
+
+/* ============================================================================
+   Reduced motion
+   ----------------------------------------------------------------------------
+   The app animates content entrances (fade-in, page-enter, stagger-in), tab
+   switches and a CONTINUOUS live pulse on the WebSocket indicator. The pulse
+   never stops, so for someone with a vestibular disorder it is a permanent
+   source of motion they cannot switch off.
+
+   `animation: none` removes the movement; `transition: none` does the same for
+   state changes. The live dot keeps its colour, so it still reads as "connected"
+   without pulsing.
+
+   This is a preference query, not a user setting: it follows the OS.
+   ========================================================================== */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  .live-dot {
+    animation: none !important;
+  }
+}

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { 
   ShieldAlert,
   Plus, 
@@ -48,7 +48,11 @@ export const BlacklistPage: React.FC = () => {
   const [isBulkRemoving, setIsBulkRemoving] = useState(false);
 
   // Fetch paginated blacklist from server
-  const fetchBlacklist = async () => {
+  // Memoised so the effect below can depend on it directly. The filters it
+  // reads ARE the effect's trigger, so the request fires on exactly the same
+  // changes as before — the only difference is that the identity is stable, so
+  // React stops warning and stops risking a stale closure.
+  const fetchBlacklist = useCallback(async () => {
     setLoading(true);
     try {
       const data = await ApiClient.getBlacklist({
@@ -64,18 +68,18 @@ export const BlacklistPage: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [page, pageSize, search, reasonFilter, toast, t]);
 
   useEffect(() => {
     fetchBlacklist();
-  }, [page, pageSize, search, reasonFilter]);
+  }, [fetchBlacklist]);
 
   // Clear selection on page/filter change unless all-matching is active
   useEffect(() => {
     if (!selectAllMatching) {
       setSelectedIds([]);
     }
-  }, [page, pageSize, search, reasonFilter]);
+  }, [page, pageSize, search, reasonFilter, selectAllMatching]);
 
   // Selection Checkbox Logic
   const currentPageIds = blacklist.map((item) => item.id);

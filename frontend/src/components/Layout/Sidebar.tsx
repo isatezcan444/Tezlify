@@ -118,6 +118,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
         {/* Mobile Close Button */}
         <button
+          aria-label={t('common.close')}
           type="button"
           onClick={onCloseMobile}
           className="lg:hidden p-2 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/[0.05] cursor-pointer"

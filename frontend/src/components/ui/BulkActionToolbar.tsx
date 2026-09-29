@@ -102,7 +102,8 @@ export const BulkActionToolbar: React.FC<BulkActionToolbarProps> = ({
           onClick={onClearSelection}
           className="p-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white/80 hover:text-white transition-colors cursor-pointer"
           title={t('common.clearSelection')}
-        >
+        
+          aria-label={t('common.clearSelection')}>
           <X className="w-4 h-4" />
         </button>
       </div>

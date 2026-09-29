@@ -220,7 +220,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
     return { start, end };
   };
 
-  const measureMounted = (): number => {
+  const measureMounted = useCallback((): number => {
     const cont = containerRef.current;
     if (!cont) return 0;
     const width = cont.clientWidth - 32;
@@ -235,9 +235,9 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
       }
     }
     return changes;
-  };
+  }, []);
 
-  const anchorInfo = (): { key: string; y: number; atBottom: boolean } | null => {
+  const anchorInfo = useCallback((): { key: string; y: number; atBottom: boolean } | null => {
     const cont = containerRef.current;
     if (!cont) return null;
     const er = cont.getBoundingClientRect();
@@ -254,13 +254,13 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
     const atBottom = cont.scrollHeight - cont.scrollTop - cont.clientHeight <= 2;
     if (!pick) return { key: '', y: 0, atBottom };
     return { key: pick.dataset.k as string, y: pick.getBoundingClientRect().top - er.top, atBottom };
-  };
+  }, []);
 
-  const trackAnchor = () => {
+  const trackAnchor = useCallback(() => {
     const a = anchorInfo();
     if (a && a.key) anchorRef.current = { key: a.key, y: a.y };
     else anchorRef.current = null;
-  };
+  }, [anchorInfo]);
 
   /**
    * The single logical geometry operation (K.18.1 contract):
@@ -322,7 +322,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
    * where flushSync cannot re-flush mid-commit). Still pre-paint either way,
    * and it holds the ≤1 scroll-write invariant.
    */
-  const runPin = (op: K19Op, pinMode: 'anchor' | 'bottom' | null, wantY: number | null) => {
+  const runPin = useCallback((op: K19Op, pinMode: 'anchor' | 'bottom' | null, wantY: number | null) => {
     const cont = containerRef.current;
     if (!cont) return;
     // Fill the cache from the rows the commit just mounted: mounted heights are
@@ -344,7 +344,12 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
     trackAnchor();
     scrollTopRef.current = cont.scrollTop;
     bottomDistRef.current = cont.scrollHeight - cont.scrollTop - cont.clientHeight;
-  };
+    // measureMounted and trackAnchor read their state through refs, so this
+    // callback is safe to memoise with no dependencies at all. That matters
+    // because geomOp and the layout effect below both depend on it: if runPin
+    // were a fresh function every render, both of them would be rebuilt on
+    // every render too and the pinning window would never settle.
+  }, [measureMounted, trackAnchor]);
 
   const geomOp = useCallback((type: K19Op['type'], opts: {
     wantY?: number | null; atBottom?: boolean; affected?: string[]; pin?: 'anchor' | 'bottom' | null;
@@ -416,7 +421,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
     } finally {
       if (!pendingPinRef.current || pendingPinRef.current.op !== op) { busyRef.current = false; maybeRORecheck(); }
     }
-  }, [topsOf]);
+  }, [topsOf, measureMounted, runPin]);
 
   // --------------------------- ResizeObserver: store + async logical ops ----
   // RO NEVER writes scroll and never setStates straight from the callback; a
@@ -485,7 +490,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
     const ro = new ResizeObserver(() => roTick());
     for (const el of cont.querySelectorAll<HTMLElement>('[data-k]')) ro.observe(el);
     return () => { ro.disconnect(); if (roTickRef.current === roTick) roTickRef.current = null; };
-  }, [virtualize, win.start, win.end, geomOp]);
+  }, [virtualize, win.start, win.end, geomOp, anchorInfo]);
 
   // -------------------------------------------------------------- scroll ----
   const handleScroll = () => {
@@ -632,7 +637,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
       busyRef.current = false;
       maybeRORecheck();
     }
-  }, [win, virtualize]);
+  }, [win, virtualize, runPin]);
 
   const newestKey = sortedMessages.length ? rowKeyOf(sortedMessages[sortedMessages.length - 1]) : null;
   const prevNewestKeyRef = useRef<string | null>(newestKey);
@@ -694,6 +699,13 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
         setShowNewMessagePill(true);
       }
     }
+  // `newestKey` is intentionally NOT a dependency. This effect compares the
+  // incoming newest key against the PREVIOUS one held in prevNewestKeyRef —
+  // that comparison is the entire point, so making it a dependency would re-run
+  // the effect on every new message and destroy the "is this actually new?"
+  // question the effect exists to answer. It already re-runs whenever
+  // `sortedMessages` changes, which is exactly when newestKey can differ.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sortedMessages, isNearBottom, geomOp]);
 
   // Initial scroll to bottom on mount, on load finishing, on a conversation

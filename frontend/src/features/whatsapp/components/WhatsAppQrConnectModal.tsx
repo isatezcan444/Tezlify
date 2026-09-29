@@ -705,7 +705,7 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
     return () => {
       window.removeEventListener('tezlify:ws_event', handleWsEvent);
     };
-  }, [isOpen, sessionId, sessionName, modalState, resetCountdown, clearTimers, t, toast, setPairingLifecycle]);
+  }, [isOpen, sessionId, sessionName, modalState, resetCountdown, clearTimers, t, toast, setPairingLifecycle, onClose]);
 
   // Gentle Fallback Polling (Every 2.5 seconds while waiting for pairing/connection)
   useEffect(() => {

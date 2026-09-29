@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useCallback } from 'react';
 import { Sparkles, RefreshCw, Copy, Check } from 'lucide-react';
 import { Card } from '../../../components/ui/card';
 import { IconButton } from '../../../components/ui/IconButton';
@@ -54,7 +54,7 @@ export const SpintaxPreviewCard: React.FC<SpintaxPreviewCardProps> = ({
   }, [sampleLead, targetCategory, language]);
 
   // Spintax Resolver: {opt1|opt2|opt3} and {name}/{isim}, {city}/{şehir}, {district}/{ilçe}, {category}/{kategori}, {rating}/{puan}
-  const resolveSpintax = (text: string) => {
+  const resolveSpintax = useCallback((text: string) => {
     if (!text || !text.trim()) return '';
 
     // 1. Replace template variables (supporting both TR and EN tokens)
@@ -79,7 +79,7 @@ export const SpintaxPreviewCard: React.FC<SpintaxPreviewCardProps> = ({
     });
 
     return resolved;
-  };
+  }, [activeSampleLead, targetCategory, t]);
 
   const previewText = useMemo(() => {
     if (!template || !template.trim()) {
@@ -88,7 +88,13 @@ export const SpintaxPreviewCard: React.FC<SpintaxPreviewCardProps> = ({
         : 'Once you select a communication goal and fill in details, your live preview will appear here.');
     }
     return resolveSpintax(template);
-  }, [template, iteration, activeSampleLead, language, t]);
+    // `iteration` is a deliberate dependency, even though nothing here reads
+    // it. It is the re-roll counter: bumping it must re-run the memo so
+    // Math.random() inside resolveSpintax picks a different set of branches.
+    // ESLint cannot see that indirection, so the comment is the only record of
+    // why removing it would freeze the preview forever.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [template, iteration, language, t, resolveSpintax]);
 
   const handleCopy = () => {
     if (!previewText) return;

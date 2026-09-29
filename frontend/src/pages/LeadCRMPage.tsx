@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { 
   Users, 
   Search, 
@@ -143,25 +143,45 @@ export const LeadCRMPage: React.FC<LeadCRMPageProps> = ({ onRefreshStats }) => {
   const [formError, setFormError] = useState('');
 
   const fetchLeadsRequestIdRef = useRef(0);
+  const fetchLeadsAbortRef = useRef<AbortController | null>(null);
 
-  const fetchLeads = async () => {
+  const fetchLeads = useCallback(async () => {
     const requestId = ++fetchLeadsRequestIdRef.current;
+    // Cancel the request this one supersedes. The requestId check below already
+    // discards a stale response, but the superseded request still occupied a
+    // browser connection and server worker for its full round trip; on a slow
+    // connection a burst of keystrokes queues up several of them.
+    fetchLeadsAbortRef.current?.abort();
+    const controller = new AbortController();
+    fetchLeadsAbortRef.current = controller;
     setLoading(true);
     try {
-      const data = await ApiClient.getLeads(buildQueryParams());
+      const data = await ApiClient.getLeads(buildQueryParams(), controller.signal);
       if (requestId !== fetchLeadsRequestIdRef.current) return;
       setLeads(data.items);
       setTotal(data.total);
     } catch (err) {
+      // An abort is the expected outcome of a superseded search, not a failure
+      // worth logging or surfacing.
+      if ((err as Error)?.name === 'AbortError') return;
       console.error('Error fetching leads:', err);
     } finally {
       if (requestId === fetchLeadsRequestIdRef.current) setLoading(false);
     }
-  };
+  }, [buildQueryParams]);
 
+
+  // Abort on unmount so a late response cannot call setState on a dead
+  // component.
+  useEffect(() => () => fetchLeadsAbortRef.current?.abort(), []);
+
+  // fetchLeads depends on buildQueryParams, which useLeadFilters memoises on
+  // exactly the eight filters this used to list by hand. Depending on the
+  // callback therefore fires on precisely the same changes, with no array
+  // rebuilt every render and no way for the two lists to drift apart.
   useEffect(() => {
     fetchLeads();
-  }, [page, pageSize, search, selectedCity, selectedDistricts, selectedCategories, statusFilter, waOnly]);
+  }, [fetchLeads]);
 
   // Clear selection on page/filter change unless all-matching is active
   useEffect(() => {

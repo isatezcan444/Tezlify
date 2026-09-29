@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   Sparkles,
   Handshake,
@@ -312,7 +312,7 @@ export const CampaignCreateWizard: React.FC<CampaignCreateWizardProps> = ({
     }
   }, [prefill]);
 
-  const getPayload = (seed?: number) => {
+  const getPayload = useCallback((seed?: number) => {
     let offer_title = '';
     let key_benefit = '';
     let extra_information = '';
@@ -365,7 +365,7 @@ export const CampaignCreateWizard: React.FC<CampaignCreateWizardProps> = ({
       language,
       variation_seed: seed !== undefined ? seed : variationCount,
     };
-  };
+  }, [communicationGoal, goalForm, variationCount, language, targetCategory]);;
 
   // Automatic Debounced AI Message Generation
   useEffect(() => {
@@ -430,6 +430,8 @@ export const CampaignCreateWizard: React.FC<CampaignCreateWizardProps> = ({
     targetCategory,
     language,
     isTemplateManuallyEdited,
+    getPayload,
+    variationCount,
   ]);
 
   const handleSelectGoal = (goalId: CommunicationGoal) => {

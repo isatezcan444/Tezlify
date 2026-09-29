@@ -40,7 +40,8 @@ export const IconButton = React.forwardRef<HTMLButtonElement, IconButtonProps>(
           className
         )}
         {...props}
-      >
+      
+        aria-label={tooltip || title}>
         <Icon className="w-full h-full stroke-[2.2]" />
       </button>
     );

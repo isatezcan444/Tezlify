@@ -1,6 +1,7 @@
 import * as React from 'react';
 import { LucideIcon, X } from 'lucide-react';
 import { cn, renderIcon } from '../../lib/utils';
+import { useI18n } from '../../context/I18nContext';
 
 export interface TextInputProps extends React.InputHTMLAttributes<HTMLInputElement> {
   leftIcon?: LucideIcon | React.ReactNode;
@@ -11,6 +12,8 @@ export interface TextInputProps extends React.InputHTMLAttributes<HTMLInputEleme
 
 export const TextInput = React.forwardRef<HTMLInputElement, TextInputProps>(
   ({ className, leftIcon: LeftIcon, rightIcon: RightIcon, onClear, error, value, ...props }, ref) => {
+    // Accessible name for the icon-only clear button; `title` is mouse-only.
+    const { t } = useI18n();
     const showClear = onClear && value && String(value).length > 0;
 
     return (
@@ -37,6 +40,7 @@ export const TextInput = React.forwardRef<HTMLInputElement, TextInputProps>(
         {showClear ? (
           <button
             type="button"
+            aria-label={t("common.clear")}
             onClick={onClear}
             className="absolute right-2.5 p-1 rounded-md text-slate-400 hover:text-slate-600 dark:hover:text-white transition-colors cursor-pointer"
           >

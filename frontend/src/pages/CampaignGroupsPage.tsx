@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { 
   Users, 
   Trash2, 
@@ -55,7 +55,7 @@ export const CampaignGroupsPage: React.FC<CampaignGroupsPageProps> = ({
   const [selectedGroupId, setSelectedGroupId] = useState<number | null>(null);
   const [editingGroup, setEditingGroup] = useState<CampaignGroup | null>(null);
 
-  const fetchGroups = async () => {
+  const fetchGroups = useCallback(async () => {
     try {
       setLoading(true);
       const data = await ApiClient.getCampaignGroups();
@@ -66,11 +66,11 @@ export const CampaignGroupsPage: React.FC<CampaignGroupsPageProps> = ({
     } finally {
       setLoading(false);
     }
-  };
+  }, [toast, t]);
 
   useEffect(() => {
     fetchGroups();
-  }, []);
+  }, [fetchGroups]);
 
   const handleDeleteGroup = async (group: CampaignGroup) => {
     const confirmed = await toast.confirm({

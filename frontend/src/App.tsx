@@ -1,31 +1,125 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, lazy, Suspense } from 'react';
 import { ThemeProvider } from './context/ThemeContext';
 import { ToastProvider, useToast } from './context/ToastContext';
 import { I18nProvider, useI18n } from './context/I18nContext';
 import { Sidebar } from './components/Layout/Sidebar';
 import { TopHeader } from './components/Layout/TopHeader';
 import { DashboardPage } from './pages/DashboardPage';
-import { LeadFinderPage } from './pages/LeadFinderPage';
-import { LeadCRMPage } from './pages/LeadCRMPage';
-import { CampaignsPage } from './pages/CampaignsPage';
-import { CampaignGroupsPage } from './pages/CampaignGroupsPage';
-import { WhatsAppHubPage } from './pages/WhatsAppHubPage';
-import { BlacklistPage } from './pages/BlacklistPage';
-import { SettingsPage } from './pages/SettingsPage';
-import { AdminOverviewPage } from './pages/admin/AdminOverviewPage';
-import { AdminWhatsAppPage } from './pages/admin/AdminWhatsAppPage';
-import { AdminMonitoringPage } from './pages/admin/AdminMonitoringPage';
-import { AdminBackupsPage } from './pages/admin/AdminBackupsPage';
-import { AdminOperationsPage } from './pages/admin/AdminOperationsPage';
-import { AdminDeploymentPage } from './pages/admin/AdminDeploymentPage';
-import { AdminSecurityPage } from './pages/admin/AdminSecurityPage';
 import { ApiClient, createWebSocket } from './api/client';
 import { DashboardStats } from './types';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { LoginPage } from './pages/LoginPage';
 
+/* Route-level code splitting.
+   The 922 KB bundle was a single file because all 15 pages were static imports,
+   so a visitor paid to download every screen to reach the one they wanted.
+   These load on demand, in parallel with the request that needs them.
+   Dashboard and Login stay eager: they are the first paint, and holding the
+   auth shell back on a network round trip would be a worse trade than the
+   bytes. */
+const LeadFinderPage = lazy(() => import('./pages/LeadFinderPage').then((m) => ({ default: m.LeadFinderPage })));
+const LeadCRMPage = lazy(() => import('./pages/LeadCRMPage').then((m) => ({ default: m.LeadCRMPage })));
+const CampaignsPage = lazy(() => import('./pages/CampaignsPage').then((m) => ({ default: m.CampaignsPage })));
+const CampaignGroupsPage = lazy(() => import('./pages/CampaignGroupsPage').then((m) => ({ default: m.CampaignGroupsPage })));
+const WhatsAppHubPage = lazy(() => import('./pages/WhatsAppHubPage').then((m) => ({ default: m.WhatsAppHubPage })));
+const BlacklistPage = lazy(() => import('./pages/BlacklistPage').then((m) => ({ default: m.BlacklistPage })));
+const SettingsPage = lazy(() => import('./pages/SettingsPage').then((m) => ({ default: m.SettingsPage })));
+const AdminOverviewPage = lazy(() => import('./pages/admin/AdminOverviewPage').then((m) => ({ default: m.AdminOverviewPage })));
+const AdminWhatsAppPage = lazy(() => import('./pages/admin/AdminWhatsAppPage').then((m) => ({ default: m.AdminWhatsAppPage })));
+const AdminMonitoringPage = lazy(() => import('./pages/admin/AdminMonitoringPage').then((m) => ({ default: m.AdminMonitoringPage })));
+const AdminBackupsPage = lazy(() => import('./pages/admin/AdminBackupsPage').then((m) => ({ default: m.AdminBackupsPage })));
+const AdminOperationsPage = lazy(() => import('./pages/admin/AdminOperationsPage').then((m) => ({ default: m.AdminOperationsPage })));
+const AdminDeploymentPage = lazy(() => import('./pages/admin/AdminDeploymentPage').then((m) => ({ default: m.AdminDeploymentPage })));
+const AdminSecurityPage = lazy(() => import('./pages/admin/AdminSecurityPage').then((m) => ({ default: m.AdminSecurityPage })));
+
+/**
+ * Keep the active section in the URL.
+ *
+ * WHY
+ * ---
+ * The app tracked the active tab in `useState` only, so:
+ *   - a shared link (`/whatsapp`) always landed on the dashboard, because
+ *     nothing read the URL;
+ *   - the browser Back button did nothing;
+ *   - a refresh lost your place.
+ *
+ * This maps the tab to `?tab=` and listens to `popstate`, which is the whole
+ * fix without pulling in a router: 15 routes do not justify a new dependency and
+ * a migration of every `onNavigate` call site.
+ *
+ * Design notes:
+ * - `pushState` (not `replaceState`) so that Back returns to the section you
+ *   came from, which is the behaviour people expect from navigation.
+ * - The default tab carries no `?tab=` at all, so the shared/canonical URL for
+ *   the app stays clean.
+ * - An unknown or missing `?tab=` falls back to the dashboard rather than
+ *   rendering a blank screen.
+ */
+const TAB_PARAM = 'tab';
+
+/**
+ * The sections the app can actually render.
+ *
+ * This is the same list the render switch handles, and it is deliberately
+ * duplicated rather than derived: `readTabFromUrl` runs during the initial
+ * useState, before any component is mounted, so it cannot read the switch.
+ * `verify:url-sync` fails if the two ever drift apart in a way that lets an
+ * unknown section through.
+ */
+const VALID_TABS = new Set([
+  'dashboard',
+  'lead-finder',
+  'leads',
+  'campaigns',
+  'campaign-groups',
+  'whatsapp',
+  'blacklist',
+  'settings',
+  'admin-overview',
+  'admin-whatsapp',
+  'admin-monitoring',
+  'admin-backups',
+  'admin-operations',
+  'admin-deployment',
+  'admin-security',
+]);
+
+function readTabFromUrl(fallback: string): string {
+  if (typeof window === 'undefined') return fallback;
+  const value = new URLSearchParams(window.location.search).get(TAB_PARAM);
+  // An unknown ?tab= falls back rather than being trusted. Without this check a
+  // stale or hand-edited link rendered nothing at all: no page matched the
+  // switch, so the user got an empty shell with no way to tell what went wrong.
+  if (!value || !value.trim() || !VALID_TABS.has(value)) return fallback;
+  return value;
+}
+
+export function useTabUrlSync(
+  defaultTab: string,
+): [string, (tab: string) => void] {
+  const [tab, setTab] = useState(() => readTabFromUrl(defaultTab));
+
+  useEffect(() => {
+    const onPop = () => setTab(readTabFromUrl(defaultTab));
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, [defaultTab]);
+
+  const navigate = useCallback((next: string) => {
+    setTab(next);
+    if (typeof window === 'undefined') return;
+    const url = new URL(window.location.href);
+    if (next === defaultTab) url.searchParams.delete(TAB_PARAM);
+    else url.searchParams.set(TAB_PARAM, next);
+    // push, so Back returns to the previous section.
+    window.history.pushState(null, '', url.toString());
+  }, [defaultTab]);
+
+  return [tab, navigate];
+}
+
 const AppContent: React.FC = () => {
-  const [activeTab, setActiveTab] = useState('dashboard');
+  const [activeTab, setActiveTab] = useTabUrlSync('dashboard');
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [isWsConnected, setIsWsConnected] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -293,6 +387,17 @@ const AppContent: React.FC = () => {
           key={activeTab}
           className="flex-1 p-3.5 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto animate-page-enter"
         >
+          {/* Pages are code-split, so the first visit to each one waits on its
+              chunk. The placeholder matches the page's own padding so the
+              layout does not jump when the content lands. */}
+          <Suspense
+            fallback={
+              <div className="flex items-center justify-center py-24" role="status" aria-live="polite">
+                <div className="w-7 h-7 rounded-full border-2 border-slate-200 dark:border-white/10 border-t-primary-600 dark:border-t-primary-400 animate-spin" />
+                <span className="sr-only">{t('common.loading')}</span>
+              </div>
+            }
+          >
           {activeTab === 'dashboard' && (
             <DashboardPage stats={stats} onNavigate={handleNavigate} />
           )}
@@ -343,6 +448,7 @@ const AppContent: React.FC = () => {
           {activeTab === 'admin-security' && (
             <AdminSecurityPage onNavigate={handleNavigate} />
           )}
+          </Suspense>
         </main>
 
       </div>

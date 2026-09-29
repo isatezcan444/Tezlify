@@ -46,6 +46,10 @@ const OPS_TABS: { id: OpsTab; key: string }[] = [
   { id: 'history', key: 'admin.ops.tabHistory' },
 ];
 
+// Stable empty fallback: a literal `[]` in render would be a new reference each
+// time and would invalidate every memo downstream of it.
+const EMPTY_SERVICES: OpsServiceStatus[] = [];
+
 export const AdminOperationsPage: React.FC = () => {
   const { t } = useI18n();
   const { user, profile, isAdmin } = useAuth();
@@ -170,7 +174,8 @@ export const AdminOperationsPage: React.FC = () => {
     };
     void poll();
     return () => { cancelled = true; };
-  }, [status?.running?.id, fetchStatus, realtimeConnected]);
+  }, [status?.running, fetchStatus, realtimeConnected]);
+
 
   // Paged history is fetched separately from the status poll: the poll carries
   // a small newest-first window for context, while this is the full, filterable
@@ -252,7 +257,11 @@ export const AdminOperationsPage: React.FC = () => {
     }
   }, [toast, t, fetchStatus]);
 
-  const services = status?.services || [];
+  // `|| []` allocates a NEW array on every render whenever `status` is null or
+  // has no services, so it was never referentially stable and defeated the
+  // memo entirely. A module-level constant keeps the identity fixed, so the
+  // memo actually holds.
+  const services = status?.services ?? EMPTY_SERVICES;
   const serviceNames = useMemo(
     () => services.map((s: OpsServiceStatus) => s.name.replace('tezlify-', '')),
     [services],

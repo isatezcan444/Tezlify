@@ -1,41 +1,29 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { createPortal } from 'react-dom';
 import { 
   Smartphone, 
   QrCode, 
   ShieldCheck, 
-  Flame, 
   CheckCircle2, 
   Loader2, 
-  Zap,
-  Clock,
-  Sliders,
-  Check,
   RotateCcw,
   AlertTriangle,
-  Shield,
   Building2,
-  Save,
-  Undo2,
   MessageSquare,
   Archive,
-  ExternalLink,
-  Copy,
   MessageSquarePlus,
   Users,
   ArrowLeft
 } from 'lucide-react';
-import { ApiClient } from '../api/client';
 import { startWaLatency } from '../features/whatsapp/lib/whatsappLatency';
 import { translateApiError } from '../features/whatsapp/lib/translateError';
 import { mergeDeliveryStatus, mergeWhatsAppMessages } from '../features/whatsapp/lib/whatsappMessageMerge';
 import { WhatsAppRepository } from '../features/whatsapp/data/whatsappRepository';
-import { compareConversationsByActivityDesc, compareMessagesChronological, getConversationActivityTimestamp, restoreConversationActivity } from '../features/whatsapp/lib/whatsappOrdering';
+import { compareConversationsByActivityDesc, compareMessagesChronological, restoreConversationActivity } from '../features/whatsapp/lib/whatsappOrdering';
 import { isRawWhatsAppJid as isRawWhatsAppIdentity, identityKeys } from '../features/whatsapp/lib/whatsappIdentity';
 import { PEER_TYPING_TTL_MS, pruneExpiredTyping, resolveSyncDisplayCounts } from '../features/whatsapp/lib/whatsappSync';
 import { applyConversationEvent } from '../features/whatsapp/lib/whatsappConversationPatch';
 import { WhatsAppSession, Conversation, ConversationStatus, ConversationMessageStatus, Lead, Message, LiveModeStatus, SessionSyncState } from '../types';
-import { WhatsAppApi, useLiveMode, probeLive, invalidateLiveProbe, isLiveCached, mapConversationItem, mapMessageItem, buildConversationUpdatedPayload } from '../features/whatsapp/api/whatsappApi';
+import { WhatsAppApi, useLiveMode, mapConversationItem, mapMessageItem } from '../features/whatsapp/api/whatsappApi';
 import { useWhatsAppLoadingGate } from '../features/whatsapp/hooks/useWhatsAppLoadingGate';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
@@ -56,24 +44,14 @@ import {
   TemplateSelectModal, 
   NewChatModal,
   WhatsAppSyncGate,
+  AntiBanPanel,
 } from '../features/whatsapp/components';
 import { LeadDetailDrawer } from '../features/leads/components';
+import { useAntiBanSettings } from '../features/whatsapp/hooks/useAntiBanSettings';
 import { FilterTab } from '../features/whatsapp/components/ConversationList';
-import { Slider, Switch } from '../components/forms';
-import { 
-  AntiBanConfig, 
-  DEFAULT_ANTI_BAN_CONFIG, 
-  ANTI_BAN_PRESETS, 
-  getStoredAntiBanConfig, 
-  saveAntiBanConfig, 
-  calculateRiskLevel,
-  isConfigEqual,
-  resolvePresetFromConfig
-} from '../utils/antiBanSettings';
 import { useToast } from '../context/ToastContext';
 import { useI18n } from '../context/I18nContext';
-import { buildChatPreview, normalizePreviewText, shouldApplyPreview } from '../features/whatsapp/lib/whatsappPreview';
-import { parseServerTime } from '../lib/utils';
+import { buildChatPreview, shouldApplyPreview } from '../features/whatsapp/lib/whatsappPreview';
 
 
 interface WhatsAppHubPageProps {
@@ -180,7 +158,6 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   // Lead Detail Drawer State for Conversation -> Lead navigation
   const [drawerLead, setDrawerLead] = useState<Lead | null>(null);
   const [isLeadDrawerOpen, setIsLeadDrawerOpen] = useState<boolean>(false);
-  const [leadLoading, setLeadLoading] = useState<boolean>(false);
   const [isTemplateModalOpen, setIsTemplateModalOpen] = useState<boolean>(false);
   const [isNewChatModalOpen, setIsNewChatModalOpen] = useState<boolean>(false);
   const [isSyncingChats, setIsSyncingChats] = useState<boolean>(false);
@@ -356,8 +333,11 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   }, []);
 
   // Live mode: probes backend WhatsApp gateway health on mount & periodically
-  const { status: liveStatus, probe: probeLiveMode } = useLiveMode();
-  const isLive = liveStatus === LiveModeStatus.LIVE_CONNECTED;
+  // Read-only: the flag is passed to a disabled= prop, and nothing in this
+  // component ever sets it, so the setter is deliberately omitted.
+  const [leadLoading] = useState<boolean>(false);
+
+  const { status: liveStatus } = useLiveMode();
 
   const activeMessages = selectedConv ? (messagesMap[selectedConv.id] || []) : [];
   const activePaging = selectedConv ? messagePaging[selectedConv.id] : undefined;
@@ -531,6 +511,13 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     } finally {
       if (!isSilent && generation === conversationsGenerationRef.current) setConvsLoading(false);
     }
+    // hydrateConversationMessages is intentionally NOT a dependency. This list
+    // fetch is re-issued by the WS bootstrap and by the backfill chain, and
+    // pulling hydration in here would let a conversation-list response schedule
+    // a per-conversation message fetch, which is how the page ended up issuing
+    // a request storm while hydrating. The list and the messages are
+    // deliberately independent flows.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [convFilter, convSearch, scheduleBackgroundBackfill]);
 
   const loadMoreConversations = useCallback(async (isBackground: boolean = false) => {
@@ -842,6 +829,10 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     }
 
     void hydrateConversationMessages(convId);
+    // `selectedConv` itself is not a dependency, only its id: depending on the
+    // object would re-run this on every list refresh, since the conversation is
+    // replaced whenever unread counts or previews change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedConv?.id, reportReadSync, hydrateConversationMessages]);
 
   // Faz 11: Manuel "Eşitle" artık ağır sync'i HTTP'de BEKLEMİYOR — POST /sync
@@ -1066,7 +1057,6 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     const convId = selectedConv.id;
     const target = (messagesMapRef.current[convId] || []).find((m) => m.id === msgId);
     const isRealDbId = typeof msgId === 'number' && Number.isInteger(msgId) && msgId > 0;
-    try {
       if (!isRealDbId) {
         const clientMid = target?.client_message_id;
         if (!target || !clientMid || !target.body) {
@@ -1099,10 +1089,9 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
           m.id === msgId ? { ...m, status: res.status, error_message: undefined } : m
         ),
       }));
-    } catch (err: any) {
-      // F-7: no toast here — the UI caller owns the single user-facing toast.
-      throw err;
-    }
+    // No try/catch: F-7 requires no toast here because the UI caller owns the
+    // single user-facing toast. A catch that only rethrows would be a no-op
+    // wrapper, so the error propagates untouched instead.
   }, []);
 
   // PHASE 2.K.1 (single variable): STABLE onRetry handler. Same behavior as the
@@ -1116,6 +1105,11 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       toastRef.current.success(tRef.current('whatsapp.messageSent'), tRef.current('common.success'));
     } catch (err: any) {
       toastRef.current.error(translateApiError(err, tRef.current) || tRef.current('whatsapp.msgFailed'), tRef.current('common.error'));
+      // The rethrow is NOT redundant: ChatBubble catches this to flip the
+      // message into its FAILED state. The toast tells the user, the throw
+      // tells the row to update. ESLint only sees a catch that rethrows and
+      // calls the wrapper useless, which it would be if the toast were absent.
+      // eslint-disable-next-line no-useless-catch
       throw err;
     }
   }, [activeRetryMessage]);
@@ -1310,9 +1304,6 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     }
   };
 
-  const fetchConversations = () => {
-    loadConversations(true);
-  };
 
   // Real-time listener for conversation list unread, status and preview updates
   useEffect(() => {
@@ -1982,13 +1973,20 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       window.removeEventListener('tezlify:ws_event', handleWsEvent);
       window.removeEventListener('tezlify:ws_connected', handleReconnect);
     };
+    // Deliberately narrower than what the handler closes over. These are the
+    // long-lived, memoised entry points; the rest are read through refs or are
+    // pure setters, and listing them would tear down and re-register both WS
+    // listeners on every render, dropping events mid-flight. This wiring is
+    // covered by verify:realtime (9/9 scenarios) — change it only with that
+    // suite running.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loadConversations, refreshSyncStatus, reportReadSync, logBackgroundFetchFailure, hydrateConversation, clearPeerTyping, acknowledgeFailedSync, scheduleBootstrapFetch]);
 
-  // Anti-Ban Timing & Change-Tracking State
-  const [savedConfig, setSavedConfig] = useState<AntiBanConfig>(getStoredAntiBanConfig());
-  const [config, setConfig] = useState<AntiBanConfig>(getStoredAntiBanConfig());
-  const [isSavingAntiBan, setIsSavingAntiBan] = useState(false);
-  const [saveSuccess, setSaveSuccess] = useState(false);
+  // Anti-ban: the editor itself is <AntiBanPanel>, but the tab button shows an
+  // unsaved-changes dot, so the page still needs to know whether the config
+  // differs from the last server-confirmed one. It subscribes to the same hook
+  // rather than holding a second, divergent copy of the state.
+  const { hasUnsavedChanges } = useAntiBanSettings();
 
   const fetchSessions = useCallback(async (silent = false) => {
     try {
@@ -2062,21 +2060,6 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     // Faz 7: sayfa acildiginda devam eden bir initial-sync varsa banner hemen gorunsun
     refreshSyncStatus();
 
-    // Load persisted Anti-Ban configuration from backend database
-    ApiClient.getAntiBanSettings()
-      .then((remote) => {
-        if (remote) {
-          const resolvedPreset = resolvePresetFromConfig(remote);
-          const normalized = { ...remote, preset: remote.preset || resolvedPreset };
-          setConfig(normalized);
-          setSavedConfig(normalized);
-          saveAntiBanConfig(normalized);
-        }
-      })
-      .catch((e) => {
-        console.warn('Anti-ban config failed to load from backend, using local storage:', e);
-      });
-
     return () => {
       window.removeEventListener('tezlify:ws_event', handleWs);
     };
@@ -2086,76 +2069,6 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fetchSessions, refreshSyncStatus]);
 
-  const handlePresetSelect = (presetKey: 'ultra_safe' | 'standard_balanced' | 'fast_warmed') => {
-    const presetData = ANTI_BAN_PRESETS[presetKey];
-    setConfig((prev) => ({
-      ...prev,
-      preset: presetKey,
-      ...presetData
-    }));
-  };
-
-  const handleCustomChange = (field: keyof AntiBanConfig, value: any) => {
-    setConfig((prev) => {
-      const updated = {
-        ...prev,
-        [field]: value
-      };
-      updated.preset = resolvePresetFromConfig(updated);
-      return updated;
-    });
-  };
-
-  const handleSaveAntiBan = async () => {
-    setIsSavingAntiBan(true);
-    try {
-      const updated = await ApiClient.updateAntiBanSettings(config);
-      setSavedConfig(updated);
-      setConfig(updated);
-      saveAntiBanConfig(updated);
-      setSaveSuccess(true);
-      toast.success(t('whatsapp.policySavedSuccess'), t('toast.policySavedTitle'));
-      setTimeout(() => setSaveSuccess(false), 3500);
-    } catch (err: any) {
-      toast.error(err.message || t('common.error'), t('toast.errorTitle'));
-    } finally {
-      setIsSavingAntiBan(false);
-    }
-  };
-
-  const handleRevertChanges = () => {
-    setConfig(savedConfig);
-    toast.info(t('whatsapp.discardChanges'), t('common.info'));
-  };
-
-  const handleResetDefaults = async () => {
-    const confirmed = await toast.confirm({
-      title: t('whatsapp.resetDefaults') + '?',
-      message: t('whatsapp.presetBalancedDesc'),
-      confirmText: t('common.save'),
-      cancelText: t('common.cancel'),
-      variant: 'warning'
-    });
-    if (!confirmed) return;
-
-    setIsSavingAntiBan(true);
-    try {
-      const updated = await ApiClient.updateAntiBanSettings(DEFAULT_ANTI_BAN_CONFIG);
-      setSavedConfig(updated);
-      setConfig(updated);
-      saveAntiBanConfig(updated);
-      setSaveSuccess(true);
-      toast.success(t('whatsapp.policySavedSuccess'), t('toast.policySavedTitle'));
-      setTimeout(() => setSaveSuccess(false), 3500);
-    } catch (err: any) {
-      toast.error(err.message || t('common.error'), t('common.error'));
-    } finally {
-      setIsSavingAntiBan(false);
-    }
-  };
-
-  const hasUnsavedChanges = !isConfigEqual(config, savedConfig);
-  const riskInfo = calculateRiskLevel(config.min_delay_seconds, config.daily_message_limit);
 
   const handleDisconnectSession = async (sessionId: number) => {
     if (disconnectingSessionId) return;
@@ -2319,7 +2232,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       {/* 1. CANLI DİYALOGLAR (CONVERSATIONS) PANELİ */}
       {/* ========================================================================= */}
       {hubTab === 'conversations' && (
-        <Card className="w-full max-w-full h-[520px] sm:h-[600px] md:h-[calc(100dvh-16.5rem)] md:min-h-[480px] md:max-h-[calc(100dvh-15.5rem)] p-0 flex flex-col md:flex-row overflow-hidden border border-slate-200/80 dark:border-white/[0.08] shadow-sm">
+        <Card className="w-full max-w-full h-[calc(100dvh-16rem)] max-h-[calc(100dvh-8rem)] min-h-[320px] md:h-[calc(100dvh-16.5rem)] md:min-h-[480px] md:max-h-[calc(100dvh-15.5rem)] p-0 flex flex-col md:flex-row overflow-hidden border border-slate-200/80 dark:border-white/[0.08] shadow-sm" style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}>
           {/* Faz 14 — QR sonrasi senkron kapisi (WhatsApp Web paritesi): ilk
               senkron surerken sohbet listesi ve sohbet paneli HIC render
               EDILMEZ. Boylece bir sohbete tiklamak "o an indirme" yoluna
@@ -2776,436 +2689,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       {/* ========================================================================= */}
       {/* 3. WHATSAPP ANTI-BAN YAPILANDIRMASI SUITE */}
       {/* ========================================================================= */}
-      {hubTab === 'antiban' && (
-        <div className="space-y-6">
-          <Card className="p-4 sm:p-6 space-y-6">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 dark:border-white/[0.08] pb-4">
-          <div className="flex items-center space-x-2.5">
-            <div className="w-9 h-9 rounded-xl bg-[#28C76F]/15 text-[#28C76F] flex items-center justify-center font-bold">
-              <ShieldCheck className="w-5 h-5" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h3 className="text-base font-extrabold text-slate-800 dark:text-white">
-                  {t('whatsapp.antiBanTitle')}
-                </h3>
-                {hasUnsavedChanges ? (
-                  <Badge variant="warning" className="text-[10px] animate-pulse">
-                    ⚠️ {t('whatsapp.unsavedChanges')}
-                  </Badge>
-                ) : (
-                  <Badge variant="success" className="text-[10px]">
-                    ✅ {t('whatsapp.synchronized')}
-                  </Badge>
-                )}
-              </div>
-              <p className="text-[11px] text-slate-400 dark:text-[#7E7F96] font-medium">
-                {t('whatsapp.antiBanSubtitle')}
-              </p>
-            </div>
-          </div>
-
-          <div className="flex items-center space-x-2">
-            {hasUnsavedChanges && (
-              <button
-                type="button"
-                onClick={handleRevertChanges}
-                className="text-xs font-bold text-slate-500 hover:text-[#7367F0] dark:text-[#7E7F96] dark:hover:text-white flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 dark:border-white/[0.08] hover:bg-slate-50 dark:hover:bg-white/[0.04] transition-all cursor-pointer"
-                title={t('whatsapp.discardChanges')}
-              >
-                <Undo2 className="w-3.5 h-3.5" />
-                <span>{t('whatsapp.revertChanges')}</span>
-              </button>
-            )}
-
-            <button
-              type="button"
-              onClick={handleResetDefaults}
-              className="text-xs font-bold text-slate-500 hover:text-[#7367F0] dark:text-[#7E7F96] dark:hover:text-white flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 dark:border-white/[0.08] hover:bg-slate-50 dark:hover:bg-white/[0.04] transition-all cursor-pointer"
-              title={t('whatsapp.resetDefaults')}
-            >
-              <RotateCcw className="w-3.5 h-3.5" />
-              <span>{t('whatsapp.resetDefaults')}</span>
-            </button>
-          </div>
-        </div>
-
-        {/* Preset Selector Tabs */}
-        <div>
-          <label className="text-xs font-bold text-slate-700 dark:text-slate-200 block mb-2">
-            {t('whatsapp.antiBanPresetLabel')}
-          </label>
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
-            {/* Preset 1: Ultra Safe */}
-            <button
-              type="button"
-              onClick={() => handlePresetSelect('ultra_safe')}
-              className={`p-3.5 rounded-xl border text-left transition-all cursor-pointer ${
-                config.preset === 'ultra_safe'
-                  ? 'border-[#28C76F] bg-[#28C76F]/10 ring-1 ring-[#28C76F]/50 shadow-sm'
-                  : 'border-slate-200 dark:border-white/[0.08] bg-slate-50/50 dark:bg-white/[0.02] hover:bg-slate-100 dark:hover:bg-white/[0.04]'
-              }`}
-            >
-              <div className="flex items-center justify-between mb-1">
-                <span className="text-xs font-extrabold text-slate-800 dark:text-white flex items-center gap-1.5">
-                  <Shield className="w-3.5 h-3.5 text-[#28C76F]" />
-                  {t('whatsapp.presetUltraSafe')}
-                </span>
-                <span className="text-[10px] font-bold px-1.5 py-0.2 rounded bg-[#28C76F]/15 text-[#28C76F]">
-                  {t('whatsapp.presetUltraSafeTag')}
-                </span>
-              </div>
-              <p className="text-[11px] text-slate-500 dark:text-[#7E7F96]">
-                {t('whatsapp.presetUltraSafeDesc')}
-              </p>
-            </button>
-
-            {/* Preset 2: Standard Balanced (Default) */}
-            <button
-              type="button"
-              onClick={() => handlePresetSelect('standard_balanced')}
-              className={`p-3.5 rounded-xl border text-left transition-all cursor-pointer ${
-                config.preset === 'standard_balanced'
-                  ? 'border-[#7367F0] bg-[#7367F0]/10 ring-1 ring-[#7367F0]/50 shadow-sm'
-                  : 'border-slate-200 dark:border-white/[0.08] bg-slate-50/50 dark:bg-white/[0.02] hover:bg-slate-100 dark:hover:bg-white/[0.04]'
-              }`}
-            >
-              <div className="flex items-center justify-between mb-1">
-                <span className="text-xs font-extrabold text-slate-800 dark:text-white flex items-center gap-1.5">
-                  <ShieldCheck className="w-3.5 h-3.5 text-[#7367F0]" />
-                  {t('whatsapp.presetBalanced')}
-                </span>
-                <span className="text-[10px] font-bold px-1.5 py-0.2 rounded bg-[#7367F0]/15 text-[#7367F0]">
-                  {t('whatsapp.presetBalancedTag')}
-                </span>
-              </div>
-              <p className="text-[11px] text-slate-500 dark:text-[#7E7F96]">
-                {t('whatsapp.presetBalancedDesc')}
-              </p>
-            </button>
-
-            {/* Preset 3: Fast Warmed */}
-            <button
-              type="button"
-              onClick={() => handlePresetSelect('fast_warmed')}
-              className={`p-3.5 rounded-xl border text-left transition-all cursor-pointer ${
-                config.preset === 'fast_warmed'
-                  ? 'border-[#FF9F43] bg-[#FF9F43]/10 ring-1 ring-[#FF9F43]/50 shadow-sm'
-                  : 'border-slate-200 dark:border-white/[0.08] bg-slate-50/50 dark:bg-white/[0.02] hover:bg-slate-100 dark:hover:bg-white/[0.04]'
-              }`}
-            >
-              <div className="flex items-center justify-between mb-1">
-                <span className="text-xs font-extrabold text-slate-800 dark:text-white flex items-center gap-1.5">
-                  <Zap className="w-3.5 h-3.5 text-[#FF9F43]" />
-                  {t('whatsapp.presetFast')}
-                </span>
-                <span className="text-[10px] font-bold px-1.5 py-0.2 rounded bg-[#FF9F43]/15 text-[#FF9F43]">
-                  {t('whatsapp.presetFastTag')}
-                </span>
-              </div>
-              <p className="text-[11px] text-slate-500 dark:text-[#7E7F96]">
-                {t('whatsapp.presetFastDesc')}
-              </p>
-            </button>
-          </div>
-        </div>
-
-        {/* Detailed Sliders */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-1">
-          <Slider
-            label={t('whatsapp.minDelay')}
-            icon={Clock}
-            value={config.min_delay_seconds}
-            min={10}
-            max={120}
-            step={5}
-            unit="s"
-            helperText={t('whatsapp.minDelayHelp')}
-            onChange={(val) => {
-              handleCustomChange('min_delay_seconds', val);
-              if (val >= config.max_delay_seconds) {
-                handleCustomChange('max_delay_seconds', val + 15);
-              }
-            }}
-          />
-
-          <Slider
-            label={t('whatsapp.maxDelay')}
-            icon={Clock}
-            value={config.max_delay_seconds}
-            min={config.min_delay_seconds + 5}
-            max={240}
-            step={5}
-            unit="s"
-            helperText={t('whatsapp.maxDelayHelp')}
-            onChange={(val) => handleCustomChange('max_delay_seconds', val)}
-          />
-
-          <Slider
-            label={t('whatsapp.typingDelay')}
-            icon={Sliders}
-            value={config.typing_delay_seconds}
-            min={1}
-            max={15}
-            step={1}
-            unit="s"
-            helperText={t('whatsapp.typingDelayHelp')}
-            onChange={(val) => handleCustomChange('typing_delay_seconds', val)}
-          />
-
-          <Slider
-            label={t('whatsapp.dailyLimitSlider')}
-            icon={Shield}
-            value={config.daily_message_limit}
-            min={10}
-            max={250}
-            step={5}
-            helperText={t('whatsapp.dailyLimitHelp')}
-            onChange={(val) => handleCustomChange('daily_message_limit', val)}
-          />
-        </div>
-
-        {/* Working Hours Protection & Smooth Risk Gauge */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-1">
-          {/* Working Hours Box */}
-          <div className="p-4 rounded-xl bg-slate-50 dark:bg-[#25293C] border border-slate-200/60 dark:border-white/[0.05] space-y-3 shadow-sm">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center space-x-2">
-                <Building2 className="w-4 h-4 text-[#7367F0]" />
-                <div>
-                  <span className="text-xs font-extrabold text-slate-800 dark:text-white block">
-                    {t('whatsapp.workingHoursTitle')}
-                  </span>
-                  <span className="text-[10px] text-slate-400">{t('whatsapp.workingHoursSubtitle')}</span>
-                </div>
-              </div>
-
-              <Switch
-                checked={config.working_hours_enabled !== false}
-                onChange={(checked) => handleCustomChange('working_hours_enabled', checked)}
-              />
-            </div>
-
-            {config.working_hours_enabled !== false && (
-              <div className="space-y-2.5 pt-1 animate-fade-in">
-                <div className="flex items-center gap-1.5 flex-wrap">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      handleCustomChange('working_hours_start', '09:00');
-                      handleCustomChange('working_hours_end', '18:00');
-                    }}
-                    className={`px-2 py-1 rounded-lg text-[10px] font-bold border transition-all cursor-pointer ${
-                      config.working_hours_start === '09:00' && config.working_hours_end === '18:00'
-                        ? 'bg-[#7367F0]/15 text-[#7367F0] border-[#7367F0]/40'
-                        : 'bg-white dark:bg-white/[0.04] text-slate-500 border-slate-200 dark:border-white/[0.08] hover:bg-slate-100'
-                    }`}
-                  >
-                    {t('whatsapp.presetStandardHours')}
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      handleCustomChange('working_hours_start', '09:00');
-                      handleCustomChange('working_hours_end', '18:30');
-                    }}
-                    className={`px-2 py-1 rounded-lg text-[10px] font-bold border transition-all cursor-pointer ${
-                      config.working_hours_start === '09:00' && config.working_hours_end === '18:30'
-                        ? 'bg-[#7367F0]/15 text-[#7367F0] border-[#7367F0]/40'
-                        : 'bg-white dark:bg-white/[0.04] text-slate-500 border-slate-200 dark:border-white/[0.08] hover:bg-slate-100'
-                    }`}
-                  >
-                    {t('whatsapp.presetCorporateHours')}
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      handleCustomChange('working_hours_start', '09:00');
-                      handleCustomChange('working_hours_end', '20:00');
-                    }}
-                    className={`px-2 py-1 rounded-lg text-[10px] font-bold border transition-all cursor-pointer ${
-                      config.working_hours_start === '09:00' && config.working_hours_end === '20:00'
-                        ? 'bg-[#7367F0]/15 text-[#7367F0] border-[#7367F0]/40'
-                        : 'bg-white dark:bg-white/[0.04] text-slate-500 border-slate-200 dark:border-white/[0.08] hover:bg-slate-100'
-                    }`}
-                  >
-                    {t('whatsapp.presetFlexibleHours')}
-                  </button>
-                </div>
-
-                <div className="grid grid-cols-2 gap-2 text-xs pt-1">
-                  <div>
-                    <label className="text-[10px] font-bold text-slate-500 dark:text-[#7E7F96] block mb-1">
-                      {t('whatsapp.startTime')}
-                    </label>
-                    <input
-                      type="time"
-                      value={config.working_hours_start || '09:00'}
-                      onChange={(e) => handleCustomChange('working_hours_start', e.target.value)}
-                      className="w-full px-2.5 py-1.5 rounded-lg vuexy-input text-xs font-mono font-bold"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-[10px] font-bold text-slate-500 dark:text-[#7E7F96] block mb-1">
-                      {t('whatsapp.endTime')}
-                    </label>
-                    <input
-                      type="time"
-                      value={config.working_hours_end || '18:30'}
-                      onChange={(e) => handleCustomChange('working_hours_end', e.target.value)}
-                      className="w-full px-2.5 py-1.5 rounded-lg vuexy-input text-xs font-mono font-bold"
-                    />
-                  </div>
-                </div>
-              </div>
-            )}
-            <p className="text-[10px] text-slate-400">
-              {t('whatsapp.workingHoursHelp')}
-            </p>
-          </div>
-
-          {/* Smooth Animated Risk Meter */}
-          <div className="p-4 rounded-xl bg-slate-50 dark:bg-[#25293C] border border-slate-200/60 dark:border-white/[0.05] flex flex-col justify-between space-y-3 shadow-sm">
-            <div>
-              <div className="flex items-center justify-between mb-1.5">
-                <span className="text-xs font-bold text-slate-700 dark:text-slate-200 flex items-center gap-1.5">
-                  <AlertTriangle className={`w-4 h-4 ${riskInfo.color}`} />
-                  {t('whatsapp.riskTitle')}
-                </span>
-                <span className={`text-[11px] font-extrabold px-2.5 py-0.5 rounded-lg border font-mono uppercase transition-all duration-300 ${riskInfo.badgeBg} ${riskInfo.badgeText}`}>
-                  {riskInfo.title} (%{riskInfo.score})
-                </span>
-              </div>
-              <p className="text-[11px] text-slate-500 dark:text-[#7E7F96] leading-relaxed">
-                {riskInfo.desc}
-              </p>
-            </div>
-
-            <div className="space-y-1.5 pt-1">
-              <div className="relative w-full h-3 rounded-full bg-slate-200 dark:bg-slate-700 overflow-visible p-0.5">
-                <div 
-                  className="w-full h-full rounded-full bg-gradient-to-r from-[#28C76F] via-[#FF9F43] to-[#EA5455] opacity-90"
-                />
-                <div 
-                  className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-4 h-4 bg-white dark:bg-slate-900 border-2 rounded-full shadow-md transition-all duration-500 ease-out z-10 flex items-center justify-center"
-                  style={{ 
-                    left: `${Math.max(4, Math.min(96, riskInfo.score))}%`,
-                    borderColor: riskInfo.color 
-                  }}
-                >
-                  <div 
-                    className="w-1.5 h-1.5 rounded-full"
-                    style={{ backgroundColor: riskInfo.color }}
-                  />
-                </div>
-              </div>
-
-              <div className="flex items-center justify-between text-[9px] font-bold text-slate-400 font-mono px-0.5">
-                <span className="text-[#28C76F]">{t('whatsapp.riskSafe')}</span>
-                <span className="text-[#FF9F43]">{t('whatsapp.riskBalanced')}</span>
-                <span className="text-[#EA5455]">{t('whatsapp.riskHigh')}</span>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Save Actions */}
-        <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 pt-2 border-t border-slate-100 dark:border-white/[0.05]">
-          <div className="flex items-center gap-2">
-            {saveSuccess ? (
-              <span className="inline-flex items-center gap-1.5 text-xs font-bold text-[#28C76F] bg-[#28C76F]/15 px-3 py-1.5 rounded-lg border border-[#28C76F]/30 animate-fade-in">
-                <Check className="w-3.5 h-3.5" />
-                <span>{t('whatsapp.policySavedSuccess')}</span>
-              </span>
-            ) : hasUnsavedChanges ? (
-              <span className="inline-flex items-center gap-1.5 text-xs font-bold text-[#FF9F43] bg-[#FF9F43]/15 px-3 py-1.5 rounded-lg border border-[#FF9F43]/30 animate-fade-in">
-                <AlertTriangle className="w-3.5 h-3.5" />
-                <span>{t('whatsapp.unsavedChangesDesc')}</span>
-              </span>
-            ) : (
-              <span className="text-xs text-slate-400 dark:text-[#7E7F96]">
-                {savedConfig.updated_at
-                  ? `${t('whatsapp.synchronized')}: ${new Date(savedConfig.updated_at).toLocaleTimeString()}`
-                  : t('whatsapp.synchronized')}
-              </span>
-            )}
-          </div>
-
-          <div className="flex items-center gap-2">
-            {hasUnsavedChanges && (
-              <Button
-                variant="outline"
-                onClick={handleRevertChanges}
-                className="space-x-1.5 font-bold text-slate-600 dark:text-slate-300 cursor-pointer"
-              >
-                <Undo2 className="w-4 h-4" />
-                <span>{t('whatsapp.revertChanges')}</span>
-              </Button>
-            )}
-
-            <Button
-              onClick={handleSaveAntiBan}
-              disabled={isSavingAntiBan || !hasUnsavedChanges}
-              className={`space-x-2 font-bold justify-center cursor-pointer transition-all duration-300 ${
-                hasUnsavedChanges
-                  ? 'bg-[#7367F0] hover:bg-[#5E50EE] text-white shadow-lg shadow-[#7367F0]/30 ring-2 ring-[#7367F0]/30'
-                  : 'bg-slate-200 dark:bg-white/[0.08] text-slate-400 dark:text-slate-500 cursor-not-allowed'
-              }`}
-            >
-              {isSavingAntiBan ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  <span>{t('whatsapp.saving')}</span>
-                </>
-              ) : (
-                <>
-                  <Save className="w-4 h-4" />
-                  <span>{hasUnsavedChanges ? t('whatsapp.savePolicy') : t('whatsapp.savedStatus')}</span>
-                </>
-              )}
-            </Button>
-          </div>
-        </div>
-      </Card>
-
-      {/* Anti-Ban Safeguard Guidelines */}
-      <div className="grid grid-cols-1">
-        <div>
-          <Card className="p-6 space-y-4">
-            <h3 className="text-base font-bold text-slate-800 dark:text-white flex items-center gap-2">
-              <ShieldCheck className="w-4 h-4 text-[#28C76F]" />
-              {t('whatsapp.guidelinesTitle')}
-            </h3>
-
-            <div className="space-y-2.5 text-xs text-slate-700 dark:text-slate-300 font-medium">
-              <div className="p-3 rounded-lg bg-slate-50 dark:bg-[#25293C] border border-slate-200/60 dark:border-white/[0.05] space-y-1">
-                <span className="font-bold text-[#28C76F]">{t('whatsapp.guideline1Title')}</span>
-                <p className="text-slate-500 dark:text-[#7E7F96] text-[11px]">
-                  {t('whatsapp.guideline1Desc')}
-                </p>
-              </div>
-
-              <div className="p-3 rounded-lg bg-slate-50 dark:bg-[#25293C] border border-slate-200/60 dark:border-white/[0.05] space-y-1">
-                <span className="font-bold text-[#00CFE8]">{t('whatsapp.guideline2Title')}</span>
-                <p className="text-slate-500 dark:text-[#7E7F96] text-[11px]">
-                  {t('whatsapp.guideline2Desc')}
-                </p>
-              </div>
-
-              <div className="p-3 rounded-lg bg-slate-50 dark:bg-[#25293C] border border-slate-200/60 dark:border-white/[0.05] space-y-1">
-                <span className="font-bold text-[#7367F0]">{t('whatsapp.guideline3Title')}</span>
-                <p className="text-slate-500 dark:text-[#7E7F96] text-[11px]">
-                  {t('whatsapp.guideline3Desc')}
-                </p>
-              </div>
-            </div>
-          </Card>
-        </div>
-      </div>
-      </div>
-      )}
+      {hubTab === 'antiban' && <AntiBanPanel />}
 
       {/* Lead Detail Drawer for Conversation -> Lead Navigation */}
       <LeadDetailDrawer

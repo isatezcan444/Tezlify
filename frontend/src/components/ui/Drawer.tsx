@@ -2,6 +2,8 @@ import React, { useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { X, LucideIcon } from 'lucide-react';
 import { cn } from '../../lib/utils';
+import { useI18n } from '../../context/I18nContext';
+import { useDialogFocusTrap } from './Modal';
 
 export interface DrawerProps {
   isOpen: boolean;
@@ -28,6 +30,9 @@ export const Drawer: React.FC<DrawerProps> = ({
   footer,
   className,
 }) => {
+  // Accessible name for the icon-only close button. `title` is a mouse-only
+  // hint and is not reliably announced by screen readers.
+  const { t } = useI18n();
   // Trap escape key & disable body scroll
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -48,6 +53,10 @@ export const Drawer: React.FC<DrawerProps> = ({
       window.removeEventListener('keydown', handleKeyDown);
     };
   }, [isOpen, onClose]);
+
+  // Shared with Modal: focus in on open, Tab trapped inside, focus restored to
+  // the trigger on close.
+  const panelRef = useDialogFocusTrap(isOpen);
 
   if (!isOpen || typeof document === 'undefined') return null;
 
@@ -70,6 +79,10 @@ export const Drawer: React.FC<DrawerProps> = ({
 
       {/* Slide-over Content Surface */}
       <div
+        ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        tabIndex={-1}
         className={cn(
           'relative w-full h-full bg-white dark:bg-[#2F3349] shadow-2xl border-l border-slate-200/80 dark:border-white/[0.08] flex flex-col z-10 transition-transform duration-300 ease-out transform',
           position === 'right' ? 'translate-x-0' : 'translate-x-0',
@@ -101,6 +114,7 @@ export const Drawer: React.FC<DrawerProps> = ({
           <button
             type="button"
             onClick={onClose}
+            aria-label={t("common.close")}
             className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/[0.06] transition-colors cursor-pointer shrink-0 ml-2"
           >
             <X className="w-5 h-5" />

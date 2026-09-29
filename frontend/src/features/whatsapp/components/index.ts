@@ -1,3 +1,4 @@
+export * from './AntiBanPanel';
 export * from './ChatBubble';
 export * from './ChatComposer';
 export * from './ChatThread';

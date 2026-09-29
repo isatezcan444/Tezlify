@@ -43,7 +43,8 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
               onClick={onToggleMobileMenu}
               className="lg:hidden p-2 rounded-lg text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/[0.05] transition-colors cursor-pointer"
               title={menuButtonTitle ?? t('common.menuTitle')}
-            >
+            
+              aria-label={menuButtonTitle ?? t('common.menuTitle')}>
               <Menu className="w-5 h-5" />
             </button>
           )}
@@ -95,7 +96,8 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
             type="button"
             className="relative p-2 rounded-lg text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/[0.05] transition-colors cursor-pointer"
             title={t('header.notifications')}
-          >
+          
+            aria-label={t('header.notifications')}>
             <Bell className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
             <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-[#EA5455]" />
           </button>
@@ -107,7 +109,8 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
               onClick={onOpenSettings}
               title={t('header.settings')}
               className="p-2 rounded-lg text-slate-500 hover:text-[#7367F0] dark:text-slate-400 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/[0.05] transition-colors cursor-pointer"
-            >
+            
+              aria-label={t('header.settings')}>
               <Settings className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
             </button>
           )}

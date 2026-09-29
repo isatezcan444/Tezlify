@@ -15,7 +15,7 @@ import {
   Save,
   Database
 } from 'lucide-react';
-import { ApiClient, createWebSocket } from '../api/client';
+import { ApiClient, createWebSocket, type ManagedWebSocket } from '../api/client';
 import {
   Button,
   Badge,
@@ -211,7 +211,7 @@ export const LeadFinderPage: React.FC<LeadFinderPageProps> = ({ onNavigate, onRe
         `[${new Date().toLocaleTimeString()}] ${t('leadFinder.stream.jobActive', { id: job.id })}`,
       ]);
 
-      let pollInterval: any = null;
+      let pollInterval: ReturnType<typeof setInterval> | null = null;
       const stopPolling = () => {
         if (pollInterval) {
           clearInterval(pollInterval);
@@ -257,23 +257,20 @@ export const LeadFinderPage: React.FC<LeadFinderPageProps> = ({ onNavigate, onRe
         setLogs((prev) => [...prev, `[${new Date().toLocaleTimeString()}] ${t('leadFinder.stream.failed', { error: errorMsg })}`]);
       };
 
-      // Fallback Polling (3s interval) to guarantee state progression
-      pollInterval = setInterval(async () => {
-        try {
-          const status = await ApiClient.getScraperJob(job.id);
-          if (status.status === 'COMPLETED') {
-            handleJobCompletion(status.total_found || 0, status.total_new_leads || 0);
-            ws.close();
-          } else if (status.status === 'FAILED') {
-            handleJobFailure(status.error_message || 'Tarama başarısız oldu');
-            ws.close();
-          }
-        } catch (e) {
-          // ignore transient poll error
-        }
-      }, 3000);
+      // The socket is created BEFORE the fallback poll and assigned to a `let`,
+      // because the interval closes it. Declaring it with `const` after the
+      // interval left it in the temporal dead zone: the first 3s tick that ran
+      // before the socket had been created threw
+      // "Cannot access 'ws' before initialization" and took the whole scrape
+      // down with it. Closing is also funnelled through one helper so no path
+      // can close it twice.
+      let ws: ManagedWebSocket | null = null;
+      const closeSocket = () => {
+        try { ws?.close(); } catch { /* already closed */ }
+        ws = null;
+      };
 
-      const ws = createWebSocket((eventData) => {
+      ws = createWebSocket((eventData) => {
         if (eventData.job_id !== undefined && eventData.job_id !== activeJobIdRef.current) {
           return;
         }
@@ -296,12 +293,29 @@ export const LeadFinderPage: React.FC<LeadFinderPageProps> = ({ onNavigate, onRe
           }
         } else if (eventData.event === 'scraper_completed') {
           handleJobCompletion(eventData.total_found, eventData.total_new_leads, eventData.leads);
-          ws.close();
+          closeSocket();
         } else if (eventData.event === 'scraper_failed') {
           handleJobFailure(eventData.error);
-          ws.close();
+          closeSocket();
         }
       });
+
+      // Fallback Polling (3s interval) to guarantee state progression.
+      // Declared after the socket exists so `ws` is never in the TDZ here.
+      pollInterval = setInterval(async () => {
+        try {
+          const status = await ApiClient.getScraperJob(job.id);
+          if (status.status === 'COMPLETED') {
+            handleJobCompletion(status.total_found || 0, status.total_new_leads || 0);
+            closeSocket();
+          } else if (status.status === 'FAILED') {
+            handleJobFailure(status.error_message || 'Tarama başarısız oldu');
+            closeSocket();
+          }
+        } catch (e) {
+          // ignore transient poll error
+        }
+      }, 3000);
 
     } catch (err: any) {
       setIsScraping(false);

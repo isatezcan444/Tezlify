@@ -92,6 +92,12 @@ export const AdminDeploymentPage: React.FC<AdminDeploymentPageProps> = ({ onNavi
       void fetchDeployment(false);
       OpsApi.getStatus(5).then(setOpsStatus).catch(() => undefined);
     }
+    // fetchDeployment is deliberately NOT a dependency: it is declared further
+    // down, and depending on it here would throw a TDZ error at render. The
+    // practical consequence is that this holds the first render's
+    // fetchDeployment. That closure only reads `t` for an error message, and
+    // it is re-registered by useOpsEvents, so the exposure is cosmetic. The
+    // honest fix is to hoist fetchDeployment above this callback.
   }, []);
 
   useOpsEvents(Boolean(isAdmin || profile?.is_admin || user?.is_admin), { onOperation: handleOpsEvent });

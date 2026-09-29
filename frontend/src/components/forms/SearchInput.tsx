@@ -39,11 +39,12 @@ export const SearchInput = React.forwardRef<HTMLInputElement, SearchInputProps>(
       onClearRef.current = onClear;
     });
 
-    // Sync from parent if controlledValue changed from outside
+    // Sync from parent if controlledValue changed from outside.
+    // The functional updater avoids depending on `localValue`, which would make
+    // this effect re-run on every keystroke and re-compare against itself.
     useEffect(() => {
-      if (controlledValue !== undefined && controlledValue !== localValue) {
-        setLocalValue(controlledValue);
-      }
+      if (controlledValue === undefined) return;
+      setLocalValue((prev) => (controlledValue !== prev ? controlledValue : prev));
     }, [controlledValue]);
 
     // Clean up timer on unmount
@@ -115,6 +116,7 @@ export const SearchInput = React.forwardRef<HTMLInputElement, SearchInputProps>(
             <Loader2 className="w-3.5 h-3.5 animate-spin text-[#7367F0]" />
           ) : localValue ? (
             <button
+              aria-label={t('common.clear')}
               type="button"
               onClick={handleClear}
               className="p-1 rounded-md text-slate-400 hover:text-slate-600 dark:hover:text-white transition-colors cursor-pointer"

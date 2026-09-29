@@ -17,7 +17,6 @@ interface UseWhatsAppConversationOptions {
   conversationId?: number;
   enabled?: boolean;
   autoMarkAsRead?: boolean;
-  initialLimit?: number;
 }
 
 export function useWhatsAppConversation({
@@ -25,7 +24,6 @@ export function useWhatsAppConversation({
   conversationId,
   enabled = true,
   autoMarkAsRead = true,
-  initialLimit = 50,
 }: UseWhatsAppConversationOptions) {
   const { t } = useI18n();
   const [conversation, setConversation] = useState<ConversationDetail | null>(null);
@@ -88,7 +86,7 @@ export function useWhatsAppConversation({
     } finally {
       if (!isStale()) setLoading(false);
     }
-  }, [leadId, conversationId, enabled, autoMarkAsRead, initialLimit]);
+  }, [leadId, conversationId, enabled, autoMarkAsRead, t]);
 
   useEffect(() => {
     fetchConversation();
@@ -248,7 +246,7 @@ export function useWhatsAppConversation({
       });
       throw err;
     }
-  }, [conversation]);
+  }, [conversation, t]);
 
   // Send template helper
   const sendTemplate = useCallback(async (templateKey: string, variables: Record<string, string> = {}) => {
