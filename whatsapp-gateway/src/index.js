@@ -180,6 +180,12 @@ app.get('/health', async (_req, res) => {
   // monitoring check that only looks at the status code is not silenced, while
   // the admin UI can still show the operator exactly what is not being stored.
   const orphaned = sessionManager.listOrphaned();
+  // WHATSAPP_AUTO_RESTORE is deliberately disabled in production, so a gateway
+  // restart leaves ZERO live sessions while the database still says CONNECTED.
+  // That combination is the confusing one: the UI reports a healthy line that
+  // cannot receive anything. Exposing the reason is what lets the admin screen
+  // explain it instead of leaving the operator to guess.
+  const liveSessions = sessionManager.listSessions();
   res.status(isHealthy ? 200 : 503).json({
     status: isHealthy ? 'ok' : 'degraded',
     service: 'tezlify-whatsapp-gateway',
@@ -188,6 +194,13 @@ app.get('/health', async (_req, res) => {
     sessions: { total: sessions.length, connected, pending_qr: pending },
     orphaned_sessions: orphaned.length,
     orphaned_detail: orphaned,
+    auto_restore: autoRestore,
+    // Session ids the gateway can actually serve. The backend compares these
+    // against the rows it believes are CONNECTED to spot a line that is
+    // "connected" only in the database.
+    live_session_ids: liveSessions
+      .filter((s) => s.status === 'CONNECTED')
+      .map((s) => s.id),
   });
 });
 

@@ -88,6 +88,19 @@ class AdminGatewayRuntimeStatus(BaseModel):
     # "connected but not being saved" instead of finding out from missing data.
     orphaned_count: int = 0
     orphaned_detail: List[Dict[str, Any]] = Field(default_factory=list)
+    # False in production: a gateway restart leaves no live sessions, so the
+    # database can report CONNECTED for a line the gateway cannot serve.
+    auto_restore: bool = True
+    # Session ids the gateway can currently serve. `None` means the gateway did
+    # not report (unreachable), which is NOT the same as an empty list meaning
+    # "none live" — collapsing the two would hide a gateway outage behind an
+    # empty state. Compared against the CONNECTED rows to detect a line that is
+    # connected only in the database.
+    live_session_ids: Optional[List[str]] = None
+    # Session names the database says are CONNECTED but the gateway does not
+    # serve. Non-empty means the UI is showing a healthy line that receives
+    # nothing — the exact state that made `chats: 0` hard to explain.
+    ghost_connected: List[str] = Field(default_factory=list)
 
 
 class AdminDBSessionSummary(BaseModel):

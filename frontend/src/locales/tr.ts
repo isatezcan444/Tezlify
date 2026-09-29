@@ -1140,6 +1140,8 @@ export const tr = {
       orphanedSessionTitle: '{count} WhatsApp oturumu kaydedilmiyor',
       orphanedSessionBody: 'Oturum bağlı görünüyor ama veritabanı kaydı silinmiş (genellikle numarayı yeniden eşleştirince). Bu yüzden olayları yalnızca canlı soket üzerinden backend’e ulaşıyor ve her yeniden başlatmada kayboluyor. Canlı bir oturum kaydı oluşturmak için numarayı WhatsApp ekranından yeniden eşleştirin.',
       orphanedSince: '{at} tarihinden beri',
+      ghostConnectedTitle: '{count} oturum bağlı görünüyor ama çalışmıyor',
+      ghostConnectedBody: 'Veritabanı bu oturumu hâlâ bağlı gösteriyor ama gateway onu sunmuyor, yani hiçbir mesaj gelemez. Otomatik oturum geri yükleme kapalıyken gateway yeniden başladığında böyle olur. Geri getirmek için numarayı WhatsApp ekranından yeniden eşleştirin.',
       tabHistory: 'Geçmiş',
       noData: 'Veri yok',
       logsTitle: 'Servis Logları',

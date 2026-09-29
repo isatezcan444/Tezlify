@@ -331,6 +331,7 @@ export const AdminOperationsPage: React.FC = () => {
           persistenceOk={status?.persistence_ok !== false}
           orphanedCount={whatsappRuntime?.orphaned_count ?? 0}
           orphanedDetail={whatsappRuntime?.orphaned_detail ?? []}
+          ghostConnected={whatsappRuntime?.ghost_connected ?? []}
         />
       )}
       {tab === 'system' && (

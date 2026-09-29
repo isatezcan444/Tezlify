@@ -1140,6 +1140,8 @@ export const en = {
       orphanedSessionTitle: '{count} WhatsApp session is not being saved',
       orphanedSessionBody: 'The session looks connected, but its database record was deleted (usually by re-pairing the number), so its events reach the backend over the live socket only and are lost on any restart. Re-pair the number from the WhatsApp screen to register a live session.',
       orphanedSince: 'since {at}',
+      ghostConnectedTitle: '{count} session shows as connected but is not running',
+      ghostConnectedBody: 'The database still marks this session as connected, but the gateway is not serving it, so no messages can arrive. This is what happens after a gateway restart while automatic session restore is off. Re-pair the number from the WhatsApp screen to bring it back.',
       tabHistory: 'History',
       noData: 'No data',
       logsTitle: 'Service Logs',

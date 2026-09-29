@@ -69,6 +69,12 @@ async def get_whatsapp_operations_metrics(db: AsyncSession) -> AdminWhatsAppResp
     gw_pending_qr = 0
     gw_orphaned = 0
     gw_orphaned_detail: List[Dict[str, Any]] = []
+    gw_auto_restore = True
+    # None means "the gateway did not say", which is different from "none live".
+    gw_live_ids: Optional[List[str]] = None
+    # Rows the DATABASE believes are CONNECTED, needed to spot a line that is
+    # connected only in the database.
+    db_connected_rows: List[Any] = []
     try:
         res = await get_gateway_health()
         if isinstance(res, dict):
@@ -85,9 +91,34 @@ async def get_whatsapp_operations_metrics(db: AsyncSession) -> AdminWhatsAppResp
             detail = res.get("orphaned_detail")
             if isinstance(detail, list):
                 gw_orphaned_detail = [d for d in detail if isinstance(d, dict)]
+            gw_auto_restore = res.get("auto_restore", True) is not False
+            live_ids = res.get("live_session_ids")
+            if isinstance(live_ids, list):
+                gw_live_ids = [str(i) for i in live_ids if i]
     except Exception as ge:
         logger.debug("Gateway health probe failed: %s", ge)
         gw_health = "unreachable"
+
+    # A "connected" line the gateway cannot serve.
+    #
+    # Production 2026-09-29: WHATSAPP_AUTO_RESTORE is false, so every gateway
+    # restart leaves zero live sessions while the database still says CONNECTED.
+    # The UI therefore reported a healthy line that received nothing — the state
+    # behind the unexplained `chats: 0`. Detected here rather than trusted,
+    # because the two sources genuinely disagree and the operator needs to be
+    # told which one to believe.
+    ghost_connected: List[str] = []
+    if gw_live_ids is not None and connected_sess > len(gw_live_ids):
+        live_set = set(gw_live_ids)
+        for s in db_connected_rows:
+            if str(s.gateway_id) not in live_set:
+                ghost_connected.append(s.session_name or str(s.gateway_id))
+    if ghost_connected:
+        logger.warning(
+            "WhatsApp sessions marked CONNECTED in the database but not served by "
+            "the gateway (auto_restore=%s): %s",
+            gw_auto_restore, ", ".join(ghost_connected),
+        )
 
     gateway_runtime = AdminGatewayRuntimeStatus(
         health_status=gw_health,
@@ -96,6 +127,9 @@ async def get_whatsapp_operations_metrics(db: AsyncSession) -> AdminWhatsAppResp
         pending_qr_count=gw_pending_qr,
         orphaned_count=gw_orphaned,
         orphaned_detail=gw_orphaned_detail,
+        auto_restore=gw_auto_restore,
+        live_session_ids=gw_live_ids,
+        ghost_connected=ghost_connected,
     )
 
     # 3. DB session summary & session list

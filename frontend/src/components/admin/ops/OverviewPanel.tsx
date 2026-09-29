@@ -32,6 +32,13 @@ export interface OverviewPanelProps {
    */
   orphanedCount?: number;
   orphanedDetail?: { id: string; session_name?: string; since?: string | null }[];
+  /**
+   * Sessions the database calls CONNECTED while the gateway serves nothing for
+   * them. Reported separately from `orphanedCount`: an orphan still produces
+   * events that reach the backend, whereas a ghost-connected line produces
+   * nothing at all.
+   */
+  ghostConnected?: string[];
 }
 
 /**
@@ -51,6 +58,7 @@ export function OverviewPanel({
   persistenceOk = true,
   orphanedCount = 0,
   orphanedDetail = [],
+  ghostConnected = [],
 }: OverviewPanelProps) {
   const { t } = useI18n();
 
@@ -152,6 +160,34 @@ export function OverviewPanel({
                 ))}
               </ul>
             )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* A line can be CONNECTED in the database and dead at the gateway. The
+          UI said "connected" and nothing arrived — this is the state behind the
+          unexplained `chats: 0`, so it gets said out loud. */}
+      {ghostConnected.length > 0 && (
+        <Card className="border-amber-300 dark:amber-700/50 bg-amber-50 dark:bg-amber-950/20">
+          <CardContent className="pt-4 space-y-2">
+            <div className="flex items-start gap-3">
+              <AlertTriangle className="w-4 h-4 mt-0.5 text-amber-600 dark:text-amber-400 shrink-0" />
+              <div className="space-y-1">
+                <p className="text-sm font-bold text-amber-900 dark:text-amber-300">
+                  {t('admin.ops.ghostConnectedTitle', { count: String(ghostConnected.length) })}
+                </p>
+                <p className="text-sm text-amber-800 dark:text-amber-300/90">
+                  {t('admin.ops.ghostConnectedBody')}
+                </p>
+              </div>
+            </div>
+            <ul className="ml-7 space-y-0.5">
+              {ghostConnected.map((name) => (
+                <li key={name} className="text-[11px] text-amber-800/80 dark:text-amber-300/70">
+                  • {name}
+                </li>
+              ))}
+            </ul>
           </CardContent>
         </Card>
       )}

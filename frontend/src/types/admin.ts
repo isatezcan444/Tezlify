@@ -72,6 +72,19 @@ export interface AdminGatewayRuntimeStatus {
     status?: string;
     since?: string | null;
   }[];
+  /** False in production: a gateway restart leaves no live sessions. */
+  auto_restore?: boolean;
+  /**
+   * Ids the gateway can currently serve. `null` means the gateway did not
+   * report, which is different from `[]` meaning "none live".
+   */
+  live_session_ids?: string[] | null;
+  /**
+   * Sessions the DATABASE calls CONNECTED while the gateway serves nothing for
+   * them — a healthy-looking line that receives no messages. This is the state
+   * that made `chats: 0` hard to explain.
+   */
+  ghost_connected?: string[];
   connected_count: number;
   pending_qr_count: number;
 }

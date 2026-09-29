@@ -411,7 +411,6 @@ check('an orphaned session is surfaced, not left in the logs', () => {
 });
 
 check('the gateway reports orphans on /health without faking a failure', async () => {
-  const fs = await import('node:fs');
   const gw = fs.readFileSync(new URL('../../whatsapp-gateway/src/index.js', import.meta.url), 'utf8');
   assert.ok(/orphaned_sessions/.test(gw), '/health must report the orphan count');
   // It is reported SEPARATELY from `status`: an orphaned session is not a
@@ -423,6 +422,35 @@ check('the gateway reports orphans on /health without faking a failure', async (
   assert.ok(/listOrphaned/.test(sm), 'the session manager must expose listOrphaned');
   assert.ok(/orphaned: Boolean\(s\._orphaned\)/.test(sm),
     'listSessions must expose the flag so the admin payload can carry it');
+});
+
+check('a database-CONNECTED line the gateway does not serve is called out', async () => {
+  const panel = read('../src/components/admin/ops/OverviewPanel.tsx');
+  const types = read('../src/types/admin.ts');
+  const svc = fs.readFileSync(
+    new URL('../../backend/app/services/admin/whatsapp_admin_service.py', import.meta.url), 'utf8');
+  // Production 2026-09-29: WHATSAPP_AUTO_RESTORE is false, so a gateway restart
+  // leaves zero live sessions while the database still says CONNECTED. The UI
+  // reported a healthy line that received nothing — the state behind the
+  // unexplained `chats: 0`.
+  assert.ok(types.includes('ghost_connected'), 'the type must expose the ghost list');
+  assert.ok(panel.includes('ghostConnected.length > 0'), 'the panel must warn on a ghost line');
+  assert.ok(panel.includes('ghostConnectedTitle'), 'the warning must be titled');
+  // Detection compares two sources rather than trusting either.
+  assert.ok(/live_session_ids/.test(svc), 'the service must read the gateway live ids');
+  assert.ok(/ghost_connected=ghost_connected/.test(svc), 'the service must return the list');
+  // "gateway did not answer" must not be treated as "no sessions live".
+  const schema = fs.readFileSync(
+    new URL('../../backend/app/schemas/admin.py', import.meta.url), 'utf8');
+  assert.ok(schema.includes('live_session_ids: Optional[List[str]] = None'),
+    'an unreachable gateway must stay None, not an empty list');
+});
+
+check('the gateway reports why it has no sessions', () => {
+  const gw = fs.readFileSync(
+    new URL('../../whatsapp-gateway/src/index.js', import.meta.url), 'utf8');
+  assert.ok(/auto_restore: autoRestore/.test(gw), '/health must report the restore mode');
+  assert.ok(/live_session_ids/.test(gw), '/health must list the live session ids');
 });
 
 console.log(`\nAdmin ops client contract: PASS (${passed} checks)`);
