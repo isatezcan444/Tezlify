@@ -11,12 +11,15 @@ WORKDIR /app
 # never caller-supplied argv. Installing only the client keeps the attack
 # surface minimal; the socket mount is what actually grants host access and is
 # granted deliberately in docker-compose.prod.yml.
+#
+# The compose PLUGIN is not installed: `docker.io` ships the CLI, and the
+# daemon's built-in `docker compose` subcommand is what the operations invoke.
+# (The `docker-compose-v2` apt package does not exist on this base image.)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     curl \
     ca-certificates \
     docker.io \
-    docker-compose-v2 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements and install
