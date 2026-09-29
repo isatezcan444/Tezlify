@@ -105,3 +105,29 @@ async def test_admin_whatsapp_phone_number_masking():
     assert masked.endswith("67")
     assert "***" in masked
     assert "12345" not in masked  # Middle digits masked
+
+
+def test_ghost_session_detection_runs_after_the_rows_are_read():
+    """The ghost check must run AFTER the session rows are collected.
+
+    Found in production, not in the unit tests: the check was placed before the
+    database loop that fills `db_connected_rows` and increments
+    `connected_sess`, so the admin WhatsApp endpoint raised
+    `UnboundLocalError: connected_sess` and the whole payload 500'd. The admin
+    screen that exists to show this problem was itself broken by it.
+    """
+    import inspect
+
+    from backend.app.services.admin import whatsapp_admin_service as svc
+
+    src = inspect.getsource(svc.get_whatsapp_operations_metrics)
+    append_at = src.index("db_connected_rows.append")
+    ghost_at = src.index("ghost_connected: List[str] = []")
+    model_at = src.index("gateway_runtime = AdminGatewayRuntimeStatus(")
+    assert append_at < ghost_at, "rows must be collected before the ghost check"
+    assert ghost_at < model_at, "the ghost list must be built before the model"
+    # And the rows must be appended inside the CONNECTED branch, not the elif.
+    connected_branch = src[src.index('if st == "CONNECTED"'):src.index('elif st == "SCAN_QR"')]
+    assert "db_connected_rows.append" in connected_branch, (
+        "a connected row must be recorded inside the CONNECTED branch"
+    )

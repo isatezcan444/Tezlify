@@ -99,40 +99,11 @@ async def get_whatsapp_operations_metrics(db: AsyncSession) -> AdminWhatsAppResp
         logger.debug("Gateway health probe failed: %s", ge)
         gw_health = "unreachable"
 
-    # A "connected" line the gateway cannot serve.
-    #
-    # Production 2026-09-29: WHATSAPP_AUTO_RESTORE is false, so every gateway
-    # restart leaves zero live sessions while the database still says CONNECTED.
-    # The UI therefore reported a healthy line that received nothing — the state
-    # behind the unexplained `chats: 0`. Detected here rather than trusted,
-    # because the two sources genuinely disagree and the operator needs to be
-    # told which one to believe.
-    ghost_connected: List[str] = []
-    if gw_live_ids is not None and connected_sess > len(gw_live_ids):
-        live_set = set(gw_live_ids)
-        for s in db_connected_rows:
-            if str(s.gateway_id) not in live_set:
-                ghost_connected.append(s.session_name or str(s.gateway_id))
-    if ghost_connected:
-        logger.warning(
-            "WhatsApp sessions marked CONNECTED in the database but not served by "
-            "the gateway (auto_restore=%s): %s",
-            gw_auto_restore, ", ".join(ghost_connected),
-        )
-
-    gateway_runtime = AdminGatewayRuntimeStatus(
-        health_status=gw_health,
-        session_count=gw_sessions,
-        connected_count=gw_connected,
-        pending_qr_count=gw_pending_qr,
-        orphaned_count=gw_orphaned,
-        orphaned_detail=gw_orphaned_detail,
-        auto_restore=gw_auto_restore,
-        live_session_ids=gw_live_ids,
-        ghost_connected=ghost_connected,
-    )
-
     # 3. DB session summary & session list
+    #
+    # Read BEFORE the gateway runtime is assembled: the ghost check below needs
+    # both `db_connected_rows` and `connected_sess`, so building the model first
+    # made the whole admin payload raise UnboundLocalError.
     sessions_list: List[AdminWhatsAppSessionSummary] = []
     total_sess = 0
     connected_sess = 0
@@ -149,6 +120,9 @@ async def get_whatsapp_operations_metrics(db: AsyncSession) -> AdminWhatsAppResp
             st = str(s.status.value if hasattr(s.status, "value") else s.status)
             if st == "CONNECTED":
                 connected_sess += 1
+                # Needed to spot a line that is CONNECTED only in the database
+                # while the gateway serves nothing for it.
+                db_connected_rows.append(s)
             elif st == "SCAN_QR":
                 scan_qr_sess += 1
             elif st == "RELINK_REQUIRED":
@@ -174,6 +148,38 @@ async def get_whatsapp_operations_metrics(db: AsyncSession) -> AdminWhatsAppResp
         connected=connected_sess,
         scan_qr=scan_qr_sess,
         relink_required=relink_sess,
+    )
+
+    # Built AFTER the session rows are read.
+    #
+    # A "connected" line the gateway cannot serve: WHATSAPP_AUTO_RESTORE is
+    # false in production, so a gateway restart leaves zero live sessions while
+    # the database still says CONNECTED. The UI reported a healthy line that
+    # received nothing — the state behind the unexplained `chats: 0`. Both sides
+    # are compared rather than either being trusted.
+    ghost_connected: List[str] = []
+    if gw_live_ids is not None and connected_sess > len(gw_live_ids):
+        live_set = set(gw_live_ids)
+        for s in db_connected_rows:
+            if str(s.gateway_id) not in live_set:
+                ghost_connected.append(s.session_name or str(s.gateway_id))
+    if ghost_connected:
+        logger.warning(
+            "WhatsApp sessions marked CONNECTED in the database but not served by "
+            "the gateway (auto_restore=%s): %s",
+            gw_auto_restore, ", ".join(ghost_connected),
+        )
+
+    gateway_runtime = AdminGatewayRuntimeStatus(
+        health_status=gw_health,
+        session_count=gw_sessions,
+        connected_count=gw_connected,
+        pending_qr_count=gw_pending_qr,
+        orphaned_count=gw_orphaned,
+        orphaned_detail=gw_orphaned_detail,
+        auto_restore=gw_auto_restore,
+        live_session_ids=gw_live_ids,
+        ghost_connected=ghost_connected,
     )
 
     # 4. Socket leases
