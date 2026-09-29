@@ -397,6 +397,21 @@ WhatsApp Operations Center composites, rendered inside
 - **Props**: `{ logsByService: Record<string, string[]>; catalogue: OpsCatalogueEntry[]; runningName?: string | null; onRun: (entry: OpsCatalogueEntry) => void; onViewLogs: (service: string) => void }`
 - **Import**: `import { ErrorFeed } from '@/components/admin/ops';`
 
+### `OverviewPanel`
+- **Purpose**: Read-only summary of the whole deployment — service count, health verdict, database and WhatsApp state, recent operations, and a warning when the server cannot persist its audit trail. Composes the existing admin overview and ops payloads; introduces no new endpoint.
+- **Props**: `{ overview: AdminOverviewResponse | null; services: OpsServiceStatus[]; health: OpsHealthCheck | null; operations: OpsOperation[]; loading?: boolean; persistenceOk?: boolean }`
+- **Import**: `import { OverviewPanel } from '@/components/admin/ops';`
+
+### `ConnectionPanel`
+- **Purpose**: WhatsApp connection state — gateway bridge, gateway health, reconnect count, session list and what the operator should do next. Deliberately READ-ONLY: pairing is owned by `/api/v1/whatsapp/pairing/*`, which is scoped to the requesting user, so an admin-triggered pairing flow would pair against the wrong account or require writing session credentials on a user's behalf.
+- **Props**: `{ data: AdminWhatsAppResponse | null; health: OpsHealthCheck | null; loading?: boolean }`
+- **Import**: `import { ConnectionPanel } from '@/components/admin/ops';`
+
+### `LiveChatsLink`
+- **Purpose**: Entry point to live WhatsApp chats. A link, NOT an embedded chat list, on purpose: `/whatsapp/conversations` is scoped to the requesting user and enforced server-side, so listing chats here would either leak other tenants' conversations to the admin role or show the admin's own chats while implying they are everyone's. The operator is handed off to the WhatsApp hub, which has correct scoping and the existing realtime/ordering fixes.
+- **Props**: `{ onOpenChats: () => void }`
+- **Import**: `import { LiveChatsLink } from '@/components/admin/ops';`
+
 ### `useOpsEvents` (hook)
 - **Purpose**: Subscribes to `operation.*` events on the shared `/ws` stream so operation progress is realtime. Reuses the managed `createWebSocket` factory, so auth-refresh and backoff behaviour stay identical to the rest of the product. Polling remains only as a fallback when the socket is down.
 - **Props**: `(enabled: boolean, { onOperation: (op: OpsOperation, event: string) => void; onConnectionChange?: (connected: boolean) => void })`

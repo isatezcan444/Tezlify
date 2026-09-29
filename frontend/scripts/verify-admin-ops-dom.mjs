@@ -69,6 +69,9 @@ await writeFile(
     `export { ServiceStatusPanel } from '${SRC}/components/admin/ops/ServiceStatusPanel';`,
     `export { ErrorFeed, buildErrorFeed, classifyError } from '${SRC}/components/admin/ops/ErrorFeed';`,
     `export { OpsLogsPanel } from '${SRC}/components/admin/ops/OpsLogsPanel';`,
+    `export { OverviewPanel } from '${SRC}/components/admin/ops/OverviewPanel';`,
+    `export { ConnectionPanel } from '${SRC}/components/admin/ops/ConnectionPanel';`,
+    `export { LiveChatsLink } from '${SRC}/components/admin/ops/LiveChatsLink';`,
   ].join('\n'),
   'utf8',
 );
@@ -111,7 +114,11 @@ try {
   });
 
   const mod = await import(out);
-  const { React, domAct, createRoot, I18nProvider, ToastProvider, ServiceStatusPanel, ErrorFeed, buildErrorFeed, classifyError, OpsLogsPanel } = mod;
+    const {
+    React, domAct, createRoot, I18nProvider, ToastProvider,
+    ServiceStatusPanel, ErrorFeed, buildErrorFeed, classifyError, OpsLogsPanel,
+    OverviewPanel, ConnectionPanel, LiveChatsLink,
+  } = mod;
   const h = React.createElement;
   const text = () => window.document.body.textContent || '';
   const buttons = () => Array.from(window.document.querySelectorAll('button'));
@@ -207,6 +214,64 @@ try {
       /opsRealtimeConnected \? 'admin\.ops\.liveHint' : 'admin\.ops\.pollingHint'/.test(page),
       'the indicator must explain the current mode on hover',
     );
+  });
+
+  await check('OverviewPanel summarises the deployment read-only', async () => {
+    await mount(h(OverviewPanel, {
+      overview: { database: { health: 'healthy' } },
+      services: [
+        { name: 'tezlify-backend', status: 'running', state: 'Up 2 hours (healthy)' },
+        { name: 'tezlify-db', status: 'running', state: 'Up 13 days (healthy)' },
+      ],
+      health: { checks: {}, all_healthy: true, checked_at: '', whatsapp: { state: 'connected', connected: true } },
+      operations: [{ id: '1', name: 'restart_gateway', label: 'Restart WhatsApp gateway', status: 'succeeded', step: 'completed', destructive: true, logs: [] }],
+    }));
+    const body = text();
+    assert.ok(body.includes('2/2'), 'service ratio shown');
+    assert.ok(body.includes('backend'), 'service names shown');
+    assert.ok(body.includes('Restart WhatsApp gateway'), 'recent operation shown');
+    // No action controls: the Overview tab must not place a destructive button
+    // in front of the operator before they have read any state.
+    const labels = buttons().map((b) => (b.textContent || '').trim());
+    assert.ok(!labels.some((l) => /restart|deploy/i.test(l)), 'overview must have no action buttons');
+  });
+
+  await check('OverviewPanel warns when the server cannot persist history', async () => {
+    await mount(h(OverviewPanel, {
+      overview: null, services: [], health: null, operations: [], persistenceOk: false,
+    }));
+    assert.ok(
+      text().includes('cannot write its operation history'),
+      'an unwritable state dir must be surfaced, not hidden',
+    );
+  });
+
+  await check('ConnectionPanel reports session state without pairing controls', async () => {
+    let navigated = false;
+    await mount(h(ConnectionPanel, {
+      data: {
+        gateway_bridge: { connected: true, reconnect_count: 2, last_connected_at: null, last_event_at: null },
+        gateway_runtime: { health_status: 'healthy' },
+        sessions: [{ id: 1, session_name: 'Ops phone', status: 'CONNECTED', phone_number_masked: '+90***' }],
+      },
+      health: { checks: {}, all_healthy: true, checked_at: '', whatsapp: { state: 'connected', connected: true } },
+    }));
+    const body = text();
+    assert.ok(body.includes('Ops phone'), 'session listed');
+    assert.ok(body.includes('CONNECTED'), 'session status shown');
+    // Pairing belongs to the account owner; the admin panel must not offer it.
+    const labels = buttons().map((b) => (b.textContent || '').trim());
+    assert.ok(!labels.some((l) => /pair|qr|scan|connect now/i.test(l)),
+      'the admin connection panel must not offer pairing');
+  });
+
+  await check('LiveChatsLink hands off to the scoped chat surface', async () => {
+    let opened = false;
+    await mount(h(LiveChatsLink, { onOpenChats: () => { opened = true; } }));
+    const btn = buttons().find((b) => /open whatsapp chats/i.test(b.textContent || ''));
+    assert.ok(btn, 'must offer a hand-off button');
+    await domAct(async () => { btn.dispatchEvent(new window.MouseEvent('click', { bubbles: true })); });
+    assert.ok(opened, 'clicking must navigate to the WhatsApp hub');
   });
 
   console.log(`\nAdmin operations DOM verification: PASS (${passed} checks)`);

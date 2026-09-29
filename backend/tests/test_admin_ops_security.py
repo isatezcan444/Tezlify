@@ -198,3 +198,138 @@ def test_destructive_operations_are_flagged():
             assert spec.destructive is False
         else:
             assert spec.destructive is True, f"{name} must be marked destructive"
+
+
+# ------------------------------------------------------- production-safety
+def test_restart_all_never_touches_postgres():
+    """`restart_all` must not recreate the database.
+
+    A bare `docker compose up -d --force-recreate` recreates every service in
+    the project, including `tezlify-db`. The panel deliberately does not allow
+    database restarts, so this operation must name its targets explicitly —
+    otherwise a single click could take the whole datastore down.
+    """
+    argv = ops.OPERATIONS["restart_all"].build_argv()
+    assert "db" not in argv, "restart_all must not include the db service"
+    assert "postgres" not in argv
+    # Every restartable service is still included, so the fix is not "do less".
+    for service in ops.ALLOWED_SERVICES:
+        assert service in argv, f"{service} should still be restarted by restart_all"
+    assert "--no-deps" in argv, "must not cascade into dependencies"
+
+
+def test_docker_ndjson_is_parsed_per_line():
+    """`docker ps --format '{{json .}}'` emits NDJSON, not a JSON array.
+
+    Parsing the whole stdout with one `json.loads` fails as soon as there is
+    more than one container, which silently made every service look "absent"
+    while all of them were running.
+    """
+    ndjson = (
+        '{"Names":"tezlify-backend","State":"Up 3 minutes (healthy)"}\n'
+        '{"Names":"tezlify-gateway","State":"Up 13 hours (healthy)"}\n'
+    )
+
+    class _Proc:
+        returncode = 0
+
+        async def communicate(self):
+            return ndjson.encode(), b""
+
+    async def fake_exec(*args, **kwargs):
+        # create_subprocess_exec returns the process object directly.
+        return _Proc()
+
+    original = asyncio.create_subprocess_exec
+    asyncio.create_subprocess_exec = fake_exec
+    try:
+        result = asyncio.run(ops._docker_json(["docker", "ps"]))
+    finally:
+        asyncio.create_subprocess_exec = original
+
+    assert isinstance(result, list), "NDJSON must yield a list of records"
+    assert len(result) == 2, f"expected both containers, got {result!r}"
+    assert result[0]["Names"] == "tezlify-backend"
+
+
+def test_operations_survive_a_backend_restart():
+    """A restart must not lose history, and must not leave a phantom 'running'.
+
+    The backend restarts ITSELF when the operator runs restart_backend, so the
+    process executing the operation is the one that dies. State therefore has
+    to be persisted, and anything still 'running' at boot must be reconciled to
+    a terminal state — otherwise the family guard is blocked forever and the
+    panel shows an operation that no process is performing.
+    """
+    import tempfile
+    from pathlib import Path
+
+    assert hasattr(ops, "init_ops_state")
+    src = inspect.getsource(ops._recover_orphans)
+    assert '"interrupted"' in src, "orphans must be marked interrupted"
+
+    # Redirect the state file to a temp dir so the suite never writes to (or
+    # reads from) the real deploy directory.
+    redirected = Path(tempfile.mkdtemp()) / "ops-state"
+    original_file, original_dir = ops._STATE_FILE, ops._STATE_DIR
+    ops._STATE_DIR = redirected
+    ops._STATE_FILE = redirected / "operations.json"
+    ops._op_registry.clear()
+    ops._order.clear()
+    ops._audit.clear()
+    try:
+        ops._op_registry["op1"] = {
+            "id": "op1", "name": "restart_backend", "label": "Restart backend",
+            "status": "running", "step": "starting", "started_at": ops._now_iso(),
+            "finished_at": None, "duration_ms": None, "actor": "admin",
+            "destructive": True, "error": None, "logs": [], "exit_code": None,
+        }
+        ops._order.append("op1")
+        ops._persist_state()
+
+        # Simulate the restart: fresh process, same file on disk.
+        ops._op_registry.clear()
+        ops._order.clear()
+        ops._audit.clear()
+        ops.init_ops_state()
+
+        restored = ops.get_operation("op1")
+        assert restored is not None, "history must survive the restart"
+        assert restored["status"] == "failed", "an in-flight op cannot still be running"
+        assert restored["step"] == "interrupted"
+        assert restored["error"], "the operator must be told the result is unknown"
+    finally:
+        ops._op_registry.clear()
+        ops._order.clear()
+        ops._audit.clear()
+        ops._STATE_FILE, ops._STATE_DIR = original_file, original_dir
+        try:
+            import shutil
+            shutil.rmtree(redirected, ignore_errors=True)
+        except Exception:
+            pass
+
+
+def test_health_check_probes_more_than_container_state():
+    """Container state alone cannot prove a deployment worked."""
+    src = inspect.getsource(ops.run_health_check)
+    assert "_probe_backend_http" in src, "must probe the backend HTTP endpoint"
+    assert "_probe_gateway_health" in src, "must probe the gateway"
+    assert "_whatsapp_session_state" in src, "must report WhatsApp session state"
+
+
+def test_http_probe_distinguishes_unreachable_from_unhealthy():
+    """'could not check' must never be rendered to the operator as 'broken'."""
+    ann = str(inspect.signature(ops._http_probe).return_annotation)
+    assert "bool" in ann and "None" in ann, ann
+
+    async def _boom(*a, **k):
+        raise FileNotFoundError()
+
+    original = asyncio.create_subprocess_exec
+    asyncio.create_subprocess_exec = _boom
+    try:
+        result = asyncio.run(ops._http_probe("http://x/health", 1))
+    finally:
+        asyncio.create_subprocess_exec = original
+    assert result is None, "an unreachable probe returns None, not False"

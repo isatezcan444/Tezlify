@@ -119,6 +119,11 @@ check('ops block covers every tab the Operations Center needs', () => {
     'dangerZone', 'dangerZoneDesc',
     'errorsTitle', 'errorsEmpty',
     'live', 'polling', 'liveHint', 'pollingHint',
+    'overviewServices', 'overviewHealth', 'overviewDatabase', 'overviewWhatsapp',
+    'overviewUnknown', 'overviewNoServices', 'persistenceWarning',
+    'bridgeStatus', 'gatewayHealth', 'reconnectCount',
+    'connected', 'disconnected', 'sessionsTitle', 'sessionsEmpty',
+    'pairingActive', 'pairingNeeded', 'chatsScopedNote', 'chatsOpenHub',
   ];
   for (const key of required) {
     assert.ok(trOps.has(key), `missing ops key: ${key}`);
@@ -161,6 +166,65 @@ check('the page keeps a polling fallback when realtime is unavailable', () => {
   );
   // A finished operation must refresh service state immediately.
   assert.ok(/op\.status !== 'running'/.test(page), 'must refresh status when an operation finishes');
+});
+
+check('all eight Operations Center tabs are wired to real components', () => {
+  const page = read('../src/pages/admin/AdminWhatsAppPage.tsx');
+  // The panel is only finished when every declared tab renders something. A tab
+  // that falls through would show a blank card and look broken.
+  // `operations` is the deliberate fall-through: it also hosts the live log
+  // view, so it has no explicit `opsTab === 'operations'` branch.
+  for (const [id, component] of [
+    ['overview', 'OverviewPanel'],
+    ['connection', 'ConnectionPanel'],
+    ['chats', 'LiveChatsLink'],
+    ['session', 'null'],
+    ['system', 'ServiceStatusPanel'],
+    ['errors', 'ErrorFeed'],
+    ['logs', 'OpsLogsPanel'],
+  ]) {
+    assert.ok(new RegExp(`opsTab === '${id}'`).test(page), `missing tab branch: ${id}`);
+    if (component !== 'null') {
+      assert.ok(new RegExp(`<${component}[\\s/>]`).test(page), `${id} must render ${component}`);
+    }
+  }
+  // The fall-through must still render the history panel.
+  assert.ok(/<OpsHistoryPanel[\s/>]/.test(page), 'operations tab must render OpsHistoryPanel');
+  // The tab bar must not advertise a tab the page cannot render.
+  for (const id of ['overview', 'connection', 'chats', 'session', 'system', 'errors', 'logs', 'operations']) {
+    assert.ok(new RegExp(`id: '${id}'`).test(page), `tab ${id} missing from the tab bar`);
+  }
+});
+
+check('the chats tab does not embed a conversation list', () => {
+  const link = read('../src/components/admin/ops/LiveChatsLink.tsx');
+  // /whatsapp/conversations is user-scoped and enforced server-side. An admin
+  // panel that listed them would leak another tenant's chats or silently show
+  // the admin's own, so the tab must hand off instead.
+  assert.ok(/onOpenChats/.test(link), 'must navigate to the scoped chat surface');
+  assert.ok(!/conversation_id|fetchConversations|\.map\(.*conversations/.test(link),
+    'the admin ops tab must not render conversations itself');
+  const page = read('../src/pages/admin/AdminWhatsAppPage.tsx');
+  assert.ok(
+    page.includes("<LiveChatsLink onOpenChats={() => onNavigate?.('whatsapp')} />"),
+    'chats tab must route to the WhatsApp hub',
+  );
+});
+
+check('the connection tab is read-only (pairing stays with the account owner)', () => {
+  const panel = read('../src/components/admin/ops/ConnectionPanel.tsx');
+  // Pairing endpoints are scoped to the requesting user; an admin-triggered
+  // pairing flow would pair the wrong account or need a privileged endpoint
+  // that writes session credentials on a user's behalf.
+  assert.ok(!/pair\/start|startPairing|pairing\/\{pair_token\}/.test(panel),
+    'the admin connection panel must not call pairing endpoints');
+});
+
+check('the overview tab surfaces an unwritable state directory', () => {
+  const panel = read('../src/components/admin/ops/OverviewPanel.tsx');
+  assert.ok(/persistenceOk/.test(panel), 'must render the persistence warning');
+  const page = read('../src/pages/admin/AdminWhatsAppPage.tsx');
+  assert.ok(/persistence_ok !== false/.test(page), 'page must read the server flag');
 });
 
 console.log(`\nAdmin ops client contract: PASS (${passed} checks)`);

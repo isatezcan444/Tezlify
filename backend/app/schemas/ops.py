@@ -32,6 +32,12 @@ class OpsHealthCheck(BaseModel):
     checks: Dict[str, bool] = Field(default_factory=dict)
     all_healthy: bool = False
     checked_at: str
+    # Per-service probe detail (container state, HTTP probe result). Present so
+    # an operator can see WHY a check failed instead of only that it did.
+    details: Dict[str, Any] = Field(default_factory=dict)
+    # WhatsApp connectivity, reported separately: a restart that leaves the
+    # session logged out is an operator action to re-pair, not a failed deploy.
+    whatsapp: Dict[str, Any] = Field(default_factory=dict)
 
 
 class OpsOperation(BaseModel):
@@ -79,6 +85,10 @@ class OpsStatusResponse(BaseModel):
     running: Optional[OpsOperation] = None
     catalogue: List[OpsCatalogueEntry] = Field(default_factory=list)
     audit: List[OpsAuditEntry] = Field(default_factory=list)
+    # False when the deploy dir is not writable, so operation history is not
+    # being kept across restarts. The UI must say so instead of pretending.
+    persistence_ok: bool = True
+    persistence_error: Optional[str] = None
 
 
 class OpsLogsResponse(BaseModel):

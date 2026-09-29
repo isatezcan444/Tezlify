@@ -40,6 +40,7 @@ from backend.app.core.migrations import (
     ensure_whatsapp_private_lid_and_history_tables,
 )
 from backend.app.core.seed import seed_demo_data_if_empty
+from backend.app.services.admin.ops_service import init_ops_state
 from backend.app.models.blacklist import ScraperJob, ScraperJobStatus
 from backend.app.models.campaign import Campaign, CampaignStatus
 
@@ -137,6 +138,15 @@ async def lifespan(app: FastAPI):
 
     # Restart sonrası yarıda kalan arka plan işlerini toparla
     await recover_stuck_jobs()
+
+    # Operations Center: restore the operation/audit history that the previous
+    # process persisted, and reconcile anything it left marked "running".
+    # Best-effort by design: a missing or corrupt state file must never stop
+    # the API from serving traffic.
+    try:
+        init_ops_state()
+    except Exception as e:
+        logger.warning(f"Ops state recovery failed (non-critical): {e}", exc_info=True)
 
     if settings.SEED_DEMO_DATA:
         try:

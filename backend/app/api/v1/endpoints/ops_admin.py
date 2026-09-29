@@ -76,6 +76,10 @@ async def get_ops_status(
         running=_operation(running_raw) if running_raw else None,
         catalogue=[OpsCatalogueEntry(**c) for c in ops.available_operations()],
         audit=[OpsAuditEntry(**a) for a in ops.list_audit(limit=50)],
+        # Surfaces a deploy dir that cannot be written. Without this the panel
+        # would look healthy while silently losing every operation record.
+        persistence_ok=ops.persistence_status()["ok"],
+        persistence_error=ops.persistence_status()["error"],
     )
 
 

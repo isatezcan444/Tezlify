@@ -9,15 +9,19 @@ import {
   ArrowLeft,
   Smartphone,
   RefreshCw,
-  Info
+  Info,
+  LayoutDashboard,
+  Wifi,
+  MessageSquare
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useI18n } from '../../context/I18nContext';
 import { AdminApi } from '../../api/admin';
-import { 
-  AdminWhatsAppResponse, 
+import {
+  AdminOverviewResponse,
+  AdminWhatsAppResponse,
   AdminWhatsAppSessionSummary,
-  OverallSystemStatus 
+  OverallSystemStatus
 } from '../../types/admin';
 import { AdminShell } from '../../components/admin/AdminShell';
 import { Card, CardHeader, CardTitle, CardContent } from '../../components/ui/card';
@@ -30,6 +34,9 @@ import { ServiceStatusPanel } from '../../components/admin/ops/ServiceStatusPane
 import { OpsLogsPanel } from '../../components/admin/ops/OpsLogsPanel';
 import { OpsHistoryPanel } from '../../components/admin/ops/OpsHistoryPanel';
 import { ErrorFeed } from '../../components/admin/ops/ErrorFeed';
+import { OverviewPanel } from '../../components/admin/ops/OverviewPanel';
+import { ConnectionPanel } from '../../components/admin/ops/ConnectionPanel';
+import { LiveChatsLink } from '../../components/admin/ops/LiveChatsLink';
 import { OpsApi } from '../../api/admin';
 import { useToast } from '../../context/ToastContext';
 import { useOpsEvents } from '../../hooks/useOpsEvents';
@@ -41,9 +48,12 @@ import {
   OpsStatusResponse,
 } from '../../types/admin';
 
-type OpsTab = 'session' | 'system' | 'errors' | 'logs' | 'operations';
+type OpsTab = 'overview' | 'connection' | 'chats' | 'session' | 'system' | 'errors' | 'logs' | 'operations';
 
 const OPS_TABS: { id: OpsTab; key: string; icon: React.ComponentType<{ className?: string }> }[] = [
+  { id: 'overview', key: 'admin.ops.tabOverview', icon: LayoutDashboard },
+  { id: 'connection', key: 'admin.ops.tabConnection', icon: Wifi },
+  { id: 'chats', key: 'admin.ops.tabChats', icon: MessageSquare },
   { id: 'session', key: 'admin.ops.tabSession', icon: Smartphone },
   { id: 'system', key: 'admin.ops.tabSystem', icon: Radio },
   { id: 'errors', key: 'admin.ops.tabErrors', icon: ShieldAlert },
@@ -71,7 +81,9 @@ export const AdminWhatsAppPage: React.FC<AdminWhatsAppPageProps> = ({ onNavigate
   // Kept separate from the WhatsApp read model on purpose: opening the panel
   // must not trigger a WhatsApp history/contact/avatar sync (§ performance).
   const toast = useToast();
-  const [opsTab, setOpsTab] = useState<OpsTab>('system');
+  // Open on Overview: it is the read-only summary, so an operator sees the
+  // state of the system before any destructive control is within reach.
+  const [opsTab, setOpsTab] = useState<OpsTab>('overview');
   const [opsStatus, setOpsStatus] = useState<OpsStatusResponse | null>(null);
   const [opsLoading, setOpsLoading] = useState<boolean>(false);
   const [opsError, setOpsError] = useState<string | null>(null);
@@ -81,6 +93,9 @@ export const AdminWhatsAppPage: React.FC<AdminWhatsAppPageProps> = ({ onNavigate
   const [logsLoading, setLogsLoading] = useState<boolean>(false);
   const [logsByService, setLogsByService] = useState<Record<string, string[]>>({});
   const [opLogs, setOpLogs] = useState<OpsOperation | null>(null);
+  // Feeds the Overview tab. The admin overview endpoint already exists and is
+  // read-only, so the summary tab costs no new backend surface.
+  const [overview, setOverview] = useState<AdminOverviewResponse | null>(null);
 
   const opsRefreshing = useRef<boolean>(false);
 
@@ -128,6 +143,23 @@ export const AdminWhatsAppPage: React.FC<AdminWhatsAppPageProps> = ({ onNavigate
   }, [fetchOpsStatus]);
 
   const opsRealtimeConnected = useOpsEvents(showAdmin, { onOperation: handleOpsEvent });
+
+  // Overview feeds the summary tab only, and is fetched once: it is a slow
+  // changing system summary, so polling it alongside ops status would add load
+  // for no benefit. A manual refresh re-reads it.
+  const fetchOverview = useCallback(async () => {
+    try {
+      setOverview(await AdminApi.getOverview());
+    } catch {
+      // The Overview tab degrades to service-only data rather than an error
+      // page; the operator still sees live service state.
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!showAdmin) return;
+    void fetchOverview();
+  }, [showAdmin, fetchOverview]);
 
   // Poll only the lightweight status endpoint, and only while the tab is
   // visible. Logs are fetched on demand, never in a loop.
@@ -534,6 +566,30 @@ export const AdminWhatsAppPage: React.FC<AdminWhatsAppPageProps> = ({ onNavigate
           </CardContent>
         </Card>
       );
+    }
+    if (opsTab === 'overview') {
+      return (
+        <OverviewPanel
+          overview={overview}
+          services={opsStatus?.services || []}
+          health={opsStatus?.health || null}
+          operations={opsStatus?.operations || []}
+          loading={opsLoading && !opsStatus}
+          persistenceOk={opsStatus?.persistence_ok !== false}
+        />
+      );
+    }
+    if (opsTab === 'connection') {
+      return (
+        <ConnectionPanel
+          data={data}
+          health={opsStatus?.health || null}
+          loading={loading && !data}
+        />
+      );
+    }
+    if (opsTab === 'chats') {
+      return <LiveChatsLink onOpenChats={() => onNavigate?.('whatsapp')} />;
     }
     if (opsTab === 'session') {
       // The pre-existing WhatsApp session view (bridge, sessions, outbox) is

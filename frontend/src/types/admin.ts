@@ -363,6 +363,14 @@ export interface OpsHealthCheck {
   checks: Record<string, boolean>;
   all_healthy: boolean;
   checked_at: string;
+  /** Per-service probe detail, so a failure shows *why* it failed. */
+  details?: Record<string, unknown>;
+  /**
+   * WhatsApp connectivity. Deliberately NOT part of `all_healthy`: a restart
+   * that leaves the session logged out needs an operator to re-pair, it is not
+   * a failed deploy.
+   */
+  whatsapp?: { state?: string; connected?: boolean };
 }
 
 export interface OpsOperation {
@@ -405,6 +413,13 @@ export interface OpsStatusResponse {
   running?: OpsOperation | null;
   catalogue: OpsCatalogueEntry[];
   audit: OpsAuditEntry[];
+  /**
+   * False when the server cannot write its operation history. Shown in the UI:
+   * a panel that silently loses its audit trail is worse than one that admits
+   * it, because the operator keeps trusting a record that is not being kept.
+   */
+  persistence_ok?: boolean;
+  persistence_error?: string | null;
 }
 
 export interface OpsLogsResponse {
