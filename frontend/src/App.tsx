@@ -281,8 +281,18 @@ const AppContent: React.FC = () => {
           onToggleMobileMenu={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
         />
 
-        {/* Dynamic Page Container with Responsive Padding */}
-        <main className="flex-1 p-3.5 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto">
+        {/* Dynamic Page Container with Responsive Padding
+
+            The `key` is what makes the entrance animation replay on every
+            navigation. Without it React reuses the same DOM node, the animation
+            runs once at mount, and switching between sections is a hard cut —
+            which is how the admin pages felt like they had "no effects" while
+            every other screen animated. It also guarantees each page starts from
+            a clean state instead of inheriting the previous one's DOM. */}
+        <main
+          key={activeTab}
+          className="flex-1 p-3.5 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto animate-page-enter"
+        >
           {activeTab === 'dashboard' && (
             <DashboardPage stats={stats} onNavigate={handleNavigate} />
           )}

@@ -220,11 +220,17 @@ export const OpsHistoryPanel: React.FC<OpsHistoryPanelProps> = ({
               description={t('admin.ops.operationsSubtitle')}
             />
           ) : (
-            operations.map((op) => {
+            operations.map((op, idx) => {
               const meta = statusOf(op);
               const isOpen = openId === op.id;
               return (
-                <div key={op.id} className="rounded-lg border border-slate-200 dark:border-white/[0.08]">
+                <div
+                  key={op.id}
+                  // Capped delay: a 40-row history would otherwise keep the
+                  // last item invisible for most of a second.
+                  style={{ animationDelay: `${Math.min(idx, 8) * 35}ms` }}
+                  className="rounded-lg border border-slate-200 dark:border-white/[0.08] animate-stagger-in"
+                >
                   <button
                     type="button"
                     onClick={() => setOpenId(isOpen ? null : op.id)}

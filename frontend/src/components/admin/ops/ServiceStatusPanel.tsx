@@ -146,7 +146,10 @@ export const ServiceStatusPanel: React.FC<ServiceStatusPanelProps> = ({
                   size="sm"
                   disabled={busy || Boolean(running)}
                   onClick={() => onRun(action)}
-                  className="w-full gap-2 cursor-pointer border-slate-200 dark:border-white/[0.08]"
+                  // Press feedback: a destructive control that gives no
+                  // response feels unresponsive, and the confirmation dialog is
+                  // the only other signal that the click registered.
+                  className="w-full gap-2 cursor-pointer border-slate-200 dark:border-white/[0.08] transition-all duration-150 active:scale-[0.98]"
                 >
                   {busy ? (
                     <Activity className="w-3.5 h-3.5 animate-spin text-vuexy-primary" />

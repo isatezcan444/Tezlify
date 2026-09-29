@@ -281,7 +281,8 @@ export const AdminOperationsPage: React.FC = () => {
           type="button"
           onClick={() => setTab(item.id)}
           className={
-            'px-3 py-1.5 rounded-lg text-xs font-bold whitespace-nowrap transition-colors cursor-pointer ' +
+            'px-3 py-1.5 rounded-lg text-xs font-bold whitespace-nowrap cursor-pointer ' +
+            'transition-all duration-200 ease-out active:scale-[0.97] ' +
             (tab === item.id
               ? 'bg-vuexy-primary text-white shadow-sm'
               : 'bg-slate-100 dark:bg-white/[0.06] text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-white/[0.1]')
@@ -314,6 +315,7 @@ export const AdminOperationsPage: React.FC = () => {
       onRefresh={() => void fetchStatus(false)}
     >
       {tabBar}
+      <div key={tab} className="animate-fade-in">
       {error && !status && (
         <Card>
           <CardContent className="pt-4">
@@ -400,6 +402,7 @@ export const AdminOperationsPage: React.FC = () => {
           />
         </div>
       )}
+      </div>
     </AdminShell>
   );
 };

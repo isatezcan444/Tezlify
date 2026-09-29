@@ -65,7 +65,11 @@ export const AdminShell: React.FC<AdminShellProps> = ({
         badge={badge}
         actions={headerActions}
       />
-      <div className="space-y-6">
+      {/* The entrance animation lives here rather than in each admin page so
+          every section of the panel transitions identically. `App.tsx` keys the
+          <main> on the active tab, which remounts this shell and replays it on
+          each navigation. */}
+      <div className="space-y-6 animate-fade-in">
         {children}
       </div>
     </div>

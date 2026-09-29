@@ -193,5 +193,54 @@ console.log('\nTypography');
   }
 }
 
+// --- motion consistency -----------------------------------------------------
+// Every admin section must enter the same way, and every admin page must be
+// reached through the animated <main>. The operations panel shipped with no
+// animation at all while 27 other files used the house style, which is exactly
+// the kind of drift that only a check catches.
+console.log('\nMotion');
+{
+  const cfg = fs.readFileSync(path.join(HERE, '..', 'tailwind.config.js'), 'utf8');
+  const shell = fs.readFileSync(path.join(SRC, 'components/admin/AdminShell.tsx'), 'utf8');
+  const app = fs.readFileSync(path.join(SRC, 'App.tsx'), 'utf8');
+
+  // The shared keyframes must exist before anything can use them.
+  for (const kf of ['page-enter', 'stagger-in']) {
+    if (!cfg.includes(`'${kf}'`)) fail('motion', `tailwind config defines no '${kf}' keyframe`);
+  }
+  if (!cfg.includes('page-enter') || !cfg.includes('stagger-in')) {
+    // already reported above
+  } else {
+    pass('shared page-enter and stagger-in keyframes are defined');
+  }
+
+  // The shell is the single place the admin entrance lives, so every section
+  // transitions identically instead of page by page.
+  if (!shell.includes('animate-fade-in')) {
+    fail('motion', 'AdminShell does not animate: switching between admin sections would be a hard cut');
+  } else {
+    pass('AdminShell animates the admin entrance once, for every page');
+  }
+
+  // Without the key React reuses the same node, the animation runs once at
+  // mount, and navigation looks like nothing happened.
+  if (!/<main[^>]*key=\{activeTab\}/s.test(app)) {
+    fail('motion', 'App.tsx <main> is not keyed on activeTab, so the entrance animation only plays once');
+  } else {
+    pass('App.tsx keys <main> on activeTab so the animation replays on navigation');
+  }
+
+  // The admin surfaces themselves should not each reinvent an entrance.
+  const pages = ADMIN_FILES.filter((f) => f.startsWith('pages/admin/'));
+  const withMotion = pages.filter((f) => /animate-(fade-in|page-enter|stagger-in|page-enter)/.test(
+    fs.readFileSync(path.join(SRC, f), 'utf8'),
+  )).length;
+  if (withMotion === 0) {
+    fail('motion', 'no admin page has any entrance animation');
+  } else {
+    pass(`${withMotion}/${pages.length} admin pages carry a local animation on top of the shell`);
+  }
+}
+
 console.log(`\n${problems === 0 ? 'Admin i18n + typography audit: PASS' : `Admin i18n + typography audit: ${problems} problem(s)`}`);
 process.exit(problems === 0 ? 0 : 1);

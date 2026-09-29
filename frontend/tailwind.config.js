@@ -63,11 +63,27 @@ export default {
           '0%': { opacity: '0', transform: 'scale(0.95) translateY(-4px)' },
           '100%': { opacity: '1', transform: 'scale(1) translateY(0)' },
         },
+        // Page/tab swap. The remount key on the main region means this replays on
+        // every navigation, which is what makes switching between the admin
+        // sections feel like a transition rather than a hard cut. A short fade
+        // only — a long one reads as lag.
+        'page-enter': {
+          '0%': { opacity: '0', transform: 'translateY(6px)' },
+          '100%': { opacity: '1', transform: 'translateY(0)' },
+        },
+        // Staggered list entrance. Applied with an inline `animation-delay` so
+        // items reveal in order; without it a long list pops in all at once.
+        'stagger-in': {
+          '0%': { opacity: '0', transform: 'translateY(6px)' },
+          '100%': { opacity: '1', transform: 'translateY(0)' },
+        },
       },
       animation: {
         'fade-in': 'fade-in 0.25s ease-out',
         'scale-up': 'scale-up 0.2s ease-out',
         'scale-in': 'scale-in 0.18s ease-out',
+        'page-enter': 'page-enter 0.22s cubic-bezier(0.16, 1, 0.3, 1)',
+        'stagger-in': 'stagger-in 0.26s cubic-bezier(0.16, 1, 0.3, 1)',
       },
     },
   },

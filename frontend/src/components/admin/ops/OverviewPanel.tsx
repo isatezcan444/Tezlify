@@ -108,8 +108,14 @@ export function OverviewPanel({
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        {tiles.map((tile) => (
-          <Card key={tile.label} className="border-slate-200 dark:border-white/[0.06]">
+        {tiles.map((tile, i) => (
+          <Card
+            key={tile.label}
+            // Same staggered entrance as the history list, so the summary reads
+            // as assembling rather than appearing at once.
+            style={{ animationDelay: `${i * 45}ms` }}
+            className="border-slate-200 dark:border-white/[0.06] animate-stagger-in"
+          >
             <CardContent className="pt-4">
               <div className="flex items-center gap-2 text-slate-400 dark:text-[#7E7F96]">
                 {tile.icon}
