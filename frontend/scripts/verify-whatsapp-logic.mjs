@@ -796,7 +796,13 @@ try {
     lead_name: fx.baseline.name,
     avatar_url: 'https://cdn.example/a.png',
     last_message_preview: 'son mesaj',
-    last_message_at: '2026-09-18T10:02:00.000Z',
+    // Same wire format as the fixture (a DB-serialised timestamp, no offset).
+    // Keeping the two identical makes this a pure "does a partial event
+    // preserve the field?" check. Using a different format here (e.g. an
+    // explicit `Z`) made the assertion depend on the machine's timezone:
+    // shouldApplyPreview parses an offset-less timestamp as LOCAL time, so the
+    // same fixture applied or was rejected depending on where the suite ran.
+    last_message_at: fx.ws_partial_unread_zero.conversation.last_message_at,
     is_group: false,
   };
 

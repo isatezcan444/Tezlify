@@ -412,3 +412,17 @@ export interface OpsLogsResponse {
   lines: string[];
   error?: string | null;
 }
+
+/**
+ * Realtime event pushed by the Operations Center on the shared `/ws` stream.
+ *
+ * The backend publishes `operation.started`, `operation.progress`,
+ * `operation.log` and `operation.<status>` (e.g. `operation.succeeded`), each
+ * carrying the full, already-redacted operation record. There is no separate
+ * operations socket: the Operations Center reuses the product's existing
+ * realtime channel, so nothing is consumed that the page did not subscribe to.
+ */
+export interface OpsRealtimeEvent {
+  event: string;
+  operation: OpsOperation;
+}

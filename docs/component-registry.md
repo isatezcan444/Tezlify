@@ -369,3 +369,36 @@ src/
 
 
 
+---
+
+## 5. Admin Operations Center (`components/admin/ops/`)
+
+WhatsApp Operations Center composites, rendered inside
+`AdminWhatsAppPage`. All are re-exported from
+`components/admin/ops/index.ts`; do not create page-local duplicates.
+
+### `ServiceStatusPanel`
+- **Purpose**: Live health of each Docker service plus the allowlisted action buttons (restart / deploy). Destructive actions require confirmation, and every control is disabled while an operation is running.
+- **Props**: `{ services: OpsServiceStatus[]; health: OpsHealthCheck | null; catalogue: OpsCatalogueEntry[]; loading: boolean; running: OpsOperation | null; busyName: string | null; onRun: (entry: OpsCatalogueEntry) => void }`
+- **Import**: `import { ServiceStatusPanel } from '@/components/admin/ops';`
+
+### `OpsHistoryPanel`
+- **Purpose**: Recent operations with status, duration and the server-side redacted error, plus the bounded audit trail.
+- **Props**: `{ operations: OpsOperation[]; audit: OpsAuditEntry[] }`
+- **Import**: `import { OpsHistoryPanel } from '@/components/admin/ops';`
+
+### `OpsLogsPanel`
+- **Purpose**: Per-service log tail with level filtering. Logs are fetched on demand, never in a loop.
+- **Props**: `{ services: string[]; activeService: string; lines: string[]; loading?: boolean; error?: string | null; onServiceChange: (service: string) => void; onReload: () => void }`
+- **Import**: `import { OpsLogsPanel } from '@/components/admin/ops';`
+
+### `ErrorFeed`
+- **Purpose**: Deduplicated recent errors aggregated from the loaded service logs, each linking to the owning service and a next action.
+- **Props**: `{ logsByService: Record<string, string[]>; catalogue: OpsCatalogueEntry[]; runningName?: string | null; onRun: (entry: OpsCatalogueEntry) => void; onViewLogs: (service: string) => void }`
+- **Import**: `import { ErrorFeed } from '@/components/admin/ops';`
+
+### `useOpsEvents` (hook)
+- **Purpose**: Subscribes to `operation.*` events on the shared `/ws` stream so operation progress is realtime. Reuses the managed `createWebSocket` factory, so auth-refresh and backoff behaviour stay identical to the rest of the product. Polling remains only as a fallback when the socket is down.
+- **Props**: `(enabled: boolean, { onOperation: (op: OpsOperation, event: string) => void; onConnectionChange?: (connected: boolean) => void })`
+- **Returns**: `connected: boolean`
+- **Import**: `import { useOpsEvents } from '@/hooks/useOpsEvents';`

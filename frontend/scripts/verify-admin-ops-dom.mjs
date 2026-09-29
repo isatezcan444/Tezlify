@@ -10,6 +10,7 @@
  */
 import assert from 'node:assert/strict';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -192,6 +193,20 @@ try {
     const after = text();
     assert.ok(after.includes('one'), 'error still shown');
     assert.ok(!after.includes('two'), 'info filtered out');
+  });
+
+  await check('the page renders a realtime indicator for operators', async () => {
+    const page = readFileSync(new URL('../src/pages/admin/AdminWhatsAppPage.tsx', import.meta.url), 'utf8');
+    // The operator must be able to tell a live panel from one silently falling
+    // back to polling, otherwise a stale view looks like a healthy system.
+    assert.ok(
+      /opsRealtimeConnected \? 'admin\.ops\.live' : 'admin\.ops\.polling'/.test(page),
+      'page must render the live/polling indicator',
+    );
+    assert.ok(
+      /opsRealtimeConnected \? 'admin\.ops\.liveHint' : 'admin\.ops\.pollingHint'/.test(page),
+      'the indicator must explain the current mode on hover',
+    );
   });
 
   console.log(`\nAdmin operations DOM verification: PASS (${passed} checks)`);

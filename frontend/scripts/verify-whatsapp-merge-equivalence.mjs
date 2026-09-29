@@ -19,6 +19,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
+import { importTsModule } from './lib/import-ts.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const frontendRoot = path.resolve(here, '..');
@@ -26,15 +27,13 @@ const SRC = path.join(frontendRoot, 'src');
 const HUB = path.join(SRC, 'pages/WhatsAppHubPage.tsx');
 const MERGE_TS = path.join(SRC, 'features/whatsapp/lib/whatsappMessageMerge.ts');
 
-async function loadModule(file) {
-  const source = fs.readFileSync(file, 'utf8');
-  const js = ts.transpileModule(source, {
-    compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
-  }).outputText;
-  return import(`data:text/javascript;base64,${Buffer.from(js).toString('base64')}`);
-}
-
-const { mergeWhatsAppMessages, mergeDeliveryStatus } = await loadModule(MERGE_TS);
+// Loads through the shared harness, which resolves the module's own relative
+// imports. The previous data:-URL import could not resolve ./whatsappOrdering
+// (a data: URL has no base), so this equivalence check could never run.
+const { mergeWhatsAppMessages, mergeDeliveryStatus } = await importTsModule(
+  '../src/features/whatsapp/lib/whatsappMessageMerge',
+  import.meta.url,
+);
 
 const hubSrc = fs.readFileSync(HUB, 'utf8');
 
@@ -71,7 +70,11 @@ function legacyInlineMerge(list, newMsg) {
   });
 }
 
-const CANONICAL_LIVE_PATTERN = /mergeWhatsAppMessages\(prev\[convId\] \|\| \[\], \[newMsg\]\)/;
+// The live-WS path must delegate to the shared merge helper. The conversation
+// key variable has been renamed over time (convId -> targetConvId), so match
+// any identifier: the invariant under test is "uses the shared function", not
+// what the local variable happens to be called.
+const CANONICAL_LIVE_PATTERN = /mergeWhatsAppMessages\(\s*prev\[[A-Za-z_$][\w$]*\]\s*\|\|\s*\[\],\s*\[newMsg\]\s*,?\s*\)/;
 const INLINE_PATTERN = /const existingIdx = list\.findIndex\(/;
 
 const mode = INLINE_PATTERN.test(hubSrc) ? 'inline' : 'canonical';

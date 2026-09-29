@@ -118,6 +118,7 @@ check('ops block covers every tab the Operations Center needs', () => {
     'auditTitle', 'auditEmpty',
     'dangerZone', 'dangerZoneDesc',
     'errorsTitle', 'errorsEmpty',
+    'live', 'polling', 'liveHint', 'pollingHint',
   ];
   for (const key of required) {
     assert.ok(trOps.has(key), `missing ops key: ${key}`);
@@ -132,6 +133,34 @@ check('no Turkish text leaked into the EN ops block', () => {
   for (const turkish of ['Çalışıyor', 'Başarılı', 'Yeniden', 'İşlem', 'Onayla', 'Durum']) {
     assert.ok(!block.includes(turkish), `EN block contains Turkish: ${turkish}`);
   }
+});
+
+check('the ops realtime hook listens on the shared socket and filters operation events', () => {
+  const hook = read('../src/hooks/useOpsEvents.ts');
+  // Reuse the managed factory: a bespoke socket would duplicate the auth-refresh
+  // and backoff logic and reintroduce the 401 reconnect loop.
+  assert.ok(/createWebSocket/.test(hook), 'must reuse createWebSocket');
+  // Only operation events are consumed; the shared stream also carries scraper
+  // and WhatsApp traffic that this panel must ignore.
+  assert.ok(/startsWith\('operation\.'\)/.test(hook), 'must filter to operation.* events');
+  // Never connect for a non-admin, and always tear the socket down.
+  assert.ok(/if \(!enabled\)/.test(hook), 'must honour the enabled flag');
+  assert.ok(/socket\?\.close\(\)/.test(hook), 'must close the socket on cleanup');
+  // A realtime failure must degrade to polling, not break the panel.
+  assert.ok(/catch\s*\{[\s\S]*?setConnected\(false\)/.test(hook), 'must fail soft to polling');
+});
+
+check('the page keeps a polling fallback when realtime is unavailable', () => {
+  const page = read('../src/pages/admin/AdminWhatsAppPage.tsx');
+  assert.ok(/useOpsEvents\(/.test(page), 'page must subscribe to ops events');
+  // The interval period depends on the socket state: realtime healthy means a
+  // slow safety poll, otherwise the original fast poll.
+  assert.ok(
+    /opsRealtimeConnected \? 60000 : 15000/.test(page),
+    'poll period must depend on the realtime connection state',
+  );
+  // A finished operation must refresh service state immediately.
+  assert.ok(/op\.status !== 'running'/.test(page), 'must refresh status when an operation finishes');
 });
 
 console.log(`\nAdmin ops client contract: PASS (${passed} checks)`);

@@ -1,10 +1,10 @@
-import ts from 'typescript';
-import fs from 'node:fs';
 import assert from 'node:assert/strict';
+import { importTsModule } from './lib/import-ts.mjs';
 
-const source = fs.readFileSync(new URL('../src/features/whatsapp/lib/whatsappMessageMerge.ts', import.meta.url), 'utf8');
-const js = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText;
-const { mergeWhatsAppMessages, mergeDeliveryStatus } = await import(`data:text/javascript;base64,${Buffer.from(js).toString('base64')}`);
+const { mergeWhatsAppMessages, mergeDeliveryStatus } = await importTsModule(
+  '../src/features/whatsapp/lib/whatsappMessageMerge',
+  import.meta.url,
+);
 const base = { conversation_id: 1, direction: 'OUTBOUND', body: 'body', created_at: '2026-01-01T00:00:00Z' };
 const pending = { ...base, id: -1, client_message_id: 'client', status: 'PENDING' };
 const ack = { ...base, id: 1, client_message_id: 'client', wa_message_id: 'wa', status: 'READ' };

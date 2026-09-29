@@ -32,6 +32,7 @@ import { OpsHistoryPanel } from '../../components/admin/ops/OpsHistoryPanel';
 import { ErrorFeed } from '../../components/admin/ops/ErrorFeed';
 import { OpsApi } from '../../api/admin';
 import { useToast } from '../../context/ToastContext';
+import { useOpsEvents } from '../../hooks/useOpsEvents';
 import {
   OpsAuditEntry,
   OpsCatalogueEntry,
@@ -99,24 +100,57 @@ export const AdminWhatsAppPage: React.FC<AdminWhatsAppPageProps> = ({ onNavigate
     }
   }, [t]);
 
+  // ---- Realtime -----------------------------------------------------------
+  // The server already pushes operation lifecycle events on the shared `/ws`
+  // stream, so a running operation is followed live instead of being polled
+  // every few seconds. Polling stays as a FALLBACK only: if the socket cannot
+  // be established, the panel must still show progress rather than freeze.
+  const handleOpsEvent = useCallback((op: OpsOperation) => {
+    setOpLogs(op);
+    setOpsStatus((prev) => {
+      if (!prev) return prev;
+      const stillRunning = op.status === 'running';
+      // Merge into history without duplicating the row we are following.
+      const rest = prev.operations.filter((o) => o.id !== op.id);
+      const operations = [op, ...rest].slice(0, 20);
+      return {
+        ...prev,
+        operations,
+        running: stillRunning ? op : null,
+      };
+    });
+    // A finished operation changes service state too (restart/deploy), so pull
+    // fresh status rather than waiting for the next tick.
+    if (op.status !== 'running') {
+      setBusyName(null);
+      void fetchOpsStatus(false);
+    }
+  }, [fetchOpsStatus]);
+
+  const opsRealtimeConnected = useOpsEvents(showAdmin, { onOperation: handleOpsEvent });
+
   // Poll only the lightweight status endpoint, and only while the tab is
   // visible. Logs are fetched on demand, never in a loop.
   useEffect(() => {
     if (!showAdmin) return;
     void fetchOpsStatus(true);
+    // While realtime is healthy, a slow safety poll is enough: the socket
+    // carries the state changes the panel actually reacts to.
+    const periodMs = opsRealtimeConnected ? 60000 : 15000;
     const id = setInterval(() => {
       if (document.visibilityState === 'hidden') return;
       void fetchOpsStatus(false);
-    }, 15000);
+    }, periodMs);
     return () => clearInterval(id);
-  }, [showAdmin, fetchOpsStatus]);
+  }, [showAdmin, fetchOpsStatus, opsRealtimeConnected]);
 
   // Follow a running operation by id: the server keeps working after a tab
   // close or refresh, so re-attaching is the normal path, not an edge case.
+  // Skipped while realtime is connected, where events drive the same state.
   useEffect(() => {
     const running = opsStatus?.running;
-    if (!running) {
-      setOpLogs(null);
+    if (!running || opsRealtimeConnected) {
+      if (!running) setOpLogs(null);
       return;
     }
     let cancelled = false;
@@ -133,7 +167,7 @@ export const AdminWhatsAppPage: React.FC<AdminWhatsAppPageProps> = ({ onNavigate
     };
     void poll();
     return () => { cancelled = true; };
-  }, [opsStatus?.running?.id, fetchOpsStatus]);
+  }, [opsStatus?.running?.id, fetchOpsStatus, opsRealtimeConnected]);
 
   const fetchLogs = useCallback(async (service: string) => {
     setLogService(service);
@@ -462,6 +496,27 @@ export const AdminWhatsAppPage: React.FC<AdminWhatsAppPageProps> = ({ onNavigate
           </button>
         );
       })}
+      {/* Realtime indicator: tells the operator whether operation updates are
+          arriving live or falling back to polling, so a stale panel is never
+          mistaken for a running system. */}
+      <span
+        className={
+          'ml-auto pl-2 inline-flex items-center gap-1.5 text-[11px] font-bold whitespace-nowrap ' +
+          (opsRealtimeConnected
+            ? 'text-emerald-600 dark:text-emerald-400'
+            : 'text-amber-600 dark:text-amber-400')
+        }
+        title={t(opsRealtimeConnected ? 'admin.ops.liveHint' : 'admin.ops.pollingHint')}
+      >
+        <span
+          aria-hidden
+          className={
+            'w-1.5 h-1.5 rounded-full ' +
+            (opsRealtimeConnected ? 'bg-emerald-500' : 'bg-amber-500')
+          }
+        />
+        {t(opsRealtimeConnected ? 'admin.ops.live' : 'admin.ops.polling')}
+      </span>
     </div>
   );
 
