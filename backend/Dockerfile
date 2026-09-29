@@ -17,19 +17,22 @@ WORKDIR /app
 # CLI lives in `docker-cli`. Installing only `docker.io` produces an image where
 # `docker` is "executable file not found", so both are required.
 #
-# The compose PLUGIN is not installed from apt: the daemon provides the
-# `docker compose` subcommand that the operations invoke.
+# `docker compose` is a CLI PLUGIN, and this base image ships no plugin dir at
+# all, so the subcommand is unavailable even with the CLI installed. The
+# standalone `docker-compose` v2 package provides it (the package is
+# `docker-compose`; `docker-compose-v2` does not exist on this image).
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     curl \
     ca-certificates \
     docker.io \
     docker-cli \
+    docker-compose \
     && rm -rf /var/lib/apt/lists/*
 
-# Fail the build, not production, if the CLI is absent: without it every
+# Fail the build, not production, if either tool is missing: without them every
 # Operations Center action would fail at runtime with a confusing message.
-RUN docker --version
+RUN docker --version && docker compose version
 
 # Copy requirements and install
 COPY backend/requirements.txt .
