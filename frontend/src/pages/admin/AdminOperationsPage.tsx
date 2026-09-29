@@ -305,6 +305,7 @@ export const AdminOperationsPage: React.FC = () => {
           error={error}
           onServiceChange={(svc) => void fetchLogs(svc)}
           onReload={() => void fetchLogs(logService)}
+          logsByService={logsByService}
         />
       )}
       {tab === 'history' && (

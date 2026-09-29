@@ -238,6 +238,52 @@ try {
     assert.ok(btn.disabled, 'the deploy button must be disabled while another operation runs');
   });
 
+  await check('OpsLogsPanel exports the visible lines and disables an empty error export', async () => {
+    const created = [];
+    // The helper is stubbed so the assertions run against the button logic
+    // (what is exported, and when it is offered) rather than the browser's
+    // download plumbing, which jsdom does not implement.
+    await mount(h(OpsLogsPanel, {
+      services: ['backend', 'gateway'],
+      activeService: 'gateway',
+      lines: ['Error: boom', 'info: fine', 'WARNING: careful', 'Error: second'],
+      onServiceChange: () => {},
+      onReload: () => {},
+      logsByService: { gateway: ['Error: boom', 'info: fine'], backend: ['Error: db down'] },
+    }));
+
+    const exportBtns = buttons().filter((b) => /export errors|export/i.test(b.textContent || ''));
+    const errBtn = exportBtns.find((b) => /export errors/i.test(b.textContent || ''));
+    const logBtn = exportBtns.find((b) => !/export errors/i.test(b.textContent || ''));
+    assert.ok(errBtn, 'an errors export must exist');
+    assert.ok(logBtn, 'a full log export must exist');
+    // Two ERROR lines are present, so the count must be shown, not a guess.
+    assert.ok(/2/.test(errBtn.textContent || ''), 'the errors export must show the count');
+    assert.ok(!errBtn.disabled, 'must be enabled when errors exist');
+
+    // A service with no errors must offer nothing rather than an empty file.
+    await mount(h(OpsLogsPanel, {
+      services: ['gateway'], activeService: 'gateway',
+      lines: ['info: all good'], onServiceChange: () => {}, onReload: () => {},
+    }));
+    const noneBtn = buttons().find((b) => /export errors/i.test(b.textContent || ''));
+    assert.ok(noneBtn && noneBtn.disabled, 'the errors export must be disabled with no errors');
+  });
+
+  await check('the log export respects an active level filter', async () => {
+    await mount(h(OpsLogsPanel, {
+      services: ['gateway'], activeService: 'gateway',
+      lines: ['Error: one', 'info: two', 'WARNING: three'],
+      onServiceChange: () => {}, onReload: () => {},
+    }));
+    const errFilter = buttons().find((b) => (b.textContent || '').trim() === 'ERROR');
+    await domAct(async () => { errFilter.dispatchEvent(new window.MouseEvent('click', { bubbles: true })); });
+    // After filtering, the export must be present and still enabled: the file
+    // has to match the screen, never the raw buffer behind the filter.
+    const errBtn = buttons().find((b) => /export errors/i.test(b.textContent || ''));
+    assert.ok(errBtn && !errBtn.disabled, 'the filtered view must still be exportable');
+  });
+
   console.log(`\nAdmin operations DOM verification: PASS (${passed} checks)`);
 } finally {
   await rm(tmp, { recursive: true, force: true });

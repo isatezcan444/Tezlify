@@ -395,7 +395,8 @@ restarting a service and shipping code are different risk classes.
 
 ### `OpsLogsPanel`
 - **Purpose**: Per-service log tail with level filtering. Logs are fetched on demand, never in a loop.
-- **Props**: `{ services: string[]; activeService: string; lines: string[]; loading?: boolean; error?: string | null; onServiceChange: (service: string) => void; onReload: () => void }`
+- **Props**: `{ services: string[]; activeService: string; lines: string[]; loading?: boolean; error?: string | null; onServiceChange: (service: string) => void; onReload: () => void; logsByService?: Record<string, string[]> }`
+- **Export**: two client-side downloads — `tezlify-logs-<ts>.txt` (everything visible) and `tezlify-errors-<ts>.txt` (error lines only, disabled when there are none). Both export the FILTERED view, not the raw buffer, so a download can never bypass a level filter or search the operator is relying on. A merged export groups the already-loaded per-service buffers under `===== service (n lines) =====` headers. The object URL is revoked on the next tick, because revoking it in the same task aborts the download in Safari and Firefox.
 - **Import**: `import { OpsLogsPanel } from '@/components/admin/ops';`
 
 ### `ErrorFeed`

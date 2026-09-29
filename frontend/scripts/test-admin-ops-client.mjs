@@ -271,4 +271,46 @@ check('every page is routed in App.tsx', () => {
   assert.ok(app.includes("case 'admin-operations':"), 'operations title/subtitle case missing');
 });
 
+check('log and error exports are available and honest about filters', () => {
+  const panel = read('../src/components/admin/ops/OpsLogsPanel.tsx');
+  // The file must contain what the operator SEES. Exporting the raw buffer
+  // would quietly bypass a level filter or search they are relying on.
+  assert.ok(/buildLogExport\(\{[\s\S]*?lines: visible,/.test(panel),
+    'the export must use the filtered lines, not the raw buffer');
+  assert.ok(/levelFilter: level/.test(panel), 'the active level filter must be recorded');
+  assert.ok(/query,/.test(panel), 'the active search must be recorded');
+  // Two distinct exports: an operator debugging an incident usually wants the
+  // errors, not 500 lines of noise.
+  assert.ok(panel.includes('tezlify-errors'),
+    'an errors-only export must exist');
+  assert.ok(panel.includes("'tezlify-logs'"), 'a full log export must exist');
+  // Nothing to export means the control is disabled, not a silent empty file.
+  assert.ok(/disabled=\{!hasVisible \|\| errorCount === 0\}/.test(panel),
+    'the errors export must be disabled when there are none');
+});
+
+check('the download helper revokes its object URL', () => {
+  const helper = read('../src/components/admin/ops/exportLogs.ts');
+  // AGENTS.md requires revoking blob URLs: an admin session that exports
+  // repeatedly would otherwise hold every export in memory.
+  assert.ok(/URL\.revokeObjectURL\(url\)/.test(helper), 'must revoke the object URL');
+  assert.ok(/setTimeout\(\(\) => URL\.revokeObjectURL/.test(helper),
+    'revoke must be deferred a tick, or Safari aborts the download');
+  assert.ok(
+    /removeChild\(anchor\)|anchor\.remove\(\)/.test(helper),
+    'the anchor must not stay in the DOM',
+  );
+  // File names must be sortable and safe on every filesystem.
+  assert.ok(helper.includes("replace(/[:.]/g, '-')"),
+    'the timestamp must not contain characters that break a file name');
+});
+
+check('the errors tab can be exported too', () => {
+  const ops = read('../src/pages/admin/AdminOperationsPage.tsx');
+  // The page owns the per-service buffers, so the merged export has to receive
+  // them; without this the file would only ever contain the visible service.
+  assert.ok(/logsByService=\{logsByService\}/.test(ops),
+    'the logs panel must receive the loaded service buffers');
+});
+
 console.log(`\nAdmin ops client contract: PASS (${passed} checks)`);

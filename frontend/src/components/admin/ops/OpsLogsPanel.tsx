@@ -7,11 +7,12 @@
  * thousands of nodes. Filtering is done on the already-fetched buffer.
  */
 import React, { useMemo, useState } from 'react';
-import { FileText, Search } from 'lucide-react';
+import { Download, FileText, Search, TriangleAlert } from 'lucide-react';
 import { useI18n } from '../../../context/I18nContext';
 import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
 import { Button } from '../../ui/button';
 import { Skeleton } from '../../ui/Skeleton';
+import { buildLogExport, downloadTextFile } from './exportLogs';
 
 export interface OpsLogsPanelProps {
   services: string[];
@@ -21,6 +22,12 @@ export interface OpsLogsPanelProps {
   error?: string | null;
   onServiceChange: (service: string) => void;
   onReload: () => void;
+  /**
+   * Every service buffer already loaded in the page, used by the merged export.
+   * Only services that have actually been fetched are included, so the file
+   * never claims to hold data the operator never saw.
+   */
+  logsByService?: Record<string, string[]>;
 }
 
 const LEVELS = ['ALL', 'ERROR', 'WARN', 'INFO'];
@@ -48,6 +55,7 @@ export const OpsLogsPanel: React.FC<OpsLogsPanelProps> = ({
   error = null,
   onServiceChange,
   onReload,
+  logsByService = {},
 }) => {
   const { t } = useI18n();
   const [level, setLevel] = useState('ALL');
@@ -62,6 +70,26 @@ export const OpsLogsPanel: React.FC<OpsLogsPanelProps> = ({
     });
   }, [lines, level, query]);
 
+  // Exports what the operator can SEE, not the raw buffer: if a level filter or
+  // a search is active, the file must match the screen, otherwise the export
+  // becomes a way to get around a filter they are relying on.
+  const exportFiltered = (prefix: string) => {
+    downloadTextFile(buildLogExport({
+      prefix,
+      service: activeService,
+      lines: visible,
+      levelFilter: level,
+      query,
+      extra: logsByService,
+    }));
+  };
+
+  const hasVisible = visible.length > 0;
+  const errorCount = useMemo(
+    () => visible.filter((l) => levelOf(l) === 'ERROR').length,
+    [visible],
+  );
+
   return (
     <Card>
       <CardHeader className="flex flex-col gap-3">
@@ -74,9 +102,33 @@ export const OpsLogsPanel: React.FC<OpsLogsPanelProps> = ({
               {t('admin.ops.logsService')}: <strong>{activeService}</strong>
             </p>
           </div>
-          <Button variant="outline" size="sm" onClick={onReload} className="cursor-pointer">
-            {t('admin.refreshNow')}
-          </Button>
+          <div className="flex items-center gap-1.5">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => exportFiltered('tezlify-errors')}
+              disabled={!hasVisible || errorCount === 0}
+              className="cursor-pointer gap-1.5"
+              title={t('admin.ops.exportErrorsHint')}
+            >
+              <TriangleAlert className="w-3.5 h-3.5" />
+              {t('admin.ops.exportErrors')} ({errorCount})
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => exportFiltered('tezlify-logs')}
+              disabled={!hasVisible}
+              className="cursor-pointer gap-1.5"
+              title={t('admin.ops.exportLogsHint')}
+            >
+              <Download className="w-3.5 h-3.5" />
+              {t('admin.ops.exportLogs')}
+            </Button>
+            <Button variant="outline" size="sm" onClick={onReload} className="cursor-pointer">
+              {t('admin.refreshNow')}
+            </Button>
+          </div>
         </div>
 
         <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
