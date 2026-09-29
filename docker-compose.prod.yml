@@ -51,6 +51,21 @@ services:
       - /opt/tezlify/backups:/opt/tezlify/backups:ro
       - /opt/tezlify/monitoring:/opt/tezlify/monitoring:ro
       - /run:/host/run:ro
+      # Operations Center: the docker CLI talks to the host daemon through this
+      # socket to run ALLOWLISTED `docker compose` operations (restart / deploy)
+      # defined in backend/app/services/admin/ops_service.py. Callers can never
+      # supply a command; the operation name is mapped to a fixed argv server
+      # side and every endpoint is behind `require_admin`.
+      #
+      # RISK (accepted deliberately): a mounted docker socket is root-equivalent
+      # on the host. It is granted only because the panel must be able to
+      # restart/deploy the very containers it runs in, and the blast radius is
+      # bounded by (a) require_admin on every ops route, (b) the fixed allowlist
+      # in ops_service.py, and (c) redaction of everything those routes return.
+      - /var/run/docker.sock:/var/run/docker.sock
+      # The compose project directory, so `docker compose -f` resolves and the
+      # working tree can be updated during a deploy.
+      - /opt/tezlify:/opt/tezlify/deploy:rw
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; res = urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5); exit(0 if res.status == 200 else 1)"]
       interval: 15s
