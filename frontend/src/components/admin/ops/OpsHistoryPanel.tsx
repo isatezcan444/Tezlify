@@ -6,16 +6,29 @@
  * (or before a refresh) still shows its live status and logs.
  */
 import React, { useState } from 'react';
-import { CheckCircle2, ChevronDown, Loader2, ShieldAlert, XCircle } from 'lucide-react';
+import { CheckCircle2, ChevronDown, Download, Loader2, Search, ShieldAlert, XCircle } from 'lucide-react';
 import { useI18n } from '../../../context/I18nContext';
 import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
 import { StatusBadge } from '../../ui/StatusBadge';
+import { Button } from '../../ui/button';
 import { EmptyState } from '../../ui/EmptyState';
 import { OpsAuditEntry, OpsOperation } from '../../../types/admin';
+import { buildHistoryCsv, buildHistoryJson, downloadTextFile } from './exportLogs';
 
 export interface OpsHistoryPanelProps {
   operations: OpsOperation[];
   audit: OpsAuditEntry[];
+  /** Total retained operations, for the paging controls. 0 = unknown. */
+  totalOperations?: number;
+  /** Page offset currently shown. */
+  offset?: number;
+  /** Rows per page. */
+  pageSize?: number;
+  onPageChange?: (offset: number) => void;
+  onStatusFilter?: (status: string) => void;
+  onNameFilter?: (name: string) => void;
+  /** Status filter currently applied. */
+  statusFilter?: string;
 }
 
 /** Human label for a step, including the multi-step deploy pipeline names. */
@@ -74,20 +87,130 @@ function statusOf(op: OpsOperation) {
 }
 
 
-export const OpsHistoryPanel: React.FC<OpsHistoryPanelProps> = ({ operations, audit }) => {
+export const OpsHistoryPanel: React.FC<OpsHistoryPanelProps> = ({
+  operations,
+  audit,
+  totalOperations = 0,
+  offset = 0,
+  pageSize = 20,
+  onPageChange,
+  onStatusFilter,
+  onNameFilter,
+  statusFilter = 'ALL',
+}) => {
   const { t } = useI18n();
   const [openId, setOpenId] = useState<string | null>(null);
+  const [nameQuery, setNameQuery] = useState('');
+
+  // The export covers the WHOLE retained history, not the visible page: an
+  // audit question ("everything we did last week") is not answered by one page
+  // of rows, and a silently truncated export would be worse than none.
+  const exportHistory = (format: 'csv' | 'json') => {
+    const build = format === 'csv' ? buildHistoryCsv : buildHistoryJson;
+    downloadTextFile(build({ operations, audit }));
+  };
+
+  const canPrev = Boolean(onPageChange) && offset > 0;
+  const canNext = Boolean(onPageChange) && totalOperations > 0
+    && offset + pageSize < totalOperations;
 
   return (
     <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
       <Card>
         <CardHeader>
-          <CardTitle className="text-base text-slate-800 dark:text-white">
-            {t('admin.ops.operationsTitle')}
-          </CardTitle>
-          <p className="text-xs text-slate-500 dark:text-[#7E7F96] mt-0.5">
-            {t('admin.ops.operationsSubtitle')}
-          </p>
+          <div className="flex items-start justify-between gap-3 flex-wrap">
+            <div>
+              <CardTitle className="text-base text-slate-800 dark:text-white">
+                {t('admin.ops.operationsTitle')}
+              </CardTitle>
+              <p className="text-xs text-slate-500 dark:text-[#7E7F96] mt-0.5">
+                {t('admin.ops.operationsSubtitle')}
+              </p>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => exportHistory('csv')}
+                disabled={operations.length === 0 && audit.length === 0}
+                className="cursor-pointer gap-1.5"
+                title={t('admin.ops.exportHistoryHint')}
+              >
+                <Download className="w-3.5 h-3.5" />
+                CSV
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => exportHistory('json')}
+                disabled={operations.length === 0 && audit.length === 0}
+                className="cursor-pointer gap-1.5"
+                title={t('admin.ops.exportHistoryHint')}
+              >
+                <Download className="w-3.5 h-3.5" />
+                JSON
+              </Button>
+            </div>
+          </div>
+
+          {/* Filters: "which deploy failed" and "what did we do last Tuesday"
+              are the two questions this panel exists to answer. */}
+          <div className="flex flex-col sm:flex-row gap-2 sm:items-center mt-3">
+            <div className="flex items-center gap-1">
+              {['ALL', 'succeeded', 'failed', 'running'].map((s) => (
+                <button
+                  key={s}
+                  type="button"
+                  onClick={() => onStatusFilter?.(s)}
+                  className={
+                    'px-2 py-1 rounded-md text-[10px] font-bold transition-colors cursor-pointer ' +
+                    (s === statusFilter
+                      ? 'bg-slate-800 dark:bg-white text-white'
+                      : 'text-slate-500 hover:text-slate-800 dark:hover:text-white')
+                  }
+                >
+                  {s === 'ALL' ? t('admin.ops.filterAll') : s}
+                </button>
+              ))}
+            </div>
+            <div className="relative flex-1 min-w-[140px]">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
+              <input
+                value={nameQuery}
+                onChange={(e) => setNameQuery(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') onNameFilter?.(nameQuery); }}
+                onBlur={() => onNameFilter?.(nameQuery)}
+                placeholder={t('admin.ops.searchOperation')}
+                className="w-full pl-8 pr-3 py-1.5 rounded-lg border border-slate-200 dark:border-white/[0.08] bg-white dark:bg-[#1E2333] text-xs text-slate-700 dark:text-slate-200 outline-none focus:border-vuexy-primary"
+              />
+            </div>
+          </div>
+
+          {onPageChange && totalOperations > pageSize && (
+            <div className="flex items-center justify-between gap-2 mt-3">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => onPageChange(Math.max(0, offset - pageSize))}
+                disabled={!canPrev}
+                className="cursor-pointer"
+              >
+                {t('admin.ops.previousPage')}
+              </Button>
+              <span className="text-[11px] text-slate-400">
+                {offset + 1}-{Math.min(offset + operations.length, totalOperations)} / {totalOperations}
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => onPageChange(offset + pageSize)}
+                disabled={!canNext}
+                className="cursor-pointer"
+              >
+                {t('admin.ops.nextPage')}
+              </Button>
+            </div>
+          )}
         </CardHeader>
         <CardContent className="space-y-2">
           {operations.length === 0 ? (

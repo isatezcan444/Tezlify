@@ -71,6 +71,7 @@ await writeFile(
     `export { OpsLogsPanel } from '${SRC}/components/admin/ops/OpsLogsPanel';`,
     `export { OverviewPanel } from '${SRC}/components/admin/ops/OverviewPanel';`,
     `export { DeployPanel } from '${SRC}/components/admin/ops/DeployPanel';`,
+    `export { OpsHistoryPanel } from '${SRC}/components/admin/ops/OpsHistoryPanel';`,
   ].join('\n'),
   'utf8',
 );
@@ -116,7 +117,7 @@ try {
     const {
     React, domAct, createRoot, I18nProvider, ToastProvider,
     ServiceStatusPanel, ErrorFeed, buildErrorFeed, classifyError, OpsLogsPanel,
-    OverviewPanel, DeployPanel,
+    OverviewPanel, DeployPanel, OpsHistoryPanel,
   } = mod;
   const h = React.createElement;
   const text = () => window.document.body.textContent || '';
@@ -282,6 +283,45 @@ try {
     // has to match the screen, never the raw buffer behind the filter.
     const errBtn = buttons().find((b) => /export errors/i.test(b.textContent || ''));
     assert.ok(errBtn && !errBtn.disabled, 'the filtered view must still be exportable');
+  });
+
+  await check('OpsHistoryPanel exports the history and pages through it', async () => {
+    const ops = [
+      { id: 'a1', name: 'deploy_full', label: 'Deploy latest', status: 'succeeded',
+        step: 'completed', destructive: true, logs: [], total_steps: 3, current_step: 'restart' },
+      { id: 'a2', name: 'restart_gateway', label: 'Restart gateway', status: 'failed',
+        step: 'interrupted', destructive: true, logs: [] },
+    ];
+    await mount(h(OpsHistoryPanel, {
+      operations: ops,
+      audit: [{ id: 'x', at: 't', action: 'operation.start', actor: 'admin', result: 'accepted', detail: '{}' }],
+      totalOperations: 45, offset: 20, pageSize: 20,
+      onPageChange: () => {}, onStatusFilter: () => {}, onNameFilter: () => {},
+    }));
+
+    const labels = buttons().map((b) => (b.textContent || '').trim());
+    assert.ok(labels.includes('CSV'), 'a CSV export must be offered');
+    assert.ok(labels.includes('JSON'), 'a JSON export must be offered');
+    // Paging must reflect the real retained total, not the page size.
+    assert.ok(text().includes('21-22 / 45'), 'the page range and total must be shown');
+    const next = buttons().find((b) => /next/i.test(b.textContent || ''));
+    const prev = buttons().find((b) => /previous/i.test(b.textContent || ''));
+    assert.ok(next && !next.disabled, 'next must be enabled mid-history');
+    assert.ok(prev && !prev.disabled, 'previous must be enabled when not on the first page');
+  });
+
+  await check('OpsHistoryPanel hides paging when everything fits', async () => {
+    await mount(h(OpsHistoryPanel, {
+      operations: [{ id: 'a', name: 'x', label: 'X', status: 'succeeded', destructive: false, logs: [] }],
+      audit: [],
+      totalOperations: 3, offset: 0, pageSize: 20,
+      onPageChange: () => {},
+    }));
+    // Controls that cannot do anything are noise; a 3-record history does not
+    // need a pager.
+    const labels = buttons().map((b) => (b.textContent || '').trim());
+    assert.ok(!labels.some((l) => /next|previous/i.test(l)),
+      'paging must be hidden when the whole history fits on one page');
   });
 
   console.log(`\nAdmin operations DOM verification: PASS (${passed} checks)`);

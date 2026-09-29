@@ -390,7 +390,9 @@ restarting a service and shipping code are different risk classes.
 
 ### `OpsHistoryPanel`
 - **Purpose**: Recent operations with status, duration and the server-side redacted error, plus the bounded audit trail.
-- **Props**: `{ operations: OpsOperation[]; audit: OpsAuditEntry[] }`
+- **Props**: `{ operations: OpsOperation[]; audit: OpsAuditEntry[]; totalOperations?: number; offset?: number; pageSize?: number; onPageChange?: (offset: number) => void; onStatusFilter?: (status: string) => void; onNameFilter?: (name: string) => void; statusFilter?: string }`
+- **Export**: `tezlify-operations-history-<ts>.csv` and `.json`, covering the retained operations AND the audit trail. Both are disabled when there is nothing to export, so an empty file can never be mistaken for "no activity". CSV cells are escaped against spreadsheet FORMULA injection: a cell starting with `=`, `+`, `-` or `@` is prefixed with an apostrophe, because the `error` and `actor` fields are attacker-influenced and an audit trail is exactly what gets opened in Excel.
+- **Paging**: hidden entirely when the whole retained history fits on one page. Changing a status or name filter resets the offset, otherwise a narrower result set left on page 3 renders as an empty table that looks like data loss.
 - **Import**: `import { OpsHistoryPanel } from '@/components/admin/ops';`
 
 ### `OpsLogsPanel`

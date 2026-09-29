@@ -348,4 +348,46 @@ check('the caddy config no longer requests a certificate for a dead domain', () 
     'the sslip site must still proxy the backend');
 });
 
+check('the operation history is exportable as CSV and JSON', () => {
+  const panel = read('../src/components/admin/ops/OpsHistoryPanel.tsx');
+  // An audit question ("everything we did last week") is not answered by one
+  // page of rows, so the export must not be limited to what is on screen.
+  for (const fmt of ['csv', 'json']) {
+    assert.ok(panel.includes(`exportHistory('${fmt}')`),
+      `a ${fmt.toUpperCase()} export must exist`);
+  }
+  assert.ok(/operations, audit/.test(panel), 'the export must include the audit trail');
+  // Nothing to export means a disabled control, not an empty file.
+  assert.ok(/disabled=\{operations\.length === 0 && audit\.length === 0\}/.test(panel),
+    'the export buttons must be disabled when there is nothing to export');
+});
+
+check('CSV cells cannot be used as spreadsheet formulas', () => {
+  const helper = read('../src/components/admin/ops/exportLogs.ts');
+  // An audit trail is exactly what an operator opens in Excel, and the error /
+  // actor fields are attacker-influenced. A cell starting with = + - @ is
+  // EXECUTED as a formula, so it must be neutralised.
+  assert.ok(/\[=\+\\-\@/.test(helper), 'formula-leading characters must be escaped');
+  assert.ok(helper.includes("s = `'${s}`"), 'a leading apostrophe must be prepended');
+  assert.ok(/replace\(\/"\/g, '""'\)/.test(helper), 'embedded quotes must be doubled');
+});
+
+check('the history is paged and filterable, not a fixed 20-row window', () => {
+  const panel = read('../src/components/admin/ops/OpsHistoryPanel.tsx');
+  const page = read('../src/pages/admin/AdminOperationsPage.tsx');
+  const api = read('../src/api/admin.ts');
+  for (const [id, what] of [['onPageChange', 'paging'], ['onStatusFilter', 'status filter'],
+                            ['onNameFilter', 'name filter']]) {
+    assert.ok(panel.includes(id), `the panel must expose a ${what}`);
+  }
+  assert.ok(api.includes('listOperations'), 'the client must call the paged endpoint');
+  assert.ok(api.includes("query.set('offset'"), 'the client must send an offset');
+  // Changing a filter must reset the page, or a narrow result set on page 3
+  // renders as an empty table that looks like data loss.
+  assert.ok(/setHistoryStatus\(next\);\s*\n\s*setHistoryOffset\(0\);/.test(page),
+    'a status filter change must reset the offset');
+  assert.ok(/setHistoryName\(next\);\s*\n\s*setHistoryOffset\(0\);/.test(page),
+    'a name filter change must reset the offset');
+});
+
 console.log(`\nAdmin ops client contract: PASS (${passed} checks)`);

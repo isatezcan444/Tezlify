@@ -158,9 +158,21 @@ async def start_operation(
 @router.get("/operations", response_model=list[OpsOperation])
 async def list_operations(
     limit: int = Query(20, ge=1, le=50),
+    offset: int = Query(0, ge=0, le=500),
+    status: Optional[str] = Query(None, max_length=20),
+    name: Optional[str] = Query(None, max_length=80),
     current_admin: AuthUser = Depends(require_admin),
 ) -> list[OpsOperation]:
-    return [_operation(o) for o in ops.list_operations(limit=limit)]
+    """Newest-first operation history, paged and filterable.
+
+    The panel previously showed a fixed newest-20 window, so an operator could
+    not answer "what did we deploy last Tuesday" even though the record was
+    retained. Paging over the kept window is the point of keeping it.
+    """
+    return [
+        _operation(o)
+        for o in ops.list_operations(limit=limit, offset=offset, status=status, name=name)
+    ]
 
 
 @router.get("/operations/{operation_id}", response_model=OpsOperation)

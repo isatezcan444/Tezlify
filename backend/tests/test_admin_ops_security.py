@@ -466,3 +466,61 @@ def test_interrupted_operation_names_the_step_it_died_in():
             shutil.rmtree(redirected, ignore_errors=True)
         except Exception:
             pass
+
+
+# ---------------------------------------------------------- history paging
+def test_history_is_paged_and_filterable():
+    """The panel showed a fixed newest-20 window, so older records were unreachable.
+
+    Keeping 50 operations is pointless if only the newest 20 can ever be read:
+    "what did we deploy last Tuesday" had no answer even though the record
+    existed. Paging and filtering are what make retention useful, and they must
+    not weaken the bounded-memory guarantees.
+    """
+    ops._op_registry.clear()
+    ops._order.clear()
+    ops._audit.clear()
+    try:
+        for i in range(30):
+            oid = f"op{i:02d}"
+            ops._op_registry[oid] = {
+                "id": oid, "name": "deploy_full" if i % 2 else "restart_gateway",
+                "label": f"Operation {i}", "status": "succeeded" if i % 2 else "failed",
+                "step": "completed", "started_at": ops._now_iso(), "finished_at": None,
+                "duration_ms": 1, "actor": "admin", "destructive": True,
+                "error": None, "logs": [], "exit_code": 0,
+            }
+            ops._order.append(oid)
+        ops.record_audit("operation.start", "admin", "accepted", "op01", {"name": "x"})
+        ops.record_audit("operation.finish", "admin", "denied", "op02", {"name": "y"})
+
+        assert ops.operation_history_size() == 30
+
+        # Newest first.
+        first = ops.list_operations(limit=3)
+        assert [r["id"] for r in first] == ["op29", "op28", "op27"], first
+
+        # Paging reaches records the old fixed window never showed.
+        page2 = ops.list_operations(limit=10, offset=10)
+        assert len(page2) == 10
+        assert page2[0]["id"] == "op19", page2[0]["id"]
+
+        # Filters.
+        assert len(ops.list_operations(status="succeeded")) == 15
+        assert len(ops.list_operations(name="deploy")) == 15
+
+        # Bounds must hold: a caller cannot ask for the whole buffer at once
+        # and defeat the memory cap.
+        assert len(ops.list_operations(limit=10_000)) <= ops.MAX_OPERATION_HISTORY
+        assert ops.list_operations(offset=10_000) == []
+        assert ops.list_operations(offset=-5)[0]["id"] == "op29", "negative offset must clamp"
+
+        # Audit filters.
+        assert len(ops.list_audit(action="operation.start")) == 1
+        assert len(ops.list_audit(result="denied")) == 1
+        assert len(ops.list_audit()) == 2
+        assert ops.audit_history_size() == 2
+    finally:
+        ops._op_registry.clear()
+        ops._order.clear()
+        ops._audit.clear()

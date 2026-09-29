@@ -140,6 +140,22 @@ export class OpsApi {
     return res.json();
   }
 
+  static async listOperations(params: {
+    limit?: number;
+    offset?: number;
+    status?: string;
+    name?: string;
+  } = {}): Promise<OpsOperation[]> {
+    const query = new URLSearchParams();
+    query.set('limit', String(params.limit ?? 20));
+    query.set('offset', String(params.offset ?? 0));
+    if (params.status && params.status !== 'ALL') query.set('status', params.status);
+    if (params.name && params.name.trim()) query.set('name', params.name.trim());
+    const res = await authFetch(`${API_BASE}/admin/ops/operations?${query.toString()}`);
+    await OpsApi.guard(res, 'Operasyon gecmisi alinamadi');
+    return res.json();
+  }
+
   static async getAudit(limit = 100): Promise<OpsAuditEntry[]> {
     const res = await authFetch(`${API_BASE}/admin/ops/audit?limit=${limit}`);
     await OpsApi.guard(res, 'Denetim kaydı alınamadı');

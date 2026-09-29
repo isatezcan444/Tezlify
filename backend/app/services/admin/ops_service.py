@@ -382,9 +382,64 @@ def record_audit(action: str, actor: str, result: str, operation_id: Optional[st
     _persist_state()
 
 
-def list_audit(limit: int = 100) -> List[Dict[str, Any]]:
+def list_operations(
+    limit: int = 20,
+    offset: int = 0,
+    status: Optional[str] = None,
+    name: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Return operations newest-first, optionally filtered and paged.
+
+    The panel used to show a fixed newest-20 window, so "what did we deploy last
+    Tuesday" was unanswerable: the record existed but was unreachable. Paging
+    over the retained window is the whole point of keeping 50 of them.
+    """
+    limit = max(1, min(int(limit or 20), MAX_OPERATION_HISTORY))
+    offset = max(0, int(offset or 0))
+    rows = [_public(_op_registry[i]) for i in _order if i in _op_registry][::-1]
+    if status:
+        wanted = status.strip().lower()
+        if wanted and wanted != "all":
+            rows = [r for r in rows if str(r.get("status", "")).lower() == wanted]
+    if name:
+        needle = name.strip().lower()
+        if needle:
+            rows = [
+                r for r in rows
+                if needle in str(r.get("name", "")).lower()
+                or needle in str(r.get("label", "")).lower()
+            ]
+    return rows[offset:offset + limit]
+
+
+def operation_history_size() -> int:
+    """How many operations are retained, for the UI's paging controls."""
+    return len(_order)
+
+
+def list_audit(
+    limit: int = 100,
+    offset: int = 0,
+    result: Optional[str] = None,
+    action: Optional[str] = None,
+) -> List[Dict[str, Any]]:
     limit = max(1, min(int(limit or 100), 500))
-    return list(_audit[-limit:])[::-1]
+    offset = max(0, int(offset or 0))
+    rows = list(_audit)[::-1]
+    if result:
+        wanted = result.strip().lower()
+        if wanted and wanted != "all":
+            rows = [r for r in rows if str(r.get("result", "")).lower() == wanted]
+    if action:
+        needle = action.strip().lower()
+        if needle:
+            rows = [r for r in rows if needle in str(r.get("action", "")).lower()]
+    return rows[offset:offset + limit]
+
+
+def audit_history_size() -> int:
+    """How many audit entries are retained."""
+    return len(_audit)
 
 
 async def _publish(event: Dict[str, Any], user_id: Optional[str]) -> None:
@@ -585,11 +640,6 @@ async def _execute(op: Dict[str, Any], spec: OperationSpec, user_id: Optional[st
 def get_operation(operation_id: str) -> Optional[Dict[str, Any]]:
     op = _op_registry.get(operation_id)
     return _public(op) if op else None
-
-
-def list_operations(limit: int = 20) -> List[Dict[str, Any]]:
-    limit = max(1, min(int(limit or 20), MAX_OPERATION_HISTORY))
-    return [_public(_op_registry[i]) for i in _order[-limit:]][::-1]
 
 
 def running_operation() -> Optional[Dict[str, Any]]:

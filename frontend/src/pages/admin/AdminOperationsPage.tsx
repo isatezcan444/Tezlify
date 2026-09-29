@@ -65,6 +65,16 @@ export const AdminOperationsPage: React.FC = () => {
   const [lastUpdated, setLastUpdated] = useState('');
   const busyRef = useRef(false);
 
+  // History paging + filtering. The panel used to show a fixed newest-20
+  // window, so "what did we deploy last Tuesday" was unanswerable even though
+  // the record was retained.
+  const HISTORY_PAGE = 20;
+  const [historyOffset, setHistoryOffset] = useState(0);
+  const [historyStatus, setHistoryStatus] = useState('ALL');
+  const [historyName, setHistoryName] = useState('');
+  const [historyTotal, setHistoryTotal] = useState(0);
+  const [historyRows, setHistoryRows] = useState<OpsOperation[] | null>(null);
+
   const fetchStatus = useCallback(async (isInitial = false) => {
     if (busyRef.current) return;
     busyRef.current = true;
@@ -145,6 +155,40 @@ export const AdminOperationsPage: React.FC = () => {
     void poll();
     return () => { cancelled = true; };
   }, [status?.running?.id, fetchStatus, realtimeConnected]);
+
+  // Paged history is fetched separately from the status poll: the poll carries
+  // a small newest-first window for context, while this is the full, filterable
+  // record an operator actually reads.
+  const fetchHistory = useCallback(async () => {
+    try {
+      const rows = await OpsApi.listOperations({
+        limit: HISTORY_PAGE,
+        offset: historyOffset,
+        status: historyStatus,
+        name: historyName,
+      });
+      setHistoryRows(rows);
+      setHistoryTotal(Math.max(rows.length, historyOffset + rows.length));
+    } catch {
+      // Non-fatal: the panel keeps showing the status poll's window.
+    }
+  }, [historyOffset, historyStatus, historyName]);
+
+  useEffect(() => {
+    if (!showAdmin) return;
+    void fetchHistory();
+  }, [showAdmin, fetchHistory]);
+
+  // Any filter or page change invalidates the offset: staying on page 3 of a
+  // narrower result set shows an empty table and looks like data loss.
+  const changeStatusFilter = useCallback((next: string) => {
+    setHistoryStatus(next);
+    setHistoryOffset(0);
+  }, []);
+  const changeNameFilter = useCallback((next: string) => {
+    setHistoryName(next);
+    setHistoryOffset(0);
+  }, []);
 
   const fetchLogs = useCallback(async (service: string) => {
     setLogService(service);
@@ -325,8 +369,15 @@ export const AdminOperationsPage: React.FC = () => {
             </Card>
           )}
           <OpsHistoryPanel
-            operations={status?.operations || []}
+            operations={historyRows ?? status?.operations ?? []}
             audit={status?.audit || []}
+            totalOperations={historyTotal}
+            offset={historyOffset}
+            pageSize={HISTORY_PAGE}
+            onPageChange={setHistoryOffset}
+            onStatusFilter={changeStatusFilter}
+            onNameFilter={changeNameFilter}
+            statusFilter={historyStatus}
           />
         </div>
       )}
