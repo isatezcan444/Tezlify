@@ -70,7 +70,12 @@ export function createPostgresEventOutbox({
   encryptionKey,
   poolMax = 1,
   pool: injectedPool = null,
-}) {
+  /**
+   * Called when a write fails because the session row no longer exists, so the
+   * caller can mark the session and surface it. Reported once per session.
+   */
+  onOrphaned = null,
+} = {}) {
   if (!connectionString && !injectedPool) {
     throw new Error('A PostgreSQL connection is required for the event outbox.');
   }
@@ -112,6 +117,9 @@ export function createPostgresEventOutbox({
         // the durable outbox is empty instead of guessing.
         if (err?.code === PG_FOREIGN_KEY_VIOLATION) {
           reportOrphanedSession('event_outbox', sessionId, eventType);
+          // Surface it on the session too, so the operator sees it in the UI
+          // rather than only in a log they may never open.
+          try { onOrphaned?.(sessionId, eventType); } catch { /* reporting only */ }
           // The event is not durable, but the socket path still delivers it,
           // so returning the payload keeps in-flight state correct.
           return payload;

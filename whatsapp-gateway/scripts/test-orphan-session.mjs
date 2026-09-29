@@ -136,4 +136,47 @@ await check('a healthy insert reports nothing and stores the row', async () => {
   assert.equal(seen[0][1], 'sess-ok', 'the session id must be the gateway session');
 });
 
+
+// --- The session must be MARKED, not just logged -----------------------------
+await check('a foreign-key violation marks the session as orphaned', async () => {
+  resetOrphanReports();
+  const marked = [];
+  await capture(async () => {
+    const outbox = createPostgresEventOutbox({
+      encryptionKey: KEY,
+      pool: { query: async () => { throw fkError(); } },
+      onOrphaned: (id, detail) => marked.push({ id, detail }),
+    });
+    await outbox.enqueue({ gateway_session_id: 'sess-marked', event: 'message_new' });
+  });
+  assert.equal(marked.length, 1, 'the session must be marked, not only logged');
+  assert.equal(marked[0].id, 'sess-marked');
+});
+
+await check('a missing onOrphaned callback is not an error', async () => {
+  resetOrphanReports();
+  await capture(async () => {
+    const outbox = createPostgresEventOutbox({
+      encryptionKey: KEY,
+      pool: { query: async () => { throw fkError(); } },
+    });
+    // Reporting must never be the thing that breaks a live session.
+    const payload = await outbox.enqueue({ gateway_session_id: 'sess-x', event: 'x' });
+    assert.ok(payload);
+  });
+});
+
+await check('a throwing onOrphaned callback does not propagate', async () => {
+  resetOrphanReports();
+  await capture(async () => {
+    const outbox = createPostgresEventOutbox({
+      encryptionKey: KEY,
+      pool: { query: async () => { throw fkError(); } },
+      onOrphaned: () => { throw new Error('reporting blew up'); },
+    });
+    const payload = await outbox.enqueue({ gateway_session_id: 'sess-y', event: 'x' });
+    assert.ok(payload, 'the payload must still be returned');
+  });
+});
+
 console.log(`\nOrphaned session reporting: PASS (${passed} checks)`);

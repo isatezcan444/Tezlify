@@ -276,7 +276,15 @@ export function createSessionManager({
 
   const mediaStore = createMediaStore({ mediaDir, logger });
   const leaseCoordinator = createLeaseCoordinator({ leaseRepository, instanceId, logger });
-  const lidRepository = createLidRepository({ pool, sessionsDir, logger });
+  const lidRepository = createLidRepository({
+    pool,
+    sessionsDir,
+    logger,
+    // A LID write failing on a missing session row is the same orphan as an
+    // outbox write failing: the whatsapp_sessions row is gone. Flag the session
+    // so the UI can say the session is connected but not being stored.
+    onOrphaned: (sessionId) => { manager.markOrphaned(sessionId, 'lid_mapping'); },
+  });
   const contactRepository = createContactRepository({ pool, logger });
 
   function clearSessionHistoryFetches(sessionId) {
@@ -385,7 +393,49 @@ export function createSessionManager({
         sync: s.sync || { phase: 'idle' },
         created_at: s.created_at,
         updated_at: s.updated_at,
+        // Set when a durable write failed with a foreign-key violation, i.e.
+        // the whatsapp_sessions row for this gateway session is gone. Surfaced
+        // here so the operator SEES that the session is not being stored,
+        // instead of discovering it later as missing history.
+        orphaned: Boolean(s._orphaned),
+        orphaned_since: s._orphaned_since || null,
       }));
+    },
+
+    /**
+     * Mark a session as orphaned: its database row no longer exists.
+     *
+     * Called from the outbox/LID write paths when PostgreSQL reports a
+     * foreign-key violation. The session stays CONNECTED — it really is — but
+     * nothing it emits is being stored, so the UI must say so rather than
+     * showing a healthy session whose data goes nowhere.
+     */
+    markOrphaned(sessionId, detail) {
+      const session = sessions.get(String(sessionId));
+      if (!session) return false;
+      if (session._orphaned) return false;
+      session._orphaned = true;
+      session._orphaned_since = new Date().toISOString();
+      session._orphaned_detail = detail || null;
+      logger.error(
+        { session_ref: sessionRef(session.id), detail: detail || null },
+        'Session is orphaned: its database row no longer exists. Events from it ' +
+        'reach the backend over the live socket only and are lost on restart. ' +
+        'Re-pair the number to register a live session row.',
+      );
+      return true;
+    },
+
+    /** Sessions the database no longer knows about. */
+    listOrphaned() {
+      return [...sessions.values()]
+        .filter((s) => s._orphaned)
+        .map((s) => ({
+          id: s.id,
+          session_name: s.session_name,
+          status: s.status,
+          since: s._orphaned_since || null,
+        }));
     },
 
     getSession(id) {

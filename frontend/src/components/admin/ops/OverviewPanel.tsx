@@ -25,6 +25,13 @@ export interface OverviewPanelProps {
   loading?: boolean;
   /** False when the server cannot persist its operation history. */
   persistenceOk?: boolean;
+  /**
+   * Gateway sessions whose database row no longer exists. They report
+   * CONNECTED but nothing they emit is stored, so this is surfaced rather than
+   * left for the operator to infer from missing history.
+   */
+  orphanedCount?: number;
+  orphanedDetail?: { id: string; session_name?: string; since?: string | null }[];
 }
 
 /**
@@ -42,6 +49,8 @@ export function OverviewPanel({
   operations,
   loading = false,
   persistenceOk = true,
+  orphanedCount = 0,
+  orphanedDetail = [],
 }: OverviewPanelProps) {
   const { t } = useI18n();
 
@@ -111,6 +120,38 @@ export function OverviewPanel({
             <p className="text-sm text-amber-800 dark:text-amber-300">
               {t('admin.ops.persistenceWarning')}
             </p>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* A session can report CONNECTED and still store nothing: re-pairing
+          deletes the old whatsapp_sessions row while the gateway keeps the
+          session in memory. Without this the operator sees a healthy system and
+          discovers the problem as missing message history. */}
+      {orphanedCount > 0 && (
+        <Card className="border-rose-300 dark:border-rose-700/50 bg-rose-50 dark:bg-rose-950/20">
+          <CardContent className="pt-4 space-y-2">
+            <div className="flex items-start gap-3">
+              <AlertTriangle className="w-4 h-4 mt-0.5 text-rose-600 dark:text-rose-400 shrink-0" />
+              <div className="space-y-1">
+                <p className="text-sm font-bold text-rose-800 dark:text-rose-300">
+                  {t('admin.ops.orphanedSessionTitle', { count: String(orphanedCount) })}
+                </p>
+                <p className="text-sm text-rose-700 dark:text-rose-300/90">
+                  {t('admin.ops.orphanedSessionBody')}
+                </p>
+              </div>
+            </div>
+            {orphanedDetail.length > 0 && (
+              <ul className="ml-7 space-y-1">
+                {orphanedDetail.map((s) => (
+                  <li key={s.id} className="text-[11px] text-rose-700/80 dark:text-rose-300/70">
+                    • {s.session_name || s.id}
+                    {s.since ? ` — ${t('admin.ops.orphanedSince', { at: s.since })}` : ''}
+                  </li>
+                ))}
+              </ul>
+            )}
           </CardContent>
         </Card>
       )}

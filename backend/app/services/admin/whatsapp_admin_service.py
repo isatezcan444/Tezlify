@@ -67,6 +67,8 @@ async def get_whatsapp_operations_metrics(db: AsyncSession) -> AdminWhatsAppResp
     gw_sessions = 0
     gw_connected = 0
     gw_pending_qr = 0
+    gw_orphaned = 0
+    gw_orphaned_detail: List[Dict[str, Any]] = []
     try:
         res = await get_gateway_health()
         if isinstance(res, dict):
@@ -76,6 +78,13 @@ async def get_whatsapp_operations_metrics(db: AsyncSession) -> AdminWhatsAppResp
                 gw_sessions = int(sessions_info.get("total", 0))
                 gw_connected = int(sessions_info.get("connected", 0))
                 gw_pending_qr = int(sessions_info.get("pending_qr", 0))
+            # Sessions whose DB row is gone. Reported so the operator sees
+            # "connected but nothing is being stored" instead of discovering it
+            # later as missing message history.
+            gw_orphaned = int(res.get("orphaned_sessions", 0) or 0)
+            detail = res.get("orphaned_detail")
+            if isinstance(detail, list):
+                gw_orphaned_detail = [d for d in detail if isinstance(d, dict)]
     except Exception as ge:
         logger.debug("Gateway health probe failed: %s", ge)
         gw_health = "unreachable"
@@ -85,6 +94,8 @@ async def get_whatsapp_operations_metrics(db: AsyncSession) -> AdminWhatsAppResp
         session_count=gw_sessions,
         connected_count=gw_connected,
         pending_qr_count=gw_pending_qr,
+        orphaned_count=gw_orphaned,
+        orphaned_detail=gw_orphaned_detail,
     )
 
     # 3. DB session summary & session list

@@ -24,7 +24,7 @@ export function lidScopeSessionIds(sessionId, ownerId, sessions) {
   return scope;
 }
 
-export function createLidRepository({ pool, sessionsDir, logger }) {
+export function createLidRepository({ pool, sessionsDir, logger, onOrphaned = null }) {
   function getSessionDir(baseDir, sessionId) {
     return path.join(baseDir, sessionId);
   }
@@ -69,6 +69,10 @@ export function createLidRepository({ pool, sessionsDir, logger }) {
       // Report the orphan once, with the cause and the remedy.
       if (err?.code === PG_FOREIGN_KEY_VIOLATION) {
         reportOrphanedSession('lid_mappings', String(sessionId), `lid=${String(lid)}`, logger);
+        // Same diagnosis as the outbox path: the session row is gone, so this
+        // session's data is not being stored either. Mark it on the session so
+        // the operator sees it without reading logs.
+        try { onOrphaned?.(String(sessionId), 'lid_mapping'); } catch { /* reporting only */ }
         return;
       }
       logger.warn(

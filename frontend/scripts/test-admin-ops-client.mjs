@@ -390,4 +390,39 @@ check('the history is paged and filterable, not a fixed 20-row window', () => {
     'a name filter change must reset the offset');
 });
 
+check('an orphaned session is surfaced, not left in the logs', () => {
+  const panel = read('../src/components/admin/ops/OverviewPanel.tsx');
+  const page = read('../src/pages/admin/AdminOperationsPage.tsx');
+  const types = read('../src/types/admin.ts');
+  // A session can report CONNECTED and still store nothing: re-pairing deletes
+  // the whatsapp_sessions row while the gateway keeps it in memory. Without a
+  // visible warning the operator sees a healthy system and finds out from
+  // missing message history.
+  assert.ok(/orphanedCount > 0/.test(panel), 'the warning must be conditional on the count');
+  assert.ok(/orphanedSessionTitle/.test(panel), 'the warning must have a title');
+  assert.ok(/orphanedSessionBody/.test(panel), 'the warning must explain the cause');
+  // It must name the remedy: re-pairing, not a vague "something is wrong".
+  assert.ok(panel.includes("onStatusFilter") === false, 'sanity: the panel has no stray filter');
+  assert.ok(page.includes('orphanedCount={whatsappRuntime?.orphaned_count ?? 0}'),
+    'the page must pass the gateway count through');
+  assert.ok(page.includes('AdminApi.getWhatsApp()'),
+    'the count must come from the existing admin call, not a new endpoint');
+  assert.ok(types.includes('orphaned_count'), 'the type must expose the count');
+});
+
+check('the gateway reports orphans on /health without faking a failure', async () => {
+  const fs = await import('node:fs');
+  const gw = fs.readFileSync(new URL('../../whatsapp-gateway/src/index.js', import.meta.url), 'utf8');
+  assert.ok(/orphaned_sessions/.test(gw), '/health must report the orphan count');
+  // It is reported SEPARATELY from `status`: an orphaned session is not a
+  // gateway fault, and folding it into the status code would make a healthy
+  // gateway look down to every monitoring check.
+  assert.ok(/orphaned_detail/.test(gw), '/health must carry the detail list');
+  const sm = fs.readFileSync(new URL('../../whatsapp-gateway/src/session-manager.js', import.meta.url), 'utf8');
+  assert.ok(/markOrphaned/.test(sm), 'the session manager must expose markOrphaned');
+  assert.ok(/listOrphaned/.test(sm), 'the session manager must expose listOrphaned');
+  assert.ok(/orphaned: Boolean\(s\._orphaned\)/.test(sm),
+    'listSessions must expose the flag so the admin payload can carry it');
+});
+
 console.log(`\nAdmin ops client contract: PASS (${passed} checks)`);

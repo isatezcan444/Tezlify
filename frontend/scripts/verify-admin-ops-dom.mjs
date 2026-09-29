@@ -324,6 +324,24 @@ try {
       'paging must be hidden when the whole history fits on one page');
   });
 
+  await check('OverviewPanel warns that a session is connected but not stored', async () => {
+    // The failure this prevents: an operator sees CONNECTED, assumes the session
+    // is fine, and only discovers the gap as missing message history.
+    await mount(h(OverviewPanel, {
+      overview: null, services: [], health: null, operations: [],
+      orphanedCount: 1,
+      orphanedDetail: [{ id: 's1', session_name: 'Hat 1', since: '2026-09-29T15:32:00Z' }],
+    }));
+    const body = text();
+    assert.ok(/not being saved/i.test(body), 'the warning must say it is NOT being saved');
+    assert.ok(body.includes('Hat 1'), 'the affected session must be named');
+    // And a clean system must NOT show a red banner.
+    await mount(h(OverviewPanel, {
+      overview: null, services: [], health: null, operations: [], orphanedCount: 0,
+    }));
+    assert.ok(!/not being saved/i.test(text()), 'a healthy system must not show the warning');
+  });
+
   console.log(`\nAdmin operations DOM verification: PASS (${passed} checks)`);
 } finally {
   await rm(tmp, { recursive: true, force: true });

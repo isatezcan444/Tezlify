@@ -99,6 +99,13 @@ if (DATABASE_URL) {
   eventOutbox = createPostgresEventOutbox({
     encryptionKey: aesKey,
     pool: gatewayPool,
+    // Re-pairing deletes the old whatsapp_sessions row while this in-memory
+    // session keeps emitting. Marking it here is what lets the UI say "this
+    // session is not being stored" instead of the operator discovering it as
+    // missing history days later.
+    onOrphaned: (sessionId, detail) => {
+      sessionManager.markOrphaned(sessionId, detail);
+    },
   });
   leaseRepository = createPostgresSessionLease({
     pool: gatewayPool,
@@ -168,12 +175,19 @@ app.get('/health', async (_req, res) => {
     }
   }
   const isHealthy = dbOk;
+  // An orphaned session is not a gateway fault: the service is fine, but one
+  // session's events are going nowhere. Reported separately from `status` so a
+  // monitoring check that only looks at the status code is not silenced, while
+  // the admin UI can still show the operator exactly what is not being stored.
+  const orphaned = sessionManager.listOrphaned();
   res.status(isHealthy ? 200 : 503).json({
     status: isHealthy ? 'ok' : 'degraded',
     service: 'tezlify-whatsapp-gateway',
     database: gatewayPool ? (dbOk ? 'connected' : 'error') : 'disabled',
     pool: poolStats,
     sessions: { total: sessions.length, connected, pending_qr: pending },
+    orphaned_sessions: orphaned.length,
+    orphaned_detail: orphaned,
   });
 });
 

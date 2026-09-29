@@ -60,6 +60,18 @@ export interface AdminGatewayBridgeStatus {
 export interface AdminGatewayRuntimeStatus {
   health_status: string;
   session_count: number;
+  /**
+   * Sessions whose `whatsapp_sessions` row no longer exists. They report
+   * CONNECTED but nothing they emit is stored, so this is the difference
+   * between "working" and "connected but silently losing data".
+   */
+  orphaned_count?: number;
+  orphaned_detail?: {
+    id: string;
+    session_name?: string;
+    status?: string;
+    since?: string | null;
+  }[];
   connected_count: number;
   pending_qr_count: number;
 }

@@ -6,7 +6,7 @@ Invariants:
 - Phone numbers are masked; message bodies and raw payloads are strictly excluded.
 """
 
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -83,6 +83,11 @@ class AdminGatewayRuntimeStatus(BaseModel):
     session_count: int = 0
     connected_count: int = 0
     pending_qr_count: int = 0
+    # Gateway sessions whose whatsapp_sessions row no longer exists: they look
+    # connected but nothing they emit is stored. Surfaced so the operator sees
+    # "connected but not being saved" instead of finding out from missing data.
+    orphaned_count: int = 0
+    orphaned_detail: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 class AdminDBSessionSummary(BaseModel):

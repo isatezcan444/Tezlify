@@ -29,6 +29,7 @@ import { OverviewPanel } from '../../components/admin/ops/OverviewPanel';
 import { useOpsEvents } from '../../hooks/useOpsEvents';
 import type {
   AdminOverviewResponse,
+  AdminWhatsAppResponse,
   OpsCatalogueEntry,
   OpsOperation,
   OpsServiceStatus,
@@ -54,6 +55,13 @@ export const AdminOperationsPage: React.FC = () => {
   const [tab, setTab] = useState<OpsTab>('overview');
   const [status, setStatus] = useState<OpsStatusResponse | null>(null);
   const [overview, setOverview] = useState<AdminOverviewResponse | null>(null);
+  const [whatsappRuntime, setWhatsappRuntime] = useState<
+    AdminWhatsAppResponse['gateway_runtime'] | null
+  >(null);
+  // The WhatsApp runtime block is the only place the gateway reports an
+  // ORPHANED session (connected, but its DB row is gone). It lives on the
+  // admin WhatsApp payload, which this page already has access to through the
+  // read-only admin API, so no new call and no new endpoint is needed.
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busyName, setBusyName] = useState<string | null>(null);
@@ -96,6 +104,14 @@ export const AdminOperationsPage: React.FC = () => {
       setOverview(await AdminApi.getOverview());
     } catch {
       // The overview degrades to service-only data; the page still works.
+    }
+    // The WhatsApp payload carries the gateway runtime block, which is where an
+    // ORPHANED session is reported. Fetched alongside the overview so the
+    // warning does not need its own request.
+    try {
+      setWhatsappRuntime((await AdminApi.getWhatsApp()).gateway_runtime);
+    } catch {
+      // Non-fatal: the orphan banner simply does not appear.
     }
   }, []);
 
@@ -313,6 +329,8 @@ export const AdminOperationsPage: React.FC = () => {
           operations={status?.operations || []}
           loading={loading && !status}
           persistenceOk={status?.persistence_ok !== false}
+          orphanedCount={whatsappRuntime?.orphaned_count ?? 0}
+          orphanedDetail={whatsappRuntime?.orphaned_detail ?? []}
         />
       )}
       {tab === 'system' && (

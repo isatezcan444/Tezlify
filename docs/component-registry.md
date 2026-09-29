@@ -409,7 +409,8 @@ restarting a service and shipping code are different risk classes.
 
 ### `OverviewPanel`
 - **Purpose**: Read-only summary of the whole deployment — service count, health verdict, database and WhatsApp state, recent operations, and a warning when the server cannot persist its audit trail. Composes the existing admin overview and ops payloads; introduces no new endpoint.
-- **Props**: `{ overview: AdminOverviewResponse | null; services: OpsServiceStatus[]; health: OpsHealthCheck | null; operations: OpsOperation[]; loading?: boolean; persistenceOk?: boolean }`
+- **Props**: `{ overview: AdminOverviewResponse | null; services: OpsServiceStatus[]; health: OpsHealthCheck | null; operations: OpsOperation[]; loading?: boolean; persistenceOk?: boolean; orphanedCount?: number; orphanedDetail?: { id: string; session_name?: string; since?: string | null }[] }`
+- **Orphan warning**: renders a red banner when `orphanedCount > 0`. A gateway session can report `CONNECTED` and still store NOTHING — re-pairing deletes the `whatsapp_sessions` row while the gateway keeps the session in memory, so its events only reach the backend over the live socket and vanish on restart. The banner names the affected session and states the remedy (re-pair from the WhatsApp screen) rather than a vague failure. The count comes from the existing admin WhatsApp payload's `gateway_runtime.orphaned_count`; no new endpoint, and `/health` still reports `status: ok` because an orphaned session is not a gateway fault.
 - **Import**: `import { OverviewPanel } from '@/components/admin/ops';`
 
 
