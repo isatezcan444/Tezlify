@@ -22,15 +22,16 @@
 # stream of "level":"error" lines that buried the real operational signals and
 # made the Error feed useless.
 #
-# Two fixes, both needed:
-#   1. the dead domain is removed, and re-add it ONLY together with an A record;
-#   2. the sslip.io host uses Caddy's internal CA, so it never contacts an
-#      external ACME server at all. sslip.io is a public DNS name that resolves
-#      to the host IP, which means public-CA validation (DNS-01) is impossible
-#      for it anyway — an internal certificate is the correct and only workable
-#      option here, and the admin trusts it explicitly.
+# Fix: the dead domain is removed. Re-add it ONLY together with a matching
+# DNS A record, otherwise this exact failure comes back.
+#
+# NOTE ON TLS: this site deliberately does NOT pin `tls internal`. That was
+# tried while chasing this error and it broke every client that trusted the
+# previous Let's Encrypt chain — switching the issuing CA is a visible,
+# client-wide change and is not part of fixing a dead domain. A public
+# certificate needs a real A record; ACME cannot be satisfied for a name
+# that only resolves through sslip.io.
 api.130.162.247.20.sslip.io, 130.162.247.20.sslip.io {
-    tls internal
     import security_headers
     encode zstd gzip
 
