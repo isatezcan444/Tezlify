@@ -16,6 +16,7 @@ import { AdminOverviewPage } from './pages/admin/AdminOverviewPage';
 import { AdminWhatsAppPage } from './pages/admin/AdminWhatsAppPage';
 import { AdminMonitoringPage } from './pages/admin/AdminMonitoringPage';
 import { AdminBackupsPage } from './pages/admin/AdminBackupsPage';
+import { AdminOperationsPage } from './pages/admin/AdminOperationsPage';
 import { AdminDeploymentPage } from './pages/admin/AdminDeploymentPage';
 import { AdminSecurityPage } from './pages/admin/AdminSecurityPage';
 import { ApiClient, createWebSocket } from './api/client';
@@ -207,6 +208,8 @@ const AppContent: React.FC = () => {
         return t('titles.adminMonitoring');
       case 'admin-backups':
         return t('titles.adminBackups');
+      case 'admin-operations':
+        return t('titles.adminOperations');
       case 'admin-deployment':
         return t('titles.adminDeployment');
       case 'admin-security':
@@ -242,6 +245,8 @@ const AppContent: React.FC = () => {
         return t('titles.adminMonitoringSub');
       case 'admin-backups':
         return t('titles.adminBackupsSub');
+      case 'admin-operations':
+        return t('titles.adminOperationsSub');
       case 'admin-deployment':
         return t('titles.adminDeploymentSub');
       case 'admin-security':
@@ -318,6 +323,9 @@ const AppContent: React.FC = () => {
           )}
           {activeTab === 'admin-backups' && (
             <AdminBackupsPage onNavigate={handleNavigate} />
+          )}
+          {activeTab === 'admin-operations' && (
+            <AdminOperationsPage />
           )}
           {activeTab === 'admin-deployment' && (
             <AdminDeploymentPage onNavigate={handleNavigate} />

@@ -371,11 +371,17 @@ src/
 
 ---
 
-## 5. Admin Operations Center (`components/admin/ops/`)
+## 5. Server Operations Center (`components/admin/ops/`)
 
-WhatsApp Operations Center composites, rendered inside
-`AdminWhatsAppPage`. All are re-exported from
-`components/admin/ops/index.ts`; do not create page-local duplicates.
+Composites for the two pages that own changes to the SERVER:
+`AdminOperationsPage` (service restart, logs, errors, history) and
+`AdminDeploymentPage` (code deploy). The WhatsApp admin page is read-only and
+hosts none of these.
+
+All are re-exported from `components/admin/ops/index.ts`; do not create
+page-local duplicates. `DeployPanel` is deliberately the only component allowed
+on the deployment page, and the only one forbidden on the operations page —
+restarting a service and shipping code are different risk classes.
 
 ### `ServiceStatusPanel`
 - **Purpose**: Live health of each Docker service plus the allowlisted action buttons (restart / deploy). Destructive actions require confirmation, and every control is disabled while an operation is running.
@@ -402,15 +408,7 @@ WhatsApp Operations Center composites, rendered inside
 - **Props**: `{ overview: AdminOverviewResponse | null; services: OpsServiceStatus[]; health: OpsHealthCheck | null; operations: OpsOperation[]; loading?: boolean; persistenceOk?: boolean }`
 - **Import**: `import { OverviewPanel } from '@/components/admin/ops';`
 
-### `ConnectionPanel`
-- **Purpose**: WhatsApp connection state — gateway bridge, gateway health, reconnect count, session list and what the operator should do next. Deliberately READ-ONLY: pairing is owned by `/api/v1/whatsapp/pairing/*`, which is scoped to the requesting user, so an admin-triggered pairing flow would pair against the wrong account or require writing session credentials on a user's behalf.
-- **Props**: `{ data: AdminWhatsAppResponse | null; health: OpsHealthCheck | null; loading?: boolean }`
-- **Import**: `import { ConnectionPanel } from '@/components/admin/ops';`
 
-### `LiveChatsLink`
-- **Purpose**: Entry point to live WhatsApp chats. A link, NOT an embedded chat list, on purpose: `/whatsapp/conversations` is scoped to the requesting user and enforced server-side, so listing chats here would either leak other tenants' conversations to the admin role or show the admin's own chats while implying they are everyone's. The operator is handed off to the WhatsApp hub, which has correct scoping and the existing realtime/ordering fixes.
-- **Props**: `{ onOpenChats: () => void }`
-- **Import**: `import { LiveChatsLink } from '@/components/admin/ops';`
 
 ### `DeployPanel`
 - **Purpose**: The cohesive deploy action — pull, rebuild, recreate, verify, as ONE ordered pipeline. Replaces the three separate `deploy_pull` / `deploy_build` / restart controls, which let an operator pull and forget to build (panel shows the new commit while the old image serves) or build without pulling (shipping a rebuild of the previous commit). A failure at any stage stops the rest. The action is resolved from the catalogue so the allowlist stays the single source of truth, and it is disabled whenever another operation is running.

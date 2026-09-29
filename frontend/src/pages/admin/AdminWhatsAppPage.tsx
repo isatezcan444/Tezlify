@@ -9,19 +9,15 @@ import {
   ArrowLeft,
   Smartphone,
   RefreshCw,
-  Info,
-  LayoutDashboard,
-  Wifi,
-  MessageSquare
+  Info
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useI18n } from '../../context/I18nContext';
 import { AdminApi } from '../../api/admin';
-import {
-  AdminOverviewResponse,
-  AdminWhatsAppResponse,
+import { 
+  AdminWhatsAppResponse, 
   AdminWhatsAppSessionSummary,
-  OverallSystemStatus
+  OverallSystemStatus 
 } from '../../types/admin';
 import { AdminShell } from '../../components/admin/AdminShell';
 import { Card, CardHeader, CardTitle, CardContent } from '../../components/ui/card';
@@ -30,37 +26,6 @@ import { StatusBadge, StatusVariant } from '../../components/ui/StatusBadge';
 import { Button } from '../../components/ui/button';
 import { Skeleton } from '../../components/ui/Skeleton';
 import { DataTable, ColumnDef } from '../../components/data-display/DataTable';
-import { ServiceStatusPanel } from '../../components/admin/ops/ServiceStatusPanel';
-import { OpsLogsPanel } from '../../components/admin/ops/OpsLogsPanel';
-import { OpsHistoryPanel } from '../../components/admin/ops/OpsHistoryPanel';
-import { ErrorFeed } from '../../components/admin/ops/ErrorFeed';
-import { OverviewPanel } from '../../components/admin/ops/OverviewPanel';
-import { ConnectionPanel } from '../../components/admin/ops/ConnectionPanel';
-import { LiveChatsLink } from '../../components/admin/ops/LiveChatsLink';
-import { DeployPanel } from '../../components/admin/ops/DeployPanel';
-import { OpsApi } from '../../api/admin';
-import { useToast } from '../../context/ToastContext';
-import { useOpsEvents } from '../../hooks/useOpsEvents';
-import {
-  OpsAuditEntry,
-  OpsCatalogueEntry,
-  OpsOperation,
-  OpsServiceStatus,
-  OpsStatusResponse,
-} from '../../types/admin';
-
-type OpsTab = 'overview' | 'connection' | 'chats' | 'session' | 'system' | 'errors' | 'logs' | 'operations';
-
-const OPS_TABS: { id: OpsTab; key: string; icon: React.ComponentType<{ className?: string }> }[] = [
-  { id: 'overview', key: 'admin.ops.tabOverview', icon: LayoutDashboard },
-  { id: 'connection', key: 'admin.ops.tabConnection', icon: Wifi },
-  { id: 'chats', key: 'admin.ops.tabChats', icon: MessageSquare },
-  { id: 'session', key: 'admin.ops.tabSession', icon: Smartphone },
-  { id: 'system', key: 'admin.ops.tabSystem', icon: Radio },
-  { id: 'errors', key: 'admin.ops.tabErrors', icon: ShieldAlert },
-  { id: 'logs', key: 'admin.ops.tabLogs', icon: Layers },
-  { id: 'operations', key: 'admin.ops.tabDeployment', icon: Send },
-];
 
 interface AdminWhatsAppPageProps {
   onNavigate?: (tab: string) => void;
@@ -76,181 +41,8 @@ export const AdminWhatsAppPage: React.FC<AdminWhatsAppPageProps> = ({ onNavigate
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<string>('');
 
-  const showAdmin = Boolean(isAdmin || profile?.is_admin || user?.is_admin);
-
-  // ---- Operations Center state ------------------------------------------
-  // Kept separate from the WhatsApp read model on purpose: opening the panel
-  // must not trigger a WhatsApp history/contact/avatar sync (§ performance).
-  const toast = useToast();
-  // Open on Overview: it is the read-only summary, so an operator sees the
-  // state of the system before any destructive control is within reach.
-  const [opsTab, setOpsTab] = useState<OpsTab>('overview');
-  const [opsStatus, setOpsStatus] = useState<OpsStatusResponse | null>(null);
-  const [opsLoading, setOpsLoading] = useState<boolean>(false);
-  const [opsError, setOpsError] = useState<string | null>(null);
-  const [busyName, setBusyName] = useState<string | null>(null);
-  const [logService, setLogService] = useState<string>('gateway');
-  const [logs, setLogs] = useState<string[]>([]);
-  const [logsLoading, setLogsLoading] = useState<boolean>(false);
-  const [logsByService, setLogsByService] = useState<Record<string, string[]>>({});
-  const [opLogs, setOpLogs] = useState<OpsOperation | null>(null);
-  // Feeds the Overview tab. The admin overview endpoint already exists and is
-  // read-only, so the summary tab costs no new backend surface.
-  const [overview, setOverview] = useState<AdminOverviewResponse | null>(null);
-
-  const opsRefreshing = useRef<boolean>(false);
-
-  const fetchOpsStatus = useCallback(async (isInitial = false) => {
-    if (opsRefreshing.current) return;
-    opsRefreshing.current = true;
-    if (isInitial) setOpsLoading(true);
-    try {
-      const res = await OpsApi.getStatus(20);
-      setOpsStatus(res);
-      setOpsError(null);
-    } catch (err: any) {
-      setOpsError(err?.message || t('common.error'));
-    } finally {
-      if (isInitial) setOpsLoading(false);
-      opsRefreshing.current = false;
-    }
-  }, [t]);
-
-  // ---- Realtime -----------------------------------------------------------
-  // The server already pushes operation lifecycle events on the shared `/ws`
-  // stream, so a running operation is followed live instead of being polled
-  // every few seconds. Polling stays as a FALLBACK only: if the socket cannot
-  // be established, the panel must still show progress rather than freeze.
-  const handleOpsEvent = useCallback((op: OpsOperation) => {
-    setOpLogs(op);
-    setOpsStatus((prev) => {
-      if (!prev) return prev;
-      const stillRunning = op.status === 'running';
-      // Merge into history without duplicating the row we are following.
-      const rest = prev.operations.filter((o) => o.id !== op.id);
-      const operations = [op, ...rest].slice(0, 20);
-      return {
-        ...prev,
-        operations,
-        running: stillRunning ? op : null,
-      };
-    });
-    // A finished operation changes service state too (restart/deploy), so pull
-    // fresh status rather than waiting for the next tick.
-    if (op.status !== 'running') {
-      setBusyName(null);
-      void fetchOpsStatus(false);
-    }
-  }, [fetchOpsStatus]);
-
-  const opsRealtimeConnected = useOpsEvents(showAdmin, { onOperation: handleOpsEvent });
-
-  // Overview feeds the summary tab only, and is fetched once: it is a slow
-  // changing system summary, so polling it alongside ops status would add load
-  // for no benefit. A manual refresh re-reads it.
-  const fetchOverview = useCallback(async () => {
-    try {
-      setOverview(await AdminApi.getOverview());
-    } catch {
-      // The Overview tab degrades to service-only data rather than an error
-      // page; the operator still sees live service state.
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!showAdmin) return;
-    void fetchOverview();
-  }, [showAdmin, fetchOverview]);
-
-  // Poll only the lightweight status endpoint, and only while the tab is
-  // visible. Logs are fetched on demand, never in a loop.
-  useEffect(() => {
-    if (!showAdmin) return;
-    void fetchOpsStatus(true);
-    // While realtime is healthy, a slow safety poll is enough: the socket
-    // carries the state changes the panel actually reacts to.
-    const periodMs = opsRealtimeConnected ? 60000 : 15000;
-    const id = setInterval(() => {
-      if (document.visibilityState === 'hidden') return;
-      void fetchOpsStatus(false);
-    }, periodMs);
-    return () => clearInterval(id);
-  }, [showAdmin, fetchOpsStatus, opsRealtimeConnected]);
-
-  // Follow a running operation by id: the server keeps working after a tab
-  // close or refresh, so re-attaching is the normal path, not an edge case.
-  // Skipped while realtime is connected, where events drive the same state.
-  useEffect(() => {
-    const running = opsStatus?.running;
-    if (!running || opsRealtimeConnected) {
-      if (!running) setOpLogs(null);
-      return;
-    }
-    let cancelled = false;
-    const poll = async () => {
-      try {
-        const fresh = await OpsApi.getOperation(running.id);
-        if (cancelled) return;
-        setOpLogs(fresh);
-        if (fresh.status === 'running') setTimeout(poll, 3000);
-        else void fetchOpsStatus(false);
-      } catch {
-        if (!cancelled) setTimeout(poll, 5000);
-      }
-    };
-    void poll();
-    return () => { cancelled = true; };
-  }, [opsStatus?.running?.id, fetchOpsStatus, opsRealtimeConnected]);
-
-  const fetchLogs = useCallback(async (service: string) => {
-    setLogService(service);
-    setLogsLoading(true);
-    try {
-      const res = await OpsApi.getLogs(service, 200);
-      setLogs(res.lines);
-      setLogsByService((prev) => ({ ...prev, [service]: res.lines }));
-      setOpsError(null);
-    } catch (err: any) {
-      setOpsError(err?.message || t('common.error'));
-    } finally {
-      setLogsLoading(false);
-    }
-  }, [t]);
-
-  // Load the gateway buffer on first visit so the error feed is not empty.
-  useEffect(() => {
-    if (!showAdmin) return;
-    if (Object.keys(logsByService).length === 0) void fetchLogs('gateway');
-  }, [showAdmin, logsByService, fetchLogs]);
-
-  const runOperation = useCallback(async (entry: OpsCatalogueEntry) => {
-    // Confirmation is mandatory for destructive operations. The server enforces
-    // this too — the dialog is a safety rail, not the control.
-    if (entry.destructive) {
-      const ok = await toast.confirm({
-        title: t('admin.ops.confirmTitle'),
-        message: entry.name.startsWith('deploy')
-          ? t('admin.ops.confirmDeployBody')
-          : t('admin.ops.confirmRestartBody'),
-        confirmText: t('admin.ops.confirmProceed'),
-        cancelText: t('admin.ops.cancel'),
-        variant: 'warning',
-      });
-      if (!ok) return;
-    }
-    setBusyName(entry.name);
-    try {
-      await OpsApi.startOperation(entry.name, entry.destructive);
-      toast.success(t('admin.ops.operationRunning'), entry.label);
-      await fetchOpsStatus(false);
-    } catch (err: any) {
-      toast.error(err?.message || t('common.error'), entry.label);
-    } finally {
-      setBusyName(null);
-    }
-  }, [toast, t, fetchOpsStatus]);
-
   const fetchingRef = useRef<boolean>(false);
+  const showAdmin = Boolean(isAdmin || profile?.is_admin || user?.is_admin);
 
   const fetchWhatsApp = useCallback(async (isInitial = false) => {
     if (fetchingRef.current) return;
@@ -504,168 +296,6 @@ export const AdminWhatsAppPage: React.FC<AdminWhatsAppPageProps> = ({ onNavigate
     },
   ];
 
-
-  // ---- Operations Center tab bar ----------------------------------------
-  const opsTabBar = (
-    <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
-      {OPS_TABS.map((tab) => {
-        const Icon = tab.icon;
-        const active = opsTab === tab.id;
-        return (
-          <button
-            key={tab.id}
-            type="button"
-            onClick={() => setOpsTab(tab.id)}
-            className={
-              'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold whitespace-nowrap ' +
-              'transition-colors cursor-pointer ' +
-              (active
-                ? 'bg-vuexy-primary text-white shadow-sm'
-                : 'bg-slate-100 dark:bg-white/[0.06] text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-white/[0.1]')
-            }
-          >
-            <Icon className="w-3.5 h-3.5" />
-            {t(tab.key)}
-          </button>
-        );
-      })}
-      {/* Realtime indicator: tells the operator whether operation updates are
-          arriving live or falling back to polling, so a stale panel is never
-          mistaken for a running system. */}
-      <span
-        className={
-          'ml-auto pl-2 inline-flex items-center gap-1.5 text-[11px] font-bold whitespace-nowrap ' +
-          (opsRealtimeConnected
-            ? 'text-emerald-600 dark:text-emerald-400'
-            : 'text-amber-600 dark:text-amber-400')
-        }
-        title={t(opsRealtimeConnected ? 'admin.ops.liveHint' : 'admin.ops.pollingHint')}
-      >
-        <span
-          aria-hidden
-          className={
-            'w-1.5 h-1.5 rounded-full ' +
-            (opsRealtimeConnected ? 'bg-emerald-500' : 'bg-amber-500')
-          }
-        />
-        {t(opsRealtimeConnected ? 'admin.ops.live' : 'admin.ops.polling')}
-      </span>
-    </div>
-  );
-
-  const serviceNames = (opsStatus?.services || []).map((s: OpsServiceStatus) =>
-    s.name.replace('tezlify-', ''),
-  );
-  const logServiceTabs = serviceNames.length > 0 ? serviceNames : ['gateway'];
-
-  const opsTabContent = (() => {
-    if (opsError && !opsStatus) {
-      return (
-        <Card>
-          <CardContent className="pt-4">
-            <p className="text-sm text-rose-600 dark:text-rose-400">{opsError}</p>
-          </CardContent>
-        </Card>
-      );
-    }
-    if (opsTab === 'overview') {
-      return (
-        <OverviewPanel
-          overview={overview}
-          services={opsStatus?.services || []}
-          health={opsStatus?.health || null}
-          operations={opsStatus?.operations || []}
-          loading={opsLoading && !opsStatus}
-          persistenceOk={opsStatus?.persistence_ok !== false}
-        />
-      );
-    }
-    if (opsTab === 'connection') {
-      return (
-        <ConnectionPanel
-          data={data}
-          health={opsStatus?.health || null}
-          loading={loading && !data}
-        />
-      );
-    }
-    if (opsTab === 'chats') {
-      return <LiveChatsLink onOpenChats={() => onNavigate?.('whatsapp')} />;
-    }
-    if (opsTab === 'session') {
-      // The pre-existing WhatsApp session view (bridge, sessions, outbox) is
-      // unchanged; the operations tabs are additive.
-      return null;
-    }
-    if (opsTab === 'system') {
-      return (
-        <div className="space-y-6">
-          <ServiceStatusPanel
-            services={opsStatus?.services || []}
-            health={opsStatus?.health || null}
-            catalogue={opsStatus?.catalogue || []}
-            loading={opsLoading && !opsStatus}
-            running={opsStatus?.running || null}
-            busyName={busyName}
-            onRun={runOperation}
-          />
-        </div>
-      );
-    }
-    if (opsTab === 'errors') {
-      return (
-        <ErrorFeed
-          logsByService={logsByService}
-          catalogue={opsStatus?.catalogue || []}
-          runningName={opsStatus?.running?.name || null}
-          onRun={runOperation}
-          onViewLogs={(svc) => { void fetchLogs(svc); setOpsTab('logs'); }}
-        />
-      );
-    }
-    if (opsTab === 'logs') {
-      return (
-        <OpsLogsPanel
-          services={logServiceTabs}
-          activeService={logService}
-          lines={logs}
-          loading={logsLoading}
-          error={opsError}
-          onServiceChange={(svc) => void fetchLogs(svc)}
-          onReload={() => void fetchLogs(logService)}
-        />
-      );
-    }
-    return (
-      <div className="space-y-6">
-        <DeployPanel
-          catalogue={opsStatus?.catalogue || []}
-          running={opsStatus?.running || null}
-          busyName={busyName}
-          onRun={runOperation}
-        />
-        {opLogs && (
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base text-slate-800 dark:text-white">
-                {opLogs.label}
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <pre className="max-h-64 overflow-auto rounded-lg bg-slate-50 dark:bg-[#0F1222] p-3 text-[11px] font-mono whitespace-pre-wrap break-all text-slate-700 dark:text-slate-300">
-                {opLogs.logs.length ? opLogs.logs.slice(-200).join('\n') : t('admin.ops.noData')}
-              </pre>
-            </CardContent>
-          </Card>
-        )}
-        <OpsHistoryPanel
-          operations={opsStatus?.operations || []}
-          audit={opsStatus?.audit || []}
-        />
-      </div>
-    );
-  })();
-
   const overallBadgeStatus: StatusVariant = 
     overallStatus === 'CRITICAL' ? 'danger' : overallStatus === 'WARN' ? 'warning' : 'active';
   const overallBadgeLabel = 
@@ -687,9 +317,6 @@ export const AdminWhatsAppPage: React.FC<AdminWhatsAppPageProps> = ({ onNavigate
       isRefreshing={refreshing}
       onRefresh={() => void fetchWhatsApp(false)}
     >
-      {opsTabBar}
-      {opsTabContent}
-      {opsTab === 'session' && (
       <div className="space-y-6">
         {/* Read-only Advisory Banner */}
         <div className="flex items-center gap-2.5 px-4 py-2.5 rounded-lg bg-indigo-50/70 dark:bg-indigo-950/30 border border-indigo-200/60 dark:border-indigo-800/40 text-xs text-indigo-700 dark:text-indigo-300">
@@ -1015,7 +642,6 @@ export const AdminWhatsAppPage: React.FC<AdminWhatsAppPageProps> = ({ onNavigate
           </CardContent>
         </Card>
       </div>
-      )}
     </AdminShell>
   );
 };

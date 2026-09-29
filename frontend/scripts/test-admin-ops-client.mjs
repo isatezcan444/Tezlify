@@ -107,8 +107,8 @@ check('TR and EN ops blocks are in sync', () => {
 check('ops block covers every tab the Operations Center needs', () => {
   const required = [
     'title', 'subtitle',
-    'tabOverview', 'tabConnection', 'tabChats', 'tabErrors',
-    'tabSession', 'tabSystem', 'tabLogs', 'tabDeployment',
+    'tabOverview',  'tabErrors',
+    'tabSession', 'tabSystem', 'tabLogs', 'tabDeployment', 'tabHistory',
     'servicesTitle', 'healthAllOk', 'healthSomeDown',
     'logsTitle', 'logsEmpty',
     'deploymentTitle', 'currentCommit', 'deployNow',
@@ -121,9 +121,9 @@ check('ops block covers every tab the Operations Center needs', () => {
     'live', 'polling', 'liveHint', 'pollingHint',
     'overviewServices', 'overviewHealth', 'overviewDatabase', 'overviewWhatsapp',
     'overviewUnknown', 'overviewNoServices', 'persistenceWarning',
-    'bridgeStatus', 'gatewayHealth', 'reconnectCount',
-    'connected', 'disconnected', 'sessionsTitle', 'sessionsEmpty',
-    'pairingActive', 'pairingNeeded', 'chatsScopedNote', 'chatsOpenHub',
+    
+     
+      
     'stagePull', 'stageBuild', 'stageRestart', 'stageProgress', 'stepInterrupted',
     'deployFull', 'deployFullDesc', 'deploymentUnavailable', 'deployBlocked',
     'deployRestartsBackendNote',
@@ -156,78 +156,6 @@ check('the ops realtime hook listens on the shared socket and filters operation 
   assert.ok(/socket\?\.close\(\)/.test(hook), 'must close the socket on cleanup');
   // A realtime failure must degrade to polling, not break the panel.
   assert.ok(/catch\s*\{[\s\S]*?setConnected\(false\)/.test(hook), 'must fail soft to polling');
-});
-
-check('the page keeps a polling fallback when realtime is unavailable', () => {
-  const page = read('../src/pages/admin/AdminWhatsAppPage.tsx');
-  assert.ok(/useOpsEvents\(/.test(page), 'page must subscribe to ops events');
-  // The interval period depends on the socket state: realtime healthy means a
-  // slow safety poll, otherwise the original fast poll.
-  assert.ok(
-    /opsRealtimeConnected \? 60000 : 15000/.test(page),
-    'poll period must depend on the realtime connection state',
-  );
-  // A finished operation must refresh service state immediately.
-  assert.ok(/op\.status !== 'running'/.test(page), 'must refresh status when an operation finishes');
-});
-
-check('all eight Operations Center tabs are wired to real components', () => {
-  const page = read('../src/pages/admin/AdminWhatsAppPage.tsx');
-  // The panel is only finished when every declared tab renders something. A tab
-  // that falls through would show a blank card and look broken.
-  // `operations` is the deliberate fall-through: it also hosts the live log
-  // view, so it has no explicit `opsTab === 'operations'` branch.
-  for (const [id, component] of [
-    ['overview', 'OverviewPanel'],
-    ['connection', 'ConnectionPanel'],
-    ['chats', 'LiveChatsLink'],
-    ['session', 'null'],
-    ['system', 'ServiceStatusPanel'],
-    ['errors', 'ErrorFeed'],
-    ['logs', 'OpsLogsPanel'],
-  ]) {
-    assert.ok(new RegExp(`opsTab === '${id}'`).test(page), `missing tab branch: ${id}`);
-    if (component !== 'null') {
-      assert.ok(new RegExp(`<${component}[\\s/>]`).test(page), `${id} must render ${component}`);
-    }
-  }
-  // The fall-through must still render the history panel.
-  assert.ok(/<OpsHistoryPanel[\s/>]/.test(page), 'operations tab must render OpsHistoryPanel');
-  // The tab bar must not advertise a tab the page cannot render.
-  for (const id of ['overview', 'connection', 'chats', 'session', 'system', 'errors', 'logs', 'operations']) {
-    assert.ok(new RegExp(`id: '${id}'`).test(page), `tab ${id} missing from the tab bar`);
-  }
-});
-
-check('the chats tab does not embed a conversation list', () => {
-  const link = read('../src/components/admin/ops/LiveChatsLink.tsx');
-  // /whatsapp/conversations is user-scoped and enforced server-side. An admin
-  // panel that listed them would leak another tenant's chats or silently show
-  // the admin's own, so the tab must hand off instead.
-  assert.ok(/onOpenChats/.test(link), 'must navigate to the scoped chat surface');
-  assert.ok(!/conversation_id|fetchConversations|\.map\(.*conversations/.test(link),
-    'the admin ops tab must not render conversations itself');
-  const page = read('../src/pages/admin/AdminWhatsAppPage.tsx');
-  assert.ok(
-    page.includes("<LiveChatsLink onOpenChats={() => onNavigate?.('whatsapp')} />"),
-    'chats tab must route to the WhatsApp hub',
-  );
-});
-
-check('the connection tab is read-only (pairing stays with the account owner)', () => {
-  const panel = read('../src/components/admin/ops/ConnectionPanel.tsx');
-  // Pairing endpoints are scoped to the requesting user; an admin-triggered
-  // pairing flow would pair the wrong account or need a privileged endpoint
-  // that writes session credentials on a user's behalf.
-  assert.ok(!/pair\/start|startPairing|pairing\/\{pair_token\}/.test(panel),
-    'the admin connection panel must not call pairing endpoints');
-});
-
-check('the overview tab surfaces an unwritable state directory', () => {
-  const panel = read('../src/components/admin/ops/OverviewPanel.tsx');
-  assert.ok(/persistenceOk/.test(panel), 'must render the persistence warning');
-  const page = read('../src/pages/admin/AdminWhatsAppPage.tsx');
-  assert.ok(/persistence_ok !== false/.test(page), 'page must read the server flag');
 });
 
 check('the deploy action is one cohesive pipeline, not three loose buttons', () => {
@@ -282,6 +210,65 @@ check('the TR and EN ops dictionaries have identical key sets', () => {
   const missingInTr = [...en].filter((k) => !tr.has(k));
   assert.deepEqual(missingInEn, [], `EN is missing ops keys: ${missingInEn.join(', ')}`);
   assert.deepEqual(missingInTr, [], `TR is missing ops keys: ${missingInTr.join(', ')}`);
+});
+
+check('the WhatsApp admin page is read-only again: no server controls', () => {
+  const wa = read('../src/pages/admin/AdminWhatsAppPage.tsx');
+  // This is the regression this restructure exists to prevent: restarting a
+  // container or deploying code is not a WhatsApp operation, and putting those
+  // controls here made the page header lie about what its buttons did.
+  for (const forbidden of ['OpsApi', 'ServiceStatusPanel', 'DeployPanel', 'OpsLogsPanel', 'ErrorFeed', 'startOperation']) {
+    assert.ok(!wa.includes(forbidden), `the WhatsApp page must not contain ${forbidden}`);
+  }
+});
+
+check('server operations live on their own page', () => {
+  const ops = read('../src/pages/admin/AdminOperationsPage.tsx');
+  assert.ok(/ServiceStatusPanel/.test(ops), 'service control belongs here');
+  assert.ok(/OpsLogsPanel/.test(ops), 'logs belong here');
+  assert.ok(/ErrorFeed/.test(ops), 'errors belong here');
+  assert.ok(/OpsHistoryPanel/.test(ops), 'history belongs here');
+  assert.ok(/useOpsEvents/.test(ops), 'must follow operations in realtime');
+  for (const id of ['overview', 'system', 'errors', 'logs', 'history']) {
+    assert.ok(new RegExp(`id: '${id}'`).test(ops), `missing tab ${id}`);
+  }
+});
+
+check('the operations page never offers code deployment', () => {
+  const ops = read('../src/pages/admin/AdminOperationsPage.tsx');
+  // Restarting a service and shipping new code are different risk classes;
+  // DeployPanel must not appear on the server operations page.
+  assert.ok(!ops.includes('DeployPanel'), 'deploy must not be offered here');
+  assert.ok(!ops.includes("deploy_full"), 'the deploy pipeline must not be started here');
+});
+
+check('deployment actions live on the deployment page', () => {
+  const dep = read('../src/pages/admin/AdminDeploymentPage.tsx');
+  assert.ok(/DeployPanel/.test(dep), 'the deploy action belongs on the deployment page');
+  assert.ok(/runDeploy/.test(dep), 'the page must wire a deploy handler');
+  // It must follow the deploy over the socket: a deploy restarts the backend,
+  // so the page has to recover state when the socket drops and reconnects.
+  assert.ok(/useOpsEvents/.test(dep), 'must track the deploy in realtime');
+  assert.ok(/status !== 'running'/.test(dep), 'a finished deploy must re-read the deployment state');
+});
+
+check('the sidebar exposes operations and deployment as separate entries', () => {
+  const side = read('../src/components/Layout/Sidebar.tsx');
+  assert.ok(side.includes("id: 'admin-operations'"), 'missing operations entry');
+  assert.ok(side.includes("id: 'admin-deployment'"), 'missing deployment entry');
+  // Ordering: operations must sit next to deployment, not inside WhatsApp.
+  const opsIdx = side.indexOf("id: 'admin-operations'");
+  const depIdx = side.indexOf("id: 'admin-deployment'");
+  const waIdx = side.indexOf("id: 'admin-whatsapp'");
+  assert.ok(waIdx < opsIdx, 'operations must come after the WhatsApp entry');
+  assert.ok(Math.abs(opsIdx - depIdx) < 400, 'operations and deployment should be adjacent');
+});
+
+check('every page is routed in App.tsx', () => {
+  const app = read('../src/App.tsx');
+  assert.ok(app.includes("activeTab === 'admin-operations'"), 'operations route missing');
+  assert.ok(app.includes('<AdminOperationsPage'), 'operations page not rendered');
+  assert.ok(app.includes("case 'admin-operations':"), 'operations title/subtitle case missing');
 });
 
 console.log(`\nAdmin ops client contract: PASS (${passed} checks)`);

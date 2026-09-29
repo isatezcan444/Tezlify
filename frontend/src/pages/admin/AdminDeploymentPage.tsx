@@ -20,11 +20,17 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useI18n } from '../../context/I18nContext';
-import { AdminApi } from '../../api/admin';
+import { AdminApi, OpsApi } from '../../api/admin';
+import { useToast } from '../../context/ToastContext';
+import { DeployPanel } from '../../components/admin/ops/DeployPanel';
+import { useOpsEvents } from '../../hooks/useOpsEvents';
 import {
   AdminDeploymentResponse,
   AdminOverviewResponse,
   AdminContainerDeploymentState,
+  OpsCatalogueEntry,
+  OpsOperation,
+  OpsStatusResponse,
 } from '../../types/admin';
 import { AdminShell } from '../../components/admin/AdminShell';
 import { Card, CardHeader, CardTitle, CardContent } from '../../components/ui/card';
@@ -57,6 +63,7 @@ const formatDateTime = (isoString?: string | null): string => {
 
 export const AdminDeploymentPage: React.FC<AdminDeploymentPageProps> = ({ onNavigate }) => {
   const { t } = useI18n();
+  const toast = useToast();
   const { user, profile, isAdmin } = useAuth();
 
   const [deploymentData, setDeploymentData] = useState<AdminDeploymentResponse | null>(null);
@@ -65,6 +72,53 @@ export const AdminDeploymentPage: React.FC<AdminDeploymentPageProps> = ({ onNavi
   const [refreshing, setRefreshing] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<string>('');
+
+  // ---- Deployment actions -------------------------------------------------
+  // The write side of deployment lives HERE, not on the server operations page.
+  // Restarting a service and shipping new code are different risk classes, so
+  // they are not presented in the same list of buttons.
+  const [opsStatus, setOpsStatus] = useState<OpsStatusResponse | null>(null);
+  const [busyName, setBusyName] = useState<string | null>(null);
+  const [deploying, setDeploying] = useState<OpsOperation | null>(null);
+
+  // The deploy restarts the backend, so this socket drops mid-operation and
+  // reconnects afterwards. Listening is what lets the page recover state
+  // instead of showing a frozen progress bar.
+  const handleOpsEvent = useCallback((op: OpsOperation) => {
+    setDeploying(op);
+    if (op.status !== 'running') {
+      setBusyName(null);
+      // A finished deploy changes the commit and the containers: re-read both.
+      void fetchDeployment(false);
+      OpsApi.getStatus(5).then(setOpsStatus).catch(() => undefined);
+    }
+  }, []);
+
+  useOpsEvents(Boolean(isAdmin || profile?.is_admin || user?.is_admin), { onOperation: handleOpsEvent });
+
+  useEffect(() => {
+    if (!isAdmin && !profile?.is_admin && !user?.is_admin) return;
+    OpsApi.getStatus(5).then(setOpsStatus).catch(() => undefined);
+  }, [isAdmin, profile?.is_admin, user?.is_admin]);
+
+  const runDeploy = useCallback(async (entry: OpsCatalogueEntry) => {
+    const ok = await toast.confirm({
+      title: t('admin.ops.confirmTitle'),
+      message: t('admin.ops.confirmDeployBody'),
+      confirmText: t('admin.ops.confirmProceed'),
+      cancelText: t('admin.ops.cancel'),
+      variant: 'warning',
+    });
+    if (!ok) return;
+    setBusyName(entry.name);
+    try {
+      setDeploying(await OpsApi.startOperation(entry.name, true));
+      toast.success(t('admin.ops.operationRunning'), entry.label);
+    } catch (err: any) {
+      toast.error(err?.message || t('common.error'), entry.label);
+      setBusyName(null);
+    }
+  }, [toast, t]);
 
   const fetchingRef = useRef<boolean>(false);
   const showAdmin = Boolean(isAdmin || profile?.is_admin || user?.is_admin);
@@ -355,12 +409,38 @@ export const AdminDeploymentPage: React.FC<AdminDeploymentPageProps> = ({ onNavi
       lastUpdated={lastUpdated}
     >
       <div className="space-y-6">
-        {/* Strict Read-Only Notice */}
+        {/* Deployment actions live at the TOP: an operator arriving here to ship
+            a commit should not have to scroll past every read-only metric. */}
+        <DeployPanel
+          catalogue={opsStatus?.catalogue || []}
+          running={opsStatus?.running || null}
+          busyName={busyName}
+          onRun={runDeploy}
+        />
+
+        {deploying && deploying.status === 'running' && (
+          <Card>
+            <CardContent className="pt-4">
+              <div className="flex items-center gap-2 text-sm font-bold text-slate-700 dark:text-slate-200">
+                <RefreshCw className="w-4 h-4 animate-spin text-vuexy-primary" />
+                {deploying.label}
+                {deploying.total_steps > 1 && deploying.current_step && (
+                  <span className="text-[11px] font-bold uppercase tracking-wide text-vuexy-primary">
+                    {t('admin.ops.stageProgress')} {deploying.current_step}
+                  </span>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* The surrounding data is read-only; only the deploy action above
+            changes the system. */}
         <div className="flex items-start gap-3 p-3.5 rounded-xl bg-slate-50 dark:bg-white/[0.02] border border-slate-200/60 dark:border-white/[0.06] text-xs text-slate-600 dark:text-slate-300">
           <Info className="w-4 h-4 text-[#7367F0] shrink-0 mt-0.5" />
           <div className="space-y-1">
             <span className="font-semibold text-slate-800 dark:text-white">
-              {t('admin.deployment.readOnlyNotice')}
+              {t('admin.deployment.dataReadOnly')}
             </span>
           </div>
         </div>
