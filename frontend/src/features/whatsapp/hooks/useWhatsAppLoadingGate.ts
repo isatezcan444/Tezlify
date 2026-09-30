@@ -90,6 +90,15 @@ export function useWhatsAppLoadingGate(onReady?: () => void): UseWhatsAppLoading
   }, [refresh]);
 
   // WS besleme: birleşik olay varsa tek-authority, yoksa session_sync türetmesi.
+  //
+  // KRITIK AYRIM: gateway'in `session_sync_*` olayi YALNIZCA gateway'in kendi
+  // geçmiş senkronunu anlatir. Backend'in isi (sohbet anlik goruntusu + rehber +
+  // mesajlar + bos sohbet geri doldurma) bundan SONRA biter ve `initial_sync_completed_at`
+  // damgasi o zaman yazilir. Bu yuzden gateway `ready` sinyali kapıyı AÇMAZ;
+  // bunun yerine yetkili REST durumu yeniden cekilir (tek-authority sozlesme).
+  // Onceden bu sinyal `applyGate('ready')` yapiyordu: kapı, mesajlar henuz
+  // inmeden kapanıyor ve kullanıcı "anlık yuklenen" bir sohbet listesi
+  // goruyordu.
   useEffect(() => {
     const handler = (e: Event) => {
       const detail = (e as CustomEvent<any>).detail as LoadingGateEventPayload | undefined;
@@ -104,12 +113,20 @@ export function useWhatsAppLoadingGate(onReady?: () => void): UseWhatsAppLoading
         detail.event === 'session_sync_completed'
       ) {
         const derived = deriveFromSessionSync(detail as Record<string, any>);
-        if (derived) applyGate(derived);
+        if (!derived) return;
+        if (derived.phase === 'ready') {
+          // Gateway bitti: tek-authority backend kapısına sor. Backend hala
+          // SYNCING ise kapı `syncing_history` kalır; ilk senkron damgası
+          // zaten atilmissa `ready` doner ve kapı açılır.
+          void refresh();
+          return;
+        }
+        applyGate(derived);
       }
     };
     window.addEventListener('tezlify:ws_event', handler);
     return () => window.removeEventListener('tezlify:ws_event', handler);
-  }, [applyGate]);
+  }, [applyGate, refresh]);
 
   // `ready` geçişi: tam olarak bir kez, üst bileşene bildirilir.
   useEffect(() => {

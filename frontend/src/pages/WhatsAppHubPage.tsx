@@ -18,7 +18,7 @@ import { startWaLatency } from '../features/whatsapp/lib/whatsappLatency';
 import { translateApiError } from '../features/whatsapp/lib/translateError';
 import { mergeDeliveryStatus, mergeWhatsAppMessages } from '../features/whatsapp/lib/whatsappMessageMerge';
 import { WhatsAppRepository } from '../features/whatsapp/data/whatsappRepository';
-import { compareConversationsByActivityDesc, compareMessagesChronological, restoreConversationActivity } from '../features/whatsapp/lib/whatsappOrdering';
+import { compareConversationsByActivityDesc, restoreConversationActivity } from '../features/whatsapp/lib/whatsappOrdering';
 import {
   createConversationHydrator,
   type ConversationHydrator,
@@ -184,7 +184,14 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         setMessagesMap((prev) => ({ ...prev, [convId]: messages }));
       },
       getExisting: (convId) => messagesMapRef.current?.[convId] || [],
-      merge: (fetched, existing) => [...fetched, ...existing].sort(compareMessagesChronological),
+      // Identity-based merge, NOT a concat. A revalidation fetches the same
+      // rows that are already on screen; concatenating them duplicated EVERY
+      // message in the thread on every hydration (and a second hydration
+      // triplicated them). `mergeWhatsAppMessages` reconciles by
+      // id / wa_message_id / client_message_id, keeps the server-authoritative
+      // fields (the fetched page is the newer snapshot) and preserves
+      // optimistic rows until their real identity arrives.
+      merge: (fetched, existing) => mergeWhatsAppMessages(existing, fetched),
       describeError: (err) => {
         const text = translateApiError(err, tRef.current);
         return text || tRef.current('whatsapp.messagesLoadFailed');
@@ -442,9 +449,12 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       if (!isCurrentOlderPage(pagingLocksRef.current, convId, request)) return;
       setMessagesMap((prev) => {
         const existing = prev[convId] || [];
-        const seen = new Set(existing.map((m) => `${m.wa_message_id || ''}:${m.id}`));
-        const older = res.messages.filter((m) => !seen.has(`${m.wa_message_id || ''}:${m.id}`));
-        const merged = [...older, ...existing].sort(compareMessagesChronological);
+        // Identity-based: an older page may arrive with a different DB id for a
+        // row we already hold (history re-ingest), and a wa_message_id-less row
+        // defeated the old `${wa || ''}:${id}` key entirely. The canonical merge
+        // reconciles on id / wa_message_id / client_message_id and keeps the
+        // older rows' chronological position.
+        const merged = mergeWhatsAppMessages(existing, res.messages);
         return { ...prev, [convId]: merged };
       });
       setMessagePaging((prev) => ({
@@ -713,8 +723,10 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   // Kullanici kapiyi kapatmadigi surece WhatsApp Web yukleme ekrani gosterilir.
   const connectedSession = sessions.find((s) => s.status === 'CONNECTED') || null;
   const initialSyncPending = Boolean(connectedSession) && connectedSession?.initial_sync_completed !== true;
-  const loadingGateActive =
-    loadingGate?.phase === 'syncing_history' || loadingGate?.phase === 'loading_profiles';
+  // Avatarlar asla kapıyı TUTMAZ (backend `resolve_gate_phase` de artık
+  // `loading_profiles` dondurmez). Kapı yalnızca gercek ilk senkron surerken
+  // kapanır; profil fotografları arkada akar.
+  const loadingGateActive = loadingGate?.phase === 'syncing_history';
   const syncGateActive =
     hubTab === 'conversations' &&
     !syncGateDismissed &&
@@ -2035,7 +2047,17 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       }
       if (eventData.event === 'session_sync_completed') {
         const sync = (eventData.sync || null) as SessionSyncState | null;
-        if (sync && !activeSyncIdRef.current) setSessionSync({ ...sync, phase: 'ready', progress: 100 });
+        if (sync && !activeSyncIdRef.current) {
+          // The gateway finishing ITS history pass is not the backend's first
+          // sync finishing (chats snapshot + contacts + messages + empty-chat
+          // backfill, stamped as `initial_sync_completed_at`). Promoting to
+          // 'ready' here closed the full-screen gate while the real progress was
+          // still moving — reported as "loading screen closes before it
+          // completes, messages load instantly". Ask the two real authorities
+          // (sync job + loading gate) and let them answer.
+          void refreshSyncStatus();
+          void refreshLoadingGate();
+        }
       }
 
       // 4. PRESENCE UPDATE ('yazıyor...' göstergesi) — backend jid'yi sayısal

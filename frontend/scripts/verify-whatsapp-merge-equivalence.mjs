@@ -99,6 +99,49 @@ if (mode === 'inline') {
   );
 }
 
+// --- hydration merge (regression) -----------------------------------------
+// The conversation hydrator used to merge a refetched page with the rows
+// already on screen by CONCATENATION:
+//     merge: (fetched, existing) => [...fetched, ...existing].sort(...)
+// Every revalidation (a `conversation_updated` event, a list refresh, a
+// reconnect) therefore duplicated every message already in the thread — the
+// user-visible "my message appears twice" symptom — and a second hydration
+// triplicated it. The page-level merge MUST go through the identity-aware
+// canonical helper. The live-WS pattern above only checked the new-message
+// branch and never saw this one.
+const HYDRATION_MERGE_PATTERN =
+  /merge:\s*\(fetched,\s*existing\)\s*=>\s*mergeWhatsAppMessages\(existing,\s*fetched\)/;
+const HYDRATION_CONCAT_PATTERN = /merge:\s*\(fetched,\s*existing\)\s*=>\s*\[\.\.\.fetched/;
+
+assert.ok(
+  HYDRATION_MERGE_PATTERN.test(hubSrc),
+  'the conversation hydrator must merge fetched + existing via mergeWhatsAppMessages(existing, fetched)'
+);
+assert.ok(
+  !HYDRATION_CONCAT_PATTERN.test(hubSrc),
+  'the conversation hydrator must not concatenate fetched + existing (duplicates every row)'
+);
+
+// Behaviour lock: refetching the very page that is already painted yields the
+// same number of rows, not double. This is the exact production flow — the
+// backend commits the outbound row, a `conversation_updated` event triggers a
+// revalidation, and the page re-fetches the thread while the send response is
+// still in flight.
+{
+  const painted = [
+    buildEventMessage({ id: 1, wa_message_id: 'W1', status: 'READ', body: 'eski', created_at: '2026-01-01T00:00:00Z' }),
+    buildEventMessage({ id: 2, client_message_id: 'C2', wa_message_id: 'W2', status: 'SENT', body: 'yeni', created_at: '2026-01-01T00:00:05Z' }),
+  ];
+  const refetched = painted.map((m) => ({ ...m }));
+  const identityMerged = mergeWhatsAppMessages(painted, refetched);
+  assert.equal(identityMerged.length, 2, 'an identity merge must not duplicate a revalidated page');
+  const concatMerged = [...refetched, ...painted].sort(
+    (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+  );
+  assert.equal(concatMerged.length, 4, 'the old concat behaviour doubled the thread (regression fixture)');
+  console.log('hydration merge: identity-based, no duplicate rows on revalidation');
+}
+
 // --- fixtures -------------------------------------------------------------
 /** Build the message object the live WS path hands to its merge (hub :1144-1160). */
 function buildEventMessage(event) {
