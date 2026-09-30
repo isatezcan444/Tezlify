@@ -128,3 +128,75 @@ The two genuine insert races (`uq_contact_user_phone`,
 `uq_msg_conv_wa_message_id`) already have savepoint handling in the source —
 the duplicate is caught and ignored — but the production image that logged them
 predated those fixes and has now been replaced.
+
+> **Correction (Pass 3, below):** only the contact race was already savepointed.
+> The `uq_msg_conv_wa_message_id` violation was still live in the *current*
+> image and came from the one insert path that had no savepoint.
+
+## Pass 3 — 2026-09-30 (14:32 UTC), current-time triage
+
+Scope for this pass: fix only what is actually failing *now*. Checked at
+14:49:25 UTC against the live database and Caddy logs:
+
+| Signal | Last occurrence | Status |
+| --- | --- | --- |
+| `uq_msg_conv_wa_message_id` duplicate key | 14:32:01.065 | **live product bug → fixed below** |
+| `column "|" does not exist` | 14:30:09 | ad-hoc `psql` diagnostic, not product SQL |
+| Caddy 502 `/ws` | 14:18 (2 total in 60 min) | this deploy's own container recreate |
+| FK 23503, ACK ordering, contact race | 12:47 / 11:25 | already fixed in `f73a5a0`; zero since restart |
+
+### Root cause of the one live error
+
+The 14:32:01 statement is a 24-column ORM `INSERT INTO messages … RETURNING`, on
+conversation 17600, whose winner row (`messages.id = 104414`) had been committed
+30 ms earlier — a plain concurrent-ingest race. Attribution is not inferred from
+the statement shape (both insert paths render the same 24 columns); it comes
+from the backend log at 14:32:01,080:
+
+```
+INFO … nch: message_new DB yarisi kazanan satirla yeniden yayinlandi (event=message_new, conversation_id=17600)
+```
+
+That line is emitted only by `_recover_message_new_after_integrity_error`, and
+`grep -c "concurrent ingest race"` over the same backend log returned **0** — so
+`_persist_gateway_message` (which already wrapped its insert in
+`db.begin_nested()`) was not involved. The loser was `_ingest_message`, whose
+new-row path did `db.add(row)` / `await db.flush()` with **no savepoint**, so the
+`IntegrityError` escaped to `ingest_gateway_event` and could only be handled by
+rolling back the *whole* transaction — discarding, for that event, the contact
+upsert and the conversation write, and requiring the winner to be re-selected
+after the rollback.
+
+### Fix
+
+`_ingest_message` now isolates its insert in a savepoint and resolves the
+duplicate locally, exactly like `_persist_gateway_message`,
+`_insert_messages_resilient`, `_persist_sync_batch_safely` and `_upsert_contact`:
+
+* the INSERT runs inside `db.begin_nested()`, so only that statement rolls back;
+* on `IntegrityError` the winner is re-selected with the existing
+  `_recover_message_new_after_integrity_error` (deliberately *not*
+  conversation-scoped — an LID reconciliation can move the winner to a sibling
+  conversation) and the event is still broadcast, carrying the winner row;
+* the conversation summary and unread tick are applied only on the success path,
+  so a duplicate cannot double-count an unread message.
+
+Regression test:
+`backend/tests/test_whatsapp_forensic_phase5.py::test_p5_duplicate_insert_race_costs_only_its_own_insert`.
+It blinds only the pre-flight dedup `SELECT` (a real TOCTOU miss), asserts the
+duplicate is broadcast from the winner, that exactly one row survives, and that
+**no transaction-wide rollback occurred**. Verified to fail against the
+unfixed source and pass with it.
+
+### Residual, stated honestly
+
+A savepoint rollback does **not** suppress the server-side `ERROR` line —
+PostgreSQL logs it either way. Confirmed with a throwaway probe on production
+(`CREATE TEMP TABLE … SAVEPOINT … ROLLBACK TO SAVEPOINT`, 14:50:46): the
+`ERROR: duplicate key` line was still written. So the remaining benefit of this
+fix is that the race no longer aborts a transaction and no longer drops the
+rest of the event's work; a *rare* duplicate-key line in the PostgreSQL log is
+the expected cost of using a unique index as the arbiter. Eliminating the log
+line entirely would require `INSERT … ON CONFLICT DO NOTHING` on the message
+insert, which cannot return the ORM row — it would add one extra `SELECT` per
+inbound message, the exact round-trip Phase 10.9 removed.

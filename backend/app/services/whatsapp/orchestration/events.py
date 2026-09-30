@@ -697,7 +697,44 @@ class WhatsAppEventOrchestrator:
             status=ConversationMessageStatus.RECEIVED if direction == MessageDirection.INBOUND else ConversationMessageStatus.SENT,
             external_timestamp=_as_naive_utc(_parse_dt(msg.get("created_at"))),
         )
-        db.add(row)
+        # The pre-flight SELECT above is a filter, not a guarantee. The same
+        # WhatsApp message can be ingested twice at the same instant — the
+        # gateway delivers one send's echo both as the send result and as the
+        # `messages.upsert` for the same id, and a sync job's history replay can
+        # overlap a live `message_new` — and the loser then violates
+        # `uq_msg_conv_wa_message_id`.
+        #
+        # Without a savepoint that IntegrityError aborts the WHOLE transaction:
+        # the contact upsert and the conversation row written for this very
+        # message are rolled back with it, and the only recovery left is
+        # `ingest_gateway_event`'s transaction-wide rollback. Inside a nested
+        # block only this INSERT rolls back, nothing else is lost, and the event
+        # is still broadcast from the row that actually won. Measured in
+        # production on 2026-09-30 14:32:01 (conversation 17600): this path was
+        # the one that poisoned the transaction, because the sibling insert in
+        # `_persist_gateway_message` already had this guard and this one did not.
+        try:
+            async with db.begin_nested():
+                db.add(row)
+                await db.flush()
+        except IntegrityError:
+            logger.info(
+                "Duplicate WhatsApp message ignored (concurrent ingest race): "
+                "conversation_id=%s wa_message_id=%s client_message_id=%s",
+                conv.id, wa_id, client_id,
+            )
+            # The winner's row exists and is committed. Re-select it and
+            # broadcast THAT row, so the open thread shows the bubble the
+            # provider actually acknowledged instead of losing it. The lookup
+            # is intentionally not conversation-scoped: an LID reconciliation
+            # can have moved the winner to a sibling conversation.
+            recovered = await self._recover_message_new_after_integrity_error(db, event)
+            if recovered is None:
+                return _skip_event(
+                    event,
+                    f"message_new: yaris kaybedildi, kazanan satir bulunamadi ({jid_str})",
+                )
+            return recovered
         summary = build_last_message_summary(
             message_type=mtype_str,
             body=body,
@@ -708,7 +745,6 @@ class WhatsAppEventOrchestrator:
         apply_last_message(conv, _as_naive_utc(_parse_dt(msg.get("created_at"))) or datetime.utcnow(), summary)
         if direction == MessageDirection.INBOUND:
             conv.unread_count = (conv.unread_count or 0) + 1
-        await db.flush()
         # A provider ACK may have arrived while this record was being persisted
         # (see the deferred-ACK block at the top of this module). Apply it now,
         # before serialization, instead of losing it.

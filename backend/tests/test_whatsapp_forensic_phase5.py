@@ -1068,3 +1068,96 @@ async def test_p5_successful_mark_read_clears_unread():
     conv = await _get_conversation(conv_id)
     assert conv.unread_count == 0
     assert conv.last_read_at is not None
+
+
+# ---------------------------------------------------------------------------
+# §3b — a lost duplicate INSERT race must cost ONLY that INSERT
+# ---------------------------------------------------------------------------
+
+
+async def _seed_race_winner(conv_id: int, wa_id: str, *, body: str = "kazanan") -> int:
+    """Commits the row a concurrent ingest won the race with."""
+    async with AsyncSessionLocal() as db:
+        row = Message(
+            user_id=P5_USER,
+            conversation_id=conv_id,
+            direction=MessageDirection.INBOUND,
+            message_type=MessageType.TEXT,
+            body=body,
+            wa_message_id=wa_id,
+            sender_phone=P5_PHONE,
+            recipient_phone="ME",
+            status=ConversationMessageStatus.RECEIVED,
+            external_timestamp=datetime(2026, 9, 18, 10, 0, 0),
+        )
+        db.add(row)
+        await db.commit()
+        return row.id
+
+
+@pytest.mark.asyncio
+async def test_p5_duplicate_insert_race_costs_only_its_own_insert():
+    """Measured in production on 2026-09-30 14:32:01 (conversation 17600):
+    `uq_msg_conv_wa_message_id` was violated on the live `message_new` path.
+    The pre-flight dedup SELECT is a TOCTOU filter — two ingests of the same
+    WhatsApp message (a send echo delivered twice, or a history replay
+    overlapping the live event) both pass it — and `_ingest_message` ran that
+    INSERT with no savepoint, so the IntegrityError aborted the WHOLE
+    transaction and `ingest_gateway_event` could only recover by rolling back.
+
+    Contract proven here against the real schema and the real orchestrator:
+      * the pre-flight SELECT is allowed to legitimately miss (that IS the race),
+      * the duplicate loses only its own INSERT: nothing else in the
+        transaction is discarded and NO transaction-wide rollback is needed,
+      * the event is still broadcast, and it carries the WINNER row,
+      * exactly one row and one unread tick survive.
+    """
+    from backend.app.services.whatsapp.orchestration.events import (
+        WhatsAppEventOrchestrator,
+    )
+
+    conv_id = await _seed_conversation()
+    event = _message_new("W-RACE-1", body="yarisi kaybeden")
+    winner_id = await _seed_race_winner(conv_id, "W-RACE-1")
+
+    orch = WhatsAppEventOrchestrator()
+    async with AsyncSessionLocal() as db:
+        real_execute = db.execute
+        real_rollback = db.rollback
+        seen = {"select_missed": 0, "rollbacks": 0}
+
+        async def execute_that_misses_the_winner(stmt, *args, **kwargs):
+            # Only the pre-flight dedup SELECT is blinded, and only once: it is
+            # the one Message query scoped to a conversation. Everything else
+            # (owner resolution, contact/conversation lookups, the winner
+            # re-selection on the recovery path) runs for real.
+            sql = str(stmt)
+            if seen["select_missed"] == 0 and "FROM messages" in sql and "messages.conversation_id" in sql:
+                seen["select_missed"] += 1
+                return await real_execute(
+                    select(Message).where(Message.conversation_id == -1)
+                )
+            return await real_execute(stmt, *args, **kwargs)
+
+        async def counting_rollback(*args, **kwargs):
+            seen["rollbacks"] += 1
+            return await real_rollback(*args, **kwargs)
+
+        db.execute = execute_that_misses_the_winner
+        db.rollback = counting_rollback
+
+        result = await orch._ingest_message(db, event)
+        await db.commit()
+
+    assert seen["select_missed"] == 1, "the race window was never exercised"
+    assert result.get("_skip") is None, "the duplicate must still be broadcast"
+    assert result["message"]["wa_message_id"] == "W-RACE-1"
+    assert (await _get_message(conv_id, "W-RACE-1")).id == winner_id
+    assert await _count_messages(conv_id, "W-RACE-1") == 1
+    # The point of the fix: the loser's INSERT failure never escalated into a
+    # transaction-wide rollback that would take unrelated work down with it.
+    assert seen["rollbacks"] == 0, (
+        "the duplicate must be contained by the savepoint, not by a rollback"
+    )
+    # And a duplicate is not a second unread message.
+    assert (await _get_conversation(conv_id)).unread_count == 0
