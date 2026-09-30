@@ -298,6 +298,105 @@ async def gateway_websocket_endpoint(
             logger.debug("[WS-GATEWAY] Keepalive ping send failed: %s", ping_err)
 
     keepalive_task = asyncio.create_task(_keepalive_loop())
+    # Ingest is off the receive loop so the gateway socket is drained
+    # immediately. See _ingest_and_publish for the measured reasoning.
+    queue: "asyncio.Queue[Dict[str, Any]]" = asyncio.Queue()
+    STOP = object()
+
+    async def _ingest_worker() -> None:
+        """Drains the queue in order. Deliberately serial.
+
+        Concurrency here would let a newer message commit before an older one,
+        and the frontend's merge assumes gateway ordering.
+        """
+        while True:
+            item = await queue.get()
+            if item is STOP:
+                # The sentinel is counted like any other item, otherwise
+                # queue.join() waits forever for a task_done() that never
+                # comes and every disconnect stalls for the full timeout.
+                queue.task_done()
+                return
+            try:
+                await _ingest_and_publish(item, websocket, counters)
+            except Exception as exc:  # noqa: BLE001 - the worker must never die
+                counters["failed"] += 1
+                logger.exception("[WS-GATEWAY] Ingest worker hatasi: %s", exc)
+            finally:
+                queue.task_done()
+
+    async def _ingest_and_publish(
+        event_data: Dict[str, Any],
+        websocket: "WebSocket",
+        counters: Dict[str, int],
+    ) -> None:
+        """Persists one gateway event, then broadcasts and ACKs it.
+
+        Extracted from the receive loop; only the caller moved. Every branch
+        below is the original behaviour.
+
+        It runs on the worker, not the socket loop. The loop used to await this
+        inline, so one event blocked reception of the next for the whole
+        persist. Measured on production, that persist averages ~1.03s
+        (npm run measure:whatsapp-latency) and a hydration pass wrote 68 rows
+        inside a single second. Serialised, a burst of ten messages reached the
+        UI after roughly ten seconds — the visible symptom being "messages
+        arrive late" while every message looked fine in the database.
+        """
+        try:
+            persisted = await ingest_gateway_event(event_data)
+        except Exception as ingest_err:
+            # Not persisted -> not broadcast, or the UI would show a message the
+            # database has never seen (fake data).
+            counters["failed"] += 1
+            logger.exception("[WS-GATEWAY] Olay persist edilemedi, yayinlanmadi: %s", ingest_err)
+            # Without a NACK the event stays IN_FLIGHT in the gateway outbox and
+            # is redelivered until the dead-letter. A persist failure is
+            # permanent (e.g. a serialisation bug), so it is NACKed as such.
+            event_id = event_data.get("event_id")
+            if event_id:
+                await websocket.send_json({
+                    "type": "gateway_event_nack",
+                    "event_id": str(event_id),
+                    "permanent": True,
+                })
+                counters["nacked"] += 1
+            return
+        if persisted is None:
+            # Owner unresolvable or an unknown event: skipped rather than
+            # broadcast (multi-tenant isolation, fail-closed). _skip_event now
+            # logs the reason at WARNING, so this counter is explainable.
+            counters["skipped"] += 1
+            event_id = event_data.get("event_id")
+            if event_id:
+                await websocket.send_json({
+                    "type": "gateway_event_nack",
+                    "event_id": str(event_id),
+                    "permanent": False,
+                })
+                counters["nacked"] += 1
+            return
+        if persisted.get("_duplicate") is True:
+            event_id = event_data.get("event_id")
+            if event_id:
+                await websocket.send_json({
+                    "type": "gateway_event_ack",
+                    "event_id": str(event_id),
+                })
+                counters["acked"] += 1
+            return
+        await ws_manager.broadcast(persisted)
+        counters["broadcast"] += 1
+        event_id = event_data.get("event_id")
+        if event_id:
+            await websocket.send_json({
+                "type": "gateway_event_ack",
+                "event_id": str(event_id),
+            })
+            counters["acked"] += 1
+
+    worker_task = asyncio.create_task(_ingest_worker())
+
     try:
         while True:
             raw = await websocket.receive_text()
@@ -318,61 +417,29 @@ async def gateway_websocket_endpoint(
             if event_data.get("type") == "ping":
                 await websocket.send_json({"type": "pong"})
                 continue
-            try:
-                persisted = await ingest_gateway_event(event_data)
-            except Exception as ingest_err:
-                # Persist EDILEMEYEN olay UI'a yayinlanmaz — aksi halde
-                # kullanicinin gordugu mesaj DB'de hic yokmus gibi olur (sahte veri).
-                counters["failed"] += 1
-                logger.exception("[WS-GATEWAY] Olay persist edilemedi, yayinlanmadi: %s", ingest_err)
-                # NACK gonderilmezse olay gateway outbox'inda IN_FLIGHT kalir ve
-                # dead-letter'a kadar yeniden iletilmeyi bekler. Persist hatalari
-                # (orn. serilestirme bug'i) kalicidir — permanent=True ile NACK'la.
-                event_id = event_data.get("event_id")
-                if event_id:
-                    await websocket.send_json({
-                        "type": "gateway_event_nack",
-                        "event_id": str(event_id),
-                        "permanent": True,
-                    })
-                    counters["nacked"] += 1
-                continue
-            if persisted is None:
-                # Sahibi KESIN cozulemeyen ya da bilinmeyen olay: genis yayin
-                # yapmak yerine atlanir (cok kiracili izolasyon, fail-closed).
-                counters["skipped"] += 1
-                event_id = event_data.get("event_id")
-                if event_id:
-                    await websocket.send_json({
-                        "type": "gateway_event_nack",
-                        "event_id": str(event_id),
-                        "permanent": False,
-                    })
-                    counters["nacked"] += 1
-                continue
-            if persisted.get("_duplicate") is True:
-                event_id = event_data.get("event_id")
-                if event_id:
-                    await websocket.send_json({
-                        "type": "gateway_event_ack",
-                        "event_id": str(event_id),
-                    })
-                    counters["acked"] += 1
-                continue
-            await ws_manager.broadcast(persisted)
-            counters["broadcast"] += 1
-            event_id = event_data.get("event_id")
-            if event_id:
-                await websocket.send_json({
-                    "type": "gateway_event_ack",
-                    "event_id": str(event_id),
-                })
-                counters["acked"] += 1
+            # Enqueued, not processed: the socket is drained immediately and the
+            # worker persists in order.
+            await queue.put(event_data)
     except WebSocketDisconnect:
         pass
     except Exception as e:
         logger.warning(f"[WS-GATEWAY] Bağlantı hatası: {e}")
     finally:
+        # Drain what is already queued so a gateway reconnect does not silently
+        # drop the tail of a burst: those events still get persisted and ACKed.
+        #
+        # The worker is cancelled only AFTER the join. Cancelling first is the
+        # obvious order and it is wrong: join() waits for task_done(), which only
+        # the worker calls, so a cancelled worker makes join() hang until the
+        # timeout — every disconnect paid a full stall. The join is bounded, and
+        # the timeout path logs rather than hiding a stuck worker.
+        await queue.put(STOP)
+        try:
+            await asyncio.wait_for(queue.join(), timeout=5)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            logger.warning("[WS-GATEWAY] Kuyruk bosaltilmadi; kalan olaylar atlandi.")
+        finally:
+            worker_task.cancel()
         keepalive_task.cancel()
         try:
             await keepalive_task

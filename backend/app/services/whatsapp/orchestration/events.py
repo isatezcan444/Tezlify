@@ -89,8 +89,18 @@ _orphan_suppressed: Dict[str, Dict[str, Any]] = {}
 
 
 def _skip_event(event: Dict[str, Any], reason: str) -> Dict[str, Any]:
-    """Marks an event with _skip so it is not broadcast but debug-logged."""
-    logger.debug("Gateway olayi kalici yazilmadi (%s)", reason)
+    """Marks an event so it is not broadcast, and records WHY at a visible level.
+
+    The reason used to go to `logger.debug` only, so in production (INFO) a
+    dropped event produced a counter increment and nothing else: the gateway
+    bridge logged "skipped=49" with no way to learn which events were dropped
+    or why. An operator reading that had no thread to pull — which is exactly
+    the "messages just do not arrive" class of report.
+
+    The reason strings are bounded and drawn from a fixed set in this module,
+    not from message bodies, so WARNING cannot leak conversation content.
+    """
+    logger.warning("Gateway olayi kalici yazilmadi: %s", reason)
     event["_skip"] = reason
     return event
 
