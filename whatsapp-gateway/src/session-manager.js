@@ -528,7 +528,9 @@ export function createSessionManager({
           logger,
         }),
       };
-      await lidRepository.loadLidMappingsFromDb(id, session.store);
+      // An ephemeral pairing must not write LID mappings to PostgreSQL before
+      // its gateway_sessions row exists (the FK would reject it).
+      await lidRepository.loadLidMappingsFromDb(id, session.store, undefined, { persist: !ephemeral });
       // The backend `contacts` table is the durable record of the names this
       // gateway learned earlier. Without this the store starts empty on every
       // restart and sender labels degrade to raw phone numbers.
@@ -1480,7 +1482,10 @@ export function createSessionManager({
       const { contacts, chats, messagesByChat } = store;
       const emitEvent = (event) => this._emit({ gateway_session_id: session.id, ...event });
       if (!rememberLidPair(store, lid, phoneJid)) return;
-      void lidRepository.persistLidMappingToDb(session.id, lid, phoneJid);
+      // No-Create ephemeral sessions have no gateway_sessions row yet, so the
+      // lid_mappings FK would reject the write. The pair is already remembered
+      // in memory; persistence resumes once the pairing promotes the session.
+      void lidRepository.persistLidMappingToDb(session.id, lid, phoneJid, { enabled: !session.ephemeral });
       const lidKey = asLid(lid);
       const phoneKey = asPn(phoneJid);
 

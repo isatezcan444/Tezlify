@@ -212,8 +212,22 @@ export function createEventBridge({ backendWsUrl, sessionManager, eventOutbox = 
 
   async function publish(event) {
     const sessionId = event?.gateway_session_id || event?.session_id;
+    const session = sessionId ? sessionManager.getSession(String(sessionId)) : null;
     const isDelete = String(event?.event || '').startsWith('session_deleted');
-    if (sessionId && !sessionManager.getSession(String(sessionId)) && !isDelete) return;
+    if (sessionId && !session && !isDelete) return;
+
+    // An ephemeral (No-Create) pairing has NO gateway_sessions row by design:
+    // `createSession` deliberately skips registerSession and the lease until
+    // `connection.open` promotes it. The outbox FK
+    // (event_outbox_session_id_fkey) therefore rejects every event emitted
+    // during the QR window (PG 23503) — production logged 24 such failures in
+    // one day and each attempt cost a failed statement. Durable storage is only
+    // promised for REGISTERED sessions, the same boundary registerSession and
+    // the lease already enforce, so an ephemeral session takes the best-effort
+    // path directly instead of failing an INSERT it can never satisfy.
+    // After promotion `session.ephemeral` flips to false and durable writes
+    // resume on the next event.
+    const skipDurable = Boolean(session?.ephemeral);
 
     const eventType = String(event?.event || event?.event_type || '');
     if (eventType === 'session_sync_progress') {
@@ -228,7 +242,7 @@ export function createEventBridge({ backendWsUrl, sessionManager, eventOutbox = 
       return;
     }
 
-    if (eventOutbox) {
+    if (eventOutbox && !skipDurable) {
       try {
         const durableEvent = await eventOutbox.enqueue(event);
         sendLocal(durableEvent);

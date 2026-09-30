@@ -52,7 +52,13 @@ export function createLidRepository({ pool, sessionsDir, logger, onOrphaned = nu
     return { scope: lidScopeSessionIds(sessionId, ownerId, sessions), ownerId, sessions };
   }
 
-  async function persistLidMappingToDb(sessionId, lid, phoneJid) {
+  async function persistLidMappingToDb(sessionId, lid, phoneJid, { enabled = true } = {}) {
+    // An ephemeral (No-Create) pairing has no gateway_sessions row until the
+    // socket opens, so the `lid_mappings_session_id_fkey` FK rejects the
+    // INSERT. Callers that know the session is still ephemeral pass
+    // `enabled: false`; the mapping stays in the in-memory store and is
+    // persisted once the pairing promotes the session.
+    if (!enabled) return;
     if (!pool || !sessionId || !lid || !phoneJid) return;
     try {
       await pool.query(
@@ -82,7 +88,7 @@ export function createLidRepository({ pool, sessionsDir, logger, onOrphaned = nu
     }
   }
 
-  async function syncLidMappingsFromDisk(sessionId, store, onLearned) {
+  async function syncLidMappingsFromDisk(sessionId, store, onLearned, { persist = true } = {}) {
     let count = 0;
     try {
       const scanDirs = new Set();
@@ -143,7 +149,7 @@ export function createLidRepository({ pool, sessionsDir, logger, onOrphaned = nu
             if (store) {
               rememberLidPair(store, lidJid, phoneJid);
             }
-            void persistLidMappingToDb(sessionId || dirSessionId, lidJid, phoneJid);
+            void persistLidMappingToDb(sessionId || dirSessionId, lidJid, phoneJid, { enabled: persist });
             if (typeof onLearned === 'function') {
               onLearned(lidJid, phoneJid);
             }
@@ -160,9 +166,9 @@ export function createLidRepository({ pool, sessionsDir, logger, onOrphaned = nu
     return count;
   }
 
-  async function loadLidMappingsFromDb(sessionId, store, onLearned) {
+  async function loadLidMappingsFromDb(sessionId, store, onLearned, { persist = true } = {}) {
     if (!sessionId || !store) return 0;
-    await syncLidMappingsFromDisk(sessionId, store, onLearned);
+    await syncLidMappingsFromDisk(sessionId, store, onLearned, { persist });
     if (!pool) return 0;
     try {
       const { scope } = await lidScopeFor(sessionId);
