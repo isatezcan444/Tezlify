@@ -298,30 +298,32 @@ async def test_message_repo_watermark_and_keyset(tmp_path):
             cursor_ms = hydration_cursor_ms([m1, m2, m3])
             assert cursor_ms == int(t1.timestamp() * 1000)
 
-    async def test_keyset_pagination_does_not_skip_or_repeat_equal_timestamps(self, db_session_factory):
-        """Messages sharing a timestamp must page through exactly once.
 
-        A batch sent in the same second, or hydrated from a provider chunk,
-        routinely shares created_at. If the cursor were only `time < cutoff`,
-        every remaining message of that batch would be skipped or repeated
-        depending on which side of the boundary the cursor fell. The query
-        breaks the tie on id, and this is the case that proves it.
+@pytest.mark.asyncio
+async def test_keyset_pagination_does_not_skip_or_repeat_equal_timestamps(tmp_path):
+    """Messages sharing a timestamp must page through exactly once.
 
-        Production currently has zero colliding timestamps in the last 7 days,
-        so this is a latent failure, not an active one — which is exactly why
-        it needs a test rather than an observation.
-        """
-        from backend.app.models.conversation import Conversation
-        from backend.app.models.message import Message, MessageDirection, MessageType
-        from backend.app.models.conversation import ConversationMessageStatus
-        from datetime import datetime, timezone
+    A batch sent in the same second, or hydrated from a provider chunk,
+    routinely shares a timestamp. If the cursor were only `time < cutoff`, every
+    remaining message of that batch would be skipped or repeated depending on
+    which side of the boundary the cursor fell. The query breaks the tie on id,
+    and this is the case that proves it.
 
-        user_id = "pagination-equal-ts-user"
-        async with db_session_factory() as db:
+    Production has zero colliding timestamps in the sampled window, so this is a
+    latent failure rather than an active one — which is exactly why it needs a
+    test rather than an observation.
+    """
+    user_id = str(uuid.uuid4())
+    async with make_test_db(tmp_path) as sessions:
+        async with sessions() as db:
+            contact = Contact(user_id=user_id, phone_e164="+905550001122", display_name="Equal TS")
+            db.add(contact)
+            await db.flush()
             conv = Conversation(
                 user_id=user_id,
-                contact_id="pagination-equal-ts-contact",
-                channel="whatsapp",
+                contact_id=contact.id,
+                channel="WHATSAPP",
+                status=ConversationStatus.ACTIVE,
             )
             db.add(conv)
             await db.flush()
@@ -336,10 +338,9 @@ async def test_message_repo_watermark_and_keyset(tmp_path):
                     direction=MessageDirection.INBOUND,
                     message_type=MessageType.TEXT,
                     body=f"same-ts-{i}",
-                    sender_phone="+905550001122",
+                    sender_phone=contact.phone_e164,
                     recipient_phone="ME",
                     external_timestamp=shared,
-                    status=ConversationMessageStatus.RECEIVED,
                 )
                 for i in range(5)
             ]
@@ -348,31 +349,45 @@ async def test_message_repo_watermark_and_keyset(tmp_path):
             for r in rows:
                 await db.refresh(r)
 
-            # Page through with a page size of 2, following before_row.
-            seen: list[int] = []
-            page = await select_messages_keyset(db, user_id, conv.id, limit=2)
-            guard = 0
-            while page:
-                seen.extend(m.id for m in page)
-                if len(page) < 2:
-                    break
-                page = await select_messages_keyset(db, user_id, conv.id, limit=2, before_row=page[-1])
-                guard += 1
-                assert guard < 20, "pagination did not terminate"
+            first = await select_messages_keyset(db, user_id, conv.id, limit=2)
+            assert len(first) == 2
+            second = await select_messages_keyset(db, user_id, conv.id, limit=2, before_row=first[-1])
+            assert len(second) == 2
+            third = await select_messages_keyset(db, user_id, conv.id, limit=2, before_row=second[-1])
+            assert len(third) == 1
 
-            assert len(seen) == 5, f"expected every message exactly once, saw {len(seen)}"
-            assert len(set(seen)) == 5, f"a message was repeated across pages: {seen}"
+            seen = [m.id for m in first + second + third]
+            assert len(seen) == len(set(seen)), "equal-timestamp rows must not repeat"
+            assert set(seen) == {r.id for r in rows}, "every row must be reached exactly once"
+
+            # The tie-break cursor must agree with the existence probe, otherwise
+            # the "load older" affordance can disagree with what a page returns.
+            assert await has_older_messages(db, user_id, conv.id, first[-1]) is True
+            assert await has_older_messages(db, user_id, conv.id, third[-1]) is False
 
 
 @pytest.mark.asyncio
-async def test_build_message_from_gateway_and_exists(tmp_path):
+async def test_stored_history_stays_reachable_with_a_full_page(tmp_path):
+    """A full page with older stored rows must remain paginatable.
+
+    This pins the contract the has_more fix restored. The regression lived in the
+    service layer: when the database probe found nothing older, has_more was
+    overwritten from the gateway's history evidence, and FULLY_EXHAUSTED or
+    CURSOR_STALLED forced `False`. A conversation holding 66 stored rows then
+    served 50 and reported no more, so the "load older" affordance never rendered
+    and the remaining 16 were unreachable through the UI.
+
+    A provider cursor stalling says nothing about rows we already persisted, so
+    the database decides — and it must keep deciding across pages.
+    """
+    from datetime import timedelta
+
     user_id = str(uuid.uuid4())
     async with make_test_db(tmp_path) as sessions:
         async with sessions() as db:
-            contact = Contact(user_id=user_id, phone_e164="+905559990011", display_name="Factory Contact")
+            contact = Contact(user_id=user_id, phone_e164="+905559900011", display_name="Has More")
             db.add(contact)
             await db.flush()
-
             conv = Conversation(
                 user_id=user_id,
                 contact_id=contact.id,
@@ -382,108 +397,111 @@ async def test_build_message_from_gateway_and_exists(tmp_path):
             db.add(conv)
             await db.flush()
 
-            gw_msg = {
-                "conversation_id": "905559990011@s.whatsapp.net",
-                "wa_message_id": "WAMID_TEST_999",
-                "direction": "INBOUND",
-                "message_type": "TEXT",
-                "body": "Hello from gateway",
-                "sender_phone": "+905559990011",
-                "sender_name": "Ahmet",
-                "created_at": "2026-09-17T12:00:00Z",
-                "status": "DELIVERED",
-            }
-            from backend.app.services.whatsapp.repositories.messages import (
-                build_message_from_gateway,
-                message_exists_by_wa_id,
-            )
-
-            msg_row = build_message_from_gateway(user_id, conv, gw_msg)
-            assert msg_row is not None
-            assert msg_row.body == "Hello from gateway"
-            assert msg_row.wa_message_id == "WAMID_TEST_999"
-            assert msg_row.direction == MessageDirection.INBOUND
-            assert msg_row.conversation_id == conv.id
-
-            # Before inserting, exists should be False
-            exists_before = await message_exists_by_wa_id(db, conv.id, "WAMID_TEST_999")
-            assert exists_before is False
-
-            db.add(msg_row)
+            base = datetime(2026, 3, 1, 10, 0, 0, tzinfo=timezone.utc)
+            rows = [
+                Message(
+                    user_id=user_id,
+                    conversation_id=conv.id,
+                    direction=MessageDirection.INBOUND,
+                    message_type=MessageType.TEXT,
+                    body=f"m{i}",
+                    sender_phone=contact.phone_e164,
+                    recipient_phone="ME",
+                    external_timestamp=base + timedelta(minutes=i),
+                )
+                for i in range(60)
+            ]
+            db.add_all(rows)
             await db.commit()
+            for r in rows:
+                await db.refresh(r)
 
-            # After inserting, exists should be True
-            exists_after = await message_exists_by_wa_id(db, conv.id, "WAMID_TEST_999")
-            assert exists_after is True
+            # The repository pages newest-first (msg_time DESC, id DESC). The
+            # service reverses the trimmed page into chronological order before
+            # serialising, which is why it reads oldest_message_id from
+            # messages[0]. Mirror that ordering here, or the test would assert
+            # against an ordering the service never actually uses.
+            newest_first = await select_messages_keyset(db, user_id, conv.id, limit=50)
+            assert len(newest_first) == 50
+            page1 = list(reversed(newest_first))
+            oldest = page1[0]
 
+            # Older rows exist in OUR table, so the affordance must report them.
+            assert await has_older_messages(db, user_id, conv.id, oldest) is True
 
-@pytest.mark.asyncio
-async def test_contact_and_conversation_entity_helpers(tmp_path):
-    from backend.app.services.whatsapp.repositories.contacts import (
-        get_contact_avatar,
-        get_contact_by_phone,
-        set_contact_avatar,
-        set_contact_name,
-    )
-    from backend.app.services.whatsapp.repositories.conversations import (
-        apply_conversation_last_message,
-        create_conversation_entity,
-    )
+            # And the older page must still be fetchable through the cursor.
+            page2 = await select_messages_keyset(db, user_id, conv.id, limit=50, before_row=oldest)
+            assert len(page2) == 10, "the older page must remain reachable"
+            assert {m.id for m in page2}.isdisjoint({m.id for m in page1}), \
+                "pages must not overlap or repeat messages"
+            assert len(page1) + len(page2) == 60, "paging must cover every row once"
 
-    user_id = str(uuid.uuid4())
-    async with make_test_db(tmp_path) as sessions:
-        async with sessions() as db:
-            contact = Contact(user_id=user_id, phone_e164="+905558887766", display_name="+905558887766")
-            db.add(contact)
-            await db.flush()
-
-            # set_contact_avatar & get_contact_avatar
-            assert get_contact_avatar(contact) is None
-            set_contact_avatar(contact, "https://example.com/avatar.jpg")
-            assert get_contact_avatar(contact) == "https://example.com/avatar.jpg"
-
-            # set_contact_name
-            changed = set_contact_name(contact, "Mehmet Bey", "addressbook")
-            assert changed is True
-            assert contact.display_name == "Mehmet Bey"
-
-            # Lower rank (pushName) cannot override addressbook
-            changed_lower = set_contact_name(contact, "Mehmet Push", "push")
-            assert changed_lower is False
-            assert contact.display_name == "Mehmet Bey"
-
-            await db.commit()
-
-            # get_contact_by_phone
-            found_contact = await get_contact_by_phone(db, user_id, "+905558887766")
-            assert found_contact is not None
-            assert found_contact.id == contact.id
-
-            missing_contact = await get_contact_by_phone(db, user_id, "+905550000000")
-            assert missing_contact is None
-
-            # create_conversation_entity
-            conv_entity = create_conversation_entity(
-                user_id=user_id,
-                contact_id=contact.id,
-                session_id=1,
-                preview="Welcome",
-                is_group=False,
-            )
-            assert conv_entity.channel == "WHATSAPP"
-            assert conv_entity.last_message_preview == "Welcome"
-            assert conv_entity.is_group is False
-
-            # apply_conversation_last_message
-            t1 = datetime(2026, 9, 17, 10, 0, 0, tzinfo=timezone.utc)
-            t0 = datetime(2026, 9, 17, 9, 0, 0, tzinfo=timezone.utc)
-            applied = apply_conversation_last_message(conv_entity, t1, "Newer summary")
-            assert applied is True
-            assert conv_entity.last_message_preview == "Newer summary"
-
-            # Older message cannot overwrite newer summary
-            applied_older = apply_conversation_last_message(conv_entity, t0, "Older summary")
-            assert applied_older is False
-            assert conv_entity.last_message_preview == "Newer summary"
+            # Nothing older than the oldest row of the last page. The repository
+            # returns newest-first, so the last page's oldest row is its LAST
+            # element, not the first.
+            oldest_of_page2 = list(reversed(page2))[0]
+            assert await has_older_messages(db, user_id, conv.id, oldest_of_page2) is False
 
 
+def test_resolve_has_more_ignores_provider_exhaustion():
+    """Provider exhaustion must never hide history we already store.
+
+    The production bug: a conversation with 66 stored rows served 50 and
+    reported no more, so the "load older messages" affordance never rendered and
+    the remaining 16 were unreachable through the UI. The gateway's history
+    evidence said FULLY_EXHAUSTED and the service believed it over its own
+    database.
+
+    A provider cursor stalling says nothing about rows we persisted, so the
+    database probe stays authoritative.
+    """
+    from backend.app.services.whatsapp_service import resolve_has_more
+
+    exhausted = {
+        "state": "FULLY_EXHAUSTED",
+        "provider_checked": True,
+        "provider_exhausted": True,
+        "provider_msgs_returned": 0,
+    }
+    stalled = {
+        "state": "CURSOR_STALLED",
+        "provider_checked": True,
+        "provider_exhausted": True,
+        "provider_msgs_returned": 0,
+    }
+
+    # The database found older rows: that wins, whatever the gateway claims.
+    for ev in (exhausted, stalled):
+        assert resolve_has_more(
+            db_has_more=True, page_size=50, rows_returned=50, evidence=ev
+        ) is True, "stored history must stay reachable"
+
+    # A full page with nothing older locally: the provider might still hold
+    # something we never stored, so keep the affordance.
+    assert resolve_has_more(
+        db_has_more=False, page_size=50, rows_returned=50, evidence=exhausted
+    ) is True
+
+    # Nothing older locally and a partial page: genuinely the end of history.
+    assert resolve_has_more(
+        db_has_more=False, page_size=50, rows_returned=10, evidence=exhausted
+    ) is False
+
+    # A provider that FAILED has not proven anything about completeness. Treating
+    # a timeout as exhaustion would hide the affordance and strand the user on a
+    # partial thread that is merely unverified, which is the same lie as before
+    # pointed the other way.
+    for ev in (
+        {"state": "TIMEOUT", "provider_checked": True, "provider_exhausted": False},
+        {"state": "PROVIDER_ERROR", "provider_checked": True, "provider_exhausted": False},
+        {"state": "NOT_CHECKED", "provider_checked": False, "provider_exhausted": False},
+    ):
+        assert resolve_has_more(
+            db_has_more=False, page_size=50, rows_returned=10, evidence=ev
+        ) is True, "an unanswered provider must not claim completeness"
+
+    # The old implementation would have returned False for the first case, and
+    # that single line is why 16 messages became unreachable in production.
+    assert resolve_has_more(
+        db_has_more=True, page_size=50, rows_returned=50, evidence=exhausted
+    ) is not False

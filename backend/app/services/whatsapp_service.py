@@ -784,6 +784,53 @@ async def _hydrate_or_tolerate_provider_timeout(
         return []
 
 
+def resolve_has_more(
+    *,
+    db_has_more: bool,
+    page_size: int,
+    rows_returned: int,
+    evidence: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """Decide whether older messages are still reachable, for one page.
+
+    `db_has_more` is an EXISTS probe against OUR OWN message table and is
+    authoritative: we store what we fetched, and it stays stored. Provider
+    history evidence can only ever explain WHY there is nothing more, never veto
+    a page we already know is incomplete.
+
+    The regression this exists to prevent: has_more used to be recomputed from
+    provider evidence whenever the database probe found nothing older, and
+    FULLY_EXHAUSTED or CURSOR_STALLED then forced it to False. A conversation
+    holding 66 stored rows served 50 and reported no more, so the "load older"
+    affordance never rendered and the remaining 16 were unreachable through the
+    UI. A provider cursor stalling says nothing about rows already persisted, so
+    trusting it there made stored history permanently invisible.
+
+    TIMEOUT and PROVIDER_ERROR are deliberately NOT treated as exhaustion. A
+    provider that failed to answer has not told us it reached the end of the
+    history, so claiming completeness from a failure would be the same lie in the
+    opposite direction — it would hide the affordance and strand the user on a
+    partial thread that is merely unverified. We keep the affordance and let the
+    click retry.
+
+    Only a definitive "I have nothing older" from both sides ends the thread.
+    """
+    if db_has_more:
+        return True
+    if page_size > 0 and rows_returned >= page_size:
+        # A full page with nothing older in our table: the provider may still
+        # hold something we never stored, so keep the affordance.
+        return True
+    ev = evidence or {}
+    state = ev.get("state")
+    if state in ("TIMEOUT", "PROVIDER_ERROR") or not ev.get("provider_checked"):
+        # The provider never gave a usable answer, so completeness is unproven.
+        return True
+    if state in ("FULLY_EXHAUSTED", "CURSOR_STALLED") or ev.get("provider_exhausted"):
+        return False
+    return True
+
+
 async def _history_evidence_session_id(
     db: AsyncSession, user_id: str, conv: Conversation
 ) -> Optional[str]:
@@ -1015,12 +1062,15 @@ async def get_messages(
                         "provider_exhausted": bool(evidence.get("provider_exhausted", False)),
                         "provider_msgs_returned": int(evidence.get("provider_msgs_returned", 0)),
                     }
-                    if not has_more:
-                        st = evidence.get("state")
-                        if st in ("FULLY_EXHAUSTED", "CURSOR_STALLED") or evidence.get("provider_exhausted"):
-                            has_more = False
-                        else:
-                            has_more = True
+                    # Provider evidence may explain why there is no more, but it
+                    # must not be able to hide history we already hold. See
+                    # resolve_has_more for the regression this replaced.
+                    has_more = resolve_has_more(
+                        db_has_more=has_more,
+                        page_size=page_size,
+                        rows_returned=len(rows),
+                        evidence=evidence,
+                    )
         except Exception as e:
             logger.debug("history_sync_states check failed: %s", e)
             if not has_more and len(rows) >= page_size:
