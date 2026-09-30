@@ -23,6 +23,12 @@ import {
   createConversationHydrator,
   type ConversationHydrator,
 } from '../features/whatsapp/lib/conversationHydration';
+import {
+  claimOlderPage,
+  isCurrentOlderPage,
+  releaseOlderPage,
+  type OlderPageRequest,
+} from '../features/whatsapp/lib/olderPageLock';
 import { isRawWhatsAppJid as isRawWhatsAppIdentity, identityKeys } from '../features/whatsapp/lib/whatsappIdentity';
 import { PEER_TYPING_TTL_MS, pruneExpiredTyping, resolveSyncDisplayCounts } from '../features/whatsapp/lib/whatsappSync';
 import { applyConversationEvent } from '../features/whatsapp/lib/whatsappConversationPatch';
@@ -152,6 +158,10 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   const [messageLoadState, setMessageLoadState] = useState<Record<number, 'idle' | 'loading' | 'ready' | 'error'>>({});
   const [messageLoadError, setMessageLoadError] = useState<Record<number, string>>({});
   const messagePagingRequestsRef = useRef(new Map<number, AbortController>());
+  // Older-page fetch lock, keyed by conversation. Kept separate from the
+  // hydration requests above: those fetch the newest page, this fetches older
+  // ones, and each may only hold its own cursor at a time.
+  const pagingLocksRef = useRef(new Map<number, OlderPageRequest>());
   // Conversations whose server preview is newer than what we hold. The list
   // refresh records it here; the revalidation effect below consumes it. This
   // replaces a network call that used to live inside a setSelectedConv updater,
@@ -412,8 +422,14 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   const activeLoadOlder = useCallback(async () => {
     if (!selectedConv || !activePaging?.hasMore || !activePaging.oldest || activePaging.loading) return;
     const convId = selectedConv.id;
-    const controller = new AbortController();
-    messagePagingRequestsRef.current.set(convId, controller);
+    // Claim the lock BEFORE reading any state. The `activePaging.loading` check
+    // above cannot see a fetch that started in this same tick, because React has
+    // not committed the state update yet — a double click, or a scroll event
+    // that fires again while the control is still visible, would otherwise fire
+    // two requests for the same cursor. See olderPageLock.
+    const request = claimOlderPage(pagingLocksRef.current, convId);
+    if (!request) return;
+    const { controller } = request;
     const timeout = window.setTimeout(() => controller.abort(), MESSAGE_LOAD_TIMEOUT_MS);
     startWaLatency('chat_request_to_commit_ms', convId);
     setMessagePaging((prev) => ({ ...prev, [convId]: { ...(prev[convId] || activePaging), loading: true } }));
@@ -423,7 +439,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         before: activePaging.oldest,
         signal: controller.signal,
       });
-      if (messagePagingRequestsRef.current.get(convId) !== controller) return;
+      if (!isCurrentOlderPage(pagingLocksRef.current, convId, request)) return;
       setMessagesMap((prev) => {
         const existing = prev[convId] || [];
         const seen = new Set(existing.map((m) => `${m.wa_message_id || ''}:${m.id}`));
@@ -440,7 +456,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         },
       }));
     } catch (err) {
-      if (messagePagingRequestsRef.current.get(convId) !== controller) return;
+      if (!isCurrentOlderPage(pagingLocksRef.current, convId, request)) return;
       // Sorun 2: history sayfasi basarisiz → mevcut mesajlar SILINMEZ,
       // yalnizca retry edilebilir bir hata isareti konur. Global hata toast'i
       // yok: tek sayfa hatasi tum sohbet ekranini hata gibi gostermez.
@@ -451,9 +467,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       console.warn('[WhatsAppHubPage] Older messages fetch failed:', err);
     } finally {
       window.clearTimeout(timeout);
-      if (messagePagingRequestsRef.current.get(convId) === controller) {
-        messagePagingRequestsRef.current.delete(convId);
-      }
+      releaseOlderPage(pagingLocksRef.current, convId, request);
     }
   }, [selectedConv, activePaging]);
 
@@ -833,12 +847,20 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     // Captured now, not read in the cleanup: a ref's .current may point
     // somewhere else by the time the cleanup runs.
     const pagingRequests = messagePagingRequestsRef.current;
+    const olderPageLocks = pagingLocksRef.current;
     return () => {
       if (!convId) return;
       // release() cancels the fetch AND clears 'loading' — see the note there.
       hydratorRef.current?.release(convId);
       pagingRequests.get(convId)?.abort();
       pagingRequests.delete(convId);
+      // The older-page lock MUST be dropped here too. Leaving it behind would
+      // strand the conversation: the guard would report a fetch in flight for a
+      // request that no longer exists, so returning to this chat could never
+      // load older messages again — and the only visible symptom is a control
+      // that silently does nothing.
+      olderPageLocks.get(convId)?.controller.abort();
+      olderPageLocks.delete(convId);
       setMessagePaging((prev) => {
         const paging = prev[convId];
         return paging?.loading ? { ...prev, [convId]: { ...paging, loading: false } } : prev;
