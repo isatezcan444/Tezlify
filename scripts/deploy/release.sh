@@ -112,17 +112,28 @@ log "public /health"
 curl -fsS --max-time 10 "$API_HEALTH_URL" >/dev/null || die "public /health 200 donmedi"
 log "public /health OK"
 
+live_hash() {
+  # $1 = url, $2 = beklenen hash. Cutover'in hemen ardindan CDN/Caddy ilk
+  # saniyelerde onceki dosyayi servis edebiliyor; o yuzden kisa tekrarlar var.
+  # Kalici sapma (gercek drift) yine de yakalanir: 5 deneme sonrasi doner.
+  local url="$1" want="$2" got="" attempt
+  for attempt in 1 2 3 4 5; do
+    got="$(curl -fsS --max-time 20 "$url" 2>/dev/null | shasum -a 256 | cut -d' ' -f1 || true)"
+    [ "$got" = "$want" ] && break
+    sleep 3
+  done
+  printf '%s' "$got"
+}
+
 if [ -n "$FRONTEND_TAR" ]; then
   log "yayindaki frontend hash'leri karsilastiriliyor"
   FAILED=""
   while read -r rel hash; do
     if [ "$rel" = "index.html" ]; then
-      url="$FRONTEND_URL/"
-      tmp_body="$(curl -fsS --max-time 15 "$url" || true)"
-      live="$(printf '%s' "$tmp_body" | shasum -a 256 | cut -d' ' -f1)"
+      live="$(live_hash "$FRONTEND_URL/" "$hash")"
       if [ "$live" != "$hash" ]; then FAILED="$FAILED index.html"; fi
     else
-      live="$(curl -fsS --max-time 20 "$FRONTEND_URL/assets/$rel" | shasum -a 256 | cut -d' ' -f1)"
+      live="$(live_hash "$FRONTEND_URL/assets/$rel" "$hash")"
       if [ "$live" != "$hash" ]; then FAILED="$FAILED $rel"; fi
     fi
   done < <(node -e '
