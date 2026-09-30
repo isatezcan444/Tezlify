@@ -92,6 +92,7 @@ TS="$(date -u +%Y%m%dT%H%M%SZ)"
 RELEASE_DIR="$PROJECT_DIR/backups/releases/$TS"
 CANDIDATE_NAME="tezlify-candidate-$TS"
 CUTOVER=0
+VERIFIED=0
 FRONTEND_BACKUP=""
 
 log() { printf '[release %s] %s\n' "$TS" "$*"; }
@@ -114,13 +115,26 @@ rollback() {
     cp -a "$FRONTEND_BACKUP/." "$FRONTEND_DIR/" || true
   fi
   docker compose -f "$COMPOSE_FILE" up -d "$BACKEND_SERVICE" "$GATEWAY_SERVICE" || true
-  log "geri alindi; .deployed-commit DEGISTIRILMEDI"
+  if [ -f "$RELEASE_DIR/deployed-commit.before" ]; then
+    cp -a "$RELEASE_DIR/deployed-commit.before" "$PROJECT_DIR/.deployed-commit" || true
+    log ".deployed-commit onceki degere dondu: $(cut -c1-12 "$PROJECT_DIR/.deployed-commit" 2>/dev/null || echo '?')"
+  else
+    rm -f "$PROJECT_DIR/.deployed-commit" || true
+    log ".deployed-commit kaldirildi (onceki deger yoktu)"
+  fi
+  log "geri alindi"
 }
 
 on_error() {
   local code=$?
   log "HATA (cikis kodu $code)"
-  if [ "$CUTOVER" = "1" ]; then
+  if [ "$VERIFIED" = "1" ]; then
+    # Dogrulama (hash'ler + public saglik) gectikten sonra hata artik GERI
+    # DONME sebebi degil: cutover basarili, kanitlar alindi. Geri almak
+    # calisan bir surumu bozmak olurdu (ilk denemede tam da bu oldu: kayit
+    # dosyasindaki sozdizimi hatasi yuzunden iyi surum geri alindi).
+    log "surum DOGRULANDI (hash + public saglik); geri alinmiyor — basarisiz adim yalnizca kayit"
+  elif [ "$CUTOVER" = "1" ]; then
     rollback
   else
     log "trafik HENUZ cevrilmedi; canli sistem etkilenmedi"
@@ -169,6 +183,12 @@ mkdir -p "$RELEASE_DIR"
 git status --porcelain > "$RELEASE_DIR/git-status-before.txt" || true
 git diff > "$RELEASE_DIR/worktree-unstaged.patch" || true
 git diff --cached > "$RELEASE_DIR/worktree-staged.patch" || true
+# Rollback, .deployed-commit'i "geri alindi" diye birakip yeni SHA'yi orada
+# birakmamali: denetim dosyasi calisan kodu gostermezse guvenilirligini
+# yitirir. Onceki deger burada saklanir, rollback bunu geri yazar.
+if [ -f "$PROJECT_DIR/.deployed-commit" ]; then
+  cp -a "$PROJECT_DIR/.deployed-commit" "$RELEASE_DIR/deployed-commit.before" || true
+fi
 log "denetim kaydi: $RELEASE_DIR"
 
 # ---------------------------------------------------------------------------
@@ -293,6 +313,8 @@ if [ "$PUBLIC_OK" != "1" ]; then
   fi
 fi
 [ "$PUBLIC_OK" = "1" ] || die "public /health 200 donmedi"
+# Bu noktadan sonra yalnizca KAYIT yazilir; hata olursa surum geri alinmaz.
+VERIFIED=1
 
 if [ -d "$FRONTEND_DIR" ]; then
   if curl -fsS --max-time 10 "$FRONTEND_URL/" >/dev/null 2>&1; then
@@ -302,19 +324,27 @@ if [ -d "$FRONTEND_DIR" ]; then
   fi
 fi
 
-printf '%s\n' "$TARGET_FULL" > "$PROJECT_DIR/.deployed-commit"
+RELEASED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+FRONTEND_JSON="null"
+if [ -n "$FRONTEND_TAR" ]; then
+  FRONTEND_JSON="$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$(basename "$FRONTEND_TAR")")"
+fi
 cat > "$RELEASE_DIR/release.json" <<JSON
 {
   "sha": "$TARGET_FULL",
-  "sha_short": "$(git rev-parse --short "$TARGET_FULL")",
-  "subject": $(git log -1 --format=%s "$TARGET_FULL" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read().strip()))'),
-  "released_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "sha_short": "$SHORT_SHA",
+  "subject": $SUBJECT_JSON,
+  "released_at": "$RELEASED_AT",
   "backend_image": "$NEW_BACKEND_DIGEST",
   "previous_backend_image": "$PREV_BACKEND_IMAGE",
   "rollback_tags": {"backend": "tezlify-backend:pre-$TS", "gateway": "tezlify-gateway:pre-$TS"},
-  "frontend": $(if [ -n "$FRONTEND_TAR" ]; then python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$(basename "$FRONTEND_TAR")"); else echo null; fi)
+  "frontend": $FRONTEND_JSON
 }
 JSON
+# .deployed-commit EN SON yazilir: yukarisi patlarsa dosya eski SHA'yi gostermeye
+# devam eder (ilk denemede bu dosya coktan yazilmisti ve geri almaya ragmen
+# yeni SHA'yi gosteriyordu).
+printf '%s\n' "$TARGET_FULL" > "$PROJECT_DIR/.deployed-commit"
 
 log "SURUM TAMAM: $(git rev-parse --short "$TARGET_FULL") — $(git log -1 --format=%s "$TARGET_FULL")"
 log "kayit: $RELEASE_DIR/release.json"
