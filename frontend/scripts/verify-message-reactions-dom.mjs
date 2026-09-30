@@ -19,6 +19,13 @@
  * Run: node scripts/verify-message-reactions-dom.mjs — exit code 0 = PASS.
  */
 import assert from 'node:assert/strict';
+import { hardenAssert } from './lib/safe-dom-assert.mjs';
+
+// CANLI DOM elemani uzerinde esitlik iddiasi kurmak Node'un mesaj uretimini
+// tetikler ve util.inspect tum DOM grafigini yuruyerek RAM'i tuketir
+// (olculdu: tek iframe icin 137MB string -> SIGKILL, teshis yok). Kural:
+// eleman yerine boolean veya attribute string karsilastir.
+hardenAssert(assert);
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -197,7 +204,7 @@ try {
     });
     const trigger = container.querySelector('[data-testid="reaction-trigger-101"]');
     assert.ok(trigger, 'a persisted message offers the reaction trigger');
-    assert.equal(container.querySelector('[data-testid="reaction-bar-101"]'), null, 'bar starts closed');
+    assert.ok(container.querySelector('[data-testid="reaction-bar-101"]') === null, 'bar starts closed');
     await click(trigger);
     const bar = container.querySelector('[data-testid="reaction-bar-101"]');
     assert.ok(bar, 'the quick bar must open');
@@ -212,8 +219,8 @@ try {
   // --- 6. Iyimser satir tepki sunmaz ----------------------------------------
   await check('an optimistic (string id) message offers no reaction affordance', async () => {
     const container = await renderBubble(baseMessage({ id: 'optimistic_cmsg_1' }), () => {});
-    assert.equal(container.querySelector('[data-testid="reaction-trigger-optimistic_cmsg_1"]'), null);
-    assert.equal(container.querySelector('[data-testid^="reaction-chips-"]'), null);
+    assert.ok(container.querySelector('[data-testid="reaction-trigger-optimistic_cmsg_1"]') === null, 'no trigger for an optimistic row');
+    assert.ok(container.querySelector('[data-testid^="reaction-chips-"]') === null, 'no chips for an optimistic row');
   });
 
   // --- 7. Tam panel: "+" → EmojiPicker → gercek secim ------------------------
@@ -235,7 +242,7 @@ try {
     await click(chosen);
     assert.equal(calls.length, 1, 'picking from the full panel reacts once');
     assert.equal(calls[0][1], chosenEmoji, 'the picked emoji is sent verbatim');
-    assert.equal(window.document.querySelector('[data-testid="emoji-grid"]'), null, 'the panel closes after a pick');
+    assert.ok(window.document.querySelector('[data-testid="emoji-grid"]') === null, 'the panel closes after a pick');
   });
 
   ok = true;

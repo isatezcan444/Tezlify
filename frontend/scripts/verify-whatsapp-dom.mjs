@@ -24,6 +24,13 @@
  * variant is executed too and must throw.
  */
 import assert from 'node:assert/strict';
+import { hardenAssert } from './lib/safe-dom-assert.mjs';
+
+// CANLI DOM elemani uzerinde esitlik iddiasi kurmak Node'un mesaj uretimini
+// tetikler ve util.inspect tum DOM grafigini yuruyerek RAM'i tuketir
+// (olculdu: tek iframe icin 137MB string -> SIGKILL, teshis yok). Kural:
+// eleman yerine boolean veya attribute string karsilastir.
+hardenAssert(assert);
 import { mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -323,7 +330,7 @@ try {
 
     const empty = await mount(h(ChatThread, { messages: [] }));
     assert.ok(!(empty.host.textContent || '').includes('network failed'), 'empty state must not reuse the error state');
-    assert.equal(empty.host.querySelector('[role="status"]'), null, 'empty state must not claim to be loading');
+    assert.ok(empty.host.querySelector('[role="status"]') === null, 'empty state must not claim to be loading');
     await empty.unmount();
   });
 

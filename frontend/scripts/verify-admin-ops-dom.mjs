@@ -9,6 +9,13 @@
  * Run: node scripts/verify-admin-ops-dom.mjs — exit code 0 = PASS.
  */
 import assert from 'node:assert/strict';
+import { hardenAssert } from './lib/safe-dom-assert.mjs';
+
+// CANLI DOM elemani uzerinde esitlik iddiasi kurmak Node'un mesaj uretimini
+// tetikler ve util.inspect tum DOM grafigini yuruyerek RAM'i tuketir
+// (olculdu: tek iframe icin 137MB string -> SIGKILL, teshis yok). Kural:
+// eleman yerine boolean veya attribute string karsilastir.
+hardenAssert(assert);
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import os from 'node:os';
@@ -346,3 +353,15 @@ try {
 } finally {
   await rm(tmp, { recursive: true, force: true });
 }
+
+// Acik bir `process.exit` SART. jsdom `pretendToBeVisual: true` ile kurulur ve
+// bir requestAnimationFrame dongusu calistirir; React'in zamanlayicilari da
+// olay dongusunu canli tutar. Bu yuzden script dogrulamayi GECTIKTEN SONRA
+// asili kalir: tum kontroller yesil olmasina ragmen surec hic bitmez, cagiran
+// arac onu SIGTERM ile oldurur ve ekrana `exit 137 / SIGTERM` duser. Yani
+// BASARILI bir kosu, bellek tukenmesiyle karistirilabilecek bir basarisizlik
+// gibi gorunur. (Ayni tuzak verify-link-preview-dom.mjs'te de belgelenmistir.)
+//
+// Bir kontrol patlarsa bu satira hic gelinmez; hata yukari kacar ve node 1 ile
+// cikar. Dolayisiyla buradaki exit yalnizca yesil yolu kapatir.
+process.exit(0);

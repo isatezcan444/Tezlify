@@ -426,3 +426,35 @@ restarting a service and shipping code are different risk classes.
 - **Props**: `(enabled: boolean, { onOperation: (op: OpsOperation, event: string) => void; onConnectionChange?: (connected: boolean) => void })`
 - **Returns**: `connected: boolean`
 - **Import**: `import { useOpsEvents } from '@/hooks/useOpsEvents';`
+
+### `LinkPreviewCard`
+- **Purpose**: WhatsApp Web-shaped preview card for a link found in a message body — image, site name, title, description and an open action. Rendered under the text, never instead of it.
+- **Props**: `{ preview: LinkPreview; isOutbound?: boolean }`
+- **Image is always proxied, never hotlinked**: `preview.image_url` is the server-issued authenticated path (`/api/v1/whatsapp/link-preview/image?u=<hash>`), not the remote address. Loading the remote image directly would leak the reader's IP and browser fingerprint to the third-party site, and would break on referrer/CORS rules; `referrerPolicy="no-referrer"` is set for the same reason.
+- **Embeds are click-to-load and allowlisted**: the iframe renders only when `preview.embed_url` is present, which the server fills **only** for an explicit provider allowlist (YouTube, via `youtube-nocookie.com`). Putting an arbitrary URL in an iframe means running third-party content with the user's session — that is why the decision lives on the server, not in this component.
+- **Import**: `import { LinkPreviewCard } from '@/features/whatsapp/components';`
+
+### `DocumentCard`
+- **Purpose**: Turns a document message from "a filename and a download icon" into a real card: type icon, type badge, filename, MIME, and separate Open / Download actions.
+- **Props**: `{ filename?: string | null; mimeType?: string | null; url?: string | null; isOutbound?: boolean }`
+- **Type is resolved from extension AND MIME together**: the gateway reports some attachments as `application/octet-stream`, so MIME alone would lose the type and the filename extension alone would miss the rest. Both are consulted.
+- **No file size, deliberately**: `messages` has no size column (`media_id` / `media_mime_type` / `media_filename` / `media_caption` only). Showing a size would mean inventing one. Open and Download are separate actions because they are separate intents — Open renders a PDF in the browser's viewer, Download saves it.
+- **Import**: `import { DocumentCard } from '@/features/whatsapp/components';`
+
+### `Dropdown` (extended, not new)
+- **Purpose**: Pre-existing menu component; two capabilities were added rather than forking it.
+- **`portal?: boolean`**: renders the menu into `document.body` with `position: fixed`, measured from the trigger's rect and **re-measured on scroll/resize** (scroll is listened to in the capture phase, since scroll does not bubble). Without it a menu inside a scrolling container — the conversation list — is clipped by `overflow-y-auto`. The outside-click test must check **both** the trigger and the portalled menu, or `mousedown` closes the menu before the item's `click` ever fires.
+- **`onOpenChange?: (open: boolean) => void`**: reports open/close so a caller can keep a hover-revealed trigger visible. A portalled menu is no longer inside the row, so hovering the menu un-hovers the row and the trigger would vanish while its own menu is open.
+- **`data-testid="dropdown-menu"`**: stable hook on the menu container. The menu has no accessible role of its own, so a DOM gate would otherwise have to match on Tailwind classes (`z-[99999]`) to find it.
+- **Import**: `import { Dropdown, DropdownItem } from '@/components/ui/Dropdown';`
+
+### `ConversationList` row menu ("aşağı ok") — extension of `ConversationList`, not a new component
+
+- **Purpose**: WhatsApp Web parity for a live conversation row: a chevron that reveals Archive / Close / Reopen / Delete. Hidden until hover or focus (`opacity-0` → `group-hover:opacity-100`), and the row's timestamp hides while the chevron is shown, because both occupy the same corner.
+- **Props added**: `onArchive?`, `onClose?`, `onReopen?`, `onDelete?` — all `(id: number) => void`. The menu renders only when at least one is provided.
+- **The trigger is a SIBLING of the row `<button>`, never a child**: a nested `<button>` is invalid HTML, and the click would also select the conversation. Asserted by the gate.
+- **Menu items are state-aware**: an archived row offers Reopen, an active row offers Archive + Close; Delete is always last and carries the danger variant. The action list is derived from the conversation's *current* state — offering "Archive" on an already-archived chat is a promise the UI cannot keep.
+- **`isArchived?: boolean` (row prop)** — *the invariant*: "archived" must mean the **same thing** here as in the list filter, i.e. `is_archived` (WhatsApp/gateway metadata) **OR** `status === 'ARCHIVED'` (CRM action). The filter always used both; the row menu originally used only `status`, so a chat archived on the phone showed up in the Archived tab offering "Archive". Both sides now read the same predicate.
+- **Callbacks must have stable identities** (`statusChangeRef` + four `useCallback([])` wrappers in `WhatsAppHubPage`). The row is `React.memo`-wrapped, so a callback whose identity changes every render re-renders every row. The same reason `handleSelectById` exists.
+- **Gate**: `npm run verify:conv-menu` (`scripts/verify-conversation-menu-dom.mjs`) — 9 checks, including that the menu is portalled **out of** the scroll container and that opening it does not also select the chat.
+- **Import**: `import { ConversationList } from '@/features/whatsapp/components';`

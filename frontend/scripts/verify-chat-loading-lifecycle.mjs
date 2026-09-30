@@ -19,6 +19,13 @@
  * only while a request for it can still settle.
  */
 import assert from 'node:assert/strict';
+import { hardenAssert } from './lib/safe-dom-assert.mjs';
+
+// CANLI DOM elemani uzerinde esitlik iddiasi kurmak Node'un mesaj uretimini
+// tetikler ve util.inspect tum DOM grafigini yuruyerek RAM'i tuketir
+// (olculdu: tek iframe icin 137MB string -> SIGKILL, teshis yok). Kural:
+// eleman yerine boolean veya attribute string karsilastir.
+hardenAssert(assert);
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
