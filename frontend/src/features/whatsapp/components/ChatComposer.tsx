@@ -1,3 +1,4 @@
+import { createSendLock } from '../lib/sendLock';
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { 
   Send, 
@@ -139,16 +140,30 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
     setIsFileModalOpen(true);
   };
 
+  // Single-flight guard. `sending` below is only for rendering; it cannot
+  // prevent a duplicate, because React commits state asynchronously and a
+  // double Enter (or Enter plus a click) runs both handlers before that commit.
+  // The backend's idempotency check does not catch it either: it is keyed on
+  // client_message_id, and each send mints a fresh one, so two sends of the same
+  // text are two unrelated messages and both reach WhatsApp.
+  // See lib/sendLock.
+  const sendLockRef = useRef(createSendLock());
+
   const handleSubmit = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     const clean = text.trim();
-    if (!clean || disabled || isClosed || sending || !onSend) return;
+    if (!clean || disabled || isClosed || !onSend) return;
+    // A send already in flight makes this a duplicate; reject it before any
+    // request is made, and report nothing to the user because nothing failed.
+    if (sendLockRef.current.isLocked()) return;
 
     setSending(true);
     try {
-      await onSend(clean);
-      setText('');
-      stopTypingSignal();
+      await sendLockRef.current.run(async () => {
+        await onSend(clean);
+        setText('');
+        stopTypingSignal();
+      });
     } catch (err) {
       console.error('[ChatComposer] Send error:', err);
     } finally {
