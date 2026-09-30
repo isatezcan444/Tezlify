@@ -200,3 +200,33 @@ the expected cost of using a unique index as the arbiter. Eliminating the log
 line entirely would require `INSERT … ON CONFLICT DO NOTHING` on the message
 insert, which cannot return the ORM row — it would add one extra `SELECT` per
 inbound message, the exact round-trip Phase 10.9 removed.
+
+### Why 14:32:01 was the moment it fired
+
+`whatsapp_sessions.initial_sync_completed_at` for the line that was live
+(session 113) is `2026-09-30 14:32:01.087057` — 22 ms after the rejected
+INSERT. The initial sync's bulk history replay for that freshly re-paired line
+ran head-on into the live ingest of the same message on conversation 17600,
+which is exactly the overlap this savepoint now contains. The line has been
+stable since; the failure was a one-shot at the end of a first sync, not a
+steady-state leak.
+
+### Deploy proof (`f9e92fa`)
+
+Backend-only change; gateway and frontend were not rebuilt.
+
+* `backend/app/services/whatsapp/orchestration/events.py` in-container SHA256
+  `ad4487dd48a3cf1091d778d88d18a3bfbbfdb3b7dbf8357af3994abb1d298d44` equals the
+  `f9e92fa` blob (pre-deploy container held `6bae3146…` = the `f73a5a0` blob).
+* `.deployed-commit` = `f9e92fa`; backup at
+  `backups/predeploy_20260930T145717Z/events.py.bak`.
+* `tezlify-backend` healthy, `RestartCount=0`, in-container and public
+  `/health` both 200, `verify-production-whatsapp.mjs` 6/6.
+* The gateway event bridge dropped once during the recreate
+  (`event_bridge_socket_closed` 1012 → one `ECONNREFUSED` attempt at 14:57:52)
+  and reconnected at 14:57:55 (`Baileys gateway bağlandı`); the single Caddy
+  `/ws` 502 at 14:57:51 is that same window.
+* Zero PostgreSQL `ERROR` lines attributable to product code after the swap
+  (14:59 UTC); the two in the preceding 15 minutes are this pass's own probes
+  (`column "session_id"` from a hand-written `SELECT`, and
+  `buffy_sp_probe_pkey` from the savepoint experiment).
