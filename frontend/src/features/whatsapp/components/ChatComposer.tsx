@@ -1,4 +1,5 @@
 import { createSendLock } from '../lib/sendLock';
+import { insertAtCaret } from '../lib/emojiData';
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { 
   Send, 
@@ -10,11 +11,13 @@ import {
   Image as ImageIcon, 
   FileText, 
   RotateCcw,
+  Smile,
   Sparkles
 } from 'lucide-react';
 import { Button } from '../../../components/ui/button';
 import { Tooltip } from '../../../components/ui/Tooltip';
 import { Modal } from '../../../components/ui/Modal';
+import { EmojiPicker } from './EmojiPicker';
 import { useI18n } from '../../../context/I18nContext';
 
 export interface ChatComposerProps {
@@ -72,6 +75,8 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
   const attachMenuRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const draftInputRef = useRef<HTMLInputElement>(null);
+  const composerRootRef = useRef<HTMLDivElement>(null);
+  const [isEmojiOpen, setIsEmojiOpen] = useState(false);
   const lastTypingSignalRef = useRef<number>(0);
   const typingActiveRef = useRef<boolean>(false);
   const onTypingRef = useRef<((typing: boolean) => void) | undefined>(onTyping);
@@ -262,8 +267,47 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
   const isActionDisabled = disabled || isClosed || sending;
   const isInputDisabled = disabled || isClosed || !isWindowOpen;
 
+  /**
+   * WhatsApp Web keeps the emoji panel open while you keep composing: it closes
+   * when you click outside the composer, not when you click the draft you are
+   * typing into.
+   */
+  useEffect(() => {
+    if (!isEmojiOpen) return;
+    const onDocumentMouseDown = (e: MouseEvent) => {
+      const root = composerRootRef.current;
+      if (!root || (e.target instanceof Node && root.contains(e.target))) return;
+      setIsEmojiOpen(false);
+    };
+    document.addEventListener('mousedown', onDocumentMouseDown);
+    return () => document.removeEventListener('mousedown', onDocumentMouseDown);
+  }, [isEmojiOpen]);
+
+  /**
+   * Insert at the caret, not at the end: someone who moved the cursor back into
+   * the middle of a draft expects the emoji where they were typing. The caret is
+   * restored right after the inserted character so several emoji in a row land
+   * side by side.
+   */
+  const handleEmojiPick = (char: string) => {
+    const el = draftInputRef.current;
+    const next = insertAtCaret(text, char, el?.selectionStart ?? null, el?.selectionEnd ?? null);
+    setText(next.text);
+    notifyTypingActivity();
+    window.requestAnimationFrame(() => {
+      const input = draftInputRef.current;
+      if (!input) return;
+      input.focus();
+      const pos = Math.min(next.caret, next.text.length);
+      input.setSelectionRange(pos, pos);
+    });
+  };
+
   return (
-    <div className="p-3 border-t border-slate-200/80 dark:border-white/[0.08] bg-slate-50/50 dark:bg-black/20">
+    <div
+      ref={composerRootRef}
+      className="p-3 border-t border-slate-200/80 dark:border-white/[0.08] bg-slate-50/50 dark:bg-black/20"
+    >
       {/* 1. Closed Conversation Notice */}
       {isClosed && (
         <div className="flex items-center justify-between mb-2.5 px-3 py-2 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-600 dark:text-rose-400 text-xs">
@@ -309,6 +353,34 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
 
       {/* 3. Main Composer Row */}
       <form onSubmit={handleSubmit} className="flex items-center space-x-2">
+        {/* Emoji Picker (WhatsApp Web: smiley first, then attach) */}
+        <div className="relative">
+          <Tooltip content={t('whatsapp.emojiPickerTitle')}>
+            <button
+              type="button"
+              aria-label={t('whatsapp.emojiPickerTitle')}
+              aria-expanded={isEmojiOpen}
+              disabled={isInputDisabled}
+              onClick={() => setIsEmojiOpen((open) => !open)}
+              className={`p-2 rounded-xl transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
+                isEmojiOpen
+                  ? 'text-[#7367F0] bg-[#7367F0]/10'
+                  : 'text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 hover:bg-slate-200/60 dark:hover:bg-white/[0.08]'
+              }`}
+            >
+              <Smile className="w-4 h-4" />
+            </button>
+          </Tooltip>
+
+          {isEmojiOpen && (
+            <EmojiPicker
+              onPick={handleEmojiPick}
+              onClose={() => setIsEmojiOpen(false)}
+              className="absolute bottom-12 left-0 z-40 animate-in fade-in slide-in-from-bottom-2 duration-150"
+            />
+          )}
+        </div>
+
         {/* Attachment '+' Button with Popover */}
         <div className="relative" ref={attachMenuRef}>
           <Tooltip content={t('whatsapp.addAttachment')}>

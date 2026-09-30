@@ -26,6 +26,7 @@
     "lint:report": "eslint src --ext .ts,.tsx --resolve-plugins-relative-to .",
     "verify:dialog-a11y": "node scripts/verify-dialog-a11y-dom.mjs",
     "verify:composer-focus": "node scripts/verify-composer-focus-dom.mjs",
+    "verify:emoji": "node scripts/verify-emoji-picker.mjs",
     "verify:url-sync": "node scripts/verify-url-sync.mjs",
     "verify:ws-lifecycle": "node scripts/verify-ws-lifecycle.mjs",
     "verify:chat-loading": "node scripts/verify-chat-loading-lifecycle.mjs",

@@ -1,10 +1,13 @@
 /**
  * Executed DOM verification of the composer's Enter-to-send contract.
  *
- * REPORTED SYMPTOM
- *   After typing a message and pressing Enter, the cursor no longer sat in the
- *   draft field, so the next message could not be typed without clicking back
- *   into the composer. WhatsApp Web keeps the cursor there.
+ * REPORTED SYMPTOMS
+ *   (a) After typing a message and pressing Enter, the cursor no longer sat in
+ *       the draft field, so the next message could not be typed without clicking
+ *       back into the composer. WhatsApp Web keeps the cursor there.
+ *   (b) The composer had no emoji panel at all. When one was added, the wiring
+ *       is where it can go wrong: stealing focus from the draft, appending to
+ *       the end of the draft instead of the caret, or closing after one pick.
  *
  * ROOT CAUSE
  *   The draft input was rendered `disabled` while a send was in flight
@@ -115,6 +118,16 @@ try {
   };
 
   const flush = () => act(async () => { /* let pending promises settle */ });
+
+  /**
+   * Wait for a real macrotask, so `requestAnimationFrame` callbacks scheduled by
+   * a handler actually run. The caret is restored inside rAF — after React has
+   * committed the new value — so asserting without this would only ever see the
+   * caret a browser leaves at the end of a programmatically assigned value.
+   */
+  const settle = () => act(async () => {
+    await new Promise((r) => setTimeout(r, 80));
+  });
 
   const mount = async (onSend) => {
     const host = window.document.createElement('div');
@@ -232,8 +245,78 @@ try {
     assert.equal(send.calls.length, 1, 'and it stays rejected after the send completes');
   });
 
-  console.log(`\n${passed}/4 composer focus checks passed`);
-  ok = passed === 4;
+  // ---------------------------------------------------------------- emoji panel
+
+  const click = async (el) => {
+    await act(async () => {
+      el.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }));
+    });
+  };
+
+  const panelOf = (host) => host.querySelector('[data-testid="emoji-grid"]')?.parentElement ?? null;
+
+  await check('the emoji button opens the panel on a non-empty category', async () => {
+    const send = deferredSend();
+    const { host } = await mount(send.onSend);
+
+    const toggle = host.querySelector('button[aria-expanded]');
+    assert.ok(toggle, 'the composer must render an emoji toggle');
+    assert.equal(toggle.getAttribute('aria-expanded'), 'false');
+
+    await click(toggle);
+
+    assert.equal(toggle.getAttribute('aria-expanded'), 'true', 'the panel must open');
+    const panel = panelOf(host);
+    assert.ok(panel, 'the panel must render');
+    // A first-time user has no recents; the panel must not open empty.
+    const emojis = panel.querySelectorAll('button[title]');
+    assert.ok(emojis.length > 20, `the grid must be populated (got ${emojis.length})`);
+  });
+
+  await check('picking an emoji inserts it at the caret and keeps the draft focused', async () => {
+    const send = deferredSend();
+    const { host, input } = await mount(send.onSend);
+
+    await typeInto(input, 'merhaba dunya');
+    // Put the caret in the middle: the emoji must land THERE, not at the end.
+    await act(async () => { input.setSelectionRange(8, 8); });
+    input.focus();
+
+    await click(host.querySelector('button[aria-expanded]'));
+    const panel = panelOf(host);
+    const first = panel.querySelectorAll('button[title]')[0];
+    const picked = first.textContent;
+
+    await click(first);
+    await flush();
+    await settle();
+
+    assert.equal(input.value, `merhaba ${picked}dunya`, 'inserted at the caret, not appended');
+    assert.equal(window.document.activeElement, input, 'the draft keeps focus after a pick');
+    assert.ok(
+      panelOf(host), 'the panel stays open so several emoji can be added in a row',
+    );
+    assert.equal(input.selectionStart, 8 + picked.length, 'the caret follows the emoji');
+  });
+
+  await check('Escape closes the emoji panel', async () => {
+    const send = deferredSend();
+    const { host } = await mount(send.onSend);
+
+    const toggle = host.querySelector('button[aria-expanded]');
+    await click(toggle);
+    assert.ok(panelOf(host), 'the panel must be open first');
+
+    await act(async () => {
+      window.document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+
+    assert.equal(panelOf(host), null, 'Escape must close the panel');
+    assert.equal(toggle.getAttribute('aria-expanded'), 'false');
+  });
+
+  console.log(`\n${passed}/7 composer focus + emoji checks passed`);
+  ok = passed === 7;
 } catch (err) {
   console.error(`\nFAIL: ${err?.message ?? err}`);
 } finally {
