@@ -46,8 +46,8 @@ export function subscribeGatewayEvents(onEvent: (event: any) => void): () => voi
 // Live session helpers
 // ---------------------------------------------------------------------------
 
-async function requireLive(): Promise<void> {
-  const live = await probeLive();
+async function requireLive(signal?: AbortSignal): Promise<void> {
+  const live = await probeLive(signal);
   if (!live) {
     invalidateLiveProbe();
     throw new WhatsAppApiError('whatsapp.gatewayDown');
@@ -153,13 +153,14 @@ export class WhatsAppRepository {
     limit?: number;
     offset?: number;
     sync?: boolean;
+    signal?: AbortSignal;
   }): Promise<{
     items: Conversation[];
     total: number;
     has_more: boolean;
     next_offset?: number;
   }> {
-    await requireLive();
+    await requireLive(params?.signal);
     return WhatsAppApi.getConversationsPage({
       status: params?.status as ConversationStatus | undefined,
       unread_only: params?.unread_only,
@@ -171,6 +172,7 @@ export class WhatsAppRepository {
       limit: params?.limit,
       offset: params?.offset,
       sync: params?.sync,
+      signal: params?.signal,
     });
   }
 
@@ -185,14 +187,15 @@ export class WhatsAppRepository {
     limit?: number;
     offset?: number;
     sync?: boolean;
+    signal?: AbortSignal;
   }): Promise<Conversation[]> {
     const page = await this.getConversationsPage(params);
     return page.items;
   }
 
 
-  static async getConversation(conversationId: number): Promise<ConversationDetail> {
-    await requireLive();
+  static async getConversation(conversationId: number, signal?: AbortSignal): Promise<ConversationDetail> {
+    await requireLive(signal);
     // Faz 12: hedefli tek-sohbet sorgusu — eskiden TUM liste (limit=200)
     // indirilip istemcide filtreleniyordu (agir + 200 sohbetten sonra sessizce
     // basarisiz). Ayni tenant filtresi sunucuda uygulanir.
@@ -204,8 +207,8 @@ export class WhatsAppRepository {
     // `conversationNotFound` error is still the one that surfaces (a 404 from
     // /messages must not mask it) — and so it never becomes an unhandled
     // rejection when we bail out early.
-    const listPromise = WhatsAppApi.getConversations({ conversation_id: conversationId, limit: 1 });
-    const messagesPromise = WhatsAppApi.getMessages(conversationId, { limit: 50 });
+    const listPromise = WhatsAppApi.getConversations({ conversation_id: conversationId, limit: 1, signal });
+    const messagesPromise = WhatsAppApi.getMessages(conversationId, { limit: 50, signal });
 
     const list = await listPromise;
     const conv = list[0];
@@ -227,9 +230,9 @@ export class WhatsAppRepository {
 
   static async getConversationMessages(
     conversationId: number,
-    params?: { limit?: number; before?: number },
+    params?: { limit?: number; before?: number; signal?: AbortSignal },
   ): Promise<ConversationMessagesResponse> {
-    await requireLive();
+    await requireLive(params?.signal);
     return WhatsAppApi.getMessages(conversationId, params);
   }
 
@@ -383,14 +386,14 @@ export class WhatsAppRepository {
    * 200 satirlik liste taramasi YOK (AGENTS.md §1.1: sahte basari/veri uretilmez,
    * sohbet yoksa gercek hata firlatilir).
    */
-  static async getLeadConversation(leadId: number): Promise<ConversationDetail> {
-    await requireLive();
-    const list = await WhatsAppApi.getConversations({ lead_id: leadId, limit: 1 });
+  static async getLeadConversation(leadId: number, signal?: AbortSignal): Promise<ConversationDetail> {
+    await requireLive(signal);
+    const list = await WhatsAppApi.getConversations({ lead_id: leadId, limit: 1, signal });
     const conv = list[0];
     if (!conv) {
       throw new WhatsAppApiError('whatsapp.leadConversationNotFound');
     }
-    const messages = await WhatsAppApi.getMessages(conv.id, { limit: 50 });
+    const messages = await WhatsAppApi.getMessages(conv.id, { limit: 50, signal });
     return {
       ...conv,
       messages: messages.messages,

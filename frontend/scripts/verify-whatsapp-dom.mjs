@@ -300,6 +300,33 @@ try {
     });
   };
 
+  await check('thread states: loading is themed and accessible, error is retryable, empty is distinct', async () => {
+    const loading = await mount(h(ChatThread, { messages: [], loading: true }));
+    const status = loading.host.querySelector('[role="status"]');
+    assert.ok(status, 'loading state must expose status semantics');
+    assert.ok(status.className.includes('bg-slate-50/40'), 'loading state must have a light surface');
+    assert.ok(status.className.includes('dark:bg-slate-950/20'), 'loading state must have a dark surface');
+    await loading.unmount();
+
+    let retried = false;
+    const failed = await mount(h(ChatThread, {
+      messages: [],
+      error: 'network failed',
+      onRetryLoad: () => { retried = true; },
+    }));
+    assert.ok((failed.host.textContent || '').includes('network failed'), 'error detail must be visible');
+    const retry = failed.host.querySelector('button');
+    assert.ok(retry, 'error state must offer retry');
+    await click(retry);
+    assert.equal(retried, true, 'retry action must be wired');
+    await failed.unmount();
+
+    const empty = await mount(h(ChatThread, { messages: [] }));
+    assert.ok(!(empty.host.textContent || '').includes('network failed'), 'empty state must not reuse the error state');
+    assert.equal(empty.host.querySelector('[role="status"]'), null, 'empty state must not claim to be loading');
+    await empty.unmount();
+  });
+
   // =========================================================== SCENARIO G — bottom
   await check('G-bottom: a new inbound while at the bottom stays pinned and shows no pill', async () => {
     const msgs = Array.from({ length: 12 }, (_, i) => mkMsg(i + 1));

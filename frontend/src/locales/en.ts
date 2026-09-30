@@ -552,6 +552,8 @@ export const en = {
     templateFailed: 'Failed to send template',
     conversationsLoadFailed: 'Conversations could not be loaded.',
     messagesLoadFailed: 'Messages could not be loaded.',
+    loadingMessages: 'Loading messages...',
+    messagesLoadTimeout: 'Loading messages took too long. Please try again.',
     typingFailed: 'Typing status could not be sent.',
     deleteSessionFailed: 'The WhatsApp line was removed locally, but the gateway could not be cleaned up.',
     connectionFailed: 'Could not connect to WhatsApp. Please try again.',

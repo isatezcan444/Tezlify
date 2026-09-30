@@ -552,6 +552,8 @@ export const tr = {
     templateFailed: 'Şablon gönderilemedi',
     conversationsLoadFailed: 'Sohbetler yüklenemedi.',
     messagesLoadFailed: 'Mesajlar yüklenemedi.',
+    loadingMessages: 'Mesajlar yükleniyor...',
+    messagesLoadTimeout: 'Mesajların yüklenmesi çok uzun sürdü. Lütfen tekrar deneyin.',
     typingFailed: 'Yazıyor durumu gönderilemedi.',
     deleteSessionFailed: 'WhatsApp hattı yerel olarak silindi ancak gateway temizlenemedi.',
     connectionFailed: 'WhatsApp bağlantısı kurulamadı. Lütfen tekrar deneyin.',

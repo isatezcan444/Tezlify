@@ -750,7 +750,11 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
 
   if (loading) {
     return (
-      <div className="flex-1 min-w-0 p-4 space-y-4 overflow-y-auto overflow-x-hidden">
+      <div
+        role="status"
+        aria-label={t('whatsapp.loadingMessages')}
+        className="flex-1 min-w-0 p-4 space-y-4 overflow-y-auto overflow-x-hidden bg-slate-50/40 dark:bg-slate-950/20"
+      >
         <div className="flex justify-start">
           <Skeleton className="w-48 h-12 rounded-2xl rounded-tl-sm" />
         </div>
@@ -760,6 +764,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
         <div className="flex justify-start">
           <Skeleton className="w-64 h-16 rounded-2xl rounded-tl-sm" />
         </div>
+        <span className="sr-only">{t('whatsapp.loadingMessages')}</span>
       </div>
     );
   }

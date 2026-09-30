@@ -102,6 +102,7 @@ const SEEN_WA_IDS_MAX = 1000;
 // yalnizca sunucunun `has_more` sinyaline bagli bounded bir doldurma.
 const CONVERSATION_PAGE_SIZE = 200;
 const MAX_BACKGROUND_CONVERSATION_PAGES = 5;
+const MESSAGE_LOAD_TIMEOUT_MS = 20_000;
 
 export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats }) => {
   const toast = useToast();
@@ -146,6 +147,10 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   const [convLoadError, setConvLoadError] = useState<string | null>(null);
   const [messageLoadState, setMessageLoadState] = useState<Record<number, 'loading' | 'ready' | 'error'>>({});
   const [messageLoadError, setMessageLoadError] = useState<Record<number, string>>({});
+  // One authoritative hydration per conversation. Superseded requests are
+  // aborted and, even if an adapter ignores AbortSignal, cannot commit state.
+  const messageHydrationRequestsRef = useRef(new Map<number, { controller: AbortController; token: symbol }>());
+  const messagePagingRequestsRef = useRef(new Map<number, AbortController>());
   const [convsLoading, setConvsLoading] = useState<boolean>(false);
   const [convSearch, setConvSearch] = useState<string>('');
   const [convFilter, setConvFilter] = useState<FilterTab>('ALL');
@@ -356,13 +361,18 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   const activeLoadOlder = useCallback(async () => {
     if (!selectedConv || !activePaging?.hasMore || !activePaging.oldest || activePaging.loading) return;
     const convId = selectedConv.id;
+    const controller = new AbortController();
+    messagePagingRequestsRef.current.set(convId, controller);
+    const timeout = window.setTimeout(() => controller.abort(), MESSAGE_LOAD_TIMEOUT_MS);
     startWaLatency('chat_request_to_commit_ms', convId);
     setMessagePaging((prev) => ({ ...prev, [convId]: { ...(prev[convId] || activePaging), loading: true } }));
     try {
       const res = await WhatsAppRepository.getConversationMessages(convId, {
         limit: 50,
         before: activePaging.oldest,
+        signal: controller.signal,
       });
+      if (messagePagingRequestsRef.current.get(convId) !== controller) return;
       setMessagesMap((prev) => {
         const existing = prev[convId] || [];
         const seen = new Set(existing.map((m) => `${m.wa_message_id || ''}:${m.id}`));
@@ -379,6 +389,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         },
       }));
     } catch (err) {
+      if (messagePagingRequestsRef.current.get(convId) !== controller) return;
       // Sorun 2: history sayfasi basarisiz → mevcut mesajlar SILINMEZ,
       // yalnizca retry edilebilir bir hata isareti konur. Global hata toast'i
       // yok: tek sayfa hatasi tum sohbet ekranini hata gibi gostermez.
@@ -387,6 +398,11 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         [convId]: { ...(prev[convId] || activePaging), loading: false, error: true },
       }));
       console.warn('[WhatsAppHubPage] Older messages fetch failed:', err);
+    } finally {
+      window.clearTimeout(timeout);
+      if (messagePagingRequestsRef.current.get(convId) === controller) {
+        messagePagingRequestsRef.current.delete(convId);
+      }
     }
   }, [selectedConv, activePaging]);
 
@@ -744,10 +760,34 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   // izlenir. Basarisizlik YALNIZCA o sohbeti error durumuna alir; mevcut
   // mesajlar SILINMEZ ve tum chat UI'i hata ekranina dusmez.
   const hydrateConversationMessages = useCallback(async (convId: number) => {
+    const previous = messageHydrationRequestsRef.current.get(convId);
+    previous?.controller.abort();
+    const controller = new AbortController();
+    const token = Symbol(`conversation-${convId}`);
+    messageHydrationRequestsRef.current.set(convId, { controller, token });
+    let timedOut = false;
+    const timeout = window.setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, MESSAGE_LOAD_TIMEOUT_MS);
+    const isCurrent = () => messageHydrationRequestsRef.current.get(convId)?.token === token;
+
     setMessageLoadState((prev) => (prev[convId] === 'loading' ? prev : { ...prev, [convId]: 'loading' }));
+    setMessageLoadError((prev) => {
+      if (!(convId in prev)) return prev;
+      const next = { ...prev };
+      delete next[convId];
+      return next;
+    });
     try {
-      const res = await WhatsAppRepository.getConversationMessages(convId, { limit: 50 });
-      if (!res?.messages) return;
+      const res = await WhatsAppRepository.getConversationMessages(convId, {
+        limit: 50,
+        signal: controller.signal,
+      });
+      if (!isCurrent()) return;
+      if (!res || !Array.isArray(res.messages)) {
+        throw new Error(tRef.current('whatsapp.messagesLoadFailed'));
+      }
       setMessagePaging((prev) => ({
         ...prev,
         [convId]: {
@@ -786,6 +826,8 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         return next;
       });
     } catch (err) {
+      if (!isCurrent()) return;
+      if (controller.signal.aborted && !timedOut) return;
       // Tek sohbetin hidrasyon hatasi tum chat UI'ini error'a dusurmez:
       // mesajlar korunur, yalnizca bu sohbet icin retry edilebilir state olur.
       console.warn('[WhatsAppHubPage] Conversation messages load failed', {
@@ -795,9 +837,43 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       setMessageLoadState((prev) => ({ ...prev, [convId]: 'error' }));
       setMessageLoadError((prev) => ({
         ...prev,
-        [convId]: (err as any)?.message || tRef.current('whatsapp.messagesLoadFailed') || tRef.current('common.error'),
+        [convId]: timedOut
+          ? tRef.current('whatsapp.messagesLoadTimeout')
+          : translateApiError(err, tRef.current) || tRef.current('whatsapp.messagesLoadFailed'),
       }));
+    } finally {
+      window.clearTimeout(timeout);
+      if (isCurrent()) messageHydrationRequestsRef.current.delete(convId);
     }
+  }, []);
+
+  // A conversation switch must not leave the previous pane's network work
+  // alive. The identity guard above is retained for fetch adapters that settle
+  // after abort instead of rejecting immediately.
+  useEffect(() => {
+    const convId = selectedConv?.id;
+    return () => {
+      if (!convId) return;
+      messageHydrationRequestsRef.current.get(convId)?.controller.abort();
+      messageHydrationRequestsRef.current.delete(convId);
+      messagePagingRequestsRef.current.get(convId)?.abort();
+      messagePagingRequestsRef.current.delete(convId);
+      setMessagePaging((prev) => {
+        const paging = prev[convId];
+        return paging?.loading ? { ...prev, [convId]: { ...paging, loading: false } } : prev;
+      });
+    };
+  }, [selectedConv?.id]);
+
+  useEffect(() => {
+    const hydrationRequests = messageHydrationRequestsRef.current;
+    const pagingRequests = messagePagingRequestsRef.current;
+    return () => {
+      for (const request of hydrationRequests.values()) request.controller.abort();
+      hydrationRequests.clear();
+      for (const request of pagingRequests.values()) request.abort();
+      pagingRequests.clear();
+    };
   }, []);
 
   // Kullanici kaynakli retry: yalnizca secili sohbetin hidrasyonunu tekrarlar.

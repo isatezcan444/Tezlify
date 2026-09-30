@@ -74,7 +74,7 @@ export function invalidateLiveProbe(): void {
   liveProbe = null;
 }
 
-export async function probeLive(): Promise<boolean> {
+export async function probeLive(signal?: AbortSignal): Promise<boolean> {
   const cached = isLiveCached();
   if (cached !== null) return cached;
   // A7: the real liveness signal is the backend's gateway health check.
@@ -84,7 +84,7 @@ export async function probeLive(): Promise<boolean> {
   // when the gateway is healthy, 503 { gateway_available: false, error }
   // otherwise. Fail CLOSED on any error / non-ok / missing flag.
   try {
-    const res = await authFetch(`${API_BASE}/whatsapp/gateway/health`, { method: 'GET' });
+    const res = await authFetch(`${API_BASE}/whatsapp/gateway/health`, { method: 'GET', signal });
     if (!res.ok) {
       liveProbe = { value: false, checkedAt: Date.now() };
       return false;
@@ -92,6 +92,7 @@ export async function probeLive(): Promise<boolean> {
     const data = (await res.json().catch(() => null)) as { gateway_available?: boolean } | null;
     liveProbe = { value: data?.gateway_available === true, checkedAt: Date.now() };
   } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') throw error;
     console.warn('[WhatsAppApi] Live probe failed', {
       endpoint: `${API_BASE}/whatsapp/gateway/health`,
       error: error instanceof Error ? error.message : String(error),
@@ -104,8 +105,8 @@ export async function probeLive(): Promise<boolean> {
 // ---------------------------------------------------------------------------
 // Raw fetch helper
 // ---------------------------------------------------------------------------
-async function apiGet<T>(path: string): Promise<T> {
-  const res = await authFetch(`${API_BASE}${path}`);
+async function apiGet<T>(path: string, signal?: AbortSignal): Promise<T> {
+  const res = await authFetch(`${API_BASE}${path}`, { signal });
   if (!res.ok) throw new WhatsAppApiError(await parseError(res, 'WhatsApp API hatası'), res.status);
   return res.json() as Promise<T>;
 }
@@ -597,6 +598,7 @@ export const WhatsAppApi = {
     limit?: number;
     offset?: number;
     sync?: boolean;
+    signal?: AbortSignal;
   }): Promise<{
     items: Conversation[];
     total: number;
@@ -625,7 +627,7 @@ export const WhatsAppApi = {
       total: number;
       has_more?: boolean;
       next_offset?: number;
-    }>(`/whatsapp/conversations${suffix}`);
+    }>(`/whatsapp/conversations${suffix}`, params?.signal);
     const items = (data.items || []).map(mapConversation);
     const total = data.total ?? 0;
     const currentOffset = params?.offset || 0;
@@ -649,6 +651,7 @@ export const WhatsAppApi = {
     limit?: number;
     offset?: number;
     sync?: boolean;
+    signal?: AbortSignal;
   }): Promise<Conversation[]> {
     const page = await this.getConversationsPage(params);
     return page.items;
@@ -657,7 +660,7 @@ export const WhatsAppApi = {
 
   async getMessages(
     conversationId: number,
-    params?: { limit?: number; before?: number }
+    params?: { limit?: number; before?: number; signal?: AbortSignal }
   ): Promise<ConversationMessagesResponse> {
     const qs = new URLSearchParams();
     if (params?.limit) qs.set('limit', String(params.limit));
@@ -674,7 +677,7 @@ export const WhatsAppApi = {
         provider_exhausted: boolean;
         provider_msgs_returned: number;
       };
-    }>(`/whatsapp/conversations/${conversationId}/messages${suffix}`);
+    }>(`/whatsapp/conversations/${conversationId}/messages${suffix}`, params?.signal);
     return {
       messages: (data.messages || []).map((m) => mapMessage(m, conversationId)),
       has_more: data.has_more ?? false,

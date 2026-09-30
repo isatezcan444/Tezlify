@@ -11,6 +11,7 @@ import { compareMessagesChronological } from '../lib/whatsappOrdering';
 // helper registry invariant).
 const sortMessagesChronologically = (list: Message[]): Message[] =>
   [...list].sort(compareMessagesChronological);
+const CONVERSATION_LOAD_TIMEOUT_MS = 20_000;
 
 interface UseWhatsAppConversationOptions {
   leadId?: number;
@@ -31,29 +32,46 @@ export function useWhatsAppConversation({
   const [loadingOlder, setLoadingOlder] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const isFetchingOlderRef = useRef(false);
+  const conversationRef = useRef<ConversationDetail | null>(conversation);
+  conversationRef.current = conversation;
+  const fetchControllerRef = useRef<AbortController | null>(null);
+  const olderControllerRef = useRef<AbortController | null>(null);
   // Stale-response guard: hizli lead/sohbet degisiminde (A -> B) A'nin yavas
   // donen cevabi B'nin basligi altina yazilabiliyordu. Her fetch kendi
   // neslini tasir; yalnizca en guncel neslin sonucu state'e yazilir.
   const fetchGenerationRef = useRef(0);
 
   const fetchConversation = useCallback(async () => {
+    fetchControllerRef.current?.abort();
+    olderControllerRef.current?.abort();
+    isFetchingOlderRef.current = false;
+    setLoadingOlder(false);
     if (!enabled || (!leadId && !conversationId)) {
       fetchGenerationRef.current += 1;
       setConversation(null);
+      setLoading(false);
+      setError(null);
       return;
     }
 
     const generation = ++fetchGenerationRef.current;
     const isStale = () => generation !== fetchGenerationRef.current;
+    const controller = new AbortController();
+    fetchControllerRef.current = controller;
+    let timedOut = false;
+    const timeout = window.setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, CONVERSATION_LOAD_TIMEOUT_MS);
 
     setLoading(true);
     setError(null);
     try {
       let data: ConversationDetail;
       if (leadId) {
-        data = await WhatsAppRepository.getLeadConversation(leadId);
+        data = await WhatsAppRepository.getLeadConversation(leadId, controller.signal);
       } else if (conversationId) {
-        data = await WhatsAppRepository.getConversation(conversationId);
+        data = await WhatsAppRepository.getConversation(conversationId, controller.signal);
       } else {
         return;
       }
@@ -81,15 +99,19 @@ export function useWhatsAppConversation({
       }
     } catch (err: any) {
       if (isStale()) return;
+      if (controller.signal.aborted && !timedOut) return;
       console.error('[useWhatsAppConversation] Fetch error:', err);
-      setError(translateApiError(err, t) || t('whatsapp.messagesLoadFailed'));
+      setError(timedOut ? t('whatsapp.messagesLoadTimeout') : translateApiError(err, t) || t('whatsapp.messagesLoadFailed'));
     } finally {
+      window.clearTimeout(timeout);
+      if (fetchControllerRef.current === controller) fetchControllerRef.current = null;
       if (!isStale()) setLoading(false);
     }
   }, [leadId, conversationId, enabled, autoMarkAsRead, t]);
 
   useEffect(() => {
-    fetchConversation();
+    void fetchConversation();
+    return () => fetchControllerRef.current?.abort();
   }, [fetchConversation]);
 
   // Load older messages for pagination
@@ -106,16 +128,23 @@ export function useWhatsAppConversation({
 
     isFetchingOlderRef.current = true;
     setLoadingOlder(true);
+    const targetConversationId = conversation.id;
+    const generation = fetchGenerationRef.current;
+    const controller = new AbortController();
+    olderControllerRef.current = controller;
 
     try {
       const res = await WhatsAppRepository.getConversationMessages(conversation.id, {
         limit: 30,
         before: oldestId,
+        signal: controller.signal,
       });
+
+      if (generation !== fetchGenerationRef.current || controller.signal.aborted) return;
 
       if (res.messages.length > 0) {
         setConversation((prev) => {
-          if (!prev) return prev;
+          if (!prev || prev.id !== targetConversationId) return prev;
           // Filter out any messages already present in state
           const existingIds = new Set(prev.messages.map((m) => m.id));
           const existingWaIds = new Set(prev.messages.map((m) => m.wa_message_id).filter(Boolean));
@@ -135,13 +164,17 @@ export function useWhatsAppConversation({
           };
         });
       } else {
-        setConversation((prev) => (prev ? { ...prev, has_more: false } : null));
+        setConversation((prev) => (prev?.id === targetConversationId ? { ...prev, has_more: false } : prev));
       }
     } catch (err: any) {
+      if (controller.signal.aborted) return;
       console.error('[useWhatsAppConversation] Load older messages error:', err);
     } finally {
-      setLoadingOlder(false);
-      isFetchingOlderRef.current = false;
+      if (olderControllerRef.current === controller) {
+        olderControllerRef.current = null;
+        setLoadingOlder(false);
+        isFetchingOlderRef.current = false;
+      }
     }
   }, [conversation]);
 
@@ -342,7 +375,7 @@ export function useWhatsAppConversation({
 
       const matchesConv =
         (conversationId && eventData.conversation_id === conversationId) ||
-        (conversation && eventData.conversation_id === conversation.id);
+        (conversationRef.current && eventData.conversation_id === conversationRef.current.id);
 
       // Handle message status updates (PENDING -> SENT -> DELIVERED -> READ / FAILED).
       // Reconcile by client_message_id first (survives the optimistic phase),
@@ -400,7 +433,7 @@ export function useWhatsAppConversation({
       if (eventData.event === 'message_new' && matchesConv) {
         const raw = eventData.message && typeof eventData.message === 'object' ? eventData.message : eventData;
         if (!raw || typeof raw !== 'object') return;
-        const incoming = mapMessageItem(raw as any, (conversationId ?? conversation?.id) as number);
+        const incoming = mapMessageItem(raw as any, (conversationId ?? conversationRef.current?.id) as number);
         setConversation((prev) => {
           if (!prev) return prev;
           const exists = prev.messages.some((m) => {
@@ -419,7 +452,7 @@ export function useWhatsAppConversation({
     return () => {
       window.removeEventListener('tezlify:ws_event', handleWsEvent);
     };
-  }, [leadId, conversationId, conversation, fetchConversation]);
+  }, [conversationId]);
 
   return {
     conversation,

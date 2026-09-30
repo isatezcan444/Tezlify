@@ -938,6 +938,21 @@ try {
     );
   });
 
+  await checkAsync('message hydration aborts superseded work and realtime listeners stay stable', async () => {
+    const hub = await readFile(path.join(frontendRoot, 'src/pages/WhatsAppHubPage.tsx'), 'utf8');
+    const hook = await readFile(path.join(frontendRoot, 'src/features/whatsapp/hooks/useWhatsAppConversation.ts'), 'utf8');
+    const api = await readFile(path.join(frontendRoot, 'src/features/whatsapp/api/whatsappApi.ts'), 'utf8');
+    assert.ok(hub.includes('previous?.controller.abort()'), 'same-conversation hydration must abort its predecessor');
+    assert.ok(hub.includes('if (!isCurrent()) return'), 'a superseded hydration must not commit stale state');
+    assert.ok(hub.includes('MESSAGE_LOAD_TIMEOUT_MS'), 'message hydration must have a bounded timeout');
+    assert.ok(api.includes('params?.signal'), 'the API layer must forward AbortSignal');
+    assert.match(
+      hook,
+      /window\.addEventListener\('tezlify:ws_event',[\s\S]*?\}, \[conversationId\]\);/,
+      'the conversation realtime listener must not be recreated for each message object update',
+    );
+  });
+
   check('§P6.2: the extracted merge keeps the known name when the payload carries none', () => {
     const patched = applyConversationEvent({ ...baseUi }, { id: baseUi.id, unread_count: 0 }, fakeT);
     assert.equal(patched.lead_name, baseUi.lead_name, 'an unresolved identity must keep the known name');
