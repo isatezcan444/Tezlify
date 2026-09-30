@@ -211,9 +211,9 @@ which is exactly the overlap this savepoint now contains. The line has been
 stable since; the failure was a one-shot at the end of a first sync, not a
 steady-state leak.
 
-### Deploy proof (`f9e92fa`)
+### Deploy proof (`f9e92fa`, backend)
 
-Backend-only change; gateway and frontend were not rebuilt.
+Backend-only change; gateway and frontend were not rebuilt in that step.
 
 * `backend/app/services/whatsapp/orchestration/events.py` in-container SHA256
   `ad4487dd48a3cf1091d778d88d18a3bfbbfdb3b7dbf8357af3994abb1d298d44` equals the
@@ -230,3 +230,72 @@ Backend-only change; gateway and frontend were not rebuilt.
   (14:59 UTC); the two in the preceding 15 minutes are this pass's own probes
   (`column "session_id"` from a hand-written `SELECT`, and
   `buffy_sp_probe_pkey` from the savepoint experiment).
+
+## Pass 4 — 2026-09-30 (15:21 UTC): the composer no longer loses the cursor
+
+Reported alongside the log triage: “after pressing Enter to send, the message
+field is not focused any more” (WhatsApp Web keeps the cursor in the draft).
+
+### Root cause
+
+`ChatComposer` derived its input's disabled state from `sending`:
+
+```
+isActionDisabled = disabled || isClosed || sending
+isInputDisabled  = isActionDisabled || !isWindowOpen   // <- the draft input
+```
+
+A focused element that becomes `disabled` is blurred by the browser, and
+re-enabling it never restores focus. Every single send therefore blurred the
+draft, so the next message needed a click first. Nothing else was involved — no
+re-render, no remount (`key={selectedConv.id}` is stable per conversation).
+
+### Fix
+
+* `sending` now gates only the ACTIONS (send / attach / template, so the spinner
+  and the in-flight guard still render); the draft stays writable.
+* `refocusDraft()` reclaims focus once the send settles, and only when nothing
+  else claimed it (`activeElement` is the field or `document.body`) so a
+  deliberate click into the attachment menu is not undone. Also called after the
+  media and file modals close.
+* The completion clears only the draft that was SENT
+  (`setText((current) => current === draft ? '' : current)`, compared against the
+  raw draft, not the trimmed body). Because the field is now usable during the
+  flight, an unconditional `setText('')` would have eaten anything typed in the
+  meantime.
+
+### Verification
+
+New executed-DOM gate
+`frontend/scripts/verify-composer-focus-dom.mjs` (`npm run verify:composer-focus`),
+4 checks against the real component in jsdom: the draft is not disabled during a
+send; focus returns after the blur a browser performs; a draft typed during the
+flight survives and the sent draft is cleared (including trailing whitespace); a
+second Enter during the flight still sends nothing. It was confirmed to FAIL
+against the unfixed component (`the draft must stay writable while the send is in
+flight`). jsdom does not implement the browser's blur-on-disable focus fixup, so
+that check drives the blur explicitly rather than relying on it.
+
+### Deploy proof (`72b8ff4`, frontend)
+
+Backend image untouched (still `f9e92fa`). `frontend/dist` was rebuilt and its
+contents written INTO the existing `frontend_candidate` directory, so the Caddy
+bind mount stays valid and no container was recreated; the previous bundle is at
+`frontend_candidate.prev-20260930T152133Z/`. Live checksums equal the local
+build byte for byte:
+
+| Artifact | Live | Local |
+| --- | --- | --- |
+| `index.html` | `99e6678a291cd2071975b301dcbf59d0` | same |
+| `assets/index-yDMB1tfU.js` | `25d9e7ac75a8b17e8faa0a711efbdd7b` | same |
+| `assets/WhatsAppHubPage-C8OeJnJr.js` | `5aafc0eb0c1fb2f1461f78b590e6c273` | same |
+
+`verify-production-whatsapp.mjs` 6/6 on the new bundle. The local frontend suite
+is green: `verify:composer-focus` 4/4, `verify:realtime` 9/9,
+`verify:chat-loading` 8/8, `verify:dialog-a11y` 8/8, `verify:loading-gate`,
+`verify:merge-equivalence`.
+
+`verify-whatsapp-realtime-inbound.mjs` was reporting 9/9 and then never
+terminating (no explicit `process.exit`; the bundled React/jsdom graph keeps the
+event loop alive), so its result and exit code were unreadable and it looked like
+a hang. It now exits with the status it prints.
