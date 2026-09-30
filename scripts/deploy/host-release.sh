@@ -39,7 +39,6 @@ PROJECT_DIR="/opt/tezlify"
 COMPOSE_FILE="$PROJECT_DIR/docker-compose.prod.yml"
 FRONTEND_DIR="$PROJECT_DIR/frontend_candidate"
 NETWORK="tezlify_tezlify-internal"
-ENV_FILE="$PROJECT_DIR/.env.production"
 BACKEND_SERVICE="backend"
 GATEWAY_SERVICE="gateway"
 API_HEALTH_URL="https://api.130.162.247.20.sslip.io/health"
@@ -210,9 +209,19 @@ log "yeni backend imaj: $NEW_BACKEND_DIGEST"
 # ---------------------------------------------------------------------------
 log "adacik container kaldiriliyor (gateway KAPALI, PORT=8001): $CANDIDATE_NAME"
 docker rm -f "$CANDIDATE_NAME" >/dev/null 2>&1 || true
+# Adacigin ortami CANLI container'dan kopyalanir, `.env.production`dan DEGIL:
+# o dosya tirnakli degerler icerir ve `docker run --env-file` bunlari compose
+# gibi soymez (ilk denemede DATABASE_URL basindaki tirnak yuzunden SQLAlchemy
+# URL'i parse edemedi ve adacik olctu — cutover olmadigi icin canli etkilenmedi).
+# Canli container'in env'i, compose'un cozumledigi halin ta kendisidir.
+CANDIDATE_ENV_FILE="$RELEASE_DIR/candidate-env"
+docker inspect "tezlify-$BACKEND_SERVICE" --format '{{range .Config.Env}}{{println .}}{{end}}' \
+  | grep -E '^[A-Za-z_][A-Za-z0-9_]*=' > "$CANDIDATE_ENV_FILE" \
+  || die "adacik ortami canli container'dan okunamadi"
+log "adacik ortami canlidan kopyalandi: $(wc -l < "$CANDIDATE_ENV_FILE" | tr -d ' ') degisken"
 docker run -d --name "$CANDIDATE_NAME" \
   --network "$NETWORK" \
-  --env-file "$ENV_FILE" \
+  --env-file "$CANDIDATE_ENV_FILE" \
   -e PORT=8001 \
   -e GATEWAY_ENCRYPTION_KEY= \
   -e SKIP_JOB_RECOVERY=true \
