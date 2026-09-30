@@ -62,3 +62,69 @@ wrong reason.
 - Real A -> B -> C -> A conversation switching.
 - Group chats.
 - Physical iOS keyboard behaviour (safe-area, viewport resize).
+
+---
+
+## Pass 2 — 2026-09-30: live reports, root causes, proof
+
+Committed as `01e41be`, `5f932c0`, `5f24d60` and deployed to
+`ubuntu@130.162.247.20:/opt/tezlify` (`.deployed-commit` = `5f24d60`).
+
+### Why the earlier fixes were not live
+
+The production checkout was still at `70d0395`. The backend image had been
+built before the source was updated, so the running container lacked
+`resolve_gate_phase`, `resolve_has_more` and the "plain open never blocks on the
+provider" read path; the served frontend bundle was built before the
+hydration-merge and gate edits. Both were rebuilt from `git archive HEAD` and
+verified by hash — backend `whatsapp_service.py 47e39a11…`, `events.py
+6bae3146…`, gateway `events.js 6a2eddc1…`, and the live bundle md5
+`f56c995e…` equals the local build.
+
+### Report -> root cause -> fix
+
+1. **A sent message looked duplicated.** The conversation hydrator
+   concatenated each revalidated page onto the painted thread
+   (`[...fetched, ...existing]`), so every list refresh or WS revalidation
+   re-added every row. Both hydration paths now merge by identity
+   (`mergeWhatsAppMessages`). `5f932c0`.
+2. **The loading screen closed early.** Gateway `session_sync_completed` was
+   translated to `phase='ready'` in the hook and to `sessionSync.phase='ready'`
+   in the page while the backend's own first sync (chats snapshot + contacts +
+   messages + empty-chat backfill) was still running. Both now re-ask the single
+   authority (`GET /whatsapp/loading-gate`). `5f932c0` + `01e41be`.
+3. **Opening a conversation was slow.** The running backend image predated the
+   measured fix that returns local rows immediately on a plain open instead of
+   awaiting the gateway history round-trip (~3–4 s observed live). Rebuilding
+   the image was the fix; no new code was needed.
+4. **A refresh after QR pairing showed an unfinishable gate.**
+   `resolve_gate_phase` derived the phase from in-memory job/gateway state and
+   checked `avatars_missing` before `ready` — none of which survive a restart.
+   It now returns `ready` from the durable
+   `whatsapp_sessions.initial_sync_completed_at` (verified on session 112:
+   `2026-09-30 12:47:07`), never lets avatars hold the gate, and the frontend
+   only blocks on `syncing_history`. `01e41be` + `5f932c0`.
+5. **`event_outbox` / `lid_mappings` FK 23503** (24 + 8 in one day). No-Create
+   ephemeral pairings have no `gateway_sessions` row by design, so every
+   QR-window durable write failed. The outbox and LID persistence now mirror
+   the `registerSession`/lease guard and resume after `connection.open` promotes
+   the session. `5f24d60`.
+
+The Caddy `/ws` 502s were backend downtime during deploy windows (the two most
+recent ones are this deploy's own container recreate); the backend is healthy
+with `RestartCount=0` and has not 502'd since.
+
+### Log provenance — not application bugs
+
+The other PostgreSQL statements in the 2026-09-30 log were ad-hoc diagnostics
+run through `psql`, not application SQL: `SELECT ... FROM
+public.history_sync_states` (the table is `whatsapp_private.history_sync_states`),
+`table_name LIKE %history%` (unquoted), `contacts.avatar_url` (it lives in
+`contacts.custom_attributes`), `conversations.avatar_url` (no such column), the
+`messages.created_at` GROUP BY and the `UNION` syntax error. None of them is
+produced by the product.
+
+The two genuine insert races (`uq_contact_user_phone`,
+`uq_msg_conv_wa_message_id`) already have savepoint handling in the source —
+the duplicate is caught and ignored — but the production image that logged them
+predated those fixes and has now been replaced.
