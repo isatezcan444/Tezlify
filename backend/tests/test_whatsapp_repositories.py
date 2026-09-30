@@ -298,6 +298,71 @@ async def test_message_repo_watermark_and_keyset(tmp_path):
             cursor_ms = hydration_cursor_ms([m1, m2, m3])
             assert cursor_ms == int(t1.timestamp() * 1000)
 
+    async def test_keyset_pagination_does_not_skip_or_repeat_equal_timestamps(self, db_session_factory):
+        """Messages sharing a timestamp must page through exactly once.
+
+        A batch sent in the same second, or hydrated from a provider chunk,
+        routinely shares created_at. If the cursor were only `time < cutoff`,
+        every remaining message of that batch would be skipped or repeated
+        depending on which side of the boundary the cursor fell. The query
+        breaks the tie on id, and this is the case that proves it.
+
+        Production currently has zero colliding timestamps in the last 7 days,
+        so this is a latent failure, not an active one — which is exactly why
+        it needs a test rather than an observation.
+        """
+        from backend.app.models.conversation import Conversation
+        from backend.app.models.message import Message, MessageDirection, MessageType
+        from backend.app.models.conversation import ConversationMessageStatus
+        from datetime import datetime, timezone
+
+        user_id = "pagination-equal-ts-user"
+        async with db_session_factory() as db:
+            conv = Conversation(
+                user_id=user_id,
+                contact_id="pagination-equal-ts-contact",
+                channel="whatsapp",
+            )
+            db.add(conv)
+            await db.flush()
+
+            # Five messages, ALL sharing one timestamp: the exact shape a
+            # provider chunk or a fast burst produces.
+            shared = datetime(2026, 3, 1, 12, 0, 0, tzinfo=timezone.utc)
+            rows = [
+                Message(
+                    user_id=user_id,
+                    conversation_id=conv.id,
+                    direction=MessageDirection.INBOUND,
+                    message_type=MessageType.TEXT,
+                    body=f"same-ts-{i}",
+                    sender_phone="+905550001122",
+                    recipient_phone="ME",
+                    external_timestamp=shared,
+                    status=ConversationMessageStatus.RECEIVED,
+                )
+                for i in range(5)
+            ]
+            db.add_all(rows)
+            await db.commit()
+            for r in rows:
+                await db.refresh(r)
+
+            # Page through with a page size of 2, following before_row.
+            seen: list[int] = []
+            page = await select_messages_keyset(db, user_id, conv.id, limit=2)
+            guard = 0
+            while page:
+                seen.extend(m.id for m in page)
+                if len(page) < 2:
+                    break
+                page = await select_messages_keyset(db, user_id, conv.id, limit=2, before_row=page[-1])
+                guard += 1
+                assert guard < 20, "pagination did not terminate"
+
+            assert len(seen) == 5, f"expected every message exactly once, saw {len(seen)}"
+            assert len(set(seen)) == 5, f"a message was repeated across pages: {seen}"
+
 
 @pytest.mark.asyncio
 async def test_build_message_from_gateway_and_exists(tmp_path):
