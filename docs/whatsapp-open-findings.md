@@ -299,3 +299,76 @@ is green: `verify:composer-focus` 4/4, `verify:realtime` 9/9,
 terminating (no explicit `process.exit`; the bundled React/jsdom graph keeps the
 event loop alive), so its result and exit code were unreadable and it looked like
 a hang. It now exits with the status it prints.
+
+## Pass 5 — 2026-09-30 (18:11 UTC): reactions ship, and the release pipeline earns its gates
+
+Message reactions are live end to end (`16252b0`): one row per
+`(message_id, reactor_jid)` with `emoji=''` as a withdrawn row kept in place, the
+gateway routing `reactionMessage` to its own event before dedup/bookkeeping,
+the echo path skipping outbound bookkeeping, `POST …/messages/{id}/reactions`,
+bubble chips with a quick bar and the full picker, and the conversation badge
+computed from the newest reaction on the *newest* message (batch fetch, no N+1).
+Backend gate: 678 passed / 4 skipped, including 13 new reaction tests; the
+gateway chain covers `test-message-reactions.mjs`; `tsc` is clean and the DOM
+gates pass.
+
+### Four defects the release runs exposed in the pipeline itself
+
+The gates were written to fail before touching traffic, and they did — every one
+of the four failures below left production serving the previous release:
+
+1. **The host checkout had no `host-release.sh`.** The ssh command ran a script
+the drifted checkout did not contain. It now fetches origin and checks out that
+one path from the target SHA, so the script that runs and the code it deploys are
+the same git object, while the reset itself still lives inside the host script
+behind `--force-reset`.
+2. **The candidate read a quoted `DATABASE_URL`.** `.env.production` has 13
+quoted lines; compose strips those quotes, `docker run --env-file` does not, so
+SQLAlchemy saw a leading `"` and the candidate never booted. The candidate now
+copies the running container's environment — faithful by construction. After the
+fix it was healthy in 3s and the same boot created `message_reactions` in
+production Postgres.
+3. **The record could roll back a verified release.** `.deployed-commit` was
+written before the audit file, and a heredoc expanding nested command
+substitutions aborted the record step — the trap then rolled back a release that
+had already passed every hash and public-health check, and the record named a SHA
+that was no longer running. The record is now written last, the previous value is
+restored on rollback, and a release past its verification gates is never rolled
+back for a bookkeeping failure.
+4. **The cutover did not adopt the built image.** Compose considered the
+container up to date (`up -d --dry-run backend` printed `Running`) while
+`tezlify-backend:latest` had moved, so two consecutive releases replaced nothing
+while their records named the new image. The cutover now uses `--force-recreate`
+and asserts the live image IDs equal the freshly built digests, recording the
+live IDs in `release.json`.
+
+### Deploy proof (`1a48712`, backend + gateway + frontend)
+
+| Evidence | Value |
+| --- | --- |
+| `.deployed-commit` | `1a48712a759a14fde1c1ed64d4f00f17db42368a` |
+| live backend image | `sha256:8de4da…881a9` (= `release.json.backend_image`, `live_backend_image`) |
+| live gateway image | `sha256:3a6609…f16c5` (= record) |
+| `events.py` in container | `71f92e8291eb` = git blob at the target SHA |
+| `reactions.py` in container | `de6058a8fcb9` = git blob |
+| gateway `session-manager.js` | `e8a1c0f57ceb` = git blob |
+| live `index.html` | byte-identical to the local build (`7bba6025…`) |
+| new route | `POST …/messages/1/reactions` → 401, bogus path → 404 |
+| production table | `select count(*) from message_reactions` → 0 (created by the new image) |
+| `verify-production-whatsapp.mjs` | 6/6 on the new bundle |
+| rollback | `bash scripts/deploy/host-release.sh --rollback-to 20260930T181136Z` |
+
+The local check retries each frontend file before reporting drift: right after
+the directory swap Caddy briefly served the previous `index.html`, which is a
+timing artefact, not drift — the bytes matched a minute later.
+
+### Residual, stated honestly
+
+No reaction has been sent or received through a real WhatsApp session yet: the
+evidence is the shipped code, the live route, the created table and the gates —
+not an observed peer reaction. The badge answers “which reaction should the
+conversation list show” with the newest reaction on the newest message; that rule
+is a product choice, not a WhatsApp contract. `ensure_message_reactions_table`
+only creates the table, so any future column change needs its own migration. And
+the test suite still runs on SQLite while production is PostgreSQL — the next
+gap worth closing.
