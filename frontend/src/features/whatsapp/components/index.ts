@@ -3,6 +3,8 @@ export * from './ChatBubble';
 export * from './ChatComposer';
 export * from './ChatThread';
 export * from './ConversationList';
+export * from './DocumentCard';
+export * from './LinkPreviewCard';
 export * from './NewChatModal';
 export * from './SessionCard';
 export * from './TemplateSelectModal';

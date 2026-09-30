@@ -326,6 +326,28 @@ export type MessageDirection = 'INBOUND' | 'OUTBOUND';
 export type MessageType = 'TEXT' | 'IMAGE' | 'DOCUMENT' | 'AUDIO' | 'VIDEO' | 'STICKER' | 'LOCATION' | 'CONTACT' | 'TEMPLATE' | 'UNKNOWN' | 'OTHER';
 export type ConversationMessageStatus = 'PENDING' | 'RECEIVED' | 'SENT' | 'DELIVERED' | 'READ' | 'FAILED';
 
+/**
+ * Sunucu tarafinda cozulmus link onizlemesi.
+ *
+ * `image_url` UZAK adres DEGIL, kimlik dogrulamali proxy yoludur
+ * (`/api/v1/whatsapp/link-preview/image?u=<hash>`). Uzak gorseli dogrudan
+ * yuklemek kullanicinin IP'sini sizdirir ve saglayicinin referrer/CORS
+ * kurallarina takilir; proxy ikisi de cozer.
+ *
+ * `kind` hangi kartin cizilecegini soyler: LINK | VIDEO | IMAGE | DOCUMENT.
+ * `embed_url` yalnizca izin listesindeki saglayicilar icin doludur
+ * (YouTube) — keyfi URL'ler asla iframe'e konmaz.
+ */
+export interface LinkPreview {
+  url: string;
+  kind: 'LINK' | 'VIDEO' | 'IMAGE' | 'DOCUMENT';
+  title?: string | null;
+  description?: string | null;
+  site_name?: string | null;
+  image_url?: string | null;
+  embed_url?: string | null;
+}
+
 export interface MessageReaction {
   /** Mesaj reaksiyonu: kisi basina mesaj basina TEK ifade.
    * `emoji` HER ZAMAN doludur; geri cekilmis satirlar sunucudan hic gelmez
@@ -361,6 +383,11 @@ export interface Message {
   /** Bu mesaja birakilan ifadeler (kisi basina tek). Sunucu her zaman bu
    * anahtari dondurur; yoksa bos dizi. */
   reactions?: MessageReaction[];
+  /** Govdedeki link icin sunucu tarafinda cozulmus onizleme. `null`/yok =
+   * onizleme yok VEYA henuz cozulmedi — ikisi de ayni sekilde ele alinir
+   * (kart cizilmez), cunku ikisi de kullaniciya gosterilecek bir sey
+   * oldugunu soylemez. */
+  link_preview?: LinkPreview | null;
   external_timestamp?: string;
   created_at: string;
 }

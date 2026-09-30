@@ -1,14 +1,12 @@
 import React, { useState, useLayoutEffect } from 'react';
-import { 
-  Check, 
-  CheckCheck, 
-  AlertCircle, 
-  FileText, 
-  Image as ImageIcon, 
-  Music, 
-  Video, 
-  MapPin, 
-  Download,
+import {
+  Check,
+  CheckCheck,
+  AlertCircle,
+  Image as ImageIcon,
+  Music,
+  Video,
+  MapPin,
   Eye,
   RotateCcw,
   Loader2,
@@ -24,6 +22,8 @@ import { formatMessageTime } from '../../../lib/utils';
 import { finishWaLatency } from '../lib/whatsappLatency';
 import { getConversationDisplayName } from '../lib/whatsappIdentity';
 import { EmojiPicker } from './EmojiPicker';
+import { DocumentCard } from './DocumentCard';
+import { LinkPreviewCard } from './LinkPreviewCard';
 import { groupReactions } from '../lib/whatsappReactions';
 
 /** WhatsApp Web'in tepki cubugunda gosterdigi altı hizli ifade. */
@@ -168,6 +168,25 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({ message, isGroup = fal
     }
   };
 
+  /**
+   * Metin govdesi + (varsa) link onizleme karti.
+   *
+   * WhatsApp Web onizlemeyi metnin ALTINA koyar; metin her zaman gorunur
+   * kalir. Onizleme yoksa (henuz cozulmemis veya basarisiz) yalnizca metin
+   * cizilir — "yukleniyor" iskeleti GOSTERILMEZ, cunku onizleme gelecek diye
+   * bir soz verilmemistir.
+   */
+  const renderTextWithPreview = (body: string) => (
+    <div className="space-y-1.5 min-w-0">
+      <p className="whitespace-pre-wrap [overflow-wrap:anywhere] break-words min-w-0">
+        {body}
+      </p>
+      {message.link_preview && (
+        <LinkPreviewCard preview={message.link_preview} isOutbound={!isInbound} />
+      )}
+    </div>
+  );
+
   const renderMediaContent = () => {
     switch (message.message_type) {
       case 'IMAGE':
@@ -204,35 +223,13 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({ message, isGroup = fal
 
       case 'DOCUMENT':
         return (
-          <div className="space-y-2 max-w-[280px]">
-            <div className="flex items-center space-x-3 p-2.5 rounded-xl bg-slate-200/60 dark:bg-white/[0.06] border border-black/5 dark:border-white/10">
-              <div className="w-9 h-9 rounded-lg bg-[#7367F0]/15 text-[#7367F0] flex items-center justify-center shrink-0">
-                <FileText className="w-5 h-5" />
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-xs font-bold truncate text-slate-800 dark:text-slate-100">
-                  {message.media_filename || t('leads.documentFallbackName')}
-                </p>
-                <p className="text-[10px] font-mono text-slate-500 dark:text-slate-400 truncate">
-                  {message.media_mime_type || 'application/pdf'}
-                </p>
-              </div>
-              <Tooltip content={t('leads.documentReady')}>
-                {message.media_url ? (
-                  <a
-                    href={message.media_url}
-                    download={message.media_filename || true}
-                    className="p-1.5 rounded-lg bg-black/5 dark:bg-white/5 text-slate-500 dark:text-slate-400 hover:text-[#7367F0] transition-colors cursor-pointer"
-                  >
-                    <Download className="w-4 h-4" />
-                  </a>
-                ) : (
-                  <div className="p-1.5 rounded-lg bg-black/5 dark:bg-white/5 text-slate-500 dark:text-slate-400">
-                    <Download className="w-4 h-4" />
-                  </div>
-                )}
-              </Tooltip>
-            </div>
+          <div className="space-y-2">
+            <DocumentCard
+              filename={message.media_filename}
+              mimeType={message.media_mime_type}
+              url={message.media_url}
+              isOutbound={!isInbound}
+            />
             {message.media_caption && (
               <p className="whitespace-pre-wrap break-words font-medium text-xs">
                 {message.media_caption}
@@ -267,7 +264,12 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({ message, isGroup = fal
               <video
                 controls
                 preload="metadata"
-                src={message.media_url}
+                // `#t=0.1` medya fragment'i tarayiciya ILK KAREYE atlamasini
+                // soyler; bu sayede balon oynatilmadan once siyah bir
+                // dikdortgen degil, videonun kendi karesi gorunur. Sunucu
+                // tarafinda thumbnail uretmek yeni bir bagimlilik (ffmpeg)
+                // gerektirirdi; bu cozum ayni sonucu bagimliliksiz verir.
+                src={message.media_url.includes('#') ? message.media_url : `${message.media_url}#t=0.1`}
                 className="w-full max-h-60 rounded-xl border border-black/5 dark:border-white/10 bg-black"
               />
             ) : (
@@ -306,22 +308,29 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({ message, isGroup = fal
             </div>
           );
         }
-        return (
-          // Sorun 11: overflow-wrap:anywhere — uzun URL/JID mesaj govdesi
-          // baloncuğu asla yatay olarak genişletemez (WhatsApp Web davranışı).
-          <p className="whitespace-pre-wrap [overflow-wrap:anywhere] break-words min-w-0">
-            {message.body || t('leads.mediaFallback')}
-          </p>
-        );
+        return renderTextWithPreview(message.body || t('leads.mediaFallback'));
       }
+
+      case 'STICKER':
+        // Cikartma: balon icinde ciplak gorsel olarak durur. Onceden hicbir
+        // durumu yoktu ve varsayilan dala dusup "medya" yer tutucusu
+        // gosteriyordu.
+        return message.media_url ? (
+          <img
+            src={message.media_url}
+            alt={t('whatsapp.stickerAlt')}
+            className="w-32 h-32 object-contain"
+          />
+        ) : (
+          <div className="flex flex-col items-center justify-center p-4 text-slate-500 dark:text-slate-400">
+            <ImageIcon className="w-8 h-8 mb-1 opacity-60" />
+            <span className="text-[11px] font-bold">{t('whatsapp.stickerUnavailable')}</span>
+          </div>
+        );
 
       case 'TEXT':
       default:
-        return (
-          <p className="whitespace-pre-wrap [overflow-wrap:anywhere] break-words min-w-0">
-            {message.body || t('leads.mediaFallback')}
-          </p>
-        );
+        return renderTextWithPreview(message.body || t('leads.mediaFallback'));
     }
   };
 
