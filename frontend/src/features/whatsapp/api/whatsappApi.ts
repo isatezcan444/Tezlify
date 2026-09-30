@@ -586,6 +586,36 @@ export const WhatsAppApi = {
     }
   },
 
+  /**
+   * Sohbeti ve o sohbete ait TUM mesajlari kalici olarak siler.
+   *
+   * GERI DONUSU YOKTUR ve WhatsApp konusmalari icin yedek bulunmaz; cagiran
+   * taraf kullanicidan onay almak zorundadir. Karsi tarafin cihazindaki gecmis
+   * silinmez (WhatsApp semantigi).
+   *
+   * `deleted: false` donerse bu bir BASARISIZLIKTIR: sunucu "sildim" demedi,
+   * arayuz de silinmis gibi davranamaz (AGENTS.md §1.1).
+   */
+  async deleteConversation(
+    conversationId: number,
+  ): Promise<{ id: number; deleted: boolean; messages_deleted: number; reactions_deleted: number }> {
+    const data = await apiSend<{
+      id: number;
+      deleted: boolean;
+      messages_deleted?: number;
+      reactions_deleted?: number;
+    }>(`/whatsapp/conversations/${conversationId}`, 'DELETE');
+    if (!data.deleted) {
+      throw new WhatsAppApiError('');
+    }
+    return {
+      id: data.id,
+      deleted: true,
+      messages_deleted: data.messages_deleted ?? 0,
+      reactions_deleted: data.reactions_deleted ?? 0,
+    };
+  },
+
   // Faz 7: QR sonrası gerçek initial-sync durumu (gateway Baileys progress).
   //
   // Faz 13: `gateway_available=false` iken `sync.phase` `"unavailable"` olur ve

@@ -1019,6 +1019,61 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     void loadConversations();
   }, [loadConversations]);
 
+  // Sohbet listesi satir menusu (asagi ok) eylemleri icin ortak gerekce:
+  // satirlar `React.memo` ile sarildigi icin bu callback'lerin kimligi SABIT
+  // olmali, aksi halde her render butun satirlari yeniden cizdirir. Canli
+  // degerler ref uzerinden okunur; bagimlilik listeleri bu yuzden bostur.
+  // (`statusChangeRef` tanimi, `handleStatusChange` bir `const` oldugu ve
+  // kimligi her render degistigi icin o fonksiyonun TANIMINDAN SONRA gelir.)
+
+  /**
+   * Sohbeti KALICI olarak siler (mesajlar ve reaksiyonlar dahil).
+   *
+   * Iki kural burada kilitlidir:
+   *
+   * 1. **Once acik onay.** Bu islem geri alinamaz ve yedegi yoktur; ayrica
+   *    karsi tarafin cihazindaki konusmayi SILMEZ, bunu onay metni acikca
+   *    soyler. Yanlislikla tetiklenebilecek bir yere konmaz.
+   * 2. **Basarisizlikta yerel state'e DOKUNULMAZ.** Once listeden dusup sonra
+   *    hata gostermek "silindi" izlenimi birakir; AGENTS.md §1.1 geregi
+   *    basarisiz bir silme basarili gibi gosterilemez.
+   */
+  const handleDeleteConversation = useCallback(async (convId: number) => {
+    const conv = conversationsRef.current.find((c) => c.id === convId);
+    const name = conv ? getConversationDisplayName(conv, tRef.current) : '';
+    const confirmed = await toastRef.current.confirm({
+      title: tRef.current('whatsapp.deleteChatConfirmTitle'),
+      message: tRef.current('whatsapp.deleteChatConfirmBody').replace('{name}', name),
+      confirmText: tRef.current('whatsapp.deleteChat'),
+      variant: 'danger',
+    });
+    if (!confirmed) return;
+
+    try {
+      const res = await WhatsAppRepository.deleteConversation(convId);
+      setConversations((prev) => prev.filter((c) => c.id !== convId));
+      // Yuklenmis mesaj tamponu da dusmeli; aksi halde ayni id yeniden acilirsa
+      // eski mesajlar hayalet olarak geri gelir.
+      setMessagesMap((prev) => {
+        if (!(convId in prev)) return prev;
+        const next = { ...prev };
+        delete next[convId];
+        return next;
+      });
+      if (selectedConvRef.current?.id === convId) setSelectedConv(null);
+      toastRef.current.success(
+        tRef.current('whatsapp.deleteChatDone').replace('{count}', String(res.messages_deleted)),
+        tRef.current('common.success'),
+      );
+    } catch (err: any) {
+      console.warn('[WhatsAppHubPage] Sohbet silinemedi:', err);
+      toastRef.current.error(
+        err?.message || tRef.current('whatsapp.deleteChatFailed'),
+        tRef.current('common.error'),
+      );
+    }
+  }, []);
+
   const handleOpenLead = async (leadId: number) => {
     const rawPhone = selectedConv?.lead_phone || (selectedConv as any)?.phone || '';
     const displayName = selectedConv ? getConversationDisplayName(selectedConv, t) : t('whatsapp.customerLabel');
@@ -1080,6 +1135,23 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       );
     }
   };
+
+  // `handleStatusChange` bir `const` ve kimligi her render degisir; satir memo'su
+  // bozulmasin diye ref'e alinip uc sabit sarmalayici uretilir.
+  const statusChangeRef = useRef(handleStatusChange);
+  statusChangeRef.current = handleStatusChange;
+  const handleArchiveConversation = useCallback(
+    (convId: number) => void statusChangeRef.current(convId, 'ARCHIVED'),
+    [],
+  );
+  const handleCloseConversation = useCallback(
+    (convId: number) => void statusChangeRef.current(convId, 'CLOSED'),
+    [],
+  );
+  const handleReopenConversation = useCallback(
+    (convId: number) => void statusChangeRef.current(convId, 'ACTIVE'),
+    [],
+  );
 
   const activeSendMessage = async (text: string) => {
     if (!selectedConv || !text.trim()) return;
@@ -1808,6 +1880,23 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         );
         if (selectedConvRef.current && selectedConvRef.current.id === convId) {
           setSelectedConv((prev) => (prev ? { ...prev, unread_count: 0 } : prev));
+        }
+      }
+
+      // Sohbet baska bir oturumda silindiginde liste kendiliginden temizlenir.
+      // Aksi halde silinmis bir sohbet listede kalir ve acildiginda bos bir
+      // mesaj akisi gosterir — kullanici bunu "mesajlar kayboldu" sanir.
+      if (eventData.event === 'conversation_deleted') {
+        const convId = Number(eventData.conversation_id);
+        if (Number.isInteger(convId)) {
+          setConversations((prev) => prev.filter((c) => c.id !== convId));
+          setMessagesMap((prev) => {
+            if (!(convId in prev)) return prev;
+            const next = { ...prev };
+            delete next[convId];
+            return next;
+          });
+          if (selectedConvRef.current?.id === convId) setSelectedConv(null);
         }
       }
 
@@ -2573,6 +2662,12 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
               hasMore={hasMoreConvs}
               loadingMore={loadingMoreConvs}
               onSelect={handleSelectConversation}
+              // Satir menusu (asagi ok). Dordunun de kimligi sabittir; satir
+              // memo'su bu yuzden bozulmaz.
+              onArchive={handleArchiveConversation}
+              onClose={handleCloseConversation}
+              onReopen={handleReopenConversation}
+              onDelete={handleDeleteConversation}
             />
           </div>
 

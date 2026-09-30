@@ -438,4 +438,17 @@ export class WhatsAppRepository {
   ): Promise<{ id: number; status: string }> {
     return WhatsAppApi.updateConversationStatus(conversationId, status);
   }
+
+  /**
+   * Sohbeti ve o sohbete ait tum mesajlari kalici olarak siler.
+   *
+   * Mock fallback YOKTUR: silme geri alinamaz ve yedegi yoktur, bu yuzden
+   * "yerel olarak silinmis gibi gostermek" sahte bir basari olurdu
+   * (AGENTS.md §1.1). Gercek cagri basarisiz olursa hata cagirana tasinir.
+   */
+  static async deleteConversation(
+    conversationId: number,
+  ): Promise<{ id: number; deleted: boolean; messages_deleted: number; reactions_deleted: number }> {
+    return WhatsAppApi.deleteConversation(conversationId);
+  }
 }

@@ -1,9 +1,10 @@
 import React, { useState, useRef, useCallback } from 'react';
-import { MessageSquare, Archive, CheckCircle2, Inbox, Mail, MessageSquarePlus, RefreshCw, RotateCcw, Users, AlertTriangle } from 'lucide-react';
+import { MessageSquare, Archive, CheckCircle2, ChevronDown, Inbox, Mail, MessageSquarePlus, RefreshCw, RotateCcw, Trash2, Users, AlertTriangle } from 'lucide-react';
 import { Conversation, ConversationStatus } from '../../../types';
 import { Avatar } from '../../../components/ui/Avatar';
 import { Badge } from '../../../components/ui/badge';
 import { Button } from '../../../components/ui/button';
+import { Dropdown, DropdownItem } from '../../../components/ui/Dropdown';
 import { SearchInput } from '../../../components/forms/SearchInput';
 import { Skeleton } from '../../../components/ui/Skeleton';
 import { useI18n } from '../../../context/I18nContext';
@@ -55,6 +56,12 @@ export interface ConversationListProps {
   loadError?: string | null;
   /** Error state'teki "tekrar dene" eylemi. */
   onRetryLoad?: () => void;
+  /** WhatsApp Web paritesi: satir uzerindeki "asagi ok" menusu. Verilmezse
+   * menu hic render edilmez (eski cagiranlar aynen calismaya devam eder). */
+  onArchive?: (id: number) => void;
+  onClose?: (id: number) => void;
+  onReopen?: (id: number) => void;
+  onDelete?: (id: number) => void;
 }
 
 // PHASE 2.K.6 experiment: the conversation row extracted from the inline map, but
@@ -77,19 +84,35 @@ interface ConversationRowProps {
    * string olarak gecilir ki React.memo deger karsilastirmasiyla calissin. */
   lastReactionEmoji?: string;
   status: ConversationStatus;
+  /** WhatsApp arsiv durumu (gateway metadata, `is_archived`). `status`ten AYRI
+   * tutulur cunku ikisi farkli kaynaklardan gelir: `status` CRM durumudur,
+   * `is_archived` ise telefondan gelen arsiv durumudur. Liste filtresi ikisini
+   * de "arsivli" sayar; menu de AYNI tanimi kullanmali, aksi halde Arsiv
+   * sekmesindeki bir sohbet menusunde "Arsivle" gorunur. Ilkel boolean olarak
+   * gecilir ki React.memo deger karsilastirmasiyla calissin. */
+  isArchived?: boolean;
   unreadCount: number;
   isGroup?: boolean;
   selected: boolean;
   typing: boolean;
   isSyncing: boolean;
   onSelect: (id: number) => void;
+  /** Satir uzerindeki "asagi ok" menusunun eylemleri (WhatsApp Web paritesi).
+   * Hepsi opsiyonel: hicbiri verilmezse menu hic cizilmez. */
+  onArchive?: (id: number) => void;
+  onClose?: (id: number) => void;
+  onReopen?: (id: number) => void;
+  onDelete?: (id: number) => void;
 }
 
-const ConversationRowComponent: React.FC<ConversationRowProps> = ({ id, name, avatarUrl, phone, lastMessagePreview, lastMessageAt, lastMessageState, messageCount, lastReactionEmoji, status, unreadCount, isGroup, selected, typing, isSyncing, onSelect }) => {
+const ConversationRowComponent: React.FC<ConversationRowProps> = ({ id, name, avatarUrl, phone, lastMessagePreview, lastMessageAt, lastMessageState, messageCount, lastReactionEmoji, status, isArchived, unreadCount, isGroup, selected, typing, isSyncing, onSelect, onArchive, onClose, onReopen, onDelete }) => {
   const { t, language } = useI18n();
   const isRawJid = isRawWhatsAppJid(phone);
   const cleanPhone = extractCleanPhone(phone);
   const formatTime = (dateStr?: string) => formatConversationTime(dateStr, language);
+  // Menu body'ye portallandigi icin, imlec menuye girdiginde satir artik hover
+  // SAYILMAZ ve tetikleyici ok kaybolurdu. Bu durum acikca tutulur.
+  const [menuOpen, setMenuOpen] = useState(false);
   let lastMsg: string;
   if (typing) lastMsg = '__typing__';
   else if (lastMessagePreview) lastMsg = lastMessagePreview;
@@ -97,7 +120,57 @@ const ConversationRowComponent: React.FC<ConversationRowProps> = ({ id, name, av
   else if (lastMessageState === 'NO_MESSAGES' || (messageCount === 0 && lastMessageState !== 'REPAIRING' && lastMessageState !== 'LOADING')) lastMsg = t('leads.noMessagesTitle');
   else if (lastMessageState === 'REPAIRING' || lastMessageState === 'LOADING' || (typeof messageCount === 'number' && messageCount > 0)) lastMsg = t('whatsapp.lastMessageSyncing');
   else lastMsg = t('leads.noMessagesTitle');
+
+  // Menu ogeleri sohbetin MEVCUT durumundan turetilir: arsivlenmis bir sohbete
+  // "Arsivle" gostermek yanlis bir vaat olurdu (WhatsApp Web de bunu yapmaz).
+  // "Arsivli" tanimi liste filtresiyle AYNI olmali (is_archived VEYA CRM
+  // ARCHIVED); ayrisirsa Arsiv sekmesindeki satir menusunde "Arsivle" cikar.
+  const hasMenu = Boolean(onArchive || onClose || onReopen || onDelete);
+  const archivedLike = status === 'ARCHIVED' || Boolean(isArchived);
+  const menuItems: (DropdownItem | 'divider')[] = [];
+  if (archivedLike) {
+    if (onReopen) {
+      menuItems.push({
+        id: 'reopen',
+        label: t('whatsapp.reopen'),
+        icon: <RotateCcw className="w-3.5 h-3.5" />,
+        onClick: () => onReopen(id),
+      });
+    }
+  } else {
+    if (onArchive) {
+      menuItems.push({
+        id: 'archive',
+        label: t('whatsapp.archive'),
+        icon: <Archive className="w-3.5 h-3.5" />,
+        onClick: () => onArchive(id),
+      });
+    }
+    if (onClose) {
+      menuItems.push({
+        id: 'close',
+        label: t('whatsapp.close'),
+        icon: <CheckCircle2 className="w-3.5 h-3.5" />,
+        onClick: () => onClose(id),
+      });
+    }
+  }
+  if (onDelete) {
+    if (menuItems.length) menuItems.push('divider');
+    menuItems.push({
+      id: 'delete',
+      label: t('whatsapp.deleteChat'),
+      icon: <Trash2 className="w-3.5 h-3.5" />,
+      variant: 'danger',
+      onClick: () => onDelete(id),
+    });
+  }
+
   return (
+    // Sarmalayici `relative group`: menu TETIKLEYICIYE degil SATIRA baglidir.
+    // Menu, satirin <button>'i ile KARDES olarak durur — ic ice bir <button>
+    // gecersiz HTML olurdu ve menu tiklamasi satiri da secerdi.
+    <div className="relative group">
     <button
       type="button"
       data-conv-id={id}
@@ -130,7 +203,13 @@ const ConversationRowComponent: React.FC<ConversationRowProps> = ({ id, name, av
               {name}
             </h4>
           </div>
-          <span className="text-[10px] text-slate-400 font-medium shrink-0 ml-1">
+          {/* WhatsApp Web paritesi: ok gorunurken SAAT gizlenir — ikisi ayni
+              kosede durur ve ust uste binmemelidir. */}
+          <span
+            className={`text-[10px] text-slate-400 font-medium shrink-0 ml-1 transition-opacity ${
+              hasMenu && !menuOpen ? 'group-hover:opacity-0' : ''
+            }`}
+          >
             {lastMessageAt ? formatTime(lastMessageAt) : ''}
           </span>
         </div>
@@ -171,6 +250,35 @@ const ConversationRowComponent: React.FC<ConversationRowProps> = ({ id, name, av
         )}
       </div>
     </button>
+
+      {/* "Asagi ok" menusu — yalnizca hover/odakta gorunur (WhatsApp Web
+          paritesi). Menu `portal` ile body'ye tasinir; aksi halde listenin
+          `overflow-y-auto` kutusu tarafindan kirpilirdi. */}
+      {hasMenu && (
+        <div className="absolute top-2.5 right-2.5 z-20">
+          <Dropdown
+            portal
+            align="right"
+            onOpenChange={setMenuOpen}
+            trigger={
+              <span
+                role="button"
+                tabIndex={0}
+                aria-label={t('whatsapp.chatActions')}
+                title={t('whatsapp.chatActions')}
+                data-testid={`conv-menu-${id}`}
+                className={`inline-flex items-center justify-center p-1 rounded-lg text-slate-500 dark:text-slate-300 bg-white/90 dark:bg-black/40 border border-slate-200/70 dark:border-white/[0.08] shadow-xs transition-opacity cursor-pointer ${
+                  menuOpen ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100'
+                }`}
+              >
+                <ChevronDown className="w-3.5 h-3.5" />
+              </span>
+            }
+            items={menuItems}
+          />
+        </div>
+      )}
+    </div>
   );
 };
 
@@ -198,6 +306,10 @@ const ConversationListComponent: React.FC<ConversationListProps> = ({
   loadState,
   loadError = null,
   onRetryLoad,
+  onArchive,
+  onClose,
+  onReopen,
+  onDelete,
 }) => {
 
   const { t, language } = useI18n();
@@ -211,6 +323,17 @@ const ConversationListComponent: React.FC<ConversationListProps> = ({
     const c = conversationsRef.current.find((x) => x.id === cid);
     if (c) onSelect?.(c);
   }, [onSelect]);
+
+  // Satir menusu eylemleri de AYNI gerekceyle sabitlenir: satir `React.memo`
+  // ile sarildigi icin, kimligi her render'da degisen bir callback butun
+  // satirlarin yeniden cizilmesine yol acardi. Eylemler ref uzerinden okunur,
+  // boylece bu sarmalayicilarin kimligi HIC degismez.
+  const rowActionsRef = useRef({ onArchive, onClose, onReopen, onDelete });
+  rowActionsRef.current = { onArchive, onClose, onReopen, onDelete };
+  const handleArchiveById = useCallback((cid: number) => rowActionsRef.current.onArchive?.(cid), []);
+  const handleCloseById = useCallback((cid: number) => rowActionsRef.current.onClose?.(cid), []);
+  const handleReopenById = useCallback((cid: number) => rowActionsRef.current.onReopen?.(cid), []);
+  const handleDeleteById = useCallback((cid: number) => rowActionsRef.current.onDelete?.(cid), []);
   const [internalFilter, setInternalFilter] = useState<FilterTab>(activeFilter);
   const currentFilter = onFilterChange ? activeFilter : internalFilter;
 
@@ -468,12 +591,17 @@ const ConversationListComponent: React.FC<ConversationListProps> = ({
               messageCount={conv.message_count}
               lastReactionEmoji={conv.last_reaction?.emoji || undefined}
               status={conv.status}
+              isArchived={Boolean(conv.is_archived)}
               unreadCount={conv.unread_count}
               isGroup={conv.is_group}
               selected={selectedId === conv.id}
               typing={!!typingMap?.[conv.id]}
               isSyncing={isSyncing}
               onSelect={handleSelectById}
+              onArchive={handleArchiveById}
+              onClose={handleCloseById}
+              onReopen={handleReopenById}
+              onDelete={handleDeleteById}
             />
           ))
         )}
