@@ -28,7 +28,8 @@
     "verify:ws-lifecycle": "node scripts/verify-ws-lifecycle.mjs",
     "verify:chat-loading": "node scripts/verify-chat-loading-lifecycle.mjs",
     "verify:whatsapp-theme": "node scripts/verify-whatsapp-theme.mjs",
-    "verify:production-whatsapp": "node scripts/verify-production-whatsapp.mjs"
+    "verify:production-whatsapp": "node scripts/verify-production-whatsapp.mjs",
+    "measure:whatsapp-latency": "node scripts/measure-whatsapp-latency.mjs"
   },
   "dependencies": {
     "class-variance-authority": "^0.7.1",
