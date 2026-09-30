@@ -19,6 +19,10 @@ import { translateApiError } from '../features/whatsapp/lib/translateError';
 import { mergeDeliveryStatus, mergeWhatsAppMessages } from '../features/whatsapp/lib/whatsappMessageMerge';
 import { WhatsAppRepository } from '../features/whatsapp/data/whatsappRepository';
 import { compareConversationsByActivityDesc, compareMessagesChronological, restoreConversationActivity } from '../features/whatsapp/lib/whatsappOrdering';
+import {
+  createConversationHydrator,
+  type ConversationHydrator,
+} from '../features/whatsapp/lib/conversationHydration';
 import { isRawWhatsAppJid as isRawWhatsAppIdentity, identityKeys } from '../features/whatsapp/lib/whatsappIdentity';
 import { PEER_TYPING_TTL_MS, pruneExpiredTyping, resolveSyncDisplayCounts } from '../features/whatsapp/lib/whatsappSync';
 import { applyConversationEvent } from '../features/whatsapp/lib/whatsappConversationPatch';
@@ -145,12 +149,59 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   //    tum chat UI'ini error'a dusurmez).
   const [convLoadState, setConvLoadState] = useState<'loading' | 'ready' | 'error'>('loading');
   const [convLoadError, setConvLoadError] = useState<string | null>(null);
-  const [messageLoadState, setMessageLoadState] = useState<Record<number, 'loading' | 'ready' | 'error'>>({});
+  const [messageLoadState, setMessageLoadState] = useState<Record<number, 'idle' | 'loading' | 'ready' | 'error'>>({});
   const [messageLoadError, setMessageLoadError] = useState<Record<number, string>>({});
-  // One authoritative hydration per conversation. Superseded requests are
-  // aborted and, even if an adapter ignores AbortSignal, cannot commit state.
-  const messageHydrationRequestsRef = useRef(new Map<number, { controller: AbortController; token: symbol }>());
   const messagePagingRequestsRef = useRef(new Map<number, AbortController>());
+  // Conversations whose server preview is newer than what we hold. The list
+  // refresh records it here; the revalidation effect below consumes it. This
+  // replaces a network call that used to live inside a setSelectedConv updater,
+  // where it fired on every list refresh and StrictMode ran it twice.
+  const conversationsNewerThanMessagesRef = useRef(new Map<number, string>());
+
+  // Wires the tested hydration lifecycle to this page's state. Created once
+  // (every dependency is a ref) and torn down on unmount, so no request can
+  // commit into a dead component.
+  const hydratorRef = useRef<ConversationHydrator<Message> | null>(null);
+  if (hydratorRef.current === null) {
+    hydratorRef.current = createConversationHydrator<Message>({
+      fetchMessages: (convId, init) =>
+        WhatsAppRepository.getConversationMessages(convId, { limit: 50, signal: init.signal }),
+      onMessages: (convId, messages, meta) => {
+        setMessagePaging((prev) => ({
+          ...prev,
+          [convId]: { hasMore: meta.has_more, oldest: meta.oldest ?? undefined, loading: false, error: false },
+        }));
+        setMessagesMap((prev) => ({ ...prev, [convId]: messages }));
+      },
+      getExisting: (convId) => messagesMapRef.current?.[convId] || [],
+      merge: (fetched, existing) => [...fetched, ...existing].sort(compareMessagesChronological),
+      describeError: (err) => {
+        const text = translateApiError(err, tRef.current);
+        return text || tRef.current('whatsapp.messagesLoadFailed');
+      },
+      timeoutMs: MESSAGE_LOAD_TIMEOUT_MS,
+    });
+  }
+  // Mirror the lifecycle into React state. The module owns the truth; this
+  // subscription is only so the existing UI (which reads React state) renders
+  // it, and so a transition re-renders exactly once.
+  useEffect(() => {
+    const h = hydratorRef.current;
+    if (!h) return undefined;
+    return h.subscribe((convId, state) => {
+      setMessageLoadState((prev) => (prev[convId] === state ? prev : { ...prev, [convId]: state }));
+      if (state === 'error') {
+        setMessageLoadError((prev) => ({ ...prev, [convId]: h.getError(convId) || '' }));
+      } else {
+        setMessageLoadError((prev) => {
+          if (!(convId in prev)) return prev;
+          const next = { ...prev };
+          delete next[convId];
+          return next;
+        });
+      }
+    });
+  }, []);
   const [convsLoading, setConvsLoading] = useState<boolean>(false);
   const [convSearch, setConvSearch] = useState<string>('');
   const [convFilter, setConvFilter] = useState<FilterTab>('ALL');
@@ -488,8 +539,16 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
             const currentMsgs = messagesMapRef.current?.[prev.id] || [];
             const lastMsg = currentMsgs[currentMsgs.length - 1];
             const isNewer = sanitized.last_message_at && (!lastMsg?.created_at || new Date(sanitized.last_message_at).getTime() > new Date(lastMsg.created_at).getTime());
+            // NO side effects in a state updater. This branch used to call
+            // hydrateConversationMessages here, which meant every list refresh
+            // (WebSocket event, background backfill, tab visibility) aborted the
+            // in-flight message fetch and started a new one — and StrictMode
+            // invoked the updater twice, doubling that. The fetch could then
+            // never finish, and the conversation sat on "Mesajlar yükleniyor"
+            // with no request behind it. The revalidation is driven by the
+            // effect below, which watches the preview timestamp.
             if (isNewer) {
-              void hydrateConversationMessages(prev.id);
+              conversationsNewerThanMessagesRef.current.set(prev.id, sanitized.last_message_at as string);
             }
             return sanitized;
           }
@@ -759,92 +818,11 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   // Faz 16 (Sorun 2/10): secilen sohbetin mesaj hidrasyonu sohbet BASINA
   // izlenir. Basarisizlik YALNIZCA o sohbeti error durumuna alir; mevcut
   // mesajlar SILINMEZ ve tum chat UI'i hata ekranina dusmez.
-  const hydrateConversationMessages = useCallback(async (convId: number) => {
-    const previous = messageHydrationRequestsRef.current.get(convId);
-    previous?.controller.abort();
-    const controller = new AbortController();
-    const token = Symbol(`conversation-${convId}`);
-    messageHydrationRequestsRef.current.set(convId, { controller, token });
-    let timedOut = false;
-    const timeout = window.setTimeout(() => {
-      timedOut = true;
-      controller.abort();
-    }, MESSAGE_LOAD_TIMEOUT_MS);
-    const isCurrent = () => messageHydrationRequestsRef.current.get(convId)?.token === token;
-
-    setMessageLoadState((prev) => (prev[convId] === 'loading' ? prev : { ...prev, [convId]: 'loading' }));
-    setMessageLoadError((prev) => {
-      if (!(convId in prev)) return prev;
-      const next = { ...prev };
-      delete next[convId];
-      return next;
-    });
-    try {
-      const res = await WhatsAppRepository.getConversationMessages(convId, {
-        limit: 50,
-        signal: controller.signal,
-      });
-      if (!isCurrent()) return;
-      if (!res || !Array.isArray(res.messages)) {
-        throw new Error(tRef.current('whatsapp.messagesLoadFailed'));
-      }
-      setMessagePaging((prev) => ({
-        ...prev,
-        [convId]: {
-          hasMore: Boolean(res.has_more),
-          oldest: res.oldest_message_id,
-          loading: false,
-          error: false,
-        },
-      }));
-      setMessagesMap((prev) => {
-        const existing = prev[convId] || [];
-        // Merge strategy: prevent wiping messages received via realtime while GET was in flight
-        const fetchedIds = new Set(res.messages.map((m) => m.id));
-        const fetchedWaIds = new Set(res.messages.map((m) => m.wa_message_id).filter(Boolean));
-        const fetchedClientIds = new Set(res.messages.map((m) => m.client_message_id).filter(Boolean));
-
-        const inFlightOrRealtime = existing.filter((m) => {
-          if (m.id && fetchedIds.has(m.id)) return false;
-          if (m.wa_message_id && fetchedWaIds.has(m.wa_message_id)) return false;
-          if (m.client_message_id && fetchedClientIds.has(m.client_message_id)) return false;
-          return true;
-        });
-
-        const merged = [...res.messages, ...inFlightOrRealtime].sort(compareMessagesChronological);
-
-        return {
-          ...prev,
-          [convId]: merged,
-        };
-      });
-      setMessageLoadState((prev) => ({ ...prev, [convId]: 'ready' }));
-      setMessageLoadError((prev) => {
-        if (!(convId in prev)) return prev;
-        const next = { ...prev };
-        delete next[convId];
-        return next;
-      });
-    } catch (err) {
-      if (!isCurrent()) return;
-      if (controller.signal.aborted && !timedOut) return;
-      // Tek sohbetin hidrasyon hatasi tum chat UI'ini error'a dusurmez:
-      // mesajlar korunur, yalnizca bu sohbet icin retry edilebilir state olur.
-      console.warn('[WhatsAppHubPage] Conversation messages load failed', {
-        conversation_id: convId,
-        error: err instanceof Error ? err.message : String(err),
-      });
-      setMessageLoadState((prev) => ({ ...prev, [convId]: 'error' }));
-      setMessageLoadError((prev) => ({
-        ...prev,
-        [convId]: timedOut
-          ? tRef.current('whatsapp.messagesLoadTimeout')
-          : translateApiError(err, tRef.current) || tRef.current('whatsapp.messagesLoadFailed'),
-      }));
-    } finally {
-      window.clearTimeout(timeout);
-      if (isCurrent()) messageHydrationRequestsRef.current.delete(convId);
-    }
+  // The lifecycle itself lives in features/whatsapp/lib/conversationHydration,
+  // where it is covered by verify:chat-loading-lifecycle. This wires it to the
+  // page's state; the ordering and merge rules stay the ones the tests pin.
+  const hydrateConversationMessages = useCallback((convId: number) => {
+    hydratorRef.current.hydrate(convId);
   }, []);
 
   // A conversation switch must not leave the previous pane's network work
@@ -852,25 +830,35 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   // after abort instead of rejecting immediately.
   useEffect(() => {
     const convId = selectedConv?.id;
+    // Captured now, not read in the cleanup: a ref's .current may point
+    // somewhere else by the time the cleanup runs.
+    const pagingRequests = messagePagingRequestsRef.current;
     return () => {
       if (!convId) return;
-      messageHydrationRequestsRef.current.get(convId)?.controller.abort();
-      messageHydrationRequestsRef.current.delete(convId);
-      messagePagingRequestsRef.current.get(convId)?.abort();
-      messagePagingRequestsRef.current.delete(convId);
+      // release() cancels the fetch AND clears 'loading' — see the note there.
+      hydratorRef.current?.release(convId);
+      pagingRequests.get(convId)?.abort();
+      pagingRequests.delete(convId);
       setMessagePaging((prev) => {
         const paging = prev[convId];
         return paging?.loading ? { ...prev, [convId]: { ...paging, loading: false } } : prev;
       });
+      // The message load state MUST leave 'loading' here. The abort makes the
+      // request's own catch return early (it is no longer the current request),
+      // so nothing else would ever clear it — the conversation would keep
+      // rendering "Mesajlar yükleniyor..." with no request behind it, and
+      // returning to it would not start a new load. Clearing to 'idle' means
+      // re-selecting it starts a clean fetch.
+      setMessageLoadState((prev) => (prev[convId] === 'loading' ? { ...prev, [convId]: 'idle' } : prev));
     };
   }, [selectedConv?.id]);
 
   useEffect(() => {
-    const hydrationRequests = messageHydrationRequestsRef.current;
     const pagingRequests = messagePagingRequestsRef.current;
     return () => {
-      for (const request of hydrationRequests.values()) request.controller.abort();
-      hydrationRequests.clear();
+      // Aborts every in-flight fetch and moves any 'loading' state out, so an
+      // unmounted page can never commit or leave a spinner behind.
+      hydratorRef.current?.dispose();
       for (const request of pagingRequests.values()) request.abort();
       pagingRequests.clear();
     };
@@ -910,6 +898,34 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     // replaced whenever unread counts or previews change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedConv?.id, reportReadSync, hydrateConversationMessages]);
+
+  // Revalidate the OPEN conversation when the list reports a newer preview.
+  //
+  // This replaces the call that used to sit inside the setSelectedConv updater.
+  // Two properties matter and neither held before:
+  //   - it only revalidates the conversation the user is actually looking at,
+  //     so a busy event stream cannot pile requests onto the open thread;
+  //   - it compares the server timestamp against the newest message we already
+  //     hold, so a list refresh that changed nothing (an unread badge, a
+  //     contact name) does NOT restart the fetch.
+  //
+  // Without the second property this is the same bug in a new place: a fetch
+  // restarted on every event would never complete.
+  useEffect(() => {
+    const convId = selectedConv?.id;
+    if (!convId) return;
+    const stamp = conversationsNewerThanMessagesRef.current.get(convId);
+    if (!stamp) return;
+    conversationsNewerThanMessagesRef.current.delete(convId);
+
+    const held = messagesMapRef.current?.[convId] || [];
+    const newest = held[held.length - 1]?.created_at;
+    if (newest && new Date(stamp).getTime() <= new Date(newest).getTime()) return;
+
+    void hydrateConversationMessages(convId);
+  // The trigger is the preview timestamp the list just handed us, so the
+  // effect runs once per genuine change rather than once per render.
+  }, [selectedConv?.id, selectedConv?.last_message_at, hydrateConversationMessages]);
 
   // Faz 11: Manuel "Eşitle" artık ağır sync'i HTTP'de BEKLEMİYOR — POST /sync
   // kısa ömürlü job'ı tetikler (202); tüm ilerleme ve tamamlama mevcut WS

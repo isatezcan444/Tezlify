@@ -65,18 +65,18 @@ export const WhatsAppSyncGate: React.FC<WhatsAppSyncGateProps> = ({
 
   return (
     <div
-      className="flex-1 w-full h-full min-h-[460px] flex flex-col items-center justify-center px-6 py-12 text-center select-none bg-[#111b21] text-[#e9edef]"
+      className="flex-1 w-full h-full min-h-[460px] flex flex-col items-center justify-center px-6 py-12 text-center select-none bg-white text-slate-800 dark:bg-[#111b21] dark:text-[#e9edef]"
       role="status"
       aria-live="polite"
     >
       <div className="w-full max-w-[340px] flex flex-col items-center">
         {/* WhatsApp Logo Icon — WhatsApp Web tam eslesmesi */}
-        <div className="text-[#8696a0] mb-8">
+        <div className="text-slate-400 dark:text-[#8696a0] mb-8">
           <WhatsAppIcon className="w-16 h-16 opacity-80" />
         </div>
 
         {/* WhatsApp Web Tarzi Ince Ilerleme Cubugu */}
-        <div className="w-full h-[3px] rounded-full bg-[#202c33] overflow-hidden mb-6">
+        <div className="w-full h-[3px] rounded-full bg-slate-200 dark:bg-[#202c33] overflow-hidden mb-6">
           <div
             className="h-full rounded-full bg-[#00a884] transition-all duration-500 ease-out"
             style={{ width: `${Math.max(5, progress)}%` }}
@@ -84,25 +84,25 @@ export const WhatsAppSyncGate: React.FC<WhatsAppSyncGateProps> = ({
         </div>
 
         {/* Baslik ve Sifreleme Ibaresi */}
-        <h2 className="text-xl font-bold tracking-tight text-[#e9edef]">
+        <h2 className="text-xl font-bold tracking-tight text-slate-800 dark:text-[#e9edef]">
           {t('whatsapp.syncGateTitle')}
         </h2>
 
-        <div className="mt-2 flex items-center justify-center space-x-1.5 text-xs text-[#8696a0]">
+        <div className="mt-2 flex items-center justify-center space-x-1.5 text-xs text-slate-500 dark:text-[#8696a0]">
           <Lock className="w-3.5 h-3.5" />
           <span>{t('whatsapp.syncGateEncryption')}</span>
         </div>
 
         {/* Canli Asama ve Yuzde Durumu */}
         {!isError && (
-          <div className="mt-6 flex flex-col items-center space-y-1 text-xs text-[#8696a0]">
+          <div className="mt-6 flex flex-col items-center space-y-1 text-xs text-slate-500 dark:text-[#8696a0]">
             <div className="flex items-center space-x-2 font-medium">
               <span className="text-emerald-400 font-semibold">{resolvedStage}</span>
-              <span className="text-[#8696a0]">·</span>
+              <span className="text-slate-400 dark:text-[#8696a0]">·</span>
               <span className="font-mono text-emerald-400 font-bold">{progress}%</span>
             </div>
 
-            <p className="text-[11px] text-[#667781] mt-1">
+            <p className="text-[11px] text-slate-500 dark:text-[#667781] mt-1">
               {isProfileStage && avatarCounts
                 ? t('whatsapp.syncingAvatarsCount', { count: avatarCounts.avatars_missing })
                 : `${t('whatsapp.syncingContactsCount', { count: counts.contacts })} · ${t(
@@ -136,7 +136,7 @@ export const WhatsAppSyncGate: React.FC<WhatsAppSyncGateProps> = ({
                 </Button>
               )}
               {onContinueAnyway && (
-                <Button size="sm" variant="ghost" onClick={onContinueAnyway} className="text-[#8696a0] hover:text-[#e9edef] text-xs">
+                <Button size="sm" variant="ghost" onClick={onContinueAnyway} className="text-slate-500 dark:text-[#8696a0] hover:text-[#e9edef] text-xs">
                   {t('whatsapp.syncGateContinueAnyway')}
                 </Button>
               )}
@@ -148,7 +148,7 @@ export const WhatsAppSyncGate: React.FC<WhatsAppSyncGateProps> = ({
           <button
             type="button"
             onClick={onContinueAnyway}
-            className="mt-8 text-xs font-semibold text-[#8696a0] underline underline-offset-2 hover:text-[#e9edef] transition-colors cursor-pointer"
+            className="mt-8 text-xs font-semibold text-slate-500 dark:text-[#8696a0] underline underline-offset-2 hover:text-[#e9edef] transition-colors cursor-pointer"
           >
             {t('whatsapp.syncGateContinueAnyway')}
           </button>

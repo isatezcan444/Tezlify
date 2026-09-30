@@ -942,9 +942,66 @@ try {
     const hub = await readFile(path.join(frontendRoot, 'src/pages/WhatsAppHubPage.tsx'), 'utf8');
     const hook = await readFile(path.join(frontendRoot, 'src/features/whatsapp/hooks/useWhatsAppConversation.ts'), 'utf8');
     const api = await readFile(path.join(frontendRoot, 'src/features/whatsapp/api/whatsappApi.ts'), 'utf8');
-    assert.ok(hub.includes('previous?.controller.abort()'), 'same-conversation hydration must abort its predecessor');
-    assert.ok(hub.includes('if (!isCurrent()) return'), 'a superseded hydration must not commit stale state');
+    // The hydration lifecycle now lives in its own module so it can be tested
+    // by execution (verify:chat-loading-lifecycle) rather than by reading source
+    // text. These assertions moved with it; the behaviour they pin is the same,
+    // and the behavioural suite is strictly stronger.
+    const hydration = await readFile(
+      path.join(frontendRoot, 'src/features/whatsapp/lib/conversationHydration.ts'),
+      'utf8',
+    );
+    assert.ok(
+      hydration.includes('previous.controller.abort()'),
+      'same-conversation hydration must abort its predecessor',
+    );
+    assert.ok(
+      hydration.includes('if (!isCurrent()) return'),
+      'a superseded hydration must not commit stale state',
+    );
+    // The deadlock guard: leaving a conversation must take the state out of
+    // 'loading', or the spinner survives with no request behind it.
+    assert.ok(
+      hydration.includes("publish(conversationId, 'idle')"),
+      'releasing a conversation must clear its loading state',
+    );
     assert.ok(hub.includes('MESSAGE_LOAD_TIMEOUT_MS'), 'message hydration must have a bounded timeout');
+    assert.ok(
+      hub.includes('hydratorRef.current?.release(convId)'),
+      'a conversation switch must release the previous conversation’s hydration',
+    );
+    // A state updater must stay pure. The hydration call that used to live
+    // inside setSelectedConv is what caused the endless loading. The body is
+    // extracted by brace matching, not by a fixed window, so this cannot be
+    // fooled by code that merely sits nearby.
+    const extractUpdater = (src, marker) => {
+      const at = src.indexOf(marker);
+      if (at === -1) return '';
+      const open = src.indexOf('{', at);
+      let depth = 0;
+      for (let i = open; i < src.length; i += 1) {
+        if (src[i] === '{') depth += 1;
+        else if (src[i] === '}') {
+          depth -= 1;
+          if (depth === 0) return src.slice(open, i + 1);
+        }
+      }
+      return '';
+    };
+    // Comments are stripped first: the explanatory comment for this very
+    // invariant names the function, and a naive scan would flag its own
+    // documentation.
+    const stripComments = (src) =>
+      src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
+    const updater = extractUpdater(stripComments(hub), 'setSelectedConv((prev) =>');
+    assert.ok(updater.length > 0, 'the setSelectedConv updater must be findable');
+    assert.ok(
+      !updater.includes('hydrateConversationMessages'),
+      'a state updater must never start a network request (StrictMode double-invokes it)',
+    );
+    assert.ok(
+      updater.includes('conversationsNewerThanMessagesRef'),
+      'the updater should only record intent',
+    );
     assert.ok(api.includes('params?.signal'), 'the API layer must forward AbortSignal');
     assert.match(
       hook,
