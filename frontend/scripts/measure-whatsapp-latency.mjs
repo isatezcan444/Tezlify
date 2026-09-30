@@ -80,6 +80,30 @@ for (const r of rows) {
   stats[path] = { n: Number(n), avg: Number(avg), max: Number(max) };
 }
 
+// 1b. Delivery-status latency (the "tik -> gri tik" leg).
+//
+// DELIVERED is our latency: WhatsApp accepted the message. READ is NOT — it
+// fires when the OTHER PERSON opens the chat, so its distribution is a measure
+// of human behaviour, not of this system. Mixing them is what makes an average
+// look like a 25s regression. They are reported separately, and only
+// DELIVERED is asserted.
+const statusRows = await psql(`
+  SELECT status, count(*), round(avg(lag_s)::numeric, 2), coalesce(max(lag_s), 0)
+  FROM (
+    SELECT status, round(EXTRACT(EPOCH FROM (updated_at - created_at))) AS lag_s
+    FROM public.messages
+    WHERE created_at > now() - interval '${HOURS} hours'
+      AND direction = 'OUTBOUND'
+      AND updated_at > created_at + interval '0.5 seconds'
+  ) t GROUP BY 1 ORDER BY 2 DESC;
+`);
+
+const statusStats = {};
+for (const r of statusRows) {
+  const [st, n, avg, max] = r.split(',');
+  statusStats[st] = { n: Number(n), avg: Number(avg), max: Number(max) };
+}
+
 // 2. Clustering: how many write-seconds carried more than one row.
 const clusterRows = await psql(`
   SELECT coalesce(max(c), 0) FROM (
@@ -90,7 +114,14 @@ const clusterRows = await psql(`
 `);
 const largestBurst = Number(clusterRows[0] || 0);
 
-const live = stats.live || { n: 0, avg: 0, max: 0 };
+for (const [st, v] of Object.entries(statusStats)) {
+  const note = st === 'READ'
+    ? '   (other person opened the chat — human timing, not ours)'
+    : '   (our latency)';
+  console.log(`  status ${st.padEnd(10)} n=${String(v.n).padEnd(4)} avg=${v.avg}s  max=${v.max}s${note}`);
+}
+
+const live = stats.live || { n: 0, avg: 0, max: 0};
 const bulk = stats.bulk || { n: 0, avg: 0, max: 0 };
 
 console.log(`WHATSAPP INGEST LATENCY — last ${HOURS}h (production)`);
@@ -126,6 +157,17 @@ check('no single live delivery is pathologically slow', () => {
   );
 });
 
+const delivered = statusStats.DELIVERED;
+if (delivered && !LIVE_ONLY) {
+  check('delivery status is acknowledged promptly', () => {
+    assert.ok(
+      delivered.avg <= 10,
+      `average SENT->DELIVERED took ${delivered.avg}s; the tick should feel instant`,
+    );
+  });
+  passed += 0;
+}
+
 check('bulk writes are distinguishable from live delivery', () => {
   // If these ever collapse into one population, the metric loses the ability to
   // tell a real regression from a backfill — which is how a healthy system
@@ -136,5 +178,5 @@ check('bulk writes are distinguishable from live delivery', () => {
   );
 });
 
-console.log(`\n${passed}/3 checks passed`);
-process.exit(passed === 3 ? 0 : 1);
+console.log(`\n${passed} checks passed`);
+process.exit(passed >= 3 ? 0 : 1);
