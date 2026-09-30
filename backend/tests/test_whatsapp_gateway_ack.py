@@ -99,6 +99,41 @@ async def test_gateway_pong_frame_is_silently_ignored(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_gateway_endpoint_annotations_resolve_at_call_time() -> None:
+    """Every name in the gateway endpoint's annotations must be importable.
+
+    The production bridge was dead for a full deploy cycle because the ingest
+    worker added `Dict[str, Any]` annotations to a module that only imported
+    `Optional`. Without `from __future__ import annotations`, Python evaluates a
+    def's annotations when the `def` executes — so the endpoint imported
+    cleanly, every test passed, and the FIRST real gateway connection raised
+    NameError. The gateway then reconnected every three seconds, forever,
+    while the backend logged only "baglandi" and never a disconnect.
+
+    Importing the module is therefore not a sufficient check. Each annotation
+    is resolved explicitly, which is exactly what a connection does.
+    """
+    import typing
+
+    import backend.app.main as main_module
+
+    endpoint = getattr(main_module, "gateway_websocket_endpoint", None)
+    assert endpoint is not None, "the gateway websocket endpoint is missing"
+
+    # get_type_hints raises NameError for an unknown name — the exact failure
+    # that took the bridge down in production.
+    hints = typing.get_type_hints(endpoint)
+    assert hints, "the endpoint should carry annotations"
+
+    # The names used by the endpoint's own body must exist in the module scope.
+    for name in ("Dict", "Any", "Optional"):
+        assert hasattr(typing, name), f"typing.{name} is missing"
+        assert name in dir(main_module), f"{name} is used but not imported by main"
+
+    assert callable(endpoint)
+
+
+@pytest.mark.asyncio
 async def test_gateway_pong_message_is_handled(monkeypatch) -> None:
     socket = FakeGatewaySocket({"type": "pong"})
     ingest = AsyncMock()
