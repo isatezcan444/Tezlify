@@ -71,6 +71,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
 
   const attachMenuRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const draftInputRef = useRef<HTMLInputElement>(null);
   const lastTypingSignalRef = useRef<number>(0);
   const typingActiveRef = useRef<boolean>(false);
   const onTypingRef = useRef<((typing: boolean) => void) | undefined>(onTyping);
@@ -149,6 +150,28 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
   // See lib/sendLock.
   const sendLockRef = useRef(createSendLock());
 
+  /**
+   * WhatsApp Web keeps the cursor in the draft field after Enter, so the next
+   * message can be typed straight away.
+   *
+   * Focus was being lost on every send because the draft input was rendered
+   * `disabled` while `sending` (see `isInputDisabled` below), and a focused
+   * element that becomes disabled is blurred by the browser. Re-enabling it
+   * never restores focus, so the user had to click the field again — the whole
+   * point of Enter-to-send is that they do not.
+   *
+   * The draft is now left enabled during a send and focus is reclaimed here.
+   * It is only reclaimed when nothing else has claimed it: a deliberate click
+   * into the attachment menu or the template picker must not be undone.
+   */
+  const refocusDraft = useCallback(() => {
+    const el = draftInputRef.current;
+    if (!el || el.disabled) return;
+    const active = typeof document !== 'undefined' ? document.activeElement : null;
+    if (active && active !== document.body && active !== el) return;
+    el.focus();
+  }, []);
+
   const handleSubmit = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     const clean = text.trim();
@@ -157,17 +180,27 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
     // request is made, and report nothing to the user because nothing failed.
     if (sendLockRef.current.isLocked()) return;
 
+    // Snapshot the RAW draft, not the trimmed text: `clean` drops trailing
+    // whitespace, so comparing the live value against it would leave a draft
+    // of "merhaba " behind after a successful send.
+    const draft = text;
     setSending(true);
     try {
       await sendLockRef.current.run(async () => {
         await onSend(clean);
-        setText('');
+        // Clear only the draft we actually sent. The field stays editable
+        // while the send is in flight (you can start the next message before
+        // the last one lands), so anything typed in the meantime is a NEW
+        // message and must survive; an unconditional `setText('')` would have
+        // silently eaten it.
+        setText((current) => (current === draft ? '' : current));
         stopTypingSignal();
       });
     } catch (err) {
       console.error('[ChatComposer] Send error:', err);
     } finally {
       setSending(false);
+      refocusDraft();
     }
   };
 
@@ -195,6 +228,8 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
       setMediaCaption('');
       setMediaFilename('');
       stopTypingSignal();
+      // The modal took focus; hand it back to the draft field it closed over.
+      refocusDraft();
     } catch (err) {
       console.error('[ChatComposer] Media send error:', err);
     } finally {
@@ -212,6 +247,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
       setIsFileModalOpen(false);
       setPendingFile(null);
       setFileCaption('');
+      refocusDraft();
     } catch (err) {
       console.error('[ChatComposer] File send error:', err);
     } finally {
@@ -219,8 +255,12 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
     }
   };
 
+  // `sending` gates the ACTIONS (send, attach, template) so an in-flight send
+  // still renders its spinner and cannot be re-triggered by a click. It must
+  // NOT gate the draft input: disabling a focused field blurs it, which is how
+  // Enter-to-send used to drop the cursor out of the composer.
   const isActionDisabled = disabled || isClosed || sending;
-  const isInputDisabled = isActionDisabled || !isWindowOpen;
+  const isInputDisabled = disabled || isClosed || !isWindowOpen;
 
   return (
     <div className="p-3 border-t border-slate-200/80 dark:border-white/[0.08] bg-slate-50/50 dark:bg-black/20">
@@ -359,6 +399,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
             yatay genişletemez. */}
         <div className="relative flex-1 min-w-0">
           <input
+            ref={draftInputRef}
             type="text"
             value={text}
             disabled={isInputDisabled}
@@ -407,7 +448,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
               type="submit"
               size="sm"
               aria-label={t('leads.sendNow')}
-              disabled={isInputDisabled || !text.trim()}
+              disabled={isActionDisabled || !text.trim()}
               className="bg-[#25D366] hover:bg-[#1EBE5D] text-white px-4 py-2.5 font-bold shadow-sm cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 h-auto"
             >
               {sending ? (

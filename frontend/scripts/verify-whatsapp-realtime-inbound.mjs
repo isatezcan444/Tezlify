@@ -82,6 +82,7 @@ window.Element.prototype.scrollIntoView = function scrollIntoView() {};
 
 // ------------------------------------------------------------------- bundling
 const tmp = await mkdtemp(path.join(os.tmpdir(), 'tezlify-diag-'));
+let exitCode = 0;
 const entry = path.join(tmp, 'entry.ts');
 const out = path.join(tmp, 'bundle.mjs');
 const stub = path.join(tmp, 'stub.ts');
@@ -368,8 +369,16 @@ try {
   if (fails.length) {
     console.error('\nREALTIME INBOUND REGRESSION: active ChatThread did not receive:');
     for (const f of fails) console.error('  - ' + f.label);
-    process.exitCode = 1;
   }
+  exitCode = fails.length ? 1 : 0;
+} catch (err) {
+  console.error(`\nFAIL: ${err?.message ?? err}`);
+  exitCode = 1;
 } finally {
   await rm(tmp, { recursive: true, force: true });
+  // The bundled React/jsdom graph leaves handles behind that keep the event
+  // loop alive. The result is already reported above, so exit explicitly:
+  // without this the process never terminates, the script looks like it hung,
+  // and a caller (or CI) can never read its exit code.
+  process.exit(exitCode);
 }
