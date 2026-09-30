@@ -149,6 +149,17 @@ export function rememberLidPair(store, lid, phoneJid) {
   const p = asPn(phoneJid);
   if (!store || !l || !p || !isLidJid(l) || isLidJid(p)) return false;
   if (store.lidToJid.get(l) === p) return false;
+  // Keep both indexes as a bijection.  A refreshed mapping can move a LID to
+  // another phone JID (or reuse a phone JID for a newer LID); retaining either
+  // inverse entry makes raw-message lookup resolve through stale identity.
+  const previousPhone = store.lidToJid.get(l);
+  if (previousPhone && store.jidToLid.get(previousPhone) === l) {
+    store.jidToLid.delete(previousPhone);
+  }
+  const previousLid = store.jidToLid.get(p);
+  if (previousLid && previousLid !== l && store.lidToJid.get(previousLid) === p) {
+    store.lidToJid.delete(previousLid);
+  }
   store.lidToJid.set(l, p);
   store.jidToLid.set(p, l);
   return true;

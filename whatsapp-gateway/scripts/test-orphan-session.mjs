@@ -49,7 +49,11 @@ async function capture(fn) {
   const logged = [];
   // pino-style: error(metaObject, message). Keep BOTH so assertions can read
   // the human-readable text, which is the whole point of the report.
-  console.error = (obj, message) => logged.push({ ...obj, message: message ?? obj?.message });
+  console.error = (obj, message) => logged.push(
+    typeof obj === 'string' && message === undefined
+      ? { message: obj }
+      : { ...obj, message: message ?? obj?.message },
+  );
   try {
     await fn();
   } finally {

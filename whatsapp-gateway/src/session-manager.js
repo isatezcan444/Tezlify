@@ -2252,8 +2252,10 @@ export function createSessionManager({
             // Re-read the session on every LID callback; the closure may be stale.
             const live = sessions.get(id);
             if (!live || live._deleted) return;
-            rememberLidPair(live.store, lid, phoneJid);
-            void lidRepository.persistLidMappingToDb(live.id, lid, phoneJid);
+            // `_applyLidMapping` owns both cache persistence and migration of
+            // pending contacts/chats/messages.  Pre-populating the cache here
+            // made its `rememberLidPair` guard return false, skipping all of
+            // those side effects and the canonical `lid_mapped` event.
             this._applyLidMapping(live, lid, phoneJid);
           },
         });

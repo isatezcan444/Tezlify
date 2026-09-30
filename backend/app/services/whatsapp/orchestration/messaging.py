@@ -318,9 +318,17 @@ class WhatsAppMessagingOrchestrator:
         gateway_error: Optional[str] = None
         try:
             session_row = await conversation_session(db, user_id, conv)
-            await gateway_op_or_mark_relink(
+            gateway_result = await gateway_op_or_mark_relink(
                 db, session_row, lambda gid: gateway_client.mark_conversation_read(gid, jid)
             )
+            # A transport-level 2xx is not proof that WhatsApp accepted the
+            # receipt.  The gateway deliberately returns ``success: false``
+            # when ``readMessages`` fails, so treating that payload as success
+            # would incorrectly clear the durable unread state.
+            if not isinstance(gateway_result, dict) or gateway_result.get("success") is not True:
+                gateway_ok = False
+                raw_error = gateway_result.get("error") if isinstance(gateway_result, dict) else None
+                gateway_error = str(raw_error or "INVALID_GATEWAY_RESPONSE")[:300]
         except WhatsAppRelinkRequired:
             gateway_ok = False
             gateway_error = "WHATSAPP_AUTH_RELINK_REQUIRED"

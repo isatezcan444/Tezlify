@@ -30,6 +30,23 @@ import { summarizeWaMessage } from '../messages/message-classifier.js';
 import { createSessionStore, messageTimestampMs, resolveChatActivitySeconds, rememberRawMessage } from '../messages/message-store.js';
 import { safeWriteEncrypted } from './socket-connector.js';
 
+export function resolveHistoryWaitersForChunk({
+  pendingHistoryWaiters,
+  inFlightHistoryFetches,
+  sessionId,
+  messagesByChat,
+  touchedChatKeys,
+}) {
+  for (const [flightKey, waiter] of pendingHistoryWaiters.entries()) {
+    if (waiter.sessionId !== sessionId || !touchedChatKeys.has(waiter.key)) continue;
+    const chatMsgs = messagesByChat.get(waiter.key) || [];
+    const matching = waiter.before ? chatMsgs.filter((m) => m.id < waiter.before) : chatMsgs;
+    waiter.resolve(matching);
+    pendingHistoryWaiters.delete(flightKey);
+    inFlightHistoryFetches.delete(flightKey);
+  }
+}
+
 export function bindSocketEvents({
   id,
   session,
@@ -629,14 +646,19 @@ export function bindSocketEvents({
         });
       }
       let storedMessages = 0;
+      const touchedHistoryKeys = new Set();
       for (const msg of historyMessages || []) {
         const jid = msg.key?.remoteJid;
-        if (!jid || msg.key?.id === '__history__') continue;
+        if (!jid) continue;
         if (isBroadcastOnlyJid(jid)) continue;
         if (msg.key?.senderLid && msg.key?.senderPn) applyLidMapping(msg.key.senderLid, msg.key.senderPn);
-        if (msg.message?.protocolMessage) continue;
         const key = normalizeJid(jid);
         if (isBroadcastOnlyJid(key)) continue;
+        // Even a sentinel/protocol-only row proves which chat this provider
+        // chunk answers; mark it before content filtering so an honestly empty
+        // history page completes its own waiter instead of timing out.
+        touchedHistoryKeys.add(key);
+        if (msg.key?.id === '__history__' || msg.message?.protocolMessage) continue;
         if (msg.key.id && msg.message) rememberRaw(key, msg.key.id, msg.message);
         const list = messagesByChat.get(key) || [];
         if (msg.key.id && list.some((m) => m.wa_message_id === msg.key.id)) continue;
@@ -648,15 +670,6 @@ export function bindSocketEvents({
         messagesByChat.set(key, list);
         storedMessages += 1;
       }
-      for (const [flightKey, waiter] of pendingHistoryWaiters.entries()) {
-        if (waiter.sessionId === session.id) {
-          const chatMsgs = messagesByChat.get(waiter.key) || [];
-          const matching = waiter.before ? chatMsgs.filter((m) => m.id < waiter.before) : chatMsgs;
-          waiter.resolve(matching);
-          pendingHistoryWaiters.delete(flightKey);
-          inFlightHistoryFetches.delete(flightKey);
-        }
-      }
       let storedChats = 0;
       for (const chat of historyChats || []) {
         const jid = chat.id || chat.jid;
@@ -667,6 +680,7 @@ export function bindSocketEvents({
         if (isLidJid(jid) && chat.pnJid) applyLidMapping(jid, chat.pnJid);
         const key = normalizeJid(jid);
         if (isBroadcastOnlyJid(key)) continue;
+        touchedHistoryKeys.add(key);
         const contact = contacts.get(key);
         const list = messagesByChat.get(key) || [];
         const newest = list.reduce(
@@ -718,6 +732,16 @@ export function bindSocketEvents({
         if (!merged.avatar_url && storedChats <= 5) void ensureChatAvatar(key);
         emitEvent({ event: 'conversation_updated', conversation: merged });
       }
+      // A history chunk belongs only to the chats it names.  Resolving every
+      // waiter for the session let chat A's realtime chunk prematurely finish
+      // chat B's concurrent request with an empty result.
+      resolveHistoryWaitersForChunk({
+        pendingHistoryWaiters,
+        inFlightHistoryFetches,
+        sessionId: session.id,
+        messagesByChat,
+        touchedChatKeys: touchedHistoryKeys,
+      });
       const cachedMessages = [...messagesByChat.values()].reduce((n, l) => n + l.length, 0);
       emitEvent({
         event: 'history_sync_completed',

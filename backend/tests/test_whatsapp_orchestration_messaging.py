@@ -302,6 +302,27 @@ class TestWhatsAppMessagingOrchestration:
                     assert conv.last_read_at is None
 
     @pytest.mark.asyncio
+    async def test_mark_conversation_read_gateway_negative_ack_is_not_success(self):
+        db = AsyncMock()
+        conv = MagicMock()
+        conv.id = 10
+        conv.unread_count = 4
+        conv.last_read_at = None
+
+        with patch("backend.app.services.whatsapp.orchestration.messaging._resolve_jid", return_value=(conv, "90555@s.whatsapp.net")):
+            with patch("backend.app.services.whatsapp.orchestration.messaging._conversation_session", return_value=MagicMock()):
+                with patch(
+                    "backend.app.services.whatsapp.orchestration.messaging._gateway_op_or_mark_relink",
+                    return_value={"success": False, "error": "provider read failed"},
+                ):
+                    res = await mark_conversation_read(db, "usr-1", 10)
+
+        assert res == {"success": False, "error": "provider read failed"}
+        assert conv.unread_count == 4
+        assert conv.last_read_at is None
+        db.commit.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_send_typing_success(self):
         db = AsyncMock()
         with patch("backend.app.services.whatsapp.orchestration.messaging._resolve_jid", return_value=(MagicMock(), "90555@s.whatsapp.net")):
@@ -336,4 +357,3 @@ class TestWhatsAppMessagingOrchestration:
                     res = await whatsapp_service.send_text_message(db, "usr-1", 10, "Facade message")
                     assert res["body"] == "Facade message"
                     assert res["wa_message_id"] == "wa_facade_1"
-

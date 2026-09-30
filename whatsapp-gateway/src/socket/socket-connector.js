@@ -18,6 +18,14 @@ import {
 import { createBaileysLogger, logger as defaultLogger } from '../utils/baileys-logger.js';
 import { lookupRawMessage } from '../messages/message-store.js';
 import { rememberLidPair, resolveJidKey, jidToPhone } from '../utils/whatsapp-identity.js';
+
+export function applyDiscoveredLidMapping(store, lidJid, phoneJid, onDiscovered) {
+  if (typeof onDiscovered === 'function') {
+    onDiscovered(lidJid, phoneJid);
+    return;
+  }
+  rememberLidPair(store, lidJid, phoneJid);
+}
 import { diagnostic, sessionRef, latency } from '../observability.js';
 
 export function encryptBuffer(buf, key) {
@@ -104,9 +112,7 @@ export async function createSocketForSession({
             if (pnUser && lidUser && !pnUser.includes('@') && !lidUser.includes('@')) {
               const lidJid = `${lidUser}@lid`;
               const phoneJid = `${pnUser}@s.whatsapp.net`;
-              if (typeof onLidMappingDiscovered === 'function') {
-                onLidMappingDiscovered(lidJid, phoneJid);
-              }
+              applyDiscoveredLidMapping(session.store, lidJid, phoneJid, onLidMappingDiscovered);
             }
           }
         }
@@ -164,10 +170,7 @@ export async function createSocketForSession({
     session.self_lid = resolveJidKey(store, state.creds.me.lid);
   }
   if (session.self_lid && session.self_jid) {
-    rememberLidPair(store, session.self_lid, session.self_jid);
-    if (typeof onLidMappingDiscovered === 'function') {
-      onLidMappingDiscovered(session.self_lid, session.self_jid);
-    }
+    applyDiscoveredLidMapping(store, session.self_lid, session.self_jid, onLidMappingDiscovered);
   }
 
   const versionStarted = performance.now();
