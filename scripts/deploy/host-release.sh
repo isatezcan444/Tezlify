@@ -114,7 +114,7 @@ rollback() {
     find "$FRONTEND_DIR" -mindepth 1 -delete || true
     cp -a "$FRONTEND_BACKUP/." "$FRONTEND_DIR/" || true
   fi
-  docker compose -f "$COMPOSE_FILE" up -d "$BACKEND_SERVICE" "$GATEWAY_SERVICE" || true
+  docker compose -f "$COMPOSE_FILE" up -d --force-recreate "$BACKEND_SERVICE" "$GATEWAY_SERVICE" || true
   if [ -f "$RELEASE_DIR/deployed-commit.before" ]; then
     cp -a "$RELEASE_DIR/deployed-commit.before" "$PROJECT_DIR/.deployed-commit" || true
     log ".deployed-commit onceki degere dondu: $(cut -c1-12 "$PROJECT_DIR/.deployed-commit" 2>/dev/null || echo '?')"
@@ -222,7 +222,9 @@ else
   docker compose -f "$COMPOSE_FILE" build "$BACKEND_SERVICE" "$GATEWAY_SERVICE"
 fi
 NEW_BACKEND_DIGEST="$(docker image inspect tezlify-backend:latest --format '{{.Id}}')"
+NEW_GATEWAY_DIGEST="$(docker image inspect tezlify-gateway:latest --format '{{.Id}}')"
 log "yeni backend imaj: $NEW_BACKEND_DIGEST"
+log "yeni gateway imaj: $NEW_GATEWAY_DIGEST"
 
 # ---------------------------------------------------------------------------
 # 3. ADACIK SAGLIK KONTROLU — eski container hala ayakta
@@ -263,12 +265,29 @@ fi
 # 4. CUTOVER — adacik saglikli olduktan SONRA trafik cevrilir
 # ---------------------------------------------------------------------------
 CUTOVER=1
-log "cutover: compose up -d backend gateway"
-docker compose -f "$COMPOSE_FILE" up -d "$BACKEND_SERVICE" "$GATEWAY_SERVICE"
+# `--force-recreate` SART: compose bir container'i "guncel" sayip recreate
+# etmediginde yeni imaj canliya hic oturmaz ve surum kaydi olmayan bir imaji
+# gosterir (olculdu: `up -d --dry-run backend` → "Container tezlify-backend
+# Running", oysa latest etiketi yeni imaja kaymisti). Yeniden yaratmayi
+# compose'un degisiklik sezgisine birakmak yerine acikca istiyoruz.
+log "cutover: compose up -d --force-recreate backend gateway"
+docker compose -f "$COMPOSE_FILE" up -d --force-recreate "$BACKEND_SERVICE" "$GATEWAY_SERVICE"
 if ! wait_healthy tezlify-backend 8000 180; then
   die "yeni backend 180 sn icinde saglikli olmadi"
 fi
 log "yeni backend saglikli"
+
+# Cutover'in gercekten YENI imaji calistirdigini kanitla: imaj kimligi
+# kayittaki ile ayni degilse "deploy oldu" demek yanlis olur.
+LIVE_BACKEND_IMAGE="$(docker inspect "tezlify-$BACKEND_SERVICE" --format '{{.Image}}')"
+LIVE_GATEWAY_IMAGE="$(docker inspect "tezlify-$GATEWAY_SERVICE" --format '{{.Image}}')"
+if [ "$LIVE_BACKEND_IMAGE" != "$NEW_BACKEND_DIGEST" ]; then
+  die "cutover sonrasi backend yeni imajda degil (canli=${LIVE_BACKEND_IMAGE:0:12} beklenen=${NEW_BACKEND_DIGEST:0:12})"
+fi
+if [ "$LIVE_GATEWAY_IMAGE" != "$NEW_GATEWAY_DIGEST" ]; then
+  die "cutover sonrasi gateway yeni imajda degil (canli=${LIVE_GATEWAY_IMAGE:0:12} beklenen=${NEW_GATEWAY_DIGEST:0:12})"
+fi
+log "cutover dogrulandi: backend=${LIVE_BACKEND_IMAGE:0:12} gateway=${LIVE_GATEWAY_IMAGE:0:12}"
 
 # Frontend: backend ayaga kalktiktan SONRA yazilir (yeni bundle yeni uclari
 # kullanabilir; tersi yonde eski bundle yeni uclara 404 alirdi).
@@ -338,6 +357,9 @@ cat > "$RELEASE_DIR/release.json" <<JSON
   "subject": $SUBJECT_JSON,
   "released_at": "$RELEASED_AT",
   "backend_image": "$NEW_BACKEND_DIGEST",
+  "gateway_image": "$NEW_GATEWAY_DIGEST",
+  "live_backend_image": "$LIVE_BACKEND_IMAGE",
+  "live_gateway_image": "$LIVE_GATEWAY_IMAGE",
   "previous_backend_image": "$PREV_BACKEND_IMAGE",
   "rollback_tags": {"backend": "tezlify-backend:pre-$TS", "gateway": "tezlify-gateway:pre-$TS"},
   "frontend": $FRONTEND_JSON
