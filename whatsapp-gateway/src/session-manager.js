@@ -1079,6 +1079,10 @@ export function createSessionManager({
       const isGroup = key.includes('@g.us');
       let gatewayOk = true;
       let gatewayError = null;
+      // Whether a read receipt actually reached WhatsApp, as opposed to there
+      // being nothing cached to send one for. Kept explicit so the caller can
+      // distinguish the two instead of reading a bare `success: true`.
+      let receiptSent = false;
       try {
         const list = messagesByChat.get(key) || [];
         const inbound = list.filter((m) => m.direction === 'INBOUND' && m.wa_message_id);
@@ -1091,6 +1095,7 @@ export function createSessionManager({
           }));
           if (keys.length) {
             await session.sock.readMessages(keys);
+            receiptSent = true;
           } else {
             // Okunacak bilinen gelen mesaj yok: gecersiz `{id: undefined}`
             // anahtari Baileys'i patlatir. Gonderilecek kanaat YOKTUR —
@@ -1099,6 +1104,7 @@ export function createSessionManager({
         } else if (inbound.length) {
           const newest = inbound[inbound.length - 1];
           await session.sock.readMessages([{ remoteJid: key, id: newest.wa_message_id, fromMe: false }]);
+          receiptSent = true;
         }
         // 1:1 sohbette bilinen gelen mesaj yoksa da saglayiciya gecersiz
         // anahtar gonderilmez (yukaridaki grup dalindaki ayni kural).
@@ -1117,7 +1123,9 @@ export function createSessionManager({
           gateway_session_id: session.id,
         });
       }
-      return gatewayOk ? { success: true } : { success: false, error: gatewayError };
+      return gatewayOk
+        ? { success: true, receipt_sent: receiptSent }
+        : { success: false, error: gatewayError };
     },
 
     // -----------------------------------------------------------------------

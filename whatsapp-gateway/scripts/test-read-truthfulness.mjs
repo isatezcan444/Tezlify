@@ -34,8 +34,17 @@ const chat = () => sm._storeOf(session).chats.get(jid);
 try {
   // -------------------------------------------------------------------------
   // 1. Provider rejects the read receipt -> honest failure, no state change
+  //
+  // An inbound message MUST be cached first, otherwise there is nothing to
+  // mark read, the provider is never called, and the socket that throws here
+  // is never reached — so the assertion would pass for the wrong reason.
+  // That is exactly how this test passed against the code it was written to
+  // catch: the fixture built a state where no receipt is ever attempted.
   // -------------------------------------------------------------------------
   sm._storeOf(session).chats.set(jid, { id: jid, unread_count: 4, last_message_at: null });
+  sm._storeOf(session).messagesByChat.set(jid, [
+    { wa_message_id: 'WA-REJECT-1', direction: 'INBOUND', body: 'hi', id: 1, status: 'RECEIVED' },
+  ]);
   session.sock = {
     async readMessages() {
       throw new Error('socket closed');

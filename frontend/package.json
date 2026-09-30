@@ -27,7 +27,8 @@
     "verify:url-sync": "node scripts/verify-url-sync.mjs",
     "verify:ws-lifecycle": "node scripts/verify-ws-lifecycle.mjs",
     "verify:chat-loading": "node scripts/verify-chat-loading-lifecycle.mjs",
-    "verify:whatsapp-theme": "node scripts/verify-whatsapp-theme.mjs"
+    "verify:whatsapp-theme": "node scripts/verify-whatsapp-theme.mjs",
+    "verify:production-whatsapp": "node scripts/verify-production-whatsapp.mjs"
   },
   "dependencies": {
     "class-variance-authority": "^0.7.1",
