@@ -12,7 +12,9 @@ import {
   Eye,
   RotateCcw,
   Loader2,
-  Clock
+  Clock,
+  SmilePlus,
+  Plus
 } from 'lucide-react';
 import { Conversation, Message } from '../../../types';
 import { Tooltip } from '../../../components/ui/Tooltip';
@@ -21,6 +23,11 @@ import { useI18n } from '../../../context/I18nContext';
 import { formatMessageTime } from '../../../lib/utils';
 import { finishWaLatency } from '../lib/whatsappLatency';
 import { getConversationDisplayName } from '../lib/whatsappIdentity';
+import { EmojiPicker } from './EmojiPicker';
+import { groupReactions } from '../lib/whatsappReactions';
+
+/** WhatsApp Web'in tepki cubugunda gosterdigi altı hizli ifade. */
+export const QUICK_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🙏'] as const;
 
 export interface ChatBubbleProps {
   message: Message;
@@ -29,13 +36,18 @@ export interface ChatBubbleProps {
   /** Sohbet basligi — gonderen adi sohbet adiyla aynissa tekrar edilmez. */
   chatTitle?: string;
   onRetry?: (messageId: number | string) => Promise<void> | void;
+  /** Mesaja ifade birakir/degistirir; bos `emoji` geri ceker. */
+  onReact?: (messageId: number | string, emoji: string) => Promise<void> | void;
 }
 
-const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({ message, isGroup = false, chatTitle, onRetry }) => {
+const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({ message, isGroup = false, chatTitle, onRetry, onReact }) => {
   const { t, language } = useI18n();
   const isInbound = message.direction === 'INBOUND';
   const [isLightboxOpen, setIsLightboxOpen] = useState(false);
   const [retrying, setRetrying] = useState(false);
+  const [isReactionBarOpen, setIsReactionBarOpen] = useState(false);
+  const [isPickerOpen, setIsPickerOpen] = useState(false);
+  const [reacting, setReacting] = useState(false);
   useLayoutEffect(() => {
     finishWaLatency('event_handler_to_message_commit_ms', message.id);
   }, [message]);
@@ -55,6 +67,47 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({ message, isGroup = fal
 
   const formatTime = (dateStr?: string) => {
     return formatMessageTime(dateStr, language);
+  };
+
+  // Tepki yalnizca KALICI (sayisal id'li) mesaja birakilabilir: iyimser satirin
+  // henuz sunucu kimligi yoktur ve `/reactions` ucu ona 404 donerdi.
+  const canReact = Boolean(onReact) && typeof message.id === 'number' && message.id > 0;
+
+  // Ayni ifadeyi birden fazla kisi biraktiysa tek rozet + sayac gosterilir
+  // (WhatsApp Web paritesi). "Benim" isaretli rozete tiklamak ifadeyi GERI CEKER.
+  // Gruplama kurali TEK bir yerde (`groupReactions`) yasar; test kapisi da
+  // ayni fonksiyonu dogrular.
+  const groupedReactions = React.useMemo(
+    () => groupReactions(message.reactions),
+    [message.reactions],
+  );
+
+  // Hizli tepki cubugu disina tiklaninca kapanir (WhatsApp Web paritesi).
+  const reactionBarRef = React.useRef<HTMLDivElement | null>(null);
+  React.useEffect(() => {
+    if (!isReactionBarOpen) return;
+    const onPointerDown = (e: MouseEvent) => {
+      if (!reactionBarRef.current) return;
+      if (!reactionBarRef.current.contains(e.target as Node)) setIsReactionBarOpen(false);
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    return () => document.removeEventListener('mousedown', onPointerDown);
+  }, [isReactionBarOpen]);
+
+  const handleReact = async (emoji: string) => {
+    if (!canReact || !onReact || reacting) return;
+    setIsReactionBarOpen(false);
+    setIsPickerOpen(false);
+    setReacting(true);
+    try {
+      await onReact(message.id, emoji);
+    } catch (err) {
+      // Hata YUTULMAZ ama balonu da dusurmez: cagiran (sohbet ekrani) iyimser
+      // rozeti geri alir ve toast gosterir; burada konsola iz birakilir.
+      console.error('[ChatBubble] Reaction failed:', err);
+    } finally {
+      setReacting(false);
+    }
   };
 
   // I-5 / F-13: the group sender label is resolved by the SAME canonical
@@ -305,6 +358,96 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({ message, isGroup = fal
             {renderStatusIcon()}
           </div>
 
+          {/* Tepki rozetleri: balonun ALT kenarinda (WhatsApp Web paritesi).
+              Kendi ifadeni geri cekmek icin rozete tiklamak yeterlidir. */}
+          {groupedReactions.length > 0 && (
+            <div
+              className={`flex flex-wrap items-center gap-1 mt-1.5 ${isInbound ? 'justify-start' : 'justify-end'}`}
+              data-testid={`reaction-chips-${message.id}`}
+            >
+              {groupedReactions.map((group) => (
+                <button
+                  key={group.emoji}
+                  type="button"
+                  onClick={() => handleReact(group.mine ? '' : group.emoji)}
+                  disabled={!canReact || reacting}
+                  title={group.mine ? t('whatsapp.reactionRemove') : t('whatsapp.reactionAdd')}
+                  className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[11px] leading-none border transition-all cursor-pointer disabled:cursor-not-allowed ${
+                    group.mine
+                      ? 'bg-[#7367F0]/15 border-[#7367F0]/60 text-[#7367F0] dark:text-[#c3bcf9]'
+                      : 'bg-black/5 dark:bg-white/10 border-black/10 dark:border-white/15'
+                  }`}
+                >
+                  <span>{group.emoji}</span>
+                  {group.count > 1 && <span className="font-bold opacity-80">{group.count}</span>}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Tepki tetikleyicisi: yalnizca fare balonun uzerindeyken gorunur
+              (WhatsApp Web paritesi). Inbound'da sagda, outbound'da solda. */}
+          {canReact && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                setIsReactionBarOpen((open) => !open);
+              }}
+              disabled={reacting}
+              title={t('whatsapp.reactionAdd')}
+              aria-label={t('whatsapp.reactionAdd')}
+              data-testid={`reaction-trigger-${message.id}`}
+              className={`absolute -top-3 ${
+                isInbound ? '-right-3' : '-left-3'
+              } z-10 p-1.5 rounded-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-white/10 shadow-md text-slate-500 dark:text-slate-300 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity cursor-pointer disabled:opacity-40`}
+            >
+              {reacting ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <SmilePlus className="w-3.5 h-3.5" />
+              )}
+            </button>
+          )}
+
+          {canReact && isReactionBarOpen && (
+            <div
+              ref={reactionBarRef}
+              data-testid={`reaction-bar-${message.id}`}
+              className={`absolute -top-11 ${
+                isInbound ? 'left-0' : 'right-0'
+              } z-20 flex items-center gap-0.5 px-1.5 py-1 rounded-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-white/10 shadow-lg animate-in fade-in slide-in-from-bottom-1 duration-150`}
+            >
+              {QUICK_REACTIONS.map((emoji) => (
+                <button
+                  key={emoji}
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void handleReact(emoji);
+                  }}
+                  disabled={reacting}
+                  className="w-7 h-7 grid place-items-center text-base rounded-full hover:bg-slate-100 dark:hover:bg-white/10 transition-colors cursor-pointer disabled:opacity-40"
+                >
+                  {emoji}
+                </button>
+              ))}
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setIsReactionBarOpen(false);
+                  setIsPickerOpen(true);
+                }}
+                title={t('whatsapp.reactionMore')}
+                aria-label={t('whatsapp.reactionMore')}
+                className="w-7 h-7 grid place-items-center rounded-full text-slate-400 hover:bg-slate-100 dark:hover:bg-white/10 transition-colors cursor-pointer"
+              >
+                <Plus className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
+
           {/* Failed State Retry Action */}
           {!isInbound && message.status === 'FAILED' && onRetry && (
             <div className="flex items-center justify-between space-x-2 mt-1.5 pt-1.5 border-t border-white/20 select-none">
@@ -328,6 +471,28 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({ message, isGroup = fal
           )}
         </div>
       </div>
+
+      {/* Tam ifade paneli: balonun icinde konumlanan genis panel sohbet
+          kaydirma alaninda KIRPILIR, bu yuzden ayni `EmojiPicker` modal
+          icinde acilir (bilesen ve arama/recents davranisi ayni kalir). */}
+      {isPickerOpen && (
+        <Modal
+          isOpen={isPickerOpen}
+          onClose={() => setIsPickerOpen(false)}
+          title={t('whatsapp.reactionPickerTitle')}
+          icon={SmilePlus}
+          maxWidth="sm"
+        >
+          <EmojiPicker
+            onPick={(char) => {
+              setIsPickerOpen(false);
+              void handleReact(char);
+            }}
+            onClose={() => setIsPickerOpen(false)}
+            className="h-72"
+          />
+        </Modal>
+      )}
 
       {/* Lightbox Modal for Image Preview */}
       {isLightboxOpen && (

@@ -22,6 +22,7 @@ import {
   Conversation,
   ConversationDetail,
   ConversationMessagesResponse,
+  MessageReaction,
   WhatsAppSession,
   WhatsAppTemplate,
   ConversationStatus,
@@ -305,6 +306,26 @@ export class WhatsAppRepository {
   /** Karsı tarafa 'yazıyor...' göstergesi gönderir; hatayı çağırana taşır. */
   static async sendTyping(conversationId: number, typing: boolean = true): Promise<void> {
     await WhatsAppApi.sendTyping(conversationId, typing);
+  }
+
+  /**
+   * Bir mesaja ifade birakir/degistirir/kaldirir (`emoji === ''` geri ceker).
+   *
+   * Hata YUTULMAZ: cagiran (sohbet ekrani) iyimser rozeti geri almali ve
+   * kullaniciya gercek bir hata gostermelidir — aksi halde tepki birakilmis
+   * gibi gorunur ama WhatsApp'a hic gitmemistir.
+   */
+  static async sendReaction(conversationId: number, messageId: number, emoji: string): Promise<{
+    success: boolean;
+    emoji: string;
+    removed: boolean;
+    from_me: boolean;
+    reactor_jid?: string | null;
+    reaction?: MessageReaction | null;
+    conversation_reaction?: MessageReaction | null;
+  }> {
+    await requireLive();
+    return WhatsAppApi.sendReaction(conversationId, messageId, emoji);
   }
 
   /**

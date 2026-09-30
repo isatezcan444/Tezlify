@@ -1023,6 +1023,38 @@ export function createSessionManager({
       return msg;
     },
 
+    /**
+     * Bir mesaja tepki birakir (veya mevcut tepkiyi degistirir/kaldirir).
+     *
+     * Reaksiyon bilerek `_recordOutbound` uzerinden GECMEZ: yerel mesaj kaydi
+     * uretmek, tepkiyi bir mesaj gibi gostermenin ta kendisidir ve bu tam da
+     * duzeltilen hataydi. Kalici gercekligi backend tutar (mesaj satirina bagli
+     * tek satirlik reaksiyon), gateway yalnizca WhatsApp'a iletir.
+     */
+    async sendReaction(sessionId, jid, { target_wa_message_id, target_from_me, emoji }) {
+      const session = this._requireConnectedSession(sessionId);
+      const key = resolveJidKey(this._storeOf(session), jid);
+      if (!target_wa_message_id) throw new Error('target_wa_message_id is required');
+      const text = typeof emoji === 'string' ? emoji : '';
+      await session.sock.sendMessage(key, {
+        react: {
+          text,
+          key: {
+            remoteJid: key,
+            fromMe: Boolean(target_from_me),
+            id: target_wa_message_id,
+          },
+        },
+      });
+      return {
+        success: true,
+        conversation_id: key,
+        wa_message_id: target_wa_message_id,
+        emoji: text,
+        removed: !text,
+      };
+    },
+
     async sendMediaMessage(sessionId, jid, { media_type, media_url, media_base64, mime_type, caption, filename, client_message_id }) {
       const session = this._requireConnectedSession(sessionId);
       const key = resolveJidKey(this._storeOf(session), jid);
@@ -1178,6 +1210,43 @@ export function createSessionManager({
       return session.store;
     },
 
+    /**
+     * Bir reaksiyonu kendi olayi olarak yayinlar — mesaj olarak DEGIL.
+     *
+     * Baileys'te `reactionMessage.key` HEDEF mesajin anahtaridir; olayin kendi
+     * anahtari (`msg.key`) kimin, hangi sohbette tepki verdigini tasir. Ikisi
+     * karistirilirsa tepki yanlis mesaja baglanir.
+     *
+     * `text === ''` WhatsApp sozlesmesinde "tepkiyi geri cek" demektir; ayrica
+     * `removed` alanini da gondeririz ki backend bos metni yorumlamak zorunda
+     * kalmasin ve iki taraf ayni sozlesmeyi okusun.
+     */
+    _ingestReactionMessage(sessionId, msg, key, reactionContent) {
+      const targetWaId = reactionContent?.key?.id;
+      if (!targetWaId) return null;
+      const emoji = typeof reactionContent?.text === 'string' ? reactionContent.text : '';
+      // "Kim tepki verdi" YALNIZCA olayin kendi anahtarina bakar (`msg.key`).
+      // `reactionContent.key.fromMe` HEDEF mesajin kim tarafindan gonderildigini
+      // soyler (bizim mesajimiza karsi taraf tepki verebilir); onu reaktor
+      // kimligine karistirmak, karsi tarafin tepkisini "benim" gibi gosterip
+      // herkese tek satir yazdirirdi.
+      const fromMe = Boolean(msg.key?.fromMe);
+      const reactorJid = fromMe ? null : (msg.key?.participant || msg.key?.remoteJid || null);
+      const ts = messageTimestampMs(msg.messageTimestamp);
+      const event = {
+        event: 'message_reaction',
+        conversation_id: key,
+        target_wa_message_id: targetWaId,
+        emoji,
+        removed: !emoji,
+        from_me: fromMe,
+        reactor_jid: reactorJid,
+        created_at: ts ? new Date(ts).toISOString() : null,
+      };
+      this._emit({ gateway_session_id: sessionId, ...event });
+      return event;
+    },
+
     async _ingestUpsertMessage(msg, sock, sessionId) {
       const session = this._requireSession(sessionId);
       const store = this._storeOf(session);
@@ -1198,6 +1267,17 @@ export function createSessionManager({
       }
       const key = normalizeJid(jid);
       if (isBroadcastOnlyJid(key)) return null;
+
+      // Reaksiyonlar mesaj DEGILDIR ve asla mesaj satirina donusmemelidir.
+      // Eskiden `reactionMessage` genel kayit ureticisine dusuyor, orada
+      // `systemContentMarker` ona `[REACTION]` yer tutucu govdesini veriyordu
+      // (amac onizlemeyi bos birakmamakti); bedeli sohbette cop bir balon ve
+      // listede yanlis `last_message` onizlemesiydi. Kendi olayina yonlendirme
+      // asagidaki mesaj/dedup muhasebesinden ONCE yapilir.
+      const reactionContent = msg.message?.reactionMessage;
+      if (reactionContent) {
+        return this._ingestReactionMessage(sessionId, msg, key, reactionContent);
+      }
 
       if (msg.key?.id) {
         // A duplicate is only a duplicate if it carries nothing new.

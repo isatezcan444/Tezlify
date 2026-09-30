@@ -29,8 +29,10 @@ from backend.app.schemas.whatsapp import (
     WhatsAppPairingStartRequest,
     WhatsAppPairingStartResponse,
     WhatsAppQrResponse,
+    WhatsAppReactionResult,
     WhatsAppReadResult,
     WhatsAppSendMediaRequest,
+    WhatsAppSendReactionRequest,
     WhatsAppSendResult,
     WhatsAppSendTextRequest,
     WhatsAppSessionCreate,
@@ -607,6 +609,42 @@ async def get_message_detail(
         raise _not_found(exc) from exc
     except Exception as exc:
         raise _bad_gateway(exc) from exc
+
+
+@router.post(
+    "/conversations/{conversation_id}/messages/{message_id}/reactions",
+    response_model=WhatsAppReactionResult,
+)
+async def send_reaction(
+    conversation_id: int,
+    message_id: int,
+    payload: WhatsAppSendReactionRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+) -> WhatsAppReactionResult:
+    """Bir mesaja tepki birakir/degistirir/kaldirir (WhatsApp Web paritesi).
+
+    Kendi ucu vardir: `/messages` ucundan gecmesi tepkiyi bir MESAJ gibi
+    kaydederdi — duzeltilen hatanin ta kendisi. Bos `emoji` geri ceker ve
+    yanit bunu `removed=true` ile acikca soyler.
+    """
+    try:
+        result = await whatsapp_service.send_reaction(
+            db, current_user.id, conversation_id, message_id, payload.emoji
+        )
+    except WhatsAppRelinkRequired as exc:
+        raise _relink_required(exc) from exc
+    except NoWhatsAppSession as exc:
+        raise _no_session(exc) from exc
+    except LookupError as exc:
+        raise _not_found(exc) from exc
+    except ValueError as exc:
+        # Ornegin henuz saglayici kimligi olmayan bir mesaj: girdi degil
+        # DURUM sorunu, ama istemcinin retry etmemesi gerektigi icin 422.
+        raise _unprocessable(exc) from exc
+    except Exception as exc:
+        raise _bad_gateway(exc) from exc
+    return WhatsAppReactionResult(**result)
 
 
 @router.post("/conversations/{conversation_id}/messages", response_model=WhatsAppSendResult)

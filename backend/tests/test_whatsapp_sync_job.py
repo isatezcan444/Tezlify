@@ -446,9 +446,12 @@ async def test_07_batched_dedup_single_select_per_batch(mock_gateway, events):
     #   `_repair_phone_sender_names`; adi bilinen kisi sayisiyla sinirli tek sorgu).
     # + 1 bos-sohbet geri doldurma aday SELECT'i (NOT EXISTS alt sorgusu metin
     #   olarak "FROM messages" icerdigi icin sayaca dahil olur; sohbet SAYISIYLA
-    #   olceklenmez, job basi tek sorgudur). Bu testin amaci "dedup mesaj basina
-    #   SELECT atmaz" — asil korunan sey bu; sabit yalnizca o regresyonu yakalar.
-    assert total_message_selects <= 5, f"mesaj SELECT sayisi: {total_message_selects}"
+    #   olceklenmez, job basi tek sorgudur).
+    # + 1 sohbet listesi reaksiyon rozeti SELECT'i (son mesaji MAX(messages.id)
+    #   alt sorgusuyla bulan TEK sorgu; yine sohbet basina degil job basina).
+    # Bu testin amaci "dedup/reaksiyon mesaj basina SELECT atmaz" — asil korunan
+    # sey bu; sabit yalnizca o regresyonu yakalar.
+    assert total_message_selects <= 6, f"mesaj SELECT sayisi: {total_message_selects}"
 
 
 # ---------------------------------------------------------------------------

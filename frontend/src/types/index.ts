@@ -326,6 +326,17 @@ export type MessageDirection = 'INBOUND' | 'OUTBOUND';
 export type MessageType = 'TEXT' | 'IMAGE' | 'DOCUMENT' | 'AUDIO' | 'VIDEO' | 'STICKER' | 'LOCATION' | 'CONTACT' | 'TEMPLATE' | 'UNKNOWN' | 'OTHER';
 export type ConversationMessageStatus = 'PENDING' | 'RECEIVED' | 'SENT' | 'DELIVERED' | 'READ' | 'FAILED';
 
+export interface MessageReaction {
+  /** Mesaj reaksiyonu: kisi basina mesaj basina TEK ifade.
+   * `emoji` HER ZAMAN doludur; geri cekilmis satirlar sunucudan hic gelmez
+   * (yokluk = ifade yok). `reactor_jid` kendi hattimiz icin 'ME' sentinelidir. */
+  message_id: number;
+  emoji: string;
+  from_me: boolean;
+  reactor_jid?: string | null;
+  updated_at?: string | null;
+}
+
 export interface Message {
   // Server messages carry a numeric DB primary key. Optimistic (not yet
   // persisted) messages carry a client-only string such as
@@ -347,6 +358,9 @@ export interface Message {
   sender_name?: string | null;
   recipient_phone?: string;
   error_message?: string;
+  /** Bu mesaja birakilan ifadeler (kisi basina tek). Sunucu her zaman bu
+   * anahtari dondurur; yoksa bos dizi. */
+  reactions?: MessageReaction[];
   external_timestamp?: string;
   created_at: string;
 }
@@ -389,6 +403,9 @@ export interface Conversation {
   // Sorun 4: WhatsApp arsiv durumu (Baileys metadata) — CRM status'tan bagimsiz.
   is_archived?: boolean;
   last_message_preview?: string;
+  /** WhatsApp Web paritesi: liste satirinda SON MESAJIN en yeni ifadesi.
+   * Eski bir mesaja birakilan ifade listede gorunmez (sunucu hesaplar). */
+  last_reaction?: MessageReaction | null;
   // Faz 10 (P2): "Henüz WhatsApp Mesajı Yok" yalnızca message_count===0 &&
   // last_message_state==='NO_MESSAGES' iken gösterilir; LOADING/REPAIRING
   // durumlarında senkron sürüyor mesajı gösterilir.

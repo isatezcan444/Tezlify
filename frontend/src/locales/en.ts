@@ -374,6 +374,12 @@ export const en = {
     emojiCategoryFlags: 'Flags',
     emojiNoRecent: 'No emojis used yet.',
     emojiNoResults: 'No emoji found.',
+    // Message reactions (WhatsApp Web parity)
+    reactionAdd: 'Add reaction',
+    reactionRemove: 'Remove your reaction',
+    reactionMore: 'More reactions',
+    reactionPickerTitle: 'Pick a reaction',
+    reactionFailed: 'Reaction could not be sent.',
     sessionsSubtitle: 'Connect and manage WhatsApp multi-device sessions with QR pairing',
     addSession: 'Connect WhatsApp Line',
     noSessions: 'No WhatsApp Lines Connected',

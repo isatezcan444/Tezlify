@@ -792,6 +792,21 @@ async def ensure_whatsapp_sessions_table(engine: AsyncEngine) -> None:
     logger.info("[MIGRATION] ensure_whatsapp_sessions_table verified")
 
 
+async def ensure_message_reactions_table(engine: AsyncEngine) -> None:
+    """Mesaj reaksiyonlari tablosunu guvence altina alir.
+
+    `Base.metadata.create_all` taze kurulumda tabloyu zaten olusturur; bu
+    fonksiyon MEVCUT kurulumlar icin var (create_all var olan bir tabloyu
+    ALTER etmez). Sinir: gelecekte sutun eklenirse burasi da guncellenmelidir —
+    aksi halde taze kurulum ile migrate edilmis kurulum birbirinden sapar.
+    """
+    from backend.app.models import MessageReaction  # noqa: F401 (metadata'ya kayit)
+
+    async with engine.begin() as conn:
+        await conn.run_sync(MessageReaction.__table__.create, checkfirst=True)
+    logger.info("[MIGRATION] ensure_message_reactions_table verified")
+
+
 async def ensure_whatsapp_session_sync_columns(engine: AsyncEngine) -> None:
     """`whatsapp_sessions.initial_sync_completed_at` sütununu güvence altına alır.
 

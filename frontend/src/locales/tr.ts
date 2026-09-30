@@ -374,6 +374,12 @@ export const tr = {
     emojiCategoryFlags: 'Bayraklar',
     emojiNoRecent: 'Henüz emoji kullanmadınız.',
     emojiNoResults: 'Emoji bulunamadı.',
+    // Mesaj reaksiyonlari (WhatsApp Web paritesi)
+    reactionAdd: 'İfade ekle',
+    reactionRemove: 'İfadeni geri çek',
+    reactionMore: 'Daha fazla ifade',
+    reactionPickerTitle: 'İfade seç',
+    reactionFailed: 'İfade gönderilemedi.',
     sessionsSubtitle: 'QR eşleştirme ile WhatsApp çoklu cihaz oturumlarını bağlayın ve yönetin',
     addSession: 'Yeni WhatsApp Hattı Bağla',
     noSessions: 'Bağlı WhatsApp Hattı Bulunmuyor',

@@ -73,6 +73,9 @@ interface ConversationRowProps {
   lastMessageAt?: string;
   lastMessageState?: string;
   messageCount?: number;
+  /** SON mesaja birakilan en yeni ifade (WhatsApp Web listesi). Ilkel bir
+   * string olarak gecilir ki React.memo deger karsilastirmasiyla calissin. */
+  lastReactionEmoji?: string;
   status: ConversationStatus;
   unreadCount: number;
   isGroup?: boolean;
@@ -82,7 +85,7 @@ interface ConversationRowProps {
   onSelect: (id: number) => void;
 }
 
-const ConversationRowComponent: React.FC<ConversationRowProps> = ({ id, name, avatarUrl, phone, lastMessagePreview, lastMessageAt, lastMessageState, messageCount, status, unreadCount, isGroup, selected, typing, isSyncing, onSelect }) => {
+const ConversationRowComponent: React.FC<ConversationRowProps> = ({ id, name, avatarUrl, phone, lastMessagePreview, lastMessageAt, lastMessageState, messageCount, lastReactionEmoji, status, unreadCount, isGroup, selected, typing, isSyncing, onSelect }) => {
   const { t, language } = useI18n();
   const isRawJid = isRawWhatsAppJid(phone);
   const cleanPhone = extractCleanPhone(phone);
@@ -137,8 +140,18 @@ const ConversationRowComponent: React.FC<ConversationRowProps> = ({ id, name, av
             {t('whatsapp.peerTyping')}
           </p>
         ) : (
-          <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate mt-0.5">
-            {lastMsg}
+          // Rozet metnin SONUNDA durur (WhatsApp Web paritesi); metin kisalir,
+          // ifade asla kirpilmaz.
+          <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 flex items-center gap-1 min-w-0">
+            <span className="truncate min-w-0">{lastMsg}</span>
+            {lastReactionEmoji ? (
+              <span
+                className="shrink-0 text-[12px] leading-none select-none"
+                data-testid={`conv-last-reaction-${id}`}
+              >
+                {lastReactionEmoji}
+              </span>
+            ) : null}
           </p>
         )}
 
@@ -453,6 +466,7 @@ const ConversationListComponent: React.FC<ConversationListProps> = ({
               lastMessageAt={conv.last_message_at}
               lastMessageState={conv.last_message_state}
               messageCount={conv.message_count}
+              lastReactionEmoji={conv.last_reaction?.emoji || undefined}
               status={conv.status}
               unreadCount={conv.unread_count}
               isGroup={conv.is_group}

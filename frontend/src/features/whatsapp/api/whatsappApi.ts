@@ -15,6 +15,7 @@ import {
   ConversationStatus,
   LiveModeStatus,
   Message,
+  MessageReaction,
   SessionSyncState,
   WhatsAppSession,
   WhatsAppSyncJob,
@@ -204,6 +205,14 @@ function mapSession(s: BackendSession): WhatsAppSession {
   };
 }
 
+export interface BackendReaction {
+  message_id?: number | string | null;
+  emoji?: string | null;
+  from_me?: boolean;
+  reactor_jid?: string | null;
+  updated_at?: string | null;
+}
+
 export interface BackendConversation {
   id: number;
   session_id?: number | null;
@@ -215,6 +224,8 @@ export interface BackendConversation {
   is_archived?: boolean;
   avatar_url?: string | null;
   last_message_preview?: string | null;
+  /** Liste rozeti: SON mesajin en yeni ifadesi (sunucu hesaplar). */
+  last_reaction?: BackendReaction | null;
   last_message_at?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
@@ -258,6 +269,20 @@ function mapConversation(c: BackendConversation): Conversation {
   if (c.last_message_preview !== undefined) {
     conv.last_message_preview = c.last_message_preview || undefined;
   }
+  // Rozet yalnizca payload'da GERCEKTEN varsa kopyalanir (kismi realtime
+  // payload'i mevcut rozeti silmemeli). Acik `null` ise otoriterdir: sunucu
+  // "son mesajda ifade yok" demistir ve rozet temizlenir.
+  if (c.last_reaction !== undefined) {
+    conv.last_reaction = c.last_reaction
+      ? {
+          message_id: Number(c.last_reaction.message_id) || 0,
+          emoji: c.last_reaction.emoji || '',
+          from_me: Boolean(c.last_reaction.from_me),
+          reactor_jid: c.last_reaction.reactor_jid ?? null,
+          updated_at: c.last_reaction.updated_at ?? null,
+        }
+      : null;
+  }
   if (c.message_count !== undefined) conv.message_count = c.message_count ?? 0;
   if (c.last_message_state !== undefined) {
     conv.last_message_state = c.last_message_state || undefined;
@@ -290,6 +315,7 @@ interface BackendMessage {
   sender_name?: string | null;
   recipient_phone?: string | null;
   error_message?: string | null;
+  reactions?: BackendReaction[] | null;
   created_at?: string | null;
 }
 
@@ -312,7 +338,7 @@ function mapMessage(m: BackendMessage, convId: number): Message {
     ? `cmsg_${m.client_message_id}`
     : `srv_${convId}_${m.created_at || 'unknown'}`;
 
-  return {
+  const mapped: Message = {
     id: m.id ?? fallbackId,
     conversation_id: (m.conversation_id as number) ?? convId,
     direction: (m.direction as Message['direction']) || 'INBOUND',
@@ -333,6 +359,21 @@ function mapMessage(m: BackendMessage, convId: number): Message {
     external_timestamp: m.created_at ?? undefined,
     created_at: m.created_at || '',
   };
+  // KEY YALNIZCA VERI VARSA YAZILIR: WS mesaj payload'inda `reactions` yoktur
+  // ve `{...previous, ...mapped}` birlestirmesi undefined bir anahtari yazip
+  // balondaki mevcut ifadeleri silerdi.
+  if (Array.isArray(m.reactions)) {
+    mapped.reactions = m.reactions
+      .filter((reaction) => reaction && typeof reaction.emoji === 'string' && reaction.emoji.length > 0)
+      .map((reaction) => ({
+        message_id: Number(reaction.message_id) || 0,
+        emoji: String(reaction.emoji),
+        from_me: Boolean(reaction.from_me),
+        reactor_jid: reaction.reactor_jid ?? null,
+        updated_at: reaction.updated_at ?? null,
+      }));
+  }
+  return mapped;
 }
 
 // Faz 11: WS sync olaylarindaki ham payload'lari ayni tiplere eslemek icin
@@ -697,6 +738,68 @@ export const WhatsAppApi = {
       `/whatsapp/conversations/${conversationId}/messages/${messageId}`
     );
     return mapMessage(data, conversationId);
+  },
+
+  /**
+   * Bir mesaja ifade birakir/degistirir/kaldirir (WhatsApp Web paritesi).
+   *
+   * Kendi ucu vardir (`/messages` DEGIL): tepki bir mesaj gonderimi degildir,
+   * bu yuzden yanit bir `Message` degil rozetlerdir. Bos `emoji` geri ceker ve
+   * sunucu bunu `removed: true` ile acikca bildirir.
+   */
+  async sendReaction(
+    conversationId: number,
+    messageId: number,
+    emoji: string
+  ): Promise<{
+    success: boolean;
+    emoji: string;
+    removed: boolean;
+    from_me: boolean;
+    reactor_jid?: string | null;
+    reaction?: MessageReaction | null;
+    conversation_reaction?: MessageReaction | null;
+  }> {
+    const data = await apiSend<{
+      success?: boolean;
+      emoji?: string | null;
+      removed?: boolean;
+      from_me?: boolean;
+      reactor_jid?: string | null;
+      reaction?: BackendReaction | null;
+      conversation_reaction?: BackendReaction | null;
+    }>(
+      `/whatsapp/conversations/${conversationId}/messages/${messageId}/reactions`,
+      'POST',
+      { emoji }
+    );
+    return {
+      success: data.success !== false,
+      emoji: data.emoji ?? emoji,
+      removed: Boolean(data.removed) || !(data.emoji ?? emoji),
+      from_me: data.from_me !== false,
+      reactor_jid: data.reactor_jid ?? null,
+      reaction:
+        data.reaction && data.reaction.emoji
+          ? {
+              message_id: Number(data.reaction.message_id) || messageId,
+              emoji: String(data.reaction.emoji),
+              from_me: Boolean(data.reaction.from_me),
+              reactor_jid: data.reaction.reactor_jid ?? null,
+              updated_at: data.reaction.updated_at ?? null,
+            }
+          : null,
+      conversation_reaction:
+        data.conversation_reaction && data.conversation_reaction.emoji
+          ? {
+              message_id: Number(data.conversation_reaction.message_id) || 0,
+              emoji: String(data.conversation_reaction.emoji),
+              from_me: Boolean(data.conversation_reaction.from_me),
+              reactor_jid: data.conversation_reaction.reactor_jid ?? null,
+              updated_at: data.conversation_reaction.updated_at ?? null,
+            }
+          : null,
+    };
   },
 
   async sendMessage(conversationId: number, body: string, clientMessageId?: string): Promise<Message> {

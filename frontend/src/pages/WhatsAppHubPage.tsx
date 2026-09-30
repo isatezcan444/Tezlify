@@ -32,6 +32,7 @@ import {
 import { isRawWhatsAppJid as isRawWhatsAppIdentity, identityKeys } from '../features/whatsapp/lib/whatsappIdentity';
 import { PEER_TYPING_TTL_MS, pruneExpiredTyping, resolveSyncDisplayCounts } from '../features/whatsapp/lib/whatsappSync';
 import { applyConversationEvent } from '../features/whatsapp/lib/whatsappConversationPatch';
+import { applyReactionToThread } from '../features/whatsapp/lib/whatsappReactions';
 import { WhatsAppSession, Conversation, ConversationStatus, ConversationMessageStatus, Lead, Message, LiveModeStatus, SessionSyncState } from '../types';
 import { WhatsAppApi, useLiveMode, mapConversationItem, mapMessageItem } from '../features/whatsapp/api/whatsappApi';
 import { useWhatsAppLoadingGate } from '../features/whatsapp/hooks/useWhatsAppLoadingGate';
@@ -1240,6 +1241,55 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     }
   }, [activeRetryMessage]);
 
+  /**
+   * Bir mesaja ifade birakir/degistirir/kaldirir (WhatsApp Web paritesi).
+   *
+   * Iyimser rozet ANINDA gosterilir; sunucu yaniti (ve ayni anda gelen WS
+   * yankisi) gercek degeri yazar. Hata olursa rozet ESKI haline doner ve
+   * kullaniciya toast gider — "basarili gibi gorunen ama WhatsApp'a hic
+   * gitmeyen" bir tepki birakilmaz.
+   */
+  const handleReactMessage = useCallback(async (msgId: number | string, emoji: string) => {
+    const convId = selectedConvRef.current ? Number(selectedConvRef.current.id) : null;
+    const numericId = typeof msgId === 'number' ? msgId : Number(msgId);
+    if (!convId || !Number.isInteger(numericId) || numericId <= 0) return;
+    const before = messagesMapRef.current?.[convId]?.find(
+      (m) => String(m.id) === String(numericId),
+    )?.reactions;
+    setMessagesMap((prev) => ({
+      ...prev,
+      [convId]: applyReactionToThread(prev[convId] || [], numericId, emoji),
+    }));
+    try {
+      const res = await WhatsAppRepository.sendReaction(convId, numericId, emoji);
+      setMessagesMap((prev) => ({
+        ...prev,
+        [convId]: applyReactionToThread(prev[convId] || [], numericId, res.removed ? '' : res.emoji),
+      }));
+      // Liste rozeti SUNUCUDAN gelir: eski bir mesaja birakilan ifade rozeti
+      // degistirmez (`conversation_reaction` o durumda mevcut rozeti doner).
+      const serverReaction = res.conversation_reaction ?? null;
+      setConversations((prev) =>
+        prev.map((c) => (Number(c.id) === convId ? { ...c, last_reaction: serverReaction } : c)),
+      );
+      setSelectedConv((prev) =>
+        prev && Number(prev.id) === convId ? { ...prev, last_reaction: serverReaction } : prev,
+      );
+    } catch (err: any) {
+      setMessagesMap((prev) => ({
+        ...prev,
+        [convId]: (prev[convId] || []).map((m) =>
+          String(m.id) === String(numericId) ? { ...m, reactions: before } : m,
+        ),
+      }));
+      toastRef.current.error(
+        translateApiError(err, tRef.current) || tRef.current('whatsapp.reactionFailed'),
+        tRef.current('common.error'),
+      );
+      throw err;
+    }
+  }, []);
+
   const activeSendMedia = async (type: string, url: string, caption?: string, filename?: string) => {
     if (!selectedConv) return;
     const tempClientMid = `media_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
@@ -1662,6 +1712,38 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
               .then((res) => reportReadSync(res, { label: `auto#${targetConvId}` }))
               .catch((err) => console.warn('[WhatsAppHubPage] Otomatik okundu istegi basarisiz:', err));
           }
+        }
+      }
+
+      // 2b. MESSAGE REACTION — bir mesaja birakilan/geri cekilen ifade.
+      //
+      // Reaksiyon bir MESAJ DEGILDIR: `messagesMap`e yeni balon EKLEMEZ, var
+      // olan balonun rozetlerini gunceller. Liste rozeti icin SUNUCUNUN
+      // hesapladigi `conversation_reaction` esas alinir (eski bir mesaja
+      // birakilan ifade rozeti degistirmez).
+      if (eventData.event === 'message_reaction') {
+        const convId = Number(eventData.conversation_id);
+        const messageId = Number(eventData.message_id);
+        const emoji = typeof eventData.emoji === 'string' ? eventData.emoji : '';
+        const fromMe = Boolean(eventData.from_me);
+        const reactorJid = eventData.reactor_jid || (fromMe ? 'ME' : '');
+        if (Number.isInteger(convId) && convId > 0 && Number.isInteger(messageId) && messageId > 0 && reactorJid) {
+          setMessagesMap((prev) => {
+            const list = prev[convId];
+            if (!list) return prev;
+            const updated = applyReactionToThread(list, messageId, emoji, {
+              reactorJid,
+              fromMe,
+            });
+            return updated === list ? prev : { ...prev, [convId]: updated };
+          });
+          const serverReaction = eventData.conversation_reaction || null;
+          setConversations((prev) =>
+            prev.map((c) => (Number(c.id) === convId ? { ...c, last_reaction: serverReaction } : c)),
+          );
+          setSelectedConv((prev) =>
+            prev && Number(prev.id) === convId ? { ...prev, last_reaction: serverReaction } : prev,
+          );
         }
       }
 
@@ -2639,6 +2721,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                   isGroup={Boolean(selectedConv.is_group)}
                   peerTyping={!!peerTypingMap[selectedConv.id]}
                   onRetry={handleRetryMessage}
+                  onReact={handleReactMessage}
                 />
 
                 {/* Active Chat Composer */}

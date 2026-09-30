@@ -335,6 +335,30 @@ async def send_media_message(gateway_id: str, jid: str, media: Dict[str, Any]) -
     return await _request("POST", f"{_s(gateway_id)}/conversations/{jid}/media", json=media)
 
 
+async def send_reaction(
+    gateway_id: str,
+    jid: str,
+    *,
+    target_wa_message_id: str,
+    emoji: str,
+    target_from_me: bool = False,
+) -> Dict[str, Any]:
+    """Bir mesaja tepki birakir (`emoji=""` tepkiyi geri ceker).
+
+    Kendi ucu vardir: tepki bir mesaj GONDERIMI degildir ve `/messages`
+    ucundan gecmesi, onu mesaj kaydi ureten yola sokardi.
+    """
+    return await _request(
+        "POST",
+        f"{_s(gateway_id)}/conversations/{jid}/reactions",
+        json={
+            "target_wa_message_id": target_wa_message_id,
+            "target_from_me": bool(target_from_me),
+            "emoji": emoji,
+        },
+    )
+
+
 async def mark_conversation_read(gateway_id: str, jid: str) -> Dict[str, Any]:
     return await _request("POST", f"{_s(gateway_id)}/conversations/{jid}/read")
 

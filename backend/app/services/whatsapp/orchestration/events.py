@@ -67,6 +67,11 @@ from backend.app.services.whatsapp.repositories.conversations import (
 from backend.app.services.whatsapp.repositories.lid_mappings import (
     resolve_lid_phone as _resolve_lid_phone,
 )
+from backend.app.services.whatsapp.repositories.reactions import (
+    conversation_reaction as _conversation_reaction,
+    reaction_identity as _reaction_identity,
+    upsert_reaction as _upsert_reaction,
+)
 from backend.app.services.whatsapp.repositories.messages import (
     build_message_from_gateway as _message_row_from_gateway,
     message_exists_by_wa_id,
@@ -1006,6 +1011,85 @@ class WhatsAppEventOrchestrator:
             )
         return healed
 
+    async def _ingest_message_reaction(self, db: AsyncSession, event: Dict[str, Any]) -> Dict[str, Any]:
+        """Bir mesaj reaksiyonunu kalici hale getirir ve yayinlanabilir hale getirir.
+
+        Reaksiyon bir MESAJ DEGILDIR: hedef mesaja bagli, kisi basina tek ve
+        degistirilebilir bir ifadedir. Bu yuzden `message_new` yolundan gecmez,
+        kendi tablosuna yazilir ve yalnizca listedeki rozeti guncelleyen kucuk
+        bir olay yayinlar.
+
+        Hedef mesaj bulunamazsa olay ATILIR, mesaj satiri URETILMEZ: eski hata
+        tam da bunu yapiyordu (`[REACTION]` govdeli sahte bir balon).
+        """
+        resolve_event_owner_and_session = self._get_helper(
+            "_resolve_event_owner_and_session", _resolve_event_owner_and_session
+        )
+        find_conversation = self._get_helper("_find_whatsapp_conversation", _find_whatsapp_conversation)
+
+        jid = event.get("conversation_id") or event.get("jid")
+        if not jid or "@" not in str(jid):
+            return _skip_event(event, "message_reaction: gecerli jid yok")
+        jid_str = str(jid)
+        if is_broadcast_only_jid(jid_str) or is_degenerate_jid(jid_str):
+            return _skip_event(event, f"message_reaction: gecersiz jid ({jid_str})")
+        target_wa_id = event.get("target_wa_message_id")
+        if not target_wa_id:
+            return _skip_event(event, "message_reaction: hedef mesaj kimligi yok")
+
+        owner, _ws_session_id = await resolve_event_owner_and_session(
+            db, jid_str, event.get("gateway_session_id")
+        )
+        event["user_id"] = owner
+
+        # Reaksiyon, sohbeti YARATMAZ: hedef mesaj yoksa sohbet de yoktur.
+        conv = await find_conversation(db, owner, jid_str)
+        if conv is None:
+            return _skip_event(event, f"message_reaction: sohbet yok ({jid_str})")
+        target = await db.scalar(
+            select(Message).where(
+                Message.conversation_id == conv.id,
+                Message.wa_message_id == str(target_wa_id),
+                get_user_filter(Message.user_id, owner),
+            )
+        )
+        if target is None:
+            return _skip_event(event, f"message_reaction: hedef mesaj yok ({jid_str})")
+
+        from_me = bool(event.get("from_me"))
+        reactor_jid = _reaction_identity(from_me, event.get("reactor_jid"))
+        if not reactor_jid:
+            return _skip_event(event, "message_reaction: reaksiyon sahibi cozulemedi")
+        # WhatsApp sozlesmesi: 32 karakterden uzun ifade yok. Kesme sinirda
+        # yapilir; DB sutunu da 32.
+        emoji = str(event.get("emoji") or "")[:32]
+
+        await _upsert_reaction(
+            db,
+            user_id=owner,
+            message_id=target.id,
+            conversation_id=conv.id,
+            reactor_jid=reactor_jid,
+            from_me=from_me,
+            emoji=emoji,
+        )
+        return {
+            "event": "message_reaction",
+            "user_id": owner,
+            "conversation_id": conv.id,
+            "jid": jid_str,
+            "message_id": target.id,
+            "wa_message_id": str(target_wa_id),
+            "emoji": emoji,
+            "from_me": from_me,
+            "reactor_jid": reactor_jid,
+            "removed": not emoji,
+            # Liste rozeti SUNUCUDA hesaplanir: "en son mesajin ifadesi" kurali
+            # istemcide tekrarlanirsa iki taraf ayrisabilir. Reaksiyon eski bir
+            # mesaja aitse bu alan mevcut rozeti korur (ya da yoksa null).
+            "conversation_reaction": await _conversation_reaction(db, conv.id),
+        }
+
     async def _ingest_lid_mapped(self, db: AsyncSession, event: Dict[str, Any]) -> Dict[str, Any]:
         resolve_event_owner_and_session = self._get_helper(
             "_resolve_event_owner_and_session", _resolve_event_owner_and_session
@@ -1809,6 +1893,8 @@ class WhatsAppEventOrchestrator:
                     result = await map_conversation_event(db, event)
                 elif evt == "contact_synced":
                     result = await ingest_contact_synced(db, event)
+                elif evt == "message_reaction":
+                    result = await self._ingest_message_reaction(db, event)
                 elif evt == "lid_mapped":
                     result = await self._ingest_lid_mapped(db, event)
                 elif evt == "connection_error" or str(evt).startswith("session_"):
@@ -1901,6 +1987,7 @@ _default_orchestrator = WhatsAppEventOrchestrator()
 
 ingest_gateway_event = _default_orchestrator.ingest_gateway_event
 _ingest_message = _default_orchestrator._ingest_message
+_ingest_message_reaction = _default_orchestrator._ingest_message_reaction
 _ingest_contact_synced = _default_orchestrator._ingest_contact_synced
 reconcile_legacy_split_conversation = _default_orchestrator.reconcile_legacy_split_conversation
 _map_conversation_event = _default_orchestrator._map_conversation_event

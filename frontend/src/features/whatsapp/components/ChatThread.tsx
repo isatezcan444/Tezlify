@@ -79,6 +79,8 @@ export interface ChatThreadProps {
   /** Faz 6a: grup sohbetinde balonlarda katilimci adlari gosterilir. */
   isGroup?: boolean;
   onRetry?: (messageId: number | string) => Promise<void> | void;
+  /** Mesaja ifade birakir/degistirir/kaldirir (bos `emoji` geri ceker). */
+  onReact?: (messageId: number | string, emoji: string) => Promise<void> | void;
   peerTyping?: boolean;
   /** Sorun 2 (LOADING ≠ EMPTY ≠ ERROR): bu sohbetin MESAJ hidrasyonu
    * basarisiz olduysa hata mesaji. Yalnizca BU sohbeti etkiler — diger
@@ -106,6 +108,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
   leadName,
   isGroup = false,
   onRetry,
+  onReact,
   peerTyping = false,
   error = null,
   onRetryLoad,
@@ -739,7 +742,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
           </span>
         </div>
       )}
-      <ChatBubble message={row.msg} isGroup={isGroup} chatTitle={leadName} onRetry={onRetry} />
+      <ChatBubble message={row.msg} isGroup={isGroup} chatTitle={leadName} onRetry={onRetry} onReact={onReact} />
     </>
   );
 

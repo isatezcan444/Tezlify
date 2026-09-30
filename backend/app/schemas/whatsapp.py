@@ -105,6 +105,20 @@ class WhatsAppContactListResponse(BaseModel):
     contacts: List[WhatsAppContact] = Field(default_factory=list)
 
 
+class WhatsAppReactionItem(BaseModel):
+    """Bir mesaja birakilan tek bir ifade (kisi basina tek).
+
+    `emoji` burada HER ZAMAN doludur; geri cekilmis satirlar istemciye hic
+    gonderilmez (yokluk = ifade yok).
+    """
+
+    message_id: int
+    emoji: str
+    from_me: bool = False
+    reactor_jid: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
 class WhatsAppConversationItem(BaseModel):
     id: int
     # A contact may have one conversation per connected WhatsApp line.
@@ -125,6 +139,9 @@ class WhatsAppConversationItem(BaseModel):
     # last_message_state=="NO_MESSAGES" iken gosterir.
     message_count: int = 0
     last_message_state: Optional[str] = None
+    # WhatsApp Web paritesi: liste satirinda SON MESAJIN en yeni ifadesi.
+    # Eski bir mesaja birakilan ifade listede gorunmez (sunucu hesaplar).
+    last_reaction: Optional[WhatsAppReactionItem] = None
     unread_count: int = 0
     status: str = "ACTIVE"
     identity_state: Optional[str] = None
@@ -156,6 +173,7 @@ class WhatsAppMessageItem(BaseModel):
     sender_name: Optional[str] = None
     recipient_phone: Optional[str] = None
     error_message: Optional[str] = None
+    reactions: List[WhatsAppReactionItem] = Field(default_factory=list)
     created_at: Optional[str] = None
 
 
@@ -187,6 +205,29 @@ class WhatsAppSendMediaRequest(BaseModel):
     caption: Optional[str] = None
     filename: Optional[str] = None
     client_message_id: Optional[str] = None
+
+
+class WhatsAppSendReactionRequest(BaseModel):
+    emoji: str = Field(
+        default="",
+        max_length=32,
+        description="Reaksiyon ifadesi; bos string tepkiyi geri ceker",
+    )
+
+
+class WhatsAppReactionResult(BaseModel):
+    """Tepki gonderme yaniti (mesaj gonderme sonucundan AYRI)."""
+
+    success: bool = True
+    conversation_id: Optional[int] = None
+    message_id: Optional[int] = None
+    wa_message_id: Optional[str] = None
+    emoji: str = ""
+    removed: bool = False
+    from_me: bool = True
+    reactor_jid: Optional[str] = None
+    reaction: Optional[WhatsAppReactionItem] = None
+    conversation_reaction: Optional[WhatsAppReactionItem] = None
 
 
 class WhatsAppTypingRequest(BaseModel):

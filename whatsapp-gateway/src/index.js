@@ -492,6 +492,20 @@ app.post('/sessions/:sessionId/conversations/:jid/media', withSession(async (req
   res.status(201).json(result);
 }));
 
+// React to an existing message (an empty `emoji` withdraws the reaction)
+app.post('/sessions/:sessionId/conversations/:jid/reactions', withSession(async (req, res, sessionId) => {
+  const { target_wa_message_id, target_from_me, emoji } = req.body || {};
+  if (!target_wa_message_id) {
+    return res.status(400).json({ error: 'target_wa_message_id is required' });
+  }
+  const result = await sessionManager.sendReaction(sessionId, req.params.jid, {
+    target_wa_message_id,
+    target_from_me,
+    emoji,
+  });
+  res.status(201).json(result);
+}));
+
 // Typing indicator ("yazıyor…")
 app.post('/sessions/:sessionId/conversations/:jid/typing', withSession(async (req, res, sessionId) => {
   const { typing = true, duration_ms = 4000 } = req.body || {};

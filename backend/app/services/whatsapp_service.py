@@ -78,6 +78,10 @@ from backend.app.services.whatsapp.repositories.messages import (
     msg_time as _msg_time,
     msg_time_col as _msg_time_col,
 )
+from backend.app.services.whatsapp.repositories.reactions import (
+    latest_reaction_by_conversation as _latest_reaction_by_conversation,
+    reactions_by_message as _reactions_by_message,
+)
 from backend.app.services.whatsapp.repositories.lid_mappings import (
     resolve_lid_phones as _resolve_lid_phones,
 )
@@ -654,6 +658,17 @@ async def list_conversations(
         )
         counts_map = {cid: int(n) for cid, n in cnt_res.fetchall()}
 
+    # Liste rozeti: her sohbetin EN SON mesajina birakilan EN YENI ifade.
+    # Tek sorgu; eski bir mesaja birakilan ifadeyi liste gostermez (kural
+    # sunucuda, `latest_reaction_by_conversation` icinde).
+    reaction_map: Dict[int, Dict[str, Any]] = {}
+    if conv_ids:
+        try:
+            reaction_map = await _latest_reaction_by_conversation(db, conv_ids)
+        except Exception as reaction_exc:  # noqa: BLE001 - rozet, listeyi dusurmemeli
+            logger.warning("Sohbet listesi reaksiyon rozetleri alinamadi: %s", reaction_exc)
+            reaction_map = {}
+
     active_sess_stmt = (
         select(WhatsAppSession.phone_number)
         .where(
@@ -750,6 +765,7 @@ async def list_conversations(
                 "updated_at": r.updated_at.isoformat() if r.updated_at else None,
                 "message_count": msg_count,
                 "last_message_state": lm_state,
+                "last_reaction": reaction_map.get(r.id),
                 "unread_count": r.unread_count,
                 "status": r.status.value if hasattr(r.status, "value") else str(r.status),
             }
@@ -1128,7 +1144,16 @@ async def get_messages(
 
     if len(rows) > page_size:
         rows = rows[-page_size:]
-    messages = [_serialize_message(r) for r in rows]
+    # Reaksiyonlar TOPLU cozulur: mesaj basina sorgu atmak 50 mesajlik bir
+    # sayfayi 50 ek sorguya cevirirdi. Yaris kaybi olmamasi icin rozetler
+    # yalnizca DB'den okunur; canli guncelleme WS `message_reaction` olayiyla
+    # gelir.
+    try:
+        grouped = await _reactions_by_message(db, [r.id for r in rows])
+    except Exception as reaction_exc:  # noqa: BLE001 - rozet, sayfayi dusurmemeli
+        logger.warning("Mesaj reaksiyonlari alinamadi: %s", reaction_exc)
+        grouped = {}
+    messages = [_serialize_message(r, reactions=grouped.get(r.id, [])) for r in rows]
     return {
         "messages": messages,
         "has_more": has_more,
@@ -1159,6 +1184,15 @@ async def mark_conversation_read(db: AsyncSession, user_id: str, conversation_id
 
 async def send_typing(db: AsyncSession, user_id: str, conversation_id: int, typing: bool = True) -> Dict[str, Any]:
     return await _messaging_orchestrator.send_typing(db, user_id, conversation_id, typing=typing)
+
+
+async def send_reaction(
+    db: AsyncSession, user_id: str, conversation_id: int, message_id: int, emoji: str
+) -> Dict[str, Any]:
+    """Mesaja tepki birakir/degistirir/kaldirir (`emoji=""` geri ceker)."""
+    return await _messaging_orchestrator.send_reaction(
+        db, user_id, conversation_id, message_id, emoji
+    )
 
 
 async def get_message(

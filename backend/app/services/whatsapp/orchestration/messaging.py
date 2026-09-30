@@ -10,7 +10,7 @@ Preserves strict transaction boundaries:
 """
 from datetime import datetime
 import logging
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 import uuid
 
 from sqlalchemy import select
@@ -40,6 +40,13 @@ from backend.app.services.whatsapp.repositories.conversations import (
     apply_conversation_last_message as _apply_last_message,
     resolve_conversation_jid as _resolve_jid,
 )
+from backend.app.services.whatsapp.repositories.reactions import (
+    SELF_REACTOR_JID,
+    conversation_reaction as _conversation_reaction,
+    list_reactions_for_message as _list_reactions_for_message,
+    serialize_reaction as _serialize_reaction,
+    upsert_reaction as _upsert_reaction,
+)
 from backend.app.services.whatsapp.repositories.sessions import (
     conversation_gateway_id as _conversation_gateway_id,
     conversation_session as _conversation_session,
@@ -67,8 +74,17 @@ def _validated_send_result(raw: Any) -> Dict[str, str]:
     return {"wa_message_id": str(wa_message_id), "status": status}
 
 
-def serialize_message(row: Message) -> Dict[str, Any]:
-    """Serializes a Message ORM entity into an API dictionary response."""
+def serialize_message(
+    row: Message, reactions: Optional[List[Dict[str, Any]]] = None
+) -> Dict[str, Any]:
+    """Serializes a Message ORM entity into an API dictionary response.
+
+    `reactions` ayri bir parametredir cunku bu fonksiyon SENKRON ve DB'siz
+    cagrilir (broadcast yolu dahil); reaksiyonlar tek toplu sorguyla cagiran
+    tarafca cozulur (`reactions_by_message`, mesaj basina sorgu = N+1).
+    Anahtar her zaman bulunur ki istemci "bos" ile "yok" ayrimini
+    yapmak zorunda kalmasin.
+    """
     # Gelen medya gateway'de durur; frontend kimlik dogrulamali proxy uzerinden ceker.
     media_url = f"/api/v1/whatsapp/media/{row.media_id}" if row.media_id else None
     return {
@@ -89,6 +105,7 @@ def serialize_message(row: Message) -> Dict[str, Any]:
         "sender_name": row.sender_name,
         "recipient_phone": row.recipient_phone,
         "error_message": row.error_message,
+        "reactions": reactions or [],
         "created_at": row.external_timestamp.isoformat()
         if row.external_timestamp
         else (row.created_at.isoformat() if row.created_at else None),
@@ -110,9 +127,88 @@ class WhatsAppMessagingOrchestrator:
             return getattr(self.service, name, default)
         return default
 
-    def serialize_message(self, row: Message) -> Dict[str, Any]:
+    def serialize_message(
+        self, row: Message, reactions: Optional[List[Dict[str, Any]]] = None
+    ) -> Dict[str, Any]:
         serializer = self._get_helper("_serialize_message", serialize_message)
-        return serializer(row)
+        return serializer(row, reactions)
+
+    @profiled("send_reaction")
+    async def send_reaction(
+        self,
+        db: AsyncSession,
+        user_id: str,
+        conversation_id: int,
+        message_id: int,
+        emoji: str,
+    ) -> Dict[str, Any]:
+        """Bir mesaja tepki birakir, degistirir veya kaldirir.
+
+        Reaksiyon bir MESAJ DEGILDIR, bu yuzden burada mesaj satiri OLUSMAZ:
+        `last_message_preview` degismez, okunmamis sayaci artmaz ve korumali
+        PENDING -> SENT FSM'i isletilmez (tepki gonderilemezse mesaj
+        "FAILED" olmus gibi gorunmemeli). Kalici gercek `message_reactions`
+        tablosudur; gateway yalnizca WhatsApp'a iletir.
+        """
+        resolve_jid = self._get_helper("_resolve_jid", _resolve_jid)
+        conversation_session = self._get_helper("_conversation_session", _conversation_session)
+        gateway_op_or_mark_relink = self._get_helper("_gateway_op_or_mark_relink", _gateway_op_or_mark_relink)
+        gateway_client = self._get_helper("gw", gw)
+
+        conv, jid = await resolve_jid(db, user_id, conversation_id)
+        target = await db.scalar(
+            select(Message).where(
+                Message.id == message_id,
+                Message.conversation_id == conv.id,
+                get_user_filter(Message.user_id, user_id),
+            )
+        )
+        if target is None:
+            raise LookupError("Mesaj bulunamadi.")
+        # `emoji == ""` tepkiyi GERI CEKER; bu durumda da hedef mesajin
+        # saglayici kimligi gerekir (WhatsApp'a bos bir react gonderilir).
+        emoji = (emoji or "").strip()
+        if len(emoji) > 32:
+            raise ValueError("Reaksiyon en fazla 32 karakter olabilir.")
+        if not target.wa_message_id:
+            # Saglayici kimligi olmayan bir mesaja WhatsApp tarafinda tepki
+            # birakilamaz. Yerelde yazip gondermemek sessizce yalan olurdu.
+            raise ValueError("Bu mesaja henuz tepki birakilamaz (saglayici kimligi yok).")
+
+        session_row = await conversation_session(db, user_id, conv)
+        await gateway_op_or_mark_relink(
+            db,
+            session_row,
+            lambda gid: gateway_client.send_reaction(
+                gid,
+                jid,
+                target_wa_message_id=target.wa_message_id,
+                target_from_me=target.direction == MessageDirection.OUTBOUND,
+                emoji=emoji,
+            ),
+        )
+        row = await _upsert_reaction(
+            db,
+            user_id=user_id,
+            message_id=target.id,
+            conversation_id=conv.id,
+            reactor_jid=SELF_REACTOR_JID,
+            from_me=True,
+            emoji=emoji,
+        )
+        await db.commit()
+        return {
+            "success": True,
+            "conversation_id": conv.id,
+            "message_id": target.id,
+            "wa_message_id": target.wa_message_id,
+            "emoji": emoji,
+            "removed": not emoji,
+            "reactor_jid": SELF_REACTOR_JID,
+            "from_me": True,
+            "reaction": _serialize_reaction(row) if row is not None else None,
+            "conversation_reaction": await _conversation_reaction(db, conv.id),
+        }
 
     @profiled("send_text")
     async def send_text_message(
@@ -401,7 +497,16 @@ class WhatsAppMessagingOrchestrator:
         )
         if row is None:
             raise LookupError(f"Mesaj bulunamadi (conversation={conversation_id}, message={message_id}).")
-        return self.serialize_message(row)
+        # Tek satirda da reaksiyon rozetleri gelir; aksi halde retry akisinin
+        # cektigi mesaj, thread'de gorunen ayni mesajdan farkli cikardi.
+        # Rozet OKUMA hatasi mesajin kendisini dusurmemeli (liste ve sayfa
+        # yollarindaki ayni kural); bu yuzden burada da sinirli bir tamir var.
+        try:
+            reactions = await _list_reactions_for_message(db, row.id)
+        except Exception as reaction_exc:  # noqa: BLE001 - rozet, mesaji dusurmemeli
+            logger.warning("Mesaj reaksiyonlari alinamadi (message_id=%s): %s", row.id, reaction_exc)
+            reactions = []
+        return self.serialize_message(row, reactions=reactions)
 
     async def get_media_bytes(
         self,
