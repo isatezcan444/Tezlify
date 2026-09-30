@@ -85,8 +85,18 @@ import {
 } from './socket/socket-connector.js';
 import { bindSocketEvents } from './socket/socket-events.js';
 
-// Baileys/WA ack rank and order
-const ACK_RANK = { 2: 'SENT', 3: 'DELIVERED', 4: 'READ', 5: 'READ' };
+// Baileys/WA ack rank and order.
+//
+// Baileys delivers `ERROR: 0` when WhatsApp REJECTS a message (block, not a
+// contact, rate limit, a too-large attachment). That receipt is the only
+// signal that the message will never arrive, and it used to be dropped: the
+// rank table had no entry for 0, so `newStatus` was undefined and the handler
+// returned early. The message stayed SENT forever, and because the terminal-ack
+// short-circuit then returned that stored row, it was never retried either.
+//
+// The user saw a permanent, silent false positive — AGENTS.md 1.1 forbids
+// exactly this.
+const ACK_RANK = { 0: 'FAILED', 2: 'SENT', 3: 'DELIVERED', 4: 'READ', 5: 'READ' };
 const ACK_ORDER = { PENDING: 0, SENT: 1, DELIVERED: 2, READ: 3, FAILED: 0 };
 
 // Avatar sweep pacing.
@@ -812,11 +822,22 @@ export function createSessionManager({
         fromMe: Boolean(targetFromMe),
       };
 
+      // The in-flight marker used to be registered AFTER `new Promise(...)`. A
+      // SYNCHRONOUS throw from sock.fetchMessageHistory ran the catch (which
+      // deletes the map entry) and then re-inserted a dead, already-resolved
+      // promise that nothing ever removed — so every later request for the same
+      // (session, chat, anchor) replayed {status:'ERROR'} forever, surviving
+      // socket recovery. Registering from inside the executor cannot work
+      // (the promise is still in its TDZ there), so the guard is a flag that
+      // makes the catch the last writer, and the map entry is only published
+      // for a run that is genuinely still in flight.
+      let settled = false;
       const fetchPromise = new Promise((resolve) => {
         const timer = setTimeout(() => {
           pendingHistoryWaiters.delete(flightKey);
           inFlightHistoryFetches.delete(flightKey);
           logger.info({ flightKey, targetId }, 'Older history request timed out waiting for provider chunk');
+          settled = true;
           resolve({ messages: [], count: 0, status: 'TIMEOUT' });
         }, timeoutMs);
 
@@ -825,6 +846,7 @@ export function createSessionManager({
             clearTimeout(timer);
             pendingHistoryWaiters.delete(flightKey);
             inFlightHistoryFetches.delete(flightKey);
+            settled = true;
             resolve({ messages: newMsgs, count: newMsgs.length, status: 'OK' });
           },
           timer,
@@ -845,6 +867,7 @@ export function createSessionManager({
               pendingHistoryWaiters.delete(flightKey);
               inFlightHistoryFetches.delete(flightKey);
               logger.warn({ flightKey, err: err?.message }, 'Failed to send fetchMessageHistory PDO');
+              settled = true;
               resolve({ messages: [], count: 0, status: 'ERROR', error: err?.message });
             });
         } catch (err) {
@@ -852,11 +875,16 @@ export function createSessionManager({
           pendingHistoryWaiters.delete(flightKey);
           inFlightHistoryFetches.delete(flightKey);
           logger.warn({ flightKey, err: err?.message }, 'Exception in sock.fetchMessageHistory');
+          settled = true;
           resolve({ messages: [], count: 0, status: 'ERROR', error: err?.message });
         }
       });
 
-      inFlightHistoryFetches.set(flightKey, fetchPromise);
+      // Published only for a run that is genuinely still in flight. A
+      // synchronous provider throw resolves inside the executor (settled=true),
+      // so nothing is cached and the next call can retry a recovered socket.
+      if (!settled) inFlightHistoryFetches.set(flightKey, fetchPromise);
+
       return fetchPromise;
     },
 
@@ -1162,10 +1190,28 @@ export function createSessionManager({
       if (isBroadcastOnlyJid(key)) return null;
 
       if (msg.key?.id) {
-        const dup = (messagesByChat.get(key) || []).some(
+        // A duplicate is only a duplicate if it carries nothing new.
+        //
+        // chats.update synthesises a message-less record from `lastMessage` and
+        // emits it, so the real messages.upsert for the same wa_message_id
+        // arrives afterwards. The old check matched on the id alone and
+        // returned null — discarding the record that actually carried the
+        // media, while the synthesised one has media_id hardcoded to null.
+        // The attachment was therefore lost permanently, not just delayed.
+        //
+        // So: an existing record that already has a media_id wins, and the
+        // media-less placeholder is upgraded in place instead of dropped.
+        const existingRecord = (messagesByChat.get(key) || []).find(
           (m) => m.wa_message_id && m.wa_message_id === msg.key.id
         );
-        if (dup) return null;
+        if (existingRecord) {
+          const placeholder = !existingRecord.media_id;
+          const incomingHasMedia = Boolean(msg.message?.imageMessage || msg.message?.videoMessage
+            || msg.message?.audioMessage || msg.message?.documentMessage || msg.message?.stickerMessage);
+          if (!placeholder) return null;
+          if (!incomingHasMedia) return null;
+          // Fall through: the incoming record replaces the placeholder below.
+        }
       }
 
       const lidHold = isLidJid(key);
@@ -1205,6 +1251,15 @@ export function createSessionManager({
       };
       if (!messagesByChat.has(key)) messagesByChat.set(key, []);
       const chatMsgs = messagesByChat.get(key);
+      // Upgrading a media-less placeholder (see the duplicate check above):
+      // drop the synthetic row so the chat keeps ONE record per wa_message_id
+      // and the real media-bearing one takes its place.
+      if (msg.key?.id) {
+        const placeholderAt = chatMsgs.findIndex(
+          (m) => m.wa_message_id === msg.key.id && !m.media_id
+        );
+        if (placeholderAt !== -1) chatMsgs.splice(placeholderAt, 1);
+      }
       chatMsgs.push(record);
       if (chatMsgs.length > 2000) {
         chatMsgs.splice(0, chatMsgs.length - 2000);
@@ -1377,6 +1432,27 @@ export function createSessionManager({
       const store = this._storeOf(this._requireSession(sessionId));
       const jid = resolveJidKey(store, key.remoteJid);
       const msg = (store.messagesByChat.get(jid) || []).find((m) => m.wa_message_id === key.id);
+      // FAILED is terminal and must win over any earlier status, so it is
+      // checked before the monotonic guard. Ranking it alongside PENDING (0)
+      // meant a rejected message was silently discarded once it was SENT —
+      // which is the case that matters, since WhatsApp rejects after accept.
+      if (newStatus === 'FAILED') {
+        if (msg && msg.status === 'FAILED') return;
+        if (msg) {
+          msg.status = 'FAILED';
+          msg.error_message = 'WhatsApp reddetti (blok, hız sınırı veya ek biçimi).';
+        }
+        this._emit({
+          event: 'message_status_updated',
+          gateway_session_id: sessionId,
+          conversation_id: jid,
+          wa_message_id: key.id,
+          client_message_id: msg?.client_message_id,
+          status: 'FAILED',
+          timestamp: new Date().toISOString(),
+        });
+        return;
+      }
       if (msg && ACK_ORDER[newStatus] <= (ACK_ORDER[msg.status] ?? 0)) return;
       if (msg) msg.status = newStatus;
       this._emit({

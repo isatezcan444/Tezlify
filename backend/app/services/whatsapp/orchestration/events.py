@@ -529,7 +529,24 @@ class WhatsAppEventOrchestrator:
                 if direction == MessageDirection.OUTBOUND
                 else (msg.get("participant_name") or (None if is_group_jid else contact.display_name))
             ),
-            recipient_phone=msg.get("recipient_phone") or "ME" if direction == MessageDirection.INBOUND else contact.phone_e164,
+            # Operator precedence made this read as
+            #   (msg.get("recipient_phone") or "ME") if INBOUND else contact.phone_e164
+            # because `or` binds tighter than the conditional expression. For
+            # an OUTBOUND message on a contact with no phone_e164 — which is
+            # every LID contact, since a LID carries no phone number — this
+            # wrote NULL into Message.recipient_phone, a NOT NULL column. The
+            # IntegrityError was swallowed further down, so the entire
+            # message_new event was dropped and the bubble silently vanished.
+            #
+            # The intent, matching repositories/messages.py: an inbound row is
+            # addressed to us, an outbound row to the conversation's own JID.
+            # Neither needs the contact to have a phone number, so the JID is
+            # the final fallback rather than a NULL.
+            recipient_phone=(
+                (msg.get("recipient_phone") or "ME")
+                if direction == MessageDirection.INBOUND
+                else (msg.get("recipient_phone") or contact.phone_e164 or jid)
+            ),
             status=ConversationMessageStatus.RECEIVED if direction == MessageDirection.INBOUND else ConversationMessageStatus.SENT,
             external_timestamp=_as_naive_utc(_parse_dt(msg.get("created_at"))),
         )

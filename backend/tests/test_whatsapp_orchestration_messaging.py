@@ -98,8 +98,11 @@ class TestWhatsAppMessagingOrchestration:
     @pytest.mark.asyncio
     async def test_send_text_message_empty_body_raises(self):
         db = AsyncMock()
+        # ValueError, not LookupError: the conversation WAS found, the input is
+        # invalid. LookupError became a 404, so an empty composer reported the
+        # conversation as missing and invited a pointless retry.
         with patch("backend.app.services.whatsapp.orchestration.messaging._resolve_jid", return_value=(MagicMock(), "90555@s.whatsapp.net")):
-            with pytest.raises(LookupError, match="Mesaj bos olamaz"):
+            with pytest.raises(ValueError, match="Mesaj bos olamaz"):
                 await send_text_message(db, "usr-1", 10, "   ")
 
     @pytest.mark.asyncio

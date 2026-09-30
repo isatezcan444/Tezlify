@@ -134,7 +134,10 @@ class WhatsAppMessagingOrchestrator:
         conv, jid = await resolve_jid(db, user_id, conversation_id)
         clean = body.strip()
         if not clean:
-            raise LookupError("Mesaj bos olamaz.")
+            # ValueError, not LookupError: the conversation was found, the
+            # INPUT is invalid. LookupError became a 404, so an empty composer
+            # told the user the conversation does not exist.
+            raise ValueError("Mesaj bos olamaz.")
         _now = datetime.utcnow()
         session_row = await conversation_session(db, user_id, conv)
         client_message_id = client_message_id or str(uuid.uuid4())

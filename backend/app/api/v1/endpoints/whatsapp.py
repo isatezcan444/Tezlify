@@ -55,6 +55,28 @@ def _not_found(exc: Exception) -> HTTPException:
     return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
 
 
+def _unprocessable(exc: Exception) -> HTTPException:
+    """Girdi dogrulanamadi -> 422.
+
+    `LookupError` "bulunamadi" demektir, ve bir bos mesaj govdesi veya yeniden
+    kullanilan bir client_message_id bulunamaz degil — gecersizdir. Bunlar 404
+    olarak dondugu icin istemci "sohbet bulunamadi" saniyor ve kullanicinin
+    yapabilecegi tek sey yeniden denemek oluyor.
+    """
+    return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+
+
+def _conflict(exc: Exception) -> HTTPException:
+    """Idempotency celiskisi -> 409.
+
+    Ayni client_message_id FARKLI bir icerikle tekrar kullanilamaz. Bu bir
+    gateway aritasi degil, istemcinin istegi kendi kendisiyle celisiyor; 502
+    donmek "gecici hata, tekrar dene" dedirtiyor ve ayni hatayi tekrar
+    uretiyordu.
+    """
+    return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+
+
 def _no_session(exc: Exception) -> HTTPException:
     """Kullanicinin bagli WhatsApp hatti yok -> 409.
 
@@ -604,6 +626,11 @@ async def send_message(
         raise _no_session(exc) from exc
     except LookupError as exc:
         raise _not_found(exc) from exc
+    except ValueError as exc:
+        # Idempotency conflict: the same client_message_id was reused for
+        # different content. Distinguishable from a gateway outage so the UI
+        # does not tell the user to just retry the identical request.
+        raise _conflict(exc) from exc
     except Exception as exc:
         raise _bad_gateway(exc) from exc
     return WhatsAppSendResult(
@@ -646,6 +673,12 @@ async def send_media(
         raise _no_session(exc) from exc
     except LookupError as exc:
         raise _not_found(exc) from exc
+    except ValueError as exc:
+        # Either an empty body (422) or a client_message_id reused for different
+        # content (409). Both are client-side; retrying as-is never helps.
+        if "client_message_id" in str(exc):
+            raise _conflict(exc) from exc
+        raise _unprocessable(exc) from exc
     except Exception as exc:
         raise _bad_gateway(exc) from exc
     return WhatsAppSendResult(

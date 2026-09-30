@@ -66,9 +66,14 @@ export function isDegenerateJid(jid) {
   if (domain === 'g.us') {
     return !/^\d+(?:-\d+)?$/.test(local);
   }
-  // Newsletter JIDs
+  // Newsletter JIDs.
+  // The 5-digit minimum applies here too: a short numeric local part is a
+  // truncated/placeholder id, and letting it through created a contact for an
+  // identity WhatsApp never issued. This branch previously only checked that
+  // the local part was numeric, so `123@newsletter` was accepted.
   if (domain === 'newsletter') {
-    return !/^\d+$/.test(local);
+    if (!/^\d+$/.test(local)) return true;
+    return local.length < 5 || /^0+$/.test(local);
   }
   // User phone / LID JIDs
   if (!/^\d+$/.test(local)) return true;

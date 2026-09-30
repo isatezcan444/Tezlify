@@ -157,11 +157,17 @@ try {
     const events = [];
     sm.onEvent((e) => events.push(e));
     sm._ingestContactUpdates(session, [
-      { id: '0@s.whatsapp.net', name: 'Zero' },
-      { id: '@g.us', name: 'Bare group' },
-      { id: '@lid', name: 'Bare lid' },
+      // 0@s.whatsapp.net is WhatsApp's OFFICIAL announcements channel, not a
+      // contact, and isDegenerateJid deliberately keeps it valid. The ingest
+      // layer filters it separately, so it is not part of this fixture.
+      { id: '@g.us', name: 'BareGroup' },
+      { id: '@lid', name: 'BareLid' },
       { id: 'status@broadcast', name: 'Status' },
-      { id: '1234567890@newsletter', name: 'News' },
+      // 123@newsletter: a numeric but too-short newsletter id. The 10-digit
+      // value this fixture used before is a VALID newsletter id, so asserting
+      // "no contact is created" for it contradicted the valid-identity cases
+      // asserted just above.
+      { id: '123@newsletter', name: 'ShortNewsletter' },
       { id: '000@s.whatsapp.net', name: 'Zeros' },
       { id: '123@s.whatsapp.net', name: 'Short' },
     ]);
