@@ -43,6 +43,23 @@ logger = logging.getLogger(__name__)
 _REDIRECT_CODES = {301, 302, 303, 307, 308}
 _HTML_TYPES = ("text/html", "application/xhtml+xml")
 
+# Google/YouTube, veri merkezi IP'lerine bir ONAM (consent) ARA SAYFASI doner.
+# Ara sayfanin `og:title`'i gercek icerigin degil ara sayfanin basligidir.
+# Canli olculdu (2026-09-30, uretim):
+#   maps.app.goo.gl       -> "Google Haritalar'a devam etmeden once"
+#   youtube.com/playlist  -> "YouTube'a devam etmeden once"
+# Yanlis bir baslik gostermek, hic kart gostermemekten KOTUDUR: kullanici
+# paylasilan icerigin basligi sanir. Bu yuzden ara sayfa bir SONUC degil,
+# bir BASARISIZLIK sayilir (negatif onbellek, kart cizilmez).
+_CONSENT_HOSTS = ("consent.google.com", "consent.youtube.com")
+
+
+def _is_consent_interstitial(final_url: str) -> bool:
+    """Son adres bir onam ara sayfasi mi?"""
+    host = (urlsplit(final_url).hostname or "").lower()
+    return host in _CONSENT_HOSTS or host.startswith("consent.")
+
+
 
 class UnfurlError(Exception):
     """Onizleme cozulemedi (ag, icerik turu veya guvenlik)."""
@@ -208,6 +225,13 @@ async def unfurl(normalized_url: str) -> Dict[str, Any]:
             return fallback
 
     html, final_url = await _fetch_html(normalized_url)
+    if _is_consent_interstitial(final_url):
+        # Basligi ara sayfadan okumak yerine acikca basarisiz ol. `error`
+        # sutunu teshis icin son ana makineyi saklar.
+        raise UnfurlError(
+            f"Onam ara sayfasi donduruldu ({urlsplit(final_url).hostname}); "
+            "gercek icerik alinamadi."
+        )
     parsed = parse_html(html, final_url)
     parsed["kind"] = kind
     return parsed

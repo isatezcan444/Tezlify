@@ -20,6 +20,13 @@ Sozlesmeler
 6. **Istemciye uzak gorsel adresi verilmez**, hash tabanli proxy yolu verilir;
    boylece proxy acik bir aktarima donusmez.
 7. **Basarisizlik da onbelleklenir** (kisa TTL), ama kart cizilmez.
+8. **Yanit modeli serilestirilen anahtarlari DUSURMEZ.** `serialize_message`
+   `link_preview` uretir; `WhatsAppMessageItem` bu alani bildirmezse Pydantic
+   v2 (varsayilan `extra="ignore"`) degeri SESSIZCE atar ve onizleme uctan
+   hic cikmaz. Bu tam olarak canli ortamda yasandi (2026-09-30): tabloda
+   `status=OK` satirlar varken `GET /conversations/{id}/messages` yanitinda
+   `link_preview` anahtari YOKTU. Ayni hata `WhatsAppSessionResponse.sync`
+   icin de yasanmis ve orada yorumla isaretlenmisti (A8).
 
 Bu dosyadaki ayristirma ve URL testleri AG GEREKTIRMEZ; DNS'e bagli olanlar
 `socket.getaddrinfo` monkeypatch'i ile deterministik hale getirilir.
@@ -619,3 +626,143 @@ async def test_ensure_preview_stores_ssrf_rejection_as_negative_cache(
     assert row.status == "FAILED"
     assert row.image_url is None
     assert row.expires_at is not None
+
+
+# ---------------------------------------------------------------------------
+# 8. KONTRAKT: yanit modeli serilestirilen anahtarlari DUSURMEMELI
+# ---------------------------------------------------------------------------
+
+
+def _serialized_message(preview=None):
+    from backend.app.models.message import Message
+    from backend.app.services.whatsapp.orchestration.messaging import serialize_message
+
+    row = Message()
+    row.id = 105284
+    row.conversation_id = 17748
+    return serialize_message(row, preview=preview)
+
+
+def test_serialize_message_always_emits_link_preview_key():
+    """Anahtar HER ZAMAN bulunur; `None` = onizleme yok/hazir degil."""
+    payload = _serialized_message()
+    assert "link_preview" in payload
+    assert payload["link_preview"] is None
+
+
+def test_response_model_preserves_link_preview():
+    """ASIL REGRESYON (canli 2026-09-30).
+
+    FastAPI `response_model`u uygularken tam olarak bunu yapar: sozlugu
+    modele dogrular ve `model_dump()` ile disari verir. Alan modelde
+    bildirilmemisse bu adimda sessizce kaybolur.
+    """
+    from backend.app.schemas.whatsapp import WhatsAppMessagesResponse
+
+    preview = {
+        "url": "https://youtu.be/PLXSVsDUisg?si=vS-3zTyni-kW0APB",
+        "kind": "VIDEO",
+        "title": "Ornek Video",
+        "description": "Aciklama",
+        "site_name": "YouTube",
+        "image_url": "/api/v1/whatsapp/link-preview/image?u=8a312a527d97",
+        "embed_url": "https://www.youtube-nocookie.com/embed/PLXSVsDUisg",
+    }
+    dumped = WhatsAppMessagesResponse(
+        messages=[_serialized_message(preview=preview)]
+    ).model_dump()
+
+    survived = dumped["messages"][0]["link_preview"]
+    assert survived is not None, (
+        "link_preview yanit modelinden DUSTU: `WhatsAppMessageItem` alani "
+        "bildirmiyor (Pydantic v2 `extra='ignore'`)."
+    )
+    assert survived["kind"] == "VIDEO"
+    assert survived["site_name"] == "YouTube"
+    assert survived["embed_url"].endswith("/embed/PLXSVsDUisg")
+    # Istemciye HAM uzak gorsel adresi degil proxy yolu gider.
+    assert survived["image_url"].startswith("/api/v1/whatsapp/link-preview/image?u=")
+
+
+def test_every_serialized_key_is_declared_on_the_response_model():
+    """Sinifin tamamini kapatan koruma.
+
+    Tek tek alan eklemek yerine sozlesmeyi burada tutuyoruz: serilestiricinin
+    urettigi bir anahtar modelde yoksa yanittan duser. `link_preview` ve
+    `sync` bu sekilde kaybolmustu; bir daha kaybolmasin.
+    """
+    from backend.app.schemas.whatsapp import WhatsAppMessageItem
+
+    produced = set(_serialized_message().keys())
+    declared = set(WhatsAppMessageItem.model_fields.keys())
+    missing = sorted(produced - declared)
+    assert not missing, (
+        f"`serialize_message` bu anahtarlari uretiyor ama `WhatsAppMessageItem` "
+        f"bildirmiyor, yani yanittan DUSECEKLER: {missing}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 9. ONAM (consent) ARA SAYFASI: yanlis baslik yerine DURUST basarisizlik
+# ---------------------------------------------------------------------------
+
+# Google, veri merkezi IP'lerine gercek icerik yerine bu ara sayfayi doner.
+# Basligi gercek sanmak, kullaniciya paylasilan icerigin basligi diye
+# "... devam etmeden once" gostermek olurdu.
+_CONSENT_HTML = (
+    "<html><head>"
+    '<meta property="og:title" content="Google Haritalar&#39;a devam etmeden once" />'
+    "<title>Google Haritalar'a devam etmeden once</title>"
+    "</head><body></body></html>"
+)
+
+
+@pytest.mark.parametrize(
+    "final_url,expected",
+    [
+        ("https://consent.google.com/m?continue=x", True),
+        ("https://consent.youtube.com/m?continue=x", True),
+        ("https://www.google.com/maps", False),
+        ("https://maps.google.com/", False),
+        # "consent" ile BASLAYAN baska bir alan adi da ara sayfa sayilir.
+        ("https://consent.example.com/", True),
+        # Ama icinde "consent" gecen mesru bir alan adi sayilmaz.
+        ("https://myconsent.com/", False),
+    ],
+)
+def test_consent_host_detection(final_url, expected):
+    from backend.app.services.link_preview.unfurl import _is_consent_interstitial
+
+    assert _is_consent_interstitial(final_url) is expected
+
+
+@pytest.mark.asyncio
+async def test_unfurl_rejects_consent_interstitial(monkeypatch):
+    """Ara sayfa bir SONUC degil, BASARISIZLIK olmali."""
+    from backend.app.services.link_preview import unfurl as unfurl_module
+
+    async def fake_fetch(_url):
+        return _CONSENT_HTML, "https://consent.google.com/m?continue=abc"
+
+    monkeypatch.setattr(unfurl_module, "_fetch_html", fake_fetch)
+
+    with pytest.raises(UnfurlError) as exc:
+        await unfurl_module.unfurl("https://maps.app.goo.gl/qDxmw6vwCppGAixm8")
+
+    # Teshis icin son ana makine hatada gorunur.
+    assert "consent.google.com" in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_unfurl_parses_normally_when_no_consent_redirect(monkeypatch):
+    """Kontrol grubu: ara sayfa YOKSA normal ayristirma bozulmamis olmali."""
+    from backend.app.services.link_preview import unfurl as unfurl_module
+
+    async def fake_fetch(_url):
+        return _OG_HTML, "https://example.com/haber/1"
+
+    monkeypatch.setattr(unfurl_module, "_fetch_html", fake_fetch)
+
+    parsed = await unfurl_module.unfurl("https://example.com/haber/1")
+    assert parsed["title"] == "Baslik"
+    assert parsed["site_name"] == "Ornek"

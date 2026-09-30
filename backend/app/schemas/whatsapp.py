@@ -155,6 +155,27 @@ class WhatsAppConversationListResponse(BaseModel):
 
 
 
+class WhatsAppLinkPreviewItem(BaseModel):
+    """Govdedeki link icin sunucu tarafinda cozulmus onizleme.
+
+    Alan adlari `frontend/src/types/index.ts` icindeki `LinkPreview` ile
+    BIREBIR ayni olmalidir; bu dosyanin basligi zaten "frontend tipleriyle
+    uyumlu tutulur" diyor.
+
+    `image_url` burada HAM uzak adres DEGIL, kimlik dogrulamali proxy yolu
+    (`/api/v1/whatsapp/link-preview/image?u=<hash>`) olarak gelir; bkz.
+    `link_preview.service._proxy_image_url`.
+    """
+
+    url: str
+    kind: str = "LINK"
+    title: Optional[str] = None
+    description: Optional[str] = None
+    site_name: Optional[str] = None
+    image_url: Optional[str] = None
+    embed_url: Optional[str] = None
+
+
 class WhatsAppMessageItem(BaseModel):
     id: Optional[Any] = None
     conversation_id: Any = None
@@ -174,6 +195,11 @@ class WhatsAppMessageItem(BaseModel):
     recipient_phone: Optional[str] = None
     error_message: Optional[str] = None
     reactions: List[WhatsAppReactionItem] = Field(default_factory=list)
+    # `serialize_message` HER ZAMAN bu anahtari uretir (`preview or None`).
+    # Alan burada bildirilmezse Pydantic v2 (varsayilan `extra="ignore"`)
+    # degeri SESSIZCE duser ve onizleme uctan hic cikmaz — `sync` alaninda
+    # yasanan A8 hatasinin birebir aynisi (bkz. WhatsAppSessionResponse).
+    link_preview: Optional[WhatsAppLinkPreviewItem] = None
     created_at: Optional[str] = None
 
 
