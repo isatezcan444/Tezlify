@@ -324,6 +324,8 @@ if [ -d "$FRONTEND_DIR" ]; then
   fi
 fi
 
+SHORT_SHA="$(git rev-parse --short "$TARGET_FULL")"
+SUBJECT_JSON="$(git log -1 --format=%s "$TARGET_FULL" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read().strip()))')"
 RELEASED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 FRONTEND_JSON="null"
 if [ -n "$FRONTEND_TAR" ]; then
