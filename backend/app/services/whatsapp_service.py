@@ -232,6 +232,52 @@ async def gateway_health_probe() -> Dict[str, Any]:
     return {"gateway_available": True, "status": "ok", **data}
 
 
+def resolve_gate_phase(
+    *,
+    job_state: str,
+    job_stage: str,
+    gw_phase: str,
+    session_status: Optional[str],
+    avatars_missing: int,
+) -> tuple[str, str]:
+    """Decide the loading gate's phase and stage.
+
+    A permanently missing profile picture must NOT hold the gate.
+
+    The `avatars_missing` check used to sit ABOVE the ready check. One avatar the
+    gateway could not fetch therefore pinned the gate to "loading_profiles"
+    forever: progress froze at 90 + 10*fetched/total, which lands on 98% in the
+    common case of a single unfetchable contact, and the chat list never opened.
+    Avatars are not persisted in our database — they stream from the gateway on
+    every probe — so "missing" is regenerated each time and never clears on its
+    own. The gate could never open.
+
+    WhatsApp Web does not hide a conversation because a contact has no photo; it
+    renders their initial. Messages are what someone is waiting for, and they
+    are already stored, so the gate opens and a photo appears in the background
+    if it ever arrives.
+
+    Work that is genuinely still in flight still holds the gate, and avatars
+    remain a reported stage so the UI can explain the wait — they just never
+    justify one on their own.
+    """
+    if job_state == "FAILED":
+        return "error", job_stage
+    if job_state == "SYNCING":
+        return "syncing_history", job_stage
+    if gw_phase == "syncing":
+        return "syncing_history", (job_stage if job_stage != "idle" else "chats")
+    if gw_phase == "ready" and job_state in ("COMPLETED", "IDLE"):
+        return "ready", "complete"
+    if session_status in ("CONNECTING", "RESTORING"):
+        # Connecting is still connecting. Reporting "loading avatars" while the
+        # socket is still coming up would name a wait that is not happening yet.
+        return "connecting", "connecting"
+    if avatars_missing > 0:
+        return "loading_profiles", "avatars"
+    return "idle", "idle"
+
+
 async def get_loading_gate(db: AsyncSession, user_id: str) -> Dict[str, Any]:
     """Faz 0 — Loading Gate: tek-authority QR sonrasi yukleme kapisi.
 
@@ -304,24 +350,13 @@ async def get_loading_gate(db: AsyncSession, user_id: str) -> Dict[str, Any]:
     job_stage = str(job_snap.get("stage") or "idle")
     job_error = job_snap.get("error")
 
-    if job_state == "FAILED":
-        phase = "error"
-        stage = job_stage
-    elif job_state == "SYNCING":
-        phase = "syncing_history"
-        stage = job_stage
-    elif gw_phase == "syncing":
-        phase = "syncing_history"
-        stage = job_stage if job_stage != "idle" else "chats"
-    elif counts["avatars_missing"] > 0:
-        phase = "loading_profiles"
-        stage = "avatars"
-    elif gw_phase == "ready" and (job_state in ("COMPLETED", "IDLE")):
-        phase = "ready"
-        stage = "complete"
-    else:
-        phase = "connecting" if session.get("status") in ("CONNECTING", "RESTORING") else "idle"
-        stage = "connecting" if phase == "connecting" else "idle"
+    phase, stage = resolve_gate_phase(
+        job_state=job_state,
+        job_stage=job_stage,
+        gw_phase=gw_phase,
+        session_status=session.get("status"),
+        avatars_missing=counts["avatars_missing"],
+    )
 
     progress = int(sync.get("progress") or 0)
     if phase == "ready":
@@ -337,6 +372,9 @@ async def get_loading_gate(db: AsyncSession, user_id: str) -> Dict[str, Any]:
         "stage": stage,
         "progress": max(0, min(100, progress)),
         "counts": counts,
+        # Informational only. Avatars keep streaming in after the gate opens, so
+        # this is a hint for the UI, never a reason to keep someone waiting.
+        "avatars_pending": counts["avatars_missing"] > 0,
         "gateway_available": True,
         "gateway_error": None,
         "error": job_error,

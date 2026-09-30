@@ -196,6 +196,11 @@ export interface WhatsAppLoadingGate {
   stage: string;
   progress: number;
   counts: LoadingGateCounts;
+  /**
+   * Informational only. Avatars keep streaming in after the gate opens, so this
+   * is a hint for the UI and never a reason to keep someone waiting.
+   */
+  avatars_pending?: boolean;
   gateway_available: boolean;
   gateway_error?: string | null;
   error?: string | null;

@@ -505,3 +505,79 @@ def test_resolve_has_more_ignores_provider_exhaustion():
     assert resolve_has_more(
         db_has_more=True, page_size=50, rows_returned=50, evidence=exhausted
     ) is not False
+
+
+def test_missing_avatar_does_not_hold_the_loading_gate():
+    """A profile photo that will never arrive must not keep the gate closed.
+
+    The production bug: `avatars_missing > 0` was checked before the ready
+    branch, so a single contact whose photo the gateway could not fetch pinned
+    the gate to "loading_profiles" permanently. Progress froze at
+    90 + 10*fetched/total — 98% for the common case of one missing photo — and
+    the chat list never opened.
+
+    Avatars are not persisted in our database; they stream from the gateway on
+    every probe, so "missing" is regenerated each time and never clears by
+    itself. Nothing would ever have unblocked this.
+
+    WhatsApp Web renders a contact's initial instead of hiding the conversation,
+    and the messages the user is waiting for are already stored.
+    """
+    from backend.app.services.whatsapp_service import resolve_gate_phase
+
+    # The reported production state: sync finished, gateway ready, one avatar
+    # that will not resolve.
+    phase, stage = resolve_gate_phase(
+        job_state="COMPLETED",
+        job_stage="complete",
+        gw_phase="ready",
+        session_status="CONNECTED",
+        avatars_missing=1,
+    )
+    assert phase == "ready", "a missing photo must not hold the gate closed"
+    assert stage == "complete"
+
+    # Even a large number of permanently missing photos opens the gate.
+    assert resolve_gate_phase(
+        job_state="COMPLETED",
+        job_stage="complete",
+        gw_phase="ready",
+        session_status="CONNECTED",
+        avatars_missing=97,
+    )[0] == "ready"
+
+    # Real work in flight still holds it, and avatars remain a reported stage so
+    # the UI can explain the wait — they just never justify one by themselves.
+    assert resolve_gate_phase(
+        job_state="SYNCING",
+        job_stage="chats",
+        gw_phase="syncing",
+        session_status="CONNECTED",
+        avatars_missing=1,
+    ) == ("syncing_history", "chats")
+
+    assert resolve_gate_phase(
+        job_state="IDLE",
+        job_stage="idle",
+        gw_phase="syncing",
+        session_status="CONNECTED",
+        avatars_missing=5,
+    ) == ("syncing_history", "chats")
+
+    # A failure is still a failure: avatars never mask an error.
+    assert resolve_gate_phase(
+        job_state="FAILED",
+        job_stage="messages",
+        gw_phase="ready",
+        session_status="CONNECTED",
+        avatars_missing=3,
+    )[0] == "error"
+
+    # Connecting is still connecting.
+    assert resolve_gate_phase(
+        job_state="IDLE",
+        job_stage="idle",
+        gw_phase="idle",
+        session_status="CONNECTING",
+        avatars_missing=2,
+    ) == ("connecting", "connecting")
