@@ -249,6 +249,22 @@ class WhatsAppConversationStatusResult(BaseModel):
     status: str
 
 
+class WhatsAppConversationDeleteResult(BaseModel):
+    """Sohbet silme sonucu.
+
+    `messages_deleted` SAYILIR ve dondurulur: "sildim" demek yetmez, kullanicinin
+    geri donusu olmayan bir islemi onayladigi sey gercekten silinmis olmalidir.
+    Sayi 0 ise sohbet zaten mesajsizdi; bu bir hata degil, ama sessiz de
+    kalmamalidir (AGENTS.md §1.1 — yalan soylememek kadar, belirsiz de
+    birakmamak).
+    """
+
+    id: int
+    deleted: bool
+    messages_deleted: int = 0
+    reactions_deleted: int = 0
+
+
 class WhatsAppSendResult(BaseModel):
     id: Optional[Any] = None
     wa_message_id: Optional[str] = None

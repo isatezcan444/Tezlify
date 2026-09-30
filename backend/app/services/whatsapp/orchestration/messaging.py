@@ -75,7 +75,9 @@ def _validated_send_result(raw: Any) -> Dict[str, str]:
 
 
 def serialize_message(
-    row: Message, reactions: Optional[List[Dict[str, Any]]] = None
+    row: Message,
+    reactions: Optional[List[Dict[str, Any]]] = None,
+    preview: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Serializes a Message ORM entity into an API dictionary response.
 
@@ -84,6 +86,12 @@ def serialize_message(
     tarafca cozulur (`reactions_by_message`, mesaj basina sorgu = N+1).
     Anahtar her zaman bulunur ki istemci "bos" ile "yok" ayrimini
     yapmak zorunda kalmasin.
+
+    `preview` de AYNI gerekceyle ayri parametredir: link onizlemesi bir DIS
+    ISTEK gerektirebilir ve o istek ASLA bu yolun icinde yapilmaz. Cagiran
+    (bkz. `previews_by_message`) yalnizca ONBELLEKTEN okur ve bulamadigini
+    arka planda cozer. `None` = "onizleme yok", "henuz cozulmedi" anlamina da
+    gelir; ikisi arayuzde ayni sekilde (kart cizilmez) ele alinir.
     """
     # Gelen medya gateway'de durur; frontend kimlik dogrulamali proxy uzerinden ceker.
     media_url = f"/api/v1/whatsapp/media/{row.media_id}" if row.media_id else None
@@ -106,6 +114,7 @@ def serialize_message(
         "recipient_phone": row.recipient_phone,
         "error_message": row.error_message,
         "reactions": reactions or [],
+        "link_preview": preview or None,
         "created_at": row.external_timestamp.isoformat()
         if row.external_timestamp
         else (row.created_at.isoformat() if row.created_at else None),
@@ -128,10 +137,13 @@ class WhatsAppMessagingOrchestrator:
         return default
 
     def serialize_message(
-        self, row: Message, reactions: Optional[List[Dict[str, Any]]] = None
+        self,
+        row: Message,
+        reactions: Optional[List[Dict[str, Any]]] = None,
+        preview: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         serializer = self._get_helper("_serialize_message", serialize_message)
-        return serializer(row, reactions)
+        return serializer(row, reactions, preview)
 
     @profiled("send_reaction")
     async def send_reaction(

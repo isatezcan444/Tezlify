@@ -82,6 +82,9 @@ from backend.app.services.whatsapp.repositories.reactions import (
     latest_reaction_by_conversation as _latest_reaction_by_conversation,
     reactions_by_message as _reactions_by_message,
 )
+from backend.app.services.link_preview.service import (
+    previews_by_message as _previews_by_message,
+)
 from backend.app.services.whatsapp.repositories.lid_mappings import (
     resolve_lid_phones as _resolve_lid_phones,
 )
@@ -1153,7 +1156,19 @@ async def get_messages(
     except Exception as reaction_exc:  # noqa: BLE001 - rozet, sayfayi dusurmemeli
         logger.warning("Mesaj reaksiyonlari alinamadi: %s", reaction_exc)
         grouped = {}
-    messages = [_serialize_message(r, reactions=grouped.get(r.id, [])) for r in rows]
+    # Link onizlemeleri de TOPLU cozulur ve YALNIZCA onbellekten okunur. Bu yol
+    # `@profiled("chat_open")`; buraya bir HTTP cagrisi koymak sohbet acilisini
+    # saniyelere cikarirdi. Onbellegi bos olan URL'ler icin is arka planda
+    # baslatilir (bkz. link_preview.service.previews_by_message).
+    try:
+        previews = await _previews_by_message(db, rows)
+    except Exception as preview_exc:  # noqa: BLE001 - onizleme, sayfayi dusurmemeli
+        logger.warning("Link onizlemeleri alinamadi: %s", preview_exc)
+        previews = {}
+    messages = [
+        _serialize_message(r, reactions=grouped.get(r.id, []), preview=previews.get(r.id))
+        for r in rows
+    ]
     return {
         "messages": messages,
         "has_more": has_more,
@@ -1341,6 +1356,78 @@ async def update_conversation_status(
         )
     except Exception as exc:  # noqa: BLE001 - broadcast is best-effort
         logger.debug("Conversation status broadcast failed (conv=%s): %s", conv.id, exc)
+    return result
+
+
+@profiled("conversation_delete")
+async def delete_conversation(
+    db: AsyncSession, user_id: str, conversation_id: int
+) -> Dict[str, Any]:
+    """Sohbeti ve O SOHBETE AIT TUM MESAJLARI kalici olarak siler.
+
+    WhatsApp Web'deki "Sohbeti sil" karsiligi: sohbet yerel olarak kaldirilir.
+    Karsi tarafin cihazindaki gecmis SILINMEZ (WhatsApp semantigi budur) — ama
+    BIZIM taraftaki mesaj gecmisi geri donusu olmadan gider. WhatsApp
+    konusmalari icin yedek YOKTUR, bu yuzden cagiran taraf (arayuz) kullaniciya
+    sonucu acikca soylemek zorundadir.
+
+    Neden ORM cascade DEGIL: `Conversation.messages` iliskisinde
+    `cascade="all, delete-orphan"` var, ama ona guvenmek binlerce mesajlik bir
+    sohbette TUM satirlari oturuma yukleyip tek tek silerdi. Burada toplu
+    DELETE kullanilir; islem sabit sayida sorgu uretir.
+
+    Yetki: kapsam `_get_conversation_or_404` ile kurulur — baska kiracinin
+    sohbeti 404 doner, "bulunamadi" ile "yetkin yok" ayrimi sizdirilmaz.
+    """
+    from sqlalchemy import delete
+
+    from backend.app.models.message_reaction import MessageReaction
+
+    conv = await _get_conversation_or_404(db, user_id, conversation_id)
+
+    # Reaksiyonlar once: `message_reactions` hem `messages.id` hem
+    # `conversations.id`'ye FK ile baglidir. SQLite'ta FK zorlamasi varsayilan
+    # olarak KAPALIDIR, bu yuzden DB seviyesindeki ON DELETE CASCADE'e guvenmek
+    # testte sessizce yetim satir birakirdi. Acik silme iki lehcede de ayni
+    # sonucu verir.
+    reactions_deleted = (
+        await db.execute(
+            delete(MessageReaction).where(
+                MessageReaction.conversation_id == conv.id
+            )
+        )
+    ).rowcount
+    messages_deleted = (
+        await db.execute(delete(Message).where(Message.conversation_id == conv.id))
+    ).rowcount
+    await db.delete(conv)
+    await db.commit()
+
+    result = {
+        "id": conversation_id,
+        "deleted": True,
+        "messages_deleted": int(messages_deleted or 0),
+        "reactions_deleted": int(reactions_deleted or 0),
+    }
+    logger.info(
+        "Sohbet silindi (conv=%s, messages=%s, reactions=%s)",
+        conversation_id,
+        result["messages_deleted"],
+        result["reactions_deleted"],
+    )
+    try:
+        from backend.app.api.v1.websocket import ws_manager
+
+        await ws_manager.broadcast(
+            {
+                "event": "conversation_deleted",
+                "user_id": user_id,
+                "conversation_id": conversation_id,
+            },
+            target_user_id=user_id,
+        )
+    except Exception as exc:  # noqa: BLE001 - broadcast is best-effort
+        logger.debug("Conversation delete broadcast failed (conv=%s): %s", conv.id, exc)
     return result
 
 

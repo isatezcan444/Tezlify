@@ -13,6 +13,7 @@ from backend.app.models.system_settings import SystemSetting
 from backend.app.models.conversation import Conversation, ConversationStatus
 from backend.app.models.message import Message, MessageDirection, MessageType, ConversationMessageStatus
 from backend.app.models.message_reaction import MessageReaction
+from backend.app.models.link_preview import LinkPreview
 from backend.app.models.profile import Profile
 from backend.app.models.whatsapp_session import WhatsAppSession, SessionStatus
 from backend.app.models.ephemeral_pairing import EphemeralPairing
@@ -43,6 +44,7 @@ __all__ = [
     "MessageType",
     "ConversationMessageStatus",
     "MessageReaction",
+    "LinkPreview",
     "Profile",
     "WhatsAppSession",
     "SessionStatus",

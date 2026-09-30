@@ -20,6 +20,7 @@ from backend.app.schemas.whatsapp import (
     WhatsAppConversationListResponse,
     WhatsAppConversationStatusRequest,
     WhatsAppConversationStatusResult,
+    WhatsAppConversationDeleteResult,
     WhatsAppLoadingGateResponse,
     WhatsAppMessageItem,
     WhatsAppMessagesResponse,
@@ -45,6 +46,9 @@ from backend.app.schemas.whatsapp import (
     WhatsAppTypingRequest,
 )
 from backend.app.services import whatsapp_service
+from backend.app.services.link_preview.service import (
+    get_preview_image_bytes as _get_preview_image_bytes,
+)
 from backend.app.services.whatsapp.exceptions import PairingPromotionRefused
 from backend.app.services.whatsapp_service import NoWhatsAppSession, WhatsAppRelinkRequired
 
@@ -798,6 +802,32 @@ async def update_conversation_status(
     return WhatsAppConversationStatusResult(id=result["id"], status=result["status"])
 
 
+@router.delete(
+    "/conversations/{conversation_id}",
+    response_model=WhatsAppConversationDeleteResult,
+)
+async def delete_conversation(
+    conversation_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+) -> WhatsAppConversationDeleteResult:
+    """Sohbeti ve o sohbete ait TUM mesajlari kalici olarak siler.
+
+    Geri donusu yoktur ve WhatsApp konusmalari icin yedek bulunmaz; bu yuzden
+    arayuz onay ister. Karsi tarafin cihazindaki gecmis silinmez (WhatsApp
+    semantigi). Gateway'e ihtiyac duymaz: bu kullanicinin CRM aksiyonudur.
+    """
+    try:
+        result = await whatsapp_service.delete_conversation(
+            db, current_user.id, conversation_id
+        )
+    except LookupError as exc:
+        raise _not_found(exc) from exc
+    except Exception as exc:
+        raise _bad_gateway(exc) from exc
+    return WhatsAppConversationDeleteResult(**result)
+
+
 @router.get("/media/{media_id}")
 async def get_media(
     media_id: str,
@@ -817,4 +847,40 @@ async def get_media(
     if filename:
         headers["Content-Disposition"] = f'inline; filename="{filename}"'
     return Response(content=data, media_type=mime or "application/octet-stream", headers=headers)
+
+
+@router.get("/link-preview/image")
+async def get_link_preview_image(
+    u: str = Query(
+        ...,
+        min_length=8,
+        max_length=64,
+        description="link_previews.url_hash (URL DEGIL)",
+    ),
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+) -> Response:
+    """Onizleme kapak gorselini kimlik dogrulamali proxy uzerinden sunar.
+
+    Istemci URL DEGIL HASH gonderir. Bu ayrim guvenligin kendisidir: URL kabul
+    eden bir proxy, saldirganin `u=http://169.254.169.254/...` gonderip
+    sunucuyu kendi ic agina konusturdugu acik bir aktarim olurdu. Hash ile
+    cekilecek adres yalnizca `link_previews` tablosunda, yani dogrulamadan
+    gecmis kayitlarda bulunur.
+
+    `Cache-Control: private` secildi: onizleme kisisel bir sohbete ait
+    olmasa da yanit kimlik dogrulamali bir uctan gelir ve ara sunucularda
+    ortak onbellege alinmamalidir.
+    """
+    try:
+        data, mime = await _get_preview_image_bytes(db, u)
+    except LookupError as exc:
+        raise _not_found(exc) from exc
+    except Exception as exc:
+        raise _bad_gateway(exc) from exc
+    return Response(
+        content=data,
+        media_type=mime or "image/jpeg",
+        headers={"Cache-Control": "private, max-age=86400"},
+    )
 
