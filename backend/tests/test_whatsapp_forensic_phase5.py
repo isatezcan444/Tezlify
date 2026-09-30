@@ -449,6 +449,161 @@ async def test_p5_sent_is_not_downgraded_by_late_failed_echo():
 
 
 # ===========================================================================
+# §3/§11 — an early provider ACK must not be discarded
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_p5_early_provider_ack_is_deferred_and_applied_when_record_lands():
+    """The provider can ACK a message BEFORE its `message_new` upsert arrives.
+
+    Production log: hundreds of
+        ERROR Gateway olayi islenemedi, yayinlanmadi (event=message_status_updated):
+        Provider ACK precedes its message record; retry required
+    Nothing retried — the LookupError made the dispatcher drop the ACK for good,
+    so every early receipt was lost and the thread kept its stale status.
+
+    The ACK must be buffered instead, and applied the moment the record exists.
+    """
+    client_id = str(uuid.uuid4())
+    conv_id = await _seed_conversation()
+
+    ack = {
+        "event": "message_status_updated",
+        "event_id": str(uuid.uuid4()),
+        "gateway_session_id": P5_GW,
+        "conversation_id": P5_JID,
+        "wa_message_id": "W-EARLY-1",
+        "client_message_id": client_id,
+        "status": "DELIVERED",
+    }
+    # The early ACK is buffered, not broadcast, and must not raise.
+    assert await ingest_gateway_event(dict(ack)) is None
+
+    # There is still no record: the ACK cannot fabricate a message.
+    assert await _get_message(conv_id, "W-EARLY-1") is None
+
+    result = await ingest_gateway_event(
+        _message_new(
+            "W-EARLY-1",
+            client_id=client_id,
+            direction="OUTBOUND",
+            status="PENDING",
+            body="erken ack",
+        )
+    )
+
+    row = await _get_message(conv_id, "W-EARLY-1")
+    assert row is not None
+    assert row.status == ConversationMessageStatus.DELIVERED, (
+        "the deferred provider ACK was not applied to the message record"
+    )
+    # The broadcast must carry the true status, so the UI never shows a stale
+    # tick for a message the provider has already delivered.
+    assert result is not None
+    assert result["message"]["status"] == "DELIVERED"
+
+
+@pytest.mark.asyncio
+async def test_p5_early_ack_survives_identity_only_on_one_side():
+    """The ACK may carry only the wa id while the record carries both, or vice
+    versa. Buffering is keyed by EVERY identity the ACK carries, so either
+    match consumes it exactly once."""
+    client_id = str(uuid.uuid4())
+    conv_id = await _seed_conversation()
+
+    await ingest_gateway_event({
+        "event": "message_status_updated",
+        "event_id": str(uuid.uuid4()),
+        "gateway_session_id": P5_GW,
+        "conversation_id": P5_JID,
+        "wa_message_id": "W-EARLY-2",
+        "status": "READ",
+    })
+
+    await ingest_gateway_event(
+        _message_new(
+            "W-EARLY-2",
+            client_id=client_id,
+            direction="OUTBOUND",
+            status="SENT",
+            body="tek kimlik",
+        )
+    )
+
+    row = await _get_message(conv_id, "W-EARLY-2")
+    assert row is not None
+    assert row.status == ConversationMessageStatus.READ
+
+
+@pytest.mark.asyncio
+async def test_p5_early_ack_with_no_matching_record_is_harmless():
+    """An ACK whose record never arrives must not crash, create a row, or leak
+    into an unrelated message."""
+    conv_id = await _seed_conversation()
+
+    await ingest_gateway_event({
+        "event": "message_status_updated",
+        "event_id": str(uuid.uuid4()),
+        "gateway_session_id": P5_GW,
+        "conversation_id": P5_JID,
+        "wa_message_id": "W-NEVER-ARRIVES",
+        "status": "READ",
+    })
+
+    await ingest_gateway_event(
+        _message_new("W-OTHER-1", direction="OUTBOUND", status="SENT", body="baska")
+    )
+
+    assert await _count_messages(conv_id) == 1
+    row = await _get_message(conv_id, "W-OTHER-1")
+    assert row is not None
+    assert row.status == ConversationMessageStatus.SENT, (
+        "an unmatched deferred ACK leaked onto another message"
+    )
+
+
+@pytest.mark.asyncio
+async def test_p5_ingest_never_replaces_a_known_provider_wa_id():
+    """The gateway records an outbound send under a deterministic pre-send id and
+    can echo that record after the provider id is confirmed. The dedup path used
+    to assign unconditionally (`wa_id or current`), so a stale echo overwrote
+    the real id — every later dedup/ACK lookup for that message then missed it
+    and a second row could be created.
+
+    A known provider id is evidence and must never be replaced by a different
+    one; an unknown id is still filled in normally.
+    """
+    client_id = str(uuid.uuid4())
+    conv_id = await _seed_conversation()
+
+    await ingest_gateway_event(
+        _message_new(
+            "W-REAL-1",
+            client_id=client_id,
+            direction="OUTBOUND",
+            status="SENT",
+            body="gercek",
+        )
+    )
+    # Stale echo for the same client id carrying a different (pre-send) id.
+    await ingest_gateway_event(
+        _message_new(
+            "W-SYNTHETIC-1",
+            client_id=client_id,
+            direction="OUTBOUND",
+            status="PENDING",
+            body="gercek",
+        )
+    )
+
+    assert await _count_messages(conv_id) == 1
+    row = await _get_message(conv_id, "W-REAL-1")
+    assert row is not None, "the real provider id was overwritten by a stale echo"
+    assert row.wa_message_id == "W-REAL-1"
+
+
+# ===========================================================================
 # §5 — snapshot vs realtime ordering of state
 # ===========================================================================
 

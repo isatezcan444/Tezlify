@@ -12,7 +12,7 @@ Handles all incoming events from the Baileys gateway (/ws/gateway):
 from datetime import datetime
 import logging
 import time
-from typing import Any, Dict, FrozenSet, List, Optional, Tuple
+from typing import Any, Callable, Dict, FrozenSet, List, Optional, Tuple
 import uuid
 
 from sqlalchemy import or_, select, text
@@ -88,6 +88,121 @@ _PASSTHROUGH_EVENTS: FrozenSet[str] = frozenset({"history_sync_completed"})
 _orphan_suppressed: Dict[str, Dict[str, Any]] = {}
 
 
+# ---------------------------------------------------------------------------
+# Deferred provider ACKs
+# ---------------------------------------------------------------------------
+# A `message_status_updated` event can arrive BEFORE the `message_new` that
+# carries its message record: WhatsApp acknowledges a message while its upsert
+# is still travelling, and the gateway forwards both independently (a reconnect
+# or a busy provider can widen the gap to seconds).
+#
+# The old code raised `LookupError("Provider ACK precedes its message record;
+# retry required")`. Nothing retried — the dispatcher caught it as a generic
+# failure and DROPPED the event for good: the thread kept its old status
+# forever, and the log filled with errors for ACKs that had a perfectly good
+# home a moment later.
+#
+# The ACK is not wrong and it is not lost work; it is early. Buffer it under the
+# identities it carries, and apply it the moment the record is created (or the
+# dedup path finds it). Bounded TTL + size keep a never-arriving message from
+# leaking memory.
+_DEFERRED_STATUS_TTL_S = 300.0
+_DEFERRED_STATUS_MAX_KEYS = 1000
+_deferred_status_updates: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+
+
+def _status_identity_keys(event: Dict[str, Any]) -> List[str]:
+    """Identity keys under which an ACK — or a message row — can be found."""
+    keys: List[str] = []
+    wa_id = event.get("wa_message_id")
+    client_mid = event.get("client_message_id")
+    if wa_id:
+        keys.append(f"wa:{wa_id}")
+    if client_mid:
+        keys.append(f"client:{client_mid}")
+    return keys
+
+
+def defer_status_update(event: Dict[str, Any]) -> None:
+    """Buffers an early provider ACK until its message record exists."""
+    now = time.monotonic()
+    expired = [
+        key for key, (seen_at, _) in _deferred_status_updates.items()
+        if now - seen_at > _DEFERRED_STATUS_TTL_S
+    ]
+    for key in expired:
+        _deferred_status_updates.pop(key, None)
+    payload = dict(event)
+    keys = _status_identity_keys(payload)
+    if not keys:
+        # Nothing to key on; the ACK can never be matched to a record.
+        return
+    # Evict oldest entries (by first-seen time) until there is room for the
+    # whole payload. Inserting under every key means the same payload object
+    # may occupy more than one slot.
+    while len(_deferred_status_updates) + len(keys) > _DEFERRED_STATUS_MAX_KEYS:
+        oldest = min(_deferred_status_updates.items(), key=lambda item: item[1][0], default=None)
+        if oldest is None:
+            break
+        _deferred_status_updates.pop(oldest[0], None)
+    for key in keys:
+        _deferred_status_updates[key] = (now, payload)
+
+
+def _consume_deferred_status(row: Message) -> Optional[Dict[str, Any]]:
+    """Removes and returns the buffered ACK that belongs to `row`, if any.
+
+    The payload is stored under every identity it carries, so a hit on one key
+    must remove its siblings too — otherwise the same ACK would be applied
+    twice (once via `wa:` and once via `client:`).
+    """
+    keys = _status_identity_keys({
+        "wa_message_id": row.wa_message_id,
+        "client_message_id": row.client_message_id,
+    })
+    hit: Optional[Dict[str, Any]] = None
+    for key in keys:
+        entry = _deferred_status_updates.pop(key, None)
+        if entry is None:
+            continue
+        payload = entry[1]
+        if hit is None:
+            hit = payload
+        for sibling in list(_deferred_status_updates):
+            if _deferred_status_updates[sibling][1] is payload:
+                _deferred_status_updates.pop(sibling, None)
+    return hit
+
+
+def apply_deferred_status(
+    row: Message,
+    advance: Callable[[Any, Optional[str]], bool] = _advance_message_status,
+) -> bool:
+    """Applies a buffered early ACK to a freshly persisted/deduped message.
+
+    Mirrors the live `message_status_updated` branch: FAILED is terminal and
+    must win even after SENT (WhatsApp rejects after it has accepted), and every
+    other status advances monotonically. Returns True when the row changed.
+    """
+    event = _consume_deferred_status(row)
+    if event is None:
+        return False
+    new_status = str(event.get("status") or "").upper()
+    if not new_status:
+        return False
+    if new_status == "FAILED":
+        # Same boundary the live ACK branch pins: only a still-unproven send
+        # (PENDING) may be failed; a late failure echo must not undo a SENT /
+        # DELIVERED / READ message.
+        if row.status != ConversationMessageStatus.PENDING:
+            return False
+        row.status = ConversationMessageStatus.FAILED
+        row.failed_at = datetime.utcnow()
+        row.error_message = str(event.get("error_message") or "Provider rejected the message.")[:300]
+        return True
+    return bool(advance(row, new_status))
+
+
 def _skip_event(event: Dict[str, Any], reason: str) -> Dict[str, Any]:
     """Marks an event so it is not broadcast, and records WHY at a visible level.
 
@@ -101,6 +216,19 @@ def _skip_event(event: Dict[str, Any], reason: str) -> Dict[str, Any]:
     not from message bodies, so WARNING cannot leak conversation content.
     """
     logger.warning("Gateway olayi kalici yazilmadi: %s", reason)
+    event["_skip"] = reason
+    return event
+
+
+def _defer_event(event: Dict[str, Any], reason: str) -> Dict[str, Any]:
+    """Marks an event as intentionally buffered (not dropped, not broadcast).
+
+    Unlike `_skip_event`, deferral is an expected outcome — an early provider
+    ACK — so it is logged at DEBUG. The event is not published yet; it is
+    re-applied when its message record arrives and the broadcast then carries
+    the true status.
+    """
+    logger.debug("Gateway olayi ertelendi: %s", reason)
     event["_skip"] = reason
     return event
 
@@ -503,8 +631,17 @@ class WhatsAppEventOrchestrator:
             )
             canonical = existing.scalars().first()
             if canonical is not None:
-                canonical.wa_message_id = wa_id or canonical.wa_message_id
+                # Fill the provider id, never REPLACE a known one with a
+                # different value. The gateway records an outbound send under a
+                # deterministic pre-send id and can echo that record before (or
+                # after) the real provider id is confirmed; overwriting the real
+                # id here broke every later dedup/ACK lookup for that message and
+                # produced a second row when the provider echo arrived.
+                canonical.wa_message_id = canonical.wa_message_id or wa_id
                 advance_message_status(canonical, msg.get("status"))
+                # An early ACK may be buffered for this record; apply it before
+                # serializing so the broadcast carries the true status.
+                apply_deferred_status(canonical, advance=advance_message_status)
                 await db.commit()
                 event["conversation_id"] = conv.id
                 event["message"] = serialize_message(canonical)
@@ -572,6 +709,10 @@ class WhatsAppEventOrchestrator:
         if direction == MessageDirection.INBOUND:
             conv.unread_count = (conv.unread_count or 0) + 1
         await db.flush()
+        # A provider ACK may have arrived while this record was being persisted
+        # (see the deferred-ACK block at the top of this module). Apply it now,
+        # before serialization, instead of losing it.
+        apply_deferred_status(row, advance=advance_message_status)
 
         event["conversation_id"] = conv.id
         event["jid"] = jid_str
@@ -1126,11 +1267,12 @@ class WhatsAppEventOrchestrator:
                             Message.client_message_id == client_mid if client_mid else False,
                         ),
                         get_user_filter(Conversation.user_id, owner),
-                        *(
-                            [Conversation.session_id == ws_session_id]
-                            if ws_session_id is not None
-                            else []
-                        ),
+                        # Deliberately NOT scoped to the event's session: a relink
+                        # or a LID/phone split moves the message row to another
+                        # conversation of the SAME owner, and scoping by session
+                        # made the ACK miss it — which is how a real ACK turned
+                        # into "provider ACK precedes its message record". The
+                        # owner filter still makes cross-tenant reads impossible.
                     )
                 )
                 first_pair = msg_res.first()
@@ -1283,7 +1425,17 @@ class WhatsAppEventOrchestrator:
                     event["client_message_id"] = row.client_message_id
                     event["status"] = row.status.value
                 else:
-                    raise LookupError("Provider ACK precedes its message record; retry required")
+                    # Early ACK, not a failure. WhatsApp acknowledged the message
+                    # while its `message_new` upsert was still travelling, so the
+                    # record will exist shortly. Buffer the ACK and apply it when
+                    # the record lands. The old `LookupError` made the dispatcher
+                    # discard the event permanently — the status never arrived and
+                    # every early ACK logged a stack trace.
+                    defer_status_update(event)
+                    return _defer_event(
+                        event,
+                        f"message_status_updated: kayit henuz yok, ACK ertelendi ({wa_id or event.get('client_message_id')})",
+                    )
         return event
 
     async def _map_session_event(self, db: AsyncSession, event: Dict[str, Any]) -> Dict[str, Any]:

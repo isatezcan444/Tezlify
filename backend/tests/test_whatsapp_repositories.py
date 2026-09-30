@@ -564,7 +564,8 @@ def test_missing_avatar_does_not_hold_the_loading_gate():
         avatars_missing=5,
     ) == ("syncing_history", "chats")
 
-    # A failure is still a failure: avatars never mask an error.
+    # A failure is still a failure: neither avatars nor a previous completion
+    # may mask a genuinely failed job.
     assert resolve_gate_phase(
         job_state="FAILED",
         job_stage="messages",
@@ -572,8 +573,16 @@ def test_missing_avatar_does_not_hold_the_loading_gate():
         session_status="CONNECTED",
         avatars_missing=3,
     )[0] == "error"
+    assert resolve_gate_phase(
+        job_state="FAILED",
+        job_stage="messages",
+        gw_phase="ready",
+        session_status="CONNECTED",
+        avatars_missing=3,
+        initial_sync_completed=True,
+    )[0] == "error"
 
-    # Connecting is still connecting.
+    # Connecting is still connecting on a line that has never completed a sync.
     assert resolve_gate_phase(
         job_state="IDLE",
         job_stage="idle",
@@ -581,3 +590,62 @@ def test_missing_avatar_does_not_hold_the_loading_gate():
         session_status="CONNECTING",
         avatars_missing=2,
     ) == ("connecting", "connecting")
+
+
+def test_durable_initial_sync_stamp_outranks_in_memory_gate_signals():
+    """The refresh / restart hang: the first-load gate must not wait forever.
+
+    `resolve_gate_phase` used to read ONLY in-memory signals: the backend
+    `SyncJob` registry and the gateway's live `sync.phase`. Both are erased by a
+    page refresh, a backend restart or a gateway restart. After QR pairing, a
+    completed first sync left `whatsapp_sessions.initial_sync_completed_at`
+    stamped, but a refresh could still resolve to `syncing_history` (gateway
+    reconnecting) or `loading_profiles` (avatars) with nothing left to finish —
+    the loading screen never completed.
+
+    `initial_sync_completed_at` is the durable record that the first sync
+    finished, so it must open the gate regardless of the volatile state.
+    """
+    from backend.app.services.whatsapp_service import resolve_gate_phase
+
+    # Gateway says it is syncing (e.g. it restarted and re-fetched history),
+    # the backend has no job: the durable stamp still opens the gate.
+    assert resolve_gate_phase(
+        job_state="IDLE",
+        job_stage="idle",
+        gw_phase="syncing",
+        session_status="CONNECTED",
+        avatars_missing=4,
+        initial_sync_completed=True,
+    ) == ("ready", "complete")
+
+    # A manual re-sync (job SYNCING) must NOT re-open the full-screen first-load
+    # gate once the line has completed its first sync; it belongs in the banner.
+    assert resolve_gate_phase(
+        job_state="SYNCING",
+        job_stage="messages",
+        gw_phase="ready",
+        session_status="CONNECTED",
+        avatars_missing=0,
+        initial_sync_completed=True,
+    ) == ("ready", "complete")
+
+    # A reconnect must not re-open the gate for a user who already has chats.
+    assert resolve_gate_phase(
+        job_state="IDLE",
+        job_stage="idle",
+        gw_phase="idle",
+        session_status="CONNECTING",
+        avatars_missing=3,
+        initial_sync_completed=True,
+    )[0] == "ready"
+
+    # Default keeps the previous contract for callers that do not know the
+    # stamp: nothing in memory, nothing running -> no gate (`idle`).
+    assert resolve_gate_phase(
+        job_state="IDLE",
+        job_stage="idle",
+        gw_phase="idle",
+        session_status="CONNECTED",
+        avatars_missing=0,
+    ) == ("idle", "idle")

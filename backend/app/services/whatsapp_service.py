@@ -239,42 +239,55 @@ def resolve_gate_phase(
     gw_phase: str,
     session_status: Optional[str],
     avatars_missing: int,
+    initial_sync_completed: bool = False,
 ) -> tuple[str, str]:
     """Decide the loading gate's phase and stage.
 
-    A permanently missing profile picture must NOT hold the gate.
+    The gate answers ONE question: is the line's FIRST sync still running? Only
+    `syncing_history`, `connecting` and `error` block; every other outcome lets
+    the chat list open.
 
-    The `avatars_missing` check used to sit ABOVE the ready check. One avatar the
-    gateway could not fetch therefore pinned the gate to "loading_profiles"
-    forever: progress froze at 90 + 10*fetched/total, which lands on 98% in the
-    common case of a single unfetchable contact, and the chat list never opened.
-    Avatars are not persisted in our database — they stream from the gateway on
-    every probe — so "missing" is regenerated each time and never clears on its
-    own. The gate could never open.
+    Two production defects shaped these rules.
 
-    WhatsApp Web does not hide a conversation because a contact has no photo; it
-    renders their initial. Messages are what someone is waiting for, and they
-    are already stored, so the gate opens and a photo appears in the background
-    if it ever arrives.
+    1. Avatars must never hold the gate. `avatars_missing > 0` used to be
+       checked before the ready branch, so one profile photo the gateway could
+       not fetch pinned the gate to "loading_profiles" forever: progress froze at
+       90 + 10*fetched/total (98% in the common single-contact case) and the
+       chat list never opened. Avatars are not persisted in our database — they
+       stream from the gateway on every probe — so "missing" regenerates each
+       time and never clears on its own. WhatsApp Web renders a contact's
+       initial instead; messages are what someone is waiting for, and they are
+       already stored. Avatars therefore no longer participate in the decision
+       at all (the payload still reports them via `avatars_pending`).
 
-    Work that is genuinely still in flight still holds the gate, and avatars
-    remain a reported stage so the UI can explain the wait — they just never
-    justify one on their own.
+    2. `initial_sync_completed` is the durable truth. The gateway's sync phase
+       and the backend `SyncJob` both live only in memory, so a page refresh or
+       a container restart erases them. `whatsapp_sessions.initial_sync_completed_at`
+       does not. Once it is stamped, the first-load gate is finished — a
+       refresh must never show an unfinishable loading screen again, and a
+       manual re-sync belongs in the in-list banner, not in a full-screen gate.
+
+    A failed job is still a failure — an error is never masked by the durable
+    stamp. A reconnect, by contrast, must not re-open the first-load gate for a
+    user who already has their chats: the session banner already reports the
+    socket state, so the stamp wins there.
     """
     if job_state == "FAILED":
         return "error", job_stage
+    if initial_sync_completed:
+        return "ready", "complete"
+    if session_status in ("CONNECTING", "RESTORING"):
+        # Connecting is still connecting. Reporting "loading avatars" while the
+        # socket is still coming up would name a wait that is not happening yet.
+        return "connecting", "connecting"
     if job_state == "SYNCING":
         return "syncing_history", job_stage
     if gw_phase == "syncing":
         return "syncing_history", (job_stage if job_stage != "idle" else "chats")
     if gw_phase == "ready" and job_state in ("COMPLETED", "IDLE"):
         return "ready", "complete"
-    if session_status in ("CONNECTING", "RESTORING"):
-        # Connecting is still connecting. Reporting "loading avatars" while the
-        # socket is still coming up would name a wait that is not happening yet.
-        return "connecting", "connecting"
-    if avatars_missing > 0:
-        return "loading_profiles", "avatars"
+    # Nothing durable and nothing running: there is no wait to explain. The UI
+    # does not open a gate for `idle`, so the chat list is usable immediately.
     return "idle", "idle"
 
 
@@ -356,13 +369,12 @@ async def get_loading_gate(db: AsyncSession, user_id: str) -> Dict[str, Any]:
         gw_phase=gw_phase,
         session_status=session.get("status"),
         avatars_missing=counts["avatars_missing"],
+        initial_sync_completed=bool(session.get("initial_sync_completed")),
     )
 
     progress = int(sync.get("progress") or 0)
     if phase == "ready":
         progress = 100
-    elif phase == "loading_profiles" and counts["avatars_total"] > 0:
-        progress = 90 + int(10 * counts["avatars_fetched"] / counts["avatars_total"])
     elif job_state == "SYNCING" and counts["chats_total"] > 0:
         progress = max(progress, min(90, int(90 * counts["chats_synced"] / counts["chats_total"])))
 
