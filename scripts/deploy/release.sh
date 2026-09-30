@@ -99,9 +99,13 @@ fi
 
 # --- 3. Sunucu tarafi akis (adacik saglik kapisi + cutover + dogrulama) -----
 log "sunucu akisi basliyor (once imaj build + ADACIK saglik, sonra cutover)"
+# Sunucudaki script HEDEF COMMIT'ten gelir: once fetch, sonra yalnizca o dosyayi
+# checkout et. Boylece calisan script ile deploy edilen kod AYNI git nesnesidir
+# (script'i scp ile kopyalamak "sunucuda ne var?" sorusunu geri getirirdi).
+# Reset'in kendisi hala host script'inin icinde ve `--force-reset` ister.
 # shellcheck disable=SC2029
 ssh -i "$SSH_KEY" -o ConnectTimeout=20 "$HOST" \
-  "cd /opt/tezlify && bash scripts/deploy/host-release.sh $SHA $SKIP_BUILD ${FRONTEND_TAR:+--frontend-tar /tmp/$(basename "$FRONTEND_TAR")} --force-reset"
+  "cd /opt/tezlify && git fetch origin --prune && git checkout $(printf '%s' "$SHA") -- scripts/deploy/host-release.sh && bash scripts/deploy/host-release.sh $SHA $SKIP_BUILD ${FRONTEND_TAR:+--frontend-tar /tmp/$(basename "$FRONTEND_TAR")} --force-reset"
 
 # --- 4. Yayin dogrulamasi (yerelden, public uclar) -------------------------
 log "public /health"
