@@ -110,9 +110,36 @@ _MERGE_LOCK_POLL_SECONDS = 0.25
 _MERGE_LOCK_TABLE_READY: set[str] = set()
 
 
+def _lock_table_cache_key(db: AsyncSession, postgres: bool) -> str:
+    """Lease tablosu hazır-işareti için ANAHTAR: sürücü DEĞİL, VERİTABANI.
+
+    Önbellek yalnızca lehçeye göre anahtarlanıyordu (`"sqlite"` /
+    `"postgresql"`). Tek bir süreçte BİRDEN FAZLA sqlite veritabanı koşar
+    (test paketi her test için ayrı bir dosya açıyor): tabloyu ilk kuran
+    veritabanı, DİĞERLERİNİ de "hazır" işaretliyor ve
+    `CREATE TABLE IF NOT EXISTS` tam da gereken yerde atlanıyordu.
+
+    Sonuç yalnızca `no such table: wa_merge_locks` değildi: kilit ALINMAMIŞ
+    sayılıyor, yani bu tablonun önlemek için var olduğu çapraz süreç
+    birleştirme yarışı sessizce geri geliyordu. Üretimde tek bir veritabanı
+    olduğu için orada görünmüyordu; test paketinde ise sıraya bağlı, tekrarlayan
+    kırmızı üretiyordu.
+
+    Kimlik okunamazsa eski (kaba) davranışa düşülür: en kötü ihtimalle tablo
+    yeniden kurulur, ki bu idempotenttir.
+    """
+    dialect = "postgresql" if postgres else "sqlite"
+    try:
+        bind = db.get_bind()
+    except Exception:  # noqa: BLE001 - kimlik okunamazsa kaba anahtar
+        return dialect
+    url = getattr(bind, "url", None) or getattr(getattr(bind, "engine", None), "url", None)
+    return f"{dialect}:{url}" if url else dialect
+
+
 async def _ensure_merge_lock_table(db: AsyncSession, postgres: bool) -> bool:
     """Lease tablosunu idempotent kurar. Kurulamazsa kilit YOK sayılmaz."""
-    key = "postgresql" if postgres else "sqlite"
+    key = _lock_table_cache_key(db, postgres)
     if key in _MERGE_LOCK_TABLE_READY:
         return True
     ddl = (
