@@ -148,6 +148,13 @@ per build.
   `wa_merge_locks` lock-table fix, §N). `RELEASE_EXIT=0` ("SÜRÜM TAMAM: 7370c18"), frontend hash parity,
   `/health` OK. The `/var/lib/docker/containers` mount is live (`rw=true`) and
   `POST /api/v1/admin/ops/logs/clear` is present in the live OpenAPI.
+- **2026-10-01 (later):** deployed `f63a0f1` (the log-tail direct read). `RELEASE_EXIT=0`
+  ("SÜRÜM TAMAM: f63a0f1"), frontend hash parity, public `/health` OK. Verified by running the DEPLOYED
+  `ops_service.get_service_logs` inside the container — backend 25 ms / 200 lines, gateway 23 ms / 199,
+  caddy 23 ms / 178, db 19 ms / 117, all `error=None` (previously a 30 s timeout returning nothing) — and
+  by the deployed `ops_service.py` sha256 matching `git show HEAD:` byte-for-byte. `docker logs` was
+  unwedged for all four with `docker restart` (now 22–23 ms). Rotation applied to backend+gateway; caddy
+  and db still `map[]`.
 
 ## Verification baselines
 
