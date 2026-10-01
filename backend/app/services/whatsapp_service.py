@@ -1371,6 +1371,11 @@ async def delete_conversation(
     konusmalari icin yedek YOKTUR, bu yuzden cagiran taraf (arayuz) kullaniciya
     sonucu acikca soylemek zorundadir.
 
+    Ayrica sohbet WhatsApp tarafinda da silinir (`deleteChatAction` app-state
+    yamasi), boylece hesabin diger cihazlari (telefon) da senkron kalir. Bu
+    cagri en iyi cabadir: basarisiz olursa yerel silme YINE yapilir, ama sonuc
+    `remote_deleted=False` olarak DONDURULUR.
+
     Neden ORM cascade DEGIL: `Conversation.messages` iliskisinde
     `cascade="all, delete-orphan"` var, ama ona guvenmek binlerce mesajlik bir
     sohbette TUM satirlari oturuma yukleyip tek tek silerdi. Burada toplu
@@ -1384,6 +1389,49 @@ async def delete_conversation(
     from backend.app.models.message_reaction import MessageReaction
 
     conv = await _get_conversation_or_404(db, user_id, conversation_id)
+
+    # --- Uzaktan silme: WhatsApp tarafi -------------------------------------
+    # WhatsApp Web'de bir sohbeti silmek, hesabin DIGER cihazlarinda (telefon)
+    # kalan kopyayi kaldirmaz; bunun icin `deleteChatAction` app-state yamasi
+    # gerekir. Yama gonderilmezse Tezlify "sildi" derken telefonda sohbet durur
+    # ve bir sonraki gecmis senkronu onu geri getirebilir — yani silme
+    # senkronu iki yonlu degil, tek yonlu olur.
+    #
+    # EN IYI CABADIR ve yerel silmeyi ASLA engellemez: kullanici silme kararini
+    # verdi, yerel veri gitmelidir. Ama sonuc DONDURULUR (`remote_deleted`), ki
+    # arayuz "WhatsApp'ta da silindi" iddiasini ancak dogruysa kurabilsin
+    # (AGENTS.md §1.1 — sessiz yalan yok).
+    remote_deleted = False
+    remote_error: Optional[str] = None
+    remote_jid: Optional[str] = None
+    try:
+        _remote_conv, remote_jid = await _resolve_jid(db, user_id, conversation_id)
+    except LookupError as exc:
+        # Kisisi olmayan bir sohbetin WhatsApp kimligi yoktur. Bu bir hata
+        # degil, uzaktan silmenin MUMKUN OLMADIGI durumdur — ve silme yine
+        # yapilmalidir; bu yuzden 404'e cevrilmez.
+        remote_error = "NO_REMOTE_IDENTITY"
+        logger.info("Sohbet uzaktan silinemedi (conv=%s): %s", conversation_id, exc)
+    if remote_jid:
+        try:
+            session_row = await _conversation_session(db, user_id, conv)
+            gateway_result = await _gateway_op_or_mark_relink(
+                db, session_row, lambda gid: gw.delete_conversation_remote(gid, remote_jid)
+            )
+            # Tasima katmanindaki 2xx, WhatsApp'in kabul ettiginin kaniti
+            # DEGILDIR; gateway saglayici reddinde `success: false` doner.
+            if isinstance(gateway_result, dict) and gateway_result.get("success") is True:
+                remote_deleted = True
+            else:
+                raw = gateway_result.get("error") if isinstance(gateway_result, dict) else None
+                remote_error = str(raw or "INVALID_GATEWAY_RESPONSE")[:300]
+        except WhatsAppRelinkRequired:
+            remote_error = "WHATSAPP_AUTH_RELINK_REQUIRED"
+        except NoWhatsAppSession as exc:
+            remote_error = str(exc)[:300]
+        except Exception as exc:  # noqa: BLE001 - uzaktan silme yerel silmeyi durduramaz
+            remote_error = str(exc)[:300]
+            logger.warning("Sohbet uzaktan silinemedi (conv=%s): %s", conversation_id, exc)
 
     # Reaksiyonlar once: `message_reactions` hem `messages.id` hem
     # `conversations.id`'ye FK ile baglidir. SQLite'ta FK zorlamasi varsayilan
@@ -1408,12 +1456,17 @@ async def delete_conversation(
         "deleted": True,
         "messages_deleted": int(messages_deleted or 0),
         "reactions_deleted": int(reactions_deleted or 0),
+        # Uzaktan silme sonucu: arayuz bunu kullaniciya soylemek ZORUNDA.
+        # `False` ise sohbet yalnizca Tezlify'dan kaldirildi.
+        "remote_deleted": remote_deleted,
+        "remote_error": remote_error,
     }
     logger.info(
-        "Sohbet silindi (conv=%s, messages=%s, reactions=%s)",
+        "Sohbet silindi (conv=%s, messages=%s, reactions=%s, remote=%s)",
         conversation_id,
         result["messages_deleted"],
         result["reactions_deleted"],
+        remote_deleted,
     )
     try:
         from backend.app.api.v1.websocket import ws_manager

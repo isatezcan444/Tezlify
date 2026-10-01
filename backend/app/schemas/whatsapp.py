@@ -289,6 +289,14 @@ class WhatsAppConversationDeleteResult(BaseModel):
     deleted: bool
     messages_deleted: int = 0
     reactions_deleted: int = 0
+    # Uzaktan (WhatsApp hesabinin diger cihazlari) silme sonucu. `False` ise
+    # sohbet YALNIZCA Tezlify'dan kaldirildi; arayuz bunu kullaniciya soylemek
+    # zorundadir, yoksa "sildim" iddiasi telefonda dogru olmaz.
+    # NOT: alan burada ACIKCA bildirilmelidir — Pydantic v2 varsayilan
+    # `extra="ignore"` davranisi, bildirilmeyen bir alani sessizce DUSURUR
+    # (`link_preview` hatasinin ayni sekli).
+    remote_deleted: bool = False
+    remote_error: Optional[str] = None
 
 
 class WhatsAppSendResult(BaseModel):

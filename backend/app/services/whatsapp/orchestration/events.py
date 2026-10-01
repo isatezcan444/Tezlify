@@ -7,15 +7,18 @@ Handles all incoming events from the Baileys gateway (/ws/gateway):
 - Session lifecycle & connection state (session_connected, connection_error, etc.)
 - Contact synchronization (contact_synced)
 - Deduplication and idempotency tracking (processed_events table)
-- Fail-closed orphan event handling (EventOwnerUnresolved -> rollback)
+- Fail-closed orphan event handling (EventOwnerUnresolved -> rollback), with a
+  bounded replay queue so an event whose owner is only *not yet* resolvable is
+  held and retried instead of being discarded
 """
+from collections import deque
 from datetime import datetime
 import logging
 import time
 from typing import Any, Callable, Dict, FrozenSet, List, Optional, Tuple
 import uuid
 
-from sqlalchemy import or_, select, text
+from sqlalchemy import delete, func, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,6 +26,7 @@ from backend.app.core.auth import get_user_filter
 from backend.app.core.database import AsyncSessionLocal
 from backend.app.models.contact import Contact
 from backend.app.models.conversation import Conversation, ConversationStatus
+from backend.app.models.message_reaction import MessageReaction
 from backend.app.models.message import (
     ConversationMessageStatus,
     Message,
@@ -261,11 +265,156 @@ def _log_orphan_event(evt: str, exc: Exception, gw_session_id: Optional[str]) ->
         logger.debug("Gateway olayi sahibi cozulemedi, atlandi (event=%s): %s", evt, exc)
 
 
+# ---------------------------------------------------------------------------
+# Owner-unresolved replay queue
+# ---------------------------------------------------------------------------
+# Why this exists: an event whose owner cannot be resolved is not garbage, it is
+# EARLY. In production a `lid_mapped` arrived while the QR session's
+# `whatsapp_sessions` row did not exist yet, so `_resolve_event_owner_and_session`
+# failed and the event was discarded. That one drop starved the entire LID
+# identity-healing path (`_heal_lid_contact_identity` +
+# `reconcile_legacy_split_conversation`), which is why the reported chat stayed
+# split and its messages looked like they had never arrived.
+#
+# From the user's side, discarding an event the system could have handled
+# seconds later is indistinguishable from losing a message. So it is HELD:
+# bounded, time-limited, and replayed the moment an event for the same gateway
+# session does resolve — which is the evidence the blocker has cleared.
+_ORPHAN_QUEUE_MAX = 500
+_ORPHAN_TTL_SECONDS = 300.0
+_orphan_queue: "deque[Dict[str, Any]]" = deque(maxlen=_ORPHAN_QUEUE_MAX)
+# Gateway sessions that produced an orphan. Membership gates the drain so the
+# common (non-orphaning) path pays one set lookup and nothing else.
+_orphan_sessions: set = set()
+# Overflow and TTL evictions are COUNTED, never silently forgotten: a queue that
+# quietly discards is the very failure this replaces.
+_orphan_dropped = 0
+_orphan_replayed = 0
+_orphan_drain_inflight = False
+
+
+def _push_orphan_item(item: Dict[str, Any]) -> None:
+    """Appends to the bounded queue, counting any eviction it forces."""
+    global _orphan_dropped
+    if _orphan_queue.maxlen is not None and len(_orphan_queue) >= _orphan_queue.maxlen:
+        _orphan_dropped += 1
+    _orphan_queue.append(item)
+
+
+def _enqueue_orphan_event(event: Dict[str, Any], reason: str) -> None:
+    """Holds an owner-unresolved event for replay instead of discarding it."""
+    gw_session = str(event.get("gateway_session_id") or "-")
+    # Shallow copy WITHOUT `_skip`: a later attempt must start clean, and the
+    # caller's dict may still be mutated after this call.
+    held = {k: v for k, v in event.items() if k != "_skip"}
+    _push_orphan_item(
+        {"queued_at": time.monotonic(), "reason": reason, "event": held}
+    )
+    _orphan_sessions.add(gw_session)
+
+
+def orphan_queue_stats() -> Dict[str, Any]:
+    """Observability for the held-event queue (and a test seam)."""
+    return {
+        "queued": len(_orphan_queue),
+        "dropped": int(_orphan_dropped),
+        "replayed": int(_orphan_replayed),
+        "sessions": sorted(_orphan_sessions),
+        "max": _ORPHAN_QUEUE_MAX,
+        "ttl_seconds": _ORPHAN_TTL_SECONDS,
+    }
+
+
+def reset_orphan_queue() -> None:
+    """Clears held events and counters. Test isolation hook."""
+    global _orphan_dropped, _orphan_replayed, _orphan_drain_inflight
+    _orphan_queue.clear()
+    _orphan_sessions.clear()
+    _orphan_dropped = 0
+    _orphan_replayed = 0
+    _orphan_drain_inflight = False
+
+
 class WhatsAppEventOrchestrator:
     """Coordinates incoming Baileys gateway event ingestion, validation, persistence, and dispatch."""
 
     def __init__(self, service: Optional[Any] = None) -> None:
         self.service = service
+
+    async def _drain_orphan_queue(self, gateway_session_id: Optional[str]) -> int:
+        """Replays held events once their owner has become resolvable.
+
+        Triggered after an event for `gateway_session_id` resolved to an owner:
+        that is direct evidence the original blocker is gone (the session row
+        exists, the contact was created, ...).
+
+        Re-entrancy is blocked on purpose. A replayed event that is STILL
+        unresolvable is pushed back instead of being retried in place, so a
+        permanently orphaned event can never spin.
+        """
+        global _orphan_drain_inflight, _orphan_replayed, _orphan_dropped
+        key = str(gateway_session_id or "-")
+        if _orphan_drain_inflight or key not in _orphan_sessions:
+            return 0
+        if not any(
+            str(item["event"].get("gateway_session_id") or "-") == key
+            for item in _orphan_queue
+        ):
+            _orphan_sessions.discard(key)
+            return 0
+
+        _orphan_drain_inflight = True
+        now = time.monotonic()
+        try:
+            mine: List[Dict[str, Any]] = []
+            keep: List[Dict[str, Any]] = []
+            for item in list(_orphan_queue):
+                if str(item["event"].get("gateway_session_id") or "-") == key:
+                    mine.append(item)
+                else:
+                    keep.append(item)
+
+            # Rebuild in place so the bounded deque keeps enforcing its cap.
+            _orphan_queue.clear()
+            for item in keep:
+                _push_orphan_item(item)
+
+            replayed = 0
+            for item in mine:
+                if now - float(item["queued_at"]) > _ORPHAN_TTL_SECONDS:
+                    _orphan_dropped += 1
+                    logger.warning(
+                        "Sahipsiz gateway olayi suresi doldu, yayinlanmadi (event=%s, session=%s)",
+                        item["event"].get("event"), key,
+                    )
+                    continue
+                try:
+                    result = await self.ingest_gateway_event(item["event"])
+                except Exception as exc:  # noqa: BLE001 - replay must never break ingest
+                    logger.warning(
+                        "Sahipsiz olay yeniden oynanamadi (session=%s): %s", key, exc
+                    )
+                    result = None
+                if isinstance(result, dict) and result.get("user_id"):
+                    replayed += 1
+                    _orphan_replayed += 1
+                else:
+                    # Still unresolvable — hold it again rather than dropping it.
+                    _push_orphan_item(item)
+            if replayed:
+                logger.info(
+                    "Sahipsiz gateway olaylari yeniden oynandi (session=%s, adet=%s)",
+                    key, replayed,
+                )
+            still_held = any(
+                str(item["event"].get("gateway_session_id") or "-") == key
+                for item in _orphan_queue
+            )
+            if not still_held:
+                _orphan_sessions.discard(key)
+            return replayed
+        finally:
+            _orphan_drain_inflight = False
 
     def _get_helper(self, name: str, default: Any) -> Any:
         if self.service is not None:
@@ -1847,6 +1996,158 @@ class WhatsAppEventOrchestrator:
 
 
 
+    async def _ingest_conversation_deleted(self, db: AsyncSession, event: Dict[str, Any]) -> Dict[str, Any]:
+        """Telefonda silinen sohbeti burada da siler (urun karari: TAM silme).
+
+        WhatsApp paritesi: bir cihazda silinen sohbet her cihazda kaybolur.
+        Gateway, Baileys'in `chats.delete` olayini `conversation_deleted` olarak
+        yayiyor; YETKI karari burada verilir — jid'den kullaniciya cozum ve
+        kiraci filtresi gateway'de yoktur ve olmamalidir.
+
+        Silme TOPLU yapilir; ORM cascade'e birakilmaz. Ayni gerekce
+        `whatsapp_service.delete_conversation` icin de yazilmisti: 10 bin
+        mesajlik bir sohbeti oturuma yukleyip tek tek silmek bellegi sisirir.
+        """
+        resolve_event_owner_and_session = self._get_helper(
+            "_resolve_event_owner_and_session", _resolve_event_owner_and_session
+        )
+        find_whatsapp_conversation = self._get_helper(
+            "_find_whatsapp_conversation", _find_whatsapp_conversation
+        )
+
+        jid = event.get("conversation_id")
+        if not jid or "@" not in str(jid):
+            return _skip_event(event, "conversation_deleted: sohbet jid'i cozulemedi")
+        clean_jid = _strip_jid_prefix(str(jid))
+        if is_broadcast_only_jid(clean_jid) or is_degenerate_jid(clean_jid):
+            return _skip_event(event, f"conversation_deleted: gecersiz jid ({clean_jid})")
+
+        owner, ws_session_id = await resolve_event_owner_and_session(
+            db, clean_jid, event.get("gateway_session_id")
+        )
+        event["user_id"] = owner
+
+        conv = await find_whatsapp_conversation(db, owner, str(jid), session_id=ws_session_id)
+        if conv is None:
+            # Idempotency, not an error: the same delete can arrive twice (durable
+            # outbox replay + the live socket). The second delivery has nothing
+            # left to delete.
+            return _skip_event(event, f"conversation_deleted: sohbet zaten yok ({clean_jid})")
+
+        conv_id = int(conv.id)
+        reactions_deleted = (
+            await db.execute(
+                delete(MessageReaction).where(MessageReaction.conversation_id == conv_id)
+            )
+        ).rowcount
+        messages_deleted = (
+            await db.execute(delete(Message).where(Message.conversation_id == conv_id))
+        ).rowcount
+        await db.delete(conv)
+        await db.commit()
+        logger.info(
+            "Telefondan silinen sohbet kaldirildi (conv=%s, messages=%s, reactions=%s)",
+            conv_id,
+            int(messages_deleted or 0),
+            int(reactions_deleted or 0),
+        )
+        # NUMERIC id: this is exactly the shape `delete_conversation` broadcasts,
+        # so the frontend's existing `conversation_deleted` branch handles both
+        # the in-app delete and this phone-side one.
+        event["conversation_id"] = conv_id
+        event["wa_jid"] = clean_jid
+        event["origin"] = event.get("origin") or "phone"
+        event["deleted"] = True
+        event["messages_deleted"] = int(messages_deleted or 0)
+        event["reactions_deleted"] = int(reactions_deleted or 0)
+        return event
+
+    async def _ingest_messages_deleted(self, db: AsyncSession, event: Dict[str, Any]) -> Dict[str, Any]:
+        """Telefonda mesaj silindi ya da sohbet TEMIZLENDI.
+
+        Iki sekil ayni olay adiyla gelir ama ayni islem DEGILDIR; karistirmak ya
+        temizlenen sohbetin mesajlarini birakir ya da yalnizca TEMIZLENEN bir
+        sohbeti komple siler:
+          - `all: true`      -> mesajlar gider, sohbet KALIR
+          - `wa_message_ids` -> yalnizca o mesajlar gider
+
+        Sohbetin KENDISI silinirse ayri olay gelir (`conversation_deleted`).
+        """
+        resolve_event_owner_and_session = self._get_helper(
+            "_resolve_event_owner_and_session", _resolve_event_owner_and_session
+        )
+        find_whatsapp_conversation = self._get_helper(
+            "_find_whatsapp_conversation", _find_whatsapp_conversation
+        )
+
+        jid = event.get("conversation_id")
+        if not jid or "@" not in str(jid):
+            return _skip_event(event, "messages_deleted: sohbet jid'i cozulemedi")
+        clean_jid = _strip_jid_prefix(str(jid))
+        if is_broadcast_only_jid(clean_jid) or is_degenerate_jid(clean_jid):
+            return _skip_event(event, f"messages_deleted: gecersiz jid ({clean_jid})")
+
+        owner, ws_session_id = await resolve_event_owner_and_session(
+            db, clean_jid, event.get("gateway_session_id")
+        )
+        event["user_id"] = owner
+
+        conv = await find_whatsapp_conversation(db, owner, str(jid), session_id=ws_session_id)
+        if conv is None:
+            return _skip_event(event, f"messages_deleted: sohbet yok ({clean_jid})")
+        conv_id = int(conv.id)
+
+        if event.get("all"):
+            deleted = (
+                await db.execute(delete(Message).where(Message.conversation_id == conv_id))
+            ).rowcount
+            await db.execute(
+                delete(MessageReaction).where(MessageReaction.conversation_id == conv_id)
+            )
+            # Nothing is left to preview or to be unread, so a preview/unread
+            # pointing at a deleted message would make the list show text this
+            # chat no longer has.
+            conv.last_message_preview = None
+            conv.unread_count = 0
+            conv.last_message_at = None
+            await db.commit()
+            event["conversation_id"] = conv_id
+            event["wa_jid"] = clean_jid
+            event["all"] = True
+            event["messages_deleted"] = int(deleted or 0)
+            return event
+
+        wa_ids = [str(x) for x in (event.get("wa_message_ids") or []) if x]
+        if not wa_ids:
+            return _skip_event(event, "messages_deleted: ne `all` ne `wa_message_ids` var")
+        deleted = (
+            await db.execute(
+                delete(Message).where(
+                    Message.conversation_id == conv_id,
+                    Message.wa_message_id.in_(wa_ids),
+                )
+            )
+        ).rowcount
+        remaining = (
+            await db.execute(
+                select(func.count())
+                .select_from(Message)
+                .where(Message.conversation_id == conv_id)
+            )
+        ).scalar_one()
+        if not remaining:
+            # Every message went one-by-one: clear the same fields `all` clears.
+            conv.last_message_preview = None
+            conv.unread_count = 0
+            conv.last_message_at = None
+        await db.commit()
+        event["conversation_id"] = conv_id
+        event["wa_jid"] = clean_jid
+        event["wa_message_ids"] = wa_ids
+        event["messages_deleted"] = int(deleted or 0)
+        event["messages_remaining"] = int(remaining or 0)
+        return event
+
     @profiled("gateway_event")
     async def ingest_gateway_event(self, event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Gateway event ingestion coordinator.
@@ -1865,6 +2166,9 @@ class WhatsAppEventOrchestrator:
         map_session_event = self._get_helper("_map_session_event", self._map_session_event)
         passthrough_event = self._get_helper("_passthrough_event", self._passthrough_event)
         log_orphan_event = self._get_helper("_log_orphan_event", _log_orphan_event)
+        enqueue_orphan_event = self._get_helper(
+            "_enqueue_orphan_event", _enqueue_orphan_event
+        )
 
         session_factory = self._get_helper("AsyncSessionLocal", AsyncSessionLocal)
         async with session_factory() as db:
@@ -1893,6 +2197,10 @@ class WhatsAppEventOrchestrator:
                     result = await map_conversation_event(db, event)
                 elif evt == "contact_synced":
                     result = await ingest_contact_synced(db, event)
+                elif evt == "conversation_deleted":
+                    result = await self._ingest_conversation_deleted(db, event)
+                elif evt == "messages_deleted":
+                    result = await self._ingest_messages_deleted(db, event)
                 elif evt == "message_reaction":
                     result = await self._ingest_message_reaction(db, event)
                 elif evt == "lid_mapped":
@@ -1911,10 +2219,12 @@ class WhatsAppEventOrchestrator:
                 if result.get("_skip"):
                     return None
                 if not result.get("user_id"):
-                    logger.error(
-                        "Gateway olayi sahipsiz (event=%s, gateway_session_id=%s) — yayinlanmadi",
+                    logger.warning(
+                        "Gateway olayi sahipsiz (event=%s, gateway_session_id=%s) — "
+                        "yayinlanmadi, yeniden oynanmak uzere tutuldu",
                         evt, event.get("gateway_session_id"),
                     )
+                    enqueue_orphan_event(event, f"owner_unresolved:{evt}")
                     return None
 
                 if event_id and db.bind is not None and db.bind.dialect.name == "postgresql":
@@ -1938,10 +2248,22 @@ class WhatsAppEventOrchestrator:
                             reconcile=evt == "session_sync_completed",
                             session_key=event.get("gateway_session_id"),
                         )
+                # This event resolved an owner for its gateway session, so any
+                # event held for that same session can be retried now: the
+                # blocker (missing session row / contact) has demonstrably
+                # cleared. No-op unless this session ever produced an orphan.
+                await self._drain_orphan_queue(event.get("gateway_session_id"))
                 return result
             except EventOwnerUnresolved as exc:
                 await db.rollback()
                 log_orphan_event(evt, exc, event.get("gateway_session_id"))
+                # NOT discarded. The owner is often resolvable seconds later:
+                # during a QR pairing the session's own row is created only on
+                # promotion, so events that arrive while the phone is still
+                # linking are unresolvable for a moment — and dropping them is
+                # what starved the LID identity heal in production. Held for
+                # replay; see `_drain_orphan_queue`.
+                enqueue_orphan_event(event, f"owner_unresolved:{evt}")
                 return None
             except IntegrityError as exc:
                 await db.rollback()

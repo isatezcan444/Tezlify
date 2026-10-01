@@ -33,7 +33,16 @@ def reset_whatsapp_module_globals():
     conversation id identifies exactly one conversation.
     """
     from backend.app.services import whatsapp_service as ws
+    from backend.app.services.whatsapp.orchestration import events as events_mod
     from backend.app.services.whatsapp.orchestration import sync as sync_mod
+
+    # The owner-unresolved replay queue is process-global and holds EVENTS, not
+    # just counters. Left alone between tests, a held `message_new` from one
+    # test would be replayed inside an unrelated one and could make a failing
+    # assertion pass — a false green. It is reset with the rest.
+    reset_orphan_queue = getattr(events_mod, "reset_orphan_queue", None)
+    if callable(reset_orphan_queue):
+        reset_orphan_queue()
 
     for d in (
         getattr(sync_mod, "_on_demand_provider_calls", None),
@@ -54,3 +63,6 @@ def reset_whatsapp_module_globals():
     ):
         if isinstance(d, dict):
             d.clear()
+
+    if callable(reset_orphan_queue):
+        reset_orphan_queue()

@@ -815,7 +815,12 @@ async def delete_conversation(
 
     Geri donusu yoktur ve WhatsApp konusmalari icin yedek bulunmaz; bu yuzden
     arayuz onay ister. Karsi tarafin cihazindaki gecmis silinmez (WhatsApp
-    semantigi). Gateway'e ihtiyac duymaz: bu kullanicinin CRM aksiyonudur.
+    semantigi).
+
+    Gateway'e ihtiyac DUYAR: Tezlify'dan silinen sohbet WhatsApp tarafinda da
+    silinir (`deleteChatAction`), boylece hesabin diger cihazlari (telefon) da
+    senkron kalir. Bu cagri en iyi cabadir ve yerel silmeyi ASLA engellemez;
+    sonuc yanitta `remote_deleted` olarak doner.
     """
     try:
         result = await whatsapp_service.delete_conversation(
