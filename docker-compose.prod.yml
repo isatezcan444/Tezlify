@@ -12,6 +12,18 @@ services:
     image: caddy:2-alpine
     container_name: tezlify-caddy
     restart: always
+    # Bounded json-file logs. Without this the log grows forever and the only
+    # remedy was the panel's "clear logs", which TRUNCATES the file in place —
+    # and truncation leaves the daemon's per-container log reader pointing past
+    # EOF, so `docker logs` for that container blocks indefinitely afterwards
+    # (measured 2026-10-01: 22 ms before, still hanging after 45 s once
+    # truncated, 19 ms again after a restart). Rotation is done BY the daemon,
+    # which keeps its reader consistent, so it has no such side effect.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     ports:
       - "80:80"
       - "443:443"
@@ -37,6 +49,13 @@ services:
       dockerfile: backend/Dockerfile
     container_name: tezlify-backend
     restart: always
+    # Bounded json-file logs — see the note on `caddy` above for why unbounded
+    # logs are not merely untidy here.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     expose:
       - "8000"
     env_file:
@@ -92,6 +111,12 @@ services:
       dockerfile: whatsapp-gateway/Dockerfile
     container_name: tezlify-gateway
     restart: always
+    # Bounded json-file logs — see the note on `caddy` above.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     expose:
       - "8787"
     env_file:

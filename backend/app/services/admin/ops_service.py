@@ -762,30 +762,110 @@ def _parse_uptime(state: str) -> Optional[str]:
 LOG_SERVICES: Tuple[str, ...] = ("backend", "gateway", "caddy", "db")
 MAX_LOG_LINES = 500
 
+# Backwards read window for a json-file log. A 90 MB log must cost the same as
+# a 90 KB one, so the file is never materialised whole: read the last chunk,
+# widen only if it did not yield enough lines, and stop at the cap.
+_LOG_READ_START_BYTES = 256 * 1024
+_LOG_READ_MAX_BYTES = 8 * 1024 * 1024
+
+
+def _tail_json_log(path: str, tail: int) -> List[str]:
+    """Unwrap the last `tail` logical lines of a Docker `json-file` log.
+
+    Each line of that file is one JSON record — `{"log": ..., "stream": ...,
+    "time": ...}` — which is exactly what `docker logs` unwraps before printing.
+    A single record can carry an embedded newline (the application logged a
+    multi-line message), so records are unwrapped FIRST and split into lines
+    afterwards, which is what `docker logs` output looks like to the caller.
+    """
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return []
+    if size <= 0:
+        return []
+
+    window = min(size, _LOG_READ_START_BYTES)
+    records: List[str] = []
+    while True:
+        with open(path, "rb") as fh:
+            fh.seek(size - window)
+            blob = fh.read(window)
+        records = blob.decode("utf-8", "replace").splitlines()
+        # The first record in a window that does not start at byte 0 is cut in
+        # half; dropping it is what keeps a mangled line out of the panel.
+        if window < size and records:
+            records = records[1:]
+        if len(records) >= tail or window >= size or window >= _LOG_READ_MAX_BYTES:
+            break
+        window = min(size, window * 4)
+
+    lines: List[str] = []
+    for record in records:
+        record = record.strip()
+        if not record:
+            continue
+        try:
+            parsed = json.loads(record)
+        except Exception:
+            # Not a json-file record — a partially written line, or a different
+            # logging driver. Show it verbatim rather than silently dropping it.
+            lines.append(record)
+            continue
+        if isinstance(parsed, dict) and "log" in parsed:
+            lines.extend(str(parsed["log"]).rstrip("\n").splitlines() or [""])
+        else:
+            lines.append(record)
+    # Bound the RESULT here, not only in the caller: unwrapping can expand a
+    # record into several lines, and the point of reading a window is that a
+    # large log never becomes a large list in memory.
+    return lines[-tail:]
+
 
 async def get_service_logs(
     service: str,
     tail: int = 200,
     level: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Return the redacted tail of one allowlisted container's logs."""
+    """Return the redacted tail of one allowlisted container's logs.
+
+    The json-file is read DIRECTLY instead of shelling out to `docker logs`.
+    That is not a micro-optimisation — it is the difference between a usable
+    panel and a 30-second stall per tab switch:
+
+    * `docker logs` costs a daemon round trip plus a subprocess on EVERY call,
+      and the Logs panel calls it on every service-tab switch.
+    * Worse, the daemon's per-container log reader can WEDGE. Once the json-file
+      has been truncated in place — which `clear_service_logs` does, and which
+      docker offers no alternative for — the reader's recorded position sits
+      past EOF and `docker logs` blocks indefinitely. Measured on production
+      2026-10-01: 22 ms before truncation, still hanging after 45 s once
+      truncated, 19 ms again after a container restart. All four containers were
+      in that state, so every tab switch burned the full timeout and then
+      displayed nothing.
+
+    Reading the file is unaffected by the wedge, so the panel keeps working on a
+    truncated log. It also removes the subprocess entirely, so no stuck
+    uninterruptible `docker logs` process can accumulate.
+    """
     if service not in LOG_SERVICES:
         raise OperationError("Unknown log service", code="unknown_service")
     tail = max(1, min(int(tail or 200), MAX_LOG_LINES))
-    argv = ["docker", "logs", "--tail", str(tail), f"tezlify-{service}"]
-    proc = await asyncio.create_subprocess_exec(
-        *argv, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
-    )
+
+    path = await _container_log_path(service)
+    if not path:
+        return {
+            "service": service,
+            "lines": [],
+            "error": "Log dosyasi bulunamadi (container calismiyor veya log yolu okunamadi).",
+        }
+
     try:
-        out, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
-    except asyncio.TimeoutError:
-        proc.kill()
-        return {"service": service, "lines": [], "error": "log read timed out"}
-    lines = [
-        redact(line, 2000)
-        for line in out.decode("utf-8", "replace").splitlines()
-        if line.strip()
-    ]
+        raw = await asyncio.to_thread(_tail_json_log, path, tail)
+    except OSError as exc:
+        return {"service": service, "lines": [], "error": f"Log dosyasi okunamadi: {exc}"}
+
+    lines = [redact(line, 2000) for line in raw if line.strip()]
     if level and level.upper() != "ALL":
         needle = level.upper()
         lines = [l for l in lines if needle in l.upper()]
@@ -828,6 +908,24 @@ async def clear_service_logs(service: str, actor: str = "system") -> Dict[str, A
 
     The container is NOT restarted, so live WhatsApp sessions survive. Only the
     log file is touched; the process, its state and its volumes are untouched.
+
+    SIDE EFFECT — MEASURED, NOT THEORETICAL (2026-10-01)
+    ----------------------------------------------------
+    Truncating the file leaves the daemon's per-container log reader pointing
+    past EOF, and `docker logs` for that container then **blocks indefinitely**.
+    Proven on a throwaway container: `docker logs --tail 10` took 22 ms before
+    truncation, still had not returned after 45 s once the file was truncated
+    in place, and took 19 ms again after a container restart. It does not
+    recover on its own as the file regrows.
+
+    Two consequences, both handled:
+
+    * The Ops panel no longer uses `docker logs` — `get_service_logs` reads the
+      file directly, so clearing logs does not break the panel.
+    * `docker logs` on the host stays broken for that container until it is
+      RECREATED. That is a real cost and the reason log ROTATION
+      (`logging.options.max-size` in the compose file) is the better long-term
+      answer than repeatedly clearing.
 
     Returns the number of bytes freed so the UI can report something concrete
     rather than a bare "done".

@@ -5,7 +5,10 @@ anonymous caller, a normal user, or a crafted body must never be able to run
 anything. These tests drive the real FastAPI app with dependency overrides so
 the real `require_admin` gate is exercised, not a mock.
 """
+import asyncio
+import json
 import os
+import re
 import shutil
 import tempfile
 
@@ -283,3 +286,140 @@ async def test_clear_logs_records_an_audit_entry(monkeypatch):
         assert entries[0]["result"] == "succeeded"
     finally:
         shutil.rmtree(directory, ignore_errors=True)
+
+
+# ------------------------------------------------------------- log tail read
+# Why these exist: the panel used to fetch logs with `docker logs --tail N`.
+# That is not just slower — once the json-file has been truncated in place
+# (which `clear_service_logs` does, and which the panel's own "clear" button
+# triggers) the daemon's per-container log reader is left pointing past EOF and
+# `docker logs` BLOCKS INDEFINITELY. Measured on production 2026-10-01: 22 ms
+# before truncation, still hanging after 45 s once truncated, 19 ms again after
+# a restart. All four containers were in that state, so every service-tab
+# switch burned a full 30 s timeout and then rendered nothing.
+#
+# The tail is now read straight from the json-file, which is unaffected by the
+# wedge. The first test is the regression that pins that: no subprocess at all.
+
+
+def _json_records(path: str, logs, pad: int = 0) -> None:
+    with open(path, "w", encoding="utf-8") as fh:
+        for entry in logs:
+            record = {"log": f"{entry}\n", "stream": "stdout",
+                      "time": "2026-10-01T12:00:00Z"}
+            if pad:
+                record["pad"] = "x" * pad
+            fh.write(json.dumps(record) + "\n")
+
+
+@pytest.mark.asyncio
+async def test_get_service_logs_never_shells_out_to_docker(monkeypatch):
+    """The tail must come from the FILE, not from `docker logs`.
+
+    If this fails, the panel has gone back to depending on the daemon's log
+    reader — which is exactly the component that wedges after a log clear.
+    """
+    directory = tempfile.mkdtemp(prefix="tezlify-opslog-")
+    try:
+        path = os.path.join(directory, "container-json.log")
+        _json_records(path, [f"satir {i}" for i in range(1, 6)])
+
+        async def fake_path(_service: str):
+            return path
+
+        async def no_subprocess(*args, **kwargs):
+            raise AssertionError(f"nothing may be spawned for a log read: {args!r}")
+
+        monkeypatch.setattr(ops, "_container_log_path", fake_path)
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", no_subprocess)
+
+        result = await ops.get_service_logs("gateway", tail=3)
+
+        assert result["error"] is None
+        assert result["lines"] == ["satir 3", "satir 4", "satir 5"]
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_log_tail_still_works_after_the_log_was_cleared(monkeypatch):
+    """The state production was actually in: a cleared (truncated) log.
+
+    An emptied log must read as "no lines", not as an error — and once the
+    container logs again the tail must come back. This is the case that
+    `docker logs` could not serve at all.
+    """
+    directory = tempfile.mkdtemp(prefix="tezlify-opslog-")
+    try:
+        path = os.path.join(directory, "container-json.log")
+        _json_records(path, ["eski satir"])
+
+        async def fake_path(_service: str):
+            return path
+
+        monkeypatch.setattr(ops, "_container_log_path", fake_path)
+
+        with open(path, "wb"):
+            pass
+        emptied = await ops.get_service_logs("caddy", tail=50)
+        assert emptied["error"] is None, emptied
+        assert emptied["lines"] == []
+
+        _json_records(path, ["yeni satir"])
+        regrown = await ops.get_service_logs("caddy", tail=50)
+        assert regrown["lines"] == ["yeni satir"]
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+def test_tail_json_log_unwraps_records(tmp_path):
+    """json-file lines are `{"log": ...}` envelopes; the panel shows the text."""
+    path = tmp_path / "c.json.log"
+    _json_records(str(path), ["bir", "iki", "uc"])
+    assert ops._tail_json_log(str(path), 10) == ["bir", "iki", "uc"]
+
+
+def test_tail_json_log_keeps_multi_line_records_together(tmp_path):
+    """One record may carry an embedded newline (a multi-line log message)."""
+    path = tmp_path / "c.json.log"
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(json.dumps({"log": "ilk satir\nikinci satir\n"}) + "\n")
+    assert ops._tail_json_log(str(path), 10) == ["ilk satir", "ikinci satir"]
+
+
+def test_tail_json_log_passes_through_non_json_lines(tmp_path):
+    """A partially written line must be shown, not silently swallowed."""
+    path = tmp_path / "c.json.log"
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("bu bir json kaydi degil\n")
+    assert ops._tail_json_log(str(path), 10) == ["bu bir json kaydi degil"]
+
+
+def test_tail_json_log_handles_empty_and_missing_files(tmp_path):
+    empty = tmp_path / "empty.log"
+    empty.write_bytes(b"")
+    assert ops._tail_json_log(str(empty), 10) == []
+    assert ops._tail_json_log(str(tmp_path / "yok.log"), 10) == []
+
+
+def test_tail_json_log_reads_backwards_and_drops_the_partial_head(tmp_path):
+    """The window starts mid-file, so its first record is cut in half.
+
+    Constructed so the drop is load-bearing: the window holds exactly `tail`
+    entries, one of which is the mangled head. Keeping it would push a JSON
+    fragment into the panel; dropping it forces the window to widen instead.
+    """
+    path = tmp_path / "big.json.log"
+    _json_records(str(path), ["satir 1", "satir 2", "satir 3", "satir 4"], pad=100_000)
+    assert os.path.getsize(path) > ops._LOG_READ_START_BYTES
+
+    lines = ops._tail_json_log(str(path), 3)
+
+    assert lines == ["satir 2", "satir 3", "satir 4"]
+    assert all(re.fullmatch(r"satir \d+", l) for l in lines), lines
+
+
+def test_tail_json_log_returns_only_the_last_lines(tmp_path):
+    path = tmp_path / "many.json.log"
+    _json_records(str(path), [f"n{i}" for i in range(1, 501)])
+    assert ops._tail_json_log(str(path), 3) == ["n498", "n499", "n500"]
