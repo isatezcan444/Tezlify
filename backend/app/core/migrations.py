@@ -1160,6 +1160,26 @@ async def ensure_messages_wa_message_id_unique(engine: AsyncEngine) -> str:
 _RAW_JID_NAME_PATTERNS = ("%@lid%", "jid:%", "%@c.us%", "%@s.whatsapp.net%", "%@g.us%")
 
 
+async def _lid_bridge_table_available(conn, *, postgres: bool) -> bool:
+    """`lid_mappings` erişilebilir mi? Tek, hatasız sorguyla ölçer.
+
+    Sorguyu deneyip hatayı yakalamak Postgres'te işe yaramaz: patlayan bir
+    ifade transaction'ı "aborted" durumuna düşürür ve sonraki her ifade de
+    başarısız olur. Bu yüzden varlık `to_regclass` / `sqlite_master` ile
+    SORMADAN ölçülür — her ikisi de tablo yokken hata değil NULL döner.
+    """
+    try:
+        if postgres:
+            row = await conn.execute(text("SELECT to_regclass('whatsapp_private.lid_mappings')"))
+        else:
+            row = await conn.execute(
+                text("SELECT name FROM sqlite_master WHERE type='table' AND name='lid_mappings'")
+            )
+        return row.scalar() is not None
+    except Exception:  # noqa: BLE001 - ölçemezsek erteleme yok, eski davranış sürer
+        return False
+
+
 async def purge_raw_jid_identity_data(engine: AsyncEngine) -> None:
     """Faz 6e öncesi biriken ham LID/JID kimlik artıklarını temizler.
 
@@ -1172,11 +1192,26 @@ async def purge_raw_jid_identity_data(engine: AsyncEngine) -> None:
        bu contact'lere bağlı sohbetler silinir — gateway, LID↔phone köprüsü
        ile aynı kişiyi telefon JID anahtarlı olarak yeniden oluşturur.
        Gruplar (@g.us) KORUNUR: 'jid:...@g.us' meşru grup anahtarıdır.
+       3b. Köprüsü BİLİNEN hayaletler silinmez (aşağıya bakınız).
+
+    Köprüsü bilinen hayalet silinmez, ertelenir
+    -------------------------------------------
+    Yukarıdaki "çözülmemiş" ölçütü koda yansımıyordu: sorgu köprüden bağımsız
+    olarak HER hayaleti siliyordu. Köprüsü `lid_mappings` + `whatsapp_sessions`
+    üzerinden çözülmüş bir hayaletin mesajları gerçek bir kişiye aittir ve
+    onarım işi (`scripts/diagnostics/whatsapp_lid_split_repair.py`) onları
+    canonical sohbete TAŞIR. Burada silmek onarımın malzemesini yok eder ve
+    geri getirilemez veri kaybı olur — kullanıcı için "mesajlarım kayboldu".
+    Ertelenen satırlar silinmez; onarım işi birleştirene kadar dururlar.
 
     Idempotenttir; tekrar çalıştırma hiçbir şey yapmaz. Hata durumunda
     migration loglanır ama startup'ı düşürmez (orijinal purge deseniyle aynı
     fail-open davranış — veri temizliği şema bütünlüğüne dokunmaz).
     """
+    postgres = getattr(getattr(engine, "dialect", None), "name", "") == "postgresql"
+    # Gateway bu tabloyu Postgres'te özel şemada, SQLite'ta düz adla açar.
+    lid_table = "whatsapp_private.lid_mappings" if postgres else "lid_mappings"
+    sessions_table = "public.whatsapp_sessions" if postgres else "whatsapp_sessions"
     try:
         async with engine.begin() as conn:
             # 1. Ham jid/lid görünen adları nötrle (contact).
@@ -1199,11 +1234,30 @@ async def purge_raw_jid_identity_data(engine: AsyncEngine) -> None:
             # 3. Çözülmemiş LID hayalet contact'lerinin sohbetlerini sil
             #    (messages, conversations FK ondelete CASCADE ise birlikte gider;
             #    değilse önce manuel silinir — her iki yol da güvenlidir).
+            defer_clause = ""
+            if await _lid_bridge_table_available(conn, postgres=postgres):
+                defer_clause = (
+                    f" AND NOT EXISTS (SELECT 1 FROM {lid_table} lm "
+                    f"JOIN {sessions_table} ws ON ws.gateway_id = lm.session_id "
+                    f"WHERE lm.lid_jid = substr(c.phone_e164, 5) "
+                    f"AND lm.phone_jid IS NOT NULL AND lm.phone_jid <> '')"
+                )
             ghost_ids = (
                 await conn.execute(
-                    text("SELECT id FROM contacts WHERE phone_e164 LIKE 'jid:%@lid'")
+                    text(
+                        "SELECT c.id FROM contacts c "
+                        "WHERE c.phone_e164 LIKE 'jid:%@lid'" + defer_clause
+                    )
                 )
             ).scalars().all()
+            deferred_ghosts = 0
+            if defer_clause:
+                total_ghosts = (
+                    await conn.execute(
+                        text("SELECT count(*) FROM contacts WHERE phone_e164 LIKE 'jid:%@lid'")
+                    )
+                ).scalar() or 0
+                deferred_ghosts = max(int(total_ghosts) - len(ghost_ids), 0)
             deleted_convs = deleted_msgs = deleted_contacts = 0
             if ghost_ids:
                 placeholders = ", ".join(f":g{i}" for i in range(len(ghost_ids)))
@@ -1224,11 +1278,13 @@ async def purge_raw_jid_identity_data(engine: AsyncEngine) -> None:
                 r = await conn.execute(text(f"DELETE FROM contacts WHERE id IN ({placeholders})"), params)
                 deleted_contacts = r.rowcount or 0
 
-            if sanitized_names or sanitized_msgs or deleted_contacts or deleted_convs:
+            if sanitized_names or sanitized_msgs or deleted_contacts or deleted_convs or deferred_ghosts:
                 logger.info(
                     "[MIGRATION] purge_raw_jid_identity_data: %d ad nötrlendi, %d mesaj adı nötrlendi, "
-                    "%d hayalet LID contact + %d sohbet + %d mesaj silindi.",
+                    "%d hayalet LID contact + %d sohbet + %d mesaj silindi, "
+                    "%d köprüsü bilinen hayalet onarıma bırakıldı.",
                     sanitized_names, sanitized_msgs, deleted_contacts, deleted_convs, deleted_msgs,
+                    deferred_ghosts,
                 )
             else:
                 logger.debug("[MIGRATION] purge_raw_jid_identity_data: temizlenecek ham LID/JID verisi yok.")

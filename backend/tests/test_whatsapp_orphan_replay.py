@@ -56,13 +56,16 @@ async def _cleanup():
                 text("DELETE FROM conversations WHERE user_id = :h AND channel = 'WHATSAPP'"),
                 {"h": TEST_USER_HEX},
             )
-            await db.execute(
-                text("DELETE FROM contacts WHERE user_id = :h"), {"h": TEST_USER_HEX}
-            )
-            await db.execute(
-                text("DELETE FROM whatsapp_sessions WHERE user_id = :h"),
-                {"h": TEST_USER_HEX},
-            )
+            # Both normalizations: writers disagree on whether `user_id` keeps
+            # the dashes, and a cleanup that misses one form leaves the row for
+            # the NEXT run to trip over.
+            for uid in (TEST_USER, TEST_USER_HEX):
+                await db.execute(
+                    text("DELETE FROM contacts WHERE user_id = :h"), {"h": uid}
+                )
+                await db.execute(
+                    text("DELETE FROM whatsapp_sessions WHERE user_id = :h"), {"h": uid}
+                )
             await db.commit()
 
     events_mod.reset_orphan_queue()
@@ -88,10 +91,21 @@ async def _create_session(gateway_id: str) -> None:
 
 
 async def _contact_phones():
+    """Phones belonging to THIS test's user, deliberately not the whole table.
+
+    `+905551112233` is a fixture phone shared by ~17 other test files, and the
+    test database is a persistent file (`./tezlify.db`), so an unscoped
+    "this phone exists nowhere" check eventually fails on another file's
+    residue instead of on a regression. The only question worth asking is
+    whether OUR event wrote the row.
+    """
     async with AsyncSessionLocal() as db:
         rows = (
             await db.execute(
-                select(Contact.phone_e164).where(Contact.phone_e164.isnot(None))
+                select(Contact.phone_e164).where(
+                    Contact.phone_e164.isnot(None),
+                    Contact.user_id.in_([TEST_USER, TEST_USER_HEX]),
+                )
             )
         ).all()
     return {str(r[0]) for r in rows}
