@@ -43,7 +43,11 @@ from backend.app.core.migrations import (
 )
 from backend.app.core.seed import seed_demo_data_if_empty
 from backend.app.services.admin.ops_service import init_ops_state
-from backend.app.services.whatsapp.reconciliation import merge_deferred_lid_ghosts
+from backend.app.services.whatsapp.reconciliation import (
+    identity_sweep_loop,
+    merge_deferred_lid_ghosts,
+    merge_sweep_status,
+)
 from backend.app.models.blacklist import ScraperJob, ScraperJobStatus
 from backend.app.models.campaign import Campaign, CampaignStatus
 
@@ -146,6 +150,33 @@ async def lifespan(app: FastAPI):
     await ensure_phase_10_7_indexes(engine)
     await ensure_whatsapp_private_lid_and_history_tables(engine)
 
+    # Boot tek başına yetmez: artan çiftler, canlı yolun ertelediği birleştirmeler
+    # ve arşivlenen sohbette kalmış sahipsiz mesajlar ancak YENİDEN koşan bir
+    # süpürmeyle onarılır. Tüm şema geçişlerinden SONRA başlar; durumu
+    # `/health` → `whatsapp_identity_sweep` altında görünür.
+    sweep_task: Optional[asyncio.Task] = None
+    if getattr(settings, "WHATSAPP_IDENTITY_SWEEP_ENABLED", True):
+        sweep_task = asyncio.create_task(
+            identity_sweep_loop(
+                engine,
+                interval_seconds=float(
+                    getattr(settings, "WHATSAPP_IDENTITY_SWEEP_INTERVAL_SECONDS", 900)
+                ),
+                initial_delay_seconds=float(
+                    getattr(settings, "WHATSAPP_IDENTITY_SWEEP_INITIAL_DELAY_SECONDS", 60)
+                ),
+                limit=int(getattr(settings, "WHATSAPP_IDENTITY_SWEEP_LIMIT", 200)),
+            )
+        )
+        logger.info(
+            "[SWEEP] LID kimlik süpürmesi başladı (aralık=%ss, ilk tur=%ss, limit=%s).",
+            getattr(settings, "WHATSAPP_IDENTITY_SWEEP_INTERVAL_SECONDS", 900),
+            getattr(settings, "WHATSAPP_IDENTITY_SWEEP_INITIAL_DELAY_SECONDS", 60),
+            getattr(settings, "WHATSAPP_IDENTITY_SWEEP_LIMIT", 200),
+        )
+    else:
+        logger.info("[SWEEP] LID kimlik süpürmesi kapalı (kill-switch).")
+
     # Restart sonrası yarıda kalan arka plan işlerini toparla
     await recover_stuck_jobs()
 
@@ -168,6 +199,14 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         # Cleanup
+        if sweep_task is not None:
+            sweep_task.cancel()
+            try:
+                await sweep_task
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:  # noqa: BLE001 - kapanışı engellemez
+                logger.warning(f"Sweep loop kapanis hatasi: {e}")
         try:
             await engine.dispose()
         except Exception as e:
@@ -499,4 +538,6 @@ async def health_check():
             "last_event_at": _gateway_bridge["last_event_at"],
             "reconnect_count": _gateway_bridge["reconnect_count"],
         },
+        # Bekleyen bölünmüş sohbet işini kabuk komudu olmadan görünür kılar.
+        "whatsapp_identity_sweep": merge_sweep_status(),
     }

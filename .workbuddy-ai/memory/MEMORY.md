@@ -210,6 +210,29 @@ conversation exists" stays true forever. Every restart would re-process the same
 `merged=N` again, and `remaining` would never shrink — a moving-but-stuck queue. The archived filter
 is what makes the second boot an honest `scanned=0`.
 
+**In-process locks do not protect a multi-process repair.** `asyncio.Lock` keyed by conversation only
+serialises callers inside one process, but the live merge runs in the API process while boot and the
+repair job are separate processes. Two concurrent merges read the same message set, both report
+success, unread is added twice, and a message that arrived mid-merge is left in the archived
+conversation — invisible to the canonical read path. A DB-row **lease** (TTL, stealable once expired
+so a dead process cannot wedge it) fixes it: if the lease cannot be taken, the merge DEFERS, and
+deferral is safe precisely because the LID conversation stays unarchived and therefore stays a
+candidate for the next sweep. Report deferrals as `deferred`, never as `merged`.
+
+**A lock key must be normalised, or it protects nothing.** The lease key mixed a `Uuid` column that
+stores dash-less hex with a live path that passes the dashed form, so the two processes produced
+different keys for the same pair and the lock silently never contended. A test caught it only because
+the sweep merged while a lease was held in the test. Any coordination key derived from `user_id`
+must strip dashes (and normalise case) before use.
+
+**"I moved everything" is a claim; verify it before archiving.** A single move pass can miss a
+message that ingest wrote into the legacy conversation mid-merge. Re-read and move again (bounded
+passes), then MEASURE the leftovers (`stranded_unique`) before archiving and log an error if any
+remain. The same care applies to the residue that archiving itself creates: once the LID conversation
+is archived it drops out of the candidate set, so a separate collector must look for its leftover
+messages — and it must exclude dead duplicates (rows whose `wa_message_id` already exists canonically)
+or every sweep reports the same fake work forever.
+
 **An assertion about the whole table is a trap when the test DB persists.** `tezlify.db` is a file
 that survives between runs, and `+905551112233` is a fixture phone shared by ~17 test files. An
 assertion phrased "this phone exists nowhere" fails on another file's residue instead of on a

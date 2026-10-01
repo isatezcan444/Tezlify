@@ -3,46 +3,84 @@
 Neden bir araç
 --------------
 "Rozet düştü" ve "sohbet telefondan gitti" elle ölçüldüğünde kanıt parmakla
-gösterilir hale gelir: hangi sohbet, hangi değerden hangi değere, hangi saniyede?
-Bu üç sorunun cevabı kayda geçmezse ölçüm tartışmaya açık kalır ve "bence oldu"
-ile "ölçtüm, oldu" ayırt edilemez.
+gösterilir hale gelir: hangi sohbet, hangi değerden hangi değere, hangi saniyede,
+ve olay gerçekten oldu mu? Bu soruların cevabı kayda geçmezse ölçüm tartışmaya
+açık kalır ve "bence oldu" ile "ölçtüm, oldu" ayırt edilemez.
 
-Araç ölçümü üç adıma böler ve hiçbir şeyi DEĞİŞTİRMEZ:
+Bu betik hiçbir şeyi DEĞİŞTİRMEZ; yalnızca okur ve kanıtı tek bir JSON'da toplar:
 
   --list-candidates                        ölçüme uygun sohbetleri listeler
-  --snapshot --conversation N --out b.json ölçüm öncesi durumu JSON'a yazar
+  --snapshot --conversation N --out b.json ölçüm öncesi/sonrası durumu yazar
+  --capture-logs --since 15m --out l.json  log kanıtını (host tarafı) toplar
   --diff b.json a.json                     beklenen geçişleri satır satır söyler
-  --logs                                   kanıt için koşulacak log komutlarını yazdırır
+  --logs                                   elle koşulacak log komutlarını yazdırır
 
 Protokol: `docs/whatsapp-handset-measurement-protocol.md`.
 
-Kullanım (üretim, backend konteyneri içinde — betik salt-okunurdur):
-  docker cp scripts/diagnostics/whatsapp_handset_measure.py tezlify-backend:/tmp/handset.py
-  docker exec -e PYTHONPATH=/app -w /app tezlify-backend python /tmp/handset.py --list-candidates
+Nerede koşar
+------------
+* `--capture-logs`, `--diff` ve `--logs` **host'ta** koşabilir: modülün ağır
+  bağımlılıkları (SQLAlchemy, uygulama modülleri) yalnızca DB'ye dokunan
+  fonksiyonların içinde import edilir. Loglar host'ta `docker logs` ile okunur;
+  backend konteynerinin docker soketine erişimi yoktur ve OLMAMALIDIR.
+* `--list-candidates` ve `--snapshot` DB okur; konteynerde koşarlar:
+  `docker exec -e PYTHONPATH=/app -w /app tezlify-backend python /tmp/handset.py …`
+
+Log kanıtı neyi kanıtlar, neyi kanıtlamaz
+----------------------------------------
+Kanıtların ASIL kaynağı DB önce/sonra farkı ve gateway önbelleğidir. Loglar
+bağımsız bir başarı kanıtı DEĞİLDİR: gateway başarılı giden silmeyi loglamaz, bu
+yüzden "log hatası yok" satırı **hatasızlık** kanıtıdır. Yalan söylememek için
+kontrolün adı da budur (`gateway_delete_error_absent`), "delete_succeeded"
+değil. Başarı iddiasının tek pozitif log kanıtı backend'in kendi dürüst
+raporudur (`Sohbet silindi … remote=True`).
 
 `--diff` çıkış kodu: 0 = beklenen geçişlerin hepsi gerçekleşti, 1 = en az biri
-gerçekleşmedi, 2 = kanıt eksik/okunamadı. "Kaldı" demek, ölçümün başarısız
+gerçekleşmedi, 2 = kanıt eksik/okunamadı. "KANIT-EKSIK", ölçümün başarısız
 olduğunu değil, İDDİANIN doğrulanamadığını söyler.
 """
 import argparse
 import asyncio
 import json
 import logging
+import subprocess
 import sys
 from datetime import datetime
-from typing import Any, Dict, List, Optional
-
-from sqlalchemy import select
-
-from backend.app.core.database import AsyncSessionLocal
-from backend.app.models.contact import Contact
-from backend.app.models.conversation import Conversation
-from backend.app.models.message import Message
-from backend.app.models.whatsapp_session import WhatsAppSession
+from typing import Any, Dict, Iterable, List, Optional
 
 logger = logging.getLogger("handset_measure")
 
 UNSAFE_PHONE_PREFIX = "jid:"
+
+# Log kalıpları. Bir kalıp, listedeki TÜM parçaları AYNI satırda arayan bir
+# filtredir: `["Sohbet silindi", "remote=True"]` gibi iki parçalı kalıplar,
+# "silme raporu" ile "uzaktan başarılı" bilgisinin aynı satırda olduğunu
+# doğrular. Farklı satırlardaki iki işaret ayrı kalıp olarak yazılır — birleştirmek
+# yanlış pozitif üretirdi. Örnek satırlar kanıt olarak saklanır (en fazla 5).
+LOG_PATTERNS: Dict[str, Dict[str, List[str]]] = {
+    "gateway": {
+        # Sağlayıcı reddi: giden silmenin BAŞARISIZ olduğunun doğrudan kanıtı.
+        "delete_provider_error": ["Delete conversation provider error"],
+        # Okuma/güncelleme yolundaki ayrıştırma hataları: rozet ölçümünü
+        # sessizce bozabilecek tek sınıf (ayrı kalıplar: farklı satırlardalar).
+        "chat_update_parse_warning": ["chats.update lastMessage sentezlenemedi"],
+        "read_error": ["Mark read error"],
+    },
+    "backend": {
+        # Pozitif kanıt: backend'in kendi dürüst raporu.
+        "delete_reported_remote_true": ["Sohbet silindi", "remote=True"],
+        "delete_reported_remote_false": ["Sohbet silindi", "remote=False"],
+        "delete_remote_failed": ["uzaktan silinemedi"],
+        # Olay kalıcı yazılamadı ise rozet/sohbet güncellemesi UI'a hiç gitmez.
+        "event_persist_failure": ["Gateway olayi kalici yazilmadi"],
+    },
+}
+
+LOG_COMMANDS = [
+    "# Kanıt için log komutlarını elle koşmak yerine: --capture-logs --since 15m --out logs.json",
+    "docker logs tezlify-gateway --since 15m 2>&1 | tail -100",
+    "docker logs tezlify-backend --since 15m 2>&1 | tail -100",
+]
 
 
 def _mask(value: Optional[str], show: bool) -> str:
@@ -55,8 +93,172 @@ def _mask(value: Optional[str], show: bool) -> str:
     return text[:4] + "*" * max(0, len(text) - 7) + text[-4:]
 
 
-def _is_json_mode(value: Any) -> bool:
-    return isinstance(value, dict)
+def _db():
+    """Ağır bağımlılıkları yalnızca DB'ye dokunan yollarda yükle."""
+    from backend.app.core.database import AsyncSessionLocal  # noqa: PLC0415
+
+    return AsyncSessionLocal
+
+
+# ---------------------------------------------------------------------------
+# Log kanıtı (host tarafı)
+# ---------------------------------------------------------------------------
+
+
+def capture_logs(
+    *,
+    since: str,
+    containers: Optional[Dict[str, str]] = None,
+    conversation_id: Optional[int] = None,
+    timeout: float = 60.0,
+) -> Dict[str, Any]:
+    """`docker logs` çıktısını yapılandırılmış kanıta çevirir (salt okuma)."""
+    containers = containers or {"gateway": "tezlify-gateway", "backend": "tezlify-backend"}
+    result: Dict[str, Any] = {
+        "mode": "logs",
+        "since": since,
+        "captured_at": datetime.utcnow().isoformat(),
+        "conversation_filter": conversation_id,
+        "sources": {},
+    }
+    for source, container in containers.items():
+        entry: Dict[str, Any] = {"container": container, "available": False, "matches": {}}
+        try:
+            proc = subprocess.run(
+                ["docker", "logs", container, "--since", since],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+            # docker, logs'u stderr'e de yazar; ikisini birleştirmek satır kaybını önler.
+            text_out = (proc.stdout or "") + (proc.stderr or "")
+            entry["available"] = proc.returncode == 0
+            entry["exit_code"] = proc.returncode
+            lines = text_out.splitlines()
+            entry["lines"] = len(lines)
+        except Exception as exc:  # noqa: BLE001 - log yoksa ölçüm yine kaydedilir
+            entry["error"] = f"{type(exc).__name__}: {exc}"
+            result["sources"][source] = entry
+            continue
+
+        if conversation_id is not None:
+            needle = f"conv={conversation_id}"
+            # Silme kanıtı sohbet bazlıdır; pencere içindeki BAŞKA bir sohbetin
+            # kaydı bu ölçüme kanıt olarak yazılamaz.
+            lines = [ln for ln in lines if needle in ln] or lines
+            entry["conversation_filtered_lines"] = len(lines)
+
+        for name, needles in LOG_PATTERNS.get(source, {}).items():
+            hits = [ln for ln in lines if all(n in ln for n in needles)]
+            entry["matches"][name] = {
+                "count": len(hits),
+                "samples": [ln[:400] for ln in hits[:5]],
+            }
+        result["sources"][source] = entry
+    return result
+
+
+def _log_check(
+    checks: List[Dict[str, Any]],
+    *,
+    name: str,
+    value: Optional[int],
+    passed: Optional[bool],
+    detail: str,
+) -> None:
+    checks.append({"check": name, "passed": passed, "detail": detail, "count": value})
+
+
+def _apply_log_checks(
+    checks: List[Dict[str, Any]],
+    logs: Optional[Dict[str, Any]],
+    measurement: str,
+) -> None:
+    """Log kanıtından türeyen kontroller. Log yoksa hüküm KANIT-EKSIK olur."""
+    if not logs:
+        _log_check(
+            checks,
+            name="log_evidence",
+            value=None,
+            passed=None,
+            detail="log kanıtı verilmedi (--capture-logs ile alıp snapshot'a ekleyin)",
+        )
+        return
+
+    sources = logs.get("sources") or {}
+    gateway = ((sources.get("gateway") or {}).get("matches") or {})
+    backend = ((sources.get("backend") or {}).get("matches") or {})
+
+    def _count(bucket: Dict[str, Any], key: str) -> Optional[int]:
+        if key not in bucket:
+            return None
+        return int((bucket.get(key) or {}).get("count") or 0)
+
+    if measurement == "delete":
+        backed = _count(backend, "delete_reported_remote_true")
+        failed_report = _count(backend, "delete_reported_remote_false")
+        if backed is None and failed_report is None:
+            _log_check(
+                checks,
+                name="backend_delete_report_seen",
+                value=None,
+                passed=None,
+                detail="log penceresinde silme raporu yok (yanlış pencere mi?)",
+            )
+        else:
+            _log_check(
+                checks,
+                name="backend_reported_remote_true",
+                value=backed,
+                passed=bool(backed and not failed_report),
+                detail=f"remote=True sayısı={backed}, remote=False sayısı={failed_report}",
+            )
+        gerr = _count(gateway, "delete_provider_error")
+        _log_check(
+            checks,
+            name="gateway_delete_error_absent",
+            value=gerr,
+            passed=(gerr == 0) if gerr is not None else None,
+            detail=(
+                "gateway sağlayıcı hatası yok (hatasızlık kanıtı — başarı kanıtı DEĞİL)"
+                if gerr == 0
+                else f"gateway sağlayıcı hatası {gerr} kez loglandı"
+            ),
+        )
+    else:  # badge
+        parts = [
+            _count(gateway, "chat_update_parse_warning"),
+            _count(gateway, "read_error"),
+        ]
+        warn = None if all(p is None for p in parts) else sum(p or 0 for p in parts)
+        _log_check(
+            checks,
+            name="gateway_unread_warning_absent",
+            value=warn,
+            passed=(warn == 0) if warn is not None else None,
+            detail=(
+                "okuma/sohbet güncellemesi ayrıştırma uyarısı yok"
+                if warn == 0
+                else f"{warn} ayrıştırma uyarısı var"
+            ),
+        )
+        persist = _count(backend, "event_persist_failure")
+        _log_check(
+            checks,
+            name="backend_event_persist_failure_absent",
+            value=persist,
+            passed=(persist == 0) if persist is not None else None,
+            detail=(
+                "kalıcı yazma hatası yok"
+                if persist == 0
+                else f"{persist} kalıcı yazma hatası var"
+            ),
+        )
+
+
+# ---------------------------------------------------------------------------
+# DB kanıtı (konteyner tarafı)
+# ---------------------------------------------------------------------------
 
 
 async def list_candidates(*, limit: int, show_phones: bool, user_id: Optional[str]) -> List[Dict[str, Any]]:
@@ -66,6 +268,13 @@ async def list_candidates(*, limit: int, show_phones: bool, user_id: Optional[st
     ölçümü kanonik sohbette yapılmalıdır, yoksa "rozet düştü mü" sorusu
     birleştirilmemiş bir satır hakkında sorulmuş olur.
     """
+    from sqlalchemy import select
+
+    from backend.app.models.contact import Contact
+    from backend.app.models.conversation import Conversation
+    from backend.app.models.whatsapp_session import WhatsAppSession
+
+    AsyncSessionLocal = _db()
     rows: List[Dict[str, Any]] = []
     async with AsyncSessionLocal() as db:
         stmt = (
@@ -90,7 +299,7 @@ async def list_candidates(*, limit: int, show_phones: bool, user_id: Optional[st
         )
         if user_id:
             stmt = stmt.where(Conversation.user_id == user_id)
-        for conv_id, unread, last_at, archived, phone, gw_id, gw_status in (
+        for conv_id, unread, last_at, _archived, phone, gw_id, gw_status in (
             await db.execute(stmt)
         ).all():
             rows.append(
@@ -112,8 +321,22 @@ async def list_candidates(*, limit: int, show_phones: bool, user_id: Optional[st
     return rows
 
 
-async def snapshot(*, conversation_id: int, gateway_cache: bool) -> Dict[str, Any]:
+async def snapshot(
+    *,
+    conversation_id: int,
+    gateway_cache: bool,
+    measurement: str = "badge",
+    logs: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """Bir sohbetin ölçüm öncesi/sonrası durumu (salt okuma)."""
+    from sqlalchemy import select
+
+    from backend.app.models.contact import Contact
+    from backend.app.models.conversation import Conversation
+    from backend.app.models.message import Message
+    from backend.app.models.whatsapp_session import WhatsAppSession
+
+    AsyncSessionLocal = _db()
     async with AsyncSessionLocal() as db:
         conv = (
             await db.execute(select(Conversation).where(Conversation.id == conversation_id))
@@ -121,9 +344,11 @@ async def snapshot(*, conversation_id: int, gateway_cache: bool) -> Dict[str, An
         if conv is None:
             return {
                 "mode": "snapshot",
+                "measurement": measurement,
                 "conversation_id": conversation_id,
                 "exists": False,
                 "captured_at": datetime.utcnow().isoformat(),
+                "logs": logs,
             }
         contact = (
             await db.execute(select(Contact).where(Contact.id == conv.contact_id))
@@ -145,6 +370,7 @@ async def snapshot(*, conversation_id: int, gateway_cache: bool) -> Dict[str, An
 
     data: Dict[str, Any] = {
         "mode": "snapshot",
+        "measurement": measurement,
         "conversation_id": conversation_id,
         "exists": True,
         "captured_at": datetime.utcnow().isoformat(),
@@ -155,7 +381,9 @@ async def snapshot(*, conversation_id: int, gateway_cache: bool) -> Dict[str, An
         "is_archived": bool(conv.is_archived),
         "status": getattr(conv.status, "value", conv.status),
         "contact_phone": contact.phone_e164 if contact else None,
-        "contact_is_ghost_lid": bool(contact and str(contact.phone_e164).startswith(UNSAFE_PHONE_PREFIX)),
+        "contact_is_ghost_lid": bool(
+            contact and str(contact.phone_e164).startswith(UNSAFE_PHONE_PREFIX)
+        ),
         "session_id": conv.session_id,
         "gateway_id": session.gateway_id if session else None,
         "session_status": getattr(session.status, "value", session.status) if session else None,
@@ -169,6 +397,7 @@ async def snapshot(*, conversation_id: int, gateway_cache: bool) -> Dict[str, An
             }
             for mid, wa_id, direction, created in messages
         ],
+        "logs": logs,
     }
 
     if gateway_cache and data["gateway_id"]:
@@ -198,9 +427,15 @@ async def snapshot(*, conversation_id: int, gateway_cache: bool) -> Dict[str, An
     return data
 
 
+# ---------------------------------------------------------------------------
+# Hüküm
+# ---------------------------------------------------------------------------
+
+
 def diff_snapshots(before: Dict[str, Any], after: Dict[str, Any]) -> Dict[str, Any]:
     """Beklenen geçişleri tek tek söyler; sessiz kalan bir geçiş yoktur."""
     checks: List[Dict[str, Any]] = []
+    measurement = str(before.get("measurement") or after.get("measurement") or "badge")
 
     def _check(name: str, passed: Optional[bool], detail: str) -> None:
         checks.append({"check": name, "passed": passed, "detail": detail})
@@ -208,11 +443,13 @@ def diff_snapshots(before: Dict[str, Any], after: Dict[str, Any]) -> Dict[str, A
     if not before.get("exists"):
         return {"verdict": "KANIT-EKSIK", "checks": [], "reason": "before snapshot yok"}
 
+    logs = before.get("logs") or after.get("logs")
+
     if not after.get("exists"):
         # Silme ölçümünün beklenen sonucu: sohbet ARTIK YOK.
         _check("conversation_removed", True, "sohbet yerel olarak silinmiş")
-        _check("db_unread_zero", True, "satır yok, okunmamış da yok")
-        verdict = "GECTI" if all(c["passed"] for c in checks) else "KALDI"
+        _apply_log_checks(checks, logs, measurement)
+        verdict = _verdict(checks)
         return {"verdict": verdict, "checks": checks}
 
     before_unread = before.get("unread_count")
@@ -258,30 +495,31 @@ def diff_snapshots(before: Dict[str, Any], after: Dict[str, Any]) -> Dict[str, A
             f"gateway sayacı {gw_before} → {gw_after}",
         )
 
+    _apply_log_checks(checks, logs, measurement)
+    return {"verdict": _verdict(checks), "checks": checks}
+
+
+def _verdict(checks: Iterable[Dict[str, Any]]) -> str:
+    checks = list(checks)
     hard = [c for c in checks if c["passed"] is False]
     missing = [c for c in checks if c["passed"] is None]
-    verdict = "GECTI" if not hard and not missing else ("KANIT-EKSIK" if not hard else "KALDI")
-    return {"verdict": verdict, "checks": checks}
-
-
-LOG_COMMANDS = [
-    "# Olayın gateway'e GELDİĞİNİN kanıtı (rozet ölçümü):",
-    "docker logs tezlify-gateway --since 15m 2>&1 | grep -iE \"conversation_updated|unread|chats.update\" | tail -20",
-    "# Uzaktan silmenin SAĞLAYICIYA gittiğinin kanıtı (silme ölçümü):",
-    "docker logs tezlify-gateway --since 15m 2>&1 | grep -iE \"Delete conversation|chatModify\" | tail -20",
-    "# Backend'in dürüst raporu:",
-    "docker logs tezlify-backend --since 15m 2>&1 | grep -iE \"Sohbet silindi|uzaktan silinemedi\" | tail -20",
-]
+    if hard:
+        return "KALDI"
+    return "KANIT-EKSIK" if missing else "GECTI"
 
 
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--list-candidates", action="store_true")
     parser.add_argument("--snapshot", action="store_true")
+    parser.add_argument("--capture-logs", action="store_true")
     parser.add_argument("--diff", nargs=2, metavar=("BEFORE", "AFTER"))
     parser.add_argument("--logs", action="store_true")
     parser.add_argument("--conversation", type=int, default=None)
+    parser.add_argument("--measurement", choices=["badge", "delete"], default="badge")
+    parser.add_argument("--since", default="15m")
     parser.add_argument("--out", default=None)
+    parser.add_argument("--logs-json", default=None)
     parser.add_argument("--limit", type=int, default=20)
     parser.add_argument("--user-id", default=None)
     parser.add_argument("--show-phones", action="store_true")
@@ -290,9 +528,29 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(message)s")
 
+    def _write(payload: Any, out: Optional[str]) -> None:
+        text = json.dumps(payload, ensure_ascii=False, indent=2, default=str)
+        if out:
+            with open(out, "w", encoding="utf-8") as fh:
+                fh.write(text)
+            print(f"[handset-measure] yazildi: {out}")
+        else:
+            print(text)
+
     if args.logs:
         for line in LOG_COMMANDS:
             print(line)
+        return 0
+
+    if args.capture_logs:
+        payload = capture_logs(since=args.since, conversation_id=args.conversation)
+        _write(payload, args.out)
+        for source, entry in payload["sources"].items():
+            if not entry.get("available"):
+                print(
+                    f"[handset-measure] {source}: log alinamadi ({entry.get('error') or entry.get('exit_code')})",
+                    file=sys.stderr,
+                )
         return 0
 
     if args.list_candidates:
@@ -312,16 +570,23 @@ def main(argv: Optional[List[str]] = None) -> int:
         if not args.conversation:
             print("[handset-measure] --snapshot icin --conversation gerekli", file=sys.stderr)
             return 2
+        logs = None
+        if args.logs_json:
+            try:
+                with open(args.logs_json, encoding="utf-8") as fh:
+                    logs = json.load(fh)
+            except Exception as exc:  # noqa: BLE001 - kanıt okunamazsa açıkça söylenir
+                print(f"[handset-measure] log kaniti okunamadi: {exc}", file=sys.stderr)
+                return 2
         data = asyncio.run(
-            snapshot(conversation_id=args.conversation, gateway_cache=not args.no_gateway_cache)
+            snapshot(
+                conversation_id=args.conversation,
+                gateway_cache=not args.no_gateway_cache,
+                measurement=args.measurement,
+                logs=logs,
+            )
         )
-        payload = json.dumps(data, ensure_ascii=False, indent=2, default=str)
-        if args.out:
-            with open(args.out, "w", encoding="utf-8") as fh:
-                fh.write(payload)
-            print(f"[handset-measure] yazildi: {args.out}")
-        else:
-            print(payload)
+        _write(data, args.out)
         return 0
 
     if args.diff:

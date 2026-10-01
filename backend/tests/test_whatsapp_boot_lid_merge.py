@@ -16,6 +16,7 @@ Bu kapı, `merge_deferred_lid_ghosts` (boot adımı) sözleşmesini çiviler:
 - hiçbir hata startup'ı düşürmez (`error` alanıyla raporlanır),
 - canlı yol, boot ve onarım işi TEK bir birleştirme uygulamasını çağırır.
 """
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -34,7 +35,15 @@ from backend.app.services.whatsapp.orchestration.events import WhatsAppEventOrch
 import backend.app.services.whatsapp.orchestration.events as events_module
 import backend.app.services.whatsapp.reconciliation as reconciliation_module
 import scripts.diagnostics.whatsapp_lid_split_repair as repair_module
-from backend.app.services.whatsapp.reconciliation import merge_deferred_lid_ghosts
+from backend.app.services.whatsapp.reconciliation import (
+    _merge_lease,
+    _merge_lock_key,
+    collect_stranded_lid_messages,
+    merge_deferred_lid_ghosts,
+    merge_split_conversation,
+    merge_sweep_status,
+    run_identity_sweep_once,
+)
 
 # Diğer WhatsApp kapılarıyla paylaşılmayan kullanıcı/numaralar: bu kapı
 # "kimin satırı birleşti" sayısını kanıt olarak okuduğu için yalıtım şart.
@@ -219,6 +228,9 @@ async def test_boot_merge_actually_moves_the_ghost_conversation():
     assert pair["legacy_conversation_id"] == legacy_id
     assert pair["canonical_conversation_id"] == canonical_id
     assert pair["canonical_unread_count"] == 3, "1 (kanonik) + 2 (LID) toplanmalı"
+    assert pair["moved_unique"] == 1
+    assert pair["deduped_duplicates"] == 1, "paylaşılan wa_message_id tekilleşmeli"
+    assert pair["stranded_unique"] == 0, "sahipsiz mesaj iddiası ölçülerek söylenir"
 
     rows = await _message_conversations()
     canonical_rows = [r for r in rows if r[0] == canonical_id]
@@ -256,6 +268,168 @@ async def test_purge_defers_then_merge_repairs_on_the_same_boot():
         "lid-1",
     ], "purge sonrası merge mesajları taşımalı (hiçbiri kaybolmadan)"
     assert (await _legacy_state(legacy_id)).is_archived is True
+
+
+@pytest.mark.asyncio
+async def test_a_merge_lease_held_elsewhere_defers_instead_of_racing():
+    """İki süreç aynı çifti birleştiremez: ikincisi ERTELENİR, yalan söylemez.
+
+    Erteleme kayıp değildir: LID sohbeti arşivlenmediği için aday kalır ve bir
+    sonraki süpürme onu birleştirir. Yarışa izin vermek ise okunmamışı iki kez
+    toplar ve arada gelen mesajı arşivlenen sohbette sahipsiz bırakır.
+    """
+    legacy_id, canonical_id = await _seed_split()
+
+    async with AsyncSessionLocal() as holder_db:
+        async with _merge_lease(
+            holder_db,
+            # Anahtar PAYLAŞILAN yardımcıyla üretilir: dash'li/dash'siz user_id
+            # aynı kilide düşmezse iki süreç birbirini görmez.
+            lock_key=_merge_lock_key(TEST_USER, f"jid:{LID_JID}"),
+            wait_seconds=0.0,
+        ) as (held, _h):
+            assert held is True, "lease alınmalıydı"
+
+            info: Dict[str, Any] = {}
+            async with AsyncSessionLocal() as other_db:
+                merged = await merge_split_conversation(
+                    other_db,
+                    TEST_USER,
+                    LID_JID,
+                    PHONE_JID,
+                    session_id=None,
+                    lock_wait_seconds=0.0,
+                    result_info=info,
+                )
+            assert merged is None, "kilitliyken birleştirme YAPILMAMALI"
+            assert info.get("skipped_reason") == "merge_lease_held"
+
+            legacy = await _legacy_state(legacy_id)
+            assert legacy.is_archived is False, "erteleme sohbete dokunmamalı"
+            assert await _canonical_unread(canonical_id) == 1, "okunmamış iki kez toplanmamalı"
+
+    # Kilit bırakıldıktan sonra aynı iş normal biçimde tamamlanır.
+    info2: Dict[str, Any] = {}
+    async with AsyncSessionLocal() as db:
+        merged = await merge_split_conversation(
+            db, TEST_USER, LID_JID, PHONE_JID, session_id=None, result_info=info2
+        )
+    assert merged is not None and merged.id == canonical_id
+    assert info2.get("moved_unique") == 1, "benzersiz mesaj taşınmış olmalı"
+    assert info2.get("merge_passes", 0) >= 2, (
+        "taşıma sonrası DOĞRULAMA turu koşmalı: tek tur, arada gelmiş bir mesajı "
+        "arşivlenen sohbette bırakabilir"
+    )
+    assert info2.get("stranded_unique") == 0
+    assert await _canonical_unread(canonical_id) == 3
+    assert (await _legacy_state(legacy_id)).is_archived is True
+
+
+def test_the_lease_key_ignores_user_id_spelling():
+    """Kayıtlı user_id dash'siz, canlı yol tireli: anahtar YİNE aynı olmalı."""
+    from backend.app.services.whatsapp.reconciliation import _merge_lock_key as key
+
+    assert key(TEST_USER, f"jid:{LID_JID}") == key(TEST_USER_HEX, f"jid:{LID_JID}")
+
+
+@pytest.mark.asyncio
+async def test_boot_reports_a_lease_deferral_as_deferred_not_as_silence():
+    """Boot raporu ertelenen işi `deferred` olarak söyler; `merged` demez."""
+    await _seed_split()
+
+    async with AsyncSessionLocal() as holder_db:
+        async with _merge_lease(
+            holder_db,
+            lock_key=_merge_lock_key(TEST_USER, f"jid:{LID_JID}"),
+            wait_seconds=0.0,
+        ) as (held, _h):
+            assert held is True
+            report = await merge_deferred_lid_ghosts(engine, limit=10, user_id=TEST_USER)
+
+    assert report["merged"] == 0
+    assert report["deferred"] == 1, report
+    assert report["deferred_pairs"][0]["reason"] == "merge_lease_held"
+
+
+@pytest.mark.asyncio
+async def test_a_message_stranded_by_the_race_is_collected_later():
+    """Yarışta arşivlenen sohbete düşen mesaj KAYBOLMAZ: süpürme onu taşır."""
+    legacy_id, canonical_id = await _seed_split()
+    await merge_deferred_lid_ghosts(engine, limit=10)
+    assert await _canonical_unread(canonical_id) == 3
+
+    # Canlı ingest'in yarışını simüle et: eski sohbet arşivlendi ama bir mesaj
+    # hâlâ oraya yazıldı (arşivlemeden önce çözülmüş olan sohbet).
+    async with AsyncSessionLocal() as db:
+        db.add(
+            Message(
+                user_id=TEST_USER_HEX,
+                conversation_id=legacy_id,
+                direction=MessageDirection.INBOUND,
+                message_type=MessageType.TEXT,
+                body="race-message",
+                sender_phone=PHONE,
+                recipient_phone="ME",
+                wa_message_id="RACE_1",
+            )
+        )
+        await db.commit()
+
+    report = await collect_stranded_lid_messages(engine, limit=10, user_id=TEST_USER)
+
+    assert report["scanned"] == 1, report
+    assert report["merged"] == 1
+    assert report["moved_unique_total"] == 1
+    assert report["still_stranded"] == 0
+
+    rows = await _message_conversations()
+    canonical_bodies = sorted(b for c, _w, b in rows if c == canonical_id)
+    assert canonical_bodies == ["already-canonical", "lid-1", "race-message"], (
+        f"sahipsiz mesaj canonical sohbete taşınmalı; got {rows}"
+    )
+
+    # İkinci koşu iş ÜRETMEZ: sahipsiz satır kalmadıysa aday da yoktur.
+    again = await collect_stranded_lid_messages(engine, limit=10, user_id=TEST_USER)
+    assert again["scanned"] == 0
+    assert again["merged"] == 0
+
+
+@pytest.mark.asyncio
+async def test_one_sweep_run_merges_and_collects_and_reports_state():
+    """Süpürme hem birleştirir hem artığı toplar; durumu `/health` için kaydeder."""
+    legacy_id, canonical_id = await _seed_split()
+
+    first = await run_identity_sweep_once(engine, limit=10)
+
+    assert first["splits"]["merged"] == 1
+    assert first["stranded"]["scanned"] == 0, "aynı turda artık kalmadı"
+    status = merge_sweep_status()
+    assert status["runs"] == 1
+    assert status["merged_total"] == 1
+    assert status["pending_at_least"] == 0
+    assert status["last_finished_at"] is not None
+    assert "last_report" not in status, "tam rapor /health gövdesini şişirmemeli"
+
+    # Yarış artığı aynı süpürme turunda toplanır.
+    async with AsyncSessionLocal() as db:
+        db.add(
+            Message(
+                user_id=TEST_USER_HEX,
+                conversation_id=legacy_id,
+                direction=MessageDirection.INBOUND,
+                message_type=MessageType.TEXT,
+                body="sweep-race",
+                sender_phone=PHONE,
+                recipient_phone="ME",
+                wa_message_id="RACE_2",
+            )
+        )
+        await db.commit()
+
+    second = await run_identity_sweep_once(engine, limit=10)
+    assert second["stranded"]["moved_unique_total"] == 1
+    assert merge_sweep_status()["stranded_moved_total"] == 1
+    assert await _canonical_unread(canonical_id) == 3
 
 
 @pytest.mark.asyncio
@@ -338,6 +512,23 @@ async def test_boot_step_never_crashes_startup(monkeypatch):
 
     assert report["merged"] == 0
     assert "lid_mappings okunamadi" in (report.get("error") or "")
+
+
+@pytest.mark.asyncio
+async def test_health_exposes_the_sweep_state_without_shell_commands():
+    """Operatör "bekleyen iş var mı"yı docker exec etmeden `/health`ten okur."""
+    from backend.app.main import health_check
+
+    await run_identity_sweep_once(engine, limit=5)
+    body = await health_check()
+
+    block = body["whatsapp_identity_sweep"]
+    assert block["runs"] == 1
+    assert "pending_at_least" in block
+    assert "last_deferred" in block
+    assert "still_stranded" in block
+    assert block["last_finished_at"] is not None
+    assert "last_report" not in block
 
 
 def test_live_boot_and_repair_share_one_merge_implementation():

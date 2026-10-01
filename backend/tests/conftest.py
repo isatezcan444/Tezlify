@@ -10,6 +10,29 @@ def enable_history_expansion_in_tests():
 
 
 @pytest.fixture(autouse=True)
+def disable_identity_sweep_in_tests():
+    """Testlerde periyodik LID süpürmesi KAPALI.
+
+    Açık kalsaydı arka plan görevi, kendi kapısı olan testlerin tohumladığı
+    satırları testin ortasında birleştirir ve "birleştirilecek=1" bekleyen bir
+    iddiayı zamanlamaya bağlı hale getirirdi. Süpürmeyi ölçen test kendi
+    çağrısını yapar (`run_identity_sweep_once`).
+    """
+    from backend.app.core.config import settings
+    from backend.app.services.whatsapp import reconciliation as reconciliation_mod
+
+    old = getattr(settings, "WHATSAPP_IDENTITY_SWEEP_ENABLED", True)
+    settings.WHATSAPP_IDENTITY_SWEEP_ENABLED = False
+    reset_sweep_state = getattr(reconciliation_mod, "reset_sweep_state", None)
+    if callable(reset_sweep_state):
+        reset_sweep_state()
+    yield
+    settings.WHATSAPP_IDENTITY_SWEEP_ENABLED = old
+    if callable(reset_sweep_state):
+        reset_sweep_state()
+
+
+@pytest.fixture(autouse=True)
 def reset_whatsapp_module_globals():
     """Clear process-global WhatsApp state between tests.
 

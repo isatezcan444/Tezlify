@@ -192,6 +192,8 @@ zaman) denetim izi olarak loglanır; verinin kendisi tutulmaz.
 | 5b | QR penceresindeki olaylar sınırlı bellekte tutulur, promosyonda kalıcı kuyruğa akar | **bitti** | `whatsapp-gateway/scripts/test-ephemeral-outbox-gate.mjs` (sözleşme güçlendirildi: `1 !== 2`); boşaltma devre dışı → kırmızı |
 | 7 | Startup purge köprüsü bilinen bölünmeyi **silmez, erteler** | **bitti** | `backend/tests/test_whatsapp_purge_defers_known_bridge.py` 3/3; erteleme kapatılınca **2 kırmızı, kontrol yeşil** |
 | 8 | Startup'ta ertelenen LID hayaleti **gerçekten birleştirilir** (tek uygulama) | **bitti** | `backend/tests/test_whatsapp_boot_lid_merge.py` 9/9; boot birleştirmesi kapatılınca **3 kırmızı, kontroller yeşil**; paylaşılan sembol atlanınca **2 kırmızı** |
+| 9 | Aynı LID çiftinde **çapraz süreç kilidi** + sahipsiz mesaj**sız** doğrulama turu | **bitti** | aynı dosya 15/15; kilidi kapatınca **2 kırmızı**, doğrulama turunu tek tura indirince **1 kırmızı**, toplayıcıyı kapatınca **2 kırmızı** |
+| 10 | **Periyodik** süpürme (boot sınırı + ertelemeler + yarış artığı) ve `/health` görünürlüğü | **bitti** | süpürme tek turu birleştirme+toplama yapıyor, durumu `/health` bloğunda; conftest süpürmeyi kapatıyor (zamanlama bağımlılığı yok) |
 
 ### Faz 7 — onarımı besleyen malzeme purge tarafından yok ediliyordu
 
@@ -388,6 +390,42 @@ sabitleri); kilit zaten depo katmanındaki paylaşılan `get_conversation_lock`'
   alanıyla raporlanır) — kimlik birleştirmesi şema bütünlüğüne dokunmaz.
 - **`--user-id` sessizce boş dönmez:** `user_id` sütunu `Uuid` olduğu için kayıt
   dash'siz olabilir; sorgu artık tireli ve dash'siz iki biçimi de kabul eder.
+
+### Faz 9/10 — ertelemeyi güvenli kılan üç parça
+
+Faz 8 birleştirmeyi servis katmanından çıkardı ama üç dürüstlük açığı kaldı:
+
+1. **Aynı çifti iki süreç birleştirebiliyordu.** `get_conversation_lock` yalnızca
+   TEK süreçte geçerli; canlı yol API'de, boot ve onarım işi ayrı süreçlerde koşar.
+   İki birleştirme aynı mesaj kümesini okur, ikisi de "taşıdım" der: okunmamış sayı
+   İKİ KEZ toplanır ve arada gelen bir mesaj arşivlenen sohbette **sahipsiz** kalır.
+   Çözüm DB satırı olan bir **lease** (`wa_merge_locks`, TTL 120s): süreç ölürse
+   lease kendiliğinden düşer, yani kilit asla kalıcı takılmaz. Alınamazsa
+   birleştirme ERTELENİR — LID sohbeti arşivlenmediği için aday kalır ve bir
+   sonraki süpürme onu birleştirir. Erteleme kayıp değil, sıradır; raporda da
+   `merged` değil **`deferred`** olarak görünür.
+   *Kritik ayrıntı:* lease anahtarı `user_id`nin yazımından bağımsız olmalı.
+   `Uuid` sütunu dash'siz saklarken canlı yol tireli gönderir; anahtar normalize
+   edilmezse iki süreç **farklı** kilitler alır ve kilit sessizce hiçbir şeyi
+   korumaz — bu tam olarak bir testte yakalandı (kilit tutulurken birleştirme
+   yine de oldu).
+2. **Tek tur "taşıdım" demek yetmez.** Birleştirme sürerken canlı ingest eski
+   sohbeti (henüz arşivlenmeden) çözmüş olabilir ve mesaj oraya yazılır. Bu
+   yüzden taşıma **sınırlı (3) doğrulama turu** ile tekrarlanır ve arşivlemeden
+   ÖNCE `stranded_unique` **ölçülür**; sıfır değilse `ERROR` loglanır ve raporda
+   saklanmaz (`merge_passes` de kanıta girer: tek tur = kırmızı).
+3. **Yarış artığı bir yerde toplanmalı.** Arşivlenmiş LID sohbeti aday
+   listesinden çıktığı için, orada kalmış bir mesaj boot tarafından bir daha
+   görülmezdi. Süpürmenin ikinci fazı (`collect_stranded_lid_messages`) tam o
+   satırları bulur ve **aynı** birleştirmeyi kullanarak taşır. Sahte "bekleyen iş"
+   üretmemek için ölü kopyalar (wa_message_id'si canonical tarafta zaten olanlar)
+   aday sayılmaz — ikinci koşu `scanned=0` der.
+
+Süpürme **periyodik**tir (varsayılan 15 dk, ilk tur 60 sn sonra; kill-switch
+`WHATSAPP_IDENTITY_SWEEP_ENABLED`) ve durumu `/health` → `whatsapp_identity_sweep`
+altında görünür (`runs`, `pending_at_least`, `last_deferred`, `still_stranded`,
+son tur zamanları). Böylece "bekleyen iş var mı" sorusu kabuk komutu gerektirmez;
+operatörün işi yalnızca ölçüm kaldığında telefonu eline almak olur.
 
 ## Kalan dürüstlük payı
 

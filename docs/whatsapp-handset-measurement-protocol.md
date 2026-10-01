@@ -70,9 +70,18 @@ cihazda yapılan okuma **kalıcı olarak görünmez** kalıyordu.
    docker exec -e PYTHONPATH=/app -w /app tezlify-backend \
      python /tmp/handset.py --diff /tmp/before.json /tmp/after.json
    ```
-7. Log kanıtı (olayın gateway'e geldiğini göstermeden "düştü" demeyiz):
+7. Log kanıtı (olayın pencerede gerçekleştiğini gösterimeden "düştü" demeyiz).
+   Komutlar elle kopyalanmaz: **host'ta** tek çağrı yeterli (betik host'ta koşar,
+   ağır bağımlılıkları yalnızca DB yollarında yükler):
    ```bash
-   docker exec -e PYTHONPATH=/app -w /app tezlify-backend python /tmp/handset.py --logs
+   python3 scripts/diagnostics/whatsapp_handset_measure.py --capture-logs \
+     --since 15m --out /tmp/logs.json
+   ```
+   Ve kanıt snapshot'a gömülür (`--logs-json`):
+   ```bash
+   docker cp /tmp/logs.json tezlify-backend:/tmp/logs.json
+   docker exec -e PYTHONPATH=/app -w /app tezlify-backend python /tmp/handset.py \
+     --snapshot --conversation <ID> --logs-json /tmp/logs.json --out /tmp/after.json
    ```
 
 **Beklenen sonuç (hepsi birlikte)**
@@ -148,6 +157,9 @@ kabul ederse** düşürülür (yoksa sonraki senkron silinen sohbeti geri getiri
 **Beklenen sonuç (hepsi birlikte)**
 
 - API yanıtı `remote_deleted: true`, `remote_error: null`.
+- `--diff` ekranında `backend_reported_remote_true` **GECTI** ve
+  `gateway_delete_error_absent` **GECTI** (bu ikincisi *hatasızlık* kanıtıdır,
+  başarı kanıtı değildir — gateway başarılı silmeyi loglamaz).
 - Ek uyarı bildirimi **çıkmaz**.
 - Telefonda sohbet kaybolur ve senkron sonrası **geri gelmez**.
 - Backend logu `remote=True` der; gateway tarafında sağlayıcı hatası yok.
@@ -191,6 +203,10 @@ Beklenmeyen/gözlem: <varsa aynen yapıştır>
 
 **Hüküm satırı olmadan "ölçüldü" denmez.** `--diff` çıktısı kaydın parçasıdır;
 `KANIT-EKSIK`, "başarısız" değil "iddia doğrulanamadı" demektir ve öyle raporlanır.
+Log kanıtı (`--capture-logs`) verilmezse hüküm de `KANIT-EKSIK` çıkar: DB farkı tek
+başına yeterli sayılmaz. Log kanıtı **bağımsız bir başarı kanıtı değildir** —
+gateway başarılı işlemleri loglamaz, bu yüzden kontrollerin adı da dürüsttür
+(`gateway_delete_error_absent` = "hata yok", "silme başarılı" değil).
 
 ---
 
