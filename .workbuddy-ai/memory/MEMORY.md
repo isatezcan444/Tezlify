@@ -101,8 +101,10 @@ Curated index only. Detail lives elsewhere, deliberately:
 - **Falsify before trusting** — see the `scoped-stash-falsification` skill.
 - **Parallel `Edit` calls on one file clobber each other** — edit sequentially or rewrite with one `Write`.
 - Ops log clearing **TRUNCATEs** the container log file in place (never delete — the daemon holds the inode
-  and keeps appending; deleting strands the output and reclaims nothing). `docker-compose.prod.yml` mounts
-  `/var/lib/docker/containers:rw` for exactly this.
+  and keeps appending). **But truncating WEDGES the daemon's log reader: `docker logs` for that container
+  then blocks FOREVER until it is restarted** (measured 22 ms → still hanging at 45 s → 19 ms after
+  restart). So the panel reads the json-file **directly** (`_tail_json_log`) and the compose file sets
+  `logging.options.max-size` — **never reintroduce `docker logs` for the tail.**
 
 ## Skills covering reusable procedures
 
@@ -117,4 +119,6 @@ DB must import **every** model module, not just `app/models/`, or tables are sil
 tests die on "no such table"), `tezlify-push-verification-gate` (the exact 3-suite pre-push sequence + the
 sandbox traps that fake a signal), `memory-index-truncation-recovery` (this index is injected every session
 and is **silently truncated** past its ceiling — relocate detail to `reference/`, verify presence **and**
-leak, and never `grep "\|"` for the check).
+leak, and never `grep "\|"` for the check), `docker-logs-wedge-diagnosis` (`docker logs` hanging forever
+after a json-file was truncated in place — prove it with a throwaway container, read the file directly,
+`docker restart` unwedges, rotate instead of clearing).

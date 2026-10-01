@@ -36,6 +36,28 @@ about to touch production, deploy, or run the test suites. Invariants live in
   `docker-compose.prod.yml` mounts `/var/lib/docker/containers:rw` — an added privilege, justified in-file
   like the existing `docker.sock` grant. Live 2026-10-01: `caddy` 500 → 0 lines, **192.1 KB** freed, audit
   entry written, all four services writable; `db` holds ~89.5 MB.
+- **TRUNCATING A LOG WEDGES THE DAEMON'S LOG READER — `docker logs` then blocks FOREVER.** Measured on a
+  throwaway container 2026-10-01: `docker logs --tail 10` took **22 ms** before truncation, had **still not
+  returned after 45 s** once the file was truncated in place, and took **19 ms** again after a container
+  restart. It does **not** recover as the file regrows. All four production containers were in that state.
+  Consequences and the fixes that follow from it:
+  - **The Ops panel must never use `docker logs` for the tail.** `get_service_logs` reads the json-file
+    **directly** (`_tail_json_log`: bounded backwards window, unwraps `{"log": ...}` records, drops the
+    partial first record). Measured on the wedged production files: backend **6.5 ms / 200 lines**,
+    gateway 0.6 ms, `caddy` (0 bytes) 0.0 ms and clean, `db` 0.3 ms — where `docker logs` hung. It also
+    leaves no stuck D-state `docker logs` process behind. Pinned by
+    `test_get_service_logs_never_shells_out_to_docker`.
+  - **The 30 s stall the user reported was this**, not the panel's rendering: `get_service_logs` had a 30 s
+    timeout around `docker logs`, so **every service-tab switch burned the full timeout and then rendered
+    nothing**.
+  - **Prevention is rotation, not clearing:** `docker-compose.prod.yml` sets
+    `logging: {driver: json-file, options: {max-size: 10m, max-file: 3}}` on caddy/backend/gateway. The
+    daemon performs rotation itself and keeps its reader consistent, so the side effect does not occur.
+    Note `db` is **not** in the prod compose file (it carries `com.docker.compose` labels from an older
+    file, is `Up 2 weeks`, and is untouched by deploys) — so its rotation is still unbounded and needs a
+    manual change. Do **not** add a `db` service to the prod compose file to fix that: making compose own
+    the datastore container risks recreating it.
+  - To unwedge a container, **`docker restart` is enough** (proven) — a full recreate is not required.
 - Local sandbox sets `HTTP_PROXY/HTTPS_PROXY=http://127.0.0.1:59508`, which tunnels `app.tezlify.com`
   into a 502 — run API probes **from the production host** (Caddy is local there). Playwright exists only
   in the repo `venv` (`venv/bin/python`).
