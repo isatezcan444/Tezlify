@@ -104,6 +104,27 @@ class OpsLogsResponse(BaseModel):
     error: Optional[str] = None
 
 
+class OpsLogsClearRequest(BaseModel):
+    """Truncate one allowlisted container's log file.
+
+    `service` must be in the server-side `LOG_SERVICES` allowlist. `confirm`
+    is required, mirroring every other destructive action in this module: a
+    log clear is irreversible and a mis-click should not be enough.
+    """
+
+    service: str = Field(..., min_length=1, max_length=32)
+    confirm: bool = False
+
+
+class OpsLogsClearResponse(BaseModel):
+    service: str
+    cleared: bool = False
+    # Bytes reclaimed, so the UI can report something concrete instead of a
+    # bare "done" that is indistinguishable from a no-op.
+    freed_bytes: int = 0
+    error: Optional[str] = None
+
+
 class OpsOperationRequest(BaseModel):
     """Start an allowlisted operation.
 

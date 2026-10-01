@@ -5,6 +5,10 @@ anonymous caller, a normal user, or a crafted body must never be able to run
 anything. These tests drive the real FastAPI app with dependency overrides so
 the real `require_admin` gate is exercised, not a mock.
 """
+import os
+import shutil
+import tempfile
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -173,3 +177,109 @@ def test_logs_tail_is_bounded_by_query_validation(monkeypatch):
     # 99999 exceeds the declared maximum and must be rejected by validation.
     assert client.get("/api/v1/admin/ops/logs",
                       params={"service": "backend", "tail": 99999}).status_code == 422
+
+
+# ------------------------------------------------------------ clear logs
+def test_clear_logs_requires_confirmation(monkeypatch):
+    """Irreversible: a body without `confirm` must not truncate anything."""
+    client = _client(monkeypatch)
+    res = client.post("/api/v1/admin/ops/logs/clear", json={"service": "gateway"})
+    assert res.status_code == 400
+    assert "confirm" in res.json()["detail"].lower()
+
+
+def test_clear_logs_rejects_unknown_service_over_http(monkeypatch):
+    """The service name is allowlisted, so a path can never be targeted."""
+    client = _client(monkeypatch)
+    res = client.post(
+        "/api/v1/admin/ops/logs/clear",
+        json={"service": "../../etc/passwd", "confirm": True},
+    )
+    assert res.status_code == 400
+
+
+def test_clear_logs_anonymous_denied():
+    client = _anon_client()
+    res = client.post(
+        "/api/v1/admin/ops/logs/clear",
+        json={"service": "gateway", "confirm": True},
+    )
+    assert res.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_clear_logs_rejects_unknown_service_at_service_layer():
+    with pytest.raises(ops.OperationError):
+        await ops.clear_service_logs("../../etc/passwd")
+
+
+@pytest.mark.asyncio
+async def test_clear_logs_truncates_in_place_and_reports_freed_bytes(monkeypatch):
+    """TRUNCATE, not unlink.
+
+    The daemon keeps an open descriptor and appends to the same inode. Deleting
+    the file would send new output to an unlinked inode, so `docker logs` would
+    show nothing until the container was recreated and the disk space would not
+    be reclaimed. Asserting the inode survives is what distinguishes the two.
+    """
+    directory = tempfile.mkdtemp(prefix="tezlify-opslog-")
+    try:
+        path = os.path.join(directory, "container-json.log")
+        with open(path, "wb") as fh:
+            fh.write(b"log line\n" * 512)
+        before_ino = os.stat(path).st_ino
+        size_before = os.path.getsize(path)
+
+        async def fake_path(_service: str):
+            return path
+
+        monkeypatch.setattr(ops, "_container_log_path", fake_path)
+        result = await ops.clear_service_logs("gateway", actor="tester@tezlify.test")
+
+        assert result["cleared"] is True
+        assert result["freed_bytes"] == size_before
+        assert result["error"] is None
+        assert os.path.getsize(path) == 0
+        # Same inode => truncated in place, not unlinked and recreated.
+        assert os.stat(path).st_ino == before_ino
+        assert os.path.exists(path)
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_clear_logs_reports_failure_instead_of_claiming_success(monkeypatch):
+    """A container that is down must not read as 'cleared'."""
+
+    async def no_path(_service: str):
+        return None
+
+    monkeypatch.setattr(ops, "_container_log_path", no_path)
+    result = await ops.clear_service_logs("gateway")
+
+    assert result["cleared"] is False
+    assert result["freed_bytes"] == 0
+    assert result["error"]
+
+
+@pytest.mark.asyncio
+async def test_clear_logs_records_an_audit_entry(monkeypatch):
+    directory = tempfile.mkdtemp(prefix="tezlify-opslog-")
+    try:
+        path = os.path.join(directory, "container-json.log")
+        with open(path, "wb") as fh:
+            fh.write(b"x" * 64)
+
+        async def fake_path(_service: str):
+            return path
+
+        monkeypatch.setattr(ops, "_container_log_path", fake_path)
+        monkeypatch.setattr(ops, "_audit", [])
+        await ops.clear_service_logs("caddy", actor="auditor@tezlify.test")
+
+        entries = [a for a in ops._audit if a["action"] == "clear-logs"]
+        assert len(entries) == 1
+        assert entries[0]["actor"] == "auditor@tezlify.test"
+        assert entries[0]["result"] == "succeeded"
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)

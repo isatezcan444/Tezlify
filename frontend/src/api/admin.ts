@@ -9,6 +9,7 @@ import {
   OpsAuditEntry,
   OpsCatalogueEntry,
   OpsHealthCheck,
+  OpsLogsClearResponse,
   OpsLogsResponse,
   OpsOperation,
   OpsStatusResponse,
@@ -137,6 +138,16 @@ export class OpsApi {
     if (level && level !== 'ALL') params.set('level', level);
     const res = await authFetch(`${API_BASE}/admin/ops/logs?${params.toString()}`);
     await OpsApi.guard(res, 'Loglar alınamadı');
+    return res.json();
+  }
+
+  static async clearLogs(service: string, confirm = true): Promise<OpsLogsClearResponse> {
+    const res = await authFetch(`${API_BASE}/admin/ops/logs/clear`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ service, confirm }),
+    });
+    await OpsApi.guard(res, 'Loglar temizlenemedi');
     return res.json();
   }
 

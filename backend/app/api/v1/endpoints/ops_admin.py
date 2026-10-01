@@ -18,6 +18,8 @@ from backend.app.schemas.ops import (
     OpsAuditEntry,
     OpsCatalogueEntry,
     OpsHealthCheck,
+    OpsLogsClearRequest,
+    OpsLogsClearResponse,
     OpsLogsResponse,
     OpsOperation,
     OpsOperationRequest,
@@ -106,6 +108,37 @@ async def get_ops_logs(
             status_code=status.HTTP_400_BAD_REQUEST, detail=exc.message
         ) from exc
     return OpsLogsResponse(**result)
+
+
+@router.post("/logs/clear", response_model=OpsLogsClearResponse)
+async def clear_ops_logs(
+    payload: OpsLogsClearRequest,
+    current_admin: AuthUser = Depends(require_admin),
+) -> OpsLogsClearResponse:
+    """Empty one allowlisted container's log file.
+
+    Irreversible, so `confirm` is mandatory — the same rule the operations
+    catalogue applies to restarts and deploys. The container is not restarted
+    and no process state is touched; only the daemon's log file is truncated.
+    """
+    if not payload.confirm:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="confirm must be true: clearing logs is irreversible.",
+        )
+    try:
+        result = await ops.clear_service_logs(
+            service=payload.service,
+            actor=current_admin.email or current_admin.id,
+        )
+    except ops.OperationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=exc.message
+        ) from exc
+    # A failure that reached the service (container down, permission denied) is
+    # reported as 200 with `cleared: false` plus a reason, NOT as a success:
+    # the panel must be able to tell "emptied" from "nothing happened".
+    return OpsLogsClearResponse(**result)
 
 
 @router.get("/health", response_model=OpsHealthCheck)

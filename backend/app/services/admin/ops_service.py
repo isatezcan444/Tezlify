@@ -756,9 +756,9 @@ def _parse_uptime(state: str) -> Optional[str]:
 
 
 # Log reading is bounded and service-scoped: the UI can ask for the tail of one
-# allowlisted container's logs, never an arbitrary file.
-LOG_SERVICES: Tuple[str, ...] = ("backend", "gateway", "caddy", "db")# Log reading is bounded and service-scoped: the UI can ask for the tail of one
-# allowlisted container's logs, never an arbitrary file.
+# allowlisted container's logs, never an arbitrary file. `db` is included here
+# even though it is NOT in ALLOWED_SERVICES: reading postgres logs is safe and
+# useful, while restarting the database is not.
 LOG_SERVICES: Tuple[str, ...] = ("backend", "gateway", "caddy", "db")
 MAX_LOG_LINES = 500
 
@@ -791,8 +791,79 @@ async def get_service_logs(
         lines = [l for l in lines if needle in l.upper()]
     return {"service": service, "lines": lines[-tail:], "error": None}
 
-    m = re.search(r"Up\s+([0-9]+\s+\S+)", state or "")
-    return m.group(1) if m else None
+
+async def _container_log_path(service: str) -> Optional[str]:
+    """The daemon's own path for one allowlisted container's json log.
+
+    The path is asked of the daemon, never built from caller input, and the
+    name is validated against `LOG_SERVICES` first — so a caller can neither
+    read nor truncate an arbitrary file.
+    """
+    if service not in LOG_SERVICES:
+        raise OperationError("Unknown log service", code="unknown_service")
+    proc = await asyncio.create_subprocess_exec(
+        "docker", "inspect", "--format", "{{.LogPath}}", f"tezlify-{service}",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=15)
+    except asyncio.TimeoutError:
+        proc.kill()
+        return None
+    if proc.returncode != 0:
+        return None
+    return out.decode("utf-8", "replace").strip() or None
+
+
+async def clear_service_logs(service: str, actor: str = "system") -> Dict[str, Any]:
+    """Empty one allowlisted container's log file, in place.
+
+    Docker exposes no "clear logs" API, so the file the daemon writes to is
+    TRUNCATED rather than deleted. The distinction matters: the daemon holds an
+    open descriptor and keeps appending, so unlinking the file would send new
+    output to an unlinked inode — `docker logs` would then show nothing until
+    the container was recreated, and the disk space would not be reclaimed
+    until then either. Truncating keeps the inode and frees the space at once.
+
+    The container is NOT restarted, so live WhatsApp sessions survive. Only the
+    log file is touched; the process, its state and its volumes are untouched.
+
+    Returns the number of bytes freed so the UI can report something concrete
+    rather than a bare "done".
+    """
+    path = await _container_log_path(service)
+    if not path:
+        record_audit("clear-logs", actor, "failed", detail={"service": service, "reason": "log path not found"})
+        return {
+            "service": service,
+            "cleared": False,
+            "freed_bytes": 0,
+            "error": "Log dosyasi bulunamadi (container calismiyor veya log yolu okunamadi).",
+        }
+
+    try:
+        freed = os.path.getsize(path)
+    except OSError:
+        freed = 0
+
+    try:
+        # `open(..., "wb")` truncates to zero and closes immediately, leaving
+        # the inode in place for the daemon's still-open descriptor.
+        with open(path, "wb"):
+            pass
+    except OSError as exc:
+        record_audit("clear-logs", actor, "failed", detail={"service": service, "reason": str(exc)})
+        return {
+            "service": service,
+            "cleared": False,
+            "freed_bytes": 0,
+            "error": f"Log dosyasi temizlenemedi: {exc}",
+        }
+
+    logger.info("Cleared %s logs (%s bytes)", service, freed)
+    record_audit("clear-logs", actor, "succeeded", detail={"service": service, "freed_bytes": freed})
+    return {"service": service, "cleared": True, "freed_bytes": freed, "error": None}
 
 
 async def run_health_check() -> Dict[str, Any]:

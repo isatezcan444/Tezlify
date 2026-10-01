@@ -23,6 +23,7 @@ import { AdminShell } from '../../components/admin/AdminShell';
 import { Card, CardContent } from '../../components/ui/card';
 import { ServiceStatusPanel } from '../../components/admin/ops/ServiceStatusPanel';
 import { OpsLogsPanel } from '../../components/admin/ops/OpsLogsPanel';
+import { formatBytes } from '../../components/admin/ops/formatBytes';
 import { OpsHistoryPanel } from '../../components/admin/ops/OpsHistoryPanel';
 import { ErrorFeed } from '../../components/admin/ops/ErrorFeed';
 import { OverviewPanel } from '../../components/admin/ops/OverviewPanel';
@@ -74,6 +75,7 @@ export const AdminOperationsPage: React.FC = () => {
   const [logsLoading, setLogsLoading] = useState(false);
   const [logsByService, setLogsByService] = useState<Record<string, string[]>>({});
   const [opLogs, setOpLogs] = useState<OpsOperation | null>(null);
+  const [clearingLogs, setClearingLogs] = useState(false);
   const [lastUpdated, setLastUpdated] = useState('');
   const busyRef = useRef(false);
 
@@ -268,6 +270,55 @@ export const AdminOperationsPage: React.FC = () => {
   );
   const logTabs = serviceNames.length > 0 ? serviceNames : ['gateway'];
 
+  const handleClearLogs = useCallback(async () => {
+    const targets = logTabs;
+    const ok = await toast.confirm({
+      title: t('admin.ops.confirmClearLogsTitle'),
+      message: t('admin.ops.confirmClearLogsBody').replace('{services}', targets.join(', ')),
+      confirmText: t('admin.ops.confirmClearLogsProceed'),
+      cancelText: t('admin.ops.cancel'),
+      variant: 'danger',
+    });
+    if (!ok) return;
+
+    setClearingLogs(true);
+    let freed = 0;
+    const failed: string[] = [];
+    try {
+      // Sequential, not parallel: these truncate host files through the docker
+      // socket, and firing every service at once gains nothing while making a
+      // partial failure much harder to attribute.
+      for (const svc of targets) {
+        try {
+          const res = await OpsApi.clearLogs(svc, true);
+          if (res.cleared) freed += res.freed_bytes;
+          else failed.push(svc);
+        } catch {
+          failed.push(svc);
+        }
+      }
+      // Drop the cleared buffers so the panel cannot keep showing lines that
+      // no longer exist on disk.
+      setLogsByService((prev) => {
+        const next = { ...prev };
+        for (const svc of targets) next[svc] = [];
+        return next;
+      });
+      await fetchLogs(logService);
+
+      if (failed.length > 0) {
+        toast.error(
+          t('admin.ops.clearLogsPartial').replace('{services}', failed.join(', ')),
+          t('admin.ops.clearLogs'),
+        );
+      } else {
+        toast.success(formatBytes(freed), t('admin.ops.clearLogsDone'));
+      }
+    } finally {
+      setClearingLogs(false);
+    }
+  }, [toast, t, logTabs, logService, fetchLogs]);
+
   if (!showAdmin) {
     return (
       <div className="max-w-2xl mx-auto mt-12 px-4">
@@ -380,6 +431,8 @@ export const AdminOperationsPage: React.FC = () => {
           onServiceChange={(svc) => void fetchLogs(svc)}
           onReload={() => void fetchLogs(logService)}
           logsByService={logsByService}
+          onClearLogs={() => void handleClearLogs()}
+          clearing={clearingLogs}
         />
       )}
       {tab === 'history' && (

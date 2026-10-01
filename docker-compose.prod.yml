@@ -63,6 +63,17 @@ services:
       # bounded by (a) require_admin on every ops route, (b) the fixed allowlist
       # in ops_service.py, and (c) redaction of everything those routes return.
       - /var/run/docker.sock:/var/run/docker.sock
+      # Operations Center "clear logs": docker has no clear-logs API, so the
+      # daemon's json log file is TRUNCATED in place. The path is asked of the
+      # daemon (`docker inspect --format {{.LogPath}}`) and mounted at the SAME
+      # absolute path, so the reported path resolves inside this container.
+      #
+      # RISK (accepted deliberately): this grants write access to the daemon's
+      # log files. It is bounded the same way the socket is — (a) require_admin
+      # on the route, (b) the `LOG_SERVICES` allowlist gates the container NAME,
+      # and (c) the path itself is never built from caller input, only from
+      # `docker inspect`. No other file under this tree is ever opened.
+      - /var/lib/docker/containers:/var/lib/docker/containers:rw
       # The compose project directory, so `docker compose -f` resolves and the
       # working tree can be updated during a deploy.
       - /opt/tezlify:/opt/tezlify/deploy:rw

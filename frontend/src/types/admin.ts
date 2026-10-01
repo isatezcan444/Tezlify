@@ -459,6 +459,16 @@ export interface OpsLogsResponse {
   error?: string | null;
 }
 
+/** Result of truncating one container's log file. */
+export interface OpsLogsClearResponse {
+  service: string;
+  /** `false` means nothing was emptied; `error` then says why. */
+  cleared: boolean;
+  /** Bytes reclaimed, so the UI can report something concrete. */
+  freed_bytes: number;
+  error?: string | null;
+}
+
 /**
  * Realtime event pushed by the Operations Center on the shared `/ws` stream.
  *

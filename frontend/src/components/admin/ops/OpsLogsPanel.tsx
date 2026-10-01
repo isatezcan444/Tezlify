@@ -7,7 +7,7 @@
  * thousands of nodes. Filtering is done on the already-fetched buffer.
  */
 import React, { useMemo, useState } from 'react';
-import { Download, FileText, Search, TriangleAlert } from 'lucide-react';
+import { Download, FileText, Search, Trash2, TriangleAlert } from 'lucide-react';
 import { useI18n } from '../../../context/I18nContext';
 import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
 import { Button } from '../../ui/button';
@@ -29,6 +29,14 @@ export interface OpsLogsPanelProps {
    * never claims to hold data the operator never saw.
    */
   logsByService?: Record<string, string[]>;
+  /**
+   * Truncate the log files behind every service in `services`. Owned by the
+   * page because it performs the requests and the confirmation; the panel only
+   * renders the trigger.
+   */
+  onClearLogs?: () => void;
+  /** A clear is in flight — the button must not be clickable twice. */
+  clearing?: boolean;
 }
 
 const LEVELS = ['ALL', 'ERROR', 'WARN', 'INFO'];
@@ -54,6 +62,8 @@ export const OpsLogsPanel: React.FC<OpsLogsPanelProps> = ({
   onServiceChange,
   onReload,
   logsByService = {},
+  onClearLogs,
+  clearing = false,
 }) => {
   const { t } = useI18n();
   const [level, setLevel] = useState('ALL');
@@ -126,6 +136,24 @@ export const OpsLogsPanel: React.FC<OpsLogsPanelProps> = ({
             <Button variant="outline" size="sm" onClick={onReload} className="cursor-pointer">
               {t('admin.refreshNow')}
             </Button>
+            {/* Irreversible, so it is last, visually distinct, and always
+                confirmed. Deliberately NOT disabled when the visible buffer is
+                empty: a level/search filter can hide every line while the
+                server still holds logs, and that is exactly when an operator
+                wants to reclaim the space. */}
+            {onClearLogs && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={onClearLogs}
+                disabled={clearing}
+                className="cursor-pointer gap-1.5 text-rose-600 dark:text-rose-400 disabled:opacity-60"
+                title={t('admin.ops.clearLogsHint')}
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                {clearing ? t('admin.ops.clearingLogs') : t('admin.ops.clearLogs')}
+              </Button>
+            )}
           </div>
         </div>
 
