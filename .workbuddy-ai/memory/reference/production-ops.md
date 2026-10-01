@@ -39,6 +39,11 @@ about to touch production, deploy, or run the test suites. Invariants live in
 - Local sandbox sets `HTTP_PROXY/HTTPS_PROXY=http://127.0.0.1:59508`, which tunnels `app.tezlify.com`
   into a 502 — run API probes **from the production host** (Caddy is local there). Playwright exists only
   in the repo `venv` (`venv/bin/python`).
+- **Only Caddy publishes host ports** (`80`/`443`); `backend` (8000), `gateway` (8787) and `db` (5432) are
+  container-internal, so `curl localhost:8000` from the host fails (empty body, `http=000`). Probe through
+  Caddy instead: `curl -s -k https://localhost/openapi.json -H "Host: app.tezlify.com"`. **The OpenAPI
+  document is at the root (`/openapi.json`)** — `/api/v1/openapi.json` is a 404. A **405** on a GET to a
+  POST-only route (e.g. `/api/v1/admin/ops/logs/clear`) is the *positive* signal that the route is live.
 - **Nested `sh -c "… node -e \"…\""` quoting does not survive ssh.** Write the script to `/tmp` and
   `docker cp` it in. A heredoc `<<'JS'` is fine, but `${...}` template literals are still expanded by the
   **local** shell — use string concatenation instead. After `--force-recreate` a container loses its
@@ -54,11 +59,34 @@ tab-based, not routed: enter via `button[data-tab-id="whatsapp"]`; conversation 
 the `__reactContainer$` root and matching `memoizedProps.messages` + `leadName` — minified names change
 per build.
 
-## Frontend release mechanics
+## Release mechanics (`scripts/deploy/host-release.sh`) — re-measured 2026-10-01
 
-- Releases live at `/opt/tezlify/releases/` (NOT `/opt/tezlify/frontend/releases/` — that older path
-  exists but is unused by the symlinks). Swap the `frontend_candidate` symlink atomically
-  (`ln -sfn` + `mv -T`) then **force-recreate Caddy** (its bind mount resolves the symlink at creation).
+- **`frontend_candidate` is a DIRECTORY, not a symlink.** `host-release.sh` sets
+  `FRONTEND_DIR=/opt/tezlify/frontend_candidate`, deletes its contents and unpacks the tarball in place,
+  keeping the previous copy at `frontend_candidate.prev-<TS>`. Caddy bind-mounts that directory at
+  `/srv/frontend` (`rw=false`), so **Caddy is NOT recreated** — the release only runs
+  `compose up -d --force-recreate backend gateway`. Writing into the already-mounted directory is served
+  immediately: proved 2026-10-01 by `tezlify-caddy` being **Up 23 h** while serving a bundle written at
+  12:50 UTC, with the served `assets/index-EbhNawq7.js` sha256 matching the file in `frontend_candidate`
+  byte-for-byte. An earlier note here claimed an atomic symlink swap (`ln -sfn` + `mv -T`) plus a forced
+  Caddy recreate — **that is stale; verify before trusting it.** (`/opt/tezlify/releases/` still exists but
+  is NOT written by the current script; the newest entries are from 2026-09-30.)
+- **The deploy audit markers are `/opt/tezlify/.deployed-commit` (the SHA) and
+  `backups/releases/<TS>/release.json`** — sha, built images, `released_at`, frontend tarball name, and
+  `previous_backend_image`. Rollback: `bash scripts/deploy/host-release.sh --rollback-to <TS>`, using the
+  `tezlify-backend:pre-<TS>` / `tezlify-gateway:pre-<TS>` image tags plus the `frontend_candidate.prev-<TS>`
+  directory. `.deployed-commit` is written LAST on purpose (an earlier failure left it pointing at a SHA that
+  had been rolled back).
+- **Cutover is gated by an isolated candidate container** — `PORT=8001`, gateway off
+  (`GATEWAY_ENCRYPTION_KEY=`), `SKIP_JOB_RECOVERY=true`, env copied from the **LIVE container**, never from
+  `.env.production` (its quoted values break `docker run --env-file`, and the first attempt died on a quoted
+  `DATABASE_URL`). It must answer `/health` before traffic moves; the old container serves throughout. After
+  cutover the script re-reads `docker inspect --format {{.Image}}` and **refuses to report success** if the
+  live image differs from the one it built.
+- **The script itself runs `git reset --hard <sha>`** — it demands `--force-reset` when the tree is dirty and
+  first saves `worktree-unstaged.patch` / `worktree-staged.patch` under `backups/releases/<TS>/`. So manual
+  `git reset --hard` in `/opt/tezlify` is still the wrong way to deploy (use the script), but a dirty tree is
+  no longer the deploy marker it once was.
 - Cache policy is already right: entry document `no-cache, no-store, must-revalidate`, hashed assets
   `immutable, max-age=31536000` — a plain reload picks up a deploy; no hard refresh needed.
 - Release dirs are **build output only** (`index.html` + `assets/`, ~960 KB): no `node_modules`, no git
@@ -71,10 +99,11 @@ per build.
 
 ## Deploy state (2026-09-26; refreshed 2026-10-01)
 
-- Prod `/opt/tezlify` is a **git checkout deliberately left dirty** at `359fe6d` with the deployed patches
-  applied as uncommitted working-tree changes. **That dirt is the deploy marker** — never run
-  `git checkout .` / `git reset --hard` / `git clean` there. A later full deploy of `ddbfbf4` should find
-  those files already matching.
+- **Measured 2026-10-01: the prod checkout is CLEAN at `7370c18`** (`git status --porcelain
+  --untracked-files=no` empty), and the authoritative deploy marker is `/opt/tezlify/.deployed-commit`.
+  The older note that the tree is "deliberately left dirty as the deploy marker" at `359fe6d` is **stale**:
+  `host-release.sh` resets hard to the target SHA and then asserts the tree is clean. Still — deploy via the
+  script; never hand-reset `/opt/tezlify`.
 - Live: frontend `5916ff1` chat-thread singleton + `8177a2b` i18n missing keys; backend `9981298`
   502-on-short-conversation + `6c7214a` ~4 s open-path bound; naming fix
   `55f994e`/`1030850`/`4bd7791`; gateway `4fc791a` chat-ordering stamp. Restarts are routine and the line

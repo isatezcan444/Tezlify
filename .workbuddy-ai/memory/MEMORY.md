@@ -19,8 +19,9 @@ Curated index only. Detail lives elsewhere, deliberately:
 - **No backup covers WhatsApp conversations/messages.** Sep 19 dump is schema-only for those tables; Sep 16
   restores but has 0 rows; `archive_mode=off`, no replication slots, no PITR. Before promising a rollback,
   restore into a scratch DB and **count rows** — dump size proves nothing.
-- **Prod `/opt/tezlify` is a git checkout deliberately left dirty** as the deploy marker — never
-  `git checkout .` / `git reset --hard` / `git clean` there. **Push is not deploy.**
+- **Deploy only via `scripts/deploy/host-release.sh`; never hand-reset `/opt/tezlify`.** (Measured
+  2026-10-01: that checkout is **clean** at the released SHA and `/opt/tezlify/.deployed-commit` is the
+  authoritative deploy marker — the older "deliberately left dirty" note is stale.) **Push is not deploy.**
 - **Never run pytest on the dev DB** (some tests assert global row counts) — use a schema-only copy.
 
 ## WhatsApp invariants — the one-line "tell" each (full detail in the reference)
