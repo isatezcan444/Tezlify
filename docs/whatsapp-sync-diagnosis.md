@@ -189,6 +189,60 @@ zaman) denetim izi olarak loglanır; verinin kendisi tutulmaz.
 | 4 | LID kimliği ingest anında `remoteJidAlt`'ten çözülür | **bitti** | `whatsapp-gateway/scripts/test-lid-alt-resolution.mjs` 12/12; çift falsifiye (kaynak devre dışı → B1/B3/B5 kırmızı, kontrol B4 yeşil) |
 | 5 | Sahipsiz olaylar sınırlı/TTL'li kuyruğa alınır ve yeniden oynanır | **bitti** | `backend/tests/test_whatsapp_orphan_replay.py` 6/6; eski "at" davranışı geri konunca 6/6 kırmızı |
 | 6 | Okunmamış sayacı yalnızca **yayınlanan** mesajı sayar | **bitti** | `whatsapp-gateway/scripts/test-unread-count-authority.mjs` 6/6; eski sıralama geri konunca A1 kırmızı, rozet kontrolleri yeşil |
+| 5b | QR penceresindeki olaylar sınırlı bellekte tutulur, promosyonda kalıcı kuyruğa akar | **bitti** | `whatsapp-gateway/scripts/test-ephemeral-outbox-gate.mjs` (sözleşme güçlendirildi: `1 !== 2`); boşaltma devre dışı → kırmızı |
+| 7 | Startup purge köprüsü bilinen bölünmeyi **silmez, erteler** | **bitti** | `backend/tests/test_whatsapp_purge_defers_known_bridge.py` 3/3; erteleme kapatılınca **2 kırmızı, kontrol yeşil** |
+
+### Faz 7 — onarımı besleyen malzeme purge tarafından yok ediliyordu
+
+Üretimde ölçtüğümde onarım `taranan=0` döndü. "0 sonuç" ile "bozuk sorgu" ayırt
+edilemez, bu yüzden **keşfin her aşamasını tek tek ölçtüm**:
+
+| Aşama | Üretimde |
+|---|---|
+| `lid_mappings` toplam / `@lid` olan | 17300 / 17288 |
+| `whatsapp_sessions` JOIN sonrası (aşama 1) | **208** |
+| hayalet LID kontak (`phone_e164='jid:…@lid'`) | **0** |
+| hayalet LID sohbet | **0** |
+
+Yani darboğaz sorgu değil, **malzemenin yokluğu**. Ve nedeni
+`WHATSAPP_PRODUCTION_DEPLOY_REPORT.md`'de zaten kayıtlıydı: `conversations 449 → 447`,
+`contacts 1848 → 1846`, **"pre-existing `purge_raw_jid_identity_data`"**.
+
+Purge kendini *"çözülmemiş LID hayaletlerini temizler"* diye belgeliyordu ama sorgu
+**köprüden bağımsız olarak her hayaleti** siliyordu:
+
+```sql
+SELECT id FROM contacts WHERE phone_e164 LIKE 'jid:%@lid'   -- köprü sorulmuyor
+```
+
+Köprü tam da satırı onarılabilir kılan şeydir: onarım mesajları canonical sohbete
+**taşır**, purge hayaleti sohbetiyle ve mesajlarıyla **siler**. Sırayla koştuklarında
+purge önce davranıp onarımın malzemesini yok ediyordu ve kayıp geri getirilemiyor.
+
+Düzeltme yeni bir davranış eklemiyor; **koda kendi sözleşmesini uyguluyor**:
+
+```sql
+SELECT c.id FROM contacts c WHERE c.phone_e164 LIKE 'jid:%@lid'
+  AND NOT EXISTS (SELECT 1 FROM whatsapp_private.lid_mappings lm
+                  JOIN public.whatsapp_sessions ws ON ws.gateway_id = lm.session_id
+                  WHERE lm.lid_jid = substr(c.phone_e164, 5)
+                    AND lm.phone_jid IS NOT NULL AND lm.phone_jid <> '')
+```
+
+Üç mühendislik detayı yük taşıyor:
+
+- **Tablo varlığı sorgulanmadan ölçülür.** `try/except` ile yoklamak Postgres'te
+  işe yaramaz: patlayan bir ifade transaction'ı *aborted* durumuna düşürür ve
+  sonraki her ifade de başarısız olur. Bu yüzden `to_regclass` / `sqlite_master`
+  kullanılıyor — ikisi de tablo yokken hata değil NULL döner.
+- **Tablo adı lehçeye göre seçilir** (PG: `whatsapp_private.lid_mappings`, SQLite:
+  `lid_mappings`); startup sırası bunu güvenli kılıyor
+  (`ensure_whatsapp_gateway_private_schema` satır 128, purge satır 136).
+- **Sessizlik yok:** ertelenenler sayılır ve loglanır.
+
+Canlı doğrulama (yayın sonrası, üretim Postgres'inde): erteleme sorgusu **hatasız
+çalıştı** ve `to_regclass` **t** döndü — yani erteleme dalı gerçekten aktif, sessizce
+eski "hepsini sil" davranışına düşmüyor.
 
 ### Faz 5 — asıl kayıp "sahipsiz"di, "kimlik" değil
 
@@ -260,6 +314,43 @@ gateway'in `success: false` dönüşü başarı sayılmaz — çünkü 2xx, What
 kanıtı değildir. Arayüz `remote_deleted=false` gördüğünde uyarı toast'i gösterir; susmak
 kullanıcıya telefonun da temizlendiğini sanmasına yol açardı.
 
-**Hâlâ doğrulanmamış (canlı test gerekir):** rozetin telefon okumasıyla düşmesi (Faz 1) ve
-gerçek cihazda sohbetin telefondan silinmesi (Faz 2 giden). İkisi de yayın sonrası
-ölçülmelidir; kod ve kapı tarafı hazırdır.
+## Yayın sonrası canlı doğrulama (ölçülen)
+
+| Ne | Sonuç |
+|---|---|
+| yayındaki commit | `7c5cb2c…` — `/opt/tezlify/.deployed-commit` ile birebir |
+| public `/health` | 200, `gateway_bridge.connected=true`, `last_event_at` canlı |
+| container'lar | backend/gateway/caddy/db hepsi `healthy` |
+| startup hatası | **0** traceback |
+| gateway kodu | `deleteConversationRemote`, `conversations/:jid` (9 eşleşme), `pairingBuffers` (15), `remoteJidAlt` (3) |
+| backend kodu | `delete_conversation_remote`, orphan kuyruğu (54), `remote_deleted` şema + endpoint |
+| **dışa dönük silme rotası** | backend→gateway DELETE gerçek token'la: `route=/sessions/:session/conversations/:jid status=404 {"error":"Session not found"}` |
+| **erteleme dalı** | üretim Postgres'inde sorgu hatasız çalıştı; `to_regclass(...) IS NOT NULL` = **t** |
+
+İki satır özellikle önemli:
+
+- Gateway tüm rotalara auth'tan **önce** 401 döndüğü için durum kodu rota varlığını
+  ayırt etmiyor. Bu yüzden çağrı **backend'in kendi istemcisinden** gerçek token'la
+  yapıldı: yanıt gövdesi `Session not found` — yani istek rota deseniyle **eşleşti**
+  (Express'in `Cannot DELETE` varsayılanı değil) ve yalnızca oturum araması düştü.
+- `to_regclass` = `t`, erteleme dalının üretimde **aktif** olduğunu kanıtlıyor;
+  sessizce eski "hepsini sil" davranışına düşmüyor. (SQLite'ta geçen bir sorgu
+  Postgres'te patlayabilirdi; bu ölçüm onu dışlıyor.)
+
+## Kalan dürüstlük payı
+
+**Erteleme birleştirme değildir.** Köprüsü bilinen hayalet artık silinmiyor ama startup'ta
+**birleştirilmiyor da**: `reconcile_legacy_split_conversation` bir orchestrator **metodu** ve
+onu `core/migrations.py`'den çağırmak servis katmanını startup migration'ına bağlardı
+(döngüsel import riski). Boot'ta birleştirme **bilinçli olarak** yazılmadı; ertelenen satırlar
+operatör `scripts/diagnostics/whatsapp_lid_split_repair.py --apply` çalıştırana kadar
+nameless bir sohbet olarak durur. Silinmiş olmaktan iyidir, ama birleştirilmiş de değildir.
+
+**Gerçek telefon gerektiren iki doğrulama yapılmadı** — ve ölçülmüş gibi yapmıyorum:
+
+1. **Rozetin telefon okumasıyla düşmesi** (Faz 1 + 6).
+2. **Tezlify'dan silinen sohbetin telefondan da gitmesi** (Faz 2 giden).
+
+Kapılar **sözleşmeyi** kanıtlıyor, WhatsApp sunucusunun kabul ettiğini değil. İkisi de
+telefon elde, yayın sonrası ölçülmelidir. Yukarıdaki tabloda kanıtlanan şey hattın
+**uçtan uca bağlı ve canlı** olduğudur; bu, sunucunun kabul edeceğinin kanıtı değildir.

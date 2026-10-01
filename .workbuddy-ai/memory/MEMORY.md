@@ -171,3 +171,32 @@ changes who OWNS the counter and would require redesigning the downward-only
 **QR-window events skipping the durable outbox is not a bug.** The outbox has a `gateway_sessions` FK
 and an ephemeral pairing session has no row by design (PG 23503, ~24 logged failures/day), so durable
 storage is only promised for registered sessions.
+
+**A repair job can be starved by the cleanup that runs first.** Two mechanisms addressed the same
+LID split: `reconcile_legacy_split_conversation` MOVES the ghost's messages onto the canonical
+conversation, while the startup migration `purge_raw_jid_identity_data` DELETED the ghost, its
+conversation and its messages. The purge documented itself as cleaning *unresolved* LID ghosts but
+its SQL asked no question about the bridge — and the bridge is exactly what makes a row repairable.
+Measured in production: **208 known LID→phone bridges, 0 ghost contacts, 0 ghost conversations**,
+while the deploy report attributed `conversations 449 → 447` to that same purge. The repair reported
+`0 candidates` forever because the purge always won the race. Before concluding a repair finds
+nothing to fix, verify its input still exists.
+
+**"0 results" is not evidence until each stage of the discovery query is measured.** The same run
+showed 17300 `lid_mappings` rows (17288 `@lid`), 208 surviving a `whatsapp_sessions` JOIN, and 0
+ghost contacts — the bottleneck was the material, not the query. A single `0` cannot distinguish
+"nothing to do" from "the query can never match".
+
+**Probe table existence WITHOUT running the query in Postgres.** A `try/except` around
+`SELECT 1 FROM some_table` does not work: the failed statement puts the transaction into the
+*aborted* state and every subsequent statement fails too. Use `to_regclass('schema.table')` (PG) or
+`sqlite_master` (SQLite) — both return NULL rather than raising. Also pick the table name by dialect:
+`whatsapp_private.lid_mappings` in PG, plain `lid_mappings` in SQLite. Startup order makes this safe
+(`ensure_whatsapp_gateway_private_schema` runs before the purge).
+
+**An assertion about the whole table is a trap when the test DB persists.** `tezlify.db` is a file
+that survives between runs, and `+905551112233` is a fixture phone shared by ~17 test files. An
+assertion phrased "this phone exists nowhere" fails on another file's residue instead of on a
+regression — and did, intermittently. Scope assertions to the test's own user. Related: writers
+disagree on whether `user_id` keeps its dashes, so a cleanup that deletes only one form leaves the
+row for the next run.
