@@ -81,6 +81,21 @@ Curated index only. Detail lives elsewhere, deliberately:
   row guarded by a unique index, whichever loses has to roll back and re-read the winner's row. If only one
   writer has the try/except, **that other writer is the bug** — check both before trusting either. And
   before "fixing" a duplicate implementation, measure whether its branches have ever actually run.
+- **A key the serializer emits but the `response_model` does not DECLARE never reaches the client.**
+  Pydantic v2 defaults to `extra="ignore"`, so `WhatsAppMessageItem` silently discarded the
+  `link_preview` dict that `serialize_message` always builds (`whatsapp/orchestration/messaging.py:117`)
+  — the whole link-preview feature ran correctly server-side and was **invisible in production**
+  (live 2026-09-30: `status=OK` rows in `link_previews`, yet `HAS preview KEY: False` on the wire).
+  The tell is an **asymmetry**: `reactions` was declared on the same model and worked. The same bug had
+  already been fixed for `WhatsAppSessionResponse.sync` with an in-file comment (A8) — the pattern was
+  known and recurred. Tests stopped at the service/serializer layer and never crossed the Pydantic
+  boundary, so both were green while the feature was dead. See
+  `fastapi-response-model-silent-field-drop` (includes the generic guard test:
+  `set(serialize(row)) - set(Model.model_fields)` must be empty).
+- **A code fix is not retroactive over a positive cache.** Correcting how a value is *computed* leaves
+  already-cached rows holding the old value for their full TTL — the two consent-interstitial rows
+  (`status=OK`, 7-day TTL) kept their wrong titles until `expires_at` was forced into the past so the
+  next chat-open re-resolved them. Always pair a compute-path fix with a cache-invalidation step.
 
 ## Operational quick hits — full detail in `reference/production-ops.md`
 
@@ -102,8 +117,57 @@ no test runner), `real-browser-cdp-verification`, `stack-latency-parity-diagnosi
 `non-destructive-schema-constraint-migration`, `hermetic-service-process-harness`,
 `asymmetric-resource-guard-detection`, `client-lifecycle-cancels-server-promotion`,
 `cross-tenant-lookup-isolation`, `symlink-served-release-fast-forward-deploy`,
+`fastapi-response-model-silent-field-drop` (a serializer key absent from the `response_model` is
+silently dropped by Pydantic v2 — detect it on the wire, close it with a key-set contract test),
 `bootstrap-model-registration-parity` (a hand-provisioned test DB must import **every** model module,
 not just `app/models/` — otherwise tables are silently absent and unrelated tests die on "no such table";
 add a `Base.metadata.tables - actual` hard gate), `tezlify-push-verification-gate` (the exact 3-suite
 pre-push sequence + the four sandbox traps that fake a signal: dev-DB prohibition, `tmp_path` EEXIST,
 the Vite bulk-delete guard, and piped output masking the exit code).
+
+## WhatsApp delete sync — the two app-state collections are NOT the same collection
+
+`chatModify({ delete: true, lastMessages })` writes a `deleteChatAction` into **`regular_high`**
+(`apiVersion: 6`), whereas read/archive (`markChatAsReadAction`, `archiveChatAction`) write to
+**`regular_low`**. Measured on prod: `regular_high` was still advancing while `regular_low` was frozen,
+so the outbound delete is **independent** of the app-state fault — never assume one fix covers both
+symptoms, and never conclude "app-state is dead" from one frozen collection.
+
+`lastMessages` is validated by Baileys `getMessageRange` and **throws instead of degrading**: every
+entry needs `key.remoteJid`, `key.id` and a convertible `messageTimestamp`; a group entry with
+`fromMe: false` also needs `participant`. Ship a **one-element** list (the newest message) — the
+multi-element ordering is ambiguous because `lastMessageTimestamp` is read from the LAST element while
+the docstring says "reverse chronologically".
+
+Clearing the in-memory chat caches on a successful remote delete is load-bearing: leaving them lets
+the next chat discovery re-create the chat, i.e. the delete undoes itself. On failure, do NOT clear
+them — a chat we failed to delete must not vanish from our own view.
+
+## WhatsApp identity + unread — three separate mechanisms inside "the sync looks broken"
+
+**"Owner unresolved" means EARLY, not garbage.** `resolve_event_owner_and_session` looks the session
+up by `gateway_id`; during a QR pairing the `whatsapp_sessions` row does not exist yet, so it raises
+`EventOwnerUnresolved` and the dispatch path used to discard the event. That single drop starved the
+**entire** LID identity repair (`_heal_lid_contact_identity` +
+`reconcile_legacy_split_conversation`, whose only caller is the `lid_mapped` handler) — the machine
+existed and was never fed. Events are now held in a bounded, TTL'd queue and replayed when a later
+event for the same gateway session resolves an owner. Before blaming a missing mechanism, check
+whether the existing one is merely starved of input.
+
+**`WAMessageKey.remoteJidAlt` / `participantAlt` carry the same entity's other address.** Reading them
+files a message under its phone identity at INGEST time. Without it, a LID-addressed message is held
+(`lidHold`) and only emitted if a mapping event arrives later — so during a first pairing, when no
+mapping is learned yet, the messages the user can see on their phone are exactly the held ones. When
+deriving a LID→PN pair, validate the phone side strictly: `asPn` passes anything containing `@`
+through, so a GROUP jid would be accepted and would poison `lidToJid` with a LID→group mapping.
+
+**A local counter must count only what was PUBLISHED.** The gateway incremented its in-memory
+`unread_count` for every inbound message, including held ones it never emitted, so its list disagreed
+with the backend (measured: gateway 2 / DB 1). The mismatch is a second contradictory truth, not a
+richer one. Note what was deliberately NOT done: publishing the increment so the backend adopts it
+changes who OWNS the counter and would require redesigning the downward-only
+`should_apply_unread_count` gate. Fix only the wrong part.
+
+**QR-window events skipping the durable outbox is not a bug.** The outbox has a `gateway_sessions` FK
+and an ephemeral pairing session has no row by design (PG 23503, ~24 logged failures/day), so durable
+storage is only promised for registered sessions.

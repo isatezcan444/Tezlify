@@ -1065,6 +1065,16 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         tRef.current('whatsapp.deleteChatDone').replace('{count}', String(res.messages_deleted)),
         tRef.current('common.success'),
       );
+      // §1.1 durustluk: yerel silme basarili diye sohbet WhatsApp tarafinda da
+      // silindi VARSAYILAMAZ. Silinememisse telefonda sohbet durmaya devam eder
+      // ve bir sonraki gecmis senkronu onu geri getirebilir; kullanici bunu
+      // simdi bilmezse "sildim" sanir.
+      if (!res.remote_deleted) {
+        toastRef.current.warning(
+          tRef.current('whatsapp.deleteChatRemoteFailed'),
+          tRef.current('common.warning'),
+        );
+      }
     } catch (err: any) {
       console.warn('[WhatsAppHubPage] Sohbet silinemedi:', err);
       toastRef.current.error(

@@ -598,12 +598,21 @@ export const WhatsAppApi = {
    */
   async deleteConversation(
     conversationId: number,
-  ): Promise<{ id: number; deleted: boolean; messages_deleted: number; reactions_deleted: number }> {
+  ): Promise<{
+    id: number;
+    deleted: boolean;
+    messages_deleted: number;
+    reactions_deleted: number;
+    remote_deleted: boolean;
+    remote_error: string | null;
+  }> {
     const data = await apiSend<{
       id: number;
       deleted: boolean;
       messages_deleted?: number;
       reactions_deleted?: number;
+      remote_deleted?: boolean;
+      remote_error?: string | null;
     }>(`/whatsapp/conversations/${conversationId}`, 'DELETE');
     if (!data.deleted) {
       throw new WhatsAppApiError('');
@@ -613,6 +622,11 @@ export const WhatsAppApi = {
       deleted: true,
       messages_deleted: data.messages_deleted ?? 0,
       reactions_deleted: data.reactions_deleted ?? 0,
+      // Uzaktan (WhatsApp) silme sonucu. Alan gelmezse `true` VARSAYILMAZ:
+      // "bilinmiyor"u basariya cevirmek sessiz bir yalan olurdu. Arayuz
+      // yalnizca sunucu acikca `true` dediginde susar (AGENTS.md §1.1).
+      remote_deleted: data.remote_deleted === true,
+      remote_error: data.remote_error ?? null,
     };
   },
 

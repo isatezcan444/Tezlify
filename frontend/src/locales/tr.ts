@@ -540,9 +540,14 @@ export const tr = {
     deleteChat: 'Sohbeti sil',
     deleteChatConfirmTitle: 'Sohbeti sil',
     deleteChatConfirmBody:
-      '{name} ile olan sohbetin tamamı ve tüm mesajları kalıcı olarak silinecek. Bu işlem geri alınamaz ve yedeği yoktur. Sohbet karşı tarafın cihazından silinmez.',
+      '{name} ile olan sohbetin tamamı ve tüm mesajları kalıcı olarak silinecek. Bu işlem geri alınamaz ve yedeği yoktur. Sohbet bağlı WhatsApp cihazlarınızdan da kaldırılır, ancak karşı tarafın cihazından silinmez.',
     deleteChatDone: 'Sohbet silindi ({count} mesaj kaldırıldı)',
     deleteChatFailed: 'Sohbet silinemedi',
+    // Yerel silme basarili ama WhatsApp silmeyi kabul etmedi: sohbet bagli
+    // telefonda durmaya devam ediyor. Burada susmak, kullanicinin telefonun da
+    // temizlendigini sanmasina yol acardi.
+    deleteChatRemoteFailed:
+      'Sohbet Tezlify\u2019dan kaldırıldı ancak WhatsApp\u2019a bildirilemedi. Telefonunuzda görünmeye devam edebilir ve bir sonraki senkronizasyonda geri gelebilir.',
     linkPreviewOpen: 'Bağlantıyı aç',
     documentOpen: 'Aç',
     documentDownload: 'İndir',

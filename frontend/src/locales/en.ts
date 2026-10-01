@@ -540,9 +540,14 @@ export const en = {
     deleteChat: 'Delete chat',
     deleteChatConfirmTitle: 'Delete chat',
     deleteChatConfirmBody:
-      'The entire conversation with {name} and all of its messages will be permanently deleted. This cannot be undone and there is no backup. The chat is not deleted from the other person\u2019s device.',
+      'The entire conversation with {name} and all of its messages will be permanently deleted. This cannot be undone and there is no backup. The chat is also removed from your linked WhatsApp devices, but it is not deleted from the other person\u2019s device.',
     deleteChatDone: 'Chat deleted ({count} messages removed)',
     deleteChatFailed: 'Chat could not be deleted',
+    // Local delete succeeded but WhatsApp did not accept the delete, so the
+    // chat is still on the linked phone. Saying nothing here would let the user
+    // believe the phone was cleaned too.
+    deleteChatRemoteFailed:
+      'Chat was removed from Tezlify, but WhatsApp could not be notified. It may still appear on your phone and could come back on the next sync.',
     linkPreviewOpen: 'Open link',
     documentOpen: 'Open',
     documentDownload: 'Download',

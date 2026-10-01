@@ -448,7 +448,14 @@ export class WhatsAppRepository {
    */
   static async deleteConversation(
     conversationId: number,
-  ): Promise<{ id: number; deleted: boolean; messages_deleted: number; reactions_deleted: number }> {
+  ): Promise<{
+    id: number;
+    deleted: boolean;
+    messages_deleted: number;
+    reactions_deleted: number;
+    remote_deleted: boolean;
+    remote_error: string | null;
+  }> {
     return WhatsAppApi.deleteConversation(conversationId);
   }
 }
