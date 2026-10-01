@@ -114,4 +114,6 @@ failure is pre-existing by stashing only the source and re-running), `esbuild-fr
 `fastapi-response-model-silent-field-drop`, `bootstrap-model-registration-parity` (a hand-provisioned test
 DB must import **every** model module, not just `app/models/`, or tables are silently absent and unrelated
 tests die on "no such table"), `tezlify-push-verification-gate` (the exact 3-suite pre-push sequence + the
-sandbox traps that fake a signal).
+sandbox traps that fake a signal), `memory-index-truncation-recovery` (this index is injected every session
+and is **silently truncated** past its ceiling — relocate detail to `reference/`, verify presence **and**
+leak, and never `grep "\|"` for the check).
