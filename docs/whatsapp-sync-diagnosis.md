@@ -427,6 +427,22 @@ altında görünür (`runs`, `pending_at_least`, `last_deferred`, `still_strande
 son tur zamanları). Böylece "bekleyen iş var mı" sorusu kabuk komutu gerektirmez;
 operatörün işi yalnızca ölçüm kaldığında telefonu eline almak olur.
 
+### Yayın 4 (`6b35eaa`) — kilit, toplayıcı ve periyodik süpürme canlıda
+
+| Kanıt | Ölçüm |
+|---|---|
+| yayındaki commit | `6b35eaa…` — `.deployed-commit` ve host HEAD birebir |
+| container kodu | `main.py` süpürme başlangıcı + `health` bloğu; modülde `_merge_lease` / `collect_stranded_lid_messages` |
+| startup | **0** traceback; süpürme kendi kendine başladı: `[SWEEP] … aralık=900s, ilk tur=60s, limit=200` |
+| **periyodik tur gerçekten koştu** | `/health` → `runs=1`, `last_started_at 12:27:34` (başlangıçtan tam 60 sn sonra), `last_finished_at 12:27:34.94`, `pending_at_least=0`, `last_error=null` |
+| **lease karşılıklı dışlama (üretim PG)** | aynı anda ikinci alma denemesi **False**; bırakma sonrası kalan lease satırı **0** |
+| iki fazlı rapor şekli | `splits{scanned,merged,deferred,remaining_at_least}` + `stranded{scanned,merged,moved_unique_total,still_stranded}` üretimde hatasız koştu |
+| log kanıtı (host, venv yok) | sunucuda `sqlalchemy` **yok** (lazy-import tasarımının kanıtı) ama `--capture-logs` koştu: 150 gateway + 119 backend satırı yapılandırılmış kanıta çevrildi, tüm kalıp sayıları `0` |
+
+`merged=0` / `scanned=0` yine **beklenen**: üretimde birleştirilecek hayalet yok.
+Kanıtlanan şey mekanizmaların **çalışır durumda ve görünür** olduğudur: periyodik tur,
+karşılıklı dışlayan lease, iki fazlı rapor ve tek komutla log kanıtı.
+
 ## Kalan dürüstlük payı
 
 **Boot adımı ölçülemediği yerde iddia etmez.** Üretimde hayalet LID kontak/sohbet
