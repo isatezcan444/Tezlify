@@ -194,6 +194,22 @@ ghost contacts — the bottleneck was the material, not the query. A single `0` 
 `whatsapp_private.lid_mappings` in PG, plain `lid_mappings` in SQLite. Startup order makes this safe
 (`ensure_whatsapp_gateway_private_schema` runs before the purge).
 
+**Deferring is not merging — and the fix belongs where both callers can reach it.** Phase 7 stopped the
+purge from deleting bridged ghosts, but nothing merged them at boot, so the honest state was "not lost,
+yet not repaired". The blocker was architectural: the merge lived as an orchestrator *method*, and
+`core/migrations.py` cannot import the service layer. Moving the body into
+`services/whatsapp/reconciliation.py` and leaving a thin delegating method — injecting the
+orchestrator's own mockable helpers — made one implementation reachable from the live path, the boot
+step, and the repair script. A test asserting the three references are the *same object* (`is`) pins
+that; a duplicated body would drift silently. Keep the trigger in `main.py` (right after the purge)
+rather than inside the migration module: the migration module stays service-free.
+
+**A merge that archives must exclude archived rows from its candidate query, or it is not
+idempotent.** The merge archives the LID conversation instead of deleting it, so "ghost contact +
+conversation exists" stays true forever. Every restart would re-process the same pairs and report
+`merged=N` again, and `remaining` would never shrink — a moving-but-stuck queue. The archived filter
+is what makes the second boot an honest `scanned=0`.
+
 **An assertion about the whole table is a trap when the test DB persists.** `tezlify.db` is a file
 that survives between runs, and `+905551112233` is a fixture phone shared by ~17 test files. An
 assertion phrased "this phone exists nowhere" fails on another file's residue instead of on a

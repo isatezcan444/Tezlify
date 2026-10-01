@@ -50,6 +50,9 @@ from backend.app.services.whatsapp.identity import (
 from backend.app.services.whatsapp.orchestration.messaging import (
     serialize_message as _serialize_message,
 )
+from backend.app.services.whatsapp.reconciliation import (
+    merge_split_conversation as _merge_split_conversation,
+)
 from backend.app.services.whatsapp.preview_normalization import (
     as_naive_utc as _as_naive_utc,
     build_last_message_summary,
@@ -989,104 +992,27 @@ class WhatsAppEventOrchestrator:
         phone_jid: str,
         session_id: Optional[int] = None,
     ) -> Optional[Conversation]:
-        get_conversation_lock = self._get_helper("_get_conversation_lock", None)
-        lid_phone = f"jid:{lid_jid}" if not str(lid_jid).startswith("jid:") else str(lid_jid)
-        canonical_phone = _contact_phone_for_jid(phone_jid)
+        """Canlı yol: `lid_mapped` öğrenildiğinde bölünmüş sohbeti birleştirir.
 
-        cres = await db.execute(
-            select(Contact).where(
-                Contact.phone_e164.in_([lid_phone, canonical_phone]),
-                get_user_filter(Contact.user_id, user_id),
-            )
+        Gövde `services/whatsapp/reconciliation.py`'ye taşındı: aynı birleştirme
+        boot adımı ve onarım işi tarafından da çağrılır ve TEK bir uygulama
+        olmalıdır. Burada yalnızca orchestrator'a özgü, mock'lanabilir yardımcılar
+        (`_upsert_contact`, `_ensure_conversation`, kilit) enjekte edilir.
+        """
+        return await _merge_split_conversation(
+            db,
+            user_id,
+            lid_jid,
+            phone_jid,
+            session_id,
+            upsert_contact=self._get_helper("_upsert_contact", self._upsert_contact),
+            ensure_conversation=self._get_helper(
+                "_ensure_conversation", self._ensure_conversation
+            ),
+            # Servis katmanı yoksa (boot/onarım) paylaşılan depo kilidi devreye
+            # girer; eskiden bu dalda kilit hiç alınmıyordu.
+            lock_factory=self._get_helper("_get_conversation_lock", None),
         )
-        contacts = {c.phone_e164: c for c in cres.scalars().all()}
-        lid_contact = contacts.get(lid_phone)
-        canonical_contact = contacts.get(canonical_phone)
-
-        if not lid_contact:
-            return None
-        if not canonical_contact:
-            upsert_contact = self._get_helper("_upsert_contact", self._upsert_contact)
-            canonical_contact = await upsert_contact(db, user_id, phone_jid, lid_contact.display_name, None)
-
-        # Merge avatar if lid contact has it and canonical does not
-        lid_attrs = lid_contact.custom_attributes or {}
-        canon_attrs = canonical_contact.custom_attributes or {}
-        if lid_attrs.get("avatar_url") and not canon_attrs.get("avatar_url"):
-            canon_attrs["avatar_url"] = lid_attrs["avatar_url"]
-            canonical_contact.custom_attributes = dict(canon_attrs)
-            await db.flush()
-
-        conv_res = await db.execute(
-            select(Conversation).where(
-                Conversation.contact_id.in_([lid_contact.id, canonical_contact.id]),
-                get_user_filter(Conversation.user_id, user_id),
-                *(
-                    [Conversation.session_id == session_id]
-                    if session_id is not None
-                    else []
-                ),
-            )
-        )
-        convs = {c.contact_id: c for c in conv_res.scalars().all()}
-        legacy_conv = convs.get(lid_contact.id)
-        canonical_conv = convs.get(canonical_contact.id)
-
-        if not legacy_conv:
-            return canonical_conv
-        if not canonical_conv:
-            ensure_conversation = self._get_helper("_ensure_conversation", self._ensure_conversation)
-            canonical_conv = await ensure_conversation(
-                db, user_id, phone_jid, session_id=legacy_conv.session_id
-            )
-
-        if legacy_conv.id == canonical_conv.id:
-            return canonical_conv
-
-        ranks = {"PENDING": 0, "FAILED": 0, "SENT": 1, "DELIVERED": 2, "READ": 3, "RECEIVED": 4}
-
-        async def _do_reconciliation():
-            mres = await db.execute(
-                select(Message).where(Message.conversation_id.in_([legacy_conv.id, canonical_conv.id]))
-            )
-            all_msgs = list(mres.scalars().all())
-            canonical_wa_ids = {
-                m.wa_message_id: m for m in all_msgs if m.conversation_id == canonical_conv.id and m.wa_message_id
-            }
-
-            for msg in all_msgs:
-                if msg.conversation_id == legacy_conv.id:
-                    if msg.wa_message_id and msg.wa_message_id in canonical_wa_ids:
-                        canon_msg = canonical_wa_ids[msg.wa_message_id]
-                        if ranks.get(msg.status.value, 0) > ranks.get(canon_msg.status.value, 0):
-                            canon_msg.status = msg.status
-                            canon_msg.delivered_at = canon_msg.delivered_at or msg.delivered_at
-                            canon_msg.read_at = canon_msg.read_at or msg.read_at
-                    else:
-                        msg.conversation_id = canonical_conv.id
-
-            canonical_conv.unread_count = (canonical_conv.unread_count or 0) + (legacy_conv.unread_count or 0)
-
-            if legacy_conv.last_message_at and (
-                canonical_conv.last_message_at is None or legacy_conv.last_message_at > canonical_conv.last_message_at
-            ):
-                canonical_conv.last_message_at = legacy_conv.last_message_at
-                if legacy_conv.last_message_preview:
-                    canonical_conv.last_message_preview = legacy_conv.last_message_preview
-
-            legacy_conv.status = ConversationStatus.ARCHIVED
-            legacy_conv.is_archived = True
-            legacy_conv.unread_count = 0
-            legacy_conv.archived_at = datetime.utcnow()
-
-            await db.commit()
-            await db.refresh(canonical_conv)
-            return canonical_conv
-
-        if get_conversation_lock is not None:
-            async with get_conversation_lock(user_id, legacy_conv.id), get_conversation_lock(user_id, canonical_conv.id):
-                return await _do_reconciliation()
-        return await _do_reconciliation()
 
     async def _heal_lid_contact_identity(
         self,

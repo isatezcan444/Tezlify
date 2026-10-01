@@ -43,6 +43,7 @@ from backend.app.core.migrations import (
 )
 from backend.app.core.seed import seed_demo_data_if_empty
 from backend.app.services.admin.ops_service import init_ops_state
+from backend.app.services.whatsapp.reconciliation import merge_deferred_lid_ghosts
 from backend.app.models.blacklist import ScraperJob, ScraperJobStatus
 from backend.app.models.campaign import Campaign, CampaignStatus
 
@@ -134,6 +135,11 @@ async def lifespan(app: FastAPI):
             f"uq_msg_conv_wa_message_id={wa_unique_status}"
         )
     await purge_raw_jid_identity_data(engine)
+    # Purge, köprüsü BİLİNEN hayaletleri silmez, ERTELER (mesaj kaybı olmasın
+    # diye). Erteleme birleştirme değildir: burada, onarım işiyle AYNI
+    # birleştirme mantığıyla canonical sohbete taşınırlar. Sınırlıdır ve
+    # startup'ı düşürmez.
+    await merge_deferred_lid_ghosts(engine)
     await backfill_phone_sender_names(engine)
     await purge_degenerate_phone_contacts(engine)
     await backfill_whatsapp_last_message_previews(engine)

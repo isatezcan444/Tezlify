@@ -1202,7 +1202,10 @@ async def purge_raw_jid_identity_data(engine: AsyncEngine) -> None:
     onarım işi (`scripts/diagnostics/whatsapp_lid_split_repair.py`) onları
     canonical sohbete TAŞIR. Burada silmek onarımın malzemesini yok eder ve
     geri getirilemez veri kaybı olur — kullanıcı için "mesajlarım kayboldu".
-    Ertelenen satırlar silinmez; onarım işi birleştirene kadar dururlar.
+    Erteleme birleştirme DEĞİLDİR: bu fonksiyon yalnızca silmekten vazgeçer.
+    Birleştirmeyi hemen ardından çalışan `merge_deferred_lid_ghosts`
+    (services/whatsapp/reconciliation.py) yapar — canlı yol ve onarım işiyle
+    AYNI mantık. Sınır (`limit`) yüzünden artan kalırsa onarım işi devam ettirir.
 
     Idempotenttir; tekrar çalıştırma hiçbir şey yapmaz. Hata durumunda
     migration loglanır ama startup'ı düşürmez (orijinal purge deseniyle aynı

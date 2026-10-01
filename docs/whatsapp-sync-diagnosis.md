@@ -191,6 +191,7 @@ zaman) denetim izi olarak loglanır; verinin kendisi tutulmaz.
 | 6 | Okunmamış sayacı yalnızca **yayınlanan** mesajı sayar | **bitti** | `whatsapp-gateway/scripts/test-unread-count-authority.mjs` 6/6; eski sıralama geri konunca A1 kırmızı, rozet kontrolleri yeşil |
 | 5b | QR penceresindeki olaylar sınırlı bellekte tutulur, promosyonda kalıcı kuyruğa akar | **bitti** | `whatsapp-gateway/scripts/test-ephemeral-outbox-gate.mjs` (sözleşme güçlendirildi: `1 !== 2`); boşaltma devre dışı → kırmızı |
 | 7 | Startup purge köprüsü bilinen bölünmeyi **silmez, erteler** | **bitti** | `backend/tests/test_whatsapp_purge_defers_known_bridge.py` 3/3; erteleme kapatılınca **2 kırmızı, kontrol yeşil** |
+| 8 | Startup'ta ertelenen LID hayaleti **gerçekten birleştirilir** (tek uygulama) | **bitti** | `backend/tests/test_whatsapp_boot_lid_merge.py` 9/9; boot birleştirmesi kapatılınca **3 kırmızı, kontroller yeşil**; paylaşılan sembol atlanınca **2 kırmızı** |
 
 ### Faz 7 — onarımı besleyen malzeme purge tarafından yok ediliyordu
 
@@ -337,14 +338,45 @@ kullanıcıya telefonun da temizlendiğini sanmasına yol açardı.
   sessizce eski "hepsini sil" davranışına düşmüyor. (SQLite'ta geçen bir sorgu
   Postgres'te patlayabilirdi; bu ölçüm onu dışlıyor.)
 
+### Faz 8 — ertelemeyi birleştirmeye çeviren adım
+
+Faz 7'nin dürüst boşluğu şuydu: **erteleme birleştirme değildir.** Köprüsü bilinen hayalet
+artık silinmiyordu ama boot'ta canonical sohbete de taşınmıyordu; operatör onarımı
+çalıştırana kadar isimsiz bir sohbet olarak duruyordu. Enger, birleştirmenin
+`reconcile_legacy_split_conversation` adlı bir orchestrator **metodu** olmasıydı: onu
+`core/migrations.py`'den çağırmak servis katmanını startup migration'ına bağlar
+(döngüsel import riski).
+
+Çözüm, mantığı oradan **çıkarmak** oldu — `services/whatsapp/reconciliation.py`:
+
+| Çağrı yeri | Nasıl |
+|---|---|
+| canlı yol (`lid_mapped`) | orchestrator metodu artık ince bir **delegasyon**; kendi mock'lanabilir `_upsert_contact` / `_ensure_conversation` / kilit yardımcılarını enjekte eder |
+| **boot** | `main.py`, `purge_raw_jid_identity_data`'dan hemen sonra `merge_deferred_lid_ghosts(engine)` çağırır |
+| onarım işi | `scripts/diagnostics/whatsapp_lid_split_repair.py` aynı fonksiyonu çağırır |
+
+Üç yer de **aynı nesneyi** çağırır (kapı bunu `is` ile çiviler); bir kopya mantık zamanla
+ayrışırdı. Modül servis katmanına bağlı değildir (yalnızca model + depo + saf kimlik
+sabitleri); kilit zaten depo katmanındaki paylaşılan `get_conversation_lock`'tur.
+
+İki sessiz tuzak kapatıldı:
+
+- **İdempotans.** Birleştirme LID sohbetini arşivler ama silmez; aday sorgusu
+  arşivlenmiş satırı **dışlar**. Onsuz her restart aynı çiftleri yeniden "birleştirilmiş"
+  diye raporlar, `limit` yüzünden "kalan" sayısı hiç azalmazdı.
+- **Sınır + dürüstlük.** Koşu `limit` (boot 200) ile sınırlıdır; artan iş
+  `remaining_at_least` olarak söylenir. Hata boot'u **düşürmez** (fail-open, `error`
+  alanıyla raporlanır) — kimlik birleştirmesi şema bütünlüğüne dokunmaz.
+- **`--user-id` sessizce boş dönmez:** `user_id` sütunu `Uuid` olduğu için kayıt
+  dash'siz olabilir; sorgu artık tireli ve dash'siz iki biçimi de kabul eder.
+
 ## Kalan dürüstlük payı
 
-**Erteleme birleştirme değildir.** Köprüsü bilinen hayalet artık silinmiyor ama startup'ta
-**birleştirilmiyor da**: `reconcile_legacy_split_conversation` bir orchestrator **metodu** ve
-onu `core/migrations.py`'den çağırmak servis katmanını startup migration'ına bağlardı
-(döngüsel import riski). Boot'ta birleştirme **bilinçli olarak** yazılmadı; ertelenen satırlar
-operatör `scripts/diagnostics/whatsapp_lid_split_repair.py --apply` çalıştırana kadar
-nameless bir sohbet olarak durur. Silinmiş olmaktan iyidir, ama birleştirilmiş de değildir.
+**Boot adımı ölçülemediği yerde iddia etmez.** Üretimde hayalet LID kontak/sohbet
+**0/0** olduğu için boot birleştirmesi orada **yapacak iş bulmaz** ve `merged=0` der —
+bu, kapının kanıtladığı sözleşmenin (tohumlanmış bölünmeyi mesaj kaybetmeden taşıma)
+yokluğu değil, **malzemenin yokluğudur**. Gerçekleşen bir birleştirmenin canlı kanıtı
+için malzemeyi onarım işiyle üretmek gerekir.
 
 **Gerçek telefon gerektiren iki doğrulama yapılmadı** — ve ölçülmüş gibi yapmıyorum:
 

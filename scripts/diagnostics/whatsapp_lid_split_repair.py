@@ -14,10 +14,16 @@ kişinin telefon JID'i altında yeniden oluşması beklenirdi. Bu, köprüsü za
 bilinen bir bölünme için gereksiz veri kaybıdır — mesajlar geri gelmezse
 kullanıcı için "mesajlarım kayboldu" demektir.
 
-Bu iş onun yerine `reconcile_legacy_split_conversation`'ı kullanır: mesajları
-`conversation_id` güncelleyerek **taşır** (aynı `wa_message_id` varsa durum
-rütbesi yüksek olan kazanır), okunmamışı toplar, eski sohbeti arşivler. Hiçbir
-satır silinmez.
+Aynı birleştirme (tek uygulama, bkz. `services/whatsapp/reconciliation.py`) artık
+**boot'ta** da çalışır: `purge_raw_jid_identity_data` ertelediği hayaletleri
+`merge_deferred_lid_ghosts` birleştirir. Bu iş onun manuel/ölçekli karşılığıdır ve
+şu durumlar için hâlâ gerekir: boot sınırı (`limit`) yüzünden bekleyen kalanlar,
+bir oturumun köprüsü öğrenilmeden önce kalıcılaşmış ve gateway'in artık yeniden
+öğrenmediği bölünmeler, ve boot adımının loglamadığı ayrıntılı kanıt.
+
+Birleştirme semantiği: mesajları `conversation_id` güncelleyerek **taşır** (aynı
+`wa_message_id` varsa durum rütbesi yüksek olan kazanır), okunmamışı toplar, eski
+sohbeti arşivler. Hiçbir satır silinmez.
 
 Ne yapmaz
 ---------
@@ -44,94 +50,22 @@ import logging
 import sys
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import select, text
+from sqlalchemy import select
 
 from backend.app.core.database import AsyncSessionLocal
 from backend.app.models.contact import Contact
 from backend.app.models.conversation import Conversation
 from backend.app.models.message import Message
 from backend.app.services.whatsapp.identity import contact_phone_for_jid
-from backend.app.services.whatsapp.orchestration.events import WhatsAppEventOrchestrator
+from backend.app.services.whatsapp.reconciliation import (
+    DEFAULT_REPAIR_LIMIT,
+    candidate_lid_split_pairs,
+    merge_split_conversation,
+)
 
 logger = logging.getLogger("lid_split_repair")
 
-DEFAULT_LIMIT = 50
-
-
-def _is_postgres(engine) -> bool:
-    try:
-        return engine.dialect.name == "postgresql"
-    except Exception:  # noqa: BLE001
-        return False
-
-
-def _lid_table(postgres: bool) -> str:
-    # Gateway bu tabloyu Postgres'te özel şemada, SQLite'ta düz adla açar.
-    return "whatsapp_private.lid_mappings" if postgres else "lid_mappings"
-
-
-def _sessions_table(postgres: bool) -> str:
-    return "public.whatsapp_sessions" if postgres else "whatsapp_sessions"
-
-
-async def _candidate_pairs(db, *, postgres: bool, user_id: Optional[str], limit: int) -> List[Dict[str, Any]]:
-    """Köprüsü BİLİNEN ve hâlâ hayalet LID kişisine bağlı sohbeti olan çiftler.
-
-    Yalnızca her iki ucu da kanıtlanmış çiftler döner: eşleme tablosunda kaydı
-    olmayan bir LID aday DEĞİLDİR (kimliği tahmin etmek yerine atlarız).
-    """
-    where_user = " AND ws.user_id = :user_id" if user_id else ""
-    rows = (
-        await db.execute(
-            text(
-                f"""
-                SELECT DISTINCT lm.lid_jid, lm.phone_jid, ws.user_id
-                FROM {_lid_table(postgres)} lm
-                JOIN {_sessions_table(postgres)} ws ON ws.gateway_id = lm.session_id
-                WHERE lm.phone_jid IS NOT NULL AND lm.phone_jid <> ''
-                  AND lm.lid_jid LIKE '%@lid'
-                  {where_user}
-                ORDER BY lm.lid_jid
-                LIMIT :lim
-                """
-            ),
-            {"lim": limit, "user_id": user_id} if user_id else {"lim": limit},
-        )
-    ).all()
-
-    pairs: List[Dict[str, Any]] = []
-    for lid_jid, phone_jid, owner in rows:
-        lid_phone = f"jid:{lid_jid}"
-        ghost = (
-            await db.execute(
-                select(Contact.id, Contact.phone_e164).where(
-                    Contact.phone_e164 == lid_phone,
-                    Contact.user_id == owner,
-                )
-            )
-        ).first()
-        if not ghost:
-            continue
-        legacy_conv = (
-            await db.execute(
-                select(Conversation.id).where(
-                    Conversation.contact_id == ghost.id,
-                    Conversation.user_id == owner,
-                )
-            )
-        ).first()
-        if not legacy_conv:
-            continue
-        pairs.append(
-            {
-                "user_id": str(owner),
-                "lid_jid": str(lid_jid),
-                "phone_jid": str(phone_jid),
-                "lid_contact_id": ghost.id,
-                "lid_conversation_id": legacy_conv.id,
-            }
-        )
-    return pairs
+DEFAULT_LIMIT = DEFAULT_REPAIR_LIMIT
 
 
 async def repair_lid_splits(
@@ -150,15 +84,11 @@ async def repair_lid_splits(
     if limit <= 0:
         raise ValueError("limit pozitif olmali")
 
-    orchestrator = WhatsAppEventOrchestrator()
     evidence: List[Dict[str, Any]] = []
     skipped: List[Dict[str, Any]] = []
 
     async with AsyncSessionLocal() as db:
-        postgres = _is_postgres(db.bind)
-        pairs = await _candidate_pairs(
-            db, postgres=postgres, user_id=user_id, limit=limit
-        )
+        pairs = await candidate_lid_split_pairs(db, user_id=user_id, limit=limit)
         scanned = len(pairs)
 
         for pair in pairs[:limit]:
@@ -212,7 +142,9 @@ async def repair_lid_splits(
                 ).scalars().all()
             )
 
-            merged = await orchestrator.reconcile_legacy_split_conversation(
+            # Canlı yol, boot adımı ve bu iş AYNI birleştirmeyi çağırır (tek
+            # uygulama): ayrı bir kopya zamanla ayrışırdı.
+            merged = await merge_split_conversation(
                 db, owner, lid_jid, phone_jid, session_id=None
             )
             if merged is None:
