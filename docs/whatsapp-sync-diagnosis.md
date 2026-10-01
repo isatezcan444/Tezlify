@@ -397,7 +397,11 @@ bu, kapının kanıtladığı sözleşmenin (tohumlanmış bölünmeyi mesaj kay
 yokluğu değil, **malzemenin yokluğudur**. Gerçekleşen bir birleştirmenin canlı kanıtı
 için malzemeyi onarım işiyle üretmek gerekir.
 
-**Gerçek telefon gerektiren iki doğrulama yapılmadı** — ve ölçülmüş gibi yapmıyorum:
+**Gerçek telefon gerektiren iki doğrulama yapılmadı** — ve ölçülmüş gibi yapmıyorum.
+Ölçümün kendisi artık elle tutulur bir kayda bağlandı: adım adım protokol
+[`whatsapp-handset-measurement-protocol.md`](whatsapp-handset-measurement-protocol.md)
+ve kanıt aracı `scripts/diagnostics/whatsapp_handset_measure.py` (önce/sonra
+snapshot + `--diff` hükmü; hüküm satırı olmadan "ölçüldü" denmez).
 
 1. **Rozetin telefon okumasıyla düşmesi** (Faz 1 + 6).
 2. **Tezlify'dan silinen sohbetin telefondan da gitmesi** (Faz 2 giden).
