@@ -26,6 +26,16 @@ about to touch production, deploy, or run the test suites. Invariants live in
   `POST /sessions/restore` (gateway, `X-Gateway-Secret`, no body) re-attaches from persisted creds with
   **no QR**. `listRestorableSessions()` only returns sessions active in both `gateway_sessions` and
   `whatsapp_sessions` with stored credentials — check that count before firing it.
+- **Admin ops log clearing TRUNCATES the container log file in place.** Docker has no clear-logs API, so
+  `clear_service_logs` resolves the path from `docker inspect --format {{.LogPath}}` — never from caller
+  input: the container NAME passes a `LOG_SERVICES` allowlist and the path comes only from `inspect` — and
+  opens it `"wb"`. **Truncate, never delete:** the daemon holds an open descriptor and keeps appending to the
+  same inode, so truncation frees space immediately and `docker logs` keeps working, whereas deleting sends
+  new output to an unlinked inode (`docker logs` shows nothing until recreate, and the space is not
+  reclaimed). Proven by asserting the **inode survives** (`os.stat(path).st_ino`). This is why
+  `docker-compose.prod.yml` mounts `/var/lib/docker/containers:rw` — an added privilege, justified in-file
+  like the existing `docker.sock` grant. Live 2026-10-01: `caddy` 500 → 0 lines, **192.1 KB** freed, audit
+  entry written, all four services writable; `db` holds ~89.5 MB.
 - Local sandbox sets `HTTP_PROXY/HTTPS_PROXY=http://127.0.0.1:59508`, which tunnels `app.tezlify.com`
   into a 502 — run API probes **from the production host** (Caddy is local there). Playwright exists only
   in the repo `venv` (`venv/bin/python`).
@@ -59,7 +69,7 @@ per build.
 - Vite's `prepareOutDir` calls `emptyDir` on `dist/assets`; the sandbox's bulk-delete guard (>50 files)
   makes that fail and it *looks* like a build error. `rm -rf dist` first.
 
-## Deploy state (2026-09-26)
+## Deploy state (2026-09-26; refreshed 2026-10-01)
 
 - Prod `/opt/tezlify` is a **git checkout deliberately left dirty** at `359fe6d` with the deployed patches
   applied as uncommitted working-tree changes. **That dirt is the deploy marker** — never run
@@ -83,10 +93,16 @@ per build.
   09:34:56 on 2026-09-26 (id 86, the user's own number `+905413749073`) rebuilt all 113 conversation rows
   and dropped `messages` 529 → 44. Not a code bug — a re-link — but it invalidates any before/after
   comparison across that timestamp.
+- **2026-10-01:** deployed `7370c18` — `48fc52e` (ops Logs-tab "clear all" button) plus `7370c18` (the
+  `wa_merge_locks` lock-table fix, §N). `RELEASE_EXIT=0` ("SÜRÜM TAMAM: 7370c18"), frontend hash parity,
+  `/health` OK. The `/var/lib/docker/containers` mount is live (`rw=true`) and
+  `POST /api/v1/admin/ops/logs/clear` is present in the live OpenAPI.
 
 ## Verification baselines
 
-- Last run (2026-09-26): backend **1169 pass / 4 skip / 0 fail**; gateway all **8** `npm test` scripts
+- Last run (2026-10-01): backend **1423 pass / 4 skip / 0 fail**; gateway `npm test` **42 PASS** (exit 0);
+  frontend `npm run build` exit 0, `tsc --noEmit` clean, i18n parity **8/8** keys in both locales.
+- Previous run (2026-09-26): backend **1169 pass / 4 skip / 0 fail**; gateway all **8** `npm test` scripts
   pass (`test-system-content-preview.mjs` 14 checks, `test-contact-cache.mjs` 37,
   `test-contact-hydration.mjs` 26); frontend `verify:logic` **45/45** (incl. the two i18n checks),
   `tsc --noEmit` clean, `npm run build` exit 0.

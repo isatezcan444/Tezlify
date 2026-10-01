@@ -412,3 +412,122 @@ says nothing. **The gateway used to violate this in all four writers** (`socket-
   outright**, and it was already broken at HEAD; and `_run_bulk_message_sync` did not forward
   `recovery_pass`/`only_conv_ids`. When adding a parameter to an orchestrator method, grep for a shim of
   the same name and mirror the signature exactly.
+
+## M. Outbound chat delete — the two app-state collections are NOT the same collection
+
+- **`chatModify({ delete: true, lastMessages })` writes a `deleteChatAction` into `regular_high`
+  (`apiVersion: 6`), whereas read/archive (`markChatAsReadAction`, `archiveChatAction`) write to
+  `regular_low`.** Measured on prod: `regular_high` was still advancing while `regular_low` was frozen, so
+  the outbound delete is **independent** of the app-state fault — never assume one fix covers both
+  symptoms, and never conclude "app-state is dead" from one frozen collection.
+- **`lastMessages` is validated by Baileys `getMessageRange` and THROWS instead of degrading.** Every entry
+  needs `key.remoteJid`, `key.id` and a convertible `messageTimestamp`; a group entry with `fromMe: false`
+  also needs `participant`. Ship a **one-element** list (the newest message) — the multi-element ordering is
+  ambiguous because `lastMessageTimestamp` is read from the LAST element while the docstring says
+  "reverse chronologically".
+- **Clearing the in-memory chat caches on a successful remote delete is load-bearing:** leaving them lets the
+  next chat discovery re-create the chat, i.e. the delete undoes itself. On failure, do NOT clear them — a
+  chat we failed to delete must not vanish from our own view.
+
+## N. Identity + unread — three separate mechanisms inside "the sync looks broken"
+
+**"Owner unresolved" means EARLY, not garbage.** `resolve_event_owner_and_session` looks the session up by
+`gateway_id`; during a QR pairing the `whatsapp_sessions` row does not exist yet, so it raises
+`EventOwnerUnresolved` and the dispatch path used to discard the event. That single drop starved the
+**entire** LID identity repair (`_heal_lid_contact_identity` + `reconcile_legacy_split_conversation`, whose
+only caller is the `lid_mapped` handler) — the machine existed and was never fed. Events are now held in a
+bounded, TTL'd queue and replayed when a later event for the same gateway session resolves an owner. Before
+blaming a missing mechanism, check whether the existing one is merely starved of input.
+
+**`WAMessageKey.remoteJidAlt` / `participantAlt` carry the same entity's other address.** Reading them files
+a message under its phone identity at INGEST time. Without it, a LID-addressed message is held (`lidHold`)
+and only emitted if a mapping event arrives later — so during a first pairing, when no mapping is learned
+yet, the messages the user can see on their phone are exactly the held ones. When deriving a LID→PN pair,
+validate the phone side strictly: `asPn` passes anything containing `@` through, so a GROUP jid would be
+accepted and would poison `lidToJid` with a LID→group mapping.
+
+**A local counter must count only what was PUBLISHED.** The gateway incremented its in-memory
+`unread_count` for every inbound message, including held ones it never emitted, so its list disagreed with
+the backend (measured: gateway 2 / DB 1). The mismatch is a second contradictory truth, not a richer one.
+Note what was deliberately NOT done: publishing the increment so the backend adopts it changes who OWNS the
+counter and would require redesigning the downward-only `should_apply_unread_count` gate. Fix only the wrong
+part.
+
+**QR-window events skipping the durable outbox is not a bug.** The outbox has a `gateway_sessions` FK and an
+ephemeral pairing session has no row by design (PG 23503, ~24 logged failures/day), so durable storage is
+only promised for registered sessions.
+
+**A repair job can be starved by the cleanup that runs first.** Two mechanisms addressed the same LID split:
+`reconcile_legacy_split_conversation` MOVES the ghost's messages onto the canonical conversation, while the
+startup migration `purge_raw_jid_identity_data` DELETED the ghost, its conversation and its messages. The
+purge documented itself as cleaning *unresolved* LID ghosts but its SQL asked no question about the bridge —
+and the bridge is exactly what makes a row repairable. Measured in production: **208 known LID→phone
+bridges, 0 ghost contacts, 0 ghost conversations**, while the deploy report attributed `conversations
+449 → 447` to that same purge. The repair reported `0 candidates` forever because the purge always won the
+race. Before concluding a repair finds nothing to fix, verify its input still exists.
+
+**"0 results" is not evidence until each stage of the discovery query is measured.** The same run showed
+17300 `lid_mappings` rows (17288 `@lid`), 208 surviving a `whatsapp_sessions` JOIN, and 0 ghost contacts —
+the bottleneck was the material, not the query. A single `0` cannot distinguish "nothing to do" from "the
+query can never match".
+
+**Probe table existence WITHOUT running the query in Postgres.** A `try/except` around
+`SELECT 1 FROM some_table` does not work: the failed statement puts the transaction into the *aborted* state
+and every subsequent statement fails too. Use `to_regclass('schema.table')` (PG) or `sqlite_master` (SQLite)
+— both return NULL rather than raising. Also pick the table name by dialect: `whatsapp_private.lid_mappings`
+in PG, plain `lid_mappings` in SQLite. Startup order makes this safe
+(`ensure_whatsapp_gateway_private_schema` runs before the purge).
+
+**Deferring is not merging — and the fix belongs where both callers can reach it.** Phase 7 stopped the
+purge from deleting bridged ghosts, but nothing merged them at boot, so the honest state was "not lost, yet
+not repaired". The blocker was architectural: the merge lived as an orchestrator *method*, and
+`core/migrations.py` cannot import the service layer. Moving the body into
+`services/whatsapp/reconciliation.py` and leaving a thin delegating method — injecting the orchestrator's own
+mockable helpers — made one implementation reachable from the live path, the boot step, and the repair
+script. A test asserting the three references are the *same object* (`is`) pins that; a duplicated body would
+drift silently. Keep the trigger in `main.py` (right after the purge) rather than inside the migration
+module: the migration module stays service-free.
+
+**A merge that archives must exclude archived rows from its candidate query, or it is not idempotent.** The
+merge archives the LID conversation instead of deleting it, so "ghost contact + conversation exists" stays
+true forever. Every restart would re-process the same pairs and report `merged=N` again, and `remaining`
+would never shrink — a moving-but-stuck queue. The archived filter is what makes the second boot an honest
+`scanned=0`.
+
+**In-process locks do not protect a multi-process repair.** `asyncio.Lock` keyed by conversation only
+serialises callers inside one process, but the live merge runs in the API process while boot and the repair
+job are separate processes. Two concurrent merges read the same message set, both report success, unread is
+added twice, and a message that arrived mid-merge is left in the archived conversation — invisible to the
+canonical read path. A DB-row **lease** (TTL, stealable once expired so a dead process cannot wedge it) fixes
+it: if the lease cannot be taken, the merge DEFERS, and deferral is safe precisely because the LID
+conversation stays unarchived and therefore stays a candidate for the next sweep. Report deferrals as
+`deferred`, never as `merged`.
+
+**A process-global readiness cache keyed too coarsely silently disables the lock it guards.** The
+`_MERGE_LOCK_TABLE_READY` guard was keyed by **dialect only** (`"postgresql" if postgres else "sqlite"`), so
+the first SQLite DB to create `wa_merge_locks` marked *all* SQLite DBs ready and every later one **skipped the
+DDL** — the merge lock was never acquired, re-enabling exactly the race it exists to prevent, and the symptom
+surfaced far away as `no such table: wa_merge_locks` in unrelated tests. Fixed by keying on the resolved bind
+URL (`f"{dialect}:{url}"`, falling back to the bare dialect when the bind cannot be introspected). Any
+process-global "already initialised" flag must be keyed by the **identity of the resource**, not by a coarse
+family label.
+
+**A lock key must be normalised, or it protects nothing.** The lease key mixed a `Uuid` column that stores
+dash-less hex with a live path that passes the dashed form, so the two processes produced different keys for
+the same pair and the lock silently never contended. A test caught it only because the sweep merged while a
+lease was held in the test. Any coordination key derived from `user_id` must strip dashes (and normalise case)
+before use.
+
+**"I moved everything" is a claim; verify it before archiving.** A single move pass can miss a message that
+ingest wrote into the legacy conversation mid-merge. Re-read and move again (bounded passes), then MEASURE
+the leftovers (`stranded_unique`) before archiving and log an error if any remain. The same care applies to
+the residue that archiving itself creates: once the LID conversation is archived it drops out of the
+candidate set, so a separate collector must look for its leftover messages — and it must exclude dead
+duplicates (rows whose `wa_message_id` already exists canonically) or every sweep reports the same fake work
+forever.
+
+**An assertion about the whole table is a trap when the test DB persists.** `tezlify.db` is a file that
+survives between runs, and `+905551112233` is a fixture phone shared by ~17 test files. An assertion phrased
+"this phone exists nowhere" fails on another file's residue instead of on a regression — and did,
+intermittently. Scope assertions to the test's own user. Related: writers disagree on whether `user_id` keeps
+its dashes, so a cleanup that deletes only one form leaves the row for the next run.
