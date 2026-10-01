@@ -41,6 +41,67 @@ export function asPn(v) {
   return v.endsWith('@c.us') ? `${v.slice(0, -'@c.us'.length)}@s.whatsapp.net` : v;
 }
 
+/**
+ * Strict LID side: must ALREADY be a LID jid.
+ *
+ * Deliberately not `asLid`, which appends `@lid` to any bare string. Here a
+ * bare number is not evidence of a LID and must not be promoted into one.
+ */
+function _asLidSide(v) {
+  if (typeof v !== 'string') return null;
+  const clean = v.replace(/^jid:/, '').trim();
+  return isLidJid(clean) ? clean : null;
+}
+
+/**
+ * Strict phone side: a real user jid, never a group or broadcast.
+ *
+ * The strictness is load-bearing. `asPn` passes anything containing `@`
+ * straight through, so a GROUP jid would be accepted as the "phone" half of a
+ * pair and would poison `store.lidToJid` with a LID→group mapping — after which
+ * every message from that LID would be filed under the group.
+ */
+function _asPhoneSide(v) {
+  if (typeof v !== 'string') return null;
+  const clean = v.replace(/^jid:/, '').trim();
+  if (!clean.includes('@')) return null;
+  if (isLidJid(clean)) return null;
+  if (clean.includes('@g.us')) return null;
+  if (isBroadcastOnlyJid(clean)) return null;
+  return clean.endsWith('@c.us')
+    ? `${clean.slice(0, -'@c.us'.length)}@s.whatsapp.net`
+    : clean;
+}
+
+/**
+ * (lid, phone) identity pairs carried on a message key as ALTERNATE addressing.
+ *
+ * Baileys exposes `remoteJidAlt` / `participantAlt` on `WAMessageKey`: the same
+ * entity's other address. When `remoteJid` is a LID the alt holds the phone jid,
+ * and vice versa.
+ *
+ * Reading them is what lets a message be filed under its phone identity at
+ * INGEST time instead of being held as a LID until some later mapping event
+ * arrives. That matters most during a first QR pairing, when no mapping has been
+ * learned yet and the message would otherwise be held indefinitely.
+ */
+export function lidPairsFromMessageKey(key) {
+  if (!key || typeof key !== 'object') return [];
+  const pairs = [];
+  const consider = (lidCandidate, phoneCandidate) => {
+    const lid = _asLidSide(lidCandidate);
+    const pn = _asPhoneSide(phoneCandidate);
+    if (lid && pn && lid !== pn) pairs.push([lid, pn]);
+  };
+  // Both orders on purpose: either field may be the LID one depending on how
+  // the message was addressed (PN-addressed messages still reveal the LID).
+  consider(key.remoteJid, key.remoteJidAlt);
+  consider(key.remoteJidAlt, key.remoteJid);
+  consider(key.participant, key.participantAlt);
+  consider(key.participantAlt, key.participant);
+  return pairs;
+}
+
 export function jidToPhone(jid) {
   if (!jid) return null;
   if (isLidJid(jid)) return null;

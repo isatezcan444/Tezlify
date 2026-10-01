@@ -7,6 +7,11 @@ export function createEventBridge({ backendWsUrl, sessionManager, eventOutbox = 
   const fallbackBuffer = [];
   const fallbackCapacity = 500;
   let fallbackDropped = 0;
+
+  // QR-window (ephemeral) event buffer. See `bufferForPairing`.
+  const pairingBuffers = new Map();
+  const pairingCapacity = 200;
+  const pairingSessionCap = 20;
   let backendSocket = null;
   let reconnectTimer = null;
   let retryTimer = null;
@@ -210,6 +215,98 @@ export function createEventBridge({ backendWsUrl, sessionManager, eventOutbox = 
     }
   }
 
+  /**
+   * Holds a durable event that was produced while the session had no
+   * `gateway_sessions` row yet.
+   *
+   * Why: the outbox has an FK to that table, and during a QR pairing the row is
+   * created only on promotion, so every INSERT for the window fails with PG
+   * 23503 (production logged ~24/day). Those events then took the best-effort
+   * path, which means a backend that was momentarily unreachable lost them
+   * outright — a real delivery gap, distinct from the "delivered but ownerless"
+   * case the backend's own replay queue now covers.
+   *
+   * Held events are flushed into the DURABLE queue the moment the session is
+   * registered, so promotion is what unblocks them. Bounded twice over (per
+   * session, and by session count) and every eviction is counted: a silent
+   * buffer is the same bug one layer down.
+   */
+  function bufferForPairing(sessionId, event) {
+    const key = String(sessionId);
+    let slot = pairingBuffers.get(key);
+    if (!slot) {
+      // Oldest session buffer evicted first; sessions are few, so this only
+      // fires if ephemeral sessions leak without ever being cleaned up.
+      if (pairingBuffers.size >= pairingSessionCap) {
+        const oldest = pairingBuffers.keys().next().value;
+        pairingBuffers.delete(oldest);
+        diagnostic('pairing_buffer_session_evicted', { capacity: pairingSessionCap });
+      }
+      slot = { items: [], dropped: 0 };
+      pairingBuffers.set(key, slot);
+    }
+    if (slot.items.length < pairingCapacity) {
+      slot.items.push(event);
+      return;
+    }
+    slot.dropped += 1;
+    if (slot.dropped === 1 || slot.dropped % 50 === 0) {
+      diagnostic('pairing_buffer_overflow', {
+        capacity: pairingCapacity,
+        dropped: slot.dropped,
+        event_type: String(event?.event || 'unknown'),
+      });
+    }
+  }
+
+  /**
+   * Moves a session's held QR-window events into the durable outbox.
+   *
+   * Called just before the first durable event of that session is enqueued, so
+   * the buffered events are written first and keep their original order.
+   */
+  async function flushPairingBuffer(sessionId) {
+    if (!eventOutbox) return 0;
+    const key = String(sessionId);
+    const slot = pairingBuffers.get(key);
+    if (!slot) return 0;
+    pairingBuffers.delete(key);
+    if (slot.dropped) {
+      diagnostic('pairing_buffer_flushed_with_losses', {
+        flushed: slot.items.length,
+        dropped: slot.dropped,
+      });
+    }
+    let flushed = 0;
+    for (const held of slot.items) {
+      try {
+        const durableEvent = await eventOutbox.enqueue(held);
+        sendLocal(durableEvent);
+        flushed += 1;
+      } catch (error) {
+        diagnostic('pairing_buffer_flush_failed', {
+          event_type: String(held?.event || 'unknown'),
+          error_code: error?.code || null,
+        });
+        deliverBestEffort(held);
+      }
+    }
+    if (flushed) await pumpOutbox();
+    return flushed;
+  }
+
+  function prunePairingBuffers() {
+    for (const key of [...pairingBuffers.keys()]) {
+      const live = sessionManager.getSession(key);
+      if (!live || live.ephemeral === false) {
+        // A registered session should have been flushed already; if it still
+        // has a buffer, its flush event never arrived. Drop it rather than hold
+        // memory for a session that can no longer promote.
+        pairingBuffers.delete(key);
+      }
+    }
+  }
+
   async function publish(event) {
     const sessionId = event?.gateway_session_id || event?.session_id;
     const session = sessionId ? sessionManager.getSession(String(sessionId)) : null;
@@ -228,6 +325,13 @@ export function createEventBridge({ backendWsUrl, sessionManager, eventOutbox = 
     // After promotion `session.ephemeral` flips to false and durable writes
     // resume on the next event.
     const skipDurable = Boolean(session?.ephemeral);
+
+    // Promotion is the unblocking signal: the row exists now, so anything held
+    // from the QR window can go to the durable queue — BEFORE this event, so
+    // the original order is preserved.
+    if (eventOutbox && !skipDurable && sessionId) {
+      await flushPairingBuffer(sessionId);
+    }
 
     const eventType = String(event?.event || event?.event_type || '');
     if (eventType === 'session_sync_progress') {
@@ -262,6 +366,16 @@ export function createEventBridge({ backendWsUrl, sessionManager, eventOutbox = 
       return;
     }
 
+    if (eventOutbox && skipDurable) {
+      // Durable event during the QR window: HELD, not best-effort only. Sending
+      // it now would be useless anyway (the backend cannot resolve an owner
+      // without the row) and would risk double delivery once it is flushed.
+      // `sendLocal` still keeps the in-process clients informed.
+      bufferForPairing(sessionId, event);
+      sendLocal(event);
+      return;
+    }
+
     deliverBestEffort(event);
   }
 
@@ -270,7 +384,10 @@ export function createEventBridge({ backendWsUrl, sessionManager, eventOutbox = 
   if (eventOutbox) {
     retryTimer = setInterval(() => { void pumpOutbox(); }, 10_000);
     void cleanupOutbox();
-    cleanupTimer = setInterval(() => { void cleanupOutbox(); }, 10 * 60 * 1000);
+    cleanupTimer = setInterval(() => {
+      void cleanupOutbox();
+      prunePairingBuffers();
+    }, 10 * 60 * 1000);
   }
 
   return {

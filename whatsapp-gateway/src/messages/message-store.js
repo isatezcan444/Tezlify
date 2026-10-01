@@ -51,6 +51,12 @@ export function createSessionStore({ sessionDir = null, sessionPhone = null, log
     avatarFetchAttemptedAt: createBoundedCache({ maxEntries: 10_000, ttlMs: 60 * 60 * 1000 }),
     rawMessagesByChat: new Map(), // jid -> Map<waMessageId, proto.IMessage>
     rawMessageCount: 0,
+    // App-state sync health. `true` ONLY after a resync demonstrably advanced a
+    // collection version file (see `readAppStateProgress`). A populated `chats`
+    // map is not evidence of app-state health: history sync fills it while
+    // `regular_low` can stay parked.
+    appStateHealthy: false,
+    _appStateRearmCount: 0,
   };
   if (sessionDir) {
     const contactCache = createContactCache({ sessionDir, logger, sessionPhone });

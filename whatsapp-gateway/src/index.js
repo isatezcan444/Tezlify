@@ -519,6 +519,15 @@ app.post('/sessions/:sessionId/conversations/:jid/read', withSession(async (req,
   res.json(result);
 }));
 
+// Delete a conversation on WhatsApp itself (deleteChatAction app-state patch).
+// This is the OUTBOUND half of delete sync: a local-only delete leaves the
+// account's other devices (the phone) holding the chat, and the next history
+// sync can bring it back. Session-scoped like every other data-plane route.
+app.delete('/sessions/:sessionId/conversations/:jid', withSession(async (req, res, sessionId) => {
+  const result = await sessionManager.deleteConversationRemote(sessionId, req.params.jid);
+  res.json(result);
+}));
+
 // Download media by media_id — yalnızca medyayı indiren oturuma servis edilir.
 app.get('/sessions/:sessionId/media/:mediaId', withSession(async (req, res, sessionId) => {
   const filePath = sessionManager.getMediaPath(sessionId, req.params.mediaId);

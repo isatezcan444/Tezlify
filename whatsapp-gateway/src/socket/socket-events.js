@@ -116,6 +116,10 @@ export function bindSocketEvents({
     emitEvent({ event: 'session_sync_completed', session_id: id, session_name: session.session_name, sync: session.sync });
     void ensureGroupSubjects({ force: true });
     manager._scheduleBackgroundAvatarFetch(session);
+    // A FIRST pairing never takes the `priorSyncs > 0` branch on connect, so
+    // without this call the app-state recovery would never be armed for the QR
+    // case — the very case whose connect-time resync races the key share.
+    manager._scheduleAppStateRearm(session);
   };
 
   // --- QR event ---
@@ -478,6 +482,78 @@ export function bindSocketEvents({
           message_id: msg?.key?.id || null,
         }, 'messages.upsert item failed');
       }
+    }
+  });
+
+  // --- Chat deleted on the phone ---
+  //
+  // WhatsApp Web mirrors a delete performed on any device: the chat disappears
+  // everywhere. We had NO subscription at all, so a phone-side delete never
+  // reached the backend and the conversation stayed in the CRM — reported as
+  // "mobilden Sevda'nın sohbetini sildim, Tezlify'a yansımadı".
+  //
+  // Product decision (2026-10-01): the delete is COMPLETE, messages included.
+  // The backend owns the conversation rows, so the gateway drops its own caches
+  // here and emits the event that authorises the backend to delete.
+  sock.ev.on('chats.delete', (jids) => {
+    if (ignoreStaleSocketEvent('chats.delete')) return;
+    for (const raw of jids || []) {
+      if (!raw || isBroadcastOnlyJid(raw) || isDegenerateJid(raw)) continue;
+      const key = normalizeJid(raw);
+      if (isBroadcastOnlyJid(key)) continue;
+      const cached = chats.delete(key);
+      messagesByChat.delete(key);
+      try { store.rawMessagesByChat?.delete(key); } catch { /* best-effort */ }
+      if (session._pendingGroupJids) session._pendingGroupJids.delete(key);
+      logger.info(
+        { session_ref: sessionRef(id), conversation_id: key, cached },
+        'Chat deleted on the phone',
+      );
+      emitEvent({ event: 'conversation_deleted', conversation_id: key, origin: 'phone' });
+    }
+  });
+
+  // --- Messages deleted / chat cleared on the phone ---
+  //
+  // Baileys gives three DIFFERENT shapes here and they are not the same
+  // operation. Collapsing them would either keep a cleared chat's messages or
+  // delete a chat the user only cleared:
+  //   { keys: [...] }    → exactly those messages are gone
+  //   { jid, all: true } → the chat was CLEARED; the chat itself remains
+  sock.ev.on('messages.delete', (payload) => {
+    if (ignoreStaleSocketEvent('messages.delete')) return;
+    if (payload && payload.all && payload.jid) {
+      if (isBroadcastOnlyJid(payload.jid)) return;
+      const key = normalizeJid(payload.jid);
+      if (isBroadcastOnlyJid(key)) return;
+      const cleared = (messagesByChat.get(key) || []).length;
+      messagesByChat.delete(key);
+      try { store.rawMessagesByChat?.delete(key); } catch { /* best-effort */ }
+      logger.info(
+        { session_ref: sessionRef(id), conversation_id: key, cleared },
+        'Chat cleared on the phone',
+      );
+      emitEvent({ event: 'messages_deleted', conversation_id: key, all: true, cleared });
+      return;
+    }
+    const keys = Array.isArray(payload?.keys) ? payload.keys : [];
+    const byConversation = new Map();
+    for (const key of keys) {
+      if (!key?.remoteJid || !key?.id) continue;
+      if (isBroadcastOnlyJid(key.remoteJid)) continue;
+      const convKey = normalizeJid(key.remoteJid);
+      if (isBroadcastOnlyJid(convKey)) continue;
+      const list = messagesByChat.get(convKey);
+      if (list) {
+        const at = list.findIndex((m) => m.wa_message_id && m.wa_message_id === key.id);
+        if (at !== -1) list.splice(at, 1);
+      }
+      try { store.rawMessagesByChat?.get(convKey)?.delete(key.id); } catch { /* best-effort */ }
+      if (!byConversation.has(convKey)) byConversation.set(convKey, []);
+      byConversation.get(convKey).push(key.id);
+    }
+    for (const [convKey, ids] of byConversation) {
+      emitEvent({ event: 'messages_deleted', conversation_id: convKey, wa_message_ids: ids });
     }
   });
 

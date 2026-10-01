@@ -34,6 +34,7 @@ import {
   mergeContactName,
   rememberLidPair,
   resolveJidKey,
+  lidPairsFromMessageKey,
 } from './utils/whatsapp-identity.js';
 
 import {
@@ -149,28 +150,73 @@ const AVATAR_REARM_DELAYS_MS = [2_000, 4_000, 8_000, 15_000, 30_000];
 // the gateway log), so `regular` stayed parked for the life of the process and
 // the chat list never populated — the `chats: 0` symptom.
 //
-// Baileys clears the block on a full sync or on line 1057, but neither happens
-// on a long-lived connected session. So we own the retry: periodically ask for
-// a resync while the store has no chats. This mirrors the existing avatar
-// re-arm chain deliberately — same counters, same backoff, same unref, same
-// "stop once the store fills up" condition.
+// Baileys clears the block on a full sync or on `connection.close`, but neither
+// happens on a long-lived connected session. So we own the retry.
+//
+// MEASURED CORRECTION (production, session 73155bba, 2026-10-01). The earlier
+// gate — "retry only while the store has no chats" — is WRONG, and a populated
+// store is not evidence that app-state works:
+//
+//   park   regular_low                    1790841765872
+//   write  app-state-sync-key-AAAAAPAM.json 1790841766000  (129 ms later)
+//   frozen regular_low                    1790841766000  (never advanced again)
+//   advanced regular_high                 1790842042000  (4.5 min later)
+//
+// The same session reported `chats: 118` from history sync while `regular_low`
+// — the collection that carries chat-level actions (archive / markChatAsRead /
+// chat delete) — stayed frozen. Stopping the retry the moment the store filled
+// therefore left exactly the broken collection un-retried.
+//
+// The recovery now keys on APP-STATE health, never on chat-store size, and
+// re-requests every collection rather than a subset.
+const APPSTATE_PATCH_NAMES = [
+  'critical_block',
+  'critical_unblock_low',
+  'regular',
+  'regular_low',
+  'regular_high',
+];
 const APPSTATE_REARM_MAX = 6;
 const APPSTATE_REARM_DELAYS_MS = [5_000, 15_000, 30_000, 60_000, 120_000, 300_000];
 
-/** Retry the app-state sync while the chat store is still empty. */
-function shouldRearmAppState(session, store) {
+/**
+ * Fingerprint of app-state progress: mtime+size of every collection's version
+ * file. A resync that actually decoded patches advances the collection it
+ * decoded, so a change in this string is positive evidence that the app-state
+ * path is alive. This is a local `stat`, never a network call.
+ */
+export function readAppStateProgress(sessionDir) {
+  if (!sessionDir) return null;
+  const parts = [];
+  for (const name of APPSTATE_PATCH_NAMES) {
+    try {
+      const st = fs.statSync(path.join(sessionDir, `app-state-sync-version-${name}.json`));
+      parts.push(`${name}:${st.mtimeMs}:${st.size}`);
+    } catch {
+      parts.push(`${name}:-`);
+    }
+  }
+  return parts.join('|');
+}
+
+/**
+ * Retry the app-state sync until the collections are demonstrably alive.
+ *
+ * Stopping rule: POSITIVE evidence (`store.appStateHealthy`), not the absence of
+ * chats. A populated store proves history sync worked; it says nothing about
+ * app-state, and conflating the two is what stranded the parked collections.
+ */
+export function shouldRearmAppState(session, store) {
   if (!store || !session) return false;
   if (session._deleted || session._shuttingDown) return false;
   if (session.status !== 'CONNECTED' || !session.sock) return false;
   if (typeof session.sock.resyncAppState !== 'function') return false;
-  // Once chats have landed there is nothing to recover; a resync would be pure
-  // load on the WhatsApp side.
-  if (store.chats && store.chats.size > 0) return false;
+  if (store.appStateHealthy === true) return false;
   const attempts = Number(store._appStateRearmCount) || 0;
   return attempts < APPSTATE_REARM_MAX;
 }
 
-function scheduleAppStateRearm(manager, session, store) {
+function scheduleAppStateRearm(manager, session, store, sessionDir) {
   const attempts = Number(store._appStateRearmCount) || 0;
   if (attempts >= APPSTATE_REARM_MAX) return;
   const delay = APPSTATE_REARM_DELAYS_MS[Math.min(attempts, APPSTATE_REARM_DELAYS_MS.length - 1)];
@@ -180,8 +226,9 @@ function scheduleAppStateRearm(manager, session, store) {
       store._appStateRearmCount = 0;
       return;
     }
+    const before = readAppStateProgress(sessionDir);
     try {
-      await session.sock.resyncAppState(['regular', 'regular_low', 'regular_high'], false);
+      await session.sock.resyncAppState(APPSTATE_PATCH_NAMES, false);
       logger.info(
         { session_ref: sessionRef(session.id), attempt: attempts + 1 },
         'App-state re-arm resync completed',
@@ -192,8 +239,19 @@ function scheduleAppStateRearm(manager, session, store) {
         'App-state re-arm resync failed; will retry',
       );
     }
+    const after = readAppStateProgress(sessionDir);
+    if (before !== null && after !== null && after !== before) {
+      // The decode advanced a collection: app-state is alive, stop retrying.
+      store.appStateHealthy = true;
+      store._appStateRearmCount = 0;
+      logger.info(
+        { session_ref: sessionRef(session.id), attempt: attempts + 1 },
+        'App-state collections advanced; recovery complete',
+      );
+      return;
+    }
     if (shouldRearmAppState(session, store)) {
-      scheduleAppStateRearm(manager, session, store);
+      scheduleAppStateRearm(manager, session, store, sessionDir);
     } else {
       store._appStateRearmCount = 0;
     }
@@ -206,6 +264,9 @@ function shouldRearmWhenEmpty(store, session) {
   if (!store || !session) return false;
   if (session._deleted || session._shuttingDown) return false;
   if (session.status !== 'CONNECTED' || !session.sock) return false;
+  // The avatar sweep DOES legitimately stop on a populated store: its job is to
+  // fetch pictures for whatever the store already holds. App-state recovery is
+  // the opposite — see `shouldRearmAppState` for why it must not use this rule.
   if (store.chats && store.chats.size > 0) return false;
   const attempts = Number(store._avatarRearmCount) || 0;
   return attempts < AVATAR_REARM_MAX;
@@ -703,8 +764,35 @@ export function createSessionManager({
         // sentinel between groupMetadata calls; without this, a deleted
         // session's pass kept issuing doomed fetches (bounded, but wasted).
         session._groupSubjectsInFlight = 'cancelled';
+        // Invalidate FIRST: this makes every socket event that `logout()` is
+        // about to provoke (it emits a loggedOut `connection.update`) count as
+        // stale, so the close handler cannot run recovery work on a session we
+        // are in the middle of destroying.
         session.lifecycle.invalidate();
         await leaseCoordinator.releaseLease(session);
+        // REMOVE THE LINKED DEVICE ON WHATSAPP'S SIDE.
+        //
+        // `sock.end()` only closes the socket locally — WhatsApp keeps the
+        // companion device in the phone's "Linked devices" list, so removing a
+        // line in Tezlify left the phone still showing it. `logout()` is the
+        // only call that sends the remove-companion-device IQ. Measured
+        // (2026-10-01, session 115): the UI trash button reaches this method
+        // via `DELETE /sessions/{id}`, while the separate "Bağlantıyı Kes"
+        // button reaches `logoutSession` (`POST /sessions/{id}/logout`) — which
+        // is why only the second one unlinked anything.
+        //
+        // Best-effort on purpose: a provider failure must not leave the local
+        // session undeletable. The local teardown below still runs.
+        if (session.sock) {
+          try {
+            await session.sock.logout();
+          } catch (err) {
+            logger.warn(
+              { err: err?.message, session_ref: sessionRef(id) },
+              'Delete: provider logout failed; continuing with local teardown',
+            );
+          }
+        }
         if (session.sock?.ev) {
           try { session.sock.ev.removeAllListeners(); } catch (err) { /* ignore */ }
         }
@@ -1162,6 +1250,88 @@ export function createSessionManager({
         : { success: false, error: gatewayError };
     },
 
+    /**
+     * Sohbeti WhatsApp tarafinda siler (`deleteChatAction`).
+     *
+     * Neden gerekli: WhatsApp Web'de bir sohbeti silmek onu YALNIZCA O CIHAZIN
+     * listesinden kaldirir; hesabin diger cihazlarinda (telefon) kalan kopya
+     * icin app-state yamasi gerekir. Yamayi WhatsApp Web kendisi de gonderir.
+     *
+     * Neden `regular_high` onemli: `chatModify({delete:true})` yamasi
+     * `regular_high` koleksiyonuna yazilir (Baileys chat-utils), okundu/arsiv
+     * ise `regular_low`a. Ikisi AYRI koleksiyondur — yani bu islem, `regular_low`
+     * parkli kalsa bile calisir.
+     *
+     * `lastMessages` sozlesmesi (Baileys `getMessageRange`): her ogenin
+     * `key.remoteJid`, `key.id` ve `messageTimestamp` alani ZORUNLU; eksikse
+     * Baileys `Incomplete key` / `Missing timestamp` ile FIRLATIR (sessizce
+     * yutmaz). Bu yuzden yalnizca iki alani da tasiyan kayitlar secilir ve liste
+     * TEK elemanlidir (en yeni mesaj): cok elemanli listede
+     * `lastMessageTimestamp` SON elemandan okunur ve siralama yonu tartismali
+     * oldugu icin tek eleman o belirsizligi tamamen kaldirir.
+     */
+    async deleteConversationRemote(sessionId, jid) {
+      const session = this._requireConnectedSession(sessionId);
+      const store = this._storeOf(session);
+      const { chats, messagesByChat } = store;
+      const key = resolveJidKey(store, jid);
+      const isGroup = key.includes('@g.us');
+
+      // Yerel onbellek bos olabilir: sohbet listesi mesaj gecmisi olmadan da
+      // doluyor (history sync sirasinda). O durumda anahtar UYDURULMAZ, bos
+      // `lastMessages` ile gonderilir — `getMessageRange` bos dizide firlatmaz
+      // ve WhatsApp sohbeti yine siler. Kanit olmadan bir anahtar uretmek,
+      // silme yerine yanlis bir mesaji isaret eden yama uretirdi.
+      const list = messagesByChat.get(key) || [];
+      let lastMessages = [];
+      for (let i = list.length - 1; i >= 0; i -= 1) {
+        const m = list[i];
+        if (!m?.wa_message_id) continue;
+        const ts = Number(m.timestamp_s);
+        if (!Number.isFinite(ts) || ts <= 0) continue;
+        const fromMe = m.direction === 'OUTBOUND';
+        const entryKey = { remoteJid: key, id: m.wa_message_id, fromMe };
+        // Grup sohbetinde "benden degil" bir mesajin `participant`i olmak
+        // ZORUNDA (Baileys aksi halde firlatir). Katilimci bilinmiyorsa bu
+        // kayit kullanilamaz; uydurmak yerine daha eski kayitlar da denenir.
+        if (isGroup && !fromMe) {
+          if (!m.participant_jid) continue;
+          entryKey.participant = m.participant_jid;
+        }
+        lastMessages = [{ key: entryKey, messageTimestamp: ts }];
+        break;
+      }
+
+      let providerOk = true;
+      let providerError = null;
+      try {
+        await session.sock.chatModify({ delete: true, lastMessages }, key);
+      } catch (err) {
+        providerOk = false;
+        providerError = err?.message || String(err);
+        logger.warn(
+          { err: providerError, session_ref: sessionRef(sessionId) },
+          'Delete conversation provider error'
+        );
+      }
+
+      // Yerel kopya YALNIZCA saglayici kabul ettiginde dusurulur. Birakilirsa
+      // sonraki sohbet kesfi silinen sohbeti yeniden uretirdi — senkronu
+      // "duzeltirken" silinen sohbeti geri getirmis olurduk.
+      if (providerOk) {
+        chats.delete(key);
+        messagesByChat.delete(key);
+        const raw = store.rawMessagesByChat?.get(key);
+        if (raw) {
+          store.rawMessageCount = Math.max(0, (store.rawMessageCount || 0) - raw.size);
+          store.rawMessagesByChat.delete(key);
+        }
+      }
+      return providerOk
+        ? { success: true, remote_deleted: true, last_messages: lastMessages.length }
+        : { success: false, error: providerError };
+    },
+
     // -----------------------------------------------------------------------
     // Media delegation
     // -----------------------------------------------------------------------
@@ -1265,6 +1435,16 @@ export function createSessionManager({
       if (msg.key?.participantLid && msg.key?.participantPn) {
         this._applyLidMapping(session, msg.key.participantLid, msg.key.participantPn);
       }
+      // Baileys carries the SAME entity's alternate address on the key
+      // (`remoteJidAlt` / `participantAlt`). Learning from it here, BEFORE the
+      // key is normalized, files the message under its phone identity straight
+      // away instead of holding it as a LID until some later mapping event
+      // happens to arrive. During a first QR pairing no mapping has been
+      // learned yet, so without this the very messages the user sees on their
+      // phone are the ones that get held.
+      for (const [lidJid, phoneJid] of lidPairsFromMessageKey(msg.key)) {
+        this._applyLidMapping(session, lidJid, phoneJid);
+      }
       const key = normalizeJid(jid);
       if (isBroadcastOnlyJid(key)) return null;
 
@@ -1361,9 +1541,16 @@ export function createSessionManager({
         buildChatPreview(record, isGroup) ||
         normalizePreviewText('TEXT', systemContentMarker(msg) || '');
       this._touchChat(session, key, chatPreview, record.created_at);
-      const chat = chats.get(key);
-      if (chat && !fromMe) chat.unread_count = (chat.unread_count || 0) + 1;
+      // Only messages we actually PUBLISH may be counted. A held (LID) message
+      // is not emitted at all, so counting it made this counter describe a
+      // different set of messages than the rest of the system can ever see —
+      // production showed gateway `unread_count=2` against a backend count of 1
+      // for exactly this reason (the extra one was a held LID message). A local
+      // counter that disagrees with what was published is not a richer truth;
+      // it is a second, contradictory one.
       if (!lidHold) {
+        const chat = chats.get(key);
+        if (chat && !fromMe) chat.unread_count = (chat.unread_count || 0) + 1;
         emitEvent({
           event: 'message_new',
           conversation_id: key,
@@ -2050,13 +2237,20 @@ export function createSessionManager({
      * once a session reaches CONNECTED. See that function for why a Baileys
      * "parked" collection otherwise strands the chat list for the life of the
      * process.
+     *
+     * Every connect is a NEW app-state sync run (the previous run's park is
+     * cleared by Baileys on `connection.close`), so the recovery verdict is
+     * deliberately reset here. Carrying `appStateHealthy` across a reconnect
+     * would skip the retry on exactly the connection that needs it.
      */
     _scheduleAppStateRearm(session) {
       session = this._sess(session);
       if (!session) return;
       const store = this._storeOf(session);
+      store.appStateHealthy = false;
+      store._appStateRearmCount = 0;
       if (!shouldRearmAppState(session, store)) return;
-      scheduleAppStateRearm(this, session, store);
+      scheduleAppStateRearm(this, session, store, getSessionDir(sessionsDir, session.id));
     },
 
     async _ensureGroupSubjects({ sessionId, force = false, extraJids = [] } = {}) {
