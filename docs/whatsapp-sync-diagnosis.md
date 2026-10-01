@@ -328,6 +328,25 @@ kullanıcıya telefonun da temizlendiğini sanmasına yol açardı.
 | **dışa dönük silme rotası** | backend→gateway DELETE gerçek token'la: `route=/sessions/:session/conversations/:jid status=404 {"error":"Session not found"}` |
 | **erteleme dalı** | üretim Postgres'inde sorgu hatasız çalıştı; `to_regclass(...) IS NOT NULL` = **t** |
 
+### Yayın 3 (`27e2803`) — boot birleştirmesi canlıda
+
+| Kanıt | Ölçüm |
+|---|---|
+| yayındaki commit | `27e2803…` — `/opt/tezlify/.deployed-commit` ve host `git rev-parse HEAD` ile **birebir** |
+| container'da yeni kod | `/app/backend/app/services/whatsapp/reconciliation.py` var; `main.py:46` import, `main.py:142` çağrı, `events.py:1002` delegasyon |
+| startup | **0** traceback; özel şema/lid_mappings doğrulandı |
+| boot adımı canlı koşu | container içinde `merge_deferred_lid_ghosts(engine, limit=50)` → `{"scanned": 0, "merged": 0, "skipped": 0, "errors": 0, "remaining_at_least": 0}` |
+| `--user-id` iki biçim | tireli UUID filtresiyle de hatasız koştu (PG'de SQL hatası yok) |
+| onarım işi (paylaşılan uygulama) | container içinde PLAN: `taranan=0 birlestirilen=0 birlestirilecek=0 atlanan=0` |
+| üretimde hayalet LID kontak / aktif sohbet | **0 / 0** |
+
+Canlı koşuda `merged=0` **beklenen** sonuçtur: üretimde birleştirilecek hayalet (0/0)
+yok. Yani bu tablo "birleştirme canlıda x satırı taşıdı" demiyor — **malzeme yokluğu**
+nasıl ölçülür, onu gösteriyor. Gerçek bir birleştirmenin davranış kanıtı kapıdadır
+(`test_whatsapp_boot_lid_merge.py` 9/9, 3 kırmızıya falsifiye edildi); üretimde kanıt
+üretmek için sentetik satır yazmak **yapılmadı** — canlı veriyi doğrulama uğruna
+kirletmek, ölçümün kendisinden daha pahalıdır.
+
 İki satır özellikle önemli:
 
 - Gateway tüm rotalara auth'tan **önce** 401 döndüğü için durum kodu rota varlığını
