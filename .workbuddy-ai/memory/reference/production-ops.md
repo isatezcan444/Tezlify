@@ -7,8 +7,9 @@ about to touch production, deploy, or run the test suites. Invariants live in
 ## Production topology & access
 
 - Oracle `130.162.247.20`, `/opt/tezlify`, user `ubuntu`, SSH key `~/.ssh/id_tezlify_oracle`.
-  **Push is not deploy.** Compose file `docker-compose.prod.yml`; services `backend`, `gateway`, `db`,
-  `caddy`.
+  **Push is not deploy.** Compose file `docker-compose.prod.yml` declares **only `backend`, `gateway` and
+  `caddy`** — `db` is **NOT** in it (see "The `db` container" below), so
+  `docker compose config --services` printing three names is correct, not truncated output.
 - Gateway listens on **8787** (`GATEWAY_PORT`) and its container has **no `curl`** — query it with `node`
   inside the container reading `process.env.WHATSAPP_GATEWAY_SECRET`, so the secret never leaves its own
   environment. **Gateway REST auth is `Authorization: Bearer <secret>`** — NOT `X-Gateway-Secret`, which
@@ -53,11 +54,48 @@ about to touch production, deploy, or run the test suites. Invariants live in
   - **Prevention is rotation, not clearing:** `docker-compose.prod.yml` sets
     `logging: {driver: json-file, options: {max-size: 10m, max-file: 3}}` on caddy/backend/gateway. The
     daemon performs rotation itself and keeps its reader consistent, so the side effect does not occur.
-    Note `db` is **not** in the prod compose file (it carries `com.docker.compose` labels from an older
-    file, is `Up 2 weeks`, and is untouched by deploys) — so its rotation is still unbounded and needs a
-    manual change. Do **not** add a `db` service to the prod compose file to fix that: making compose own
-    the datastore container risks recreating it.
+    **As of 2026-10-01 all FOUR containers carry it** (`logopts=map[max-file:3 max-size:10m]`), including
+    `db` — see "The `db` container" below. `docker update` cannot apply it: it accepts `--log-driver` only,
+    never `--log-opt` (verified on docker 29.8.0 — `docker update --help | grep -i log` is empty), so
+    rotation **always needs a recreate**, which is also the only time a compose `logging:` block takes
+    effect.
   - To unwedge a container, **`docker restart` is enough** (proven) — a full recreate is not required.
+
+### The `db` container — hand-made, unlabelled, and deliberately NOT in compose
+
+- **`db` is not declared anywhere.** Its `com.docker.compose.project.config_files` label still points at
+  `/opt/tezlify/docker-compose.prod.yml` with `service=db`, i.e. it *was* created from a **locally edited**
+  copy of that file; `git log -S'  db:' -- docker-compose.prod.yml` returns **nothing**, so the service
+  never existed in the repo, and a later deploy's `git reset --hard` removed it from the host file too.
+  That left the container an **orphan**: compose warns *"Found orphan containers (tezlify-db) for this
+  project … --remove-orphans flag to clean it up"* — a single `up -d --remove-orphans` would **delete the
+  database**. Confirmed live 2026-10-01.
+- **Therefore `db` is run as a plain container with NO compose labels** (recreated that way 2026-10-01):
+  unlabelled means compose cannot see it at all, so `--remove-orphans` cannot reach it. Safe because the
+  Operations Center can never act on it either — `ALLOWED_SERVICES = ("backend", "gateway", "caddy")`
+  excludes `db`. Do **not** "tidy this up" by adding a `db` service to the prod compose file.
+- Its spec (verified 2026-10-01): image `postgres:17-alpine`, `restart=always`, network
+  `tezlify_tezlify-internal` **with alias `db`** (backend dials `db:5432`), named volume
+  **`tezlify_postgres_staging_data`** → `/var/lib/postgresql/data`, healthcheck
+  `pg_isready -U tezlify -d tezlify` (5 s/3 s/×5), cmd
+  `postgres -c timezone=UTC -c max_connections=100 -c shared_buffers=512MB -c work_mem=16MB -c fsync=on
+  -c full_page_writes=on -c synchronous_commit=on`, user/db `tezlify`. It publishes **no** host ports.
+  (`docker-compose.staging.yml` is a **different** stack: `staging-db`, `postgres:16-alpine`, volume
+  `pg_staging_data`, user `tezlify_stage` — do not confuse them.)
+- **Safe recreate recipe** (used for the 2026-10-01 rotation change): read every parameter back from the
+  live container with `jq` (env → repeated `-e "$e"`, **never** `--env-file`, whose quoted values are not
+  stripped); pass `--network-alias db`; then `docker stop` → `docker rename … -pre-rotation` →
+  **`docker update --restart=no`** (a *stopped* `restart=always` container is restarted by the daemon on
+  boot, and **two postmasters on one PGDATA corrupt the data**); create the replacement; verify by row
+  count; only then `docker rm` the old one. Wrap it in `trap rollback ERR`. `pg_dump -Fc` first
+  (75 MB DB → 4.6 MB dump). Full procedure + traps in the `docker-logs-wedge-diagnosis` skill.
+- **A `db` restart crashes the gateway.** `docker stop tezlify-db` SIGTERMs Postgres, which terminates
+  clients with `57P01 terminating connection due to administrator command`; the gateway's Node `pg` Pool
+  emits `'error'` with **no listener** (`pg-pool/index.js:62 idleListener`), so the **process dies**
+  (`restarts` +1). Backend is unaffected (`pool_pre_ping=True`, `pool_recycle=300`). Recovery is
+  automatic and correct — the gateway restores the session and re-acquires the socket lease **after one
+  TTL** (`GATEWAY_LEASE_TTL_SECONDS=45`, ~49 s measured) — but the crash itself is an open resilience
+  gap (fix: attach a Pool `'error'` handler). See §G/§M and the 2026-10-01 session log.
 - Local sandbox sets `HTTP_PROXY/HTTPS_PROXY=http://127.0.0.1:59508`, which tunnels `app.tezlify.com`
   into a 502 — run API probes **from the production host** (Caddy is local there). Playwright exists only
   in the repo `venv` (`venv/bin/python`).
@@ -155,6 +193,16 @@ per build.
   by the deployed `ops_service.py` sha256 matching `git show HEAD:` byte-for-byte. `docker logs` was
   unwedged for all four with `docker restart` (now 22–23 ms). Rotation applied to backend+gateway; caddy
   and db still `map[]`.
+- **2026-10-01 (later still): log rotation completed on ALL FOUR** — an ops action only, no code change, so
+  the deployed SHA is still `f63a0f1`. `caddy` via
+  `docker compose -p tezlify -f docker-compose.prod.yml up -d --force-recreate --no-deps caddy`; `db` via
+  the unlabelled recreate described above. Verified: all four `logopts=map[max-file:3 max-size:10m]` and
+  healthy, `db` has **0** `com.docker.compose` labels and the compose orphan warning is **gone**, backend
+  resolves `db` (172.29.0.5), `docker logs` is **0.02 s** on all four (was 45000 ms), and the DEPLOYED
+  `get_service_logs` reads all four at their **new** container paths — backend 27.1 ms/200 lines,
+  gateway 26.5/199, caddy 17.5/26, db 16.7/9, all `error=None`. Row counts after the `db` recreate matched
+  the pre-recreate baseline exactly (sessions 3 / conversations 120 / messages 699 / contacts 1525 /
+  lid_mappings 17508). Site 200 / 5.5 ms, API 200 / 7.5 ms, `gateway_bridge.connected: true`.
 
 ## Verification baselines
 
