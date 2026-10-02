@@ -23,10 +23,17 @@ about to touch production, deploy, or run the test suites. Invariants live in
   - `conversations` has **no `jid` column**; join `contacts` for `display_name`.
   - In `\pset format unaligned`, a top-level `SELECT` prints the header **once per column** — wrap it in
     a CTE to get one line per row.
-- **`WHATSAPP_AUTO_RESTORE=false`**: a gateway restart does **not** re-attach the linked line.
-  `POST /sessions/restore` (gateway, `X-Gateway-Secret`, no body) re-attaches from persisted creds with
-  **no QR**. `listRestorableSessions()` only returns sessions active in both `gateway_sessions` and
-  `whatsapp_sessions` with stored credentials — check that count before firing it.
+- **`WHATSAPP_AUTO_RESTORE` is `true` in production — CORRECTED 2026-10-02.** This note previously said
+  `false` ("a gateway restart does **not** re-attach the linked line"). That is **stale and was about to
+  mislead a deploy decision**: `docker-compose.prod.yml:146` sets `WHATSAPP_AUTO_RESTORE: "true"`, and
+  the **live** gateway's `/health` reports `auto_restore: true` with `sessions: {total:1, connected:1}`
+  (measured 2026-10-02, line `id=117` CONNECTED). So a gateway recreate is **expected to restore** the
+  linked line from persisted credentials, with no QR. Verify it, don't assume it — the gateway only
+  restores what `listRestorableSessions()` returns: sessions active in **both** `gateway_sessions` and
+  `whatsapp_sessions` with stored credentials. Manual fallback is `POST /sessions/restore` (gateway,
+  `X-Gateway-Secret`, no body), which re-attaches from persisted creds with **no QR**. The historical
+  daily logs (2026-09-20, 2026-09-26) describe the earlier `false` era; they are append-only records and
+  are left untouched — do not read them as current state.
 - **Admin ops log clearing TRUNCATES the container log file in place.** Docker has no clear-logs API, so
   `clear_service_logs` resolves the path from `docker inspect --format {{.LogPath}}` — never from caller
   input: the container NAME passes a `LOG_SERVICES` allowlist and the path comes only from `inspect` — and
@@ -241,7 +248,9 @@ per build.
   yourself); `StartedAt` moved only for backend (08:06:28) + gateway (08:06:34), db/caddy unchanged;
   API 200/39 ms, frontend 200, gateway `/health` `database: connected`, `restarts=0` on all four.
   Recreating the gateway stranded nothing because **no line was CONNECTED** (116 still logged out,
-  4/5 stale `diag`) — check this before any gateway recreate under `WHATSAPP_AUTO_RESTORE=false`.
+  4/5 stale `diag`) — check this before any gateway recreate. Auto-restore is now `true` (see the
+  corrected note above), so a recreate should re-attach the line; confirm `auto_restore` on the live
+  `/health` rather than trusting either value from memory.
 
 ## Verification baselines
 
