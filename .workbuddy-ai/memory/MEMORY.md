@@ -4,7 +4,7 @@ Curated index only. Detail lives elsewhere, deliberately:
 
 | Where | What |
 | --- | --- |
-| `reference/whatsapp-subsystem-invariants.md` | WhatsApp subsystem invariants, sections **A–N** (the `A11`-style refs point here) |
+| `reference/whatsapp-subsystem-invariants.md` | WhatsApp subsystem invariants, sections **A–P** (the `A11`-style refs point here) |
 | `reference/production-ops.md` | Production topology, deploy state, release mechanics, test baselines |
 | `YYYY-MM-DD.md` | Deploy narratives, timings, falsification evidence (most recent first) |
 | the skills listed at the end | Reusable procedures — never duplicate them into memory |
@@ -55,6 +55,10 @@ Curated index only. Detail lives elsewhere, deliberately:
   **  only** arrive via app-state. Recovering the already-lost rows is a **product decision**.
 - **The first-load gate opens ONLY on the durable `initial_sync_completed_at` stamp**, never on the
   gateway's `sync.phase == 'ready'` (§O).
+- **A guard keyed on "the current page has rows" is DEAD for a page that is empty BY CONSTRUCTION**
+  (§P) — pagination past the end re-paid a futile provider round-trip on every click (25.2 s → 502, live
+  conv 18192); ask what the **caller** holds, not the page. And a client abort budget must EXCEED the
+  server's worst case: 20 s < gateway 25 s < backend 30 s → now 40 s + `verify:message-timeout-budget`.
 - **Delete-sync / identity / unread narratives → §M, §N.** `regular_high` vs `regular_low` are different
   app-state collections; `lastMessages` THROWS instead of degrading; "owner unresolved" means EARLY not
   garbage; `remoteJidAlt` files a message under its phone identity at ingest; a local counter must count only

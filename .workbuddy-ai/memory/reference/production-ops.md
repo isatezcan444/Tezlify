@@ -310,6 +310,21 @@ per build.
     matching `whatsapp_sessions` being written at 11:20:28 and `public.whatsapp_sessions` now holding
     only the September rows (id 4, 5) — session **117** (CONNECTED at the 09:50 deploy) and **116**
     are gone. **No recovery exists** (`archive_mode=off`, no backups).
+    - **RESOLVED 2026-10-02 11:41 — the QR re-pair repopulated them (measured, not inferred).** All
+      **118** `conversations` rows were created **11:29:46.52 → 11:29:50.20** and all **480** `messages`
+      **11:29:46.72 → 11:30:24.09**; `contacts` still reaches back to **2026-09-10**, so contacts were
+      **not** cascaded. The 120/699 → 118/480 delta is therefore **not** a like-for-like loss — a re-link
+      rebuilds history from whatever WhatsApp actually delivers (see the re-link note above). The empty
+      window is real, its cause (a line deletion at ~11:20:28) is still **unproven**, and what restored
+      the data was **re-pairing**, not any backup (there is still none).
+    - **Table identity — do NOT conflate these (a wrong note cost a full debugging cycle).**
+      `public.messages` **IS** the WhatsApp chat store (25 columns: `conversation_id`, `direction`,
+      `message_type`, `body`, `media_*`, `sender_phone`, `recipient_phone`, `external_timestamp`,
+      `wa_message_id`, … — no `campaign_id`/`rendered_message`/`target_phone`). There is **no**
+      `whatsapp_private.messages` at all; that schema holds only `event_outbox`, `gateway_sessions`,
+      `history_sync_states`, `lid_mappings`, `processed_events`, `retry_messages`,
+      `session_credentials`, `signal_keys`, `socket_leases`. The **CRM campaign log** is
+      `public.message_logs` (**2 rows**), which is a different table entirely.
 
 ## Verification baselines
 

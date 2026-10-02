@@ -574,3 +574,52 @@ Regression guards: `test_missing_avatar_does_not_hold_the_loading_gate` (backend
 / `_gateway_sync_phase` / `_run_sync_job` tests live in `test_whatsapp_orchestration_sync.py`; the frontend
 `verify:loading-gate` script guards both directions (the gateway signal must NOT open the gate, and the
 backend's own completion MUST re-ask it).
+
+## P. On-demand "load older" — three budgets, and a guard keyed on the wrong thing (FIXED 2026-10-02)
+
+Live case: conv **18192** ("Emre Bulut", contact 13660, +905322326335, session **118**, gateway
+`ee579956-b7a3-4629-91c1-c37e754de307`) held exactly **2 OUTBOUND** rows and nothing older exists.
+Clicking "daha eski mesajları yükle" produced the rose banner `whatsapp.messagesLoadFailed`
+("Mesajlar yüklenemedi") **plus** a still-offered load-older control, and the console showed
+`AbortError: signal is aborted without reason`.
+
+**Three independent defects, all measured:**
+
+1. **The unresponsive-provider skip was keyed on the PAGE's rows.** `get_messages` gated
+   `is_provider_recently_unresponsive` on `rows and …`, but a load-older page is empty **by
+   construction** — nothing is older than the row the client was handed — so the guard was **dead
+   exactly where the futile round-trip was being paid on every click**. Now
+   `(rows or before_row is not None)`. The guard's stated rationale ("skipping while holding zero rows
+   fabricates an empty conversation") only holds for `before is None`; with `before` set, the caller
+   demonstrably already holds the newer page (it sent us that row's id).
+2. **`have_rows` was computed from the page, not from what the caller holds.**
+   `_hydrate_or_tolerate_provider_timeout(have_rows=bool(rows))` in the load-older branch was always
+   `False` → the timeout propagated → the endpoint's `except Exception` → **502**. That branch is only
+   reachable with a resolvable cursor, i.e. the caller holds a row, so it is now `have_rows=True`.
+3. **The client aborted before the server could answer.** Three budgets in three projects:
+   `MESSAGE_LOAD_TIMEOUT_MS` **20 000** < gateway provider wait **25 000**
+   (`whatsapp-gateway/src/session-manager.js` `timeoutMs = 25000`) < backend gateway HTTP ceiling
+   **30 000** (`WHATSAPP_GATEWAY_TIMEOUT`). Raised to **40 000**, guarded by
+   `verify:message-timeout-budget` — which reads all three files and asserts the ordering, so the
+   numbers cannot silently diverge again.
+
+**Deliberately unchanged:** `resolve_has_more` still returns `True` on `TIMEOUT` (H-3: UNAVAILABLE ≠
+EXHAUSTED, invariant 7 of `history_evidence.py`), so the affordance returns on the next hydration;
+a zero-row conversation still raises → 502 (`test_27`); load-older still keeps the gateway's full
+window (`test_26`). The empty page the skip produces is **not** a false "conversation is empty" — the
+client's own zero-progress contract (`frontend/src/features/whatsapp/lib/olderPageState.ts`) retires
+the affordance for that render tree only, and the response still carries `has_more: true`.
+
+**The cooldown is NOT a permanent shield.** `PROVIDER_UNAVAILABLE_COOLDOWN_S = 300` decays from the
+last **real** attempt, and a skipped round-trip writes no evidence. Measured live 11:52: the row was
+`state=TIMEOUT, timeout_count=3, last_attempt_at=11:38:47` → `is_provider_recently_unresponsive`
+**False** (age ≈ 800 s). So defect **2**, not defect 1, is what covers a click more than 300 s later.
+
+**Measured before:** `get_messages(db, uid, 18192, limit=50, before=107847)` **raised after 25.2 s**
+(`WhatsAppHistoryTimeout`), via `whatsapp_service.py:1093 → :867 → :819 → sync.py:2357`.
+
+**Transferable tell:** a guard conditioned on "the current page is non-empty" is **dead** for any
+request whose page is empty *by construction* — pagination past the end, a filtered page, a cursor
+page. Ask what the **caller** holds, not what the **page** holds. Same family as the dead
+`setSessionPhone()` guard in the index: a defensive branch that can never fire reads as protection
+while providing none.
