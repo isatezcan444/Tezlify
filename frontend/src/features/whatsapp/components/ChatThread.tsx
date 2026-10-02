@@ -922,7 +922,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
           onScroll={handleScroll}
           className="flex-1 min-w-0 p-4 overflow-y-auto overflow-x-hidden space-y-1 scroll-smooth"
         >
-          {hasMore && loadOlderButton}
+          {messages.length > 0 && hasMore && loadOlderButton}
           {rows.map((row) => (
             <React.Fragment key={row.key}>{renderRowBody(row)}</React.Fragment>
           ))}
@@ -954,7 +954,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
         style={{ overflowAnchor: 'none' }}
         className="flex-1 min-w-0 p-4 overflow-y-auto overflow-x-hidden scroll-smooth"
       >
-        {win.start <= 0 && hasMore && loadOlderButton}
+        {win.start <= 0 && messages.length > 0 && hasMore && loadOlderButton}
         <div aria-hidden style={{ height: `${topSpacer}px` }} />
         {mountedRows.map((row) => (
           <div

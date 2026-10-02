@@ -88,6 +88,9 @@ from backend.app.services.whatsapp.orchestration.history_evidence import (
     record_on_demand_provider_result,
     _table_name as history_table_name,
 )
+from backend.app.services.whatsapp.repositories.reactions import (
+    upsert_reaction as _upsert_reaction,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1383,14 +1386,35 @@ class WhatsAppSyncOrchestrator:
                 have = existing_ids.setdefault(cid, set())
                 for gm in gm_list:
                     wa = gm.get("wa_message_id")
+                    rx_list = gm.get("reactions") or []
                     if wa and str(wa) in have:
+                        if rx_list:
+                            existing_msg_id = await db.scalar(
+                                select(Message.id).where(
+                                    Message.conversation_id == cid,
+                                    Message.wa_message_id == str(wa),
+                                )
+                            )
+                            if existing_msg_id:
+                                for rx in rx_list:
+                                    emoji = rx.get("emoji")
+                                    if emoji:
+                                        await _upsert_reaction(
+                                            db,
+                                            user_id=job.user_id,
+                                            message_id=existing_msg_id,
+                                            conversation_id=cid,
+                                            reactor_jid=rx.get("reactor_jid") or (None if rx.get("from_me") else ""),
+                                            from_me=bool(rx.get("from_me")),
+                                            emoji=emoji,
+                                        )
                         continue
                     row = message_row_from_gateway(job.user_id, conv, gm)
                     if row is None:
                         continue
                     if wa:
                         have.add(str(wa))
-                    rows.append((row, str(gm.get("conversation_id") or "")))
+                    rows.append((row, str(gm.get("conversation_id") or ""), rx_list))
                     summary = build_last_message_summary(
                         message_type=row.message_type.value,
                         body=row.body,
@@ -1414,7 +1438,7 @@ class WhatsAppSyncOrchestrator:
                             for column in Message.__table__.columns
                             if column.name != "id" and getattr(row, column.name) is not None
                         }
-                        for row, _ in rows[batch_start:batch_start + _SYNC_PERSIST_BATCH]
+                        for row, _, _ in rows[batch_start:batch_start + _SYNC_PERSIST_BATCH]
                     ]
                     try:
                         inserted = await db.scalars(
@@ -1427,6 +1451,21 @@ class WhatsAppSyncOrchestrator:
                         # duplicate cannot discard its neighbours.
                         recovered = await _persist_sync_batch_safely(db, values)
                         persisted_rows.extend(recovered)
+                for p_row in persisted_rows:
+                    matching_rx = next((rx_l for r, _, rx_l in rows if r.wa_message_id and r.wa_message_id == p_row.wa_message_id), None)
+                    if matching_rx:
+                        for rx in matching_rx:
+                            emoji = rx.get("emoji")
+                            if emoji:
+                                await _upsert_reaction(
+                                    db,
+                                    user_id=job.user_id,
+                                    message_id=p_row.id,
+                                    conversation_id=p_row.conversation_id,
+                                    reactor_jid=rx.get("reactor_jid") or (None if rx.get("from_me") else ""),
+                                    from_me=bool(rx.get("from_me")),
+                                    emoji=emoji,
+                                )
                 await db.flush()
                 await db.commit()
                 serialized = [serialize_message(r) for r in persisted_rows]
@@ -2369,7 +2408,28 @@ class WhatsAppSyncOrchestrator:
         rows: List[Message] = []
         for gm in gw_msgs:
             wa = gm.get("wa_message_id")
+            rx_list = gm.get("reactions") or []
             if wa and str(wa) in have:
+                if rx_list:
+                    existing_msg_id = await db.scalar(
+                        select(Message.id).where(
+                            Message.conversation_id == conv.id,
+                            Message.wa_message_id == str(wa),
+                        )
+                    )
+                    if existing_msg_id:
+                        for rx in rx_list:
+                            emoji = rx.get("emoji")
+                            if emoji:
+                                await _upsert_reaction(
+                                    db,
+                                    user_id=owner,
+                                    message_id=existing_msg_id,
+                                    conversation_id=conv.id,
+                                    reactor_jid=rx.get("reactor_jid") or (None if rx.get("from_me") else ""),
+                                    from_me=bool(rx.get("from_me")),
+                                    emoji=emoji,
+                                )
                 continue
             row = message_row_from_gateway(owner, conv, gm)
             if row is None:
@@ -2394,6 +2454,21 @@ class WhatsAppSyncOrchestrator:
             # forever).
             await db.commit()
             return []
+        for ins in inserted:
+            matching_gm = next((m for m in gw_msgs if m.get("wa_message_id") and str(m.get("wa_message_id")) == ins.wa_message_id), None)
+            if matching_gm and matching_gm.get("reactions"):
+                for rx in matching_gm["reactions"]:
+                    emoji = rx.get("emoji")
+                    if emoji:
+                        await _upsert_reaction(
+                            db,
+                            user_id=owner,
+                            message_id=ins.id,
+                            conversation_id=conv.id,
+                            reactor_jid=rx.get("reactor_jid") or (None if rx.get("from_me") else ""),
+                            from_me=bool(rx.get("from_me")),
+                            emoji=emoji,
+                        )
         # Summarise from the newest row that was ACTUALLY inserted. Using the
         # last candidate would let a duplicate push the conversation's
         # last_message_at backwards (or onto a message we did not write),

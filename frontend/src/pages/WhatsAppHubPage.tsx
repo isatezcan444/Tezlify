@@ -214,10 +214,18 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       fetchMessages: (convId, init) =>
         WhatsAppRepository.getConversationMessages(convId, { limit: 50, signal: init.signal }),
       onMessages: (convId, messages, meta) => {
-        setMessagePaging((prev) => ({
-          ...prev,
-          [convId]: { hasMore: meta.has_more, oldest: meta.oldest ?? undefined, loading: false, error: false },
-        }));
+        setMessagePaging((prev) => {
+          const alreadyExhausted = prev[convId]?.hasMore === false && prev[convId]?.oldest === meta.oldest;
+          return {
+            ...prev,
+            [convId]: {
+              hasMore: alreadyExhausted ? false : Boolean(messages.length > 0 && meta.has_more),
+              oldest: meta.oldest ?? undefined,
+              loading: false,
+              error: false,
+            },
+          };
+        });
         setMessagesMap((prev) => ({ ...prev, [convId]: messages }));
       },
       getExisting: (convId) => messagesMapRef.current?.[convId] || [],
@@ -451,7 +459,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
 
   const activeMessages = selectedConv ? (messagesMap[selectedConv.id] || []) : [];
   const activePaging = selectedConv ? messagePaging[selectedConv.id] : undefined;
-  const activeHasMore = Boolean(activePaging?.hasMore && activePaging.oldest);
+  const activeHasMore = Boolean(activeMessages.length > 0 && activePaging?.hasMore && activePaging.oldest);
   const activeLoadingOlder = Boolean(activePaging?.loading);
   const activePagingError = Boolean(activePaging?.error);
   // Faz 16 (Sorun 2/10): ilk hidrasyon SURERKEN "mesaj yok" gosterilmez —
@@ -1922,11 +1930,29 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
             return updated === list ? prev : { ...prev, [convId]: updated };
           });
           const serverReaction = eventData.conversation_reaction || null;
+          const newPreview = eventData.last_message_preview;
+          const newLastAt = eventData.last_message_at;
           setConversations((prev) =>
-            prev.map((c) => (Number(c.id) === convId ? { ...c, last_reaction: serverReaction } : c)),
+            prev.map((c) =>
+              Number(c.id) === convId
+                ? {
+                    ...c,
+                    last_reaction: serverReaction,
+                    ...(newPreview ? { last_message_preview: newPreview } : {}),
+                    ...(newLastAt ? { last_message_at: newLastAt } : {}),
+                  }
+                : c,
+            ),
           );
           setSelectedConv((prev) =>
-            prev && Number(prev.id) === convId ? { ...prev, last_reaction: serverReaction } : prev,
+            prev && Number(prev.id) === convId
+              ? {
+                  ...prev,
+                  last_reaction: serverReaction,
+                  ...(newPreview ? { last_message_preview: newPreview } : {}),
+                  ...(newLastAt ? { last_message_at: newLastAt } : {}),
+                }
+              : prev,
           );
         }
       }
@@ -2858,7 +2884,10 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
               EKLEMEZ, yalnizca icerigi degistirir. */}
           <div className={`flex-1 w-0 min-w-0 overflow-hidden flex flex-col h-full bg-white dark:bg-[#181C28] ${selectedConv ? 'flex' : 'hidden md:flex'}`}>
             {selectedConv ? (
-              <>
+              <div
+                key={selectedConv.id}
+                className="flex-1 w-full h-full flex flex-col overflow-hidden animate-in fade-in-50 slide-in-from-right-3 duration-200 ease-out"
+              >
                 {/* Active Chat Header */}
                 <div className="p-3 sm:p-3.5 border-b border-slate-200/80 dark:border-white/[0.08] bg-slate-50/50 dark:bg-black/20 flex items-center justify-between shrink-0 gap-2">
                   <div className="flex items-center space-x-2 sm:space-x-3 min-w-0 flex-1">
@@ -3077,9 +3106,9 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                     }
                   }}
                 />
-              </>
+              </div>
             ) : (
-              <div className="flex-1 flex items-center justify-center p-8">
+              <div className="flex-1 flex items-center justify-center p-8 animate-in fade-in duration-200">
                 {/* Sorun 1/17: ilk yukleme surerken "sohbet yok" DENMEZ —
                     loading ile empty karismaz. */}
                 {convLoadState === 'loading' ? (

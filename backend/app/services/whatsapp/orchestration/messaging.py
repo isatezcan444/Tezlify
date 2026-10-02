@@ -102,15 +102,7 @@ def serialize_message(
     gelir; ikisi arayuzde ayni sekilde (kart cizilmez) ele alinir.
     """
     # Gelen medya gateway'de durur; frontend kimlik dogrulamali proxy uzerinden ceker.
-    media_url = (
-        f"/api/v1/whatsapp/media/{row.media_id}"
-        if row.media_id
-        else (
-            f"/api/v1/whatsapp/media/{row.wa_message_id}"
-            if row.message_type in (MessageType.IMAGE, MessageType.VIDEO, MessageType.AUDIO, MessageType.DOCUMENT) and row.wa_message_id
-            else None
-        )
-    )
+    media_url = f"/api/v1/whatsapp/media/{row.media_id}" if row.media_id else None
     return {
         "id": row.id,
         "conversation_id": row.conversation_id,

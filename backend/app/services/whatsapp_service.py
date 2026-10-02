@@ -928,12 +928,16 @@ def resolve_has_more(
         return True
     ev = evidence or {}
     state = ev.get("state")
-    if state in ("TIMEOUT", "PROVIDER_ERROR") or not ev.get("provider_checked"):
-        # The provider never gave a usable answer, so completeness is unproven.
-        return True
     if state in ("FULLY_EXHAUSTED", "CURSOR_STALLED") or ev.get("provider_exhausted"):
         return False
-    return True
+    if state in ("TIMEOUT", "PROVIDER_ERROR"):
+        return True
+    if not ev.get("provider_checked"):
+        # The provider never gave an answer yet, so completeness is unproven.
+        return True
+    # The provider has been checked, no timeout/error occurred, our DB has no
+    # older rows, and fewer rows were returned than the page size: there are no older messages.
+    return False
 
 
 async def _history_evidence_session_id(

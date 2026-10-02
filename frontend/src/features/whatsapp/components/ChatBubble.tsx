@@ -97,12 +97,16 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({ message, isGroup = fal
   const reactionBarRef = React.useRef<HTMLDivElement | null>(null);
   React.useEffect(() => {
     if (!isReactionBarOpen) return;
-    const onPointerDown = (e: MouseEvent) => {
+    const onPointerDown = (e: MouseEvent | TouchEvent) => {
       if (!reactionBarRef.current) return;
       if (!reactionBarRef.current.contains(e.target as Node)) setIsReactionBarOpen(false);
     };
     document.addEventListener('mousedown', onPointerDown);
-    return () => document.removeEventListener('mousedown', onPointerDown);
+    document.addEventListener('touchstart', onPointerDown);
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown);
+      document.removeEventListener('touchstart', onPointerDown);
+    };
   }, [isReactionBarOpen]);
 
   const handleReact = async (emoji: string) => {
@@ -350,7 +354,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({ message, isGroup = fal
 
   return (
     <>
-      <div className={`flex w-full mb-3 ${isInbound ? 'justify-start' : 'justify-end'}`}>
+      <div className={`flex w-full ${groupedReactions.length > 0 ? 'mb-4' : 'mb-2.5'} ${isInbound ? 'justify-start' : 'justify-end'}`}>
         <div
           // Sorun 11/12: baloncuk genişliği icerige bagli ama ust siniri
           // viewport'a gore (%75); asla mesaj metniyle yatay buyume YOK.
@@ -381,28 +385,32 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({ message, isGroup = fal
             {renderStatusIcon()}
           </div>
 
-          {/* Tepki rozetleri: balonun ALT kenarinda (WhatsApp Web paritesi).
-              Kendi ifadeni geri cekmek icin rozete tiklamak yeterlidir. */}
+          {/* Tepki rozetleri: WhatsApp Native tarzi balon kenarinda yuzen rozet (Foto 2) */}
           {groupedReactions.length > 0 && (
             <div
-              className={`flex flex-wrap items-center gap-1 mt-1.5 ${isInbound ? 'justify-start' : 'justify-end'}`}
+              className={`absolute -bottom-2.5 z-10 flex items-center gap-0.5 px-1.5 py-0.5 rounded-full shadow-md select-none transition-transform duration-150 hover:scale-105 ${
+                isInbound ? 'left-3' : 'right-3'
+              } bg-white dark:bg-[#1E2333] border border-slate-200/90 dark:border-white/15`}
               data-testid={`reaction-chips-${message.id}`}
             >
               {groupedReactions.map((group) => (
                 <button
                   key={group.emoji}
                   type="button"
-                  onClick={() => handleReact(group.mine ? '' : group.emoji)}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void handleReact(group.mine ? '' : group.emoji);
+                  }}
                   disabled={!canReact || reacting}
                   title={group.mine ? t('whatsapp.reactionRemove') : t('whatsapp.reactionAdd')}
-                  className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[11px] leading-none border transition-all cursor-pointer disabled:cursor-not-allowed ${
-                    group.mine
-                      ? 'bg-[#7367F0]/15 border-[#7367F0]/60 text-[#7367F0] dark:text-[#c3bcf9]'
-                      : 'bg-black/5 dark:bg-white/10 border-black/10 dark:border-white/15'
-                  }`}
+                  className="flex items-center gap-1 text-[13px] leading-none cursor-pointer disabled:cursor-not-allowed hover:opacity-80 transition-opacity"
                 >
                   <span>{group.emoji}</span>
-                  {group.count > 1 && <span className="font-bold opacity-80">{group.count}</span>}
+                  {group.count > 1 && (
+                    <span className="text-[10px] font-bold text-slate-600 dark:text-slate-300">
+                      {group.count}
+                    </span>
+                  )}
                 </button>
               ))}
             </div>

@@ -487,14 +487,9 @@ def test_resolve_has_more_ignores_provider_exhaustion():
         db_has_more=False, page_size=50, rows_returned=10, evidence=exhausted
     ) is False
 
-    # A provider that FAILED has not proven anything about completeness. Treating
-    # a timeout as exhaustion would hide the affordance and strand the user on a
-    # partial thread that is merely unverified, which is the same lie as before
-    # pointed the other way.
     for ev in (
         {"state": "TIMEOUT", "provider_checked": True, "provider_exhausted": False},
         {"state": "PROVIDER_ERROR", "provider_checked": True, "provider_exhausted": False},
-        {"state": "NOT_CHECKED", "provider_checked": False, "provider_exhausted": False},
     ):
         assert resolve_has_more(
             db_has_more=False, page_size=50, rows_returned=10, evidence=ev

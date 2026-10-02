@@ -73,10 +73,32 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
   }, [pendingFile]);
 
   const attachMenuRef = useRef<HTMLDivElement>(null);
+  const emojiContainerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const draftInputRef = useRef<HTMLInputElement>(null);
   const composerRootRef = useRef<HTMLDivElement>(null);
   const [isEmojiOpen, setIsEmojiOpen] = useState(false);
+
+  // Click / tap outside handler to auto-close emoji panel and attachment menu
+  useEffect(() => {
+    if (!isEmojiOpen && !isAttachMenuOpen) return;
+    const handlePointerDown = (e: MouseEvent | TouchEvent) => {
+      const target = e.target as Node;
+      if (isEmojiOpen && emojiContainerRef.current && !emojiContainerRef.current.contains(target)) {
+        setIsEmojiOpen(false);
+      }
+      if (isAttachMenuOpen && attachMenuRef.current && !attachMenuRef.current.contains(target)) {
+        setIsAttachMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('touchstart', handlePointerDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('touchstart', handlePointerDown);
+    };
+  }, [isEmojiOpen, isAttachMenuOpen]);
+
   const lastTypingSignalRef = useRef<number>(0);
   const typingActiveRef = useRef<boolean>(false);
   const onTypingRef = useRef<((typing: boolean) => void) | undefined>(onTyping);
@@ -354,7 +376,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
       {/* 3. Main Composer Row */}
       <form onSubmit={handleSubmit} className="flex items-center space-x-2">
         {/* Emoji Picker (WhatsApp Web: smiley first, then attach) */}
-        <div className="relative">
+        <div className="relative" ref={emojiContainerRef}>
           <Tooltip content={t('whatsapp.emojiPickerTitle')}>
             <button
               type="button"
@@ -475,6 +497,14 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
             type="text"
             value={text}
             disabled={isInputDisabled}
+            onFocus={() => {
+              setIsEmojiOpen(false);
+              setIsAttachMenuOpen(false);
+            }}
+            onClick={() => {
+              if (isEmojiOpen) setIsEmojiOpen(false);
+              if (isAttachMenuOpen) setIsAttachMenuOpen(false);
+            }}
             onChange={(e) => {
               setText(e.target.value);
               notifyTypingActivity();

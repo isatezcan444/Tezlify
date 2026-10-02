@@ -100,9 +100,17 @@ export function normalizePreviewText(
   const type = String(messageType || 'TEXT').toUpperCase();
   const text = String(body || '').trim();
   if (text) {
+    if (text.startsWith('[REACTION')) {
+      const rxMatch = /^\[REACTION(?::(.+?))?\]$/.exec(text);
+      const emoji = rxMatch?.[1] || '❤️';
+      return `Şu mesaja ${emoji} ifadesini bıraktı`;
+    }
     const m = /^\[([A-Za-z_]+)\]$/.exec(text);
     if (m) {
       const inner = m[1].toUpperCase();
+      if (inner === 'REACTION') {
+        return 'Şu mesaja ❤️ ifadesini bıraktı';
+      }
       return TYPE_LABEL_KEYS[inner] ? labelForType(inner, t) : labelForType(type, t);
     }
     if (text === '[object Object]' || text === '[Medya]') return labelForType(type, t);
@@ -110,6 +118,34 @@ export function normalizePreviewText(
   }
   if (type === 'TEXT') return '';
   return labelForType(type, t);
+}
+
+/** Reaksiyon birakildiginda liste satirinda gosterilecek metin (WhatsApp Web paritesi). */
+export function formatReactionPreview(
+  emoji: string,
+  fromMe: boolean,
+  senderName?: string | null,
+  isGroup: boolean = false,
+  t?: (key: string, params?: Record<string, string | number>) => string,
+): string {
+  const cleanEmoji = emoji || '❤️';
+  const name = String(senderName || '').trim();
+  if (t) {
+    if (fromMe) {
+      return t('whatsapp.reactionLeftByYou', { emoji: cleanEmoji });
+    }
+    if (isGroup && name && name.toUpperCase() !== 'ME' && !isRawIdentityName(name) && !isPhoneLikeName(name)) {
+      return t('whatsapp.reactionLeftInGroup', { name, emoji: cleanEmoji });
+    }
+    return t('whatsapp.reactionLeftByOther', { emoji: cleanEmoji });
+  }
+  if (fromMe) {
+    return `Şu mesaja ${cleanEmoji} ifadesini bıraktınız`;
+  }
+  if (isGroup && name && name.toUpperCase() !== 'ME' && !isRawIdentityName(name) && !isPhoneLikeName(name)) {
+    return `${name} şu mesaja ${cleanEmoji} ifadesini bıraktı`;
+  }
+  return `Şu mesaja ${cleanEmoji} ifadesini bıraktı`;
 }
 
 /** Sohbet listesi satırı için son-mesaj özeti (tek paylaşılan kural). */

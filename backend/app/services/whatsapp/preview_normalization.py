@@ -70,9 +70,16 @@ def normalize_preview_text(message_type: Optional[str], body: Optional[str]) -> 
     t = str(message_type or "TEXT").upper()
     text = (body or "").strip()
     if text:
+        if text.startswith("[REACTION"):
+            m_rx = re.match(r"^\[REACTION(?::(.+?))?\]$", text)
+            if m_rx:
+                rx_emoji = m_rx.group(1) or "❤️"
+                return f"Şu mesaja {rx_emoji} ifadesini bıraktı"
         m = BRACKET_TYPE_RE.match(text)
         if m:
             inner = m.group(1).upper()
+            if inner == "REACTION":
+                return "Şu mesaja ❤️ ifadesini bıraktı"
             # UI'a asla kopeli deger sizmaz: taninmayan tip -> mesajin kendi
             # tip etiketi, o da yoksa genel 'Mesaj'.
             return TYPE_PREVIEW_LABELS.get(inner, TYPE_PREVIEW_LABELS.get(t, "Mesaj"))
@@ -82,6 +89,37 @@ def normalize_preview_text(message_type: Optional[str], body: Optional[str]) -> 
     if t == "TEXT":
         return ""
     return TYPE_PREVIEW_LABELS.get(t, "Mesaj")
+
+
+def format_reaction_preview(
+    emoji: str,
+    *,
+    from_me: bool = False,
+    sender_name: Optional[str] = None,
+    is_group: bool = False,
+    lang: str = "tr",
+) -> str:
+    """WhatsApp Web ile birebir aynı reaksiyon bildirim önizleme metnini üretir."""
+    clean_emoji = emoji or "❤️"
+    clean_name = (sender_name or "").strip()
+    if from_me:
+        if lang == "en":
+            return f"You reacted {clean_emoji} to a message"
+        return f"Şu mesaja {clean_emoji} ifadesini bıraktınız"
+    else:
+        if (
+            is_group
+            and clean_name
+            and clean_name.upper() != "ME"
+            and not is_raw_jid_name(clean_name)
+            and not is_phone_like(clean_name)
+        ):
+            if lang == "en":
+                return f"{clean_name} reacted {clean_emoji} to a message"
+            return f"{clean_name} şu mesaja {clean_emoji} ifadesini bıraktı"
+        if lang == "en":
+            return f"Reacted {clean_emoji} to a message"
+        return f"Şu mesaja {clean_emoji} ifadesini bıraktı"
 
 
 def build_last_message_summary(

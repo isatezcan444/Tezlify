@@ -1458,6 +1458,36 @@ export function createSessionManager({
       const fromMe = Boolean(msg.key?.fromMe);
       const reactorJid = fromMe ? null : (msg.key?.participant || msg.key?.remoteJid || null);
       const ts = messageTimestampMs(msg.messageTimestamp);
+
+      // Memory store'daki hedef mesaja ve sohbete reaksiyonu ilistir
+      const session = sessions.get(sessionId);
+      if (session) {
+        const store = this._storeOf(session);
+        const list = store.messagesByChat.get(key) || [];
+        const targetRecord = list.find((m) => m.wa_message_id === targetWaId);
+        if (targetRecord) {
+          targetRecord.reactions = targetRecord.reactions || [];
+          targetRecord.reactions = targetRecord.reactions.filter((r) => r.reactor_jid !== reactorJid || r.from_me !== fromMe);
+          if (emoji) {
+            targetRecord.reactions.push({
+              emoji,
+              from_me: fromMe,
+              reactor_jid: reactorJid,
+              created_at: ts ? new Date(ts).toISOString() : null,
+            });
+          }
+        }
+        const chat = store.chats.get(key);
+        if (chat && emoji) {
+          chat.last_reaction = { emoji, from_me: fromMe, reactor_jid: reactorJid };
+          chat.last_message_preview = fromMe
+            ? `Şu mesaja ${emoji} ifadesini bıraktınız`
+            : `Şu mesaja ${emoji} ifadesini bıraktı`;
+          if (ts) chat.last_activity_timestamp = ts;
+          this._emit({ gateway_session_id: sessionId, event: 'chat_update', chat });
+        }
+      }
+
       const event = {
         event: 'message_reaction',
         conversation_id: key,
@@ -2612,6 +2642,20 @@ export function createSessionManager({
         mediaId = mediaStore.getMediaIdByWaId(waMsgId);
       }
 
+      const rawReactions = Array.isArray(msg.reactions)
+        ? msg.reactions
+        : (msg.message?.reactionMessage ? [msg.message.reactionMessage] : []);
+      const reactions = rawReactions
+        .filter((r) => r?.text)
+        .map((r) => ({
+          emoji: r.text,
+          from_me: Boolean(r.key?.fromMe),
+          reactor_jid: r.key?.fromMe ? null : (r.key?.participant || r.key?.remoteJid || null),
+          created_at: r.senderTimestampMs
+            ? new Date(Number(r.senderTimestampMs)).toISOString()
+            : null,
+        }));
+
       return {
         id: ts,
         timestamp_s: Number.isFinite(timestampSeconds) && timestampSeconds > 0 ? timestampSeconds : null,
@@ -2630,6 +2674,7 @@ export function createSessionManager({
         sender_name: msg.key?.fromMe ? 'ME' : (this._resolveDisplayName(session, msg.key?.participant || key, msg.pushName) || null),
         participant_jid: msg.key?.participant || null,
         participant_name: msg.key?.participant ? this._resolveDisplayName(session, msg.key.participant, msg.pushName) : null,
+        reactions: reactions,
         created_at: new Date(ts).toISOString(),
       };
     },

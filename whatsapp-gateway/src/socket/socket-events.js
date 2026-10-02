@@ -753,6 +753,30 @@ export function bindSocketEvents({
         // history page completes its own waiter instead of timing out.
         touchedHistoryKeys.add(key);
         if (msg.key?.id === '__history__' || msg.message?.protocolMessage) continue;
+
+        // History sync icindeki bagimsiz reactionMessage olaylari: hedef mesaja ilistir
+        const rx = msg.message?.reactionMessage;
+        if (rx?.key?.id && typeof rx.text === 'string') {
+          if (rx.text) {
+            const targetWaId = rx.key.id;
+            const targetList = messagesByChat.get(key) || [];
+            const targetRecord = targetList.find((m) => m.wa_message_id === targetWaId);
+            if (targetRecord) {
+              targetRecord.reactions = targetRecord.reactions || [];
+              const fromMe = Boolean(msg.key?.fromMe);
+              const reactorJid = fromMe ? null : (msg.key?.participant || msg.key?.remoteJid || null);
+              targetRecord.reactions = targetRecord.reactions.filter((r) => r.reactor_jid !== reactorJid || r.from_me !== fromMe);
+              targetRecord.reactions.push({
+                emoji: rx.text,
+                from_me: fromMe,
+                reactor_jid: reactorJid,
+                created_at: msg.messageTimestamp ? new Date(messageTimestampMs(msg.messageTimestamp)).toISOString() : null,
+              });
+            }
+          }
+          continue;
+        }
+
         if (msg.key.id && msg.message) rememberRaw(key, msg.key.id, msg.message);
         const list = messagesByChat.get(key) || [];
         if (msg.key.id && list.some((m) => m.wa_message_id === msg.key.id)) continue;

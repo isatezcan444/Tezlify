@@ -60,6 +60,7 @@ from backend.app.services.whatsapp.reconciliation import (
 from backend.app.services.whatsapp.preview_normalization import (
     as_naive_utc as _as_naive_utc,
     build_last_message_summary,
+    format_reaction_preview as _format_reaction_preview,
     normalize_preview_text as _normalize_preview_text,
     parse_dt as _parse_dt,
 )
@@ -1172,6 +1173,22 @@ class WhatsAppEventOrchestrator:
             from_me=from_me,
             emoji=emoji,
         )
+
+        reaction_preview = None
+        if emoji:
+            sender_display_name = event.get("sender_name") or event.get("participant_name")
+            reaction_preview = _format_reaction_preview(
+                emoji,
+                from_me=from_me,
+                sender_name=sender_display_name,
+                is_group="@g.us" in jid_str,
+                lang="tr",
+            )
+            conv.last_message_preview = reaction_preview
+            created_at_dt = _parse_dt(event.get("created_at")) or datetime.now(timezone.utc).replace(tzinfo=None)
+            conv.last_message_at = created_at_dt
+            await db.flush()
+
         return {
             "event": "message_reaction",
             "user_id": owner,
@@ -1183,6 +1200,8 @@ class WhatsAppEventOrchestrator:
             "from_me": from_me,
             "reactor_jid": reactor_jid,
             "removed": not emoji,
+            "last_message_preview": reaction_preview or conv.last_message_preview,
+            "last_message_at": conv.last_message_at.isoformat() if conv.last_message_at else None,
             # Liste rozeti SUNUCUDA hesaplanir: "en son mesajin ifadesi" kurali
             # istemcide tekrarlanirsa iki taraf ayrisabilir. Reaksiyon eski bir
             # mesaja aitse bu alan mevcut rozeti korur (ya da yoksa null).
