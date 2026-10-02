@@ -6,7 +6,7 @@ Tüm uç noktalar kimlik doğrulamalı ve çok kiracılı (user_id filtresi) ça
 from typing import Optional, Dict, Any
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -874,9 +874,45 @@ async def merge_lid_splits(
     return WhatsAppLidSplitMergeResponse(**result)
 
 
+def _handle_byte_range(
+    data: bytes, range_header: str, mime: Optional[str], headers: dict
+) -> Response:
+    total_len = len(data)
+    headers["Accept-Ranges"] = "bytes"
+    if not range_header.startswith("bytes="):
+        headers["Content-Length"] = str(total_len)
+        return Response(content=data, media_type=mime or "application/octet-stream", headers=headers)
+
+    raw_range = range_header.replace("bytes=", "").strip()
+    parts = raw_range.split("-")
+    try:
+        start = int(parts[0]) if parts[0] else 0
+        end = int(parts[1]) if len(parts) > 1 and parts[1] else total_len - 1
+    except ValueError:
+        headers["Content-Length"] = str(total_len)
+        return Response(content=data, media_type=mime or "application/octet-stream", headers=headers)
+
+    if start >= total_len or end >= total_len or start > end:
+        return Response(
+            status_code=416,
+            headers={"Content-Range": f"bytes */{total_len}", "Accept-Ranges": "bytes"},
+        )
+
+    chunk = data[start : end + 1]
+    headers["Content-Range"] = f"bytes {start}-{end}/{total_len}"
+    headers["Content-Length"] = str(len(chunk))
+    return Response(
+        content=chunk,
+        status_code=206,
+        media_type=mime or "application/octet-stream",
+        headers=headers,
+    )
+
+
 @router.get("/media/{media_id}")
 async def get_media(
     media_id: str,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: AuthUser = Depends(get_current_user),
 ) -> Response:
@@ -892,6 +928,11 @@ async def get_media(
     headers = {}
     if filename:
         headers["Content-Disposition"] = f'inline; filename="{filename}"'
+    range_header = request.headers.get("range")
+    if range_header:
+        return _handle_byte_range(data, range_header, mime, headers)
+    headers["Accept-Ranges"] = "bytes"
+    headers["Content-Length"] = str(len(data))
     return Response(content=data, media_type=mime or "application/octet-stream", headers=headers)
 
 

@@ -37,6 +37,36 @@ export function hasRecognizedContent(content) {
   );
 }
 
+export function extractLinkPreviewMetadata(messageContent) {
+  const content = extractMessageContent(messageContent) || messageContent || {};
+  const ext = content.extendedTextMessage;
+  if (!ext || typeof ext !== 'object') return null;
+  const url = ext.matchedText || ext.canonicalUrl || null;
+  const title = ext.title || null;
+  const description = ext.description || null;
+  let jpegThumbnailBuffer = null;
+  if (ext.jpegThumbnail) {
+    if (Buffer.isBuffer(ext.jpegThumbnail)) {
+      jpegThumbnailBuffer = ext.jpegThumbnail;
+    } else if (typeof ext.jpegThumbnail === 'string') {
+      try {
+        jpegThumbnailBuffer = Buffer.from(ext.jpegThumbnail, 'base64');
+      } catch {
+        jpegThumbnailBuffer = null;
+      }
+    } else if (ext.jpegThumbnail instanceof Uint8Array) {
+      jpegThumbnailBuffer = Buffer.from(ext.jpegThumbnail);
+    }
+  }
+  if (!url && !title && !description && !jpegThumbnailBuffer) return null;
+  return {
+    url,
+    title,
+    description,
+    jpegThumbnailBuffer,
+  };
+}
+
 /**
  * Metinsiz sistem/protokol/ifade/arama mesajlari icin bir preview isareti uretir.
  *

@@ -25,6 +25,7 @@ import { EmojiPicker } from './EmojiPicker';
 import { DocumentCard } from './DocumentCard';
 import { LinkPreviewCard } from './LinkPreviewCard';
 import { groupReactions } from '../lib/whatsappReactions';
+import { resolveMediaUrl } from '../../../lib/mediaUrl';
 
 /** WhatsApp Web'in tepki cubugunda gosterdigi altı hizli ifade. */
 export const QUICK_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🙏'] as const;
@@ -188,6 +189,8 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({ message, isGroup = fal
   );
 
   const renderMediaContent = () => {
+    const resolvedMediaUrl = resolveMediaUrl(message.media_url);
+
     switch (message.message_type) {
       case 'IMAGE':
         return (
@@ -196,9 +199,9 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({ message, isGroup = fal
               onClick={() => setIsLightboxOpen(true)}
               className="relative group rounded-xl overflow-hidden bg-slate-950/10 dark:bg-black/20 border border-black/5 dark:border-white/10 max-w-[280px] cursor-pointer"
             >
-              {message.media_url ? (
+              {resolvedMediaUrl ? (
                 <img 
-                  src={message.media_url} 
+                  src={resolvedMediaUrl} 
                   alt={message.media_caption || t('leads.imageAltFallback')} 
                   className="w-full h-auto max-h-60 object-cover group-hover:scale-105 transition-transform duration-200"
                 />
@@ -227,7 +230,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({ message, isGroup = fal
             <DocumentCard
               filename={message.media_filename}
               mimeType={message.media_mime_type}
-              url={message.media_url}
+              url={resolvedMediaUrl}
               isOutbound={!isInbound}
             />
             {message.media_caption && (
@@ -241,8 +244,8 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({ message, isGroup = fal
       case 'AUDIO':
         return (
           <div className="space-y-1.5 min-w-[220px]">
-            {message.media_url ? (
-              <audio controls preload="metadata" src={message.media_url} className="w-full h-9 max-w-[260px]" />
+            {resolvedMediaUrl ? (
+              <audio controls preload="metadata" src={resolvedMediaUrl} className="w-full h-9 max-w-[260px]" />
             ) : (
               <div className="flex items-center space-x-2 p-2 rounded-xl bg-slate-200/60 dark:bg-white/[0.06]">
                 <div className="w-8 h-8 rounded-full bg-[#28C76F]/20 text-[#28C76F] flex items-center justify-center shrink-0">
@@ -258,18 +261,23 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({ message, isGroup = fal
         );
 
       case 'VIDEO':
+        const videoSrc = resolvedMediaUrl
+          ? (resolvedMediaUrl.includes('#') ? resolvedMediaUrl : `${resolvedMediaUrl}#t=0.1`)
+          : undefined;
+
         return (
           <div className="space-y-2 max-w-[280px]">
-            {message.media_url ? (
+            {videoSrc ? (
               <video
                 controls
                 preload="metadata"
+                playsInline
                 // `#t=0.1` medya fragment'i tarayiciya ILK KAREYE atlamasini
                 // soyler; bu sayede balon oynatilmadan once siyah bir
                 // dikdortgen degil, videonun kendi karesi gorunur. Sunucu
                 // tarafinda thumbnail uretmek yeni bir bagimlilik (ffmpeg)
                 // gerektirirdi; bu cozum ayni sonucu bagimliliksiz verir.
-                src={message.media_url.includes('#') ? message.media_url : `${message.media_url}#t=0.1`}
+                src={videoSrc}
                 className="w-full max-h-60 rounded-xl border border-black/5 dark:border-white/10 bg-black"
               />
             ) : (
@@ -514,9 +522,9 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({ message, isGroup = fal
           maxWidth="lg"
         >
           <div className="flex flex-col items-center justify-center p-4 bg-slate-950/20 rounded-xl">
-            {message.media_url ? (
+            {resolveMediaUrl(message.media_url) ? (
               <img 
-                src={message.media_url} 
+                src={resolveMediaUrl(message.media_url)} 
                 alt={t('leads.imageAltFallback')} 
                 className="max-h-[60vh] object-contain rounded-lg shadow-md"
               />

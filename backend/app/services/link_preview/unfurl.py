@@ -183,8 +183,8 @@ def _instagram_fallback(shortcode: str, normalized: str) -> Dict[str, Any]:
     izlenimi verir; kaynagi adiyla soyleyen bir kart ise dogru bilgi verir.
     """
     return {
-        "title": None,
-        "description": None,
+        "title": f"Instagram ({shortcode})",
+        "description": "Instagram gönderisi",
         "site_name": "Instagram",
         "image_url": None,
         "embed_url": None,
@@ -201,12 +201,26 @@ async def unfurl(normalized_url: str) -> Dict[str, Any]:
 
     video_id = youtube_video_id(normalized_url)
     if video_id:
-        # Tek bir dis istek bile YOK: kapak ve gomme adresi deterministik.
+        title = None
+        site_name = "YouTube"
+        try:
+            async with httpx.AsyncClient(timeout=2.0) as client:
+                res = await client.get(
+                    f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
+                )
+                if res.status_code == 200:
+                    data = res.json()
+                    title = data.get("title") or None
+                    if data.get("author_name"):
+                        site_name = f"YouTube · {data['author_name']}"
+        except Exception:
+            pass
+
         return {
             "kind": "VIDEO",
-            "title": None,
+            "title": title,
             "description": None,
-            "site_name": "YouTube",
+            "site_name": site_name,
             "image_url": youtube_thumbnail(video_id),
             "embed_url": youtube_embed(video_id),
         }

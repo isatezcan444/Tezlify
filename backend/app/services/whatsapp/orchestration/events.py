@@ -47,6 +47,10 @@ from backend.app.services.whatsapp.identity import (
     strip_jid_prefix as _strip_jid_prefix,
     jid_to_phone,
 )
+from backend.app.services.link_preview.service import (
+    ingest_native_preview as _ingest_native_preview,
+    preview_for_text_message as _preview_for_text_message,
+)
 from backend.app.services.whatsapp.orchestration.messaging import (
     serialize_message as _serialize_message,
 )
@@ -907,11 +911,26 @@ class WhatsAppEventOrchestrator:
         # before serialization, instead of losing it.
         apply_deferred_status(row, advance=advance_message_status)
 
+        preview_data = None
+        native_preview = msg.get("native_link_preview")
+        if native_preview and isinstance(native_preview, dict) and native_preview.get("url"):
+            try:
+                preview_data = await _ingest_native_preview(db, native_preview)
+            except Exception as exc:
+                logger.debug("Native link preview ingest failed: %s", exc)
+        if preview_data is None and row.body:
+            try:
+                preview_data = await _preview_for_text_message(
+                    db, row.body, user_id=owner, conversation_id=conv.id
+                )
+            except Exception as exc:
+                logger.debug("Text message link preview failed: %s", exc)
+
         event["conversation_id"] = conv.id
         event["jid"] = jid_str
         event["is_group"] = is_group_jid
         event["lead_phone"] = contact.phone_e164 if contact else None
-        event["message"] = serialize_message(row)
+        event["message"] = serialize_message(row, preview=preview_data)
         return event
 
     async def _ingest_contact_synced(self, db: AsyncSession, event: Dict[str, Any]) -> Dict[str, Any]:

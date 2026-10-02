@@ -61,6 +61,7 @@ import {
   summarizeWaMessage,
   systemContentMarker,
   buildMediaContent,
+  extractLinkPreviewMetadata,
 } from './messages/message-classifier.js';
 
 import {
@@ -1159,6 +1160,22 @@ export function createSessionManager({
         const st = String(existing.status || '').toUpperCase();
         if (st === 'SENT' || st === 'DELIVERED' || st === 'READ') return { ...existing };
       }
+      let storedOutboundMedia = null;
+      if (media_base64 && typeof mediaStore?.storeMediaBuffer === 'function') {
+        try {
+          const buf = Buffer.from(media_base64, 'base64');
+          storedOutboundMedia = mediaStore.storeMediaBuffer(session.id, buf, {
+            mimeType: mime_type,
+            filename,
+          });
+        } catch (e) {
+          logger.warn({ err: e }, 'Failed to store outbound media in mediaStore');
+        }
+      }
+      const outboundMediaId = storedOutboundMedia?.media_id || null;
+      const outboundMimeType = storedOutboundMedia?.mime_type || mime_type || null;
+      const outboundFilename = storedOutboundMedia?.filename || filename || null;
+
       const content = buildMediaContent({
         media_type, media_url, media_base64, mime_type, caption, filename,
       });
@@ -1168,7 +1185,8 @@ export function createSessionManager({
       const pending = this._recordOutbound(key, {
         body: expectedBody, message_type: type.toUpperCase(),
         client_message_id: clientMessageId, wa_message_id: messageId, status: 'PENDING',
-        media_filename: filename, media_caption: caption,
+        media_id: outboundMediaId, media_mime_type: outboundMimeType,
+        media_filename: outboundFilename, media_caption: caption,
       }, session.id);
       let result;
       try {
@@ -1459,7 +1477,11 @@ export function createSessionManager({
         return this._ingestReactionMessage(sessionId, msg, key, reactionContent);
       }
 
-      if (msg.key?.id) {
+      const existingRecord = msg.key?.id
+        ? (messagesByChat.get(key) || []).find((m) => m.wa_message_id && m.wa_message_id === msg.key.id)
+        : null;
+
+      if (existingRecord) {
         // A duplicate is only a duplicate if it carries nothing new.
         //
         // chats.update synthesises a message-less record from `lastMessage` and
@@ -1471,17 +1493,12 @@ export function createSessionManager({
         //
         // So: an existing record that already has a media_id wins, and the
         // media-less placeholder is upgraded in place instead of dropped.
-        const existingRecord = (messagesByChat.get(key) || []).find(
-          (m) => m.wa_message_id && m.wa_message_id === msg.key.id
-        );
-        if (existingRecord) {
-          const placeholder = !existingRecord.media_id;
-          const incomingHasMedia = Boolean(msg.message?.imageMessage || msg.message?.videoMessage
-            || msg.message?.audioMessage || msg.message?.documentMessage || msg.message?.stickerMessage);
-          if (!placeholder) return null;
-          if (!incomingHasMedia) return null;
-          // Fall through: the incoming record replaces the placeholder below.
-        }
+        const placeholder = !existingRecord.media_id;
+        const incomingHasMedia = Boolean(msg.message?.imageMessage || msg.message?.videoMessage
+          || msg.message?.audioMessage || msg.message?.documentMessage || msg.message?.stickerMessage);
+        if (!placeholder) return null;
+        if (!incomingHasMedia) return null;
+        // Fall through: the incoming record replaces the placeholder below.
       }
 
       const lidHold = isLidJid(key);
@@ -1493,9 +1510,41 @@ export function createSessionManager({
       const text = msg.message?.conversation || msg.message?.extendedTextMessage?.text || msg.message?.imageMessage?.caption || msg.message?.videoMessage?.caption || msg.message?.documentMessage?.caption || '';
       const mediaType = classifyMessageType(msg.message);
       let mediaInfo = null;
-      if (!fromMe && mediaType !== 'TEXT' && mediaType !== 'LOCATION' && mediaType !== 'CONTACT' && typeof this.storeIncomingMedia === 'function' && sock) {
-        mediaInfo = await this.storeIncomingMedia(session, msg, sock);
+      if (mediaType !== 'TEXT' && mediaType !== 'LOCATION' && mediaType !== 'CONTACT' && typeof this.storeIncomingMedia === 'function' && sock) {
+        if (existingRecord?.media_id) {
+          mediaInfo = {
+            media_id: existingRecord.media_id,
+            mime_type: existingRecord.media_mime_type,
+            filename: existingRecord.media_filename,
+          };
+        } else {
+          mediaInfo = await this.storeIncomingMedia(session, msg, sock);
+        }
       }
+
+      let nativeLinkPreview = null;
+      const previewMeta = extractLinkPreviewMetadata(msg.message);
+      if (previewMeta) {
+        let thumbMediaId = null;
+        if (previewMeta.jpegThumbnailBuffer && typeof mediaStore?.storeMediaBuffer === 'function') {
+          try {
+            const storedThumb = mediaStore.storeMediaBuffer(session?.id, previewMeta.jpegThumbnailBuffer, {
+              mimeType: 'image/jpeg',
+              filename: `thumb_${msg.key?.id || Date.now()}.jpg`,
+            });
+            thumbMediaId = storedThumb?.media_id || null;
+          } catch (tErr) {
+            logger.debug({ tErr }, 'Failed to save link preview jpegThumbnail');
+          }
+        }
+        nativeLinkPreview = {
+          url: previewMeta.url,
+          title: previewMeta.title,
+          description: previewMeta.description,
+          media_id: thumbMediaId,
+        };
+      }
+
       const ts = messageTimestampMs(msg.messageTimestamp);
       const timestampSeconds = Number(msg.messageTimestamp);
       const record = {
@@ -1506,10 +1555,11 @@ export function createSessionManager({
         message_type: mediaType,
         status: fromMe ? 'SENT' : 'RECEIVED',
         body: text || '',
-        media_id: mediaInfo?.media_id || null,
-        media_mime_type: mediaInfo?.mime_type || null,
-        media_filename: mediaInfo?.filename || null,
-        media_caption: text || null,
+        media_id: mediaInfo?.media_id || existingRecord?.media_id || null,
+        media_mime_type: mediaInfo?.mime_type || existingRecord?.media_mime_type || null,
+        media_filename: mediaInfo?.filename || existingRecord?.media_filename || null,
+        media_caption: text || existingRecord?.media_caption || null,
+        native_link_preview: nativeLinkPreview,
         wa_message_id: msg.key?.id || null,
         sender_phone: fromMe ? 'ME' : (jidToPhone(key) || key),
         recipient_phone: fromMe ? (jidToPhone(key) || key) : 'ME',
@@ -1611,6 +1661,10 @@ export function createSessionManager({
         if (dup) {
           dup.client_message_id ||= data.client_message_id;
           dup.wa_message_id = data.wa_message_id || dup.wa_message_id;
+          dup.media_id = data.media_id || dup.media_id;
+          dup.media_mime_type = data.media_mime_type || dup.media_mime_type;
+          dup.media_filename = data.media_filename || dup.media_filename;
+          dup.media_caption = data.media_caption || dup.media_caption;
           if (data.status && (ACK_ORDER[data.status] ?? 0) > (ACK_ORDER[dup.status] ?? 0)) {
             dup.status = data.status;
           }
@@ -1624,6 +1678,8 @@ export function createSessionManager({
         message_type: data.message_type || 'TEXT',
         status: data.status || 'PENDING',
         body: data.body || '',
+        media_id: data.media_id || null,
+        media_mime_type: data.media_mime_type || null,
         media_url: data.media_url,
         media_filename: data.media_filename,
         media_caption: data.media_caption,

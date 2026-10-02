@@ -59,6 +59,33 @@ export function createMediaStore({
     return entry.filePath || null;
   }
 
+  function storeMediaBuffer(sessionId, buffer, { mimeType, filename } = {}) {
+    if (!buffer || !Buffer.isBuffer(buffer)) return null;
+    const mediaId = uuidv4();
+    const resolvedMime = mimeType || 'application/octet-stream';
+    const ext = (resolvedMime.split('/')[1] || 'bin').split(';')[0];
+    const resolvedFilename = filename || `media_${mediaId}.${ext}`;
+    const filePath = path.join(mediaDir, `${mediaId}.${ext}`);
+    fs.writeFileSync(filePath, buffer);
+    const meta = {
+      sessionId: String(sessionId || ''),
+      filePath,
+      mimeType: resolvedMime,
+      filename: resolvedFilename,
+      sizeBytes: buffer.length,
+      savedAt: Date.now(),
+    };
+    const metaPath = path.join(mediaDir, `${mediaId}.meta.json`);
+    try {
+      fs.writeFileSync(metaPath, JSON.stringify(meta), 'utf8');
+    } catch (metaErr) {
+      logger.warn({ metaErr, mediaId }, 'Failed to write media sidecar metadata');
+    }
+    mediaIndex.set(mediaId, meta);
+    evictOverflowMedia();
+    return { media_id: mediaId, mime_type: resolvedMime, filename: resolvedFilename, size_bytes: buffer.length };
+  }
+
   async function storeIncomingMedia(session, waMessage, sock) {
     try {
       const resolved = resolveDownloadableMedia(waMessage?.message);
@@ -77,29 +104,9 @@ export function createMediaStore({
         { logger, reuploadRequest: sock.updateMediaMessage }
       );
       if (!buffer) return null;
-      const mediaId = uuidv4();
       const mimeType = media.mimetype || 'application/octet-stream';
-      const ext = (mimeType.split('/')[1] || 'bin').split(';')[0];
-      const filename = media.fileName || `media_${mediaId}.${ext}`;
-      const filePath = path.join(mediaDir, `${mediaId}.${ext}`);
-      fs.writeFileSync(filePath, buffer);
-      const meta = {
-        sessionId: String(session?.id || ''),
-        filePath,
-        mimeType,
-        filename,
-        sizeBytes: buffer.length,
-        savedAt: Date.now(),
-      };
-      const metaPath = path.join(mediaDir, `${mediaId}.meta.json`);
-      try {
-        fs.writeFileSync(metaPath, JSON.stringify(meta), 'utf8');
-      } catch (metaErr) {
-        logger.warn({ metaErr, mediaId }, 'Failed to write media sidecar metadata');
-      }
-      mediaIndex.set(mediaId, meta);
-      evictOverflowMedia();
-      return { media_id: mediaId, mime_type: mimeType, filename, size_bytes: buffer.length };
+      const filename = media.fileName || undefined;
+      return storeMediaBuffer(session?.id, buffer, { mimeType, filename });
     } catch (err) {
       logger.warn({ err }, 'Failed to store incoming media');
       return null;
@@ -124,6 +131,7 @@ export function createMediaStore({
     mediaIndex,
     getMediaPath,
     storeIncomingMedia,
+    storeMediaBuffer,
     evictOverflowMedia,
     clearSessionMedia,
   };

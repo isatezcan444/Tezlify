@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { ExternalLink, Play } from 'lucide-react';
 import { LinkPreview } from '../../../types';
 import { useI18n } from '../../../context/I18nContext';
+import { resolveMediaUrl } from '../../../lib/mediaUrl';
 
 export interface LinkPreviewCardProps {
   preview: LinkPreview;
@@ -30,8 +31,10 @@ export const LinkPreviewCard: React.FC<LinkPreviewCardProps> = ({
 }) => {
   const { t } = useI18n();
   const [embedOpen, setEmbedOpen] = useState(false);
+  const [imageError, setImageError] = useState(false);
 
-  const hasImage = Boolean(preview.image_url);
+  const resolvedImageUrl = resolveMediaUrl(preview.image_url);
+  const hasImage = Boolean(resolvedImageUrl) && !imageError;
   const canEmbed = Boolean(preview.embed_url);
   const headline = preview.title || preview.site_name || preview.url;
   const surface = isOutbound
@@ -73,10 +76,11 @@ export const LinkPreviewCard: React.FC<LinkPreviewCardProps> = ({
             className="relative block w-full cursor-pointer group/preview"
           >
             <img
-              src={preview.image_url as string}
+              src={resolvedImageUrl}
               alt={headline}
               loading="lazy"
               referrerPolicy="no-referrer"
+              onError={() => setImageError(true)}
               className="w-full h-auto max-h-44 object-cover"
             />
             {canEmbed && (

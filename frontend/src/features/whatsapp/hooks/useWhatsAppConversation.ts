@@ -446,6 +446,29 @@ export function useWhatsAppConversation({
           return { ...prev, messages };
         });
       }
+
+      if (eventData.event === 'link_preview_updated' && matchesConv && eventData.preview) {
+        const preview = eventData.preview;
+        const previewUrl = eventData.url || preview.url;
+        setConversation((prev) => {
+          if (!prev) return prev;
+          let changed = false;
+          const messages = prev.messages.map((m) => {
+            if (
+              m.body &&
+              previewUrl &&
+              (m.body.includes(previewUrl) || (preview.url && m.body.includes(preview.url)))
+            ) {
+              if (!m.link_preview || JSON.stringify(m.link_preview) !== JSON.stringify(preview)) {
+                changed = true;
+                return { ...m, link_preview: preview };
+              }
+            }
+            return m;
+          });
+          return changed ? { ...prev, messages } : prev;
+        });
+      }
     };
 
     window.addEventListener('tezlify:ws_event', handleWsEvent);

@@ -51,6 +51,9 @@ from backend.app.services.whatsapp.repositories.sessions import (
     conversation_gateway_id as _conversation_gateway_id,
     conversation_session as _conversation_session,
 )
+from backend.app.services.link_preview.service import (
+    preview_for_text_message,
+)
 from backend.app.services.whatsapp.status_policy import (
     advance_message_status as _advance_message_status,
 )
@@ -65,13 +68,18 @@ _TERMINAL_OUTBOUND_STATUSES = {
 _ACCEPTED_GATEWAY_STATUSES = {"PENDING", "SENT", "DELIVERED", "READ"}
 
 
-def _validated_send_result(raw: Any) -> Dict[str, str]:
+def _validated_send_result(raw: Any) -> Dict[str, Any]:
     parsed = extract_send_result(raw)
     wa_message_id = parsed.get("wa_message_id")
     status = str(parsed.get("status") or "").upper()
     if not wa_message_id or status not in _ACCEPTED_GATEWAY_STATUSES:
         raise WhatsAppGatewayError("Gateway geçersiz gönderim yanıtı döndürdü.")
-    return {"wa_message_id": str(wa_message_id), "status": status}
+    return {
+        "wa_message_id": str(wa_message_id),
+        "status": status,
+        "media_id": parsed.get("media_id"),
+        "media_mime_type": parsed.get("media_mime_type"),
+    }
 
 
 def serialize_message(
@@ -313,7 +321,10 @@ class WhatsAppMessagingOrchestrator:
             ),
         )
         await db.commit()
-        return self.serialize_message(row)
+        preview_data = await preview_for_text_message(
+            db, clean, user_id=user_id, conversation_id=conv.id
+        )
+        return self.serialize_message(row, preview=preview_data)
 
     async def send_media_message(
         self,
@@ -395,6 +406,10 @@ class WhatsAppMessagingOrchestrator:
             raise
         await db.refresh(row)
         row.wa_message_id = send_res["wa_message_id"]
+        if send_res.get("media_id"):
+            row.media_id = send_res["media_id"]
+        if send_res.get("media_mime_type") and not row.media_mime_type:
+            row.media_mime_type = send_res["media_mime_type"]
         target_status = send_res.get("status")
         is_group = bool(conv.is_group) or ("@g.us" in str(jid))
         if is_group and target_status in (None, "PENDING"):

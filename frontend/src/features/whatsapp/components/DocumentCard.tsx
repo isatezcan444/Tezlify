@@ -1,7 +1,8 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   Download,
   ExternalLink,
+  Eye,
   File as FileIcon,
   FileArchive,
   FileSpreadsheet,
@@ -9,6 +10,8 @@ import {
   Presentation,
 } from 'lucide-react';
 import { useI18n } from '../../../context/I18nContext';
+import { Modal } from '../../../components/ui/Modal';
+import { resolveMediaUrl } from '../../../lib/mediaUrl';
 
 export interface DocumentCardProps {
   filename?: string | null;
@@ -57,14 +60,8 @@ function resolveVisual(filename?: string | null, mimeType?: string | null): DocV
 /**
  * Belge karti (WhatsApp Web paritesi).
  *
- * Onceki hali yalnizca bir dosya adi, MIME dizesi ve bir indirme simgesiydi —
- * kullanici belgenin TURUNU bir bakista goremiyordu. Bu kart turu ikon ve
- * rozetle soyler, hem acmayi hem indirmeyi ayri eylem olarak sunar.
- *
- * Boyut GOSTERILMEZ ve bu bilinclidir: `messages` tablosunda dosya boyutu
- * sutunu yoktur (bkz. `Message` modeli — media_id/mime/filename/caption var,
- * size yok). Uydurma bir boyut yazmak, olmayan bir veriyi varmis gibi
- * gostermek olurdu (AGENTS.md §1.1).
+ * Metin tabanlı belgeler (.txt, .csv, .json, .log, .md) için anlık önizleme penceresi
+ * sunar; diğer belgeler için doğrudan tarayıcıda açma ve indirme eylemleri sağlar.
  */
 export const DocumentCard: React.FC<DocumentCardProps> = ({
   filename,
@@ -75,6 +72,36 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
   const { t } = useI18n();
   const { Icon, tone, label } = resolveVisual(filename, mimeType);
   const displayName = filename || t('leads.documentFallbackName');
+  const resolvedUrl = resolveMediaUrl(url);
+
+  const ext = (filename || '').toLowerCase().split('.').pop() || '';
+  const mime = (mimeType || '').toLowerCase();
+  const isTextFile = ['txt', 'csv', 'json', 'log', 'md', 'xml'].includes(ext) || mime.includes('text') || mime.includes('json');
+
+  const [isPreviewOpen, setIsPreviewOpen] = useState(false);
+  const [previewContent, setPreviewContent] = useState<string | null>(null);
+  const [loadingPreview, setLoadingPreview] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+
+  const handleOpenPreview = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!resolvedUrl) return;
+    setIsPreviewOpen(true);
+    if (previewContent !== null) return;
+    setLoadingPreview(true);
+    setPreviewError(null);
+    try {
+      const res = await fetch(resolvedUrl);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const text = await res.text();
+      setPreviewContent(text);
+    } catch (err: any) {
+      setPreviewError(err?.message || t('whatsapp.documentPreviewError'));
+    } finally {
+      setLoadingPreview(false);
+    }
+  };
+
   const surface = isOutbound
     ? 'bg-black/15 border-white/20'
     : 'bg-slate-200/50 dark:bg-white/[0.06] border-black/5 dark:border-white/10';
@@ -82,63 +109,103 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
   const mutedColor = isOutbound ? 'text-white/70' : 'text-slate-500 dark:text-slate-400';
 
   return (
-    <div
-      data-testid="document-card"
-      className={`w-full max-w-[300px] min-w-0 rounded-xl border ${surface} overflow-hidden`}
-    >
-      <div className="flex items-center gap-3 p-2.5 min-w-0">
-        <div className={`w-10 h-10 rounded-lg flex items-center justify-center shrink-0 ${tone}`}>
-          <Icon className="w-5 h-5" />
+    <>
+      <div
+        data-testid="document-card"
+        className={`w-full max-w-[300px] min-w-0 rounded-xl border ${surface} overflow-hidden`}
+      >
+        <div className="flex items-center gap-3 p-2.5 min-w-0">
+          <div className={`w-10 h-10 rounded-lg flex items-center justify-center shrink-0 ${tone}`}>
+            <Icon className="w-5 h-5" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className={`text-xs font-bold truncate ${nameColor}`} title={displayName}>
+              {displayName}
+            </p>
+            <p className={`text-[10px] font-bold ${mutedColor}`}>
+              {label}
+              <span className="font-normal opacity-70"> · {mimeType || t('whatsapp.documentTypeUnknown')}</span>
+            </p>
+          </div>
         </div>
-        <div className="flex-1 min-w-0">
-          <p className={`text-xs font-bold truncate ${nameColor}`} title={displayName}>
-            {displayName}
+
+        {resolvedUrl ? (
+          <div className={`flex items-stretch border-t ${isOutbound ? 'border-white/20' : 'border-black/5 dark:border-white/10'}`}>
+            {isTextFile && (
+              <>
+                <button
+                  type="button"
+                  data-testid="document-preview-btn"
+                  onClick={handleOpenPreview}
+                  className={`flex-1 flex items-center justify-center gap-1.5 py-2 text-[11px] font-bold transition-colors cursor-pointer ${mutedColor} ${
+                    isOutbound ? 'hover:bg-white/10' : 'hover:bg-black/5 dark:hover:bg-white/[0.06]'
+                  }`}
+                >
+                  <Eye className="w-3.5 h-3.5" />
+                  <span>{t('whatsapp.documentPreview')}</span>
+                </button>
+                <span className={`w-px ${isOutbound ? 'bg-white/20' : 'bg-black/5 dark:bg-white/10'}`} />
+              </>
+            )}
+            <a
+              href={resolvedUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              className={`flex-1 flex items-center justify-center gap-1.5 py-2 text-[11px] font-bold transition-colors cursor-pointer ${mutedColor} ${
+                isOutbound ? 'hover:bg-white/10' : 'hover:bg-black/5 dark:hover:bg-white/[0.06]'
+              }`}
+            >
+              <ExternalLink className="w-3.5 h-3.5" />
+              <span>{t('whatsapp.documentOpen')}</span>
+            </a>
+            <span className={`w-px ${isOutbound ? 'bg-white/20' : 'bg-black/5 dark:bg-white/10'}`} />
+            <a
+              href={resolvedUrl}
+              download={filename || true}
+              onClick={(e) => e.stopPropagation()}
+              className={`flex-1 flex items-center justify-center gap-1.5 py-2 text-[11px] font-bold transition-colors cursor-pointer ${mutedColor} ${
+                isOutbound ? 'hover:bg-white/10' : 'hover:bg-black/5 dark:hover:bg-white/[0.06]'
+              }`}
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>{t('whatsapp.documentDownload')}</span>
+            </a>
+          </div>
+        ) : (
+          <p className={`px-3 py-2 text-[10px] border-t ${mutedColor} ${
+            isOutbound ? 'border-white/20' : 'border-black/5 dark:border-white/10'
+          }`}>
+            {t('whatsapp.documentUnavailable')}
           </p>
-          <p className={`text-[10px] font-bold ${mutedColor}`}>
-            {label}
-            <span className="font-normal opacity-70"> · {mimeType || t('whatsapp.documentTypeUnknown')}</span>
-          </p>
-        </div>
+        )}
       </div>
 
-      {url ? (
-        <div className={`flex items-stretch border-t ${isOutbound ? 'border-white/20' : 'border-black/5 dark:border-white/10'}`}>
-          {/* "Ac" satir ici acar (tarayici PDF'i kendi goruntuleyicisinde
-              gosterir); "Indir" kaydetmeye zorlar. Ikisi farkli niyettir. */}
-          <a
-            href={url}
-            target="_blank"
-            rel="noopener noreferrer"
-            onClick={(e) => e.stopPropagation()}
-            className={`flex-1 flex items-center justify-center gap-1.5 py-2 text-[11px] font-bold transition-colors cursor-pointer ${mutedColor} ${
-              isOutbound ? 'hover:bg-white/10' : 'hover:bg-black/5 dark:hover:bg-white/[0.06]'
-            }`}
-          >
-            <ExternalLink className="w-3.5 h-3.5" />
-            <span>{t('whatsapp.documentOpen')}</span>
-          </a>
-          <span className={`w-px ${isOutbound ? 'bg-white/20' : 'bg-black/5 dark:bg-white/10'}`} />
-          <a
-            href={url}
-            download={filename || true}
-            onClick={(e) => e.stopPropagation()}
-            className={`flex-1 flex items-center justify-center gap-1.5 py-2 text-[11px] font-bold transition-colors cursor-pointer ${mutedColor} ${
-              isOutbound ? 'hover:bg-white/10' : 'hover:bg-black/5 dark:hover:bg-white/[0.06]'
-            }`}
-          >
-            <Download className="w-3.5 h-3.5" />
-            <span>{t('whatsapp.documentDownload')}</span>
-          </a>
-        </div>
-      ) : (
-        // Medya gateway'de yoksa "hazir" demek yanlis olurdu; eylemler
-        // cizilmez cunku tiklanacak bir sey yok.
-        <p className={`px-3 py-2 text-[10px] border-t ${mutedColor} ${
-          isOutbound ? 'border-white/20' : 'border-black/5 dark:border-white/10'
-        }`}>
-          {t('whatsapp.documentUnavailable')}
-        </p>
+      {isPreviewOpen && (
+        <Modal
+          isOpen={isPreviewOpen}
+          onClose={() => setIsPreviewOpen(false)}
+          title={displayName}
+          subtitle={`${label} · ${mimeType || t('whatsapp.documentTypeUnknown')}`}
+          icon={Icon as any}
+          maxWidth="2xl"
+        >
+          <div className="p-4 max-h-[60vh] overflow-auto bg-slate-950/20 dark:bg-black/40 rounded-xl font-mono text-xs leading-relaxed whitespace-pre-wrap break-words">
+            {loadingPreview ? (
+              <div className="py-8 text-center text-slate-400">
+                <p>{t('whatsapp.documentPreviewLoading')}</p>
+              </div>
+            ) : previewError ? (
+              <div className="py-8 text-center text-rose-500">
+                <p>{previewError}</p>
+              </div>
+            ) : (
+              <code>{previewContent}</code>
+            )}
+          </div>
+        </Modal>
       )}
-    </div>
+    </>
   );
 };
+

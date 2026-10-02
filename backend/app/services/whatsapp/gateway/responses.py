@@ -79,10 +79,15 @@ def extract_send_result(data: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     if not isinstance(data, dict):
         return {"wa_message_id": None, "status": None}
     wa_id = data.get("wa_message_id") or data.get("id")
-    return {
+    res = {
         "wa_message_id": str(wa_id) if wa_id else None,
         "status": data.get("status"),
     }
+    if "media_id" in data:
+        res["media_id"] = data.get("media_id")
+    if "media_mime_type" in data:
+        res["media_mime_type"] = data.get("media_mime_type")
+    return res
 
 
 def normalize_contacts_payload(data: Any) -> List[Dict[str, Any]]:

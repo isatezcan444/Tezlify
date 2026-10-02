@@ -1916,6 +1916,33 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         }
       }
 
+      // 1.5. LINK PREVIEW UPDATED
+      if (eventData.event === 'link_preview_updated' && eventData.preview) {
+        const preview = eventData.preview;
+        const targetConvId = eventData.conversation_id;
+        const previewUrl = eventData.url || preview.url;
+        if (targetConvId && previewUrl) {
+          setMessagesMap((prev) => {
+            const list = prev[targetConvId];
+            if (!list) return prev;
+            let changed = false;
+            const updatedList = list.map((msg) => {
+              if (
+                msg.body &&
+                (msg.body.includes(previewUrl) || (preview.url && msg.body.includes(preview.url)))
+              ) {
+                if (!msg.link_preview || JSON.stringify(msg.link_preview) !== JSON.stringify(preview)) {
+                  changed = true;
+                  return { ...msg, link_preview: preview };
+                }
+              }
+              return msg;
+            });
+            return changed ? { ...prev, [targetConvId]: updatedList } : prev;
+          });
+        }
+      }
+
       // 2. MESSAGE STATUS UPDATE (PENDING -> SENT -> DELIVERED -> READ / FAILED)
       if (eventData.event === 'message_status_updated') {
         const convId = eventData.conversation_id;

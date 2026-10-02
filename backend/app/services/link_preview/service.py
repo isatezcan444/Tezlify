@@ -153,10 +153,16 @@ async def previews_by_message(
     missing = wanted - set(fresh.keys())
     if missing:
         urls_by_hash = _hashes_to_urls(rows)
+        first_row = rows[0] if rows else None
+        row_user_id = str(getattr(first_row, "user_id", None)) if first_row and getattr(first_row, "user_id", None) else None
+        row_conv_id = getattr(first_row, "conversation_id", None) if first_row else None
         for digest in list(missing)[:MAX_SCHEDULED_PER_PAGE]:
             url = urls_by_hash.get(digest)
             if url:
-                schedule_unfurl(digest, url)
+                try:
+                    schedule_unfurl(digest, url, user_id=row_user_id, conversation_id=row_conv_id)
+                except TypeError:
+                    schedule_unfurl(digest, url)
 
     return out
 
@@ -234,7 +240,12 @@ async def ensure_preview(db: AsyncSession, normalized_url: str) -> Optional[Link
     return existing
 
 
-async def _run_unfurl(digest: str, normalized_url: str) -> None:
+async def _run_unfurl(
+    digest: str,
+    normalized_url: str,
+    user_id: Optional[str] = None,
+    conversation_id: Optional[int] = None,
+) -> None:
     """Arka plan gorevi: kendi oturumunu acar.
 
     Istek oturumu bu noktada KAPANMISTIR; onu kullanmak sessiz bir hata
@@ -242,20 +253,40 @@ async def _run_unfurl(digest: str, normalized_url: str) -> None:
     """
     try:
         async with AsyncSessionLocal() as session:
-            await ensure_preview(session, normalized_url)
+            preview_row = await ensure_preview(session, normalized_url)
+            if preview_row is not None and preview_row.status == "OK":
+                try:
+                    from backend.app.api.v1.websocket import ws_manager
+                    event_payload = {
+                        "event": "link_preview_updated",
+                        "url_hash": digest,
+                        "url": normalized_url,
+                        "conversation_id": conversation_id,
+                        "preview": serialize_preview(preview_row),
+                    }
+                    if user_id:
+                        event_payload["user_id"] = user_id
+                        await ws_manager.broadcast(event_payload, target_user_id=user_id)
+                except Exception as ws_err:
+                    logger.debug("WS link preview broadcast atlandi: %s", ws_err)
     except Exception as exc:  # noqa: BLE001 - arka plan isi asla yukseltmez
         logger.warning("Arka plan onizleme cozumu basarisiz (%s): %s", normalized_url, exc)
     finally:
         _inflight.discard(digest)
 
 
-def schedule_unfurl(digest: str, normalized_url: str) -> None:
+def schedule_unfurl(
+    digest: str,
+    normalized_url: str,
+    user_id: Optional[str] = None,
+    conversation_id: Optional[int] = None,
+) -> None:
     """Onizleme cozumumunu arka planda baslatir (ayni URL icin tek gorev)."""
     if digest in _inflight:
         return
     _inflight.add(digest)
     try:
-        asyncio.create_task(_run_unfurl(digest, normalized_url))
+        asyncio.create_task(_run_unfurl(digest, normalized_url, user_id=user_id, conversation_id=conversation_id))
     except RuntimeError:
         # Calisan bir olay dongusu yok (orn. senkron test baglami): isi
         # sessizce dusurmek yerine isareti geri al, boylece bir sonraki cagri
@@ -284,6 +315,23 @@ async def get_preview_image_bytes(db: AsyncSession, digest: str) -> tuple[bytes,
     row = await lookup_preview_for_proxy(db, digest)
     if row is None or not row.image_url:
         raise LookupError("Bu onizleme icin gorsel yok.")
+    if row.image_url.startswith("/api/v1/whatsapp/media/"):
+        from backend.app.models.message import Message
+        from backend.app.models.conversation import Conversation
+        from backend.app.services.whatsapp.repositories.sessions import (
+            conversation_gateway_id as _conversation_gateway_id,
+        )
+        from backend.app.services import whatsapp_gateway as gw
+
+        media_id = row.image_url.split("/")[-1]
+        msg_row = await db.scalar(select(Message).where(Message.media_id == media_id))
+        if msg_row:
+            conv = await db.get(Conversation, msg_row.conversation_id)
+            if conv:
+                gid = await _conversation_gateway_id(db, msg_row.user_id, conv)
+                data = await gw.fetch_media(gid, media_id)
+                return data, msg_row.media_mime_type or "image/jpeg"
+        raise LookupError("Medyaya ulasilamadi.")
     return await fetch_image_bytes(row.image_url)
 
 
@@ -300,3 +348,82 @@ async def refresh_preview(db: AsyncSession, url: str) -> Optional[LinkPreview]:
         existing.expires_at = datetime.utcnow() - timedelta(seconds=1)
         await db.commit()
     return await ensure_preview(db, normalized)
+
+
+async def preview_for_text_message(
+    db: AsyncSession,
+    body: Optional[str],
+    user_id: Optional[str] = None,
+    conversation_id: Optional[int] = None,
+) -> Optional[Dict[str, Any]]:
+    """Extracts first URL from message body, returns cached preview or schedules unfurl."""
+    if not body:
+        return None
+    raw_url = extract_first_url(body)
+    if not raw_url:
+        return None
+    norm = normalize_url(raw_url)
+    if not norm:
+        return None
+    digest = url_hash(norm)
+    row = await db.scalar(select(LinkPreview).where(LinkPreview.url_hash == digest))
+    now = datetime.utcnow()
+    if row and _is_fresh(row, now) and row.status == "OK":
+        return serialize_preview(row)
+    try:
+        schedule_unfurl(digest, norm, user_id=user_id, conversation_id=conversation_id)
+    except TypeError:
+        schedule_unfurl(digest, norm)
+    return None
+
+
+async def ingest_native_preview(
+    db: AsyncSession,
+    native: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """Persists a link preview extracted directly by Baileys gateway."""
+    from backend.app.services.link_preview.urls import classify_url
+
+    raw_url = native.get("url")
+    if not raw_url:
+        return None
+    norm = normalize_url(raw_url)
+    if not norm:
+        return None
+    digest = url_hash(norm)
+    now = datetime.utcnow()
+    existing = await db.scalar(select(LinkPreview).where(LinkPreview.url_hash == digest))
+    thumb_id = native.get("thumbnail_media_id")
+    image_url = f"/api/v1/whatsapp/media/{thumb_id}" if thumb_id else None
+
+    if existing is not None:
+        if not existing.image_url and image_url:
+            existing.image_url = image_url
+        if not existing.title and native.get("title"):
+            existing.title = native.get("title")
+        if not existing.description and native.get("description"):
+            existing.description = native.get("description")
+        existing.status = "OK"
+        existing.expires_at = now + TTL_OK
+        return serialize_preview(existing)
+
+    kind = classify_url(norm)
+    lp = LinkPreview(
+        url_hash=digest,
+        url=norm,
+        status="OK",
+        kind=kind,
+        title=native.get("title"),
+        description=native.get("description"),
+        site_name=None,
+        image_url=image_url,
+        fetched_at=now,
+        expires_at=now + TTL_OK,
+    )
+    db.add(lp)
+    try:
+        await db.flush()
+    except IntegrityError:
+        pass
+    return serialize_preview(lp)
+
