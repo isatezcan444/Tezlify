@@ -21,7 +21,7 @@ Curated index only. Detail lives elsewhere, deliberately:
 - **Deploy only via `scripts/deploy/host-release.sh`; never hand-reset `/opt/tezlify`.** (The checkout is
   **clean**; `.deployed-commit` is the authority — the old "left dirty" note is stale.) **Push is not
   deploy.** It **force-recreates backend+gateway even with `--skip-build`** — never deploy a docs-only
-  commit (costs gateway in-memory state, §A6).
+  commit (costs gateway state, §A6). **Prod is deliberately at `e8a86ee`, not `main`** — don't sync it.
 - **Never run pytest on the dev DB** (some tests assert global row counts) — use a schema-only copy.
 
 ## WhatsApp invariants — the one-line "tell" each (full detail in the reference)
@@ -53,13 +53,13 @@ Curated index only. Detail lives elsewhere, deliberately:
 - **Archive state: "unknown" must never be written as `false`** (K) — the backend contract is *omit the key*
   and it already preserves a stored `is_archived` when the gateway stays silent; the gateway's four `?? false`
   writers made that guard **dead** (live: 112/112 chats carried the key, 111 `false`). Archive state can
-  **only** arrive via app-state. Recovering the already-lost rows is a **product decision**.
+  **only** arrive via app-state. Recovery is a **product decision**.
 - **The first-load gate opens ONLY on the durable `initial_sync_completed_at` stamp**, never on the
   gateway's `sync.phase == 'ready'` (§O).
 - **A guard keyed on "the current page has rows" is DEAD for a page that is empty BY CONSTRUCTION**
   (§P) — pagination past the end re-paid a futile provider round-trip on every click (25.2 s → 502, live
-  conv 18192); ask what the **caller** holds, not the page. And a client abort budget must EXCEED the
-  server's worst case: 20 s < gateway 25 s < backend 30 s → now 40 s + `verify:message-timeout-budget`.
+  conv 18192); ask what the **caller** holds, not the page. Client abort budget must EXCEED the server's
+  worst case (gateway 25 s < backend 30 s → 40 s). **§P's fix was REVERTED** (`5c1c76d`) — LIVE at `e8a86ee`.
 - **Delete-sync / identity / unread narratives → §M, §N.** `regular_high` vs `regular_low` are different
   app-state collections; `lastMessages` THROWS instead of degrading; "owner unresolved" means EARLY not
   garbage; `remoteJidAlt` files a message under its phone identity at ingest; a local counter must count only
@@ -71,9 +71,8 @@ Curated index only. Detail lives elsewhere, deliberately:
 
 - Identity: `resolve_contact_identity` owns names; REST/WS fields match (never `lead_phone`); sort by
   activity only.
-- **An exported-but-never-called guard is a dead guard.** `setSessionPhone()` shipped with no call site, so
-  the cache's phone stamp stayed `null` and its mismatch check could never fire. Grep for the call site
-  before trusting any defensive branch.
+- **An exported-but-never-called guard is a dead guard** (`setSessionPhone()` had no call site) — grep the
+  call site before trusting any defensive branch. See `dead-guard-by-construction`.
 - **A parity check between two mirrors cannot detect something missing from both.** The i18n check compared
   `en` against `tr`, so 19 keys absent from *both* passed it while the UI rendered raw key paths (`useI18n`
   warns and returns the path). Derive the required set from the **consumer** (the `t('...')` call sites),
@@ -84,8 +83,8 @@ Curated index only. Detail lives elsewhere, deliberately:
 - **A key the serializer emits but the `response_model` does not DECLARE never reaches the client.**
   Pydantic v2 defaults to `extra="ignore"`, so `link_preview` ran correctly server-side and was
   **invisible in production**. Tell: the **asymmetry** (`reactions` was declared on the same model and
-  worked). Already fixed once for `WhatsAppSessionResponse.sync` (A8), so the pattern recurred — full
-  narrative in `2026-09-30.md`. See `fastapi-response-model-silent-field-drop`.
+  worked). Already fixed once for `WhatsAppSessionResponse.sync` (A8), so the pattern recurred
+  (`2026-09-30.md`). See `fastapi-response-model-silent-field-drop`.
 - **A code fix is not retroactive over a positive cache.** Correcting how a value is *computed* leaves
   cached rows holding the old value for their full TTL (two 7-day consent-interstitial rows kept wrong
   titles until `expires_at` was forced into the past). Always pair a compute-path fix with a cache

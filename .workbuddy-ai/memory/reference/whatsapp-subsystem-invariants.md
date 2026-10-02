@@ -575,7 +575,12 @@ Regression guards: `test_missing_avatar_does_not_hold_the_loading_gate` (backend
 `verify:loading-gate` script guards both directions (the gateway signal must NOT open the gate, and the
 backend's own completion MUST re-ask it).
 
-## P. On-demand "load older" — three budgets, and a guard keyed on the wrong thing (FIXED 2026-10-02)
+## P. On-demand "load older" — three budgets, and a guard keyed on the wrong thing (FIX REVERTED 2026-10-02 — LIVE at `e8a86ee`)
+
+> **STATUS: the patch described here was REVERTED.** `5c1c76d` reverts `d229269`, at the user's request, and
+> prod runs `e8a86ee` — the **pre-fix** state. So all three defects below are **LIVE in production again**.
+> Read every "Now …" clause as the shape of the *patch to re-apply*, not as deployed reality. The patch also
+> added `frontend/scripts/verify-message-timeout-budget.mjs`, which the revert deleted.
 
 Live case: conv **18192** ("Emre Bulut", contact 13660, +905322326335, session **118**, gateway
 `ee579956-b7a3-4629-91c1-c37e754de307`) held exactly **2 OUTBOUND** rows and nothing older exists.
@@ -599,9 +604,9 @@ Clicking "daha eski mesajları yükle" produced the rose banner `whatsapp.messag
 3. **The client aborted before the server could answer.** Three budgets in three projects:
    `MESSAGE_LOAD_TIMEOUT_MS` **20 000** < gateway provider wait **25 000**
    (`whatsapp-gateway/src/session-manager.js` `timeoutMs = 25000`) < backend gateway HTTP ceiling
-   **30 000** (`WHATSAPP_GATEWAY_TIMEOUT`). Raised to **40 000**, guarded by
-   `verify:message-timeout-budget` — which reads all three files and asserts the ordering, so the
-   numbers cannot silently diverge again.
+   **30 000** (`WHATSAPP_GATEWAY_TIMEOUT`). The patch raised the client to **40 000** and guarded it with
+   `verify:message-timeout-budget` (reads all three files, asserts the ordering) — **both reverted**; the
+   live value is back to **20 000**, so the client again aborts before the server can answer.
 
 **Deliberately unchanged:** `resolve_has_more` still returns `True` on `TIMEOUT` (H-3: UNAVAILABLE ≠
 EXHAUSTED, invariant 7 of `history_evidence.py`), so the affordance returns on the next hydration;

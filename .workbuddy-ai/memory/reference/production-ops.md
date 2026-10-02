@@ -196,11 +196,20 @@ per build.
 
 ## Deploy state (2026-09-26; refreshed 2026-10-02)
 
-- **Measured 2026-10-02 (latest): the prod checkout is CLEAN at `8d0b66c`** (`git status --porcelain
-  --untracked-files=no` empty), and the authoritative deploy marker is `/opt/tezlify/.deployed-commit`
-  (`8d0b66cbf80aa5436433847c833a16fbe93c70f4`). Previous state was CLEAN at `73c9fe0`. The older note that the tree is "deliberately left dirty as the deploy marker" at
-  `359fe6d` is **stale**: `host-release.sh` resets hard to the target SHA and then asserts the tree is
-  clean. Still — deploy via the script; never hand-reset `/opt/tezlify`.
+- **Measured 2026-10-02 (latest): the prod checkout is CLEAN at `e8a86ee`**, `/opt/tezlify/.deployed-commit`
+  = `e8a86ee8799c9e3657664208e0ccf40768ac2168`. This is a **deliberate rollback** (below), NOT the tip of
+  `main` — do not "fix" it by deploying `main` without checking with the user. The older note that the tree
+  is "deliberately left dirty as the deploy marker" at `359fe6d` is **stale**: `host-release.sh` resets hard
+  to the target SHA and then asserts the tree is clean. Still — deploy via the script; never hand-reset.
+- **2026-10-02 rollback to `e8a86ee` (user-requested).** Releases `20261002T122733Z`, then
+  `20261002T122857Z`. The FIRST was **incomplete**: it rolled back the backend but left the newer frontend
+  live. Cause: `release.sh` builds the frontend from the **local working tree**
+  (`FRONTEND_DIR="$REPO_ROOT/frontend"`), not from the target SHA — so `release.sh <old-sha>` ships the old
+  backend with the CURRENT frontend. Detected by `grep -c "have_rows=True"` → 0 while the served bundle was
+  still `index-CD0gj4e3.js`. Fixed by `git checkout e8a86ee` locally, rebuilding, re-releasing. Final proof:
+  served `index-DEU-2HqI.js` **200** + `WhatsAppHubPage-GJ3_Pr5f.js` **200**; newer `index-CD0gj4e3.js` /
+  `WhatsAppHubPage-VbDT9_Pt.js` **404**; caddy 200; line `connected=1`. Repo side: `5c1c76d` reverts
+  `d229269`, so `main`'s code == `e8a86ee` (history NOT rewritten; restore with `git revert 5c1c76d`).
 - Live: frontend `5916ff1` chat-thread singleton + `8177a2b` i18n missing keys; backend `9981298`
   502-on-short-conversation + `6c7214a` ~4 s open-path bound; naming fix
   `55f994e`/`1030850`/`4bd7791`; gateway `4fc791a` chat-ordering stamp. Restarts are routine and the line
@@ -374,8 +383,9 @@ per build.
   PASS (incl. `test-postgres-pool-error.mjs`); frontend `npm run build` exit 0, `tsc` clean; real
   Chrome `verify:browser` **10 passed / 0 failed** (A–J).
   (Baselines: **1438** after the early-gate fix, **1440** after the two load-older tests, **1432** after
-  the cache fix; **+6** from the early-gate tests.) `verify:message-timeout-budget` was added with the
-  load-older fix and is wired into `package.json` — an unwired verify script never runs in any gate.
+  the cache fix; **+6** from the early-gate tests.) **The load-older patch was REVERTED** (`5c1c76d`), so
+  its **2 tests** and its `verify:message-timeout-budget` script are gone — treat the **pre-patch**
+  baseline as current. (The rule stands: an unwired verify script never runs in any gate.)
 - **`pytest-randomly` is easy to fake.** `-q` suppresses its seed banner, so a run can *look* seeded
   without being so. Prove it reshuffles by diffing `--collect-only -q` output across two seeds
   (12345 vs 777 gave different orders on 2026-10-02). A green suite at several *verified* seeds is the
