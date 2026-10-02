@@ -58,7 +58,8 @@ Curated index only. Detail lives elsewhere, deliberately:
   garbage; `remoteJidAlt` files a message under its phone identity at ingest; a local counter must count only
   what was PUBLISHED; a repair job can be starved by the cleanup that runs first; the merge needs a DB-row
   lease with a **normalised** key; a process-global "already initialised" flag must be keyed by the
-  **resource**, not by a coarse family label.
+  **resource**, not by a coarse family label — the same rule `_bulk_channel_cache` broke by being a
+  flat, un-keyed dict (one line's failed probe answered for EVERY line for 300 s; fixed 2026-10-02).
 
 ## Cross-cutting
 
@@ -92,9 +93,10 @@ Curated index only. Detail lives elsewhere, deliberately:
   probes **from the production host** — the local sandbox proxy turns `app.tezlify.com` into a 502.
 - **`db` is in NO compose file** (unlabelled container, alias `db`, volume `tezlify_postgres_staging_data`)
   — compose calls it an *orphan*, so **never run `up -d --remove-orphans`**; it would delete the database.
-  Log rotation is on all four. A `db` restart no longer kills the gateway (fixed in `7357f3b`). But
-  **`pytest-randomly` is installed**, so a red backend run may be order-only — re-check with
-  `-p no:randomly` and the file alone before believing it.
+  Log rotation is on all four. A `db` restart no longer kills the gateway (fixed in `7357f3b`).
+  **`pytest-randomly` is installed**; the suite was order-dependent until `_bulk_channel_cache` was
+  keyed by gateway (2026-10-02, now green at 3 seeds) — but a **new** module-global cache can
+  reintroduce false reds, so still re-check with `-p no:randomly` and the file alone.
 - **Falsify before trusting** — see the `scoped-stash-falsification` skill.
 - **Parallel `Edit` calls on one file clobber each other** — edit sequentially or rewrite with one `Write`.
 - Ops log clearing **TRUNCATEs** the container log file in place (never delete — the daemon holds the inode).

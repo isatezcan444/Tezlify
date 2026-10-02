@@ -232,24 +232,36 @@ per build.
 
 ## Verification baselines
 
-- Last run (2026-10-02): backend **1431 pass / 4 skip / 0 fail** (run with `-p no:randomly`); gateway
-  `npm test` exit 0 with every suite PASS (incl. the new `test-postgres-pool-error.mjs`); frontend
-  `npm run build` exit 0, `tsc --noEmit` clean.
-- **`pytest-randomly 4.1.0` IS installed, so the backend suite is ORDER-DEPENDENT and its pass/fail
-  flips per run.** Measured 2026-10-02: random order → **21 failed / 1410 passed**; `-p no:randomly`
+- Last run (2026-10-02, AFTER the cache fix): backend **1432 pass / 4 skip / 0 fail** with
+  `-p no:randomly`, **and green under `pytest-randomly` at three explicit seeds** (12345, 777,
+  20261002) — the suite is **order-INDEPENDENT again**. gateway `npm test` exit 0 with every suite
+  PASS (incl. `test-postgres-pool-error.mjs`); frontend `npm run build` exit 0, bundle hash
+  **unchanged** (`index-EbhNawq7.js`), `tsc --noEmit` clean.
+- **`pytest-randomly 4.1.0` IS installed** — the backend suite *was* order-dependent until
+  2026-10-02. Measured BEFORE the fix: random order → **21 failed / 1410 passed**; `-p no:randomly`
   → **1431 passed / 4 skipped, exit 0**. Failures were `test_whatsapp_sync_job.py` (19) +
-  `test_whatsapp_live.py` (2), signature `AssertionError` — **not** `no such table`, so it is not a
-  provisioning gap — and `test_whatsapp_sync_job.py` passes **alone** (46 passed). Re-run with
-  `-p no:randomly` *and* the file in isolation before calling anything "pre-existing" or blaming your
-  change. (A previous session's "1431 passed" was simply a lucky seed.)
-  - The poisoning agent is a **real production bug** at
-    `backend/app/services/whatsapp/orchestration/sync.py:294`:
-    `_bulk_channel_cache: Dict[str, Any] = {"ok": False, "checked_at": 0.0}` is **module-global**,
+  `test_whatsapp_live.py` (2), signature `AssertionError` — **not** `no such table`, so not a
+  provisioning gap — and the file passed **alone** (46 passed).
+  - The poisoning agent was a **real production bug** at
+    `backend/app/services/whatsapp/orchestration/sync.py`:
+    `_bulk_channel_cache: Dict[str, Any] = {"ok": False, "checked_at": 0.0}` was **module-global**,
     assigned by **reference** (`self._bulk_channel_cache = _bulk_channel_cache`), and
-    `_bulk_channel_available(self, gateway_id)` **never keys on `gateway_id`**. So one line's failed
-    bulk probe answers "bulk channel unavailable" for **every** line for 300 s, silently degrading all
-    of them to legacy per-chat sync. That is the invariant §N already states — key a process-global
-    flag by the **resource**, not by a coarse family label. **Still open as of 2026-10-02.**
+    `_bulk_channel_available(self, gateway_id)` **never keyed on `gateway_id`**. So one line's failed
+    bulk probe answered "bulk channel unavailable" for **every** line for 300 s, silently degrading
+    all of them to legacy per-chat sync — the invariant §N already states: key a process-global flag
+    by the **resource**, not by a coarse family label.
+  - **FIXED 2026-10-02.** The cache is now `Dict[str, Dict[str, Any]]` keyed by `gateway_id`, with
+    `_BULK_CHANNEL_TTL_SECONDS = 300`; an unknown gateway is probed (never treated as a cached miss).
+    New regression test `test_bulk_channel_probe_is_cached_PER_GATEWAY` (falsified: reverting only
+    `sync.py` fails it on `assert False is True` at the cross-gateway line).
+  - **A shape change to a module-global has OTHER writers.** Grep every reader/writer first. Two test
+    files still reset it by flat key and silently stopped isolating tests — the four natural-order
+    failures this change first produced: `test_whatsapp_sync_job.py` `_drain_jobs` (flat `["ok"]` /
+    `["checked_at"]`) and `test_whatsapp_live.py` `_drain_sync_jobs` (same), plus `test_24`'s
+    `_bulk_channel_cache["checked_at"] = … - 301`. All three now target the per-gateway entry /
+    `.clear()`.
+  - Still re-run with `-p no:randomly` *and* the file in isolation before calling anything
+    "pre-existing" or blaming your change.
 - Previous run (2026-09-26): backend **1169 pass / 4 skip / 0 fail**; gateway all **8** `npm test` scripts
   pass (`test-system-content-preview.mjs` 14 checks, `test-contact-cache.mjs` 37,
   `test-contact-hydration.mjs` 26); frontend `verify:logic` **45/45** (incl. the two i18n checks),
