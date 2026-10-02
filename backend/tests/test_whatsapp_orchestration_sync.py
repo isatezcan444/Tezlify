@@ -124,17 +124,60 @@ async def test_bulk_channel_available_caching():
     mock_service.gw = mock_gw
 
     orchestrator = WhatsAppSyncOrchestrator(service=mock_service)
-    orchestrator._bulk_channel_cache["checked_at"] = 0.0
-    orchestrator._bulk_channel_cache["ok"] = False
+    # The cache is keyed by GATEWAY ID now, so seed a stale entry for THIS gateway
+    # instead of relying on a global default.
+    orchestrator._bulk_channel_cache["gw-sess-1"] = {"ok": False, "checked_at": 0.0}
 
-    ok1 = await orchestrator._bulk_channel_available("gw-sess-1")
-    assert ok1 is True
-    assert mock_gw.list_all_messages.call_count == 1
+    try:
+        ok1 = await orchestrator._bulk_channel_available("gw-sess-1")
+        assert ok1 is True
+        assert mock_gw.list_all_messages.call_count == 1
 
-    # Second call within TTL does not query gateway again
-    ok2 = await orchestrator._bulk_channel_available("gw-sess-1")
-    assert ok2 is True
-    assert mock_gw.list_all_messages.call_count == 1
+        # Second call within TTL does not query gateway again
+        ok2 = await orchestrator._bulk_channel_available("gw-sess-1")
+        assert ok2 is True
+        assert mock_gw.list_all_messages.call_count == 1
+    finally:
+        # Module-global: never leave an entry behind for another test.
+        orchestrator._bulk_channel_cache.pop("gw-sess-1", None)
+
+
+@pytest.mark.asyncio
+async def test_bulk_channel_probe_is_cached_PER_GATEWAY():
+    """Bir hattin probe sonucu YALNIZCA o hatti baglar.
+
+    Regresyon: `_bulk_channel_cache` eskiden anahtarsiz TEK bir duz sozluktu, yani
+    ilk probe'un sonucu 300 sn boyunca HER hat icin gecerli sayiliyordu. Bir hattin
+    gecici gateway hatasi bu yuzden butun hatlari sessizce legacy per-chat sync'e
+    dusuruyordu. Kaynak eski haline dondurulurse bu test KIRMIZI olur.
+    """
+    async def _probe(gateway_id, limit=1, offset=0):
+        if gateway_id == "gw-broken":
+            raise RuntimeError("gateway down")
+        return {"messages": [], "total": 0}
+
+    mock_service = MagicMock()
+    mock_service.gw = MagicMock()
+    mock_service.gw.list_all_messages = AsyncMock(side_effect=_probe)
+
+    orchestrator = WhatsAppSyncOrchestrator(service=mock_service)
+    orchestrator._bulk_channel_cache.pop("gw-broken", None)
+    orchestrator._bulk_channel_cache.pop("gw-healthy", None)
+
+    try:
+        # The broken line caches its own negative result...
+        assert await orchestrator._bulk_channel_available("gw-broken") is False
+        # ...and the healthy line must NOT inherit it.
+        assert await orchestrator._bulk_channel_available("gw-healthy") is True
+
+        # The negative result stays scoped to its own gateway, and the healthy
+        # one is served from its own cache entry (no third gateway call).
+        assert await orchestrator._bulk_channel_available("gw-broken") is False
+        assert await orchestrator._bulk_channel_available("gw-healthy") is True
+        assert mock_service.gw.list_all_messages.call_count == 2
+    finally:
+        orchestrator._bulk_channel_cache.pop("gw-broken", None)
+        orchestrator._bulk_channel_cache.pop("gw-healthy", None)
 
 
 @pytest.mark.asyncio

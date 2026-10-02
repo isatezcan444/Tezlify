@@ -111,8 +111,10 @@ async def _drain_jobs():
             timeout=10,
         )
     ws._sync_jobs.clear()
-    ws._bulk_channel_cache["ok"] = False
-    ws._bulk_channel_cache["checked_at"] = 0.0
+    # Bulk-kanal algilama cache'i modul-global VE artik gateway_id ile anahtarli.
+    # Duz anahtar yazmak (eskiden oldugu gibi) girdiyi temizlemez, yani onceki
+    # testin "ok=True" sonucu 300 sn boyunca bu teste sizar. Tamamen bosalt.
+    ws._bulk_channel_cache.clear()
 
 
 @pytest.fixture
@@ -825,8 +827,9 @@ async def test_24_bulk_probe_cached_five_minutes(mock_gateway):
                    if c.kwargs.get("limit") == 1]
     assert len(probe_calls) == 1
 
-    # Cache suresi dolunca yeniden probe
-    ws._bulk_channel_cache["checked_at"] = time.monotonic() - 301
+    # Cache suresi dolunca yeniden probe — girdi artik gateway_id ile anahtarli,
+    # o yuzden duz "checked_at" yerine BU hattin girdisini bayatlat.
+    ws._bulk_channel_cache[MOCK_GW_ID] = {"ok": True, "checked_at": time.monotonic() - 301}
     assert await ws._bulk_channel_available(MOCK_GW_ID) is True
     probe_calls = [c for c in mock_gateway.list_all_messages.await_args_list
                    if c.kwargs.get("limit") == 1]

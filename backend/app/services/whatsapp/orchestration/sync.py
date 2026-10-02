@@ -291,7 +291,16 @@ class SyncJob:
 
 # In-memory sync job registries & throttles
 _sync_jobs: Dict[str, SyncJob] = {}
-_bulk_channel_cache: Dict[str, Any] = {"ok": False, "checked_at": 0.0}
+# Capability probe cache, keyed by GATEWAY ID: {gateway_id: {"ok": bool, "checked_at": float}}.
+#
+# It MUST be keyed by the gateway. A single flat entry used to answer for EVERY
+# line, so one line's failed probe silently degraded all the other lines to the
+# legacy per-chat sync for the whole TTL — the same "key a process-global flag by
+# the RESOURCE, not by a coarse family label" rule the rest of this subsystem
+# follows. It also made the test suite order-dependent: whichever test probed
+# first decided the outcome for every later test that shared the entry.
+_BULK_CHANNEL_TTL_SECONDS = 300
+_bulk_channel_cache: Dict[str, Dict[str, Any]] = {}
 _last_bootstrap_emit: Dict[str, float] = {}
 _metadata_tasks: Dict[str, asyncio.Task[None]] = {}
 _sync_conversations_inflight: Set[str] = set()
@@ -396,8 +405,9 @@ class WhatsAppSyncOrchestrator:
     async def _bulk_channel_available(self, gateway_id: str) -> bool:
         gateway_client = self._get_helper("gw", gw)
         now = time.monotonic()
-        if now - float(self._bulk_channel_cache.get("checked_at") or 0.0) < 300:
-            return bool(self._bulk_channel_cache.get("ok"))
+        entry = self._bulk_channel_cache.get(gateway_id)
+        if entry is not None and now - float(entry.get("checked_at") or 0.0) < _BULK_CHANNEL_TTL_SECONDS:
+            return bool(entry.get("ok"))
         try:
             probe = await gateway_client.list_all_messages(gateway_id, limit=1, offset=0)
             ok = isinstance(probe, dict) and "messages" in probe
@@ -408,8 +418,7 @@ class WhatsAppSyncOrchestrator:
                 gateway_id,
                 exc,
             )
-        self._bulk_channel_cache["ok"] = ok
-        self._bulk_channel_cache["checked_at"] = now
+        self._bulk_channel_cache[gateway_id] = {"ok": ok, "checked_at": now}
         return ok
 
     async def _broadcast_sync_event(self, payload: Dict[str, Any], owner: str) -> None:

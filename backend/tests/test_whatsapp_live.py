@@ -167,9 +167,9 @@ async def _drain_sync_jobs():
             timeout=10,
         )
     ws._sync_jobs.clear()
-    # Bulk-kanal algilama cache'i de modil-global — her test taze baslasin.
-    ws._bulk_channel_cache["ok"] = False
-    ws._bulk_channel_cache["checked_at"] = 0.0
+    # Bulk-kanal algilama cache'i de modul-global VE gateway_id ile anahtarli —
+    # duz anahtar temizlemez, o yuzden tamamen bosalt (her test taze baslasin).
+    ws._bulk_channel_cache.clear()
 
 
 @pytest.fixture
