@@ -1,4 +1,5 @@
 import pg from 'pg';
+import { attachPoolErrorHandler } from '../database/postgres-pool.js';
 
 const { Pool } = pg;
 
@@ -9,7 +10,7 @@ export function createPostgresSessionLease({
 }) {
   if (!connectionString && !injectedPool) throw new Error('PostgreSQL is required for socket leases.');
   const ownsPool = !injectedPool;
-  const pool = injectedPool || new Pool({ connectionString, max: 1, min: 0 });
+  const pool = injectedPool || attachPoolErrorHandler(new Pool({ connectionString, max: 1, min: 0 }), 'lease');
   const ttl = Math.max(30, Math.min(120, Number(ttlSeconds) || 45));
 
   return {

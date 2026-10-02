@@ -1,6 +1,7 @@
 import { BufferJSON, initAuthCreds } from '@whiskeysockets/baileys';
 import pg from 'pg';
 import { createEncryptedCodec } from './encrypted-codec.js';
+import { attachPoolErrorHandler } from '../database/postgres-pool.js';
 
 const { Pool } = pg;
 
@@ -26,14 +27,14 @@ export function createPostgresAuthRepository({
   if (!connectionString && !injectedPool) {
     throw new Error('GATEWAY_DATABASE_URL is required for durable WhatsApp auth.');
   }
-  const pool = injectedPool || new Pool({
+  const pool = injectedPool || attachPoolErrorHandler(new Pool({
     connectionString,
     max: poolMax,
     min: 0,
     idleTimeoutMillis: 10_000,
     connectionTimeoutMillis: 10_000,
     allowExitOnIdle: true,
-  });
+  }), 'auth');
   const ownsPool = !injectedPool;
   const codec = createEncryptedCodec(encryptionKey);
 

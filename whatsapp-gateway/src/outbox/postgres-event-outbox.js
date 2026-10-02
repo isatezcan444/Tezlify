@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import pg from 'pg';
 import { createEncryptedCodec } from '../auth/encrypted-codec.js';
+import { attachPoolErrorHandler } from '../database/postgres-pool.js';
 
 const { Pool } = pg;
 
@@ -108,14 +109,14 @@ export function createPostgresEventOutbox({
     throw new Error('A PostgreSQL connection is required for the event outbox.');
   }
   const ownsPool = !injectedPool;
-  const pool = injectedPool || new Pool({
+  const pool = injectedPool || attachPoolErrorHandler(new Pool({
     connectionString,
     max: poolMax,
     min: 0,
     idleTimeoutMillis: 10_000,
     connectionTimeoutMillis: 10_000,
     allowExitOnIdle: true,
-  });
+  }), 'outbox');
   const codec = createEncryptedCodec(encryptionKey);
 
   return {
