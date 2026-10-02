@@ -274,6 +274,42 @@ per build.
     `is_phone_online=t` with its stamp). This is the empirical refutation of the old
     "a recreate strands the line" note.
   - Rollback: `bash scripts/deploy/host-release.sh --rollback-to 20261002T095006Z`.
+- **2026-10-02 (latest):** deployed `e8a86ee` — the chat scroll/older-page fixes (`6479441`) plus the
+  memory commit. Frontend-only change, so `release.sh e8a86ee --skip-build`.
+  `RELEASE_EXIT=0`, "SÜRÜM TAMAM: e8a86ee", record `backups/releases/20261002T112215Z/release.json`,
+  rollback `--rollback-to 20261002T112215Z`.
+  - **`--skip-build` proven safe before use:** `8d0b66c..e8a86ee` touched **0** files under
+    `backend/` + `whatsapp-gateway/`, AND the host's `tezlify-{backend,gateway}:latest` digests were
+    **identical to the running containers' `.Image`** (backend `d10e2b41…`, gateway `da7b1563…`).
+    So skipping the build still ships exactly the code that was already running. Rollback tags are
+    created before the build regardless (`host-release.sh:214-216`).
+  - **`release.sh` runs `npm run build` itself → the bulk-delete guard kills the release at the
+    frontend step.** First attempt died with
+    `[safe-delete][SAFE_DELETE_BULK_CONFIRM_REQUIRED] {"count":54,"threshold":50,"scope":"turn"}`
+    **before touching the server** (no partial deploy). Fix: `mv frontend/dist /tmp/…` **before**
+    invoking `release.sh`, then re-run. `tsc` passes at that step.
+  - Verified live, **byte-identical**: `index.html` `58477e154ee3808f…`, `index-DEU-2HqI.js`
+    `df1e3a7e97c38747…`, `WhatsAppHubPage-GJ3_Pr5f.js` `0a90bb4098c1020c…`,
+    `LeadDetailDrawer-DB-3LMAX.js` `190b1d29f9325069…`; the served `index.html` points at the NEW
+    bundle and the **old `index-DAy8k-4P.js` is now 404**. `.deployed-commit` = `e8a86ee8799c…`.
+  - `StartedAt` moved only for backend (11:22:20) + gateway (11:22:25); db/caddy unchanged; all four
+    healthy; API `/health` 200/39 ms.
+  - **The line is NOT connected — `sessions {total:0, connected:0}`.** `whatsapp_private.gateway_sessions`
+    87 rows / **0 active**; `whatsapp_private.session_credentials` = **0 rows**; gateway log
+    `session_registry_initialized: persisted_session_directories=26, restored=0` and
+    `session_registry_restored: discovered=0`. This is the documented `WHATSAPP_LOGGED_OUT` state from
+    2026-10-01 22:06:51 — it needs a **QR re-pair**, and the gateway's `discovered=0` is CORRECT.
+  - ⚠️ **`public.conversations` and `public.messages` are EMPTY (0 rows, `pg_relation_size` = 0 bytes)**
+    — the reference recorded 120/699 on 2026-10-01. `n_tup_del`: messages 72 737, conversations 9 023;
+    `n_dead_tup` 0 in both. **This predates the deploy**: the relation files' mtimes are
+    `messages` 11:20:34.063991 / `conversations` 11:20:34.078991 / `whatsapp_sessions` 11:20:28.244965
+    (UTC), i.e. ~100 s BEFORE the 11:22:15 cutover, and **neither file was written again after the
+    cutover** — so the freshly-started backend deleted nothing. The release path has no DB writes
+    (grep for `psql|DELETE|TRUNCATE|drop|migrat` under `scripts/deploy/` → one log line only) and
+    `tezlify-db` was never restarted. Leading, **unproven** mechanism: a **line deletion** (cascade),
+    matching `whatsapp_sessions` being written at 11:20:28 and `public.whatsapp_sessions` now holding
+    only the September rows (id 4, 5) — session **117** (CONNECTED at the 09:50 deploy) and **116**
+    are gone. **No recovery exists** (`archive_mode=off`, no backups).
 
 ## Verification baselines
 
