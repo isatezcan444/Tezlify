@@ -13,7 +13,7 @@ import logging
 from typing import Any, Dict, List, Optional, Tuple
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.auth import get_user_filter
@@ -102,7 +102,15 @@ def serialize_message(
     gelir; ikisi arayuzde ayni sekilde (kart cizilmez) ele alinir.
     """
     # Gelen medya gateway'de durur; frontend kimlik dogrulamali proxy uzerinden ceker.
-    media_url = f"/api/v1/whatsapp/media/{row.media_id}" if row.media_id else None
+    media_url = (
+        f"/api/v1/whatsapp/media/{row.media_id}"
+        if row.media_id
+        else (
+            f"/api/v1/whatsapp/media/{row.wa_message_id}"
+            if row.message_type in (MessageType.IMAGE, MessageType.VIDEO, MessageType.AUDIO, MessageType.DOCUMENT) and row.wa_message_id
+            else None
+        )
+    )
     return {
         "id": row.id,
         "conversation_id": row.conversation_id,
@@ -547,7 +555,10 @@ class WhatsAppMessagingOrchestrator:
 
         res = await db.execute(
             select(Message).where(
-                Message.media_id == media_id,
+                or_(
+                    Message.media_id == media_id,
+                    Message.wa_message_id == media_id,
+                ),
                 get_user_filter(Message.user_id, user_id),
             )
         )
@@ -559,7 +570,27 @@ class WhatsAppMessagingOrchestrator:
             raise LookupError(f"Medya bulunamadi: {media_id}")
         gateway_id = await conversation_gateway_id(db, user_id, conv)
         data = await gateway_client.fetch_media(gateway_id, media_id)
-        return data, row.media_mime_type, row.media_filename
+
+        mime = row.media_mime_type
+        if not mime and data:
+            if data.startswith(b"\xff\xd8\xff"):
+                mime = "image/jpeg"
+            elif data.startswith(b"\x89PNG"):
+                mime = "image/png"
+            elif data.startswith(b"OggS"):
+                mime = "audio/ogg; codecs=opus"
+            elif len(data) >= 8 and (data[4:8] == b"ftyp" or data[:4] == b"\x00\x00\x00\x18"):
+                mime = "video/mp4"
+            elif data.startswith(b"%PDF"):
+                mime = "application/pdf"
+            elif row.message_type == MessageType.IMAGE:
+                mime = "image/jpeg"
+            elif row.message_type == MessageType.VIDEO:
+                mime = "video/mp4"
+            elif row.message_type == MessageType.AUDIO:
+                mime = "audio/ogg"
+
+        return data, mime, row.media_filename
 
 
 # Default module-level orchestrator instance

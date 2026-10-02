@@ -1357,6 +1357,43 @@ export function createSessionManager({
       return mediaStore.getMediaPath(sessionId, mediaId);
     },
 
+    async downloadMediaOnDemand(sessionId, mediaIdOrWaId) {
+      if (!mediaIdOrWaId) return null;
+      let filePath = mediaStore.getMediaPath(sessionId, mediaIdOrWaId);
+      if (filePath && fs.existsSync(filePath)) return filePath;
+
+      const session = sessionId ? sessions.get(String(sessionId)) : null;
+      if (!session) return null;
+      const store = this._storeOf(session);
+      if (!store) return null;
+
+      const strId = String(mediaIdOrWaId);
+      let foundRaw = null;
+      let foundJid = null;
+
+      if (store.rawMessagesByChat) {
+        for (const [jid, byId] of store.rawMessagesByChat.entries()) {
+          if (byId.has(strId)) {
+            foundRaw = byId.get(strId);
+            foundJid = jid;
+            break;
+          }
+        }
+      }
+
+      if (foundRaw && foundJid) {
+        const waMsg = {
+          key: { remoteJid: foundJid, id: strId },
+          message: foundRaw,
+        };
+        const stored = await mediaStore.storeIncomingMedia(session, waMsg, session.sock);
+        if (stored?.media_id) {
+          return mediaStore.getMediaPath(sessionId, stored.media_id);
+        }
+      }
+      return null;
+    },
+
     async storeIncomingMedia(session, waMessage, sock) {
       return mediaStore.storeIncomingMedia(session, waMessage, sock);
     },
@@ -2550,6 +2587,31 @@ export function createSessionManager({
       if (!hasRecognizedContent(content) && !text) return null;
       const ts = messageTimestampMs(msg.messageTimestamp);
       const timestampSeconds = Number(msg.messageTimestamp);
+      const rawMedia =
+        content.imageMessage ||
+        content.videoMessage ||
+        content.audioMessage ||
+        content.documentMessage ||
+        content.stickerMessage;
+      const mediaMime =
+        rawMedia?.mimetype ||
+        (mediaType === 'IMAGE'
+          ? 'image/jpeg'
+          : mediaType === 'VIDEO'
+            ? 'video/mp4'
+            : mediaType === 'AUDIO'
+              ? 'audio/ogg'
+              : content.documentMessage?.mimetype || null);
+      const mediaFilename =
+        content.documentMessage?.fileName ||
+        rawMedia?.fileName ||
+        null;
+      const waMsgId = msg.key?.id || null;
+      let mediaId = null;
+      if (waMsgId && typeof mediaStore?.getMediaIdByWaId === 'function') {
+        mediaId = mediaStore.getMediaIdByWaId(waMsgId);
+      }
+
       return {
         id: ts,
         timestamp_s: Number.isFinite(timestampSeconds) && timestampSeconds > 0 ? timestampSeconds : null,
@@ -2558,11 +2620,11 @@ export function createSessionManager({
         message_type: mediaType || 'TEXT',
         status: msg.key?.fromMe ? 'SENT' : 'RECEIVED',
         body: text || '',
-        media_id: null,
-        media_mime_type: null,
-        media_filename: content.documentMessage?.fileName || null,
+        media_id: mediaId,
+        media_mime_type: mediaMime,
+        media_filename: mediaFilename,
         media_caption: text || null,
-        wa_message_id: msg.key?.id || null,
+        wa_message_id: waMsgId,
         sender_phone: msg.key?.fromMe ? 'ME' : (jidToPhone(msg.key?.participant || key) || key),
         recipient_phone: msg.key?.fromMe ? (jidToPhone(key) || key) : 'ME',
         sender_name: msg.key?.fromMe ? 'ME' : (this._resolveDisplayName(session, msg.key?.participant || key, msg.pushName) || null),

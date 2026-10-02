@@ -528,12 +528,27 @@ app.delete('/sessions/:sessionId/conversations/:jid', withSession(async (req, re
   res.json(result);
 }));
 
-// Download media by media_id — yalnızca medyayı indiren oturuma servis edilir.
+// Download media by media_id or wa_message_id (with on-demand fallback)
 app.get('/sessions/:sessionId/media/:mediaId', withSession(async (req, res, sessionId) => {
-  const filePath = sessionManager.getMediaPath(sessionId, req.params.mediaId);
+  let filePath = sessionManager.getMediaPath(sessionId, req.params.mediaId);
+  if (!filePath || !fs.existsSync(filePath)) {
+    filePath = await sessionManager.downloadMediaOnDemand(sessionId, req.params.mediaId);
+  }
   if (!filePath || !fs.existsSync(filePath)) return res.status(404).json({ error: 'Media not found' });
   res.sendFile(filePath);
 }));
+
+// Unscoped media route for authorized callers
+app.get('/media/:mediaId', async (req, res) => {
+  const authHeader = req.headers['authorization'] || '';
+  const token = authHeader.replace(/^Bearer\s+/i, '');
+  if (!process.env.WHATSAPP_GATEWAY_SECRET || token !== process.env.WHATSAPP_GATEWAY_SECRET) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  let filePath = sessionManager.getMediaPath(null, req.params.mediaId);
+  if (!filePath || !fs.existsSync(filePath)) return res.status(404).json({ error: 'Media not found' });
+  res.sendFile(filePath);
+});
 
 // ---------------------------------------------------------------------------
 // WebSocket — realtime events to connected clients (FastAPI backend)

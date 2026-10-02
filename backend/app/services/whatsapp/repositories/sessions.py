@@ -69,6 +69,10 @@ async def conversation_gateway_id(
 ) -> str:
     """Sohbetin ait oldugu hattin gateway kimligi."""
     row = await require_user_session(db, user_id, conv.session_id)
+    if row.status != SessionStatus.CONNECTED:
+        connected = await get_user_sessions(db, user_id, connected_only=True)
+        if connected:
+            return str(connected[0].gateway_id)
     return str(row.gateway_id)
 
 

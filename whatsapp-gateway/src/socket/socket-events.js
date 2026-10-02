@@ -26,7 +26,7 @@ import {
   resolveSyncState,
   archivedPatch,
 } from '../utils/whatsapp-formatting.js';
-import { summarizeWaMessage } from '../messages/message-classifier.js';
+import { summarizeWaMessage, resolveDownloadableMedia } from '../messages/message-classifier.js';
 import { createSessionStore, messageTimestampMs, resolveChatActivitySeconds, rememberRawMessage } from '../messages/message-store.js';
 import { safeWriteEncrypted } from './socket-connector.js';
 
@@ -738,6 +738,9 @@ export function bindSocketEvents({
       }
       let storedMessages = 0;
       const touchedHistoryKeys = new Set();
+      const historyMediaQueue = [];
+      const seenMediaWaIds = new Set();
+
       for (const msg of historyMessages || []) {
         const jid = msg.key?.remoteJid;
         if (!jid) continue;
@@ -760,6 +763,42 @@ export function bindSocketEvents({
         if (list.length > 2000) list.splice(0, list.length - 2000);
         messagesByChat.set(key, list);
         storedMessages += 1;
+
+        if (
+          msg.key?.id &&
+          msg.message &&
+          Boolean(resolveDownloadableMedia(msg.message)) &&
+          !record.media_id &&
+          !seenMediaWaIds.has(msg.key.id)
+        ) {
+          seenMediaWaIds.add(msg.key.id);
+          historyMediaQueue.push(msg);
+        }
+      }
+
+      if (historyMediaQueue.length > 0) {
+        (async () => {
+          for (const m of historyMediaQueue) {
+            if (ignoreStaleSocketEvent('messaging-history.set')) break;
+            try {
+              const stored = await mediaStore.storeIncomingMedia(session, m, sock);
+              if (stored?.media_id) {
+                const chatKey = normalizeJid(m.key?.remoteJid);
+                const list = messagesByChat.get(chatKey);
+                if (list) {
+                  const rec = list.find((item) => item.wa_message_id === m.key?.id);
+                  if (rec) {
+                    rec.media_id = stored.media_id;
+                    rec.media_mime_type = stored.mime_type;
+                    rec.media_filename = stored.filename;
+                  }
+                }
+              }
+            } catch (dlErr) {
+              logger?.debug({ dlErr: dlErr?.message, waId: m.key?.id }, 'Background history media download error');
+            }
+          }
+        })().catch(() => {});
       }
       let storedChats = 0;
       for (const chat of historyChats || []) {
