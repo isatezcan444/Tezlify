@@ -29,6 +29,7 @@ import {
   releaseOlderPage,
   type OlderPageRequest,
 } from '../features/whatsapp/lib/olderPageLock';
+import { applyOlderPageResult } from '../features/whatsapp/lib/olderPageState';
 import { isRawWhatsAppJid as isRawWhatsAppIdentity, identityKeys } from '../features/whatsapp/lib/whatsappIdentity';
 import { PEER_TYPING_TTL_MS, pruneExpiredTyping, resolveSyncDisplayCounts } from '../features/whatsapp/lib/whatsappSync';
 import { applyConversationEvent } from '../features/whatsapp/lib/whatsappConversationPatch';
@@ -460,11 +461,14 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       });
       setMessagePaging((prev) => ({
         ...prev,
-        [convId]: {
-          hasMore: Boolean(res.has_more),
-          oldest: res.oldest_message_id ?? prev[convId]?.oldest,
-          loading: false,
-        },
+        // A page that adds no rows and does not move the cursor is terminal —
+        // see olderPageState. The backend legitimately answers an empty page
+        // with `has_more: true` when it cannot prove exhaustion, and keeping
+        // the affordance there re-sent the identical cursor forever.
+        [convId]: applyOlderPageResult(
+          prev[convId] ?? { hasMore: true, oldest: activePaging?.oldest, loading: true },
+          res,
+        ),
       }));
     } catch (err) {
       if (!isCurrentOlderPage(pagingLocksRef.current, convId, request)) return;

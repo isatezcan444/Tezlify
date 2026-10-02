@@ -179,6 +179,31 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
   const anchorRef = useRef<{ key: string; y: number } | null>(null);
   const busyRef = useRef(false);
   const programmaticRef = useRef(false);
+  // LEGACY-path echo suppression. The K.19 model above suppresses its own
+  // scroll writes with a ONE-SHOT flag (`programmaticRef`), which is enough
+  // because every K.19 write is a single instant jump. The legacy path also
+  // issues SMOOTH scrolls (`scrollIntoView({behavior:'smooth'})`) whose
+  // animation raises a whole SERIES of scroll events, so a one-shot flag would
+  // be consumed by the first event and leave the rest unguarded. A short
+  // deadline covers the entire animation instead.
+  //
+  // WHY THIS MATTERS (measured in a real browser): the legacy container carries
+  // `scroll-smooth`, so the prepend-restore's direct `scrollTop` write is
+  // ANIMATED from the current position upward. Its early events sit below the
+  // 60px pagination trigger, so they were read as "the user scrolled to the
+  // top" and fired ANOTHER older page. One scroll-to-top gesture produced 17
+  // chained page requests and left the viewport ~40,000px from the newest
+  // message. `handleScrollK19` has always had this guard; the legacy handler
+  // never did.
+  //
+  // Window sizes are deliberate: an INSTANT write raises exactly one scroll
+  // event, which lands in the very next frame, so 150ms is ample and short
+  // enough that a real user scroll right after opening a chat still counts. A
+  // SMOOTH write animates for ~300-500ms, so it needs the longer window.
+  const legacyProgrammaticUntilRef = useRef(0);
+  const markLegacyProgrammatic = useCallback((ms: number) => {
+    legacyProgrammaticUntilRef.current = Date.now() + ms;
+  }, []);
   const pendingPrependK19Ref = useRef<{ wantY: number | null; atBottom: boolean; prevFirstKey: string | null } | null>(null);
   const pendingPinRef = useRef<{ op: K19Op; pinMode: 'anchor' | 'bottom' | null; wantY: number | null } | null>(null);
   // K.19.3-1A: distance-to-bottom as last OBSERVED (scroll event / pin completion /
@@ -531,6 +556,11 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
     const nearBottom = distanceToBottom < 120;
     setIsNearBottom(nearBottom);
     if (nearBottom) { setShowNewMessagePill(false); }
+    // A scroll WE issued is not a user gesture. Without this, the animated
+    // prepend-restore re-enters the trigger below and chains page after page
+    // (see `legacyProgrammaticUntilRef`). Position tracking above still runs —
+    // only the pagination trigger is suppressed.
+    if (Date.now() < legacyProgrammaticUntilRef.current) return;
     if (scrollTop < 60 && hasMore && !loadingOlder && initialScrollDoneRef.current) {
       handleLoadOlder();
     }
@@ -595,7 +625,16 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
     if (didPrepend && containerRef.current) {
       const newScrollHeight = containerRef.current.scrollHeight;
       const heightDiff = newScrollHeight - prevScrollHeightRef.current;
-      containerRef.current.scrollTop = prevScrollTopRef.current + heightDiff;
+      // INSTANT, and armed. This is a position-preserving correction, so
+      // animating it is wrong on its own terms — and on a `scroll-smooth`
+      // container the animation's early events land inside the <60px
+      // pagination trigger, which is what chained one gesture into 17 page
+      // requests. `scrollTo` with an explicit behaviour bypasses the CSS.
+      markLegacyProgrammatic(150);
+      containerRef.current.scrollTo({
+        top: prevScrollTopRef.current + heightDiff,
+        behavior: 'instant',
+      });
       isPrependingRef.current = false;
       pendingPrependRef.current = null;
       return;
@@ -604,7 +643,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
       isPrependingRef.current = false;
       pendingPrependRef.current = null;
     }
-  }, [sortedMessages, loadingOlder]);
+  }, [sortedMessages, loadingOlder, markLegacyProgrammatic]);
 
   // K.19 prepend: older page landed → ONE logical op; new rows above the
   // viewport are estimates, but the pin is anchored on the anchor's REAL
@@ -696,7 +735,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
     if (isNewMessageAdded && !isPrependingRef.current) {
       if (isNearBottom) {
         if (virtualizeRef.current) { fsCtxRef.current = 'passive'; geomOp('new-message', { pin: 'bottom' }); }
-        else bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+        else { markLegacyProgrammatic(600); bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }
         setShowNewMessagePill(false);
       } else {
         setShowNewMessagePill(true);
@@ -718,9 +757,17 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
   // and nothing else would take the thread to its newest message there.
   const hasContent = sortedMessages.length > 0;
   useEffect(() => {
-    if (!loading && sortedMessages.length > 0 && isNearBottom) {
+    // The pagination guard must NOT be armed while the thread is still loading.
+    // Arming it here used to be unconditional, so the flag flipped true on the
+    // render where the thread was still empty — long before the initial position
+    // was taken. Any scroll event in between (a content swap clamping scrollTop,
+    // the initial scroll's own echo) then read as "the user is at the top" and
+    // fired an older-page request on open. Returning keeps it disarmed; the
+    // effect re-runs when `loading` settles.
+    if (loading) return;
+    if (sortedMessages.length > 0 && isNearBottom) {
       if (virtualizeRef.current) { fsCtxRef.current = 'passive'; geomOp('initial', { pin: 'bottom', affected: [] }); }
-      else bottomRef.current?.scrollIntoView({ behavior: 'instant' });
+      else { markLegacyProgrammatic(150); bottomRef.current?.scrollIntoView({ behavior: 'instant' }); }
     }
     initialScrollDoneRef.current = true;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -728,7 +775,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
 
   const scrollToBottom = () => {
     if (virtualizeRef.current) geomOp('bottom', { pin: 'bottom' });
-    else bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    else { markLegacyProgrammatic(600); bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }
     setShowNewMessagePill(false);
   };
 

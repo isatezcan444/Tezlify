@@ -129,6 +129,12 @@ function draw() { flushSync(() => { root.render(React.createElement(App)); }); r
 let loadingOlder = false;
 let olderRequests = 0;
 let hasMoreState = true;
+// Most scenarios want exactly ONE page so the restore arithmetic is
+// unambiguous. Scenario I must NOT: a cascade is only observable when more
+// pages remain available after the first one lands, so it opts in explicitly.
+// (This is why the original gate could not see the cascade — the fixture
+// structurally forbade a second request.)
+let keepPagesAfterLoad = false;
 
 // ChatThread calls this when the user scrolls near the top (scrollTop < 60).
 // It mirrors the real app: the page is "in flight" while loadingOlder is true,
@@ -144,7 +150,7 @@ function requestOlder(n) {
     threads[convId] = [...older, ...threads[convId]];
     loadingOlder = false;
     // One page per scenario, so the restore arithmetic is unambiguous.
-    hasMoreState = false;
+    hasMoreState = keepPagesAfterLoad;
     draw();
   }, 40);
 }
@@ -178,7 +184,19 @@ window.__h = {
   async reset() {
     threads = seed(); convId = 1; sent = []; nextId = 5000; mountSeq += 1;
     loadingOlder = false; olderRequests = 0; hasMoreState = true;
+    keepPagesAfterLoad = false;
     draw(); await frame(); await frame(); await settle(); await settle(1500);
+    return true;
+  },
+  // Scenario I: keep older pages available after each one lands, so a chained
+  // (cascading) request is observable instead of being structurally impossible.
+  allowManyPages() { keepPagesAfterLoad = true; hasMoreState = true; return true; },
+  // Scenario J: make conversation 2 short enough that its maximum scrollTop
+  // sits inside the <60px pagination trigger zone. The check then OPENS it, so
+  // the conversation-switch reset and the initial-scroll effect both run — the
+  // real "click a chat" path.
+  async setThreadSize(id, n) {
+    threads[id] = Array.from({ length: n }, (_, i) => make(i + 1));
     return true;
   },
   async select(id) { convId = id; draw(); await frame(); await frame(); await settle(); return true; },
@@ -634,6 +652,62 @@ await check('H: opening 6 conversations in a row leaves exactly one thread root 
   assert.ok((s.threadText || '').includes('mesaj-1049#'), 'the visible chat must be the selected one');
   assert.ok(!(s.threadText || '').includes('mesaj-30#'), 'no other conversation may stay rendered');
   assert.ok(s.atBottom, 'the last opened conversation must be on its newest message');
+});
+
+// I — ONE scroll gesture must fetch ONE page.
+//
+// The legacy scroll handler had no programmatic-scroll echo guard, while
+// `handleScrollK19` has always had one. The container carries
+// `scroll-behavior: smooth`, so the prepend-restore's `scrollTop` write was
+// ANIMATED from the current position upward; its early events sit below the
+// 60px trigger and were read as "the user scrolled to the top", firing another
+// page. Each prepend re-armed the animation, so a single gesture chained page
+// after page (measured: 17 requests in the lead drawer, viewport stranded
+// ~40,000px from the newest message).
+//
+// Scenario E cannot see this: its fixture stops offering pages after the first
+// one, so a second request is structurally impossible. This check deliberately
+// keeps pages available.
+await check('I: one scroll-to-top gesture fetches exactly one older page', async () => {
+  await call('window.__h.reset()');
+  await call('window.__h.allowManyPages()');
+  // One gesture, issued by the harness (not by the component), so it must count.
+  await call('window.__h.scrollToInstant(10)');
+  await new Promise((r) => setTimeout(r, 2500));
+  const s = await state();
+  assert.equal(
+    s.olderRequests,
+    1,
+    `one gesture must fetch one page, got ${s.olderRequests} (a chain means the ` +
+      `prepend-restore re-entered the pagination trigger)`
+  );
+});
+
+// J — a thread whose maximum scrollTop sits INSIDE the <60px trigger zone.
+//
+// The initial jump to the newest message ends at a scrollTop below 60, so the
+// scroll event it raises is indistinguishable from "the user scrolled to the
+// top" unless the handler knows the scroll was its own. Opening such a chat must
+// not fetch older history.
+await check('J: opening a chat whose max scrollTop is inside the trigger zone fetches nothing', async () => {
+  await call('window.__h.reset()');
+  // A handful of messages overflows the pane by well under 60px.
+  await call('window.__h.setThreadSize(2, 4)');
+  await call('window.__h.select(2)');
+  await new Promise((r) => setTimeout(r, 1200));
+  const s = await state();
+  const maxScrollTop = s.hasScroller ? s.scrollHeight - s.clientHeight : 0;
+  assert.ok(
+    maxScrollTop > 0 && maxScrollTop < 60,
+    `precondition: the thread must overflow by 0-60px, got ${maxScrollTop}px`
+  );
+  assert.equal(
+    s.olderRequests,
+    0,
+    `opening a chat whose max scrollTop (${maxScrollTop}px) is inside the trigger zone ` +
+      `fired ${s.olderRequests} older-page request(s) with no user scroll`
+  );
+  assert.ok(s.atBottom, `it must still open on the newest message (scrollTop=${s.scrollTop})`);
 });
 
 await cleanup();
