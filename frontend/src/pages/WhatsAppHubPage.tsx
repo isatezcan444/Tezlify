@@ -114,7 +114,20 @@ const SEEN_WA_IDS_MAX = 1000;
 // yalnizca sunucunun `has_more` sinyaline bagli bounded bir doldurma.
 const CONVERSATION_PAGE_SIZE = 200;
 const MAX_BACKGROUND_CONVERSATION_PAGES = 5;
-const MESSAGE_LOAD_TIMEOUT_MS = 20_000;
+// Bir mesaj sayfasi isteginin istemci tarafi iptal butcesi. SUNUCUNUN KENDI en
+// kotu durumundan BUYUK olmak ZORUNDA, aksi halde yavas ama basarili bir yukleme
+// "iptal" olarak gorunur:
+//   gateway saglayici beklemesi : 25_000 ms  (whatsapp-gateway/src/session-manager.js
+//                                             `timeoutMs = 25000`, history PDO)
+//   backend gateway HTTP tavani : 30_000 ms  (WHATSAPP_GATEWAY_TIMEOUT varsayilani;
+//                                             whatsapp_gateway.gateway_timeout())
+// 20_000 ms, gateway'in kendi penceresi dolmadan ~5 s ONCE iptal ediyordu; bu
+// yuzden saglayici zaman asimi kullaniciya her zaman `AbortError` -> "Mesajlar
+// yuklenemedi" olarak donuyordu (backend'in 502 cevabi hic gorunmuyordu).
+// 40_000 ms, saglayici turundan SONRA gelen DB isi + evidence commit'i icin de
+// pay birakir. `WHATSAPP_GATEWAY_TIMEOUT` degistirilirse bu deger de ustunde
+// kalmali.
+const MESSAGE_LOAD_TIMEOUT_MS = 40_000;
 
 export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats }) => {
   const toast = useToast();
