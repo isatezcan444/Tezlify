@@ -178,9 +178,9 @@ per build.
 
 ## Deploy state (2026-09-26; refreshed 2026-10-02)
 
-- **Measured 2026-10-02: the prod checkout is CLEAN at `73c9fe0`** (`git status --porcelain
+- **Measured 2026-10-02 (latest): the prod checkout is CLEAN at `8d0b66c`** (`git status --porcelain
   --untracked-files=no` empty), and the authoritative deploy marker is `/opt/tezlify/.deployed-commit`
-  (`73c9fe014e33`). The older note that the tree is "deliberately left dirty as the deploy marker" at
+  (`8d0b66cbf80aa5436433847c833a16fbe93c70f4`). Previous state was CLEAN at `73c9fe0`. The older note that the tree is "deliberately left dirty as the deploy marker" at
   `359fe6d` is **stale**: `host-release.sh` resets hard to the target SHA and then asserts the tree is
   clean. Still — deploy via the script; never hand-reset `/opt/tezlify`.
 - Live: frontend `5916ff1` chat-thread singleton + `8177a2b` i18n missing keys; backend `9981298`
@@ -251,6 +251,29 @@ per build.
   4/5 stale `diag`) — check this before any gateway recreate. Auto-restore is now `true` (see the
   corrected note above), so a recreate should re-attach the line; confirm `auto_restore` on the live
   `/health` rather than trusting either value from memory.
+- **2026-10-02 (latest):** deployed `8d0b66c` (the early-loading-gate fix — see invariants §O).
+  **This one included a frontend change**, so `--frontend-tar` WAS passed: local `npm run build` from a
+  clean tree → `tar -czf … -C dist .` (the tar must have `./index.html` at its root) → `scp` →
+  `bash scripts/deploy/host-release.sh 8d0b66c --frontend-tar /tmp/tezlify-frontend-dist.tar.gz`.
+  `RELEASE_EXIT=0`, "SÜRÜM TAMAM: 8d0b66c", record `backups/releases/20261002T095006Z/release.json`.
+  **The image build was a full cache hit (15 s)** because no backend/gateway *source* changed — a short
+  release duration is not a symptom here.
+  - **`--dry-run` cannot validate the SHA.** Its `run` helper prints commands without executing them, so
+    `git fetch` never happens and it dies with "hedef SHA bu checkout'ta yok (push edildi mi?)" even
+    though the push succeeded. Fetch on the host by hand first, then dry-run.
+  - Verified live (the script's `verify_blob` covers only three hardcoded paths — hash your own files):
+    `.deployed-commit` `8d0b66cbf80aa…`; in-container `sync.py` sha256 `01045b30…b21b` and
+    `whatsapp_service.py` sha256 `3b8b8000…c0f`, **both = local**; `_GATEWAY_HISTORY_READY_TIMEOUT_S`
+    present ×3; `whatsapp_service.py:414` carries the progress cap.
+  - Frontend: `frontend_candidate/index.html` sha256 `296e2f71…1745` = local `dist`, and the served
+    bundle moved `index-EbhNawq7.js` → **`index-DAy8k-4P.js`** (confirmed over HTTP, not just on disk).
+  - `StartedAt` moved only for backend (09:50:13) + gateway (09:50:19); db/caddy unchanged; all four
+    healthy, `restarts=0`; API `/health` 200/39 ms; frontend 200.
+  - **Line 117 was CONNECTED throughout and came back CONNECTED after the gateway recreate**
+    (`auto_restore: true`, gateway `/health` `sessions {total:1, connected:1}`, DB row still
+    `is_phone_online=t` with its stamp). This is the empirical refutation of the old
+    "a recreate strands the line" note.
+  - Rollback: `bash scripts/deploy/host-release.sh --rollback-to 20261002T095006Z`.
 
 ## Verification baselines
 
