@@ -1306,20 +1306,11 @@ async def test_26_full_budget_kept_where_the_wait_is_the_point(tmp_path, monkeyp
             assert cursor is not None, "the page must expose a pagination cursor"
             calls_before = gw_mock.call_count
 
-            # A timed-out provider on a load-older page no longer surfaces as a
-            # 502. The caller already holds the newer page — it is the one that
-            # sent us the cursor — so "no older page this time" is not the false
-            # "this conversation has no messages" that the 502 exists to prevent.
-            # The subject of THIS test is which budget the gateway was given,
-            # asserted below.
-            page = await ws.get_messages(db, owner, conv_id, limit=50, before=cursor)
-
-            assert page["messages"] == [], (
-                "a timed-out load-older page must come back empty, not as an error"
-            )
-            # H-3: a timeout proves nothing about completeness, so the affordance
-            # must stay available server-side.
-            assert page["has_more"] is True
+            # Nothing older is stored, so a timed-out provider still surfaces as a
+            # retryable error (unchanged behaviour) -- the point here is only which
+            # budget the gateway was given.
+            with pytest.raises(WhatsAppHistoryTimeout):
+                await ws.get_messages(db, owner, conv_id, limit=50, before=cursor)
 
             assert gw_mock.call_count > calls_before, "pagination must still consult the provider"
             # `in` matters: the budget must actually be threaded to the gateway.
@@ -1354,87 +1345,6 @@ async def test_27_zero_row_conversation_keeps_full_budget(tmp_path, monkeypatch)
             assert gw_mock.call_args.kwargs["timeout_ms"] is None, (
                 "a conversation with zero rows must not give up early"
             )
-
-
-@pytest.mark.asyncio
-async def test_28_load_older_skips_a_known_unresponsive_provider(tmp_path, monkeypatch):
-    """28. A load-older click must not re-pay a round-trip already known to be futile.
-
-    Measured live 2026-10-02 (conv 18192, "Emre Bulut"): the conversation held 2
-    outbound rows, the phone never answered the history PDO, and EVERY "load
-    older" click waited 25.2 s before the endpoint turned the timeout into a 502
-    — rendered as "Mesajlar yüklenemedi" next to a control that could never
-    succeed. The client had already given up at 20 s, so it saw an AbortError.
-
-    The guard that exists to prevent exactly that was keyed on the PAGE's rows,
-    and a load-older page is empty BY CONSTRUCTION — nothing is older than the
-    row the client was handed — so the guard was dead precisely here.
-    """
-    owner = str(uuid.uuid4())
-    async with make_test_db(tmp_path) as sessions:
-        conv_id = await _seed_conversation_with_rows(sessions, owner, rows=8)
-        async with sessions() as db:
-            sid = str(uuid.uuid4())
-            jid = ws._phone_to_jid("+905551112233")
-            monkeypatch.setattr(ws, "_history_evidence_session_id", AsyncMock(return_value=sid))
-
-            # A timeout recorded moments ago for exactly this (session, jid).
-            await record_on_demand_provider_result(
-                db, session_id=sid, jid=jid, requested_count=50,
-                provider_status="TIMEOUT", gw_msgs=[],
-            )
-            await db.commit()
-
-            gw_mock = _timeout_gateway()
-            monkeypatch.setattr(ws.gw, "get_messages", gw_mock)
-
-            first = await ws.get_messages(db, owner, conv_id, limit=50)
-            cursor = first["oldest_message_id"]
-            assert cursor is not None, "the page must expose a pagination cursor"
-
-            page = await ws.get_messages(db, owner, conv_id, limit=50, before=cursor)
-
-            assert not gw_mock.called, (
-                "a load-older page must not re-pay a round-trip that just timed out"
-            )
-            assert page["messages"] == []
-            assert page["oldest_message_id"] is None
-            # NOT exhaustion: a timeout proves nothing about completeness (H-3).
-            assert page["has_more"] is True
-            assert page["history_evidence"]["provider_exhausted"] is False
-
-
-@pytest.mark.asyncio
-async def test_29_load_older_tolerates_a_first_provider_timeout(tmp_path, monkeypatch):
-    """29. With no evidence yet the round-trip is still made — its timeout degrades.
-
-    The first click on a brand-new conversation genuinely has to ask: nothing is
-    known about the provider yet, so the gateway keeps its full window (H-3
-    retryability preserved). What it must NOT do is fail the whole request: the
-    caller already holds the newer page, so the answer is "no older page this
-    time", never the false "this conversation is empty" the 502 prevents.
-    """
-    owner = str(uuid.uuid4())
-    async with make_test_db(tmp_path) as sessions:
-        conv_id = await _seed_conversation_with_rows(sessions, owner, rows=8)
-        async with sessions() as db:
-            monkeypatch.setattr(
-                ws, "_history_evidence_session_id", AsyncMock(return_value=str(uuid.uuid4()))
-            )
-            gw_mock = _timeout_gateway()
-            monkeypatch.setattr(ws.gw, "get_messages", gw_mock)
-
-            first = await ws.get_messages(db, owner, conv_id, limit=50)
-            cursor = first["oldest_message_id"]
-
-            page = await ws.get_messages(db, owner, conv_id, limit=50, before=cursor)
-
-            assert gw_mock.called, "with no evidence the provider must still be asked"
-            assert gw_mock.call_args.kwargs["timeout_ms"] is None, (
-                "an explicit load-older keeps the gateway's full provider budget"
-            )
-            assert page["messages"] == []
-            assert page["has_more"] is True
 
 
 # ---------------------------------------------------------------------------

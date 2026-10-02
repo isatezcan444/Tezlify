@@ -35,7 +35,6 @@
     "verify:chat-loading": "node scripts/verify-chat-loading-lifecycle.mjs",
     "verify:older-page-lock": "node scripts/verify-older-page-lock.mjs",
     "verify:older-page-state": "node scripts/verify-older-page-state.mjs",
-    "verify:message-timeout-budget": "node scripts/verify-message-timeout-budget.mjs",
     "verify:whatsapp-theme": "node scripts/verify-whatsapp-theme.mjs",
     "verify:production-whatsapp": "node scripts/verify-production-whatsapp.mjs",
     "measure:whatsapp-latency": "node scripts/measure-whatsapp-latency.mjs"
