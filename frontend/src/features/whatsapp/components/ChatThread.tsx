@@ -741,14 +741,32 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
         setShowNewMessagePill(true);
       }
     }
-  // `newestKey` is intentionally NOT a dependency. This effect compares the
-  // incoming newest key against the PREVIOUS one held in prevNewestKeyRef —
-  // that comparison is the entire point, so making it a dependency would re-run
-  // the effect on every new message and destroy the "is this actually new?"
-  // question the effect exists to answer. It already re-runs whenever
-  // `sortedMessages` changes, which is exactly when newestKey can differ.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sortedMessages, isNearBottom, geomOp]);
+
+  const scrollToBottomNow = useCallback((behavior: 'instant' | 'smooth' = 'instant') => {
+    if (virtualizeRef.current) {
+      if (behavior === 'smooth') geomOp('bottom', { pin: 'bottom' });
+      else { fsCtxRef.current = 'passive'; geomOp('initial', { pin: 'bottom', affected: [] }); }
+      setShowNewMessagePill(false);
+      return;
+    }
+    const cont = containerRef.current;
+    if (!cont) return;
+    markLegacyProgrammatic(behavior === 'instant' ? 250 : 600);
+    if (behavior === 'instant') {
+      cont.scrollTop = cont.scrollHeight;
+    } else {
+      cont.scrollTo({ top: cont.scrollHeight, behavior: 'smooth' });
+    }
+    bottomRef.current?.scrollIntoView({ behavior, block: 'end' });
+    setIsNearBottom(true);
+    setShowNewMessagePill(false);
+  }, [geomOp]);
+
+  const scrollToBottom = () => {
+    scrollToBottomNow('smooth');
+  };
 
   // Initial scroll to bottom on mount, on load finishing, on a conversation
   // switch (convEpoch) — the instance is reused across switches — and on the
@@ -758,26 +776,55 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
   const hasContent = sortedMessages.length > 0;
   useEffect(() => {
     // The pagination guard must NOT be armed while the thread is still loading.
-    // Arming it here used to be unconditional, so the flag flipped true on the
-    // render where the thread was still empty — long before the initial position
-    // was taken. Any scroll event in between (a content swap clamping scrollTop,
-    // the initial scroll's own echo) then read as "the user is at the top" and
-    // fired an older-page request on open. Returning keeps it disarmed; the
-    // effect re-runs when `loading` settles.
     if (loading) return;
     if (sortedMessages.length > 0 && isNearBottom) {
-      if (virtualizeRef.current) { fsCtxRef.current = 'passive'; geomOp('initial', { pin: 'bottom', affected: [] }); }
-      else { markLegacyProgrammatic(150); bottomRef.current?.scrollIntoView({ behavior: 'instant' }); }
+      scrollToBottomNow('instant');
+      const raf = requestAnimationFrame(() => scrollToBottomNow('instant'));
+      const t1 = setTimeout(() => scrollToBottomNow('instant'), 60);
+      const t2 = setTimeout(() => scrollToBottomNow('instant'), 200);
+      const t3 = setTimeout(() => scrollToBottomNow('instant'), 500);
+      initialScrollDoneRef.current = true;
+      return () => {
+        cancelAnimationFrame(raf);
+        clearTimeout(t1);
+        clearTimeout(t2);
+        clearTimeout(t3);
+      };
     }
     initialScrollDoneRef.current = true;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loading, virtualize, convEpoch, hasContent]);
+  }, [loading, virtualize, convEpoch, hasContent, conversationKey]);
 
-  const scrollToBottom = () => {
-    if (virtualizeRef.current) geomOp('bottom', { pin: 'bottom' });
-    else { markLegacyProgrammatic(600); bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }
-    setShowNewMessagePill(false);
-  };
+  // ResizeObserver: when media (videos, images, posters) load and expand rows,
+  // ensure the chat stays pinned to the bottom if the user is at the bottom.
+  useEffect(() => {
+    if (virtualizeRef.current) return;
+    const cont = containerRef.current;
+    if (!cont) return;
+
+    let resizeTimer: any = null;
+    const ro = new ResizeObserver(() => {
+      if (isNearBottom) {
+        cont.scrollTop = cont.scrollHeight;
+        if (!resizeTimer) {
+          resizeTimer = setTimeout(() => {
+            cont.scrollTop = cont.scrollHeight;
+            resizeTimer = null;
+          }, 50);
+        }
+      }
+    });
+
+    ro.observe(cont);
+    for (let i = 0; i < cont.children.length; i++) {
+      ro.observe(cont.children[i]);
+    }
+
+    return () => {
+      ro.disconnect();
+      if (resizeTimer) clearTimeout(resizeTimer);
+    };
+  }, [sortedMessages, isNearBottom, convEpoch]);
 
   // ------------------------------------------------------------- render ----
   const renderRowBody = (row: ThreadRow) => (
@@ -920,9 +967,9 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
         <div
           ref={containerRef}
           onScroll={handleScroll}
-          className="flex-1 min-w-0 p-4 overflow-y-auto overflow-x-hidden space-y-1 scroll-smooth"
+          className="flex-1 min-w-0 p-4 overflow-y-auto overflow-x-hidden space-y-1"
         >
-          {messages.length > 0 && hasMore && loadOlderButton}
+          {messages.length >= 50 && hasMore && loadOlderButton}
           {rows.map((row) => (
             <React.Fragment key={row.key}>{renderRowBody(row)}</React.Fragment>
           ))}
@@ -952,9 +999,9 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
         ref={containerRef}
         onScroll={handleScroll}
         style={{ overflowAnchor: 'none' }}
-        className="flex-1 min-w-0 p-4 overflow-y-auto overflow-x-hidden scroll-smooth"
+        className="flex-1 min-w-0 p-4 overflow-y-auto overflow-x-hidden"
       >
-        {win.start <= 0 && messages.length > 0 && hasMore && loadOlderButton}
+        {win.start <= 0 && messages.length >= 50 && hasMore && loadOlderButton}
         <div aria-hidden style={{ height: `${topSpacer}px` }} />
         {mountedRows.map((row) => (
           <div

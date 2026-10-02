@@ -216,10 +216,11 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       onMessages: (convId, messages, meta) => {
         setMessagePaging((prev) => {
           const alreadyExhausted = prev[convId]?.hasMore === false && prev[convId]?.oldest === meta.oldest;
+          const hasMore = Boolean(!alreadyExhausted && messages.length >= 50 && meta.has_more);
           return {
             ...prev,
             [convId]: {
-              hasMore: alreadyExhausted ? false : Boolean(messages.length > 0 && meta.has_more),
+              hasMore,
               oldest: meta.oldest ?? undefined,
               loading: false,
               error: false,
@@ -459,7 +460,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
 
   const activeMessages = selectedConv ? (messagesMap[selectedConv.id] || []) : [];
   const activePaging = selectedConv ? messagePaging[selectedConv.id] : undefined;
-  const activeHasMore = Boolean(activeMessages.length > 0 && activePaging?.hasMore && activePaging.oldest);
+  const activeHasMore = Boolean(activeMessages.length >= 50 && activePaging?.hasMore && activePaging.oldest);
   const activeLoadingOlder = Boolean(activePaging?.loading);
   const activePagingError = Boolean(activePaging?.error);
   // Faz 16 (Sorun 2/10): ilk hidrasyon SURERKEN "mesaj yok" gosterilmez —
@@ -2885,8 +2886,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
           <div className={`flex-1 w-0 min-w-0 overflow-hidden flex flex-col h-full bg-white dark:bg-[#181C28] ${selectedConv ? 'flex' : 'hidden md:flex'}`}>
             {selectedConv ? (
               <div
-                key={selectedConv.id}
-                className="flex-1 w-full h-full flex flex-col overflow-hidden animate-in fade-in-50 slide-in-from-right-3 duration-200 ease-out"
+                className="flex-1 w-full h-full flex flex-col overflow-hidden animate-in fade-in-50 duration-150 ease-out"
               >
                 {/* Active Chat Header */}
                 <div className="p-3 sm:p-3.5 border-b border-slate-200/80 dark:border-white/[0.08] bg-slate-50/50 dark:bg-black/20 flex items-center justify-between shrink-0 gap-2">

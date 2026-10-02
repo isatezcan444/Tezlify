@@ -385,10 +385,10 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({ message, isGroup = fal
             {renderStatusIcon()}
           </div>
 
-          {/* Tepki rozetleri: WhatsApp Native tarzi balon kenarinda yuzen rozet (Foto 2) */}
+          {/* Tepki rozetleri: WhatsApp Native tarzı yuvarlak/hap biçiminde ferah rozet */}
           {groupedReactions.length > 0 && (
             <div
-              className={`absolute -bottom-2.5 z-10 flex items-center gap-0.5 px-1.5 py-0.5 rounded-full shadow-md select-none transition-transform duration-150 hover:scale-105 ${
+              className={`absolute -bottom-3 z-10 inline-flex items-center justify-center min-w-[28px] h-[26px] px-1.5 py-0.5 rounded-full shadow-[0_1.5px_4px_rgba(0,0,0,0.12)] dark:shadow-[0_2px_6px_rgba(0,0,0,0.35)] select-none transition-all duration-150 hover:scale-105 ${
                 isInbound ? 'left-3' : 'right-3'
               } bg-white dark:bg-[#1E2333] border border-slate-200/90 dark:border-white/15`}
               data-testid={`reaction-chips-${message.id}`}
@@ -403,11 +403,13 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({ message, isGroup = fal
                   }}
                   disabled={!canReact || reacting}
                   title={group.mine ? t('whatsapp.reactionRemove') : t('whatsapp.reactionAdd')}
-                  className="flex items-center gap-1 text-[13px] leading-none cursor-pointer disabled:cursor-not-allowed hover:opacity-80 transition-opacity"
+                  className="inline-flex items-center justify-center gap-1 cursor-pointer disabled:cursor-not-allowed hover:opacity-85 transition-opacity"
                 >
-                  <span>{group.emoji}</span>
+                  <span className="text-[14px] leading-none inline-flex items-center justify-center">
+                    {group.emoji}
+                  </span>
                   {group.count > 1 && (
-                    <span className="text-[10px] font-bold text-slate-600 dark:text-slate-300">
+                    <span className="text-[10px] font-bold text-slate-600 dark:text-slate-300 ml-0.5 select-none leading-none">
                       {group.count}
                     </span>
                   )}
