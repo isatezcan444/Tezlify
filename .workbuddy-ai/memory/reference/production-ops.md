@@ -89,13 +89,25 @@ about to touch production, deploy, or run the test suites. Invariants live in
   boot, and **two postmasters on one PGDATA corrupt the data**); create the replacement; verify by row
   count; only then `docker rm` the old one. Wrap it in `trap rollback ERR`. `pg_dump -Fc` first
   (75 MB DB → 4.6 MB dump). Full procedure + traps in the `docker-logs-wedge-diagnosis` skill.
-- **A `db` restart crashes the gateway.** `docker stop tezlify-db` SIGTERMs Postgres, which terminates
-  clients with `57P01 terminating connection due to administrator command`; the gateway's Node `pg` Pool
-  emits `'error'` with **no listener** (`pg-pool/index.js:62 idleListener`), so the **process dies**
-  (`restarts` +1). Backend is unaffected (`pool_pre_ping=True`, `pool_recycle=300`). Recovery is
-  automatic and correct — the gateway restores the session and re-acquires the socket lease **after one
-  TTL** (`GATEWAY_LEASE_TTL_SECONDS=45`, ~49 s measured) — but the crash itself is an open resilience
-  gap (fix: attach a Pool `'error'` handler). See §G/§M and the 2026-10-01 session log.
+- **A `db` restart used to crash the gateway — FIXED in `7357f3b` (deployed 2026-10-02).** `docker stop
+  tezlify-db` SIGTERMs Postgres, which terminates clients with `57P01 terminating connection due to
+  administrator command`; the gateway's Node `pg` Pool re-emits that on the **Pool** (`pg-pool/index.js:62
+  idleListener`) and Node treats an `'error'` event with **no listener** as fatal — the whole process
+  exited (`restarts` +1). The crash bought nothing: the pool had already discarded the broken client and
+  would reconnect on the next query, so a blip the gateway could absorb instead dropped every linked line
+  for one lease TTL (`GATEWAY_LEASE_TTL_SECONDS=45`). `attachPoolErrorHandler(pool, label)` in
+  `whatsapp-gateway/src/database/postgres-pool.js` is now applied at **all four** pool-creation sites
+  (in production all four consumers inject the one shared `gatewayPool`). It **logs at error level** and
+  is not swallowing: the operation that hit the error still fails. Pinned by
+  `scripts/test-postgres-pool-error.mjs` (in `npm test`; falsified via scoped stash →
+  `listenerCount('error') 0 !== 1`). Backend was never affected (`pool_pre_ping=True`,
+  `pool_recycle=300`). Live proof 2026-10-02: `pg_terminate_backend()` on the gateway's single idle
+  connection — the same `57P01`, with **zero downtime** — left `restarts=0`, `state=running`, and an
+  unchanged `StartedAt`, while the new handler logged the event.
+- **Verify this class of fix with `pg_terminate_backend()`, not a `db` restart.** Killing one idle
+  pooled connection from the server side reproduces the client-side `'error'` exactly and disturbs
+  nothing. Identify the owner by `client_addr` in `pg_stat_activity` against the container IPs
+  (`172.29.0.2`=backend, `.3`=gateway, `.4`=caddy, `.5`=db on `tezlify_tezlify-internal`).
 - Local sandbox sets `HTTP_PROXY/HTTPS_PROXY=http://127.0.0.1:59508`, which tunnels `app.tezlify.com`
   into a 502 — run API probes **from the production host** (Caddy is local there). Playwright exists only
   in the repo `venv` (`venv/bin/python`).
@@ -203,11 +215,41 @@ per build.
   gateway 26.5/199, caddy 17.5/26, db 16.7/9, all `error=None`. Row counts after the `db` recreate matched
   the pre-recreate baseline exactly (sessions 3 / conversations 120 / messages 699 / contacts 1525 /
   lid_mappings 17508). Site 200 / 5.5 ms, API 200 / 7.5 ms, `gateway_bridge.connected: true`.
+- **2026-10-02:** deployed `7357f3b` (the `pg` Pool `'error'` handler — gateway survives a DB blip).
+  `RELEASE_EXIT=0` ("SÜRÜM TAMAM: 7357f3b"), candidate health gate passed, cutover image identity
+  verified, hash checks OK, frontend 200. Release record `backups/releases/20261002T072012Z/release.json`
+  (`live_backend_image`/`live_gateway_image` equal the built digests); rollback tags
+  `tezlify-{backend,gateway}:pre-20261002T072012Z`. **No `--frontend-tar` was passed** — the frontend
+  did not change, and `host-release.sh` only rewrites `frontend_candidate` when one is given (line 294);
+  the served bundle stayed `index-EbhNawq7.js`. Prod checkout was clean beforehand, so no
+  `--force-reset`. Verified live with `pg_terminate_backend()` (zero downtime): `restarts=0`,
+  `StartedAt` unchanged.
+  - **Open at deploy time:** the WhatsApp line (session 116, +905413749073) is `DISCONNECTED` with
+    `error_message=WHATSAPP_LOGGED_OUT`, stamped `2026-10-01 22:06:51` — WhatsApp unlinked the device
+    ~9 h BEFORE this deploy, `gateway_sessions` went `is_active=f` and `session_credentials` was emptied,
+    so the gateway correctly had `discovered=0` to restore. It cannot be restored from credentials;
+    it needs a **QR re-pair**.
 
 ## Verification baselines
 
-- Last run (2026-10-01): backend **1423 pass / 4 skip / 0 fail**; gateway `npm test` **42 PASS** (exit 0);
-  frontend `npm run build` exit 0, `tsc --noEmit` clean, i18n parity **8/8** keys in both locales.
+- Last run (2026-10-02): backend **1431 pass / 4 skip / 0 fail** (run with `-p no:randomly`); gateway
+  `npm test` exit 0 with every suite PASS (incl. the new `test-postgres-pool-error.mjs`); frontend
+  `npm run build` exit 0, `tsc --noEmit` clean.
+- **`pytest-randomly 4.1.0` IS installed, so the backend suite is ORDER-DEPENDENT and its pass/fail
+  flips per run.** Measured 2026-10-02: random order → **21 failed / 1410 passed**; `-p no:randomly`
+  → **1431 passed / 4 skipped, exit 0**. Failures were `test_whatsapp_sync_job.py` (19) +
+  `test_whatsapp_live.py` (2), signature `AssertionError` — **not** `no such table`, so it is not a
+  provisioning gap — and `test_whatsapp_sync_job.py` passes **alone** (46 passed). Re-run with
+  `-p no:randomly` *and* the file in isolation before calling anything "pre-existing" or blaming your
+  change. (A previous session's "1431 passed" was simply a lucky seed.)
+  - The poisoning agent is a **real production bug** at
+    `backend/app/services/whatsapp/orchestration/sync.py:294`:
+    `_bulk_channel_cache: Dict[str, Any] = {"ok": False, "checked_at": 0.0}` is **module-global**,
+    assigned by **reference** (`self._bulk_channel_cache = _bulk_channel_cache`), and
+    `_bulk_channel_available(self, gateway_id)` **never keys on `gateway_id`**. So one line's failed
+    bulk probe answers "bulk channel unavailable" for **every** line for 300 s, silently degrading all
+    of them to legacy per-chat sync. That is the invariant §N already states — key a process-global
+    flag by the **resource**, not by a coarse family label. **Still open as of 2026-10-02.**
 - Previous run (2026-09-26): backend **1169 pass / 4 skip / 0 fail**; gateway all **8** `npm test` scripts
   pass (`test-system-content-preview.mjs` 14 checks, `test-contact-cache.mjs` 37,
   `test-contact-hydration.mjs` 26); frontend `verify:logic` **45/45** (incl. the two i18n checks),

@@ -92,8 +92,9 @@ Curated index only. Detail lives elsewhere, deliberately:
   probes **from the production host** — the local sandbox proxy turns `app.tezlify.com` into a 502.
 - **`db` is in NO compose file** (unlabelled container, alias `db`, volume `tezlify_postgres_staging_data`)
   — compose calls it an *orphan*, so **never run `up -d --remove-orphans`**; it would delete the database.
-  Log rotation is now on all four. A `db` restart **crashes the gateway** (unhandled `pg` Pool `'error'`);
-  it self-heals after one 45 s lease TTL.
+  Log rotation is on all four. A `db` restart no longer kills the gateway (fixed in `7357f3b`). But
+  **`pytest-randomly` is installed**, so a red backend run may be order-only — re-check with
+  `-p no:randomly` and the file alone before believing it.
 - **Falsify before trusting** — see the `scoped-stash-falsification` skill.
 - **Parallel `Edit` calls on one file clobber each other** — edit sequentially or rewrite with one `Write`.
 - Ops log clearing **TRUNCATEs** the container log file in place (never delete — the daemon holds the inode).
