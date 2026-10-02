@@ -274,6 +274,16 @@ def resolve_gate_phase(
        refresh must never show an unfinishable loading screen again, and a
        manual re-sync belongs in the in-list banner, not in a full-screen gate.
 
+    3. The gateway finishing its OWN history sync is NOT the first sync
+       finishing. `gw_phase == "ready"` used to open the gate outright (as long
+       as no backend job happened to be running), so the chat list opened while
+       chats were still being pulled in — measured 2026-10-02: the gateway
+       emits `session_sync_completed` and the backend reconcile job only becomes
+       `SYNCING` a moment later, and a job scheduled on `session_connected` can
+       be skipped entirely when the session's owner is not resolvable yet. The
+       durable stamp is the only thing that may open the gate; without it the
+       gate keeps blocking.
+
     A failed job is still a failure — an error is never masked by the durable
     stamp. A reconnect, by contrast, must not re-open the first-load gate for a
     user who already has their chats: the session banner already reports the
@@ -292,7 +302,14 @@ def resolve_gate_phase(
     if gw_phase == "syncing":
         return "syncing_history", (job_stage if job_stage != "idle" else "chats")
     if gw_phase == "ready" and job_state in ("COMPLETED", "IDLE"):
-        return "ready", "complete"
+        # Defect 3 (see docstring). No durable stamp means the backend has not
+        # finished a pass over the gateway's final chat set, so this is still the
+        # first sync. Reporting "ready" here is what let the list open while
+        # chats were still arriving; keep blocking until the reconcile pass
+        # stamps the column.
+        return "syncing_history", (
+            job_stage if job_stage not in ("idle", "complete") else "chats"
+        )
     # Nothing durable and nothing running: there is no wait to explain. The UI
     # does not open a gate for `idle`, so the chat list is usable immediately.
     return "idle", "idle"
@@ -382,8 +399,19 @@ async def get_loading_gate(db: AsyncSession, user_id: str) -> Dict[str, Any]:
     progress = int(sync.get("progress") or 0)
     if phase == "ready":
         progress = 100
-    elif job_state == "SYNCING" and counts["chats_total"] > 0:
-        progress = max(progress, min(90, int(90 * counts["chats_synced"] / counts["chats_total"])))
+    elif job_state == "SYNCING":
+        # The bar must never read 100% while the first sync is still running.
+        # The gateway reports `progress: 100` the moment ITS history sync
+        # finishes, but the backend still has to pull the final chat set — so cap
+        # the gateway's contribution at 90 and take the job's own progress when
+        # it is further along. `ready` (above) is the only path to 100.
+        gateway_progress = min(progress, 90)
+        backend_progress = (
+            min(90, int(90 * counts["chats_synced"] / counts["chats_total"]))
+            if counts["chats_total"] > 0
+            else 0
+        )
+        progress = max(gateway_progress, backend_progress)
 
     return {
         "session_id": session.get("id"),

@@ -526,13 +526,18 @@ def test_missing_avatar_does_not_hold_the_loading_gate():
     from backend.app.services.whatsapp_service import resolve_gate_phase
 
     # The reported production state: sync finished, gateway ready, one avatar
-    # that will not resolve.
+    # that will not resolve. "Sync finished" is expressed by the DURABLE stamp —
+    # `initial_sync_completed=True`. It is NOT implied by `job_state="COMPLETED"`:
+    # a job that ran while the gateway was still syncing also reaches COMPLETED,
+    # and treating that as "finished" is precisely the defect the regression
+    # below pins down.
     phase, stage = resolve_gate_phase(
         job_state="COMPLETED",
         job_stage="complete",
         gw_phase="ready",
         session_status="CONNECTED",
         avatars_missing=1,
+        initial_sync_completed=True,
     )
     assert phase == "ready", "a missing photo must not hold the gate closed"
     assert stage == "complete"
@@ -544,7 +549,23 @@ def test_missing_avatar_does_not_hold_the_loading_gate():
         gw_phase="ready",
         session_status="CONNECTED",
         avatars_missing=97,
+        initial_sync_completed=True,
     )[0] == "ready"
+
+    # REGRESSION (2026-10-02): a gateway that finished ITS history sync must not
+    # open the gate by itself. Without the durable stamp the backend has not yet
+    # pulled the final chat set, so the list stays behind the gate — opening here
+    # is what let chats stream into a list the user was already reading.
+    for _job_state, _job_stage in (("COMPLETED", "complete"), ("IDLE", "idle")):
+        assert resolve_gate_phase(
+            job_state=_job_state,
+            job_stage=_job_stage,
+            gw_phase="ready",
+            session_status="CONNECTED",
+            avatars_missing=0,
+        ) == ("syncing_history", "chats"), (
+            "the gateway finishing its own sync must not open the first-load gate"
+        )
 
     # Real work in flight still holds it, and avatars remain a reported stage so
     # the UI can explain the wait — they just never justify one by themselves.

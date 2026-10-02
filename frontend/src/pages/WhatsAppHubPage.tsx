@@ -2194,6 +2194,16 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
           syncMsgBufferRef.current = {};
           fetchSessions(true);
           onRefreshStatsRef.current();
+          // The BACKEND's first sync just reached its terminal state, and its
+          // durable stamp (`initial_sync_completed_at`) was committed BEFORE this
+          // event was broadcast. The full-screen gate is fed ONLY by the backend
+          // authority (`loadingGate.phase === 'syncing_history'`), and the single
+          // signal that re-asks it — the gateway's `session_sync_completed` — now
+          // arrives EARLIER than this event, because the backend job waits for the
+          // gateway's history sync before it pulls. Without this refresh the gate
+          // would keep showing "loading chats" after everything had finished,
+          // until a remount or a WS reconnect.
+          void refreshLoadingGate();
         } else if (eventData.event === 'whatsapp_sync_failed') {
           // Sorun 8: basarisizlik kullaniciya BIR KEZ gosterilir ve
           // acknowledged olarak isaretlenir — backend'de tutulan ayni job
@@ -2203,6 +2213,11 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
           setSessionSync({ phase: 'error', stage: eventData.stage || 'failed', error: eventData.error || null, progress: 0 });
           setIsSyncingChats(false);
           activeSyncIdRef.current = null;
+          // A failed job is a real failure, never a hidden one. Re-ask the gate so
+          // it reports `error` (with the retry affordance) instead of leaving the
+          // full-screen gate stuck on `syncing_history` — the job snapshot stays
+          // `FAILED` in memory, so the backend answers honestly.
+          void refreshLoadingGate();
           if (eventData.error_code === 'RELINK_REQUIRED') {
             fetchSessions(true);
             toast.error(t('whatsapp.syncRelinkRequired'), t('common.error'));
@@ -2297,7 +2312,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     // covered by verify:realtime (9/9 scenarios) — change it only with that
     // suite running.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loadConversations, refreshSyncStatus, reportReadSync, logBackgroundFetchFailure, hydrateConversation, clearPeerTyping, acknowledgeFailedSync, scheduleBootstrapFetch]);
+  }, [loadConversations, refreshSyncStatus, reportReadSync, logBackgroundFetchFailure, hydrateConversation, clearPeerTyping, acknowledgeFailedSync, scheduleBootstrapFetch, refreshLoadingGate]);
 
   // Anti-ban: the editor itself is <AntiBanPanel>, but the tab button shows an
   // unsaved-changes dot, so the page still needs to know whether the config

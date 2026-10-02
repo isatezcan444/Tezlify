@@ -52,7 +52,9 @@ Curated index only. Detail lives elsewhere, deliberately:
 - **Archive state: "unknown" must never be written as `false`** (K) — the backend contract is *omit the key*
   and it already preserves a stored `is_archived` when the gateway stays silent; the gateway's four `?? false`
   writers made that guard **dead** (live: 112/112 chats carried the key, 111 `false`). Archive state can
-  **only** arrive via app-state. Recovering the already-lost rows is a **product decision**.
+  **  only** arrive via app-state. Recovering the already-lost rows is a **product decision**.
+- **The first-load gate opens ONLY on the durable `initial_sync_completed_at` stamp**, never on the
+  gateway's `sync.phase == 'ready'` (§O).
 - **Delete-sync / identity / unread narratives → §M, §N.** `regular_high` vs `regular_low` are different
   app-state collections; `lastMessages` THROWS instead of degrading; "owner unresolved" means EARLY not
   garbage; `remoteJidAlt` files a message under its phone identity at ingest; a local counter must count only
@@ -113,10 +115,10 @@ failure is pre-existing by stashing only the source and re-running), `esbuild-fr
 `asymmetric-resource-guard-detection`, `client-lifecycle-cancels-server-promotion`,
 `cross-tenant-lookup-isolation`, `symlink-served-release-fast-forward-deploy`,
 `fastapi-response-model-silent-field-drop`, `bootstrap-model-registration-parity` (a hand-provisioned test
-DB must import **every** model module or tables are silently absent and unrelated tests die on "no such
-table"), `tezlify-push-verification-gate` (the exact 3-suite pre-push sequence + the sandbox traps that fake
-a signal), `memory-index-truncation-recovery` (this index is injected every session and is **silently
-truncated** past its ceiling — relocate detail to `reference/`, verify presence **and** leak, and never
-`grep "\|"` for the check), `docker-logs-wedge-diagnosis` (`docker logs` hanging forever after a json-file
-was truncated in place — prove it with a throwaway container, read the file directly, `docker restart`
-unwedges, rotate instead of clearing).
+DB must import **every** model module or unrelated tests die on "no such table"),
+`tezlify-push-verification-gate` (the exact 3-suite pre-push sequence + the sandbox traps that fake
+a signal), `memory-index-truncation-recovery` (injected every session, **silently truncated** past its
+ceiling — relocate detail to `reference/`, verify presence **and** leak), `docker-logs-wedge-diagnosis`
+(`docker logs` hangs forever after a json-file truncation — read the file directly, `docker restart`
+unwedges, rotate instead of clearing), `permissive-branch-removal-orphans-transition` (removing a
+permissive branch can orphan the state's only open path).

@@ -301,6 +301,48 @@ _sync_jobs: Dict[str, SyncJob] = {}
 # first decided the outcome for every later test that shared the entry.
 _BULK_CHANNEL_TTL_SECONDS = 300
 _bulk_channel_cache: Dict[str, Dict[str, Any]] = {}
+
+# Gateway history-sync readiness wait (see `_await_gateway_history_ready`).
+#
+# The gateway emits `session_connected` BEFORE it starts its own history sync
+# (`socket-events.js`: the emit is at line 343, `session_sync_started` at 368),
+# and the backend schedules the FIRST sync job on exactly that event
+# (`events.py`, `session_connected` -> `_schedule_initial_sync`). Pulling
+# immediately therefore snapshots a nearly-empty gateway and stamps
+# `initial_sync_completed_at` while the real download is still in flight — the
+# loading gate then opens and chats keep streaming into the list (production
+# report, 2026-10-02).
+#
+# The wait is BOUNDED, deliberately: the gateway's own fallbacks force
+# `phase: 'ready'` within 45 s even when no history arrives
+# (`HISTORY_NO_CHUNK_FALLBACK_MS`), so 120 s sits comfortably above every
+# self-resolving path — and a gateway that never answers must not pin the job.
+_GATEWAY_HISTORY_READY_TIMEOUT_S = 120.0
+_GATEWAY_HISTORY_READY_POLL_S = 2.0
+
+
+def _gateway_sync_phase(sessions: Any, gateway_id: str) -> str:
+    """Read one session's own `sync.phase` out of a gateway `/sessions` payload.
+
+    Returns `unknown` when the session is absent or the gateway omitted the field.
+    The caller treats **anything that is not `syncing`** as "do not block", so an
+    unreadable answer can never pin a sync job — and `unknown` is deliberately not
+    a synonym for "still working".
+
+    This reads the SAME source the loading gate uses (`listSessions()` carries
+    `sync: s.sync || { phase: 'idle' }`, `session-manager.js`), so the job and the
+    gate can never disagree about whether history has landed.
+    """
+    if not isinstance(sessions, list):
+        return "unknown"
+    for item in sessions:
+        if not isinstance(item, dict) or str(item.get("id")) != str(gateway_id):
+            continue
+        sync = item.get("sync")
+        if isinstance(sync, dict) and sync.get("phase"):
+            return str(sync["phase"])
+        return "unknown"
+    return "unknown"
 _last_bootstrap_emit: Dict[str, float] = {}
 _metadata_tasks: Dict[str, asyncio.Task[None]] = {}
 _sync_conversations_inflight: Set[str] = set()
@@ -420,6 +462,51 @@ class WhatsAppSyncOrchestrator:
             )
         self._bulk_channel_cache[gateway_id] = {"ok": ok, "checked_at": now}
         return ok
+
+    async def _await_gateway_history_ready(self, gateway_id: str) -> str:
+        """Block until the gateway reports its OWN history sync as finished.
+
+        Returns the last observed phase. Every non-`ready` outcome returns so the
+        caller proceeds: a timeout, an unreachable gateway, or a probe missing on
+        a test double. This is a **readiness** wait, never a hard gate — the job
+        must not be able to hang forever on a gateway that cannot answer, and a
+        gateway that is genuinely gone already fails the job honestly at the very
+        next `list_conversations` call.
+
+        Only the FIRST sync waits (the caller checks the durable stamp), so a
+        manual re-sync on an already-synced line behaves exactly as before.
+
+        Why not just trust `session_connected`: that event fires BEFORE the
+        history sync starts, so it says nothing about whether chats have arrived.
+        The gateway's `sync.phase` is the only signal that means "WhatsApp has
+        finished handing me the chat list and its messages".
+        """
+        gateway_client = self._get_helper("gw", gw)
+        deadline = time.monotonic() + _GATEWAY_HISTORY_READY_TIMEOUT_S
+        last_phase = "unknown"
+        while True:
+            try:
+                sessions = await gateway_client.list_sessions()
+            except Exception as exc:  # noqa: BLE001 - readiness probe is best-effort
+                logger.warning(
+                    "Gateway gecmis senkron durumu okunamadi; beklenmeden devam (gateway=%s): %s",
+                    gateway_id,
+                    exc,
+                )
+                return last_phase
+            last_phase = _gateway_sync_phase(sessions, gateway_id)
+            if last_phase != "syncing":
+                return last_phase
+            if time.monotonic() >= deadline:
+                logger.warning(
+                    "Gateway gecmis senkronu %ss icinde 'ready' olmadi "
+                    "(gateway=%s, son faz=%s); senkron mevcut durumla devam ediyor",
+                    int(_GATEWAY_HISTORY_READY_TIMEOUT_S),
+                    gateway_id,
+                    last_phase,
+                )
+                return last_phase
+            await asyncio.sleep(_GATEWAY_HISTORY_READY_POLL_S)
 
     async def _broadcast_sync_event(self, payload: Dict[str, Any], owner: str) -> None:
         try:
@@ -1389,6 +1476,9 @@ class WhatsAppSyncOrchestrator:
         sync_contacts = self._get_helper("sync_contacts", self.sync_contacts)
         reapply_chat_names = self._get_helper("_reapply_chat_names", self._reapply_chat_names)
         bulk_channel_available = self._get_helper("_bulk_channel_available", self._bulk_channel_available)
+        await_gateway_history_ready = self._get_helper(
+            "_await_gateway_history_ready", self._await_gateway_history_ready
+        )
         run_bulk_message_sync = self._get_helper("_run_bulk_message_sync", self._run_bulk_message_sync)
         run_backfill_empty = self._get_helper(
             "_backfill_empty_conversations", self._backfill_empty_conversations
@@ -1433,6 +1523,18 @@ class WhatsAppSyncOrchestrator:
                 for ws_session in sessions_to_sync:
                     gateway_id = str(ws_session.gateway_id)
                     expansion_gateway_ids.append(gateway_id)
+                    # FIRST sync only: wait for the gateway's own history sync to
+                    # finish before snapshotting anything. This job is scheduled on
+                    # `session_connected`, which the gateway emits BEFORE it starts
+                    # that sync — so without this wait we snapshot a nearly-empty
+                    # gateway and stamp `initial_sync_completed_at` while chats are
+                    # still arriving; the loading gate then opens and the list keeps
+                    # growing (production report, 2026-10-02). `job.stage` stays
+                    # "starting" for the duration, which is what the UI shows.
+                    if ws_session.initial_sync_completed_at is None:
+                        await await_gateway_history_ready(gateway_id)
+                    if job.cancel_requested:
+                        raise asyncio.CancelledError()
                     job.stage = "chats"
                     if gateway_op_or_mark_relink is not None:
                         data = await gateway_op_or_mark_relink(
@@ -2484,6 +2586,7 @@ _schedule_group_hydration = _default_sync_orchestrator._schedule_group_hydration
 _reapply_chat_names = _default_sync_orchestrator._reapply_chat_names
 _run_background_history_expansion = _default_sync_orchestrator._run_background_history_expansion
 _bulk_channel_available = _default_sync_orchestrator._bulk_channel_available
+_await_gateway_history_ready = _default_sync_orchestrator._await_gateway_history_ready
 _broadcast_sync_event = _default_sync_orchestrator._broadcast_sync_event
 _sync_event = _default_sync_orchestrator._sync_event
 reset_history_expansion_state = _default_sync_orchestrator.reset_history_expansion_state

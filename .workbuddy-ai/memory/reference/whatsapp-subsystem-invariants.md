@@ -531,3 +531,46 @@ survives between runs, and `+905551112233` is a fixture phone shared by ~17 test
 "this phone exists nowhere" fails on another file's residue instead of on a regression — and did,
 intermittently. Scope assertions to the test's own user. Related: writers disagree on whether `user_id` keeps
 its dashes, so a cleanup that deletes only one form leaves the row for the next run.
+
+## O. The first-load gate — the durable stamp is the ONLY opener (FIXED 2026-10-02)
+
+The QR-post-pairing full-screen gate (`phase: syncing_history`) may be opened by exactly one thing:
+`whatsapp_sessions.initial_sync_completed_at` being set, surfaced as `initial_sync_completed`. Nothing
+in memory counts — neither the gateway's `sync.phase` nor the backend `SyncJob` survives a refresh, and
+neither is proof that the backend finished a pass over the gateway's **final** chat set.
+
+Three defects made the list open while chats were still streaming in, all fixed together:
+
+1. **The gateway emits `session_connected` BEFORE it starts its own history sync** (`socket-events.js`:
+   emit at 343, `session_sync_started` at 368), and the backend schedules the FIRST sync job on exactly
+   that event (`events.py` → `_schedule_initial_sync`). The job used to call `list_conversations`
+   immediately, snapshotting a nearly-empty gateway and stamping the write-once column. **Fix:**
+   `_await_gateway_history_ready()` in `orchestration/sync.py` — a **fail-open**, bounded (120 s) wait on
+   the gateway's own `sync.phase`, called **only for a first sync** (stamp `None`). It reads the SAME
+   source the gate reads (`listSessions()` → `sync: s.sync || {phase:'idle'}`), so job and gate cannot
+   disagree. Anything that is not `syncing` means "do not block"; an unreachable gateway must never pin
+   the job.
+2. **`resolve_gate_phase` opened on `gw_phase == "ready" and job_state in ("COMPLETED","IDLE")` with no
+   stamp.** That branch was the authoritative premature-open path (its `COMPLETED` half is practically
+   unreachable — the stamp commits before `COMPLETED`). It now returns `syncing_history`.
+3. **Contributing:** the gateway force-sets `phase:'ready'` after `HISTORY_NO_CHUNK_FALLBACK_MS` (45 s) +
+   `HISTORY_QUIET_PERIOD_MS` (3 s), so it can declare ready with zero history.
+
+**The mirror bug — removing defect 2 orphaned the transition.** The gate is opened by a client re-fetch
+(`GET /whatsapp/loading-gate`), and the only re-fetch trigger was the *gateway's* `session_sync_completed`.
+Fix 1 makes the backend job **wait for that same signal**, so the re-fetch now always lands while the job
+is `SYNCING` → returns `syncing_history` → and **nothing re-asked after the backend finished**, leaving the
+full-screen gate up until a remount. Closed by re-asking on the backend's own terminal events
+(`whatsapp_sync_complete` / `whatsapp_sync_failed`, `WhatsAppHubPage.tsx`). Ordering is safe because the
+stamp commits at `sync.py:1657` **before** `whatsapp_sync_complete` is broadcast at `:1680`. Lesson
+generalised in the `permissive-branch-removal-orphans-transition` skill.
+
+**Progress-bar rule:** while `job_state == "SYNCING"` the gateway's `progress: 100` is capped at **90**
+and the job's own `chats_synced/chats_total` is taken when further along. `ready` is the only path to 100.
+The bar must never read 100% while the first sync is still running.
+
+Regression guards: `test_missing_avatar_does_not_hold_the_loading_gate` (backend) asserts the
+`COMPLETED`/`IDLE` + gateway-ready case stays `("syncing_history","chats")`; the 5 `_await_gateway_history_ready`
+/ `_gateway_sync_phase` / `_run_sync_job` tests live in `test_whatsapp_orchestration_sync.py`; the frontend
+`verify:loading-gate` script guards both directions (the gateway signal must NOT open the gate, and the
+backend's own completion MUST re-ask it).

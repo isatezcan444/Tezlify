@@ -19,10 +19,12 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.services.whatsapp.exceptions import NoWhatsAppSession
+from backend.app.services.whatsapp.orchestration import sync as sync_module
 from backend.app.services.whatsapp.orchestration.sync import (
     SyncJob,
     WhatsAppSyncOrchestrator,
     _BOOTSTRAP_EMIT_INTERVAL_S,
+    _gateway_sync_phase,
 )
 
 
@@ -239,3 +241,149 @@ async def test_run_sync_job_fails_closed_on_no_session():
     assert len(broadcasts) >= 2
     failed_ev = [b for b in broadcasts if b["event"] == "whatsapp_sync_failed"]
     assert len(failed_ev) == 1
+
+
+# ---------------------------------------------------------------------------
+# Gateway history-sync readiness wait (production report 2026-10-02)
+#
+# The gateway emits `session_connected` BEFORE it starts its own history sync,
+# and this job is scheduled on exactly that event. Without a wait the job
+# snapshots a nearly-empty gateway and stamps `initial_sync_completed_at` while
+# chats are still arriving, so the loading gate opens and the list keeps growing.
+# ---------------------------------------------------------------------------
+
+
+def test_gateway_sync_phase_reads_only_its_own_session():
+    """Only the matching session's phase is read; everything else is `unknown`.
+
+    `unknown` must NOT be treated as "still working" — that is what keeps a
+    session the gateway cannot describe from pinning a job forever.
+    """
+    payload = [
+        {"id": "gw-other", "sync": {"phase": "syncing"}},
+        {"id": "gw-mine", "sync": {"phase": "ready"}},
+    ]
+    assert _gateway_sync_phase(payload, "gw-mine") == "ready"
+    assert _gateway_sync_phase(payload, "gw-absent") == "unknown"
+    # A payload that is not a list, a non-dict entry, or a missing `sync` field
+    # are all "we cannot tell", never a blocking state.
+    assert _gateway_sync_phase(None, "gw-mine") == "unknown"
+    assert _gateway_sync_phase([{"id": "gw-mine"}], "gw-mine") == "unknown"
+    assert _gateway_sync_phase([{"id": "gw-mine", "sync": {}}], "gw-mine") == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_await_gateway_history_ready_does_not_block_when_not_syncing():
+    """`ready` returns on the first probe — a re-sync must stay fast."""
+    mock_service = MagicMock()
+    mock_service.gw = MagicMock()
+    mock_service.gw.list_sessions = AsyncMock(
+        return_value=[{"id": "gw-ready", "sync": {"phase": "ready"}}]
+    )
+    orchestrator = WhatsAppSyncOrchestrator(service=mock_service)
+
+    assert await orchestrator._await_gateway_history_ready("gw-ready") == "ready"
+    assert mock_service.gw.list_sessions.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_await_gateway_history_ready_polls_while_syncing(monkeypatch):
+    """`syncing` must BLOCK until the gateway says otherwise — the point of the fix."""
+    phases = ["syncing", "syncing", "ready"]
+
+    async def _sessions():
+        return [{"id": "gw-slow", "sync": {"phase": phases.pop(0)}}]
+
+    mock_service = MagicMock()
+    mock_service.gw = MagicMock()
+    mock_service.gw.list_sessions = AsyncMock(side_effect=_sessions)
+    orchestrator = WhatsAppSyncOrchestrator(service=mock_service)
+    monkeypatch.setattr(sync_module, "_GATEWAY_HISTORY_READY_POLL_S", 0.01)
+
+    assert await orchestrator._await_gateway_history_ready("gw-slow") == "ready"
+    assert mock_service.gw.list_sessions.call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_await_gateway_history_ready_is_fail_open():
+    """A gateway that cannot answer must never pin the job — return, do not hang.
+
+    The job stays honest about a dead gateway anyway: the very next
+    `list_conversations` call fails it.
+    """
+    mock_service = MagicMock()
+    mock_service.gw = MagicMock()
+    mock_service.gw.list_sessions = AsyncMock(side_effect=RuntimeError("gateway down"))
+    orchestrator = WhatsAppSyncOrchestrator(service=mock_service)
+
+    started = time.monotonic()
+    assert await orchestrator._await_gateway_history_ready("gw-dead") == "unknown"
+    assert time.monotonic() - started < 1.0, "an unreadable gateway must not be waited on"
+
+
+@pytest.mark.asyncio
+async def test_await_gateway_history_ready_gives_up_at_the_bound(monkeypatch):
+    """A gateway stuck in `syncing` is abandoned after the bound, not forever."""
+    mock_service = MagicMock()
+    mock_service.gw = MagicMock()
+    mock_service.gw.list_sessions = AsyncMock(
+        return_value=[{"id": "gw-stuck", "sync": {"phase": "syncing"}}]
+    )
+    orchestrator = WhatsAppSyncOrchestrator(service=mock_service)
+    monkeypatch.setattr(sync_module, "_GATEWAY_HISTORY_READY_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(sync_module, "_GATEWAY_HISTORY_READY_POLL_S", 0.01)
+
+    assert await orchestrator._await_gateway_history_ready("gw-stuck") == "syncing"
+    assert mock_service.gw.list_sessions.call_count >= 2
+
+
+@pytest.mark.asyncio
+async def test_run_sync_job_waits_for_the_gateway_only_on_a_first_sync():
+    """The readiness wait runs for a FIRST sync and is skipped once stamped.
+
+    `session_connected` — the event this job is scheduled on — fires BEFORE the
+    gateway starts its history sync, so a first sync must wait. A line that
+    already carries the durable stamp must not wait, so a manual re-sync keeps
+    behaving exactly as it did before.
+
+    The job is expected to fail right after the wait (the gateway calls are not
+    mocked here); only the WAIT DECISION is under test.
+    """
+    waited: List[str] = []
+
+    class _FakeSession:
+        def __init__(self, gateway_id: str, completed: Any) -> None:
+            self.gateway_id = gateway_id
+            self.initial_sync_completed_at = completed
+            self.id = 7
+
+    def _orchestrator_for(session: Any) -> WhatsAppSyncOrchestrator:
+        mock_service = MagicMock()
+        mock_service._broadcast_sync_event = AsyncMock()
+        mock_service._user_sessions = AsyncMock(return_value=[session])
+        ctx = MagicMock()
+        ctx.__aenter__ = AsyncMock(return_value=MagicMock(spec=AsyncSession))
+        ctx.__aexit__ = AsyncMock(return_value=None)
+        mock_service.AsyncSessionLocal = MagicMock(return_value=ctx)
+
+        async def _capture(gateway_id: str) -> str:
+            waited.append(gateway_id)
+            return "ready"
+
+        mock_service._await_gateway_history_ready = _capture
+        orchestrator = WhatsAppSyncOrchestrator(service=mock_service)
+        mock_service._sync_event = orchestrator._sync_event
+        return orchestrator
+
+    # FIRST sync: the durable stamp is NULL -> the job must wait.
+    await _orchestrator_for(_FakeSession("gw-first", None))._run_sync_job(
+        SyncJob(sync_id="j-first", user_id="u-first")
+    )
+    assert waited == ["gw-first"], "a first sync must wait for the gateway's history sync"
+
+    # Already synced: the stamp is present -> no wait at all.
+    waited.clear()
+    await _orchestrator_for(_FakeSession("gw-done", datetime(2026, 1, 1)))._run_sync_job(
+        SyncJob(sync_id="j-done", user_id="u-done")
+    )
+    assert waited == [], "an already-synced line must not wait"

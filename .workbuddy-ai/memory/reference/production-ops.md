@@ -245,11 +245,15 @@ per build.
 
 ## Verification baselines
 
-- Last run (2026-10-02, AFTER the cache fix): backend **1432 pass / 4 skip / 0 fail** with
+- Last run (2026-10-02, AFTER the early-gate fix): backend **1438 pass / 4 skip / 0 fail** with
   `-p no:randomly`, **and green under `pytest-randomly` at three explicit seeds** (12345, 777,
   20261002) — the suite is **order-INDEPENDENT again**. gateway `npm test` exit 0 with every suite
-  PASS (incl. `test-postgres-pool-error.mjs`); frontend `npm run build` exit 0, bundle hash
-  **unchanged** (`index-EbhNawq7.js`), `tsc --noEmit` clean.
+  PASS (incl. `test-postgres-pool-error.mjs`); frontend `npm run build` exit 0, `tsc` clean.
+  (Previous baseline after the cache fix was **1432**; +6 from the early-gate tests.)
+- **`pytest-randomly` is easy to fake.** `-q` suppresses its seed banner, so a run can *look* seeded
+  without being so. Prove it reshuffles by diffing `--collect-only -q` output across two seeds
+  (12345 vs 777 gave different orders on 2026-10-02). A green suite at several *verified* seeds is the
+  evidence; three green runs at one accidental order is not.
 - **`pytest-randomly 4.1.0` IS installed** — the backend suite *was* order-dependent until
   2026-10-02. Measured BEFORE the fix: random order → **21 failed / 1410 passed**; `-p no:randomly`
   → **1431 passed / 4 skipped, exit 0**. Failures were `test_whatsapp_sync_job.py` (19) +

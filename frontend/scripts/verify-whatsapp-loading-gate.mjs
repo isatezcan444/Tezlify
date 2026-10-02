@@ -12,6 +12,12 @@
  *   2. A refresh after QR pairing could show a gate that never finished: the
  *      avatar count and the in-memory gateway phase were consulted, and both
  *      can be regenerated forever with nothing left to complete.
+ *   3. The mirror image of (1): once the gate correctly stops opening on the
+ *      gateway's signal, the BACKEND's own completion must be what opens it.
+ *      The backend job now waits for the gateway's history sync before pulling,
+ *      so `session_sync_completed` arrives EARLIER than the backend finishing —
+ *      and the gate then had no later signal to re-ask it, leaving the full
+ *      screen up after everything had finished.
  *
  * These guards fail if either shortcut comes back. They read the shipped
  * sources, the same style as the hydration guards in
@@ -56,6 +62,35 @@ assert.match(
   page,
   /const loadingGateActive =\s*\n?\s*loadingGate\?\.phase === 'syncing_history'/,
   "avatars/profiles must never hold the gate; only 'syncing_history' does",
+);
+
+// 4. Defect 3: the BACKEND's own sync job is what opens the gate, so its
+//    terminal events must re-ask it. Sliced by branch header so the completion
+//    and failure branches cannot mask each other (a plain window after the
+//    first header would happily match the second branch's refresh).
+const branch = (startMarker, endMarker) => {
+  const start = page.indexOf(startMarker);
+  const end = page.indexOf(endMarker);
+  assert.ok(start !== -1, `branch start not found: ${startMarker}`);
+  assert.ok(end > start, `branch end not found after start: ${endMarker}`);
+  return page.slice(start, end);
+};
+
+assert.match(
+  branch(
+    "eventData.event === 'whatsapp_sync_complete'",
+    "eventData.event === 'whatsapp_sync_failed'",
+  ),
+  /void refreshLoadingGate\(\)/,
+  "the backend's own sync completion must re-ask the loading gate",
+);
+assert.match(
+  branch(
+    "eventData.event === 'whatsapp_sync_failed'",
+    'Gateway completion is not persistence completion',
+  ),
+  /void refreshLoadingGate\(\)/,
+  'a failed backend sync must re-ask the loading gate so it reports the error',
 );
 
 console.log('[verify-whatsapp-loading-gate] ok - backend is the single gate authority');
