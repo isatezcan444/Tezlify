@@ -52,7 +52,7 @@ Curated index only. Detail lives elsewhere, deliberately:
 - **Archive state: "unknown" must never be written as `false`** (K) — the backend contract is *omit the key*
   and it already preserves a stored `is_archived` when the gateway stays silent; the gateway's four `?? false`
   writers made that guard **dead** (live: 112/112 chats carried the key, 111 `false`). Archive state can
-  **  only** arrive via app-state. Recovering the already-lost rows is a **product decision**.
+  **only** arrive via app-state. Recovering the already-lost rows is a **product decision**.
 - **The first-load gate opens ONLY on the durable `initial_sync_completed_at` stamp**, never on the
   gateway's `sync.phase == 'ready'` (§O).
 - **A guard keyed on "the current page has rows" is DEAD for a page that is empty BY CONSTRUCTION**
@@ -64,8 +64,7 @@ Curated index only. Detail lives elsewhere, deliberately:
   garbage; `remoteJidAlt` files a message under its phone identity at ingest; a local counter must count only
   what was PUBLISHED; a repair job can be starved by the cleanup that runs first; the merge needs a DB-row
   lease with a **normalised** key; a process-global "already initialised" flag must be keyed by the
-  **resource**, not by a coarse family label — the same rule `_bulk_channel_cache` broke by being a
-  flat, un-keyed dict (one line's failed probe answered for EVERY line for 300 s; fixed 2026-10-02).
+  **resource**, not by a coarse family label (`_bulk_channel_cache` broke this — `production-ops.md`).
 
 ## Cross-cutting
 
@@ -82,11 +81,10 @@ Curated index only. Detail lives elsewhere, deliberately:
   **that other writer is the bug** — check both. Before "fixing" a duplicate implementation, measure whether
   its branches have ever actually run.
 - **A key the serializer emits but the `response_model` does not DECLARE never reaches the client.**
-  Pydantic v2 defaults to `extra="ignore"`, so `WhatsAppMessageItem` silently discarded `link_preview`
-  (always built by `serialize_message`, `whatsapp/orchestration/messaging.py:117`) — the feature ran
-  correctly server-side and was **invisible in production**. Tell: the **asymmetry** (`reactions` was
-  declared on the same model and worked). Already fixed once for `WhatsAppSessionResponse.sync` (A8), so the
-  pattern recurred. See `fastapi-response-model-silent-field-drop`.
+  Pydantic v2 defaults to `extra="ignore"`, so `link_preview` ran correctly server-side and was
+  **invisible in production**. Tell: the **asymmetry** (`reactions` was declared on the same model and
+  worked). Already fixed once for `WhatsAppSessionResponse.sync` (A8), so the pattern recurred — full
+  narrative in `2026-09-30.md`. See `fastapi-response-model-silent-field-drop`.
 - **A code fix is not retroactive over a positive cache.** Correcting how a value is *computed* leaves
   cached rows holding the old value for their full TTL (two 7-day consent-interstitial rows kept wrong
   titles until `expires_at` was forced into the past). Always pair a compute-path fix with a cache
@@ -116,10 +114,8 @@ Each skill's own `description` is the authority — not duplicated here.
 `esbuild-frontend-verification`, `real-browser-cdp-verification`, `jsdom-react-dom-gate-verification`,
 `stack-latency-parity-diagnosis`, `non-destructive-schema-constraint-migration`,
 `hermetic-service-process-harness`, `asymmetric-resource-guard-detection`,
-`client-lifecycle-cancels-server-promotion`, `cross-tenant-lookup-isolation`,
+`dead-guard-by-construction`, `client-lifecycle-cancels-server-promotion`, `cross-tenant-lookup-isolation`,
 `symlink-served-release-fast-forward-deploy`, `fastapi-response-model-silent-field-drop`,
 `bootstrap-model-registration-parity`, `tezlify-push-verification-gate`,
 `memory-index-truncation-recovery`, `docker-logs-wedge-diagnosis`,
-`permissive-branch-removal-orphans-transition`, `fixture-limitation-masks-bug`
-(**a deliberately constrained fixture can make the bug class structurally unobservable — a green gate
-is not coverage; assert the side-effect COUNT, not just the end state**).
+`permissive-branch-removal-orphans-transition`, `fixture-limitation-masks-bug`.
