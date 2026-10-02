@@ -852,16 +852,24 @@ async def _hydrate_or_tolerate_provider_timeout(
     were discarded. When `have_rows` is true we therefore serve what we have and
     leave `has_more` untouched (still true: we genuinely do not know).
 
+    `have_rows` therefore means "the caller cannot be misled into reading this
+    page as an empty conversation" — NOT "this page returned rows". A paginated
+    page is empty by construction once it walks past the oldest stored row, while
+    the caller still holds the entire newer page it was just handed; passing
+    `bool(rows)` there made a load-older timeout surface as a 502 (measured live
+    2026-10-02: 25.2 s, then `WhatsAppHistoryTimeout`, rendered as "Mesajlar
+    yüklenemedi" next to a "load older" control that could never succeed).
+
     With `have_rows` false the exception still propagates, because there the
     alternative is returning an empty list — i.e. claiming "no messages exist" —
     which is exactly the falsehood the 502 exists to prevent.
 
-    `provider_timeout_ms` is chosen by the CALLER. Today only the explicit
-    "load older" path reaches this helper, and it passes `None` so the gateway's
-    own full window applies — the user is actively asking for those older
-    messages. A plain open with local rows never gets here at all (see
-    `list_messages`); the parameter is kept because a zero-row open still needs
-    the full window and because the budget must stay a caller decision.
+    `provider_timeout_ms` is chosen by the CALLER. The explicit "load older" path
+    passes `None` so the gateway's own full window applies — the user is actively
+    asking for those older messages. A plain open with local rows never reaches
+    this helper at all (see `get_messages`); the zero-row open does, and keeps the
+    full window for the same reason. The parameter is kept because the budget must
+    stay a caller decision.
     """
     try:
         return await _hydrate_messages_on_demand(
@@ -1027,11 +1035,30 @@ async def get_messages(
                                 db, j_val, session_id=history_session_id
                             ):
                                 should_skip_provider = True
-                            # A recent provider TIMEOUT/PROVIDER_ERROR means asking again
-                            # right now would re-pay the gateway's whole provider wait
-                            # (~15 s observed) and fail identically. Skipping is allowed
-                            # ONLY while we hold local rows: with zero rows the request
-                            # must stay a retryable failure rather than a false "empty".
+                            # A recent provider TIMEOUT/PROVIDER_ERROR means asking
+                            # again right now would re-pay the gateway's whole
+                            # provider wait (~25 s measured live 2026-10-02) and
+                            # fail identically.
+                            #
+                            # Skipping is allowed ONLY when the caller cannot read
+                            # the answer as "this conversation has no messages" —
+                            # the falsehood the 502 exists to prevent. Two shapes
+                            # qualify:
+                            #   * the page already has rows, or
+                            #   * an explicit "load older" whose `before` row we
+                            #     resolved in THIS conversation (`before_row`): the
+                            #     caller holds the newer page by construction, since
+                            #     it is the one that sent us that row's id.
+                            # With `before is None` and zero rows, skipping would
+                            # answer an empty page and fabricate "no messages
+                            # exist", so that case must stay a retryable failure.
+                            #
+                            # Keying this on `rows` ALONE was the bug: a load-older
+                            # page is empty BY CONSTRUCTION (nothing is older than
+                            # the row we were handed), so the guard was dead exactly
+                            # where the futile round-trip was being paid on every
+                            # click. Live: conv 18192 held 2 outbound rows, every
+                            # click waited 25.2 s and 502'd.
                             #
                             # Distinct from sync.py's in-memory `_history_jid_cooldown`,
                             # which only guards the kill-switched background sweep. This
@@ -1039,7 +1066,7 @@ async def get_messages(
                             # durable evidence, so it survives restarts and is shared
                             # across workers.
                             elif (
-                                rows
+                                (rows or before_row is not None)
                                 and j_val
                                 and history_session_id
                                 and await is_provider_recently_unresponsive(
@@ -1095,7 +1122,18 @@ async def get_messages(
                                     user_id,
                                     conv,
                                     page_size - len(rows),
-                                    have_rows=bool(rows),
+                                    # This branch is only reachable for an explicit
+                                    # "load older" (`before is not None`) AND with a
+                                    # resolvable cursor (`cursor_ms is not None`),
+                                    # which requires either rows on this page or a
+                                    # `before_row` that resolved inside THIS
+                                    # conversation — i.e. the caller already holds
+                                    # that newer row. So an empty page here can never
+                                    # be read as "this conversation has no messages",
+                                    # and a provider timeout must degrade to "no
+                                    # older page this time" rather than a 502. See
+                                    # the `have_rows` contract on the helper.
+                                    have_rows=True,
                                     before_ts_ms=cursor_ms,
                                     oldest_msg_id=anchor_id,
                                     oldest_msg_from_me=anchor_from_me,

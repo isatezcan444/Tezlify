@@ -85,9 +85,13 @@ async def is_provider_recently_unresponsive(
     This one answers "is asking again right now known to be futile?", which a
     recent timeout/error DOES establish.
 
-    Callers must only use this to skip a round-trip when they already have local
-    rows to serve. Skipping while holding zero rows would turn a retryable
-    provider outage into a false "this conversation is empty".
+    Callers must only use this to skip a round-trip when the caller already holds
+    rows it was served — either on the current page, or on the newer page it was
+    handed before paginating past the oldest stored row. A load-older page is
+    empty BY CONSTRUCTION, so keying the guard on the page's own rows makes it
+    dead exactly where the futile round-trip is actually paid. Skipping while the
+    caller holds nothing would turn a retryable provider outage into a false
+    "this conversation is empty".
     """
     if not jid or not session_id:
         return False
