@@ -463,3 +463,77 @@ snapshot + `--diff` hükmü; hüküm satırı olmadan "ölçüldü" denmez).
 Kapılar **sözleşmeyi** kanıtlıyor, WhatsApp sunucusunun kabul ettiğini değil. İkisi de
 telefon elde, yayın sonrası ölçülmelidir. Yukarıdaki tabloda kanıtlanan şey hattın
 **uçtan uca bağlı ve canlı** olduğudur; bu, sunucunun kabul edeceğinin kanıtı değildir.
+
+## Yayın 5 (`3fec1e8` / `eb17f47` / `cdb8aac`) — metrikler, tıklanabilir onarım, canlı sentetik birleştirme
+
+Üç iş birlikte yayınlandı: (1) süpürme/kilit gözlemlenebilirliği + **`/metrics`**,
+(2) bekleyen bölünmeleri listeleyen ve **tek istekle birleştiren yönetim ucu** (+ arayüzde
+"Birleştir" uyarısı), (3) `5c1c76d`'nin geri alınmasıyla eski-sayfa (§P) düzeltmesinin
+geri getirilmesi. Yayın kaydı `20261002T131728Z`; geri dönüş
+`bash scripts/deploy/host-release.sh --rollback-to 20261002T131728Z`.
+
+### Gözlemlenebilirlik — `/metrics`
+
+Süpürme turu süresi, iki fazın ayrı süresi ve **kilit bekleme dağılımı** (son 50 örnek:
+last/avg/max/p50/p95 + toplam/deneme) süreç belleğinde örneklenir. `/metrics` tamamını,
+`/health` kompakt özetini verir (`last_duration_ms`, `avg_duration_ms`, `lock_wait_avg_ms`,
+`lock_contended_total`). Değerler **süreç-yereldir**: `process_local: true` ve `generated_at`
+bunu açıkça söyler; yeniden başlatmada sıfırlanır ve "tüm zamanların metriği" sanılmamalıdır.
+
+- **Caddy tuzağı (yakalandı):** backend'de var olan bir `/metrics`, edge'de yönlendirme
+  tanımlı olmadığı için SPA fallback'ine düşüyor ve **HTML uygulama kabuğu** döndürüyordu —
+  "uç nokta var ama görünmüyor". `Caddyfile`'a `/health` ile aynı `handle /metrics` bloğu
+  eklendi (`eb17f47`) ve canlıda `curl .../metrics` → **JSON** doğrulandı.
+- `/health` artık `duration_ms.count/avg/p50/p95` gibi **dağılım** alanlarını taşımaz
+  (gövdeyi şişirmemek için); yalnızca özet skalerler kalır. Örnek listeleri süreç belleğinde,
+  `/metrics`'te tam haliyle durur.
+
+### Canlı ölçüm — sentetik bölünmüş çift, gerçek birleştirme, geri alma
+
+Üretimde (PostgreSQL) iki sentetik çift tohumlandı (`99999900000000{1,2}@lid` →
+`+1555000000{1,2}`), **gerçek birleştirme** uçtan uca ölçüldü, sonra tohum ve etkisi geri alındı.
+
+**Çift 2 — operatör yolu (yönetim ucu), saniyeler içinde:**
+
+| Adım | Kanıt |
+|---|---|
+| tohum | conv **18431** (3 mesaj, okunmamış 3) + conv **18432** (1 mesaj, okunmamış 1) + `lid_mappings` satırı |
+| `GET /api/v1/whatsapp/lid-splits` | `items:[{lid_jid:"999999000000002@lid", message_count:3, unread_count:3}], total:1, truncated:false` |
+| `POST /lid-splits/merge` (tek istek) | `requested:1, merged:1, deferred:0, errors:0` → `moved_unique:2, deduped_duplicates:1, stranded_after:0, canonical_unread_count:4` |
+| DB (merge sonrası) | conv 18432: 3 mesaj (`SEED2-LID-2/3` + paylaşılan), okunmamış **4**; conv 18431: **arşivli**, okunmamış 0, ölü kopya 1 |
+| liste (merge sonrası) | `{"items":[],"total":0}` |
+| `/metrics` | kilit `attempts:1 acquired:1 contended:0`, bekleme `last=avg=max=p50=p95=43.561 ms`; tur `runs:1` |
+| geri alma | 8 mesaj + 4 sohbet + 4 kişi + 2 eşleme silindi; artık `0|0|0|0|0`; sayımlar tabana döndü (contacts 1527 / conversations 122 / lid_mappings 18138) |
+| auth hijyeni | geçici oturum satırı silindi; aynı token artık **401** — yeni uç noktalar fail-closed kimlik doğrulamalı |
+
+**Çift 1 — boot yolu (sürüm adayı):** çift 1, yayın sırasında **aday container'ın boot
+birleştirmesiyle** taşındı (kanıt: eski sohbet 13:17:32.799'da arşivlendi, mesajlar
+13:17:32.79'da taşındı; canlı container'ın sonraki boot'u aday bulamadı). Bu, üretim kodunun
+üretim DB'sinde gerçek bir birleştirmesidir; ama aday container'la birlikte **süreç-yerel
+metrikleri** de yok oldu — o yüzden bu birleştirmenin kanıtı DB satırlarıdır, `/metrics` değil.
+
+**Dürüstlük notu (ölçüldü, açıklanamadı):** çift 1'in canonical sohbetinin okunmamış sayısı
+beklenen **4** değil **0**'dı; `updated_at` (13:13:43) merge anından (13:17:32) **önce**. Çift 2
+aynı sürümle 4'ü doğru üretti. Yani aritmetik değil, merge'den önce her iki sentetik sohbeti de
+etkileyen bir okuma/senkron olayı var; **kaynağı kanıtlanmadı** ve burada neden diye
+yazılmadı.
+
+### Canlıda yakalanan gerçek defekt — aday taraması ham satırları tarıyordu
+
+İlk merge denemesi **`requested:0`** döndü; tohum DB'de duruyordu. Neden: `candidate_lid_split_pairs`
+ham `lid_mappings` satırlarını `ORDER BY lid_jid LIMIT` ile tarayıp adayları Python'da eliyordu.
+Üretimde **18 138** eşleme vardı ve tohumun `lid_jid`'i sıralamanın **sonundaydı** — yani sınır
+yalnızca en küçük `lid_jid` penceresini kapsıyor, gerçek bölünme hiç görünmüyordu. Aynı körlük
+periyodik süpürmeyi de kapsıyordu: `merged=0`, "aday yok" değil, **"ilk N ham satır dışına
+bakılmadı"** demekti.
+
+Düzeltme (`cdb8aac`): hayalet kişi ve sohbet koşulları SQL **JOIN**'ine taşındı; `LIMIT` artık
+**gerçek adaylara** uygulanır, `remaining_at_least` gerçekten kalan işi söyler. Kapı
+`test_candidate_scan_is_not_blinded_by_non_candidate_mappings`; falsifikasyon: eski ön-kesit
+taramasi simüle edildi → `len(pairs) == 1` **`[]`** ile kırmızı, prob artığı 0.
+
+## Açık kalanlar (bu yayınla değişmedi)
+
+- `greenlet_spawn has not been called` (`sync.py` ilk senkron hidrasyonu) — `e8a86ee`'de de var.
+- `conversation_deleted: sohbet zaten yok` 30 sn'lik döngü (aynı 8 `@lid`) — `e8a86ee`'de de var.
+- Gerçek telefon gerektiren iki ölçüm (rozet düşüşü; silinen sohbetin telefondan gitmesi) hâlâ yapılmadı.

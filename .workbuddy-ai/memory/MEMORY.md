@@ -60,7 +60,7 @@ Curated index only. Detail lives elsewhere, deliberately:
   (§P) — pagination past the end re-paid a futile provider round-trip on every click (25.2 s → 502, live
   conv 18192); ask what the **caller** holds, not the page. Client abort budget must EXCEED the server's
   worst case (gateway 25 s < backend 30 s → 40 s). **§P's fix was REVERTED** (`5c1c76d`) — LIVE at `e8a86ee`.
-- **Delete-sync / identity / unread narratives → §M, §N.** `regular_high` vs `regular_low` are different
+- **Delete-sync / identity / unread narratives → §M, §N, §Q.** `regular_high` vs `regular_low` are different
   app-state collections; `lastMessages` THROWS instead of degrading; "owner unresolved" means EARLY not
   garbage; `remoteJidAlt` files a message under its phone identity at ingest; a local counter must count only
   what was PUBLISHED; a repair job can be starved by the cleanup that runs first; the merge needs a DB-row

@@ -628,3 +628,28 @@ request whose page is empty *by construction* — pagination past the end, a fil
 page. Ask what the **caller** holds, not what the **page** holds. Same family as the dead
 `setSessionPhone()` guard in the index: a defensive branch that can never fire reads as protection
 while providing none.
+
+## Q. A `LIMIT` applied BEFORE filtering scans a fixed prefix, not the work
+
+**Live tell (2026-10-02).** `candidate_lid_split_pairs` selected raw `lid_mappings` rows
+(`ORDER BY lid_jid LIMIT :lim`) and *then* discarded non-candidates in Python. Production held
+**18 138** mappings; the seeded candidate's `lid_jid` sorted **last**, so the 50-row window never
+reached it — `/lid-splits` returned `[]` and the boot/sweep merge reported `merged=0` for a pair
+that provably existed. `merged=0` therefore meant *"the first N raw rows were examined"*, not
+*"there is nothing to repair"* — a silent-false-negative class, and the same blind spot hit the
+operator endpoint because both share the function.
+
+**Rule.** When a scan is bounded, the bound must apply to the thing you are actually looking for.
+Push the candidate predicates (here: ghost contact + conversation with the right
+`is_archived`) into the query as JOINs; only then does `LIMIT` (and any `remaining_at_least`
+report derived from it) describe real work. A boundary computed from an unfiltered window is a
+lie in the honest-reporting sense, even though every individual row is correct.
+
+**Gate + falsification.** `test_candidate_scan_is_not_blinded_by_non_candidate_mappings` seeds
+candidates that sort *after* non-candidate mappings; it fails (`[]`) if the raw-prefix scan is
+simulated. Practically: three decoy mappings plus two real pairs, `limit=1`, then assert
+`merged == 1` and `remaining_at_least == 1` (decoys must not consume the budget).
+
+**Related traps in the same shape.** `archive=true` and `archive=false` are two different
+questions on the same table (both must go through the same JOIN); and a `MIN(...)`/`GROUP BY`
+keeps the "one row per pair" contract when the join can multiply rows.
