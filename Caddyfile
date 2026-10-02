@@ -63,6 +63,17 @@ api.130.162.247.20.sslip.io, 130.162.247.20.sslip.io {
         }
     }
 
+    # Supurme/kilit metrikleri. `/health` ile ayni yonlendirme: bu yol da SPA
+    # fallback'ina dusmemeli, aksi halde operator `/metrics`e gidince HTML
+    # uygulama kabugu gorur ve "uc nokta yok" sanir.
+    handle /metrics {
+        reverse_proxy backend:8000 {
+            header_up Host {host}
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-Proto https
+        }
+    }
+
     handle /docs* {
         reverse_proxy backend:8000 {
             header_up Host {host}
@@ -118,6 +129,15 @@ api.130.162.247.20.sslip.io, 130.162.247.20.sslip.io {
     }
 
     handle /health {
+        reverse_proxy backend:8000 {
+            header_up Host {host}
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-Proto http
+        }
+    }
+
+    # Supurme/kilit metrikleri (bkz. diger site bloklarindaki ayni gerekce).
+    handle /metrics {
         reverse_proxy backend:8000 {
             header_up Host {host}
             header_up X-Real-IP {remote_host}
@@ -184,6 +204,17 @@ api.130.162.247.20.sslip.io, 130.162.247.20.sslip.io {
     }
 
     handle /health {
+        reverse_proxy backend:8000 {
+            header_up Host {host}
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-Proto https
+        }
+    }
+
+    # Supurme/kilit metrikleri. `/health` ile ayni yonlendirme: bu yol da SPA
+    # fallback'ina dusmemeli, aksi halde operator `/metrics`e gidince HTML
+    # uygulama kabugu gorur ve "uc nokta yok" sanir.
+    handle /metrics {
         reverse_proxy backend:8000 {
             header_up Host {host}
             header_up X-Real-IP {remote_host}
