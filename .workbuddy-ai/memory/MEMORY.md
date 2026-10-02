@@ -18,9 +18,10 @@ Curated index only. Detail lives elsewhere, deliberately:
 - **No backup covers WhatsApp conversations/messages** — `archive_mode=off`, no replication slots, no PITR;
   older dumps are schema-only or empty. Before promising a rollback, restore into a scratch DB and **count
   rows** — dump size proves nothing.
-- **Deploy only via `scripts/deploy/host-release.sh`; never hand-reset `/opt/tezlify`.** (Measured
-  2026-10-01: that checkout is **clean** at the released SHA; `/opt/tezlify/.deployed-commit` is the
-  authoritative marker — the older "deliberately left dirty" note is stale.) **Push is not deploy.**
+- **Deploy only via `scripts/deploy/host-release.sh`; never hand-reset `/opt/tezlify`.** (The checkout is
+  **clean**; `.deployed-commit` is the authority — the old "left dirty" note is stale.) **Push is not
+  deploy.** It **force-recreates backend+gateway even with `--skip-build`** — never deploy a docs-only
+  commit (costs gateway in-memory state, §A6).
 - **Never run pytest on the dev DB** (some tests assert global row counts) — use a schema-only copy.
 
 ## WhatsApp invariants — the one-line "tell" each (full detail in the reference)

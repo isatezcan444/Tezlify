@@ -138,8 +138,26 @@ tab-based, not routed: enter via `button[data-tab-id="whatsapp"]`; conversation 
 the `__reactContainer$` root and matching `memoizedProps.messages` + `leadName` — minified names change
 per build.
 
+### Host-side probes — traps that produce a FAKE outage
+
+- **`app.tezlify.com` does NOT resolve from the production host itself** (`getent hosts` fails — Oracle
+  hairpin DNS), so `curl https://app.tezlify.com/` returns **000**, which reads as "site down". Probe the
+  local edge instead: `curl -sk -H 'Host: app.tezlify.com' https://localhost/` → **200** (plain
+  `http://localhost/` also 200).
+- **The backend's `:8000` is NOT published on the host** (`docker port tezlify-backend` is empty), so
+  `curl localhost:8000/health` → **000**. Probe from inside the container, or go through caddy.
+- **The gateway's health port is `8787`** — that is its own healthcheck target, not 3000/8080/3001/8000
+  (all of which refuse). It returns `database=connected`, `pool`, `sessions={"total":1,"connected":1,
+  "pending_qr":0}`, `orphaned_sessions`, `auto_restore=true` and `live_session_ids`.
+- **Never grep logs for a bare `502`** — `127.0.0.1:50224` matches it, so a healthy `200 OK` access line
+  reads as a 502. Anchor the pattern (`" 502 `, `"status":502`).
+
 ## Release mechanics (`scripts/deploy/host-release.sh`) — re-measured 2026-10-01
 
+- **The cutover is UNCONDITIONAL.** `docker compose up -d --force-recreate backend gateway` runs on every
+  release, **including with `--skip-build`** (that flag only skips the image build, not the cutover). So
+  even a memory/docs-only commit restarts both services — and a gateway restart drops its in-memory stores,
+  which WhatsApp does NOT rebuild for an existing session (§A6). **Never deploy docs-only commits.**
 - **`frontend_candidate` is a DIRECTORY, not a symlink.** `host-release.sh` sets
   `FRONTEND_DIR=/opt/tezlify/frontend_candidate`, deletes its contents and unpacks the tarball in place,
   keeping the previous copy at `frontend_candidate.prev-<TS>`. Caddy bind-mounts that directory at
