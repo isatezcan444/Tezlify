@@ -38,6 +38,7 @@ import scripts.diagnostics.whatsapp_lid_split_repair as repair_module
 from backend.app.services.whatsapp.reconciliation import (
     _merge_lease,
     _merge_lock_key,
+    candidate_lid_split_pairs,
     collect_stranded_lid_messages,
     identity_sweep_metrics,
     merge_deferred_lid_ghosts,
@@ -579,6 +580,53 @@ async def test_live_path_delegates_with_its_own_mockable_helpers(monkeypatch):
     assert seen["phone_jid"] == "905551234567@s.whatsapp.net"
     assert callable(seen["upsert_contact"]), "orchestrator kendi üretim yardımcısını vermeli"
     assert callable(seen["ensure_conversation"])
+
+
+@pytest.mark.asyncio
+async def test_candidate_scan_is_not_blinded_by_non_candidate_mappings():
+    """Üretimde ölçülen tuzak: sınır HAM eşlemelere uygulanırsa gerçek aday görünmez.
+
+    Canlı ölçüm (2026-10-02): 18 138 `lid_mappings` satırı varken
+    `ORDER BY lid_jid LIMIT 50` yalnızca en küçük `lid_jid` penceresini
+    tarıyordu; sıralamada sonra gelen GERÇEK bir bölünme `/lid-splits`te hiç
+    görünmedi ve süpürme onu aday saymadı. Bu kapı, aday OLMAYAN eşlemelerin
+    sınırı yemesini yasaklar: sınır gerçek adaylara uygulanır.
+    """
+    # İki gerçek çift (ikisi de sıralamada SONDA) + araya 3 aday-olmayan eşleme.
+    await _seed_split()
+    await _seed_split(
+        lid_jid="999000111222334@lid",
+        phone="+905559990002",
+        phone_jid="905559990002@s.whatsapp.net",
+        gw_id="gw-boot-lid-merge-a",
+        wa_tag="a",
+    )
+    async with AsyncSessionLocal() as db:
+        for i in range(3):
+            await db.execute(
+                text(
+                    "INSERT INTO lid_mappings (session_id, lid_jid, phone_jid) "
+                    "VALUES (:s, :l, :p)"
+                ),
+                {
+                    "s": GW_ID,
+                    "l": f"00000000000000{i}@lid",
+                    "p": f"0000000000000{i}@s.whatsapp.net",
+                },
+            )
+        await db.commit()
+
+    async with AsyncSessionLocal() as db:
+        pairs = await candidate_lid_split_pairs(db, user_id=TEST_USER, limit=1)
+    assert len(pairs) == 1, pairs
+    assert pairs[0]["lid_jid"] == LID_JID, "sınır gerçek adaya uygulanmalı"
+    assert pairs[0]["lid_contact_id"] and pairs[0]["lid_conversation_id"]
+
+    # Süpürme de aynı pencereden okur: aday olmayanlar ne işi yer ne de
+    # "kalan" sayısını şişirir (gerçek kalan = 1).
+    report = await merge_deferred_lid_ghosts(engine, limit=1, user_id=TEST_USER)
+    assert report["merged"] == 1, report
+    assert report["remaining_at_least"] == 1, report
 
 
 # ---------------------------------------------------------------------------

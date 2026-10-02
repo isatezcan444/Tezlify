@@ -91,6 +91,11 @@ def _sessions_table(postgres: bool) -> str:
     return "public.whatsapp_sessions" if postgres else "whatsapp_sessions"
 
 
+def _public_table(postgres: bool, name: str) -> str:
+    # contacts/conversations her zaman public şemadadır; SQLite testte düz ad.
+    return f"public.{name}" if postgres else name
+
+
 # ---------------------------------------------------------------------------
 # Çapraz SÜREÇ kilidi: birleştirme aynı anda iki süreçte koşamaz
 # ---------------------------------------------------------------------------
@@ -365,6 +370,15 @@ async def candidate_lid_split_pairs(
 
     `archived=True` ise tam tersi sorulur: ARŞİVLENMİŞ ama hâlâ mesaj taşıyan
     sohbetler (birleştirme sırasında gelen mesajın sahipsiz kaldığı durum).
+
+    Sınır GERÇEK adaylara uygulanır (2026-10-02 düzeltmesi): hayalet kişi ve
+    sohbet koşulları SQL JOIN'indedir. Önceki sürüm ham eşleme satırlarını
+    `ORDER BY lid_jid LIMIT` ile tarayıp Python'da eliyordu; ÜRETİMDE ÖLÇÜLDÜ —
+    18 138 eşleme varken `limit=50` yalnızca en küçük `lid_jid` penceresini
+    kapsıyor, sıralamada sonra gelen gerçek bir bölünme hiç görünmüyordu
+    (`/lid-splits` boş döndü, süpürme o çifti hiç aday saymadı). JOIN'li sürümde
+    `LIMIT` gerçek aday sayısını sınırlar ve `remaining_at_least` gerçekten
+    kalan işi söyler.
     """
     if postgres is None:
         postgres = _dialect_is_postgres(getattr(db, "bind", None))
@@ -372,20 +386,35 @@ async def candidate_lid_split_pairs(
     # ise tireli UUID yazar. İki biçimi de kabul et — yoksa `--user-id` sessizce
     # "hiç aday yok" derdi.
     where_user = " AND (ws.user_id = :user_id OR ws.user_id = :user_id_hex)" if user_id else ""
-    params = {"lim": limit}
+    params: Dict[str, Any] = {"lim": limit, "archived": archived}
     if user_id:
         params["user_id"] = str(user_id)
         params["user_id_hex"] = str(user_id).replace("-", "")
+    # `MIN(...)`: aynı çift için birden çok kişi/sohbet satırı varsa (veri
+    # anomalisi) Python sürümünün `.first()` seçicisiyle aynı biçimde en küçük
+    # id seçilir — çift başına tek satır döner.
     rows = (
         await db.execute(
             text(
                 f"""
-                SELECT DISTINCT lm.lid_jid, lm.phone_jid, ws.user_id
+                SELECT lm.lid_jid,
+                       lm.phone_jid,
+                       ws.user_id,
+                       MIN(c.id) AS lid_contact_id,
+                       MIN(cv.id) AS lid_conversation_id
                 FROM {_lid_table(postgres)} lm
                 JOIN {_sessions_table(postgres)} ws ON ws.gateway_id = lm.session_id
+                JOIN {_public_table(postgres, "contacts")} c
+                  ON c.user_id = ws.user_id
+                 AND c.phone_e164 = 'jid:' || lm.lid_jid
+                JOIN {_public_table(postgres, "conversations")} cv
+                  ON cv.contact_id = c.id
+                 AND cv.user_id = ws.user_id
+                 AND cv.is_archived = :archived
                 WHERE lm.phone_jid IS NOT NULL AND lm.phone_jid <> ''
                   AND lm.lid_jid LIKE '%@lid'
                   {where_user}
+                GROUP BY lm.lid_jid, lm.phone_jid, ws.user_id
                 ORDER BY lm.lid_jid
                 LIMIT :lim
                 """
@@ -395,38 +424,14 @@ async def candidate_lid_split_pairs(
     ).all()
 
     pairs: List[Dict[str, Any]] = []
-    for lid_jid, phone_jid, owner in rows:
-        lid_phone = f"jid:{lid_jid}"
-        ghost = (
-            await db.execute(
-                select(Contact.id, Contact.phone_e164).where(
-                    Contact.phone_e164 == lid_phone,
-                    Contact.user_id == owner,
-                )
-            )
-        ).first()
-        if not ghost:
-            continue
-        legacy_conv = (
-            await db.execute(
-                select(Conversation.id)
-                .where(
-                    Conversation.contact_id == ghost.id,
-                    Conversation.user_id == owner,
-                    Conversation.is_archived.is_(archived),
-                )
-                .order_by(Conversation.id.asc())
-            )
-        ).first()
-        if not legacy_conv:
-            continue
+    for lid_jid, phone_jid, owner, lid_contact_id, lid_conversation_id in rows:
         pairs.append(
             {
                 "user_id": str(owner),
                 "lid_jid": str(lid_jid),
                 "phone_jid": str(phone_jid),
-                "lid_contact_id": ghost.id,
-                "lid_conversation_id": legacy_conv.id,
+                "lid_contact_id": lid_contact_id,
+                "lid_conversation_id": lid_conversation_id,
             }
         )
     return pairs
