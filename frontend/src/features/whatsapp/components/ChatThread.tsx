@@ -117,7 +117,9 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
 }) => {
   const { t, language } = useI18n();
   const containerRef = useRef<HTMLDivElement>(null);
+  const contentWrapperRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const userScrolledUpRef = useRef<boolean>(false);
   useLayoutEffect(() => {
     if (messages.length) finishWaLatency('chat_request_to_commit_ms', messages[0].conversation_id);
   }, [messages]);
@@ -555,7 +557,12 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
     const distanceToBottom = scrollHeight - scrollTop - clientHeight;
     const nearBottom = distanceToBottom < 120;
     setIsNearBottom(nearBottom);
-    if (nearBottom) { setShowNewMessagePill(false); }
+    if (nearBottom) {
+      setShowNewMessagePill(false);
+      userScrolledUpRef.current = false;
+    } else if (distanceToBottom > 160) {
+      userScrolledUpRef.current = true;
+    }
     // A scroll WE issued is not a user gesture. Without this, the animated
     // prepend-restore re-enters the trigger below and chains page after page
     // (see `legacyProgrammaticUntilRef`). Position tracking above still runs —
@@ -697,6 +704,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
   const prevConversationKeyRef = useRef(conversationKey);
   if (conversationKey !== prevConversationKeyRef.current) {
     prevConversationKeyRef.current = conversationKey;
+    userScrolledUpRef.current = false;
     // legacy scroll/prepend guards
     isPrependingRef.current = false;
     pendingPrependRef.current = null;
@@ -778,36 +786,40 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
     if (loading) return;
     const cont = containerRef.current;
     if (!cont) return;
-    if (sortedMessages.length > 0 && isNearBottom) {
-      cont.scrollTop = cont.scrollHeight;
-      bottomRef.current?.scrollIntoView({ behavior: 'instant', block: 'end' });
-      const raf = requestAnimationFrame(() => {
-        if (cont && isNearBottom) {
-          cont.scrollTop = cont.scrollHeight;
-        }
-      });
+    if (sortedMessages.length > 0) {
+      if (!userScrolledUpRef.current) {
+        cont.scrollTop = cont.scrollHeight;
+        bottomRef.current?.scrollIntoView({ behavior: 'instant', block: 'end' });
+        const raf = requestAnimationFrame(() => {
+          if (cont && !userScrolledUpRef.current) {
+            cont.scrollTop = cont.scrollHeight;
+          }
+        });
+        initialScrollDoneRef.current = true;
+        return () => cancelAnimationFrame(raf);
+      }
       initialScrollDoneRef.current = true;
-      return () => cancelAnimationFrame(raf);
     }
-    initialScrollDoneRef.current = true;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading, virtualize, convEpoch, hasContent, conversationKey]);
 
-  // ResizeObserver: when media (videos, images, posters) load and expand the container,
-  // keep pinned to bottom ONLY if the user was already at the bottom.
+  // ResizeObserver: when media (videos, images, posters) load and expand the content wrapper,
+  // ensure the chat stays pinned to the bottom if the user hasn't explicitly scrolled up or is near bottom.
   useEffect(() => {
     if (virtualizeRef.current) return;
+    const contentEl = contentWrapperRef.current;
     const cont = containerRef.current;
-    if (!cont) return;
+    if (!contentEl || !cont) return;
 
     const ro = new ResizeObserver(() => {
+      if (isPrependingRef.current) return;
       const distanceFromBottom = cont.scrollHeight - cont.scrollTop - cont.clientHeight;
-      if (distanceFromBottom <= 50) {
+      if (!userScrolledUpRef.current || distanceFromBottom <= 100) {
         cont.scrollTop = cont.scrollHeight;
       }
     });
 
-    ro.observe(cont);
+    ro.observe(contentEl);
     return () => ro.disconnect();
   }, [convEpoch]);
 
@@ -947,23 +959,30 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
   // Byte-identical DOM + behaviour to the pre-K.19 production component.
   if (!virtualize) {
     return (
-      <div className="relative flex-1 min-w-0 flex flex-col min-h-0 animate-in fade-in duration-200 ease-out">
+      <div
+        key={`thread-${convEpoch}`}
+        className="relative flex-1 min-w-0 flex flex-col min-h-0 animate-in fade-in duration-200 ease-out"
+      >
         {pagingBanner}
         <div
           ref={containerRef}
           onScroll={handleScroll}
-          className="flex-1 min-w-0 p-4 overflow-y-auto overflow-x-hidden space-y-1"
+          className="flex-1 min-w-0 p-4 overflow-y-auto overflow-x-hidden"
+          style={{ overflowAnchor: 'none' }}
         >
-          {messages.length >= 50 && hasMore && loadOlderButton}
-          {rows.map((row) => (
-            <React.Fragment key={row.key}>{renderRowBody(row)}</React.Fragment>
-          ))}
-          {peerTyping && (
-            <div className="flex justify-start pt-1">
-              <TypingBubble label={t('whatsapp.peerTyping')} />
-            </div>
-          )}
-          <div ref={bottomRef} className="h-1" />
+          <div ref={contentWrapperRef} className="flex flex-col min-h-full space-y-1">
+            <div className="flex-1 min-h-0" />
+            {messages.length >= 50 && hasMore && loadOlderButton}
+            {rows.map((row) => (
+              <React.Fragment key={row.key}>{renderRowBody(row)}</React.Fragment>
+            ))}
+            {peerTyping && (
+              <div className="flex justify-start pt-1">
+                <TypingBubble label={t('whatsapp.peerTyping')} />
+              </div>
+            )}
+            <div ref={bottomRef} className="h-px shrink-0" />
+          </div>
         </div>
         {pill}
       </div>

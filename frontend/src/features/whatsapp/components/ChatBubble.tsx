@@ -239,7 +239,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({ message, isGroup = fal
           <div className="space-y-2">
             <div 
               onClick={() => !imageLoadError && resolvedMediaUrl && setIsLightboxOpen(true)}
-              className="relative group rounded-xl overflow-hidden bg-slate-950/10 dark:bg-black/20 border border-black/5 dark:border-white/10 max-w-[280px] cursor-pointer"
+              className="relative group rounded-xl overflow-hidden bg-slate-950/10 dark:bg-black/20 border border-black/5 dark:border-white/10 max-w-[280px] min-h-[140px] cursor-pointer"
             >
               {resolvedMediaUrl && !imageLoadError ? (
                 <img 
@@ -309,7 +309,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({ message, isGroup = fal
           : undefined;
 
         return (
-          <div className="space-y-2 max-w-[280px]">
+          <div className="space-y-2 max-w-[280px] min-h-[160px]">
             {videoSrc ? (
               <video
                 controls
@@ -321,7 +321,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({ message, isGroup = fal
                 // tarafinda thumbnail uretmek yeni bir bagimlilik (ffmpeg)
                 // gerektirirdi; bu cozum ayni sonucu bagimliliksiz verir.
                 src={videoSrc}
-                className="w-full max-h-60 rounded-xl border border-black/5 dark:border-white/10 bg-black"
+                className="w-full min-h-[160px] max-h-60 rounded-xl border border-black/5 dark:border-white/10 bg-black aspect-video object-cover"
               />
             ) : (
               <div className="rounded-xl overflow-hidden bg-slate-950/20 border border-black/5 dark:border-white/10 p-4 text-center">

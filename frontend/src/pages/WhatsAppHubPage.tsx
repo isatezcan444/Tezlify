@@ -467,7 +467,10 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   // skeleton gosterilir. Hata ayri bir in-thread error + retry durumudur;
   // mevcut mesajlar varsa hicbir zaman loading/empty ekranina dusulmez.
   const activeChatLoading = Boolean(
-    selectedConv && activeMessages.length === 0 && messageLoadState[selectedConv.id] === 'loading',
+    selectedConv &&
+      activeMessages.length === 0 &&
+      messageLoadState[selectedConv.id] !== 'ready' &&
+      messageLoadState[selectedConv.id] !== 'error',
   );
   const activeMessagesError = selectedConv ? (messageLoadError[selectedConv.id] || null) : null;
   const activeConv = selectedConv;
@@ -1049,6 +1052,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   // loadConversations, refreshSyncStatus deps []) -> stable identity, no stale closure.
   const handleSelectConversation = useCallback((c: Conversation) => {
     setSelectedConv(c);
+    setMessageLoadState((prev) => (prev[c.id] === 'ready' ? prev : { ...prev, [c.id]: 'loading' }));
     if (c.unread_count > 0) {
       lastMarkedReadConvIdRef.current = c.id;
       // Kullanici eylemi → gateway'e iletilemezse GORUNUR bildirim.
@@ -2907,7 +2911,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                       const headerDisplayName = getConversationDisplayName(selectedConv, t);
                       const headerCleanPhone = extractCleanPhone(rawPhone);
                       return (
-                        <>
+                        <div key={selectedConv.id} className="flex items-center space-x-2 sm:space-x-3 min-w-0 flex-1 animate-in fade-in duration-150 ease-out">
                           <Avatar
                             name={headerDisplayName}
                             image={selectedConv.lead_avatar_url}
@@ -2938,7 +2942,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                               </p>
                             )}
                           </div>
-                        </>
+                        </div>
                       );
                     })()}
                   </div>
