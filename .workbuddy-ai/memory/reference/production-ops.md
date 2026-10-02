@@ -169,13 +169,13 @@ per build.
 - Vite's `prepareOutDir` calls `emptyDir` on `dist/assets`; the sandbox's bulk-delete guard (>50 files)
   makes that fail and it *looks* like a build error. `rm -rf dist` first.
 
-## Deploy state (2026-09-26; refreshed 2026-10-01)
+## Deploy state (2026-09-26; refreshed 2026-10-02)
 
-- **Measured 2026-10-01: the prod checkout is CLEAN at `7370c18`** (`git status --porcelain
-  --untracked-files=no` empty), and the authoritative deploy marker is `/opt/tezlify/.deployed-commit`.
-  The older note that the tree is "deliberately left dirty as the deploy marker" at `359fe6d` is **stale**:
-  `host-release.sh` resets hard to the target SHA and then asserts the tree is clean. Still — deploy via the
-  script; never hand-reset `/opt/tezlify`.
+- **Measured 2026-10-02: the prod checkout is CLEAN at `73c9fe0`** (`git status --porcelain
+  --untracked-files=no` empty), and the authoritative deploy marker is `/opt/tezlify/.deployed-commit`
+  (`73c9fe014e33`). The older note that the tree is "deliberately left dirty as the deploy marker" at
+  `359fe6d` is **stale**: `host-release.sh` resets hard to the target SHA and then asserts the tree is
+  clean. Still — deploy via the script; never hand-reset `/opt/tezlify`.
 - Live: frontend `5916ff1` chat-thread singleton + `8177a2b` i18n missing keys; backend `9981298`
   502-on-short-conversation + `6c7214a` ~4 s open-path bound; naming fix
   `55f994e`/`1030850`/`4bd7791`; gateway `4fc791a` chat-ordering stamp. Restarts are routine and the line
@@ -229,6 +229,19 @@ per build.
     ~9 h BEFORE this deploy, `gateway_sessions` went `is_active=f` and `session_credentials` was emptied,
     so the gateway correctly had `discovered=0` to restore. It cannot be restored from credentials;
     it needs a **QR re-pair**.
+- **2026-10-02 (later):** deployed `73c9fe0` (`_bulk_channel_cache` keyed by `gateway_id` — see the
+  baselines section). `RELEASE_EXIT=0` ("SÜRÜM TAMAM: 73c9fe0"), candidate health gate passed, cutover
+  `backend=sha256:a96bc` / `gateway=sha256:ac49b`, release record
+  `backups/releases/20261002T080620Z/release.json` (`live_*_image` equal the built digests,
+  `frontend: null`), rollback tags `tezlify-{backend,gateway}:pre-20261002T080620Z`. **No
+  `--frontend-tar`** — frontend unchanged, served bundle stayed `index-EbhNawq7.js`. Delta audit:
+  the `backend/app/` delta in `7357f3b..73c9fe0` was **only** `sync.py` (+14/−5) → self-contained.
+  Prod checkout clean beforehand. Verified live: the deployed `sync.py` sha256 is
+  `81e0b3df…6108a8` = local (the script's `verify_blob` does **not** cover `sync.py`, so hash it
+  yourself); `StartedAt` moved only for backend (08:06:28) + gateway (08:06:34), db/caddy unchanged;
+  API 200/39 ms, frontend 200, gateway `/health` `database: connected`, `restarts=0` on all four.
+  Recreating the gateway stranded nothing because **no line was CONNECTED** (116 still logged out,
+  4/5 stale `diag`) — check this before any gateway recreate under `WHATSAPP_AUTO_RESTORE=false`.
 
 ## Verification baselines
 
