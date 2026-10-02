@@ -325,14 +325,39 @@ per build.
       `history_sync_states`, `lid_mappings`, `processed_events`, `retry_messages`,
       `session_credentials`, `signal_keys`, `socket_leases`. The **CRM campaign log** is
       `public.message_logs` (**2 rows**), which is a different table entirely.
+- **2026-10-02 (latest): deployed `8ce2e7a`** — the load-older provider-timeout fix (`d229269`, §P) plus
+  the memory commit. **A real build was required** (backend source changed), so `--skip-build` was NOT
+  used; the frontend changed too, so the script produced and shipped its own tarball. Pre-step as always:
+  `mv frontend/dist /tmp/…` before invoking `release.sh` (the script runs `npm run build` itself).
+  `RELEASE_EXIT=0`, "SÜRÜM TAMAM: 8ce2e7a", record `backups/releases/20261002T115746Z/release.json`,
+  rollback `bash scripts/deploy/host-release.sh --rollback-to 20261002T115746Z`.
+  - Verified: `.deployed-commit` `8ce2e7a4b8fe96d560098a3603d22820b1d19a11` = local HEAD; in-container
+    sha256 **byte-identical** for both changed backend files (`whatsapp_service.py` `3c935deb…8759`,
+    `history_evidence.py` `726d40fe…77f8`) — `verify_blob` covers neither, so hash your own; the fix's
+    lines present at `whatsapp_service.py:1069` (`rows or before_row is not None`) and `:1136`
+    (`have_rows=True`).
+  - `StartedAt` moved only for backend (11:57:54) + gateway (11:58:00); caddy (2026-10-01T17:44:18) and
+    db (2026-10-01T17:45:08) unchanged; all four `running`.
+  - **The line came back after the recreate:** gateway `/health` `auto_restore=true`,
+    `sessions {total:1, connected:1, pending_qr:0}`, `database=connected`. Served bundle moved
+    `index-DEU-2HqI.js` → **`index-CD0gj4e3.js`**; the old `index-DEU-2HqI.js` and
+    `WhatsAppHubPage-GJ3_Pr5f.js` are **404**. API `/health` healthy, `gateway_bridge.connected: true`.
+  - **End-to-end proof of the fix, on the reported conversation itself** (conv 18192, `before=107847`,
+    run inside the backend container): **before** `RAISED after 25.2 s: WhatsAppHistoryTimeout`;
+    **after** `OK after 25.2 s: messages=0 has_more=True oldest_message_id=None` with the log line
+    `Provider history timed out (conv=18192); serving local rows instead of failing` — no exception, and
+    `provider_exhausted` still `False` (H-3 intact).
 
 ## Verification baselines
 
-- Last run (2026-10-02, AFTER the early-gate fix): backend **1438 pass / 4 skip / 0 fail** with
+- Last run (2026-10-02, after the load-older fix): backend **1440 pass / 4 skip / 0 fail** with
   `-p no:randomly`, **and green under `pytest-randomly` at three explicit seeds** (12345, 777,
   20261002) — the suite is **order-INDEPENDENT again**. gateway `npm test` exit 0 with every suite
-  PASS (incl. `test-postgres-pool-error.mjs`); frontend `npm run build` exit 0, `tsc` clean.
-  (Previous baseline after the cache fix was **1432**; +6 from the early-gate tests.)
+  PASS (incl. `test-postgres-pool-error.mjs`); frontend `npm run build` exit 0, `tsc` clean; real
+  Chrome `verify:browser` **10 passed / 0 failed** (A–J).
+  (Baselines: **1438** after the early-gate fix, **1440** after the two load-older tests, **1432** after
+  the cache fix; **+6** from the early-gate tests.) `verify:message-timeout-budget` was added with the
+  load-older fix and is wired into `package.json` — an unwired verify script never runs in any gate.
 - **`pytest-randomly` is easy to fake.** `-q` suppresses its seed banner, so a run can *look* seeded
   without being so. Prove it reshuffles by diffing `--collect-only -q` output across two seeds
   (12345 vs 777 gave different orders on 2026-10-02). A green suite at several *verified* seeds is the
