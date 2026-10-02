@@ -101,24 +101,21 @@ Curated index only. Detail lives elsewhere, deliberately:
   reintroduce false reds, so still re-check with `-p no:randomly` and the file alone.
 - **Falsify before trusting** — see the `scoped-stash-falsification` skill.
 - **Parallel `Edit` calls on one file clobber each other** — edit sequentially or rewrite with one `Write`.
-- Ops log clearing **TRUNCATEs** the container log file in place (never delete — the daemon holds the inode).
-  **But truncating WEDGES the daemon's log reader: `docker logs` then blocks FOREVER until a restart**
-  (22 ms → still hanging at 45 s → 19 ms). So the panel reads the json-file **directly** (`_tail_json_log`)
-  and compose sets `logging.options.max-size` — **never reintroduce `docker logs` for the tail.**
+- **Never reintroduce `docker logs` for the Ops tail** — truncating a json-file in place WEDGES the
+  daemon's reader forever; the panel reads the file directly (`_tail_json_log`); rotate, never clear.
 
 ## Skills covering reusable procedures
 
-`git-checkout-prod-partial-service-deploy`, `scoped-stash-falsification` (prove a fix is load-bearing / a
-failure is pre-existing by stashing only the source and re-running), `esbuild-frontend-verification`,
-`real-browser-cdp-verification`, `jsdom-react-dom-gate-verification`, `stack-latency-parity-diagnosis`,
-`non-destructive-schema-constraint-migration`, `hermetic-service-process-harness`,
-`asymmetric-resource-guard-detection`, `client-lifecycle-cancels-server-promotion`,
-`cross-tenant-lookup-isolation`, `symlink-served-release-fast-forward-deploy`,
-`fastapi-response-model-silent-field-drop`, `bootstrap-model-registration-parity` (a hand-provisioned test
-DB must import **every** model module or unrelated tests die on "no such table"),
-`tezlify-push-verification-gate` (the exact 3-suite pre-push sequence + the sandbox traps that fake
-a signal), `memory-index-truncation-recovery` (injected every session, **silently truncated** past its
-ceiling — relocate detail to `reference/`, verify presence **and** leak), `docker-logs-wedge-diagnosis`
-(`docker logs` hangs forever after a json-file truncation — read the file directly, `docker restart`
-unwedges, rotate instead of clearing), `permissive-branch-removal-orphans-transition` (removing a
-permissive branch can orphan the state's only open path).
+Each skill's own `description` is the authority — not duplicated here.
+
+`git-checkout-prod-partial-service-deploy`, `scoped-stash-falsification`,
+`esbuild-frontend-verification`, `real-browser-cdp-verification`, `jsdom-react-dom-gate-verification`,
+`stack-latency-parity-diagnosis`, `non-destructive-schema-constraint-migration`,
+`hermetic-service-process-harness`, `asymmetric-resource-guard-detection`,
+`client-lifecycle-cancels-server-promotion`, `cross-tenant-lookup-isolation`,
+`symlink-served-release-fast-forward-deploy`, `fastapi-response-model-silent-field-drop`,
+`bootstrap-model-registration-parity`, `tezlify-push-verification-gate`,
+`memory-index-truncation-recovery`, `docker-logs-wedge-diagnosis`,
+`permissive-branch-removal-orphans-transition`, `fixture-limitation-masks-bug`
+(**a deliberately constrained fixture can make the bug class structurally unobservable — a green gate
+is not coverage; assert the side-effect COUNT, not just the end state**).
