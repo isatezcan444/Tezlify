@@ -458,4 +458,26 @@ export class WhatsAppRepository {
   }> {
     return WhatsAppApi.deleteConversation(conversationId);
   }
+
+  /**
+   * Onarımı bekleyen bölünmüş LID sohbetlerini listeler (yönetim ucu).
+   *
+   * Mock fallback YOKTUR: "bekleyen yok" gibi görünen sahte bir boş liste,
+   * operatörü gerçek bir bölünmeyi onarmamaya ikna ederdi (AGENTS.md §1.1).
+   */
+  static async getLidSplits(limit: number = 50) {
+    // `requireLive()` BİLİNÇLİ olarak yok: bu uç nokta gateway'e değil DB'ye
+    // bakar ve bölünmeler zaten çoğunlukla hat kopukken/bağlanırken birikir.
+    // Gateway kapalı diye onarım görünmez olmamalı.
+    return WhatsAppApi.getLidSplits(limit);
+  }
+
+  /**
+   * Tek istekte onarım: sunucu birleştirmeyi yapar, sonuç olduğu gibi döner.
+   * Yerel iyimser bir "birleşti" durumu ÜRETİLMEZ; liste sunucudan tazelenir.
+   */
+  static async mergeLidSplits(lidJid?: string, limit: number = 50) {
+    // Yukarıdaki gerekçeyle aynı: gateway gerektirmez (bkz. getLidSplits).
+    return WhatsAppApi.mergeLidSplits(lidJid, limit);
+  }
 }

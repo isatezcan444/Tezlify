@@ -1669,3 +1669,167 @@ async def _map_conversation_event(db: AsyncSession, event: Dict[str, Any]) -> Di
 async def _map_session_event(db: AsyncSession, event: Dict[str, Any]) -> Dict[str, Any]:
     return await _event_orchestrator._map_session_event(db, event)
 
+
+# ---------------------------------------------------------------------------
+# LID/telefon bölünmüş sohbet onarımı (yönetim ucu)
+# ---------------------------------------------------------------------------
+#
+# Süpürme periyodik olarak kendi kendine koşar, ama operatörün "şu an bekleyen
+# bir şey var mı, varsa onar" diyebileceği bir kapı yoktu: tek yol `docker exec`
+# ile onarım betiğini koşturmaktı. Bu iki fonksiyon o kapıyı açar ve işi
+# SÜPÜRMEYLE AYNI birleştirmeye delege eder (ikinci bir taşıma mantığı yok).
+#
+# Yalnızca çağıranın kiracısı görünür: `candidate_lid_split_pairs` zaten
+# `user_id` kapsamıyla çalışır.
+
+async def list_lid_split_candidates(
+    db: AsyncSession, user_id: str, *, limit: int = 50  # = reconciliation.DEFAULT_REPAIR_LIMIT
+) -> Dict[str, Any]:
+    """Birleştirilmeyi bekleyen bölünmüş çiftleri KANITLARIYLA listeler.
+
+    `truncated=True`, `limit`e sığmayan aday kaldığı dürüstlüğüdür: sınırlı bir
+    listede "hepsi bu" demek yalan olurdu.
+    """
+    from backend.app.services.whatsapp.identity import contact_phone_for_jid
+    from backend.app.services.whatsapp.reconciliation import candidate_lid_split_pairs
+
+    capped = max(1, min(int(limit), 200))
+    pairs = await candidate_lid_split_pairs(db, user_id=user_id, limit=capped + 1)
+    truncated = len(pairs) > capped
+    items: List[Dict[str, Any]] = []
+    for pair in pairs[:capped]:
+        display_name: Optional[str] = None
+        canonical_phone = contact_phone_for_jid(pair["phone_jid"])
+        if canonical_phone:
+            display_name = await db.scalar(
+                select(Contact.display_name).where(
+                    Contact.phone_e164 == canonical_phone,
+                    get_user_filter(Contact.user_id, user_id),
+                )
+            )
+        message_count = await db.scalar(
+            select(func.count())
+            .select_from(Message)
+            .where(Message.conversation_id == pair["lid_conversation_id"])
+        )
+        unread_count = await db.scalar(
+            select(Conversation.unread_count).where(
+                Conversation.id == pair["lid_conversation_id"]
+            )
+        )
+        items.append(
+            {
+                "lid_jid": pair["lid_jid"],
+                "phone_jid": pair["phone_jid"],
+                "lid_conversation_id": int(pair["lid_conversation_id"]),
+                "display_name": display_name,
+                "message_count": int(message_count or 0),
+                "unread_count": int(unread_count or 0),
+            }
+        )
+    return {"items": items, "total": len(items), "truncated": truncated}
+
+
+async def merge_lid_splits(
+    db: AsyncSession,
+    user_id: str,
+    *,
+    lid_jid: Optional[str] = None,
+    limit: int = 50,  # = reconciliation.DEFAULT_REPAIR_LIMIT
+) -> Dict[str, Any]:
+    """Tek istekte onarım: `lid_jid` verilirse o çift, yoksa bekleyenler.
+
+    Her sonuç `merged` + `reason` ile dürüstçe döner. Kilit başka bir süreçte
+    ise iş ERTELENİR (`reason=merge_lease_held`) ve LID sohbeti aday kalır —
+    yani onarım kaybolmaz, bir sonraki tur devralır.
+    """
+    from backend.app.services.whatsapp.reconciliation import (
+        candidate_lid_split_pairs,
+        merge_split_conversation,
+    )
+
+    capped = max(1, min(int(limit), 200))
+    pairs = await candidate_lid_split_pairs(db, user_id=user_id, limit=capped + 1)
+    if lid_jid:
+        wanted = str(lid_jid).strip()
+        pairs = [
+            p
+            for p in pairs
+            if str(p["lid_jid"]) == wanted or f"jid:{p['lid_jid']}" == wanted
+        ]
+    else:
+        pairs = pairs[:capped]
+
+    results: List[Dict[str, Any]] = []
+    merged_count = deferred = errors = 0
+    for pair in pairs:
+        info: Dict[str, Any] = {}
+        try:
+            merged = await merge_split_conversation(
+                db,
+                pair["user_id"],
+                pair["lid_jid"],
+                pair["phone_jid"],
+                session_id=None,
+                lock_wait_seconds=5.0,
+                result_info=info,
+            )
+        except Exception as exc:  # noqa: BLE001 - tek çift tüm isteği düşürmez
+            await db.rollback()
+            errors += 1
+            results.append(
+                {
+                    "lid_jid": pair["lid_jid"],
+                    "phone_jid": pair["phone_jid"],
+                    "merged": False,
+                    "reason": "merge_error",
+                }
+            )
+            logger.warning(
+                "LID onarımı başarısız (lid=%s): %s", pair["lid_jid"], exc
+            )
+            continue
+        if merged is None:
+            reason = str(info.get("skipped_reason") or "reconcile_returned_none")
+            if reason == "merge_lease_held":
+                deferred += 1
+            else:
+                errors += 1
+            results.append(
+                {
+                    "lid_jid": pair["lid_jid"],
+                    "phone_jid": pair["phone_jid"],
+                    "merged": False,
+                    "reason": reason,
+                }
+            )
+            continue
+        merged_count += 1
+        results.append(
+            {
+                "lid_jid": pair["lid_jid"],
+                "phone_jid": pair["phone_jid"],
+                "merged": True,
+                "canonical_conversation_id": int(merged.id),
+                "moved_unique": info.get("moved_unique"),
+                "deduped_duplicates": info.get("deduped_duplicates"),
+                "stranded_after": info.get("stranded_unique"),
+                "canonical_unread_count": merged.unread_count,
+            }
+        )
+        logger.info(
+            "LID onarımı (yönetim ucu): %s → %s (taşınan=%s, tekilleşen=%s)",
+            pair["lid_jid"],
+            pair["phone_jid"],
+            info.get("moved_unique"),
+            info.get("deduped_duplicates"),
+        )
+
+    return {
+        "requested": len(pairs),
+        "merged": merged_count,
+        "deferred": deferred,
+        "errors": errors,
+        "results": results,
+    }
+

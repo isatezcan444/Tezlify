@@ -39,6 +39,7 @@ from backend.app.services.whatsapp.reconciliation import (
     _merge_lease,
     _merge_lock_key,
     collect_stranded_lid_messages,
+    identity_sweep_metrics,
     merge_deferred_lid_ghosts,
     merge_split_conversation,
     merge_sweep_status,
@@ -529,6 +530,11 @@ async def test_health_exposes_the_sweep_state_without_shell_commands():
     assert "still_stranded" in block
     assert block["last_finished_at"] is not None
     assert "last_report" not in block
+    # Süre/kilit özetleri operatör için `/health`te de görünür.
+    assert block["last_duration_ms"] is not None
+    assert block["avg_duration_ms"] is not None
+    assert "lock_wait_avg_ms" in block
+    assert "lock_contended_total" in block
 
 
 def test_live_boot_and_repair_share_one_merge_implementation():
@@ -573,3 +579,208 @@ async def test_live_path_delegates_with_its_own_mockable_helpers(monkeypatch):
     assert seen["phone_jid"] == "905551234567@s.whatsapp.net"
     assert callable(seen["upsert_contact"]), "orchestrator kendi üretim yardımcısını vermeli"
     assert callable(seen["ensure_conversation"])
+
+
+# ---------------------------------------------------------------------------
+# Gözlemlenebilirlik: tur süreleri + kilit bekleme dağılımı (`/metrics`)
+# ---------------------------------------------------------------------------
+def test_metrics_start_empty_and_declare_their_scope():
+    """Metrikler SÜREÇ-yereldir; sıfırken de dürüsttür (uydurma değer yok)."""
+    metrics = identity_sweep_metrics()
+
+    assert metrics["process_local"] is True
+    assert metrics["generated_at"]
+    assert metrics["runs"] == 0
+    assert metrics["duration_ms"]["count"] == 0
+    assert metrics["duration_ms"]["avg"] is None
+    assert metrics["merge_lock"]["attempts"] == 0
+    assert metrics["merge_lock"]["wait_ms"]["p50"] is None
+
+
+@pytest.mark.asyncio
+async def test_metrics_sample_the_run_and_the_lock_wait_even_for_one_run():
+    """Tek turda bile süreler ve kilit beklemesi ÖLÇÜLÜR (tahmin edilmez)."""
+    await _seed_split()
+
+    await run_identity_sweep_once(engine, limit=10)
+
+    metrics = identity_sweep_metrics()
+    assert metrics["runs"] == 1
+    assert metrics["duration_ms"]["count"] == 1
+    assert metrics["duration_ms"]["last"] is not None
+    assert metrics["duration_ms"]["avg"] is not None
+    assert metrics["splits_duration_ms"]["count"] == 1
+    assert metrics["stranded_duration_ms"]["count"] == 1
+
+    lock = metrics["merge_lock"]
+    assert lock["attempts"] >= 1
+    assert lock["acquired"] >= 1
+    assert lock["wait_ms"]["count"] == lock["attempts"]
+    assert lock["wait_ms"]["p95"] is not None
+
+    # `/health` özeti ile `/metrics` aynı ölçümü taşımalı: iki farklı sayı
+    # göstermek operatörü yanıltırdı.
+    status = merge_sweep_status()
+    assert status["last_duration_ms"] == metrics["duration_ms"]["last"]
+    assert status["lock_wait_avg_ms"] == lock["wait_ms"]["avg"]
+    assert "duration_samples_ms" not in status, "örnek listesi /health'i şişirmemeli"
+
+
+@pytest.mark.asyncio
+async def test_metrics_distinguish_lock_contention_from_acquisition():
+    """Kilit başkasındayken deneme `contended` sayılır; bekleme örneği yine düşer."""
+    await _seed_split()
+
+    async with AsyncSessionLocal() as holder_db:
+        async with _merge_lease(
+            holder_db,
+            lock_key=_merge_lock_key(TEST_USER, f"jid:{LID_JID}"),
+            wait_seconds=0.0,
+        ) as (held, _h):
+            assert held is True
+            info: Dict[str, Any] = {}
+            async with AsyncSessionLocal() as other_db:
+                merged = await merge_split_conversation(
+                    other_db,
+                    TEST_USER,
+                    LID_JID,
+                    PHONE_JID,
+                    session_id=None,
+                    lock_wait_seconds=0.0,
+                    result_info=info,
+                )
+            assert merged is None, "kilitliyken birleştirme yapılmamalı"
+
+    metrics = identity_sweep_metrics()
+    lock = metrics["merge_lock"]
+    assert lock["acquired"] == 1, "kilidi tutan süreç alınmış sayılır"
+    assert lock["contended"] == 1, "kilidi alamayan deneme ertelenmiş sayılır"
+    assert lock["attempts"] == 2
+    assert lock["wait_ms"]["count"] == 2
+    # Başarısız denemede bile ölçülen bekleme raporlanır: "ne kadar bekledim".
+    assert lock["wait_ms"]["max"] is not None
+
+
+@pytest.mark.asyncio
+async def test_metrics_endpoint_exposes_sweep_and_lease_metrics():
+    """`/metrics` operatör için tur + kilit metriklerini tek yanıtta verir."""
+    from backend.app.main import metrics_check
+
+    await _seed_split()
+    await run_identity_sweep_once(engine, limit=10)
+
+    body = await metrics_check()
+
+    block = body["whatsapp_identity_sweep"]
+    assert block["runs"] == 1
+    assert block["merge_lock"]["acquired"] >= 1
+    assert block["merge_lock"]["wait_ms"]["max"] is not None
+    assert block["merged_total"] == 1
+    assert body["generated_at"]
+    assert body["service"]
+
+
+# ---------------------------------------------------------------------------
+# Yönetim ucu: bekleyenleri listele + tek istekte onar
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_admin_list_shows_what_would_move_before_acting():
+    """Operatör aksiyondan ÖNCE "kaç mesaj/okunmamış taşınacak"ı görür."""
+    from backend.app.services import whatsapp_service
+
+    legacy_id, _canonical_id = await _seed_split()
+
+    async with AsyncSessionLocal() as db:
+        listed = await whatsapp_service.list_lid_split_candidates(db, TEST_USER, limit=50)
+
+    assert listed["total"] == 1
+    assert listed["truncated"] is False
+    item = listed["items"][0]
+    assert item["lid_jid"] == LID_JID
+    assert item["phone_jid"] == PHONE_JID
+    assert item["lid_conversation_id"] == legacy_id
+    assert item["message_count"] == 2, "LID sohbetindeki iki satır raporlanmalı"
+    assert item["unread_count"] == 2
+    assert item["display_name"] is None, "kanonik kişinin adı yoksa None — uydurulmaz"
+
+
+@pytest.mark.asyncio
+async def test_admin_merge_repairs_with_evidence_and_leaves_nothing_pending():
+    """Tek istek gerçekten birleştirir: kanıt alanları dolu, sonrasında aday yok."""
+    from backend.app.services import whatsapp_service
+
+    legacy_id, canonical_id = await _seed_split()
+
+    async with AsyncSessionLocal() as db:
+        result = await whatsapp_service.merge_lid_splits(db, TEST_USER, limit=50)
+        assert result["requested"] == 1
+        assert result["merged"] == 1
+        assert result["deferred"] == 0
+        assert result["errors"] == 0
+        item = result["results"][0]
+        assert item["merged"] is True
+        assert item["canonical_conversation_id"] == canonical_id
+        assert item["moved_unique"] == 1
+        assert item["deduped_duplicates"] == 1
+        assert item["stranded_after"] == 0
+        assert item["canonical_unread_count"] == 3
+        again = await whatsapp_service.list_lid_split_candidates(db, TEST_USER, limit=50)
+
+    assert again["total"] == 0, "onarım sonrası bekleyen iş kalmamalı"
+    assert (await _legacy_state(legacy_id)).is_archived is True
+    rows = await _message_conversations()
+    assert sorted(body for c, _w, body in rows if c == canonical_id) == [
+        "already-canonical",
+        "lid-1",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_admin_merge_for_an_unknown_lid_is_an_honest_no_op():
+    """Tek çift isteği BAŞKA çiftleri birleştirmez; bulunamazsa dürüstçe 0 der."""
+    from backend.app.services import whatsapp_service
+
+    _legacy_id, canonical_id = await _seed_split()
+
+    async with AsyncSessionLocal() as db:
+        result = await whatsapp_service.merge_lid_splits(
+            db, TEST_USER, lid_jid="yok-999@lid", limit=50
+        )
+
+    assert result == {
+        "requested": 0,
+        "merged": 0,
+        "deferred": 0,
+        "errors": 0,
+        "results": [],
+    }
+    assert await _canonical_unread(canonical_id) == 1, "dokunulmamalı"
+
+
+@pytest.mark.asyncio
+async def test_admin_endpoints_form_the_clickable_contract():
+    """HTTP sözleşmesi: listeleme DTO'su + tek istekte birleştirme yanıtı."""
+    from types import SimpleNamespace
+
+    from backend.app.api.v1.endpoints.whatsapp import (
+        list_lid_splits,
+        merge_lid_splits,
+    )
+    from backend.app.schemas.whatsapp import WhatsAppLidSplitMergeRequest
+
+    _legacy_id, canonical_id = await _seed_split()
+    user = SimpleNamespace(id=TEST_USER)
+
+    async with AsyncSessionLocal() as db:
+        listed = await list_lid_splits(limit=50, db=db, current_user=user)
+        assert listed.total == 1
+        assert listed.items[0].message_count == 2
+
+        merged = await merge_lid_splits(
+            payload=WhatsAppLidSplitMergeRequest(limit=50), db=db, current_user=user
+        )
+
+    assert merged.merged == 1
+    assert merged.results[0].merged is True
+    assert merged.results[0].moved_unique == 1
+    assert merged.results[0].canonical_conversation_id == canonical_id

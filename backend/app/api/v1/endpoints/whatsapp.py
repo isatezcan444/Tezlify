@@ -21,6 +21,9 @@ from backend.app.schemas.whatsapp import (
     WhatsAppConversationStatusRequest,
     WhatsAppConversationStatusResult,
     WhatsAppConversationDeleteResult,
+    WhatsAppLidSplitListResponse,
+    WhatsAppLidSplitMergeRequest,
+    WhatsAppLidSplitMergeResponse,
     WhatsAppLoadingGateResponse,
     WhatsAppMessageItem,
     WhatsAppMessagesResponse,
@@ -831,6 +834,44 @@ async def delete_conversation(
     except Exception as exc:
         raise _bad_gateway(exc) from exc
     return WhatsAppConversationDeleteResult(**result)
+
+
+# ---------------------------------------------------------------------------
+# LID/telefon bölünmüş sohbet onarımı (yönetim ucu)
+# ---------------------------------------------------------------------------
+@router.get("/lid-splits", response_model=WhatsAppLidSplitListResponse)
+async def list_lid_splits(
+    limit: int = Query(50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+) -> WhatsAppLidSplitListResponse:
+    """Onarımı bekleyen bölünmüş LID sohbetlerini KANITLARIYLA listeler.
+
+    Her satır "ne taşınacak"ı aksiyondan ÖNCE gösterir (mesaj/okunmamış sayısı);
+    "bekleyen iş var mı" sorusu artık `docker exec` gerektirmez.
+    """
+    result = await whatsapp_service.list_lid_split_candidates(
+        db, current_user.id, limit=limit
+    )
+    return WhatsAppLidSplitListResponse(**result)
+
+
+@router.post("/lid-splits/merge", response_model=WhatsAppLidSplitMergeResponse)
+async def merge_lid_splits(
+    payload: WhatsAppLidSplitMergeRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+) -> WhatsAppLidSplitMergeResponse:
+    """Tek istekte onarım: bekleyen bölünmüş çiftleri birleştirir.
+
+    `lid_jid` verilirse yalnız o çift; verilmezse bu kiracının bekleyenleri
+    (`limit` kadar). İş SÜPÜRMEYLE AYNI birleştirmeyi çağırır; kilit başka bir
+    süreçteyse sonuç `deferred` olur ve çift aday kalır — sessiz kayıp yok.
+    """
+    result = await whatsapp_service.merge_lid_splits(
+        db, current_user.id, lid_jid=payload.lid_jid, limit=payload.limit
+    )
+    return WhatsAppLidSplitMergeResponse(**result)
 
 
 @router.get("/media/{media_id}")

@@ -548,6 +548,20 @@ export const tr = {
     // temizlendigini sanmasina yol acardi.
     deleteChatRemoteFailed:
       'Sohbet Tezlify\u2019dan kaldırıldı ancak WhatsApp\u2019a bildirilemedi. Telefonunuzda görünmeye devam edebilir ve bir sonraki senkronizasyonda geri gelebilir.',
+    // LID/telefon kimliği bölünmesi: aynı kişi iki sohbete dağılmış. Onarım
+    // mesaj TAŞIR, silmez; arayüz önce kapsamı (kaç sohbet/mesaj) gösterir.
+    lidSplitBannerTitle: '{count} sohbet bölünmüş durumda',
+    lidSplitBannerBody:
+      'Aynı kişinin mesajları iki ayrı sohbete dağılmış ({count} sohbet, {messages} mesaj). Birleştirme mesajları taşır; hiçbir şey silinmez.',
+    lidSplitMerge: 'Birleştir',
+    lidSplitMerging: 'Birleştiriliyor…',
+    lidSplitConfirmTitle: 'Bölünmüş sohbetleri birleştir',
+    lidSplitConfirmBody:
+      '{count} bölünmüş sohbet birleştirilecek ({messages} mesaj taşınacak). Eski LID sohbetleri arşivlenir; hiçbir mesaj silinmez.',
+    lidSplitMerged: '{count} bölünmüş sohbet birleştirildi',
+    lidSplitPartial:
+      'Kısmi sonuç: {merged} birleşti, {deferred} kilit nedeniyle ertelendi, {errors} hata. Ertelenenler bir sonraki turda yeniden denenir.',
+    lidSplitFailed: 'Bölünmüş sohbetler birleştirilemedi',
     linkPreviewOpen: 'Bağlantıyı aç',
     documentOpen: 'Aç',
     documentDownload: 'İndir',

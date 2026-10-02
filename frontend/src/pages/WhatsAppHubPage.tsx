@@ -35,7 +35,7 @@ import { PEER_TYPING_TTL_MS, pruneExpiredTyping, resolveSyncDisplayCounts } from
 import { applyConversationEvent } from '../features/whatsapp/lib/whatsappConversationPatch';
 import { applyReactionToThread } from '../features/whatsapp/lib/whatsappReactions';
 import { WhatsAppSession, Conversation, ConversationStatus, ConversationMessageStatus, Lead, Message, LiveModeStatus, SessionSyncState } from '../types';
-import { WhatsAppApi, useLiveMode, mapConversationItem, mapMessageItem } from '../features/whatsapp/api/whatsappApi';
+import { WhatsAppApi, useLiveMode, mapConversationItem, mapMessageItem, type LidSplitCandidate } from '../features/whatsapp/api/whatsappApi';
 import { useWhatsAppLoadingGate } from '../features/whatsapp/hooks/useWhatsAppLoadingGate';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
@@ -129,6 +129,28 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
 
   // Tab State: 'conversations' | 'sessions' | 'antiban'
   const [hubTab, setHubTab] = useState<'conversations' | 'sessions' | 'antiban'>('conversations');
+
+  // Yönetim yüzeyi: bekleyen LID/telefon bölünmüş sohbetleri. Liste SUNUCUDAN
+  // okunur; istemci hiçbir koşulda "bekleyen yok" VARSAYMAZ — sonda
+  // başarısızsa hiçbir şey gösterilmez (sessizlik iddia değildir).
+  const [lidSplits, setLidSplits] = useState<LidSplitCandidate[]>([]);
+  const [lidSplitsMerging, setLidSplitsMerging] = useState(false);
+
+  const refreshLidSplits = useCallback(async () => {
+    try {
+      const res = await WhatsAppRepository.getLidSplits();
+      setLidSplits(res.items);
+    } catch (err) {
+      // Gateway/DB sondası başarısız olabilir; ekranda yanlış bir "temiz"
+      // iddiası üretmemek için yalnızca konsola yazılır.
+      console.warn('[WhatsAppHubPage] Bölünmüş LID adayları alınamadı:', err);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (hubTab !== 'conversations') return;
+    void refreshLidSplits();
+  }, [hubTab, refreshLidSplits]);
 
   // Live Conversations State (connected directly to WhatsApp session)
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -713,11 +735,14 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     if (sessionSync?.phase !== 'ready') return;
     setIsPostQrSyncing(false);
     loadConversations(true);
+    // İlk senkron biterken biriken bölünmeleri de tazele: onarım yüzeyi
+    // senkron tamamlandıktan sonra gerçek durumu göstersin.
+    void refreshLidSplits();
     const timer = setTimeout(() => {
       setSessionSync((prev) => (prev && prev.phase === 'ready' ? null : prev));
     }, 4000);
     return () => clearTimeout(timer);
-  }, [sessionSync?.phase, loadConversations]);
+  }, [sessionSync?.phase, loadConversations, refreshLidSplits]);
 
   // Faz 14 — kapi kosulu. WhatsApp Web paritesi senkron kapisi.
   //   1) QR okutulup yeni baglanti yapildiginda (`isPostQrSyncing`),
@@ -1087,6 +1112,51 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       );
     }
   }, []);
+
+  /**
+   * Bekleyen bölünmüş LID sohbetlerini TEK istekte onarır.
+   *
+   * Onarım veri SİLMEZ (mesajlar kanonik sohbete taşınır, LID sohbeti
+   * arşivlenir) ama yine de önce kapsam onaylatılır: tek tık onlarca sohbeti
+   * yerinden edebilir. Sonuç SUNUCUDAN okunur; `deferred`/`errors` sessizce
+   * yutulmaz — kısmi sonuç uyarı olarak gösterilir.
+   */
+  const handleRepairLidSplits = async () => {
+    const totalMessages = lidSplits.reduce((sum, item) => sum + item.message_count, 0);
+    const confirmed = await toast.confirm({
+      title: t('whatsapp.lidSplitConfirmTitle'),
+      message: t('whatsapp.lidSplitConfirmBody')
+        .replace('{count}', String(lidSplits.length))
+        .replace('{messages}', String(totalMessages)),
+      confirmText: t('whatsapp.lidSplitMerge'),
+    });
+    if (!confirmed) return;
+    setLidSplitsMerging(true);
+    try {
+      const res = await WhatsAppRepository.mergeLidSplits();
+      if (res.deferred > 0 || res.errors > 0) {
+        toast.warning(
+          t('whatsapp.lidSplitPartial')
+            .replace('{merged}', String(res.merged))
+            .replace('{deferred}', String(res.deferred))
+            .replace('{errors}', String(res.errors)),
+          t('common.warning'),
+        );
+      } else {
+        toast.success(
+          t('whatsapp.lidSplitMerged').replace('{count}', String(res.merged)),
+          t('common.success'),
+        );
+      }
+      await refreshLidSplits();
+      loadConversationsRef.current?.(true);
+    } catch (err: any) {
+      console.warn('[WhatsAppHubPage] LID onarımı başarısız:', err);
+      toast.error(err?.message || t('whatsapp.lidSplitFailed'), t('common.error'));
+    } finally {
+      setLidSplitsMerging(false);
+    }
+  };
 
   const handleOpenLead = async (leadId: number) => {
     const rawPhone = selectedConv?.lead_phone || (selectedConv as any)?.phone || '';
@@ -2667,6 +2737,33 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                 {sessionSync.error && (
                   <p className="mt-1 text-[10px] text-slate-500 dark:text-slate-400 break-words">{sessionSync.error}</p>
                 )}
+              </div>
+            )}
+            {/* Bekleyen bölünmüş sohbetler: operatör tek tıkla onarır. Yalnızca
+                GERÇEK aday varsa görünür; "bekleyen yok" diye yeşil bir rozet
+                YOKTUR (sessizlik iddia değildir, sonda hatası da "temiz"
+                gösterilmez). */}
+            {lidSplits.length > 0 && (
+              <div className="mx-3 mt-3 rounded-xl border border-amber-400/40 bg-amber-400/5 dark:bg-amber-400/10 px-3 py-2.5 shrink-0">
+                <div className="flex items-center space-x-2">
+                  <AlertTriangle className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                  <span className="text-[11px] font-bold text-amber-600 dark:text-amber-400">
+                    {t('whatsapp.lidSplitBannerTitle').replace('{count}', String(lidSplits.length))}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => { void handleRepairLidSplits(); }}
+                    disabled={lidSplitsMerging}
+                    className="ml-auto text-[10px] font-extrabold text-amber-600 dark:text-amber-400 hover:underline cursor-pointer disabled:opacity-50 disabled:cursor-default"
+                  >
+                    {lidSplitsMerging ? t('whatsapp.lidSplitMerging') : t('whatsapp.lidSplitMerge')}
+                  </button>
+                </div>
+                <p className="mt-1 text-[10px] text-slate-500 dark:text-slate-400">
+                  {t('whatsapp.lidSplitBannerBody')
+                    .replace('{count}', String(lidSplits.length))
+                    .replace('{messages}', String(lidSplits.reduce((sum, item) => sum + item.message_count, 0)))}
+                </p>
               </div>
             )}
             <ConversationList

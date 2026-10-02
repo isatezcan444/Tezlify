@@ -32,6 +32,7 @@ Davranış sözleşmesi (taşındığı haliyle korunur)
 
 import asyncio
 import logging
+import time
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
@@ -108,6 +109,93 @@ _MERGE_LOCK_TTL_SECONDS = 120
 _MERGE_LOCK_POLL_SECONDS = 0.25
 # DDL'i her birleştirmede tekrarlamamak için süreç başına bir kez kurulur.
 _MERGE_LOCK_TABLE_READY: set[str] = set()
+
+# ---------------------------------------------------------------------------
+# Gözlemlenebilirlik: süpürme turu süreleri + kilit bekleme dağılımı
+# ---------------------------------------------------------------------------
+# Amaç "iş çalışıyor mu" sorusunu kabuk komudu olmadan ölçmek. Bu yüzden
+# süreç belleğinde tutulur ve `/metrics` (ve `/health` özeti) üzerinden okunur.
+# Örnekler son N taneyle sınırlanır: sınırsız bir liste süreç ömrü boyunca
+# büyür ve sızıntıya döner. Toplamlar ayrıca tutulur; ortalama tüm koşuların
+# (yalnızca son örneklerin değil) ortalamasıdır.
+_METRIC_SAMPLE_LIMIT = 50
+
+_LOCK_METRICS: Dict[str, Any] = {
+    "attempts": 0,
+    "acquired": 0,
+    "contended": 0,
+    # Lease tablosu kurulamadıysa deneme yapılmadı bile: ayrı sayılır, ki
+    # "kilit var" ile "kilit kurulamadı" raporu karışmasın.
+    "unavailable": 0,
+    "wait_samples_ms": [],
+    "wait_total_ms": 0.0,
+    "wait_max_ms": 0.0,
+}
+
+
+def _record_lock_attempt(*, wait_ms: float, acquired: bool) -> None:
+    """Bir lease denemesinin beklemesini kaydeder (örnekler son N ile sınırlı)."""
+    _LOCK_METRICS["attempts"] = int(_LOCK_METRICS["attempts"]) + 1
+    if acquired:
+        _LOCK_METRICS["acquired"] = int(_LOCK_METRICS["acquired"]) + 1
+    else:
+        _LOCK_METRICS["contended"] = int(_LOCK_METRICS["contended"]) + 1
+    waited = round(float(wait_ms), 3)
+    samples = _LOCK_METRICS["wait_samples_ms"]
+    samples.append(waited)
+    del samples[: max(0, len(samples) - _METRIC_SAMPLE_LIMIT)]
+    _LOCK_METRICS["wait_total_ms"] = round(
+        float(_LOCK_METRICS["wait_total_ms"]) + waited, 3
+    )
+    _LOCK_METRICS["wait_max_ms"] = max(float(_LOCK_METRICS["wait_max_ms"]), waited)
+
+
+def _sample_stats(
+    samples: List[float],
+    *,
+    total_ms: Optional[float] = None,
+    count: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Örneklerden avg/max/p50/p95 üretir. `count` verilirse o (tüm koşular),
+    yoksa elde tutulan örnek sayısıdır — ortalama total/count'tan gelir."""
+    n = int(count) if count is not None else len(samples)
+    ordered = sorted(float(s) for s in samples)
+    # `count` (tüm koşular) ile elde tutulan örnek penceresi AYRIŞABİLİR: tur
+    # sayacı örnek listesinden daha uzun yaşayabilir (örnek kaydı bir hatadan
+    # etkilenirse ya da liste bilinçli olarak boşaltılırsa). Bu yüzden dağılım
+    # alanları YALNIZCA gerçekten örnek varsa üretilir; sıfır bölme/boş liste
+    # indeksi yok. (Bu tuzak bir falsifikasyon probuyla yakalandı: `max`
+    # `ordered[-1]`e koşulsuz erişip IndexError atıyordu.)
+    avg: Optional[float]
+    if total_ms is not None:
+        avg = round(float(total_ms) / n, 3) if n else None
+    elif ordered:
+        avg = round(sum(ordered) / len(ordered), 3)
+    else:
+        avg = None
+    if not ordered:
+        return {
+            "count": n,
+            "last": None,
+            "avg": avg,
+            "max": None,
+            "p50": None,
+            "p95": None,
+        }
+
+    def _pct(p: float) -> Optional[float]:
+        idx = int(round((p / 100.0) * (len(ordered) - 1)))
+        idx = min(len(ordered) - 1, max(0, idx))
+        return round(ordered[idx], 3)
+
+    return {
+        "count": n,
+        "last": round(float(samples[-1]), 3) if samples else None,
+        "avg": avg,
+        "max": round(ordered[-1], 3),
+        "p50": _pct(50),
+        "p95": _pct(95),
+    }
 
 
 def _lock_table_cache_key(db: AsyncSession, postgres: bool) -> str:
@@ -188,10 +276,12 @@ async def _merge_lease(
     if postgres is None:
         postgres = _dialect_is_postgres(getattr(db, "bind", None))
     holder = uuid.uuid4().hex
+    started = time.monotonic()
     if not await _ensure_merge_lock_table(db, postgres):
         # Kilit kurulamıyorsa kilitsiz devam ETMEYİZ: sessizce yarışa girmek,
         # korunma iddiasını yalan yapar. Tek süreçli boot için bu bir engel
         # değildir; çok süreçli durumda iş bir sonraki tura kalır.
+        _LOCK_METRICS["unavailable"] = int(_LOCK_METRICS["unavailable"]) + 1
         yield False, None
         return
 
@@ -231,6 +321,12 @@ async def _merge_lease(
         if datetime.utcnow() >= deadline:
             break
         await asyncio.sleep(_MERGE_LOCK_POLL_SECONDS)
+
+    # Bekleme, ALINDIĞI ANDA ölçülür: `yield` bloğu birleştirme gövdesini de
+    # kapsar, gövde süresi kilit beklemesi sanılmamalı.
+    _record_lock_attempt(
+        wait_ms=(time.monotonic() - started) * 1000.0, acquired=acquired
+    )
 
     try:
         yield acquired, (holder if acquired else None)
@@ -982,6 +1078,11 @@ _SWEEP_STATE: Dict[str, Any] = {
     "last_finished_at": None,
     "last_report": None,
     "last_error": None,
+    # Gözlemlenebilirlik: her turun toplam süresi ve iki fazın ayrı süreleri.
+    "duration_samples_ms": [],
+    "split_duration_samples_ms": [],
+    "stranded_duration_samples_ms": [],
+    "duration_total_ms": 0.0,
 }
 
 
@@ -998,12 +1099,29 @@ async def run_identity_sweep_once(
     toplar — birinci fazın ürettiği artığı aynı turda temizler.
     """
     _SWEEP_STATE["last_started_at"] = datetime.utcnow().isoformat()
+    run_started = time.monotonic()
+    split_started = time.monotonic()
     report = await merge_deferred_lid_ghosts(
         engine, limit=limit, session_factory=session_factory
     )
+    split_ms = (time.monotonic() - split_started) * 1000.0
+    stranded_started = time.monotonic()
     stranded = await collect_stranded_lid_messages(
         engine, limit=limit, session_factory=session_factory
     )
+    stranded_ms = (time.monotonic() - stranded_started) * 1000.0
+    duration_ms = (time.monotonic() - run_started) * 1000.0
+    _SWEEP_STATE["duration_total_ms"] = round(
+        float(_SWEEP_STATE["duration_total_ms"]) + duration_ms, 3
+    )
+    for key, value in (
+        ("duration_samples_ms", duration_ms),
+        ("split_duration_samples_ms", split_ms),
+        ("stranded_duration_samples_ms", stranded_ms),
+    ):
+        samples = _SWEEP_STATE[key]
+        samples.append(round(value, 3))
+        del samples[: max(0, len(samples) - _METRIC_SAMPLE_LIMIT)]
     _SWEEP_STATE["runs"] = int(_SWEEP_STATE["runs"]) + 1
     _SWEEP_STATE["merged_total"] = int(_SWEEP_STATE["merged_total"]) + int(report.get("merged") or 0)
     _SWEEP_STATE["deferred_total"] = int(_SWEEP_STATE["deferred_total"]) + int(report.get("deferred") or 0)
@@ -1058,13 +1176,78 @@ def merge_sweep_status() -> Dict[str, Any]:
     state["pending_at_least"] = splits.get("remaining_at_least")
     state["last_deferred"] = (splits.get("deferred") or 0) + (stranded.get("deferred") or 0)
     state["last_stranded_moved"] = stranded.get("moved_unique_total")
-    # Tam rapor `/health` gövdesini şişirmesin: operatör için özet yeter.
+    runs = int(state.get("runs") or 0)
+    samples = state.get("duration_samples_ms") or []
+    # Özet alanlar: son tur süresi, tüm koşuların ortalaması ve kilit özeti.
+    state["last_duration_ms"] = samples[-1] if samples else None
+    state["avg_duration_ms"] = (
+        round(float(state.get("duration_total_ms") or 0.0) / runs, 3) if runs else None
+    )
+    state["lock_wait_avg_ms"] = (
+        round(float(_LOCK_METRICS["wait_total_ms"]) / int(_LOCK_METRICS["attempts"]), 3)
+        if int(_LOCK_METRICS["attempts"])
+        else None
+    )
+    state["lock_contended_total"] = int(_LOCK_METRICS["contended"])
+    # Tam rapor ve örnek listeleri `/health` gövdesini şişirmesin: özet yeter.
     state.pop("last_report", None)
+    for key in (
+        "duration_samples_ms",
+        "split_duration_samples_ms",
+        "stranded_duration_samples_ms",
+    ):
+        state.pop(key, None)
     return state
 
 
+def identity_sweep_metrics() -> Dict[str, Any]:
+    """`/metrics` için tam gözlemlenebilirlik: tur süreleri + kilit dağılımı.
+
+    Dürüstlük sınırı: bu değerler SÜREÇ belleğidir. Süreç yeniden başlarsa
+    sayaçlar sıfırlanır — bu yüzden `generated_at` ile birlikte okunmalı ve
+    "tüm zamanların metriği" sanılmamalıdır.
+    """
+    runs = int(_SWEEP_STATE.get("runs") or 0)
+    lock_attempts = int(_LOCK_METRICS["attempts"])
+    return {
+        "generated_at": datetime.utcnow().isoformat(),
+        "process_local": True,
+        "runs": runs,
+        "merged_total": int(_SWEEP_STATE.get("merged_total") or 0),
+        "deferred_total": int(_SWEEP_STATE.get("deferred_total") or 0),
+        "stranded_moved_total": int(_SWEEP_STATE.get("stranded_moved_total") or 0),
+        "still_stranded": int(_SWEEP_STATE.get("still_stranded") or 0),
+        "errors_total": int(_SWEEP_STATE.get("errors_total") or 0),
+        "last_started_at": _SWEEP_STATE.get("last_started_at"),
+        "last_finished_at": _SWEEP_STATE.get("last_finished_at"),
+        "last_error": _SWEEP_STATE.get("last_error"),
+        "duration_ms": _sample_stats(
+            _SWEEP_STATE.get("duration_samples_ms") or [],
+            total_ms=float(_SWEEP_STATE.get("duration_total_ms") or 0.0),
+            count=runs,
+        ),
+        "splits_duration_ms": _sample_stats(
+            _SWEEP_STATE.get("split_duration_samples_ms") or []
+        ),
+        "stranded_duration_ms": _sample_stats(
+            _SWEEP_STATE.get("stranded_duration_samples_ms") or []
+        ),
+        "merge_lock": {
+            "attempts": lock_attempts,
+            "acquired": int(_LOCK_METRICS["acquired"]),
+            "contended": int(_LOCK_METRICS["contended"]),
+            "unavailable": int(_LOCK_METRICS["unavailable"]),
+            "wait_ms": _sample_stats(
+                _LOCK_METRICS.get("wait_samples_ms") or [],
+                total_ms=float(_LOCK_METRICS.get("wait_total_ms") or 0.0),
+                count=lock_attempts,
+            ),
+        },
+    }
+
+
 def reset_sweep_state() -> None:
-    """Test izolasyonu: süreç-global süpürme durumunu sıfırlar."""
+    """Test izolasyonu: süreç-global süpürme + kilit metriklerini sıfırlar."""
     _SWEEP_STATE.update(
         {
             "runs": 0,
@@ -1077,5 +1260,20 @@ def reset_sweep_state() -> None:
             "last_finished_at": None,
             "last_report": None,
             "last_error": None,
+            "duration_samples_ms": [],
+            "split_duration_samples_ms": [],
+            "stranded_duration_samples_ms": [],
+            "duration_total_ms": 0.0,
+        }
+    )
+    _LOCK_METRICS.update(
+        {
+            "attempts": 0,
+            "acquired": 0,
+            "contended": 0,
+            "unavailable": 0,
+            "wait_samples_ms": [],
+            "wait_total_ms": 0.0,
+            "wait_max_ms": 0.0,
         }
     )

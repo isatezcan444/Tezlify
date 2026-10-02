@@ -548,6 +548,20 @@ export const en = {
     // believe the phone was cleaned too.
     deleteChatRemoteFailed:
       'Chat was removed from Tezlify, but WhatsApp could not be notified. It may still appear on your phone and could come back on the next sync.',
+    // LID/phone identity split: one person's messages are in two chats. The
+    // repair MOVES messages, never deletes; the UI states the scope up front.
+    lidSplitBannerTitle: '{count} chats are split',
+    lidSplitBannerBody:
+      'Messages from the same person are spread across two chats ({count} chats, {messages} messages). Merging moves the messages; nothing is deleted.',
+    lidSplitMerge: 'Merge',
+    lidSplitMerging: 'Merging…',
+    lidSplitConfirmTitle: 'Merge split chats',
+    lidSplitConfirmBody:
+      '{count} split chats will be merged ({messages} messages moved). The old LID chats are archived; no message is deleted.',
+    lidSplitMerged: '{count} split chats merged',
+    lidSplitPartial:
+      'Partial result: {merged} merged, {deferred} deferred by a lock, {errors} failed. Deferred items are retried on the next sweep.',
+    lidSplitFailed: 'Split chats could not be merged',
     linkPreviewOpen: 'Open link',
     documentOpen: 'Open',
     documentDownload: 'Download',

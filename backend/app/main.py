@@ -45,6 +45,7 @@ from backend.app.core.seed import seed_demo_data_if_empty
 from backend.app.services.admin.ops_service import init_ops_state
 from backend.app.services.whatsapp.reconciliation import (
     identity_sweep_loop,
+    identity_sweep_metrics,
     merge_deferred_lid_ghosts,
     merge_sweep_status,
 )
@@ -540,4 +541,21 @@ async def health_check():
         },
         # Bekleyen bölünmüş sohbet işini kabuk komudu olmadan görünür kılar.
         "whatsapp_identity_sweep": merge_sweep_status(),
+    }
+
+
+@app.api_route("/metrics", methods=["GET", "HEAD"], tags=["Health"])
+async def metrics_check() -> Dict[str, Any]:
+    """Operatörün metrik okuma noktası (kimlik doğrulamasız, tıpkı `/health` gibi).
+
+    JSON döner, Prometheus metni DEĞİL: bu repoda bir toplayıcı/bağımlılık yok
+    ve `/health` ile aynı sözleşmeyi paylaşmak operatör için tek biçim demek.
+    Değerler SÜREÇ belleğidir — yeniden başlatmada sıfırlanır, bunun için
+    `process_local: true` ve `generated_at` alanları yanıtta durur.
+    """
+    return {
+        "service": "Tezlify Backend API",
+        "version": settings.VERSION,
+        "generated_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+        "whatsapp_identity_sweep": identity_sweep_metrics(),
     }

@@ -59,6 +59,43 @@ export interface ConversationReadResult {
 
 export { LiveModeStatus };
 
+/**
+ * Onarımı bekleyen BİR bölünmüş LID çifti (yönetim ucu).
+ *
+ * `message_count`/`unread_count` LID sohbetinde DURAN değerlerdir: operatör
+ * "birleştirirsem ne taşınır"ı aksiyondan ÖNCE görür.
+ */
+export interface LidSplitCandidate {
+  lid_jid: string;
+  phone_jid: string;
+  lid_conversation_id: number;
+  display_name: string | null;
+  message_count: number;
+  unread_count: number;
+}
+
+/**
+ * Tek istekte onarım sonucu. `deferred > 0` bir hata DEĞİLDİR: kilit başka bir
+ * süreçteydi ve çift aday kaldı — arayüz bunu "birleşti" diye göstermez.
+ */
+export interface LidSplitMergeResult {
+  requested: number;
+  merged: number;
+  deferred: number;
+  errors: number;
+  results: Array<{
+    lid_jid: string;
+    phone_jid: string;
+    merged: boolean;
+    reason?: string | null;
+    canonical_conversation_id?: number | null;
+    moved_unique?: number | null;
+    deduped_duplicates?: number | null;
+    stranded_after?: number | null;
+    canonical_unread_count?: number | null;
+  }>;
+}
+
 // ---------------------------------------------------------------------------
 // Live probe (gateway erişilebilirliğini kısa süreli ölçer; mock fallback yok)
 // ---------------------------------------------------------------------------
@@ -627,6 +664,54 @@ export const WhatsAppApi = {
       // yalnizca sunucu acikca `true` dediginde susar (AGENTS.md §1.1).
       remote_deleted: data.remote_deleted === true,
       remote_error: data.remote_error ?? null,
+    };
+  },
+
+  /**
+   * Onarımı bekleyen bölünmüş LID sohbetlerini listeler (yönetim ucu).
+   *
+   * `truncated=true` dürüstlüğüdür: `limit`e sığmayan aday kaldı demektir,
+   * arayüz "hepsi bu" diyemez.
+   */
+  async getLidSplits(
+    limit: number = 50,
+    signal?: AbortSignal,
+  ): Promise<{ items: LidSplitCandidate[]; total: number; truncated: boolean }> {
+    const data = await apiGet<{
+      items?: LidSplitCandidate[];
+      total?: number;
+      truncated?: boolean;
+    }>(`/whatsapp/lid-splits?limit=${encodeURIComponent(String(limit))}`, signal);
+    return {
+      items: data.items ?? [],
+      total: data.total ?? (data.items?.length ?? 0),
+      truncated: data.truncated === true,
+    };
+  },
+
+  /**
+   * Tek istekte onarım: `lidJid` verilirse yalnız o çift, yoksa bekleyenler.
+   *
+   * Sunucu kimlik/taşıma kararını verir; istemci sonucu OLDUĞU GİBİ taşır —
+   * `deferred`/`errors` sessizce yutulmaz.
+   */
+  async mergeLidSplits(
+    lidJid?: string,
+    limit: number = 50,
+  ): Promise<LidSplitMergeResult> {
+    const body: { limit: number; lid_jid?: string } = { limit };
+    if (lidJid) body.lid_jid = lidJid;
+    const data = await apiSend<Partial<LidSplitMergeResult>>(
+      `/whatsapp/lid-splits/merge`,
+      'POST',
+      body,
+    );
+    return {
+      requested: data.requested ?? 0,
+      merged: data.merged ?? 0,
+      deferred: data.deferred ?? 0,
+      errors: data.errors ?? 0,
+      results: data.results ?? [],
     };
   },
 

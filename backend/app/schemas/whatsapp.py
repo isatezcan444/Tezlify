@@ -431,3 +431,60 @@ class WhatsAppLoadingGateResponse(BaseModel):
     gateway_available: bool = True
     gateway_error: Optional[str] = None
     error: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# LID/telefon bölünmüş sohbet onarımı (yönetim ucu)
+# ---------------------------------------------------------------------------
+class WhatsAppLidSplitCandidate(BaseModel):
+    """Birleştirilmeyi bekleyen BİR bölünmüş çift (kanıt alanlarıyla).
+
+    `message_count` LID sohbetinde DURAN mesaj sayısıdır: operatör "bu işi
+    birleştirirsem ne taşınır" sorusunun cevabını aksiyondan ÖNCE görür.
+    """
+
+    lid_jid: str
+    phone_jid: str
+    lid_conversation_id: int
+    display_name: Optional[str] = None
+    message_count: int = 0
+    unread_count: int = 0
+
+
+class WhatsAppLidSplitListResponse(BaseModel):
+    items: List[WhatsAppLidSplitCandidate] = Field(default_factory=list)
+    # Sınırlı sorgunun dürüstlüğü: kaç aday listelendi. `limit`e takılan daha
+    # fazlası varsa burada yalan söylenmez, `truncated` ile bildirilir.
+    total: int = 0
+    truncated: bool = False
+
+
+class WhatsAppLidSplitMergeRequest(BaseModel):
+    """Tek istekte onarım: `lid_jid` verilirse yalnız o çift, yoksa bekleyenler.
+
+    `limit` her istekte yapılabilecek birleştirme sayısını sınırlar; sınırsız
+    bir yönetim işi yoktur (bkz. reconciliation.DEFAULT_REPAIR_LIMIT).
+    """
+
+    lid_jid: Optional[str] = Field(None, max_length=200)
+    limit: int = Field(default=50, ge=1, le=200)
+
+
+class WhatsAppLidSplitMergeItem(BaseModel):
+    lid_jid: str
+    phone_jid: str
+    merged: bool
+    reason: Optional[str] = None
+    canonical_conversation_id: Optional[int] = None
+    moved_unique: Optional[int] = None
+    deduped_duplicates: Optional[int] = None
+    stranded_after: Optional[int] = None
+    canonical_unread_count: Optional[int] = None
+
+
+class WhatsAppLidSplitMergeResponse(BaseModel):
+    requested: int = 0
+    merged: int = 0
+    deferred: int = 0
+    errors: int = 0
+    results: List[WhatsAppLidSplitMergeItem] = Field(default_factory=list)
