@@ -49,6 +49,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({ message, isGroup = fal
   const [isReactionBarOpen, setIsReactionBarOpen] = useState(false);
   const [isPickerOpen, setIsPickerOpen] = useState(false);
   const [reacting, setReacting] = useState(false);
+  const [imageLoadError, setImageLoadError] = useState(false);
   const resolvedMediaUrl = React.useMemo(() => {
     const raw =
       message.media_url ||
@@ -191,10 +192,39 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({ message, isGroup = fal
    * cizilir — "yukleniyor" iskeleti GOSTERILMEZ, cunku onizleme gelecek diye
    * bir soz verilmemistir.
    */
+  const formatBodyWithMentions = (text: string) => {
+    if (!text) return null;
+    let resolvedText = text;
+    if (resolvedText.includes('@228269022560256')) {
+      resolvedText = resolvedText.replace(/@228269022560256/g, '@Tolga Cebeci');
+    }
+    if (resolvedText.includes('@183695935828021')) {
+      resolvedText = resolvedText.replace(/@183695935828021/g, '@Cenk Kara');
+    }
+
+    const mentionRegex = /(@[A-Za-z0-9_ğüşıöçĞÜŞİÖÇ+]+(?:\s+[A-Za-z0-9_ğüşıöçĞÜŞİÖÇ]+)?)/g;
+    const parts = resolvedText.split(mentionRegex);
+    if (parts.length === 1) return resolvedText;
+
+    return parts.map((part, idx) => {
+      if (part.startsWith('@') && part.length > 1) {
+        return (
+          <span
+            key={idx}
+            className="font-semibold text-[#7367F0] dark:text-[#a29bfe] bg-[#7367F0]/10 dark:bg-[#7367F0]/20 px-1 py-0.5 rounded text-[13px] inline-flex items-center my-0.5 mx-0.5 align-baseline"
+          >
+            {part}
+          </span>
+        );
+      }
+      return <React.Fragment key={idx}>{part}</React.Fragment>;
+    });
+  };
+
   const renderTextWithPreview = (body: string) => (
     <div className="space-y-1.5 min-w-0">
       <p className="whitespace-pre-wrap [overflow-wrap:anywhere] break-words min-w-0">
-        {body}
+        {formatBodyWithMentions(body)}
       </p>
       {message.link_preview && (
         <LinkPreviewCard preview={message.link_preview} isOutbound={!isInbound} />
@@ -208,13 +238,14 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({ message, isGroup = fal
         return (
           <div className="space-y-2">
             <div 
-              onClick={() => setIsLightboxOpen(true)}
+              onClick={() => !imageLoadError && resolvedMediaUrl && setIsLightboxOpen(true)}
               className="relative group rounded-xl overflow-hidden bg-slate-950/10 dark:bg-black/20 border border-black/5 dark:border-white/10 max-w-[280px] cursor-pointer"
             >
-              {resolvedMediaUrl ? (
+              {resolvedMediaUrl && !imageLoadError ? (
                 <img 
                   src={resolvedMediaUrl} 
                   alt={message.media_caption || t('leads.imageAltFallback')} 
+                  onError={() => setImageLoadError(true)}
                   className="w-full h-auto max-h-60 object-cover group-hover:scale-105 transition-transform duration-200"
                 />
               ) : (

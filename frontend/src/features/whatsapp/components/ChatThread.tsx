@@ -774,57 +774,42 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
   // arrive in an empty chat with no `loading` transition (realtime inbound),
   // and nothing else would take the thread to its newest message there.
   const hasContent = sortedMessages.length > 0;
-  useEffect(() => {
-    // The pagination guard must NOT be armed while the thread is still loading.
+  useLayoutEffect(() => {
     if (loading) return;
+    const cont = containerRef.current;
+    if (!cont) return;
     if (sortedMessages.length > 0 && isNearBottom) {
-      scrollToBottomNow('instant');
-      const raf = requestAnimationFrame(() => scrollToBottomNow('instant'));
-      const t1 = setTimeout(() => scrollToBottomNow('instant'), 60);
-      const t2 = setTimeout(() => scrollToBottomNow('instant'), 200);
-      const t3 = setTimeout(() => scrollToBottomNow('instant'), 500);
+      cont.scrollTop = cont.scrollHeight;
+      bottomRef.current?.scrollIntoView({ behavior: 'instant', block: 'end' });
+      const raf = requestAnimationFrame(() => {
+        if (cont && isNearBottom) {
+          cont.scrollTop = cont.scrollHeight;
+        }
+      });
       initialScrollDoneRef.current = true;
-      return () => {
-        cancelAnimationFrame(raf);
-        clearTimeout(t1);
-        clearTimeout(t2);
-        clearTimeout(t3);
-      };
+      return () => cancelAnimationFrame(raf);
     }
     initialScrollDoneRef.current = true;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading, virtualize, convEpoch, hasContent, conversationKey]);
 
-  // ResizeObserver: when media (videos, images, posters) load and expand rows,
-  // ensure the chat stays pinned to the bottom if the user is at the bottom.
+  // ResizeObserver: when media (videos, images, posters) load and expand the container,
+  // keep pinned to bottom ONLY if the user was already at the bottom.
   useEffect(() => {
     if (virtualizeRef.current) return;
     const cont = containerRef.current;
     if (!cont) return;
 
-    let resizeTimer: any = null;
     const ro = new ResizeObserver(() => {
-      if (isNearBottom) {
+      const distanceFromBottom = cont.scrollHeight - cont.scrollTop - cont.clientHeight;
+      if (distanceFromBottom <= 50) {
         cont.scrollTop = cont.scrollHeight;
-        if (!resizeTimer) {
-          resizeTimer = setTimeout(() => {
-            cont.scrollTop = cont.scrollHeight;
-            resizeTimer = null;
-          }, 50);
-        }
       }
     });
 
     ro.observe(cont);
-    for (let i = 0; i < cont.children.length; i++) {
-      ro.observe(cont.children[i]);
-    }
-
-    return () => {
-      ro.disconnect();
-      if (resizeTimer) clearTimeout(resizeTimer);
-    };
-  }, [sortedMessages, isNearBottom, convEpoch]);
+    return () => ro.disconnect();
+  }, [convEpoch]);
 
   // ------------------------------------------------------------- render ----
   const renderRowBody = (row: ThreadRow) => (
@@ -850,7 +835,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
       <div
         role="status"
         aria-label={t('whatsapp.loadingMessages')}
-        className="flex-1 min-w-0 p-4 space-y-4 overflow-y-auto overflow-x-hidden bg-slate-50/40 dark:bg-slate-950/20"
+        className="flex-1 min-w-0 p-4 space-y-4 overflow-y-auto overflow-x-hidden bg-slate-50/40 dark:bg-slate-950/20 animate-in fade-in duration-200 ease-out"
       >
         <div className="flex justify-start">
           <Skeleton className="w-48 h-12 rounded-2xl rounded-tl-sm" />
@@ -962,7 +947,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
   // Byte-identical DOM + behaviour to the pre-K.19 production component.
   if (!virtualize) {
     return (
-      <div className="relative flex-1 min-w-0 flex flex-col min-h-0">
+      <div className="relative flex-1 min-w-0 flex flex-col min-h-0 animate-in fade-in duration-200 ease-out">
         {pagingBanner}
         <div
           ref={containerRef}

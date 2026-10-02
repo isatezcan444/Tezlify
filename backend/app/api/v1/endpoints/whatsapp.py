@@ -966,7 +966,8 @@ async def get_link_preview_image(
     except LookupError as exc:
         raise _not_found(exc) from exc
     except Exception as exc:
-        raise _bad_gateway(exc) from exc
+        logger.warning("Link preview image proxy hatasi: %s", exc)
+        raise _not_found(exc) from exc
     return Response(
         content=data,
         media_type=mime or "image/jpeg",

@@ -392,6 +392,9 @@ async def fetch_media(gateway_id: str, media_id: str) -> bytes:
             res = await client.get(url, headers=gateway_auth_headers())
     except httpx.HTTPError as exc:
         raise WhatsAppGatewayError(f"Medya indirilemedi: {exc}") from exc
+    if res.status_code == 404:
+        raise LookupError(f"Medya bulunamadı: {media_id}")
     if res.status_code >= 400:
-        raise WhatsAppGatewayError(f"Medya bulunamadı (HTTP {res.status_code})")
+        raise WhatsAppGatewayError(f"Medya indirilemedi (HTTP {res.status_code})")
     return res.content
+

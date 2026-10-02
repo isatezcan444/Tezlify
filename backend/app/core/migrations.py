@@ -1885,3 +1885,54 @@ async def ensure_whatsapp_private_lid_and_history_tables(engine: AsyncEngine) ->
     except Exception as e:
         logger.warning("[MIGRATION] ensure_whatsapp_private_lid_and_history_tables: %s", e)
 
+
+async def ensure_repair_raw_lid_mentions(engine: AsyncEngine) -> None:
+    """Repair raw numeric LID mentions in messages body (e.g. @228269022560256 -> @Tolga Cebeci)."""
+    dialect = engine.dialect.name
+    if dialect != "postgresql":
+        return
+    try:
+        async with engine.begin() as conn:
+            rows = (await conn.execute(text(
+                "SELECT m.id, m.body FROM messages m WHERE m.body ~ '@[0-9]{10,}'"
+            ))).fetchall()
+            if not rows:
+                return
+
+            mappings = (await conn.execute(text(
+                "SELECT split_part(lid_jid, '@', 1) as lid_id, split_part(phone_jid, '@', 1) as phone "
+                "FROM whatsapp_private.lid_mappings WHERE lid_jid IS NOT NULL AND phone_jid IS NOT NULL"
+            ))).fetchall()
+            lid_to_phone = {str(r[0]): str(r[1]) for r in mappings if r[0] and r[1]}
+
+            contacts = (await conn.execute(text(
+                "SELECT phone_e164, display_name FROM contacts WHERE display_name IS NOT NULL"
+            ))).fetchall()
+            phone_to_name = {}
+            for p, name in contacts:
+                if not name or not p:
+                    continue
+                clean_p = str(p).replace("+", "").strip()
+                if clean_p:
+                    phone_to_name[clean_p] = str(name).strip()
+
+            repaired_count = 0
+            for msg_id, body in rows:
+                if not body:
+                    continue
+                new_body = body
+                for lid_id, phone in lid_to_phone.items():
+                    if f"@{lid_id}" in new_body:
+                        name = phone_to_name.get(phone)
+                        replacement = f"@{name}" if name else f"@+{phone}"
+                        new_body = new_body.replace(f"@{lid_id}", replacement)
+                if new_body != body:
+                    await conn.execute(text(
+                        "UPDATE messages SET body = :b WHERE id = :id"
+                    ), {"b": new_body, "id": msg_id})
+                    repaired_count += 1
+            if repaired_count > 0:
+                logger.info("[MIGRATION] Repaired raw LID mentions in %d messages", repaired_count)
+    except Exception as exc:
+        logger.warning("[MIGRATION] ensure_repair_raw_lid_mentions: %s", exc)
+

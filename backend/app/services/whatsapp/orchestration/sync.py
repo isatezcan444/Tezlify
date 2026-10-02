@@ -90,6 +90,7 @@ from backend.app.services.whatsapp.orchestration.history_evidence import (
 )
 from backend.app.services.whatsapp.repositories.reactions import (
     upsert_reaction as _upsert_reaction,
+    reaction_identity as _reaction_identity,
 )
 
 logger = logging.getLogger(__name__)
@@ -986,28 +987,64 @@ class WhatsAppSyncOrchestrator:
                 _set_contact_name(contact, name, source)
             _set_contact_avatar(contact, avatar)
             out.append((jid_str, contact))
-        try:
-            async with db.begin_nested():
-                for contact in pending_contacts:
-                    db.add(contact)
-                await db.flush()
-        except IntegrityError:
-            res = await db.execute(
-                select(Contact).where(
-                    Contact.phone_e164.in_(sorted(phones)),
-                    get_user_filter(Contact.user_id, user_id),
+        if pending_contacts:
+            bind = db.get_bind()
+            dialect_name = getattr(getattr(bind, "dialect", None), "name", "")
+            if dialect_name == "postgresql":
+                from sqlalchemy.dialects.postgresql import insert as pg_insert
+                chunk_size = 100
+                for i in range(0, len(pending_contacts), chunk_size):
+                    chunk = pending_contacts[i : i + chunk_size]
+                    stmt = pg_insert(Contact).values([
+                        {
+                            "user_id": c.user_id,
+                            "phone_e164": c.phone_e164,
+                            "display_name": c.display_name,
+                            "custom_attributes": c.custom_attributes,
+                        }
+                        for c in chunk
+                    ]).on_conflict_do_nothing(index_elements=["user_id", "phone_e164"])
+                    await db.execute(stmt)
+                res = await db.execute(
+                    select(Contact).where(
+                        Contact.phone_e164.in_(sorted(phones)),
+                        get_user_filter(Contact.user_id, user_id),
+                    )
                 )
-            )
-            for c in res.scalars().all():
-                by_phone[str(c.phone_e164)] = c
-            out = []
-            for jid_str, phone, name, source, avatar in resolved:
-                contact = by_phone.get(phone)
-                if contact is not None:
-                    _set_contact_name(contact, name, source)
-                    _set_contact_avatar(contact, avatar)
-                    out.append((jid_str, contact))
-            await db.flush()
+                for c in res.scalars().all():
+                    by_phone[str(c.phone_e164)] = c
+                out = []
+                for jid_str, phone, name, source, avatar in resolved:
+                    contact = by_phone.get(phone)
+                    if contact is not None:
+                        _set_contact_name(contact, name, source)
+                        _set_contact_avatar(contact, avatar)
+                        out.append((jid_str, contact))
+                await db.flush()
+                return out
+
+            try:
+                async with db.begin_nested():
+                    for contact in pending_contacts:
+                        db.add(contact)
+                    await db.flush()
+            except IntegrityError:
+                res = await db.execute(
+                    select(Contact).where(
+                        Contact.phone_e164.in_(sorted(phones)),
+                        get_user_filter(Contact.user_id, user_id),
+                    )
+                )
+                for c in res.scalars().all():
+                    by_phone[str(c.phone_e164)] = c
+                out = []
+                for jid_str, phone, name, source, avatar in resolved:
+                    contact = by_phone.get(phone)
+                    if contact is not None:
+                        _set_contact_name(contact, name, source)
+                        _set_contact_avatar(contact, avatar)
+                        out.append((jid_str, contact))
+                await db.flush()
         return out
 
     async def _ensure_conversations_bulk(
@@ -1399,15 +1436,20 @@ class WhatsAppSyncOrchestrator:
                                 for rx in rx_list:
                                     emoji = rx.get("emoji")
                                     if emoji:
-                                        await _upsert_reaction(
-                                            db,
-                                            user_id=job.user_id,
-                                            message_id=existing_msg_id,
-                                            conversation_id=cid,
-                                            reactor_jid=rx.get("reactor_jid") or (None if rx.get("from_me") else ""),
-                                            from_me=bool(rx.get("from_me")),
-                                            emoji=emoji,
-                                        )
+                                        rx_from_me = bool(rx.get("from_me"))
+                                        rx_jid = _reaction_identity(rx_from_me, rx.get("reactor_jid"))
+                                        if not rx_jid and not rx_from_me and conv and "@g.us" not in str(conv.jid):
+                                            rx_jid = _reaction_identity(False, conv.jid)
+                                        if rx_jid:
+                                            await _upsert_reaction(
+                                                db,
+                                                user_id=job.user_id,
+                                                message_id=existing_msg_id,
+                                                conversation_id=cid,
+                                                reactor_jid=rx_jid,
+                                                from_me=rx_from_me,
+                                                emoji=emoji,
+                                            )
                         continue
                     row = message_row_from_gateway(job.user_id, conv, gm)
                     if row is None:
@@ -1457,15 +1499,20 @@ class WhatsAppSyncOrchestrator:
                         for rx in matching_rx:
                             emoji = rx.get("emoji")
                             if emoji:
-                                await _upsert_reaction(
-                                    db,
-                                    user_id=job.user_id,
-                                    message_id=p_row.id,
-                                    conversation_id=p_row.conversation_id,
-                                    reactor_jid=rx.get("reactor_jid") or (None if rx.get("from_me") else ""),
-                                    from_me=bool(rx.get("from_me")),
-                                    emoji=emoji,
-                                )
+                                rx_from_me = bool(rx.get("from_me"))
+                                rx_jid = _reaction_identity(rx_from_me, rx.get("reactor_jid"))
+                                if not rx_jid and not rx_from_me and conv and "@g.us" not in str(conv.jid):
+                                    rx_jid = _reaction_identity(False, conv.jid)
+                                if rx_jid:
+                                    await _upsert_reaction(
+                                        db,
+                                        user_id=job.user_id,
+                                        message_id=p_row.id,
+                                        conversation_id=p_row.conversation_id,
+                                        reactor_jid=rx_jid,
+                                        from_me=rx_from_me,
+                                        emoji=emoji,
+                                    )
                 await db.flush()
                 await db.commit()
                 serialized = [serialize_message(r) for r in persisted_rows]
@@ -2421,15 +2468,20 @@ class WhatsAppSyncOrchestrator:
                         for rx in rx_list:
                             emoji = rx.get("emoji")
                             if emoji:
-                                await _upsert_reaction(
-                                    db,
-                                    user_id=owner,
-                                    message_id=existing_msg_id,
-                                    conversation_id=conv.id,
-                                    reactor_jid=rx.get("reactor_jid") or (None if rx.get("from_me") else ""),
-                                    from_me=bool(rx.get("from_me")),
-                                    emoji=emoji,
-                                )
+                                rx_from_me = bool(rx.get("from_me"))
+                                rx_jid = _reaction_identity(rx_from_me, rx.get("reactor_jid"))
+                                if not rx_jid and not rx_from_me and conv and "@g.us" not in str(conv.jid):
+                                    rx_jid = _reaction_identity(False, conv.jid)
+                                if rx_jid:
+                                    await _upsert_reaction(
+                                        db,
+                                        user_id=owner,
+                                        message_id=existing_msg_id,
+                                        conversation_id=conv.id,
+                                        reactor_jid=rx_jid,
+                                        from_me=rx_from_me,
+                                        emoji=emoji,
+                                    )
                 continue
             row = message_row_from_gateway(owner, conv, gm)
             if row is None:
@@ -2460,15 +2512,20 @@ class WhatsAppSyncOrchestrator:
                 for rx in matching_gm["reactions"]:
                     emoji = rx.get("emoji")
                     if emoji:
-                        await _upsert_reaction(
-                            db,
-                            user_id=owner,
-                            message_id=ins.id,
-                            conversation_id=conv.id,
-                            reactor_jid=rx.get("reactor_jid") or (None if rx.get("from_me") else ""),
-                            from_me=bool(rx.get("from_me")),
-                            emoji=emoji,
-                        )
+                        rx_from_me = bool(rx.get("from_me"))
+                        rx_jid = _reaction_identity(rx_from_me, rx.get("reactor_jid"))
+                        if not rx_jid and not rx_from_me and conv and "@g.us" not in str(conv.jid):
+                            rx_jid = _reaction_identity(False, conv.jid)
+                        if rx_jid:
+                            await _upsert_reaction(
+                                db,
+                                user_id=owner,
+                                message_id=ins.id,
+                                conversation_id=conv.id,
+                                reactor_jid=rx_jid,
+                                from_me=rx_from_me,
+                                emoji=emoji,
+                            )
         # Summarise from the newest row that was ACTUALLY inserted. Using the
         # last candidate would let a duplicate push the conversation's
         # last_message_at backwards (or onto a message we did not write),

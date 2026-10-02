@@ -60,6 +60,14 @@ async def upsert_reaction(
     aynisi). Var olan satir ise silinmez, `emoji=""` ile isaretlenir ki
     tekrar tepki verdiginde INSERT yarisi olmadan UPDATE olsun.
     """
+    clean_reactor = str(reactor_jid or "").strip()
+    if not clean_reactor:
+        if from_me:
+            clean_reactor = SELF_REACTOR_JID
+        else:
+            return None
+    reactor_jid = clean_reactor
+
     existing = await _select_reaction(db, message_id, reactor_jid)
     if existing is None and not emoji:
         return None

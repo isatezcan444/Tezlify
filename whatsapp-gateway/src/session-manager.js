@@ -1574,7 +1574,9 @@ export function createSessionManager({
       }
       const contact = contacts.get(key);
       const isGroup = jid.includes('@g.us');
-      const text = msg.message?.conversation || msg.message?.extendedTextMessage?.text || msg.message?.imageMessage?.caption || msg.message?.videoMessage?.caption || msg.message?.documentMessage?.caption || '';
+      const rawText = msg.message?.conversation || msg.message?.extendedTextMessage?.text || msg.message?.imageMessage?.caption || msg.message?.videoMessage?.caption || msg.message?.documentMessage?.caption || '';
+      const contextInfo = msg.message?.extendedTextMessage?.contextInfo || msg.message?.imageMessage?.contextInfo || msg.message?.videoMessage?.contextInfo || msg.message?.documentMessage?.contextInfo;
+      const text = this._formatMentions(session, rawText, contextInfo);
       const mediaType = classifyMessageType(msg.message);
       let mediaInfo = null;
       if (mediaType !== 'TEXT' && mediaType !== 'LOCATION' && mediaType !== 'CONTACT' && typeof this.storeIncomingMedia === 'function' && sock) {
@@ -2603,16 +2605,57 @@ export function createSessionManager({
       return phone || null;
     },
 
+    _formatMentions(session, text, contextInfo) {
+      if (!text || typeof text !== 'string') return text || '';
+      session = this._sess(session);
+      const store = this._storeOf(session);
+      const mentionedJids = contextInfo?.mentionedJid;
+      let formatted = text;
+
+      if (Array.isArray(mentionedJids) && mentionedJids.length > 0) {
+        for (const mJid of mentionedJids) {
+          if (!mJid) continue;
+          const userPart = String(mJid).split('@')[0];
+          if (!userPart) continue;
+          const name = this._resolveDisplayName(session, mJid);
+          if (name && name !== userPart) {
+            formatted = formatted.split(`@${userPart}`).join(`@${name}`);
+          }
+        }
+      }
+
+      const rawMentions = formatted.match(/@[0-9]{10,25}\b/g);
+      if (rawMentions) {
+        for (const mention of rawMentions) {
+          const digits = mention.slice(1);
+          const lidKey = resolveJidKey(store, `${digits}@lid`);
+          const phoneKey = resolveJidKey(store, `${digits}@s.whatsapp.net`);
+          const contact = store.contacts.get(lidKey) || store.contacts.get(phoneKey);
+          if (contact?.name && !isRawIdentityName(contact.name)) {
+            formatted = formatted.split(mention).join(`@${contact.name}`);
+          }
+        }
+      }
+
+      return formatted;
+    },
+
     _historyMessageToRecord(session, msg, key) {
       session = this._sess(session);
       const content = msg.message || {};
-      const text =
+      const rawText =
         content.conversation ||
         content.extendedTextMessage?.text ||
         content.imageMessage?.caption ||
         content.videoMessage?.caption ||
         content.documentMessage?.caption ||
         '';
+      const contextInfo =
+        content.extendedTextMessage?.contextInfo ||
+        content.imageMessage?.contextInfo ||
+        content.videoMessage?.contextInfo ||
+        content.documentMessage?.contextInfo;
+      const text = this._formatMentions(session, rawText, contextInfo);
       const mediaType = classifyMessageType(content);
       if (!hasRecognizedContent(content) && !text) return null;
       const ts = messageTimestampMs(msg.messageTimestamp);

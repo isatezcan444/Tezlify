@@ -561,7 +561,16 @@ class WhatsAppMessagingOrchestrator:
         if conv is None:
             raise LookupError(f"Medya bulunamadi: {media_id}")
         gateway_id = await conversation_gateway_id(db, user_id, conv)
-        data = await gateway_client.fetch_media(gateway_id, media_id)
+        target_id = row.media_id or media_id
+        try:
+            data = await gateway_client.fetch_media(gateway_id, target_id)
+        except LookupError:
+            if target_id != media_id:
+                data = await gateway_client.fetch_media(gateway_id, media_id)
+            elif row.wa_message_id and target_id != row.wa_message_id:
+                data = await gateway_client.fetch_media(gateway_id, row.wa_message_id)
+            else:
+                raise
 
         mime = row.media_mime_type
         if not mime and data:
