@@ -28,11 +28,20 @@ export function mergeWhatsAppMessages(current: Message[], incoming: Message[]): 
         for (const [key, value] of identities) if (value === duplicateSlot) identities.set(key, slot);
       }
     }
-    result[slot] = previous ? { ...previous, ...message,
+    result[slot] = previous ? {
+      ...previous,
+      ...message,
       id: Number(previous.id) > 0 && !(Number(message.id) > 0) ? previous.id : message.id,
       wa_message_id: message.wa_message_id || previous.wa_message_id,
       client_message_id: message.client_message_id || previous.client_message_id,
-      status: mergeDeliveryStatus(previous.status, message.status) } : message;
+      media_id: message.media_id || previous.media_id,
+      media_url: message.media_url || previous.media_url,
+      media_mime_type: message.media_mime_type || previous.media_mime_type,
+      media_filename: message.media_filename || previous.media_filename,
+      media_caption: message.media_caption || previous.media_caption,
+      link_preview: message.link_preview || previous.link_preview,
+      status: mergeDeliveryStatus(previous.status, message.status),
+    } : message;
     for (const key of keys) identities.set(key, slot);
   }
   return result.filter((message): message is Message => message !== undefined).sort(compareMessagesChronological);

@@ -32,4 +32,58 @@ const start = performance.now();
 const merged = mergeWhatsAppMessages([...existing, pending], existing.slice(-50).map((m) => ({ ...m, status: 'SENT' })));
 assert.equal(merged.length, 1201);
 assert.equal(merged.filter((m) => m.status === 'READ').length, 1200);
+
+// --- Media & Link Preview retention across merges ---
+const optimisticMedia = {
+  ...base,
+  id: -99,
+  client_message_id: 'client_media_1',
+  message_type: 'VIDEO',
+  media_url: 'blob:http://localhost/temp-video',
+  media_filename: 'video.mp4',
+  media_mime_type: 'video/mp4',
+  status: 'PENDING',
+};
+const serverEchoWithoutUrl = {
+  ...base,
+  id: 555,
+  client_message_id: 'client_media_1',
+  wa_message_id: 'wa_media_1',
+  message_type: 'VIDEO',
+  media_id: 'med_uuid_123',
+  status: 'SENT',
+};
+const mergedMedia = mergeWhatsAppMessages([optimisticMedia], [serverEchoWithoutUrl]);
+assert.equal(mergedMedia.length, 1);
+assert.equal(mergedMedia[0].id, 555);
+assert.equal(mergedMedia[0].media_id, 'med_uuid_123');
+assert.equal(mergedMedia[0].media_url, 'blob:http://localhost/temp-video', 'optimistic media_url must NOT be wiped by server echo without url');
+assert.equal(mergedMedia[0].media_filename, 'video.mp4');
+
+// Now incoming realtime with real media_url
+const realtimeWithUrl = {
+  ...base,
+  id: 555,
+  wa_message_id: 'wa_media_1',
+  message_type: 'VIDEO',
+  media_id: 'med_uuid_123',
+  media_url: '/api/v1/whatsapp/media/med_uuid_123',
+  status: 'SENT',
+};
+const updatedMedia = mergeWhatsAppMessages(mergedMedia, [realtimeWithUrl]);
+assert.equal(updatedMedia[0].media_url, '/api/v1/whatsapp/media/med_uuid_123');
+
+// --- resolveMediaUrl tests ---
+const { resolveMediaUrl } = await importTsModule('../src/lib/mediaUrl', import.meta.url);
+assert.equal(resolveMediaUrl(undefined), undefined);
+assert.equal(resolveMediaUrl(null), undefined);
+assert.equal(resolveMediaUrl(''), undefined);
+assert.equal(resolveMediaUrl('blob:http://localhost/vid'), 'blob:http://localhost/vid');
+assert.equal(resolveMediaUrl('data:image/png;base64,abc'), 'data:image/png;base64,abc');
+const fromRawId = resolveMediaUrl('44710c36-2e6a-4786-8724-738eccae781d');
+assert.ok(fromRawId?.includes('/api/v1/whatsapp/media/44710c36-2e6a-4786-8724-738eccae781d'));
+const fromRelative = resolveMediaUrl('/api/v1/whatsapp/media/44710c36-2e6a-4786-8724-738eccae781d');
+assert.ok(fromRelative?.includes('/api/v1/whatsapp/media/44710c36-2e6a-4786-8724-738eccae781d'));
+
 console.log('Identity/status/reconnect retention PASS; 1200+pending merge ms:', performance.now() - start);
+console.log('Media retention and resolveMediaUrl PASS');

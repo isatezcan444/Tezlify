@@ -29,9 +29,15 @@ export function resolveMediaUrl(url?: string | null): string | undefined {
       ? localStorage.getItem('tezlify_session_token')
       : null;
 
-  let fullUrl = url;
-  if (url.startsWith('/') && apiBase) {
-    fullUrl = `${apiBase}${url}`;
+  let pathOrUrl = url.trim();
+  // Raw media ID or UUID (not a full URL or path) is resolved to the whatsapp media endpoint
+  if (!pathOrUrl.startsWith('/') && !pathOrUrl.startsWith('http://') && !pathOrUrl.startsWith('https://')) {
+    pathOrUrl = `/api/v1/whatsapp/media/${pathOrUrl}`;
+  }
+
+  let fullUrl = pathOrUrl;
+  if (pathOrUrl.startsWith('/') && apiBase) {
+    fullUrl = `${apiBase}${pathOrUrl}`;
   }
 
   // If we have a token and the URL is targeting our API endpoints, attach ?token=

@@ -49,6 +49,10 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({ message, isGroup = fal
   const [isReactionBarOpen, setIsReactionBarOpen] = useState(false);
   const [isPickerOpen, setIsPickerOpen] = useState(false);
   const [reacting, setReacting] = useState(false);
+  const resolvedMediaUrl = React.useMemo(() => {
+    const raw = message.media_url || (message.media_id ? `/api/v1/whatsapp/media/${message.media_id}` : undefined);
+    return resolveMediaUrl(raw);
+  }, [message.media_url, message.media_id]);
   useLayoutEffect(() => {
     finishWaLatency('event_handler_to_message_commit_ms', message.id);
   }, [message]);
@@ -189,8 +193,6 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({ message, isGroup = fal
   );
 
   const renderMediaContent = () => {
-    const resolvedMediaUrl = resolveMediaUrl(message.media_url);
-
     switch (message.message_type) {
       case 'IMAGE':
         return (
@@ -320,12 +322,10 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({ message, isGroup = fal
       }
 
       case 'STICKER':
-        // Cikartma: balon icinde ciplak gorsel olarak durur. Onceden hicbir
-        // durumu yoktu ve varsayilan dala dusup "medya" yer tutucusu
-        // gosteriyordu.
-        return message.media_url ? (
+        // Cikartma: balon icinde ciplak gorsel olarak durur.
+        return resolvedMediaUrl ? (
           <img
-            src={message.media_url}
+            src={resolvedMediaUrl}
             alt={t('whatsapp.stickerAlt')}
             className="w-32 h-32 object-contain"
           />
@@ -522,9 +522,9 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({ message, isGroup = fal
           maxWidth="lg"
         >
           <div className="flex flex-col items-center justify-center p-4 bg-slate-950/20 rounded-xl">
-            {resolveMediaUrl(message.media_url) ? (
+            {resolvedMediaUrl ? (
               <img 
-                src={resolveMediaUrl(message.media_url)} 
+                src={resolvedMediaUrl} 
                 alt={t('leads.imageAltFallback')} 
                 className="max-h-[60vh] object-contain rounded-lg shadow-md"
               />

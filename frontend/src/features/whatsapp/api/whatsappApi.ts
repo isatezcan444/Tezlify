@@ -13,6 +13,7 @@ import {
   Conversation,
   ConversationMessagesResponse,
   ConversationStatus,
+  LinkPreview,
   LiveModeStatus,
   Message,
   MessageReaction,
@@ -353,6 +354,8 @@ interface BackendMessage {
   recipient_phone?: string | null;
   error_message?: string | null;
   reactions?: BackendReaction[] | null;
+  media_url?: string | null;
+  link_preview?: LinkPreview | null;
   created_at?: string | null;
 }
 
@@ -361,13 +364,13 @@ function mapMessage(m: BackendMessage, convId: number): Message {
   // başlığı taşıyamaz, bu yüzden backend'in kabul ettiği ?token= sorgu
   // parametresi eklenir. WhatsApp Web paritesi: medya her zaman kimlikli
   // URL'den gelir; tokensiz URL 401'e düşer ve balon boş kalır.
-  const mediaUrl = m.media_id
+  const mediaUrl = m.media_url || (m.media_id
     ? (() => {
         const base = `${API_BASE}/whatsapp/media/${m.media_id}`;
         const tok = ApiClient.getAuthToken();
         return tok ? `${base}?token=${encodeURIComponent(tok)}` : base;
       })()
-    : undefined;
+    : undefined);
 
   const fallbackId = m.wa_message_id
     ? `wa_${m.wa_message_id}`
@@ -393,6 +396,7 @@ function mapMessage(m: BackendMessage, convId: number): Message {
     sender_name: m.sender_name ?? undefined,
     recipient_phone: m.recipient_phone ?? undefined,
     error_message: m.error_message ?? undefined,
+    link_preview: m.link_preview ?? undefined,
     external_timestamp: m.created_at ?? undefined,
     created_at: m.created_at || '',
   };
@@ -996,6 +1000,8 @@ export const WhatsAppApi = {
         message_type: media.media_type.toUpperCase(),
         status: data.status,
         body: data.body ?? media.caption ?? media.filename ?? '',
+        media_id: (data as any).media_id,
+        media_url: (data as any).media_url || media.media_url,
         media_filename: media.filename,
         media_caption: media.caption,
         wa_message_id: data.wa_message_id,

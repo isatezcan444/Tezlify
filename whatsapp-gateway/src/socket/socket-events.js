@@ -653,12 +653,27 @@ export function bindSocketEvents({
           const list = messagesByChat.get(key) || [];
           const known = list.some((m) => m.wa_message_id && m.wa_message_id === update.lastMessage.key.id);
           if (!known) {
-            const synth = historyMessageToRecord(update.lastMessage, key);
-            if (synth) {
-              const next = [...list, synth];
-              if (next.length > 2000) next.splice(0, next.length - 2000);
-              messagesByChat.set(key, next);
-              emitEvent({ event: 'message_new', conversation_id: key, message: synth });
+            // Medya mesajlari (resim, video, ses, dokuman) icin chats.update
+            // uzerinden media_id=null yer tutucu uretilmemelidir. Baileys ayni
+            // mesaj icin birkac milisaniye sonra `messages.upsert` firlatir ve
+            // gercek medya indirmesini o yol yapar. Burada erken yayinlamak UI'da
+            // yer tutucu kartinin (Video Eki / Fotograf) gorunmesine neden olur.
+            const rawContent = update.lastMessage.message;
+            const hasMedia = Boolean(
+              rawContent?.imageMessage ||
+              rawContent?.videoMessage ||
+              rawContent?.audioMessage ||
+              rawContent?.documentMessage ||
+              rawContent?.stickerMessage
+            );
+            if (!hasMedia) {
+              const synth = historyMessageToRecord(update.lastMessage, key);
+              if (synth) {
+                const next = [...list, synth];
+                if (next.length > 2000) next.splice(0, next.length - 2000);
+                messagesByChat.set(key, next);
+                emitEvent({ event: 'message_new', conversation_id: key, message: synth });
+              }
             }
           }
         } catch (err) {

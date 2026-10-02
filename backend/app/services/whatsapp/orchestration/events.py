@@ -803,6 +803,11 @@ class WhatsAppEventOrchestrator:
                 # An early ACK may be buffered for this record; apply it before
                 # serializing so the broadcast carries the true status.
                 apply_deferred_status(canonical, advance=advance_message_status)
+                if msg.get("media_id") and not canonical.media_id:
+                    canonical.media_id = msg.get("media_id")
+                    canonical.media_mime_type = msg.get("media_mime_type") or canonical.media_mime_type
+                    canonical.media_filename = msg.get("media_filename") or canonical.media_filename
+                    canonical.media_caption = msg.get("media_caption") or canonical.media_caption
                 await db.commit()
                 event["conversation_id"] = conv.id
                 event["message"] = serialize_message(canonical)
@@ -1934,6 +1939,12 @@ class WhatsAppEventOrchestrator:
         if canonical is None:
             return None
         advance_message_status(canonical, msg.get("status"))
+        if msg.get("media_id") and not canonical.media_id:
+            canonical.media_id = msg.get("media_id")
+            canonical.media_mime_type = msg.get("media_mime_type") or canonical.media_mime_type
+            canonical.media_filename = msg.get("media_filename") or canonical.media_filename
+            canonical.media_caption = msg.get("media_caption") or canonical.media_caption
+            await db.commit()
         event["conversation_id"] = canonical.conversation_id
         event["jid"] = str(jid)
         event["message"] = serialize_message(canonical)

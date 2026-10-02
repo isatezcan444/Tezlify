@@ -734,6 +734,8 @@ async def send_media(
         body=msg.get("body"),
         created_at=msg.get("created_at"),
         message_type=msg.get("message_type"),
+        media_id=msg.get("media_id"),
+        media_url=msg.get("media_url"),
     )
 
 

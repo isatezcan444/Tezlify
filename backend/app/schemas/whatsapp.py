@@ -313,6 +313,8 @@ class WhatsAppSendResult(BaseModel):
     # uydurmasini engeller (frontend sunucu verisini asla uydurmaz).
     created_at: Optional[str] = None
     message_type: Optional[str] = None
+    media_id: Optional[str] = None
+    media_url: Optional[str] = None
 
 
 class WhatsAppStartConversationRequest(BaseModel):

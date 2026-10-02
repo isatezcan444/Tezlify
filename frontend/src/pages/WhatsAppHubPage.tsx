@@ -1537,6 +1537,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     const tempId = `optimistic_${tempClientMid}`;
     const nowIso = new Date().toISOString();
 
+    const objectUrl = URL.createObjectURL(file);
     const newMsg: Message = {
       id: tempId,
       conversation_id: selectedConv.id,
@@ -1545,6 +1546,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       status: 'PENDING',
       body: caption || file.name,
       client_message_id: tempClientMid,
+      media_url: objectUrl,
       media_filename: file.name,
       media_mime_type: file.type || undefined,
       media_caption: caption,
@@ -1849,6 +1851,12 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
           const clientMid = msgObj?.client_message_id || eventData.client_message_id;
           const msgId = msgObj?.id || eventData.id;
 
+          const incomingMediaId = msgObj?.media_id || eventData.media_id || undefined;
+          const incomingMediaUrl =
+            msgObj?.media_url ||
+            eventData.media_url ||
+            (incomingMediaId ? `/api/v1/whatsapp/media/${incomingMediaId}` : undefined);
+
           const newMsg: Message = {
             id: msgId || Date.now(),
             conversation_id: targetConvId,
@@ -1860,10 +1868,17 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
             client_message_id: clientMid,
             sender_name: senderLabel || (isOutbound ? t('whatsapp.youLabel') : undefined),
             sender_phone: msgObj?.sender_phone || eventData.phone || '',
-            media_id: msgObj?.media_id || eventData.media_id,
+            media_id: incomingMediaId,
             media_mime_type: msgObj?.media_mime_type || eventData.media_mime_type,
             media_filename: msgObj?.media_filename || eventData.media_filename,
             media_caption: msgObj?.media_caption || eventData.media_caption,
+            media_url: incomingMediaUrl,
+            link_preview: msgObj?.link_preview || eventData.link_preview || undefined,
+            reactions: Array.isArray(msgObj?.reactions)
+              ? msgObj.reactions
+              : Array.isArray(eventData.reactions)
+              ? eventData.reactions
+              : [],
             created_at: msgTime,
           };
 

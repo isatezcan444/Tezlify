@@ -205,6 +205,7 @@ def mock_gateway():
     send_media = _patch("send_media_message", {
         "id": 2, "wa_message_id": "wamid456", "client_message_id": "media_456",
         "status": "SENT", "body": "Test caption",
+        "media_id": "med_test_123", "media_mime_type": "image/png",
     })
     mark_read = _patch("mark_conversation_read", {"success": True})
     typing = _patch("send_typing", {"success": True})
@@ -996,10 +997,64 @@ async def test_send_media_base64_forwards_to_gateway(auth_headers, mock_gateway)
         )
         assert res.status_code == 200
         assert res.json()["status"] == "SENT"
+        assert res.json()["media_id"] == "med_test_123"
+        assert res.json()["media_url"] == "/api/v1/whatsapp/media/med_test_123"
     mock_gateway.send_media_message.assert_awaited()
     kwargs = mock_gateway.send_media_message.await_args.args[2]
     assert kwargs["media_base64"] == "aW1hZ2U="
     assert kwargs["mime_type"] == "image/png"
+
+
+@pytest.mark.asyncio
+async def test_message_new_dedup_upgrades_media_id_on_canonical():
+    """Real-time message_new dedup upgrades an earlier media-less placeholder with media_id."""
+    conv_id = await _make_conv()
+    wa_msg_id = f"wa_test_dup_{_uuid.uuid4().hex[:8]}"
+
+    # Event 1: message arrives without media_id (e.g. premature / placeholder)
+    evt1 = {
+        "event": "message_new",
+        "conversation_id": MOCK_JID,
+        "message": {
+            "wa_message_id": wa_msg_id,
+            "direction": "INBOUND",
+            "message_type": "VIDEO",
+            "body": "Video message",
+            "media_id": None,
+            "media_mime_type": None,
+            "created_at": "2026-10-02T14:37:00Z",
+        },
+    }
+    res1 = await ingest_gateway_event(evt1)
+    assert res1 is not None
+    assert res1["message"]["media_id"] is None
+    assert res1["message"]["media_url"] is None
+
+    # Event 2: real media download completes and fires with media_id
+    evt2 = {
+        "event": "message_new",
+        "conversation_id": MOCK_JID,
+        "message": {
+            "wa_message_id": wa_msg_id,
+            "direction": "INBOUND",
+            "message_type": "VIDEO",
+            "body": "Video message",
+            "media_id": "med_downloaded_999",
+            "media_mime_type": "video/mp4",
+            "created_at": "2026-10-02T14:37:00Z",
+        },
+    }
+    res2 = await ingest_gateway_event(evt2)
+    assert res2 is not None
+    assert res2["message"]["media_id"] == "med_downloaded_999"
+    assert res2["message"]["media_url"] == "/api/v1/whatsapp/media/med_downloaded_999"
+
+    # Check DB row is also upgraded
+    async with AsyncSessionLocal() as db:
+        saved = (await db.execute(select(Message).where(Message.wa_message_id == wa_msg_id))).scalars().first()
+        assert saved is not None
+        assert saved.media_id == "med_downloaded_999"
+        assert saved.media_mime_type == "video/mp4"
 
 
 @pytest.mark.asyncio
