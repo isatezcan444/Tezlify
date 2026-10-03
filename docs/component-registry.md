@@ -204,8 +204,8 @@ src/
 - **Import**: `import { ChatThread } from '@/features/whatsapp/components';`
 
 #### `ChatComposer`
-- **Purpose**: Bottom message composer bar with 24-hour window status alerts, closed conversation notice with one-click reopen, attachment popover (native file picker with base64 upload + legacy URL modal), outgoing "typing..." presence signals (throttled composing/paused), and template shortcuts.
-- **Props**: `onSend?: (text: string) => Promise<void> | void`, `onSendTemplate?: () => void`, `onSendMedia?: (mediaType: 'IMAGE' | 'DOCUMENT', mediaUrl: string, caption?: string, filename?: string) => Promise<void>`, `onSendMediaFile?: (file: File, caption?: string) => Promise<void>`, `onTyping?: (typing: boolean) => void`, `onReopenConversation?: () => void`, `disabled?: boolean`, `isClosed?: boolean`, `isWindowOpen?: boolean`, `placeholder?: string`.
+- **Purpose**: Bottom message composer bar with 24-hour window status alerts, closed conversation notice with one-click reopen, attachment popover (native file picker with base64 upload + legacy URL modal), live microphone voice note recording (`MediaRecorder` with Opus fallback, elapsed timer, animated soundwave, trash/discard, and native `AUDIO` dispatch), outgoing "typing..." presence signals (throttled composing/paused), reply draft quote header with dismiss, and template shortcuts.
+- **Props**: `onSend?: (text: string) => Promise<void> | void`, `onSendTemplate?: () => void`, `onSendMedia?: (mediaType: 'IMAGE' | 'DOCUMENT', mediaUrl: string, caption?: string, filename?: string) => Promise<void>`, `onSendMediaFile?: (file: File, caption?: string) => Promise<void>`, `onTyping?: (typing: boolean) => void`, `onReopenConversation?: () => void`, `disabled?: boolean`, `isClosed?: boolean`, `isWindowOpen?: boolean`, `placeholder?: string`, `replyingTo?: QuotedMessage | null`, `onCancelReply?: () => void`.
 - **Import**: `import { ChatComposer } from '@/features/whatsapp/components';`
 
 #### `ConversationList`
@@ -239,8 +239,8 @@ src/
 - **Import**: `import { WhatsAppSyncGate } from '@/features/whatsapp/components';`
 
 #### `VoiceNotePlayer`
-- **Purpose**: WhatsApp Web authentic waveform audio and voice note player. Displays animated soundwave bars, play/pause toggle, interactive seek scrubber, duration timestamps, playback speed multiplier toggle (1x / 1.5x / 2x), and microphone voice note indicator.
-- **Props**: `src: string`, `mimeType?: string | null`, `isOutbound?: boolean`.
+- **Purpose**: WhatsApp Web authentic waveform audio and voice note player. Displays animated soundwave bars, play/pause toggle, interactive seek scrubber, duration timestamps, playback speed multiplier toggle (1x / 1.5x / 2x), fail-closed audio error handling, and WhatsApp read blue transition (`#53bdeb`) once played.
+- **Props**: `mediaUrl: string`, `duration?: number`, `isOutgoing?: boolean`.
 - **Import**: `import { VoiceNotePlayer } from '@/features/whatsapp/components';`
 
 #### `ChatSearchBar`

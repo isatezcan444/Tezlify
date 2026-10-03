@@ -46,6 +46,23 @@ setGlobal('Element', window.Element);
 setGlobal('localStorage', window.localStorage);
 setGlobal('IS_REACT_ACT_ENVIRONMENT', true);
 
+const mockFetch = async (url) => ({
+  ok: true,
+  status: 200,
+  headers: {
+    get: (h) => {
+      const name = h.toLowerCase();
+      if (name === 'content-type') return 'application/pdf';
+      if (name === 'content-length') return '1048576';
+      return null;
+    },
+  },
+  text: async () => '%PDF-1.4 mock content',
+  blob: async () => new window.Blob(['%PDF-1.4 mock content'], { type: 'application/pdf' }),
+});
+setGlobal('fetch', mockFetch);
+window.fetch = mockFetch;
+
 const tmp = await mkdtemp(path.join(os.tmpdir(), 'tezlify-doc-dom-'));
 const entry = path.join(tmp, 'entry.tsx');
 const out = path.join(tmp, 'bundle.mjs');
@@ -154,6 +171,7 @@ try {
 
     await act(async () => {
       previewBtn.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 50));
     });
 
     const dialog = window.document.querySelector('[role="dialog"]');

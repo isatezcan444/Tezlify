@@ -139,8 +139,16 @@ export function buildMediaContent({
   if (type === 'image') {
     return { image: source, mimetype: mime_type || undefined, caption: caption || '' };
   }
-  if (type === 'audio') {
-    return { audio: source, mimetype: mime_type || 'audio/mpeg', ptt: false };
+  if (type === 'audio' || type === 'voice') {
+    const isPtt = Boolean(
+      type === 'voice' ||
+      (mime_type && (mime_type.includes('ogg') || mime_type.includes('opus') || mime_type.includes('webm')))
+    );
+    return {
+      audio: source,
+      mimetype: mime_type || (isPtt ? 'audio/ogg; codecs=opus' : 'audio/mpeg'),
+      ptt: isPtt,
+    };
   }
   if (type === 'video') {
     return { video: source, mimetype: mime_type || undefined, caption: caption || '' };

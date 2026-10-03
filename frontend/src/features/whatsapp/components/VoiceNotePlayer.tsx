@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { Play, Pause, Mic } from 'lucide-react';
+import { Play, Pause, Mic, RotateCcw, AlertCircle } from 'lucide-react';
+import { useI18n } from '../../../context/I18nContext';
 
 export interface VoiceNotePlayerProps {
   src: string;
@@ -14,23 +15,31 @@ export const VoiceNotePlayer: React.FC<VoiceNotePlayerProps> = ({
   mimeType = 'audio/ogg',
   isOutbound = false,
 }) => {
+  const { t } = useI18n();
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [rateIndex, setRateIndex] = useState(0);
+  const [hasBeenPlayed, setHasBeenPlayed] = useState(isOutbound);
+  const [audioError, setAudioError] = useState(false);
+  const [retryKey, setRetryKey] = useState(0);
 
   // Generate pseudo-waveform bars with deterministic heights
   const bars = React.useMemo(() => {
-    const pattern = [30, 60, 45, 80, 55, 90, 70, 40, 65, 85, 50, 75, 95, 60, 40, 70, 85, 45, 65, 90, 50, 35];
-    return pattern;
+    return [30, 60, 45, 80, 55, 90, 70, 40, 65, 85, 50, 75, 95, 60, 40, 70, 85, 45, 65, 90, 50, 35];
   }, []);
 
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
 
-    const onTimeUpdate = () => setCurrentTime(audio.currentTime);
+    setAudioError(false);
+
+    const onTimeUpdate = () => {
+      setCurrentTime(audio.currentTime);
+      if (audio.currentTime > 0) setHasBeenPlayed(true);
+    };
     const onLoadedMetadata = () => {
       if (Number.isFinite(audio.duration)) {
         setDuration(audio.duration);
@@ -39,15 +48,24 @@ export const VoiceNotePlayer: React.FC<VoiceNotePlayerProps> = ({
     const onEnded = () => {
       setIsPlaying(false);
       setCurrentTime(0);
+      setHasBeenPlayed(true);
     };
-    const onPlay = () => setIsPlaying(true);
+    const onPlay = () => {
+      setIsPlaying(true);
+      setHasBeenPlayed(true);
+    };
     const onPause = () => setIsPlaying(false);
+    const onError = () => {
+      setAudioError(true);
+      setIsPlaying(false);
+    };
 
     audio.addEventListener('timeupdate', onTimeUpdate);
     audio.addEventListener('loadedmetadata', onLoadedMetadata);
     audio.addEventListener('ended', onEnded);
     audio.addEventListener('play', onPlay);
     audio.addEventListener('pause', onPause);
+    audio.addEventListener('error', onError);
 
     return () => {
       audio.removeEventListener('timeupdate', onTimeUpdate);
@@ -55,8 +73,9 @@ export const VoiceNotePlayer: React.FC<VoiceNotePlayerProps> = ({
       audio.removeEventListener('ended', onEnded);
       audio.removeEventListener('play', onPlay);
       audio.removeEventListener('pause', onPause);
+      audio.removeEventListener('error', onError);
     };
-  }, []);
+  }, [src, retryKey]);
 
   const togglePlay = useCallback(() => {
     const audio = audioRef.current;
@@ -64,7 +83,10 @@ export const VoiceNotePlayer: React.FC<VoiceNotePlayerProps> = ({
     if (isPlaying) {
       audio.pause();
     } else {
-      audio.play().catch((err) => console.error('[VoiceNotePlayer] play error:', err));
+      audio.play().catch((err) => {
+        console.error('[VoiceNotePlayer] play error:', err);
+        setAudioError(true);
+      });
     }
   }, [isPlaying]);
 
@@ -95,16 +117,40 @@ export const VoiceNotePlayer: React.FC<VoiceNotePlayerProps> = ({
 
   const progressPercent = duration > 0 ? (currentTime / duration) * 100 : 0;
 
+  if (audioError) {
+    return (
+      <div className="flex items-center gap-2.5 py-1 px-1 min-w-[220px] select-none text-rose-500">
+        <AlertCircle className="w-5 h-5 shrink-0 opacity-80" />
+        <span className="text-xs font-medium text-slate-700 dark:text-slate-300 flex-1 truncate">
+          {t('whatsapp.mediaLoadFailed')}
+        </span>
+        <button
+          type="button"
+          onClick={() => {
+            setAudioError(false);
+            setRetryKey((k) => k + 1);
+          }}
+          className="p-1 rounded-full hover:bg-black/5 dark:hover:bg-white/10 transition-colors cursor-pointer text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+          title={t('whatsapp.mediaRetry')}
+        >
+          <RotateCcw className="w-4 h-4" />
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="flex items-center gap-3 py-1 px-1 min-w-[240px] max-w-[280px] select-none">
-      <audio ref={audioRef} src={src} preload="metadata" />
+      <audio key={retryKey} ref={audioRef} src={src} preload="metadata" />
 
       {/* Play/Pause Button */}
       <button
         type="button"
         onClick={togglePlay}
-        className="w-9 h-9 rounded-full bg-[#25D366] hover:bg-[#20ba59] text-white flex items-center justify-center shrink-0 shadow-sm transition-transform active:scale-95 cursor-pointer"
-        aria-label={isPlaying ? 'Durdur' : 'Oynat'}
+        className={`w-9 h-9 rounded-full ${
+          hasBeenPlayed ? 'bg-[#53bdeb] hover:bg-[#3ea9d6]' : 'bg-[#25D366] hover:bg-[#20ba59]'
+        } text-white flex items-center justify-center shrink-0 shadow-sm transition-transform active:scale-95 cursor-pointer`}
+        aria-label={isPlaying ? t('whatsapp.voicePause') : t('whatsapp.voicePlay')}
       >
         {isPlaying ? (
           <Pause className="w-4 h-4 fill-white" />
@@ -132,7 +178,9 @@ export const VoiceNotePlayer: React.FC<VoiceNotePlayerProps> = ({
                 key={idx}
                 className={`w-[3px] rounded-full transition-colors duration-100 ${
                   isFilled
-                    ? 'bg-[#25D366]'
+                    ? hasBeenPlayed
+                      ? 'bg-[#53bdeb]'
+                      : 'bg-[#25D366]'
                     : isOutbound
                     ? 'bg-emerald-950/25 dark:bg-white/30'
                     : 'bg-slate-300 dark:bg-white/20'
@@ -151,14 +199,20 @@ export const VoiceNotePlayer: React.FC<VoiceNotePlayerProps> = ({
               type="button"
               onClick={cycleRate}
               className="px-1.5 py-0.5 rounded-full bg-black/5 dark:bg-white/10 hover:bg-black/10 dark:hover:bg-white/20 font-bold text-[9px] transition-colors cursor-pointer"
-              title="Oynatma Hızı"
+              title={t('whatsapp.voiceSpeed')}
+              aria-label={t('whatsapp.voiceSpeed')}
             >
               {PLAYBACK_RATES[rateIndex]}x
             </button>
-            <Mic className="w-3 h-3 text-[#25D366]" />
+            <Mic
+              className={`w-3 h-3 transition-colors ${
+                hasBeenPlayed ? 'text-[#53bdeb]' : 'text-[#25D366]'
+              }`}
+            />
           </div>
         </div>
       </div>
     </div>
   );
 };
+

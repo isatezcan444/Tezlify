@@ -171,6 +171,7 @@ await writeFile(
     `export { act as domAct } from 'react-dom/test-utils';`,
     `export { createRoot } from 'react-dom/client';`,
     `export { I18nProvider } from '${SRC}/context/I18nContext';`,
+    `export { ToastProvider } from '${SRC}/context/ToastContext';`,
     `export { ChatThread } from '${SRC}/features/whatsapp/components/ChatThread';`,
     `export { ConversationList } from '${SRC}/features/whatsapp/components/ConversationList';`,
     `export { ChatComposer } from '${SRC}/features/whatsapp/components/ChatComposer';`,
@@ -226,7 +227,7 @@ try {
   });
 
   const mod = await import(out);
-  const { React, ReactNS, domAct, createRoot, I18nProvider, ChatThread, ConversationList,
+  const { React, ReactNS, domAct, createRoot, I18nProvider, ToastProvider, ChatThread, ConversationList,
     ChatComposer,
     applyConversationEvent, mergeWhatsAppMessages, compareConversationsByActivityDesc } = mod;
   const act = typeof ReactNS.act === 'function' ? ReactNS.act : domAct;
@@ -256,7 +257,7 @@ try {
     window.document.body.appendChild(host);
     const root = createRoot(host);
     await act(async () => {
-      root.render(h(I18nProvider, null, element));
+      root.render(h(I18nProvider, null, h(ToastProvider, null, element)));
     });
     return {
       host,
@@ -264,7 +265,7 @@ try {
       /** Re-render the same tree with new props. */
       update: async (next) => {
         await act(async () => {
-          root.render(h(I18nProvider, null, next));
+          root.render(h(I18nProvider, null, h(ToastProvider, null, next)));
         });
       },
       unmount: async () => {

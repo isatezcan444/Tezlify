@@ -14,6 +14,7 @@ import {
   Smile,
   Sparkles,
   Mic,
+  Trash2,
   X
 } from 'lucide-react';
 import { Button } from '../../../components/ui/button';
@@ -21,6 +22,7 @@ import { Tooltip } from '../../../components/ui/Tooltip';
 import { Modal } from '../../../components/ui/Modal';
 import { EmojiPicker } from './EmojiPicker';
 import { useI18n } from '../../../context/I18nContext';
+import { useToast } from '../../../context/ToastContext';
 
 export interface QuotedMessage {
   id: number | string;
@@ -59,6 +61,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
   onCancelReply,
 }) => {
   const { t } = useI18n();
+  const toast = useToast();
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
   const [isAttachMenuOpen, setIsAttachMenuOpen] = useState(false);
@@ -72,6 +75,138 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
   const [sendingFile, setSendingFile] = useState(false);
   const [isFileModalOpen, setIsFileModalOpen] = useState(false);
   const [filePreviewUrl, setFilePreviewUrl] = useState<string | null>(null);
+
+  // Live Voice Recording State
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingDuration, setRecordingDuration] = useState(0);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const recordingTimerRef = useRef<any>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+
+  const startRecording = useCallback(async () => {
+    if (disabled || isClosed || !isWindowOpen) return;
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
+      toast.error(t('whatsapp.micPermissionDenied'), t('common.error'));
+      return;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
+      audioChunksRef.current = [];
+
+      let mimeType = 'audio/webm;codecs=opus';
+      if (typeof MediaRecorder !== 'undefined') {
+        if (!MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
+          if (MediaRecorder.isTypeSupported('audio/ogg;codecs=opus')) {
+            mimeType = 'audio/ogg;codecs=opus';
+          } else {
+            mimeType = '';
+          }
+        }
+      }
+
+      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+      mediaRecorderRef.current = recorder;
+
+      recorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) {
+          audioChunksRef.current.push(e.data);
+        }
+      };
+
+      recorder.start(250);
+      setIsRecording(true);
+      setRecordingDuration(0);
+
+      recordingTimerRef.current = setInterval(() => {
+        setRecordingDuration((s) => s + 1);
+      }, 1000);
+    } catch (err: any) {
+      console.warn('[ChatComposer] Mic recording start error:', err);
+      toast.error(t('whatsapp.micPermissionDenied'), t('common.error'));
+    }
+  }, [disabled, isClosed, isWindowOpen, t, toast]);
+
+  const cancelRecording = useCallback(() => {
+    if (recordingTimerRef.current) {
+      clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = null;
+    }
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      try {
+        mediaRecorderRef.current.stop();
+      } catch {}
+    }
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
+    }
+    mediaRecorderRef.current = null;
+    audioChunksRef.current = [];
+    setIsRecording(false);
+    setRecordingDuration(0);
+  }, []);
+
+  const sendRecording = useCallback(async () => {
+    if (!mediaRecorderRef.current) return;
+    if (recordingTimerRef.current) {
+      clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = null;
+    }
+
+    const recorder = mediaRecorderRef.current;
+    recorder.onstop = async () => {
+      const chunks = audioChunksRef.current;
+      if (chunks.length > 0) {
+        const mimeType = recorder.mimeType || 'audio/ogg';
+        const ext = mimeType.includes('ogg') ? 'ogg' : 'webm';
+        const blob = new Blob(chunks, { type: mimeType });
+        const file = new File([blob], `voice_${Date.now()}.${ext}`, { type: mimeType });
+        if (onSendMediaFile) {
+          try {
+            await onSendMediaFile(file);
+          } catch (err) {
+            console.error('[ChatComposer] Send voice note error:', err);
+          }
+        }
+      }
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((track) => track.stop());
+        streamRef.current = null;
+      }
+      mediaRecorderRef.current = null;
+      audioChunksRef.current = [];
+      setIsRecording(false);
+      setRecordingDuration(0);
+    };
+
+    if (recorder.state !== 'inactive') {
+      recorder.stop();
+    }
+  }, [onSendMediaFile]);
+
+  // Clean up streams on unmount
+  useEffect(() => {
+    return () => {
+      if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
+      if (streamRef.current) streamRef.current.getTracks().forEach((t) => t.stop());
+    };
+  }, []);
+
+  // Escape cancels recording
+  useEffect(() => {
+    if (!isRecording) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        cancelRecording();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isRecording, cancelRecording]);
 
   useEffect(() => {
     if (!pendingFile || !pendingFile.type.startsWith('image/')) {
@@ -543,92 +678,145 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
           tabIndex={-1}
         />
 
-        {/* Multiline Textarea Input */}
-        <div className="relative flex-1 min-w-0">
-          <textarea
-            ref={draftInputRef as any}
-            rows={1}
-            data-testid="composer-input"
-            value={text}
-            disabled={isInputDisabled}
-            onFocus={() => {
-              setIsEmojiOpen(false);
-              setIsAttachMenuOpen(false);
-            }}
-            onClick={() => {
-              if (isEmojiOpen) setIsEmojiOpen(false);
-              if (isAttachMenuOpen) setIsAttachMenuOpen(false);
-            }}
-            onChange={(e) => {
-              setText(e.target.value);
-              notifyTypingActivity();
-              e.target.style.height = 'auto';
-              e.target.style.height = `${Math.min(e.target.scrollHeight, 120)}px`;
-            }}
-            onKeyDown={handleKeyDown}
-            placeholder={
-              isClosed
-                ? (t('whatsapp.closedPlaceholder'))
-                : !isWindowOpen
-                ? (t('whatsapp.windowExpiredPlaceholder'))
-                : (placeholder || t('leads.typeMessagePlaceholder'))
-            }
-            className={`w-full px-3.5 py-2.5 pr-20 text-[13px] leading-relaxed rounded-xl vuexy-input transition-all resize-none max-h-[120px] overflow-y-auto block ${
-              isInputDisabled
-                ? 'opacity-60 cursor-not-allowed bg-slate-100 dark:bg-white/[0.04]'
-                : ''
-            }`}
-          />
+        {/* Recording Bar or Multiline Textarea Input */}
+        {isRecording ? (
+          <div className="flex-1 flex items-center justify-between px-3.5 py-2 bg-slate-100 dark:bg-[#202c33] rounded-2xl animate-in fade-in duration-200">
+            {/* Discard / Trash button */}
+            <Tooltip content={t('whatsapp.voiceDiscard')}>
+              <button
+                type="button"
+                data-testid="composer-voice-discard-btn"
+                onClick={cancelRecording}
+                className="p-2 rounded-full text-rose-500 hover:bg-rose-500/10 transition-colors cursor-pointer"
+                aria-label={t('whatsapp.voiceDiscard')}
+              >
+                <Trash2 className="w-4 h-4" />
+              </button>
+            </Tooltip>
 
-          {/* Quick Template Button inside Input */}
-          {onSendTemplate && !isClosed && (
-            <div className="absolute right-2 top-3 flex items-center">
-              <Tooltip content={t('whatsapp.useTemplateBtn')}>
+            {/* Recording indicator & timer */}
+            <div className="flex items-center gap-3">
+              <span className="w-2.5 h-2.5 rounded-full bg-rose-500 animate-pulse" />
+              <span className="text-xs font-mono font-bold text-slate-800 dark:text-slate-100">
+                {Math.floor(recordingDuration / 60)}:{(recordingDuration % 60).toString().padStart(2, '0')}
+              </span>
+              <div className="flex items-center gap-0.5 h-4 px-2">
+                {[35, 75, 45, 90, 60, 30, 80, 50, 85].map((h, i) => (
+                  <span
+                    key={i}
+                    className="w-0.5 bg-rose-500/80 rounded-full animate-pulse"
+                    style={{ height: `${h}%`, animationDelay: `${i * 120}ms` }}
+                  />
+                ))}
+              </div>
+            </div>
+
+            {/* Send voice recording button */}
+            <Tooltip content={t('whatsapp.voiceSend')}>
+              <button
+                type="button"
+                data-testid="composer-voice-send-btn"
+                onClick={sendRecording}
+                className="p-2 rounded-full bg-[#25D366] hover:bg-[#1EBE5D] text-white shadow-sm transition-transform active:scale-95 cursor-pointer"
+                aria-label={t('whatsapp.voiceSend')}
+              >
+                <Send className="w-4 h-4 fill-white" />
+              </button>
+            </Tooltip>
+          </div>
+        ) : (
+          <>
+            {/* Multiline Textarea Input */}
+            <div className="relative flex-1 min-w-0">
+              <textarea
+                ref={draftInputRef as any}
+                rows={1}
+                data-testid="composer-input"
+                value={text}
+                disabled={isInputDisabled}
+                onFocus={() => {
+                  setIsEmojiOpen(false);
+                  setIsAttachMenuOpen(false);
+                }}
+                onClick={() => {
+                  if (isEmojiOpen) setIsEmojiOpen(false);
+                  if (isAttachMenuOpen) setIsAttachMenuOpen(false);
+                }}
+                onChange={(e) => {
+                  setText(e.target.value);
+                  notifyTypingActivity();
+                  e.target.style.height = 'auto';
+                  e.target.style.height = `${Math.min(e.target.scrollHeight, 120)}px`;
+                }}
+                onKeyDown={handleKeyDown}
+                placeholder={
+                  isClosed
+                    ? (t('whatsapp.closedPlaceholder'))
+                    : !isWindowOpen
+                    ? (t('whatsapp.windowExpiredPlaceholder'))
+                    : (placeholder || t('leads.typeMessagePlaceholder'))
+                }
+                className={`w-full px-3.5 py-2.5 pr-20 text-[13px] leading-relaxed rounded-xl vuexy-input transition-all resize-none max-h-[120px] overflow-y-auto block ${
+                  isInputDisabled
+                    ? 'opacity-60 cursor-not-allowed bg-slate-100 dark:bg-white/[0.04]'
+                    : ''
+                }`}
+              />
+
+              {/* Quick Template Button inside Input */}
+              {onSendTemplate && !isClosed && (
+                <div className="absolute right-2 top-3 flex items-center">
+                  <Tooltip content={t('whatsapp.useTemplateBtn')}>
+                    <button
+                      type="button"
+                      aria-label={t('whatsapp.useTemplateBtn')}
+                      onClick={onSendTemplate}
+                      disabled={isActionDisabled}
+                      className="flex items-center space-x-1 px-2 py-1 rounded-lg bg-[#7367F0]/10 hover:bg-[#7367F0]/20 text-[#7367F0] text-[10px] font-bold transition-all cursor-pointer disabled:opacity-40"
+                    >
+                      <LayoutTemplate className="w-3 h-3" />
+                      <span className="hidden sm:inline">{t('whatsapp.templateShort')}</span>
+                    </button>
+                  </Tooltip>
+                </div>
+              )}
+            </div>
+
+            {/* Send or Mic Button */}
+            {text.trim() ? (
+              <Tooltip content={isClosed ? t('whatsapp.closedComposerNotice') : !isWindowOpen ? t('whatsapp.windowExpiredNotice') : t('leads.sendNow')}>
+                <div className="mb-0.5">
+                  <Button
+                    type="submit"
+                    size="sm"
+                    aria-label={t('leads.sendNow')}
+                    disabled={isActionDisabled || !text.trim()}
+                    className="bg-[#25D366] hover:bg-[#1EBE5D] text-white px-3.5 py-2.5 rounded-xl font-bold shadow-sm cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 h-auto transition-transform active:scale-95"
+                  >
+                    {sending ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Send className="w-4 h-4 fill-white" />
+                    )}
+                  </Button>
+                </div>
+              </Tooltip>
+            ) : (
+              <Tooltip content={t('whatsapp.voiceRecordTooltip')}>
                 <button
                   type="button"
-                  aria-label={t('whatsapp.useTemplateBtn')}
-                  onClick={onSendTemplate}
+                  onClick={startRecording}
                   disabled={isActionDisabled}
-                  className="flex items-center space-x-1 px-2 py-1 rounded-lg bg-[#7367F0]/10 hover:bg-[#7367F0]/20 text-[#7367F0] text-[10px] font-bold transition-all cursor-pointer disabled:opacity-40"
+                  data-testid="composer-mic-btn"
+                  className="p-2.5 mb-0.5 rounded-xl text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 hover:bg-slate-200/60 dark:hover:bg-white/[0.08] transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
+                  aria-label={t('whatsapp.voiceRecordTooltip')}
+                  title={t('whatsapp.voiceRecordTooltip')}
                 >
-                  <LayoutTemplate className="w-3 h-3" />
-                  <span className="hidden sm:inline">{t('whatsapp.templateShort')}</span>
+                  <Mic className="w-4 h-4 text-[#25D366]" />
                 </button>
               </Tooltip>
-            </div>
-          )}
-        </div>
-
-        {/* Send or Mic Button */}
-        {text.trim() ? (
-          <Tooltip content={isClosed ? t('whatsapp.closedComposerNotice') : !isWindowOpen ? t('whatsapp.windowExpiredNotice') : t('leads.sendNow')}>
-            <div className="mb-0.5">
-              <Button
-                type="submit"
-                size="sm"
-                aria-label={t('leads.sendNow')}
-                disabled={isActionDisabled || !text.trim()}
-                className="bg-[#25D366] hover:bg-[#1EBE5D] text-white px-3.5 py-2.5 rounded-xl font-bold shadow-sm cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 h-auto transition-transform active:scale-95"
-              >
-                {sending ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                ) : (
-                  <Send className="w-4 h-4 fill-white" />
-                )}
-              </Button>
-            </div>
-          </Tooltip>
-        ) : (
-          <Tooltip content="Sesli Mesaj">
-            <button
-              type="button"
-              disabled={isActionDisabled}
-              className="p-2.5 mb-0.5 rounded-xl text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 hover:bg-slate-200/60 dark:hover:bg-white/[0.08] transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
-              aria-label="Sesli Mesaj"
-            >
-              <Mic className="w-4 h-4 text-[#25D366]" />
-            </button>
-          </Tooltip>
+            )}
+          </>
         )}
       </form>
 
