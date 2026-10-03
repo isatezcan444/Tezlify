@@ -1022,3 +1022,66 @@ def test_sync_insert_paths_survive_a_duplicate_race():
     assert "summary_src = inserted[-1]" in bulk, (
         "the last-message summary must come from an inserted row"
     )
+
+
+@pytest.mark.asyncio
+async def test_insert_messages_resilient_heterogeneous_nulls():
+    """Verify that _insert_messages_resilient succeeds when messages have differing NULL columns (e.g. body=None, media_id=None)."""
+    from backend.app.services.whatsapp.orchestration import sync as sync_mod
+    from backend.app.models.message import Message, MessageDirection, MessageType
+
+    async with AsyncSessionLocal() as db:
+        conv = Conversation(user_id=U1, channel="WHATSAPP")
+        db.add(conv)
+        await db.commit()
+        await db.refresh(conv)
+
+        r1 = Message(
+            conversation_id=conv.id,
+            user_id=U1,
+            recipient_phone="123",
+            direction=MessageDirection.INBOUND,
+            message_type=MessageType.TEXT,
+            body="Text message with body",
+            wa_message_id="wa_test_null_1",
+        )
+        r2 = Message(
+            conversation_id=conv.id,
+            user_id=U1,
+            recipient_phone="123",
+            direction=MessageDirection.INBOUND,
+            message_type=MessageType.IMAGE,
+            body=None,  # No body!
+            media_id="media_test_2",
+            wa_message_id="wa_test_null_2",
+        )
+        r3 = Message(
+            conversation_id=conv.id,
+            user_id=U1,
+            recipient_phone="123",
+            direction=MessageDirection.OUTBOUND,
+            message_type=MessageType.TEXT,
+            body="Another text",
+            media_id=None,
+            wa_message_id="wa_test_null_3",
+        )
+
+        inserted = await sync_mod._insert_messages_resilient(db, [r1, r2, r3])
+        assert len(inserted) == 3
+
+        # Test duplicate DO NOTHING
+        inserted_dup = await sync_mod._insert_messages_resilient(db, [r1, r2, r3])
+        assert len(inserted_dup) == 0
+
+        # Also test _persist_sync_batch_safely with varying keys
+        dict_batch = [
+            {"conversation_id": conv.id, "user_id": U1, "recipient_phone": "123", "direction": MessageDirection.INBOUND, "body": "Hello", "wa_message_id": "wa_dict_1"},
+            {"conversation_id": conv.id, "user_id": U1, "recipient_phone": "123", "direction": MessageDirection.INBOUND, "media_id": "m1", "wa_message_id": "wa_dict_2"},
+        ]
+        recovered = await sync_mod._persist_sync_batch_safely(db, dict_batch)
+        assert len(recovered) == 2
+
+        # Test duplicate DO NOTHING on dict_batch
+        recovered_dup = await sync_mod._persist_sync_batch_safely(db, dict_batch)
+        assert len(recovered_dup) == 0
+

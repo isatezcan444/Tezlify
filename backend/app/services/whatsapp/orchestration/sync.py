@@ -112,14 +112,23 @@ async def _insert_messages_resilient(db: AsyncSession, rows: List[Message]) -> L
         from sqlalchemy.dialects.postgresql import insert as pg_insert
         from sqlalchemy.dialects.sqlite import insert as sqlite_insert
         ins_cls = pg_insert if dialect_name == "postgresql" else sqlite_insert
-        values = [
-            {
-                column.name: getattr(row, column.name)
-                for column in Message.__table__.columns
-                if column.name != "id" and getattr(row, column.name) is not None
-            }
-            for row in rows
-        ]
+        now = datetime.utcnow()
+        values = []
+        for row in rows:
+            val_dict = {}
+            for column in Message.__table__.columns:
+                if column.name == "id":
+                    continue
+                val = getattr(row, column.name, None)
+                if val is None:
+                    if column.name in ("created_at", "updated_at"):
+                        val = now
+                    elif column.name == "status":
+                        val = ConversationMessageStatus.RECEIVED
+                    elif column.name == "message_type":
+                        val = MessageType.TEXT
+                val_dict[column.name] = val
+            values.append(val_dict)
         stmt = (
             ins_cls(Message)
             .values(values)
@@ -180,9 +189,26 @@ async def _persist_sync_batch_safely(
         from sqlalchemy.dialects.postgresql import insert as pg_insert
         from sqlalchemy.dialects.sqlite import insert as sqlite_insert
         ins_cls = pg_insert if dialect_name == "postgresql" else sqlite_insert
+        now = datetime.utcnow()
+        normalized_values = []
+        for item in values:
+            val_dict = {}
+            for column in Message.__table__.columns:
+                if column.name == "id":
+                    continue
+                val = item.get(column.name) if isinstance(item, dict) else getattr(item, column.name, None)
+                if val is None:
+                    if column.name in ("created_at", "updated_at"):
+                        val = now
+                    elif column.name == "status":
+                        val = ConversationMessageStatus.RECEIVED
+                    elif column.name == "message_type":
+                        val = MessageType.TEXT
+                val_dict[column.name] = val
+            normalized_values.append(val_dict)
         stmt = (
             ins_cls(Message)
-            .values(values)
+            .values(normalized_values)
             .on_conflict_do_nothing(
                 index_elements=["conversation_id", "wa_message_id"],
                 index_where=text("wa_message_id IS NOT NULL"),
@@ -1504,9 +1530,9 @@ class WhatsAppSyncOrchestrator:
                 for batch_start in range(0, len(rows), _SYNC_PERSIST_BATCH):
                     values = [
                         {
-                            column.name: getattr(row, column.name)
+                            column.name: getattr(row, column.name, None)
                             for column in Message.__table__.columns
-                            if column.name != "id" and getattr(row, column.name) is not None
+                            if column.name != "id"
                         }
                         for row, _, _ in rows[batch_start:batch_start + _SYNC_PERSIST_BATCH]
                     ]

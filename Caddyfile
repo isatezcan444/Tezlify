@@ -13,6 +13,26 @@
     }
 }
 
+(backend_proxy_https) {
+    reverse_proxy backend:8000 {
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-Proto https
+        lb_try_duration 5s
+        lb_try_interval 250ms
+    }
+}
+
+(backend_proxy_http) {
+    reverse_proxy backend:8000 {
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-Proto http
+        lb_try_duration 5s
+        lb_try_interval 250ms
+    }
+}
+
 # Domains served over the PUBLIC virtual hosts.
 #
 # `api.tezlify.com` was previously listed here with no `tls` directive, which
@@ -40,54 +60,30 @@ api.130.162.247.20.sslip.io, 130.162.247.20.sslip.io {
     }
 
     handle /api/* {
-        reverse_proxy backend:8000 {
-            header_up Host {host}
-            header_up X-Real-IP {remote_host}
-            header_up X-Forwarded-Proto https
-        }
+        import backend_proxy_https
     }
 
     handle /ws* {
-        reverse_proxy backend:8000 {
-            header_up Host {host}
-            header_up X-Real-IP {remote_host}
-            header_up X-Forwarded-Proto https
-        }
+        import backend_proxy_https
     }
 
     handle /health {
-        reverse_proxy backend:8000 {
-            header_up Host {host}
-            header_up X-Real-IP {remote_host}
-            header_up X-Forwarded-Proto https
-        }
+        import backend_proxy_https
     }
 
     # Supurme/kilit metrikleri. `/health` ile ayni yonlendirme: bu yol da SPA
     # fallback'ina dusmemeli, aksi halde operator `/metrics`e gidince HTML
     # uygulama kabugu gorur ve "uc nokta yok" sanir.
     handle /metrics {
-        reverse_proxy backend:8000 {
-            header_up Host {host}
-            header_up X-Real-IP {remote_host}
-            header_up X-Forwarded-Proto https
-        }
+        import backend_proxy_https
     }
 
     handle /docs* {
-        reverse_proxy backend:8000 {
-            header_up Host {host}
-            header_up X-Real-IP {remote_host}
-            header_up X-Forwarded-Proto https
-        }
+        import backend_proxy_https
     }
 
     handle /openapi.json {
-        reverse_proxy backend:8000 {
-            header_up Host {host}
-            header_up X-Real-IP {remote_host}
-            header_up X-Forwarded-Proto https
-        }
+        import backend_proxy_https
     }
 
     handle /assets/* {
@@ -113,52 +109,28 @@ api.130.162.247.20.sslip.io, 130.162.247.20.sslip.io {
     }
 
     handle /api/* {
-        reverse_proxy backend:8000 {
-            header_up Host {host}
-            header_up X-Real-IP {remote_host}
-            header_up X-Forwarded-Proto http
-        }
+        import backend_proxy_http
     }
 
     handle /ws* {
-        reverse_proxy backend:8000 {
-            header_up Host {host}
-            header_up X-Real-IP {remote_host}
-            header_up X-Forwarded-Proto http
-        }
+        import backend_proxy_http
     }
 
     handle /health {
-        reverse_proxy backend:8000 {
-            header_up Host {host}
-            header_up X-Real-IP {remote_host}
-            header_up X-Forwarded-Proto http
-        }
+        import backend_proxy_http
     }
 
     # Supurme/kilit metrikleri (bkz. diger site bloklarindaki ayni gerekce).
     handle /metrics {
-        reverse_proxy backend:8000 {
-            header_up Host {host}
-            header_up X-Real-IP {remote_host}
-            header_up X-Forwarded-Proto http
-        }
+        import backend_proxy_http
     }
 
     handle /docs* {
-        reverse_proxy backend:8000 {
-            header_up Host {host}
-            header_up X-Real-IP {remote_host}
-            header_up X-Forwarded-Proto http
-        }
+        import backend_proxy_http
     }
 
     handle /openapi.json {
-        reverse_proxy backend:8000 {
-            header_up Host {host}
-            header_up X-Real-IP {remote_host}
-            header_up X-Forwarded-Proto http
-        }
+        import backend_proxy_http
     }
 
     handle /assets/* {
@@ -188,54 +160,30 @@ api.130.162.247.20.sslip.io, 130.162.247.20.sslip.io {
     }
 
     handle /api/* {
-        reverse_proxy backend:8000 {
-            header_up Host {host}
-            header_up X-Real-IP {remote_host}
-            header_up X-Forwarded-Proto https
-        }
+        import backend_proxy_https
     }
 
     handle /ws* {
-        reverse_proxy backend:8000 {
-            header_up Host {host}
-            header_up X-Real-IP {remote_host}
-            header_up X-Forwarded-Proto https
-        }
+        import backend_proxy_https
     }
 
     handle /health {
-        reverse_proxy backend:8000 {
-            header_up Host {host}
-            header_up X-Real-IP {remote_host}
-            header_up X-Forwarded-Proto https
-        }
+        import backend_proxy_https
     }
 
     # Supurme/kilit metrikleri. `/health` ile ayni yonlendirme: bu yol da SPA
     # fallback'ina dusmemeli, aksi halde operator `/metrics`e gidince HTML
     # uygulama kabugu gorur ve "uc nokta yok" sanir.
     handle /metrics {
-        reverse_proxy backend:8000 {
-            header_up Host {host}
-            header_up X-Real-IP {remote_host}
-            header_up X-Forwarded-Proto https
-        }
+        import backend_proxy_https
     }
 
     handle /docs* {
-        reverse_proxy backend:8000 {
-            header_up Host {host}
-            header_up X-Real-IP {remote_host}
-            header_up X-Forwarded-Proto https
-        }
+        import backend_proxy_https
     }
 
     handle /openapi.json {
-        reverse_proxy backend:8000 {
-            header_up Host {host}
-            header_up X-Real-IP {remote_host}
-            header_up X-Forwarded-Proto https
-        }
+        import backend_proxy_https
     }
 
     handle /assets/* {
