@@ -194,7 +194,10 @@ async def _list_sessions_internal(
     """Oturum listesi + (varsa) gateway erisim hatasi."""
     stmt = select(WhatsAppSession).where(get_user_filter(WhatsAppSession.user_id, user_id))
     res = await db.execute(stmt)
-    rows = res.scalars().all()
+    rows = list(res.scalars().all())
+    # Commit the read transaction so the DB connection is not held idle-in-transaction
+    # while waiting on the gateway HTTP round-trip.
+    await db.commit()
     gw_sync: Dict[str, Any] = {}
     gateway_error: Optional[str] = None
     try:

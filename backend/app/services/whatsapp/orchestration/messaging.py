@@ -556,23 +556,46 @@ class WhatsAppMessagingOrchestrator:
         )
         row = res.scalars().first()
         if row is None:
+            fetch_unscoped = getattr(gateway_client, "fetch_media_unscoped", None)
+            if fetch_unscoped:
+                try:
+                    data = await fetch_unscoped(media_id)
+                    mime = None
+                    if data.startswith(b"\xff\xd8\xff"):
+                        mime = "image/jpeg"
+                    elif data.startswith(b"\x89PNG"):
+                        mime = "image/png"
+                    elif data.startswith(b"OggS"):
+                        mime = "audio/ogg; codecs=opus"
+                    elif len(data) >= 8 and (data[4:8] == b"ftyp" or data[:4] == b"\x00\x00\x00\x18"):
+                        mime = "video/mp4"
+                    elif data.startswith(b"%PDF"):
+                        mime = "application/pdf"
+                    return data, mime, None
+                except Exception:
+                    pass
             raise LookupError(f"Medya bulunamadi: {media_id}")
         conv = await db.get(Conversation, row.conversation_id)
         if conv is None:
             raise LookupError(f"Medya bulunamadi: {media_id}")
         gateway_id = await conversation_gateway_id(db, user_id, conv)
         target_id = row.media_id or media_id
+        wa_msg_id = row.wa_message_id
+        mime = row.media_mime_type
+        filename = getattr(row, "media_filename", None)
+        # Commit the read transaction so the DB connection is released to the pool
+        # while waiting on the gateway media download.
+        await db.commit()
         try:
             data = await gateway_client.fetch_media(gateway_id, target_id)
         except LookupError:
             if target_id != media_id:
                 data = await gateway_client.fetch_media(gateway_id, media_id)
-            elif row.wa_message_id and target_id != row.wa_message_id:
-                data = await gateway_client.fetch_media(gateway_id, row.wa_message_id)
+            elif wa_msg_id and target_id != wa_msg_id:
+                data = await gateway_client.fetch_media(gateway_id, wa_msg_id)
             else:
                 raise
 
-        mime = row.media_mime_type
         if not mime and data:
             if data.startswith(b"\xff\xd8\xff"):
                 mime = "image/jpeg"

@@ -541,7 +541,7 @@ app.get('/sessions/:sessionId/media/:mediaId', withSession(async (req, res, sess
 // Unscoped media route for authorized callers
 app.get('/media/:mediaId', async (req, res) => {
   const authHeader = req.headers['authorization'] || '';
-  const token = authHeader.replace(/^Bearer\s+/i, '');
+  const token = authHeader.replace(/^Bearer\s+/i, '') || req.headers['x-gateway-secret'] || '';
   if (!process.env.WHATSAPP_GATEWAY_SECRET || token !== process.env.WHATSAPP_GATEWAY_SECRET) {
     return res.status(401).json({ error: 'Unauthorized' });
   }

@@ -398,3 +398,18 @@ async def fetch_media(gateway_id: str, media_id: str) -> bytes:
         raise WhatsAppGatewayError(f"Medya indirilemedi (HTTP {res.status_code})")
     return res.content
 
+
+async def fetch_media_unscoped(media_id: str) -> bytes:
+    """Gateway'den oturumsuz doğrudan medya indirir. Yalnızca 2xx bayt döner."""
+    url = f"{gateway_base()}/media/{media_id}"
+    try:
+        async with httpx.AsyncClient(timeout=gateway_timeout()) as client:
+            res = await client.get(url, headers=gateway_auth_headers())
+    except httpx.HTTPError as exc:
+        raise WhatsAppGatewayError(f"Medya indirilemedi: {exc}") from exc
+    if res.status_code == 404:
+        raise LookupError(f"Medya bulunamadı: {media_id}")
+    if res.status_code >= 400:
+        raise WhatsAppGatewayError(f"Medya indirilemedi (HTTP {res.status_code})")
+    return res.content
+

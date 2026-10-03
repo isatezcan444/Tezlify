@@ -55,11 +55,9 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({ message, isGroup = fal
       message.media_url ||
       (message.media_id
         ? `/api/v1/whatsapp/media/${message.media_id}`
-        : message.wa_message_id && ['IMAGE', 'VIDEO', 'AUDIO', 'DOCUMENT'].includes(message.message_type)
-          ? `/api/v1/whatsapp/media/${message.wa_message_id}`
-          : undefined);
+        : undefined);
     return resolveMediaUrl(raw);
-  }, [message.media_url, message.media_id, message.wa_message_id, message.message_type]);
+  }, [message.media_url, message.media_id]);
   useLayoutEffect(() => {
     finishWaLatency('event_handler_to_message_commit_ms', message.id);
   }, [message]);

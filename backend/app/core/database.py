@@ -24,8 +24,9 @@ else:
     engine_kwargs["connect_args"] = {
         "statement_cache_size": 0,
         "server_settings": {
-            "idle_in_transaction_session_timeout": "30000",
-            "lock_timeout": "5000",
+            "idle_in_transaction_session_timeout": "120000",
+            "lock_timeout": "10000",
+            "statement_timeout": "30000",
         },
     }
     engine_kwargs["pool_size"] = settings.DATABASE_POOL_SIZE
@@ -60,9 +61,20 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
     async with AsyncSessionLocal() as session:
         try:
             yield session
-            await session.commit()
+            if session.is_active:
+                try:
+                    await session.commit()
+                except Exception:
+                    pass
         except Exception:
-            await session.rollback()
+            if session.is_active:
+                try:
+                    await session.rollback()
+                except Exception:
+                    pass
             raise
         finally:
-            await session.close()
+            try:
+                await session.close()
+            except Exception:
+                pass

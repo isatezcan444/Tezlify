@@ -29,15 +29,15 @@ class Settings(BaseSettings):
         description="Async SQLite or PostgreSQL connection string",
     )
     DATABASE_POOL_SIZE: int = Field(
-        default=5,
+        default=10,
         ge=1,
-        le=20,
+        le=50,
         description="Persistent connection pool size for PostgreSQL.",
     )
     DATABASE_MAX_OVERFLOW: int = Field(
-        default=0,
+        default=20,
         ge=0,
-        le=10,
+        le=50,
         description="Bounded temporary database connections.",
     )
 
