@@ -433,6 +433,10 @@ export function createSessionManager({
           clearTimeout(session._historyQuietTimer);
           session._historyQuietTimer = null;
         }
+        if (session._presenceKeepaliveTimer) {
+          clearInterval(session._presenceKeepaliveTimer);
+          session._presenceKeepaliveTimer = null;
+        }
         try { session.sock?.ev?.removeAllListeners(); } catch (err) { /* ignore */ }
         try { session.sock?.end(undefined); } catch (err) { /* ignore */ }
         session.sock = null;
@@ -735,6 +739,10 @@ export function createSessionManager({
         clearTimeout(session._historyQuietTimer);
         session._historyQuietTimer = null;
       }
+      if (session._presenceKeepaliveTimer) {
+        clearInterval(session._presenceKeepaliveTimer);
+        session._presenceKeepaliveTimer = null;
+      }
       session.updated_at = new Date().toISOString();
       // Logout means the next link may be a different WhatsApp account, so the
       // cached names must not survive onto it.
@@ -804,6 +812,10 @@ export function createSessionManager({
       if (session?._historyQuietTimer) {
         try { clearTimeout(session._historyQuietTimer); } catch (err) { /* ignore */ }
         session._historyQuietTimer = null;
+      }
+      if (session?._presenceKeepaliveTimer) {
+        try { clearInterval(session._presenceKeepaliveTimer); } catch (err) { /* ignore */ }
+        session._presenceKeepaliveTimer = null;
       }
       if (authRepository && !session?.ephemeral) {
         await authRepository.clearAuth(id);

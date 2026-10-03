@@ -120,6 +120,27 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
   const contentWrapperRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const userScrolledUpRef = useRef<boolean>(false);
+  const userInteractingRef = useRef<boolean>(false);
+  const userInteractingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const initialSettlingUntilRef = useRef<number>(0);
+
+  const markUserInteracting = useCallback(() => {
+    userInteractingRef.current = true;
+    if (userInteractingTimerRef.current) {
+      clearTimeout(userInteractingTimerRef.current);
+    }
+    userInteractingTimerRef.current = setTimeout(() => {
+      userInteractingRef.current = false;
+    }, 400);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (userInteractingTimerRef.current) {
+        clearTimeout(userInteractingTimerRef.current);
+      }
+    };
+  }, []);
   useLayoutEffect(() => {
     if (messages.length) finishWaLatency('chat_request_to_commit_ms', messages[0].conversation_id);
   }, [messages]);
@@ -560,7 +581,9 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
     if (nearBottom) {
       setShowNewMessagePill(false);
       userScrolledUpRef.current = false;
-    } else if (distanceToBottom > 160) {
+    } else if (distanceToBottom > 160 && userInteractingRef.current) {
+      // ONLY mark as user scrolled up if the user ACTUALLY interacted with the view!
+      // Layout shifts, image decodes, and programmatic scrolls must never set userScrolledUpRef.
       userScrolledUpRef.current = true;
     }
     // A scroll WE issued is not a user gesture. Without this, the animated
@@ -705,6 +728,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
   if (conversationKey !== prevConversationKeyRef.current) {
     prevConversationKeyRef.current = conversationKey;
     userScrolledUpRef.current = false;
+    initialSettlingUntilRef.current = Date.now() + 1800;
     // legacy scroll/prepend guards
     isPrependingRef.current = false;
     pendingPrependRef.current = null;
@@ -752,6 +776,14 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sortedMessages, isNearBottom, geomOp]);
 
+  const pinToBottomInstant = useCallback(() => {
+    const cont = containerRef.current;
+    if (!cont) return;
+    markLegacyProgrammatic(150);
+    cont.scrollTop = cont.scrollHeight;
+    bottomRef.current?.scrollIntoView({ behavior: 'instant', block: 'end' });
+  }, [markLegacyProgrammatic]);
+
   const scrollToBottomNow = useCallback((behavior: 'instant' | 'smooth' = 'instant') => {
     if (virtualizeRef.current) {
       if (behavior === 'smooth') geomOp('bottom', { pin: 'bottom' });
@@ -761,6 +793,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
     }
     const cont = containerRef.current;
     if (!cont) return;
+    userScrolledUpRef.current = false;
     markLegacyProgrammatic(behavior === 'instant' ? 250 : 600);
     if (behavior === 'instant') {
       cont.scrollTop = cont.scrollHeight;
@@ -770,7 +803,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
     bottomRef.current?.scrollIntoView({ behavior, block: 'end' });
     setIsNearBottom(true);
     setShowNewMessagePill(false);
-  }, [geomOp]);
+  }, [geomOp, markLegacyProgrammatic]);
 
   const scrollToBottom = () => {
     scrollToBottomNow('smooth');
@@ -778,30 +811,42 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
 
   // Initial scroll to bottom on mount, on load finishing, on a conversation
   // switch (convEpoch) — the instance is reused across switches — and on the
-  // chat first getting content. The last one is not redundant: a message can
-  // arrive in an empty chat with no `loading` transition (realtime inbound),
-  // and nothing else would take the thread to its newest message there.
+  // chat first getting content. The multi-phase settling window ensures that
+  // any layout passes, font changes, and initial renders consistently place
+  // the thread at its newest message without mid-view landing.
   const hasContent = sortedMessages.length > 0;
   useLayoutEffect(() => {
     if (loading) return;
     const cont = containerRef.current;
     if (!cont) return;
     if (sortedMessages.length > 0) {
-      if (!userScrolledUpRef.current) {
-        cont.scrollTop = cont.scrollHeight;
-        bottomRef.current?.scrollIntoView({ behavior: 'instant', block: 'end' });
-        const raf = requestAnimationFrame(() => {
-          if (cont && !userScrolledUpRef.current) {
-            cont.scrollTop = cont.scrollHeight;
-          }
+      initialSettlingUntilRef.current = Date.now() + 1800;
+      userScrolledUpRef.current = false;
+      pinToBottomInstant();
+
+      // Multi-phase settle to catch immediate layout passes and web font application
+      const raf1 = requestAnimationFrame(() => {
+        if (!userScrolledUpRef.current) pinToBottomInstant();
+        const raf2 = requestAnimationFrame(() => {
+          if (!userScrolledUpRef.current) pinToBottomInstant();
         });
-        initialScrollDoneRef.current = true;
-        return () => cancelAnimationFrame(raf);
-      }
+        return () => cancelAnimationFrame(raf2);
+      });
+
+      const t1 = setTimeout(() => { if (!userScrolledUpRef.current) pinToBottomInstant(); }, 60);
+      const t2 = setTimeout(() => { if (!userScrolledUpRef.current) pinToBottomInstant(); }, 200);
+      const t3 = setTimeout(() => { if (!userScrolledUpRef.current) pinToBottomInstant(); }, 500);
+
       initialScrollDoneRef.current = true;
+      return () => {
+        cancelAnimationFrame(raf1);
+        clearTimeout(t1);
+        clearTimeout(t2);
+        clearTimeout(t3);
+      };
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loading, virtualize, convEpoch, hasContent, conversationKey]);
+  }, [loading, virtualize, convEpoch, hasContent, conversationKey, pinToBottomInstant]);
 
   // ResizeObserver: when media (videos, images, posters) load and expand the content wrapper,
   // ensure the chat stays pinned to the bottom if the user hasn't explicitly scrolled up or is near bottom.
@@ -813,9 +858,11 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
 
     const ro = new ResizeObserver(() => {
       if (isPrependingRef.current) return;
+      const isSettling = Date.now() < initialSettlingUntilRef.current;
       const distanceFromBottom = cont.scrollHeight - cont.scrollTop - cont.clientHeight;
-      if (!userScrolledUpRef.current || distanceFromBottom <= 100) {
+      if (!userScrolledUpRef.current || isSettling || distanceFromBottom <= 250) {
         cont.scrollTop = cont.scrollHeight;
+        bottomRef.current?.scrollIntoView({ behavior: 'instant', block: 'end' });
       }
     });
 
@@ -967,6 +1014,14 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
         <div
           ref={containerRef}
           onScroll={handleScroll}
+          onWheel={markUserInteracting}
+          onTouchMove={markUserInteracting}
+          onPointerDown={markUserInteracting}
+          onKeyDown={(e) => {
+            if (['PageUp', 'PageDown', 'ArrowUp', 'ArrowDown', 'Home', 'End', ' '].includes(e.key)) {
+              markUserInteracting();
+            }
+          }}
           className="flex-1 min-w-0 p-4 overflow-y-auto overflow-x-hidden"
           style={{ overflowAnchor: 'none' }}
         >
@@ -1002,6 +1057,14 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
       <div
         ref={containerRef}
         onScroll={handleScroll}
+        onWheel={markUserInteracting}
+        onTouchMove={markUserInteracting}
+        onPointerDown={markUserInteracting}
+        onKeyDown={(e) => {
+          if (['PageUp', 'PageDown', 'ArrowUp', 'ArrowDown', 'Home', 'End', ' '].includes(e.key)) {
+            markUserInteracting();
+          }
+        }}
         style={{ overflowAnchor: 'none' }}
         className="flex-1 min-w-0 p-4 overflow-y-auto overflow-x-hidden"
       >

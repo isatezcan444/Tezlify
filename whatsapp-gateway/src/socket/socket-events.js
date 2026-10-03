@@ -28,7 +28,7 @@ import {
 } from '../utils/whatsapp-formatting.js';
 import { summarizeWaMessage, resolveDownloadableMedia } from '../messages/message-classifier.js';
 import { createSessionStore, messageTimestampMs, resolveChatActivitySeconds, rememberRawMessage } from '../messages/message-store.js';
-import { safeWriteEncrypted } from './socket-connector.js';
+import { safeWriteEncrypted, setCompanionPassive } from './socket-connector.js';
 
 export function resolveHistoryWaitersForChunk({
   pendingHistoryWaiters,
@@ -116,6 +116,11 @@ export function bindSocketEvents({
     emitEvent({ event: 'session_sync_completed', session_id: id, session_name: session.session_name, sync: session.sync });
     void ensureGroupSubjects({ force: true });
     manager._scheduleBackgroundAvatarFetch(session);
+    // Reinforce passive companion state and unavailable presence when sync completes
+    try {
+      void setCompanionPassive(sock, logger, sessionRef(id));
+      void sock.sendPresenceUpdate('unavailable');
+    } catch { /* best-effort */ }
     // A FIRST pairing never takes the `priorSyncs > 0` branch on connect, so
     // without this call the app-state recovery would never be armed for the QR
     // case — the very case whose connect-time resync races the key share.
@@ -349,17 +354,36 @@ export function bindSocketEvents({
         self_lid: session.self_lid || null,
       });
 
-      // Explicitly set presence to unavailable so WhatsApp servers prioritize
+      // Explicitly set presence to unavailable and send passive IQ stanza so WhatsApp servers prioritize
       // mobile phone push notifications over the web companion connection.
       // Baileys requires creds.me.name to exist before it dispatches presence stanzas.
       if (state?.creds?.me && !state.creds.me.name) {
         state.creds.me.name = session.session_name || 'Tezlify';
       }
       try {
+        await setCompanionPassive(sock, logger, sessionRef(id));
         await sock.sendPresenceUpdate('unavailable');
       } catch (presenceErr) {
         logger.debug({ err: presenceErr?.message, session_ref: sessionRef(id) }, 'Initial unavailable presence announcement ignored or not needed');
       }
+
+      // Schedule periodic presence keepalive (every 60s) to refresh passive/unavailable status
+      // so WhatsApp mobile push notifications are never suppressed during continuous operation.
+      if (session._presenceKeepaliveTimer) {
+        clearInterval(session._presenceKeepaliveTimer);
+      }
+      session._presenceKeepaliveTimer = setInterval(async () => {
+        if (!session.sock || session.status !== 'CONNECTED') return;
+        try {
+          await setCompanionPassive(session.sock, logger, sessionRef(id));
+          if (state?.creds?.me && !state.creds.me.name) {
+            state.creds.me.name = session.session_name || 'Tezlify';
+          }
+          await session.sock.sendPresenceUpdate('unavailable');
+        } catch (err) {
+          logger.debug({ err: err?.message, session_ref: sessionRef(id) }, 'Periodic unavailable presence heartbeat skipped');
+        }
+      }, 60000);
 
       const priorSyncs = Number(state?.creds?.accountSyncCounter || 0);
       session.sync = priorSyncs > 0
@@ -369,6 +393,11 @@ export function bindSocketEvents({
         emitEvent({ event: 'session_sync_completed', session_id: id, session_name: session.session_name, sync: session.sync });
         void ensureGroupSubjects();
         manager._scheduleBackgroundAvatarFetch(session);
+        // Reinforce passive companion state and unavailable presence when sync completes
+        try {
+          void setCompanionPassive(sock, logger, sessionRef(id));
+          void sock.sendPresenceUpdate('unavailable');
+        } catch { /* best-effort */ }
         // Baileys parks an app-state collection whose decryption key is
         // missing and only un-parks it when `myAppStateKeyId` arrives via
         // `creds.update`. In production that never arrived, so `regular` stayed
@@ -385,6 +414,10 @@ export function bindSocketEvents({
       }
     }
     if (connection === 'close') {
+      if (session._presenceKeepaliveTimer) {
+        clearInterval(session._presenceKeepaliveTimer);
+        session._presenceKeepaliveTimer = null;
+      }
       if (session._historyQuietTimer) {
         clearTimeout(session._historyQuietTimer);
         session._historyQuietTimer = null;

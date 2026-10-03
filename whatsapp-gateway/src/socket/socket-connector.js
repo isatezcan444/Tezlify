@@ -199,26 +199,34 @@ export async function createSocketForSession({
     msgRetryCounterCache: retryCounterCacheFor(id),
   });
 
-  // Guard against Baileys creds.update partial update presence bug (WhiskeySockets/Baileys Issue #2553).
-  // Baileys Socket/socket.js has an internal listener:
-  //   ev.on('creds.update', update => {
-  //     const name = update.me?.name;
-  //     if (creds.me?.name !== name) {
-  //       sendNode({ tag: 'presence', attrs: { name: name! } });
-  //     }
-  //     Object.assign(creds, update);
-  //   });
-  // On partial creds updates (such as signal ratchet key churn on receiving an incoming message),
-  // update.me is undefined. Because creds.me?.name !== undefined evaluates to true, Baileys
-  // serializes a bare <presence/> node (since undefined attrs are stripped in encode.js), which
-  // WhatsApp interprets as "available" (online). This continuously announces the web companion
-  // as online on every incoming message, suppressing push notifications to the user's physical phone.
-  // Furthermore, Baileys' sendPresenceUpdate('unavailable') drops requests if !me.name.
-  // By normalizing data.me and guaranteeing me.name, we ensure unavailable presence succeeds
-  // and rogue presence updates are completely suppressed.
+  // Guard against Baileys creds.update partial update presence bug (WhiskeySockets/Baileys Issue #2553)
+  // and prevent WhatsApp server from marking the companion device as online/active (which suppresses
+  // push notifications on the user's primary mobile phone).
+  //
+  // 1. Intercept `sock.sendNode`: If any code emits a <presence> stanza that is not explicitly
+  //    marked as `unavailable` or `subscribe`, convert it to `type="unavailable"`.
+  // 2. Intercept `sock.ev.emit`: Ensure state.creds.me.name stays in sync with update.me.name so
+  //    Baileys internal `creds.me?.name !== name` check never triggers rogue presence.
+  if (sock.sendNode) {
+    const originalSendNode = sock.sendNode.bind(sock);
+    sock.sendNode = async (node) => {
+      if (node?.tag === 'presence') {
+        if (!node.attrs) node.attrs = {};
+        if (node.attrs.type !== 'unavailable' && node.attrs.type !== 'subscribe') {
+          logger.debug({ attrs: node.attrs }, 'Converting online presence stanza to unavailable to preserve mobile phone notifications');
+          node.attrs.type = 'unavailable';
+        }
+      }
+      return originalSendNode(node);
+    };
+  }
+
   const passThrough = sock.ev.emit.bind(sock.ev);
   sock.ev.emit = (event, data) => {
     if (event === 'creds.update' && data) {
+      if (data.me?.name && state.creds?.me) {
+        state.creds.me.name = data.me.name;
+      }
       if (data.me === undefined && state.creds?.me) {
         if (!state.creds.me.name) {
           state.creds.me.name = session.session_name || 'Tezlify';
@@ -240,4 +248,30 @@ export async function createSocketForSession({
     socketStarted,
     sessionDir,
   };
+}
+
+/**
+ * In WhatsApp Multi-Device protocol, linked companion devices send a passive IQ stanza:
+ *   <iq to="@s.whatsapp.net" xmlns="passive" type="set"><passive/></iq>
+ * to inform WhatsApp servers that the companion is running in the background / standby mode.
+ * When a companion is passive, WhatsApp routes all push notifications to the user's primary
+ * mobile device rather than suppressing them under the assumption that an active desktop window
+ * is open in the foreground.
+ */
+export async function setCompanionPassive(sock, logger, sessionRef) {
+  if (!sock?.query) return;
+  try {
+    await sock.query({
+      tag: 'iq',
+      attrs: {
+        to: '@s.whatsapp.net',
+        xmlns: 'passive',
+        type: 'set',
+      },
+      content: [{ tag: 'passive', attrs: {} }],
+    });
+    logger?.debug({ session_ref: sessionRef }, 'Companion client successfully set to passive');
+  } catch (err) {
+    logger?.debug({ err: err?.message, session_ref: sessionRef }, 'Passive IQ stanza announcement ignored or failed');
+  }
 }
