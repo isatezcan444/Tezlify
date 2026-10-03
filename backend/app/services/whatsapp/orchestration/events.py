@@ -548,22 +548,48 @@ class WhatsAppEventOrchestrator:
                 phone_e164=phone_e164,
                 display_name=clean_name or jid_to_phone(clean_jid),
             )
+            attrs = None
             if display_name and name_source_str in _NAME_RANK:
-                attrs: Dict[str, Any] = {"name_source": name_source_str}
+                attrs = {"name_source": name_source_str}
                 if is_push_name and not _is_raw_jid_name(display_name):
                     attrs["push_name"] = str(display_name).strip()[:150]
                 contact.custom_attributes = attrs
-            try:
-                async with db.begin_nested():
-                    db.add(contact)
-                    await db.flush()
-            except IntegrityError:
+
+            bind = db.get_bind()
+            dialect_name = getattr(getattr(bind, "dialect", None), "name", "")
+            if dialect_name in ("postgresql", "sqlite"):
+                from sqlalchemy.dialects.postgresql import insert as pg_insert
+                from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+                ins_cls = pg_insert if dialect_name == "postgresql" else sqlite_insert
+                stmt_ins = (
+                    ins_cls(Contact)
+                    .values(
+                        user_id=user_id,
+                        phone_e164=phone_e164,
+                        display_name=clean_name or jid_to_phone(clean_jid),
+                        custom_attributes=attrs,
+                    )
+                    .on_conflict_do_nothing(index_elements=["user_id", "phone_e164"])
+                )
+                await db.execute(stmt_ins)
                 res = await db.execute(stmt)
                 contact = res.scalars().first()
                 if contact is None:
-                    raise
+                    raise LookupError("Kisi olusturulamadi veya bulunamadi.")
                 if _set_contact_name(contact, display_name, name_source):
                     await db.flush()
+            else:
+                try:
+                    async with db.begin_nested():
+                        db.add(contact)
+                        await db.flush()
+                except IntegrityError:
+                    res = await db.execute(stmt)
+                    contact = res.scalars().first()
+                    if contact is None:
+                        raise
+                    if _set_contact_name(contact, display_name, name_source):
+                        await db.flush()
         else:
             if _set_contact_name(contact, display_name, name_source):
                 await db.flush()
@@ -1322,13 +1348,42 @@ class WhatsAppEventOrchestrator:
         ).scalars().first()
 
         if not canonical_contact:
-            canonical_contact = Contact(
-                user_id=user_id,
-                phone_e164=canonical_phone,
-                display_name=session.session_name or canonical_phone,
-            )
-            db.add(canonical_contact)
-            await db.flush()
+            bind = db.get_bind()
+            dialect_name = getattr(getattr(bind, "dialect", None), "name", "")
+            if dialect_name in ("postgresql", "sqlite"):
+                from sqlalchemy.dialects.postgresql import insert as pg_insert
+                from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+                ins_cls = pg_insert if dialect_name == "postgresql" else sqlite_insert
+                stmt_ins = (
+                    ins_cls(Contact)
+                    .values(
+                        user_id=user_id,
+                        phone_e164=canonical_phone,
+                        display_name=session.session_name or canonical_phone,
+                    )
+                    .on_conflict_do_nothing(index_elements=["user_id", "phone_e164"])
+                )
+                await db.execute(stmt_ins)
+            else:
+                try:
+                    async with db.begin_nested():
+                        canonical_contact = Contact(
+                            user_id=user_id,
+                            phone_e164=canonical_phone,
+                            display_name=session.session_name or canonical_phone,
+                        )
+                        db.add(canonical_contact)
+                        await db.flush()
+                except IntegrityError:
+                    pass
+            canonical_contact = (
+                await db.execute(
+                    select(Contact).where(
+                        Contact.phone_e164 == canonical_phone,
+                        get_user_filter(Contact.user_id, user_id),
+                    )
+                )
+            ).scalars().first()
 
         canonical_conv = (
             await db.execute(

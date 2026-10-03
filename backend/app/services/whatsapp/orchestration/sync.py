@@ -20,7 +20,7 @@ import time
 from typing import Any, Callable, Deque, Dict, FrozenSet, List, Optional, Set, Tuple
 import uuid
 
-from sqlalchemy import delete, exists, func, insert, or_, select, text
+from sqlalchemy import delete, exists, func, insert, or_, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -103,40 +103,42 @@ _SYNC_PER_CHAT_LIMIT = 50     # per-chat limit for initial hydration
 
 
 async def _insert_messages_resilient(db: AsyncSession, rows: List[Message]) -> List[Message]:
-    """Insert message rows, surviving `uq_msg_conv_wa_message_id` races.
-
-    WHY NOT A PLAIN `add_all`
-    -------------------------
-    Production 2026-09-29, immediately after a re-pair:
-        UniqueViolationError: duplicate key value violates unique constraint
-        "uq_msg_conv_wa_message_id"
-    raised out of both the sync job AND the initial-sync hydration, so both
-    aborted.
-
-    The in-memory `have` set is only a pre-filter: a history replay racing a
-    live `message_new`, or two sync workers overlapping, both pass it and the
-    loser then violates the unique index. Because the violation propagates out
-    of the flush, SQLAlchemy marks the whole transaction failed and EVERY other
-    message in that chunk is lost with it — one duplicate message silently
-    discards a burst of real ones. That is the "mask the failure" failure mode
-    in its purest form: a retry looked safe, but the batch was already dead.
-
-    So: try the fast bulk path, and only if it loses the race fall back to
-    inserting row by row inside a savepoint. Each duplicate then costs exactly
-    itself.
-
-    Returns the rows that were ACTUALLY inserted, in input order.
-    """
+    """Insert message rows, surviving `uq_msg_conv_wa_message_id` races."""
     if not rows:
         return []
-    try:
-        db.add_all(rows)
-        await db.flush()
-        return list(rows)
-    except IntegrityError:
-        # The session is now in a failed state; discard the pending unit of work
-        # so the following savepoints start from a clean transaction.
-        await db.rollback()
+    bind = db.get_bind()
+    dialect_name = getattr(getattr(bind, "dialect", None), "name", "")
+    if dialect_name in ("postgresql", "sqlite"):
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+        from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+        ins_cls = pg_insert if dialect_name == "postgresql" else sqlite_insert
+        values = [
+            {
+                column.name: getattr(row, column.name)
+                for column in Message.__table__.columns
+                if column.name != "id" and getattr(row, column.name) is not None
+            }
+            for row in rows
+        ]
+        stmt = (
+            ins_cls(Message)
+            .values(values)
+            .on_conflict_do_nothing(
+                index_elements=["conversation_id", "wa_message_id"],
+                index_where=text("wa_message_id IS NOT NULL"),
+            )
+            .returning(Message)
+        )
+        res = await db.scalars(stmt)
+        inserted = list(res.all())
+        duplicates = len(rows) - len(inserted)
+        if duplicates:
+            logger.info(
+                "Sync inserted %d message(s); %d duplicate(s) lost a concurrent race "
+                "and were ignored.",
+                len(inserted), duplicates,
+            )
+        return inserted
 
     inserted: List[Message] = []
     duplicates = 0
@@ -168,10 +170,35 @@ async def _persist_sync_batch_safely(
     """Insert a batch of message dicts one at a time, skipping duplicates.
 
     The recovery path for a bulk insert that lost a `uq_msg_conv_wa_message_id`
-    race. Each row gets its own savepoint, so a single duplicate rolls back
-    only itself and its neighbours are still stored. Returns the rows that were
-    actually written, so the caller reports and counts only real work.
+    race. Returns the rows that were actually written.
     """
+    if not values:
+        return []
+    bind = db.get_bind()
+    dialect_name = getattr(getattr(bind, "dialect", None), "name", "")
+    if dialect_name in ("postgresql", "sqlite"):
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+        from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+        ins_cls = pg_insert if dialect_name == "postgresql" else sqlite_insert
+        stmt = (
+            ins_cls(Message)
+            .values(values)
+            .on_conflict_do_nothing(
+                index_elements=["conversation_id", "wa_message_id"],
+                index_where=text("wa_message_id IS NOT NULL"),
+            )
+            .returning(Message)
+        )
+        result = await db.scalars(stmt)
+        inserted = list(result.all())
+        duplicates = len(values) - len(inserted)
+        if duplicates:
+            logger.info(
+                "Sync batch recovered: %d message(s) stored, %d duplicate(s) ignored.",
+                len(inserted), duplicates,
+            )
+        return inserted
+
     inserted: List[Message] = []
     duplicates = 0
     for value in values:
@@ -1321,11 +1348,12 @@ class WhatsAppSyncOrchestrator:
         for cid, jid_str in jid_by_conv.items():
             conv_by_jid[jid_str] = cid
 
-        if ws_session and ws_session.gateway_id:
+        gw_sid = gateway_id or (getattr(ws_session, "gateway_id", None) if ws_session else None)
+        if gw_sid:
             try:
                 lid_res = await db.execute(
                     text("SELECT lid_jid, phone_jid FROM whatsapp_private.lid_mappings WHERE session_id = :sid"),
-                    {"sid": str(ws_session.gateway_id)},
+                    {"sid": str(gw_sid)},
                 )
                 for row in lid_res.fetchall():
                     lid_jid, phone_jid = str(row[0]), str(row[1])
@@ -1482,27 +1510,20 @@ class WhatsAppSyncOrchestrator:
                         }
                         for row, _, _ in rows[batch_start:batch_start + _SYNC_PERSIST_BATCH]
                     ]
-                    try:
-                        inserted = await db.scalars(
-                            insert(Message).returning(Message), values
-                        )
-                        persisted_rows.extend(inserted.all())
-                    except IntegrityError:
-                        await db.rollback()
-                        # Retry the batch row by row inside savepoints so one
-                        # duplicate cannot discard its neighbours.
-                        recovered = await _persist_sync_batch_safely(db, values)
-                        persisted_rows.extend(recovered)
+                    recovered = await _persist_sync_batch_safely(db, values)
+                    persisted_rows.extend(recovered)
                 for p_row in persisted_rows:
                     matching_rx = next((rx_l for r, _, rx_l in rows if r.wa_message_id and r.wa_message_id == p_row.wa_message_id), None)
                     if matching_rx:
+                        p_conv = conv_by_id.get(p_row.conversation_id)
+                        p_conv_jid = getattr(p_conv, "jid", "") if p_conv else ""
                         for rx in matching_rx:
                             emoji = rx.get("emoji")
                             if emoji:
                                 rx_from_me = bool(rx.get("from_me"))
                                 rx_jid = _reaction_identity(rx_from_me, rx.get("reactor_jid"))
-                                if not rx_jid and not rx_from_me and conv and "@g.us" not in str(conv.jid):
-                                    rx_jid = _reaction_identity(False, conv.jid)
+                                if not rx_jid and not rx_from_me and p_conv_jid and "@g.us" not in str(p_conv_jid):
+                                    rx_jid = _reaction_identity(False, p_conv_jid)
                                 if rx_jid:
                                     await _upsert_reaction(
                                         db,
@@ -1514,8 +1535,8 @@ class WhatsAppSyncOrchestrator:
                                         emoji=emoji,
                                     )
                 await db.flush()
-                await db.commit()
                 serialized = [serialize_message(r) for r in persisted_rows]
+                await db.commit()
                 # Count what was really stored, not what we attempted: a
                 # duplicate is not a synced message and inflating this counter
                 # would make the progress bar lie.
@@ -1737,9 +1758,22 @@ class WhatsAppSyncOrchestrator:
                 # "hic senkronlanmadi" ile "gunler once senkronlandi" ayirt
                 # edilemezdi (her iki bellek ici sinyal de restart'ta kaybolur).
                 _initial_sync_now = datetime.now(timezone.utc).replace(tzinfo=None)
+                session_ids = [
+                    getattr(_ws, "id", None) for _ws in sessions_to_sync
+                ]
+                session_ids = [sid for sid in session_ids if sid is not None]
+                if session_ids:
+                    await db.execute(
+                        update(WhatsAppSession)
+                        .where(
+                            WhatsAppSession.id.in_(session_ids),
+                            WhatsAppSession.initial_sync_completed_at.is_(None),
+                        )
+                        .values(initial_sync_completed_at=_initial_sync_now)
+                    )
                 for _ws in sessions_to_sync:
-                    if _ws.initial_sync_completed_at is None:
-                        _ws.initial_sync_completed_at = _initial_sync_now
+                    if hasattr(_ws, "__dict__"):
+                        _ws.__dict__["initial_sync_completed_at"] = _initial_sync_now
                 await db.commit()
                 # Avatar backfill (QR sonrasi parite): kimi profil fotoğrafları
                 # rate limit / geç hydration nedeniyle ilk sweep'te düşer ve
@@ -1825,7 +1859,7 @@ class WhatsAppSyncOrchestrator:
             job.state = "FAILED"
             job.error = str(exc)[:500]
             job.finished_at = datetime.now(timezone.utc)
-            logger.warning("Sync job basarisiz (owner=%s sync_id=%s): %s", owner, job.sync_id, exc)
+            logger.warning("Sync job basarisiz (owner=%s sync_id=%s): %s", owner, job.sync_id, exc, exc_info=True)
             err_code = "RELINK_REQUIRED" if _is_gateway_session_missing(exc) else None
             sync_payload = sync_event(job, "whatsapp_sync_failed", error=job.error, stage=job.stage)
             if err_code:
@@ -2650,7 +2684,7 @@ class WhatsAppSyncOrchestrator:
             )
         except Exception as exc:  # noqa: BLE001 - best-effort stage
             logger.warning(
-                "Bos sohbet geri doldurma turu basarisiz (owner=%s): %s", owner, exc
+                "Bos sohbet geri doldurma turu basarisiz (owner=%s): %s", owner, exc, exc_info=True
             )
             return 0
 

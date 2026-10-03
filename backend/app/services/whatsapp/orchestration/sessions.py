@@ -139,8 +139,9 @@ async def _gateway_op_or_mark_relink(
     WhatsAppRelinkRequired so UI guides user to scan QR. All other gateway errors
     propagate fail-closed.
     """
+    gw_id = str(row.__dict__.get("gateway_id") or getattr(row, "gateway_id", ""))
     try:
-        return await op(row.gateway_id)
+        return await op(gw_id)
     except gw.WhatsAppGatewayError as exc:
         if not is_gateway_session_missing(exc):
             raise
