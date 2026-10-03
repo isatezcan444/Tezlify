@@ -258,6 +258,11 @@ src/
 - **Props**: `isOpen: boolean`, `onClose: () => void`, `src?: string | null`, `filename?: string | null`, `mimeType?: string | null`, `fileSize?: string | number | null`, `senderName?: string`, `timestamp?: string`.
 - **Import**: `import { DocumentViewer } from '@/features/whatsapp/components';`
 
+#### `ChatInfoDrawer`
+- **Purpose**: WhatsApp Web authentic Contact and Group Info right-side sliding drawer. Displays high-resolution contact/group avatar (with click-to-expand lightbox), formatted phone number with one-click copy, quick action bar (in-chat search trigger, mute notification toggle), About / Description, CRM Lead profile shortcut button, comprehensive Media, Links and Docs gallery (3 tabs with image/video thumbnail grid, documents list with type badges, and parsed URLs with copy actions), Starred Messages count, and End-to-End Encryption security notice. Supports Escape key dismissal.
+- **Props**: `isOpen: boolean`, `onClose: () => void`, `conversation: Conversation`, `messages: Message[]`, `onOpenLead?: (leadId: number) => void`, `onSearchInChat?: () => void`, `onStatusChange?: (convId: number, status: 'ACTIVE' | 'ARCHIVED' | 'CLOSED') => void`.
+- **Import**: `import { ChatInfoDrawer } from '@/features/whatsapp/components';`
+
 #### `useWhatsAppLoadingGate` (hook)
 - **Purpose**: Single-authority QR post-pairing loading gate state (WhatsApp Web parity). Fed only by real signals — backend `GET /whatsapp/loading-gate` (REST bootstrap on mount + WS reconnect) and WS `whatsapp_loading_gate` / `session_sync_*` events. No polling, no fake timers. Fires the `onReady` callback exactly once when `phase` transitions to `ready`, so the hub can auto-switch to the Live Conversations tab and eagerly load chats.
 - **Signature**: `useWhatsAppLoadingGate(onReady?: () => void) => { gate, dismiss, refresh }`.

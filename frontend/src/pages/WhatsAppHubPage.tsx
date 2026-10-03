@@ -14,6 +14,7 @@ import {
   Users,
   ArrowLeft,
   Search,
+  Info,
 } from 'lucide-react';
 import { startWaLatency } from '../features/whatsapp/lib/whatsappLatency';
 import { translateApiError } from '../features/whatsapp/lib/translateError';
@@ -59,6 +60,7 @@ import {
   WhatsAppSyncGate,
   AntiBanPanel,
   ChatSearchBar,
+  ChatInfoDrawer,
   type QuotedMessage,
 } from '../features/whatsapp/components';
 import { LeadDetailDrawer } from '../features/leads/components';
@@ -177,6 +179,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   const [selectedConv, setSelectedConv] = useState<Conversation | null>(null);
   const [replyingTo, setReplyingTo] = useState<QuotedMessage | null>(null);
   const [isChatSearchOpen, setIsChatSearchOpen] = useState(false);
+  const [isChatInfoOpen, setIsChatInfoOpen] = useState(false);
   const [chatSearchQuery, setChatSearchQuery] = useState('');
   const [chatSearchCurrentIndex, setChatSearchCurrentIndex] = useState(0);
   const [messagesMap, setMessagesMap] = useState<Record<number, Message[]>>({});
@@ -2955,10 +2958,12 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
           <div className={`flex-1 w-0 min-w-0 overflow-hidden flex flex-col h-full bg-white dark:bg-[#181C28] ${selectedConv ? 'flex' : 'hidden md:flex'}`}>
             {selectedConv ? (
               <div
-                className="flex-1 w-full h-full flex flex-col overflow-hidden animate-in fade-in-50 duration-150 ease-out"
+                className="flex-1 w-full h-full flex overflow-hidden animate-in fade-in-50 duration-150 ease-out"
               >
-                {/* Active Chat Header */}
-                <div className="p-3 sm:p-3.5 border-b border-slate-200/80 dark:border-white/[0.08] bg-slate-50/50 dark:bg-black/20 flex items-center justify-between shrink-0 gap-2">
+                {/* Main Chat Conversation Column */}
+                <div className="flex-1 flex flex-col min-w-0 h-full overflow-hidden">
+                  {/* Active Chat Header */}
+                  <div className="p-3 sm:p-3.5 border-b border-slate-200/80 dark:border-white/[0.08] bg-slate-50/50 dark:bg-black/20 flex items-center justify-between shrink-0 gap-2">
                   <div className="flex items-center space-x-2 sm:space-x-3 min-w-0 flex-1">
                     {/* Mobile Back Button to Conversation List */}
                     <button
@@ -2979,8 +2984,10 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                       return (
                         <div
                           key={selectedConv.id}
-                          onClick={() => handleOpenLead(selectedConv.lead_id)}
-                          title={t('leads.openLeadDetail')}
+                          onClick={() => setIsChatInfoOpen((open) => !open)}
+                          title={selectedConv.is_group ? t('whatsapp.groupInfo') : t('whatsapp.contactInfo')}
+                          aria-label={selectedConv.is_group ? t('whatsapp.groupInfo') : t('whatsapp.contactInfo')}
+                          data-testid="chat-header-info-trigger"
                           className="flex items-center space-x-2 sm:space-x-3 min-w-0 flex-1 animate-in fade-in duration-150 ease-out cursor-pointer group/header"
                         >
                           <Avatar
@@ -3090,6 +3097,23 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                     >
                       <Building2 className="w-3.5 h-3.5 text-[#7367F0]" />
                       <span className="hidden md:inline">{t('leads.openLeadDetail')}</span>
+                    </Button>
+
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setIsChatInfoOpen((open) => !open)}
+                      data-testid="header-chat-info-btn"
+                      title={selectedConv.is_group ? t('whatsapp.groupInfo') : t('whatsapp.contactInfo')}
+                      aria-label={selectedConv.is_group ? t('whatsapp.groupInfo') : t('whatsapp.contactInfo')}
+                      className={`space-x-1.5 text-xs font-bold transition-all cursor-pointer px-2 sm:px-3 ${
+                        isChatInfoOpen
+                          ? 'bg-[#7367F0]/15 text-[#7367F0] border-[#7367F0]/30'
+                          : 'border-slate-200 dark:border-white/[0.1] text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/[0.06]'
+                      }`}
+                    >
+                      <Info className="w-3.5 h-3.5" />
+                      <span className="hidden xl:inline">{selectedConv.is_group ? t('whatsapp.groupInfo') : t('whatsapp.contactInfo')}</span>
                     </Button>
 
                     <span className="inline-flex items-center space-x-1 px-2 sm:px-2.5 py-1 rounded-full bg-[#25D366]/15 text-[#25D366] font-bold text-xs">
@@ -3220,6 +3244,20 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                     }
                   }}
                 />
+                </div>
+
+                {/* WhatsApp Web Authentic Right Drawer: Contact & Group Info */}
+                {isChatInfoOpen && (
+                  <ChatInfoDrawer
+                    isOpen={isChatInfoOpen}
+                    onClose={() => setIsChatInfoOpen(false)}
+                    conversation={selectedConv}
+                    messages={activeMessages}
+                    onOpenLead={handleOpenLead}
+                    onSearchInChat={() => setIsChatSearchOpen(true)}
+                    onStatusChange={handleStatusChange}
+                  />
+                )}
               </div>
             ) : (
               <div className="flex-1 flex items-center justify-center p-8 animate-in fade-in duration-200">

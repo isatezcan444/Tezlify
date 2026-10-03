@@ -14,3 +14,4 @@ export * from './VoiceNotePlayer';
 export * from './ChatSearchBar';
 export * from './MediaLightbox';
 export * from './DocumentViewer';
+export * from './ChatInfoDrawer';
