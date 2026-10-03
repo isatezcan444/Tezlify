@@ -1200,9 +1200,35 @@ class WhatsAppEventOrchestrator:
             emoji=emoji,
         )
 
+        if emoji and not from_me and target.direction == MessageDirection.OUTBOUND:
+            if target.status != ConversationMessageStatus.READ:
+                target.status = ConversationMessageStatus.READ
+                target.read_at = _parse_dt(event.get("created_at")) or datetime.now(timezone.utc).replace(tzinfo=None)
+                await db.flush()
+                try:
+                    from backend.app.api.v1.websocket import ws_manager
+                    await ws_manager.broadcast(
+                        f"user:{owner}",
+                        {
+                            "event": "message_status_updated",
+                            "conversation_id": conv.id,
+                            "message_id": target.id,
+                            "wa_message_id": target.wa_message_id,
+                            "client_message_id": target.client_message_id,
+                            "status": "READ",
+                            "read_at": target.read_at.isoformat() if target.read_at else None,
+                        },
+                    )
+                except Exception as ws_err:
+                    logger.debug("WS status broadcast failed on reaction: %s", ws_err)
+
         reaction_preview = None
         if emoji:
-            sender_display_name = event.get("sender_name") or event.get("participant_name")
+            sender_display_name = (
+                event.get("sender_name")
+                or event.get("participant_name")
+                or getattr(conv, "lead_name", None)
+            )
             reaction_preview = _format_reaction_preview(
                 emoji,
                 from_me=from_me,

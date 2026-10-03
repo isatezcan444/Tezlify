@@ -1024,12 +1024,14 @@ export const WhatsAppApi = {
   async startConversation(
     phone: string,
     name?: string,
-    message?: string
+    message?: string,
+    sessionId?: number
   ): Promise<Conversation> {
     const data = await apiSend<BackendConversation>('/whatsapp/conversations', 'POST', {
       phone,
       name: name || undefined,
       message: message || undefined,
+      session_id: sessionId ?? undefined,
     });
     return mapConversation(data);
   },
@@ -1109,8 +1111,9 @@ export const WhatsAppApi = {
     };
   },
 
-  async getContacts(): Promise<any[]> {
-    const data = await apiGet<{ contacts: any[] }>('/whatsapp/contacts');
+  async getContacts(sessionId?: number): Promise<any[]> {
+    const query = sessionId ? `?session_id=${sessionId}` : '';
+    const data = await apiGet<{ contacts: any[] }>(`/whatsapp/contacts${query}`);
     return data.contacts || [];
   },
 

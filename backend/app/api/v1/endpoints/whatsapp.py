@@ -435,11 +435,15 @@ async def get_sync_job(
 # ---------------------------------------------------------------------------
 @router.get("/contacts", response_model=WhatsAppContactListResponse)
 async def sync_contacts(
+    session_id: Optional[int] = Query(None, description="Opsiyonel hedef oturum ID'si"),
     db: AsyncSession = Depends(get_db),
     current_user: AuthUser = Depends(get_current_user),
 ) -> WhatsAppContactListResponse:
     try:
-        contacts = await whatsapp_service.sync_contacts(db, current_user.id)
+        ws_session = None
+        if session_id is not None:
+            ws_session = await whatsapp_service._require_user_session(db, current_user.id, session_id=session_id)
+        contacts = await whatsapp_service.sync_contacts(db, current_user.id, session=ws_session)
     except WhatsAppRelinkRequired as exc:
         raise _relink_required(exc) from exc
     except NoWhatsAppSession as exc:
@@ -554,6 +558,7 @@ async def start_conversation(
             payload.phone,
             name=payload.name,
             message=payload.message,
+            session_id=payload.session_id,
         )
     except NoWhatsAppSession as exc:
         raise _no_session(exc) from exc

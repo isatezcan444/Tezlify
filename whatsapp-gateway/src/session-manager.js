@@ -101,6 +101,27 @@ import { bindSocketEvents } from './socket/socket-events.js';
 const ACK_RANK = { 0: 'FAILED', 2: 'SENT', 3: 'DELIVERED', 4: 'READ', 5: 'READ' };
 const ACK_ORDER = { PENDING: 0, SENT: 1, DELIVERED: 2, READ: 3, FAILED: 0 };
 
+function resolveMessageStatus(msg, fromMe, reactions) {
+  if (!fromMe) return 'RECEIVED';
+  if (Array.isArray(reactions) && reactions.some((r) => r?.emoji || r?.text)) {
+    return 'READ';
+  }
+  const rawStatus = msg?.status;
+  if (typeof rawStatus === 'number') {
+    if (rawStatus === 4 || rawStatus === 5) return 'READ';
+    if (rawStatus === 3) return 'DELIVERED';
+    if (rawStatus === 2) return 'SENT';
+    if (rawStatus === 0) return 'FAILED';
+  } else if (typeof rawStatus === 'string') {
+    const s = rawStatus.toUpperCase();
+    if (s === 'READ' || s === 'PLAYED') return 'READ';
+    if (s === 'DELIVERED' || s === 'DELIVERY_ACK') return 'DELIVERED';
+    if (s === 'SENT' || s === 'SERVER_ACK') return 'SENT';
+    if (s === 'FAILED' || s === 'ERROR') return 'FAILED';
+  }
+  return 'SENT';
+}
+
 // Avatar sweep pacing.
 //
 // Canlı ölçüm (production gateway, 8 ardışık `profilePictureUrl` çağrısı):
@@ -835,10 +856,54 @@ export function createSessionManager({
     // -----------------------------------------------------------------------
     listContacts(sessionId) {
       const session = this._requireSession(sessionId);
-      const { contacts } = this._storeOf(session);
-      return [...contacts.values()]
-        .filter((c) => !isLidJid(c.id) && (c.name_source === 'addressbook' || c.name_source === 'verified'))
-        .map((c) => ({ ...c }));
+      const store = this._storeOf(session);
+      const { contacts, chats } = store;
+      const result = new Map();
+
+      // 1. WhatsApp contacts deposundaki tum gecerli 1-e-1 kisiler
+      for (const c of contacts.values()) {
+        if (!c.id || isLidJid(c.id) || isBroadcastOnlyJid(c.id) || c.id.includes('@g.us')) continue;
+        const phone = c.phone || jidToPhone(c.id);
+        if (!phone) continue;
+        const name = c.name || c.notify || null;
+        result.set(c.id, {
+          id: c.id,
+          phone,
+          name: name || phone,
+          notify: c.notify || null,
+          name_source: c.name_source || 'contacts',
+          avatar_url: c.avatar_url || null,
+        });
+      }
+
+      // 2. Sohbetlerdeki 1-e-1 kisiler (cihazdaki tum yazisilan WhatsApp kisileri)
+      for (const ch of chats.values()) {
+        if (!ch.jid || isLidJid(ch.jid) || isBroadcastOnlyJid(ch.jid) || ch.jid.includes('@g.us')) continue;
+        const phone = ch.phone || jidToPhone(ch.jid);
+        if (!phone) continue;
+        if (!result.has(ch.jid)) {
+          result.set(ch.jid, {
+            id: ch.jid,
+            phone,
+            name: ch.name || phone,
+            notify: null,
+            name_source: 'chat',
+            avatar_url: ch.avatar_url || null,
+          });
+        } else {
+          const existing = result.get(ch.jid);
+          if (!existing.avatar_url && ch.avatar_url) existing.avatar_url = ch.avatar_url;
+          if ((!existing.name || existing.name === existing.phone) && ch.name && ch.name !== ch.phone) {
+            existing.name = ch.name;
+          }
+        }
+      }
+
+      return Array.from(result.values()).sort((a, b) => {
+        const nameA = (a.name || a.phone || '').toLowerCase();
+        const nameB = (b.name || b.phone || '').toLowerCase();
+        return nameA.localeCompare(nameB, 'tr');
+      });
     },
 
     listConversations(sessionId, { search, limit, offset } = {}) {
@@ -1634,7 +1699,7 @@ export function createSessionManager({
         conversation_id: key,
         direction: fromMe ? 'OUTBOUND' : 'INBOUND',
         message_type: mediaType,
-        status: fromMe ? 'SENT' : 'RECEIVED',
+        status: resolveMessageStatus(msg, fromMe, msg.reactions),
         body: text || '',
         media_id: mediaInfo?.media_id || existingRecord?.media_id || null,
         media_mime_type: mediaInfo?.mime_type || existingRecord?.media_mime_type || null,
@@ -2717,7 +2782,7 @@ export function createSessionManager({
         conversation_id: key,
         direction: msg.key?.fromMe ? 'OUTBOUND' : 'INBOUND',
         message_type: mediaType || 'TEXT',
-        status: msg.key?.fromMe ? 'SENT' : 'RECEIVED',
+        status: resolveMessageStatus(msg, Boolean(msg.key?.fromMe), reactions),
         body: text || '',
         media_id: mediaId,
         media_mime_type: mediaMime,

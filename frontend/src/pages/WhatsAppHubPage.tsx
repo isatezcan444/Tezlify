@@ -3234,6 +3234,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       <NewChatModal
         isOpen={isNewChatModalOpen}
         onClose={() => setIsNewChatModalOpen(false)}
+        sessions={sessions}
         onSuccess={(newConv) => {
           setConversations((prev) => {
             const exists = prev.some((c) => c.id === newConv.id);

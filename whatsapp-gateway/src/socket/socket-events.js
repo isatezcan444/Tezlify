@@ -785,6 +785,7 @@ export function bindSocketEvents({
       const touchedHistoryKeys = new Set();
       const historyMediaQueue = [];
       const seenMediaWaIds = new Set();
+      const pendingHistoryReactions = [];
 
       for (const msg of historyMessages || []) {
         const jid = msg.key?.remoteJid;
@@ -799,26 +800,10 @@ export function bindSocketEvents({
         touchedHistoryKeys.add(key);
         if (msg.key?.id === '__history__' || msg.message?.protocolMessage) continue;
 
-        // History sync icindeki bagimsiz reactionMessage olaylari: hedef mesaja ilistir
+        // History sync icindeki bagimsiz reactionMessage olaylari: ikinci geciste hedef mesaja ilistirilmek uzere tamponla
         const rx = msg.message?.reactionMessage;
         if (rx?.key?.id && typeof rx.text === 'string') {
-          if (rx.text) {
-            const targetWaId = rx.key.id;
-            const targetList = messagesByChat.get(key) || [];
-            const targetRecord = targetList.find((m) => m.wa_message_id === targetWaId);
-            if (targetRecord) {
-              targetRecord.reactions = targetRecord.reactions || [];
-              const fromMe = Boolean(msg.key?.fromMe);
-              const reactorJid = fromMe ? null : (msg.key?.participant || msg.key?.remoteJid || null);
-              targetRecord.reactions = targetRecord.reactions.filter((r) => r.reactor_jid !== reactorJid || r.from_me !== fromMe);
-              targetRecord.reactions.push({
-                emoji: rx.text,
-                from_me: fromMe,
-                reactor_jid: reactorJid,
-                created_at: msg.messageTimestamp ? new Date(messageTimestampMs(msg.messageTimestamp)).toISOString() : null,
-              });
-            }
-          }
+          pendingHistoryReactions.push({ key, msg, rx });
           continue;
         }
 
@@ -842,6 +827,84 @@ export function bindSocketEvents({
         ) {
           seenMediaWaIds.add(msg.key.id);
           historyMediaQueue.push(msg);
+        }
+      }
+
+      // Ikinci gecis: historyMessages icindeki reactionMessage stanzalarini hedef mesajlara ilistir
+      for (const { key, msg, rx } of pendingHistoryReactions) {
+        if (!rx.text) continue;
+        const targetWaId = rx.key?.id;
+        const targetList = messagesByChat.get(key) || [];
+        const targetRecord = targetList.find((m) => m.wa_message_id === targetWaId);
+        const fromMe = Boolean(msg.key?.fromMe);
+        const reactorJid = fromMe ? null : (msg.key?.participant || msg.key?.remoteJid || null);
+        const ts = msg.messageTimestamp ? messageTimestampMs(msg.messageTimestamp) : null;
+        if (targetRecord) {
+          targetRecord.reactions = targetRecord.reactions || [];
+          targetRecord.reactions = targetRecord.reactions.filter((r) => r.reactor_jid !== reactorJid || r.from_me !== fromMe);
+          targetRecord.reactions.push({
+            emoji: rx.text,
+            from_me: fromMe,
+            reactor_jid: reactorJid,
+            created_at: ts ? new Date(ts).toISOString() : null,
+          });
+          if (targetRecord.direction === 'OUTBOUND') {
+            targetRecord.status = 'READ';
+          }
+        }
+        const chat = chats.get(key);
+        if (chat) {
+          const chatActivity = chat.last_activity_timestamp || 0;
+          if (ts && ts >= chatActivity) {
+            chat.last_reaction = { emoji: rx.text, from_me: fromMe, reactor_jid: reactorJid };
+            chat.last_message_preview = fromMe
+              ? `Şu mesaja ${rx.text} ifadesini bıraktınız`
+              : `Şu mesaja ${rx.text} ifadesini bıraktı`;
+            chat.last_activity_timestamp = ts;
+          }
+        }
+      }
+
+      // 1-e-1 sohbetlerde ardisik yanit/ifade akisina gore eski giden mesajlarin durumunu READ'e yukselt
+      for (const [chatKey, list] of messagesByChat.entries()) {
+        if (chatKey.includes('@g.us')) continue;
+        let latestInboundTime = 0;
+        for (const m of list) {
+          const t = m.timestamp_s ? m.timestamp_s * 1000 : (m.created_at ? new Date(m.created_at).getTime() : 0);
+          if (m.direction === 'INBOUND' && t > latestInboundTime) {
+            latestInboundTime = t;
+          }
+          if (Array.isArray(m.reactions) && m.reactions.some((r) => !r.from_me) && t > latestInboundTime) {
+            latestInboundTime = t;
+          }
+        }
+        if (latestInboundTime > 0) {
+          for (const m of list) {
+            if (m.direction === 'OUTBOUND' && m.status === 'SENT') {
+              const t = m.timestamp_s ? m.timestamp_s * 1000 : (m.created_at ? new Date(m.created_at).getTime() : 0);
+              if (t <= latestInboundTime) {
+                m.status = 'READ';
+              }
+            }
+          }
+        }
+        // Son mesajin reaksiyonu varsa sohbet onizlemesini ve last_reaction'i guncelle
+        const chat = chats.get(chatKey);
+        if (chat && list.length > 0) {
+          const newestMsg = list[list.length - 1];
+          if (Array.isArray(newestMsg.reactions) && newestMsg.reactions.length > 0) {
+            const newestRx = newestMsg.reactions[newestMsg.reactions.length - 1];
+            if (newestRx?.emoji && (!chat.last_reaction || !chat.last_message_preview?.includes('ifadesini'))) {
+              chat.last_reaction = {
+                emoji: newestRx.emoji,
+                from_me: Boolean(newestRx.from_me),
+                reactor_jid: newestRx.reactor_jid || null,
+              };
+              chat.last_message_preview = newestRx.from_me
+                ? `Şu mesaja ${newestRx.emoji} ifadesini bıraktınız`
+                : `Şu mesaja ${newestRx.emoji} ifadesini bıraktı`;
+            }
+          }
         }
       }
 

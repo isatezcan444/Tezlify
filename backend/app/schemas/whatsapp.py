@@ -328,6 +328,7 @@ class WhatsAppStartConversationRequest(BaseModel):
     phone: str = Field(..., min_length=5, max_length=32, description="Ülke kodu dahil telefon (örn. +90 5XX XXX XX XX)")
     name: Optional[str] = Field(None, max_length=150)
     message: Optional[str] = Field(None, max_length=4000)
+    session_id: Optional[int] = Field(None, description="Hedef bağlı hat/oturum ID'si")
 
 
 class WhatsAppReadResult(BaseModel):

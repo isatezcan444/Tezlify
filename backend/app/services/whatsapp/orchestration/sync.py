@@ -61,6 +61,7 @@ from backend.app.services.whatsapp.orchestration.messaging import (
 from backend.app.services.whatsapp.preview_normalization import (
     as_naive_utc as _as_naive_utc,
     build_last_message_summary,
+    format_reaction_preview as _format_reaction_preview,
     normalize_preview_text as _normalize_preview_text,
     parse_dt as _parse_dt,
 )
@@ -1511,13 +1512,23 @@ class WhatsAppSyncOrchestrator:
                     if wa:
                         have.add(str(wa))
                     rows.append((row, str(gm.get("conversation_id") or ""), rx_list))
-                    summary = build_last_message_summary(
-                        message_type=row.message_type.value,
-                        body=row.body,
-                        sender_name=row.sender_name,
-                        is_group="@g.us" in str(gm.get("conversation_id") or ""),
-                        direction=row.direction.value,
-                    )
+                    if rx_list and rx_list[-1].get("emoji"):
+                        last_rx = rx_list[-1]
+                        summary = _format_reaction_preview(
+                            last_rx["emoji"],
+                            from_me=bool(last_rx.get("from_me")),
+                            sender_name=row.sender_name if "@g.us" in str(gm.get("conversation_id") or "") else None,
+                            is_group="@g.us" in str(gm.get("conversation_id") or ""),
+                            lang="tr",
+                        )
+                    else:
+                        summary = build_last_message_summary(
+                            message_type=row.message_type.value,
+                            body=row.body,
+                            sender_name=row.sender_name,
+                            is_group="@g.us" in str(gm.get("conversation_id") or ""),
+                            direction=row.direction.value,
+                        )
                     apply_last_message(conv, _parse_dt(gm.get("created_at")), summary)
                 touched.add(cid)
             serialized: List[Dict[str, Any]] = []
@@ -1541,6 +1552,8 @@ class WhatsAppSyncOrchestrator:
                 for p_row in persisted_rows:
                     matching_rx = next((rx_l for r, _, rx_l in rows if r.wa_message_id and r.wa_message_id == p_row.wa_message_id), None)
                     if matching_rx:
+                        if p_row.direction == MessageDirection.OUTBOUND and any(bool(r.get("emoji")) for r in matching_rx):
+                            p_row.status = ConversationMessageStatus.READ
                         p_conv = conv_by_id.get(p_row.conversation_id)
                         p_conv_jid = getattr(p_conv, "jid", "") if p_conv else ""
                         for rx in matching_rx:
@@ -2591,16 +2604,29 @@ class WhatsAppSyncOrchestrator:
         # last_message_at backwards (or onto a message we did not write),
         # because a duplicate is not the newest message we stored.
         summary_src = inserted[-1]
-        apply_last_message(
-            conv,
-            summary_src.external_timestamp,
-            build_last_message_summary(
+        matching_last_gm = next((m for m in gw_msgs if m.get("wa_message_id") and str(m.get("wa_message_id")) == summary_src.wa_message_id), None)
+        rx_list = matching_last_gm.get("reactions") if matching_last_gm else None
+        if rx_list and rx_list[-1].get("emoji"):
+            last_rx = rx_list[-1]
+            summary = _format_reaction_preview(
+                last_rx["emoji"],
+                from_me=bool(last_rx.get("from_me")),
+                sender_name=summary_src.sender_name if "@g.us" in jid else None,
+                is_group="@g.us" in jid,
+                lang="tr",
+            )
+        else:
+            summary = build_last_message_summary(
                 message_type=summary_src.message_type.value,
                 body=summary_src.body,
                 sender_name=summary_src.sender_name,
                 is_group="@g.us" in jid,
                 direction=summary_src.direction.value,
-            ),
+            )
+        apply_last_message(
+            conv,
+            summary_src.external_timestamp,
+            summary,
         )
         await db.commit()
         return list(reversed(inserted))

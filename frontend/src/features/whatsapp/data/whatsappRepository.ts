@@ -134,9 +134,9 @@ export class WhatsAppRepository {
   // Contacts (live-only)
   // -------------------------------------------------------------------------
 
-  static async getWhatsAppContacts(): Promise<any[]> {
+  static async getWhatsAppContacts(sessionId?: number): Promise<any[]> {
     await requireLive();
-    return WhatsAppApi.getContacts();
+    return WhatsAppApi.getContacts(sessionId);
   }
 
   // -------------------------------------------------------------------------
@@ -392,9 +392,9 @@ export class WhatsAppRepository {
    * bagli hattan GERCEK olarak gönderilir. Fail-closed: hata çağırana
    * taşınır, sahte sohbet/mesaj üretilmez (AGENTS.md §1.1).
    */
-  static async startConversation(data: { phone: string; name?: string; message?: string }): Promise<Conversation> {
+  static async startConversation(data: { phone: string; name?: string; message?: string; sessionId?: number }): Promise<Conversation> {
     await requireLive();
-    return WhatsAppApi.startConversation(data.phone, data.name, data.message);
+    return WhatsAppApi.startConversation(data.phone, data.name, data.message, data.sessionId);
   }
 
   /**

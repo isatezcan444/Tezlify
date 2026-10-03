@@ -218,21 +218,26 @@ const ConversationRowComponent: React.FC<ConversationRowProps> = ({ id, name, av
           <p className="text-[11px] text-[#25D366] dark:text-[#25D366] font-bold truncate mt-0.5 animate-pulse">
             {t('whatsapp.peerTyping')}
           </p>
-        ) : (
-          // Rozet metnin SONUNDA durur (WhatsApp Web paritesi); metin kisalir,
-          // ifade asla kirpilmaz.
-          <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 flex items-center gap-1 min-w-0">
-            <span className="truncate min-w-0">{lastMsg}</span>
-            {lastReactionEmoji ? (
-              <span
-                className="shrink-0 text-[12px] leading-none select-none"
-                data-testid={`conv-last-reaction-${id}`}
-              >
-                {lastReactionEmoji}
-              </span>
-            ) : null}
-          </p>
-        )}
+        ) : (() => {
+          const isReactionSnippet = lastMsg.includes('ifadesini') || lastMsg.includes('reacted');
+          const displayText = (!isReactionSnippet && lastReactionEmoji)
+            ? (isGroup && name ? t('whatsapp.reactionLeftInGroup', { name, emoji: lastReactionEmoji }) : t('whatsapp.reactionLeftByOther', { emoji: lastReactionEmoji }))
+            : lastMsg;
+          const showEmojiBadge = Boolean(lastReactionEmoji && !displayText.includes(lastReactionEmoji));
+          return (
+            <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 flex items-center gap-1 min-w-0">
+              <span className="truncate min-w-0">{displayText}</span>
+              {showEmojiBadge ? (
+                <span
+                  className="shrink-0 text-[12px] leading-none select-none"
+                  data-testid={`conv-last-reaction-${id}`}
+                >
+                  {lastReactionEmoji}
+                </span>
+              ) : null}
+            </p>
+          );
+        })()}
 
         {(status !== 'ACTIVE' || unreadCount > 0) && (
           <div className="flex items-center justify-end space-x-1.5 mt-1.5">

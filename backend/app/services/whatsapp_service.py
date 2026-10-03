@@ -182,6 +182,7 @@ from backend.app.services.whatsapp.status_policy import (
 
 from backend.app.services.whatsapp.preview_normalization import (
     build_last_message_summary,
+    format_reaction_preview as _format_reaction_preview,
     normalize_preview_text as _normalize_preview_text,
 )
 
@@ -759,9 +760,21 @@ async def list_conversations(
                 continue
             seen_self_conversation = True
 
+        is_grp = bool(r.is_group) or bool(phone and "@g.us" in phone)
+        resolved_name, id_state = _resolve_contact_identity(contact, phone=phone, is_group=is_grp)
+
         # Faz 10: eski kose-parantezli degerler okuma aninda da etikete
         # normalize edilir ('[IMAGE]' -> '📷 Fotoğraf'); normal metin aynen gecer.
         preview = _normalize_preview_text(None, r.last_message_preview) or None
+        rx = reaction_map.get(r.id)
+        if rx and rx.get("emoji"):
+            preview = _format_reaction_preview(
+                rx["emoji"],
+                from_me=bool(rx.get("from_me")),
+                sender_name=resolved_name if is_grp else None,
+                is_group=is_grp,
+                lang="tr",
+            )
         msg_count = counts_map.get(r.id, 0)
         if preview:
             lm_state = "RESOLVED"
@@ -770,8 +783,6 @@ async def list_conversations(
         else:
             # Mesaj var ama ozet henuz hesaplanmadi (senkron/hydrate sürüyor).
             lm_state = "REPAIRING"
-        is_grp = bool(r.is_group) or bool(phone and "@g.us" in phone)
-        resolved_name, id_state = _resolve_contact_identity(contact, phone=phone, is_group=is_grp)
         out.append(
             {
                 "id": r.id,
@@ -1312,6 +1323,7 @@ async def start_conversation(
     phone: str,
     name: Optional[str] = None,
     message: Optional[str] = None,
+    session_id: Optional[int] = None,
 ) -> Dict[str, Any]:
     """WhatsApp Web paritesi: numara ile yeni sohbet baslat (A6 kapanisi).
 
@@ -1332,7 +1344,7 @@ async def start_conversation(
             "Geçerli bir telefon numarası girin (ülke kodu dahil, örn. +90 5XX XXX XX XX)."
         )
 
-    ws_session = await _require_user_session(db, user_id)
+    ws_session = await _require_user_session(db, user_id, session_id=session_id)
     jid = _phone_to_jid(clean_phone)
     contact_name: Optional[str] = None
     if name and name.strip():

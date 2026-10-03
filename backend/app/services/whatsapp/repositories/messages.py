@@ -165,6 +165,10 @@ def build_message_from_gateway(
     except (KeyError, TypeError) as exc:
         logger.warning("Gateway message status gecersiz; direction fallback (value=%r): %s", status_str, exc)
         status = ConversationMessageStatus.RECEIVED if direction == MessageDirection.INBOUND else ConversationMessageStatus.SENT
+    if direction == MessageDirection.OUTBOUND and status in (ConversationMessageStatus.SENT, ConversationMessageStatus.DELIVERED):
+        rx_list = msg.get("reactions") or []
+        if any(bool(r.get("emoji") or r.get("text")) for r in rx_list):
+            status = ConversationMessageStatus.READ
     return Message(
         user_id=owner,
         conversation_id=conv.id,
