@@ -259,8 +259,8 @@ src/
 - **Import**: `import { DocumentViewer } from '@/features/whatsapp/components';`
 
 #### `ChatInfoDrawer`
-- **Purpose**: WhatsApp Web authentic Contact and Group Info right-side sliding drawer. Displays high-resolution contact/group avatar (with click-to-expand lightbox), formatted phone number with one-click copy, quick action bar (in-chat search trigger, mute notification toggle), About / Description, CRM Lead profile shortcut button, comprehensive Media, Links and Docs gallery (3 tabs with image/video thumbnail grid, documents list with type badges, and parsed URLs with copy actions), Starred Messages count, and End-to-End Encryption security notice. Supports Escape key dismissal.
-- **Props**: `isOpen: boolean`, `onClose: () => void`, `conversation: Conversation`, `messages: Message[]`, `onOpenLead?: (leadId: number) => void`, `onSearchInChat?: () => void`, `onStatusChange?: (convId: number, status: 'ACTIVE' | 'ARCHIVED' | 'CLOSED') => void`.
+- **Purpose**: WhatsApp Web authentic Contact and Group Info right-side sliding drawer. Displays high-resolution contact/group avatar (with click-to-expand lightbox), formatted phone number with one-click copy, quick action bar (in-chat search trigger, mute notification toggle), About / Description, CRM Lead profile shortcut button, comprehensive Media, Links and Docs gallery (3 tabs with image/video thumbnail grid, documents list with type badges, and parsed URLs with copy actions), Starred Messages sub-view with live reactive count, message jump navigation, unstar capability, and End-to-End Encryption security notice. Supports Escape key dismissal.
+- **Props**: `isOpen: boolean`, `onClose: () => void`, `conversation: Conversation`, `messages: Message[]`, `onOpenLead?: (leadId: number) => void`, `onSearchInChat?: () => void`, `onStatusChange?: (convId: number, status: 'ACTIVE' | 'ARCHIVED' | 'CLOSED') => void`, `onJumpToMessage?: (messageId: string | number) => void`.
 - **Import**: `import { ChatInfoDrawer } from '@/features/whatsapp/components';`
 
 #### `useWhatsAppLoadingGate` (hook)

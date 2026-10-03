@@ -20,6 +20,7 @@ import {
   CheckCircle2,
   UserX,
   Users,
+  ArrowLeft,
 } from 'lucide-react';
 import { Conversation, Message } from '../../../types';
 import { useI18n } from '../../../context/I18nContext';
@@ -27,6 +28,13 @@ import { useToast } from '../../../context/ToastContext';
 import { Avatar } from '../../../components/ui/Avatar';
 import { resolveMediaUrl } from '../../../lib/mediaUrl';
 import { formatPhoneNumber } from '../lib/whatsappIdentity';
+import { formatMessageTime } from '../../../lib/utils';
+import {
+  getStarredMessagesForConversation,
+  getStarredCountForConversation,
+  subscribeStarredChanges,
+  toggleMessageStar,
+} from '../lib/starredMessages';
 import { MediaLightbox } from './MediaLightbox';
 import { DocumentViewer, resolveDocVisual } from './DocumentViewer';
 
@@ -38,6 +46,7 @@ export interface ChatInfoDrawerProps {
   onOpenLead?: (leadId: number) => void;
   onSearchInChat?: () => void;
   onStatusChange?: (convId: number, status: 'ACTIVE' | 'ARCHIVED' | 'CLOSED') => void;
+  onJumpToMessage?: (messageId: string | number) => void;
 }
 
 type GalleryTab = 'MEDIA' | 'DOCS' | 'LINKS';
@@ -57,14 +66,31 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
   onOpenLead,
   onSearchInChat,
   onStatusChange,
+  onJumpToMessage,
 }) => {
-  const { t } = useI18n();
+  const { t, language } = useI18n();
   const toast = useToast();
 
   const [activeTab, setActiveTab] = useState<GalleryTab>('MEDIA');
   const [copiedPhone, setCopiedPhone] = useState(false);
   const [copiedLink, setCopiedLink] = useState<string | null>(null);
   const [isMuted, setIsMuted] = useState(false);
+  const [isStarredViewOpen, setIsStarredViewOpen] = useState(false);
+  const [starredCount, setStarredCount] = useState<number>(() =>
+    getStarredCountForConversation(conversation.id, messages)
+  );
+  const [starredMessages, setStarredMessages] = useState<Message[]>(() =>
+    getStarredMessagesForConversation(conversation.id, messages)
+  );
+
+  useEffect(() => {
+    const updateStarred = () => {
+      setStarredCount(getStarredCountForConversation(conversation.id, messages));
+      setStarredMessages(getStarredMessagesForConversation(conversation.id, messages));
+    };
+    updateStarred();
+    return subscribeStarredChanges(updateStarred);
+  }, [conversation.id, messages]);
 
   // Lightbox & DocumentViewer modal states
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
@@ -175,23 +201,119 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
       {/* 1. Header Bar */}
       <header className="h-[60px] px-4 border-b border-slate-200 dark:border-white/[0.08] bg-white dark:bg-[#202c33] flex items-center justify-between shrink-0">
         <div className="flex items-center space-x-3">
-          <button
-            type="button"
-            onClick={onClose}
-            data-testid="close-info-drawer-btn"
-            aria-label={t('common.close')}
-            className="p-1.5 rounded-full text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/[0.08] transition-colors cursor-pointer"
-          >
-            <X className="w-5 h-5" />
-          </button>
+          {isStarredViewOpen ? (
+            <button
+              type="button"
+              onClick={() => setIsStarredViewOpen(false)}
+              data-testid="back-info-drawer-btn"
+              aria-label={t('common.back')}
+              title={t('common.back')}
+              className="p-1.5 rounded-full text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/[0.08] transition-colors cursor-pointer"
+            >
+              <ArrowLeft className="w-5 h-5" />
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={onClose}
+              data-testid="close-info-drawer-btn"
+              aria-label={t('common.close')}
+              className="p-1.5 rounded-full text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/[0.08] transition-colors cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          )}
           <h3 className="font-bold text-sm text-slate-800 dark:text-slate-100">
-            {isGroup ? t('whatsapp.groupInfo') : t('whatsapp.contactInfo')}
+            {isStarredViewOpen
+              ? t('whatsapp.starredMessages')
+              : isGroup
+              ? t('whatsapp.groupInfo')
+              : t('whatsapp.contactInfo')}
           </h3>
         </div>
       </header>
 
-      {/* 2. Scrollable Body */}
-      <div className="flex-1 overflow-y-auto overflow-x-hidden space-y-2.5 p-3 custom-scrollbar">
+      {/* 2. Body View */}
+      {isStarredViewOpen ? (
+        /* Starred Messages Sub-view */
+        <div
+          className="flex-1 overflow-y-auto overflow-x-hidden space-y-2.5 p-3 custom-scrollbar"
+          data-testid="drawer-starred-list"
+        >
+          {starredMessages.length === 0 ? (
+            <div className="py-16 flex flex-col items-center justify-center text-center space-y-3 px-4">
+              <div className="w-14 h-14 rounded-full bg-amber-500/15 dark:bg-amber-500/20 flex items-center justify-center text-amber-500">
+                <Star className="w-7 h-7 fill-amber-500" />
+              </div>
+              <div className="space-y-1">
+                <h4 className="font-bold text-sm text-slate-800 dark:text-slate-100">
+                  {t('whatsapp.starredMessagesEmpty')}
+                </h4>
+                <p className="text-xs text-slate-500 dark:text-slate-400 max-w-[260px] leading-relaxed">
+                  {t('whatsapp.starredMessagesEmptyDesc')}
+                </p>
+              </div>
+            </div>
+          ) : (
+            starredMessages.map((msg) => {
+              const isOutbound = msg.direction === 'OUTBOUND';
+              const sender = isOutbound
+                ? language === 'tr'
+                  ? 'Siz'
+                  : 'You'
+                : displayName || cleanPhone;
+              return (
+                <div
+                  key={msg.id}
+                  onClick={() => onJumpToMessage?.(msg.id)}
+                  data-testid={`starred-card-${msg.id}`}
+                  className="p-3.5 rounded-2xl bg-white dark:bg-[#202c33] border border-slate-200/80 dark:border-white/[0.06] shadow-sm hover:border-[#7367F0]/40 transition-all cursor-pointer group/star"
+                >
+                  <div className="flex items-center justify-between text-[11px] mb-2">
+                    <span className="font-bold text-slate-700 dark:text-slate-200 truncate max-w-[160px]">
+                      {sender}
+                    </span>
+                    <div className="flex items-center space-x-2 text-slate-400">
+                      <span>{formatMessageTime(msg.created_at || msg.external_timestamp, language)}</span>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleMessageStar(msg.id, conversation.id);
+                        }}
+                        title={t('whatsapp.unstarMessage')}
+                        aria-label={t('whatsapp.unstarMessage')}
+                        data-testid={`unstar-btn-${msg.id}`}
+                        className="p-1 rounded-full text-amber-500 hover:text-rose-500 hover:bg-slate-100 dark:hover:bg-white/10 transition-colors"
+                      >
+                        <Star className="w-3.5 h-3.5 fill-amber-500 group-hover/star:fill-transparent" />
+                      </button>
+                    </div>
+                  </div>
+                  {msg.body && (
+                    <p className="text-xs text-slate-600 dark:text-slate-300 line-clamp-3 select-text leading-relaxed">
+                      {msg.body}
+                    </p>
+                  )}
+                  {msg.media_filename && (
+                    <div className="flex items-center space-x-1.5 mt-1.5 text-[11px] font-semibold text-[#7367F0]">
+                      <FileText className="w-3.5 h-3.5 shrink-0" />
+                      <span className="truncate">{msg.media_filename}</span>
+                    </div>
+                  )}
+                  {onJumpToMessage && (
+                    <div className="mt-2.5 pt-2 border-t border-slate-100 dark:border-white/[0.04] flex items-center justify-end text-[10px] font-bold text-[#7367F0] opacity-80 group-hover/star:opacity-100">
+                      <span>{t('whatsapp.jumpToMessage')} &rarr;</span>
+                    </div>
+                  )}
+                </div>
+              );
+            })
+          )}
+        </div>
+      ) : (
+        /* Main Drawer Body */
+        <div className="flex-1 overflow-y-auto overflow-x-hidden space-y-2.5 p-3 custom-scrollbar">
         {/* Profile Card */}
         <div className="bg-white dark:bg-[#202c33] p-5 rounded-2xl shadow-sm border border-slate-200/80 dark:border-white/[0.06] flex flex-col items-center text-center">
           <div
@@ -490,12 +612,24 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
         </div>
 
         {/* Starred Messages Section */}
-        <div className="bg-white dark:bg-[#202c33] p-3.5 rounded-2xl shadow-sm border border-slate-200/80 dark:border-white/[0.06] flex items-center justify-between hover:bg-slate-50 dark:hover:bg-white/[0.04] transition-colors cursor-pointer">
+        <div
+          onClick={() => setIsStarredViewOpen(true)}
+          data-testid="drawer-starred-section"
+          className="bg-white dark:bg-[#202c33] p-3.5 rounded-2xl shadow-sm border border-slate-200/80 dark:border-white/[0.06] flex items-center justify-between hover:bg-slate-50 dark:hover:bg-white/[0.04] transition-colors cursor-pointer"
+        >
           <div className="flex items-center space-x-3 text-xs font-bold text-slate-700 dark:text-slate-200">
             <Star className="w-4 h-4 text-amber-500 fill-amber-500" />
             <span>{t('whatsapp.starredMessages')}</span>
           </div>
-          <ChevronRight className="w-4 h-4 text-slate-400" />
+          <div className="flex items-center space-x-1.5 text-slate-400">
+            <span
+              className="text-xs font-bold px-2 py-0.5 rounded-full bg-slate-100 dark:bg-white/[0.08] text-slate-600 dark:text-slate-300"
+              data-testid="drawer-starred-count"
+            >
+              {starredCount}
+            </span>
+            <ChevronRight className="w-4 h-4" />
+          </div>
         </div>
 
         {/* Encryption & Security Section */}
@@ -557,6 +691,7 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
           </div>
         )}
       </div>
+      )}
 
       {/* Lightbox for Avatars & Gallery Media */}
       <MediaLightbox

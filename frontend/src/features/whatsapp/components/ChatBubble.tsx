@@ -14,7 +14,8 @@ import {
   SmilePlus,
   Plus,
   Reply,
-  Copy
+  Copy,
+  Star,
 } from 'lucide-react';
 import { Conversation, Message } from '../../../types';
 import { Tooltip } from '../../../components/ui/Tooltip';
@@ -30,6 +31,7 @@ import { VoiceNotePlayer } from './VoiceNotePlayer';
 import { MediaLightbox } from './MediaLightbox';
 import { groupReactions } from '../lib/whatsappReactions';
 import { resolveMediaUrl } from '../../../lib/mediaUrl';
+import { isMessageStarred, toggleMessageStar, subscribeStarredChanges } from '../lib/starredMessages';
 
 /** WhatsApp Web'in tepki cubugunda gosterdigi altı hizli ifade. */
 export const QUICK_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🙏'] as const;
@@ -69,6 +71,14 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
   const [imageLoadError, setImageLoadError] = useState(false);
   const [mediaRetryTs, setMediaRetryTs] = useState<number | null>(null);
   const [copied, setCopied] = useState(false);
+  const [isStarred, setIsStarred] = useState<boolean>(() => isMessageStarred(message.id));
+
+  React.useEffect(() => {
+    setIsStarred(isMessageStarred(message.id));
+    return subscribeStarredChanges(() => {
+      setIsStarred(isMessageStarred(message.id));
+    });
+  }, [message.id]);
 
   const highlightMatches = useCallback(
     (text: string): React.ReactNode => {
@@ -586,6 +596,13 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
               isInbound ? 'text-[#667781] dark:text-[#8696a0]' : 'text-[#667781] dark:text-[#8696a0]'
             }`}
           >
+            {isStarred && (
+              <Star
+                className="w-2.5 h-2.5 text-amber-500 fill-amber-500 shrink-0 inline-block mr-0.5"
+                data-testid={`msg-starred-icon-${message.id}`}
+                aria-label={t('whatsapp.starredMessages')}
+              />
+            )}
             <span>{formatTime(message.created_at || message.external_timestamp)}</span>
             {renderStatusIcon()}
           </div>
@@ -683,6 +700,25 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                 )}
               </button>
             )}
+
+            {/* Yıldızla / Yıldızı Kaldır Butonu */}
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                toggleMessageStar(message.id, message.conversation_id);
+              }}
+              title={isStarred ? t('whatsapp.unstarMessage') : t('whatsapp.starMessage')}
+              aria-label={isStarred ? t('whatsapp.unstarMessage') : t('whatsapp.starMessage')}
+              data-testid={`star-trigger-${message.id}`}
+              className={`p-1 rounded-full hover:bg-slate-100 dark:hover:bg-white/10 transition-colors cursor-pointer ${
+                isStarred
+                  ? 'text-amber-500'
+                  : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-white'
+              }`}
+            >
+              <Star className={`w-3.5 h-3.5 ${isStarred ? 'fill-amber-500' : ''}`} />
+            </button>
           </div>
 
           {canReact && isReactionBarOpen && (

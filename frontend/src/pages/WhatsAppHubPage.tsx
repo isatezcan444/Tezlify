@@ -1270,6 +1270,17 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     setIsLeadDrawerOpen(true);
   };
 
+  const handleJumpToMessage = useCallback((messageId: number | string) => {
+    const targetEl = document.getElementById(`msg-${messageId}`);
+    if (targetEl) {
+      targetEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      targetEl.classList.add('ring-2', 'ring-[#00a884]', 'dark:ring-[#25D366]', 'scale-[1.02]');
+      setTimeout(() => {
+        targetEl.classList.remove('ring-2', 'ring-[#00a884]', 'dark:ring-[#25D366]', 'scale-[1.02]');
+      }, 2000);
+    }
+  }, []);
+
   const handleStatusChange = async (convId: number, newStatus: ConversationStatus) => {
     // Truthfulness (AGENTS.md §1.1): eskiden yalnizca yerel state degistirilip
     // kosulsuz basari toast'i gosteriliyordu; kalici yazma YOKTU ve degisiklik
@@ -3338,6 +3349,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                     onOpenLead={handleOpenLead}
                     onSearchInChat={() => setIsChatSearchOpen(true)}
                     onStatusChange={handleStatusChange}
+                    onJumpToMessage={handleJumpToMessage}
                   />
                 )}
               </div>
