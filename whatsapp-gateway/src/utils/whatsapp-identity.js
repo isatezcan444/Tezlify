@@ -162,6 +162,18 @@ export function isPhoneLikeName(value) {
   return /^\+?[\d\s-()]{6,}$/.test(v) || /@\w+\.(\w+)$/.test(v);
 }
 
+export function isSavedContactName(name, phone) {
+  if (!name || typeof name !== 'string') return false;
+  const trimmed = name.trim();
+  if (!trimmed) return false;
+  if (phone && (trimmed === phone || trimmed === String(phone).trim())) return false;
+  if (trimmed.startsWith('+')) return false;
+  if (isRawIdentityName(trimmed)) return false;
+  if (isPhoneLikeName(trimmed)) return false;
+  const letters = trimmed.replace(/[\s\d+().\-_/]/g, '');
+  return letters.length > 0;
+}
+
 export function contactPhoneJid(contact) {
   if (!contact || typeof contact !== 'object') return null;
   const candidates = [contact.phoneNumber, contact.pnJid, contact.pn, contact.jid, contact.phone];

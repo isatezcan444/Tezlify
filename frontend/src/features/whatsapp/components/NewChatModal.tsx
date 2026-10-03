@@ -29,6 +29,26 @@ export interface NewChatModalProps {
   sessions?: WhatsAppSession[];
 }
 
+const isSavedContact = (c: any): boolean => {
+  if (!c) return false;
+  const name = (c.name || '').trim();
+  const phone = (c.phone || '').trim();
+  if (!name) return false;
+  if (name === phone) return false;
+  if (name.startsWith('+')) return false;
+  if (
+    name.startsWith('jid:') ||
+    name.includes('@lid') ||
+    name.includes('@g.us') ||
+    name.includes('@s.whatsapp.net') ||
+    name.includes('@c.us')
+  ) {
+    return false;
+  }
+  const letters = name.replace(/[\s\d+().\-_/]/g, '');
+  return letters.length > 0;
+};
+
 export const NewChatModal: React.FC<NewChatModalProps> = ({
   isOpen,
   onClose,
@@ -80,7 +100,8 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({
     WhatsAppRepository.getWhatsAppContacts(selectedSessionId || undefined)
       .then((data) => {
         if (!cancelled) {
-          setContacts(Array.isArray(data) ? data : []);
+          const list = Array.isArray(data) ? data : [];
+          setContacts(list.filter(isSavedContact));
         }
       })
       .catch((err) => {
@@ -109,9 +130,10 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({
   }, [isOpen]);
 
   const filteredContacts = useMemo(() => {
+    const valid = (contacts || []).filter(isSavedContact);
     const q = searchQuery.trim().toLowerCase();
-    if (!q) return contacts;
-    return contacts.filter((c) => {
+    if (!q) return valid;
+    return valid.filter((c) => {
       const name = (c.name || '').toLowerCase();
       const phone = (c.phone || '').toLowerCase();
       return name.includes(q) || phone.includes(q);
@@ -267,7 +289,7 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({
               <div className="p-2.5 rounded-xl bg-[#7367F0]/10 border border-[#7367F0]/30 flex items-center justify-between">
                 <div className="flex items-center gap-2.5 min-w-0">
                   <Avatar
-                    name={selectedContact.name || selectedContact.phone}
+                    name={selectedContact.name}
                     image={selectedContact.avatar_url}
                     phone={selectedContact.phone}
                     size="sm"
@@ -275,7 +297,7 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({
                   />
                   <div className="min-w-0">
                     <p className="text-xs font-bold text-slate-900 dark:text-white truncate">
-                      {selectedContact.name || selectedContact.phone}
+                      {selectedContact.name}
                     </p>
                     <p className="text-[11px] text-slate-500 dark:text-slate-400 font-mono truncate">
                       {selectedContact.phone}
@@ -302,7 +324,11 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({
               ) : filteredContacts.length === 0 ? (
                 <div className="p-8 text-center text-xs text-slate-400 dark:text-slate-500">
                   <Users className="w-7 h-7 mx-auto mb-1.5 opacity-30" />
-                  <p>{t('whatsapp.noContactsFound')}</p>
+                  <p>
+                    {contacts.length === 0
+                      ? t('whatsapp.noSavedContactsFound')
+                      : t('whatsapp.noContactsFound')}
+                  </p>
                 </div>
               ) : (
                 <div className="max-h-56 overflow-y-auto divide-y divide-slate-100 dark:divide-white/[0.04]">
@@ -321,7 +347,7 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({
                       >
                         <div className="flex items-center gap-2.5 min-w-0">
                           <Avatar
-                            name={c.name || c.phone}
+                            name={c.name}
                             image={c.avatar_url}
                             phone={c.phone}
                             size="sm"
@@ -329,7 +355,7 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({
                           />
                           <div className="min-w-0">
                             <p className="text-xs font-bold text-slate-800 dark:text-slate-200 truncate">
-                              {c.name || c.phone}
+                              {c.name}
                             </p>
                             <p className="text-[11px] text-slate-400 font-mono truncate">
                               {c.phone}

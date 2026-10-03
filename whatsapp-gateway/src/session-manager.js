@@ -29,6 +29,7 @@ import {
   isDegenerateJid,
   isRawIdentityName,
   isPhoneLikeName,
+  isSavedContactName,
   contactPhoneJid,
   normalizePairingPhone,
   mergeContactName,
@@ -860,48 +861,46 @@ export function createSessionManager({
       const { contacts, chats } = store;
       const result = new Map();
 
-      // 1. WhatsApp contacts deposundaki tum gecerli 1-e-1 kisiler
+      // 1. WhatsApp contacts deposundaki yalnizca gercekten rehberde kayitli 1-e-1 kisiler
       for (const c of contacts.values()) {
         if (!c.id || isLidJid(c.id) || isBroadcastOnlyJid(c.id) || c.id.includes('@g.us')) continue;
         const phone = c.phone || jidToPhone(c.id);
         if (!phone) continue;
-        const name = c.name || c.notify || null;
+        const name = c.name || null;
+        if (!isSavedContactName(name, phone)) continue;
         result.set(c.id, {
           id: c.id,
           phone,
-          name: name || phone,
+          name,
           notify: c.notify || null,
           name_source: c.name_source || 'contacts',
           avatar_url: c.avatar_url || null,
         });
       }
 
-      // 2. Sohbetlerdeki 1-e-1 kisiler (cihazdaki tum yazisilan WhatsApp kisileri)
+      // 2. Sohbetlerdeki kisiler: yalnizca rehberde kayitli adi olanlar
       for (const ch of chats.values()) {
         if (!ch.jid || isLidJid(ch.jid) || isBroadcastOnlyJid(ch.jid) || ch.jid.includes('@g.us')) continue;
         const phone = ch.phone || jidToPhone(ch.jid);
         if (!phone) continue;
-        if (!result.has(ch.jid)) {
+        if (result.has(ch.jid)) {
+          const existing = result.get(ch.jid);
+          if (!existing.avatar_url && ch.avatar_url) existing.avatar_url = ch.avatar_url;
+        } else if (isSavedContactName(ch.name, phone) && (ch.name_source === 'addressbook' || ch.name_source === 'history')) {
           result.set(ch.jid, {
             id: ch.jid,
             phone,
-            name: ch.name || phone,
+            name: ch.name,
             notify: null,
-            name_source: 'chat',
+            name_source: ch.name_source,
             avatar_url: ch.avatar_url || null,
           });
-        } else {
-          const existing = result.get(ch.jid);
-          if (!existing.avatar_url && ch.avatar_url) existing.avatar_url = ch.avatar_url;
-          if ((!existing.name || existing.name === existing.phone) && ch.name && ch.name !== ch.phone) {
-            existing.name = ch.name;
-          }
         }
       }
 
       return Array.from(result.values()).sort((a, b) => {
-        const nameA = (a.name || a.phone || '').toLowerCase();
-        const nameB = (b.name || b.phone || '').toLowerCase();
+        const nameA = (a.name || '').toLowerCase();
+        const nameB = (b.name || '').toLowerCase();
         return nameA.localeCompare(nameB, 'tr');
       });
     },

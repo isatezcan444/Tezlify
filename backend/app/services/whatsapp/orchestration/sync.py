@@ -1245,6 +1245,11 @@ class WhatsAppSyncOrchestrator:
                 "avatar_url": _get_contact_avatar(contact),
             }
             for jid_str, contact in resolved
+            if contact.display_name
+            and not _is_phone_like(contact.display_name)
+            and not _is_raw_jid_name(contact.display_name)
+            and contact.display_name.strip() != str(contact.phone_e164 or "").strip()
+            and any(ch.isalpha() for ch in contact.display_name)
         ]
         await db.commit()
         return out

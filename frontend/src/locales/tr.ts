@@ -432,6 +432,7 @@ export const tr = {
     tabManualNumber: 'Numara ile Başlat',
     searchContactsPlaceholder: 'Kişi adı veya telefon numarası ara...',
     noContactsFound: 'Eşleşen kişi bulunamadı.',
+    noSavedContactsFound: 'Rehberinizde kayıtlı kişi bulunamadı.',
     selectedContact: 'Seçilen Kişi',
     deviceLineLabel: 'Bağlı Hat',
     loadingContacts: 'Rehber kişileri yükleniyor...',

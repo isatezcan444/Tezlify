@@ -432,6 +432,7 @@ export const en = {
     tabManualNumber: 'Start with Number',
     searchContactsPlaceholder: 'Search name or phone number...',
     noContactsFound: 'No contacts found.',
+    noSavedContactsFound: 'No saved contacts found in your address book.',
     selectedContact: 'Selected Contact',
     deviceLineLabel: 'Active Line',
     loadingContacts: 'Loading contacts...',
