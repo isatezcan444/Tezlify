@@ -253,6 +253,11 @@ src/
 - **Props**: `isOpen: boolean`, `onClose: () => void`, `src?: string | null`, `mediaType?: 'IMAGE' | 'VIDEO' | 'DOCUMENT'`, `caption?: string | null`, `filename?: string | null`, `senderName?: string`, `timestamp?: string`.
 - **Import**: `import { MediaLightbox } from '@/features/whatsapp/components';`
 
+#### `DocumentViewer`
+- **Purpose**: WhatsApp Web authentic document & PDF inspection lightbox overlay. Portaled to `document.body` with `z-[99999]`. Supports full embedded PDF viewing via responsive sandboxed iframe, syntax-highlighted code/text reader with line numbers and line-wrapping toggle, one-click copy to clipboard with feedback, direct printing (`Printer`), external tab open (`ExternalLink`), direct download with blob revocation, file size resolution via `HEAD`, and keyboard shortcuts (`Escape`).
+- **Props**: `isOpen: boolean`, `onClose: () => void`, `src?: string | null`, `filename?: string | null`, `mimeType?: string | null`, `fileSize?: string | number | null`, `senderName?: string`, `timestamp?: string`.
+- **Import**: `import { DocumentViewer } from '@/features/whatsapp/components';`
+
 #### `useWhatsAppLoadingGate` (hook)
 - **Purpose**: Single-authority QR post-pairing loading gate state (WhatsApp Web parity). Fed only by real signals — backend `GET /whatsapp/loading-gate` (REST bootstrap on mount + WS reconnect) and WS `whatsapp_loading_gate` / `session_sync_*` events. No polling, no fake timers. Fires the `onReady` callback exactly once when `phase` transitions to `ready`, so the hub can auto-switch to the Live Conversations tab and eagerly load chats.
 - **Signature**: `useWhatsAppLoadingGate(onReady?: () => void) => { gate, dismiss, refresh }`.

@@ -377,6 +377,8 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
               filename={message.media_filename}
               mimeType={message.media_mime_type}
               url={resolvedMediaUrl}
+              senderName={isInbound ? (chatTitle || message.sender_phone || undefined) : undefined}
+              timestamp={formatTime(message.created_at)}
               isOutbound={!isInbound}
             />
             {message.media_caption && (

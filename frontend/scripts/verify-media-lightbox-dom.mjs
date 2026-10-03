@@ -218,3 +218,5 @@ try {
 } finally {
   await rm(tmp, { recursive: true, force: true }).catch(() => {});
 }
+
+process.exit(0);
