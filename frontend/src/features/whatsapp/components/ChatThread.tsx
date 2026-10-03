@@ -122,7 +122,6 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
   const userScrolledUpRef = useRef<boolean>(false);
   const userInteractingRef = useRef<boolean>(false);
   const userInteractingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const initialSettlingUntilRef = useRef<number>(0);
 
   const markUserInteracting = useCallback(() => {
     userInteractingRef.current = true;
@@ -161,11 +160,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
 
   const [isNearBottom, setIsNearBottom] = useState<boolean>(true);
   const [showNewMessagePill, setShowNewMessagePill] = useState<boolean>(false);
-  // Bumped by the conversation-switch reset below so the "open at the newest
-  // message" effect re-runs for a conversation the instance was NOT mounted
-  // with — the instance survives switches, so mount alone is no longer a
-  // position event.
-  const [convEpoch, setConvEpoch] = useState<number>(0);
+  const [isReady, setIsReady] = useState<boolean>(false);
 
   // Guarantee strictly chronological message order in the thread
   const sortedMessages = React.useMemo(() => {
@@ -728,7 +723,6 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
   if (conversationKey !== prevConversationKeyRef.current) {
     prevConversationKeyRef.current = conversationKey;
     userScrolledUpRef.current = false;
-    initialSettlingUntilRef.current = Date.now() + 1800;
     // legacy scroll/prepend guards
     isPrependingRef.current = false;
     pendingPrependRef.current = null;
@@ -736,10 +730,11 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
     prevScrollTopRef.current = 0;
     initialScrollDoneRef.current = false;
     // inbound detection must not read the switch as a new message
-    prevMessagesCountRef.current = messages.length;
+    prevMessagesCountRef.current = sortedMessages.length;
     prevNewestKeyRef.current = newestKey;
     setIsNearBottom(true);
     setShowNewMessagePill(false);
+    setIsReady(false);
     // K.19 geometry model
     heightsRef.current.clear();
     elsRef.current.clear();
@@ -753,35 +748,45 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
     pendingRORef.current = false;
     winRef.current = { start: 0, end: -1 };
     setWin({ start: 0, end: -1 });
-    setConvEpoch((n) => n + 1);
   }
 
   // Smart Auto-Scroll when new messages arrive at the end
   useEffect(() => {
+    // Only handle incoming messages if initial load has already completed
+    if (!initialScrollDoneRef.current || isPrependingRef.current) return;
+
     const isNewMessageAdded =
+      prevMessagesCountRef.current > 0 &&
       sortedMessages.length > prevMessagesCountRef.current &&
       newestKey !== prevNewestKeyRef.current;
+
     prevMessagesCountRef.current = sortedMessages.length;
     prevNewestKeyRef.current = newestKey;
 
-    if (isNewMessageAdded && !isPrependingRef.current) {
+    if (isNewMessageAdded) {
       if (isNearBottom) {
-        if (virtualizeRef.current) { fsCtxRef.current = 'passive'; geomOp('new-message', { pin: 'bottom' }); }
-        else { markLegacyProgrammatic(600); bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }
+        if (virtualizeRef.current) {
+          fsCtxRef.current = 'passive';
+          geomOp('new-message', { pin: 'bottom' });
+        } else {
+          const cont = containerRef.current;
+          if (cont) {
+            markLegacyProgrammatic(500);
+            cont.scrollTo({ top: cont.scrollHeight, behavior: 'smooth' });
+          }
+        }
         setShowNewMessagePill(false);
       } else {
         setShowNewMessagePill(true);
       }
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sortedMessages, isNearBottom, geomOp]);
+  }, [sortedMessages, isNearBottom, geomOp, newestKey, markLegacyProgrammatic]);
 
   const pinToBottomInstant = useCallback(() => {
     const cont = containerRef.current;
     if (!cont) return;
     markLegacyProgrammatic(150);
     cont.scrollTop = cont.scrollHeight;
-    bottomRef.current?.scrollIntoView({ behavior: 'instant', block: 'end' });
   }, [markLegacyProgrammatic]);
 
   const scrollToBottomNow = useCallback((behavior: 'instant' | 'smooth' = 'instant') => {
@@ -800,7 +805,6 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
     } else {
       cont.scrollTo({ top: cont.scrollHeight, behavior: 'smooth' });
     }
-    bottomRef.current?.scrollIntoView({ behavior, block: 'end' });
     setIsNearBottom(true);
     setShowNewMessagePill(false);
   }, [geomOp, markLegacyProgrammatic]);
@@ -810,46 +814,36 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
   };
 
   // Initial scroll to bottom on mount, on load finishing, on a conversation
-  // switch (convEpoch) — the instance is reused across switches — and on the
-  // chat first getting content. The multi-phase settling window ensures that
-  // any layout passes, font changes, and initial renders consistently place
-  // the thread at its newest message without mid-view landing.
-  const hasContent = sortedMessages.length > 0;
+  // switch, and on the chat first getting content. Pre-paint positioning ensures
+  // the thread is directly positioned at its newest message without visible jumping.
   useLayoutEffect(() => {
-    if (loading) return;
+    if (loading) {
+      setIsReady(false);
+      return;
+    }
+    if (isPrependingRef.current) return;
+
     const cont = containerRef.current;
     if (!cont) return;
+
     if (sortedMessages.length > 0) {
-      initialSettlingUntilRef.current = Date.now() + 1800;
-      userScrolledUpRef.current = false;
-      pinToBottomInstant();
-
-      // Multi-phase settle to catch immediate layout passes and web font application
-      const raf1 = requestAnimationFrame(() => {
-        if (!userScrolledUpRef.current) pinToBottomInstant();
-        const raf2 = requestAnimationFrame(() => {
-          if (!userScrolledUpRef.current) pinToBottomInstant();
-        });
-        return () => cancelAnimationFrame(raf2);
-      });
-
-      const t1 = setTimeout(() => { if (!userScrolledUpRef.current) pinToBottomInstant(); }, 60);
-      const t2 = setTimeout(() => { if (!userScrolledUpRef.current) pinToBottomInstant(); }, 200);
-      const t3 = setTimeout(() => { if (!userScrolledUpRef.current) pinToBottomInstant(); }, 500);
-
-      initialScrollDoneRef.current = true;
-      return () => {
-        cancelAnimationFrame(raf1);
-        clearTimeout(t1);
-        clearTimeout(t2);
-        clearTimeout(t3);
-      };
+      if (!initialScrollDoneRef.current) {
+        userScrolledUpRef.current = false;
+        cont.scrollTop = cont.scrollHeight;
+        initialScrollDoneRef.current = true;
+        prevMessagesCountRef.current = sortedMessages.length;
+        prevNewestKeyRef.current = newestKey;
+        setIsNearBottom(true);
+        setShowNewMessagePill(false);
+        setIsReady(true);
+      }
+    } else {
+      setIsReady(true);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loading, virtualize, convEpoch, hasContent, conversationKey, pinToBottomInstant]);
+  }, [loading, conversationKey, sortedMessages.length, newestKey]);
 
   // ResizeObserver: when media (videos, images, posters) load and expand the content wrapper,
-  // ensure the chat stays pinned to the bottom if the user hasn't explicitly scrolled up or is near bottom.
+  // ensure the chat stays pinned to the bottom if the user hasn't explicitly scrolled up and is near bottom.
   useEffect(() => {
     if (virtualizeRef.current) return;
     const contentEl = contentWrapperRef.current;
@@ -857,18 +851,16 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
     if (!contentEl || !cont) return;
 
     const ro = new ResizeObserver(() => {
-      if (isPrependingRef.current) return;
-      const isSettling = Date.now() < initialSettlingUntilRef.current;
+      if (isPrependingRef.current || !initialScrollDoneRef.current) return;
       const distanceFromBottom = cont.scrollHeight - cont.scrollTop - cont.clientHeight;
-      if (!userScrolledUpRef.current || isSettling || distanceFromBottom <= 250) {
+      if (!userScrolledUpRef.current && distanceFromBottom > 0 && distanceFromBottom <= 300) {
         cont.scrollTop = cont.scrollHeight;
-        bottomRef.current?.scrollIntoView({ behavior: 'instant', block: 'end' });
       }
     });
 
     ro.observe(contentEl);
     return () => ro.disconnect();
-  }, [convEpoch]);
+  }, [conversationKey]);
 
   // ------------------------------------------------------------- render ----
   const renderRowBody = (row: ThreadRow) => (
@@ -1006,10 +998,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
   // Byte-identical DOM + behaviour to the pre-K.19 production component.
   if (!virtualize) {
     return (
-      <div
-        key={`thread-${convEpoch}`}
-        className="relative flex-1 min-w-0 flex flex-col min-h-0 animate-in fade-in duration-200 ease-out"
-      >
+      <div className="relative flex-1 min-w-0 flex flex-col min-h-0">
         {pagingBanner}
         <div
           ref={containerRef}
@@ -1022,8 +1011,8 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
               markUserInteracting();
             }
           }}
-          className="flex-1 min-w-0 p-4 overflow-y-auto overflow-x-hidden"
-          style={{ overflowAnchor: 'none' }}
+          className={`flex-1 min-w-0 p-4 overflow-y-auto overflow-x-hidden ${isReady ? 'opacity-100' : 'opacity-0'}`}
+          style={{ overflowAnchor: 'none', scrollBehavior: 'auto' }}
         >
           <div ref={contentWrapperRef} className="flex flex-col min-h-full space-y-1">
             <div className="flex-1 min-h-0" />
@@ -1065,8 +1054,8 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
             markUserInteracting();
           }
         }}
-        style={{ overflowAnchor: 'none' }}
-        className="flex-1 min-w-0 p-4 overflow-y-auto overflow-x-hidden"
+        style={{ overflowAnchor: 'none', scrollBehavior: 'auto' }}
+        className={`flex-1 min-w-0 p-4 overflow-y-auto overflow-x-hidden ${isReady ? 'opacity-100' : 'opacity-0'}`}
       >
         {win.start <= 0 && messages.length >= 50 && hasMore && loadOlderButton}
         <div aria-hidden style={{ height: `${topSpacer}px` }} />

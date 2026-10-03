@@ -237,17 +237,17 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({ message, isGroup = fal
           <div className="space-y-2">
             <div 
               onClick={() => !imageLoadError && resolvedMediaUrl && setIsLightboxOpen(true)}
-              className="relative group rounded-xl overflow-hidden bg-slate-950/10 dark:bg-black/20 border border-black/5 dark:border-white/10 max-w-[280px] min-h-[140px] cursor-pointer"
+              className="relative group rounded-xl overflow-hidden bg-slate-950/10 dark:bg-black/20 border border-black/5 dark:border-white/10 w-[260px] h-[180px] max-w-full cursor-pointer"
             >
               {resolvedMediaUrl && !imageLoadError ? (
                 <img 
                   src={resolvedMediaUrl} 
                   alt={message.media_caption || t('leads.imageAltFallback')} 
                   onError={() => setImageLoadError(true)}
-                  className="w-full h-auto max-h-60 object-cover group-hover:scale-105 transition-transform duration-200"
+                  className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
                 />
               ) : (
-                <div className="flex flex-col items-center justify-center p-6 text-slate-500 dark:text-slate-400 bg-slate-200/50 dark:bg-white/[0.05]">
+                <div className="w-full h-full flex flex-col items-center justify-center p-4 text-slate-500 dark:text-slate-400 bg-slate-200/50 dark:bg-white/[0.05]">
                   <ImageIcon className="w-10 h-10 mb-2 opacity-60" />
                   <span className="text-[11px] font-bold">{t('leads.imagePreview')}</span>
                   <span className="text-[9px] opacity-70 font-mono mt-0.5">{message.media_mime_type || 'image/jpeg'}</span>
@@ -307,27 +307,24 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({ message, isGroup = fal
           : undefined;
 
         return (
-          <div className="space-y-2 max-w-[280px] min-h-[160px]">
-            {videoSrc ? (
-              <video
-                controls
-                preload="metadata"
-                playsInline
-                // `#t=0.1` medya fragment'i tarayiciya ILK KAREYE atlamasini
-                // soyler; bu sayede balon oynatilmadan once siyah bir
-                // dikdortgen degil, videonun kendi karesi gorunur. Sunucu
-                // tarafinda thumbnail uretmek yeni bir bagimlilik (ffmpeg)
-                // gerektirirdi; bu cozum ayni sonucu bagimliliksiz verir.
-                src={videoSrc}
-                className="w-full min-h-[160px] max-h-60 rounded-xl border border-black/5 dark:border-white/10 bg-black aspect-video object-cover"
-              />
-            ) : (
-              <div className="rounded-xl overflow-hidden bg-slate-950/20 border border-black/5 dark:border-white/10 p-4 text-center">
-                <Video className="w-8 h-8 mx-auto text-[#7367F0] mb-1.5" />
-                <span className="text-xs font-bold block">{t('leads.videoMessage')}</span>
-                <span className="text-[10px] text-slate-400 font-mono">{message.media_mime_type || 'video/mp4'}</span>
-              </div>
-            )}
+          <div className="space-y-2 w-[260px] max-w-full">
+            <div className="relative group rounded-xl overflow-hidden bg-black/40 border border-black/5 dark:border-white/10 w-full h-[180px]">
+              {videoSrc ? (
+                <video
+                  controls
+                  preload="metadata"
+                  playsInline
+                  src={videoSrc}
+                  className="w-full h-full object-cover"
+                />
+              ) : (
+                <div className="w-full h-full flex flex-col items-center justify-center p-4 text-slate-500 dark:text-slate-400 bg-slate-200/50 dark:bg-white/[0.05]">
+                  <Video className="w-8 h-8 mx-auto text-[#7367F0] mb-1.5" />
+                  <span className="text-xs font-bold block">{t('leads.videoMessage')}</span>
+                  <span className="text-[10px] text-slate-400 font-mono">{message.media_mime_type || 'video/mp4'}</span>
+                </div>
+              )}
+            </div>
             {message.media_caption && (
               <p className="whitespace-pre-wrap break-words font-medium text-xs">
                 {message.media_caption}
