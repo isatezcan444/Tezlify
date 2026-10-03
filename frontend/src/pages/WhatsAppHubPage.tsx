@@ -3255,6 +3255,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                             type="button"
                             title={t('common.menuTitle')}
                             aria-label={t('common.menuTitle')}
+                            data-testid="chat-header-menu-btn"
                             className="p-2 rounded-lg text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 hover:bg-slate-200/60 dark:hover:bg-white/[0.08] transition-all duration-150 cursor-pointer"
                           >
                             <MoreVertical className="w-4 h-4" />

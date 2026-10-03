@@ -149,7 +149,7 @@ async def run_forwarding_verification():
 
         # 5. Test Multi-Select Mode via 3-dot Menu
         print("[5] Testing Multi-Select Mode via 3-Dot Dropdown Menu...")
-        menu_btn = page.locator("button[aria-label='Menü']").first
+        menu_btn = page.locator("[data-testid='chat-header-menu-btn']").first
         if await menu_btn.count() == 0:
             menu_btn = page.locator("button:has(svg.lucide-more-vertical)").first
         assert await menu_btn.count() > 0, "3-dot dropdown menu trigger must exist"
