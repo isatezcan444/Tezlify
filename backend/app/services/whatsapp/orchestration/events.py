@@ -1152,6 +1152,7 @@ class WhatsAppEventOrchestrator:
             "_resolve_event_owner_and_session", _resolve_event_owner_and_session
         )
         find_conversation = self._get_helper("_find_whatsapp_conversation", _find_whatsapp_conversation)
+        apply_last_message = self._get_helper("_apply_last_message", _apply_last_message)
 
         jid = event.get("conversation_id") or event.get("jid")
         if not jid or "@" not in str(jid):
@@ -1203,7 +1204,7 @@ class WhatsAppEventOrchestrator:
         if emoji and not from_me and target.direction == MessageDirection.OUTBOUND:
             if target.status != ConversationMessageStatus.READ:
                 target.status = ConversationMessageStatus.READ
-                target.read_at = _parse_dt(event.get("created_at")) or datetime.now(timezone.utc).replace(tzinfo=None)
+                target.read_at = _as_naive_utc(_parse_dt(event.get("created_at"))) or datetime.utcnow()
                 await db.flush()
                 try:
                     from backend.app.api.v1.websocket import ws_manager
@@ -1236,9 +1237,8 @@ class WhatsAppEventOrchestrator:
                 is_group="@g.us" in jid_str,
                 lang="tr",
             )
-            conv.last_message_preview = reaction_preview
-            created_at_dt = _parse_dt(event.get("created_at")) or datetime.now(timezone.utc).replace(tzinfo=None)
-            conv.last_message_at = created_at_dt
+            created_at_dt = _as_naive_utc(_parse_dt(event.get("created_at"))) or datetime.utcnow()
+            apply_last_message(conv, created_at_dt, reaction_preview)
             await db.flush()
 
         return {
@@ -1676,6 +1676,15 @@ class WhatsAppEventOrchestrator:
                 canonical_contact, phone=canonical_phone, is_group=canonical_is_group
             )
             canonical_preview = _normalize_preview_text(None, conv.last_message_preview) or None
+            conv_rx = await _conversation_reaction(db, conv.id)
+            if conv_rx and conv_rx.get("emoji"):
+                canonical_preview = _format_reaction_preview(
+                    conv_rx["emoji"],
+                    from_me=bool(conv_rx.get("from_me")),
+                    sender_name=canonical_name if canonical_is_group else None,
+                    is_group=canonical_is_group,
+                    lang="tr",
+                )
             event["conversation"] = {
                 "id": conv.id,
                 "session_id": conv.session_id,
@@ -1688,6 +1697,7 @@ class WhatsAppEventOrchestrator:
                 "is_archived": bool(conv.is_archived),
                 "avatar_url": _get_contact_avatar(canonical_contact),
                 "last_message_preview": canonical_preview,
+                "last_reaction": conv_rx,
                 "last_message_at": conv.last_message_at.isoformat()
                 if conv.last_message_at
                 else None,
@@ -2249,7 +2259,10 @@ class WhatsAppEventOrchestrator:
                         return {"_duplicate": True, "event_id": event_id}
                 if evt == "message_new":
                     result = await ingest_message(db, event)
-                elif evt in ("conversation_updated", "conversation_read", "message_status_updated", "presence_updated"):
+                elif evt in ("conversation_updated", "chat_update", "conversation_read", "message_status_updated", "presence_updated"):
+                    if evt == "chat_update" and "chat" in event and "conversation" not in event:
+                        event["conversation"] = event["chat"]
+                        event["event"] = "conversation_updated"
                     result = await map_conversation_event(db, event)
                 elif evt == "contact_synced":
                     result = await ingest_contact_synced(db, event)

@@ -22,8 +22,14 @@ export function mergeWhatsAppMessages(current: Message[], incoming: Message[]): 
     for (const duplicateSlot of slots.slice(1)) {
       const duplicate = result[duplicateSlot];
       if (duplicate) {
-        previous = previous ? { ...duplicate, ...previous,
-          status: mergeDeliveryStatus(previous.status, duplicate.status) } : duplicate;
+        previous = previous ? {
+          ...duplicate,
+          ...previous,
+          reactions: Array.isArray(previous.reactions) && previous.reactions.length > 0
+            ? previous.reactions
+            : duplicate.reactions,
+          status: mergeDeliveryStatus(previous.status, duplicate.status),
+        } : duplicate;
         result[duplicateSlot] = undefined;
         for (const [key, value] of identities) if (value === duplicateSlot) identities.set(key, slot);
       }
@@ -40,6 +46,7 @@ export function mergeWhatsAppMessages(current: Message[], incoming: Message[]): 
       media_filename: message.media_filename || previous.media_filename,
       media_caption: message.media_caption || previous.media_caption,
       link_preview: message.link_preview || previous.link_preview,
+      reactions: Array.isArray(message.reactions) ? message.reactions : previous.reactions,
       status: mergeDeliveryStatus(previous.status, message.status),
     } : message;
     for (const key of keys) identities.set(key, slot);

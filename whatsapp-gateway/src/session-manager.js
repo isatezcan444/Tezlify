@@ -1556,12 +1556,15 @@ export function createSessionManager({
         }
         const chat = store.chats.get(key);
         if (chat && emoji) {
+          const chatActivity = chat.last_message_at ? new Date(chat.last_message_at).getTime() : 0;
           chat.last_reaction = { emoji, from_me: fromMe, reactor_jid: reactorJid };
           chat.last_message_preview = fromMe
             ? `Şu mesaja ${emoji} ifadesini bıraktınız`
             : `Şu mesaja ${emoji} ifadesini bıraktı`;
-          if (ts) chat.last_activity_timestamp = ts;
-          this._emit({ gateway_session_id: sessionId, event: 'chat_update', chat });
+          if (ts && ts >= chatActivity) {
+            chat.last_message_at = new Date(ts).toISOString();
+          }
+          this._emit({ gateway_session_id: sessionId, event: 'conversation_updated', conversation: { ...chat } });
         }
       }
 

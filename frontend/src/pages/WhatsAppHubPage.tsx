@@ -2336,8 +2336,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
               const byId = new Map(prev.map((c) => [c.id, c]));
               for (const item of finalList) {
                 const current = byId.get(item.id);
-                byId.set(item.id, current && !shouldApplyPreview(item.last_message_at, current.last_message_at)
-                  ? { ...item, ...current } : item);
+                byId.set(item.id, current ? { ...current, ...item } : item);
               }
               return [...byId.values()].sort(compareByLastMessageDesc);
             });
@@ -2354,6 +2353,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
           syncMsgBufferRef.current = {};
           fetchSessions(true);
           onRefreshStatsRef.current();
+          void loadConversations(true);
           // The BACKEND's first sync just reached its terminal state, and its
           // durable stamp (`initial_sync_completed_at`) was committed BEFORE this
           // event was broadcast. The full-screen gate is fed ONLY by the backend

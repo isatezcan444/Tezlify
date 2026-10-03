@@ -854,13 +854,13 @@ export function bindSocketEvents({
         }
         const chat = chats.get(key);
         if (chat) {
-          const chatActivity = chat.last_activity_timestamp || 0;
+          const chatActivity = chat.last_message_at ? new Date(chat.last_message_at).getTime() : 0;
           if (ts && ts >= chatActivity) {
             chat.last_reaction = { emoji: rx.text, from_me: fromMe, reactor_jid: reactorJid };
             chat.last_message_preview = fromMe
               ? `Şu mesaja ${rx.text} ifadesini bıraktınız`
               : `Şu mesaja ${rx.text} ifadesini bıraktı`;
-            chat.last_activity_timestamp = ts;
+            chat.last_message_at = new Date(ts).toISOString();
           }
         }
       }

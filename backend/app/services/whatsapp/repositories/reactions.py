@@ -6,6 +6,7 @@ reaksiyonlar TOPLU olarak alinir (mesaj basina sorgu = N+1), ki 50 mesajlik bir
 thread 50 ek sorgu uretmesin.
 """
 
+import inspect
 import logging
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -192,14 +193,33 @@ async def latest_reaction_by_conversation(
     ids = [int(c) for c in conversation_ids]
     if not ids:
         return {}
-    newest = (
-        select(Message.conversation_id.label("conversation_id"), func.max(Message.id).label("last_id"))
+    # Mesajlar on-demand ya da geri doldurma ile tersten yazilabildigi icin
+    # salt MAX(Message.id) kullanilmaz; gercek kronolojik en yeni mesaj secilir.
+    msg_rank = (
+        select(
+            Message.id.label("msg_id"),
+            Message.conversation_id.label("conversation_id"),
+            func.row_number()
+            .over(
+                partition_by=Message.conversation_id,
+                order_by=[
+                    func.coalesce(Message.external_timestamp, Message.created_at).desc(),
+                    Message.id.desc(),
+                ],
+            )
+            .label("rn"),
+        )
         .where(Message.conversation_id.in_(ids))
-        .group_by(Message.conversation_id)
         .subquery()
     )
-    rows = (
-        await db.execute(
+    newest = (
+        select(msg_rank.c.conversation_id, msg_rank.c.msg_id.label("last_id"))
+        .where(msg_rank.c.rn == 1)
+        .subquery()
+    )
+    rows = []
+    try:
+        exec_res = await db.execute(
             select(MessageReaction)
             .join(
                 newest,
@@ -209,7 +229,24 @@ async def latest_reaction_by_conversation(
             .where(MessageReaction.emoji != "")
             .order_by(MessageReaction.updated_at.desc(), MessageReaction.id.desc())
         )
-    ).scalars().all()
+        if hasattr(exec_res, "scalars"):
+            sc = exec_res.scalars
+            if callable(sc):
+                sc = sc()
+            if inspect.iscoroutine(sc):
+                sc = await sc
+            if hasattr(sc, "all"):
+                res_all = sc.all
+                if callable(res_all):
+                    res_all = res_all()
+                if inspect.iscoroutine(res_all):
+                    rows = await res_all
+                elif isinstance(res_all, (list, tuple)):
+                    rows = res_all
+    except Exception as exc:
+        logger.debug("latest_reaction_by_conversation sorgusu atlandi: %s", exc)
+        return {}
+
     out: Dict[int, Dict[str, Any]] = {}
     for reaction in rows:
         # Ayni mesaja birden fazla kisi ifade biraktiysa listede EN YENISI gorunur
