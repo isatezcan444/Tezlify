@@ -196,6 +196,11 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
       setRecordingDuration(0);
     };
 
+    if (recorder.state === 'recording') {
+      try {
+        recorder.requestData();
+      } catch {}
+    }
     if (recorder.state !== 'inactive') {
       recorder.stop();
     }

@@ -74,6 +74,7 @@ import {
 } from './messages/message-store.js';
 
 import { createMediaStore } from './media/media-store.js';
+import { transcodeToOggOpus } from './media/audio-transcoder.js';
 
 // Lease & LID
 import { createLeaseCoordinator } from './lease/lease-coordinator.js';
@@ -1236,24 +1237,47 @@ export function createSessionManager({
         const st = String(existing.status || '').toUpperCase();
         if (st === 'SENT' || st === 'DELIVERED' || st === 'READ') return { ...existing };
       }
-      let storedOutboundMedia = null;
-      if (media_base64 && typeof mediaStore?.storeMediaBuffer === 'function') {
+      let effectiveBase64 = media_base64;
+      let effectiveMimeType = mime_type;
+      let effectiveFilename = filename;
+
+      if ((type === 'audio' || type === 'voice') && media_base64) {
         try {
-          const buf = Buffer.from(media_base64, 'base64');
+          const rawBuf = Buffer.from(media_base64, 'base64');
+          const { buffer: transcodedBuf, mimetype: targetMime } = await transcodeToOggOpus(rawBuf);
+          effectiveBase64 = transcodedBuf.toString('base64');
+          effectiveMimeType = targetMime || 'audio/ogg; codecs=opus';
+          if (!effectiveFilename || effectiveFilename.endsWith('.webm')) {
+            effectiveFilename = (effectiveFilename || 'voice.ogg').replace(/\.webm$/i, '.ogg');
+          }
+        } catch (tErr) {
+          logger.warn({ err: tErr }, '[session-manager] Audio transcode error');
+        }
+      }
+
+      let storedOutboundMedia = null;
+      if (effectiveBase64 && typeof mediaStore?.storeMediaBuffer === 'function') {
+        try {
+          const buf = Buffer.from(effectiveBase64, 'base64');
           storedOutboundMedia = mediaStore.storeMediaBuffer(session.id, buf, {
-            mimeType: mime_type,
-            filename,
+            mimeType: effectiveMimeType,
+            filename: effectiveFilename,
           });
         } catch (e) {
           logger.warn({ err: e }, 'Failed to store outbound media in mediaStore');
         }
       }
       const outboundMediaId = storedOutboundMedia?.media_id || null;
-      const outboundMimeType = storedOutboundMedia?.mime_type || mime_type || null;
-      const outboundFilename = storedOutboundMedia?.filename || filename || null;
+      const outboundMimeType = storedOutboundMedia?.mime_type || effectiveMimeType || null;
+      const outboundFilename = storedOutboundMedia?.filename || effectiveFilename || null;
 
       const content = buildMediaContent({
-        media_type, media_url, media_base64, mime_type, caption, filename,
+        media_type,
+        media_url,
+        media_base64: effectiveBase64,
+        mime_type: effectiveMimeType,
+        caption,
+        filename: effectiveFilename,
       });
       const messageId = crypto.createHash('sha256')
         .update(`${session.id}\0${key}\0${clientMessageId}`)

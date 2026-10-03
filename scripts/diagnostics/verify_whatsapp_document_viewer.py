@@ -69,8 +69,8 @@ async def run_document_verification():
         await page.wait_for_timeout(2000)
 
         # 2. Select conversation with real documents
-        # Candidate chats known to contain documents: 20497, 20534, 20514, 20519
-        candidate_conv_ids = ["20497", "20534", "20514", "20519"]
+        # Candidate chats known to contain documents: 20618 (CamScanner pdf), 20641, 20656, 20636
+        candidate_conv_ids = ["20618", "20641", "20656", "20636", "20497", "20534", "20514", "20519"]
         selected_conv = None
 
         print("[2] Searching for conversation with real document messages...")

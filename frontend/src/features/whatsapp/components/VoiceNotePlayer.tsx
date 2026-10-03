@@ -39,9 +39,19 @@ export const VoiceNotePlayer: React.FC<VoiceNotePlayerProps> = ({
     const onTimeUpdate = () => {
       setCurrentTime(audio.currentTime);
       if (audio.currentTime > 0) setHasBeenPlayed(true);
+      if (!Number.isFinite(duration) || duration <= 0) {
+        if (Number.isFinite(audio.duration) && audio.duration > 0) {
+          setDuration(audio.duration);
+        }
+      }
     };
     const onLoadedMetadata = () => {
-      if (Number.isFinite(audio.duration)) {
+      if (Number.isFinite(audio.duration) && audio.duration > 0) {
+        setDuration(audio.duration);
+      }
+    };
+    const onDurationChange = () => {
+      if (Number.isFinite(audio.duration) && audio.duration > 0) {
         setDuration(audio.duration);
       }
     };
@@ -56,12 +66,17 @@ export const VoiceNotePlayer: React.FC<VoiceNotePlayerProps> = ({
     };
     const onPause = () => setIsPlaying(false);
     const onError = () => {
+      if (audio.error && audio.error.code === 1) {
+        // MEDIA_ERR_ABORTED - normal during range probe or chunk transition
+        return;
+      }
       setAudioError(true);
       setIsPlaying(false);
     };
 
     audio.addEventListener('timeupdate', onTimeUpdate);
     audio.addEventListener('loadedmetadata', onLoadedMetadata);
+    audio.addEventListener('durationchange', onDurationChange);
     audio.addEventListener('ended', onEnded);
     audio.addEventListener('play', onPlay);
     audio.addEventListener('pause', onPause);
@@ -70,12 +85,13 @@ export const VoiceNotePlayer: React.FC<VoiceNotePlayerProps> = ({
     return () => {
       audio.removeEventListener('timeupdate', onTimeUpdate);
       audio.removeEventListener('loadedmetadata', onLoadedMetadata);
+      audio.removeEventListener('durationchange', onDurationChange);
       audio.removeEventListener('ended', onEnded);
       audio.removeEventListener('play', onPlay);
       audio.removeEventListener('pause', onPause);
       audio.removeEventListener('error', onError);
     };
-  }, [src, retryKey]);
+  }, [src, retryKey, duration]);
 
   const togglePlay = useCallback(() => {
     const audio = audioRef.current;
@@ -99,23 +115,30 @@ export const VoiceNotePlayer: React.FC<VoiceNotePlayerProps> = ({
     }
   }, [rateIndex]);
 
+  const effectiveDuration = Number.isFinite(duration) && duration > 0 
+    ? duration 
+    : (audioRef.current && Number.isFinite(audioRef.current.duration) && audioRef.current.duration > 0 
+      ? audioRef.current.duration 
+      : 0);
+
   const handleSeek = (e: React.MouseEvent<HTMLDivElement>) => {
     const audio = audioRef.current;
-    if (!audio || !duration) return;
+    if (!audio || effectiveDuration <= 0) return;
     const rect = e.currentTarget.getBoundingClientRect();
     const clickX = e.clientX - rect.left;
     const ratio = Math.max(0, Math.min(1, clickX / rect.width));
-    audio.currentTime = ratio * duration;
+    audio.currentTime = ratio * effectiveDuration;
     setCurrentTime(audio.currentTime);
   };
 
   const formatSecs = (sec: number) => {
+    if (!Number.isFinite(sec) || sec < 0) return '0:00';
     const m = Math.floor(sec / 60);
     const s = Math.floor(sec % 60);
     return `${m}:${s < 10 ? '0' : ''}${s}`;
   };
 
-  const progressPercent = duration > 0 ? (currentTime / duration) * 100 : 0;
+  const progressPercent = effectiveDuration > 0 ? Math.min(100, Math.max(0, (currentTime / effectiveDuration) * 100)) : 0;
 
   if (audioError) {
     return (

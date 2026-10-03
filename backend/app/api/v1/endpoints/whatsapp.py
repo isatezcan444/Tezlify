@@ -918,7 +918,7 @@ def _handle_byte_range(
     )
 
 
-@router.get("/media/{media_id}")
+@router.api_route("/media/{media_id}", methods=["GET", "HEAD"])
 async def get_media(
     media_id: str,
     request: Request,
@@ -939,11 +939,13 @@ async def get_media(
         ascii_name = re.sub(r'[^\x20-\x7E]', '_', filename).replace('"', '').strip() or "document"
         utf8_encoded = urllib.parse.quote(filename, encoding="utf-8")
         headers["Content-Disposition"] = f'inline; filename="{ascii_name}"; filename*=UTF-8\'\'{utf8_encoded}'
+    headers["Accept-Ranges"] = "bytes"
+    headers["Content-Length"] = str(len(data))
+    if request.method == "HEAD":
+        return Response(content=b"", media_type=mime or "application/octet-stream", headers=headers)
     range_header = request.headers.get("range")
     if range_header:
         return _handle_byte_range(data, range_header, mime, headers)
-    headers["Accept-Ranges"] = "bytes"
-    headers["Content-Length"] = str(len(data))
     return Response(content=data, media_type=mime or "application/octet-stream", headers=headers)
 
 

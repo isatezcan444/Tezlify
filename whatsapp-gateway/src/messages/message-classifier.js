@@ -146,7 +146,7 @@ export function buildMediaContent({
     );
     return {
       audio: source,
-      mimetype: mime_type || (isPtt ? 'audio/ogg; codecs=opus' : 'audio/mpeg'),
+      mimetype: isPtt ? 'audio/ogg; codecs=opus' : (mime_type || 'audio/mpeg'),
       ptt: isPtt,
     };
   }
