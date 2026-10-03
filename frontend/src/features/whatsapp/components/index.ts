@@ -11,3 +11,4 @@ export * from './TemplateSelectModal';
 export * from './WhatsAppQrConnectModal';
 export * from './WhatsAppSyncGate';
 export * from './VoiceNotePlayer';
+export * from './ChatSearchBar';

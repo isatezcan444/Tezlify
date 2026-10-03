@@ -12,7 +12,8 @@ import {
   Archive,
   MessageSquarePlus,
   Users,
-  ArrowLeft
+  ArrowLeft,
+  Search,
 } from 'lucide-react';
 import { startWaLatency } from '../features/whatsapp/lib/whatsappLatency';
 import { translateApiError } from '../features/whatsapp/lib/translateError';
@@ -57,6 +58,7 @@ import {
   NewChatModal,
   WhatsAppSyncGate,
   AntiBanPanel,
+  ChatSearchBar,
   type QuotedMessage,
 } from '../features/whatsapp/components';
 import { LeadDetailDrawer } from '../features/leads/components';
@@ -174,6 +176,9 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   }, [conversations]);
   const [selectedConv, setSelectedConv] = useState<Conversation | null>(null);
   const [replyingTo, setReplyingTo] = useState<QuotedMessage | null>(null);
+  const [isChatSearchOpen, setIsChatSearchOpen] = useState(false);
+  const [chatSearchQuery, setChatSearchQuery] = useState('');
+  const [chatSearchCurrentIndex, setChatSearchCurrentIndex] = useState(0);
   const [messagesMap, setMessagesMap] = useState<Record<number, Message[]>>({});
   // PHASE 2.K.1 (single variable = onRetry prop identity): dependency-safe refs
   // mirroring the existing conversationsRef/toastRef idiom. They let the retry
@@ -184,6 +189,9 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
 
   useEffect(() => {
     setReplyingTo(null);
+    setIsChatSearchOpen(false);
+    setChatSearchQuery('');
+    setChatSearchCurrentIndex(0);
   }, [selectedConv?.id]);
 
   const handleReplyMessage = useCallback((message: Message) => {
@@ -194,6 +202,48 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       mediaType: message.message_type !== 'TEXT' ? message.message_type : undefined,
     });
   }, [youName]);
+
+  const matchingMessageIds = React.useMemo(() => {
+    const q = chatSearchQuery.trim().toLowerCase();
+    if (!q || !selectedConv || !messagesMap[selectedConv.id]?.length) return [];
+    return messagesMap[selectedConv.id]
+      .filter((msg) => {
+        const body = (msg.body || '').toLowerCase();
+        const caption = (msg.media_caption || '').toLowerCase();
+        const filename = (msg.media_filename || '').toLowerCase();
+        return body.includes(q) || caption.includes(q) || filename.includes(q);
+      })
+      .map((msg) => msg.id as number);
+  }, [selectedConv, messagesMap, chatSearchQuery]);
+
+  const activeSearchMessageId =
+    matchingMessageIds.length > 0
+      ? matchingMessageIds[chatSearchCurrentIndex] ?? matchingMessageIds[0]
+      : null;
+
+  const handleNextSearchMatch = useCallback(() => {
+    if (matchingMessageIds.length <= 1) return;
+    setChatSearchCurrentIndex((prev) => (prev + 1) % matchingMessageIds.length);
+  }, [matchingMessageIds.length]);
+
+  const handlePrevSearchMatch = useCallback(() => {
+    if (matchingMessageIds.length <= 1) return;
+    setChatSearchCurrentIndex(
+      (prev) => (prev - 1 + matchingMessageIds.length) % matchingMessageIds.length
+    );
+  }, [matchingMessageIds.length]);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f' && selectedConv) {
+        e.preventDefault();
+        setIsChatSearchOpen((open) => !open);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [selectedConv]);
+
   const lastMarkedReadConvIdRef = useRef<number | null>(null);
   const messagesMapRef = useRef(messagesMap);
   messagesMapRef.current = messagesMap;
@@ -2925,8 +2975,14 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                       const rawPhone = selectedConv.lead_phone || (selectedConv as any).phone;
                       const headerDisplayName = getConversationDisplayName(selectedConv, t);
                       const headerCleanPhone = extractCleanPhone(rawPhone);
+                      const isPeerTyping = !!peerTypingMap[selectedConv.id];
                       return (
-                        <div key={selectedConv.id} className="flex items-center space-x-2 sm:space-x-3 min-w-0 flex-1 animate-in fade-in duration-150 ease-out">
+                        <div
+                          key={selectedConv.id}
+                          onClick={() => handleOpenLead(selectedConv.lead_id)}
+                          title={t('leads.openLeadDetail')}
+                          className="flex items-center space-x-2 sm:space-x-3 min-w-0 flex-1 animate-in fade-in duration-150 ease-out cursor-pointer group/header"
+                        >
                           <Avatar
                             name={headerDisplayName}
                             image={selectedConv.lead_avatar_url}
@@ -2942,7 +2998,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                                   <span>{t('whatsapp.group')}</span>
                                 </span>
                               )}
-                              <h4 className="font-extrabold text-sm text-slate-800 dark:text-white truncate">
+                              <h4 className="font-extrabold text-sm text-slate-800 dark:text-white truncate group-hover/header:text-[#7367F0] transition-colors">
                                 {headerDisplayName}
                               </h4>
                               {selectedConv.status !== 'ACTIVE' && (
@@ -2951,9 +3007,17 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                                 </span>
                               )}
                             </div>
-                            {headerCleanPhone && formatPhoneNumber(headerCleanPhone) !== headerDisplayName && (
+                            {isPeerTyping ? (
+                              <p className="text-[11px] font-medium text-[#00a884] dark:text-[#25D366] animate-pulse truncate">
+                                {t('whatsapp.peerTyping')}
+                              </p>
+                            ) : headerCleanPhone && formatPhoneNumber(headerCleanPhone) !== headerDisplayName ? (
                               <p className="text-[11px] font-mono text-slate-400 font-medium truncate">
                                 {formatPhoneNumber(headerCleanPhone)}
+                              </p>
+                            ) : (
+                              <p className="text-[11px] text-[#00a884] dark:text-[#25D366] font-medium truncate">
+                                {t('whatsapp.online')}
                               </p>
                             )}
                           </div>
@@ -2963,6 +3027,23 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                   </div>
 
                   <div className="flex items-center space-x-1 sm:space-x-2 shrink-0">
+                    {/* In-Chat Search Button */}
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setIsChatSearchOpen((open) => !open)}
+                      title={t('whatsapp.searchInChat')}
+                      aria-label={t('whatsapp.searchInChat')}
+                      className={`space-x-1 text-xs font-bold transition-all cursor-pointer px-2 sm:px-3 ${
+                        isChatSearchOpen
+                          ? 'bg-[#7367F0]/15 text-[#7367F0] border-[#7367F0]/30'
+                          : 'border-slate-200 dark:border-white/[0.1] text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/[0.06]'
+                      }`}
+                    >
+                      <Search className="w-3.5 h-3.5" />
+                      <span className="hidden lg:inline">{t('whatsapp.searchInChat')}</span>
+                    </Button>
+
                     {/* Lifecycle Status Action */}
                     {selectedConv.status === 'ACTIVE' ? (
                       <div className="flex items-center space-x-1">
@@ -3018,18 +3099,27 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                   </div>
                 </div>
 
-                {/* Chat Thread with Pagination
-                    P6-4 (revised): a conversation switch must NOT remount the
-                    thread. Remounting is a deletion, and a deletion that does
-                    not complete leaves the old root behind in the pane — one
-                    extra chat per clicked person. Instead the pane keeps a
-                    single thread instance and `conversationKey` makes that
-                    instance reset its own viewport/pagination state for the new
-                    chat, so the previous chat's `isNearBottom` and scroll position
-                    can never carry over. Reordering keeps the same id, so an
-                    inbound in the active chat still does not disturb the view.
-                    Sorun 11/12: pane'de TEK thread kökü vardır; secim onun
-                    icerigini degistirir, yeni pane EKLEMEZ. */}
+                {/* In-Chat Search Bar */}
+                {isChatSearchOpen && (
+                  <ChatSearchBar
+                    query={chatSearchQuery}
+                    onQueryChange={(q) => {
+                      setChatSearchQuery(q);
+                      setChatSearchCurrentIndex(0);
+                    }}
+                    totalMatches={matchingMessageIds.length}
+                    currentMatchIndex={chatSearchCurrentIndex}
+                    onNextMatch={handleNextSearchMatch}
+                    onPrevMatch={handlePrevSearchMatch}
+                    onClose={() => {
+                      setIsChatSearchOpen(false);
+                      setChatSearchQuery('');
+                      setChatSearchCurrentIndex(0);
+                    }}
+                  />
+                )}
+
+                {/* Chat Thread with Pagination */}
                 <ChatThread
                   conversationKey={selectedConv.id}
                   messages={activeMessages}
@@ -3047,6 +3137,8 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                   onRetry={handleRetryMessage}
                   onReact={handleReactMessage}
                   onReply={handleReplyMessage}
+                  searchQuery={chatSearchQuery}
+                  activeMessageId={activeSearchMessageId}
                 />
 
                 {/* Active Chat Composer */}

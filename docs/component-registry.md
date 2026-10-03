@@ -243,6 +243,11 @@ src/
 - **Props**: `src: string`, `mimeType?: string | null`, `isOutbound?: boolean`.
 - **Import**: `import { VoiceNotePlayer } from '@/features/whatsapp/components';`
 
+#### `ChatSearchBar`
+- **Purpose**: WhatsApp Web authentic in-chat message search toolbar. Features debounced query input, occurrence counter (`X / Y`), previous/next match navigation, keyboard shortcuts (Enter / Shift+Enter / Esc), and smooth scroll target integration.
+- **Props**: `query: string`, `onQueryChange`, `totalMatches: number`, `currentMatchIndex: number`, `onNextMatch`, `onPrevMatch`, `onClose`.
+- **Import**: `import { ChatSearchBar } from '@/features/whatsapp/components';`
+
 #### `useWhatsAppLoadingGate` (hook)
 - **Purpose**: Single-authority QR post-pairing loading gate state (WhatsApp Web parity). Fed only by real signals — backend `GET /whatsapp/loading-gate` (REST bootstrap on mount + WS reconnect) and WS `whatsapp_loading_gate` / `session_sync_*` events. No polling, no fake timers. Fires the `onReady` callback exactly once when `phase` transitions to `ready`, so the hub can auto-switch to the Live Conversations tab and eagerly load chats.
 - **Signature**: `useWhatsAppLoadingGate(onReady?: () => void) => { gate, dismiss, refresh }`.

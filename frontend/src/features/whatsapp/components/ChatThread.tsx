@@ -98,6 +98,8 @@ export interface ChatThreadProps {
    * lifetime. Omitting it preserves the previous behaviour (no reset).
    */
   conversationKey?: string | number | null;
+  searchQuery?: string;
+  activeMessageId?: number | null;
 }
 
 export const ChatThread: React.FC<ChatThreadProps> = ({
@@ -116,6 +118,8 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
   onRetryLoad,
   pagingError = false,
   conversationKey = null,
+  searchQuery,
+  activeMessageId,
 }) => {
   const { t, language } = useI18n();
   const containerRef = useRef<HTMLDivElement>(null);
@@ -875,6 +879,14 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
     return () => ro.disconnect();
   }, [conversationKey]);
 
+  useEffect(() => {
+    if (!activeMessageId) return;
+    const targetEl = document.getElementById(`msg-${activeMessageId}`);
+    if (targetEl && typeof targetEl.scrollIntoView === 'function') {
+      targetEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }, [activeMessageId]);
+
   // ------------------------------------------------------------- render ----
   const renderRowBody = (row: ThreadRow) => (
     <>
@@ -892,6 +904,8 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
         onRetry={onRetry}
         onReact={onReact}
         onReply={onReply}
+        searchQuery={searchQuery}
+        isSearchActiveMatch={activeMessageId != null && row.msg.id === activeMessageId}
       />
     </>
   );
@@ -1006,6 +1020,9 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
       <button
         type="button"
         onClick={scrollToBottom}
+        title={t('whatsapp.scrollToBottom')}
+        aria-label={t('whatsapp.scrollToBottom')}
+        data-testid="new-message-pill"
         className="flex items-center space-x-1.5 px-3.5 py-1.5 rounded-full bg-[#25D366] hover:bg-[#1EBE5D] text-white text-xs font-bold shadow-lg shadow-[#25D366]/30 transition-all cursor-pointer"
       >
         <span>{t('leads.newMessageAlert')}</span>

@@ -1,4 +1,4 @@
-import React, { useState, useLayoutEffect } from 'react';
+import React, { useState, useLayoutEffect, useCallback } from 'react';
 import {
   Check,
   CheckCheck,
@@ -43,9 +43,20 @@ export interface ChatBubbleProps {
   /** Mesaja ifade birakir/degistirir; bos `emoji` geri ceker. */
   onReact?: (messageId: number | string, emoji: string) => Promise<void> | void;
   onReply?: (message: Message) => void;
+  searchQuery?: string;
+  isSearchActiveMatch?: boolean;
 }
 
-const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({ message, isGroup = false, chatTitle, onRetry, onReact, onReply }) => {
+const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
+  message,
+  isGroup = false,
+  chatTitle,
+  onRetry,
+  onReact,
+  onReply,
+  searchQuery,
+  isSearchActiveMatch,
+}) => {
   const { t, language } = useI18n();
   const isInbound = message.direction === 'INBOUND';
   const [isLightboxOpen, setIsLightboxOpen] = useState(false);
@@ -55,6 +66,29 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({ message, isGroup = fal
   const [reacting, setReacting] = useState(false);
   const [imageLoadError, setImageLoadError] = useState(false);
   const [copied, setCopied] = useState(false);
+
+  const highlightMatches = useCallback(
+    (text: string): React.ReactNode => {
+      if (!searchQuery || !searchQuery.trim() || !text) return text;
+      const escaped = searchQuery.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const regex = new RegExp(`(${escaped})`, 'gi');
+      const tokens = text.split(regex);
+      if (tokens.length === 1) return text;
+      return tokens.map((token, i) =>
+        regex.test(token) ? (
+          <mark
+            key={i}
+            className="bg-yellow-300 dark:bg-yellow-500/50 text-slate-900 dark:text-white rounded-xs px-0.5"
+          >
+            {token}
+          </mark>
+        ) : (
+          token
+        )
+      );
+    },
+    [searchQuery]
+  );
 
   const handleCopy = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -233,18 +267,18 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({ message, isGroup = fal
 
     const mentionRegex = /(@[A-Za-z0-9_ğüşıöçĞÜŞİÖÇ+]+(?:\s+[A-Za-z0-9_ğüşıöçĞÜŞİÖÇ]+)?)/g;
     const parts = resolvedText.split(mentionRegex);
-    const content = parts.length === 1 ? resolvedText : parts.map((part, idx) => {
+    const content = parts.length === 1 ? highlightMatches(resolvedText) : parts.map((part, idx) => {
       if (part.startsWith('@') && part.length > 1) {
         return (
           <span
             key={idx}
             className="font-semibold text-[#00a884] dark:text-[#25D366] bg-[#00a884]/10 dark:bg-[#25D366]/20 px-1 py-0.5 rounded text-[13px] inline-flex items-center my-0.5 mx-0.5 align-baseline"
           >
-            {part}
+            {highlightMatches(part)}
           </span>
         );
       }
-      return <React.Fragment key={idx}>{part}</React.Fragment>;
+      return <React.Fragment key={idx}>{highlightMatches(part)}</React.Fragment>;
     });
 
     return (
@@ -295,7 +329,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({ message, isGroup = fal
             </div>
             {message.media_caption && (
               <p className="whitespace-pre-wrap break-words font-medium text-xs">
-                {message.media_caption}
+                {highlightMatches(message.media_caption)}
               </p>
             )}
           </div>
@@ -312,7 +346,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({ message, isGroup = fal
             />
             {message.media_caption && (
               <p className="whitespace-pre-wrap break-words font-medium text-xs">
-                {message.media_caption}
+                {highlightMatches(message.media_caption)}
               </p>
             )}
           </div>
@@ -367,7 +401,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({ message, isGroup = fal
             </div>
             {message.media_caption && (
               <p className="whitespace-pre-wrap break-words font-medium text-xs">
-                {message.media_caption}
+                {highlightMatches(message.media_caption)}
               </p>
             )}
           </div>
@@ -422,7 +456,11 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({ message, isGroup = fal
     <>
       <div className={`flex w-full ${groupedReactions.length > 0 ? 'mb-4' : 'mb-2'} ${isInbound ? 'justify-start' : 'justify-end'}`}>
         <div
+          id={message.id ? `msg-${message.id}` : undefined}
+          data-msg-id={message.id}
           className={`relative group max-w-[85%] sm:max-w-[75%] min-w-[68px] px-3 py-1.5 shadow-[0_1px_0.5px_rgba(11,20,26,0.13)] text-[13px] leading-relaxed transition-all duration-150 select-text ${
+            isSearchActiveMatch ? 'ring-2 ring-[#00a884] dark:ring-[#25D366] shadow-md scale-[1.01]' : ''
+          } ${
             isInbound
               ? 'bg-white dark:bg-[#202c33] text-[#111b21] dark:text-[#e9edef] rounded-lg rounded-tl-none border-none'
               : 'bg-[#d9fdd3] dark:bg-[#005c4b] text-[#111b21] dark:text-[#e9edef] rounded-lg rounded-tr-none border-none'
