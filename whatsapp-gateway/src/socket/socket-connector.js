@@ -185,13 +185,37 @@ export async function createSocketForSession({
     logger: createBaileysLogger(logger),
     browser: Browsers.macOS('Chrome'),
     auth: baileysAuth,
-    markOnlineOnConnect: true,
+    markOnlineOnConnect: false,
     syncFullHistory: false,
     generateHighQualityLinkPreviews: false,
     shouldSyncHistoryMessage: () => true,
     getMessage: async (key) => lookupRawMessage(store, key),
     msgRetryCounterCache: retryCounterCacheFor(id),
   });
+
+  // Guard against Baileys creds.update partial update presence bug (WhiskeySockets/Baileys Issue #2553).
+  // Baileys Socket/socket.js has an internal listener:
+  //   ev.on('creds.update', update => {
+  //     const name = update.me?.name;
+  //     if (creds.me?.name !== name) {
+  //       sendNode({ tag: 'presence', attrs: { name: name! } });
+  //     }
+  //     Object.assign(creds, update);
+  //   });
+  // On partial creds updates (such as signal ratchet key churn on receiving an incoming message),
+  // update.me is undefined. Because creds.me?.name !== undefined evaluates to true, Baileys
+  // serializes a bare <presence/> node (since undefined attrs are stripped in encode.js), which
+  // WhatsApp interprets as "available" (online). This continuously announces the web companion
+  // as online on every incoming message, suppressing push notifications to the user's physical phone.
+  // By normalizing data.me with state.creds.me when data.me is undefined, creds.me?.name !== name
+  // remains false and rogue presence updates are completely suppressed.
+  const passThrough = sock.ev.emit.bind(sock.ev);
+  sock.ev.emit = (event, data) => {
+    if (event === 'creds.update' && data && data.me === undefined && state.creds?.me) {
+      return passThrough(event, { ...data, me: state.creds.me });
+    }
+    return passThrough(event, data);
+  };
 
   return {
     sock,

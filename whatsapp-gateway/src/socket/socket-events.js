@@ -349,6 +349,14 @@ export function bindSocketEvents({
         self_lid: session.self_lid || null,
       });
 
+      // Explicitly set presence to unavailable so WhatsApp servers prioritize
+      // mobile phone push notifications over the web companion connection.
+      try {
+        await sock.sendPresenceUpdate('unavailable');
+      } catch (presenceErr) {
+        logger.debug({ err: presenceErr?.message, session_ref: sessionRef(id) }, 'Initial unavailable presence announcement ignored or not needed');
+      }
+
       const priorSyncs = Number(state?.creds?.accountSyncCounter || 0);
       session.sync = priorSyncs > 0
         ? { phase: 'ready', progress: 100, chats_synced: 0, contacts_synced: 0, messages_synced: 0, started_at: new Date().toISOString(), completed_at: new Date().toISOString() }
