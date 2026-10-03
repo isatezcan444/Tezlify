@@ -15,7 +15,11 @@ import {
   ArrowLeft,
   Search,
   Info,
+  MoreVertical,
+  X,
 } from 'lucide-react';
+import { Dropdown, DropdownItem } from '../components/ui/Dropdown';
+import { Tooltip } from '../components/ui/Tooltip';
 import { startWaLatency } from '../features/whatsapp/lib/whatsappLatency';
 import { translateApiError } from '../features/whatsapp/lib/translateError';
 import { mergeDeliveryStatus, mergeWhatsAppMessages } from '../features/whatsapp/lib/whatsappMessageMerge';
@@ -2963,165 +2967,243 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                 {/* Main Chat Conversation Column */}
                 <div className="flex-1 flex flex-col min-w-0 h-full overflow-hidden">
                   {/* Active Chat Header */}
-                  <div className="p-3 sm:p-3.5 border-b border-slate-200/80 dark:border-white/[0.08] bg-slate-50/50 dark:bg-black/20 flex items-center justify-between shrink-0 gap-2">
-                  <div className="flex items-center space-x-2 sm:space-x-3 min-w-0 flex-1">
-                    {/* Mobile Back Button to Conversation List */}
-                    <button
-                      type="button"
-                      onClick={() => setSelectedConv(null)}
-                      className="md:hidden p-1.5 -ml-1 rounded-lg text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 hover:bg-slate-200/60 dark:hover:bg-white/[0.08] transition-all cursor-pointer shrink-0"
-                      aria-label={t('common.back')}
-                      title={t('common.back')}
-                    >
-                      <ArrowLeft className="w-5 h-5" />
-                    </button>
+                  <div className="px-3 sm:px-4 py-2 sm:py-2.5 border-b border-slate-200/80 dark:border-white/[0.08] bg-slate-50/70 dark:bg-[#1f2430] flex items-center justify-between shrink-0 gap-2 sm:gap-3 min-w-0">
+                    <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1">
+                      {/* Mobile Back Button to Conversation List */}
+                      <button
+                        type="button"
+                        onClick={() => setSelectedConv(null)}
+                        className="md:hidden p-1.5 -ml-1 rounded-lg text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 hover:bg-slate-200/60 dark:hover:bg-white/[0.08] transition-all cursor-pointer shrink-0"
+                        aria-label={t('common.back')}
+                        title={t('common.back')}
+                      >
+                        <ArrowLeft className="w-5 h-5" />
+                      </button>
 
-                    {(() => {
-                      const rawPhone = selectedConv.lead_phone || (selectedConv as any).phone;
-                      const headerDisplayName = getConversationDisplayName(selectedConv, t);
-                      const headerCleanPhone = extractCleanPhone(rawPhone);
-                      const isPeerTyping = !!peerTypingMap[selectedConv.id];
-                      return (
-                        <div
-                          key={selectedConv.id}
-                          onClick={() => setIsChatInfoOpen((open) => !open)}
-                          title={selectedConv.is_group ? t('whatsapp.groupInfo') : t('whatsapp.contactInfo')}
-                          aria-label={selectedConv.is_group ? t('whatsapp.groupInfo') : t('whatsapp.contactInfo')}
-                          data-testid="chat-header-info-trigger"
-                          className="flex items-center space-x-2 sm:space-x-3 min-w-0 flex-1 animate-in fade-in duration-150 ease-out cursor-pointer group/header"
-                        >
-                          <Avatar
-                            name={headerDisplayName}
-                            image={selectedConv.lead_avatar_url}
-                            phone={headerCleanPhone || (!isRawWhatsAppIdentity(rawPhone) ? rawPhone : undefined)}
-                            size="md"
-                            shape="rounded"
-                          />
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-center space-x-2 truncate">
-                              {selectedConv.is_group && (
-                                <span className="shrink-0 inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-md bg-[#7367F0]/15 text-[#7367F0] dark:bg-[#7367F0]/25">
-                                  <Users className="w-3 h-3" />
-                                  <span>{t('whatsapp.group')}</span>
-                                </span>
-                              )}
-                              <h4 className="font-extrabold text-sm text-slate-800 dark:text-white truncate group-hover/header:text-[#7367F0] transition-colors">
-                                {headerDisplayName}
-                              </h4>
-                              {selectedConv.status !== 'ACTIVE' && (
-                                <span className="text-[9px] font-bold uppercase px-1.5 py-0.5 rounded bg-slate-200 dark:bg-white/10 text-slate-500 dark:text-slate-400 shrink-0">
-                                  {selectedConv.status === 'ARCHIVED' ? (t('whatsapp.statusArchived')) : (t('whatsapp.statusClosed'))}
-                                </span>
+                      {(() => {
+                        const rawPhone = selectedConv.lead_phone || (selectedConv as any).phone;
+                        const headerDisplayName = getConversationDisplayName(selectedConv, t);
+                        const headerCleanPhone = extractCleanPhone(rawPhone);
+                        const isPeerTyping = !!peerTypingMap[selectedConv.id];
+                        return (
+                          <div
+                            key={selectedConv.id}
+                            onClick={() => setIsChatInfoOpen((open) => !open)}
+                            title={selectedConv.is_group ? t('whatsapp.groupInfo') : t('whatsapp.contactInfo')}
+                            aria-label={selectedConv.is_group ? t('whatsapp.groupInfo') : t('whatsapp.contactInfo')}
+                            data-testid="chat-header-info-trigger"
+                            className="flex items-center gap-2.5 sm:gap-3 min-w-0 flex-1 animate-in fade-in duration-150 ease-out cursor-pointer group/header select-none"
+                          >
+                            <div className="shrink-0 relative">
+                              <Avatar
+                                name={headerDisplayName}
+                                image={selectedConv.lead_avatar_url}
+                                phone={headerCleanPhone || (!isRawWhatsAppIdentity(rawPhone) ? rawPhone : undefined)}
+                                size="md"
+                                shape="rounded"
+                              />
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-1.5 truncate">
+                                {selectedConv.is_group && (
+                                  <span className="shrink-0 inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-[#7367F0]/15 text-[#7367F0] dark:bg-[#7367F0]/25">
+                                    <Users className="w-3 h-3" />
+                                    <span>{t('whatsapp.group')}</span>
+                                  </span>
+                                )}
+                                <h4 className="font-extrabold text-sm text-slate-800 dark:text-white truncate group-hover/header:text-[#7367F0] transition-colors">
+                                  {headerDisplayName}
+                                </h4>
+                                {selectedConv.status !== 'ACTIVE' && (
+                                  <span className="text-[9px] font-bold uppercase px-1.5 py-0.5 rounded bg-slate-200 dark:bg-white/10 text-slate-500 dark:text-slate-400 shrink-0">
+                                    {selectedConv.status === 'ARCHIVED' ? (t('whatsapp.statusArchived')) : (t('whatsapp.statusClosed'))}
+                                  </span>
+                                )}
+                              </div>
+                              {isPeerTyping ? (
+                                <p className="text-[11px] font-medium text-[#00a884] dark:text-[#25D366] animate-pulse truncate">
+                                  {t('whatsapp.peerTyping')}
+                                </p>
+                              ) : headerCleanPhone && formatPhoneNumber(headerCleanPhone) !== headerDisplayName ? (
+                                <p className="text-[11px] font-mono text-slate-400 font-medium truncate">
+                                  {formatPhoneNumber(headerCleanPhone)}
+                                </p>
+                              ) : (
+                                <p className="text-[11px] text-[#00a884] dark:text-[#25D366] font-medium truncate">
+                                  {t('whatsapp.online')}
+                                </p>
                               )}
                             </div>
-                            {isPeerTyping ? (
-                              <p className="text-[11px] font-medium text-[#00a884] dark:text-[#25D366] animate-pulse truncate">
-                                {t('whatsapp.peerTyping')}
-                              </p>
-                            ) : headerCleanPhone && formatPhoneNumber(headerCleanPhone) !== headerDisplayName ? (
-                              <p className="text-[11px] font-mono text-slate-400 font-medium truncate">
-                                {formatPhoneNumber(headerCleanPhone)}
-                              </p>
-                            ) : (
-                              <p className="text-[11px] text-[#00a884] dark:text-[#25D366] font-medium truncate">
-                                {t('whatsapp.online')}
-                              </p>
-                            )}
                           </div>
-                        </div>
-                      );
-                    })()}
-                  </div>
+                        );
+                      })()}
+                    </div>
 
-                  <div className="flex items-center space-x-1 sm:space-x-2 shrink-0">
-                    {/* In-Chat Search Button */}
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setIsChatSearchOpen((open) => !open)}
-                      title={t('whatsapp.searchInChat')}
-                      aria-label={t('whatsapp.searchInChat')}
-                      className={`space-x-1 text-xs font-bold transition-all cursor-pointer px-2 sm:px-3 ${
-                        isChatSearchOpen
-                          ? 'bg-[#7367F0]/15 text-[#7367F0] border-[#7367F0]/30'
-                          : 'border-slate-200 dark:border-white/[0.1] text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/[0.06]'
-                      }`}
-                    >
-                      <Search className="w-3.5 h-3.5" />
-                      <span className="hidden lg:inline">{t('whatsapp.searchInChat')}</span>
-                    </Button>
-
-                    {/* Lifecycle Status Action */}
-                    {selectedConv.status === 'ACTIVE' ? (
-                      <div className="flex items-center space-x-1">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => handleStatusChange(selectedConv.id, 'ARCHIVED')}
-                          title={t('whatsapp.archive')}
-                          className="space-x-1 text-xs font-bold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/[0.06] cursor-pointer px-2 sm:px-3"
+                    <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
+                      {/* In-Chat Search Button */}
+                      <Tooltip content={t('whatsapp.searchInChat')} position="bottom">
+                        <button
+                          type="button"
+                          onClick={() => setIsChatSearchOpen((open) => !open)}
+                          data-testid="header-chat-search-btn"
+                          aria-label={t('whatsapp.searchInChat')}
+                          title={t('whatsapp.searchInChat')}
+                          className={`p-2 rounded-lg transition-all duration-150 cursor-pointer ${
+                            isChatSearchOpen
+                              ? 'bg-[#7367F0]/15 text-[#7367F0] ring-1 ring-[#7367F0]/30'
+                              : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 hover:bg-slate-200/60 dark:hover:bg-white/[0.08]'
+                          }`}
                         >
-                          <Archive className="w-3.5 h-3.5" />
-                          <span className="hidden sm:inline">{t('whatsapp.archive')}</span>
-                        </Button>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => handleStatusChange(selectedConv.id, 'CLOSED')}
-                          title={t('whatsapp.close')}
-                          className="space-x-1 text-xs font-bold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/[0.06] cursor-pointer px-2 sm:px-3"
+                          <Search className="w-4 h-4" />
+                        </button>
+                      </Tooltip>
+
+                      {/* CRM Lead Shortcut */}
+                      {selectedConv.lead_id && (
+                        <Tooltip content={t('leads.openLeadDetail')} position="bottom">
+                          <button
+                            type="button"
+                            onClick={() => handleOpenLead(selectedConv.lead_id)}
+                            disabled={leadLoading}
+                            aria-label={t('leads.openLeadDetail')}
+                            title={t('leads.openLeadDetail')}
+                            className="p-2 rounded-lg text-[#7367F0] hover:bg-[#7367F0]/10 dark:hover:bg-[#7367F0]/20 transition-all duration-150 cursor-pointer disabled:opacity-50"
+                          >
+                            <Building2 className="w-4 h-4" />
+                          </button>
+                        </Tooltip>
+                      )}
+
+                      {/* Quick Lifecycle Action: Visible on medium+ displays */}
+                      {selectedConv.status === 'ACTIVE' ? (
+                        <>
+                          <Tooltip content={t('whatsapp.archive')} position="bottom">
+                            <button
+                              type="button"
+                              onClick={() => handleStatusChange(selectedConv.id, 'ARCHIVED')}
+                              aria-label={t('whatsapp.archive')}
+                              title={t('whatsapp.archive')}
+                              className="hidden sm:inline-flex p-2 rounded-lg text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 hover:bg-slate-200/60 dark:hover:bg-white/[0.08] transition-all duration-150 cursor-pointer"
+                            >
+                              <Archive className="w-4 h-4" />
+                            </button>
+                          </Tooltip>
+                          <Tooltip content={t('whatsapp.close')} position="bottom">
+                            <button
+                              type="button"
+                              onClick={() => handleStatusChange(selectedConv.id, 'CLOSED')}
+                              aria-label={t('whatsapp.close')}
+                              title={t('whatsapp.close')}
+                              className="hidden sm:inline-flex p-2 rounded-lg text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 hover:bg-slate-200/60 dark:hover:bg-white/[0.08] transition-all duration-150 cursor-pointer"
+                            >
+                              <CheckCircle2 className="w-4 h-4" />
+                            </button>
+                          </Tooltip>
+                        </>
+                      ) : (
+                        <Tooltip content={t('whatsapp.reopen')} position="bottom">
+                          <button
+                            type="button"
+                            onClick={() => handleStatusChange(selectedConv.id, 'ACTIVE')}
+                            aria-label={t('whatsapp.reopen')}
+                            title={t('whatsapp.reopen')}
+                            className="hidden sm:inline-flex p-2 rounded-lg text-[#7367F0] hover:bg-[#7367F0]/10 transition-all duration-150 cursor-pointer"
+                          >
+                            <RotateCcw className="w-4 h-4" />
+                          </button>
+                        </Tooltip>
+                      )}
+
+                      {/* Contact / Group Info Button */}
+                      <Tooltip content={selectedConv.is_group ? t('whatsapp.groupInfo') : t('whatsapp.contactInfo')} position="bottom">
+                        <button
+                          type="button"
+                          onClick={() => setIsChatInfoOpen((open) => !open)}
+                          data-testid="header-chat-info-btn"
+                          aria-label={selectedConv.is_group ? t('whatsapp.groupInfo') : t('whatsapp.contactInfo')}
+                          title={selectedConv.is_group ? t('whatsapp.groupInfo') : t('whatsapp.contactInfo')}
+                          className={`p-2 rounded-lg transition-all duration-150 cursor-pointer ${
+                            isChatInfoOpen
+                              ? 'bg-[#7367F0]/15 text-[#7367F0] ring-1 ring-[#7367F0]/30'
+                              : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 hover:bg-slate-200/60 dark:hover:bg-white/[0.08]'
+                          }`}
                         >
-                          <CheckCircle2 className="w-3.5 h-3.5 text-slate-400" />
-                          <span className="hidden sm:inline">{t('whatsapp.close')}</span>
-                        </Button>
-                      </div>
-                    ) : (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => handleStatusChange(selectedConv.id, 'ACTIVE')}
-                        className="space-x-1 text-xs font-bold text-[#7367F0] border-[#7367F0]/30 hover:bg-[#7367F0]/10 cursor-pointer px-2 sm:px-3"
-                      >
-                        <RotateCcw className="w-3.5 h-3.5" />
-                        <span className="hidden sm:inline">{t('whatsapp.reopen')}</span>
-                      </Button>
-                    )}
+                          <Info className="w-4 h-4" />
+                        </button>
+                      </Tooltip>
 
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => handleOpenLead(selectedConv.lead_id)}
-                      disabled={leadLoading}
-                      title={t('leads.openLeadDetail')}
-                      className="space-x-1.5 text-xs font-bold border-slate-200 dark:border-white/[0.1] hover:bg-slate-100 dark:hover:bg-white/[0.06] cursor-pointer px-2 sm:px-3"
-                    >
-                      <Building2 className="w-3.5 h-3.5 text-[#7367F0]" />
-                      <span className="hidden md:inline">{t('leads.openLeadDetail')}</span>
-                    </Button>
+                      {/* WhatsApp Web 3-Dot More Menu */}
+                      <Dropdown
+                        portal
+                        align="right"
+                        trigger={
+                          <button
+                            type="button"
+                            title={t('common.menuTitle')}
+                            aria-label={t('common.menuTitle')}
+                            className="p-2 rounded-lg text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 hover:bg-slate-200/60 dark:hover:bg-white/[0.08] transition-all duration-150 cursor-pointer"
+                          >
+                            <MoreVertical className="w-4 h-4" />
+                          </button>
+                        }
+                        items={[
+                          {
+                            id: 'info',
+                            label: selectedConv.is_group ? t('whatsapp.groupInfo') : t('whatsapp.contactInfo'),
+                            icon: <Info className="w-4 h-4" />,
+                            onClick: () => setIsChatInfoOpen(true),
+                          },
+                          ...(selectedConv.lead_id
+                            ? [
+                                {
+                                  id: 'lead-detail',
+                                  label: t('leads.openLeadDetail'),
+                                  icon: <Building2 className="w-4 h-4 text-[#7367F0]" />,
+                                  onClick: () => handleOpenLead(selectedConv.lead_id),
+                                } as DropdownItem,
+                              ]
+                            : []),
+                          'divider' as const,
+                          ...(selectedConv.status === 'ACTIVE'
+                            ? [
+                                {
+                                  id: 'archive',
+                                  label: t('whatsapp.archive'),
+                                  icon: <Archive className="w-4 h-4" />,
+                                  onClick: () => handleStatusChange(selectedConv.id, 'ARCHIVED'),
+                                } as DropdownItem,
+                                {
+                                  id: 'close',
+                                  label: t('whatsapp.close'),
+                                  icon: <CheckCircle2 className="w-4 h-4" />,
+                                  onClick: () => handleStatusChange(selectedConv.id, 'CLOSED'),
+                                } as DropdownItem,
+                              ]
+                            : [
+                                {
+                                  id: 'reopen',
+                                  label: t('whatsapp.reopen'),
+                                  icon: <RotateCcw className="w-4 h-4 text-[#7367F0]" />,
+                                  onClick: () => handleStatusChange(selectedConv.id, 'ACTIVE'),
+                                } as DropdownItem,
+                              ]),
+                          'divider' as const,
+                          {
+                            id: 'close-pane',
+                            label: t('common.close'),
+                            icon: <X className="w-4 h-4 text-slate-400" />,
+                            onClick: () => setSelectedConv(null),
+                          },
+                        ]}
+                      />
 
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setIsChatInfoOpen((open) => !open)}
-                      data-testid="header-chat-info-btn"
-                      title={selectedConv.is_group ? t('whatsapp.groupInfo') : t('whatsapp.contactInfo')}
-                      aria-label={selectedConv.is_group ? t('whatsapp.groupInfo') : t('whatsapp.contactInfo')}
-                      className={`space-x-1.5 text-xs font-bold transition-all cursor-pointer px-2 sm:px-3 ${
-                        isChatInfoOpen
-                          ? 'bg-[#7367F0]/15 text-[#7367F0] border-[#7367F0]/30'
-                          : 'border-slate-200 dark:border-white/[0.1] text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/[0.06]'
-                      }`}
-                    >
-                      <Info className="w-3.5 h-3.5" />
-                      <span className="hidden xl:inline">{selectedConv.is_group ? t('whatsapp.groupInfo') : t('whatsapp.contactInfo')}</span>
-                    </Button>
-
-                    <span className="inline-flex items-center space-x-1 px-2 sm:px-2.5 py-1 rounded-full bg-[#25D366]/15 text-[#25D366] font-bold text-xs">
-                      <WhatsAppIcon className="w-3.5 h-3.5" />
-                      <span className="hidden sm:inline">{t('leads.whatsappActive')}</span>
-                    </span>
+                      {/* WhatsApp Active Badge (wide screens only) */}
+                      <span className="hidden 2xl:inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#25D366]/15 text-[#25D366] font-bold text-xs shrink-0 select-none">
+                        <WhatsAppIcon className="w-3.5 h-3.5" />
+                        <span>{t('leads.whatsappActive')}</span>
+                      </span>
+                    </div>
                   </div>
-                </div>
 
                 {/* In-Chat Search Bar */}
                 {isChatSearchOpen && (
