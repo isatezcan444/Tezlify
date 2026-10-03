@@ -847,7 +847,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
               ref={menuRef}
               data-testid={`msg-context-menu-${message.id}`}
               className={`absolute top-6 ${
-                isInbound ? 'left-0 sm:left-auto sm:right-0' : 'right-0'
+                isInbound ? 'left-0' : 'right-0'
               } z-50 w-56 py-1.5 bg-white dark:bg-[#233138] border border-slate-200/90 dark:border-white/[0.08] rounded-2xl shadow-2xl backdrop-blur-md animate-in fade-in zoom-in-95 duration-100 flex flex-col`}
             >
               {/* 1. Cevapla */}
