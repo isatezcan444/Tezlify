@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import logger from '../logger.js';
+import { logger } from '../utils/baileys-logger.js';
 
 /**
  * Checks if a buffer already starts with the Ogg magic bytes "OggS"
