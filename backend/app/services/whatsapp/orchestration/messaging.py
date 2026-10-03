@@ -351,11 +351,18 @@ class WhatsAppMessagingOrchestrator:
                 get_user_filter(Message.user_id, user_id),
             )
         )
-        mtype_str = (media.get("media_type") or "document").upper()
-        try:
-            msg_type = MessageType[mtype_str] if mtype_str in MessageType.__members__ else MessageType.DOCUMENT
-        except (KeyError, TypeError) as exc:
-            logger.warning("Media message_type gecersiz; DOCUMENT fallback (value=%r): %s", mtype_str, exc)
+        mtype_str = (media.get("media_type") or "").upper()
+        mime_val = (media.get("mime_type") or "").lower()
+        filename_val = (media.get("filename") or "").lower()
+        if mtype_str in ("VOICE", "AUDIO", "PTT") or mime_val.startswith("audio/") or filename_val.startswith("voice_") or filename_val.endswith(".ogg") or filename_val.endswith(".opus"):
+            msg_type = MessageType.AUDIO
+        elif mtype_str in MessageType.__members__:
+            msg_type = MessageType[mtype_str]
+        elif mime_val.startswith("image/"):
+            msg_type = MessageType.IMAGE
+        elif mime_val.startswith("video/"):
+            msg_type = MessageType.VIDEO
+        else:
             msg_type = MessageType.DOCUMENT
         caption = media.get("caption")
         filename = media.get("filename")

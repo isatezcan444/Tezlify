@@ -390,6 +390,42 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
         );
 
       case 'DOCUMENT':
+        if (
+          message.media_mime_type?.startsWith('audio/') ||
+          (message.media_filename && (
+            message.media_filename.toLowerCase().startsWith('voice_') ||
+            message.media_filename.toLowerCase().endsWith('.ogg') ||
+            message.media_filename.toLowerCase().endsWith('.opus') ||
+            message.media_filename.toLowerCase().endsWith('.mp3')
+          ))
+        ) {
+          return (
+            <div className="space-y-1.5 min-w-[240px]">
+              {resolvedMediaUrl ? (
+                <VoiceNotePlayer
+                  src={resolvedMediaUrl}
+                  mimeType={message.media_mime_type}
+                  isOutbound={!isInbound}
+                />
+              ) : (
+                <div className="flex items-center space-x-2.5 p-2 rounded-xl bg-black/5 dark:bg-white/[0.06]">
+                  <div className="w-8 h-8 rounded-full bg-[#25D366]/20 text-[#25D366] flex items-center justify-center shrink-0">
+                    <Music className="w-4 h-4" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <span className="text-[11px] font-bold block">{t('leads.voiceMessage')}</span>
+                    <span className="text-[9px] font-mono text-slate-400">{message.media_mime_type || 'audio/ogg'}</span>
+                  </div>
+                </div>
+              )}
+              {message.media_caption && (
+                <p className="whitespace-pre-wrap break-words font-medium text-xs">
+                  {highlightMatches(message.media_caption)}
+                </p>
+              )}
+            </div>
+          );
+        }
         return (
           <div className="space-y-2">
             <DocumentCard

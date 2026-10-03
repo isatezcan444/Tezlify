@@ -179,12 +179,15 @@ function fileToBase64(file: File): Promise<string> {
 
 function mediaTypeFromFile(mime: string, name: string): string {
   const ext = (name.split('.').pop() || '').toLowerCase();
+  const lowerName = name.toLowerCase();
   if (mime.startsWith('image/')) return 'image';
+  if (mime.startsWith('audio/') || ['mp3', 'ogg', 'wav', 'm4a', 'aac', 'opus'].includes(ext) || lowerName.startsWith('voice_')) return 'audio';
   if (mime.startsWith('video/')) return 'video';
-  if (mime.startsWith('audio/')) return 'audio';
   if (['png', 'jpg', 'jpeg', 'gif', 'webp'].includes(ext)) return 'image';
-  if (['mp4', 'mov', 'avi', 'mkv', 'webm'].includes(ext)) return 'video';
-  if (['mp3', 'ogg', 'wav', 'm4a', 'aac'].includes(ext)) return 'audio';
+  if (ext === 'webm') {
+    return (mime.startsWith('audio/') || lowerName.startsWith('voice_')) ? 'audio' : 'video';
+  }
+  if (['mp4', 'mov', 'avi', 'mkv'].includes(ext)) return 'video';
   return 'document';
 }
 

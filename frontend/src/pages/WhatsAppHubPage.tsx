@@ -1679,9 +1679,13 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     const ext = (file.name.split('.').pop() || '').toLowerCase();
     const mt = file.type || '';
     let msgType: Message['message_type'] = 'DOCUMENT';
-    if (mt.startsWith('image/') || ['png', 'jpg', 'jpeg', 'gif', 'webp'].includes(ext)) msgType = 'IMAGE';
-    else if (mt.startsWith('video/') || ['mp4', 'mov', 'webm'].includes(ext)) msgType = 'VIDEO';
-    else if (mt.startsWith('audio/') || ['mp3', 'ogg', 'wav', 'm4a', 'aac', 'webm', 'opus'].includes(ext)) msgType = 'AUDIO';
+    if (mt.startsWith('image/') || ['png', 'jpg', 'jpeg', 'gif', 'webp'].includes(ext)) {
+      msgType = 'IMAGE';
+    } else if (mt.startsWith('audio/') || ['mp3', 'ogg', 'wav', 'm4a', 'aac', 'opus'].includes(ext) || file.name.toLowerCase().startsWith('voice_')) {
+      msgType = 'AUDIO';
+    } else if (mt.startsWith('video/') || ['mp4', 'mov', 'webm'].includes(ext)) {
+      msgType = 'VIDEO';
+    }
 
     const tempClientMid = `file_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
     const tempId = `optimistic_${tempClientMid}`;

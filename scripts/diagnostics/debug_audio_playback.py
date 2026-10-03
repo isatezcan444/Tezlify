@@ -3,9 +3,12 @@ import os
 import sys
 from playwright.async_api import async_playwright
 
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, REPO_ROOT)
-from scripts.auth_helper import get_ephemeral_auth_token
+try:
+    from scripts.auth_helper import get_ephemeral_auth_token
+except ImportError:
+    from auth_helper import get_ephemeral_auth_token
 
 BASE_URL = os.environ.get("TARGET_URL", "https://130.162.247.20.sslip.io")
 CHROME_PATH = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"

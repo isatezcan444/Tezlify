@@ -1241,7 +1241,15 @@ export function createSessionManager({
       let effectiveMimeType = mime_type;
       let effectiveFilename = filename;
 
-      if ((type === 'audio' || type === 'voice') && media_base64) {
+      const isAudio = Boolean(
+        type === 'audio' ||
+        type === 'voice' ||
+        type === 'ptt' ||
+        (mime_type && mime_type.startsWith('audio/')) ||
+        (filename && (filename.toLowerCase().startsWith('voice_') || filename.toLowerCase().endsWith('.ogg') || filename.toLowerCase().endsWith('.opus') || (filename.toLowerCase().endsWith('.webm') && (!media_type || media_type === 'audio' || media_type === 'voice'))))
+      );
+
+      if (isAudio && media_base64) {
         try {
           const rawBuf = Buffer.from(media_base64, 'base64');
           const { buffer: transcodedBuf, mimetype: targetMime } = await transcodeToOggOpus(rawBuf);
@@ -1272,7 +1280,7 @@ export function createSessionManager({
       const outboundFilename = storedOutboundMedia?.filename || effectiveFilename || null;
 
       const content = buildMediaContent({
-        media_type,
+        media_type: isAudio ? 'voice' : media_type,
         media_url,
         media_base64: effectiveBase64,
         mime_type: effectiveMimeType,
@@ -1282,8 +1290,9 @@ export function createSessionManager({
       const messageId = crypto.createHash('sha256')
         .update(`${session.id}\0${key}\0${clientMessageId}`)
         .digest('hex').slice(0, 32).toUpperCase();
+      const recordedType = isAudio ? 'AUDIO' : (type === 'image' ? 'IMAGE' : (type === 'video' ? 'VIDEO' : 'DOCUMENT'));
       const pending = this._recordOutbound(key, {
-        body: expectedBody, message_type: type.toUpperCase(),
+        body: expectedBody, message_type: recordedType,
         client_message_id: clientMessageId, wa_message_id: messageId, status: 'PENDING',
         media_id: outboundMediaId, media_mime_type: outboundMimeType,
         media_filename: outboundFilename, media_caption: caption,

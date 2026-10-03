@@ -139,9 +139,18 @@ export function buildMediaContent({
   if (type === 'image') {
     return { image: source, mimetype: mime_type || undefined, caption: caption || '' };
   }
-  if (type === 'audio' || type === 'voice') {
+  const isAudio = Boolean(
+    type === 'audio' ||
+    type === 'voice' ||
+    type === 'ptt' ||
+    (mime_type && mime_type.startsWith('audio/')) ||
+    (filename && (filename.toLowerCase().startsWith('voice_') || filename.toLowerCase().endsWith('.ogg') || filename.toLowerCase().endsWith('.opus')))
+  );
+  if (isAudio) {
     const isPtt = Boolean(
       type === 'voice' ||
+      type === 'ptt' ||
+      (filename && filename.toLowerCase().includes('voice')) ||
       (mime_type && (mime_type.includes('ogg') || mime_type.includes('opus') || mime_type.includes('webm')))
     );
     return {
