@@ -68,43 +68,40 @@ async def run_media_verification():
         await page.goto(f"{BASE_URL}/?tab=whatsapp", wait_until="networkidle", timeout=30000)
         await page.wait_for_timeout(2000)
 
-        # 2. Search & Select conversation with media (Nevzat Aydın)
-        print("[2] Searching and selecting conversation with real media ('Nevzat Aydın')...")
-        search_input = page.locator("input[placeholder*='ara'], input[placeholder*='Ara'], input[placeholder*='Search']").first
-        if await search_input.count() > 0:
-            await search_input.fill("Nevzat Aydın")
-            await page.wait_for_timeout(1000)
-
-        nevzat_item = page.locator("[data-testid='conversation-item']").filter(has_text="Nevzat").first
+        # 2. Select conversation with real media (Nevzat Aydın, conv 20523)
+        print("[2] Selecting conversation with real media (Nevzat Aydın, id=20523)...")
+        nevzat_item = page.locator("button[data-conv-id='20523']").first
         if await nevzat_item.count() > 0:
             await nevzat_item.click()
-            print("[*] Clicked Nevzat Aydın conversation.")
+            print("[*] Clicked Nevzat Aydın conversation (conv 20523).")
         else:
-            first_item = page.locator("[data-testid='conversation-item']").first
+            first_item = page.locator("button[data-conv-id]").first
             if await first_item.count() > 0:
                 await first_item.click()
-                print("[*] Clicked first conversation.")
+                print("[*] Clicked first conversation item.")
 
         await page.wait_for_timeout(3000)
 
-        # 3. Check for image bubble or media bubble
-        print("[3] Searching for media messages in conversation...")
-        img_bubble = page.locator("div.cursor-pointer img").first
-        img_count = await img_bubble.count()
+        # 3. Check for image bubble or media bubble inside message thread
+        print("[3] Searching for media messages in conversation thread...")
+        chat_img = page.locator("div[data-msg-id] img").first
+        img_count = await chat_img.count()
 
         lightbox_opened = False
         if img_count > 0:
-            print(f"[*] Found {img_count} image media elements in conversation, taking thread screenshot...")
+            print(f"[*] Found {img_count} image media element(s) in chat bubble, taking thread screenshot...")
             await page.screenshot(path=os.path.join(ARTIFACT_DIR, "wa_thread_media_view.png"))
             print(f"[*] Thread media screenshot saved: {os.path.join(ARTIFACT_DIR, 'wa_thread_media_view.png')}")
 
-            print(f"[*] Clicking image preview to open MediaLightbox...")
-            await img_bubble.click()
+            print("[*] Clicking chat image preview to open MediaLightbox...")
+            # Click with force=True in case hover overlay is transitioning
+            await chat_img.click(force=True)
             await page.wait_for_timeout(1000)
 
             # Check if MediaLightbox opened
             lightbox = page.locator("[role='dialog'][aria-label]")
-            if await lightbox.count() > 0:
+            lightbox_count = await lightbox.count()
+            if lightbox_count > 0:
                 lightbox_opened = True
                 print("[*] MediaLightbox successfully opened via portal!")
                 await page.screenshot(path=os.path.join(ARTIFACT_DIR, "wa_media_lightbox.png"))
@@ -116,12 +113,18 @@ async def run_media_verification():
                 await page.wait_for_timeout(500)
                 if await lightbox.count() == 0:
                     print("[*] Escape key dismissed lightbox cleanly!")
-        else:
-            print("[*] Checking for any img in chat bubble...")
-            all_imgs = page.locator("div[data-msg-id] img")
-            cnt = await all_imgs.count()
-            print(f"[*] Found {cnt} total imgs in chat bubbles.")
-            await page.screenshot(path=os.path.join(ARTIFACT_DIR, "wa_thread_media_view.png"))
+            else:
+                print(f"[!] Lightbox dialog not found after click. Dialog count: {lightbox_count}")
+                # Try clicking parent div
+                parent_preview = page.locator("div[data-msg-id] .cursor-pointer").first
+                if await parent_preview.count() > 0:
+                    print("[*] Retrying click on parent .cursor-pointer...")
+                    await parent_preview.click()
+                    await page.wait_for_timeout(1000)
+                    if await lightbox.count() > 0:
+                        lightbox_opened = True
+                        print("[*] MediaLightbox successfully opened via parent click!")
+                        await page.screenshot(path=os.path.join(ARTIFACT_DIR, "wa_media_lightbox.png"))
 
         # 4. Check results
         print("\n" + "=" * 60)

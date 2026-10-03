@@ -334,7 +334,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                     onError={() => setImageLoadError(true)}
                     className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
                   />
-                  <div className="absolute inset-0 bg-black/30 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-white">
+                  <div className="absolute inset-0 bg-black/30 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-white pointer-events-none">
                     <Eye className="w-5 h-5" />
                   </div>
                 </>
@@ -516,7 +516,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                     onError={() => setImageLoadError(true)}
                     className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
                   />
-                  <div className="absolute inset-0 bg-black/30 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-white">
+                  <div className="absolute inset-0 bg-black/30 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-white pointer-events-none">
                     <Eye className="w-5 h-5" />
                   </div>
                 </div>
