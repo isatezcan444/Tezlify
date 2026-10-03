@@ -1,4 +1,4 @@
-import React, { useState, useLayoutEffect, useCallback } from 'react';
+import React, { useState, useLayoutEffect, useCallback, useEffect, useRef } from 'react';
 import {
   Check,
   CheckCheck,
@@ -17,10 +17,13 @@ import {
   Copy,
   Star,
   Forward,
+  ChevronDown,
+  Pin,
 } from 'lucide-react';
 import { Conversation, Message } from '../../../types';
 import { Tooltip } from '../../../components/ui/Tooltip';
 import { Modal } from '../../../components/ui/Modal';
+import { useToast } from '../../../context/ToastContext';
 import { useI18n } from '../../../context/I18nContext';
 import { formatMessageTime } from '../../../lib/utils';
 import { finishWaLatency } from '../lib/whatsappLatency';
@@ -33,6 +36,7 @@ import { MediaLightbox } from './MediaLightbox';
 import { groupReactions } from '../lib/whatsappReactions';
 import { resolveMediaUrl } from '../../../lib/mediaUrl';
 import { isMessageStarred, toggleMessageStar, subscribeStarredChanges } from '../lib/starredMessages';
+import { isMessagePinned, toggleMessagePin, subscribePinnedChanges } from '../lib/pinnedMessages';
 
 /** WhatsApp Web'in tepki cubugunda gosterdigi altı hizli ifade. */
 export const QUICK_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🙏'] as const;
@@ -48,6 +52,11 @@ export interface ChatBubbleProps {
   onReact?: (messageId: number | string, emoji: string) => Promise<void> | void;
   onReply?: (message: Message) => void;
   onForward?: (message: Message) => void;
+  onDelete?: (message: Message) => Promise<void> | void;
+  onEnterSelectMode?: (initialMessageId?: number | string) => void;
+  onPrivateReply?: (message: Message) => void;
+  onDirectMessageSender?: (senderPhone: string, senderName?: string) => void;
+  onReport?: (message: Message) => void;
   isSelectMode?: boolean;
   isSelected?: boolean;
   onToggleSelect?: (messageId: number | string) => void;
@@ -63,6 +72,11 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
   onReact,
   onReply,
   onForward,
+  onDelete,
+  onEnterSelectMode,
+  onPrivateReply,
+  onDirectMessageSender,
+  onReport,
   isSelectMode = false,
   isSelected = false,
   onToggleSelect,
@@ -70,6 +84,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
   isSearchActiveMatch,
 }) => {
   const { t, language } = useI18n();
+  const toast = useToast();
   const isInbound = message.direction === 'INBOUND';
   const [isLightboxOpen, setIsLightboxOpen] = useState(false);
   const [lightboxMediaType, setLightboxMediaType] = useState<'IMAGE' | 'VIDEO' | 'DOCUMENT'>('IMAGE');
@@ -81,6 +96,10 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
   const [mediaRetryTs, setMediaRetryTs] = useState<number | null>(null);
   const [copied, setCopied] = useState(false);
   const [isStarred, setIsStarred] = useState<boolean>(() => isMessageStarred(message.id));
+  const [isPinned, setIsPinned] = useState<boolean>(() => isMessagePinned(message.id));
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const menuButtonRef = useRef<HTMLButtonElement>(null);
 
   React.useEffect(() => {
     setIsStarred(isMessageStarred(message.id));
@@ -88,6 +107,39 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
       setIsStarred(isMessageStarred(message.id));
     });
   }, [message.id]);
+
+  React.useEffect(() => {
+    setIsPinned(isMessagePinned(message.id));
+    return subscribePinnedChanges(() => {
+      setIsPinned(isMessagePinned(message.id));
+    });
+  }, [message.id]);
+
+  React.useEffect(() => {
+    if (!isMenuOpen) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      const target = e.target as Node;
+      if (
+        menuRef.current &&
+        !menuRef.current.contains(target) &&
+        menuButtonRef.current &&
+        !menuButtonRef.current.contains(target)
+      ) {
+        setIsMenuOpen(false);
+      }
+    };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setIsMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isMenuOpen]);
 
   const highlightMatches = useCallback(
     (text: string): React.ReactNode => {
@@ -222,6 +274,34 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
     if (!label || label === chatTitle) return null;
     return label;
   }, [isInbound, isGroup, message.sender_name, message.sender_phone, chatTitle, t]);
+
+  const participantName = senderLabel || message.sender_name || message.sender_phone || t('whatsapp.unknownSender');
+
+  const handleDownloadMedia = useCallback(async () => {
+    if (!resolvedMediaUrl) return;
+    try {
+      const res = await fetch(resolvedMediaUrl);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const blob = await res.blob();
+      const blobUrl = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = message.media_filename || (message.message_type === 'VIDEO' ? 'video.mp4' : 'media');
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(blobUrl);
+    } catch {
+      const a = document.createElement('a');
+      a.href = resolvedMediaUrl;
+      a.download = message.media_filename || 'media';
+      a.target = '_blank';
+      a.rel = 'noopener noreferrer';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    }
+  }, [resolvedMediaUrl, message.media_filename, message.message_type]);
 
   const renderStatusIcon = () => {
     if (isInbound) return null;
@@ -613,7 +693,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
           id={message.id ? `msg-${message.id}` : undefined}
           data-msg-id={message.id}
           onClick={isSelectMode ? () => onToggleSelect?.(message.id) : undefined}
-          className={`relative group max-w-[85%] sm:max-w-[75%] min-w-[68px] px-3 py-1.5 shadow-[0_1px_0.5px_rgba(11,20,26,0.13)] text-[13px] leading-relaxed transition-all duration-150 select-text ${
+          className={`relative group max-w-[85%] sm:max-w-[75%] min-w-[76px] pl-3 pr-6 py-1.5 shadow-[0_1px_0.5px_rgba(11,20,26,0.13)] text-[13px] leading-relaxed transition-all duration-150 select-text ${
             isSelectMode ? 'cursor-pointer hover:opacity-95' : ''
           } ${
             isSearchActiveMatch ? 'ring-2 ring-[#00a884] dark:ring-[#25D366] shadow-md scale-[1.01]' : ''
@@ -660,6 +740,13 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
               isInbound ? 'text-[#667781] dark:text-[#8696a0]' : 'text-[#667781] dark:text-[#8696a0]'
             }`}
           >
+            {isPinned && (
+              <Pin
+                className="w-2.5 h-2.5 text-slate-500 dark:text-slate-400 -rotate-45 shrink-0 inline-block mr-0.5"
+                data-testid={`msg-pinned-icon-${message.id}`}
+                aria-label={t('whatsapp.menuPin')}
+              />
+            )}
             {isStarred && (
               <Star
                 className="w-2.5 h-2.5 text-amber-500 fill-amber-500 shrink-0 inline-block mr-0.5"
@@ -704,14 +791,13 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
             </div>
           )}
 
-          {/* WhatsApp Web Hover Action Bar (Tepki, Yanıtla, Kopyala) */}
-          <div
-            className={`absolute -top-3.5 ${
-              isInbound ? '-right-2' : '-left-2'
-            } z-10 flex items-center gap-0.5 p-0.5 rounded-full bg-white dark:bg-[#202c33] border border-slate-200/80 dark:border-white/10 shadow-md opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity`}
-          >
-            {/* Tepki Tetikleyicisi */}
-            {canReact && (
+          {/* Quick Reaction Button (outside bubble on hover) */}
+          {canReact && (
+            <div
+              className={`absolute top-1 ${
+                isInbound ? '-right-8' : '-left-8'
+              } z-10 opacity-0 group-hover:opacity-100 transition-opacity`}
+            >
               <button
                 type="button"
                 onClick={(e) => {
@@ -722,7 +808,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                 title={t('whatsapp.reactionAdd')}
                 aria-label={t('whatsapp.reactionAdd')}
                 data-testid={`reaction-trigger-${message.id}`}
-                className="p-1 rounded-full text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/10 transition-colors cursor-pointer disabled:opacity-40"
+                className="w-6 h-6 rounded-full flex items-center justify-center text-slate-400 hover:text-slate-700 dark:text-slate-400 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/10 transition-colors cursor-pointer disabled:opacity-40"
               >
                 {reacting ? (
                   <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -730,77 +816,289 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                   <SmilePlus className="w-3.5 h-3.5" />
                 )}
               </button>
-            )}
+            </div>
+          )}
 
-            {/* Yanıtla Butonu */}
-            {onReply && (
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onReply(message);
-                }}
-                title={t('whatsapp.reply')}
-                aria-label={t('whatsapp.reply')}
-                className="p-1 rounded-full text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/10 transition-colors cursor-pointer"
-              >
-                <Reply className="w-3.5 h-3.5" />
-              </button>
-            )}
-
-            {/* Kopyala Butonu */}
-            {(message.body || message.media_caption) && (
-              <button
-                type="button"
-                onClick={handleCopy}
-                title={copied ? t('common.copied') : t('common.copy')}
-                aria-label={copied ? t('common.copied') : t('common.copy')}
-                className="p-1 rounded-full text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/10 transition-colors cursor-pointer"
-              >
-                {copied ? (
-                  <Check className="w-3.5 h-3.5 text-[#25D366]" />
-                ) : (
-                  <Copy className="w-3.5 h-3.5" />
-                )}
-              </button>
-            )}
-
-            {/* Yıldızla / Yıldızı Kaldır Butonu */}
+          {/* WhatsApp Web Message Chevron Down Trigger ("Ok Butonu") */}
+          <div className="absolute top-1 right-1 z-20">
             <button
+              ref={menuButtonRef}
               type="button"
               onClick={(e) => {
                 e.stopPropagation();
-                toggleMessageStar(message.id, message.conversation_id);
+                setIsMenuOpen((prev) => !prev);
               }}
-              title={isStarred ? t('whatsapp.unstarMessage') : t('whatsapp.starMessage')}
-              aria-label={isStarred ? t('whatsapp.unstarMessage') : t('whatsapp.starMessage')}
-              data-testid={`star-trigger-${message.id}`}
-              className={`p-1 rounded-full hover:bg-slate-100 dark:hover:bg-white/10 transition-colors cursor-pointer ${
-                isStarred
-                  ? 'text-amber-500'
-                  : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-white'
+              data-testid={`msg-menu-btn-${message.id}`}
+              title={t('common.actions')}
+              aria-label={t('common.actions')}
+              className={`w-5 h-5 rounded-full flex items-center justify-center transition-all cursor-pointer ${
+                isMenuOpen
+                  ? 'opacity-100 bg-black/15 dark:bg-white/15 text-slate-900 dark:text-white'
+                  : 'opacity-0 group-hover:opacity-100 text-[#667781] dark:text-[#8696a0] hover:text-slate-900 dark:hover:text-white hover:bg-black/10 dark:hover:bg-white/10'
               }`}
             >
-              <Star className={`w-3.5 h-3.5 ${isStarred ? 'fill-amber-500' : ''}`} />
+              <ChevronDown className="w-3.5 h-3.5 stroke-[2.5]" />
             </button>
+          </div>
 
-            {/* İlet Butonu */}
-            {onForward && (
+          {/* WhatsApp Web Authentic Context Dropdown Menu */}
+          {isMenuOpen && (
+            <div
+              ref={menuRef}
+              data-testid={`msg-context-menu-${message.id}`}
+              className={`absolute top-6 ${
+                isInbound ? 'left-0 sm:left-auto sm:right-0' : 'right-0'
+              } z-50 w-56 py-1.5 bg-white dark:bg-[#233138] border border-slate-200/90 dark:border-white/[0.08] rounded-2xl shadow-2xl backdrop-blur-md animate-in fade-in zoom-in-95 duration-100 flex flex-col`}
+            >
+              {/* 1. Cevapla */}
+              {onReply && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setIsMenuOpen(false);
+                    onReply(message);
+                  }}
+                  data-testid={`menu-reply-${message.id}`}
+                  className="w-full text-left px-4 py-2 text-[13px] text-slate-800 dark:text-[#d1d7db] hover:bg-[#00a884] hover:text-white transition-colors cursor-pointer select-none rounded-lg mx-0.5"
+                >
+                  {t('whatsapp.menuReply')}
+                </button>
+              )}
+
+              {/* 2. İfade Bırak */}
+              {canReact && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setIsMenuOpen(false);
+                    setIsReactionBarOpen(true);
+                  }}
+                  data-testid={`menu-react-${message.id}`}
+                  className="w-full text-left px-4 py-2 text-[13px] text-slate-800 dark:text-[#d1d7db] hover:bg-[#00a884] hover:text-white transition-colors cursor-pointer select-none rounded-lg mx-0.5"
+                >
+                  {t('whatsapp.menuReact')}
+                </button>
+              )}
+
+              {/* 3. Yıldız Ekle / Yıldızı Kaldır */}
               <button
                 type="button"
                 onClick={(e) => {
                   e.stopPropagation();
-                  onForward(message);
+                  setIsMenuOpen(false);
+                  const nextStarred = toggleMessageStar(message.id, message.conversation_id);
+                  setIsStarred(nextStarred);
+                  toast.success(
+                    nextStarred
+                      ? t('whatsapp.messageStarred')
+                      : t('whatsapp.messageUnstarred')
+                  );
                 }}
-                title={t('whatsapp.forwardMessage')}
-                aria-label={t('whatsapp.forwardMessage')}
-                data-testid={`forward-trigger-${message.id}`}
-                className="p-1 rounded-full text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/10 transition-colors cursor-pointer"
+                data-testid={`menu-star-${message.id}`}
+                className="w-full text-left px-4 py-2 text-[13px] text-slate-800 dark:text-[#d1d7db] hover:bg-[#00a884] hover:text-white transition-colors cursor-pointer select-none rounded-lg mx-0.5"
               >
-                <Forward className="w-3.5 h-3.5" />
+                {isStarred ? t('whatsapp.menuUnstar') : t('whatsapp.menuStar')}
               </button>
-            )}
-          </div>
+
+              {/* 4. Sabitle / Sabitlemeyi Kaldır */}
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setIsMenuOpen(false);
+                  const nextPinned = toggleMessagePin(message.id, message.conversation_id);
+                  setIsPinned(nextPinned);
+                  toast.success(nextPinned ? t('whatsapp.messagePinned') : t('whatsapp.messageUnpinned'));
+                }}
+                data-testid={`menu-pin-${message.id}`}
+                className="w-full text-left px-4 py-2 text-[13px] text-slate-800 dark:text-[#d1d7db] hover:bg-[#00a884] hover:text-white transition-colors cursor-pointer select-none rounded-lg mx-0.5"
+              >
+                {isPinned ? t('whatsapp.menuUnpin') : t('whatsapp.menuPin')}
+              </button>
+
+              {/* 5. İlet */}
+              {onForward && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setIsMenuOpen(false);
+                    onForward(message);
+                  }}
+                  data-testid={`menu-forward-${message.id}`}
+                  className="w-full text-left px-4 py-2 text-[13px] text-slate-800 dark:text-[#d1d7db] hover:bg-[#00a884] hover:text-white transition-colors cursor-pointer select-none rounded-lg mx-0.5"
+                >
+                  {t('whatsapp.menuForward')}
+                </button>
+              )}
+
+              {/* 6. Kopyala */}
+              {(message.body || message.media_caption) && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setIsMenuOpen(false);
+                    handleCopy(e);
+                    toast.success(t('common.copied'));
+                  }}
+                  data-testid={`menu-copy-${message.id}`}
+                  className="w-full text-left px-4 py-2 text-[13px] text-slate-800 dark:text-[#d1d7db] hover:bg-[#00a884] hover:text-white transition-colors cursor-pointer select-none rounded-lg mx-0.5"
+                >
+                  {t('whatsapp.menuCopy')}
+                </button>
+              )}
+
+              {/* Grup sohbetine ve karşı tarafa özel seçenekler */}
+              {isGroup && isInbound && (
+                <>
+                  <div className="my-1 border-t border-slate-200/60 dark:border-white/[0.08]" />
+                  {onPrivateReply && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setIsMenuOpen(false);
+                        onPrivateReply(message);
+                      }}
+                      data-testid={`menu-reply-privately-${message.id}`}
+                      className="w-full text-left px-4 py-2 text-[13px] text-slate-800 dark:text-[#d1d7db] hover:bg-[#00a884] hover:text-white transition-colors cursor-pointer select-none rounded-lg mx-0.5"
+                    >
+                      {t('whatsapp.menuReplyPrivately')}
+                    </button>
+                  )}
+                  {onDirectMessageSender && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setIsMenuOpen(false);
+                        onDirectMessageSender(message.sender_phone || '', participantName);
+                      }}
+                      data-testid={`menu-direct-message-${message.id}`}
+                      className="w-full text-left px-4 py-2 text-[13px] text-slate-800 dark:text-[#d1d7db] hover:bg-[#00a884] hover:text-white transition-colors cursor-pointer select-none rounded-lg mx-0.5"
+                    >
+                      {t('whatsapp.menuMessageSender', { name: participantName })}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={async (e) => {
+                      e.stopPropagation();
+                      setIsMenuOpen(false);
+                      if (onReport) {
+                        onReport(message);
+                      } else {
+                        const ok = await toast.confirm({
+                          title: t('whatsapp.menuReport'),
+                          message: t('whatsapp.reportConfirm'),
+                          confirmText: t('whatsapp.menuReport'),
+                          variant: 'danger',
+                        });
+                        if (ok) {
+                          toast.success(t('whatsapp.messageReported'));
+                        }
+                      }
+                    }}
+                    data-testid={`menu-report-${message.id}`}
+                    className="w-full text-left px-4 py-2 text-[13px] text-slate-800 dark:text-[#d1d7db] hover:bg-[#00a884] hover:text-white transition-colors cursor-pointer select-none rounded-lg mx-0.5"
+                  >
+                    {t('whatsapp.menuReport')}
+                  </button>
+                </>
+              )}
+
+              {/* Bireysel sohbette gelen mesaja şikayet */}
+              {!isGroup && isInbound && (
+                <>
+                  <div className="my-1 border-t border-slate-200/60 dark:border-white/[0.08]" />
+                  <button
+                    type="button"
+                    onClick={async (e) => {
+                      e.stopPropagation();
+                      setIsMenuOpen(false);
+                      if (onReport) {
+                        onReport(message);
+                      } else {
+                        const ok = await toast.confirm({
+                          title: t('whatsapp.menuReport'),
+                          message: t('whatsapp.reportConfirm'),
+                          confirmText: t('whatsapp.menuReport'),
+                          variant: 'danger',
+                        });
+                        if (ok) {
+                          toast.success(t('whatsapp.messageReported'));
+                        }
+                      }
+                    }}
+                    data-testid={`menu-report-${message.id}`}
+                    className="w-full text-left px-4 py-2 text-[13px] text-slate-800 dark:text-[#d1d7db] hover:bg-[#00a884] hover:text-white transition-colors cursor-pointer select-none rounded-lg mx-0.5"
+                  >
+                    {t('whatsapp.menuReport')}
+                  </button>
+                </>
+              )}
+
+              {/* Medya dosyası ise İndir */}
+              {(resolvedMediaUrl || message.media_url || message.media_id) && (
+                <>
+                  <div className="my-1 border-t border-slate-200/60 dark:border-white/[0.08]" />
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setIsMenuOpen(false);
+                      void handleDownloadMedia();
+                    }}
+                    data-testid={`menu-download-${message.id}`}
+                    className="w-full text-left px-4 py-2 text-[13px] text-slate-800 dark:text-[#d1d7db] hover:bg-[#00a884] hover:text-white transition-colors cursor-pointer select-none rounded-lg mx-0.5"
+                  >
+                    {t('whatsapp.menuDownload')}
+                  </button>
+                </>
+              )}
+
+              {/* Sil seçeneği */}
+              {onDelete && (
+                <>
+                  <div className="my-1 border-t border-slate-200/60 dark:border-white/[0.08]" />
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setIsMenuOpen(false);
+                      void onDelete(message);
+                    }}
+                    data-testid={`menu-delete-${message.id}`}
+                    className="w-full text-left px-4 py-2 text-[13px] text-slate-800 dark:text-[#d1d7db] hover:bg-[#00a884] hover:text-white transition-colors cursor-pointer select-none rounded-lg mx-0.5"
+                  >
+                    {t('whatsapp.menuDelete')}
+                  </button>
+                </>
+              )}
+
+              {/* Mesajları seç */}
+              <div className="my-1 border-t border-slate-200/60 dark:border-white/[0.08]" />
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setIsMenuOpen(false);
+                  if (onEnterSelectMode) {
+                    onEnterSelectMode(message.id);
+                  } else {
+                    onToggleSelect?.(message.id);
+                  }
+                }}
+                data-testid={`menu-select-${message.id}`}
+                className="w-full text-left px-4 py-2 text-[13px] text-slate-800 dark:text-[#d1d7db] hover:bg-[#00a884] hover:text-white transition-colors cursor-pointer select-none rounded-lg mx-0.5"
+              >
+                {t('whatsapp.menuSelect')}
+              </button>
+            </div>
+          )}
 
           {canReact && isReactionBarOpen && (
             <div

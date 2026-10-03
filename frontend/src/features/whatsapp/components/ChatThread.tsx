@@ -83,6 +83,11 @@ export interface ChatThreadProps {
   onReact?: (messageId: number | string, emoji: string) => Promise<void> | void;
   onReply?: (message: Message) => void;
   onForward?: (message: Message) => void;
+  onDeleteMessage?: (message: Message) => Promise<void> | void;
+  onEnterSelectMode?: (initialMessageId?: number | string) => void;
+  onPrivateReply?: (message: Message) => void;
+  onDirectMessageSender?: (senderPhone: string, senderName?: string) => void;
+  onReportMessage?: (message: Message) => void;
   isSelectMode?: boolean;
   selectedMessageIds?: Set<number | string>;
   onToggleSelectMessage?: (messageId: number | string) => void;
@@ -118,6 +123,11 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
   onReact,
   onReply,
   onForward,
+  onDeleteMessage,
+  onEnterSelectMode,
+  onPrivateReply,
+  onDirectMessageSender,
+  onReportMessage,
   isSelectMode = false,
   selectedMessageIds,
   onToggleSelectMessage,
@@ -913,6 +923,11 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
         onReact={onReact}
         onReply={onReply}
         onForward={onForward}
+        onDelete={onDeleteMessage}
+        onEnterSelectMode={onEnterSelectMode}
+        onPrivateReply={onPrivateReply}
+        onDirectMessageSender={onDirectMessageSender}
+        onReport={onReportMessage}
         isSelectMode={isSelectMode}
         isSelected={selectedMessageIds ? selectedMessageIds.has(row.msg.id) : false}
         onToggleSelect={onToggleSelectMessage}

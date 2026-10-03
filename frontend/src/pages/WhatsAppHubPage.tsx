@@ -265,6 +265,86 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     }
   }, [messagesMap, selectedMessageIds]);
 
+  const handlePrivateReply = useCallback((message: Message) => {
+    if (!message.sender_phone) {
+      toastRef.current.error(tRef.current('whatsapp.senderPhoneMissing'));
+      return;
+    }
+    const cleanPhone = message.sender_phone.replace(/\D/g, '');
+    const directConv = conversationsRef.current.find(
+      (c) => !c.is_group && c.lead_phone && c.lead_phone.replace(/\D/g, '') === cleanPhone
+    );
+    if (directConv) {
+      setSelectedConv(directConv);
+      setReplyingTo({
+        id: message.id,
+        senderName: message.sender_name || directConv.lead_name || directConv.lead_phone || 'WhatsApp',
+        body: message.body || (message.message_type !== 'TEXT' ? `[${message.message_type}]` : ''),
+        mediaType: message.message_type !== 'TEXT' ? message.message_type : undefined,
+      });
+      toastRef.current.success(tRef.current('whatsapp.openingDirectChat'));
+    } else {
+      setIsNewChatModalOpen(true);
+    }
+  }, []);
+
+  const handleDirectMessageSender = useCallback((senderPhone: string, senderName?: string) => {
+    if (!senderPhone) {
+      toastRef.current.error(tRef.current('whatsapp.senderPhoneMissing'));
+      return;
+    }
+    const cleanPhone = senderPhone.replace(/\D/g, '');
+    const directConv = conversationsRef.current.find(
+      (c) => !c.is_group && c.lead_phone && c.lead_phone.replace(/\D/g, '') === cleanPhone
+    );
+    if (directConv) {
+      setSelectedConv(directConv);
+      toastRef.current.success(tRef.current('whatsapp.openingDirectChat'));
+    } else {
+      setIsNewChatModalOpen(true);
+    }
+  }, []);
+
+  const handleDeleteMessage = useCallback(async (message: Message) => {
+    const currentConv = selectedConvRef.current;
+    if (!currentConv) return;
+    const ok = await toastRef.current.confirm({
+      title: tRef.current('whatsapp.menuDelete'),
+      message: tRef.current('whatsapp.deleteMessageConfirm'),
+      confirmText: tRef.current('whatsapp.menuDelete'),
+      variant: 'danger',
+    });
+    if (!ok) return;
+
+    setMessagesMap((prev) => {
+      const list = prev[currentConv.id] || [];
+      return {
+        ...prev,
+        [currentConv.id]: list.filter((m) => m.id !== message.id),
+      };
+    });
+    toastRef.current.success(tRef.current('whatsapp.messageDeleted'));
+  }, []);
+
+  const handleEnterSelectMode = useCallback((initialMessageId?: number | string) => {
+    setIsSelectMode(true);
+    if (initialMessageId != null) {
+      setSelectedMessageIds(new Set([initialMessageId]));
+    }
+  }, []);
+
+  const handleReportMessage = useCallback(async (message: Message) => {
+    const ok = await toastRef.current.confirm({
+      title: tRef.current('whatsapp.menuReport'),
+      message: tRef.current('whatsapp.reportConfirm'),
+      confirmText: tRef.current('whatsapp.menuReport'),
+      variant: 'danger',
+    });
+    if (ok) {
+      toastRef.current.success(tRef.current('whatsapp.messageReported'));
+    }
+  }, []);
+
   const matchingMessageIds = React.useMemo(() => {
     const q = chatSearchQuery.trim().toLowerCase();
     if (!q || !selectedConv || !messagesMap[selectedConv.id]?.length) return [];
@@ -3328,6 +3408,11 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                   onReact={handleReactMessage}
                   onReply={handleReplyMessage}
                   onForward={handleForwardSingleMessage}
+                  onDeleteMessage={handleDeleteMessage}
+                  onEnterSelectMode={handleEnterSelectMode}
+                  onPrivateReply={handlePrivateReply}
+                  onDirectMessageSender={handleDirectMessageSender}
+                  onReportMessage={handleReportMessage}
                   isSelectMode={isSelectMode}
                   selectedMessageIds={selectedMessageIds}
                   onToggleSelectMessage={handleToggleSelectMessage}
