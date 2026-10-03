@@ -96,8 +96,17 @@ const scrollerTops = new WeakMap();
 const isScroller = (el) =>
   typeof el.matches === 'function' && el.matches('.overflow-y-auto');
 const metricsOf = (el) => {
-  const content = Array.from(el.children).length * ROW_H;
+  const target = el.firstElementChild && el.firstElementChild.children.length > 1
+    ? el.firstElementChild
+    : el;
+  const content = Array.from(target.children).length * ROW_H;
   return { content, viewport: VIEWPORT, max: Math.max(0, content - VIEWPORT) };
+};
+
+window.HTMLElement.prototype.scrollTo = function scrollTo(options) {
+  if (typeof options === 'object' && options !== null && 'top' in options) {
+    this.scrollTop = options.top;
+  }
 };
 
 Object.defineProperty(window.HTMLElement.prototype, 'scrollHeight', {
@@ -275,8 +284,14 @@ try {
   const pill = (host) => host.querySelector('.bottom-4.right-4');
   // A switch must never leave a second thread behind in the pane.
   const scrollerCount = (host) => host.querySelectorAll('div.overflow-y-auto').length;
+  const messageRowsOf = (container) => {
+    const target = container.firstElementChild && container.firstElementChild.children.length > 1
+      ? container.firstElementChild
+      : container;
+    return Array.from(target.children);
+  };
   const rowsWithText = (container, text) =>
-    Array.from(container.children).filter((c) => (c.textContent || '').includes(text)).length;
+    messageRowsOf(container).filter((c) => (c.textContent || '').includes(text)).length;
   const fireScroll = async (el) => {
     await act(async () => {
       el.dispatchEvent(new window.Event('scroll'));
@@ -287,10 +302,8 @@ try {
   // is invisible to it. Go through the prototype setter and fire `input`.
   const typeInto = async (input, text) => {
     await act(async () => {
-      const setter = Object.getOwnPropertyDescriptor(
-        window.HTMLInputElement.prototype,
-        'value'
-      ).set;
+      const proto = input instanceof window.HTMLTextAreaElement ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+      const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
       setter.call(input, text);
       input.dispatchEvent(new window.Event('input', { bubbles: true }));
     });
@@ -385,7 +398,7 @@ try {
     // must be measured at this same position.
     await act(async () => { el.scrollTop = 10; });
     await fireScroll(el);
-    const anchorIndexBefore = Array.from(el.children).findIndex((c) => (c.textContent || '').includes(anchorText));
+    const anchorIndexBefore = messageRowsOf(el).findIndex((c) => (c.textContent || '').includes(anchorText));
     const offsetBefore = anchorIndexBefore * ROW_H - el.scrollTop;
     assert.ok(anchorIndexBefore > 0, 'anchor must be present before the prepend');
     // Provider answers: 30 older messages are prepended.
@@ -397,7 +410,7 @@ try {
       el.scrollTop = 10;
     }
 
-    const anchorIndexAfter = Array.from(el.children).findIndex((c) => (c.textContent || '').includes(anchorText));
+    const anchorIndexAfter = messageRowsOf(el).findIndex((c) => (c.textContent || '').includes(anchorText));
     const offsetAfter = anchorIndexAfter * ROW_H - el.scrollTop;
     const result = { offsetBefore, offsetAfter, anchorIndexBefore, anchorIndexAfter, el, view };
     result.pillAfterPrepend = Boolean(pill(view.host));
@@ -494,7 +507,7 @@ try {
     const loaded = mergeWhatsAppMessages(page1, page2);
     const view = await mount(h(ChatThread, { messages: loaded, hasMore: true, onLoadOlder: () => {} }));
     const el = threadContainer(view.host);
-    const before = Array.from(el.children).length;
+    const before = messageRowsOf(el).length;
     // Refresh / sync: the newest page arrives again plus one live message.
     const after = mergeFn(loaded, [...page1, mkMsg(101)]);
     await view.update(h(ChatThread, { messages: after, hasMore: true, onLoadOlder: () => {} }));
@@ -503,7 +516,7 @@ try {
 
   await check('pagination-render: a refresh keeps both loaded pages in the DOM', async () => {
     const r = await renderPagination((cur, inc) => mergeWhatsAppMessages(cur, inc));
-    const rows = Array.from(r.el.children).length;
+    const rows = messageRowsOf(r.el).length;
     assert.ok(rows >= r.before, `rows must not shrink: ${r.before} -> ${rows}`);
     assert.ok((r.el.textContent || '').includes(r.oldest), 'page 2 must still be rendered');
     assert.equal(rowsWithText(r.el, r.newest), 1, 'the new message must appear exactly once');
@@ -721,15 +734,13 @@ try {
     const render = (key) =>
       h(ChatComposer, { key, onSend: () => {}, onSendMediaFile: async () => {} });
     const view = await mount(render(1));
-    const input = view.host.querySelector('input[type="text"]');
+    const input = view.host.querySelector('textarea, input[type="text"]');
     assert.ok(input, 'composer input must render');
 
     // Type a draft intended for conversation 1.
     await act(async () => {
-      const setter = Object.getOwnPropertyDescriptor(
-        window.HTMLInputElement.prototype,
-        'value'
-      ).set;
+      const proto = input instanceof window.HTMLTextAreaElement ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+      const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
       setter.call(input, 'bu mesaj baskasina gitmemeli');
       input.dispatchEvent(new window.Event('input', { bubbles: true }));
     });
@@ -737,7 +748,7 @@ try {
 
     // Switch conversation (the hub page keys the composer by conversation id).
     await view.update(render(2));
-    const nextInput = view.host.querySelector('input[type="text"]');
+    const nextInput = view.host.querySelector('textarea, input[type="text"]');
     assert.notEqual(nextInput.value, 'bu mesaj baskasina gitmemeli',
       'the draft leaked into another conversation');
     assert.equal(nextInput.value, '', 'the composer must be empty after a switch');
@@ -748,18 +759,16 @@ try {
     // FALSIFICATION: reuse the SAME instance (no key) — what an unkeyed
     // ChatComposer does today.
     const view = await mount(h(ChatComposer, { onSend: () => {}, onSendMediaFile: async () => {} }));
-    const input = view.host.querySelector('input[type="text"]');
+    const input = view.host.querySelector('textarea, input[type="text"]');
     try {
       await act(async () => {
-        const setter = Object.getOwnPropertyDescriptor(
-          window.HTMLInputElement.prototype,
-          'value'
-        ).set;
+        const proto = input instanceof window.HTMLTextAreaElement ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+        const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
         setter.call(input, 'bu mesaj baskasina gitmemeli');
         input.dispatchEvent(new window.Event('input', { bubbles: true }));
       });
       await view.update(h(ChatComposer, { onSend: () => {}, onSendMediaFile: async () => {} }));
-      const after = view.host.querySelector('input[type="text"]');
+      const after = view.host.querySelector('textarea, input[type="text"]');
       assert.equal(after.value, '', 'expected the unkeyed composer to leak the draft');
     } finally {
       await view.unmount();
@@ -779,14 +788,14 @@ try {
       });
 
     const view = await mount(render(1, 'A'));
-    const input = view.host.querySelector('input[type="text"]');
+    const input = view.host.querySelector('textarea, input[type="text"]');
     assert.ok(input, 'composer input must render');
     await typeInto(input, 'A icin mesaj');
 
     // A WS patch, an inbound message or a sidebar reorder all re-render the hub
     // page. The key is unchanged, so the composer must survive.
     await view.update(render(1, 'A (updated)'));
-    const same = view.host.querySelector('input[type="text"]');
+    const same = view.host.querySelector('textarea, input[type="text"]');
     assert.equal(same, input, 'an update in the same conversation must not remount the composer');
     assert.equal(same.value, 'A icin mesaj', 'the draft must survive a same-conversation update');
 
@@ -811,13 +820,13 @@ try {
       });
 
     const view = await mount(render(1));
-    await typeInto(view.host.querySelector('input[type="text"]'), 'A icin mesaj');
+    await typeInto(view.host.querySelector('textarea, input[type="text"]'), 'A icin mesaj');
 
     await view.update(render(2));
-    const inputB = view.host.querySelector('input[type="text"]');
+    const inputB = view.host.querySelector('textarea, input[type="text"]');
     assert.equal(inputB.value, '', 'the switched-to composer must be empty');
     await typeInto(inputB, 'B icin mesaj');
-    await pressEnter(view.host.querySelector('input[type="text"]'));
+    await pressEnter(view.host.querySelector('textarea, input[type="text"]'));
 
     assert.deepEqual(sent, ['B icin mesaj'], "A's draft must never reach B");
     assert.ok(

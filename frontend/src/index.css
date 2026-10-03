@@ -133,3 +133,21 @@
     animation: none !important;
   }
 }
+
+/* WhatsApp Web Authentic Chat Wallpaper */
+.whatsapp-chat-bg {
+  background-color: #efeae2;
+  background-image: 
+    radial-gradient(circle at 50% 50%, rgba(0, 0, 0, 0.04) 1px, transparent 1px),
+    radial-gradient(circle at 0% 0%, rgba(0, 0, 0, 0.02) 1.5px, transparent 1.5px);
+  background-size: 24px 24px, 48px 48px;
+}
+
+.dark .whatsapp-chat-bg {
+  background-color: #0b141a;
+  background-image: 
+    radial-gradient(circle at 50% 50%, rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+    radial-gradient(circle at 0% 0%, rgba(255, 255, 255, 0.02) 1.5px, transparent 1.5px);
+  background-size: 24px 24px, 48px 48px;
+}
+

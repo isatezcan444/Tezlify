@@ -81,6 +81,7 @@ export interface ChatThreadProps {
   onRetry?: (messageId: number | string) => Promise<void> | void;
   /** Mesaja ifade birakir/degistirir/kaldirir (bos `emoji` geri ceker). */
   onReact?: (messageId: number | string, emoji: string) => Promise<void> | void;
+  onReply?: (message: Message) => void;
   peerTyping?: boolean;
   /** Sorun 2 (LOADING ≠ EMPTY ≠ ERROR): bu sohbetin MESAJ hidrasyonu
    * basarisiz olduysa hata mesaji. Yalnizca BU sohbeti etkiler — diger
@@ -109,6 +110,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
   isGroup = false,
   onRetry,
   onReact,
+  onReply,
   peerTyping = false,
   error = null,
   onRetryLoad,
@@ -656,10 +658,15 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
       // pagination trigger, which is what chained one gesture into 17 page
       // requests. `scrollTo` with an explicit behaviour bypasses the CSS.
       markLegacyProgrammatic(150);
-      containerRef.current.scrollTo({
-        top: prevScrollTopRef.current + heightDiff,
-        behavior: 'instant',
-      });
+      const targetTop = prevScrollTopRef.current + heightDiff;
+      if (typeof containerRef.current.scrollTo === 'function') {
+        containerRef.current.scrollTo({
+          top: targetTop,
+          behavior: 'instant',
+        });
+      } else {
+        containerRef.current.scrollTop = targetTop;
+      }
       isPrependingRef.current = false;
       pendingPrependRef.current = null;
       return;
@@ -772,7 +779,11 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
           const cont = containerRef.current;
           if (cont) {
             markLegacyProgrammatic(500);
-            cont.scrollTo({ top: cont.scrollHeight, behavior: 'smooth' });
+            if (typeof cont.scrollTo === 'function') {
+              cont.scrollTo({ top: cont.scrollHeight, behavior: 'smooth' });
+            } else {
+              cont.scrollTop = cont.scrollHeight;
+            }
           }
         }
         setShowNewMessagePill(false);
@@ -800,11 +811,12 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
     if (!cont) return;
     userScrolledUpRef.current = false;
     markLegacyProgrammatic(behavior === 'instant' ? 250 : 600);
-    if (behavior === 'instant') {
+    if (behavior === 'instant' || typeof cont.scrollTo !== 'function') {
       cont.scrollTop = cont.scrollHeight;
     } else {
       cont.scrollTo({ top: cont.scrollHeight, behavior: 'smooth' });
     }
+    bottomRef.current?.scrollIntoView({ behavior, block: 'end' });
     setIsNearBottom(true);
     setShowNewMessagePill(false);
   }, [geomOp, markLegacyProgrammatic]);
@@ -830,6 +842,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
       if (!initialScrollDoneRef.current) {
         userScrolledUpRef.current = false;
         cont.scrollTop = cont.scrollHeight;
+        bottomRef.current?.scrollIntoView({ behavior: 'instant', block: 'end' });
         initialScrollDoneRef.current = true;
         prevMessagesCountRef.current = sortedMessages.length;
         prevNewestKeyRef.current = newestKey;
@@ -866,13 +879,20 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
   const renderRowBody = (row: ThreadRow) => (
     <>
       {row.showDate && (
-        <div className="flex items-center justify-center my-4">
-          <span className="px-3 py-1 rounded-full text-[10px] font-bold bg-slate-200/80 dark:bg-white/[0.08] text-slate-500 dark:text-slate-400 select-none shadow-xs">
+        <div className="flex items-center justify-center my-3">
+          <span className="px-3 py-1 rounded-lg text-[11px] font-medium bg-white/90 dark:bg-[#182229]/90 text-[#54656f] dark:text-[#8696a0] shadow-[0_1px_0.5px_rgba(11,20,26,0.13)] select-none">
             {row.dateLabel}
           </span>
         </div>
       )}
-      <ChatBubble message={row.msg} isGroup={isGroup} chatTitle={leadName} onRetry={onRetry} onReact={onReact} />
+      <ChatBubble
+        message={row.msg}
+        isGroup={isGroup}
+        chatTitle={leadName}
+        onRetry={onRetry}
+        onReact={onReact}
+        onReply={onReply}
+      />
     </>
   );
 
@@ -998,7 +1018,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
   // Byte-identical DOM + behaviour to the pre-K.19 production component.
   if (!virtualize) {
     return (
-      <div className="relative flex-1 min-w-0 flex flex-col min-h-0">
+      <div className="relative flex-1 min-w-0 flex flex-col min-h-0 whatsapp-chat-bg">
         {pagingBanner}
         <div
           ref={containerRef}
@@ -1041,7 +1061,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
   const mountedRows = win.end >= win.start ? rows.slice(win.start, win.end + 1) : [];
 
   return (
-    <div className="relative flex-1 min-w-0 flex flex-col min-h-0">
+    <div className="relative flex-1 min-w-0 flex flex-col min-h-0 whatsapp-chat-bg">
       {pagingBanner}
       <div
         ref={containerRef}

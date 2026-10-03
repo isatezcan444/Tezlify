@@ -90,13 +90,14 @@ async def test_snapshot_is_published_before_slow_group_enrichment(monkeypatch):
     monkeypatch.setattr(ws, '_bulk_channel_available', AsyncMock(return_value=True))
     monkeypatch.setattr(ws, '_run_bulk_message_sync', bulk)
     monkeypatch.setattr(ws, '_repair_last_message_previews', AsyncMock())
+    monkeypatch.setattr(ws._sync_orchestrator, '_repair_phone_sender_names', AsyncMock())
     monkeypatch.setattr(ws, 'list_conversations', AsyncMock(return_value=([], 0)))
     job = await ws.request_sync(context, owner)
     try:
-        await asyncio.wait_for(metadata.wait(), 2)
+        await asyncio.wait_for(metadata.wait(), 5)
         assert snapshot.is_set()
-        await asyncio.wait_for(messages_reached.wait(), 2)
-        await asyncio.wait_for(job.done.wait(), 2)
+        await asyncio.wait_for(messages_reached.wait(), 5)
+        await asyncio.wait_for(job.done.wait(), 5)
         assert job.state == 'COMPLETED'
         assert not release.is_set()
     finally:

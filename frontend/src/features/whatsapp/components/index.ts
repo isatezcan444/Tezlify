@@ -10,3 +10,4 @@ export * from './SessionCard';
 export * from './TemplateSelectModal';
 export * from './WhatsAppQrConnectModal';
 export * from './WhatsAppSyncGate';
+export * from './VoiceNotePlayer';

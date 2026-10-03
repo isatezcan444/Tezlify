@@ -57,6 +57,7 @@ import {
   NewChatModal,
   WhatsAppSyncGate,
   AntiBanPanel,
+  type QuotedMessage,
 } from '../features/whatsapp/components';
 import { LeadDetailDrawer } from '../features/leads/components';
 import { useAntiBanSettings } from '../features/whatsapp/hooks/useAntiBanSettings';
@@ -172,6 +173,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     conversationsRef.current = conversations;
   }, [conversations]);
   const [selectedConv, setSelectedConv] = useState<Conversation | null>(null);
+  const [replyingTo, setReplyingTo] = useState<QuotedMessage | null>(null);
   const [messagesMap, setMessagesMap] = useState<Record<number, Message[]>>({});
   // PHASE 2.K.1 (single variable = onRetry prop identity): dependency-safe refs
   // mirroring the existing conversationsRef/toastRef idiom. They let the retry
@@ -179,6 +181,19 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   // at call time (no stale closure). The state declarations above are unchanged.
   const selectedConvRef = useRef(selectedConv);
   selectedConvRef.current = selectedConv;
+
+  useEffect(() => {
+    setReplyingTo(null);
+  }, [selectedConv?.id]);
+
+  const handleReplyMessage = useCallback((message: Message) => {
+    setReplyingTo({
+      id: message.id,
+      senderName: message.direction === 'OUTBOUND' ? youName : (message.sender_name || selectedConvRef.current?.lead_name || selectedConvRef.current?.lead_phone || 'WhatsApp'),
+      body: message.body || (message.message_type !== 'TEXT' ? `[${message.message_type}]` : ''),
+      mediaType: message.message_type !== 'TEXT' ? message.message_type : undefined,
+    });
+  }, [youName]);
   const lastMarkedReadConvIdRef = useRef<number | null>(null);
   const messagesMapRef = useRef(messagesMap);
   messagesMapRef.current = messagesMap;
@@ -3031,6 +3046,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                   peerTyping={!!peerTypingMap[selectedConv.id]}
                   onRetry={handleRetryMessage}
                   onReact={handleReactMessage}
+                  onReply={handleReplyMessage}
                 />
 
                 {/* Active Chat Composer */}
@@ -3042,6 +3058,8 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                     the wrong person. Keying clears it on switch. */}
                 <ChatComposer
                   key={selectedConv.id}
+                  replyingTo={replyingTo}
+                  onCancelReply={() => setReplyingTo(null)}
                   onSend={async (text) => {
                     try {
                       await activeSendMessage(text);

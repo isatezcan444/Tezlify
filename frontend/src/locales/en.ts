@@ -380,6 +380,7 @@ export const en = {
     reactionMore: 'More reactions',
     reactionPickerTitle: 'Pick a reaction',
     reactionFailed: 'Reaction could not be sent.',
+    reply: 'Reply',
     sessionsSubtitle: 'Connect and manage WhatsApp multi-device sessions with QR pairing',
     addSession: 'Connect WhatsApp Line',
     noSessions: 'No WhatsApp Lines Connected',

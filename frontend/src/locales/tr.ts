@@ -380,6 +380,7 @@ export const tr = {
     reactionMore: 'Daha fazla ifade',
     reactionPickerTitle: 'İfade seç',
     reactionFailed: 'İfade gönderilemedi.',
+    reply: 'Yanıtla',
     sessionsSubtitle: 'QR eşleştirme ile WhatsApp çoklu cihaz oturumlarını bağlayın ve yönetin',
     addSession: 'Yeni WhatsApp Hattı Bağla',
     noSessions: 'Bağlı WhatsApp Hattı Bulunmuyor',

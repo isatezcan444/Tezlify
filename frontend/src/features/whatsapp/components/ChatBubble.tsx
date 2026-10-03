@@ -12,7 +12,9 @@ import {
   Loader2,
   Clock,
   SmilePlus,
-  Plus
+  Plus,
+  Reply,
+  Copy
 } from 'lucide-react';
 import { Conversation, Message } from '../../../types';
 import { Tooltip } from '../../../components/ui/Tooltip';
@@ -24,6 +26,7 @@ import { getConversationDisplayName } from '../lib/whatsappIdentity';
 import { EmojiPicker } from './EmojiPicker';
 import { DocumentCard } from './DocumentCard';
 import { LinkPreviewCard } from './LinkPreviewCard';
+import { VoiceNotePlayer } from './VoiceNotePlayer';
 import { groupReactions } from '../lib/whatsappReactions';
 import { resolveMediaUrl } from '../../../lib/mediaUrl';
 
@@ -39,9 +42,10 @@ export interface ChatBubbleProps {
   onRetry?: (messageId: number | string) => Promise<void> | void;
   /** Mesaja ifade birakir/degistirir; bos `emoji` geri ceker. */
   onReact?: (messageId: number | string, emoji: string) => Promise<void> | void;
+  onReply?: (message: Message) => void;
 }
 
-const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({ message, isGroup = false, chatTitle, onRetry, onReact }) => {
+const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({ message, isGroup = false, chatTitle, onRetry, onReact, onReply }) => {
   const { t, language } = useI18n();
   const isInbound = message.direction === 'INBOUND';
   const [isLightboxOpen, setIsLightboxOpen] = useState(false);
@@ -50,6 +54,16 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({ message, isGroup = fal
   const [isPickerOpen, setIsPickerOpen] = useState(false);
   const [reacting, setReacting] = useState(false);
   const [imageLoadError, setImageLoadError] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const textToCopy = message.body || message.media_caption || '';
+    if (!textToCopy) return;
+    navigator.clipboard.writeText(textToCopy);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
   const resolvedMediaUrl = React.useMemo(() => {
     const raw =
       message.media_url ||
@@ -150,31 +164,31 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({ message, isGroup = fal
       case 'PENDING':
         return (
           <Tooltip content={t('whatsapp.msgPending')}>
-            <Clock className="w-3.5 h-3.5 text-white/60 animate-pulse" />
+            <Clock className="w-3.5 h-3.5 text-slate-400 dark:text-slate-400 animate-pulse" />
           </Tooltip>
         );
       case 'SENT':
         return (
           <Tooltip content={t('leads.msgSent')}>
-            <Check className="w-3.5 h-3.5 text-white/70" />
+            <Check className="w-3.5 h-3.5 text-[#8696a0]" />
           </Tooltip>
         );
       case 'DELIVERED':
         return (
           <Tooltip content={t('leads.msgDelivered')}>
-            <CheckCheck className="w-3.5 h-3.5 text-white/70" />
+            <CheckCheck className="w-3.5 h-3.5 text-[#8696a0]" />
           </Tooltip>
         );
       case 'READ':
         return (
           <Tooltip content={t('leads.msgRead')}>
-            <CheckCheck className="w-3.5 h-3.5 text-cyan-200" />
+            <CheckCheck className="w-3.5 h-3.5 text-[#53bdeb]" />
           </Tooltip>
         );
       case 'FAILED':
         return (
           <Tooltip content={t('whatsapp.msgFailed')}>
-            <AlertCircle className="w-3.5 h-3.5 text-rose-300" />
+            <AlertCircle className="w-3.5 h-3.5 text-rose-500" />
           </Tooltip>
         );
       default:
@@ -193,6 +207,23 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({ message, isGroup = fal
   const formatBodyWithMentions = (text: string) => {
     if (!text) return null;
     let resolvedText = text;
+
+    let quotedBlock: React.ReactNode = null;
+    if (resolvedText.startsWith('> ')) {
+      const splitIdx = resolvedText.indexOf('\n\n');
+      if (splitIdx !== -1) {
+        const quotePart = resolvedText.substring(2, splitIdx).trim();
+        resolvedText = resolvedText.substring(splitIdx + 2).trim();
+        quotedBlock = (
+          <div className="mb-1.5 p-2 rounded-lg bg-black/[0.05] dark:bg-black/25 border-l-4 border-[#25D366] text-xs">
+            <p className="line-clamp-2 text-[#54656f] dark:text-[#aebac1] font-medium italic">
+              {quotePart}
+            </p>
+          </div>
+        );
+      }
+    }
+
     if (resolvedText.includes('@228269022560256')) {
       resolvedText = resolvedText.replace(/@228269022560256/g, '@Tolga Cebeci');
     }
@@ -202,14 +233,12 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({ message, isGroup = fal
 
     const mentionRegex = /(@[A-Za-z0-9_ğüşıöçĞÜŞİÖÇ+]+(?:\s+[A-Za-z0-9_ğüşıöçĞÜŞİÖÇ]+)?)/g;
     const parts = resolvedText.split(mentionRegex);
-    if (parts.length === 1) return resolvedText;
-
-    return parts.map((part, idx) => {
+    const content = parts.length === 1 ? resolvedText : parts.map((part, idx) => {
       if (part.startsWith('@') && part.length > 1) {
         return (
           <span
             key={idx}
-            className="font-semibold text-[#7367F0] dark:text-[#a29bfe] bg-[#7367F0]/10 dark:bg-[#7367F0]/20 px-1 py-0.5 rounded text-[13px] inline-flex items-center my-0.5 mx-0.5 align-baseline"
+            className="font-semibold text-[#00a884] dark:text-[#25D366] bg-[#00a884]/10 dark:bg-[#25D366]/20 px-1 py-0.5 rounded text-[13px] inline-flex items-center my-0.5 mx-0.5 align-baseline"
           >
             {part}
           </span>
@@ -217,6 +246,13 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({ message, isGroup = fal
       }
       return <React.Fragment key={idx}>{part}</React.Fragment>;
     });
+
+    return (
+      <>
+        {quotedBlock}
+        {content}
+      </>
+    );
   };
 
   const renderTextWithPreview = (body: string) => (
@@ -284,15 +320,19 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({ message, isGroup = fal
 
       case 'AUDIO':
         return (
-          <div className="space-y-1.5 min-w-[220px]">
+          <div className="space-y-1.5 min-w-[240px]">
             {resolvedMediaUrl ? (
-              <audio controls preload="metadata" src={resolvedMediaUrl} className="w-full h-9 max-w-[260px]" />
+              <VoiceNotePlayer
+                src={resolvedMediaUrl}
+                mimeType={message.media_mime_type}
+                isOutbound={!isInbound}
+              />
             ) : (
-              <div className="flex items-center space-x-2 p-2 rounded-xl bg-slate-200/60 dark:bg-white/[0.06]">
-                <div className="w-8 h-8 rounded-full bg-[#28C76F]/20 text-[#28C76F] flex items-center justify-center shrink-0">
+              <div className="flex items-center space-x-2.5 p-2 rounded-xl bg-black/5 dark:bg-white/[0.06]">
+                <div className="w-8 h-8 rounded-full bg-[#25D366]/20 text-[#25D366] flex items-center justify-center shrink-0">
                   <Music className="w-4 h-4" />
                 </div>
-                <div className="flex-1">
+                <div className="flex-1 min-w-0">
                   <span className="text-[11px] font-bold block">{t('leads.voiceMessage')}</span>
                   <span className="text-[9px] font-mono text-slate-400">{message.media_mime_type || 'audio/ogg'}</span>
                 </div>
@@ -380,20 +420,38 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({ message, isGroup = fal
 
   return (
     <>
-      <div className={`flex w-full ${groupedReactions.length > 0 ? 'mb-4' : 'mb-2.5'} ${isInbound ? 'justify-start' : 'justify-end'}`}>
+      <div className={`flex w-full ${groupedReactions.length > 0 ? 'mb-4' : 'mb-2'} ${isInbound ? 'justify-start' : 'justify-end'}`}>
         <div
-          // Sorun 11/12: baloncuk genişliği icerige bagli ama ust siniri
-          // viewport'a gore (%75); asla mesaj metniyle yatay buyume YOK.
-          className={`relative group max-w-[85%] sm:max-w-[75%] min-w-0 px-4 py-2.5 shadow-sm text-xs leading-relaxed transition-all duration-200 ${
+          className={`relative group max-w-[85%] sm:max-w-[75%] min-w-[68px] px-3 py-1.5 shadow-[0_1px_0.5px_rgba(11,20,26,0.13)] text-[13px] leading-relaxed transition-all duration-150 select-text ${
             isInbound
-              ? 'bg-slate-100 dark:bg-white/[0.08] text-slate-800 dark:text-slate-100 rounded-2xl rounded-tl-sm border border-slate-200/60 dark:border-white/[0.04]'
-              : 'bg-[#7367F0] text-white rounded-2xl rounded-tr-sm shadow-[#7367F0]/20'
+              ? 'bg-white dark:bg-[#202c33] text-[#111b21] dark:text-[#e9edef] rounded-lg rounded-tl-none border-none'
+              : 'bg-[#d9fdd3] dark:bg-[#005c4b] text-[#111b21] dark:text-[#e9edef] rounded-lg rounded-tr-none border-none'
           }`}
         >
-          {/* Faz 6a: gonderen yalnizca grup sohbetlerinde, sohbet adiyla ayni
-              degilse gosterilir (WhatsApp Web paritesi). */}
+          {/* Authentic WhatsApp Web Corner Tail Notch */}
+          {isInbound ? (
+            <svg
+              viewBox="0 0 8 13"
+              width="8"
+              height="13"
+              className="absolute -left-2 top-0 text-white dark:text-[#202c33] fill-current pointer-events-none drop-shadow-[0_1px_0.5px_rgba(11,20,26,0.13)]"
+            >
+              <path d="M1.533 3.568L8 12.18V0H2.812C1.042 0 .474 2.156 1.533 3.568z" />
+            </svg>
+          ) : (
+            <svg
+              viewBox="0 0 8 13"
+              width="8"
+              height="13"
+              className="absolute -right-2 top-0 text-[#d9fdd3] dark:text-[#005c4b] fill-current pointer-events-none drop-shadow-[0_1px_0.5px_rgba(11,20,26,0.13)]"
+            >
+              <path d="M5.188 0H0v12.18l6.467-8.612C7.526 2.156 6.958 0 5.188 0z" />
+            </svg>
+          )}
+
+          {/* Group Sender Name */}
           {senderLabel && (
-            <div className="text-[11px] font-bold text-[#7367F0] dark:text-[#a59bf5] mb-1 select-none flex items-center gap-1">
+            <div className="text-[11px] font-bold text-[#00a884] dark:text-[#25D366] mb-1 select-none flex items-center gap-1">
               <span>{senderLabel}</span>
             </div>
           )}
@@ -403,8 +461,8 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({ message, isGroup = fal
 
           {/* Footer info: time & status check */}
           <div
-            className={`flex items-center justify-end space-x-1.5 mt-1.5 text-[10px] select-none ${
-              isInbound ? 'text-slate-400 dark:text-slate-500' : 'text-white/80'
+            className={`flex items-center justify-end space-x-1 mt-0.5 text-[10px] select-none ${
+              isInbound ? 'text-[#667781] dark:text-[#8696a0]' : 'text-[#667781] dark:text-[#8696a0]'
             }`}
           >
             <span>{formatTime(message.created_at || message.external_timestamp)}</span>
@@ -444,30 +502,67 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({ message, isGroup = fal
             </div>
           )}
 
-          {/* Tepki tetikleyicisi: yalnizca fare balonun uzerindeyken gorunur
-              (WhatsApp Web paritesi). Inbound'da sagda, outbound'da solda. */}
-          {canReact && (
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                setIsReactionBarOpen((open) => !open);
-              }}
-              disabled={reacting}
-              title={t('whatsapp.reactionAdd')}
-              aria-label={t('whatsapp.reactionAdd')}
-              data-testid={`reaction-trigger-${message.id}`}
-              className={`absolute -top-3 ${
-                isInbound ? '-right-3' : '-left-3'
-              } z-10 p-1.5 rounded-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-white/10 shadow-md text-slate-500 dark:text-slate-300 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity cursor-pointer disabled:opacity-40`}
-            >
-              {reacting ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              ) : (
-                <SmilePlus className="w-3.5 h-3.5" />
-              )}
-            </button>
-          )}
+          {/* WhatsApp Web Hover Action Bar (Tepki, Yanıtla, Kopyala) */}
+          <div
+            className={`absolute -top-3.5 ${
+              isInbound ? '-right-2' : '-left-2'
+            } z-10 flex items-center gap-0.5 p-0.5 rounded-full bg-white dark:bg-[#202c33] border border-slate-200/80 dark:border-white/10 shadow-md opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity`}
+          >
+            {/* Tepki Tetikleyicisi */}
+            {canReact && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setIsReactionBarOpen((open) => !open);
+                }}
+                disabled={reacting}
+                title={t('whatsapp.reactionAdd')}
+                aria-label={t('whatsapp.reactionAdd')}
+                data-testid={`reaction-trigger-${message.id}`}
+                className="p-1 rounded-full text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/10 transition-colors cursor-pointer disabled:opacity-40"
+              >
+                {reacting ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <SmilePlus className="w-3.5 h-3.5" />
+                )}
+              </button>
+            )}
+
+            {/* Yanıtla Butonu */}
+            {onReply && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onReply(message);
+                }}
+                title={t('whatsapp.reply')}
+                aria-label={t('whatsapp.reply')}
+                className="p-1 rounded-full text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/10 transition-colors cursor-pointer"
+              >
+                <Reply className="w-3.5 h-3.5" />
+              </button>
+            )}
+
+            {/* Kopyala Butonu */}
+            {(message.body || message.media_caption) && (
+              <button
+                type="button"
+                onClick={handleCopy}
+                title={copied ? t('common.copied') : t('common.copy')}
+                aria-label={copied ? t('common.copied') : t('common.copy')}
+                className="p-1 rounded-full text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/10 transition-colors cursor-pointer"
+              >
+                {copied ? (
+                  <Check className="w-3.5 h-3.5 text-[#25D366]" />
+                ) : (
+                  <Copy className="w-3.5 h-3.5" />
+                )}
+              </button>
+            )}
+          </div>
 
           {canReact && isReactionBarOpen && (
             <div
@@ -475,7 +570,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({ message, isGroup = fal
               data-testid={`reaction-bar-${message.id}`}
               className={`absolute -top-11 ${
                 isInbound ? 'left-0' : 'right-0'
-              } z-20 flex items-center gap-0.5 px-1.5 py-1 rounded-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-white/10 shadow-lg animate-in fade-in slide-in-from-bottom-1 duration-150`}
+              } z-20 flex items-center gap-0.5 px-1.5 py-1 rounded-full bg-white dark:bg-[#202c33] border border-slate-200 dark:border-white/10 shadow-lg animate-in fade-in slide-in-from-bottom-1 duration-150`}
             >
               {QUICK_REACTIONS.map((emoji) => (
                 <button
@@ -509,15 +604,15 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({ message, isGroup = fal
 
           {/* Failed State Retry Action */}
           {!isInbound && message.status === 'FAILED' && onRetry && (
-            <div className="flex items-center justify-between space-x-2 mt-1.5 pt-1.5 border-t border-white/20 select-none">
-              <span className="text-[10px] text-rose-200 font-bold">
+            <div className="flex items-center justify-between space-x-2 mt-1.5 pt-1.5 border-t border-rose-300 dark:border-rose-800/50 select-none">
+              <span className="text-[10px] text-rose-600 dark:text-rose-400 font-bold">
                 {t('whatsapp.msgFailed')}
               </span>
               <button
                 type="button"
                 onClick={handleRetryClick}
                 disabled={retrying}
-                className="flex items-center space-x-1 px-2 py-0.5 rounded-lg bg-rose-500/30 hover:bg-rose-500/50 text-[10px] font-extrabold text-white transition-all cursor-pointer disabled:opacity-50 border border-white/20"
+                className="flex items-center space-x-1 px-2 py-0.5 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-[10px] font-extrabold text-rose-700 dark:text-rose-300 transition-all cursor-pointer disabled:opacity-50 border border-rose-300 dark:border-rose-700/50"
               >
                 {retrying ? (
                   <Loader2 className="w-3 h-3 animate-spin" />

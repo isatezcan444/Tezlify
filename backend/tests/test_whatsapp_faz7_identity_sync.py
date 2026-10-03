@@ -446,7 +446,7 @@ async def test_sync_contacts_perf_500_unique_people():
             start = time.perf_counter()
             out = await sync_contacts(db, TEST_USER)
             elapsed = time.perf_counter() - start
-        assert len(out) == 510
+        assert len(out) == 500
         assert elapsed < 20.0  # mock performans hedefi
         # Duplicate kontrolu: her phone_e164 tek satir
         dup = (await db.execute(

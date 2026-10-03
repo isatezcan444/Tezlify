@@ -147,14 +147,15 @@ try {
           React.createElement(ChatComposer, { onSend })),
       );
     });
-    const input = host.querySelector('input[type="text"]');
+    const input = host.querySelector('textarea, input[type="text"]');
     assert.ok(input, 'the draft input must render');
     return { host, input, root };
   };
 
   /** Set a value the way React sees it (native setter + bubbling input event). */
   const typeInto = async (el, value) => {
-    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    const proto = el instanceof window.HTMLTextAreaElement ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
     await act(async () => {
       setter.call(el, value);
       el.dispatchEvent(new window.Event('input', { bubbles: true }));

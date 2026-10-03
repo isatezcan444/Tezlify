@@ -238,6 +238,11 @@ src/
 - **Props**: `sync: SessionSyncState | null`, `loadingGate?: WhatsAppLoadingGate | null`, `showEscape?: boolean`, `onContinueAnyway?: () => void`, `onRetry?: () => void`.
 - **Import**: `import { WhatsAppSyncGate } from '@/features/whatsapp/components';`
 
+#### `VoiceNotePlayer`
+- **Purpose**: WhatsApp Web authentic waveform audio and voice note player. Displays animated soundwave bars, play/pause toggle, interactive seek scrubber, duration timestamps, playback speed multiplier toggle (1x / 1.5x / 2x), and microphone voice note indicator.
+- **Props**: `src: string`, `mimeType?: string | null`, `isOutbound?: boolean`.
+- **Import**: `import { VoiceNotePlayer } from '@/features/whatsapp/components';`
+
 #### `useWhatsAppLoadingGate` (hook)
 - **Purpose**: Single-authority QR post-pairing loading gate state (WhatsApp Web parity). Fed only by real signals — backend `GET /whatsapp/loading-gate` (REST bootstrap on mount + WS reconnect) and WS `whatsapp_loading_gate` / `session_sync_*` events. No polling, no fake timers. Fires the `onReady` callback exactly once when `phase` transitions to `ready`, so the hub can auto-switch to the Live Conversations tab and eagerly load chats.
 - **Signature**: `useWhatsAppLoadingGate(onReady?: () => void) => { gate, dismiss, refresh }`.

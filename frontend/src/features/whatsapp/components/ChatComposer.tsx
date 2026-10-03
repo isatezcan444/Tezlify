@@ -12,13 +12,22 @@ import {
   FileText, 
   RotateCcw,
   Smile,
-  Sparkles
+  Sparkles,
+  Mic,
+  X
 } from 'lucide-react';
 import { Button } from '../../../components/ui/button';
 import { Tooltip } from '../../../components/ui/Tooltip';
 import { Modal } from '../../../components/ui/Modal';
 import { EmojiPicker } from './EmojiPicker';
 import { useI18n } from '../../../context/I18nContext';
+
+export interface QuotedMessage {
+  id: number | string;
+  senderName?: string;
+  body?: string;
+  mediaType?: string;
+}
 
 export interface ChatComposerProps {
   onSend?: (text: string) => Promise<void> | void;
@@ -31,6 +40,8 @@ export interface ChatComposerProps {
   isClosed?: boolean;
   isWindowOpen?: boolean;
   placeholder?: string;
+  replyingTo?: QuotedMessage | null;
+  onCancelReply?: () => void;
 }
 
 export const ChatComposer: React.FC<ChatComposerProps> = ({
@@ -44,6 +55,8 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
   isClosed = false,
   isWindowOpen = true,
   placeholder,
+  replyingTo,
+  onCancelReply,
 }) => {
   const { t } = useI18n();
   const [text, setText] = useState('');
@@ -75,7 +88,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
   const attachMenuRef = useRef<HTMLDivElement>(null);
   const emojiContainerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const draftInputRef = useRef<HTMLInputElement>(null);
+  const draftInputRef = useRef<HTMLTextAreaElement | HTMLInputElement | null>(null);
   const composerRootRef = useRef<HTMLDivElement>(null);
   const [isEmojiOpen, setIsEmojiOpen] = useState(false);
 
@@ -199,6 +212,12 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
     el.focus();
   }, []);
 
+  useEffect(() => {
+    if (replyingTo) {
+      refocusDraft();
+    }
+  }, [replyingTo, refocusDraft]);
+
   const handleSubmit = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     const clean = text.trim();
@@ -211,16 +230,28 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
     // whitespace, so comparing the live value against it would leave a draft
     // of "merhaba " behind after a successful send.
     const draft = text;
+    let textToSend = clean;
+    if (replyingTo && replyingTo.body) {
+      const snippet = replyingTo.body.split('\n')[0].slice(0, 100);
+      textToSend = `> ${snippet}\n\n${clean}`;
+    }
+
     setSending(true);
     try {
       await sendLockRef.current.run(async () => {
-        await onSend(clean);
+        await onSend(textToSend);
         // Clear only the draft we actually sent. The field stays editable
         // while the send is in flight (you can start the next message before
         // the last one lands), so anything typed in the meantime is a NEW
         // message and must survive; an unconditional `setText('')` would have
         // silently eaten it.
         setText((current) => (current === draft ? '' : current));
+        if (draftInputRef.current) {
+          draftInputRef.current.style.height = 'auto';
+        }
+        if (replyingTo && onCancelReply) {
+          onCancelReply();
+        }
         stopTypingSignal();
       });
     } catch (err) {
@@ -231,7 +262,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
     }
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement | HTMLInputElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSubmit();
@@ -373,10 +404,34 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
         </div>
       )}
 
+      {/* 2.5 Quoted/Reply preview banner */}
+      {replyingTo && (
+        <div className="flex items-center justify-between px-3.5 py-2 mb-2 bg-slate-100 dark:bg-white/[0.06] border-l-4 border-l-[#25D366] rounded-r-xl text-xs animate-in fade-in slide-in-from-bottom-2 duration-150">
+          <div className="min-w-0 pr-2">
+            <div className="font-bold text-[#25D366] text-[11px]">
+              {replyingTo.senderName || t('whatsapp.reply')}
+            </div>
+            <div className="text-slate-600 dark:text-slate-300 truncate text-[11px]">
+              {replyingTo.body || (replyingTo.mediaType ? `[${replyingTo.mediaType}]` : '')}
+            </div>
+          </div>
+          {onCancelReply && (
+            <button
+              type="button"
+              onClick={onCancelReply}
+              className="p-1 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-200/50 dark:hover:bg-white/[0.08] transition-colors cursor-pointer shrink-0"
+              title={t('common.cancel')}
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
+      )}
+
       {/* 3. Main Composer Row */}
-      <form onSubmit={handleSubmit} className="flex items-center space-x-2">
+      <form onSubmit={handleSubmit} className="flex items-end space-x-2">
         {/* Emoji Picker (WhatsApp Web: smiley first, then attach) */}
-        <div className="relative" ref={emojiContainerRef}>
+        <div className="relative mb-0.5" ref={emojiContainerRef}>
           <Tooltip content={t('whatsapp.emojiPickerTitle')}>
             <button
               type="button"
@@ -404,7 +459,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
         </div>
 
         {/* Attachment '+' Button with Popover */}
-        <div className="relative" ref={attachMenuRef}>
+        <div className="relative mb-0.5" ref={attachMenuRef}>
           <Tooltip content={t('whatsapp.addAttachment')}>
             <button
               type="button"
@@ -488,13 +543,12 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
           tabIndex={-1}
         />
 
-        {/* Text Input */}
-        {/* Sorun 11/12: min-w-0 — composer flex çocuğu asla chat alanını
-            yatay genişletemez. */}
+        {/* Multiline Textarea Input */}
         <div className="relative flex-1 min-w-0">
-          <input
-            ref={draftInputRef}
-            type="text"
+          <textarea
+            ref={draftInputRef as any}
+            rows={1}
+            data-testid="composer-input"
             value={text}
             disabled={isInputDisabled}
             onFocus={() => {
@@ -508,6 +562,8 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
             onChange={(e) => {
               setText(e.target.value);
               notifyTypingActivity();
+              e.target.style.height = 'auto';
+              e.target.style.height = `${Math.min(e.target.scrollHeight, 120)}px`;
             }}
             onKeyDown={handleKeyDown}
             placeholder={
@@ -517,7 +573,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
                 ? (t('whatsapp.windowExpiredPlaceholder'))
                 : (placeholder || t('leads.typeMessagePlaceholder'))
             }
-            className={`w-full px-3.5 py-2.5 pr-20 text-xs rounded-xl vuexy-input transition-all ${
+            className={`w-full px-3.5 py-2.5 pr-20 text-[13px] leading-relaxed rounded-xl vuexy-input transition-all resize-none max-h-[120px] overflow-y-auto block ${
               isInputDisabled
                 ? 'opacity-60 cursor-not-allowed bg-slate-100 dark:bg-white/[0.04]'
                 : ''
@@ -526,7 +582,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
 
           {/* Quick Template Button inside Input */}
           {onSendTemplate && !isClosed && (
-            <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center">
+            <div className="absolute right-2 top-3 flex items-center">
               <Tooltip content={t('whatsapp.useTemplateBtn')}>
                 <button
                   type="button"
@@ -543,24 +599,37 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
           )}
         </div>
 
-        {/* Send Button */}
-        <Tooltip content={isClosed ? t('whatsapp.closedComposerNotice') : !isWindowOpen ? t('whatsapp.windowExpiredNotice') : t('leads.sendNow')}>
-          <div>
-            <Button
-              type="submit"
-              size="sm"
-              aria-label={t('leads.sendNow')}
-              disabled={isActionDisabled || !text.trim()}
-              className="bg-[#25D366] hover:bg-[#1EBE5D] text-white px-4 py-2.5 font-bold shadow-sm cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 h-auto"
+        {/* Send or Mic Button */}
+        {text.trim() ? (
+          <Tooltip content={isClosed ? t('whatsapp.closedComposerNotice') : !isWindowOpen ? t('whatsapp.windowExpiredNotice') : t('leads.sendNow')}>
+            <div className="mb-0.5">
+              <Button
+                type="submit"
+                size="sm"
+                aria-label={t('leads.sendNow')}
+                disabled={isActionDisabled || !text.trim()}
+                className="bg-[#25D366] hover:bg-[#1EBE5D] text-white px-3.5 py-2.5 rounded-xl font-bold shadow-sm cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 h-auto transition-transform active:scale-95"
+              >
+                {sending ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Send className="w-4 h-4 fill-white" />
+                )}
+              </Button>
+            </div>
+          </Tooltip>
+        ) : (
+          <Tooltip content="Sesli Mesaj">
+            <button
+              type="button"
+              disabled={isActionDisabled}
+              className="p-2.5 mb-0.5 rounded-xl text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 hover:bg-slate-200/60 dark:hover:bg-white/[0.08] transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
+              aria-label="Sesli Mesaj"
             >
-              {sending ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
-              ) : (
-                <Send className="w-4 h-4" />
-              )}
-            </Button>
-          </div>
-        </Tooltip>
+              <Mic className="w-4 h-4 text-[#25D366]" />
+            </button>
+          </Tooltip>
+        )}
       </form>
 
       {/* 4. Media Send Modal */}

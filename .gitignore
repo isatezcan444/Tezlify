@@ -50,5 +50,6 @@ whatsapp-gateway/.env
 
 # Monitoring & benchmark runtime state & logs
 monitoring/*.json
+*_report.json
 logs/
 runtime/
