@@ -38,7 +38,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional
 
-from sqlalchemy import select, text
+from sqlalchemy import select, text, func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
@@ -629,6 +629,14 @@ async def _merge_under_lease(
     if not legacy_conv:
         return canonical_conv
     if not canonical_conv:
+        legacy_msg_count = await db.scalar(
+            select(func.count(Message.id)).where(Message.conversation_id == legacy_conv.id)
+        )
+        if (legacy_msg_count or 0) == 0 and legacy_conv.last_message_at is None:
+            legacy_conv.status = ConversationStatus.ARCHIVED
+            legacy_conv.is_archived = True
+            await db.commit()
+            return None
         canonical_conv = await ensure_conversation(
             db, user_id, phone_jid, session_id=legacy_conv.session_id
         )

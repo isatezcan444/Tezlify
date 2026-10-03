@@ -1936,3 +1936,32 @@ async def ensure_repair_raw_lid_mentions(engine: AsyncEngine) -> None:
     except Exception as exc:
         logger.warning("[MIGRATION] ensure_repair_raw_lid_mentions: %s", exc)
 
+
+async def purge_empty_ghost_conversations(engine: AsyncEngine) -> None:
+    """Mesaji, zaman damgasi ve onizlemesi olmayan hayalet WhatsApp sohbetlerini temizler.
+
+    WhatsApp Web paritesi: yalnizca rehberde kayitli oldugu icin veya gecmisi
+    olmayan gruplar icin yaratilmis, hicbir mesaj veya aktivite icermeyen
+    bos Conversation satirlari temizlenir. Contact kayitlari (rehber) KORUNUR.
+    """
+    try:
+        async with engine.begin() as conn:
+            res = await conn.execute(
+                text(
+                    "DELETE FROM conversations "
+                    "WHERE channel = 'WHATSAPP' "
+                    "AND last_message_at IS NULL "
+                    "AND (last_message_preview IS NULL OR last_message_preview = '') "
+                    "AND NOT EXISTS (SELECT 1 FROM messages WHERE messages.conversation_id = conversations.id)"
+                )
+            )
+            deleted = res.rowcount or 0
+            if deleted > 0:
+                logger.info(
+                    "[MIGRATION] purge_empty_ghost_conversations: %d aktivitesiz bos sohbet temizlendi.",
+                    deleted,
+                )
+    except Exception as exc:  # noqa: BLE001 - startup'i dusurmez
+        logger.warning("[MIGRATION] purge_empty_ghost_conversations atlandi: %s", exc)
+
+

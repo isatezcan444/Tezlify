@@ -363,7 +363,16 @@ const ConversationListComponent: React.FC<ConversationListProps> = ({
     if (currentFilter === 'CLOSED' && c.status !== 'CLOSED') return false;
     if (currentFilter === 'UNREAD' && ((c.unread_count || 0) <= 0 || archivedLike)) return false;
 
-    // 2. Search query filter
+    // 2. WhatsApp Web paritesi: mesaji ve aktivitesi olmayan hayalet sohbetler
+    // (or. rehberden gelenler, gecmisi olmayan bos gruplar) ana listede gorunmez.
+    // Kullanicinin "Yeni Sohbet" ile anlik sectigi sohbet (selectedId) istisnadir.
+    const hasActivity = Boolean(c.last_message_at) ||
+      Boolean(c.last_message_preview && c.last_message_preview.trim()) ||
+      (c.message_count ?? 0) > 0 ||
+      c.id === selectedId;
+    if (!hasActivity) return false;
+
+    // 3. Search query filter
     if (!searchQuery) return true;
     const q = searchQuery.toLowerCase();
     const rawPhone = c.lead_phone || (c as any).phone || '';
