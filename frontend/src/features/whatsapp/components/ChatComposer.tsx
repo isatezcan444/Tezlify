@@ -14,6 +14,7 @@ import {
   Smile,
   Sparkles,
   Mic,
+  Music,
   Trash2,
   X
 } from 'lucide-react';
@@ -86,6 +87,13 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
 
   const startRecording = useCallback(async () => {
     if (disabled || isClosed || !isWindowOpen) return;
+
+    // Check if insecure context (browsers block getUserMedia over non-HTTPS)
+    if (typeof window !== 'undefined' && !window.isSecureContext) {
+      toast.error(t('whatsapp.micRequiresHttps'), t('common.error'));
+      return;
+    }
+
     if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
       toast.error(t('whatsapp.micPermissionDenied'), t('common.error'));
       return;
@@ -125,7 +133,13 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
       }, 1000);
     } catch (err: any) {
       console.warn('[ChatComposer] Mic recording start error:', err);
-      toast.error(t('whatsapp.micPermissionDenied'), t('common.error'));
+      if (err?.name === 'NotAllowedError' || err?.name === 'PermissionDeniedError') {
+        toast.error(t('whatsapp.micPermissionInstruction'), t('common.error'));
+      } else if (err?.name === 'NotFoundError' || err?.name === 'DevicesNotFoundError') {
+        toast.error(t('whatsapp.micNotFound'), t('common.error'));
+      } else {
+        toast.error(t('whatsapp.micPermissionDenied'), t('common.error'));
+      }
     }
   }, [disabled, isClosed, isWindowOpen, t, toast]);
 
@@ -209,15 +223,18 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
   }, [isRecording, cancelRecording]);
 
   useEffect(() => {
-    if (!pendingFile || !pendingFile.type.startsWith('image/')) {
+    if (!pendingFile) {
       setFilePreviewUrl(null);
       return;
     }
-    const url = URL.createObjectURL(pendingFile);
-    setFilePreviewUrl(url);
-    return () => {
-      URL.revokeObjectURL(url);
-    };
+    if (pendingFile.type.startsWith('image/') || pendingFile.type.startsWith('audio/')) {
+      const url = URL.createObjectURL(pendingFile);
+      setFilePreviewUrl(url);
+      return () => {
+        URL.revokeObjectURL(url);
+      };
+    }
+    setFilePreviewUrl(null);
   }, [pendingFile]);
 
   const attachMenuRef = useRef<HTMLDivElement>(null);
@@ -627,6 +644,20 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
                 type="button"
                 onClick={() => {
                   setIsAttachMenuOpen(false);
+                  openFilePicker('audio/*,.mp3,.ogg,.wav,.m4a,.aac,.webm');
+                }}
+                className="w-full flex items-center space-x-2.5 px-3 py-2 rounded-xl text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-white/[0.08] transition-all cursor-pointer text-left"
+              >
+                <div className="w-7 h-7 rounded-lg bg-[#FF9F43]/15 text-[#FF9F43] flex items-center justify-center shrink-0">
+                  <Music className="w-4 h-4" />
+                </div>
+                <span>{t('whatsapp.chooseAudioFile')}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setIsAttachMenuOpen(false);
                   openFilePicker('.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,.zip,application/pdf,application/msword');
                 }}
                 className="w-full flex items-center space-x-2.5 px-3 py-2 rounded-xl text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-white/[0.08] transition-all cursor-pointer text-left"
@@ -914,7 +945,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
           }}
           title={t('whatsapp.sendFileTitle')}
           subtitle={pendingFile.name}
-          icon={pendingFile.type.startsWith('image/') ? ImageIcon : FileText}
+          icon={pendingFile.type.startsWith('image/') ? ImageIcon : pendingFile.type.startsWith('audio/') ? Music : FileText}
           maxWidth="md"
         >
           <form onSubmit={handleFileSend} className="space-y-4">
@@ -925,6 +956,14 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
                   alt={pendingFile.name}
                   className="max-h-52 w-auto object-contain"
                 />
+              </div>
+            )}
+            {pendingFile.type.startsWith('audio/') && filePreviewUrl && (
+              <div className="rounded-xl overflow-hidden border border-black/5 dark:border-white/10 bg-slate-950/5 dark:bg-black/20 p-3 flex flex-col items-center justify-center gap-2">
+                <div className="w-10 h-10 rounded-full bg-[#FF9F43]/15 text-[#FF9F43] flex items-center justify-center">
+                  <Music className="w-5 h-5" />
+                </div>
+                <audio controls src={filePreviewUrl} className="w-full h-10 mt-1" />
               </div>
             )}
             <div className="space-y-1.5">

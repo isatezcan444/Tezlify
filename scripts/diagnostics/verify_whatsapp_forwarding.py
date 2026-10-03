@@ -147,19 +147,18 @@ async def run_forwarding_verification():
         await page.wait_for_timeout(500)
         print("    PASS: ForwardModal closed cleanly")
 
-        # 5. Test Multi-Select Mode via 3-dot Menu
-        print("[5] Testing Multi-Select Mode via 3-Dot Dropdown Menu...")
-        menu_btn = page.locator("[data-testid='chat-header-menu-btn']").first
-        if await menu_btn.count() == 0:
-            menu_btn = page.locator("button:has(svg.lucide-more-vertical)").first
-        assert await menu_btn.count() > 0, "3-dot dropdown menu trigger must exist"
-
-        await menu_btn.click(force=True)
-        await page.wait_for_timeout(500)
-
-        select_item = page.locator("button:has-text('Mesajları seç')").first
-        assert await select_item.count() > 0, "3-dot menu must have 'Mesajları seç' option"
-        await select_item.click(force=True)
+        # 5. Test Multi-Select Mode via Direct Select Button
+        print("[5] Testing Multi-Select Mode via Chat Header Select Button...")
+        select_btn = page.locator("[data-testid='chat-header-select-btn']").first
+        if await select_btn.count() > 0:
+            await select_btn.click(force=True)
+        else:
+            menu_btn = page.locator("[data-testid='chat-header-menu-btn'], button:has(svg.lucide-more-vertical)").first
+            if await menu_btn.count() > 0:
+                await menu_btn.click(force=True)
+                await page.wait_for_timeout(400)
+                select_item = page.locator("button:has-text('Mesajları seç')").first
+                await select_item.click(force=True)
         await page.wait_for_timeout(600)
 
         # 6. Verify Selection Checkboxes & Bottom Selection Bar

@@ -5,6 +5,8 @@ Tüm uç noktalar kimlik doğrulamalı ve çok kiracılı (user_id filtresi) ça
 """
 from typing import Optional, Dict, Any
 import logging
+import re
+import urllib.parse
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import JSONResponse
@@ -934,7 +936,9 @@ async def get_media(
         raise _bad_gateway(exc) from exc
     headers = {}
     if filename:
-        headers["Content-Disposition"] = f'inline; filename="{filename}"'
+        ascii_name = re.sub(r'[^\x20-\x7E]', '_', filename).replace('"', '').strip() or "document"
+        utf8_encoded = urllib.parse.quote(filename, encoding="utf-8")
+        headers["Content-Disposition"] = f'inline; filename="{ascii_name}"; filename*=UTF-8\'\'{utf8_encoded}'
     range_header = request.headers.get("range")
     if range_header:
         return _handle_byte_range(data, range_header, mime, headers)

@@ -15,13 +15,11 @@ import {
   ArrowLeft,
   Search,
   Info,
-  MoreVertical,
   X,
   CheckSquare,
   Forward,
   Copy,
 } from 'lucide-react';
-import { Dropdown, DropdownItem } from '../components/ui/Dropdown';
 import { Tooltip } from '../components/ui/Tooltip';
 import { startWaLatency } from '../features/whatsapp/lib/whatsappLatency';
 import { translateApiError } from '../features/whatsapp/lib/translateError';
@@ -1551,7 +1549,6 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   const handleRetryMessage = useCallback(async (msgId: number | string) => {
     try {
       await activeRetryMessage(msgId);
-      toastRef.current.success(tRef.current('whatsapp.messageSent'), tRef.current('common.success'));
     } catch (err: any) {
       toastRef.current.error(translateApiError(err, tRef.current) || tRef.current('whatsapp.msgFailed'), tRef.current('common.error'));
       // The rethrow is NOT redundant: ChatBubble catches this to flip the
@@ -1684,7 +1681,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     let msgType: Message['message_type'] = 'DOCUMENT';
     if (mt.startsWith('image/') || ['png', 'jpg', 'jpeg', 'gif', 'webp'].includes(ext)) msgType = 'IMAGE';
     else if (mt.startsWith('video/') || ['mp4', 'mov', 'webm'].includes(ext)) msgType = 'VIDEO';
-    else if (mt.startsWith('audio/') || ['mp3', 'ogg', 'wav', 'm4a'].includes(ext)) msgType = 'AUDIO';
+    else if (mt.startsWith('audio/') || ['mp3', 'ogg', 'wav', 'm4a', 'aac', 'webm', 'opus'].includes(ext)) msgType = 'AUDIO';
 
     const tempClientMid = `file_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
     const tempId = `optimistic_${tempClientMid}`;
@@ -3246,82 +3243,28 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                         </button>
                       </Tooltip>
 
-                      {/* WhatsApp Web 3-Dot More Menu */}
-                      <Dropdown
-                        portal
-                        align="right"
-                        trigger={
-                          <button
-                            type="button"
-                            title={t('common.menuTitle')}
-                            aria-label={t('common.menuTitle')}
-                            data-testid="chat-header-menu-btn"
-                            className="p-2 rounded-lg text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 hover:bg-slate-200/60 dark:hover:bg-white/[0.08] transition-all duration-150 cursor-pointer"
-                          >
-                            <MoreVertical className="w-4 h-4" />
-                          </button>
-                        }
-                        items={[
-                          {
-                            id: 'info',
-                            label: selectedConv.is_group ? t('whatsapp.groupInfo') : t('whatsapp.contactInfo'),
-                            icon: <Info className="w-4 h-4" />,
-                            onClick: () => setIsChatInfoOpen(true),
-                          },
-                          {
-                            id: 'select-messages',
-                            label: isSelectMode ? t('whatsapp.cancelSelection') : t('whatsapp.selectMessages'),
-                            icon: <CheckSquare className="w-4 h-4 text-[#7367F0]" />,
-                            onClick: () => {
-                              setIsSelectMode((prev) => {
-                                if (prev) setSelectedMessageIds(new Set());
-                                return !prev;
-                              });
-                            },
-                          },
-                          ...(selectedConv.lead_id
-                            ? [
-                                {
-                                  id: 'lead-detail',
-                                  label: t('leads.openLeadDetail'),
-                                  icon: <Building2 className="w-4 h-4 text-[#7367F0]" />,
-                                  onClick: () => handleOpenLead(selectedConv.lead_id),
-                                } as DropdownItem,
-                              ]
-                            : []),
-                          'divider' as const,
-                          ...(selectedConv.status === 'ACTIVE'
-                            ? [
-                                {
-                                  id: 'archive',
-                                  label: t('whatsapp.archive'),
-                                  icon: <Archive className="w-4 h-4" />,
-                                  onClick: () => handleStatusChange(selectedConv.id, 'ARCHIVED'),
-                                } as DropdownItem,
-                                {
-                                  id: 'close',
-                                  label: t('whatsapp.close'),
-                                  icon: <CheckCircle2 className="w-4 h-4" />,
-                                  onClick: () => handleStatusChange(selectedConv.id, 'CLOSED'),
-                                } as DropdownItem,
-                              ]
-                            : [
-                                {
-                                  id: 'reopen',
-                                  label: t('whatsapp.reopen'),
-                                  icon: <RotateCcw className="w-4 h-4 text-[#7367F0]" />,
-                                  onClick: () => handleStatusChange(selectedConv.id, 'ACTIVE'),
-                                } as DropdownItem,
-                              ]),
-                          'divider' as const,
-                          {
-                            id: 'close-pane',
-                            label: t('common.close'),
-                            icon: <X className="w-4 h-4 text-slate-400" />,
-                            onClick: () => setSelectedConv(null),
-                          },
-                        ]}
-                      />
+                      {/* Multi-Select Messages Button */}
+                      <Tooltip content={isSelectMode ? t('whatsapp.cancelSelection') : t('whatsapp.selectMessages')} position="bottom">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsSelectMode((prev) => {
+                              if (prev) setSelectedMessageIds(new Set());
+                              return !prev;
+                            });
+                          }}
+                          data-testid="chat-header-select-btn"
+                          aria-label={isSelectMode ? t('whatsapp.cancelSelection') : t('whatsapp.selectMessages')}
+                          title={isSelectMode ? t('whatsapp.cancelSelection') : t('whatsapp.selectMessages')}
+                          className={`p-2 rounded-lg transition-all duration-150 cursor-pointer ${
+                            isSelectMode
+                              ? 'bg-[#7367F0]/15 text-[#7367F0] ring-1 ring-[#7367F0]/30'
+                              : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 hover:bg-slate-200/60 dark:hover:bg-white/[0.08]'
+                          }`}
+                        >
+                          <CheckSquare className="w-4 h-4" />
+                        </button>
+                      </Tooltip>
 
                       {/* WhatsApp Active Badge (wide screens only) */}
                       <span className="hidden 2xl:inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#25D366]/15 text-[#25D366] font-bold text-xs shrink-0 select-none">
@@ -3435,7 +3378,6 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                     onSend={async (text) => {
                       try {
                         await activeSendMessage(text);
-                        toast.success(t('whatsapp.messageSent'), t('common.success'));
                       } catch (err: any) {
                         const msg = (err?.message || '').toLowerCase();
                         if (msg.includes('24 saat') || msg.includes('window')) {
