@@ -604,6 +604,7 @@ export const en = {
     mediaLoadFailed: 'Failed to load media',
     mediaRetry: 'Retry',
     mediaOpenLightbox: 'View full screen',
+    unsupportedMessage: 'This message is not supported.',
     stickerAlt: 'Sticker',
     stickerUnavailable: 'Sticker could not be loaded',
     messageSent: 'Message sent successfully',

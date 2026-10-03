@@ -604,6 +604,7 @@ export const tr = {
     mediaLoadFailed: 'Medya yüklenemedi',
     mediaRetry: 'Yeniden Dene',
     mediaOpenLightbox: 'Tam ekran görüntüle',
+    unsupportedMessage: 'Bu mesaj desteklenmiyor.',
     stickerAlt: 'Çıkartma',
     stickerUnavailable: 'Çıkartma yüklenemedi',
     messageSent: 'Mesaj başarıyla iletildi',

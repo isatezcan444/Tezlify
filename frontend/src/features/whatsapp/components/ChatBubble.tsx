@@ -497,7 +497,39 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
 
       case 'TEXT':
       default:
-        return renderTextWithPreview(message.body || t('leads.mediaFallback'));
+        if (!message.body && !message.link_preview) {
+          if (resolvedMediaUrl) {
+            return (
+              <div className="space-y-2">
+                <div 
+                  onClick={() => {
+                    if (!imageLoadError && resolvedMediaUrl) {
+                      setLightboxMediaType('IMAGE');
+                      setIsLightboxOpen(true);
+                    }
+                  }}
+                  className="relative group rounded-xl overflow-hidden bg-slate-950/10 dark:bg-black/20 border border-black/5 dark:border-white/10 w-[260px] h-[180px] max-w-full cursor-pointer"
+                >
+                  <img 
+                    src={resolvedMediaUrl} 
+                    alt={message.media_caption || t('leads.imageAltFallback')} 
+                    onError={() => setImageLoadError(true)}
+                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
+                  />
+                  <div className="absolute inset-0 bg-black/30 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-white">
+                    <Eye className="w-5 h-5" />
+                  </div>
+                </div>
+              </div>
+            );
+          }
+          return (
+            <p className="text-xs italic opacity-60 text-slate-500 dark:text-slate-400">
+              {t('whatsapp.unsupportedMessage')}
+            </p>
+          );
+        }
+        return renderTextWithPreview(message.body || '');
     }
   };
 
