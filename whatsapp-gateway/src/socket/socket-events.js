@@ -351,6 +351,10 @@ export function bindSocketEvents({
 
       // Explicitly set presence to unavailable so WhatsApp servers prioritize
       // mobile phone push notifications over the web companion connection.
+      // Baileys requires creds.me.name to exist before it dispatches presence stanzas.
+      if (state?.creds?.me && !state.creds.me.name) {
+        state.creds.me.name = session.session_name || 'Tezlify';
+      }
       try {
         await sock.sendPresenceUpdate('unavailable');
       } catch (presenceErr) {

@@ -173,6 +173,12 @@ export async function createSocketForSession({
     applyDiscoveredLidMapping(store, session.self_lid, session.self_jid, onLidMappingDiscovered);
   }
 
+  if (state?.creds?.me) {
+    if (!state.creds.me.name) {
+      state.creds.me.name = session.session_name || 'Tezlify';
+    }
+  }
+
   const versionStarted = performance.now();
   const { version } = await fetchLatestBaileysVersion();
   latency('provider_version_lookup_ms', versionStarted, id);
@@ -207,12 +213,21 @@ export async function createSocketForSession({
   // serializes a bare <presence/> node (since undefined attrs are stripped in encode.js), which
   // WhatsApp interprets as "available" (online). This continuously announces the web companion
   // as online on every incoming message, suppressing push notifications to the user's physical phone.
-  // By normalizing data.me with state.creds.me when data.me is undefined, creds.me?.name !== name
-  // remains false and rogue presence updates are completely suppressed.
+  // Furthermore, Baileys' sendPresenceUpdate('unavailable') drops requests if !me.name.
+  // By normalizing data.me and guaranteeing me.name, we ensure unavailable presence succeeds
+  // and rogue presence updates are completely suppressed.
   const passThrough = sock.ev.emit.bind(sock.ev);
   sock.ev.emit = (event, data) => {
-    if (event === 'creds.update' && data && data.me === undefined && state.creds?.me) {
-      return passThrough(event, { ...data, me: state.creds.me });
+    if (event === 'creds.update' && data) {
+      if (data.me === undefined && state.creds?.me) {
+        if (!state.creds.me.name) {
+          state.creds.me.name = session.session_name || 'Tezlify';
+        }
+        return passThrough(event, { ...data, me: state.creds.me });
+      }
+      if (data.me && !data.me.name && state.creds?.me?.name) {
+        data.me.name = state.creds.me.name;
+      }
     }
     return passThrough(event, data);
   };
