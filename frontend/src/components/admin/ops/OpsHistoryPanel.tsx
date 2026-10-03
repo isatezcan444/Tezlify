@@ -6,7 +6,7 @@
  * (or before a refresh) still shows its live status and logs.
  */
 import React, { useState } from 'react';
-import { CheckCircle2, ChevronDown, Download, Loader2, Search, ShieldAlert, XCircle } from 'lucide-react';
+import { Check, CheckCircle2, ChevronDown, Copy, Download, Loader2, Search, ShieldAlert, XCircle } from 'lucide-react';
 import { useI18n } from '../../../context/I18nContext';
 import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
 import { StatusBadge } from '../../ui/StatusBadge';
@@ -14,6 +14,7 @@ import { Button } from '../../ui/button';
 import { EmptyState } from '../../ui/EmptyState';
 import { OpsAuditEntry, OpsOperation } from '../../../types/admin';
 import { buildHistoryCsv, buildHistoryJson, downloadTextFile } from './exportLogs';
+import { formatOpsDateTime } from './formatDate';
 
 export interface OpsHistoryPanelProps {
   operations: OpsOperation[];
@@ -101,6 +102,7 @@ export const OpsHistoryPanel: React.FC<OpsHistoryPanelProps> = ({
   const { t } = useI18n();
   const [openId, setOpenId] = useState<string | null>(null);
   const [nameQuery, setNameQuery] = useState('');
+  const [copiedOpId, setCopiedOpId] = useState<string | null>(null);
 
   // The export covers the WHOLE retained history, not the visible page: an
   // audit question ("everything we did last week") is not answered by one page
@@ -245,14 +247,18 @@ export const OpsHistoryPanel: React.FC<OpsHistoryPanelProps> = ({
                     )}
                     <div className="min-w-0 flex-1">
                       <p className="text-xs font-bold text-slate-700 dark:text-slate-200">{op.label}</p>
-                      <p className="text-[10px] text-slate-400 dark:text-slate-500">
-                        {op.actor || '-'} · {stepLabel(op, t)}
+                      <p className="text-[10px] text-slate-400 dark:text-slate-500 flex items-center gap-1.5 flex-wrap">
+                        <span className="font-mono text-slate-500 dark:text-slate-400">{formatOpsDateTime(op.started_at)}</span>
+                        <span>·</span>
+                        <span>{op.actor || '-'}</span>
+                        <span>·</span>
+                        <span>{stepLabel(op, t)}</span>
                         {progressLabel(op, t) && (
-                          <span className="ml-1.5 text-[10px] font-bold uppercase tracking-wide text-vuexy-primary">
+                          <span className="text-[10px] font-bold uppercase tracking-wide text-vuexy-primary">
                             {progressLabel(op, t)}
                           </span>
                         )}
-                        {typeof op.duration_ms === 'number' ? ` · ${op.duration_ms}ms` : ''}
+                        {typeof op.duration_ms === 'number' ? <span>· {op.duration_ms}ms</span> : ''}
                       </p>
                     </div>
                     <StatusBadge status={meta.variant} label={t(meta.key)} size="sm" />
@@ -266,6 +272,27 @@ export const OpsHistoryPanel: React.FC<OpsHistoryPanelProps> = ({
 
                   {isOpen && (
                     <div className="px-3 pb-3 space-y-2 border-t border-slate-200 dark:border-white/[0.06] pt-3">
+                      <div className="flex items-center justify-between gap-2 flex-wrap text-[11px]">
+                        <span className="text-slate-500 dark:text-[#7E7F96]">
+                          Başlangıç: <strong className="font-mono text-slate-700 dark:text-slate-300">{formatOpsDateTime(op.started_at)}</strong>
+                          {op.finished_at && <> · Bitiş: <strong className="font-mono text-slate-700 dark:text-slate-300">{formatOpsDateTime(op.finished_at)}</strong></>}
+                        </span>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => {
+                            const details = `[${op.label}] (${op.status})\nBaşlangıç: ${formatOpsDateTime(op.started_at)}\nBitiş: ${formatOpsDateTime(op.finished_at)}\nSüre: ${op.duration_ms || 0}ms\nYapan: ${op.actor || '-'}\n${op.error ? `Hata: ${op.error}\n` : ''}\nLoglar:\n${op.logs.join('\n')}`;
+                            navigator.clipboard.writeText(details);
+                            setCopiedOpId(op.id);
+                            setTimeout(() => setCopiedOpId(null), 2000);
+                          }}
+                          className="gap-1.5 cursor-pointer text-xs h-7"
+                          title={copiedOpId === op.id ? t('common.copied') : t('common.copy')}
+                        >
+                          {copiedOpId === op.id ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
+                          {copiedOpId === op.id ? t('common.copied') : t('common.copy')}
+                        </Button>
+                      </div>
                       {op.error && (
                         <p className="text-[11px] text-rose-600 dark:text-rose-400">{op.error}</p>
                       )}
@@ -304,7 +331,7 @@ export const OpsHistoryPanel: React.FC<OpsHistoryPanelProps> = ({
               {audit.slice(0, 50).map((a) => (
                 <div key={a.id} className="px-4 py-2.5 flex items-center gap-3 text-[11px]">
                   <span className="font-mono text-slate-400 dark:text-slate-500 shrink-0">
-                    {new Date(a.at).toLocaleTimeString()}
+                    {formatOpsDateTime(a.at)}
                   </span>
                   <span className="font-bold text-slate-700 dark:text-slate-200 shrink-0">
                     {a.actor || '-'}

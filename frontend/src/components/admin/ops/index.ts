@@ -10,3 +10,4 @@ export { OpsHistoryPanel } from './OpsHistoryPanel';
 export { ErrorFeed } from './ErrorFeed';
 export { OverviewPanel } from './OverviewPanel';
 export { DeployPanel } from './DeployPanel';
+export { formatOpsDateTime, formatOpsTime } from './formatDate';

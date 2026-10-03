@@ -8,7 +8,7 @@
  * always presses the button, nothing self-heals.
  */
 import React, { useMemo, useState } from 'react';
-import { AlertTriangle, ChevronRight, CircleAlert, Info } from 'lucide-react';
+import { AlertTriangle, Check, ChevronRight, CircleAlert, Copy, Info } from 'lucide-react';
 import { useI18n } from '../../../context/I18nContext';
 import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
 import { Button } from '../../ui/button';
@@ -63,6 +63,8 @@ export const ErrorFeed: React.FC<ErrorFeedProps> = ({
   const { t } = useI18n();
   const [selected, setSelected] = useState<ErrorEntry | null>(null);
   const [filter, setFilter] = useState<'ALL' | 'ERROR' | 'WARN'>('ALL');
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [copiedAll, setCopiedAll] = useState(false);
 
   const errors = useMemo(() => buildErrorFeed(logsByService), [logsByService]);
   const visible = useMemo(
@@ -80,22 +82,41 @@ export const ErrorFeed: React.FC<ErrorFeedProps> = ({
           <CardTitle className="text-base text-slate-800 dark:text-white">
             {t('admin.ops.errorsTitle')}
           </CardTitle>
-          <div className="flex items-center gap-1">
-            {(['ALL', 'ERROR', 'WARN'] as const).map((f) => (
-              <button
-                key={f}
-                type="button"
-                onClick={() => setFilter(f)}
-                className={
-                  'px-2 py-1 rounded-md text-[10px] font-bold transition-colors cursor-pointer ' +
-                  (f === filter
-                    ? 'bg-slate-800 dark:bg-white text-white'
-                    : 'text-slate-500 hover:text-slate-800 dark:hover:text-white')
-                }
+          <div className="flex items-center gap-2 flex-wrap">
+            {visible.length > 0 && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  const text = visible.map((e) => `[${e.service}] ${e.line}`).join('\n');
+                  navigator.clipboard.writeText(text);
+                  setCopiedAll(true);
+                  setTimeout(() => setCopiedAll(false), 2000);
+                }}
+                className="gap-1.5 cursor-pointer text-xs"
+                title={copiedAll ? t('common.copied') : t('common.copy')}
               >
-                {f}
-              </button>
-            ))}
+                {copiedAll ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
+                {copiedAll ? t('common.copied') : t('common.copy')}
+              </Button>
+            )}
+            <div className="flex items-center gap-1">
+              {(['ALL', 'ERROR', 'WARN'] as const).map((f) => (
+                <button
+                  key={f}
+                  type="button"
+                  onClick={() => setFilter(f)}
+                  className={
+                    'px-2 py-1 rounded-md text-[10px] font-bold transition-colors cursor-pointer ' +
+                    (f === filter
+                      ? 'bg-slate-800 dark:bg-white text-white'
+                      : 'text-slate-500 hover:text-slate-800 dark:hover:text-white')
+                  }
+                >
+                  {f}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
         <p className="text-xs text-slate-500 dark:text-[#7E7F96]">
@@ -154,6 +175,24 @@ export const ErrorFeed: React.FC<ErrorFeedProps> = ({
                       {err.line}
                     </pre>
                     <div className="flex flex-wrap gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          navigator.clipboard.writeText(err.line);
+                          setCopiedId(err.id);
+                          setTimeout(() => setCopiedId(null), 2000);
+                        }}
+                        className="gap-1.5 cursor-pointer"
+                        title={copiedId === err.id ? t('common.copied') : t('common.copy')}
+                      >
+                        {copiedId === err.id ? (
+                          <Check className="w-3.5 h-3.5 text-emerald-500" />
+                        ) : (
+                          <Copy className="w-3.5 h-3.5" />
+                        )}
+                        {copiedId === err.id ? t('common.copied') : t('common.copy')}
+                      </Button>
                       <Button
                         variant="outline"
                         size="sm"

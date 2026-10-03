@@ -8,7 +8,9 @@ import {
   MessageCircle, 
   X, 
   HelpCircle,
-  Loader2
+  Loader2,
+  Copy,
+  Check
 } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { translations, Language } from '../locales';
@@ -83,7 +85,7 @@ export const toast = {
       type,
       desc,
       title: title || defaultToastTitle(type),
-      duration: 4500,
+      duration: type === 'error' ? 8500 : 4500,
     };
     listeners.forEach((fn) => fn(item));
     return item.id;
@@ -98,6 +100,7 @@ export const toast = {
 export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { t } = useI18n();
   const [toasts, setToasts] = useState<ToastItem[]>([]);
+  const [copiedToastId, setCopiedToastId] = useState<string | null>(null);
   const [confirmState, setConfirmState] = useState<{
     isOpen: boolean;
     options: ConfirmDialogOptions;
@@ -109,16 +112,17 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   }, []);
 
   const showToast = useCallback(
-    ({ title, desc, type, duration = 4500 }: Omit<ToastItem, 'id'>) => {
+    ({ title, desc, type, duration }: Omit<ToastItem, 'id'>) => {
       const id = Math.random().toString(36).substring(2, 9);
-      const newItem: ToastItem = { id, title, desc, type, duration };
+      const effectiveDuration = duration !== undefined ? duration : (type === 'error' ? 8500 : 4500);
+      const newItem: ToastItem = { id, title, desc, type, duration: effectiveDuration };
 
       setToasts((prev) => [newItem, ...prev.slice(0, 4)]);
 
-      if (duration > 0) {
+      if (effectiveDuration > 0) {
         setTimeout(() => {
           removeToast(id);
-        }, duration);
+        }, effectiveDuration);
       }
       return id;
     },
@@ -143,7 +147,7 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   }, [removeToast]);
 
   const success = useCallback((desc: string, title?: string) => showToast({ type: 'success', title: title ?? t('common.successTitle'), desc }), [showToast, t]);
-  const error = useCallback((desc: string, title?: string) => showToast({ type: 'error', title: title ?? t('common.errorTitle'), desc }), [showToast, t]);
+  const error = useCallback((desc: string, title?: string) => showToast({ type: 'error', title: title ?? t('common.errorTitle'), desc, duration: 8500 }), [showToast, t]);
   const warning = useCallback((desc: string, title?: string) => showToast({ type: 'warning', title: title ?? t('common.warningTitle'), desc }), [showToast, t]);
   const info = useCallback((desc: string, title?: string) => showToast({ type: 'info', title: title ?? t('common.infoTitle'), desc }), [showToast, t]);
   const reply = useCallback((desc: string, title?: string) => showToast({ type: 'reply', title: title ?? t('common.replyTitle'), desc }), [showToast, t]);
@@ -205,6 +209,8 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                 reply: <MessageCircle className="w-5 h-5 text-[#7367F0] shrink-0" />,
               }[toastItem.type];
 
+              const isCopied = copiedToastId === toastItem.id;
+
               return (
                 <div
                   key={toastItem.id}
@@ -221,14 +227,35 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                       </p>
                     )}
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => removeToast(toastItem.id)}
-                    className="text-slate-400 hover:text-slate-700 dark:hover:text-white p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-white/[0.05] transition-colors shrink-0 cursor-pointer"
-                    title={t('common.close')}
-                  >
-                    <X className="w-3.5 h-3.5" />
-                  </button>
+                  <div className="flex items-center gap-1 shrink-0 mt-0.5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const textToCopy = toastItem.desc
+                          ? `${toastItem.title}\n${toastItem.desc}`
+                          : toastItem.title;
+                        navigator.clipboard.writeText(textToCopy);
+                        setCopiedToastId(toastItem.id);
+                        setTimeout(() => setCopiedToastId(null), 2500);
+                      }}
+                      className="text-slate-400 hover:text-slate-700 dark:hover:text-white p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-white/[0.05] transition-colors cursor-pointer"
+                      title={isCopied ? t('common.copied') : t('common.copy')}
+                    >
+                      {isCopied ? (
+                        <Check className="w-3.5 h-3.5 text-emerald-500" />
+                      ) : (
+                        <Copy className="w-3.5 h-3.5" />
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => removeToast(toastItem.id)}
+                      className="text-slate-400 hover:text-slate-700 dark:hover:text-white p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-white/[0.05] transition-colors cursor-pointer"
+                      title={t('common.close')}
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                 </div>
               );
             })}

@@ -24,6 +24,7 @@ import { Card, CardContent } from '../../components/ui/card';
 import { ServiceStatusPanel } from '../../components/admin/ops/ServiceStatusPanel';
 import { OpsLogsPanel } from '../../components/admin/ops/OpsLogsPanel';
 import { formatBytes } from '../../components/admin/ops/formatBytes';
+import { formatOpsDateTime } from '../../components/admin/ops/formatDate';
 import { OpsHistoryPanel } from '../../components/admin/ops/OpsHistoryPanel';
 import { ErrorFeed } from '../../components/admin/ops/ErrorFeed';
 import { OverviewPanel } from '../../components/admin/ops/OverviewPanel';
@@ -96,7 +97,7 @@ export const AdminOperationsPage: React.FC = () => {
     try {
       setStatus(await OpsApi.getStatus(20));
       setError(null);
-      setLastUpdated(new Date().toLocaleTimeString());
+      setLastUpdated(formatOpsDateTime(new Date()));
     } catch (err: any) {
       setError(err?.message || t('common.error'));
     } finally {

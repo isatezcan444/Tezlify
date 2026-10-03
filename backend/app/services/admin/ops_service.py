@@ -156,6 +156,18 @@ OPERATIONS: Dict[str, OperationSpec] = {
         "restart_caddy", "Restart edge proxy", lambda: _build_restart("caddy"),
         destructive=True, cooldown=_DESTRUCTIVE_COOLDOWN_SECONDS,
     ),
+    "reload_caddy": OperationSpec(
+        "reload_caddy", "Hot reload edge proxy (zero downtime)",
+        lambda: ["docker", "exec", "tezlify-caddy", "caddy", "reload", "--config", "/etc/caddy/Caddyfile"],
+        destructive=True, cooldown=10, timeout=30,
+        description="Reload Caddy configuration without dropping active connections or restarting the container.",
+    ),
+    "docker_prune": OperationSpec(
+        "docker_prune", "Prune unused docker images",
+        lambda: ["docker", "image", "prune", "-f"],
+        destructive=True, cooldown=60, timeout=120,
+        description="Free host disk space by removing untagged and dangling Docker build layers.",
+    ),
     # NOTE: the explicit service list is the fix, not `up -d --force-recreate`
     # with no targets. A bare `up` also recreates `tezlify-db`, and this panel
     # deliberately does NOT allow the database to be restarted: it is not
@@ -822,6 +834,42 @@ def _tail_json_log(path: str, tail: int) -> List[str]:
     return lines[-tail:]
 
 
+def _classify_log_level(line: str) -> str:
+    """Classify log level across Pino (gateway), Caddy (JSON), Python and PG logs."""
+    clean = line.strip()
+    if not clean:
+        return "INFO"
+    if clean.startswith("{") and clean.endswith("}"):
+        try:
+            data = json.loads(clean)
+            if isinstance(data, dict):
+                raw_lvl = data.get("level")
+                # Pino levels (WhatsApp Gateway): 10 trace, 20 debug, 30 info, 40 warn, 50 error, 60 fatal
+                if isinstance(raw_lvl, int):
+                    if raw_lvl >= 50:
+                        return "ERROR"
+                    if raw_lvl >= 40:
+                        return "WARN"
+                    return "INFO"
+                # Caddy / JSON string levels: "error", "warn", "info"
+                if isinstance(raw_lvl, str):
+                    s = raw_lvl.upper()
+                    if s in ("ERROR", "FATAL", "CRITICAL", "PANIC"):
+                        return "ERROR"
+                    if s in ("WARN", "WARNING"):
+                        return "WARN"
+                    return "INFO"
+        except Exception:
+            pass
+
+    upper = line.upper()
+    if any(k in upper for k in ("ERROR", "FATAL", "CRITICAL", "EXCEPTION", "TRACEBACK", "PANIC")):
+        return "ERROR"
+    if any(k in upper for k in ("WARN", "WARNING")):
+        return "WARN"
+    return "INFO"
+
+
 async def get_service_logs(
     service: str,
     tail: int = 200,
@@ -867,8 +915,8 @@ async def get_service_logs(
 
     lines = [redact(line, 2000) for line in raw if line.strip()]
     if level and level.upper() != "ALL":
-        needle = level.upper()
-        lines = [l for l in lines if needle in l.upper()]
+        target = level.upper()
+        lines = [l for l in lines if _classify_log_level(l) == target]
     return {"service": service, "lines": lines[-tail:], "error": None}
 
 

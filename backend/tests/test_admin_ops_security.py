@@ -26,6 +26,7 @@ def test_operations_are_named_not_freeform():
     assert set(ops.OPERATIONS) == {
         "restart_backend", "restart_gateway", "restart_caddy", "restart_all",
         "deploy_build", "deploy_pull", "deploy_full", "git_status",
+        "reload_caddy", "docker_prune",
     }
     for name, spec in ops.OPERATIONS.items():
         # steps() is the single resolution path for both single- and multi-step

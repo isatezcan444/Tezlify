@@ -116,25 +116,25 @@ export class OpsApi {
   }
 
   static async getStatus(history = 20): Promise<OpsStatusResponse> {
-    const res = await authFetch(`${API_BASE}/admin/ops/status?history=${history}`);
+    const res = await authFetch(`${API_BASE}/admin/ops/status?history=${history}&_t=${Date.now()}`);
     await OpsApi.guard(res, 'Operasyon durumu alınamadı');
     return res.json();
   }
 
   static async getCatalogue(): Promise<OpsCatalogueEntry[]> {
-    const res = await authFetch(`${API_BASE}/admin/ops/catalogue`);
+    const res = await authFetch(`${API_BASE}/admin/ops/catalogue?_t=${Date.now()}`);
     await OpsApi.guard(res, 'Operasyon listesi alınamadı');
     return res.json();
   }
 
   static async getHealth(): Promise<OpsHealthCheck> {
-    const res = await authFetch(`${API_BASE}/admin/ops/health`);
+    const res = await authFetch(`${API_BASE}/admin/ops/health?_t=${Date.now()}`);
     await OpsApi.guard(res, 'Sağlık durumu alınamadı');
     return res.json();
   }
 
   static async getLogs(service: string, tail = 200, level?: string): Promise<OpsLogsResponse> {
-    const params = new URLSearchParams({ service, tail: String(tail) });
+    const params = new URLSearchParams({ service, tail: String(tail), _t: String(Date.now()) });
     if (level && level !== 'ALL') params.set('level', level);
     const res = await authFetch(`${API_BASE}/admin/ops/logs?${params.toString()}`);
     await OpsApi.guard(res, 'Loglar alınamadı');
