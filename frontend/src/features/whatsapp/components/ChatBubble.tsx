@@ -16,6 +16,7 @@ import {
   Reply,
   Copy,
   Star,
+  Forward,
 } from 'lucide-react';
 import { Conversation, Message } from '../../../types';
 import { Tooltip } from '../../../components/ui/Tooltip';
@@ -46,6 +47,10 @@ export interface ChatBubbleProps {
   /** Mesaja ifade birakir/degistirir; bos `emoji` geri ceker. */
   onReact?: (messageId: number | string, emoji: string) => Promise<void> | void;
   onReply?: (message: Message) => void;
+  onForward?: (message: Message) => void;
+  isSelectMode?: boolean;
+  isSelected?: boolean;
+  onToggleSelect?: (messageId: number | string) => void;
   searchQuery?: string;
   isSearchActiveMatch?: boolean;
 }
@@ -57,6 +62,10 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
   onRetry,
   onReact,
   onReply,
+  onForward,
+  isSelectMode = false,
+  isSelected = false,
+  onToggleSelect,
   searchQuery,
   isSearchActiveMatch,
 }) => {
@@ -547,11 +556,30 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
 
   return (
     <>
-      <div className={`flex w-full ${groupedReactions.length > 0 ? 'mb-4' : 'mb-2'} ${isInbound ? 'justify-start' : 'justify-end'}`}>
+      <div className={`flex w-full items-center ${groupedReactions.length > 0 ? 'mb-4' : 'mb-2'} ${isInbound ? 'justify-start' : 'justify-end'}`}>
+        {isSelectMode && (
+          <div
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleSelect?.(message.id);
+            }}
+            data-testid={`select-checkbox-${message.id}`}
+            className={`w-5 h-5 rounded-full border flex items-center justify-center cursor-pointer transition-all shrink-0 select-none mr-2.5 ${
+              isSelected
+                ? 'bg-[#25D366] border-[#25D366] text-white shadow-sm'
+                : 'border-slate-300 dark:border-white/30 hover:border-[#25D366] bg-white/50 dark:bg-white/[0.05]'
+            }`}
+          >
+            {isSelected && <Check className="w-3 h-3 stroke-[3]" />}
+          </div>
+        )}
         <div
           id={message.id ? `msg-${message.id}` : undefined}
           data-msg-id={message.id}
+          onClick={isSelectMode ? () => onToggleSelect?.(message.id) : undefined}
           className={`relative group max-w-[85%] sm:max-w-[75%] min-w-[68px] px-3 py-1.5 shadow-[0_1px_0.5px_rgba(11,20,26,0.13)] text-[13px] leading-relaxed transition-all duration-150 select-text ${
+            isSelectMode ? 'cursor-pointer hover:opacity-95' : ''
+          } ${
             isSearchActiveMatch ? 'ring-2 ring-[#00a884] dark:ring-[#25D366] shadow-md scale-[1.01]' : ''
           } ${
             isInbound
@@ -719,6 +747,23 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
             >
               <Star className={`w-3.5 h-3.5 ${isStarred ? 'fill-amber-500' : ''}`} />
             </button>
+
+            {/* İlet Butonu */}
+            {onForward && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onForward(message);
+                }}
+                title={t('whatsapp.forwardMessage')}
+                aria-label={t('whatsapp.forwardMessage')}
+                data-testid={`forward-trigger-${message.id}`}
+                className="p-1 rounded-full text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/10 transition-colors cursor-pointer"
+              >
+                <Forward className="w-3.5 h-3.5" />
+              </button>
+            )}
           </div>
 
           {canReact && isReactionBarOpen && (

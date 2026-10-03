@@ -82,6 +82,10 @@ export interface ChatThreadProps {
   /** Mesaja ifade birakir/degistirir/kaldirir (bos `emoji` geri ceker). */
   onReact?: (messageId: number | string, emoji: string) => Promise<void> | void;
   onReply?: (message: Message) => void;
+  onForward?: (message: Message) => void;
+  isSelectMode?: boolean;
+  selectedMessageIds?: Set<number | string>;
+  onToggleSelectMessage?: (messageId: number | string) => void;
   peerTyping?: boolean;
   /** Sorun 2 (LOADING ≠ EMPTY ≠ ERROR): bu sohbetin MESAJ hidrasyonu
    * basarisiz olduysa hata mesaji. Yalnizca BU sohbeti etkiler — diger
@@ -113,6 +117,10 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
   onRetry,
   onReact,
   onReply,
+  onForward,
+  isSelectMode = false,
+  selectedMessageIds,
+  onToggleSelectMessage,
   peerTyping = false,
   error = null,
   onRetryLoad,
@@ -904,6 +912,10 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
         onRetry={onRetry}
         onReact={onReact}
         onReply={onReply}
+        onForward={onForward}
+        isSelectMode={isSelectMode}
+        isSelected={selectedMessageIds ? selectedMessageIds.has(row.msg.id) : false}
+        onToggleSelect={onToggleSelectMessage}
         searchQuery={searchQuery}
         isSearchActiveMatch={activeMessageId != null && row.msg.id === activeMessageId}
       />

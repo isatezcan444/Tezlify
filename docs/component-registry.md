@@ -263,6 +263,11 @@ src/
 - **Props**: `isOpen: boolean`, `onClose: () => void`, `conversation: Conversation`, `messages: Message[]`, `onOpenLead?: (leadId: number) => void`, `onSearchInChat?: () => void`, `onStatusChange?: (convId: number, status: 'ACTIVE' | 'ARCHIVED' | 'CLOSED') => void`, `onJumpToMessage?: (messageId: string | number) => void`.
 - **Import**: `import { ChatInfoDrawer } from '@/features/whatsapp/components';`
 
+#### `ForwardModal`
+- **Purpose**: WhatsApp Web authentic message forwarding dialog. Portaled to `document.body` via `Modal`. Features search input with real-time conversation filtering (by contact name and clean phone number), conversation list with avatars and circular multi-target selection indicators, preview banner of the messages being forwarded (text snippet, media/document badge, or multi-item count), and fail-closed dispatch to target conversations via `WhatsAppRepository.sendMessage` / `sendMedia`.
+- **Props**: `isOpen: boolean`, `onClose: () => void`, `messagesToForward: Message[]`, `conversations: Conversation[]`, `onConfirmForward: (targetConversationIds: number[], messages: Message[]) => Promise<void> | void`.
+- **Import**: `import { ForwardModal } from '@/features/whatsapp/components';`
+
 #### `useWhatsAppLoadingGate` (hook)
 - **Purpose**: Single-authority QR post-pairing loading gate state (WhatsApp Web parity). Fed only by real signals — backend `GET /whatsapp/loading-gate` (REST bootstrap on mount + WS reconnect) and WS `whatsapp_loading_gate` / `session_sync_*` events. No polling, no fake timers. Fires the `onReady` callback exactly once when `phase` transitions to `ready`, so the hub can auto-switch to the Live Conversations tab and eagerly load chats.
 - **Signature**: `useWhatsAppLoadingGate(onReady?: () => void) => { gate, dismiss, refresh }`.

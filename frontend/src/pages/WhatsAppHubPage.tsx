@@ -17,6 +17,9 @@ import {
   Info,
   MoreVertical,
   X,
+  CheckSquare,
+  Forward,
+  Copy,
 } from 'lucide-react';
 import { Dropdown, DropdownItem } from '../components/ui/Dropdown';
 import { Tooltip } from '../components/ui/Tooltip';
@@ -65,6 +68,7 @@ import {
   AntiBanPanel,
   ChatSearchBar,
   ChatInfoDrawer,
+  ForwardModal,
   type QuotedMessage,
 } from '../features/whatsapp/components';
 import { LeadDetailDrawer } from '../features/leads/components';
@@ -184,6 +188,10 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   const [replyingTo, setReplyingTo] = useState<QuotedMessage | null>(null);
   const [isChatSearchOpen, setIsChatSearchOpen] = useState(false);
   const [isChatInfoOpen, setIsChatInfoOpen] = useState(false);
+  const [isSelectMode, setIsSelectMode] = useState(false);
+  const [selectedMessageIds, setSelectedMessageIds] = useState<Set<number | string>>(new Set());
+  const [isForwardModalOpen, setIsForwardModalOpen] = useState(false);
+  const [messagesToForward, setMessagesToForward] = useState<Message[]>([]);
   const [chatSearchQuery, setChatSearchQuery] = useState('');
   const [chatSearchCurrentIndex, setChatSearchCurrentIndex] = useState(0);
   const [messagesMap, setMessagesMap] = useState<Record<number, Message[]>>({});
@@ -199,6 +207,10 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     setIsChatSearchOpen(false);
     setChatSearchQuery('');
     setChatSearchCurrentIndex(0);
+    setIsSelectMode(false);
+    setSelectedMessageIds(new Set());
+    setIsForwardModalOpen(false);
+    setMessagesToForward([]);
   }, [selectedConv?.id]);
 
   const handleReplyMessage = useCallback((message: Message) => {
@@ -209,6 +221,51 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       mediaType: message.message_type !== 'TEXT' ? message.message_type : undefined,
     });
   }, [youName]);
+
+  const handleToggleSelectMessage = useCallback((messageId: number | string) => {
+    setSelectedMessageIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(messageId)) {
+        next.delete(messageId);
+      } else {
+        next.add(messageId);
+      }
+      return next;
+    });
+  }, []);
+
+  const handleForwardSingleMessage = useCallback((msg: Message) => {
+    setMessagesToForward([msg]);
+    setIsForwardModalOpen(true);
+  }, []);
+
+  const handleForwardSelectedMessages = useCallback(() => {
+    const currentConv = selectedConvRef.current;
+    if (!currentConv) return;
+    const currentMsgs = messagesMap[currentConv.id] || [];
+    const msgs = currentMsgs.filter((m) => selectedMessageIds.has(m.id));
+    if (msgs.length === 0) return;
+    setMessagesToForward(msgs);
+    setIsForwardModalOpen(true);
+  }, [messagesMap, selectedMessageIds]);
+
+  const handleCopySelectedMessages = useCallback(async () => {
+    const currentConv = selectedConvRef.current;
+    if (!currentConv) return;
+    const currentMsgs = messagesMap[currentConv.id] || [];
+    const msgs = currentMsgs.filter((m) => selectedMessageIds.has(m.id));
+    const text = msgs
+      .map((m) => m.body || m.media_caption || (m.media_filename ? `[${m.media_filename}]` : ''))
+      .filter(Boolean)
+      .join('\n');
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      toastRef.current.success(tRef.current('whatsapp.copyMessage') + ' ✓');
+    } catch (e) {
+      console.error('Clipboard copy failed', e);
+    }
+  }, [messagesMap, selectedMessageIds]);
 
   const matchingMessageIds = React.useMemo(() => {
     const q = chatSearchQuery.trim().toLowerCase();
@@ -1747,6 +1804,52 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     }
   };
 
+  const handleConfirmForward = useCallback(
+    async (targetConversationIds: number[], msgs: Message[]) => {
+      let successCount = 0;
+      let failCount = 0;
+
+      for (const targetConvId of targetConversationIds) {
+        for (const msg of msgs) {
+          try {
+            if (msg.message_type === 'TEXT' || (!msg.media_url && msg.body)) {
+              await WhatsAppRepository.sendMessage(targetConvId, msg.body || '');
+              successCount++;
+            } else if (msg.media_url) {
+              await WhatsAppRepository.sendMedia(targetConvId, {
+                media_type: msg.message_type || 'IMAGE',
+                media_url: msg.media_url,
+                caption: msg.media_caption || undefined,
+                filename: msg.media_filename || undefined,
+                mime_type: msg.media_mime_type || undefined,
+              });
+              successCount++;
+            }
+          } catch (err) {
+            console.error('[Forward] Failed to forward to conv:', targetConvId, err);
+            failCount++;
+          }
+        }
+      }
+
+      if (failCount === 0) {
+        toastRef.current.success(tRef.current('whatsapp.forwardSuccess'));
+      } else if (successCount > 0) {
+        toastRef.current.success(`${successCount} iletildi, ${failCount} başarısız`);
+      } else {
+        toastRef.current.error(tRef.current('whatsapp.forwardFailed'));
+      }
+
+      setIsSelectMode(false);
+      setSelectedMessageIds(new Set());
+
+      if (selectedConvRef.current && targetConversationIds.includes(selectedConvRef.current.id)) {
+        void hydrateConversationMessages(selectedConvRef.current.id);
+      }
+      void loadConversations();
+    },
+    [hydrateConversationMessages, loadConversations]
+  );
 
   // Real-time listener for conversation list unread, status and preview updates
   useEffect(() => {
@@ -3164,6 +3267,17 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                             icon: <Info className="w-4 h-4" />,
                             onClick: () => setIsChatInfoOpen(true),
                           },
+                          {
+                            id: 'select-messages',
+                            label: isSelectMode ? t('whatsapp.cancelSelection') : t('whatsapp.selectMessages'),
+                            icon: <CheckSquare className="w-4 h-4 text-[#7367F0]" />,
+                            onClick: () => {
+                              setIsSelectMode((prev) => {
+                                if (prev) setSelectedMessageIds(new Set());
+                                return !prev;
+                              });
+                            },
+                          },
                           ...(selectedConv.lead_id
                             ? [
                                 {
@@ -3254,73 +3368,122 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                   onRetry={handleRetryMessage}
                   onReact={handleReactMessage}
                   onReply={handleReplyMessage}
+                  onForward={handleForwardSingleMessage}
+                  isSelectMode={isSelectMode}
+                  selectedMessageIds={selectedMessageIds}
+                  onToggleSelectMessage={handleToggleSelectMessage}
                   searchQuery={chatSearchQuery}
                   activeMessageId={activeSearchMessageId}
                 />
 
-                {/* Active Chat Composer */}
-                {/* P6-5: keyed by conversation id. The composer owns the draft
-                    (`text`, `pendingFile`, captions) in internal state and
-                    receives no conversation identifier, so an unkeyed instance
-                    carries the draft into the next chat — and `onSend`
-                    delivers to the SELECTED conversation, so it would send to
-                    the wrong person. Keying clears it on switch. */}
-                <ChatComposer
-                  key={selectedConv.id}
-                  replyingTo={replyingTo}
-                  onCancelReply={() => setReplyingTo(null)}
-                  onSend={async (text) => {
-                    try {
-                      await activeSendMessage(text);
-                      toast.success(t('whatsapp.messageSent'), t('common.success'));
-                    } catch (err: any) {
-                      const msg = (err?.message || '').toLowerCase();
-                      if (msg.includes('24 saat') || msg.includes('window')) {
-                        toast.error(t('whatsapp.windowExpiredNotice'), t('common.error'));
-                      } else {
-                        toast.error(translateApiError(err, t) || t('whatsapp.msgFailed'), t('common.error'));
+                {/* Active Chat Composer or Multi-Select Bottom Bar */}
+                {isSelectMode ? (
+                  <div
+                    data-testid="chat-selection-bar"
+                    className="px-4 py-3 bg-white dark:bg-[#182229] border-t border-slate-200/80 dark:border-white/[0.08] shadow-lg flex items-center justify-between animate-in slide-in-from-bottom duration-200 z-10"
+                  >
+                    <div className="flex items-center space-x-3">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsSelectMode(false);
+                          setSelectedMessageIds(new Set());
+                        }}
+                        title={t('whatsapp.cancelSelection')}
+                        aria-label={t('whatsapp.cancelSelection')}
+                        data-testid="cancel-selection-btn"
+                        className="p-1.5 rounded-lg text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-white/[0.06] transition-colors cursor-pointer"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                      <span className="text-xs font-bold text-slate-800 dark:text-slate-200" data-testid="selected-count-badge">
+                        {t('whatsapp.forwardCount', { count: selectedMessageIds.size })}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center space-x-2">
+                      <button
+                        type="button"
+                        onClick={handleCopySelectedMessages}
+                        disabled={selectedMessageIds.size === 0}
+                        data-testid="selection-copy-btn"
+                        title={t('whatsapp.copyMessage')}
+                        className="px-3 py-1.5 rounded-xl text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-white/[0.06] transition-colors cursor-pointer disabled:opacity-40 disabled:pointer-events-none flex items-center space-x-1.5 border border-slate-200 dark:border-white/10"
+                      >
+                        <Copy className="w-3.5 h-3.5" />
+                        <span>{t('whatsapp.copyMessage')}</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={handleForwardSelectedMessages}
+                        disabled={selectedMessageIds.size === 0}
+                        data-testid="selection-forward-btn"
+                        className="px-3.5 py-1.5 rounded-xl text-xs font-bold bg-[#25D366] text-white hover:bg-[#20ba59] shadow-sm shadow-[#25D366]/20 transition-all cursor-pointer disabled:opacity-40 disabled:pointer-events-none flex items-center space-x-1.5"
+                      >
+                        <Forward className="w-3.5 h-3.5" />
+                        <span>{t('whatsapp.forwardMessage')}</span>
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <ChatComposer
+                    key={selectedConv.id}
+                    replyingTo={replyingTo}
+                    onCancelReply={() => setReplyingTo(null)}
+                    onSend={async (text) => {
+                      try {
+                        await activeSendMessage(text);
+                        toast.success(t('whatsapp.messageSent'), t('common.success'));
+                      } catch (err: any) {
+                        const msg = (err?.message || '').toLowerCase();
+                        if (msg.includes('24 saat') || msg.includes('window')) {
+                          toast.error(t('whatsapp.windowExpiredNotice'), t('common.error'));
+                        } else {
+                          toast.error(translateApiError(err, t) || t('whatsapp.msgFailed'), t('common.error'));
+                        }
+                        throw err;
                       }
-                      throw err;
-                    }
-                  }}
-                  onSendTemplate={() => setIsTemplateModalOpen(true)}
-                  onSendMediaFile={async (file, caption) => {
-                    try {
-                      await activeSendMediaFile(file, caption);
-                      toast.success(t('whatsapp.mediaSent'), t('common.success'));
-                    } catch (err: any) {
-                      toast.error(translateApiError(err, t) || t('whatsapp.mediaFailed'), t('common.error'));
-                      throw err;
-                    }
-                  }}
-                  onTyping={(typing) => {
-                    if (selectedConv) {
-                      void WhatsAppRepository.sendTyping(selectedConv.id, typing).catch((err) => {
-                        // Typing is background traffic; keep the composer quiet,
-                        // but retain a correlation-rich diagnostic instead of
-                        // dropping the failure.
-                        console.warn('[WhatsAppHubPage] Typing signal failed', {
-                          conversation_id: selectedConv.id,
-                          typing,
-                          error: err instanceof Error ? err.message : String(err),
+                    }}
+                    onSendTemplate={() => setIsTemplateModalOpen(true)}
+                    onSendMediaFile={async (file, caption) => {
+                      try {
+                        await activeSendMediaFile(file, caption);
+                        toast.success(t('whatsapp.mediaSent'), t('common.success'));
+                      } catch (err: any) {
+                        toast.error(translateApiError(err, t) || t('whatsapp.mediaFailed'), t('common.error'));
+                        throw err;
+                      }
+                    }}
+                    onTyping={(typing) => {
+                      if (selectedConv) {
+                        void WhatsAppRepository.sendTyping(selectedConv.id, typing).catch((err) => {
+                          // Typing is background traffic; keep the composer quiet,
+                          // but retain a correlation-rich diagnostic instead of
+                          // dropping the failure.
+                          console.warn('[WhatsAppHubPage] Typing signal failed', {
+                            conversation_id: selectedConv.id,
+                            typing,
+                            error: err instanceof Error ? err.message : String(err),
+                          });
+                          toastRef.current.error(tRef.current('whatsapp.typingFailed') || tRef.current('common.error'), tRef.current('common.error'));
                         });
-                        toastRef.current.error(tRef.current('whatsapp.typingFailed') || tRef.current('common.error'), tRef.current('common.error'));
-                      });
-                    }
-                  }}
-                  onSendMedia={async (type, url, caption, filename) => {
-                    try {
-                      await activeSendMedia(type, url, caption, filename);
-                      toast.success(t('whatsapp.mediaSent'), t('common.success'));
-                    } catch (err: any) {
-                      toast.error(t('whatsapp.mediaFailed'), t('common.error'));
-                      throw err;
-                    }
-                  }}
-                  onReopenConversation={() => handleStatusChange(selectedConv.id, 'ACTIVE')}
-                  isClosed={selectedConv.status === 'CLOSED'}
-                  isWindowOpen={activeConv?.is_window_open ?? selectedConv.is_window_open ?? true}
-                />
+                      }
+                    }}
+                    onSendMedia={async (type, url, caption, filename) => {
+                      try {
+                        await activeSendMedia(type, url, caption, filename);
+                        toast.success(t('whatsapp.mediaSent'), t('common.success'));
+                      } catch (err: any) {
+                        toast.error(t('whatsapp.mediaFailed'), t('common.error'));
+                        throw err;
+                      }
+                    }}
+                    onReopenConversation={() => handleStatusChange(selectedConv.id, 'ACTIVE')}
+                    isClosed={selectedConv.status === 'CLOSED'}
+                    isWindowOpen={activeConv?.is_window_open ?? selectedConv.is_window_open ?? true}
+                  />
+                )}
 
                 {/* Template Select Modal */}
                 <TemplateSelectModal
@@ -3499,6 +3662,18 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         }}
         existingSessionId={reconnectSessionId}
         onSuccess={handleQrSuccess}
+      />
+
+      {/* WhatsApp Message Forwarding Modal */}
+      <ForwardModal
+        isOpen={isForwardModalOpen}
+        onClose={() => {
+          setIsForwardModalOpen(false);
+          setMessagesToForward([]);
+        }}
+        messagesToForward={messagesToForward}
+        conversations={conversations}
+        onConfirmForward={handleConfirmForward}
       />
     </div>
   );

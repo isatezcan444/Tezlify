@@ -15,3 +15,4 @@ export * from './ChatSearchBar';
 export * from './MediaLightbox';
 export * from './DocumentViewer';
 export * from './ChatInfoDrawer';
+export * from './ForwardModal';
