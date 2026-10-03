@@ -138,6 +138,43 @@ export const DocumentViewer: React.FC<DocumentViewerProps> = ({
     return () => controller.abort();
   }, [isOpen, src, resolvedSize]);
 
+  const [pdfVerified, setPdfVerified] = useState(false);
+
+  // Probe PDF availability before embedding iframe to prevent raw 404 JSON in iframe
+  useEffect(() => {
+    if (!isOpen || !src || !isPdf) {
+      setPdfVerified(false);
+      return;
+    }
+
+    const controller = new AbortController();
+    setLoading(true);
+    setError(null);
+    setPdfVerified(false);
+
+    fetch(src, { method: 'GET', headers: { Range: 'bytes=0-256' }, signal: controller.signal })
+      .then(async (res) => {
+        if (!res.ok) {
+          throw new Error(res.status === 404 ? t('whatsapp.mediaExpiredOrMissing') : `HTTP ${res.status}`);
+        }
+        const ct = res.headers.get('content-type') || '';
+        if (ct.includes('application/json')) {
+          throw new Error(t('whatsapp.mediaExpiredOrMissing'));
+        }
+        setPdfVerified(true);
+      })
+      .catch((err) => {
+        if (err.name !== 'AbortError') {
+          setError(err.message || t('whatsapp.mediaExpiredOrMissing'));
+        }
+      })
+      .finally(() => {
+        setLoading(false);
+      });
+
+    return () => controller.abort();
+  }, [isOpen, src, isPdf, t]);
+
   // Load text content for text-based documents
   useEffect(() => {
     if (!isOpen || !src || !isText) {
@@ -357,12 +394,35 @@ export const DocumentViewer: React.FC<DocumentViewerProps> = ({
         {/* PDF Viewer */}
         {isPdf && src && (
           <div className="w-full h-full max-w-5xl bg-[#111b21] rounded-xl shadow-2xl border border-white/10 overflow-hidden flex flex-col">
-            <iframe
-              ref={iframeRef}
-              src={`${src}#toolbar=1&navpanes=0`}
-              title={displayName}
-              className="w-full h-full border-none bg-[#202c33]"
-            />
+            {loading ? (
+              <div className="flex-1 flex flex-col items-center justify-center text-slate-400">
+                <Loader2 className="w-8 h-8 animate-spin mb-3 text-[#00a884]" />
+                <p className="text-xs font-medium">{t('whatsapp.documentPreviewLoading')}</p>
+              </div>
+            ) : error ? (
+              <div className="flex-1 flex flex-col items-center justify-center p-6 text-center text-slate-300">
+                <AlertCircle className="w-10 h-10 text-rose-500 mb-2" />
+                <p className="text-sm font-semibold text-rose-400 mb-1">{error}</p>
+                <p className="text-xs text-slate-400 mb-4">{t('whatsapp.documentDirectDownloadPrompt')}</p>
+                {src && (
+                  <button
+                    type="button"
+                    onClick={handleDownload}
+                    className="px-4 py-2 text-xs font-semibold rounded-lg bg-[#00a884] hover:bg-[#009272] text-white transition-colors cursor-pointer flex items-center gap-2"
+                  >
+                    <Download className="w-4 h-4" />
+                    <span>{t('whatsapp.documentDownload')}</span>
+                  </button>
+                )}
+              </div>
+            ) : pdfVerified ? (
+              <iframe
+                ref={iframeRef}
+                src={`${src}#toolbar=1&navpanes=0`}
+                title={displayName}
+                className="w-full h-full border-none bg-[#202c33]"
+              />
+            ) : null}
           </div>
         )}
 

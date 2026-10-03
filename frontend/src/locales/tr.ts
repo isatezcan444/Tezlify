@@ -603,6 +603,7 @@ export const tr = {
     documentNoPreviewAvailable: 'Bu dosya türü için doğrudan önizleme kullanılamıyor.',
     documentDirectDownloadPrompt: 'Dosyayı cihazınıza indirerek veya harici uygulamada açarak görüntüleyebilirsiniz.',
     documentFileSize: 'Dosya Boyutu',
+    mediaExpiredOrMissing: 'Bu medya öğesi sunucuda bulunamadı veya süresi dolmuş.',
     mediaDownload: 'İndir',
     mediaZoomIn: 'Yakınlaştır',
     mediaZoomOut: 'Uzaklaştır',

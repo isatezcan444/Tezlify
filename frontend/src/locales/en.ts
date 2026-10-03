@@ -603,6 +603,7 @@ export const en = {
     documentNoPreviewAvailable: 'Direct preview is not available for this file type.',
     documentDirectDownloadPrompt: 'You can download the file to your device or open it in an external application.',
     documentFileSize: 'File Size',
+    mediaExpiredOrMissing: 'This media item is not cached on the server or has expired.',
     mediaDownload: 'Download',
     mediaZoomIn: 'Zoom in',
     mediaZoomOut: 'Zoom out',
