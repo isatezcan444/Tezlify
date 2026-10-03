@@ -546,6 +546,9 @@ app.get('/media/:mediaId', async (req, res) => {
     return res.status(401).json({ error: 'Unauthorized' });
   }
   let filePath = sessionManager.getMediaPath(null, req.params.mediaId);
+  if (!filePath || !fs.existsSync(filePath)) {
+    filePath = await sessionManager.downloadMediaOnDemand(null, req.params.mediaId);
+  }
   if (!filePath || !fs.existsSync(filePath)) return res.status(404).json({ error: 'Media not found' });
   res.sendFile(filePath);
 });

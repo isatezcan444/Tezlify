@@ -364,9 +364,13 @@ function mapMessage(m: BackendMessage, convId: number): Message {
   // başlığı taşıyamaz, bu yüzden backend'in kabul ettiği ?token= sorgu
   // parametresi eklenir. WhatsApp Web paritesi: medya her zaman kimlikli
   // URL'den gelir; tokensiz URL 401'e düşer ve balon boş kalır.
-  const mediaUrl = m.media_url || (m.media_id
+  const targetMediaId =
+    m.media_id ||
+    (m.message_type && m.message_type !== 'TEXT' && m.wa_message_id ? m.wa_message_id : undefined);
+
+  const mediaUrl = m.media_url || (targetMediaId
     ? (() => {
-        const base = `${API_BASE}/whatsapp/media/${m.media_id}`;
+        const base = `${API_BASE}/whatsapp/media/${targetMediaId}`;
         const tok = ApiClient.getAuthToken();
         return tok ? `${base}?token=${encodeURIComponent(tok)}` : base;
       })()
@@ -385,7 +389,7 @@ function mapMessage(m: BackendMessage, convId: number): Message {
     message_type: (m.message_type as Message['message_type']) || 'TEXT',
     status: (m.status as Message['status']) || 'RECEIVED',
     body: m.body ?? undefined,
-    media_id: m.media_id ?? undefined,
+    media_id: m.media_id ?? (m.message_type !== 'TEXT' && m.wa_message_id ? m.wa_message_id : undefined),
     media_mime_type: m.media_mime_type ?? undefined,
     media_filename: m.media_filename ?? undefined,
     media_caption: m.media_caption ?? undefined,

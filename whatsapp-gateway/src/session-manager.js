@@ -1438,16 +1438,29 @@ export function createSessionManager({
       let filePath = mediaStore.getMediaPath(sessionId, mediaIdOrWaId);
       if (filePath && fs.existsSync(filePath)) return filePath;
 
-      const session = sessionId ? sessions.get(String(sessionId)) : null;
-      if (!session) return null;
-      const store = this._storeOf(session);
-      if (!store) return null;
+      let strId = String(mediaIdOrWaId);
+      const meta = mediaStore.mediaIndex?.get(strId);
+      if (meta?.waMessageId) {
+        strId = String(meta.waMessageId);
+      }
 
-      const strId = String(mediaIdOrWaId);
-      let foundRaw = null;
-      let foundJid = null;
+      const targetSessions = [];
+      if (sessionId && sessions.has(String(sessionId))) {
+        targetSessions.push(sessions.get(String(sessionId)));
+      }
+      for (const [sId, sess] of sessions.entries()) {
+        if (!sessionId || sId !== String(sessionId)) {
+          targetSessions.push(sess);
+        }
+      }
 
-      if (store.rawMessagesByChat) {
+      for (const session of targetSessions) {
+        const store = this._storeOf(session);
+        if (!store || !store.rawMessagesByChat) continue;
+
+        let foundRaw = null;
+        let foundJid = null;
+
         for (const [jid, byId] of store.rawMessagesByChat.entries()) {
           if (byId.has(strId)) {
             foundRaw = byId.get(strId);
@@ -1455,16 +1468,16 @@ export function createSessionManager({
             break;
           }
         }
-      }
 
-      if (foundRaw && foundJid) {
-        const waMsg = {
-          key: { remoteJid: foundJid, id: strId },
-          message: foundRaw,
-        };
-        const stored = await mediaStore.storeIncomingMedia(session, waMsg, session.sock);
-        if (stored?.media_id) {
-          return mediaStore.getMediaPath(sessionId, stored.media_id);
+        if (foundRaw && foundJid) {
+          const waMsg = {
+            key: { remoteJid: foundJid, id: strId },
+            message: foundRaw,
+          };
+          const stored = await mediaStore.storeIncomingMedia(session, waMsg, session.sock);
+          if (stored?.media_id) {
+            return mediaStore.getMediaPath(session.id, stored.media_id);
+          }
         }
       }
       return null;

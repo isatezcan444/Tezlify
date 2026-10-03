@@ -27,6 +27,7 @@ import { EmojiPicker } from './EmojiPicker';
 import { DocumentCard } from './DocumentCard';
 import { LinkPreviewCard } from './LinkPreviewCard';
 import { VoiceNotePlayer } from './VoiceNotePlayer';
+import { MediaLightbox } from './MediaLightbox';
 import { groupReactions } from '../lib/whatsappReactions';
 import { resolveMediaUrl } from '../../../lib/mediaUrl';
 
@@ -60,11 +61,13 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
   const { t, language } = useI18n();
   const isInbound = message.direction === 'INBOUND';
   const [isLightboxOpen, setIsLightboxOpen] = useState(false);
+  const [lightboxMediaType, setLightboxMediaType] = useState<'IMAGE' | 'VIDEO' | 'DOCUMENT'>('IMAGE');
   const [retrying, setRetrying] = useState(false);
   const [isReactionBarOpen, setIsReactionBarOpen] = useState(false);
   const [isPickerOpen, setIsPickerOpen] = useState(false);
   const [reacting, setReacting] = useState(false);
   const [imageLoadError, setImageLoadError] = useState(false);
+  const [mediaRetryTs, setMediaRetryTs] = useState<number | null>(null);
   const [copied, setCopied] = useState(false);
 
   const highlightMatches = useCallback(
@@ -103,9 +106,18 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
       message.media_url ||
       (message.media_id
         ? `/api/v1/whatsapp/media/${message.media_id}`
+        : undefined) ||
+      (message.message_type !== 'TEXT' && message.wa_message_id
+        ? `/api/v1/whatsapp/media/${message.wa_message_id}`
         : undefined);
-    return resolveMediaUrl(raw);
-  }, [message.media_url, message.media_id]);
+    const resolved = resolveMediaUrl(raw);
+    if (!resolved) return undefined;
+    if (mediaRetryTs) {
+      const sep = resolved.includes('?') ? '&' : '?';
+      return `${resolved}${sep}_retry=${mediaRetryTs}`;
+    }
+    return resolved;
+  }, [message.media_url, message.media_id, message.wa_message_id, message.message_type, mediaRetryTs]);
   useLayoutEffect(() => {
     finishWaLatency('event_handler_to_message_commit_ms', message.id);
   }, [message]);
@@ -306,16 +318,42 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
         return (
           <div className="space-y-2">
             <div 
-              onClick={() => !imageLoadError && resolvedMediaUrl && setIsLightboxOpen(true)}
+              onClick={() => {
+                if (!imageLoadError && resolvedMediaUrl) {
+                  setLightboxMediaType('IMAGE');
+                  setIsLightboxOpen(true);
+                }
+              }}
               className="relative group rounded-xl overflow-hidden bg-slate-950/10 dark:bg-black/20 border border-black/5 dark:border-white/10 w-[260px] h-[180px] max-w-full cursor-pointer"
             >
               {resolvedMediaUrl && !imageLoadError ? (
-                <img 
-                  src={resolvedMediaUrl} 
-                  alt={message.media_caption || t('leads.imageAltFallback')} 
-                  onError={() => setImageLoadError(true)}
-                  className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
-                />
+                <>
+                  <img 
+                    src={resolvedMediaUrl} 
+                    alt={message.media_caption || t('leads.imageAltFallback')} 
+                    onError={() => setImageLoadError(true)}
+                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
+                  />
+                  <div className="absolute inset-0 bg-black/30 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-white">
+                    <Eye className="w-5 h-5" />
+                  </div>
+                </>
+              ) : imageLoadError ? (
+                <div className="w-full h-full flex flex-col items-center justify-center p-4 text-center bg-slate-200/50 dark:bg-white/[0.05]">
+                  <ImageIcon className="w-8 h-8 mb-1.5 text-rose-500/80" />
+                  <span className="text-[11px] font-bold text-slate-700 dark:text-slate-300">{t('whatsapp.mediaLoadFailed')}</span>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setImageLoadError(false);
+                      setMediaRetryTs(Date.now());
+                    }}
+                    className="mt-2 px-2.5 py-1 text-[10px] font-semibold rounded bg-[#00a884] hover:bg-[#009272] text-white transition-colors cursor-pointer"
+                  >
+                    {t('whatsapp.mediaRetry')}
+                  </button>
+                </div>
               ) : (
                 <div className="w-full h-full flex flex-col items-center justify-center p-4 text-slate-500 dark:text-slate-400 bg-slate-200/50 dark:bg-white/[0.05]">
                   <ImageIcon className="w-10 h-10 mb-2 opacity-60" />
@@ -323,9 +361,6 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                   <span className="text-[9px] opacity-70 font-mono mt-0.5">{message.media_mime_type || 'image/jpeg'}</span>
                 </div>
               )}
-              <div className="absolute inset-0 bg-black/30 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-white">
-                <Eye className="w-5 h-5" />
-              </div>
             </div>
             {message.media_caption && (
               <p className="whitespace-pre-wrap break-words font-medium text-xs">
@@ -384,13 +419,27 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
           <div className="space-y-2 w-[260px] max-w-full">
             <div className="relative group rounded-xl overflow-hidden bg-black/40 border border-black/5 dark:border-white/10 w-full h-[180px]">
               {videoSrc ? (
-                <video
-                  controls
-                  preload="metadata"
-                  playsInline
-                  src={videoSrc}
-                  className="w-full h-full object-cover"
-                />
+                <>
+                  <video
+                    controls
+                    preload="metadata"
+                    playsInline
+                    src={videoSrc}
+                    className="w-full h-full object-cover"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setLightboxMediaType('VIDEO');
+                      setIsLightboxOpen(true);
+                    }}
+                    title={t('whatsapp.mediaOpenLightbox')}
+                    aria-label={t('whatsapp.mediaOpenLightbox')}
+                    className="absolute top-2 right-2 p-1.5 rounded-lg bg-black/60 text-white/80 hover:text-white hover:bg-black/80 opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer z-10"
+                  >
+                    <Eye className="w-4 h-4" />
+                  </button>
+                </>
               ) : (
                 <div className="w-full h-full flex flex-col items-center justify-center p-4 text-slate-500 dark:text-slate-400 bg-slate-200/50 dark:bg-white/[0.05]">
                   <Video className="w-8 h-8 mx-auto text-[#7367F0] mb-1.5" />
@@ -686,32 +735,17 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
         </Modal>
       )}
 
-      {/* Lightbox Modal for Image Preview */}
-      {isLightboxOpen && (
-        <Modal
-          isOpen={isLightboxOpen}
-          onClose={() => setIsLightboxOpen(false)}
-          title={t('leads.imagePreview')}
-          subtitle={message.media_caption || undefined}
-          icon={ImageIcon}
-          maxWidth="lg"
-        >
-          <div className="flex flex-col items-center justify-center p-4 bg-slate-950/20 rounded-xl">
-            {resolvedMediaUrl ? (
-              <img 
-                src={resolvedMediaUrl} 
-                alt={t('leads.imageAltFallback')} 
-                className="max-h-[60vh] object-contain rounded-lg shadow-md"
-              />
-            ) : (
-              <div className="py-12 text-center text-slate-400">
-                <ImageIcon className="w-12 h-12 mx-auto mb-2 opacity-50" />
-                <p className="text-sm font-bold">{t('leads.imageReady')}</p>
-              </div>
-            )}
-          </div>
-        </Modal>
-      )}
+      {/* Authentic WhatsApp Web Full-Screen Media Lightbox */}
+      <MediaLightbox
+        isOpen={isLightboxOpen}
+        onClose={() => setIsLightboxOpen(false)}
+        src={resolvedMediaUrl}
+        mediaType={lightboxMediaType}
+        caption={message.media_caption || undefined}
+        filename={message.media_filename || undefined}
+        senderName={isInbound ? (chatTitle || message.sender_phone || undefined) : undefined}
+        timestamp={formatTime(message.created_at)}
+      />
     </>
   );
 };

@@ -248,6 +248,11 @@ src/
 - **Props**: `query: string`, `onQueryChange`, `totalMatches: number`, `currentMatchIndex: number`, `onNextMatch`, `onPrevMatch`, `onClose`.
 - **Import**: `import { ChatSearchBar } from '@/features/whatsapp/components';`
 
+#### `MediaLightbox`
+- **Purpose**: WhatsApp Web authentic full-screen media inspection overlay. Portaled to `document.body` with `z-[99999]`. Supports high-resolution zoom (wheel, double-click, buttons), draggable panning when zoomed, 90° clockwise rotation, fail-closed media retry, direct download with revocation, keyboard shortcuts (Escape, +/-, R, 0), and floating caption pill.
+- **Props**: `isOpen: boolean`, `onClose: () => void`, `src?: string | null`, `mediaType?: 'IMAGE' | 'VIDEO' | 'DOCUMENT'`, `caption?: string | null`, `filename?: string | null`, `senderName?: string`, `timestamp?: string`.
+- **Import**: `import { MediaLightbox } from '@/features/whatsapp/components';`
+
 #### `useWhatsAppLoadingGate` (hook)
 - **Purpose**: Single-authority QR post-pairing loading gate state (WhatsApp Web parity). Fed only by real signals — backend `GET /whatsapp/loading-gate` (REST bootstrap on mount + WS reconnect) and WS `whatsapp_loading_gate` / `session_sync_*` events. No polling, no fake timers. Fires the `onReady` callback exactly once when `phase` transitions to `ready`, so the hub can auto-switch to the Live Conversations tab and eagerly load chats.
 - **Signature**: `useWhatsAppLoadingGate(onReady?: () => void) => { gate, dismiss, refresh }`.
