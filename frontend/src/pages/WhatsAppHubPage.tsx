@@ -1506,12 +1506,23 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     const isRealDbId = typeof msgId === 'number' && Number.isInteger(msgId) && msgId > 0;
       if (!isRealDbId) {
         const clientMid = target?.client_message_id;
-        if (!target || !clientMid || !target.body) {
+        if (!target || !clientMid || (!target.body && !target.media_url)) {
           throw new Error(
             tRef.current('whatsapp.msgNotPersisted')
           );
         }
-        const res = await WhatsAppRepository.sendMessage(convId, target.body, clientMid);
+        let res: any;
+        if (target.message_type && target.message_type !== 'TEXT' && target.media_url) {
+          res = await WhatsAppRepository.sendMedia(convId, {
+            media_type: target.message_type,
+            media_url: target.media_url,
+            caption: target.media_caption || undefined,
+            filename: target.media_filename || undefined,
+            mime_type: target.media_mime_type || undefined,
+          }, clientMid);
+        } else {
+          res = await WhatsAppRepository.sendMessage(convId, target.body || '', clientMid);
+        }
         setMessagesMap((prev) => ({
           ...prev,
           [convId]: (prev[convId] || []).map((m) =>

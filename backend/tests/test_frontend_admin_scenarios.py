@@ -1064,7 +1064,7 @@ def test_frontend_admin_security_scenarios_and_invariants():
             'X-Content-Type-Options': 'nosniff',
             'X-Frame-Options': 'SAMEORIGIN',
             'Referrer-Policy': 'strict-origin-when-cross-origin',
-            'Permissions-Policy': 'camera=(), microphone=(), geolocation=(), payment=()',
+            'Permissions-Policy': 'camera=(), microphone=(self), geolocation=(), payment=()',
             'Server-Header-Masking': 'active (-Server)',
             'Via-Header-Masking': 'active (-Via)'
           }

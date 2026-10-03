@@ -175,7 +175,7 @@ def _inspect_caddy_headers() -> AdminCaddySecurityInfo:
         "X-Content-Type-Options": "nosniff",
         "X-Frame-Options": "SAMEORIGIN",
         "Referrer-Policy": "strict-origin-when-cross-origin",
-        "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=()",
+        "Permissions-Policy": "camera=(), microphone=(self), geolocation=(), payment=()",
         "Server-Header-Masking": "active (-Server)",
         "Via-Header-Masking": "active (-Via)",
     }

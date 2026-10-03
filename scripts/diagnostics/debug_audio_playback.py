@@ -39,10 +39,10 @@ async def debug_voice():
         await page.goto(f"{BASE_URL}/?tab=whatsapp", wait_until="networkidle", timeout=30000)
         await page.wait_for_timeout(2000)
 
-        # Select conversation 20633
-        conv_btn = page.locator("button[data-conv-id='20633']").first
+        # Select conversation 20618 (Hat 1)
+        conv_btn = page.locator("button[data-conv-id='20618']").first
         if await conv_btn.count() == 0:
-            print("Conversation 20633 not found in list, searching...")
+            print("Conversation 20618 not found, falling back to first conversation...")
             conv_btn = page.locator("button[data-conv-id]").first
         
         await conv_btn.click()
@@ -87,6 +87,10 @@ async def debug_voice():
                 }));
             }""")
             print("After play click audio info:", after_click)
+
+        screenshot_path = "/Users/isatezcan/.gemini/antigravity-ide/brain/7c08a75b-8c18-4648-9667-77c7d256d21e/wa_voice_playback_live.png"
+        await page.screenshot(path=screenshot_path)
+        print(f"Saved screenshot: {screenshot_path}")
 
         print("\n--- Console Logs ---")
         for log in console_logs[-30:]:
