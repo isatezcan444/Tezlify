@@ -138,7 +138,25 @@ async def run_interaction_verification():
             theme_sun = page.locator('header button:has(svg.lucide-sun), nav button:has(svg.lucide-sun), button[title*="Açık"], button[title*="Light"]').first
             if await theme_sun.is_visible():
                 await theme_sun.click()
+        # 6. In-Chat Search Verification
+        print("[6] Testing In-Chat Search Bar...")
+        search_toggle_btn = page.locator('button[title*="sohbette ara"], button[aria-label*="sohbette ara"]').first
+        if await search_toggle_btn.is_visible():
+            await search_toggle_btn.click()
             await page.wait_for_timeout(400)
+
+            in_chat_input = page.locator('div[role="search"] input').first
+            assert await in_chat_input.is_visible(), "In-chat search input must be visible after click"
+            await in_chat_input.fill("CamScanner")
+            await page.wait_for_timeout(500)
+
+            search_bar_ss = os.path.join(ARTIFACT_DIR, "wa_in_chat_search.png")
+            await page.screenshot(path=search_bar_ss)
+            print(f"[*] In-chat search screenshot saved: {search_bar_ss}")
+
+            # Close search using Escape
+            await in_chat_input.press("Escape")
+            await page.wait_for_timeout(300)
 
         print("\n" + "=" * 60)
         print("VERIFICATION RESULTS")
