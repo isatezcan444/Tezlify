@@ -251,14 +251,20 @@ export async function createSocketForSession({
 }
 
 /**
- * In WhatsApp Multi-Device protocol, linked companion devices send a passive IQ stanza:
- *   <iq to="@s.whatsapp.net" xmlns="passive" type="set"><passive/></iq>
- * to inform WhatsApp servers that the companion is running in the background / standby mode.
- * When a companion is passive, WhatsApp routes all push notifications to the user's primary
- * mobile device rather than suppressing them under the assumption that an active desktop window
- * is open in the foreground.
+ * In WhatsApp Multi-Device protocol, linked companion devices send an active IQ stanza:
+ *   <iq to="@s.whatsapp.net" xmlns="passive" type="set"><active/></iq>
+ * to inform WhatsApp servers that the companion is actively listening for incoming messages
+ * over the WebSocket stream.
+ *
+ * NOTE: Setting `<passive/>` causes WhatsApp servers to stop streaming incoming messages
+ * over the WebSocket (routing them only as offline notifications/phone pushes). Therefore,
+ * the connection MUST remain in `active` mode to receive real-time messages.
+ *
+ * Phone notifications on the primary mobile device are handled separately by PRESENCE:
+ * keeping presence set to `type="unavailable"` tells WhatsApp servers that the user is not
+ * actively viewing the companion on screen, which triggers push notifications to the phone.
  */
-export async function setCompanionPassive(sock, logger, sessionRef) {
+export async function setCompanionActive(sock, logger, sessionRef) {
   if (!sock?.query) return;
   try {
     await sock.query({
@@ -268,10 +274,11 @@ export async function setCompanionPassive(sock, logger, sessionRef) {
         xmlns: 'passive',
         type: 'set',
       },
-      content: [{ tag: 'passive', attrs: {} }],
+      content: [{ tag: 'active', attrs: {} }],
     });
-    logger?.debug({ session_ref: sessionRef }, 'Companion client successfully set to passive');
+    logger?.debug({ session_ref: sessionRef }, 'Companion client successfully set to active stream');
   } catch (err) {
-    logger?.debug({ err: err?.message, session_ref: sessionRef }, 'Passive IQ stanza announcement ignored or failed');
+    logger?.debug({ err: err?.message, session_ref: sessionRef }, 'Active IQ stanza announcement ignored or failed');
   }
 }
+

@@ -100,20 +100,20 @@ console.log('[test-phone-notifications-presence] Starting push notifications & p
 {
   const connectorSource = await import('../src/socket/socket-connector.js');
   assert.ok(connectorSource, 'socket-connector module loads successfully');
-  assert.equal(typeof connectorSource.setCompanionPassive, 'function', 'setCompanionPassive is exported');
+  assert.equal(typeof connectorSource.setCompanionActive, 'function', 'setCompanionActive is exported');
 
-  let passiveQuery = null;
+  let activeQuery = null;
   const fakeSock = {
     query: async (q) => {
-      passiveQuery = q;
+      activeQuery = q;
       return q;
     },
   };
-  await connectorSource.setCompanionPassive(fakeSock, null, 'test-ref');
-  assert.ok(passiveQuery, 'passive query was sent');
-  assert.equal(passiveQuery.attrs.xmlns, 'passive', 'passive xmlns is correct');
-  assert.equal(passiveQuery.content[0].tag, 'passive', 'passive tag is correct');
-  console.log('  ok - setCompanionPassive emits correct passive IQ stanza');
+  await connectorSource.setCompanionActive(fakeSock, null, 'test-ref');
+  assert.ok(activeQuery, 'active query was sent');
+  assert.equal(activeQuery.attrs.xmlns, 'passive', 'passive xmlns is correct');
+  assert.equal(activeQuery.content[0].tag, 'active', 'active tag is correct');
+  console.log('  ok - setCompanionActive emits correct active IQ stanza');
 }
 
 console.log('[test-phone-notifications-presence] All checks passed successfully!');
