@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 def _diagnostic_route(path: str) -> str:
     """PII-safe route shape for low-volume gateway diagnostics."""
     route = re.sub(r"/sessions/[^/]+", "/sessions/:session", path)
-    route = re.sub(r"/conversations/[^/]+", "/conversations/:jid", route)
+    route = re.sub(r"/conversations/(?!sync-groups)[^/]+", "/conversations/:jid", route)
     route = re.sub(r"/media/[^/?]+", "/media/:media", route)
     return route
 
@@ -56,22 +56,24 @@ def gateway_auth_headers() -> Dict[str, str]:
     return {"X-Gateway-Secret": secret}
 
 
-async def _request(method: str, path: str, **kwargs: Any) -> Any:
+async def _request(method: str, path: str, timeout: Optional[float] = None, **kwargs: Any) -> Any:
     url = f"{gateway_base()}{path}"
     route = _diagnostic_route(path)
     started = time.monotonic()
     supplied_headers = dict(kwargs.pop("headers", {}) or {})
     supplied_headers.update(gateway_auth_headers())
+    req_timeout = timeout if timeout is not None else gateway_timeout()
     try:
-        async with httpx.AsyncClient(timeout=gateway_timeout()) as client:
+        async with httpx.AsyncClient(timeout=req_timeout) as client:
             res = await client.request(method, url, headers=supplied_headers, **kwargs)
     except httpx.HTTPError as exc:
         elapsed_ms = round((time.monotonic() - started) * 1000)
+        exc_detail = str(exc).strip() or type(exc).__name__
         logger.warning(
-            "[WA-GATEWAY-HTTP] Ulaşım hatası (method=%s route=%s elapsed_ms=%d type=%s)",
-            method, route, elapsed_ms, type(exc).__name__,
+            "[WA-GATEWAY-HTTP] Ulaşım hatası (method=%s route=%s elapsed_ms=%d type=%s detail=%s)",
+            method, route, elapsed_ms, type(exc).__name__, exc_detail,
         )
-        raise WhatsAppGatewayError(f"Gateway'e ulaşılamadı ({route}): {exc}") from exc
+        raise WhatsAppGatewayError(f"Gateway'e ulaşılamadı ({route}): {exc_detail}") from exc
     elapsed_ms = round((time.monotonic() - started) * 1000)
     if res.status_code >= 400:
         logger.warning(
@@ -206,7 +208,12 @@ async def list_conversations(
     return await _request("GET", f"{_s(gateway_id)}/conversations", params=params)
 
 
-async def sync_group_subjects(gateway_id: str, force: bool = False, extraJids: Optional[List[str]] = None) -> Dict[str, Any]:
+async def sync_group_subjects(
+    gateway_id: str,
+    force: bool = False,
+    extraJids: Optional[List[str]] = None,
+    timeout: float = 60.0,
+) -> Dict[str, Any]:
     """Faz 8: gateway'den tüm katılımcı grupların subject'ini tek toplu
     istekte çözer (oturum bazında TTL gateway içinde). Hata fail-closed:
     WhatsAppGatewayError yükselir, çağıran yutar ama isim uydurmaz.
@@ -226,7 +233,7 @@ async def sync_group_subjects(gateway_id: str, force: bool = False, extraJids: O
     payload: Dict[str, Any] = {"force": bool(force)}
     if extraJids:
         payload["extraJids"] = [str(j) for j in extraJids if j and "@g.us" in str(j)]
-    return await _request("POST", f"{_s(gateway_id)}/conversations/sync-groups", json=payload)
+    return await _request("POST", f"{_s(gateway_id)}/conversations/sync-groups", timeout=timeout, json=payload)
 
 
 async def get_messages(

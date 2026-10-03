@@ -676,6 +676,7 @@ class WhatsAppSyncOrchestrator:
         gateway_client = self._get_helper("gw", gw)
 
         async def enrich() -> None:
+            await asyncio.sleep(2)
             try:
                 await gateway_client.sync_group_subjects(gateway_id, force=True)
             except Exception as exc:

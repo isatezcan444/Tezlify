@@ -2551,7 +2551,11 @@ export function createSessionManager({
       };
 
       try {
-        const all = await session.sock.groupFetchAllParticipating();
+        const fetchPromise = session.sock.groupFetchAllParticipating();
+        const timeoutPromise = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('groupFetchAllParticipating timeout')), 15000)
+        );
+        const all = await Promise.race([fetchPromise, timeoutPromise]);
         for (const meta of Object.values(all || {})) {
           const jid = meta?.id;
           const subject = typeof meta?.subject === 'string' ? meta.subject.trim() : '';
@@ -2562,7 +2566,7 @@ export function createSessionManager({
         }
       } catch (err) {
         session._groupSubjectsAt = 0;
-        logger.warn({ err }, 'groupFetchAllParticipating failed');
+        logger.warn({ err: err?.message || err }, 'groupFetchAllParticipating failed');
       }
 
       try {
@@ -2624,7 +2628,11 @@ export function createSessionManager({
             if (index >= unresolved.length) return;
             const jid = unresolved[index];
             try {
-              const meta = await session.sock.groupMetadata(jid);
+              const metaPromise = session.sock.groupMetadata(jid);
+              const timeoutPromise = new Promise((_, reject) =>
+                setTimeout(() => reject(new Error('groupMetadata timeout')), 8000)
+              );
+              const meta = await Promise.race([metaPromise, timeoutPromise]);
               if (session._groupSubjectsInFlight === 'cancelled') return;
               const subject = typeof meta?.subject === 'string' ? meta.subject.trim() : '';
               if (subject) {
