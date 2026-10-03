@@ -676,15 +676,36 @@ class WhatsAppSyncOrchestrator:
         gateway_client = self._get_helper("gw", gw)
 
         async def enrich() -> None:
+            # İlk denemeden önce gateway'in stabilize olması için bekle.
             await asyncio.sleep(2)
+            _MAX_ATTEMPTS = 3
+            _BASE_DELAY_S = 2.0   # 2s → 6s → 18s (exponential x3)
+            for attempt in range(1, _MAX_ATTEMPTS + 1):
+                try:
+                    await gateway_client.sync_group_subjects(gateway_id, force=True)
+                    return  # Başarılı — döngüden çık
+                except Exception as exc:
+                    if attempt < _MAX_ATTEMPTS:
+                        delay = _BASE_DELAY_S * (3 ** (attempt - 1))
+                        logger.warning(
+                            "Background group enrichment failed (session=%s, attempt=%d/%d, retry_in=%.0fs): %s",
+                            gateway_id, attempt, _MAX_ATTEMPTS, delay, exc,
+                        )
+                        await asyncio.sleep(delay)
+                    else:
+                        logger.warning(
+                            "Background group enrichment permanently failed after %d attempts (session=%s): %s",
+                            _MAX_ATTEMPTS, gateway_id, exc,
+                        )
+            finally_cleanup = True
+
+        async def _enrich_with_cleanup() -> None:
             try:
-                await gateway_client.sync_group_subjects(gateway_id, force=True)
-            except Exception as exc:
-                logger.warning("Background group enrichment failed (session=%s): %s", gateway_id, exc)
+                await enrich()
             finally:
                 self._metadata_tasks.pop(gateway_id, None)
 
-        self._metadata_tasks[gateway_id] = asyncio.create_task(enrich())
+        self._metadata_tasks[gateway_id] = asyncio.create_task(_enrich_with_cleanup())
 
     # ------------------------------------------------------------------
     # Phase 2.1.A: known @g.us group hydration.
