@@ -385,7 +385,11 @@ const AppContent: React.FC = () => {
             a clean state instead of inheriting the previous one's DOM. */}
         <main
           key={activeTab}
-          className="flex-1 p-3.5 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto animate-page-enter"
+          className={`flex-1 w-full mx-auto animate-page-enter ${
+            activeTab === 'whatsapp'
+              ? 'p-0 sm:p-6 lg:p-8 max-w-full sm:max-w-7xl'
+              : 'p-3.5 sm:p-6 lg:p-8 max-w-7xl'
+          }`}
         >
           {/* Pages are code-split, so the first visit to each one waits on its
               chunk. The placeholder matches the page's own padding so the

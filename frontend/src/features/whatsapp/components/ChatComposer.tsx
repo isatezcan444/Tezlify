@@ -106,12 +106,16 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
 
       let mimeType = 'audio/webm;codecs=opus';
       if (typeof MediaRecorder !== 'undefined') {
-        if (!MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
-          if (MediaRecorder.isTypeSupported('audio/ogg;codecs=opus')) {
-            mimeType = 'audio/ogg;codecs=opus';
-          } else {
-            mimeType = '';
-          }
+        if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
+          mimeType = 'audio/webm;codecs=opus';
+        } else if (MediaRecorder.isTypeSupported('audio/mp4')) {
+          mimeType = 'audio/mp4';
+        } else if (MediaRecorder.isTypeSupported('audio/aac')) {
+          mimeType = 'audio/aac';
+        } else if (MediaRecorder.isTypeSupported('audio/ogg;codecs=opus')) {
+          mimeType = 'audio/ogg;codecs=opus';
+        } else {
+          mimeType = '';
         }
       }
 
@@ -174,10 +178,13 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
     recorder.onstop = async () => {
       const chunks = audioChunksRef.current;
       if (chunks.length > 0) {
-        const mimeType = recorder.mimeType || 'audio/ogg';
-        const ext = mimeType.includes('ogg') ? 'ogg' : 'webm';
-        const blob = new Blob(chunks, { type: mimeType });
-        const file = new File([blob], `voice_${Date.now()}.${ext}`, { type: mimeType });
+        const finalMime = recorder.mimeType || 'audio/mp4';
+        let ext = 'm4a';
+        if (finalMime.includes('webm')) ext = 'webm';
+        else if (finalMime.includes('ogg')) ext = 'ogg';
+        else if (finalMime.includes('mp4') || finalMime.includes('m4a') || finalMime.includes('aac')) ext = 'm4a';
+        const blob = new Blob(chunks, { type: finalMime });
+        const file = new File([blob], `voice_${Date.now()}.${ext}`, { type: finalMime });
         if (onSendMediaFile) {
           try {
             await onSendMediaFile(file);
@@ -516,6 +523,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
   return (
     <div
       ref={composerRootRef}
+      style={{ paddingBottom: 'max(0.75rem, env(safe-area-inset-bottom, 0px))' }}
       className="p-3 border-t border-slate-200/80 dark:border-white/[0.08] bg-slate-50/50 dark:bg-black/20"
     >
       {/* 1. Closed Conversation Notice */}
@@ -792,7 +800,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
                     ? (t('whatsapp.windowExpiredPlaceholder'))
                     : (placeholder || t('leads.typeMessagePlaceholder'))
                 }
-                className={`w-full px-3.5 py-2.5 pr-20 text-[13px] leading-relaxed rounded-xl vuexy-input transition-all resize-none max-h-[120px] overflow-y-auto block ${
+                className={`w-full px-3.5 py-2.5 pr-20 text-base sm:text-[13px] leading-relaxed rounded-xl vuexy-input transition-all resize-none max-h-[120px] overflow-y-auto block ${
                   isInputDisabled
                     ? 'opacity-60 cursor-not-allowed bg-slate-100 dark:bg-white/[0.04]'
                     : ''

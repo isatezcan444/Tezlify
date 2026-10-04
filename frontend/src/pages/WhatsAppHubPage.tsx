@@ -814,7 +814,8 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       totalConvsRef.current = page.total;
 
       setSelectedConv((prev) => {
-        if (!prev && page.items.length > 0) return page.items[0];
+        const isMobile = typeof window !== 'undefined' && window.innerWidth < 768;
+        if (!prev && page.items.length > 0) return isMobile ? null : page.items[0];
         if (prev) {
           const updated = page.items.find((c) => Number(c.id) === Number(prev.id));
           if (updated) {
@@ -2551,7 +2552,8 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
               }
               return Array.from(byId.values()).sort(compareByLastMessageDesc);
             });
-            setSelectedConv((prev) => prev || incoming[0] || null);
+            const isMobile = typeof window !== 'undefined' && window.innerWidth < 768;
+            setSelectedConv((prev) => prev || (isMobile ? null : incoming[0]) || null);
           }
           setSessionSync((prev) => (prev && prev.phase === 'syncing' ? {
             ...prev, stage: 'chats', chats_synced: eventData.total ?? prev.chats_synced,
@@ -2897,9 +2899,11 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   };
 
   return (
-    <div className="space-y-6 pb-16 select-none animate-fade-in">
+    <div className={`select-none animate-fade-in ${hubTab === 'conversations' ? 'space-y-2 md:space-y-6 pb-2 md:pb-16' : 'space-y-6 pb-16'}`}>
       {/* Top Header & Tab Switcher */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+      <div className={`flex-col md:flex-row md:items-center justify-between gap-4 ${
+        hubTab === 'conversations' && selectedConv ? 'hidden md:flex' : 'flex'
+      }`}>
         <div className="min-w-0">
           <h2 className="text-xl font-extrabold text-slate-800 dark:text-white flex items-center gap-2">
             {hubTab === 'conversations' ? (
@@ -3002,7 +3006,11 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       {/* 1. CANLI DİYALOGLAR (CONVERSATIONS) PANELİ */}
       {/* ========================================================================= */}
       {hubTab === 'conversations' && (
-        <Card className="w-full max-w-full h-[calc(100dvh-16rem)] max-h-[calc(100dvh-8rem)] min-h-[320px] md:h-[calc(100dvh-16.5rem)] md:min-h-[480px] md:max-h-[calc(100dvh-15.5rem)] p-0 flex flex-col md:flex-row overflow-hidden border border-slate-200/80 dark:border-white/[0.08] shadow-sm" style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}>
+        <Card className={`w-full max-w-full p-0 flex flex-col md:flex-row overflow-hidden border-0 md:border border-slate-200/80 dark:border-white/[0.08] shadow-sm rounded-none md:rounded-2xl ${
+          selectedConv
+            ? 'h-[calc(100dvh-4.25rem)] md:h-[calc(100dvh-16.5rem)]'
+            : 'h-[calc(100dvh-12rem)] md:h-[calc(100dvh-16.5rem)]'
+        } min-h-[320px] md:min-h-[480px] md:max-h-[calc(100dvh-15.5rem)]`} style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}>
           {/* Faz 14 — QR sonrasi senkron kapisi (WhatsApp Web paritesi): ilk
               senkron surerken sohbet listesi ve sohbet paneli HIC render
               EDILMEZ. Boylece bir sohbete tiklamak "o an indirme" yoluna
@@ -3165,7 +3173,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
               container her secimde AYNI genislikte kalir; `min-w-0` +
               `overflow-hidden` yatay buyumeyi engeller ve secim yeni bir pane
               EKLEMEZ, yalnizca icerigi degistirir. */}
-          <div className={`flex-1 w-0 min-w-0 overflow-hidden flex flex-col h-full bg-white dark:bg-[#181C28] ${selectedConv ? 'flex' : 'hidden md:flex'}`}>
+          <div className={`flex-1 w-full md:w-0 min-w-0 overflow-hidden flex flex-col h-full bg-white dark:bg-[#181C28] ${selectedConv ? 'flex' : 'hidden md:flex'}`}>
             {selectedConv ? (
               <div
                 className="flex-1 w-full h-full flex overflow-hidden animate-in fade-in-50 duration-150 ease-out"
@@ -3179,11 +3187,11 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                       <button
                         type="button"
                         onClick={() => setSelectedConv(null)}
-                        className="md:hidden p-1.5 -ml-1 rounded-lg text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 hover:bg-slate-200/60 dark:hover:bg-white/[0.08] transition-all cursor-pointer shrink-0"
+                        className="md:hidden p-2 -ml-1.5 rounded-xl text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white hover:bg-slate-200/80 dark:hover:bg-white/[0.1] active:scale-95 transition-all cursor-pointer shrink-0"
                         aria-label={t('common.back')}
                         title={t('common.back')}
                       >
-                        <ArrowLeft className="w-5 h-5" />
+                        <ArrowLeft className="w-5 h-5 stroke-[2.5]" />
                       </button>
 
                       {(() => {

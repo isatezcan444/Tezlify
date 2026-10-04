@@ -796,7 +796,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
             <div
               className={`absolute top-1 ${
                 isInbound ? '-right-8' : '-left-8'
-              } z-10 opacity-0 group-hover:opacity-100 transition-opacity`}
+              } z-10 opacity-0 sm:group-hover:opacity-100 transition-opacity`}
             >
               <button
                 type="button"
@@ -834,7 +834,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
               className={`w-5 h-5 rounded-full flex items-center justify-center transition-all cursor-pointer ${
                 isMenuOpen
                   ? 'opacity-100 bg-black/15 dark:bg-white/15 text-slate-900 dark:text-white'
-                  : 'opacity-0 group-hover:opacity-100 text-[#667781] dark:text-[#8696a0] hover:text-slate-900 dark:hover:text-white hover:bg-black/10 dark:hover:bg-white/10'
+                  : 'opacity-70 sm:opacity-0 sm:group-hover:opacity-100 text-[#667781] dark:text-[#8696a0] hover:text-slate-900 dark:hover:text-white hover:bg-black/10 dark:hover:bg-white/10'
               }`}
             >
               <ChevronDown className="w-3.5 h-3.5 stroke-[2.5]" />

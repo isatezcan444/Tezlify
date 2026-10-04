@@ -77,9 +77,9 @@ export const SearchInput = React.forwardRef<HTMLInputElement, SearchInputProps>(
     };
 
     const sizeClasses = {
-      sm: 'h-8 text-[11px] pl-8 pr-7 font-medium',
-      md: 'h-11 text-xs pl-10 pr-9 font-medium',
-      lg: 'h-11 text-xs pl-10 pr-9 font-medium',
+      sm: 'h-8 text-base sm:text-[11px] pl-8 pr-7 font-medium',
+      md: 'h-11 text-base sm:text-xs pl-10 pr-9 font-medium',
+      lg: 'h-11 text-base sm:text-xs pl-10 pr-9 font-medium',
     };
 
     const iconSizes = {
