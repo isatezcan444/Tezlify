@@ -61,7 +61,7 @@
 # client-wide change and is not part of fixing a dead domain. A public
 # certificate needs a real A record; ACME cannot be satisfied for a name
 # that only resolves through sslip.io.
-api.130.162.247.20.sslip.io, 130.162.247.20.sslip.io {
+app.130.162.247.20.sslip.io, api.130.162.247.20.sslip.io, 130.162.247.20.sslip.io {
     import security_headers
     encode zstd gzip
 
