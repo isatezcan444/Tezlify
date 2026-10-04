@@ -14,6 +14,7 @@ import {
   makeCacheableSignalKeyStore,
   fetchLatestBaileysVersion,
   Browsers,
+  BufferJSON,
 } from '@whiskeysockets/baileys';
 import { createBaileysLogger, logger as defaultLogger } from '../utils/baileys-logger.js';
 import { lookupRawMessage } from '../messages/message-store.js';
@@ -86,15 +87,47 @@ export async function createSocketForSession({
     ? null
     : safeReadEncrypted(path.join(sessionDir, 'auth.json'), aesKey, logger);
   const authLoadStarted = performance.now();
-  const { state, saveCreds } = (authRepository && !session.ephemeral)
-    ? await authRepository.createAuthState(id)
+  const authLoaded = (authRepository && !session.ephemeral)
+    ? await authRepository.createAuthState(id, sessionDir)
     : await useMultiFileAuthState(sessionDir);
+  const { state } = authLoaded;
+  const rawSaveCreds = authLoaded.saveCreds;
+
+  const diskSaveCreds = async () => {
+    try {
+      if (typeof rawSaveCreds === 'function') {
+        await rawSaveCreds();
+      } else if (state.creds) {
+        fs.writeFileSync(path.join(sessionDir, 'creds.json'), JSON.stringify(state.creds, BufferJSON.replacer));
+      }
+    } catch { /* best-effort disk write */ }
+  };
+
+  const saveCreds = async () => {
+    if (authRepository && !session.ephemeral) {
+      try {
+        await authRepository.saveCredentials(id, state.creds);
+      } catch (err) {
+        logger.warn({ err: err?.message, session_ref: sessionRef(id) }, 'Failed to persist credentials to PostgreSQL');
+      }
+      await diskSaveCreds();
+    } else {
+      await diskSaveCreds();
+    }
+  };
   latency('auth_state_load_ms', authLoadStarted, id);
 
   if (state?.keys?.set) {
     const origKeysSet = state.keys.set.bind(state.keys);
     state.keys.set = async (data) => {
       await origKeysSet(data);
+      if (authRepository && !session.ephemeral && typeof authRepository.setSignalKeys === 'function') {
+        try {
+          await authRepository.setSignalKeys(id, data);
+        } catch (dbErr) {
+          logger.warn({ err: dbErr?.message, session_ref: sessionRef(id) }, 'Failed to mirror signal keys to PostgreSQL');
+        }
+      }
       try {
         const lidData = data && data['lid-mapping'];
         if (lidData && typeof lidData === 'object') {
@@ -224,6 +257,9 @@ export async function createSocketForSession({
   const passThrough = sock.ev.emit.bind(sock.ev);
   sock.ev.emit = (event, data) => {
     if (event === 'creds.update' && data) {
+      if (data.myAppStateKeyId && state.creds) {
+        state.creds.myAppStateKeyId = data.myAppStateKeyId;
+      }
       if (data.me?.name && state.creds?.me) {
         state.creds.me.name = data.me.name;
       }

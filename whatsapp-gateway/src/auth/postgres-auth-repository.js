@@ -1,4 +1,6 @@
-import { BufferJSON, initAuthCreds } from '@whiskeysockets/baileys';
+import { BufferJSON, initAuthCreds, proto } from '@whiskeysockets/baileys';
+import fs from 'fs';
+import path from 'path';
 import pg from 'pg';
 import { createEncryptedCodec } from './encrypted-codec.js';
 import { attachPoolErrorHandler } from '../database/postgres-pool.js';
@@ -115,7 +117,7 @@ export function createPostgresAuthRepository({
       );
     },
 
-    async getSignalKeys(sessionId, keyType, ids) {
+    async getSignalKeys(sessionId, keyType, ids, sessionDir = null) {
       if (!ids.length) return {};
       const hashesById = new Map(ids.map((id) => [id, codec.blindIndex(`${keyType}:${id}`)]));
       const idsByHash = new Map([...hashesById].map(([id, hash]) => [hash, id]));
@@ -129,11 +131,41 @@ export function createPostgresAuthRepository({
       for (const row of result.rows) {
         const id = idsByHash.get(row.key_hash);
         if (!id) continue;
-        values[id] = parse(codec.decrypt(
+        let value = parse(codec.decrypt(
           row,
           context(['signal-key', sessionId, keyType, row.key_hash]),
         ));
+        if (keyType === 'app-state-sync-key' && value) {
+          value = proto.Message.AppStateSyncKeyData.fromObject(value);
+        }
+        values[id] = value;
       }
+
+      if (sessionDir && fs.existsSync(sessionDir)) {
+        const missingIds = ids.filter((id) => values[id] === undefined);
+        if (missingIds.length > 0) {
+          const backfill = {};
+          for (const id of missingIds) {
+            const fileName = `${keyType}-${id}.json`.replace(/\//g, '__').replace(/:/g, '-');
+            const filePath = path.join(sessionDir, fileName);
+            if (fs.existsSync(filePath)) {
+              try {
+                const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'), BufferJSON.reviver);
+                if (raw) {
+                  values[id] = keyType === 'app-state-sync-key'
+                    ? proto.Message.AppStateSyncKeyData.fromObject(raw)
+                    : raw;
+                  backfill[id] = raw;
+                }
+              } catch { /* best-effort disk read */ }
+            }
+          }
+          if (Object.keys(backfill).length > 0) {
+            void repository.setSignalKeys(sessionId, { [keyType]: backfill }).catch(() => {});
+          }
+        }
+      }
+
       return values;
     },
 
@@ -216,13 +248,82 @@ export function createPostgresAuthRepository({
       }
     },
 
-    async createAuthState(sessionId) {
-      const creds = (await repository.loadCredentials(sessionId)) || initAuthCreds();
+    async syncFromFilesystem(sessionId, sessionDir) {
+      if (!sessionDir || !fs.existsSync(sessionDir)) return;
+      try {
+        const credsFile = path.join(sessionDir, 'creds.json');
+        if (fs.existsSync(credsFile)) {
+          const fileCreds = JSON.parse(fs.readFileSync(credsFile, 'utf8'), BufferJSON.reviver);
+          if (fileCreds) {
+            let dbCreds = await repository.loadCredentials(sessionId);
+            let needsCredsSave = false;
+            if (!dbCreds) {
+              dbCreds = fileCreds;
+              needsCredsSave = true;
+            } else if (!dbCreds.myAppStateKeyId && fileCreds.myAppStateKeyId) {
+              dbCreds.myAppStateKeyId = fileCreds.myAppStateKeyId;
+              needsCredsSave = true;
+            }
+            if (needsCredsSave) {
+              await repository.saveCredentials(sessionId, dbCreds);
+            }
+          }
+        }
+
+        const files = fs.readdirSync(sessionDir);
+        const categories = {};
+        for (const file of files) {
+          if (!file.endsWith('.json') || file === 'creds.json' || file === 'auth.json' || file === 'keys.json' || file.startsWith('app-state-sync-version-')) {
+            continue;
+          }
+          const dashIdx = file.indexOf('-');
+          if (dashIdx <= 0) continue;
+          const keyType = file.slice(0, dashIdx);
+          const id = file.slice(dashIdx + 1, -5).replace(/__/g, '/').replace(/-/g, ':');
+          if (!keyType || !id) continue;
+          try {
+            const raw = JSON.parse(fs.readFileSync(path.join(sessionDir, file), 'utf8'), BufferJSON.reviver);
+            if (raw) {
+              if (!categories[keyType]) categories[keyType] = {};
+              categories[keyType][id] = raw;
+            }
+          } catch { /* skip corrupted file */ }
+        }
+
+        for (const [keyType, entries] of Object.entries(categories)) {
+          const allIds = Object.keys(entries);
+          for (let i = 0; i < allIds.length; i += 50) {
+            const batchIds = allIds.slice(i, i + 50);
+            const batchEntries = {};
+            for (const bid of batchIds) batchEntries[bid] = entries[bid];
+            await repository.setSignalKeys(sessionId, { [keyType]: batchEntries });
+          }
+        }
+      } catch {
+        // non-fatal best effort sync
+      }
+    },
+
+    async createAuthState(sessionId, sessionDir = null) {
+      let creds = (await repository.loadCredentials(sessionId)) || initAuthCreds();
+      if (sessionDir && fs.existsSync(sessionDir)) {
+        const credsFile = path.join(sessionDir, 'creds.json');
+        if (fs.existsSync(credsFile)) {
+          try {
+            const fileCreds = JSON.parse(fs.readFileSync(credsFile, 'utf8'), BufferJSON.reviver);
+            if (!creds.myAppStateKeyId && fileCreds?.myAppStateKeyId) {
+              creds.myAppStateKeyId = fileCreds.myAppStateKeyId;
+              await repository.saveCredentials(sessionId, creds);
+            }
+          } catch { /* best effort */ }
+        }
+        void repository.syncFromFilesystem(sessionId, sessionDir).catch(() => {});
+      }
       return {
         state: {
           creds,
           keys: {
-            get: (type, ids) => repository.getSignalKeys(sessionId, type, ids),
+            get: (type, ids) => repository.getSignalKeys(sessionId, type, ids, sessionDir),
             set: (data) => repository.setSignalKeys(sessionId, data),
           },
         },

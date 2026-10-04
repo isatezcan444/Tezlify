@@ -1429,17 +1429,58 @@ export function createSessionManager({
         break;
       }
 
+      // App-state key self-healing: Baileys requires `authState.creds.myAppStateKeyId`
+      // to sign the `deleteChatAction` patch on `regular_high`. If missing from in-memory
+      // credentials, recover it before chatModify throws.
+      if (!session.sock?.authState?.creds?.myAppStateKeyId) {
+        const recoveredKeyId = await this._recoverAppStateKeyId(session);
+        if (recoveredKeyId && session.sock?.authState?.creds) {
+          session.sock.authState.creds.myAppStateKeyId = recoveredKeyId;
+          try {
+            if (typeof session.saveCreds === 'function') await session.saveCreds();
+          } catch { /* best-effort */ }
+          logger.info(
+            { session_ref: sessionRef(sessionId), myAppStateKeyId: recoveredKeyId },
+            'Self-healed missing myAppStateKeyId before deleteConversationRemote'
+          );
+        }
+      }
+
       let providerOk = true;
       let providerError = null;
       try {
         await session.sock.chatModify({ delete: true, lastMessages }, key);
       } catch (err) {
-        providerOk = false;
-        providerError = err?.message || String(err);
-        logger.warn(
-          { err: providerError, session_ref: sessionRef(sessionId) },
-          'Delete conversation provider error'
-        );
+        const errMsg = String(err?.message || err);
+        if (errMsg.includes('App state key not present') || errMsg.includes('myAppStateKey')) {
+          const recovered = await this._recoverAppStateKeyId(session);
+          if (recovered && session.sock?.authState?.creds) {
+            session.sock.authState.creds.myAppStateKeyId = recovered;
+            try {
+              if (typeof session.saveCreds === 'function') await session.saveCreds();
+            } catch { /* best-effort */ }
+            try {
+              await session.sock.chatModify({ delete: true, lastMessages }, key);
+              providerOk = true;
+              providerError = null;
+            } catch (retryErr) {
+              providerOk = false;
+              providerError = retryErr?.message || String(retryErr);
+            }
+          } else {
+            providerOk = false;
+            providerError = errMsg;
+          }
+        } else {
+          providerOk = false;
+          providerError = errMsg;
+        }
+        if (!providerOk) {
+          logger.warn(
+            { err: providerError, session_ref: sessionRef(sessionId) },
+            'Delete conversation provider error'
+          );
+        }
       }
 
       // Yerel kopya YALNIZCA saglayici kabul ettiginde dusurulur. Birakilirsa
@@ -1457,6 +1498,35 @@ export function createSessionManager({
       return providerOk
         ? { success: true, remote_deleted: true, last_messages: lastMessages.length }
         : { success: false, error: providerError };
+    },
+
+    async _recoverAppStateKeyId(session) {
+      if (!session) return null;
+      const sessionDir = getSessionDir(sessionsDir, session.id);
+      if (sessionDir && fs.existsSync(sessionDir)) {
+        // 1. Check creds.json on disk
+        const credsFile = path.join(sessionDir, 'creds.json');
+        if (fs.existsSync(credsFile)) {
+          try {
+            const fileCreds = JSON.parse(fs.readFileSync(credsFile, 'utf8'));
+            if (fileCreds?.myAppStateKeyId) return fileCreds.myAppStateKeyId;
+          } catch { /* best effort */ }
+        }
+        // 2. Check newest app-state-sync-key-*.json on disk
+        try {
+          const files = fs.readdirSync(sessionDir)
+            .filter((f) => f.startsWith('app-state-sync-key-') && f.endsWith('.json'))
+            .map((f) => ({ name: f, mtime: fs.statSync(path.join(sessionDir, f)).mtimeMs }))
+            .sort((a, b) => b.mtime - a.mtime);
+          if (files.length > 0) {
+            const match = files[0].name.match(/^app-state-sync-key-(.+)\.json$/);
+            if (match && match[1]) {
+              return match[1].replace(/__/g, '/').replace(/-/g, ':');
+            }
+          }
+        } catch { /* best effort */ }
+      }
+      return null;
     },
 
     // -----------------------------------------------------------------------

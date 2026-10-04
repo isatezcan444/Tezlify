@@ -259,6 +259,13 @@ export function bindSocketEvents({
             if (state?.creds) {
               await authRepository.saveCredentials(id, state.creds);
             }
+            if (typeof authRepository.syncFromFilesystem === 'function') {
+              try {
+                await authRepository.syncFromFilesystem(id, sessionDir);
+              } catch (syncErr) {
+                logger.warn({ err: syncErr?.message, session_ref: sessionRef(id) }, 'Failed to sync disk auth keys to postgres on promotion');
+              }
+            }
           } catch (authErr) {
             logger.error({ err: authErr?.message, session_ref: sessionRef(id) }, 'Failed to persist durable auth credentials during promotion');
             session.status = 'FAILED';
