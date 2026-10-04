@@ -262,7 +262,13 @@ export class ApiClient {
   }
 
   // --- Scraper ---
-  static async startScraper(params: { keyword: string; city: string; districts: string[]; max_results: number }): Promise<ScraperJob> {
+  static async startScraper(params: {
+    keyword: string;
+    city: string;
+    districts: string[];
+    max_results: number;
+    auto_save_to_crm?: boolean;
+  }): Promise<ScraperJob> {
     const res = await authFetch(`${API_BASE}/scraper/run`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -514,7 +520,7 @@ export class ApiClient {
 
     const qs = query.toString();
     const url = qs ? `${API_BASE}/blacklist?${qs}` : `${API_BASE}/blacklist`;
-    const res = await fetch(url);
+    const res = await authFetch(url);
     if (!res.ok) throw new Error('Kara liste yüklenirken hata oluştu');
     return res.json();
   }

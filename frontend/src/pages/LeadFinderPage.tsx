@@ -49,6 +49,7 @@ export const LeadFinderPage: React.FC<LeadFinderPageProps> = ({ onNavigate, onRe
   const [selectedCity, setSelectedCity] = useState('');
   const [selectedDistricts, setSelectedDistricts] = useState<string[]>([]);
   const [maxResults, setMaxResults] = useState<number>(0); // 0 means Unlimited
+  const [autoSaveToCrm, setAutoSaveToCrm] = useState<boolean>(true);
   const [isScraping, setIsScraping] = useState(false);
   const [logs, setLogs] = useState<string[]>([]);
   const [discoveredLeads, setDiscoveredLeads] = useState<any[]>([]);
@@ -202,6 +203,7 @@ export const LeadFinderPage: React.FC<LeadFinderPageProps> = ({ onNavigate, onRe
         city: selectedCity,
         districts: selectedDistricts,
         max_results: maxResults,
+        auto_save_to_crm: autoSaveToCrm,
       });
 
       activeJobIdRef.current = job.id;
@@ -229,6 +231,9 @@ export const LeadFinderPage: React.FC<LeadFinderPageProps> = ({ onNavigate, onRe
           ...prev,
           `[${new Date().toLocaleTimeString()}] ${t('leadFinder.stream.completed', { found: totalFound })}`,
         ]);
+        if (autoSaveToCrm && totalFound > 0) {
+          toast.success(t('leadFinder.autoSaveSuccess', { count: totalFound }));
+        }
         onRefreshStats();
         // Prefer the job's own exact result set (with CRM ids); the paged
         // CRM fetch below is only a degraded fallback for the polling path.
@@ -471,8 +476,26 @@ export const LeadFinderPage: React.FC<LeadFinderPageProps> = ({ onNavigate, onRe
             )}
           </div>
 
-          <div className="text-[11px] text-slate-500 dark:text-[#7E7F96] shrink-0">
-            {t('leadFinder.searchScope')}: <strong className="text-slate-800 dark:text-white font-bold">{maxResults === 0 ? t('common.all') : `${maxResults} ${t('common.entries')}`}</strong>
+          <div className="flex items-center space-x-3.5 flex-wrap">
+            <label
+              className="flex items-center space-x-2 cursor-pointer select-none group"
+              title={t('leadFinder.autoSaveToCrmTooltip')}
+            >
+              <input
+                type="checkbox"
+                checked={autoSaveToCrm}
+                onChange={(e) => setAutoSaveToCrm(e.target.checked)}
+                disabled={isScraping}
+                className="w-4 h-4 rounded text-[#7367F0] focus:ring-[#7367F0]/30 border-slate-300 dark:border-white/20 bg-slate-100 dark:bg-white/5 cursor-pointer accent-[#7367F0]"
+              />
+              <span className="text-xs font-semibold text-slate-700 dark:text-slate-200 group-hover:text-[#7367F0] transition-colors">
+                {t('leadFinder.autoSaveToCrm')}
+              </span>
+            </label>
+
+            <div className="text-[11px] text-slate-500 dark:text-[#7E7F96] shrink-0 border-l border-slate-200 dark:border-white/10 pl-3">
+              {t('leadFinder.searchScope')}: <strong className="text-slate-800 dark:text-white font-bold">{maxResults === 0 ? t('common.all') : `${maxResults} ${t('common.entries')}`}</strong>
+            </div>
           </div>
         </div>
       </Card>

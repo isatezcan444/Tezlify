@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime
 from typing import Optional, Tuple
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -7,26 +8,20 @@ from sqlalchemy import select
 from backend.app.models.lead import Lead, LeadStatus
 from backend.app.models.campaign import Campaign
 from backend.app.models.blacklist import Blacklist
+from backend.app.models.message_log import MessageLog, MessageStatus
 from backend.app.services.spintax_service import SpintaxService
 from backend.app.services.antiban_policy import AntibanPolicy, gaussian_jitter_seconds
 
 logger = logging.getLogger(__name__)
 
-# WhatsApp gönderim altyapısı tamamen kaldırıldığı için kampanya gönderim
-# adımı hiçbir dış servise ulaşmadan açık ve dürüst bir sonuç döndürür.
-NO_DISPATCH_BACKEND_MESSAGE = (
-    "WhatsApp gönderim altyapısı bulunmuyor; mesaj gönderilemedi."
-)
-
 
 class OutreachManager:
     """
-    Coordinates safe, humanized, anti-ban message dispatch preparation.
+    Coordinates safe, humanized, anti-ban message dispatch preparation and live dispatch.
 
-    The messaging pipeline (lead validation, blacklist, working hours,
-    spintax rendering, jitter) is preserved; the actual WhatsApp dispatch
-    backend has been removed, so dispatch always resolves to an explicit,
-    truthful failure instead of pretending a message was sent.
+    The messaging pipeline validates leads, checks blacklist, verifies working hours,
+    renders personalized spintax, and dispatches via the live Baileys WhatsApp Gateway.
+    All dispatch operations fail-closed on gateway error (truthfulness invariant).
     """
 
     @classmethod
@@ -113,12 +108,65 @@ class OutreachManager:
         }
         rendered_msg = SpintaxService.render_template(campaign.message_template, lead_dict)
 
-        # 6. Calculate Humanized Jitter Delay (informational; no send follows)
+        # 6. Calculate Humanized Jitter Delay
         delay_sec = policy.jitter_seconds()
 
-        # 7. Dispatch outcome: no WhatsApp backend exists in this build.
-        logger.info(
-            "[OutreachManager] Lead %d blocked from dispatch: %s (rendered %d chars, jitter %ds)",
-            lead.id, NO_DISPATCH_BACKEND_MESSAGE, len(rendered_msg), delay_sec,
-        )
-        return False, NO_DISPATCH_BACKEND_MESSAGE, None
+        # 7. Dispatch via live WhatsApp Gateway
+        user_id_str = str(campaign.user_id) if campaign.user_id else None
+        if not user_id_str:
+            return False, "Kampanya sahibi (user_id) bulunamadı; gönderim yapılamaz.", None
+
+        try:
+            from backend.app.services import whatsapp_service
+            # Dispatch message live through connected Baileys session
+            result = await whatsapp_service.start_conversation(
+                db=db,
+                user_id=user_id_str,
+                phone=lead.phone_e164,
+                name=lead.name,
+                message=rendered_msg,
+                session_id=session_id,
+            )
+
+            # Record in MessageLog
+            msg_log = MessageLog(
+                user_id=campaign.user_id,
+                lead_id=lead.id,
+                campaign_id=campaign.id,
+                target_phone=lead.phone_e164,
+                rendered_message=rendered_msg,
+                status=MessageStatus.SENT,
+                sent_at=datetime.utcnow(),
+                delay_applied_seconds=delay_sec,
+            )
+            db.add(msg_log)
+
+            lead.status = LeadStatus.CONTACTED
+            campaign.sent_count = (campaign.sent_count or 0) + 1
+            await db.commit()
+            await db.refresh(msg_log)
+
+            logger.info(
+                f"[OutreachManager] Lead {lead.id} ({lead.phone_e164}) outreach SUCCESS "
+                f"via WhatsApp Gateway (log_id={msg_log.id})"
+            )
+            return True, "Mesaj başarıyla iletildi", msg_log.id
+
+        except Exception as exc:
+            logger.warning(
+                f"[OutreachManager] Lead {lead.id} ({lead.phone_e164}) outreach FAILED: {exc}"
+            )
+            msg_log = MessageLog(
+                user_id=campaign.user_id,
+                lead_id=lead.id,
+                campaign_id=campaign.id,
+                target_phone=lead.phone_e164,
+                rendered_message=rendered_msg,
+                status=MessageStatus.FAILED,
+                error_reason=str(exc),
+                delay_applied_seconds=delay_sec,
+            )
+            db.add(msg_log)
+            campaign.failed_count = (campaign.failed_count or 0) + 1
+            await db.commit()
+            return False, f"WhatsApp gönderim hatası: {str(exc)}", None

@@ -21,8 +21,10 @@ import {
   UserX,
   Users,
   ArrowLeft,
+  Plus,
 } from 'lucide-react';
 import { Conversation, Message } from '../../../types';
+import { ApiClient } from '../../../api/client';
 import { useI18n } from '../../../context/I18nContext';
 import { useToast } from '../../../context/ToastContext';
 import { Avatar } from '../../../components/ui/Avatar';
@@ -101,6 +103,29 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
   const [docViewerSrc, setDocViewerSrc] = useState<string | null>(null);
   const [docViewerFilename, setDocViewerFilename] = useState<string | null>(null);
   const [docViewerMime, setDocViewerMime] = useState<string | null>(null);
+  const [isAddingLead, setIsAddingLead] = useState(false);
+
+  const handleAddToCrm = async () => {
+    if (!cleanPhone || isAddingLead) return;
+    setIsAddingLead(true);
+    try {
+      const created = await ApiClient.createLead({
+        name: displayName || cleanPhone,
+        phone: cleanPhone,
+        phone_e164: cleanPhone,
+        is_whatsapp_eligible: true,
+        status: 'NEW' as any,
+      });
+      toast.success(t('whatsapp.addedToCrmSuccess'));
+      if (onOpenLead && created?.id) {
+        onOpenLead(created.id);
+      }
+    } catch (err: any) {
+      toast.error(err.message || 'CRM adayı eklenemedi');
+    } finally {
+      setIsAddingLead(false);
+    }
+  };
 
   // Close on Escape key
   useEffect(() => {
@@ -356,8 +381,8 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
             </p>
           ) : null}
 
-          {/* CRM Profile Shortcut (if linked to a Lead) */}
-          {conversation.lead_id && onOpenLead && (
+          {/* CRM Profile Shortcut (if linked to a Lead) or Add to CRM */}
+          {conversation.lead_id && onOpenLead ? (
             <button
               type="button"
               onClick={() => onOpenLead(conversation.lead_id!)}
@@ -367,7 +392,17 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
               <Building2 className="w-3.5 h-3.5" />
               <span>{t('whatsapp.viewCrmLead')}</span>
             </button>
-          )}
+          ) : !isGroup && cleanPhone ? (
+            <button
+              type="button"
+              onClick={handleAddToCrm}
+              disabled={isAddingLead}
+              className="mt-3.5 inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-xl bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 font-bold text-xs transition-colors cursor-pointer border border-emerald-500/20"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>{isAddingLead ? t('common.loading') : t('whatsapp.addToCrm')}</span>
+            </button>
+          ) : null}
 
           {/* Action Row */}
           <div className="mt-4 flex items-center justify-center gap-3 w-full pt-3 border-t border-slate-100 dark:border-white/[0.06]">

@@ -15,6 +15,7 @@ class ScraperRunRequest(BaseModel):
     districts: List[str] = []
     max_results: int = Field(default=0, ge=0, le=10000)
     source: str = "GOOGLE_MAPS"
+    auto_save_to_crm: Optional[bool] = False
 
 
 class ScraperJobResponse(BaseModel):

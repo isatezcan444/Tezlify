@@ -28,12 +28,40 @@ active_tasks: dict[int, asyncio.Task] = {}
 scraper_semaphore = asyncio.Semaphore(settings.SCRAPER_MAX_CONCURRENT_TASKS)
 
 
+def lead_to_dict(l: Lead) -> Dict[str, Any]:
+    """Serializes a persisted Lead for discovery/save responses (always carries id)."""
+    return {
+        "id": l.id,
+        "name": l.name,
+        "category": l.category,
+        "entity_type": l.entity_type,
+        "phone": l.phone,
+        "phone_e164": l.phone_e164,
+        "is_mobile": l.is_mobile,
+        "is_whatsapp_eligible": l.is_whatsapp_eligible,
+        "address": l.address,
+        "city": l.city,
+        "district": l.district,
+        "latitude": l.latitude,
+        "longitude": l.longitude,
+        "website": l.website,
+        "rating": l.rating,
+        "reviews_count": l.reviews_count,
+        "is_verified": l.is_verified,
+        "place_id": l.place_id,
+        "maps_url": (l.custom_data or {}).get("maps_url"),
+        "status": l.status.value if hasattr(l.status, 'value') else str(l.status),
+        "created_at": str(l.created_at)
+    }
+
+
 async def run_scraper_task(
     job_id: int,
     keyword: str,
     city: str,
     districts: List[str],
     max_results: int,
+    auto_save_to_crm: bool = False,
 ):
     """Background execution of scraper with structured location snapshot and WebSocket dispatch."""
     start_time = time.time()
@@ -98,32 +126,55 @@ async def run_scraper_task(
                     progress_callback=on_progress,
                 )
 
-            # Discovery-only: nothing is written to CRM here. The user reviews
-            # the live results and explicitly saves a selection (or all) via
-            # POST /scraper/jobs/{job_id}/save. Persisted counts stay zero
-            # until that happens.
+            persisted_leads = []
+            new_count = 0
+            updated_count = 0
+
+            if auto_save_to_crm and raw_leads:
+                try:
+                    persisted_leads, new_count, updated_count = await LeadIngestService.ingest_leads(
+                        db=db,
+                        raw_leads=raw_leads,
+                        source="GOOGLE_MAPS",
+                        search_keyword=keyword,
+                        search_location=job.location,
+                        user_id=job.user_id,
+                    )
+                    profile = await db.get(Profile, job.user_id)
+                    if profile:
+                        profile.leads_used_this_month = (profile.leads_used_this_month or 0) + new_count
+                    logger.info(
+                        f"[SEARCH_JOB_AUTO_INGEST] job_id={job_id} auto-ingested={len(persisted_leads)} "
+                        f"new={new_count} updated={updated_count}"
+                    )
+                except Exception as ex:
+                    logger.error(f"[SEARCH_JOB_AUTO_INGEST_ERR] job_id={job_id}: {ex}", exc_info=True)
+
             job.status = ScraperJobStatus.COMPLETED
             job.total_found = len(raw_leads)
             job.total_valid_phones = sum(1 for r in raw_leads if r.get("phone_e164"))
-            job.total_new_leads = 0
+            job.total_new_leads = new_count
             job.completed_at = datetime.utcnow()
             job.duration_seconds = int(time.time() - start_time)
 
             await db.commit()
+
+            leads_to_broadcast = [lead_to_dict(l) for l in persisted_leads] if persisted_leads else raw_leads
 
             await ws_manager.broadcast({
                 "event": "scraper_completed",
                 "job_id": job_id,
                 "user_id": owner,
                 "total_found": len(raw_leads),
-                "total_new_leads": 0,
-                "leads": raw_leads,
+                "total_new_leads": new_count,
+                "leads": leads_to_broadcast,
+                "auto_saved": auto_save_to_crm,
                 "metrics": latest_metrics
             })
 
             logger.info(
                 f"[SEARCH_JOB_DONE] job_id={job_id} in {job.duration_seconds}s "
-                f"discovered={len(raw_leads)} (awaiting explicit user save)"
+                f"discovered={len(raw_leads)} (auto_saved={auto_save_to_crm}, new={new_count})"
             )
 
         except asyncio.CancelledError:
@@ -215,38 +266,12 @@ async def start_scraper(
             city=city,
             districts=districts,
             max_results=req.max_results,
+            auto_save_to_crm=bool(req.auto_save_to_crm),
         )
     )
     active_tasks[job.id] = task
 
     return job
-
-
-def lead_to_dict(l: Lead) -> Dict[str, Any]:
-    """Serializes a persisted Lead for discovery/save responses (always carries id)."""
-    return {
-        "id": l.id,
-        "name": l.name,
-        "category": l.category,
-        "entity_type": l.entity_type,
-        "phone": l.phone,
-        "phone_e164": l.phone_e164,
-        "is_mobile": l.is_mobile,
-        "is_whatsapp_eligible": l.is_whatsapp_eligible,
-        "address": l.address,
-        "city": l.city,
-        "district": l.district,
-        "latitude": l.latitude,
-        "longitude": l.longitude,
-        "website": l.website,
-        "rating": l.rating,
-        "reviews_count": l.reviews_count,
-        "is_verified": l.is_verified,
-        "place_id": l.place_id,
-        "maps_url": (l.custom_data or {}).get("maps_url"),
-        "status": l.status.value if hasattr(l.status, 'value') else str(l.status),
-        "created_at": str(l.created_at)
-    }
 
 
 @router.post("/jobs/{job_id}/save", response_model=ScraperSaveResponse)

@@ -9,6 +9,7 @@ from backend.app.core.auth import AuthUser, get_current_user, get_user_filter
 from backend.app.models.lead import Lead, LeadStatus
 from backend.app.models.campaign import Campaign, CampaignStatus
 from backend.app.models.message_log import MessageLog, MessageStatus
+from backend.app.models.whatsapp_session import WhatsAppSession, SessionStatus
 from backend.app.schemas.analytics import DashboardStatsResponse
 
 router = APIRouter()
@@ -22,6 +23,7 @@ async def get_dashboard_stats(
     lead_filter = get_user_filter(Lead.user_id, current_user.id)
     camp_filter = get_user_filter(Campaign.user_id, current_user.id)
     msg_filter = get_user_filter(MessageLog.user_id, current_user.id)
+    session_filter = get_user_filter(WhatsAppSession.user_id, current_user.id)
 
     # 1 & 2. Consolidated Leads by Status & WhatsApp Eligible (single aggregation scan)
     leads_agg_res = await db.execute(
@@ -62,9 +64,15 @@ async def get_dashboard_stats(
     )
     total_campaigns, active_campaigns = camp_counts_res.one()
 
-    # 6. Connected WhatsApp Sessions: WhatsApp backend removed — always 0.
-    #    Field kept for dashboard contract compatibility.
-    connected_sessions = 0
+    # 6. Connected WhatsApp Sessions (Live Baileys sessions for current user)
+    wa_sessions_res = await db.execute(
+        select(func.count(WhatsAppSession.id)).where(
+            session_filter,
+            WhatsAppSession.status == SessionStatus.CONNECTED,
+            WhatsAppSession.is_active == True,
+        )
+    )
+    connected_sessions = wa_sessions_res.scalar() or 0
 
     # 7 & 8. Consolidated Messages Sent Metrics (Lifetime & Today in single scan)
     tr_now = datetime.now(ZoneInfo("Europe/Istanbul"))
