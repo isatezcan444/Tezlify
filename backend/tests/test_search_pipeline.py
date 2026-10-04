@@ -761,6 +761,28 @@ class TestOutreachGuard:
         assert {l.id for l in allowed} == {2, 4}
         assert {b["lead_id"] for b in blocked} == {1, 3}
 
+    def test_self_outreach_phone_blocked(self):
+        """Lead with phone matching sender line is blocked from campaign outreach."""
+        lead = Lead(
+            id=5,
+            name="Tezlify Self Business",
+            phone="05413749073",
+            phone_e164="+905413749073",
+            is_whatsapp_eligible=True,
+            entity_type=EntityType.BUSINESS.value,
+            verification_status=VerificationStatus.VERIFIED.value,
+            is_verified=True,
+        )
+        # Blocked when sender_phone matches
+        can_enroll, reason = OutreachGuard.can_enroll_in_campaign(lead, sender_phone="+905413749073")
+        assert can_enroll is False
+        assert "gönderici WhatsApp hattı ile aynıdır" in reason
+
+        # Allowed when sender_phone is different
+        can_enroll_diff, reason_diff = OutreachGuard.can_enroll_in_campaign(lead, sender_phone="+905321112233")
+        assert can_enroll_diff is True
+        assert reason_diff is None
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "--tb=short"])

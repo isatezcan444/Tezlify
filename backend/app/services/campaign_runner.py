@@ -140,8 +140,18 @@ class CampaignRunner:
                 res = await db.execute(stmt)
                 raw_leads = res.scalars().all()
 
+                # Resolve sender line's phone to prevent self-outreach loops
+                from backend.app.models.whatsapp_session import WhatsAppSession, SessionStatus
+                active_sess = (await db.execute(
+                    select(WhatsAppSession).where(
+                        WhatsAppSession.user_id == owner,
+                        WhatsAppSession.status == SessionStatus.CONNECTED,
+                    ).order_by(WhatsAppSession.id.desc()).limit(1)
+                )).scalars().first()
+                sender_phone = active_sess.phone_number if active_sess else None
+
                 # Enforce OutreachGuard
-                leads, blocked_leads = OutreachGuard.filter_qualified_for_outreach(raw_leads)
+                leads, blocked_leads = OutreachGuard.filter_qualified_for_outreach(raw_leads, sender_phone=sender_phone)
 
                 campaign.total_leads_target = len(leads)
                 await db.commit()

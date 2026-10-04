@@ -25,7 +25,9 @@ class OutreachGuard:
     }
 
     @classmethod
-    def can_enroll_in_campaign(cls, lead: Lead) -> Tuple[bool, Optional[str]]:
+    def can_enroll_in_campaign(
+        cls, lead: Lead, sender_phone: Optional[str] = None
+    ) -> Tuple[bool, Optional[str]]:
         """
         Evaluates a single Lead record for campaign enrollment.
         Returns (is_allowed, reason_if_blocked).
@@ -34,21 +36,29 @@ class OutreachGuard:
         if not lead.is_whatsapp_eligible:
             return False, "Telefon numarası WhatsApp uyumlu değil."
 
-        # 2. Entity Type Check: Private persons or unverified profiles are strictly blocked
+        # 2. Self-Outreach Prevention: A sender cannot target their own connected line
+        if sender_phone and lead.phone_e164:
+            from backend.app.services.whatsapp.identity import is_self_identity
+            if is_self_identity(lead.phone_e164, sender_phone):
+                return False, "Lead telefon numarası gönderici WhatsApp hattı ile aynıdır (Kendi kendine outreach yapılamaz)."
+
+        # 3. Entity Type Check: Private persons or unverified profiles are strictly blocked
         entity_type_val = lead.entity_type or EntityType.UNKNOWN.value
         if entity_type_val == EntityType.PERSON.value:
             return False, "Kayıt bir şahıs/doktor profilidir (PERSON != BUSINESS). Ticari işletme olmadan outreach yapılamaz."
         if entity_type_val not in cls.ALLOWED_ENTITY_TYPES:
             return False, f"Geçersiz işletme tipi: {entity_type_val}. Sadece doğrulanmış ticari işletmeler hedeflenebilir."
 
-        # 3. Verification Status Check
+        # 4. Verification Status Check
         if not lead.is_verified or lead.verification_status != VerificationStatus.VERIFIED.value:
             return False, "İşletme henüz bağımsız kaynaklarla doğrulanmadı (UNVERIFIED)."
 
         return True, None
 
     @classmethod
-    def filter_qualified_for_outreach(cls, leads: List[Lead]) -> Tuple[List[Lead], List[Dict[str, Any]]]:
+    def filter_qualified_for_outreach(
+        cls, leads: List[Lead], sender_phone: Optional[str] = None
+    ) -> Tuple[List[Lead], List[Dict[str, Any]]]:
         """
         Filters a list of leads, partitioning into allowed leads and blocked reports.
         """
@@ -56,7 +66,7 @@ class OutreachGuard:
         blocked: List[Dict[str, Any]] = []
 
         for lead in leads:
-            can_enroll, block_reason = cls.can_enroll_in_campaign(lead)
+            can_enroll, block_reason = cls.can_enroll_in_campaign(lead, sender_phone=sender_phone)
             if can_enroll:
                 allowed.append(lead)
             else:
