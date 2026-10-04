@@ -370,7 +370,11 @@ async def mark_conversation_read(gateway_id: str, jid: str) -> Dict[str, Any]:
     return await _request("POST", f"{_s(gateway_id)}/conversations/{jid}/read")
 
 
-async def delete_conversation_remote(gateway_id: str, jid: str) -> Dict[str, Any]:
+async def delete_conversation_remote(
+    gateway_id: str,
+    jid: str,
+    last_message_hint: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """Sohbeti WhatsApp tarafinda siler (hesabin diger cihazlarina yayilir).
 
     `DELETE` cagrisi olmasina ragmen sonuc govdesi diger veri duzlemi
@@ -378,7 +382,10 @@ async def delete_conversation_remote(gateway_id: str, jid: str) -> Dict[str, Any
     `success: false` dondurur. Cagiran taraf bunu bir istisna gibi ele almali,
     cunku 2xx tek basina "WhatsApp sildi" demek degildir.
     """
-    return await _request("DELETE", f"{_s(gateway_id)}/conversations/{jid}")
+    kwargs: Dict[str, Any] = {}
+    if last_message_hint:
+        kwargs["json"] = {"last_message": last_message_hint}
+    return await _request("DELETE", f"{_s(gateway_id)}/conversations/{jid}", **kwargs)
 
 
 async def send_typing(gateway_id: str, jid: str, typing: bool = True, duration_ms: int = 4000) -> Dict[str, Any]:

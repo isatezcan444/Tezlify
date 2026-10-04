@@ -1397,7 +1397,7 @@ export function createSessionManager({
      * `lastMessageTimestamp` SON elemandan okunur ve siralama yonu tartismali
      * oldugu icin tek eleman o belirsizligi tamamen kaldirir.
      */
-    async deleteConversationRemote(sessionId, jid) {
+    async deleteConversationRemote(sessionId, jid, lastMessageHint = null) {
       const session = this._requireConnectedSession(sessionId);
       const store = this._storeOf(session);
       const { chats, messagesByChat } = store;
@@ -1427,6 +1427,21 @@ export function createSessionManager({
         }
         lastMessages = [{ key: entryKey, messageTimestamp: ts }];
         break;
+      }
+
+      // Bellek onbellegi bossa ve cagirici (backend DB) son mesaj bilgisini ilettiyse:
+      if (lastMessages.length === 0 && lastMessageHint?.wa_message_id) {
+        const hintTs = Number(lastMessageHint.timestamp_s);
+        if (Number.isFinite(hintTs) && hintTs > 0) {
+          const fromMe = Boolean(lastMessageHint.from_me);
+          const entryKey = { remoteJid: key, id: String(lastMessageHint.wa_message_id), fromMe };
+          if (isGroup && !fromMe && lastMessageHint.participant_jid) {
+            entryKey.participant = String(lastMessageHint.participant_jid);
+          }
+          if (!isGroup || fromMe || entryKey.participant) {
+            lastMessages = [{ key: entryKey, messageTimestamp: hintTs }];
+          }
+        }
       }
 
       // App-state key self-healing: Baileys requires `authState.creds.myAppStateKeyId`

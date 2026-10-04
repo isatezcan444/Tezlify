@@ -239,7 +239,23 @@ export function createPostgresEventOutbox({
         `DELETE FROM whatsapp_private.processed_events
          WHERE processed_at < NOW() - INTERVAL '7 days'`,
       );
-      return (result.rowCount || 0) + (processed.rowCount || 0);
+      // Inaktif ve yetim kalmis (public.whatsapp_sessions ile bagi olmayan)
+      // 7 gunden eski gateway oturumlarini kademeli temizle. ON DELETE CASCADE
+      // sayesinde whatsapp_private.lid_mappings ve diger tablolardaki mukerrer kayitlar da temizlenir.
+      const orphanSessions = await pool.query(
+        `WITH doomed_sessions AS (
+           SELECT session_id FROM whatsapp_private.gateway_sessions gs
+           WHERE is_active = FALSE
+             AND created_at < NOW() - INTERVAL '7 days'
+             AND NOT EXISTS (
+               SELECT 1 FROM public.whatsapp_sessions ws WHERE ws.gateway_id = gs.session_id
+             )
+           LIMIT 50
+         )
+         DELETE FROM whatsapp_private.gateway_sessions
+         WHERE session_id IN (SELECT session_id FROM doomed_sessions)`,
+      );
+      return (result.rowCount || 0) + (processed.rowCount || 0) + (orphanSessions.rowCount || 0);
     },
 
     async close() {

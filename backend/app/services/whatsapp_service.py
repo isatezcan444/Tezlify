@@ -1496,9 +1496,41 @@ async def delete_conversation(
         logger.info("Sohbet uzaktan silinemedi (conv=%s): %s", conversation_id, exc)
     if remote_jid:
         try:
+            # WhatsApp companion eşitlemesinde telefonun sohbeti kalıcı temizleyebilmesi için
+            # en son bilinen mesaj çıpasını (wa_message_id, timestamp, participant) gateway'e ilet.
+            last_message_hint = None
+            try:
+                last_msg = await db.scalar(
+                    select(Message)
+                    .where(
+                        Message.conversation_id == conv.id,
+                        get_user_filter(Message.user_id, user_id),
+                    )
+                    .order_by(_msg_time_col().desc(), Message.id.desc())
+                    .limit(1)
+                )
+                if last_msg and last_msg.wa_message_id:
+                    msg_dt = _msg_time(last_msg)
+                    last_message_hint = {
+                        "wa_message_id": last_msg.wa_message_id,
+                        "timestamp_s": int(msg_dt.timestamp()) if msg_dt else 0,
+                        "from_me": (last_msg.direction == MessageDirection.OUTBOUND),
+                        "participant_jid": getattr(last_msg, "sender_jid", None) or getattr(last_msg, "participant_jid", None),
+                    }
+            except Exception as _hint_err:
+                logger.debug("Sohbet silme mesaj çıpası çözülemedi: %s", _hint_err)
+
             session_row = await _conversation_session(db, user_id, conv)
+            async def _invoke_remote_delete(gid: str):
+                try:
+                    return await gw.delete_conversation_remote(
+                        gid, remote_jid, last_message_hint=last_message_hint
+                    )
+                except TypeError:
+                    return await gw.delete_conversation_remote(gid, remote_jid)
+
             gateway_result = await _gateway_op_or_mark_relink(
-                db, session_row, lambda gid: gw.delete_conversation_remote(gid, remote_jid)
+                db, session_row, _invoke_remote_delete
             )
             # Tasima katmanindaki 2xx, WhatsApp'in kabul ettiginin kaniti
             # DEGILDIR; gateway saglayici reddinde `success: false` doner.

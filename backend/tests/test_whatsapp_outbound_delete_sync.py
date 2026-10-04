@@ -26,6 +26,7 @@ The contract these checks pin:
   silently swallowed,
 - a conversation with no WhatsApp identity is deletable, not a 404.
 """
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -35,6 +36,7 @@ from sqlalchemy import select, text
 from backend.app.core.database import AsyncSessionLocal
 from backend.app.models.contact import Contact
 from backend.app.models.conversation import Conversation, ConversationStatus
+from backend.app.models.message import Message, MessageDirection
 from backend.app.models.whatsapp_session import SessionStatus, WhatsAppSession
 from backend.app.schemas.whatsapp import WhatsAppConversationDeleteResult
 from backend.app.services import whatsapp_service as ws
@@ -225,3 +227,40 @@ def test_delete_result_schema_declares_remote_fields():
     ).model_dump()
     assert dumped["remote_deleted"] is False
     assert dumped["remote_error"] == "BOOM"
+
+
+@pytest.mark.asyncio
+async def test_remote_delete_forwards_last_message_hint_when_message_exists():
+    """If the conversation has messages in DB, the latest message anchor is passed as last_message_hint."""
+    conv_id = await _seed()
+    async with AsyncSessionLocal() as db:
+        msg = Message(
+            user_id=TEST_USER,
+            conversation_id=conv_id,
+            wa_message_id="WA-DELETE-ANCHOR-123",
+            direction=MessageDirection.INBOUND,
+            body="Anchor test",
+            recipient_phone="905321112233",
+            created_at=datetime.now(timezone.utc).replace(tzinfo=None),
+        )
+        db.add(msg)
+        await db.commit()
+
+    captured = {}
+
+    async def _fake_remote_with_hint(gateway_id, jid, last_message_hint=None):
+        captured["gateway_id"] = gateway_id
+        captured["jid"] = jid
+        captured["last_message_hint"] = last_message_hint
+        return {"success": True, "remote_deleted": True}
+
+    with patch.object(ws.gw, "delete_conversation_remote", _fake_remote_with_hint):
+        result = await _delete(conv_id)
+
+    assert result["remote_deleted"] is True
+    assert captured["gateway_id"] == GW_ID
+    assert captured["jid"] == PHONE_JID
+    assert captured["last_message_hint"] is not None
+    assert captured["last_message_hint"]["wa_message_id"] == "WA-DELETE-ANCHOR-123"
+    assert captured["last_message_hint"]["from_me"] is False
+    assert captured["last_message_hint"]["timestamp_s"] > 0

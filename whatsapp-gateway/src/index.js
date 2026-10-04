@@ -524,7 +524,8 @@ app.post('/sessions/:sessionId/conversations/:jid/read', withSession(async (req,
 // account's other devices (the phone) holding the chat, and the next history
 // sync can bring it back. Session-scoped like every other data-plane route.
 app.delete('/sessions/:sessionId/conversations/:jid', withSession(async (req, res, sessionId) => {
-  const result = await sessionManager.deleteConversationRemote(sessionId, req.params.jid);
+  const lastMessageHint = req.body?.last_message || null;
+  const result = await sessionManager.deleteConversationRemote(sessionId, req.params.jid, lastMessageHint);
   res.json(result);
 }));
 

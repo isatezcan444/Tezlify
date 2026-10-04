@@ -3517,7 +3517,6 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                             typing,
                             error: err instanceof Error ? err.message : String(err),
                           });
-                          toastRef.current.error(tRef.current('whatsapp.typingFailed') || tRef.current('common.error'), tRef.current('common.error'));
                         });
                       }
                     }}

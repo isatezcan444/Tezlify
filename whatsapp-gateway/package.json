@@ -16,6 +16,7 @@
     "@whiskeysockets/baileys": "7.0.0-rc14",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
+    "link-preview-js": "^3.0.13",
     "pg": "^8.13.3",
     "pino": "^9.5.0",
     "qrcode": "^1.5.4",

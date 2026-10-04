@@ -796,6 +796,7 @@ export function createWebSocket(
         console.log('[Tezlify WS] Connected to realtime event stream');
         openedAt = Date.now();
         attempt = 0;
+        authFailures = 0;
         onStatusChange?.(true);
       };
 
@@ -813,27 +814,18 @@ export function createWebSocket(
         if (isManuallyClosed) return;
         attempt += 1;
 
-        const durationMs = Date.now() - openedAt;
         const explicitAuthReject =
           event?.code === 1008 || event?.code === 4401 || event?.code === 4001;
-        // Hemen kapanma = sunucu bağlantıyı reddetti (auth veya deploy/restart).
-        // Deploy/restart olsa bile token yenileme denemek zararsızdır
-        // (yenileme servisi kullanılabilirse token tazelenir, değilse
-        // authFailures artar ve döngü kısa sürede durur).
-        const rapidClose = durationMs > 0 && durationMs < WS_RAPID_CLOSE_THRESHOLD_MS;
 
-        if (explicitAuthReject || rapidClose) {
-          // Hemen kapanan bağlantıda authFailures sayacını artır.
-          // Eğer aynı token'la tekrar tekrar reddediliyorsa bu sayaç
-          // hızla sınıra ulaşır ve döngü durur.
-          if (rapidClose && !explicitAuthReject) authFailures += 1;
+        if (explicitAuthReject) {
+          // Açık kimlik doğrulama reddi (1008 Policy Violation, 4401/4001 Unauthorized).
           void handleAuthRejection();
           return;
         }
 
-        // Normal kapanma (örn. uzun süreli bağlantı sonrası ağ kesintisi):
-        // sayaçları sıfırla, üstel geri çekilme ile dene.
-        authFailures = 0;
+        // Ağ kopması, Caddy 502/restart veya standart kapanma (1006):
+        // Bu bir yetki hatası DEĞİLDİR; kullanıcıyı oturumdan atma,
+        // üstel geri çekilme (exponential backoff) ile yeniden bağlan.
         scheduleReconnect();
       };
 
