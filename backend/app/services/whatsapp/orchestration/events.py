@@ -938,6 +938,45 @@ class WhatsAppEventOrchestrator:
         apply_last_message(conv, _as_naive_utc(_parse_dt(msg.get("created_at"))) or datetime.utcnow(), summary)
         if direction == MessageDirection.INBOUND:
             conv.unread_count = (conv.unread_count or 0) + 1
+            # Check if this inbound message is a reply to an outreach campaign / lead
+            try:
+                from backend.app.models.lead import Lead, LeadStatus
+                from backend.app.models.message_log import MessageLog, MessageStatus
+                from backend.app.models.campaign import Campaign
+
+                target_lead = None
+                if conv.lead_id:
+                    target_lead = await db.get(Lead, conv.lead_id)
+                elif contact and contact.phone_e164:
+                    l_stmt = select(Lead).where(
+                        Lead.phone_e164 == contact.phone_e164,
+                        get_user_filter(Lead.user_id, owner),
+                    ).order_by(Lead.id.desc()).limit(1)
+                    target_lead = (await db.execute(l_stmt)).scalars().first()
+
+                if target_lead:
+                    if not conv.lead_id:
+                        conv.lead_id = target_lead.id
+                    if contact and not contact.lead_id:
+                        contact.lead_id = target_lead.id
+
+                    if target_lead.status in (LeadStatus.NEW, LeadStatus.CONTACTED):
+                        target_lead.status = LeadStatus.REPLIED
+
+                        log_stmt = select(MessageLog).where(
+                            MessageLog.lead_id == target_lead.id,
+                            get_user_filter(MessageLog.user_id, owner),
+                        ).order_by(MessageLog.id.desc()).limit(1)
+                        latest_log = (await db.execute(log_stmt)).scalars().first()
+                        if latest_log and latest_log.status != MessageStatus.REPLIED:
+                            latest_log.status = MessageStatus.REPLIED
+                            if latest_log.campaign_id:
+                                camp = await db.get(Campaign, latest_log.campaign_id)
+                                if camp:
+                                    camp.replied_count = (camp.replied_count or 0) + 1
+                    await db.flush()
+            except Exception as reply_err:
+                logger.warning("Inbound campaign reply sync failed: %s", reply_err)
         # A provider ACK may have arrived while this record was being persisted
         # (see the deferred-ACK block at the top of this module). Apply it now,
         # before serialization, instead of losing it.
@@ -1749,6 +1788,52 @@ class WhatsAppEventOrchestrator:
                     else:
                         advance_message_status(row, new_status)
                     if row.status != orig_status or row.wa_message_id != orig_wa_id:
+                        # Sync MessageLog and Campaign statistics
+                        try:
+                            from backend.app.models.message_log import MessageLog, MessageStatus
+                            from backend.app.models.campaign import Campaign
+
+                            log_filter = []
+                            if conv and conv.lead_id:
+                                log_filter.append(MessageLog.lead_id == conv.lead_id)
+                            elif row.recipient_phone:
+                                log_filter.append(MessageLog.target_phone == row.recipient_phone)
+
+                            if log_filter:
+                                log_stmt = (
+                                    select(MessageLog)
+                                    .where(
+                                        *log_filter,
+                                        get_user_filter(MessageLog.user_id, owner),
+                                    )
+                                    .order_by(MessageLog.id.desc())
+                                    .limit(1)
+                                )
+                                msg_log = (await db.execute(log_stmt)).scalars().first()
+
+                                if msg_log:
+                                    if row.status == ConversationMessageStatus.DELIVERED and msg_log.status == MessageStatus.SENT:
+                                        msg_log.status = MessageStatus.DELIVERED
+                                        if msg_log.campaign_id:
+                                            camp = await db.get(Campaign, msg_log.campaign_id)
+                                            if camp:
+                                                camp.delivered_count = (camp.delivered_count or 0) + 1
+                                    elif row.status == ConversationMessageStatus.READ and msg_log.status in (MessageStatus.SENT, MessageStatus.DELIVERED):
+                                        if msg_log.status == MessageStatus.SENT and msg_log.campaign_id:
+                                            camp = await db.get(Campaign, msg_log.campaign_id)
+                                            if camp:
+                                                camp.delivered_count = (camp.delivered_count or 0) + 1
+                                        msg_log.status = MessageStatus.READ
+                                    elif row.status == ConversationMessageStatus.FAILED and msg_log.status in (MessageStatus.PENDING, MessageStatus.SENT):
+                                        msg_log.status = MessageStatus.FAILED
+                                        msg_log.error_reason = row.error_message or "Delivery failed"
+                                        if msg_log.campaign_id:
+                                            camp = await db.get(Campaign, msg_log.campaign_id)
+                                            if camp:
+                                                camp.failed_count = (camp.failed_count or 0) + 1
+                        except Exception as sync_err:
+                            logger.warning("MessageLog/Campaign sync failed: %s", sync_err)
+
                         await db.commit()
                     event["message_id"] = row.id
                     event["client_message_id"] = row.client_message_id

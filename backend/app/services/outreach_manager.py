@@ -142,7 +142,23 @@ class OutreachManager:
             db.add(msg_log)
 
             lead.status = LeadStatus.CONTACTED
+            lead.last_contacted_at = datetime.utcnow()
             campaign.sent_count = (campaign.sent_count or 0) + 1
+
+            # Bi-directional link between Conversation / Contact and Lead
+            conv_id = result.get("id") if isinstance(result, dict) else None
+            if conv_id:
+                from backend.app.models.conversation import Conversation
+                from backend.app.models.contact import Contact
+                conv = await db.get(Conversation, conv_id)
+                if conv:
+                    if not conv.lead_id:
+                        conv.lead_id = lead.id
+                    if conv.contact_id:
+                        ct = await db.get(Contact, conv.contact_id)
+                        if ct and not ct.lead_id:
+                            ct.lead_id = lead.id
+
             await db.commit()
             await db.refresh(msg_log)
 
