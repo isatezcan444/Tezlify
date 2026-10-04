@@ -270,17 +270,31 @@ export function createPostgresAuthRepository({
           }
         }
 
+        const KNOWN_KEY_TYPES = [
+          'app-state-sync-key',
+          'app-state-sync-version',
+          'pre-key',
+          'signed-pre-key',
+          'session',
+          'sender-key',
+          'sender-key-memory',
+          'lid-mapping',
+          'tctoken',
+        ];
         const files = fs.readdirSync(sessionDir);
         const categories = {};
         for (const file of files) {
-          if (!file.endsWith('.json') || file === 'creds.json' || file === 'auth.json' || file === 'keys.json' || file.startsWith('app-state-sync-version-')) {
+          if (!file.endsWith('.json') || file === 'creds.json' || file === 'auth.json' || file === 'keys.json') {
             continue;
           }
-          const dashIdx = file.indexOf('-');
-          if (dashIdx <= 0) continue;
-          const keyType = file.slice(0, dashIdx);
-          const id = file.slice(dashIdx + 1, -5).replace(/__/g, '/').replace(/-/g, ':');
-          if (!keyType || !id) continue;
+          const keyType = KNOWN_KEY_TYPES.find((k) => file.startsWith(k + '-'));
+          if (!keyType) continue;
+          const rawId = file.slice(keyType.length + 1, -5);
+          let id = rawId.replace(/__/g, '/');
+          if (keyType !== 'app-state-sync-key' && keyType !== 'app-state-sync-version') {
+            id = id.replace(/-/g, ':');
+          }
+          if (!id) continue;
           try {
             const raw = JSON.parse(fs.readFileSync(path.join(sessionDir, file), 'utf8'), BufferJSON.reviver);
             if (raw) {
@@ -317,7 +331,9 @@ export function createPostgresAuthRepository({
             }
           } catch { /* best effort */ }
         }
-        void repository.syncFromFilesystem(sessionId, sessionDir).catch(() => {});
+        try {
+          await repository.syncFromFilesystem(sessionId, sessionDir);
+        } catch { /* best effort */ }
       }
       return {
         state: {
