@@ -195,7 +195,9 @@ async def _message_conversations():
     async with AsyncSessionLocal() as db:
         rows = (
             await db.execute(
-                select(Message.conversation_id, Message.wa_message_id, Message.body)
+                select(Message.conversation_id, Message.wa_message_id, Message.body).where(
+                    Message.user_id == TEST_USER_HEX
+                )
             )
         ).all()
     return [(r[0], r[1], r[2]) for r in rows]

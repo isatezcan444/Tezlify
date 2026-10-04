@@ -3288,63 +3288,20 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                         </Tooltip>
                       )}
 
-                      {/* Quick Lifecycle Action: Visible on medium+ displays */}
-                      {selectedConv.status === 'ACTIVE' ? (
-                        <>
-                          <Tooltip content={t('whatsapp.archive')} position="bottom">
-                            <button
-                              type="button"
-                              onClick={() => handleStatusChange(selectedConv.id, 'ARCHIVED')}
-                              aria-label={t('whatsapp.archive')}
-                              title={t('whatsapp.archive')}
-                              className="hidden sm:inline-flex p-2 rounded-lg text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 hover:bg-slate-200/60 dark:hover:bg-white/[0.08] transition-all duration-150 cursor-pointer"
-                            >
-                              <Archive className="w-4 h-4" />
-                            </button>
-                          </Tooltip>
-                          <Tooltip content={t('whatsapp.close')} position="bottom">
-                            <button
-                              type="button"
-                              onClick={() => handleStatusChange(selectedConv.id, 'CLOSED')}
-                              aria-label={t('whatsapp.close')}
-                              title={t('whatsapp.close')}
-                              className="hidden sm:inline-flex p-2 rounded-lg text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 hover:bg-slate-200/60 dark:hover:bg-white/[0.08] transition-all duration-150 cursor-pointer"
-                            >
-                              <CheckCircle2 className="w-4 h-4" />
-                            </button>
-                          </Tooltip>
-                        </>
-                      ) : (
-                        <Tooltip content={t('whatsapp.reopen')} position="bottom">
+                      {/* Archive Action */}
+                      {selectedConv.status === 'ACTIVE' && (
+                        <Tooltip content={t('whatsapp.archive')} position="bottom">
                           <button
                             type="button"
-                            onClick={() => handleStatusChange(selectedConv.id, 'ACTIVE')}
-                            aria-label={t('whatsapp.reopen')}
-                            title={t('whatsapp.reopen')}
-                            className="hidden sm:inline-flex p-2 rounded-lg text-[#7367F0] hover:bg-[#7367F0]/10 transition-all duration-150 cursor-pointer"
+                            onClick={() => handleStatusChange(selectedConv.id, 'ARCHIVED')}
+                            aria-label={t('whatsapp.archive')}
+                            title={t('whatsapp.archive')}
+                            className="hidden sm:inline-flex p-2 rounded-lg text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 hover:bg-slate-200/60 dark:hover:bg-white/[0.08] active:scale-95 transition-all duration-150 cursor-pointer"
                           >
-                            <RotateCcw className="w-4 h-4" />
+                            <Archive className="w-4 h-4" />
                           </button>
                         </Tooltip>
                       )}
-
-                      {/* Contact / Group Info Button */}
-                      <Tooltip content={selectedConv.is_group ? t('whatsapp.groupInfo') : t('whatsapp.contactInfo')} position="bottom">
-                        <button
-                          type="button"
-                          onClick={() => setIsChatInfoOpen((open) => !open)}
-                          data-testid="header-chat-info-btn"
-                          aria-label={selectedConv.is_group ? t('whatsapp.groupInfo') : t('whatsapp.contactInfo')}
-                          title={selectedConv.is_group ? t('whatsapp.groupInfo') : t('whatsapp.contactInfo')}
-                          className={`p-2 rounded-lg transition-all duration-150 cursor-pointer ${
-                            isChatInfoOpen
-                              ? 'bg-[#7367F0]/15 text-[#7367F0] ring-1 ring-[#7367F0]/30'
-                              : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 hover:bg-slate-200/60 dark:hover:bg-white/[0.08]'
-                          }`}
-                        >
-                          <Info className="w-4 h-4" />
-                        </button>
-                      </Tooltip>
 
                       {/* Multi-Select Messages Button */}
                       <Tooltip content={isSelectMode ? t('whatsapp.cancelSelection') : t('whatsapp.selectMessages')} position="bottom">
@@ -3359,13 +3316,31 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                           data-testid="chat-header-select-btn"
                           aria-label={isSelectMode ? t('whatsapp.cancelSelection') : t('whatsapp.selectMessages')}
                           title={isSelectMode ? t('whatsapp.cancelSelection') : t('whatsapp.selectMessages')}
-                          className={`p-2 rounded-lg transition-all duration-150 cursor-pointer ${
+                          className={`p-2 rounded-lg active:scale-95 transition-all duration-150 cursor-pointer ${
                             isSelectMode
                               ? 'bg-[#7367F0]/15 text-[#7367F0] ring-1 ring-[#7367F0]/30'
                               : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 hover:bg-slate-200/60 dark:hover:bg-white/[0.08]'
                           }`}
                         >
                           <CheckSquare className="w-4 h-4" />
+                        </button>
+                      </Tooltip>
+
+                      {/* Contact / Group Info Button (far right) */}
+                      <Tooltip content={selectedConv.is_group ? t('whatsapp.groupInfo') : t('whatsapp.contactInfo')} position="bottom">
+                        <button
+                          type="button"
+                          onClick={() => setIsChatInfoOpen((open) => !open)}
+                          data-testid="header-chat-info-btn"
+                          aria-label={selectedConv.is_group ? t('whatsapp.groupInfo') : t('whatsapp.contactInfo')}
+                          title={selectedConv.is_group ? t('whatsapp.groupInfo') : t('whatsapp.contactInfo')}
+                          className={`p-2 rounded-lg active:scale-95 transition-all duration-150 cursor-pointer ${
+                            isChatInfoOpen
+                              ? 'bg-[#7367F0]/15 text-[#7367F0] ring-1 ring-[#7367F0]/30'
+                              : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 hover:bg-slate-200/60 dark:hover:bg-white/[0.08]'
+                          }`}
+                        >
+                          <Info className="w-4 h-4" />
                         </button>
                       </Tooltip>
 

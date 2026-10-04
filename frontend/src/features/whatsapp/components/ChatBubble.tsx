@@ -98,8 +98,30 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
   const [isStarred, setIsStarred] = useState<boolean>(() => isMessageStarred(message.id));
   const [isPinned, setIsPinned] = useState<boolean>(() => isMessagePinned(message.id));
   const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const [menuPlacement, setMenuPlacement] = useState<'down' | 'up'>('down');
   const menuRef = useRef<HTMLDivElement>(null);
   const menuButtonRef = useRef<HTMLButtonElement>(null);
+
+  React.useEffect(() => {
+    if (isSelectMode) {
+      setIsMenuOpen(false);
+      setIsReactionBarOpen(false);
+    }
+  }, [isSelectMode]);
+
+  const handleToggleMenu = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!isMenuOpen && menuButtonRef.current) {
+      const rect = menuButtonRef.current.getBoundingClientRect();
+      const spaceBelow = window.innerHeight - rect.bottom;
+      if (spaceBelow < 280) {
+        setMenuPlacement('up');
+      } else {
+        setMenuPlacement('down');
+      }
+    }
+    setIsMenuOpen((prev) => !prev);
+  };
 
   React.useEffect(() => {
     setIsStarred(isMessageStarred(message.id));
@@ -212,7 +234,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
 
   // Tepki yalnizca KALICI (sayisal id'li) mesaja birakilabilir: iyimser satirin
   // henuz sunucu kimligi yoktur ve `/reactions` ucu ona 404 donerdi.
-  const canReact = Boolean(onReact) && typeof message.id === 'number' && message.id > 0;
+  const canReact = !isSelectMode && Boolean(onReact) && typeof message.id === 'number' && message.id > 0;
 
   // Ayni ifadeyi birden fazla kisi biraktiysa tek rozet + sayac gosterilir
   // (WhatsApp Web paritesi). "Benim" isaretli rozete tiklamak ifadeyi GERI CEKER.
@@ -758,12 +780,12 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
             {renderStatusIcon()}
           </div>
 
-          {/* Tepki rozetleri: WhatsApp Native tarzı yuvarlak/hap biçiminde ferah rozet */}
+          {/* WhatsApp Web Authentic Reaction Pill */}
           {groupedReactions.length > 0 && (
             <div
-              className={`absolute -bottom-3 z-10 inline-flex items-center justify-center min-w-[28px] h-[26px] px-1.5 py-0.5 rounded-full shadow-[0_1.5px_4px_rgba(0,0,0,0.12)] dark:shadow-[0_2px_6px_rgba(0,0,0,0.35)] select-none transition-all duration-150 hover:scale-105 ${
-                isInbound ? 'left-3' : 'right-3'
-              } bg-white dark:bg-[#1E2333] border border-slate-200/90 dark:border-white/15`}
+              className={`absolute -bottom-2.5 z-10 inline-flex items-center justify-center min-w-[24px] h-[22px] px-1.5 py-0 rounded-full shadow-[0_1px_3px_rgba(0,0,0,0.18)] dark:shadow-[0_1.5px_4px_rgba(0,0,0,0.4)] select-none transition-all duration-150 hover:scale-105 ${
+                isInbound ? 'left-2.5' : 'right-2.5'
+              } bg-white dark:bg-[#1f2c34] border border-slate-200/90 dark:border-white/10`}
               data-testid={`reaction-chips-${message.id}`}
             >
               {groupedReactions.map((group) => (
@@ -776,13 +798,13 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                   }}
                   disabled={!canReact || reacting}
                   title={group.mine ? t('whatsapp.reactionRemove') : t('whatsapp.reactionAdd')}
-                  className="inline-flex items-center justify-center gap-1 cursor-pointer disabled:cursor-not-allowed hover:opacity-85 transition-opacity"
+                  className="inline-flex items-center justify-center gap-0.5 cursor-pointer disabled:cursor-not-allowed hover:opacity-85 transition-opacity"
                 >
-                  <span className="text-[14px] leading-none inline-flex items-center justify-center">
+                  <span className="text-[12px] leading-none inline-flex items-center justify-center">
                     {group.emoji}
                   </span>
                   {group.count > 1 && (
-                    <span className="text-[10px] font-bold text-slate-600 dark:text-slate-300 ml-0.5 select-none leading-none">
+                    <span className="text-[9px] font-bold text-slate-600 dark:text-slate-300 ml-0.5 select-none leading-none">
                       {group.count}
                     </span>
                   )}
@@ -792,7 +814,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
           )}
 
           {/* Quick Reaction Button (outside bubble on hover) */}
-          {canReact && (
+          {canReact && !isSelectMode && (
             <div
               className={`absolute top-1 ${
                 isInbound ? '-right-8' : '-left-8'
@@ -820,35 +842,36 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
           )}
 
           {/* WhatsApp Web Message Chevron Down Trigger ("Ok Butonu") */}
-          <div className="absolute top-1 right-1 z-20">
-            <button
-              ref={menuButtonRef}
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                setIsMenuOpen((prev) => !prev);
-              }}
-              data-testid={`msg-menu-btn-${message.id}`}
-              title={t('common.actions')}
-              aria-label={t('common.actions')}
-              className={`w-5 h-5 rounded-full flex items-center justify-center transition-all cursor-pointer ${
-                isMenuOpen
-                  ? 'opacity-100 bg-black/15 dark:bg-white/15 text-slate-900 dark:text-white'
-                  : 'opacity-70 sm:opacity-0 sm:group-hover:opacity-100 text-[#667781] dark:text-[#8696a0] hover:text-slate-900 dark:hover:text-white hover:bg-black/10 dark:hover:bg-white/10'
-              }`}
-            >
-              <ChevronDown className="w-3.5 h-3.5 stroke-[2.5]" />
-            </button>
-          </div>
+          {!isSelectMode && (
+            <div className="absolute top-1 right-1 z-20">
+              <button
+                ref={menuButtonRef}
+                type="button"
+                onClick={handleToggleMenu}
+                data-testid={`msg-menu-btn-${message.id}`}
+                title={t('common.actions')}
+                aria-label={t('common.actions')}
+                className={`w-5 h-5 rounded-full flex items-center justify-center transition-all cursor-pointer ${
+                  isMenuOpen
+                    ? 'opacity-100 bg-black/15 dark:bg-white/15 text-slate-900 dark:text-white'
+                    : 'opacity-70 sm:opacity-0 sm:group-hover:opacity-100 text-[#667781] dark:text-[#8696a0] hover:text-slate-900 dark:hover:text-white hover:bg-black/10 dark:hover:bg-white/10'
+                }`}
+              >
+                <ChevronDown className="w-3.5 h-3.5 stroke-[2.5]" />
+              </button>
+            </div>
+          )}
 
           {/* WhatsApp Web Authentic Context Dropdown Menu */}
-          {isMenuOpen && (
+          {isMenuOpen && !isSelectMode && (
             <div
               ref={menuRef}
               data-testid={`msg-context-menu-${message.id}`}
-              className={`absolute top-6 ${
+              className={`absolute ${
+                menuPlacement === 'up' ? 'bottom-full mb-1' : 'top-6 mt-1'
+              } ${
                 isInbound ? 'left-0' : 'right-0'
-              } z-50 w-56 py-1.5 bg-white dark:bg-[#233138] border border-slate-200/90 dark:border-white/[0.08] rounded-2xl shadow-2xl backdrop-blur-md animate-in fade-in zoom-in-95 duration-100 flex flex-col`}
+              } z-50 w-44 py-1 bg-white dark:bg-[#233138] border border-slate-200/90 dark:border-white/[0.08] rounded-xl shadow-2xl backdrop-blur-md animate-in fade-in zoom-in-95 duration-100 flex flex-col text-[12.5px]`}
             >
               {/* 1. Cevapla */}
               {onReply && (
@@ -860,7 +883,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                     onReply(message);
                   }}
                   data-testid={`menu-reply-${message.id}`}
-                  className="w-full text-left px-4 py-2 text-[13px] text-slate-800 dark:text-[#d1d7db] hover:bg-[#00a884] hover:text-white transition-colors cursor-pointer select-none rounded-lg mx-0.5"
+                  className="w-full text-left px-3 py-1.5 text-[12.5px] text-slate-800 dark:text-[#d1d7db] hover:bg-[#00a884] hover:text-white transition-colors cursor-pointer select-none rounded-md mx-0.5"
                 >
                   {t('whatsapp.menuReply')}
                 </button>
@@ -876,7 +899,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                     setIsReactionBarOpen(true);
                   }}
                   data-testid={`menu-react-${message.id}`}
-                  className="w-full text-left px-4 py-2 text-[13px] text-slate-800 dark:text-[#d1d7db] hover:bg-[#00a884] hover:text-white transition-colors cursor-pointer select-none rounded-lg mx-0.5"
+                  className="w-full text-left px-3 py-1.5 text-[12.5px] text-slate-800 dark:text-[#d1d7db] hover:bg-[#00a884] hover:text-white transition-colors cursor-pointer select-none rounded-md mx-0.5"
                 >
                   {t('whatsapp.menuReact')}
                 </button>
@@ -897,7 +920,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                   );
                 }}
                 data-testid={`menu-star-${message.id}`}
-                className="w-full text-left px-4 py-2 text-[13px] text-slate-800 dark:text-[#d1d7db] hover:bg-[#00a884] hover:text-white transition-colors cursor-pointer select-none rounded-lg mx-0.5"
+                className="w-full text-left px-3 py-1.5 text-[12.5px] text-slate-800 dark:text-[#d1d7db] hover:bg-[#00a884] hover:text-white transition-colors cursor-pointer select-none rounded-md mx-0.5"
               >
                 {isStarred ? t('whatsapp.menuUnstar') : t('whatsapp.menuStar')}
               </button>
@@ -913,7 +936,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                   toast.success(nextPinned ? t('whatsapp.messagePinned') : t('whatsapp.messageUnpinned'));
                 }}
                 data-testid={`menu-pin-${message.id}`}
-                className="w-full text-left px-4 py-2 text-[13px] text-slate-800 dark:text-[#d1d7db] hover:bg-[#00a884] hover:text-white transition-colors cursor-pointer select-none rounded-lg mx-0.5"
+                className="w-full text-left px-3 py-1.5 text-[12.5px] text-slate-800 dark:text-[#d1d7db] hover:bg-[#00a884] hover:text-white transition-colors cursor-pointer select-none rounded-md mx-0.5"
               >
                 {isPinned ? t('whatsapp.menuUnpin') : t('whatsapp.menuPin')}
               </button>
@@ -928,7 +951,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                     onForward(message);
                   }}
                   data-testid={`menu-forward-${message.id}`}
-                  className="w-full text-left px-4 py-2 text-[13px] text-slate-800 dark:text-[#d1d7db] hover:bg-[#00a884] hover:text-white transition-colors cursor-pointer select-none rounded-lg mx-0.5"
+                  className="w-full text-left px-3 py-1.5 text-[12.5px] text-slate-800 dark:text-[#d1d7db] hover:bg-[#00a884] hover:text-white transition-colors cursor-pointer select-none rounded-md mx-0.5"
                 >
                   {t('whatsapp.menuForward')}
                 </button>
@@ -945,7 +968,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                     toast.success(t('common.copied'));
                   }}
                   data-testid={`menu-copy-${message.id}`}
-                  className="w-full text-left px-4 py-2 text-[13px] text-slate-800 dark:text-[#d1d7db] hover:bg-[#00a884] hover:text-white transition-colors cursor-pointer select-none rounded-lg mx-0.5"
+                  className="w-full text-left px-3 py-1.5 text-[12.5px] text-slate-800 dark:text-[#d1d7db] hover:bg-[#00a884] hover:text-white transition-colors cursor-pointer select-none rounded-md mx-0.5"
                 >
                   {t('whatsapp.menuCopy')}
                 </button>
@@ -964,7 +987,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                         onPrivateReply(message);
                       }}
                       data-testid={`menu-reply-privately-${message.id}`}
-                      className="w-full text-left px-4 py-2 text-[13px] text-slate-800 dark:text-[#d1d7db] hover:bg-[#00a884] hover:text-white transition-colors cursor-pointer select-none rounded-lg mx-0.5"
+                      className="w-full text-left px-3 py-1.5 text-[12.5px] text-slate-800 dark:text-[#d1d7db] hover:bg-[#00a884] hover:text-white transition-colors cursor-pointer select-none rounded-md mx-0.5"
                     >
                       {t('whatsapp.menuReplyPrivately')}
                     </button>
@@ -978,7 +1001,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                         onDirectMessageSender(message.sender_phone || '', participantName);
                       }}
                       data-testid={`menu-direct-message-${message.id}`}
-                      className="w-full text-left px-4 py-2 text-[13px] text-slate-800 dark:text-[#d1d7db] hover:bg-[#00a884] hover:text-white transition-colors cursor-pointer select-none rounded-lg mx-0.5"
+                      className="w-full text-left px-3 py-1.5 text-[12.5px] text-slate-800 dark:text-[#d1d7db] hover:bg-[#00a884] hover:text-white transition-colors cursor-pointer select-none rounded-md mx-0.5"
                     >
                       {t('whatsapp.menuMessageSender', { name: participantName })}
                     </button>
@@ -1003,7 +1026,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                       }
                     }}
                     data-testid={`menu-report-${message.id}`}
-                    className="w-full text-left px-4 py-2 text-[13px] text-slate-800 dark:text-[#d1d7db] hover:bg-[#00a884] hover:text-white transition-colors cursor-pointer select-none rounded-lg mx-0.5"
+                    className="w-full text-left px-3 py-1.5 text-[12.5px] text-slate-800 dark:text-[#d1d7db] hover:bg-[#00a884] hover:text-white transition-colors cursor-pointer select-none rounded-md mx-0.5"
                   >
                     {t('whatsapp.menuReport')}
                   </button>
@@ -1034,7 +1057,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                       }
                     }}
                     data-testid={`menu-report-${message.id}`}
-                    className="w-full text-left px-4 py-2 text-[13px] text-slate-800 dark:text-[#d1d7db] hover:bg-[#00a884] hover:text-white transition-colors cursor-pointer select-none rounded-lg mx-0.5"
+                    className="w-full text-left px-3 py-1.5 text-[12.5px] text-slate-800 dark:text-[#d1d7db] hover:bg-[#00a884] hover:text-white transition-colors cursor-pointer select-none rounded-md mx-0.5"
                   >
                     {t('whatsapp.menuReport')}
                   </button>
@@ -1053,7 +1076,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                       void handleDownloadMedia();
                     }}
                     data-testid={`menu-download-${message.id}`}
-                    className="w-full text-left px-4 py-2 text-[13px] text-slate-800 dark:text-[#d1d7db] hover:bg-[#00a884] hover:text-white transition-colors cursor-pointer select-none rounded-lg mx-0.5"
+                    className="w-full text-left px-3 py-1.5 text-[12.5px] text-slate-800 dark:text-[#d1d7db] hover:bg-[#00a884] hover:text-white transition-colors cursor-pointer select-none rounded-md mx-0.5"
                   >
                     {t('whatsapp.menuDownload')}
                   </button>
@@ -1072,7 +1095,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                       void onDelete(message);
                     }}
                     data-testid={`menu-delete-${message.id}`}
-                    className="w-full text-left px-4 py-2 text-[13px] text-slate-800 dark:text-[#d1d7db] hover:bg-[#00a884] hover:text-white transition-colors cursor-pointer select-none rounded-lg mx-0.5"
+                    className="w-full text-left px-3 py-1.5 text-[12.5px] text-slate-800 dark:text-[#d1d7db] hover:bg-[#00a884] hover:text-white transition-colors cursor-pointer select-none rounded-md mx-0.5"
                   >
                     {t('whatsapp.menuDelete')}
                   </button>
@@ -1093,14 +1116,14 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                   }
                 }}
                 data-testid={`menu-select-${message.id}`}
-                className="w-full text-left px-4 py-2 text-[13px] text-slate-800 dark:text-[#d1d7db] hover:bg-[#00a884] hover:text-white transition-colors cursor-pointer select-none rounded-lg mx-0.5"
+                className="w-full text-left px-3 py-1.5 text-[12.5px] text-slate-800 dark:text-[#d1d7db] hover:bg-[#00a884] hover:text-white transition-colors cursor-pointer select-none rounded-md mx-0.5"
               >
                 {t('whatsapp.menuSelect')}
               </button>
             </div>
           )}
 
-          {canReact && isReactionBarOpen && (
+          {canReact && !isSelectMode && isReactionBarOpen && (
             <div
               ref={reactionBarRef}
               data-testid={`reaction-bar-${message.id}`}
