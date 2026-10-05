@@ -594,7 +594,7 @@ async def ensure_messages_media_columns(engine: AsyncEngine) -> str:
                 })
                 await conn.execute(
                     text(
-                        "UPDATE messages SET quoted_message = :qdata::jsonb "
+                        "UPDATE messages SET quoted_message = CAST(:qdata AS jsonb) "
                         "WHERE wa_message_id = 'AC3A514F29C6A851F55F9F86F3E87360' AND quoted_message IS NULL"
                     ),
                     {"qdata": tolga_quoted_data},
