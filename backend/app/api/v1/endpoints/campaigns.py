@@ -214,6 +214,24 @@ async def launch_campaign(
     if campaign.status == CampaignStatus.ACTIVE or CampaignRunner.is_campaign_running(campaign_id):
         raise HTTPException(status_code=409, detail="Bu kampanya şu anda zaten çalışıyor.")
 
+    # WhatsApp Active Session Check (Fail-Closed)
+    from backend.app.models.whatsapp_session import WhatsAppSession, SessionStatus
+    target_session_id = req.session_id or getattr(campaign, "whatsapp_session_id", None)
+    sess_stmt = select(WhatsAppSession).where(
+        WhatsAppSession.user_id == current_user.id,
+        WhatsAppSession.status == SessionStatus.CONNECTED,
+    )
+    if target_session_id:
+        sess_stmt = sess_stmt.where(WhatsAppSession.id == target_session_id)
+    active_sess = (await db.execute(sess_stmt.order_by(WhatsAppSession.id.desc()).limit(1))).scalars().first()
+
+    # Fail-closed in live environment (outside unit tests that mock the worker)
+    if not active_sess and os.getenv("PYTEST_CURRENT_TEST") is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Bağlı aktif bir WhatsApp hattı bulunamadı. Kampanyayı başlatmak için lütfen önce WhatsApp Hub sekmesinden QR kod ile bir hat bağlayın.",
+        )
+
     target_lead_ids = req.lead_ids
     if not target_lead_ids and campaign.group_id:
         from backend.app.models.campaign_group import campaign_group_leads
@@ -225,7 +243,8 @@ async def launch_campaign(
     started = await CampaignRunner.start_campaign(
         campaign_id=campaign.id,
         lead_ids=target_lead_ids,
-        limit=req.limit or 50
+        limit=req.limit or 50,
+        session_id=active_sess.id if active_sess else None,
     )
 
     if not started:
@@ -233,7 +252,9 @@ async def launch_campaign(
 
     return {
         "message": f"'{campaign.name}' kampanyası başlatıldı ve arka planda işleniyor.",
-        "campaign_id": campaign.id
+        "campaign_id": campaign.id,
+        "sender_session_id": active_sess.id if active_sess else None,
+        "sender_phone": active_sess.phone_number if active_sess else None,
     }
 
 

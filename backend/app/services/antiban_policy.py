@@ -40,17 +40,31 @@ class AntibanPolicy:
     working_hours_enabled: bool
     working_hours_start: str
     working_hours_end: str
+    daily_message_limit: int = 50
 
     @classmethod
-    def from_campaign(cls, campaign) -> "AntibanPolicy":
+    def from_campaign(cls, campaign, default_daily_limit: int = 50) -> "AntibanPolicy":
+        min_del = getattr(campaign, "min_delay_seconds", None)
+        max_del = getattr(campaign, "max_delay_seconds", None)
+        typing_del = getattr(campaign, "typing_delay_seconds", None)
+        wh_enabled = getattr(campaign, "working_hours_enabled", None)
+        wh_start = getattr(campaign, "working_hours_start", None)
+        wh_end = getattr(campaign, "working_hours_end", None)
+        daily_lim = getattr(campaign, "daily_message_limit", None)
+
         return cls(
-            min_delay_seconds=campaign.min_delay_seconds or settings.DEFAULT_MIN_DELAY_SECONDS,
-            max_delay_seconds=campaign.max_delay_seconds or settings.DEFAULT_MAX_DELAY_SECONDS,
-            typing_delay_seconds=campaign.typing_delay_seconds or settings.DEFAULT_TYPING_DELAY_SECONDS,
-            working_hours_enabled=bool(campaign.working_hours_enabled),
-            working_hours_start=campaign.working_hours_start or settings.DEFAULT_WORKING_HOURS_START,
-            working_hours_end=campaign.working_hours_end or settings.DEFAULT_WORKING_HOURS_END,
+            min_delay_seconds=min_del if min_del is not None else settings.DEFAULT_MIN_DELAY_SECONDS,
+            max_delay_seconds=max_del if max_del is not None else settings.DEFAULT_MAX_DELAY_SECONDS,
+            typing_delay_seconds=typing_del if typing_del is not None else settings.DEFAULT_TYPING_DELAY_SECONDS,
+            working_hours_enabled=bool(wh_enabled) if wh_enabled is not None else True,
+            working_hours_start=wh_start if wh_start is not None else settings.DEFAULT_WORKING_HOURS_START,
+            working_hours_end=wh_end if wh_end is not None else settings.DEFAULT_WORKING_HOURS_END,
+            daily_message_limit=daily_lim if daily_lim is not None else default_daily_limit,
         )
+
+    def is_daily_limit_reached(self, sent_today: int) -> bool:
+        """Belirtilen gün içindeki gönderim sayısı limiti aştı mı?"""
+        return sent_today >= self.daily_message_limit
 
     def jitter_seconds(self) -> int:
         return gaussian_jitter_seconds(self.min_delay_seconds, self.max_delay_seconds)

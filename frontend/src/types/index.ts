@@ -61,7 +61,9 @@ export interface Campaign {
   working_hours_enabled: boolean;
   working_hours_start: string;
   working_hours_end: string;
+  daily_message_limit?: number;
   session_id?: number;
+  whatsapp_session_id?: number;
   group_id?: number;
   total_leads_target: number;
   sent_count: number;

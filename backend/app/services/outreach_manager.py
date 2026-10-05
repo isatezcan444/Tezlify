@@ -47,6 +47,26 @@ class OutreachManager:
         return set(result.scalars().all())
 
     @classmethod
+    def is_connection_fatal_error(cls, error_msg: str) -> bool:
+        """Determines if an outreach failure indicates a disconnected session or gateway error."""
+        if not error_msg:
+            return False
+        err_lower = error_msg.lower()
+        fatal_keywords = [
+            "bağlı bir whatsapp",
+            "nowhatsappsession",
+            "whatsapprelinkrequired",
+            "oturum bulunamadı",
+            "re-pair",
+            "connection closed",
+            "socket closed",
+            "connection lost",
+            "bad gateway",
+            "502",
+        ]
+        return any(k in err_lower for k in fatal_keywords)
+
+    @classmethod
     async def process_single_outreach(
         cls,
         db: AsyncSession,

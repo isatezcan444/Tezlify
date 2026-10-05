@@ -4,9 +4,13 @@ import {
   Sparkles, 
   ListPlus,
   Trash2,
+  MessageSquare,
+  AlertTriangle,
+  Smartphone,
 } from 'lucide-react';
-import { ApiClient } from '../api/client';
-import { Campaign } from '../types';
+import { ApiClient, subscribeRealtime } from '../api/client';
+import { Campaign, WhatsAppSession } from '../types';
+import { WhatsAppRepository } from '../features/whatsapp/data/whatsappRepository';
 import { 
   Button, 
   Badge, 
@@ -48,7 +52,9 @@ export const CampaignsPage: React.FC<CampaignsPageProps> = ({
   const toast = useToast();
   const { t } = useI18n();
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
+  const [sessions, setSessions] = useState<WhatsAppSession[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loadingSessions, setLoadingSessions] = useState(false);
   const [activeTab, setActiveTab] = useState<'list' | 'builder'>('list');
 
   // Pagination State
@@ -83,13 +89,96 @@ export const CampaignsPage: React.FC<CampaignsPageProps> = ({
     }
   };
 
+  const fetchSessions = async () => {
+    try {
+      setLoadingSessions(true);
+      const data = await WhatsAppRepository.getWhatsAppSessions();
+      setSessions(data);
+    } catch (err) {
+      console.error('Error fetching WhatsApp sessions:', err);
+    } finally {
+      setLoadingSessions(false);
+    }
+  };
+
   useEffect(() => {
     fetchCampaigns();
+    fetchSessions();
+  }, []);
+
+  const connectedSession = sessions.find((s) => s.status === 'CONNECTED');
+
+  // Real-time WebSocket listener for campaign & session events
+  useEffect(() => {
+    const sub = subscribeRealtime((event: any) => {
+      if (!event || !event.event) return;
+      const { event: evType, campaign_id, success, message } = event;
+
+      // Re-fetch sessions on session lifecycle events
+      if (
+        evType === 'session_connected' ||
+        evType === 'session_disconnected' ||
+        evType === 'session_status_changed'
+      ) {
+        fetchSessions();
+      }
+
+      if (!campaign_id) return;
+
+      if (evType === 'campaign_started') {
+        setCampaigns((prev) =>
+          prev.map((c) => (c.id === campaign_id ? { ...c, status: 'ACTIVE' } : c))
+        );
+      } else if (evType === 'campaign_paused') {
+        setCampaigns((prev) =>
+          prev.map((c) => (c.id === campaign_id ? { ...c, status: 'PAUSED' } : c))
+        );
+        if (message) {
+          toast.warning(message, t('campaigns.pauseCampaign'));
+        }
+      } else if (evType === 'campaign_completed') {
+        setCampaigns((prev) =>
+          prev.map((c) => (c.id === campaign_id ? { ...c, status: 'COMPLETED' } : c))
+        );
+        toast.success(message || t('campaigns.campaignLaunched'), t('common.success'));
+        fetchCampaigns();
+        onRefreshStats();
+      } else if (evType === 'message_sent' || evType === 'message_failed') {
+        setCampaigns((prev) =>
+          prev.map((c) => {
+            if (c.id !== campaign_id) return c;
+            return {
+              ...c,
+              sent_count: success ? (c.sent_count || 0) + 1 : c.sent_count,
+              failed_count: !success ? (c.failed_count || 0) + 1 : c.failed_count,
+            };
+          })
+        );
+      }
+    });
+
+    return () => {
+      sub.close();
+    };
   }, []);
 
   const handleLaunchCampaign = async (campaignId: number) => {
+    if (!connectedSession) {
+      toast.warning(
+        t('campaigns.noConnectedSessionToast') || 'Kampanyayı başlatmak için lütfen önce WhatsApp sekmesinden bir hat bağlayın.',
+        t('common.warning')
+      );
+      if (onNavigate) {
+        onNavigate('whatsapp');
+      }
+      return;
+    }
+
     try {
-      await ApiClient.launchCampaign(campaignId, { limit: 50 });
+      await ApiClient.launchCampaign(campaignId, {
+        limit: 50,
+        session_id: connectedSession.id,
+      });
       toast.success(t('campaigns.campaignLaunched'), t('common.success'));
       fetchCampaigns();
       onRefreshStats();
@@ -241,6 +330,63 @@ export const CampaignsPage: React.FC<CampaignsPageProps> = ({
           }
         />
       </Card>
+
+      {/* WhatsApp Sender Line Status Banner */}
+      {connectedSession ? (
+        <div className="p-3.5 sm:p-4 rounded-xl bg-[#28C76F]/10 border border-[#28C76F]/20 flex items-center justify-between gap-3 shadow-xs">
+          <div className="flex items-center space-x-3 min-w-0">
+            <div className="w-9 h-9 rounded-lg bg-[#28C76F] text-white flex items-center justify-center font-bold shrink-0 shadow-sm shadow-[#28C76F]/20">
+              <MessageSquare className="w-4 h-4" />
+            </div>
+            <div className="min-w-0">
+              <div className="flex items-center space-x-2">
+                <span className="w-2 h-2 rounded-full bg-[#28C76F] animate-pulse" />
+                <span className="text-xs font-extrabold text-slate-800 dark:text-white truncate">
+                  {t('campaigns.activeSenderLine')}: {connectedSession.phone_number || connectedSession.session_name}
+                </span>
+                {connectedSession.phone_number && connectedSession.session_name && (
+                  <span className="text-[11px] text-slate-400 dark:text-[#7E7F96]">({connectedSession.session_name})</span>
+                )}
+              </div>
+              <p className="text-[11px] text-slate-500 dark:text-[#7E7F96] mt-0.5 truncate">
+                {t('campaigns.campaignLaunched')}
+              </p>
+            </div>
+          </div>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => onNavigate?.('whatsapp')}
+            className="text-xs font-bold border-[#28C76F]/40 text-[#28C76F] hover:bg-[#28C76F]/10 shrink-0 cursor-pointer h-8"
+          >
+            <span>{t('campaigns.goToWhatsApp')}</span>
+          </Button>
+        </div>
+      ) : (
+        <div className="p-3.5 sm:p-4 rounded-xl bg-[#FF9F43]/10 border border-[#FF9F43]/20 flex items-center justify-between gap-3 flex-wrap sm:flex-nowrap shadow-xs">
+          <div className="flex items-center space-x-3 min-w-0">
+            <div className="w-9 h-9 rounded-lg bg-[#FF9F43] text-white flex items-center justify-center font-bold shrink-0 shadow-sm shadow-[#FF9F43]/20">
+              <AlertTriangle className="w-4 h-4" />
+            </div>
+            <div className="min-w-0">
+              <span className="text-xs font-extrabold text-slate-800 dark:text-white block">
+                {t('campaigns.noConnectedLine')}
+              </span>
+              <p className="text-[11px] text-slate-500 dark:text-[#7E7F96] mt-0.5">
+                {t('campaigns.noConnectedLineNotice')}
+              </p>
+            </div>
+          </div>
+          <Button
+            size="sm"
+            onClick={() => onNavigate?.('whatsapp')}
+            className="text-xs font-bold bg-[#FF9F43] hover:bg-[#e08a34] text-white shrink-0 shadow-sm cursor-pointer h-8"
+          >
+            <Smartphone className="w-3.5 h-3.5 mr-1" />
+            <span>{t('campaigns.linkLineButton')}</span>
+          </Button>
+        </div>
+      )}
 
       {activeTab === 'list' ? (
         /* Campaigns List View */

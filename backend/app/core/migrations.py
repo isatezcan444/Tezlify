@@ -2003,3 +2003,29 @@ async def purge_empty_ghost_conversations(engine: AsyncEngine) -> None:
         logger.warning("[MIGRATION] purge_empty_ghost_conversations atlandi: %s", exc)
 
 
+async def ensure_campaigns_columns(engine: AsyncEngine) -> None:
+    """Idempotently guarantees that campaigns table has whatsapp_session_id and daily_message_limit."""
+    try:
+        if engine.dialect.name == "sqlite":
+            async with engine.begin() as conn:
+                info_rows = (await conn.execute(text("PRAGMA table_info(campaigns)"))).fetchall()
+                cols = {row[1] for row in info_rows}
+                if not cols:
+                    return  # Tablo henuz yok; create_all yeni model semasini dogru kurar.
+                if "whatsapp_session_id" not in cols:
+                    await conn.execute(text("ALTER TABLE campaigns ADD COLUMN whatsapp_session_id INTEGER REFERENCES whatsapp_sessions(id) ON DELETE SET NULL"))
+                    logger.info("[MIGRATION] Added campaigns.whatsapp_session_id")
+                if "daily_message_limit" not in cols:
+                    await conn.execute(text("ALTER TABLE campaigns ADD COLUMN daily_message_limit INTEGER DEFAULT 50"))
+                    logger.info("[MIGRATION] Added campaigns.daily_message_limit")
+        elif engine.dialect.name == "postgresql":
+            async with engine.begin() as conn:
+                await conn.execute(text("ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS whatsapp_session_id INTEGER REFERENCES whatsapp_sessions(id) ON DELETE SET NULL"))
+                await conn.execute(text("ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS daily_message_limit INTEGER DEFAULT 50"))
+                await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_campaigns_whatsapp_session_id ON campaigns (whatsapp_session_id)"))
+                logger.info("[MIGRATION] PostgreSQL campaigns columns verified")
+    except Exception as exc:
+        logger.warning("[MIGRATION] ensure_campaigns_columns atlandi: %s", exc)
+
+
+

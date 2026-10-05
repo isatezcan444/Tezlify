@@ -32,11 +32,16 @@ class Campaign(Base):
     max_delay_seconds = Column(Integer, default=settings.DEFAULT_MAX_DELAY_SECONDS)  # Random delay upper bound
     typing_delay_seconds = Column(Integer, default=settings.DEFAULT_TYPING_DELAY_SECONDS)  # Typing simulation
 
-    # Working Hours Gate
+    # Working Hours & Anti-Ban Gate
     working_hours_enabled = Column(Boolean, default=True)
     working_hours_start = Column(String(10), default=settings.DEFAULT_WORKING_HOURS_START)  # HH:MM
     working_hours_end = Column(String(10), default=settings.DEFAULT_WORKING_HOURS_END)  # HH:MM
+    daily_message_limit = Column(Integer, default=settings.DEFAULT_DAILY_LIMIT_PER_SESSION)
     
+    # WhatsApp Session Binding (Optional explicit multi-session line)
+    whatsapp_session_id = Column(Integer, ForeignKey("whatsapp_sessions.id", ondelete="SET NULL"), nullable=True, index=True)
+    whatsapp_session = relationship("WhatsAppSession", foreign_keys=[whatsapp_session_id])
+
     # Campaign Group Association (Optional)
     group_id = Column(Integer, ForeignKey("campaign_groups.id", ondelete="SET NULL"), nullable=True)
     group = relationship("CampaignGroup", backref="campaigns")

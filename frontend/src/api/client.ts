@@ -467,7 +467,7 @@ export class ApiClient {
     return res.json();
   }
 
-  static async launchCampaign(campaignId: number, params: { lead_ids?: number[]; limit?: number } = {}): Promise<any> {
+  static async launchCampaign(campaignId: number, params: { lead_ids?: number[]; limit?: number; session_id?: number } = {}): Promise<any> {
     const res = await authFetch(`${API_BASE}/campaigns/${campaignId}/launch`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

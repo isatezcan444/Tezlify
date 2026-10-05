@@ -14,7 +14,9 @@ class CampaignBase(BaseModel):
     working_hours_enabled: bool = True
     working_hours_start: str = settings.DEFAULT_WORKING_HOURS_START
     working_hours_end: str = settings.DEFAULT_WORKING_HOURS_END
+    daily_message_limit: int = settings.DEFAULT_DAILY_LIMIT_PER_SESSION
     group_id: Optional[int] = None
+    whatsapp_session_id: Optional[int] = None
 
 class CampaignCreate(CampaignBase):
     pass
@@ -30,7 +32,9 @@ class CampaignUpdate(BaseModel):
     working_hours_enabled: Optional[bool] = None
     working_hours_start: Optional[str] = None
     working_hours_end: Optional[str] = None
+    daily_message_limit: Optional[int] = None
     group_id: Optional[int] = None
+    whatsapp_session_id: Optional[int] = None
 
 class CampaignBulkDeleteRequest(BaseModel):
     campaign_ids: List[int]
@@ -62,6 +66,7 @@ class CampaignLaunchRequest(BaseModel):
     lead_ids: Optional[List[int]] = None
     filter_status: Optional[str] = "NEW"
     limit: Optional[int] = 50
+    session_id: Optional[int] = None
 
 class GenerateMessageRequest(BaseModel):
     communication_goal: str

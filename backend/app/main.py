@@ -42,6 +42,7 @@ from backend.app.core.migrations import (
     ensure_whatsapp_private_lid_and_history_tables,
     ensure_repair_raw_lid_mentions,
     purge_empty_ghost_conversations,
+    ensure_campaigns_columns,
 )
 from backend.app.core.seed import seed_demo_data_if_empty
 from backend.app.services.admin.ops_service import init_ops_state
@@ -154,6 +155,7 @@ async def lifespan(app: FastAPI):
     await ensure_whatsapp_private_lid_and_history_tables(engine)
     await ensure_repair_raw_lid_mentions(engine)
     await purge_empty_ghost_conversations(engine)
+    await ensure_campaigns_columns(engine)
 
     # Boot tek başına yetmez: artan çiftler, canlı yolun ertelediği birleştirmeler
     # ve arşivlenen sohbette kalmış sahipsiz mesajlar ancak YENİDEN koşan bir

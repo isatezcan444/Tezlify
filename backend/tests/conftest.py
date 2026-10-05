@@ -1,6 +1,24 @@
 import pytest
 from backend.app.core.config import settings
 
+@pytest.fixture(scope="session", autouse=True)
+def run_db_migrations():
+    import asyncio
+    from backend.app.core.database import engine
+    from backend.app.core.migrations import ensure_campaigns_columns
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    if loop.is_running():
+        # already running loop
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            pool.submit(lambda: asyncio.run(ensure_campaigns_columns(engine))).result()
+    else:
+        loop.run_until_complete(ensure_campaigns_columns(engine))
+
 @pytest.fixture(autouse=True)
 def enable_history_expansion_in_tests():
     old = getattr(settings, "WHATSAPP_BACKGROUND_HISTORY_EXPANSION_ENABLED", False)

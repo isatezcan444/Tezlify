@@ -37,7 +37,8 @@ class CampaignRunner:
         cls,
         campaign_id: int,
         lead_ids: Optional[List[int]] = None,
-        limit: int = 50
+        limit: int = 50,
+        session_id: Optional[int] = None,
     ) -> bool:
         if cls.is_campaign_running(campaign_id):
             logger.warning(f"[CampaignRunner] Campaign #{campaign_id} is already running.")
@@ -63,7 +64,7 @@ class CampaignRunner:
                 return False
 
         task = asyncio.create_task(
-            cls._execute_campaign_worker(campaign_id, lead_ids, limit)
+            cls._execute_campaign_worker(campaign_id, lead_ids, limit, session_id=session_id)
         )
         active_campaign_tasks[campaign_id] = task
         return True
@@ -81,7 +82,8 @@ class CampaignRunner:
         cls,
         campaign_id: int,
         lead_ids: Optional[List[int]] = None,
-        limit: int = 50
+        limit: int = 50,
+        session_id: Optional[int] = None,
     ):
         logger.info(f"[CampaignRunner] Campaign #{campaign_id} outreach worker started.")
 
@@ -109,6 +111,36 @@ class CampaignRunner:
                     await db.commit()
                     return
 
+                # Resolve sender line (session_id if specified, else campaign.whatsapp_session_id, else latest CONNECTED session)
+                from backend.app.models.whatsapp_session import WhatsAppSession, SessionStatus
+                target_sess_id = session_id or getattr(campaign, "whatsapp_session_id", None)
+                sess_stmt = select(WhatsAppSession).where(
+                    WhatsAppSession.user_id == owner,
+                    WhatsAppSession.status == SessionStatus.CONNECTED,
+                )
+                if target_sess_id:
+                    sess_stmt = sess_stmt.where(WhatsAppSession.id == target_sess_id)
+                active_sess = (await db.execute(sess_stmt.order_by(WhatsAppSession.id.desc()).limit(1))).scalars().first()
+
+                # Fail-Closed Early Check: If no connected WhatsApp line exists, do NOT burn leads
+                if not active_sess:
+                    logger.warning(
+                        "[CampaignRunner] Campaign #%s has no connected WhatsAppSession for user %s — pausing safely.",
+                        campaign_id,
+                        owner,
+                    )
+                    campaign.status = CampaignStatus.PAUSED
+                    await db.commit()
+                    await ws_manager.broadcast({
+                        "event": "campaign_failed",
+                        "campaign_id": campaign_id,
+                        "user_id": owner,
+                        "error": "Bağlı aktif bir WhatsApp hattı bulunamadı. Lütfen önce WhatsApp sekmesinden QR kod ile bir hat bağlayın.",
+                    })
+                    return
+
+                sender_phone = active_sess.phone_number
+
                 campaign.status = CampaignStatus.ACTIVE
                 await db.commit()
 
@@ -117,6 +149,7 @@ class CampaignRunner:
                     "campaign_id": campaign_id,
                     "campaign_name": campaign.name,
                     "user_id": owner,
+                    "sender_phone": sender_phone,
                 })
 
                 # Fetch Target Leads — ZORUNLU tenant filtresi. Filtresiz sorgu
@@ -140,16 +173,6 @@ class CampaignRunner:
                 res = await db.execute(stmt)
                 raw_leads = res.scalars().all()
 
-                # Resolve sender line's phone to prevent self-outreach loops
-                from backend.app.models.whatsapp_session import WhatsAppSession, SessionStatus
-                active_sess = (await db.execute(
-                    select(WhatsAppSession).where(
-                        WhatsAppSession.user_id == owner,
-                        WhatsAppSession.status == SessionStatus.CONNECTED,
-                    ).order_by(WhatsAppSession.id.desc()).limit(1)
-                )).scalars().first()
-                sender_phone = active_sess.phone_number if active_sess else None
-
                 # Enforce OutreachGuard
                 leads, blocked_leads = OutreachGuard.filter_qualified_for_outreach(raw_leads, sender_phone=sender_phone)
 
@@ -167,7 +190,43 @@ class CampaignRunner:
                     })
                     return
 
-                policy = AntibanPolicy.from_campaign(campaign)
+                # Resolve Anti-Ban Policy with daily limit
+                from backend.app.models.system_settings import SystemSetting
+                from backend.app.models.message_log import MessageLog, MessageStatus
+                from backend.app.core.datetime_utils import utc_now_naive
+                from sqlalchemy import func
+
+                sys_setting = (await db.execute(
+                    select(SystemSetting).where(SystemSetting.key == "antiban_config").limit(1)
+                )).scalars().first()
+                default_daily_limit = sys_setting.daily_message_limit if sys_setting and sys_setting.daily_message_limit else 50
+                policy = AntibanPolicy.from_campaign(campaign, default_daily_limit=default_daily_limit)
+
+                # Check today's sent count against policy daily limit
+                start_of_day = utc_now_naive().replace(hour=0, minute=0, second=0, microsecond=0)
+                sent_today = (await db.scalar(
+                    select(func.count(MessageLog.id)).where(
+                        MessageLog.user_id == owner,
+                        MessageLog.status.in_([MessageStatus.SENT, MessageStatus.DELIVERED, MessageStatus.READ, MessageStatus.REPLIED]),
+                        MessageLog.sent_at >= start_of_day,
+                    )
+                )) or 0
+
+                if policy.is_daily_limit_reached(sent_today):
+                    logger.warning(
+                        f"[CampaignRunner] Campaign #{campaign_id} paused: daily anti-ban limit reached ({sent_today}/{policy.daily_message_limit})."
+                    )
+                    campaign.status = CampaignStatus.PAUSED
+                    await db.commit()
+                    await ws_manager.broadcast({
+                        "event": "campaign_paused",
+                        "campaign_id": campaign_id,
+                        "user_id": owner,
+                        "reason": "daily_limit_reached",
+                        "message": f"Günlük Anti-Ban mesaj limitine ({sent_today}/{policy.daily_message_limit}) ulaşıldı. WhatsApp hesabınızın güvenliği için kampanya otomatik duraklatıldı.",
+                    })
+                    return
+
                 was_stopped_early = False
 
                 # Campaign-scoped batch blacklist pre-resolution: 1 query instead of N per-lead queries
@@ -185,15 +244,68 @@ class CampaignRunner:
                         was_stopped_early = True
                         break
 
+                    # Check daily limit before each message
+                    if policy.is_daily_limit_reached(sent_today):
+                        logger.warning(
+                            f"[CampaignRunner] Campaign #{campaign_id} reached daily limit ({sent_today}/{policy.daily_message_limit}) during loop. Pausing."
+                        )
+                        campaign.status = CampaignStatus.PAUSED
+                        await db.commit()
+                        await ws_manager.broadcast({
+                            "event": "campaign_paused",
+                            "campaign_id": campaign_id,
+                            "user_id": owner,
+                            "reason": "daily_limit_reached",
+                            "message": f"Günlük Anti-Ban limitine ({sent_today}/{policy.daily_message_limit}) ulaşıldı. WhatsApp hattınızın güvenliği için kampanya duraklatıldı.",
+                        })
+                        was_stopped_early = True
+                        break
+
                     # Process single outreach (reusing in-memory lead and campaign objects, plus batch blacklist)
                     success, msg, log_id = await OutreachManager.process_single_outreach(
                         db=db,
                         lead_id=lead.id,
                         campaign_id=campaign.id,
+                        session_id=active_sess.id,
                         lead=lead,
                         campaign=campaign,
                         blacklisted_phones=blacklisted_phones,
                     )
+
+                    # Handle fatal connection drop or working hours pause
+                    if not success:
+                        if OutreachManager.is_connection_fatal_error(msg):
+                            logger.warning(
+                                f"[CampaignRunner] WhatsApp session disconnected during campaign #{campaign_id}: {msg}. Pausing campaign."
+                            )
+                            campaign.status = CampaignStatus.PAUSED
+                            await db.commit()
+                            await ws_manager.broadcast({
+                                "event": "campaign_paused",
+                                "campaign_id": campaign_id,
+                                "user_id": owner,
+                                "reason": "session_disconnected",
+                                "message": "WhatsApp hattının bağlantısı koptu. Kalan kayıtların yanmaması için kampanya otomatik duraklatıldı. Lütfen WhatsApp sekmesinden hattınızı yeniden bağlayın.",
+                            })
+                            was_stopped_early = True
+                            break
+                        elif "Mesai saatleri dışında" in msg:
+                            logger.info(
+                                f"[CampaignRunner] Outside working hours for campaign #{campaign_id}. Pausing campaign."
+                            )
+                            campaign.status = CampaignStatus.PAUSED
+                            await db.commit()
+                            await ws_manager.broadcast({
+                                "event": "campaign_paused",
+                                "campaign_id": campaign_id,
+                                "user_id": owner,
+                                "reason": "outside_working_hours",
+                                "message": f"Mesai saatleri dışına çıkıldı ({campaign.working_hours_start}-{campaign.working_hours_end}). Kampanya ertesi gün mesai saatinde devam ettirilmek üzere güvenle duraklatıldı.",
+                            })
+                            was_stopped_early = True
+                            break
+                    else:
+                        sent_today += 1
 
                     # Broadcast progress — yalnizca sahibine (lead adi/telefon
                     # tasiyor; genis yayin diger tenant'lara PII sizdirirdi).
@@ -214,7 +326,7 @@ class CampaignRunner:
                     })
 
                     # Apply Anti-Ban sleep delay
-                    if idx < len(leads) - 1:
+                    if idx < len(leads) - 1 and not was_stopped_early:
                         sleep_time = policy.worker_sleep_seconds()
                         await asyncio.sleep(sleep_time)
 
