@@ -1963,6 +1963,14 @@ class WhatsAppSyncOrchestrator:
                 ),
                 owner,
             )
+        except NoWhatsAppSession as exc:
+            job.state = "FAILED"
+            job.error = str(exc)
+            job.finished_at = datetime.now(timezone.utc)
+            logger.info("Sync job atlandi: bagli hat yok (owner=%s sync_id=%s)", owner, job.sync_id)
+            await broadcast_sync_event(
+                sync_event(job, "whatsapp_sync_failed", error=job.error, stage=job.stage), owner
+            )
         except asyncio.CancelledError:
             job.state = "FAILED"
             job.error = "sync iptal edildi"

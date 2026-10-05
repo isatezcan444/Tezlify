@@ -678,6 +678,8 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
         setConnectedPhone(phone || null);
         setModalState('CONNECTED');
         setQrCode(null);
+        pairTokenRef.current = null;
+        setPairToken(null);
         clearTimers();
         toast.success(t('whatsapp.connectedState'), t('common.success'));
         reportSuccessOnce({ 
@@ -738,6 +740,14 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
     if (shouldPoll) {
       fallbackPollRef.current = setInterval(async () => {
         try {
+          if (!isMountedRef.current || pairingLifecycleRef.current === 'CONNECTED') {
+            if (fallbackPollRef.current) {
+              clearInterval(fallbackPollRef.current);
+              fallbackPollRef.current = null;
+            }
+            return;
+          }
+
           const sid = activeSessionIdRef.current || sessionId;
           const pToken = pairTokenRef.current || pairToken;
 
@@ -757,7 +767,10 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
               setPairToken(null);
               setSessionId(res.session_id);
               setPairingLifecycle('CONNECTED');
-              if (fallbackPollRef.current) clearInterval(fallbackPollRef.current);
+              if (fallbackPollRef.current) {
+                clearInterval(fallbackPollRef.current);
+                fallbackPollRef.current = null;
+              }
               toast.success(t('whatsapp.connectedState'), t('common.success'));
               reportSuccessOnce({ id: res.session_id, phone_number: res.phone } as any);
               setTimeout(() => {

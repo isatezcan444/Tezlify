@@ -1912,10 +1912,14 @@ class WhatsAppEventOrchestrator:
                     in_memory_pairing=pairing,
                 )
                 if promoted is not None:
-                    remove_ephemeral_pairing_by_gateway_id(str(gw_session_id))
                     event["session_id"] = promoted.id
                     event["session_name"] = event.get("session_name") or promoted.session_name
                     event["user_id"] = str(promoted.user_id) if promoted.user_id else None
+                    remove_ephemeral_pairing_by_gateway_id(
+                        str(gw_session_id),
+                        session_id=promoted.id,
+                        phone=promoted.phone_number,
+                    )
                     if promoted.user_id and promoted.phone_number:
                         try:
                             await self.reconcile_self_identity(
@@ -2398,10 +2402,12 @@ class WhatsAppEventOrchestrator:
 
                 if evt in ("session_sync_completed", "session_connected"):
                     owner = result.get("user_id")
-                    if owner and owner != SYSTEM_USER_ID and schedule_initial_sync is not None:
+                    sess_id = result.get("session_id")
+                    if owner and owner != SYSTEM_USER_ID and sess_id and schedule_initial_sync is not None:
                         # S-5: attribute the reconcile to the session that asked for
                         # it, so a reconnect storm coalesces per session instead of
-                        # fanning out into parallel sync jobs.
+                        # fanning out into parallel sync jobs. Only schedule if a
+                        # durable session row exists.
                         schedule_initial_sync(
                             str(owner),
                             reconcile=evt == "session_sync_completed",

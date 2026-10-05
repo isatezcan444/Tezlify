@@ -11,7 +11,7 @@ Kapsanan senaryolar:
 7. Telefon olmayan sender_name'e dokunulmaz.
 """
 import pytest
-from sqlalchemy import text, select
+from sqlalchemy import text, select, delete
 
 from backend.app.core.database import AsyncSessionLocal, engine
 from backend.app.core.migrations import backfill_phone_sender_names
@@ -65,6 +65,11 @@ async def _mk_message(db, user_id: str, conv_id: int, sender_name: str) -> int:
 @pytest.mark.asyncio
 async def test_backfill_phone_sender_names_repairs_only_known_names():
     async with AsyncSessionLocal() as db:
+        await db.execute(delete(Message).where(Message.user_id.in_([USER_A, USER_B])))
+        await db.execute(delete(Conversation).where(Conversation.user_id.in_([USER_A, USER_B])))
+        await db.execute(delete(Contact).where(Contact.user_id.in_([USER_A, USER_B])))
+        await db.commit()
+
         # A kiracısı: adı bilinen kişi + adı bilinmeyenler
         known = Contact(user_id=USER_A, phone_e164=PHONE_KNOWN, display_name="Cevat Aydın")
         unknown = Contact(user_id=USER_A, phone_e164=PHONE_UNKNOWN, display_name=PHONE_UNKNOWN)

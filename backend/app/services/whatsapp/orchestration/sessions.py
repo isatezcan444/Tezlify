@@ -10,6 +10,7 @@ Handles WhatsApp tenant session lifecycle:
 """
 from datetime import datetime
 import logging
+import time
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 import uuid
 
@@ -398,6 +399,7 @@ async def create_session(db: AsyncSession, user_id: str, name: str) -> Dict[str,
 # ---------------------------------------------------------------------------
 _ephemeral_pairings: Dict[str, Dict[str, Any]] = {}
 _logical_to_ephemeral: Dict[int, str] = {}
+_recently_consumed_pairings: Dict[str, Dict[str, Any]] = {}
 
 
 def find_ephemeral_pairing_by_gateway_id(gateway_id: str) -> Optional[Dict[str, Any]]:
@@ -408,14 +410,29 @@ def find_ephemeral_pairing_by_gateway_id(gateway_id: str) -> Optional[Dict[str, 
     return None
 
 
-def remove_ephemeral_pairing_by_gateway_id(gateway_id: str) -> None:
-    """Clean up ephemeral pairing metadata by gateway UUID."""
+def remove_ephemeral_pairing_by_gateway_id(
+    gateway_id: str,
+    session_id: Optional[int] = None,
+    phone: Optional[str] = None,
+) -> None:
+    """Clean up ephemeral pairing metadata by gateway UUID and record consumed grace window."""
+    now = time.monotonic()
     for token, data in list(_ephemeral_pairings.items()):
         if data.get("gateway_id") == str(gateway_id):
             log_id = data.get("logical_session_id")
             if log_id and _logical_to_ephemeral.get(log_id) == token:
                 _logical_to_ephemeral.pop(log_id, None)
             _ephemeral_pairings.pop(token, None)
+            _recently_consumed_pairings[token] = {
+                "user_id": str(data.get("user_id")),
+                "session_id": session_id or log_id,
+                "phone": phone or data.get("phone"),
+                "consumed_at": now,
+            }
+    # Prune consumed entries older than 60 seconds
+    for t, d in list(_recently_consumed_pairings.items()):
+        if now - d.get("consumed_at", 0) > 60.0:
+            _recently_consumed_pairings.pop(t, None)
 
 
 async def start_pairing_session(
@@ -510,9 +527,17 @@ async def get_pairing_qr(db: AsyncSession, user_id: str, pair_token: str) -> Dic
             # raises, the token stays intact so the user can retry instead of
             # getting "Eşleşme oturumu bulunamadı" while the phone is still
             # connected on the gateway.
+            now = time.monotonic()
             if log_id and _logical_to_ephemeral.get(log_id) == pair_token:
                 _logical_to_ephemeral.pop(log_id, None)
-            _ephemeral_pairings.pop(pair_token, None)
+            p_data = _ephemeral_pairings.pop(pair_token, None)
+            if p_data:
+                _recently_consumed_pairings[pair_token] = {
+                    "user_id": str(p_data.get("user_id")),
+                    "session_id": row.id if row else log_id,
+                    "phone": phone or (row.phone_number if row else None),
+                    "consumed_at": now,
+                }
 
         # The durable row has exactly ONE writer: `promote_ephemeral_pairing`
         # (Phase 6.8). This endpoint used to hand-roll the same
@@ -795,8 +820,16 @@ async def get_session_qr(db: AsyncSession, user_id: str, session_id: int) -> Dic
                     new_gateway_id=ephemeral_gid,
                     session_name=row.session_name,
                 )
-                _ephemeral_pairings.pop(pair_token, None)
+                now = time.monotonic()
+                p_data = _ephemeral_pairings.pop(pair_token, None)
                 _logical_to_ephemeral.pop(row.id, None)
+                if p_data:
+                    _recently_consumed_pairings[pair_token] = {
+                        "user_id": str(user_id),
+                        "session_id": relink_result.session_id,
+                        "phone": relink_result.phone_number,
+                        "consumed_at": now,
+                    }
                 return {
                     "status": "CONNECTED",
                     "session_id": relink_result.session_id,
