@@ -675,8 +675,8 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     }, []),
   );
 
-  // 'yazıyor...' durumu: conversation_id -> bool (gateway presence_updated ile)
-  const [peerTypingMap, setPeerTypingMap] = useState<Record<number, boolean>>({});
+  // 'yazıyor...' durumu: conversation_id -> bool | { isTyping, senderName } (gateway presence_updated ile)
+  const [peerTypingMap, setPeerTypingMap] = useState<Record<number, boolean | { isTyping: boolean; senderName?: string }>>({});
   // F-11: TTL TÜM sohbetler için geçerlidir. Per-conversation `setTimeout`
   // yerine tek bir expiry haritası + tek bir süpürme interval'i kullanılır;
   // böylece kaybedilen bir 'paused' olayı arka plandaki bir sohbette asılı
@@ -2761,7 +2761,10 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
             // (above) removes the indicator ~10s after the last update even if
             // the 'paused' event never arrives.
             peerTypingExpiryRef.current[convId] = Date.now() + PEER_TYPING_TTL_MS;
-            setPeerTypingMap((prev) => (prev[convId] ? prev : { ...prev, [convId]: true }));
+            setPeerTypingMap((prev) => ({
+              ...prev,
+              [convId]: { isTyping: true, senderName: eventData.participant_name || undefined },
+            }));
           } else {
             clearPeerTyping(convId);
           }
@@ -3251,7 +3254,9 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                         const rawPhone = selectedConv.lead_phone || (selectedConv as any).phone;
                         const headerDisplayName = getConversationDisplayName(selectedConv, t);
                         const headerCleanPhone = extractCleanPhone(rawPhone);
-                        const isPeerTyping = !!peerTypingMap[selectedConv.id];
+                        const typingVal = peerTypingMap[selectedConv.id];
+                        const isPeerTyping = typeof typingVal === 'object' ? !!typingVal?.isTyping : !!typingVal;
+                        const typingSender = typeof typingVal === 'object' ? typingVal?.senderName : undefined;
                         return (
                           <div
                             key={selectedConv.id}
@@ -3289,7 +3294,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                               </div>
                               {isPeerTyping ? (
                                 <p className="text-[11px] font-medium text-[#00a884] dark:text-[#25D366] animate-pulse truncate">
-                                  {t('whatsapp.peerTyping')}
+                                  {selectedConv.is_group && typingSender ? `${typingSender} ${t('whatsapp.peerTyping')}` : t('whatsapp.peerTyping')}
                                 </p>
                               ) : selectedConv.is_group ? (
                                 <p
@@ -3442,7 +3447,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                   leadName={selectedConv.lead_name}
                   leadPhone={selectedConv.lead_phone}
                   isGroup={Boolean(selectedConv.is_group)}
-                  peerTyping={!!peerTypingMap[selectedConv.id]}
+                  peerTyping={Boolean(typeof peerTypingMap[selectedConv.id] === 'object' ? (peerTypingMap[selectedConv.id] as any)?.isTyping : peerTypingMap[selectedConv.id])}
                   onRetry={handleRetryMessage}
                   onReact={handleReactMessage}
                   onReply={handleReplyMessage}
@@ -3594,6 +3599,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                     onSearchInChat={() => setIsChatSearchOpen(true)}
                     onStatusChange={handleStatusChange}
                     onJumpToMessage={handleJumpToMessage}
+                    onDirectMessageParticipant={handleDirectMessageSender}
                   />
                 )}
               </div>

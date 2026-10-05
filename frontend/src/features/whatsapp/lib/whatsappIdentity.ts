@@ -27,8 +27,15 @@ export function formatPhoneNumber(phone?: string | null): string {
     raw = raw.split(':')[0];
   }
 
+  // Handle optional (Siz) / (You) suffix
+  const selfSuffixMatch = raw.match(/\s*\((Siz|You)\)$/i);
+  const suffix = selfSuffixMatch ? ` (${selfSuffixMatch[1]})` : '';
+  if (selfSuffixMatch) {
+    raw = raw.replace(/\s*\((Siz|You)\)$/i, '').trim();
+  }
+
   let digits = raw.replace(/\D/g, '');
-  if (!digits || digits.length < 5) return raw;
+  if (!digits || digits.length < 5) return `${raw}${suffix}`;
 
   // Turkish 10 digits starting with 5 (e.g. 5322334968) -> 905322334968
   if (digits.length === 10 && digits.startsWith('5')) {
@@ -39,32 +46,32 @@ export function formatPhoneNumber(phone?: string | null): string {
 
   // 1. Turkey (+90) - Mobile: 12 digits (+90 5XX XXX XX XX)
   if (digits.startsWith('90') && digits.length === 12) {
-    return `+90 ${digits.slice(2, 5)} ${digits.slice(5, 8)} ${digits.slice(8, 10)} ${digits.slice(10, 12)}`;
+    return `+90 ${digits.slice(2, 5)} ${digits.slice(5, 8)} ${digits.slice(8, 10)} ${digits.slice(10, 12)}${suffix}`;
   }
 
   // 2. North America (+1) (USA, Canada) - 11 digits: +1 XXX XXX XXXX
   if (digits.startsWith('1') && digits.length === 11) {
-    return `+1 ${digits.slice(1, 4)} ${digits.slice(4, 7)} ${digits.slice(7, 11)}`;
+    return `+1 ${digits.slice(1, 4)} ${digits.slice(4, 7)} ${digits.slice(7, 11)}${suffix}`;
   }
 
   // 3. United Kingdom (+44) - Mobile (+44 7XXX XXXXXX) or standard
   if (digits.startsWith('44')) {
     if (digits.length === 12) {
-      return `+44 ${digits.slice(2, 6)} ${digits.slice(6, 12)}`;
+      return `+44 ${digits.slice(2, 6)} ${digits.slice(6, 12)}${suffix}`;
     }
     if (digits.length === 11) {
-      return `+44 ${digits.slice(2, 5)} ${digits.slice(5, 11)}`;
+      return `+44 ${digits.slice(2, 5)} ${digits.slice(5, 11)}${suffix}`;
     }
   }
 
   // 4. Germany (+49)
   if (digits.startsWith('49') && digits.length >= 11 && digits.length <= 13) {
-    return `+49 ${digits.slice(2, 5)} ${digits.slice(5)}`;
+    return `+49 ${digits.slice(2, 5)} ${digits.slice(5)}${suffix}`;
   }
 
   // 5. France (+33) - 11 digits: +33 X XX XX XX XX
   if (digits.startsWith('33') && digits.length === 11) {
-    return `+33 ${digits.slice(2, 3)} ${digits.slice(3, 5)} ${digits.slice(5, 7)} ${digits.slice(7, 9)} ${digits.slice(9, 11)}`;
+    return `+33 ${digits.slice(2, 3)} ${digits.slice(3, 5)} ${digits.slice(5, 7)} ${digits.slice(7, 9)} ${digits.slice(9, 11)}${suffix}`;
   }
 
   // 6. Generic international fallback:
@@ -103,10 +110,10 @@ export function formatPhoneNumber(phone?: string | null): string {
         break;
       }
     }
-    return `+${cc} ${chunks.join(' ')}`;
+    return `+${cc} ${chunks.join(' ')}${suffix}`;
   }
 
-  return `+${digits}`;
+  return `+${digits}${suffix}`;
 }
 
 /**
@@ -123,8 +130,10 @@ export function stripJidPrefix(value?: string | null): string {
 
 export function extractCleanPhone(phone?: string | null): string | null {
   if (!phone) return null;
-  const raw = stripJidPrefix(phone);
+  let raw = stripJidPrefix(phone);
   if (raw.endsWith('@lid') || raw.includes('@g.us')) return null;
+  // If (Siz) or (You) is present, strip it to extract the pure phone digits
+  raw = raw.replace(/\s*\((Siz|You)\)$/i, '').trim();
   const userPart = (raw.includes('@') ? raw.split('@')[0] : raw).split(':')[0];
   let digits = userPart.replace(/\D/g, '');
   if (digits.length < 5 || /^0+$/.test(digits)) return null;
@@ -154,8 +163,10 @@ export function isRealContactName(name?: string | null): boolean {
   if (!trimmed) return false;
   if (isRawWhatsAppJid(trimmed)) return false;
 
-  const digitsOnly = trimmed.replace(/\D/g, '');
-  const lettersOnly = trimmed.replace(/[^a-zA-ZğüşıöçĞÜŞİÖÇ]/g, '');
+  // Strip self suffix if present before verifying whether it's pure phone digits
+  const strippedSelf = trimmed.replace(/\s*\((Siz|You)\)$/i, '').trim();
+  const digitsOnly = strippedSelf.replace(/\D/g, '');
+  const lettersOnly = strippedSelf.replace(/[^a-zA-ZğüşıöçĞÜŞİÖÇ]/g, '');
   if (digitsOnly.length >= 5 && lettersOnly.length === 0) {
     return false;
   }
@@ -211,7 +222,8 @@ export function getConversationDisplayName(
   const isSelf = Boolean(
     (conv as any).is_self ||
     rawName === 'ME' ||
-    (rawName && /^Hat\s*\d+$/i.test(rawName.trim()))
+    (rawName && /^Hat\s*\d+$/i.test(rawName.trim())) ||
+    (rawName && /\((Siz|You)\)$/i.test(rawName.trim()))
   );
   if (isSelf && cleanPhone) {
     return `${formatPhoneNumber(cleanPhone)} (${t('whatsapp.youLabel')})`;

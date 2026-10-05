@@ -143,6 +143,7 @@ from backend.app.services.whatsapp.identity import (
     IdentityResolutionState as _IdentityResolutionState,
     phone_to_jid as _phone_to_jid,
     extract_clean_phone as _extract_clean_phone,
+    format_phone_spaces as _format_phone_spaces,
 )
 
 import sys
@@ -768,7 +769,8 @@ async def list_conversations(
         resolved_name, id_state = _resolve_contact_identity(contact, phone=phone, is_group=is_grp)
         if is_self:
             clean_pn = _extract_clean_phone(phone) or phone
-            resolved_name = f"{clean_pn} (Siz)"
+            formatted_pn = _format_phone_spaces(clean_pn)
+            resolved_name = f"{formatted_pn} (Siz)"
 
         # Faz 10: eski kose-parantezli degerler okuma aninda da etikete
         # normalize edilir ('[IMAGE]' -> '📷 Fotoğraf'); normal metin aynen gecer.

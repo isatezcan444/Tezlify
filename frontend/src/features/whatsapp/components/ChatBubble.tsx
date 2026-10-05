@@ -325,7 +325,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
   // helper resolves a PN JID to its phone, a known contact to its name, an
   // unmapped LID to a deterministic fallback.
   const senderLabel = React.useMemo(() => {
-    if (!isInbound || !isGroup || !message.sender_name) return null;
+    if (!isInbound || !isGroup || (!message.sender_name && !message.sender_phone)) return null;
     const label = getConversationDisplayName(
       {
         id: 0,

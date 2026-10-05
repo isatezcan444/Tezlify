@@ -1096,10 +1096,33 @@ export function bindSocketEvents({
     if (ignoreStaleSocketEvent('presence.update')) return;
     const key = normalizeJid(presenceId);
     const chat = chats.get(key);
-    if (chat) {
-      chat.presence = presences?.[0]?.presence || null;
-      emitEvent({ event: 'presence_updated', conversation_id: key, presence: chat.presence });
+    let pVal = null;
+    let participantJid = null;
+    if (Array.isArray(presences) && presences.length > 0) {
+      pVal = presences[0]?.presence || presences[0]?.lastKnownPresence || null;
+      participantJid = presences[0]?.id || presences[0]?.participant || null;
+    } else if (presences && typeof presences === 'object') {
+      const entries = Object.entries(presences);
+      if (entries.length > 0) {
+        const [firstJid, firstData] = entries[0];
+        participantJid = firstJid;
+        pVal = firstData?.lastKnownPresence || firstData?.presence || null;
+      }
     }
+    if (chat) {
+      chat.presence = pVal;
+    }
+    const resolvedSenderName = participantJid && participantJid !== key
+      ? resolveDisplayName(participantJid, null) || jidToPhone(participantJid)
+      : null;
+
+    emitEvent({
+      event: 'presence_updated',
+      conversation_id: key,
+      presence: pVal,
+      participant: participantJid,
+      participant_name: resolvedSenderName,
+    });
   });
 
   // --- Message acks ---

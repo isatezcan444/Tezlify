@@ -38,8 +38,8 @@ export interface ConversationListProps {
   onSync?: () => void;
   isSyncing?: boolean;
   /** WhatsApp Web paritesi: karsi taraf su an yaziyorsa listede "yazıyor..."
-   * (yesil) gosterilir. conversation_id -> bool. */
-  typingMap?: Record<number, boolean>;
+   * (yesil) gosterilir. conversation_id -> bool | { isTyping, senderName }. */
+  typingMap?: Record<number, boolean | { isTyping: boolean; senderName?: string }>;
   onLoadMore?: () => void;
   hasMore?: boolean;
   loadingMore?: boolean;
@@ -95,6 +95,7 @@ interface ConversationRowProps {
   isGroup?: boolean;
   selected: boolean;
   typing: boolean;
+  typingSenderName?: string;
   isSyncing: boolean;
   onSelect: (id: number) => void;
   /** Satir uzerindeki "asagi ok" menusunun eylemleri (WhatsApp Web paritesi).
@@ -105,7 +106,7 @@ interface ConversationRowProps {
   onDelete?: (id: number) => void;
 }
 
-const ConversationRowComponent: React.FC<ConversationRowProps> = ({ id, name, avatarUrl, phone, lastMessagePreview, lastMessageAt, lastMessageState, messageCount, lastReactionEmoji, status, isArchived, unreadCount, isGroup, selected, typing, isSyncing, onSelect, onArchive, onClose, onReopen, onDelete }) => {
+const ConversationRowComponent: React.FC<ConversationRowProps> = ({ id, name, avatarUrl, phone, lastMessagePreview, lastMessageAt, lastMessageState, messageCount, lastReactionEmoji, status, isArchived, unreadCount, isGroup, selected, typing, typingSenderName, isSyncing, onSelect, onArchive, onClose, onReopen, onDelete }) => {
   const { t, language } = useI18n();
   const isRawJid = isRawWhatsAppJid(phone);
   const cleanPhone = extractCleanPhone(phone);
@@ -214,45 +215,52 @@ const ConversationRowComponent: React.FC<ConversationRowProps> = ({ id, name, av
           </span>
         </div>
 
-        {lastMsg === '__typing__' ? (
-          <p className="text-[11px] text-[#25D366] dark:text-[#25D366] font-bold truncate mt-0.5 animate-pulse">
-            {t('whatsapp.peerTyping')}
-          </p>
-        ) : (() => {
-          const isReactionSnippet = lastMsg.includes('ifadesini') || lastMsg.includes('reacted');
-          const displayText = (!isReactionSnippet && lastReactionEmoji)
-            ? (isGroup && name ? t('whatsapp.reactionLeftInGroup', { name, emoji: lastReactionEmoji }) : t('whatsapp.reactionLeftByOther', { emoji: lastReactionEmoji }))
-            : lastMsg;
-          const showEmojiBadge = Boolean(lastReactionEmoji && !displayText.includes(lastReactionEmoji));
-          return (
-            <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 flex items-center gap-1 min-w-0">
-              <span className="truncate min-w-0">{displayText}</span>
-              {showEmojiBadge ? (
-                <span
-                  className="shrink-0 text-[12px] leading-none select-none"
-                  data-testid={`conv-last-reaction-${id}`}
-                >
-                  {lastReactionEmoji}
-                </span>
-              ) : null}
-            </p>
-          );
-        })()}
-
-        {(status !== 'ACTIVE' || unreadCount > 0) && (
-          <div className="flex items-center justify-end space-x-1.5 mt-1.5">
-            {status !== 'ACTIVE' && (
-              <span className="text-[9px] font-bold uppercase px-1.5 py-0.5 rounded bg-slate-200 dark:bg-white/10 text-slate-500 dark:text-slate-400">
-                {status === 'ARCHIVED' ? t('whatsapp.statusArchived') : t('whatsapp.statusClosed')}
-              </span>
-            )}
-            {unreadCount > 0 && (
-              <Badge variant="primary">
-                {unreadCount}
-              </Badge>
-            )}
+        <div className="flex items-center justify-between mt-0.5 min-w-0">
+          <div className="flex-1 min-w-0 pr-1.5">
+            {lastMsg === '__typing__' ? (
+              <p className="text-[11px] text-[#25D366] dark:text-[#25D366] font-bold truncate animate-pulse">
+                {isGroup && typingSenderName ? `${typingSenderName} ` : ''}{t('whatsapp.peerTyping')}
+              </p>
+            ) : (() => {
+              const isReactionSnippet = lastMsg.includes('ifadesini') || lastMsg.includes('reacted');
+              const displayText = (!isReactionSnippet && lastReactionEmoji)
+                ? (isGroup && name ? t('whatsapp.reactionLeftInGroup', { name, emoji: lastReactionEmoji }) : t('whatsapp.reactionLeftByOther', { emoji: lastReactionEmoji }))
+                : lastMsg;
+              const showEmojiBadge = Boolean(lastReactionEmoji && !displayText.includes(lastReactionEmoji));
+              return (
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 flex items-center gap-1 min-w-0">
+                  <span className="truncate min-w-0">{displayText}</span>
+                  {showEmojiBadge ? (
+                    <span
+                      className="shrink-0 text-[12px] leading-none select-none"
+                      data-testid={`conv-last-reaction-${id}`}
+                    >
+                      {lastReactionEmoji}
+                    </span>
+                  ) : null}
+                </p>
+              );
+            })()}
           </div>
-        )}
+
+          {(status !== 'ACTIVE' || unreadCount > 0) && (
+            <div className="flex items-center space-x-1 shrink-0 ml-1">
+              {status !== 'ACTIVE' && (
+                <span className="text-[9px] font-bold uppercase px-1.5 py-0.5 rounded bg-slate-200 dark:bg-white/10 text-slate-500 dark:text-slate-400">
+                  {status === 'ARCHIVED' ? t('whatsapp.statusArchived') : t('whatsapp.statusClosed')}
+                </span>
+              )}
+              {unreadCount > 0 && (
+                <span
+                  data-testid={`conv-unread-badge-${id}`}
+                  className="min-w-[19px] h-[19px] px-1 rounded-full bg-[#25D366] text-white text-[11px] font-bold flex items-center justify-center leading-none shadow-sm"
+                >
+                  {unreadCount}
+                </span>
+              )}
+            </div>
+          )}
+        </div>
       </div>
     </button>
 
@@ -609,7 +617,8 @@ const ConversationListComponent: React.FC<ConversationListProps> = ({
               unreadCount={conv.unread_count}
               isGroup={conv.is_group}
               selected={selectedId === conv.id}
-              typing={!!typingMap?.[conv.id]}
+              typing={typeof typingMap?.[conv.id] === 'object' ? !!(typingMap[conv.id] as any)?.isTyping : !!typingMap?.[conv.id]}
+              typingSenderName={typeof typingMap?.[conv.id] === 'object' ? (typingMap[conv.id] as any)?.senderName : undefined}
               isSyncing={isSyncing}
               onSelect={handleSelectById}
               onArchive={handleArchiveById}

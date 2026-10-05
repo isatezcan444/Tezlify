@@ -14,6 +14,7 @@ from backend.app.services.whatsapp.identity import (
     jid_to_phone,
     phone_to_jid,
     safe_display_name,
+    format_phone_spaces,
 )
 
 
@@ -158,3 +159,15 @@ def test_name_rank_precedence():
     assert NAME_RANK["group_subject"] > NAME_RANK["history"]
     assert NAME_RANK["history"] > NAME_RANK["push"]
     assert NAME_RANK["push"] > NAME_RANK["phone"]
+
+
+def test_format_phone_spaces():
+    assert format_phone_spaces("+905413749073") == "+90 541 374 90 73"
+    assert format_phone_spaces("+905413749073 (Siz)") == "+90 541 374 90 73 (Siz)"
+    assert format_phone_spaces("905413749073") == "+90 541 374 90 73"
+    assert format_phone_spaces("5413749073") == "+90 541 374 90 73"
+    assert format_phone_spaces("+15551234567") == "+1 555 123 4567"
+    assert format_phone_spaces("+447123456789") == "+44 7123 456789"
+    assert format_phone_spaces("") == ""
+    assert format_phone_spaces(None) == ""
+

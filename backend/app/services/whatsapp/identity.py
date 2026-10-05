@@ -247,6 +247,64 @@ def extract_clean_phone(value: Optional[str]) -> Optional[str]:
     return f"+{digits}"
 
 
+def format_phone_spaces(phone: Optional[str]) -> str:
+    """Formats an E.164 or digit-string phone number with authentic spaces (WhatsApp Web parity).
+
+    e.g.
+      +905413749073 -> +90 541 374 90 73
+      +905413749073 (Siz) -> +90 541 374 90 73 (Siz)
+      +15551234567  -> +1 555 123 4567
+    """
+    if not phone:
+        return ""
+    val = strip_jid_prefix(str(phone).strip())
+    suffix = ""
+    match_self = re.search(r"\s*\((Siz|You)\)$", val, re.IGNORECASE)
+    if match_self:
+        suffix = f" ({match_self.group(1)})"
+        val = val[:match_self.start()].strip()
+
+    if "@" in val:
+        val = val.split("@")[0]
+    if ":" in val:
+        val = val.split(":")[0]
+
+    digits = "".join(ch for ch in val if ch.isdigit())
+    if not digits or len(digits) < 5 or set(digits) == {"0"}:
+        return f"{val}{suffix}"
+
+    if len(digits) == 10 and digits.startswith("5"):
+        digits = f"90{digits}"
+    elif len(digits) == 11 and digits.startswith("05"):
+        digits = f"90{digits[1:]}"
+
+    # Turkey (+90) Mobile: +90 5XX XXX XX XX (12 digits)
+    if digits.startswith("90") and len(digits) == 12:
+        return f"+90 {digits[2:5]} {digits[5:8]} {digits[8:10]} {digits[10:12]}{suffix}"
+
+    # North America (+1): +1 XXX XXX XXXX (11 digits)
+    if digits.startswith("1") and len(digits) == 11:
+        return f"+1 {digits[1:4]} {digits[4:7]} {digits[7:11]}{suffix}"
+
+    # UK (+44): +44 7XXX XXXXXX (12 digits) or +44 XXXX XXXXXX (11 digits)
+    if digits.startswith("44"):
+        if len(digits) == 12:
+            return f"+44 {digits[2:6]} {digits[6:12]}{suffix}"
+        if len(digits) == 11:
+            return f"+44 {digits[2:5]} {digits[5:11]}{suffix}"
+
+    # France (+33): +33 X XX XX XX XX (11 digits)
+    if digits.startswith("33") and len(digits) == 11:
+        return f"+33 {digits[2]} {digits[3:5]} {digits[5:7]} {digits[7:9]} {digits[9:11]}{suffix}"
+
+    # Germany (+49): +49 XXX XXXXXXX
+    if digits.startswith("49") and 11 <= len(digits) <= 13:
+        return f"+49 {digits[2:5]} {digits[5:]}{suffix}"
+
+    return f"+{digits}{suffix}"
+
+
+
 def resolve_contact_identity(
     contact: Optional[Any],
     phone: Optional[str] = None,
