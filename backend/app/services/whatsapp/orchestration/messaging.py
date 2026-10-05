@@ -126,6 +126,7 @@ def serialize_message(
         "error_message": row.error_message,
         "reactions": reactions or [],
         "link_preview": preview or None,
+        "quoted_message": getattr(row, "quoted_message", None),
         "created_at": row.external_timestamp.isoformat()
         if row.external_timestamp
         else (row.created_at.isoformat() if row.created_at else None),

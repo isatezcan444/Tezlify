@@ -388,8 +388,22 @@ export interface Message {
    * (kart cizilmez), cunku ikisi de kullaniciya gosterilecek bir sey
    * oldugunu soylemez. */
   link_preview?: LinkPreview | null;
+  /** Yanitlanan (alintilanan) mesaj bilgisi snapshot'i (WhatsApp native reply). */
+  quoted_message?: QuotedMessageData | null;
   external_timestamp?: string;
   created_at: string;
+}
+
+export interface QuotedMessageData {
+  stanza_id?: string | null;
+  participant?: string | null;
+  sender_name?: string | null;
+  sender_phone?: string | null;
+  message_type?: string;
+  body?: string | null;
+  thumbnail?: string | null;
+  media_id?: string | null;
+  media_url?: string | null;
 }
 
 export interface WhatsAppTemplateVariable {

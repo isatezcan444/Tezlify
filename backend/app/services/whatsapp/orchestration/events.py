@@ -837,6 +837,8 @@ class WhatsAppEventOrchestrator:
                     canonical.media_mime_type = msg.get("media_mime_type") or canonical.media_mime_type
                     canonical.media_filename = msg.get("media_filename") or canonical.media_filename
                     canonical.media_caption = msg.get("media_caption") or canonical.media_caption
+                if msg.get("quoted_message") and not getattr(canonical, "quoted_message", None):
+                    canonical.quoted_message = msg.get("quoted_message")
                 await db.commit()
                 event["conversation_id"] = conv.id
                 event["message"] = serialize_message(canonical)
@@ -861,6 +863,7 @@ class WhatsAppEventOrchestrator:
             media_mime_type=msg.get("media_mime_type"),
             media_filename=msg.get("media_filename"),
             media_caption=msg.get("media_caption"),
+            quoted_message=msg.get("quoted_message"),
             wa_message_id=wa_id,
             client_message_id=msg.get("client_message_id"),
             # D3: no fake phone numbers (hard invariant). LID senders have no

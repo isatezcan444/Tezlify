@@ -179,6 +179,7 @@ def build_message_from_gateway(
         media_mime_type=msg.get("media_mime_type"),
         media_filename=msg.get("media_filename"),
         media_caption=msg.get("media_caption"),
+        quoted_message=msg.get("quoted_message"),
         wa_message_id=msg.get("wa_message_id"),
         client_message_id=msg.get("client_message_id"),
         # D3: no fake phone numbers (hard invariant). LID senders have no

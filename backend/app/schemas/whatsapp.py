@@ -201,6 +201,7 @@ class WhatsAppMessageItem(BaseModel):
     # degeri SESSIZCE duser ve onizleme uctan hic cikmaz — `sync` alaninda
     # yasanan A8 hatasinin birebir aynisi (bkz. WhatsAppSessionResponse).
     link_preview: Optional[WhatsAppLinkPreviewItem] = None
+    quoted_message: Optional[Dict[str, Any]] = None
     created_at: Optional[str] = None
 
 

@@ -534,6 +534,7 @@ export const en = {
     syncingAvatarsCount: '{count} profile photos pending',
     pendingIdentity: 'Resolving identity…',
     contactFallback: 'Contact',
+    participantFallback: 'Participant',
     groupFallback: 'Group',
     lastMessageSyncing: 'Loading last message…',
     emptyUnread: 'No unread conversations',

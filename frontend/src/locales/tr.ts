@@ -534,6 +534,7 @@ export const tr = {
     syncingAvatarsCount: '{count} profil fotoğrafı bekleniyor',
     pendingIdentity: 'Kişi kimliği çözülüyor…',
     contactFallback: 'Kişi',
+    participantFallback: 'Katılımcı',
     groupFallback: 'Grup',
     lastMessageSyncing: 'Son mesaj yükleniyor…',
     emptyUnread: 'Okunmamış sohbet yok',

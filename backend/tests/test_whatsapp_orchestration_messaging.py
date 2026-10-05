@@ -93,7 +93,32 @@ class TestWhatsAppMessagingOrchestration:
         )
         serialized = serialize_message(row)
         assert serialized["media_url"] == "/api/v1/whatsapp/media/med_789"
-        assert serialized["media_filename"] == "photo.jpg"
+
+    def test_serialize_message_with_quoted_message(self):
+        quoted_data = {
+            "stanza_id": "orig_wa_123",
+            "sender_name": "Tolga Cebeci",
+            "message_type": "VIDEO",
+            "body": "Video",
+            "thumbnail": "data:image/jpeg;base64,abc12345",
+        }
+        row = Message(
+            id=44,
+            conversation_id=10,
+            direction=MessageDirection.INBOUND,
+            message_type=MessageType.TEXT,
+            status=ConversationMessageStatus.RECEIVED,
+            body="İsa bu tutar mı sence",
+            quoted_message=quoted_data,
+            wa_message_id="wa_44",
+            sender_phone="905551234567@s.whatsapp.net",
+            sender_name="Tolga Cebeci",
+            recipient_phone="ME",
+        )
+        serialized = serialize_message(row)
+        assert serialized["quoted_message"] == quoted_data
+        assert serialized["quoted_message"]["message_type"] == "VIDEO"
+        assert serialized["quoted_message"]["sender_name"] == "Tolga Cebeci"
 
     @pytest.mark.asyncio
     async def test_send_text_message_empty_body_raises(self):

@@ -37,6 +37,124 @@ export function hasRecognizedContent(content) {
   );
 }
 
+export function bufferToDataUrl(val, mimeType = 'image/jpeg') {
+  if (!val) return null;
+  try {
+    let buf = null;
+    if (Buffer.isBuffer(val)) {
+      buf = val;
+    } else if (val instanceof Uint8Array) {
+      buf = Buffer.from(val);
+    } else if (typeof val === 'string') {
+      if (val.startsWith('data:')) return val;
+      buf = Buffer.from(val, 'base64');
+    }
+    if (buf && buf.length > 0) {
+      return `data:${mimeType};base64,${buf.toString('base64')}`;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+export function extractQuotedMessageMetadata(messageContent, resolveSenderName) {
+  const content = extractMessageContent(messageContent) || messageContent || {};
+  const contextInfo =
+    content.extendedTextMessage?.contextInfo ||
+    content.imageMessage?.contextInfo ||
+    content.videoMessage?.contextInfo ||
+    content.documentMessage?.contextInfo ||
+    content.audioMessage?.contextInfo ||
+    content.stickerMessage?.contextInfo ||
+    content.locationMessage?.contextInfo ||
+    content.contactMessage?.contextInfo ||
+    content.buttonsResponseMessage?.contextInfo ||
+    content.templateButtonReplyMessage?.contextInfo ||
+    content.listResponseMessage?.contextInfo;
+
+  if (!contextInfo || !contextInfo.quotedMessage) {
+    return null;
+  }
+
+  const rawQuoted = extractMessageContent(contextInfo.quotedMessage) || contextInfo.quotedMessage;
+  if (!rawQuoted || typeof rawQuoted !== 'object') {
+    return null;
+  }
+
+  const stanzaId = contextInfo.stanzaId || null;
+  const participant = contextInfo.participant || null;
+
+  let messageType = 'TEXT';
+  let body = '';
+  let thumbnail = null;
+
+  if (rawQuoted.videoMessage) {
+    messageType = 'VIDEO';
+    body = rawQuoted.videoMessage.caption?.trim() || 'Video';
+    if (rawQuoted.videoMessage.jpegThumbnail) {
+      thumbnail = bufferToDataUrl(rawQuoted.videoMessage.jpegThumbnail, 'image/jpeg');
+    }
+  } else if (rawQuoted.imageMessage) {
+    messageType = 'IMAGE';
+    body = rawQuoted.imageMessage.caption?.trim() || 'Fotoğraf';
+    if (rawQuoted.imageMessage.jpegThumbnail) {
+      thumbnail = bufferToDataUrl(rawQuoted.imageMessage.jpegThumbnail, 'image/jpeg');
+    }
+  } else if (rawQuoted.documentMessage) {
+    messageType = 'DOCUMENT';
+    body = (rawQuoted.documentMessage.fileName || rawQuoted.documentMessage.title || rawQuoted.documentMessage.caption || 'Belge').trim();
+    if (rawQuoted.documentMessage.jpegThumbnail) {
+      thumbnail = bufferToDataUrl(rawQuoted.documentMessage.jpegThumbnail, 'image/jpeg');
+    }
+  } else if (rawQuoted.audioMessage) {
+    messageType = 'AUDIO';
+    body = rawQuoted.audioMessage.ptt ? 'Sesli mesaj' : 'Ses kaydı';
+  } else if (rawQuoted.stickerMessage) {
+    messageType = 'STICKER';
+    body = 'Çıkartma';
+    if (rawQuoted.stickerMessage.pngThumbnail) {
+      thumbnail = bufferToDataUrl(rawQuoted.stickerMessage.pngThumbnail, 'image/png');
+    }
+  } else if (rawQuoted.locationMessage) {
+    messageType = 'LOCATION';
+    body = rawQuoted.locationMessage.name || rawQuoted.locationMessage.address || 'Konum';
+    if (rawQuoted.locationMessage.jpegThumbnail) {
+      thumbnail = bufferToDataUrl(rawQuoted.locationMessage.jpegThumbnail, 'image/jpeg');
+    }
+  } else if (rawQuoted.contactMessage) {
+    messageType = 'CONTACT';
+    body = rawQuoted.contactMessage.displayName || 'Kişi';
+  } else if (rawQuoted.conversation) {
+    messageType = 'TEXT';
+    body = rawQuoted.conversation;
+  } else if (rawQuoted.extendedTextMessage) {
+    messageType = 'TEXT';
+    body = rawQuoted.extendedTextMessage.text || '';
+    if (rawQuoted.extendedTextMessage.jpegThumbnail) {
+      thumbnail = bufferToDataUrl(rawQuoted.extendedTextMessage.jpegThumbnail, 'image/jpeg');
+    }
+  }
+
+  let senderName = null;
+  if (typeof resolveSenderName === 'function' && participant) {
+    try {
+      senderName = resolveSenderName(participant);
+    } catch {
+      senderName = null;
+    }
+  }
+
+  return {
+    stanza_id: stanzaId,
+    participant: participant,
+    sender_name: senderName || null,
+    message_type: messageType,
+    body: body || '',
+    thumbnail: thumbnail || null,
+  };
+}
+
 export function extractLinkPreviewMetadata(messageContent) {
   const content = extractMessageContent(messageContent) || messageContent || {};
   const ext = content.extendedTextMessage;

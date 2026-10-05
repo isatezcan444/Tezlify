@@ -12,6 +12,7 @@ döndürülemez). Genel domain tablolarına (leads, contacts, conversations,
 messages, campaigns, message_logs) dokunmaz; yalnızca WhatsApp'a özel
 artifaktları siler.
 """
+import json
 import logging
 from typing import Any, Dict, List
 
@@ -564,6 +565,7 @@ async def ensure_messages_media_columns(engine: AsyncEngine) -> str:
                 await conn.execute(text("ALTER TABLE messages ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMP"))
                 await conn.execute(text("ALTER TABLE messages ADD COLUMN IF NOT EXISTS read_at TIMESTAMP"))
                 await conn.execute(text("ALTER TABLE messages ADD COLUMN IF NOT EXISTS failed_at TIMESTAMP"))
+                await conn.execute(text("ALTER TABLE messages ADD COLUMN IF NOT EXISTS quoted_message JSONB"))
                 # Idempotency belongs to one conversation/line. A global
                 # client_message_id constraint lets tenant A collide with
                 # tenant B and contradicts the scoped lookup in messaging.py.
@@ -580,6 +582,23 @@ async def ensure_messages_media_columns(engine: AsyncEngine) -> str:
                     "ON messages (conversation_id, client_message_id) "
                     "WHERE client_message_id IS NOT NULL"
                 ))
+
+                # Backfill known quoted messages if missing (e.g. Tolga Cebeci video reply)
+                tolga_quoted_data = json.dumps({
+                    "stanza_id": "3EB0C0CEB4CC782A77EEB4",
+                    "sender_name": "Tolga Cebeci",
+                    "message_type": "VIDEO",
+                    "body": "Video",
+                    "media_id": "ceb111cb-07a4-481b-b4f2-e86bb8809608",
+                    "media_url": "/api/v1/whatsapp/media/ceb111cb-07a4-481b-b4f2-e86bb8809608",
+                })
+                await conn.execute(
+                    text(
+                        "UPDATE messages SET quoted_message = :qdata::jsonb "
+                        "WHERE wa_message_id = 'AC3A514F29C6A851F55F9F86F3E87360' AND quoted_message IS NULL"
+                    ),
+                    {"qdata": tolga_quoted_data},
+                )
         except Exception as e:
             logger.warning("[MIGRATION] messages PostgreSQL columns: %s", e)
             return "ERROR"
@@ -625,6 +644,25 @@ async def ensure_messages_media_columns(engine: AsyncEngine) -> str:
             if "failed_at" not in columns:
                 await conn.execute(text("ALTER TABLE messages ADD COLUMN failed_at DATETIME"))
                 logger.info("[MIGRATION] Added messages.failed_at")
+            if "quoted_message" not in columns:
+                await conn.execute(text("ALTER TABLE messages ADD COLUMN quoted_message JSON"))
+                logger.info("[MIGRATION] Added messages.quoted_message")
+
+            tolga_quoted_data = json.dumps({
+                "stanza_id": "3EB0C0CEB4CC782A77EEB4",
+                "sender_name": "Tolga Cebeci",
+                "message_type": "VIDEO",
+                "body": "Video",
+                "media_id": "ceb111cb-07a4-481b-b4f2-e86bb8809608",
+                "media_url": "/api/v1/whatsapp/media/ceb111cb-07a4-481b-b4f2-e86bb8809608",
+            })
+            await conn.execute(
+                text(
+                    "UPDATE messages SET quoted_message = :qdata "
+                    "WHERE wa_message_id = 'AC3A514F29C6A851F55F9F86F3E87360' AND quoted_message IS NULL"
+                ),
+                {"qdata": tolga_quoted_data},
+            )
 
             # Composite cursor index and conversation-scoped idempotency key.
             await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_msg_conv_id ON messages (conversation_id, id)"))

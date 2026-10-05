@@ -63,6 +63,7 @@ import {
   systemContentMarker,
   buildMediaContent,
   extractLinkPreviewMetadata,
+  extractQuotedMessageMetadata,
 } from './messages/message-classifier.js';
 
 import {
@@ -1845,6 +1846,35 @@ export function createSessionManager({
         };
       }
 
+      const quotedMeta = extractQuotedMessageMetadata(msg.message, (participantJid) => {
+        if (!participantJid) return null;
+        const pDigits = String(participantJid).split(':')[0].split('@')[0].replace(/\D/g, '');
+        const mePhone = (session?.sock?.user?.id || session?.state?.creds?.me?.id || session?.phone_number || '').split(':')[0].split('@')[0].replace(/\D/g, '');
+        const meLid = (session?.sock?.user?.lid || session?.state?.creds?.me?.lid || session?.self_lid || '').split(':')[0].split('@')[0].replace(/\D/g, '');
+        if (pDigits && (pDigits === mePhone || pDigits === meLid)) {
+          return 'ME';
+        }
+        return this._resolveDisplayName(session, participantJid, null);
+      });
+
+      if (!messagesByChat.has(key)) messagesByChat.set(key, []);
+      const chatMsgs = messagesByChat.get(key);
+
+      if (quotedMeta && quotedMeta.stanza_id) {
+        const existingQuoted = (chatMsgs || []).find((m) => m.wa_message_id === quotedMeta.stanza_id);
+        if (existingQuoted) {
+          if (!quotedMeta.media_id && existingQuoted.media_id) {
+            quotedMeta.media_id = existingQuoted.media_id;
+          }
+          if (!quotedMeta.media_url && existingQuoted.media_id) {
+            quotedMeta.media_url = `/api/v1/whatsapp/media/${existingQuoted.media_id}`;
+          }
+          if (!quotedMeta.sender_name && existingQuoted.sender_name) {
+            quotedMeta.sender_name = existingQuoted.sender_name;
+          }
+        }
+      }
+
       const ts = messageTimestampMs(msg.messageTimestamp);
       const timestampSeconds = Number(msg.messageTimestamp);
       const record = {
@@ -1860,6 +1890,7 @@ export function createSessionManager({
         media_filename: mediaInfo?.filename || existingRecord?.media_filename || null,
         media_caption: text || existingRecord?.media_caption || null,
         native_link_preview: nativeLinkPreview,
+        quoted_message: quotedMeta || null,
         wa_message_id: msg.key?.id || null,
         sender_phone: fromMe ? 'ME' : (jidToPhone(msg.key?.participant || key) || (msg.key?.participant || key)),
         recipient_phone: fromMe ? (jidToPhone(key) || key) : 'ME',
@@ -1869,8 +1900,6 @@ export function createSessionManager({
         participant_name: isGroup ? this._resolveDisplayName(session, msg.key?.participant, msg.pushName) : null,
         created_at: new Date(ts).toISOString(),
       };
-      if (!messagesByChat.has(key)) messagesByChat.set(key, []);
-      const chatMsgs = messagesByChat.get(key);
       // Upgrading a media-less placeholder (see the duplicate check above):
       // drop the synthetic row so the chat keeps ONE record per wa_message_id
       // and the real media-bearing one takes its place.
@@ -2978,6 +3007,17 @@ export function createSessionManager({
             : null,
         }));
 
+      const quotedMeta = extractQuotedMessageMetadata(msg.message, (participantJid) => {
+        if (!participantJid) return null;
+        const pDigits = String(participantJid).split(':')[0].split('@')[0].replace(/\D/g, '');
+        const mePhone = (session?.sock?.user?.id || session?.state?.creds?.me?.id || session?.phone_number || '').split(':')[0].split('@')[0].replace(/\D/g, '');
+        const meLid = (session?.sock?.user?.lid || session?.state?.creds?.me?.lid || session?.self_lid || '').split(':')[0].split('@')[0].replace(/\D/g, '');
+        if (pDigits && (pDigits === mePhone || pDigits === meLid)) {
+          return 'ME';
+        }
+        return this._resolveDisplayName(session, participantJid, null);
+      });
+
       return {
         id: ts,
         timestamp_s: Number.isFinite(timestampSeconds) && timestampSeconds > 0 ? timestampSeconds : null,
@@ -2990,6 +3030,7 @@ export function createSessionManager({
         media_mime_type: mediaMime,
         media_filename: mediaFilename,
         media_caption: text || null,
+        quoted_message: quotedMeta || null,
         wa_message_id: waMsgId,
         sender_phone: msg.key?.fromMe ? 'ME' : (jidToPhone(msg.key?.participant || key) || key),
         recipient_phone: msg.key?.fromMe ? (jidToPhone(key) || key) : 'ME',

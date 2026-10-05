@@ -20,8 +20,9 @@ import {
   Forward,
   ChevronDown,
   Pin,
+  FileText,
 } from 'lucide-react';
-import { Conversation, Message } from '../../../types';
+import { Conversation, Message, QuotedMessageData } from '../../../types';
 import { Tooltip } from '../../../components/ui/Tooltip';
 import { Modal } from '../../../components/ui/Modal';
 import { useToast } from '../../../context/ToastContext';
@@ -407,6 +408,111 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
 
   /**
    * Metin govdesi + (varsa) link onizleme karti.
+   */
+  const scrollToQuotedMessage = (targetId?: string | null) => {
+    if (!targetId) return;
+    const targetEl =
+      (document.querySelector(`[data-wa-id="${targetId}"]`) as HTMLElement) ||
+      (document.querySelector(`[data-msg-id="${targetId}"]`) as HTMLElement) ||
+      document.getElementById(`msg-${targetId}`);
+    if (targetEl) {
+      targetEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      targetEl.classList.add('ring-2', 'ring-[#00a884]', 'dark:ring-[#25D366]', 'bg-[#00a884]/15', 'dark:bg-[#25D366]/20');
+      setTimeout(() => {
+        targetEl.classList.remove('ring-2', 'ring-[#00a884]', 'dark:ring-[#25D366]', 'bg-[#00a884]/15', 'dark:bg-[#25D366]/20');
+      }, 1800);
+    }
+  };
+
+  const renderQuotedBlock = (quoted: QuotedMessageData) => {
+    const isSelfSender = quoted.sender_name === 'ME' || quoted.sender_phone === 'ME';
+    const displayName = isSelfSender ? t('whatsapp.youLabel') : (quoted.sender_name || t('whatsapp.participantFallback'));
+    const senderColorClass = isSelfSender ? 'text-[#00a884] dark:text-[#25D366]' : getSenderColorClass(displayName);
+    const thumbSrc = quoted.thumbnail || (quoted.media_url ? resolveMediaUrl(quoted.media_url) : null);
+    const mType = (quoted.message_type || 'TEXT').toUpperCase();
+
+    const mediaLabel = (() => {
+      if (quoted.body && quoted.body !== 'Video' && quoted.body !== 'Fotoğraf' && quoted.body !== 'Belge') {
+        return quoted.body;
+      }
+      switch (mType) {
+        case 'VIDEO':
+          return t('whatsapp.previewVideo');
+        case 'IMAGE':
+          return t('whatsapp.previewImage');
+        case 'DOCUMENT':
+          return quoted.body || t('whatsapp.previewDocument');
+        case 'AUDIO':
+          return t('whatsapp.previewAudio');
+        case 'STICKER':
+          return t('whatsapp.previewSticker');
+        case 'LOCATION':
+          return quoted.body || t('whatsapp.previewLocation');
+        case 'CONTACT':
+          return quoted.body || t('whatsapp.previewContact');
+        default:
+          return quoted.body || '';
+      }
+    })();
+
+    return (
+      <div
+        onClick={(e) => {
+          e.stopPropagation();
+          scrollToQuotedMessage(quoted.stanza_id);
+        }}
+        className="mb-1.5 p-2 rounded-lg bg-black/[0.05] dark:bg-black/25 border-l-[4px] border-[#00a884] dark:border-[#25D366] cursor-pointer hover:bg-black/[0.08] dark:hover:bg-black/35 transition-colors flex items-center justify-between gap-2.5 overflow-hidden text-xs max-w-full group/quote select-none"
+      >
+        <div className="min-w-0 flex-1 py-0.5">
+          <div className={`font-semibold truncate text-[11.5px] leading-tight mb-1 ${senderColorClass}`}>
+            {displayName}
+          </div>
+          <div className="flex items-center gap-1.5 text-[#54656f] dark:text-[#aebac1] text-xs font-normal leading-snug line-clamp-2">
+            {mType === 'VIDEO' && <Video className="w-3.5 h-3.5 text-[#8696a0] shrink-0" />}
+            {mType === 'IMAGE' && <ImageIcon className="w-3.5 h-3.5 text-[#8696a0] shrink-0" />}
+            {mType === 'DOCUMENT' && <FileText className="w-3.5 h-3.5 text-[#8696a0] shrink-0" />}
+            {mType === 'AUDIO' && <Music className="w-3.5 h-3.5 text-[#8696a0] shrink-0" />}
+            {mType === 'LOCATION' && <MapPin className="w-3.5 h-3.5 text-[#8696a0] shrink-0" />}
+            <span className="truncate">{mediaLabel}</span>
+          </div>
+        </div>
+
+        {thumbSrc && (
+          <div className="w-14 h-14 shrink-0 rounded overflow-hidden bg-black/10 dark:bg-black/30 relative flex items-center justify-center">
+            {mType === 'VIDEO' && !quoted.thumbnail ? (
+              <video
+                src={`${thumbSrc}#t=0.1`}
+                className="w-full h-full object-cover pointer-events-none"
+                preload="metadata"
+                muted
+                playsInline
+              />
+            ) : (
+              <img
+                src={thumbSrc}
+                alt="Quote preview"
+                className="w-full h-full object-cover pointer-events-none"
+                loading="lazy"
+              />
+            )}
+            {mType === 'VIDEO' && (
+              <div className="absolute inset-0 flex items-center justify-center bg-black/25">
+                <Video className="w-4 h-4 text-white drop-shadow" />
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  /**
+   * Govdedeki @jid / @numara etiketlerini renkli cip olarak gosterir.
+   *
+   * Link onizlemesi metnin icine KARIŞTIRILMAZ: `renderTextWithPreview` icinde
+   * ayri bir blok olarak cizilir. Bu ayrim cok onemli: onizleme metin
+   * akisina eklenirse, uzun linklerde veya birden fazla linkte balonun
+   * yerlesimi bozulur ve kullanici metni okuyamaz.
    *
    * WhatsApp Web onizlemeyi metnin ALTINA koyar; metin her zaman gorunur
    * kalir. Onizleme yoksa (henuz cozulmemis veya basarisiz) yalnizca metin
@@ -418,7 +524,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
     let resolvedText = text;
 
     let quotedBlock: React.ReactNode = null;
-    if (resolvedText.startsWith('> ')) {
+    if (!message.quoted_message && resolvedText.startsWith('> ')) {
       const splitIdx = resolvedText.indexOf('\n\n');
       if (splitIdx !== -1) {
         const quotePart = resolvedText.substring(2, splitIdx).trim();
@@ -767,6 +873,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
         <div
           id={message.id ? `msg-${message.id}` : undefined}
           data-msg-id={message.id}
+          data-wa-id={message.wa_message_id}
           className={`relative group max-w-[85%] sm:max-w-[75%] min-w-[76px] pl-2.5 pr-2.5 pt-1.5 pb-1 sm:pl-3 sm:pr-3 shadow-[0_1px_0.5px_rgba(11,20,26,0.13)] text-[13px] leading-relaxed transition-all duration-150 select-text ${
             isSearchActiveMatch ? 'ring-2 ring-[#00a884] dark:ring-[#25D366] shadow-md scale-[1.01]' : ''
           } ${
@@ -802,6 +909,9 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
               <span>{senderLabel}</span>
             </div>
           )}
+
+          {/* Quoted Message Card */}
+          {message.quoted_message && renderQuotedBlock(message.quoted_message)}
 
           {/* Message Content */}
           {renderMediaContent()}

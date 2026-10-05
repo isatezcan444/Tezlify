@@ -1,6 +1,6 @@
 import enum
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, DateTime, Text, Enum, ForeignKey, Index, Uuid, text
+from sqlalchemy import Column, Integer, String, DateTime, Text, Enum, ForeignKey, Index, Uuid, text, JSON
 from sqlalchemy.orm import relationship
 from backend.app.core.database import Base
 from backend.app.core.datetime_utils import utc_now_naive
@@ -61,6 +61,9 @@ class Message(Base):
     media_mime_type = Column(String(100), nullable=True)
     media_filename = Column(String(255), nullable=True)
     media_caption = Column(Text, nullable=True)
+
+    # Quoted message metadata snapshot (reply preview)
+    quoted_message = Column(JSON, nullable=True)
 
     # D3: nullable — LID (privacy-mode) senders have no resolvable phone number.
     # Hard invariant (AGENTS.md): never synthesize fake phone numbers; unknown
