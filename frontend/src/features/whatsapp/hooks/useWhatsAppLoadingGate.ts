@@ -18,6 +18,13 @@ import { WhatsAppLoadingGate, LoadingGatePhase } from '../../../types';
 /** WS olayından gelen payload — backend `WhatsAppLoadingGateResponse` ile aynı şekil. */
 interface LoadingGateEventPayload extends Partial<WhatsAppLoadingGate> {
   event?: string;
+  total?: number;
+  synced?: number;
+  chats_synced?: number;
+  chats_total?: number;
+  messages_synced?: number;
+  messages_total?: number;
+  [key: string]: any;
 }
 
 /** `session_sync_*` olaylarından türetilen eşdeğer durum (gerçek alanlardan). */
@@ -30,11 +37,18 @@ function deriveFromSessionSync(eventData: Record<string, any> | null | undefined
   else if (phaseRaw === 'syncing') phase = 'syncing_history';
   else if (phaseRaw === 'error') phase = 'error';
   else phase = 'connecting';
+
+  // Gateway'in kendi geçmiş senkron ilerlemesi tüm sürecin ilk kısmıdır (0 - 50%).
+  // Kalan 50 - 95% backend'in PostgreSQL'e sohbet ve mesaj yazımıdır.
+  // Bu nedenle tek başına gateway ilerlemesi kapıyı asla %100 yapamaz.
+  const rawGw = Math.max(0, Math.min(100, Math.round(Number(sync.progress || 0))));
+  const scaledProgress = phase === 'ready' ? 50 : Math.min(50, Math.round(rawGw * 0.5));
+
   return {
     session_id: null,
     phase,
     stage: String(sync.stage || eventData.stage || 'chats'),
-    progress: Math.max(0, Math.min(100, Math.round(Number(sync.progress || 0)))),
+    progress: scaledProgress,
     counts: {
       chats_total: Number(sync.chats_unique ?? sync.chats_total ?? 0) || 0,
       chats_synced: Number(sync.chats_unique ?? sync.chats_synced ?? 0) || 0,
@@ -96,15 +110,69 @@ export function useWhatsAppLoadingGate(onReady?: () => void): UseWhatsAppLoading
   // mesajlar + bos sohbet geri doldurma) bundan SONRA biter ve `initial_sync_completed_at`
   // damgasi o zaman yazilir. Bu yuzden gateway `ready` sinyali kapıyı AÇMAZ;
   // bunun yerine yetkili REST durumu yeniden cekilir (tek-authority sozlesme).
-  // Onceden bu sinyal `applyGate('ready')` yapiyordu: kapı, mesajlar henuz
-  // inmeden kapanıyor ve kullanıcı "anlık yuklenen" bir sohbet listesi
-  // goruyordu.
   useEffect(() => {
     const handler = (e: Event) => {
       const detail = (e as CustomEvent<any>).detail as LoadingGateEventPayload | undefined;
       if (!detail) return;
       if (detail.event === 'whatsapp_loading_gate') {
         applyGate(detail as WhatsAppLoadingGate);
+        return;
+      }
+      if (
+        detail.event === 'whatsapp_sync_started' ||
+        detail.event === 'whatsapp_sync_chats_snapshot' ||
+        detail.event === 'whatsapp_sync_contacts_snapshot' ||
+        detail.event === 'whatsapp_sync_messages_chunk' ||
+        detail.event === 'whatsapp_sync_progress'
+      ) {
+        const stage = String(detail.stage || 'chats');
+        const chatsSynced = Number(detail.chats_synced ?? 0);
+        const chatsTotal = Number(detail.total ?? detail.chats_total ?? chatsSynced);
+        const msgsSynced = Number(detail.messages_synced ?? detail.synced ?? 0);
+        const msgsTotal = Number(detail.messages_total ?? msgsSynced);
+
+        let backendProgress = 50;
+        if (chatsTotal > 0) {
+          backendProgress = Math.min(95, Math.round(50 + 45 * (chatsSynced / chatsTotal)));
+        } else if (stage === 'messages' && msgsTotal > 0) {
+          backendProgress = Math.min(95, Math.round(70 + 25 * (msgsSynced / msgsTotal)));
+        } else if (stage === 'messages') {
+          backendProgress = 75;
+        } else if (stage === 'contacts') {
+          backendProgress = 60;
+        } else if (stage === 'backfill') {
+          backendProgress = 85;
+        } else if (stage === 'finalizing') {
+          backendProgress = 92;
+        }
+
+        applyGate({
+          session_id: null,
+          phase: 'syncing_history',
+          stage,
+          progress: backendProgress,
+          counts: {
+            chats_total: chatsTotal,
+            chats_synced: chatsSynced,
+            messages_total: msgsTotal,
+            messages_synced: msgsSynced,
+            avatars_total: 0,
+            avatars_fetched: 0,
+            avatars_missing: 0,
+          },
+          gateway_available: true,
+          gateway_error: null,
+          error: null,
+        });
+        return;
+      }
+      if (detail.event === 'whatsapp_sync_complete') {
+        // Backend DB sync tamamlandi! Tek-authority endpoint'e sor ve kapıyı ready'e geçir.
+        void refresh();
+        return;
+      }
+      if (detail.event === 'whatsapp_sync_failed') {
+        void refresh();
         return;
       }
       if (

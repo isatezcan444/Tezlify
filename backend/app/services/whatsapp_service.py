@@ -401,22 +401,36 @@ async def get_loading_gate(db: AsyncSession, user_id: str) -> Dict[str, Any]:
         initial_sync_completed=bool(session.get("initial_sync_completed")),
     )
 
-    progress = int(sync.get("progress") or 0)
     if phase == "ready":
         progress = 100
-    elif job_state == "SYNCING":
+    else:
         # The bar must never read 100% while the first sync is still running.
-        # The gateway reports `progress: 100` the moment ITS history sync
-        # finishes, but the backend still has to pull the final chat set — so cap
-        # the gateway's contribution at 90 and take the job's own progress when
-        # it is further along. `ready` (above) is the only path to 100.
-        gateway_progress = min(progress, 90)
-        backend_progress = (
-            min(90, int(90 * counts["chats_synced"] / counts["chats_total"]))
-            if counts["chats_total"] > 0
-            else 0
-        )
-        progress = max(gateway_progress, backend_progress)
+        # Gateway reports progress for receiving history chunks (scaled 0-50%).
+        # Backend sync job reports progress for DB ingestion (scaled 50-95%).
+        # Only durable initial_sync_completed commits allow phase='ready' and progress=100.
+        raw_gw = int(sync.get("progress") or 0)
+        gateway_progress = min(50, int(raw_gw * 0.5)) if gw_phase != "ready" else 50
+        backend_progress = 0
+        if counts["chats_total"] > 0:
+            backend_progress = min(
+                95,
+                int(50 + 45 * (counts["chats_synced"] / counts["chats_total"])),
+            )
+        elif counts["messages_total"] > 0:
+            backend_progress = min(
+                95,
+                int(70 + 25 * (counts["messages_synced"] / counts["messages_total"])),
+            )
+        elif job_stage == "messages":
+            backend_progress = 75
+        elif job_stage == "contacts":
+            backend_progress = 60
+        elif job_stage in ("chats", "backfill"):
+            backend_progress = 55
+        elif job_state == "SYNCING":
+            backend_progress = 50
+
+        progress = min(95, max(gateway_progress, backend_progress))
 
     return {
         "session_id": session.get("id"),

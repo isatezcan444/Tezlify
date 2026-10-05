@@ -93,4 +93,16 @@ assert.match(
   'a failed backend sync must re-ask the loading gate so it reports the error',
 );
 
+// 5. Initial sync pending must directly keep the gate active until chats/messages are fetched
+assert.match(
+  page,
+  /initialSyncPending\s*\|\|/,
+  'initialSyncPending must directly keep syncGateActive open',
+);
+assert.doesNotMatch(
+  page,
+  /session_sync_progress[\s\S]{0,300}setSessionSync\(\s*\{[^}]*phase:\s*'ready'/,
+  "session_sync_progress must not set sessionSync to 'ready'",
+);
+
 console.log('[verify-whatsapp-loading-gate] ok - backend is the single gate authority');

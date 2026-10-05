@@ -541,9 +541,8 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   const [isNewChatModalOpen, setIsNewChatModalOpen] = useState<boolean>(false);
   const [isSyncingChats, setIsSyncingChats] = useState<boolean>(false);
   const conversationsGenerationRef = useRef(0);
-  // Faz 6: WS handler'i guncel loadConversations kopyasini ve bilinen sohbet
-  // id'lerini ref uzerinden okur (bayat closure / StrictMode çift calisma yok).
   const loadConversationsRef = useRef<((silent?: boolean) => Promise<void>) | null>(null);
+  const fetchSessionsRef = useRef<((silent?: boolean) => Promise<void>) | null>(null);
   const knownConvIdsRef = useRef<Set<number>>(new Set());
   const hydratingConversationIds = useRef(new Set<number>());
   const hydrateConversation = useCallback((id: number) => {
@@ -668,10 +667,11 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     dismiss: dismissLoadingGate,
     refresh: refreshLoadingGate,
   } = useWhatsAppLoadingGate(
-    useCallback(() => {
+    useCallback(async () => {
+      if (fetchSessionsRef.current) await fetchSessionsRef.current(true);
+      if (loadConversationsRef.current) await loadConversationsRef.current(true);
       setIsPostQrSyncing(false);
       setHubTab('conversations');
-      loadConversationsRef.current?.(true);
     }, []),
   );
 
@@ -1017,9 +1017,34 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   // "Sohbetler esitlendi" bildirimi gercek tamamlanmadan sonra kisa sure
   // gorunur ve kendiliginden kapanir (hata MASKELENMEZ — yalnizca tamamlanma
   // mesajinin omru sinirlidir).
+  // Faz 14 — kapi kosulu. WhatsApp Web paritesi senkron kapisi.
+  //   1) QR okutulup yeni baglanti yapildiginda (`isPostQrSyncing`),
+  //   2) Ilk senkronu henuz tamamlanmamis hatta senkron suresince (`initialSyncPending`),
+  //   3) Hata veya devam eden gercek senkron asamasinda,
+  //   4) Faz 3: tek-authority loading gate `syncing_history`/`connecting` asamasindayken.
+  // Kullanici kapiyi kapatmadigi surece WhatsApp Web yukleme ekrani gosterilir.
+  const connectedSession = sessions.find((s) => s.status === 'CONNECTED') || null;
+  const initialSyncPending = Boolean(connectedSession) && connectedSession?.initial_sync_completed !== true;
+  // Avatarlar asla kapıyı TUTMAZ (backend `resolve_gate_phase` de artık
+  // `loading_profiles` dondurmez). Kapı yalnızca gercek ilk senkron surerken
+  // kapanır; profil fotografları arkada akar.
+  const loadingGateActive = loadingGate?.phase === 'syncing_history' || loadingGate?.phase === 'connecting';
+  const syncGateActive =
+    hubTab === 'conversations' &&
+    !syncGateDismissed &&
+    (isPostQrSyncing ||
+      loadingGateActive ||
+      initialSyncPending ||
+      (sessionSync?.phase === 'syncing' && isSyncingChats));
+
+  // "Sohbetler esitlendi" bildirimi gercek tamamlanmadan sonra kisa sure
+  // gorunur ve kendiliginden kapanir (hata MASKELENMEZ — yalnizca tamamlanma
+  // mesajinin omru sinirlidir).
   useEffect(() => {
     if (sessionSync?.phase !== 'ready') return;
-    setIsPostQrSyncing(false);
+    if (!initialSyncPending) {
+      setIsPostQrSyncing(false);
+    }
     loadConversations(true);
     // İlk senkron biterken biriken bölünmeleri de tazele: onarım yüzeyi
     // senkron tamamlandıktan sonra gerçek durumu göstersin.
@@ -1028,28 +1053,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       setSessionSync((prev) => (prev && prev.phase === 'ready' ? null : prev));
     }, 4000);
     return () => clearTimeout(timer);
-  }, [sessionSync?.phase, loadConversations, refreshLidSplits]);
-
-  // Faz 14 — kapi kosulu. WhatsApp Web paritesi senkron kapisi.
-  //   1) QR okutulup yeni baglanti yapildiginda (`isPostQrSyncing`),
-  //   2) Ilk senkronu henuz tamamlanmamis hatta senkron suresince,
-  //   3) Hata veya devam eden gercek senkron asamasinda,
-  //   4) Faz 3: tek-authority loading gate `syncing_history`/`loading_profiles`
-  //      asamasindayken (profil fotograflari dahil).
-  // Kullanici kapiyi kapatmadigi surece WhatsApp Web yukleme ekrani gosterilir.
-  const connectedSession = sessions.find((s) => s.status === 'CONNECTED') || null;
-  const initialSyncPending = Boolean(connectedSession) && connectedSession?.initial_sync_completed !== true;
-  // Avatarlar asla kapıyı TUTMAZ (backend `resolve_gate_phase` de artık
-  // `loading_profiles` dondurmez). Kapı yalnızca gercek ilk senkron surerken
-  // kapanır; profil fotografları arkada akar.
-  const loadingGateActive = loadingGate?.phase === 'syncing_history';
-  const syncGateActive =
-    hubTab === 'conversations' &&
-    !syncGateDismissed &&
-    (isPostQrSyncing ||
-      loadingGateActive ||
-      (initialSyncPending && (sessionSync?.phase === 'syncing' || sessionSync?.phase === 'error')) ||
-      (sessionSync?.phase === 'syncing' && isSyncingChats));
+  }, [sessionSync?.phase, initialSyncPending, loadConversations, refreshLidSplits]);
 
   // Uzun suren senkron kullaniciyi kapida kilitli birakmasin: bir esikten
   // sonra "yine de devam et" cikisi gorunur olur. Hata durumunda zaten
@@ -1098,7 +1102,9 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
           completed_at: null,
         });
       } else if (job.state === 'COMPLETED') {
-        setSessionSync((prev) => (prev ? { ...prev, phase: 'ready', progress: 100, stage: 'complete' } : prev));
+        if (!initialSyncPending) {
+          setSessionSync((prev) => (prev ? { ...prev, phase: 'ready', progress: 100, stage: 'complete' } : prev));
+        }
       } else if (job.state === 'FAILED') {
         // Sorun 8: FAILED job backend'de (in-process kayit) tutulabilir ve
         // sayfa her acildiginda ayni hata yeniden render edilirdi. Kullanici
@@ -2731,7 +2737,13 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         // WS sync job'i aktifse banner job olaylarina birakilir; gateway
         // (Baileys) asamasinda yalnizca job yokken bu olaylar banner'i besler.
         if (sync && !activeSyncIdRef.current) {
-          setSessionSync(sync);
+          const isGatewayChunkReady = sync.phase === 'ready';
+          setSessionSync({
+            ...sync,
+            phase: isGatewayChunkReady ? 'syncing' : sync.phase,
+            stage: isGatewayChunkReady ? 'chats' : (sync.stage || 'starting'),
+            progress: isGatewayChunkReady ? 50 : Math.min(50, Math.round(Number(sync.progress || 0) * 0.5)),
+          });
         }
       }
       if (eventData.event === 'session_sync_completed') {
@@ -2823,6 +2835,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       if (!silent) toast.error(err?.message || t('common.error'), t('common.error'));
     }
   }, [t, toast]);
+  fetchSessionsRef.current = fetchSessions;
 
   const handleQrSuccess = useCallback(() => {
     // QR eslesmesi sonrasi otomatik olarak Canli Diyaloglar sekmesine gec

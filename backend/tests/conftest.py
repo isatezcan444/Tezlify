@@ -1,6 +1,15 @@
 import pytest
 from backend.app.core.config import settings
 
+def pytest_sessionstart(session):
+    import asyncio
+    from backend.app.core.database import engine
+    from backend.app.core.migrations import ensure_messages_media_columns
+    try:
+        asyncio.run(ensure_messages_media_columns(engine))
+    except Exception as exc:
+        pass
+
 @pytest.fixture(autouse=True)
 def enable_history_expansion_in_tests():
     old = getattr(settings, "WHATSAPP_BACKGROUND_HISTORY_EXPANSION_ENABLED", False)
