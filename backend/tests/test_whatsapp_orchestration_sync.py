@@ -387,3 +387,70 @@ async def test_run_sync_job_waits_for_the_gateway_only_on_a_first_sync():
         SyncJob(sync_id="j-done", user_id="u-done")
     )
     assert waited == [], "an already-synced line must not wait"
+
+
+@pytest.mark.asyncio
+async def test_run_sync_job_waits_for_in_flight_ephemeral_pairing_promotion(monkeypatch):
+    """When an ephemeral pairing is active, _run_sync_job waits for promotion commit instead of failing."""
+    from backend.app.services.whatsapp.orchestration import sessions as sessions_mod
+
+    user_id = "test-promoting-user"
+    token = "test-pair-token"
+    sessions_mod._ephemeral_pairings[token] = {
+        "user_id": user_id,
+        "gateway_id": "gw-promoting",
+    }
+
+    try:
+        class _FakeSession:
+            def __init__(self) -> None:
+                self.gateway_id = "gw-promoting"
+                self.initial_sync_completed_at = datetime(2026, 1, 1)
+                self.id = 99
+
+        call_count = 0
+
+        async def _user_sessions(db, owner, connected_only=True):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return []
+            return [_FakeSession()]
+
+        mock_service = MagicMock()
+        mock_service._broadcast_sync_event = AsyncMock()
+        mock_service._user_sessions = _user_sessions
+        mock_service._bulk_channel_available = AsyncMock(return_value=False)
+        mock_service._sync_conversations_impl = AsyncMock()
+        mock_service._persist_chat_snapshot = AsyncMock(return_value=([], {}))
+        mock_service.sync_contacts = AsyncMock(return_value=[])
+        mock_service._reapply_chat_names = AsyncMock()
+        mock_service._gateway_op_or_mark_relink = AsyncMock(return_value={"items": []})
+        mock_service._schedule_metadata_enrichment = MagicMock()
+        mock_service._run_background_history_expansion = AsyncMock()
+        mock_service._repair_last_message_previews = AsyncMock()
+        mock_service._repair_phone_sender_names = AsyncMock()
+        mock_service.list_conversations = AsyncMock(return_value=([], 0))
+        mock_service.gw = MagicMock()
+        mock_service.gw.list_conversations = AsyncMock(return_value={"items": []})
+        mock_service.gw.trigger_avatar_backfill = AsyncMock()
+
+        mock_ctx = MagicMock()
+        mock_db = MagicMock(spec=AsyncSession)
+        mock_db.rollback = AsyncMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_db)
+        mock_ctx.__aexit__ = AsyncMock(return_value=None)
+        mock_service.AsyncSessionLocal = MagicMock(return_value=mock_ctx)
+
+        orchestrator = WhatsAppSyncOrchestrator(service=mock_service)
+        mock_service._sync_event = orchestrator._sync_event
+
+        job = SyncJob(sync_id="j-promote", user_id=user_id)
+        await orchestrator._run_sync_job(job)
+
+        assert job.state == "COMPLETED"
+        assert job.error is None
+        assert call_count >= 2
+    finally:
+        sessions_mod._ephemeral_pairings.pop(token, None)
+

@@ -1302,9 +1302,13 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       // gerçek durum bir kez okunur ve hata maskelenmez.
       setIsSyncingChats(false);
       void refreshSyncStatus();
-      toastRef.current.error(err.message || tRef.current('whatsapp.syncFailed'), tRef.current('common.error'));
+      const errMsg = (err?.message || '').toLowerCase();
+      const isNoSession = errMsg.includes('bagli bir whatsapp hatti yok') || errMsg.includes('bağlı bir whatsapp hattı yok');
+      if (!isNoSession || !isPostQrSyncing) {
+        toastRef.current.error(err.message || tRef.current('whatsapp.syncFailed'), tRef.current('common.error'));
+      }
     }
-  }, [refreshSyncStatus]);
+  }, [refreshSyncStatus, isPostQrSyncing]);
 
   // PHASE 2.K.4 (single variable: ConversationList callback identity stabilization):
   // stable handlers so React.memo(ConversationList) can bail out on events that do NOT
@@ -2715,7 +2719,11 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
             fetchSessions(true);
             toast.error(t('whatsapp.syncRelinkRequired'), t('common.error'));
           } else {
-            toast.error(eventData.error || t('whatsapp.syncFailed'), t('common.error'));
+            const errStr = (eventData.error || '').toLowerCase();
+            const isNoSession = errStr.includes('bagli bir whatsapp hatti yok') || errStr.includes('bağlı bir whatsapp hattı yok');
+            if (!isNoSession || !isPostQrSyncing) {
+              toast.error(eventData.error || t('whatsapp.syncFailed'), t('common.error'));
+            }
           }
         }
       }
@@ -2842,8 +2850,13 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     // Faz 4: tek-authority loading gate de ayni anda beslenir (avatar sayaclari
     // dahil); `ready` aninda hook otomatik gecisi tetikler.
     void refreshLoadingGate();
-    // Sıfır tıklama eşitleme: QR eşleşmesi tamamlanır tamamlanmaz canlı veri çekimini başlat
-    void handleSyncChats();
+    // Backend session_connected aninda _schedule_initial_sync tetikler.
+    // UI tarafinda yaris durumunu onlemek icin kisa bir aralikla (600ms)
+    // fetchSessions sonrasi sync tetiklenir / benimsenir.
+    setTimeout(() => {
+      void fetchSessions(true);
+      void handleSyncChats();
+    }, 600);
   }, [fetchSessions, onRefreshStats, refreshSyncStatus, loadConversations, handleSyncChats, refreshLoadingGate]);
 
   const handleOpenQrConnect = useCallback(() => {

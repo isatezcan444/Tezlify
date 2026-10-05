@@ -378,8 +378,8 @@ _bulk_channel_cache: Dict[str, Dict[str, Any]] = {}
 # `phase: 'ready'` within 45 s even when no history arrives
 # (`HISTORY_NO_CHUNK_FALLBACK_MS`), so 120 s sits comfortably above every
 # self-resolving path — and a gateway that never answers must not pin the job.
-_GATEWAY_HISTORY_READY_TIMEOUT_S = 120.0
-_GATEWAY_HISTORY_READY_POLL_S = 2.0
+_GATEWAY_HISTORY_READY_TIMEOUT_S = 15.0
+_GATEWAY_HISTORY_READY_POLL_S = 1.0
 
 
 def _gateway_sync_phase(sessions: Any, gateway_id: str) -> str:
@@ -404,6 +404,25 @@ def _gateway_sync_phase(sessions: Any, gateway_id: str) -> str:
             return str(sync["phase"])
         return "unknown"
     return "unknown"
+
+
+def _gateway_sync_stats(sessions: Any, gateway_id: str) -> Dict[str, int]:
+    """Read sync metrics for session out of a gateway `/sessions` payload."""
+    if not isinstance(sessions, list):
+        return {}
+    for item in sessions:
+        if not isinstance(item, dict) or str(item.get("id")) != str(gateway_id):
+            continue
+        sync = item.get("sync")
+        if isinstance(sync, dict):
+            return {
+                "chats_synced": int(sync.get("chats_synced") or 0),
+                "chats_unique": int(sync.get("chats_unique") or 0),
+                "messages_synced": int(sync.get("messages_synced") or 0),
+            }
+        return {}
+    return {}
+
 _last_bootstrap_emit: Dict[str, float] = {}
 _metadata_tasks: Dict[str, asyncio.Task[None]] = {}
 _sync_conversations_inflight: Set[str] = set()
@@ -545,6 +564,7 @@ class WhatsAppSyncOrchestrator:
         gateway_client = self._get_helper("gw", gw)
         deadline = time.monotonic() + _GATEWAY_HISTORY_READY_TIMEOUT_S
         last_phase = "unknown"
+        consecutive_chats_ready = 0
         while True:
             try:
                 sessions = await gateway_client.list_sessions()
@@ -558,6 +578,21 @@ class WhatsAppSyncOrchestrator:
             last_phase = _gateway_sync_phase(sessions, gateway_id)
             if last_phase != "syncing":
                 return last_phase
+
+            # Progressive Readiness Check:
+            # If the gateway has ingested chats into memory and is making progress,
+            # unblock early (after 2 consecutive probes) so UI shows chats in ~1-2 seconds.
+            stats = _gateway_sync_stats(sessions, gateway_id)
+            if stats.get("chats_synced", 0) > 0 or stats.get("chats_unique", 0) > 0:
+                consecutive_chats_ready += 1
+                if consecutive_chats_ready >= 2:
+                    logger.info(
+                        "Gateway gecmis senkronu sohbetleri hazirladi (%s sohbet); ilerlemeli aktarim baslatiliyor (gateway=%s)",
+                        stats.get("chats_synced") or stats.get("chats_unique"),
+                        gateway_id,
+                    )
+                    return last_phase
+
             if time.monotonic() >= deadline:
                 logger.warning(
                     "Gateway gecmis senkronu %ss icinde 'ready' olmadi "
@@ -1718,6 +1753,37 @@ class WhatsAppSyncOrchestrator:
                     phase_t0 = now
 
                 sessions_to_sync = await user_sessions(db, owner, connected_only=True) if user_sessions else []
+                if not sessions_to_sync and user_sessions:
+                    try:
+                        from backend.app.services.whatsapp.orchestration.sessions import (
+                            has_active_ephemeral_pairing_for_user,
+                        )
+                        from backend.app.services.whatsapp.orchestration.pairing_registry import (
+                            has_unconsumed_pairing_for_user,
+                        )
+                        has_pairing = has_active_ephemeral_pairing_for_user(owner) or await has_unconsumed_pairing_for_user(db, owner)
+                    except Exception:  # noqa: BLE001
+                        has_pairing = False
+
+                    if has_pairing:
+                        logger.info(
+                            "[WhatsApp][Sync] Ephemeral pairing active for user %s; waiting up to 4s for promotion commit",
+                            owner,
+                        )
+                        for _ in range(16):
+                            await asyncio.sleep(0.25)
+                            try:
+                                await db.rollback()
+                            except Exception:
+                                pass
+                            sessions_to_sync = await user_sessions(db, owner, connected_only=True)
+                            if sessions_to_sync:
+                                logger.info(
+                                    "[WhatsApp][Sync] Ephemeral pairing promoted to session %s for user %s after wait",
+                                    sessions_to_sync[0].id, owner,
+                                )
+                                break
+
                 if not sessions_to_sync:
                     raise NoWhatsAppSession(
                         "Bagli bir WhatsApp hatti yok. Lutfen once QR ile eslestirin."

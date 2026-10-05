@@ -418,6 +418,15 @@ def remove_ephemeral_pairing_by_gateway_id(gateway_id: str) -> None:
             _ephemeral_pairings.pop(token, None)
 
 
+def has_active_ephemeral_pairing_for_user(user_id: str) -> bool:
+    """True if there is an in-memory ephemeral pairing for this user."""
+    if not user_id:
+        return False
+    uid = str(user_id)
+    return any(data.get("user_id") == uid for data in _ephemeral_pairings.values())
+
+
+
 async def start_pairing_session(
     user_id: str,
     name: Optional[str] = None,

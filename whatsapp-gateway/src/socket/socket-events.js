@@ -915,30 +915,8 @@ export function bindSocketEvents({
         }
       }
 
-      if (historyMediaQueue.length > 0) {
-        (async () => {
-          for (const m of historyMediaQueue) {
-            if (ignoreStaleSocketEvent('messaging-history.set')) break;
-            try {
-              const stored = await mediaStore.storeIncomingMedia(session, m, sock);
-              if (stored?.media_id) {
-                const chatKey = normalizeJid(m.key?.remoteJid);
-                const list = messagesByChat.get(chatKey);
-                if (list) {
-                  const rec = list.find((item) => item.wa_message_id === m.key?.id);
-                  if (rec) {
-                    rec.media_id = stored.media_id;
-                    rec.media_mime_type = stored.mime_type;
-                    rec.media_filename = stored.filename;
-                  }
-                }
-              }
-            } catch (dlErr) {
-              logger?.debug({ dlErr: dlErr?.message, waId: m.key?.id }, 'Background history media download error');
-            }
-          }
-        })().catch(() => {});
-      }
+      // Faz 4: Gecmis senkronunda toplu medya indirme soketi kilitler ve CDN 404'leri uretir.
+      // Medyalar kullanici sohbette ilgili mesaja geldiginde on-demand indirilir.
       let storedChats = 0;
       for (const chat of historyChats || []) {
         const jid = chat.id || chat.jid;
@@ -998,7 +976,7 @@ export function bindSocketEvents({
         };
         chats.set(key, merged);
         storedChats += 1;
-        if (!merged.avatar_url && storedChats <= 5) void ensureChatAvatar(key);
+        if (!merged.avatar_url && storedChats <= 15) void ensureChatAvatar(key);
         emitEvent({ event: 'conversation_updated', conversation: merged });
       }
       // A history chunk belongs only to the chats it names.  Resolving every

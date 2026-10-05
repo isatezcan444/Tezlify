@@ -223,3 +223,23 @@ async def consume_pairing_by_token(db: AsyncSession, pair_token: str) -> bool:
         await db.rollback()
         logger.warning("[WhatsApp][6.8] Durable pairing consume-by-token failed: %s", exc)
         return False
+
+
+async def has_unconsumed_pairing_for_user(db: AsyncSession, user_id: str) -> bool:
+    """True if there is an unconsumed ephemeral pairing for this user."""
+    if not user_id:
+        return False
+    try:
+        from backend.app.services.whatsapp.repositories.tenancy import get_user_filter
+        row = await db.scalar(
+            select(EphemeralPairing.id)
+            .where(
+                get_user_filter(EphemeralPairing.user_id, user_id),
+                EphemeralPairing.consumed_at.is_(None),
+            )
+            .limit(1)
+        )
+        return row is not None
+    except Exception as exc:  # noqa: BLE001
+        return False
+
