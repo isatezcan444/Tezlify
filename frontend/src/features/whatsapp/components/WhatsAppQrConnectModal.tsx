@@ -131,6 +131,15 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
   const onSuccessRef = useRef(onSuccess);
   onSuccessRef.current = onSuccess;
 
+  const hasReportedSuccessRef = useRef<boolean>(false);
+  const reportSuccessOnce = useCallback((sessionData?: any) => {
+    if (hasReportedSuccessRef.current) return;
+    hasReportedSuccessRef.current = true;
+    if (timerRef.current) clearInterval(timerRef.current);
+    if (fallbackPollRef.current) clearInterval(fallbackPollRef.current);
+    onSuccessRef.current?.(sessionData);
+  }, []);
+
   const hasInitializedRef = useRef<boolean>(false);
   const isInitializingRef = useRef<boolean>(false);
   const pairingInFlightRef = useRef<boolean>(false);
@@ -278,7 +287,7 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
           setConnectedPhone(qrRes.phone);
           setModalState('CONNECTED');
           clearTimers();
-          if (onSuccessRef.current) onSuccessRef.current({ id: targetSessionId, phone_number: qrRes.phone } as any);
+          reportSuccessOnce({ id: targetSessionId, phone_number: qrRes.phone } as any);
           return;
         }
 
@@ -354,7 +363,7 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
           setModalState('CONNECTED');
           clearTimers();
           toast.success(t('whatsapp.connectedState'), t('common.success'));
-          if (onSuccessRef.current) onSuccessRef.current({ id: targetSessionId } as any);
+          reportSuccessOnce({ id: targetSessionId } as any);
           setTimeout(() => {
             if (isMountedRef.current) onClose();
           }, 1500);
@@ -383,7 +392,7 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
           setPairToken(null);
           setSessionId(res.session_id);
           toast.success(t('whatsapp.connectedState'), t('common.success'));
-          if (onSuccessRef.current) onSuccessRef.current({ id: res.session_id, phone_number: res.phone } as any);
+          reportSuccessOnce({ id: res.session_id, phone_number: res.phone } as any);
           setTimeout(() => {
             if (isMountedRef.current) onClose();
           }, 1500);
@@ -499,6 +508,7 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
     isMountedRef.current = true;
     if (isOpen) {
       isCancelledRef.current = false;
+      hasReportedSuccessRef.current = false;
       if (!hasInitializedRef.current) {
         hasInitializedRef.current = true;
         if (!existingSessionId) {
@@ -524,6 +534,7 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
       isInitializingRef.current = false;
       isNewlyCreatedRef.current = false;
       isCancelledRef.current = false;
+      hasReportedSuccessRef.current = false;
       activeSessionIdRef.current = existingSessionId || null;
       clearTimers();
       setModalState('IDLE');
@@ -669,13 +680,11 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
         setQrCode(null);
         clearTimers();
         toast.success(t('whatsapp.connectedState'), t('common.success'));
-        if (onSuccessRef.current) {
-          onSuccessRef.current({ 
-            id: sessionId || detail.session_id, 
-            phone_number: phone, 
-            session_name: sessionName 
-          } as any);
-        }
+        reportSuccessOnce({ 
+          id: sessionId || detail.session_id, 
+          phone_number: phone, 
+          session_name: sessionName 
+        } as any);
         setPairingLifecycle('CONNECTED');
         setTimeout(() => {
           if (isMountedRef.current) onClose();
@@ -750,7 +759,7 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
               setPairingLifecycle('CONNECTED');
               if (fallbackPollRef.current) clearInterval(fallbackPollRef.current);
               toast.success(t('whatsapp.connectedState'), t('common.success'));
-              if (onSuccessRef.current) onSuccessRef.current({ id: res.session_id, phone_number: res.phone } as any);
+              reportSuccessOnce({ id: res.session_id, phone_number: res.phone } as any);
               setTimeout(() => {
                 if (isMountedRef.current) onClose();
               }, 1500);
@@ -788,7 +797,7 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
               setConnectedPhone(res.phone);
               setModalState('CONNECTED');
               if (fallbackPollRef.current) clearInterval(fallbackPollRef.current);
-              if (onSuccessRef.current) onSuccessRef.current({ id: sid, phone_number: res.phone } as any);
+              reportSuccessOnce({ id: sid, phone_number: res.phone } as any);
               setTimeout(() => {
                 if (isMountedRef.current) onClose();
               }, 1500);

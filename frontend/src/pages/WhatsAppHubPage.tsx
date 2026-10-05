@@ -2837,27 +2837,21 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   }, [t, toast]);
   fetchSessionsRef.current = fetchSessions;
 
-  const handleQrSuccess = useCallback(() => {
+  const handleQrSuccess = useCallback(async () => {
     // QR eslesmesi sonrasi otomatik olarak Canli Diyaloglar sekmesine gec
     setHubTab('conversations');
     setIsPostQrSyncing(true);
     setSyncGateDismissed(false);
-    fetchSessions(true);
     onRefreshStats();
+    // Oturum listesini guncelle — bagli hat artik state'e girer
+    if (fetchSessionsRef.current) await fetchSessionsRef.current(true);
     // Faz 6 (PHASE-17 cache-first): QR sonrasi ONCE DB'deki kalici sohbet
-    // snapshot'i aninda yuklenir (reconnect'te kullanici 2-3 sn'de listeyi
-    // gorur); gercek zamanli tazeleme WS bootstrap/chats_snapshot olaylariyla
-    // ve job ile arkadan gelir. Sahte veri yok — yalnizca kalici gercek satirlar.
+    // snapshot'i yuklenir; canli senkronizasyon backend tarafindan
+    // session_connected uzerinde otomatik zamanlanir ve WS olaylariyla loading gate'e akar.
     loadConversations(true);
-    // Faz 7/11: QR sonrasi initial-sync hemen izlenmeye baslanir — devam eden
-    // job varsa GET /sync/job ile benimsenir, ilerleme WS olaylarinda akar.
     refreshSyncStatus();
-    // Faz 4: tek-authority loading gate de ayni anda beslenir (avatar sayaclari
-    // dahil); `ready` aninda hook otomatik gecisi tetikler.
     void refreshLoadingGate();
-    // Sıfır tıklama eşitleme: QR eşleşmesi tamamlanır tamamlanmaz canlı veri çekimini başlat
-    void handleSyncChats();
-  }, [fetchSessions, onRefreshStats, refreshSyncStatus, loadConversations, handleSyncChats, refreshLoadingGate]);
+  }, [onRefreshStats, refreshSyncStatus, loadConversations, refreshLoadingGate]);
 
   const handleOpenQrConnect = useCallback(() => {
     setReconnectSessionId(undefined);

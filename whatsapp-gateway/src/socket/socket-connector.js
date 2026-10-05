@@ -15,6 +15,7 @@ import {
   fetchLatestBaileysVersion,
   Browsers,
   BufferJSON,
+  proto,
 } from '@whiskeysockets/baileys';
 import { createBaileysLogger, logger as defaultLogger } from '../utils/baileys-logger.js';
 import { lookupRawMessage } from '../messages/message-store.js';
@@ -227,7 +228,13 @@ export async function createSocketForSession({
     markOnlineOnConnect: false,
     syncFullHistory: false,
     generateHighQualityLinkPreviews: false,
-    shouldSyncHistoryMessage: () => true,
+    shouldSyncHistoryMessage: (historyMsg) => {
+      // Yalnizca ilk gorunum ve guncel mesajlari senkronize et (INITIAL_BOOTSTRAP, RECENT, ON_DEMAND).
+      // FULL (tum gecmis arsiv) senkronunu atla: eski mesajlar kullanici "Daha eski mesajlari yukle"
+      // dediginde on-demand (fetchMessageHistory) ile saglayicidan cekilir.
+      const syncType = historyMsg?.syncType;
+      return syncType !== proto.HistorySync.HistorySyncType.FULL;
+    },
     getMessage: async (key) => lookupRawMessage(store, key),
     msgRetryCounterCache: retryCounterCacheFor(id),
   });

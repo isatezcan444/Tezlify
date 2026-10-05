@@ -821,7 +821,11 @@ export function bindSocketEvents({
         if (!record) continue;
         list.push(record);
         list.sort((a, b) => (a.id || 0) - (b.id || 0));
-        if (list.length > 2000) list.splice(0, list.length - 2000);
+        // WhatsApp Web paritesi: Ilk senkron sirasinda sohbet basina yalnizca
+        // "Daha eski mesajlari yukle" esigine kadar (en yeni 50 mesaj) tamponlanir;
+        // eski mesajlar kullanici tarafindan istendikce on-demand cekilir.
+        const PER_CHAT_HISTORY_LIMIT = 50;
+        if (list.length > PER_CHAT_HISTORY_LIMIT) list.splice(0, list.length - PER_CHAT_HISTORY_LIMIT);
         messagesByChat.set(key, list);
         storedMessages += 1;
 

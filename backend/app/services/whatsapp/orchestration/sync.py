@@ -1719,6 +1719,20 @@ class WhatsAppSyncOrchestrator:
 
                 sessions_to_sync = await user_sessions(db, owner, connected_only=True) if user_sessions else []
                 if not sessions_to_sync:
+                    # Eşleşme (QR promotion) anında küçük bir yarış koşulu olabilir:
+                    # `session_connected` event'inin DB commit'i henüz bitmemiş olabilir.
+                    # 1-2 saniye boyunca commit'in tamamlanmasını bekle.
+                    for _ in range(4):
+                        await asyncio.sleep(0.5)
+                        try:
+                            await db.rollback()
+                        except Exception:
+                            pass
+                        sessions_to_sync = await user_sessions(db, owner, connected_only=True) if user_sessions else []
+                        if sessions_to_sync:
+                            break
+
+                if not sessions_to_sync:
                     raise NoWhatsAppSession(
                         "Bagli bir WhatsApp hatti yok. Lutfen once QR ile eslestirin."
                     )
