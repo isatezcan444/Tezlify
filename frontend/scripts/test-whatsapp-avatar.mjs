@@ -17,7 +17,13 @@ const testModuleCode = `
 ${getAvatarColorMatch[0]}
 ${getInitialsMatch[0]}
 export const failedAvatarUrls = new Set();
-export const clearFailedAvatarUrlsCache = () => { failedAvatarUrls.clear(); };
+export const inFlightAvatarRefreshes = new Set();
+export const negativeAvatarPhones = new Map();
+export const clearFailedAvatarUrlsCache = () => {
+  failedAvatarUrls.clear();
+  inFlightAvatarRefreshes.clear();
+  negativeAvatarPhones.clear();
+};
 export { getAvatarColor, getInitials };
 `;
 
@@ -25,7 +31,7 @@ const js = ts.transpileModule(testModuleCode, {
   compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 }
 }).outputText;
 
-const { getAvatarColor, getInitials, failedAvatarUrls, clearFailedAvatarUrlsCache } = await import(
+const { getAvatarColor, getInitials, failedAvatarUrls, inFlightAvatarRefreshes, negativeAvatarPhones, clearFailedAvatarUrlsCache } = await import(
   `data:text/javascript;base64,${Buffer.from(js).toString('base64')}`
 );
 
@@ -86,7 +92,6 @@ console.log('✓ Avatar.tsx markup invariants passed');
 // 6. Test Avatar Storm Prevention (20 simulated errors for same contact)
 console.log('Testing Avatar Storm Prevention (20 consecutive errors for same contact)...');
 clearFailedAvatarUrlsCache();
-const inFlightAvatarRefreshes = new Set();
 let refreshApiCallCount = 0;
 
 const simulateAvatarError = (phone, url) => {
@@ -125,5 +130,31 @@ simulateConcurrentRenderError(testPhone, staleUrl);
 simulateConcurrentRenderError(testPhone, staleUrl);
 assert.equal(concurrentCallCount, 0, 'No additional calls should be made when URL is in failedAvatarUrls');
 console.log('✓ Concurrent render test passed (0 duplicate requests)');
+
+// 8. Test Negative Avatar Phone Caching (pictureless contacts)
+console.log('Testing Negative Avatar Phone Caching...');
+clearFailedAvatarUrlsCache();
+assert.equal(negativeAvatarPhones.size, 0);
+
+const picturelessPhone = '+905551234567';
+let networkRefreshCount = 0;
+const simulateRefreshAttempt = (phone) => {
+  const expiry = negativeAvatarPhones.get(phone) || 0;
+  if (Date.now() < expiry) return false;
+  networkRefreshCount++;
+  // Server confirms contact has no avatar (res.avatar_url is null)
+  negativeAvatarPhones.set(phone, Date.now() + 10 * 60 * 1000);
+  return true;
+};
+
+assert.equal(simulateRefreshAttempt(picturelessPhone), true, 'First attempt must hit network');
+assert.equal(simulateRefreshAttempt(picturelessPhone), false, 'Second attempt must be blocked by negative cache');
+assert.equal(simulateRefreshAttempt(picturelessPhone), false, 'Third attempt must be blocked by negative cache');
+assert.equal(networkRefreshCount, 1, 'Only 1 network request fired for pictureless contact');
+console.log('✓ Negative avatar phone caching passed (redundant refreshes blocked)');
+
+clearFailedAvatarUrlsCache();
+assert.equal(negativeAvatarPhones.size, 0, 'Cache clear must empty negativeAvatarPhones');
+console.log('✓ clearFailedAvatarUrlsCache empties negativeAvatarPhones');
 
 console.log('[test-whatsapp-avatar] ALL AVATAR TESTS PASSED SUCCESSFULLY.');

@@ -40,10 +40,12 @@ const getInitials = (name: string) => {
 // Global cache of failed/expired image URLs to prevent repeated network failure storms
 export const failedAvatarUrls = new Set<string>();
 export const inFlightAvatarRefreshes = new Set<string>();
+export const negativeAvatarPhones = new Map<string, number>();
 
 export const clearFailedAvatarUrlsCache = () => {
   failedAvatarUrls.clear();
   inFlightAvatarRefreshes.clear();
+  negativeAvatarPhones.clear();
 };
 
 export const Avatar: React.FC<AvatarProps> = ({
@@ -72,18 +74,26 @@ export const Avatar: React.FC<AvatarProps> = ({
     setImageError(true);
 
     if (phone && !inFlightAvatarRefreshes.has(phone)) {
+      const negativeExpiry = negativeAvatarPhones.get(phone) || 0;
+      if (Date.now() < negativeExpiry) {
+        return;
+      }
       inFlightAvatarRefreshes.add(phone);
       WhatsAppRepository.refreshAvatar(phone)
         .then((res) => {
           if (res.success && res.avatar_url) {
             const nextResolved = resolveMediaUrl(res.avatar_url) || res.avatar_url;
             failedAvatarUrls.delete(nextResolved);
+            negativeAvatarPhones.delete(phone);
             setCurrentImage(nextResolved);
             setImageError(false);
             onRefresh?.(res.avatar_url);
+          } else {
+            negativeAvatarPhones.set(phone, Date.now() + 10 * 60 * 1000);
           }
         })
         .catch((err) => {
+          negativeAvatarPhones.set(phone, Date.now() + 2 * 60 * 1000);
           console.debug("[Avatar] Refresh attempt failed:", err);
         })
         .finally(() => {

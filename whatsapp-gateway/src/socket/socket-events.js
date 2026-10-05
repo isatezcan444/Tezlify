@@ -794,8 +794,6 @@ export function bindSocketEvents({
       }
       let storedMessages = 0;
       const touchedHistoryKeys = new Set();
-      const historyMediaQueue = [];
-      const seenMediaWaIds = new Set();
       const pendingHistoryReactions = [];
 
       for (const msg of historyMessages || []) {
@@ -828,17 +826,6 @@ export function bindSocketEvents({
         if (list.length > 2000) list.splice(0, list.length - 2000);
         messagesByChat.set(key, list);
         storedMessages += 1;
-
-        if (
-          msg.key?.id &&
-          msg.message &&
-          Boolean(resolveDownloadableMedia(msg.message)) &&
-          !record.media_id &&
-          !seenMediaWaIds.has(msg.key.id)
-        ) {
-          seenMediaWaIds.add(msg.key.id);
-          historyMediaQueue.push(msg);
-        }
       }
 
       // Ikinci gecis: historyMessages icindeki reactionMessage stanzalarini hedef mesajlara ilistir

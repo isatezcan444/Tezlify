@@ -141,8 +141,8 @@ function resolveMessageStatus(msg, fromMe, reactions) {
 //  2) Gerçek gecikme pacing'de değil geri çekilmedeydi: ilk başarısız turdan
 //     sonra 30sn+60sn+120sn+5dk×4 = ~23.5dk bekleniyordu. İlk turlar kısa
 //     tutuldu; kalıcı eksikler ancak çok sonra (5dk) yeniden denenir.
-const AVATAR_SWEEP_BATCH = 8;
-const AVATAR_SWEEP_PAUSE_MS = 120;
+const AVATAR_SWEEP_BATCH = 4;
+const AVATAR_SWEEP_PAUSE_MS = 150;
 const AVATAR_SWEEP_MAX_PASSES = 8;
 // İlk turlar hızlı (bir tur ~15sn), sonra mesafeli. Kullanıcı fotoğrafı dakikalarca beklemez.
 const AVATAR_SWEEP_RETRY_DELAYS_MS = [4_000, 8_000, 15_000, 30_000, 120_000, 120_000, 300_000];
@@ -1590,43 +1590,58 @@ export function createSessionManager({
         strId = String(meta.waMessageId);
       }
 
-      const targetSessions = [];
-      if (sessionId && sessions.has(String(sessionId))) {
-        targetSessions.push(sessions.get(String(sessionId)));
+      if (!this._inFlightMediaDownloads) {
+        this._inFlightMediaDownloads = new Map();
       }
-      for (const [sId, sess] of sessions.entries()) {
-        if (!sessionId || sId !== String(sessionId)) {
-          targetSessions.push(sess);
+      const inFlightKey = `${sessionId || 'any'}:${strId}`;
+      if (this._inFlightMediaDownloads.has(inFlightKey)) {
+        return this._inFlightMediaDownloads.get(inFlightKey);
+      }
+
+      const downloadPromise = (async () => {
+        const targetSessions = [];
+        if (sessionId && sessions.has(String(sessionId))) {
+          targetSessions.push(sessions.get(String(sessionId)));
         }
-      }
-
-      for (const session of targetSessions) {
-        const store = this._storeOf(session);
-        if (!store || !store.rawMessagesByChat) continue;
-
-        let foundRaw = null;
-        let foundJid = null;
-
-        for (const [jid, byId] of store.rawMessagesByChat.entries()) {
-          if (byId.has(strId)) {
-            foundRaw = byId.get(strId);
-            foundJid = jid;
-            break;
+        for (const [sId, sess] of sessions.entries()) {
+          if (!sessionId || sId !== String(sessionId)) {
+            targetSessions.push(sess);
           }
         }
 
-        if (foundRaw && foundJid) {
-          const waMsg = {
-            key: { remoteJid: foundJid, id: strId },
-            message: foundRaw,
-          };
-          const stored = await mediaStore.storeIncomingMedia(session, waMsg, session.sock);
-          if (stored?.media_id) {
-            return mediaStore.getMediaPath(session.id, stored.media_id);
+        for (const session of targetSessions) {
+          const store = this._storeOf(session);
+          if (!store || !store.rawMessagesByChat) continue;
+
+          let foundRaw = null;
+          let foundJid = null;
+
+          for (const [jid, byId] of store.rawMessagesByChat.entries()) {
+            if (byId.has(strId)) {
+              foundRaw = byId.get(strId);
+              foundJid = jid;
+              break;
+            }
+          }
+
+          if (foundRaw && foundJid) {
+            const waMsg = {
+              key: { remoteJid: foundJid, id: strId },
+              message: foundRaw,
+            };
+            const stored = await mediaStore.storeIncomingMedia(session, waMsg, session.sock);
+            if (stored?.media_id) {
+              return mediaStore.getMediaPath(session.id, stored.media_id);
+            }
           }
         }
-      }
-      return null;
+        return null;
+      })().finally(() => {
+        this._inFlightMediaDownloads?.delete(inFlightKey);
+      });
+
+      this._inFlightMediaDownloads.set(inFlightKey, downloadPromise);
+      return downloadPromise;
     },
 
     async storeIncomingMedia(session, waMessage, sock) {
