@@ -758,13 +758,17 @@ async def list_conversations(
                 # from the `lid_mapped` event handler.
                 phone = resolved_pn
 
-        if phone and active_sess_phone and _is_self_identity(phone, active_sess_phone):
+        is_self = bool(phone and active_sess_phone and _is_self_identity(phone, active_sess_phone))
+        if is_self:
             if seen_self_conversation:
                 continue
             seen_self_conversation = True
 
         is_grp = bool(r.is_group) or bool(phone and "@g.us" in phone)
         resolved_name, id_state = _resolve_contact_identity(contact, phone=phone, is_group=is_grp)
+        if is_self:
+            clean_pn = _extract_clean_phone(phone) or phone
+            resolved_name = f"{clean_pn} (Siz)"
 
         # Faz 10: eski kose-parantezli degerler okuma aninda da etikete
         # normalize edilir ('[IMAGE]' -> '📷 Fotoğraf'); normal metin aynen gecer.
@@ -796,6 +800,7 @@ async def list_conversations(
                 # 5-tier hiyerarşiyle çözülen temiz ad / telefon / None döner.
                 "name": resolved_name,
                 "phone": phone,
+                "is_self": is_self,
                 "identity_state": id_state,
                 # Sorun 4: kalici `is_group` sütunu esas; eski satirlar
                 # (sync oncesinde olusmus) JID sentinel'iyle tamamlanir.

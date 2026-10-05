@@ -5,9 +5,19 @@ Phase 11.6: Extracted from whatsapp_service.py.
 Pure, deterministic, database-independent, network-independent identity functions.
 """
 
+import re
 from typing import Any, Dict, Optional, Tuple
 
 SYSTEM_USER_ID = "00000000-0000-0000-0000-000000000000"
+
+
+def is_system_session_name(value: Optional[str]) -> bool:
+    """Checks whether the name looks like an internal session label ('Hat 1', 'Hat 2', 'Tezlify')
+    which should never be presented as a contact or participant name."""
+    if not value:
+        return False
+    v = str(value).strip()
+    return bool(re.match(r"^Hat\s*\d+$", v, re.IGNORECASE) or v.lower() == "tezlify")
 
 # Contact name precedence dictionary (WhatsApp Web parity)
 NAME_RANK: Dict[str, int] = {
@@ -133,7 +143,7 @@ def safe_display_name(contact: Optional[Any]) -> Optional[str]:
     name_source = str(attrs.get("name_source") or "")
 
     name = getattr(contact, "display_name", None)
-    if name and not is_raw_jid_name(name) and str(name).strip():
+    if name and not is_raw_jid_name(name) and not is_system_session_name(name) and str(name).strip():
         if name_source != "push":
             return str(name).strip()
         # name_source == 'push': `display_name` karsi tarafin KENDI profil
@@ -274,7 +284,7 @@ def resolve_contact_identity(
         # Push name is a stranger's profile nickname — NOT an address book contact!
         # If name_source is 'push', it must NEVER resolve to RESOLVED_PROFILE.
         if name_src != "push":
-            if name and not is_raw_jid_name(name) and not is_phone_like(name) and str(name).strip():
+            if name and not is_raw_jid_name(name) and not is_phone_like(name) and not is_system_session_name(name) and str(name).strip():
                 return str(name).strip(), IdentityResolutionState.RESOLVED_PROFILE
 
     # 3. Clean E.164 Phone from phone or contact.phone_e164

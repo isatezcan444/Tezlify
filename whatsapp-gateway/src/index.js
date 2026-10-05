@@ -397,6 +397,10 @@ app.get('/sessions/:sessionId/contacts/:jid/status', withSession(async (req, res
         setAtTime = item.status.setAt || item.setAt || null;
       }
     }
+    if (statusText && typeof statusText === 'string') {
+      statusText = statusText.trim();
+      if (!statusText) statusText = null;
+    }
     return res.json({
       status: statusText,
       setAt: setAtTime,

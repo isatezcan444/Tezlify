@@ -233,19 +233,31 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     if (!selectedConv?.is_group || !selectedConv?.id) return '';
     const senderNames = new Set<string>();
     const convMessages = messagesMap[selectedConv.id] || [];
+    const youText = t('whatsapp.youLabel');
+    const isSelfName = (name: string) => {
+      const trimmed = name.trim();
+      return (
+        trimmed === 'ME' ||
+        trimmed.toLowerCase() === youText.toLowerCase() ||
+        /^Hat\s*\d+$/i.test(trimmed)
+      );
+    };
+
     for (const m of convMessages) {
       if (m.direction === 'INBOUND' && m.sender_name && m.sender_name.trim()) {
-        senderNames.add(m.sender_name.trim());
+        const sName = m.sender_name.trim();
+        if (!isSelfName(sName)) {
+          senderNames.add(sName);
+        }
       }
     }
     const fetched = groupParticipantsMap[selectedConv.id] || [];
     for (const p of fetched) {
-      if (p.name && !p.is_me) {
+      if (p.name && !p.is_me && !isSelfName(p.name)) {
         senderNames.add(p.name);
       }
     }
     const namesList = Array.from(senderNames);
-    const youText = t('whatsapp.youLabel');
     if (namesList.length === 0) {
       return youText;
     }
@@ -3290,11 +3302,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                                 <p className="text-[11px] font-mono text-slate-400 font-medium truncate">
                                   {formatPhoneNumber(headerCleanPhone)}
                                 </p>
-                              ) : (
-                                <p className="text-[11px] text-[#00a884] dark:text-[#25D366] font-medium truncate">
-                                  {t('whatsapp.online')}
-                                </p>
-                              )}
+                              ) : null}
                             </div>
                           </div>
                         );

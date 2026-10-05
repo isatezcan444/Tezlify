@@ -81,10 +81,27 @@ export function formatConversationTime(dateStr?: string | null, language: string
     if (!d || isNaN(d.getTime())) return '';
     const now = new Date();
     const locale = language === 'tr' ? 'tr-TR' : 'en-US';
+
+    // Same calendar day
     if (d.toDateString() === now.toDateString()) {
       return d.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit', hour12: false });
     }
-    return d.toLocaleDateString(locale, { month: 'short', day: 'numeric' });
+
+    // Yesterday
+    const yesterday = new Date(now);
+    yesterday.setDate(now.getDate() - 1);
+    if (d.toDateString() === yesterday.toDateString()) {
+      return language === 'tr' ? 'Dün' : 'Yesterday';
+    }
+
+    // Within last 6 days: show localized day of week name (e.g. "Cumartesi", "Saturday")
+    const diffDays = Math.floor((now.getTime() - d.getTime()) / (1000 * 60 * 60 * 24));
+    if (diffDays >= 0 && diffDays < 7) {
+      return d.toLocaleDateString(locale, { weekday: 'long' });
+    }
+
+    // Older: DD.MM.YYYY
+    return d.toLocaleDateString(locale, { day: '2-digit', month: '2-digit', year: 'numeric' });
   } catch {
     return '';
   }

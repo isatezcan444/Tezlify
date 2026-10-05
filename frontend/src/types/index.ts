@@ -427,6 +427,7 @@ export interface Conversation {
   lead_phone?: string;
   lead_avatar_url?: string;
   is_group?: boolean;
+  is_self?: boolean;
   // Sorun 4: WhatsApp arsiv durumu (Baileys metadata) — CRM status'tan bagimsiz.
   is_archived?: boolean;
   last_message_preview?: string;

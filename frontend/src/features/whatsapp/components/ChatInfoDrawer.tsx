@@ -125,8 +125,8 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
     WhatsAppApi.getContactStatus(phoneForStatus, conversation.session_id || undefined)
       .then((res) => {
         if (!active) return;
-        if (res.status) {
-          setDynamicStatus(res.status);
+        if (res && typeof res.status === 'string' && res.status.trim()) {
+          setDynamicStatus(res.status.trim());
         } else {
           setDynamicStatus(null);
         }
@@ -494,16 +494,16 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
             </div>
           )}
 
-          <div className="text-xs text-slate-600 dark:text-slate-300 italic pt-1">
+          <div className="text-xs text-slate-600 dark:text-slate-300 pt-1 select-text">
             {isGroup ? (
-              `"${t('whatsapp.noDescription')}"`
+              t('whatsapp.noDescription')
             ) : loadingStatus ? (
               <span className="inline-flex items-center gap-1.5 text-slate-400 not-italic">
                 <Loader2 className="w-3 h-3 animate-spin" />
                 <span>{t('whatsapp.statusLoading')}</span>
               </span>
             ) : (
-              `"${dynamicStatus || t('whatsapp.defaultAbout')}"`
+              dynamicStatus || t('whatsapp.defaultAbout')
             )}
           </div>
         </div>

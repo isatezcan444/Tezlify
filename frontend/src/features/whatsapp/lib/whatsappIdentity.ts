@@ -205,13 +205,25 @@ export function getConversationDisplayName(
     return t('whatsapp.groupFallback');
   }
 
-  // 2. Saved contact in address book ("Kişi rehberde kayıtlıysa: Ahmet Yılmaz")
-  if (isRealContactName(rawName)) {
+  // 2. Self conversation (talking to yourself / Note to Self)
+  // WhatsApp Web standard: "+90 541 374 90 73 (Siz)"
+  const cleanPhone = extractCleanPhone(rawPhone) || extractCleanPhone(rawName);
+  const isSelf = Boolean(
+    (conv as any).is_self ||
+    rawName === 'ME' ||
+    (rawName && /^Hat\s*\d+$/i.test(rawName.trim()))
+  );
+  if (isSelf && cleanPhone) {
+    return `${formatPhoneNumber(cleanPhone)} (${t('whatsapp.youLabel')})`;
+  }
+
+  // 3. Saved contact in address book ("Kişi rehberde kayıtlıysa: Ahmet Yılmaz")
+  // Sistem oturum adları ("Hat 1", "Hat 2" vb.) kişi adı olarak kabul edilmez.
+  if (isRealContactName(rawName) && !/^Hat\s*\d+$/i.test(rawName!.trim())) {
     return rawName!;
   }
 
-  // 3. Unsaved contact with resolvable phone number ("Kişi rehberde kayıtlı değilse: +90 532 233 49 68")
-  const cleanPhone = extractCleanPhone(rawPhone) || extractCleanPhone(rawName);
+  // 4. Unsaved contact with resolvable phone number ("Kişi rehberde kayıtlı değilse: +90 532 233 49 68")
   if (cleanPhone) {
     return formatPhoneNumber(cleanPhone);
   }

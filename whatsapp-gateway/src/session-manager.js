@@ -2841,17 +2841,26 @@ export function createSessionManager({
         throw new Error('Not a group JID');
       }
       const meta = await session.sock.groupMetadata(key);
-      const meJid = (session.sock.user?.id || session.state?.creds?.me?.id || '').split(':')[0].split('@')[0];
+      const mePhoneUser = (session.sock.user?.id || session.state?.creds?.me?.id || session.phone_number || '').split(':')[0].split('@')[0].replace(/\D/g, '');
+      const meLidUser = (session.sock.user?.lid || session.state?.creds?.me?.lid || session.self_lid || '').split(':')[0].split('@')[0].replace(/\D/g, '');
       const participants = (meta?.participants || []).map((p) => {
         const participantJid = p.id;
-        const partUser = (participantJid || '').split(':')[0].split('@')[0];
-        const isMe = Boolean(meJid && partUser && meJid === partUser);
+        const resolvedKey = resolveJidKey(store, participantJid);
+        const partPhone = jidToPhone(resolvedKey) || jidToPhone(participantJid);
+        const partUser = (participantJid || '').split(':')[0].split('@')[0].replace(/\D/g, '');
+        const resolvedUser = (resolvedKey || '').split(':')[0].split('@')[0].replace(/\D/g, '');
+
+        const isMe = Boolean(
+          (mePhoneUser && (partUser === mePhoneUser || resolvedUser === mePhoneUser)) ||
+          (meLidUser && (partUser === meLidUser || resolvedUser === meLidUser)) ||
+          (session.phone_number && partPhone && session.phone_number.replace(/\D/g, '') === partPhone.replace(/\D/g, ''))
+        );
         const name = isMe
           ? 'ME'
-          : (this._resolveDisplayName(session, participantJid, null) || jidToPhone(participantJid) || participantJid);
+          : (this._resolveDisplayName(session, participantJid, null) || partPhone || participantJid);
         return {
           id: participantJid,
-          phone: jidToPhone(participantJid) || null,
+          phone: partPhone || null,
           name,
           admin: p.admin || null,
           is_me: isMe,
