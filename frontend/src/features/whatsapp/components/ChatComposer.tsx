@@ -416,6 +416,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
         if (replyingTo && onCancelReply) {
           onCancelReply();
         }
+        setIsEmojiOpen(false);
         stopTypingSignal();
       });
     } catch (err) {
@@ -484,21 +485,6 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
   const isActionDisabled = disabled || isClosed || sending;
   const isInputDisabled = disabled || isClosed || !isWindowOpen;
 
-  /**
-   * WhatsApp Web keeps the emoji panel open while you keep composing: it closes
-   * when you click outside the composer, not when you click the draft you are
-   * typing into.
-   */
-  useEffect(() => {
-    if (!isEmojiOpen) return;
-    const onDocumentMouseDown = (e: MouseEvent) => {
-      const root = composerRootRef.current;
-      if (!root || (e.target instanceof Node && root.contains(e.target))) return;
-      setIsEmojiOpen(false);
-    };
-    document.addEventListener('mousedown', onDocumentMouseDown);
-    return () => document.removeEventListener('mousedown', onDocumentMouseDown);
-  }, [isEmojiOpen]);
 
   /**
    * Insert at the caret, not at the end: someone who moved the cursor back into
@@ -517,6 +503,8 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
       input.focus();
       const pos = Math.min(next.caret, next.text.length);
       input.setSelectionRange(pos, pos);
+      input.style.height = 'auto';
+      input.style.height = `${Math.min(input.scrollHeight, 120)}px`;
     });
   };
 
@@ -603,7 +591,10 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
               aria-label={t('whatsapp.emojiPickerTitle')}
               aria-expanded={isEmojiOpen}
               disabled={isInputDisabled}
-              onClick={() => setIsEmojiOpen((open) => !open)}
+              onClick={() => {
+                setIsEmojiOpen((open) => !open);
+                setIsAttachMenuOpen(false);
+              }}
               className={`p-2 rounded-xl transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
                 isEmojiOpen
                   ? 'text-[#7367F0] bg-[#7367F0]/10'
@@ -630,7 +621,10 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
               type="button"
               aria-label={t('whatsapp.addAttachment')}
               disabled={isActionDisabled}
-              onClick={() => setIsAttachMenuOpen(!isAttachMenuOpen)}
+              onClick={() => {
+                setIsAttachMenuOpen(!isAttachMenuOpen);
+                setIsEmojiOpen(false);
+              }}
               className="p-2 rounded-xl text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 hover:bg-slate-200/60 dark:hover:bg-white/[0.08] transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
             >
               <Plus className="w-4 h-4" />
@@ -779,12 +773,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
                 value={text}
                 disabled={isInputDisabled}
                 onFocus={() => {
-                  setIsEmojiOpen(false);
                   setIsAttachMenuOpen(false);
-                }}
-                onClick={() => {
-                  if (isEmojiOpen) setIsEmojiOpen(false);
-                  if (isAttachMenuOpen) setIsAttachMenuOpen(false);
                 }}
                 onChange={(e) => {
                   setText(e.target.value);
@@ -800,7 +789,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
                     ? (t('whatsapp.windowExpiredPlaceholder'))
                     : (placeholder || t('leads.typeMessagePlaceholder'))
                 }
-                className={`w-full px-3.5 py-2.5 pr-20 text-base sm:text-[13px] leading-relaxed rounded-xl vuexy-input transition-all resize-none max-h-[120px] overflow-y-auto block ${
+                className={`w-full px-3.5 py-2.5 pr-20 text-base sm:text-[13px] leading-relaxed rounded-xl vuexy-input transition-all resize-none max-h-[120px] overflow-y-auto scrollbar-none [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden block ${
                   isInputDisabled
                     ? 'opacity-60 cursor-not-allowed bg-slate-100 dark:bg-white/[0.04]'
                     : ''

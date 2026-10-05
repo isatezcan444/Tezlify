@@ -852,7 +852,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                   : 'hover:bg-slate-200/40 dark:hover:bg-white/[0.04]'
               }`
             : ''
-        } ${groupedReactions.length > 0 ? 'mb-3.5' : 'mb-1 sm:mb-1.5'} ${
+        } ${groupedReactions.length > 0 ? '!mb-5 sm:!mb-6 pb-0.5' : 'mb-1 sm:mb-1.5'} ${
           isInbound ? 'justify-start' : 'justify-end'
         }`}
       >

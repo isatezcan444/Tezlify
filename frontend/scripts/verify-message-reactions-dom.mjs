@@ -72,8 +72,9 @@ try {
       `import { createRoot } from 'react-dom/client';`,
       `import { act } from 'react';`,
       `import { I18nProvider } from '${SRC}/context/I18nContext';`,
+      `import { ToastProvider } from '${SRC}/context/ToastContext';`,
       `import { ChatBubble } from '${SRC}/features/whatsapp/components/ChatBubble';`,
-      `export { React, act, createRoot, I18nProvider, ChatBubble };`,
+      `export { React, act, createRoot, I18nProvider, ToastProvider, ChatBubble };`,
     ].join('\n'),
     'utf8',
   );
@@ -97,7 +98,7 @@ try {
     logLevel: 'silent',
   });
 
-  const { React, act, createRoot, I18nProvider, ChatBubble } = await import(out);
+  const { React, act, createRoot, I18nProvider, ToastProvider, ChatBubble } = await import(out);
 
   let passed = 0;
   const roots = new Set();
@@ -118,7 +119,11 @@ try {
         React.createElement(
           I18nProvider,
           null,
-          React.createElement(ChatBubble, { message, onReact }),
+          React.createElement(
+            ToastProvider,
+            null,
+            React.createElement(ChatBubble, { message, onReact }),
+          ),
         ),
       );
     });
@@ -243,6 +248,28 @@ try {
     assert.equal(calls.length, 1, 'picking from the full panel reacts once');
     assert.equal(calls[0][1], chosenEmoji, 'the picked emoji is sent verbatim');
     assert.ok(window.document.querySelector('[data-testid="emoji-grid"]') === null, 'the panel closes after a pick');
+  });
+
+  // --- 8. İfade bırakılan mesaj altında yeterli boşluk (!mb-5 / !mb-6) bırakılır --
+  await check('a message with reactions leaves generous bottom spacing (!mb-5 or !mb-6)', async () => {
+    const reactedContainer = await renderBubble(
+      baseMessage({ reactions: [{ emoji: '👍', sender: 'peer', is_from_me: false }] }),
+      () => {},
+    );
+    const reactedDiv = reactedContainer.querySelector('div.relative.flex.w-full');
+    assert.ok(reactedDiv, 'reacted row root must render');
+    assert.ok(
+      reactedDiv.className.includes('!mb-5') || reactedDiv.className.includes('!mb-6'),
+      `reacted row must have !mb-5 or !mb-6 (got: ${reactedDiv.className})`,
+    );
+
+    const plainContainer = await renderBubble(baseMessage({ reactions: [] }), () => {});
+    const plainDiv = plainContainer.querySelector('div.relative.flex.w-full');
+    assert.ok(plainDiv, 'plain row root must render');
+    assert.ok(
+      !plainDiv.className.includes('!mb-5') && !plainDiv.className.includes('!mb-6'),
+      `plain row must not have !mb-5 (got: ${plainDiv.className})`,
+    );
   });
 
   ok = true;

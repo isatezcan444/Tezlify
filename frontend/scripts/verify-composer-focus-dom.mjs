@@ -85,8 +85,9 @@ try {
       `import { createRoot } from 'react-dom/client';`,
       `import { act } from 'react';`,
       `import { I18nProvider } from '${SRC}/context/I18nContext';`,
+      `import { ToastProvider } from '${SRC}/context/ToastContext';`,
       `import { ChatComposer } from '${SRC}/features/whatsapp/components/ChatComposer';`,
-      `export { React, act, createRoot, I18nProvider, ChatComposer };`,
+      `export { React, act, createRoot, I18nProvider, ToastProvider, ChatComposer };`,
     ].join('\n'),
     'utf8',
   );
@@ -104,7 +105,7 @@ try {
     logLevel: 'silent',
   });
 
-  const { React, act, createRoot, I18nProvider, ChatComposer } = await import(out);
+  const { React, act, createRoot, I18nProvider, ToastProvider, ChatComposer } = await import(out);
 
   let passed = 0;
   const roots = new Set();
@@ -143,8 +144,15 @@ try {
     roots.add(root);
     await act(async () => {
       root.render(
-        React.createElement(I18nProvider, null,
-          React.createElement(ChatComposer, { onSend })),
+        React.createElement(
+          I18nProvider,
+          null,
+          React.createElement(
+            ToastProvider,
+            null,
+            React.createElement(ChatComposer, { onSend }),
+          ),
+        ),
       );
     });
     const input = host.querySelector('textarea, input[type="text"]');
@@ -305,6 +313,18 @@ try {
       panelOf(host), 'the panel stays open so several emoji can be added in a row',
     );
     assert.equal(input.selectionStart, 8 + picked.length, 'the caret follows the emoji');
+
+    // Pick a second emoji: panel must REMAIN open
+    const second = panel.querySelectorAll('button[title]')[1];
+    const picked2 = second.textContent;
+    await click(second);
+    await flush();
+    await settle();
+    assert.equal(input.value, `merhaba ${picked}${picked2}dunya`, 'second emoji also inserted at caret');
+    assert.ok(panelOf(host), 'the panel STILL stays open after multiple consecutive picks');
+
+    // Textarea must have scrollbar-none to prevent visible scrollbar track
+    assert.ok(input.className.includes('scrollbar-none'), 'textarea must have scrollbar-none class');
   });
 
   await check('Escape closes the emoji panel', async () => {
@@ -323,8 +343,24 @@ try {
     assert.equal(toggle.getAttribute('aria-expanded'), 'false');
   });
 
-  console.log(`\n${passed}/7 composer focus + emoji checks passed`);
-  ok = passed === 7;
+  await check('clicking outside closes the emoji panel', async () => {
+    const send = deferredSend();
+    const { host } = await mount(send.onSend);
+
+    const toggle = host.querySelector('button[aria-expanded]');
+    await click(toggle);
+    assert.ok(panelOf(host), 'the panel must be open first');
+
+    await act(async () => {
+      window.document.body.dispatchEvent(new window.MouseEvent('mousedown', { bubbles: true }));
+    });
+
+    assert.equal(panelOf(host), null, 'clicking outside body must close the panel');
+    assert.equal(toggle.getAttribute('aria-expanded'), 'false');
+  });
+
+  console.log(`\n${passed}/8 composer focus + emoji checks passed`);
+  ok = passed === 8;
 } catch (err) {
   console.error(`\nFAIL: ${err?.message ?? err}`);
 } finally {

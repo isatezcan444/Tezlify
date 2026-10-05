@@ -1129,7 +1129,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
             data-k={row.key}
             ref={(el) => registerRow(row.key, el)}
             className="flow-root"
-            style={{ marginBottom: `${K19_ROW_GAP}px` }}
+            style={{ marginBottom: `${(row.msg.reactions && row.msg.reactions.length > 0) ? 20 : K19_ROW_GAP}px` }}
           >
             {renderRowBody(row)}
           </div>
