@@ -232,7 +232,14 @@ app.get('/sessions/:id', (req, res) => {
     battery_level: session.battery_level ?? null,
     error_message: session.error_message || null,
     qr_code: session.status === 'SCAN_QR' ? session.qr_code : null,
-    sync: session.sync || { phase: 'idle' },
+    sync: session.sync ? {
+      ...session.sync,
+      chats_unique: Math.max(session.store?.chats ? session.store.chats.size : 0, session.sync.chats_unique || 0),
+      chats_synced: Math.max(session.store?.chats ? session.store.chats.size : 0, session.sync.chats_synced || 0),
+      contacts_unique: Math.max(session.store?.contacts ? session.store.contacts.size : 0, session.sync.contacts_unique || 0),
+      contacts_synced: Math.max(session.store?.contacts ? session.store.contacts.size : 0, session.sync.contacts_synced || 0),
+      messages_cached: Math.max(session.store?.messages ? session.store.messages.size : 0, session.sync.messages_cached || 0),
+    } : { phase: 'idle' },
     created_at: session.created_at,
     updated_at: session.updated_at,
   });

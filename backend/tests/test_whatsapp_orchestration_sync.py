@@ -486,3 +486,21 @@ async def test_has_unconsumed_pairing_for_user_queries_pair_token():
         await db.commit()
 
 
+@pytest.mark.asyncio
+async def test_await_gateway_history_ready_unblocks_early_when_chats_available():
+    """`_await_gateway_history_ready` unblocks immediately if chats_unique > 0 or chats_synced > 0 without waiting for phase='ready'."""
+    from unittest.mock import MagicMock, AsyncMock
+    from backend.app.services.whatsapp.orchestration.sync import WhatsAppSyncOrchestrator
+
+    mock_service = MagicMock()
+    mock_service.gw = MagicMock()
+    mock_service.gw.list_sessions = AsyncMock(
+        return_value=[{"id": "gw-early", "sync": {"phase": "syncing", "chats_unique": 15, "chats_synced": 15}}]
+    )
+    orchestrator = WhatsAppSyncOrchestrator(service=mock_service)
+
+    phase = await orchestrator._await_gateway_history_ready("gw-early")
+    assert phase == "syncing"
+    assert mock_service.gw.list_sessions.call_count == 1
+
+

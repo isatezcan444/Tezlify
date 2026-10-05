@@ -1054,6 +1054,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   const syncGateActive =
     hubTab === 'conversations' &&
     !syncGateDismissed &&
+    conversations.length === 0 &&
     (isPostQrSyncing ||
       loadingGateActive ||
       (initialSyncPending && (sessionSync?.phase === 'syncing' || sessionSync?.phase === 'error')) ||
@@ -2608,6 +2609,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
           // Sohbetler sayfa sayfa INCREMENTAL eklenir — tam liste rebuild yok (§29).
           const incoming: Conversation[] = (eventData.conversations || []).map((c: any) => mapConversationItem(c));
           if (incoming.length > 0) {
+            setIsPostQrSyncing(false);
             setConversations((prev) => {
               const byId = new Map(prev.map((c) => [c.id, c]));
               for (const c of incoming) {

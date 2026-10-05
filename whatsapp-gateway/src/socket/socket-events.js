@@ -748,6 +748,10 @@ export function bindSocketEvents({
         created_at: existing.created_at || new Date().toISOString(),
         updated_at: new Date().toISOString(),
       });
+      if (session.sync && session.sync.phase === 'syncing') {
+        session.sync.chats_unique = chats.size;
+        session.sync.chats_synced = Math.max(session.sync.chats_synced || 0, chats.size);
+      }
       if (!chats.get(key)?.avatar_url) void ensureChatAvatar(key);
       emitEvent({ event: 'conversation_updated', conversation: chats.get(key) });
     }
