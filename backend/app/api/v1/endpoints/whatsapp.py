@@ -941,6 +941,7 @@ async def get_media(
         headers["Content-Disposition"] = f'inline; filename="{ascii_name}"; filename*=UTF-8\'\'{utf8_encoded}'
     headers["Accept-Ranges"] = "bytes"
     headers["Content-Length"] = str(len(data))
+    headers["Cache-Control"] = "private, max-age=86400, immutable"
     if request.method == "HEAD":
         return Response(content=b"", media_type=mime or "application/octet-stream", headers=headers)
     range_header = request.headers.get("range")

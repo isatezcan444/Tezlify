@@ -132,7 +132,7 @@ export const EmojiPicker: React.FC<EmojiPickerProps> = ({ onPick, onClose, class
 
       <div
         ref={gridRef}
-        className="h-[240px] overflow-y-auto px-2 py-2"
+        className="h-[240px] overflow-y-auto px-2 py-2 [scrollbar-width:thin]"
         data-testid="emoji-grid"
       >
         {results.length === 0 ? (

@@ -115,6 +115,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
   const [isPickerOpen, setIsPickerOpen] = useState(false);
   const [reacting, setReacting] = useState(false);
   const [imageLoadError, setImageLoadError] = useState(false);
+  const [imageLoaded, setImageLoaded] = useState(false);
   const [mediaRetryTs, setMediaRetryTs] = useState<number | null>(null);
   const [copied, setCopied] = useState(false);
   const [isStarred, setIsStarred] = useState<boolean>(() => isMessageStarred(message.id));
@@ -254,6 +255,10 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
     }
     return resolved;
   }, [message.media_url, message.media_id, message.wa_message_id, message.message_type, mediaRetryTs]);
+
+  React.useEffect(() => {
+    setImageLoaded(false);
+  }, [resolvedMediaUrl]);
   useLayoutEffect(() => {
     finishWaLatency('event_handler_to_message_commit_ms', message.id);
   }, [message]);
@@ -597,11 +602,20 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
             >
               {resolvedMediaUrl && !imageLoadError ? (
                 <>
+                  {!imageLoaded && (
+                    <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-200/50 dark:bg-white/[0.05] animate-pulse">
+                      <ImageIcon className="w-8 h-8 text-slate-400 opacity-60" />
+                    </div>
+                  )}
                   <img 
                     src={resolvedMediaUrl} 
                     alt={message.media_caption || t('leads.imageAltFallback')} 
+                    loading="lazy"
+                    onLoad={() => setImageLoaded(true)}
                     onError={() => setImageLoadError(true)}
-                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
+                    className={`w-full h-full object-cover group-hover:scale-105 transition-all duration-200 ${
+                      imageLoaded ? 'opacity-100' : 'opacity-0'
+                    }`}
                   />
                   <div className="absolute inset-0 bg-black/30 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-white pointer-events-none">
                     <Eye className="w-5 h-5" />
@@ -964,7 +978,11 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                     {group.emoji}
                   </span>
                   {group.count > 1 && (
-                    <span className="text-[9px] font-bold text-slate-600 dark:text-slate-300 ml-0.5 select-none leading-none">
+                    <span
+                      className={`text-[9px] font-bold ${
+                        group.mine ? 'text-[#00a884] dark:text-[#25D366]' : 'text-slate-600 dark:text-slate-300'
+                      } ml-0.5 select-none leading-none`}
+                    >
                       {group.count}
                     </span>
                   )}
@@ -1303,7 +1321,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                     void handleReact(emoji);
                   }}
                   disabled={reacting}
-                  className="w-7 h-7 grid place-items-center text-base rounded-full hover:bg-slate-100 dark:hover:bg-white/10 transition-colors cursor-pointer disabled:opacity-40"
+                  className="w-7 h-7 grid place-items-center text-base rounded-full hover:bg-slate-100 dark:hover:bg-white/10 transition-transform duration-100 hover:scale-125 cursor-pointer disabled:opacity-40 origin-bottom select-none"
                 >
                   {emoji}
                 </button>
@@ -1317,7 +1335,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                 }}
                 title={t('whatsapp.reactionMore')}
                 aria-label={t('whatsapp.reactionMore')}
-                className="w-7 h-7 grid place-items-center rounded-full text-slate-400 hover:bg-slate-100 dark:hover:bg-white/10 transition-colors cursor-pointer"
+                className="w-7 h-7 grid place-items-center rounded-full text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-white/10 transition-transform duration-100 hover:scale-115 cursor-pointer"
               >
                 <Plus className="w-3.5 h-3.5" />
               </button>
@@ -1359,14 +1377,16 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
           icon={SmilePlus}
           maxWidth="sm"
         >
-          <EmojiPicker
-            onPick={(char) => {
-              setIsPickerOpen(false);
-              void handleReact(char);
-            }}
-            onClose={() => setIsPickerOpen(false)}
-            className="h-72"
-          />
+          <div className="flex justify-center -m-1">
+            <EmojiPicker
+              onPick={(char) => {
+                setIsPickerOpen(false);
+                void handleReact(char);
+              }}
+              onClose={() => setIsPickerOpen(false)}
+              className="h-80 w-full border-none shadow-none dark:bg-transparent bg-transparent"
+            />
+          </div>
         </Modal>
       )}
 
