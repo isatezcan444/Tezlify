@@ -1,6 +1,7 @@
 import * as React from "react";
 import { cn } from "../../lib/utils";
 import { WhatsAppRepository } from "../../features/whatsapp/data/whatsappRepository";
+import { resolveMediaUrl } from "../../lib/mediaUrl";
 
 export interface AvatarProps {
   name: string;
@@ -55,15 +56,16 @@ export const Avatar: React.FC<AvatarProps> = ({
   phone,
   onRefresh,
 }) => {
-  const [currentImage, setCurrentImage] = React.useState<string | undefined>(image);
+  const resolved = React.useMemo(() => resolveMediaUrl(image), [image]);
+  const [currentImage, setCurrentImage] = React.useState<string | undefined>(resolved);
   const [imageError, setImageError] = React.useState<boolean>(() => {
-    return image ? failedAvatarUrls.has(image) : false;
+    return resolved ? failedAvatarUrls.has(resolved) : false;
   });
 
   React.useEffect(() => {
-    setCurrentImage(image);
-    setImageError(image ? failedAvatarUrls.has(image) : false);
-  }, [image]);
+    setCurrentImage(resolved);
+    setImageError(resolved ? failedAvatarUrls.has(resolved) : false);
+  }, [resolved]);
 
   const handleImageError = React.useCallback(() => {
     if (currentImage) failedAvatarUrls.add(currentImage);
@@ -73,9 +75,10 @@ export const Avatar: React.FC<AvatarProps> = ({
       inFlightAvatarRefreshes.add(phone);
       WhatsAppRepository.refreshAvatar(phone)
         .then((res) => {
-          if (res.success && res.avatar_url && res.avatar_url !== currentImage) {
-            failedAvatarUrls.delete(res.avatar_url);
-            setCurrentImage(res.avatar_url);
+          if (res.success && res.avatar_url) {
+            const nextResolved = resolveMediaUrl(res.avatar_url) || res.avatar_url;
+            failedAvatarUrls.delete(nextResolved);
+            setCurrentImage(nextResolved);
             setImageError(false);
             onRefresh?.(res.avatar_url);
           }
