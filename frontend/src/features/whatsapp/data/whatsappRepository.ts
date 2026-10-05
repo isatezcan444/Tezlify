@@ -95,6 +95,11 @@ export class WhatsAppRepository {
     return WhatsAppApi.refreshAvatar(phone);
   }
 
+  static async requestAvatarBackfill(force: boolean = false): Promise<{ success: boolean; missing?: number }> {
+    await requireLive();
+    return WhatsAppApi.requestAvatarBackfill(force);
+  }
+
   static async getSessionQr(sessionId: number): Promise<{ status: string; qr_code: string | null; phone: string | null; error_message: string | null }> {
     await requireLive();
     return WhatsAppApi.getSessionQr(sessionId);

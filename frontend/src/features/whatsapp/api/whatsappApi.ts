@@ -566,6 +566,13 @@ export const WhatsAppApi = {
     );
   },
 
+  async requestAvatarBackfill(force: boolean = false): Promise<{ success: boolean; missing?: number }> {
+    return apiSend<{ success: boolean; missing?: number }>(
+      `/whatsapp/avatars/refresh${force ? '?force=true' : ''}`,
+      'POST'
+    );
+  },
+
   async getSessionQr(sessionId: number): Promise<{ status: string; qr_code: string | null; phone: string | null; error_message: string | null }> {
     const data = await apiGet<{ status: string; qr_code: string | null; phone: string | null; error_message?: string | null }>(
       `/whatsapp/sessions/${sessionId}/qr`

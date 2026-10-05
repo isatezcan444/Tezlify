@@ -196,14 +196,24 @@ export function createMediaStore({
       const { media } = resolved;
       let buffer = null;
       try {
-        buffer = await downloadMediaMessage(
+        const dlPromise = downloadMediaMessage(
           waMessage,
           'buffer',
           {},
           { logger, reuploadRequest: sock?.updateMediaMessage }
         );
+        let dlTimer;
+        const dlTimeout = new Promise((_, reject) => {
+          dlTimer = setTimeout(() => reject(new Error('Media download timeout (10s)')), 10_000);
+        });
+        dlTimeout.catch(() => {});
+        try {
+          buffer = await Promise.race([dlPromise, dlTimeout]);
+        } finally {
+          if (dlTimer) clearTimeout(dlTimer);
+        }
       } catch (dlErr) {
-        logger?.debug({ dlErr: dlErr?.message, waMessageId }, 'downloadMediaMessage failed, checking thumbnail');
+        logger?.debug({ dlErr: dlErr?.message, waMessageId }, 'downloadMediaMessage failed or timed out, checking thumbnail');
       }
 
       let mimeType = media.mimetype || 'application/octet-stream';

@@ -470,6 +470,7 @@ async def refresh_contact_avatar(
 
 @router.post("/avatars/refresh", response_model=WhatsAppAvatarBackfillResponse)
 async def refresh_all_avatars(
+    force: bool = Query(False, description="Zorla yenile: negatif onbellegi ve zaman asimi engellerini temizler"),
     db: AsyncSession = Depends(get_db),
     current_user: AuthUser = Depends(get_current_user),
 ) -> WhatsAppAvatarBackfillResponse:
@@ -481,7 +482,7 @@ async def refresh_all_avatars(
     avatarlar `conversation_updated` olaylarıyla sohbet listesine canlı akar.
     """
     try:
-        data = await whatsapp_service.refresh_all_avatars(db, current_user.id)
+        data = await whatsapp_service.refresh_all_avatars(db, current_user.id, force=force)
     except NoWhatsAppSession as exc:
         raise _no_session(exc) from exc
     except WhatsAppRelinkRequired as exc:

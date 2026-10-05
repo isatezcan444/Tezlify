@@ -545,6 +545,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   // id'lerini ref uzerinden okur (bayat closure / StrictMode çift calisma yok).
   const loadConversationsRef = useRef<((silent?: boolean) => Promise<void>) | null>(null);
   const knownConvIdsRef = useRef<Set<number>>(new Set());
+  const avatarBackfillTriggeredRef = useRef<boolean>(false);
   const hydratingConversationIds = useRef(new Set<number>());
   const hydrateConversation = useCallback((id: number) => {
     if (!Number.isSafeInteger(id) || id <= 0 || hydratingConversationIds.current.has(id)) return;
@@ -865,6 +866,13 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       setHasMoreConvs(page.has_more);
       nextConvOffsetRef.current = page.next_offset ?? page.items.length;
       totalConvsRef.current = page.total;
+
+      if (!avatarBackfillTriggeredRef.current && page.items.some((c) => !c.lead_avatar_url)) {
+        avatarBackfillTriggeredRef.current = true;
+        WhatsAppRepository.requestAvatarBackfill().catch((err) => {
+          console.debug('[WhatsAppHubPage] Background avatar backfill triggered with err:', err);
+        });
+      }
 
       setSelectedConv((prev) => {
         const isMobile = typeof window !== 'undefined' && window.innerWidth < 768;
@@ -2688,6 +2696,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
           setIsSyncingChats(false);
           activeSyncIdRef.current = null;
           syncMsgBufferRef.current = {};
+          avatarBackfillTriggeredRef.current = false;
           fetchSessions(true);
           onRefreshStatsRef.current();
           void loadConversations(true);
@@ -3283,7 +3292,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                               <Avatar
                                 name={headerDisplayName}
                                 image={selectedConv.lead_avatar_url}
-                                phone={headerCleanPhone || (!isRawWhatsAppIdentity(rawPhone) ? rawPhone : undefined)}
+                                phone={headerCleanPhone || (rawPhone ? stripJidPrefix(rawPhone) : undefined)}
                                 size="md"
                                 shape="rounded"
                               />

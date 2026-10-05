@@ -1307,7 +1307,7 @@ async def get_message(
     return await _messaging_orchestrator.get_message(db, user_id, conversation_id, message_id)
 
 
-async def refresh_all_avatars(db: AsyncSession, user_id: str) -> Dict[str, Any]:
+async def refresh_all_avatars(db: AsyncSession, user_id: str, force: bool = False) -> Dict[str, Any]:
     """Sohbet listesinde eksik kalan profil fotoğrafları için gateway'de
     backfill sweep'i tetikler (QR sonrası parite: tüm fotoğraflar iner).
 
@@ -1318,7 +1318,10 @@ async def refresh_all_avatars(db: AsyncSession, user_id: str) -> Dict[str, Any]:
     başarı üretilmez.
     """
     ws_session = await _require_user_session(db, user_id)
-    result = await gw.request_avatar_backfill(str(ws_session.gateway_id))
+    if force:
+        result = await gw.request_avatar_backfill(str(ws_session.gateway_id), force=True)
+    else:
+        result = await gw.request_avatar_backfill(str(ws_session.gateway_id))
     if not isinstance(result, dict):
         raise gw.WhatsAppGatewayError("Gateway avatar backfill yanıtı geçersiz.")
     return {

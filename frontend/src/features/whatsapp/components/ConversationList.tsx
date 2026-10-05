@@ -186,7 +186,7 @@ const ConversationRowComponent: React.FC<ConversationRowProps> = ({ id, name, av
       <Avatar
         name={name}
         image={avatarUrl}
-        phone={cleanPhone || (!isRawJid && phone ? phone : undefined)}
+        phone={cleanPhone || (phone ? stripJidPrefix(phone) : undefined)}
         size="md"
         shape="rounded"
       />

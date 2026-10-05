@@ -75,13 +75,24 @@ export function createBoundedCache({ maxEntries = 10_000, ttlMs = 60 * 60 * 1000
       }
       return entry.value;
     },
-    set(key, value) {
+    has(key) {
+      const entry = entries.get(String(key));
+      if (!entry || entry.expiresAt <= Date.now()) {
+        if (entry) entries.delete(String(key));
+        return false;
+      }
+      return true;
+    },
+    set(key, value, customTtlMs) {
+      const entryTtl = Number(customTtlMs) > 0 ? Number(customTtlMs) : ttl;
       entries.delete(String(key));
-      entries.set(String(key), { value, expiresAt: Date.now() + ttl });
+      entries.set(String(key), { value, expiresAt: Date.now() + entryTtl });
       prune();
     },
     del(key) { entries.delete(String(key)); },
+    delete(key) { entries.delete(String(key)); },
     flushAll() { entries.clear(); },
+    clear() { entries.clear(); },
     close() { entries.clear(); },
     get size() { prune(); return entries.size; },
   };

@@ -267,7 +267,8 @@ app.post('/sessions/:id/avatar/refresh', async (req, res) => {
 // paritesi: QR sonrası tüm profil fotoğrafları kademeli olarak iner).
 // Sweep, eksik kalmayana dek backoff'lu turlarla çalışır (session-manager).
 app.post('/sessions/:sessionId/avatars/backfill', withSession(async (req, res, sessionId) => {
-  const result = sessionManager.requestAvatarBackfill(sessionId);
+  const force = Boolean(req.body && req.body.force);
+  const result = sessionManager.requestAvatarBackfill(sessionId, force);
   res.json(result);
 }));
 
