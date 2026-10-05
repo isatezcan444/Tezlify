@@ -1,6 +1,8 @@
 import os
 from datetime import datetime, timezone
 from typing import List
+
+from backend.app.core.datetime_utils import utc_now_naive
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select, func, delete, insert, case
 from sqlalchemy.exc import IntegrityError
@@ -184,7 +186,7 @@ async def update_campaign_group(
     for key, value in update_data.items():
         setattr(group, key, value)
 
-    group.updated_at = datetime.utcnow()
+    group.updated_at = utc_now_naive()
     await db.commit()
     await db.refresh(group)
 

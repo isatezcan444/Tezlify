@@ -5,6 +5,7 @@ from sqlalchemy.orm import relationship
 
 from backend.app.core.config import settings
 from backend.app.core.database import Base
+from backend.app.core.datetime_utils import utc_now_naive
 
 class CampaignStatus(str, enum.Enum):
     DRAFT = "DRAFT"
@@ -47,5 +48,5 @@ class Campaign(Base):
     replied_count = Column(Integer, default=0)
     failed_count = Column(Integer, default=0)
     
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=utc_now_naive, nullable=False)
+    updated_at = Column(DateTime, default=utc_now_naive, onupdate=utc_now_naive, nullable=False)

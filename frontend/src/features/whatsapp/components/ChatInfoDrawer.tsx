@@ -22,9 +22,11 @@ import {
   Users,
   ArrowLeft,
   Plus,
+  Loader2,
 } from 'lucide-react';
 import { Conversation, Message } from '../../../types';
 import { ApiClient } from '../../../api/client';
+import { WhatsAppApi } from '../api/whatsappApi';
 import { useI18n } from '../../../context/I18nContext';
 import { useToast } from '../../../context/ToastContext';
 import { Avatar } from '../../../components/ui/Avatar';
@@ -104,6 +106,42 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
   const [docViewerFilename, setDocViewerFilename] = useState<string | null>(null);
   const [docViewerMime, setDocViewerMime] = useState<string | null>(null);
   const [isAddingLead, setIsAddingLead] = useState(false);
+
+  // Dynamic WhatsApp About / Status state
+  const [dynamicStatus, setDynamicStatus] = useState<string | null>(null);
+  const [loadingStatus, setLoadingStatus] = useState(false);
+
+  const isGroup = Boolean(conversation.is_group);
+  const cleanPhone = conversation.lead_phone || (conversation as any).phone || '';
+  const phoneForStatus = cleanPhone.startsWith('jid:') ? cleanPhone.slice(4) : cleanPhone;
+
+  useEffect(() => {
+    if (!isOpen || isGroup || !phoneForStatus) {
+      setDynamicStatus(null);
+      return;
+    }
+    let active = true;
+    setLoadingStatus(true);
+    WhatsAppApi.getContactStatus(phoneForStatus, conversation.session_id || undefined)
+      .then((res) => {
+        if (!active) return;
+        if (res.status) {
+          setDynamicStatus(res.status);
+        } else {
+          setDynamicStatus(null);
+        }
+      })
+      .catch(() => {
+        if (active) setDynamicStatus(null);
+      })
+      .finally(() => {
+        if (active) setLoadingStatus(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [isOpen, isGroup, cleanPhone, conversation.session_id]);
 
   const handleAddToCrm = async () => {
     if (!cleanPhone || isAddingLead) return;
@@ -197,8 +235,6 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
 
   if (!isOpen) return null;
 
-  const isGroup = Boolean(conversation.is_group);
-  const cleanPhone = conversation.lead_phone || '';
   const displayName = conversation.lead_name || formatPhoneNumber(cleanPhone) || (isGroup ? t('whatsapp.group') : t('whatsapp.contactInfo'));
 
   const handleCopyPhone = () => {
@@ -233,7 +269,7 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
               data-testid="back-info-drawer-btn"
               aria-label={t('common.back')}
               title={t('common.back')}
-              className="p-1.5 rounded-full text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/[0.08] transition-colors cursor-pointer"
+              className="p-1.5 rounded-full text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/[0.08] active:scale-90 transition-all cursor-pointer"
             >
               <ArrowLeft className="w-5 h-5" />
             </button>
@@ -243,7 +279,7 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
               onClick={onClose}
               data-testid="close-info-drawer-btn"
               aria-label={t('common.close')}
-              className="p-1.5 rounded-full text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/[0.08] transition-colors cursor-pointer"
+              className="p-1.5 rounded-full text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/[0.08] active:scale-90 transition-all cursor-pointer"
             >
               <X className="w-5 h-5" />
             </button>
@@ -459,7 +495,16 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
           )}
 
           <div className="text-xs text-slate-600 dark:text-slate-300 italic pt-1">
-            "{isGroup ? t('whatsapp.noDescription') : 'Hey there! I am using WhatsApp.'}"
+            {isGroup ? (
+              `"${t('whatsapp.noDescription')}"`
+            ) : loadingStatus ? (
+              <span className="inline-flex items-center gap-1.5 text-slate-400 not-italic">
+                <Loader2 className="w-3 h-3 animate-spin" />
+                <span>{t('whatsapp.statusLoading')}</span>
+              </span>
+            ) : (
+              `"${dynamicStatus || t('whatsapp.defaultAbout')}"`
+            )}
           </div>
         </div>
 

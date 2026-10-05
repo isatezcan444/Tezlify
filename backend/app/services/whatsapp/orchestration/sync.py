@@ -20,6 +20,8 @@ import time
 from typing import Any, Callable, Deque, Dict, FrozenSet, List, Optional, Set, Tuple
 import uuid
 
+from backend.app.core.datetime_utils import utc_now_naive
+
 from sqlalchemy import delete, exists, func, insert, or_, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -114,7 +116,7 @@ async def _insert_messages_resilient(db: AsyncSession, rows: List[Message]) -> L
         from sqlalchemy.dialects.postgresql import insert as pg_insert
         from sqlalchemy.dialects.sqlite import insert as sqlite_insert
         ins_cls = pg_insert if dialect_name == "postgresql" else sqlite_insert
-        now = datetime.utcnow()
+        now = utc_now_naive()
         values = []
         for row in rows:
             val_dict = {}
@@ -191,7 +193,7 @@ async def _persist_sync_batch_safely(
         from sqlalchemy.dialects.postgresql import insert as pg_insert
         from sqlalchemy.dialects.sqlite import insert as sqlite_insert
         ins_cls = pg_insert if dialect_name == "postgresql" else sqlite_insert
-        now = datetime.utcnow()
+        now = utc_now_naive()
         normalized_values = []
         for item in values:
             val_dict = {}
@@ -1553,7 +1555,7 @@ class WhatsAppSyncOrchestrator:
                                 if (has_rx or gw_status_str == "READ") and existing_msg.status != ConversationMessageStatus.READ:
                                     existing_msg.status = ConversationMessageStatus.READ
                                     if not existing_msg.read_at:
-                                        existing_msg.read_at = _as_naive_utc(_parse_dt(gm.get("created_at"))) or datetime.utcnow()
+                                        existing_msg.read_at = _as_naive_utc(_parse_dt(gm.get("created_at"))) or utc_now_naive()
                                 elif gw_status_str == "DELIVERED" and existing_msg.status == ConversationMessageStatus.SENT:
                                     existing_msg.status = ConversationMessageStatus.DELIVERED
                             if rx_list and rx_list[-1].get("emoji"):
@@ -2622,7 +2624,7 @@ class WhatsAppSyncOrchestrator:
                         if (has_rx or gw_status_str == "READ") and existing_msg.status != ConversationMessageStatus.READ:
                             existing_msg.status = ConversationMessageStatus.READ
                             if not existing_msg.read_at:
-                                existing_msg.read_at = _as_naive_utc(_parse_dt(gm.get("created_at"))) or datetime.utcnow()
+                                existing_msg.read_at = _as_naive_utc(_parse_dt(gm.get("created_at"))) or utc_now_naive()
                         elif gw_status_str == "DELIVERED" and existing_msg.status == ConversationMessageStatus.SENT:
                             existing_msg.status = ConversationMessageStatus.DELIVERED
                     if rx_list and rx_list[-1].get("emoji"):

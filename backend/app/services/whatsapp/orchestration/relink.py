@@ -23,6 +23,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 
+from backend.app.core.datetime_utils import utc_now_naive
+
 from sqlalchemy import or_, select, text
 from sqlalchemy.exc import MultipleResultsFound
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -271,7 +273,7 @@ async def perform_atomic_relink(
     candidate.qr_code = None
     candidate.error_message = None
     candidate.initial_sync_completed_at = None
-    candidate.updated_at = datetime.utcnow()
+    candidate.updated_at = utc_now_naive()
     if session_name:
         candidate.session_name = session_name
 

@@ -3,6 +3,7 @@ from datetime import datetime
 from sqlalchemy import Boolean, Column, Integer, String, DateTime, Enum, ForeignKey, Index, Uuid, Text, UniqueConstraint
 from sqlalchemy.orm import relationship
 from backend.app.core.database import Base
+from backend.app.core.datetime_utils import utc_now_naive
 
 
 class ConversationStatus(str, enum.Enum):
@@ -61,8 +62,8 @@ class Conversation(Base):
     is_group = Column(Boolean, default=False, nullable=False, index=True)
     is_archived = Column(Boolean, default=False, nullable=False, index=True)
 
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=utc_now_naive, nullable=False)
+    updated_at = Column(DateTime, default=utc_now_naive, onupdate=utc_now_naive, nullable=False)
 
     # Relationships
     lead = relationship("Lead", back_populates="conversations")

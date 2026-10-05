@@ -10,8 +10,11 @@ Preserves strict transaction boundaries:
 """
 from datetime import datetime
 import logging
+import re
 from typing import Any, Dict, List, Optional, Tuple
 import uuid
+
+from backend.app.core.datetime_utils import utc_now_naive
 
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -195,6 +198,17 @@ class WhatsAppMessagingOrchestrator:
             # birakilamaz. Yerelde yazip gondermemek sessizce yalan olurdu.
             raise ValueError("Bu mesaja henuz tepki birakilamaz (saglayici kimligi yok).")
 
+        participant_jid = None
+        if conv.is_group and target.direction == MessageDirection.INBOUND:
+            if target.sender_phone:
+                sp = target.sender_phone.strip()
+                if "@" in sp:
+                    participant_jid = sp
+                else:
+                    digits = re.sub(r"[^\d]", "", sp)
+                    if digits:
+                        participant_jid = f"{digits}@s.whatsapp.net"
+
         session_row = await conversation_session(db, user_id, conv)
         await gateway_op_or_mark_relink(
             db,
@@ -205,6 +219,7 @@ class WhatsAppMessagingOrchestrator:
                 target_wa_message_id=target.wa_message_id,
                 target_from_me=target.direction == MessageDirection.OUTBOUND,
                 emoji=emoji,
+                participant_jid=participant_jid,
             ),
         )
         row = await _upsert_reaction(
@@ -254,7 +269,7 @@ class WhatsAppMessagingOrchestrator:
             # INPUT is invalid. LookupError became a 404, so an empty composer
             # told the user the conversation does not exist.
             raise ValueError("Mesaj bos olamaz.")
-        _now = datetime.utcnow()
+        _now = utc_now_naive()
         session_row = await conversation_session(db, user_id, conv)
         client_message_id = client_message_id or str(uuid.uuid4())
         existing = await db.scalar(
@@ -301,7 +316,7 @@ class WhatsAppMessagingOrchestrator:
             await db.refresh(row)
             if row.status == ConversationMessageStatus.PENDING:
                 row.status = ConversationMessageStatus.FAILED
-                row.failed_at = datetime.utcnow()
+                row.failed_at = utc_now_naive()
                 row.error_message = str(exc)[:300]
                 await db.commit()
             raise
@@ -315,7 +330,7 @@ class WhatsAppMessagingOrchestrator:
         # Faz 10 (P2): gonderim yolu da paylasilan kurali kullanir (tek kaynak).
         apply_last_message(
             conv,
-            datetime.utcnow(),
+            utc_now_naive(),
             build_last_message_summary(
                 message_type="TEXT", body=clean, direction=MessageDirection.OUTBOUND.value
             ),
@@ -366,7 +381,7 @@ class WhatsAppMessagingOrchestrator:
             msg_type = MessageType.DOCUMENT
         caption = media.get("caption")
         filename = media.get("filename")
-        _now = datetime.utcnow()
+        _now = utc_now_naive()
         expected_body = (caption or filename or media.get("media_url") or "")[:4000]
         if existing is not None:
             if existing.body != expected_body or existing.message_type != msg_type:
@@ -407,7 +422,7 @@ class WhatsAppMessagingOrchestrator:
             await db.refresh(row)
             if row.status == ConversationMessageStatus.PENDING:
                 row.status = ConversationMessageStatus.FAILED
-                row.failed_at = datetime.utcnow()
+                row.failed_at = utc_now_naive()
                 row.error_message = str(exc)[:300]
                 await db.commit()
             raise
@@ -424,7 +439,7 @@ class WhatsAppMessagingOrchestrator:
         advance_message_status(row, target_status)
         apply_last_message(
             conv,
-            datetime.utcnow(),
+            utc_now_naive(),
             build_last_message_summary(
                 message_type=mtype_str,
                 body=caption or filename,
@@ -477,7 +492,7 @@ class WhatsAppMessagingOrchestrator:
         # engelliyordu (`should_apply_unread_count` okuma korumasi).
         if gateway_ok and (conv.unread_count > 0 or conv.last_read_at is None):
             conv.unread_count = 0
-            conv.last_read_at = datetime.utcnow()
+            conv.last_read_at = utc_now_naive()
             await db.commit()
         result: Dict[str, Any] = {"success": gateway_ok}
         if gateway_error:

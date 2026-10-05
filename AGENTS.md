@@ -81,3 +81,14 @@ This document defines the core architecture, non-negotiable rules, invariants, a
   ```bash
   cd frontend && npm run build
   ```
+
+---
+
+## 5. Post-Development Invariant: Commit, Push & Deploy
+
+After completing any development, bugfix, or feature enhancement, the agent MUST automatically perform the full deployment lifecycle:
+1. **Verify**: Ensure tests pass (`pytest`, `npm run build`, `npm test`).
+2. **Commit**: Stage changes and commit with a concise, descriptive conventional commit message (`git add -A && git commit -m "..."`).
+3. **Push**: Push to GitHub (`git push origin <branch>`).
+4. **Deploy**: Run the production deployment script (`bash scripts/deploy/release.sh`) to synchronize code, build hermetic assets, update Docker containers on the server, and verify health checks.
+No task is considered complete until all four steps succeed.

@@ -38,10 +38,14 @@ export const LinkPreviewCard: React.FC<LinkPreviewCardProps> = ({
   const canEmbed = Boolean(preview.embed_url);
   const headline = preview.title || preview.site_name || preview.url;
   const surface = isOutbound
-    ? 'bg-black/15 border-white/20'
+    ? 'bg-black/[0.06] dark:bg-black/25 border-black/10 dark:border-white/10'
     : 'bg-slate-200/50 dark:bg-white/[0.06] border-black/5 dark:border-white/10';
-  const titleColor = isOutbound ? 'text-white' : 'text-slate-800 dark:text-slate-100';
-  const mutedColor = isOutbound ? 'text-white/70' : 'text-slate-500 dark:text-slate-400';
+  const titleColor = isOutbound
+    ? 'text-[#111b21] dark:text-[#e9edef]'
+    : 'text-slate-800 dark:text-slate-100';
+  const mutedColor = isOutbound
+    ? 'text-[#54656f] dark:text-[#aebac1]'
+    : 'text-slate-500 dark:text-slate-400';
 
   return (
     <div

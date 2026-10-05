@@ -1,6 +1,7 @@
 from datetime import datetime
 from sqlalchemy import Column, Integer, String, Boolean, DateTime
 from backend.app.core.database import Base
+from backend.app.core.datetime_utils import utc_now_naive
 
 
 class SystemSetting(Base):
@@ -21,4 +22,4 @@ class SystemSetting(Base):
     working_hours_start = Column(String(10), default="09:00")
     working_hours_end = Column(String(10), default="18:30")
     
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=utc_now_naive, onupdate=utc_now_naive, nullable=False)

@@ -3,6 +3,7 @@ from datetime import datetime
 from sqlalchemy import Column, Integer, String, DateTime, Text, Enum, ForeignKey, Index, Uuid, text
 from sqlalchemy.orm import relationship
 from backend.app.core.database import Base
+from backend.app.core.datetime_utils import utc_now_naive
 
 
 class MessageDirection(str, enum.Enum):
@@ -84,8 +85,8 @@ class Message(Base):
     failed_at = Column(DateTime, nullable=True)
 
     external_timestamp = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=utc_now_naive, nullable=False)
+    updated_at = Column(DateTime, default=utc_now_naive, onupdate=utc_now_naive, nullable=False)
 
     # Relationships
     conversation = relationship("Conversation", back_populates="messages")

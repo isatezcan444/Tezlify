@@ -2,6 +2,7 @@ import enum
 from datetime import datetime
 from sqlalchemy import Column, Integer, String, DateTime, Enum, Boolean, Text, Index, Uuid
 from backend.app.core.database import Base
+from backend.app.core.datetime_utils import utc_now_naive
 
 
 class SessionStatus(str, enum.Enum):
@@ -51,8 +52,8 @@ class WhatsAppSession(Base):
     # eslesme yeni satir uretirse kapi kendiliginden yeniden kapanir.
     initial_sync_completed_at = Column(DateTime, nullable=True)
 
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=utc_now_naive, nullable=False)
+    updated_at = Column(DateTime, default=utc_now_naive, onupdate=utc_now_naive, nullable=False)
 
     __table_args__ = (
         Index("ix_ws_session_user_status", "user_id", "status"),

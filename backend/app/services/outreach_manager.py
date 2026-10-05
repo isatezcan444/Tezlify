@@ -2,6 +2,7 @@ import logging
 from datetime import datetime
 from typing import Optional, Tuple
 
+from backend.app.core.datetime_utils import utc_now_naive
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
@@ -136,13 +137,13 @@ class OutreachManager:
                 target_phone=lead.phone_e164,
                 rendered_message=rendered_msg,
                 status=MessageStatus.SENT,
-                sent_at=datetime.utcnow(),
+                sent_at=utc_now_naive(),
                 delay_applied_seconds=delay_sec,
             )
             db.add(msg_log)
 
             lead.status = LeadStatus.CONTACTED
-            lead.last_contacted_at = datetime.utcnow()
+            lead.last_contacted_at = utc_now_naive()
             campaign.sent_count = (campaign.sent_count or 0) + 1
 
             # Bi-directional link between Conversation / Contact and Lead

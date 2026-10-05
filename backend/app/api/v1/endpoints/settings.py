@@ -1,5 +1,6 @@
 import logging
 from datetime import datetime
+from backend.app.core.datetime_utils import utc_now_naive
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -60,7 +61,7 @@ async def update_antiban_settings(
     setting.working_hours_enabled = payload.working_hours_enabled
     setting.working_hours_start = payload.working_hours_start
     setting.working_hours_end = payload.working_hours_end
-    setting.updated_at = datetime.utcnow()
+    setting.updated_at = utc_now_naive()
     
     await db.commit()
     await db.refresh(setting)

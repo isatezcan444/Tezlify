@@ -3,6 +3,7 @@ from datetime import datetime
 from sqlalchemy import Column, DateTime, Index, Integer, String, Text
 
 from backend.app.core.database import Base
+from backend.app.core.datetime_utils import utc_now_naive
 
 
 class LinkPreview(Base):
@@ -61,7 +62,7 @@ class LinkPreview(Base):
     # Basarisizlik nedeni (kisa). Kullaniciya gosterilmez, teshis icin.
     error = Column(String(255), nullable=True)
 
-    fetched_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    fetched_at = Column(DateTime, default=utc_now_naive, nullable=False)
     expires_at = Column(DateTime, nullable=True, index=True)
 
     __table_args__ = (

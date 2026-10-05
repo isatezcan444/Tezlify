@@ -33,6 +33,7 @@ from datetime import datetime
 
 from sqlalchemy import Column, DateTime, Index, Integer, String
 from backend.app.core.database import Base
+from backend.app.core.datetime_utils import utc_now_naive
 
 
 class EphemeralPairing(Base):
@@ -59,8 +60,8 @@ class EphemeralPairing(Base):
     # A consumed record is retained (audit trail) but never resolves an owner.
     consumed_at = Column(DateTime, nullable=True, index=True)
 
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=utc_now_naive, nullable=False)
+    updated_at = Column(DateTime, default=utc_now_naive, onupdate=utc_now_naive, nullable=False)
 
     __table_args__ = (
         Index("ix_ephemeral_pairings_owner_open", "user_id", "consumed_at"),

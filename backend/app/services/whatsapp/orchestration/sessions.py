@@ -13,6 +13,8 @@ import logging
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 import uuid
 
+from backend.app.core.datetime_utils import utc_now_naive
+
 from sqlalchemy import delete, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -124,7 +126,7 @@ def _apply_gateway_live(row: WhatsAppSession, data: Dict[str, Any]) -> None:
         row.error_message = fields["error_message"]
     if fields["status"] in ("CONNECTED", "SCAN_QR"):
         row.error_message = None
-    row.updated_at = datetime.utcnow()
+    row.updated_at = utc_now_naive()
 
 
 async def _gateway_op_or_mark_relink(
@@ -149,7 +151,7 @@ async def _gateway_op_or_mark_relink(
         row.is_phone_online = False
         row.qr_code = None
         row.error_message = "WHATSAPP_AUTH_RELINK_REQUIRED"
-        row.updated_at = datetime.utcnow()
+        row.updated_at = utc_now_naive()
         await db.commit()
         logger.warning(
             "[WhatsApp] Durable session is not available in gateway (db_id=%s, gw_id=%s); relink required",
@@ -286,7 +288,7 @@ async def _list_sessions_internal(
                     row.qr_code = None
                     row.error_message = "WHATSAPP_LEASE_LOST"
                     row.error_reason = "LEASE_LOST"
-                    row.updated_at = datetime.utcnow()
+                    row.updated_at = utc_now_naive()
                     try:
                         await ws_manager.broadcast(
                             {
@@ -330,7 +332,7 @@ async def _list_sessions_internal(
                     row.is_phone_online = False
                     row.qr_code = None
                     row.error_message = "WHATSAPP_GATEWAY_SESSION_MISSING"
-                    row.updated_at = datetime.utcnow()
+                    row.updated_at = utc_now_naive()
                     try:
                         await ws_manager.broadcast(
                             {
@@ -431,7 +433,7 @@ async def start_pairing_session(
     That record is what lets a later `session_connected` resolve the owner even
     if this process loses `_ephemeral_pairings` (restart, cancel, popped token).
     """
-    line_name = name or f"Hat {datetime.utcnow().strftime('%H:%M')}"
+    line_name = name or f"Hat {utc_now_naive().strftime('%H:%M')}"
     gw_session = await gw.create_session(line_name, ephemeral=True)
     gateway_id = extract_session_id(gw_session)
     if not gateway_id:
@@ -442,7 +444,7 @@ async def start_pairing_session(
         "gateway_id": gateway_id,
         "session_name": gw_session.get("session_name") or line_name,
         "logical_session_id": logical_session_id,
-        "created_at": datetime.utcnow(),
+        "created_at": utc_now_naive(),
         # P6-9: keep the token on the record so the event resolver can hand it
         # back to the owner's UI for correlation.
         "pair_token": pair_token,
@@ -752,7 +754,7 @@ async def get_session_qr(db: AsyncSession, user_id: str, session_id: int) -> Dic
                         raise
 
             if not pairing or not eph_data:
-                line_name = row.session_name or f"Hat {datetime.utcnow().strftime('%H:%M')}"
+                line_name = row.session_name or f"Hat {utc_now_naive().strftime('%H:%M')}"
                 gw_session = await gw.create_session(line_name, ephemeral=True)
                 ephemeral_gid = extract_session_id(gw_session)
                 if not ephemeral_gid:
@@ -764,7 +766,7 @@ async def get_session_qr(db: AsyncSession, user_id: str, session_id: int) -> Dic
                     "session_name": line_name,
                     "logical_session_id": row.id,
                     "phone": row.phone_number,
-                    "created_at": datetime.utcnow(),
+                    "created_at": utc_now_naive(),
                 }
                 _logical_to_ephemeral[row.id] = pair_token
                 return {
@@ -946,7 +948,7 @@ async def logout_session(db: AsyncSession, user_id: str, session_id: int) -> Dic
     row.status = SessionStatus.DISCONNECTED
     row.is_active = False
     row.is_phone_online = False
-    row.updated_at = datetime.utcnow()
+    row.updated_at = utc_now_naive()
     await db.commit()
     return {"success": True, "status": "DISCONNECTED"}
 

@@ -193,6 +193,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   const [chatSearchQuery, setChatSearchQuery] = useState('');
   const [chatSearchCurrentIndex, setChatSearchCurrentIndex] = useState(0);
   const [messagesMap, setMessagesMap] = useState<Record<number, Message[]>>({});
+  const [groupParticipantsMap, setGroupParticipantsMap] = useState<Record<number, Array<{ id: string; name: string; is_me: boolean }>>>({});
   // PHASE 2.K.1 (single variable = onRetry prop identity): dependency-safe refs
   // mirroring the existing conversationsRef/toastRef idiom. They let the retry
   // handler be a STABLE useCallback that reads the LATEST selectedConv/messagesMap
@@ -210,6 +211,46 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     setIsForwardModalOpen(false);
     setMessagesToForward([]);
   }, [selectedConv?.id]);
+
+  useEffect(() => {
+    if (!selectedConv?.is_group || !selectedConv?.id) return;
+    const convId = selectedConv.id;
+    if (groupParticipantsMap[convId]) return;
+
+    void WhatsAppApi.getGroupParticipants(convId)
+      .then((res) => {
+        if (res && Array.isArray(res.participants) && res.participants.length > 0) {
+          setGroupParticipantsMap((prev) => ({
+            ...prev,
+            [convId]: res.participants,
+          }));
+        }
+      })
+      .catch(() => {});
+  }, [selectedConv?.id, selectedConv?.is_group, groupParticipantsMap]);
+
+  const groupParticipantsText = React.useMemo(() => {
+    if (!selectedConv?.is_group || !selectedConv?.id) return '';
+    const senderNames = new Set<string>();
+    const convMessages = messagesMap[selectedConv.id] || [];
+    for (const m of convMessages) {
+      if (m.direction === 'INBOUND' && m.sender_name && m.sender_name.trim()) {
+        senderNames.add(m.sender_name.trim());
+      }
+    }
+    const fetched = groupParticipantsMap[selectedConv.id] || [];
+    for (const p of fetched) {
+      if (p.name && !p.is_me) {
+        senderNames.add(p.name);
+      }
+    }
+    const namesList = Array.from(senderNames);
+    const youText = t('whatsapp.youLabel');
+    if (namesList.length === 0) {
+      return youText;
+    }
+    return [...namesList, youText].join(', ');
+  }, [selectedConv?.is_group, selectedConv?.id, messagesMap, groupParticipantsMap, t]);
 
   const handleReplyMessage = useCallback((message: Message) => {
     setReplyingTo({
@@ -3238,6 +3279,13 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                                 <p className="text-[11px] font-medium text-[#00a884] dark:text-[#25D366] animate-pulse truncate">
                                   {t('whatsapp.peerTyping')}
                                 </p>
+                              ) : selectedConv.is_group ? (
+                                <p
+                                  title={groupParticipantsText}
+                                  className="text-[11px] text-slate-500 dark:text-[#8696a0] font-normal truncate"
+                                >
+                                  {groupParticipantsText}
+                                </p>
                               ) : headerCleanPhone && formatPhoneNumber(headerCleanPhone) !== headerDisplayName ? (
                                 <p className="text-[11px] font-mono text-slate-400 font-medium truncate">
                                   {formatPhoneNumber(headerCleanPhone)}
@@ -3419,7 +3467,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                         title={t('whatsapp.cancelSelection')}
                         aria-label={t('whatsapp.cancelSelection')}
                         data-testid="cancel-selection-btn"
-                        className="p-1.5 rounded-lg text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-white/[0.06] transition-colors cursor-pointer"
+                        className="p-1.5 rounded-lg text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-white/[0.06] active:scale-90 transition-all duration-150 cursor-pointer"
                       >
                         <X className="w-4 h-4" />
                       </button>
@@ -3435,7 +3483,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                         disabled={selectedMessageIds.size === 0}
                         data-testid="selection-copy-btn"
                         title={t('whatsapp.copyMessage')}
-                        className="px-3 py-1.5 rounded-xl text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-white/[0.06] transition-colors cursor-pointer disabled:opacity-40 disabled:pointer-events-none flex items-center space-x-1.5 border border-slate-200 dark:border-white/10"
+                        className="px-3 py-1.5 rounded-xl text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-white/[0.06] active:scale-95 transition-all duration-150 cursor-pointer disabled:opacity-40 disabled:pointer-events-none flex items-center space-x-1.5 border border-slate-200 dark:border-white/10"
                       >
                         <Copy className="w-3.5 h-3.5" />
                         <span>{t('whatsapp.copyMessage')}</span>
@@ -3446,7 +3494,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                         onClick={handleForwardSelectedMessages}
                         disabled={selectedMessageIds.size === 0}
                         data-testid="selection-forward-btn"
-                        className="px-3.5 py-1.5 rounded-xl text-xs font-bold bg-[#25D366] text-white hover:bg-[#20ba59] shadow-sm shadow-[#25D366]/20 transition-all cursor-pointer disabled:opacity-40 disabled:pointer-events-none flex items-center space-x-1.5"
+                        className="px-3.5 py-1.5 rounded-xl text-xs font-bold bg-[#25D366] text-white hover:bg-[#20ba59] active:scale-95 shadow-sm shadow-[#25D366]/20 transition-all duration-150 cursor-pointer disabled:opacity-40 disabled:pointer-events-none flex items-center space-x-1.5"
                       >
                         <Forward className="w-3.5 h-3.5" />
                         <span>{t('whatsapp.forwardMessage')}</span>

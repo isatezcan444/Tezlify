@@ -45,6 +45,7 @@ import re
 from datetime import datetime
 from typing import Any, Dict, Optional
 
+from backend.app.core.datetime_utils import utc_now_naive
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -242,7 +243,7 @@ async def promote_ephemeral_pairing(
             existing.phone_number = str(resolved_phone)
         if session_name:
             existing.session_name = session_name
-        existing.updated_at = datetime.utcnow()
+        existing.updated_at = utc_now_naive()
         await db.commit()
         existing = await _finalize_promotion(db, existing, gw_id)
         if existing is None:
@@ -347,7 +348,7 @@ async def promote_ephemeral_pairing(
             candidate.error_message = None
             candidate.initial_sync_completed_at = None
             candidate.session_name = resolved_name
-            candidate.updated_at = datetime.utcnow()
+            candidate.updated_at = utc_now_naive()
             await db.commit()
             candidate = await _finalize_promotion(db, candidate, gw_id)
             if candidate is None:

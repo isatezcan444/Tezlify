@@ -34,8 +34,11 @@ Bu modul, WhatsApp alt sisteminin ana dis cephesidir (public facade).
 """
 import asyncio
 import logging
+import re
 from datetime import datetime
 from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple
+
+from backend.app.core.datetime_utils import utc_now_naive
 
 from sqlalchemy import select, func, or_, and_
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -1317,6 +1320,39 @@ async def refresh_all_avatars(db: AsyncSession, user_id: str) -> Dict[str, Any]:
     }
 
 
+async def get_contact_status(
+    db: AsyncSession,
+    user_id: str,
+    phone_or_jid: str,
+    session_id: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Kişinin WhatsApp 'Hakkında' (About / Status) metnini dinamik olarak gateway üzerinden çeker."""
+    try:
+        ws_session = await _require_user_session(db, user_id, session_id=session_id)
+        clean_jid = phone_or_jid if "@" in phone_or_jid else f"{re.sub(r'[^0-9]', '', phone_or_jid)}@s.whatsapp.net"
+        return await gw.fetch_contact_status(str(ws_session.gateway_id), clean_jid)
+    except Exception as exc:
+        logger.info("[WA-CONTACT-STATUS] Kişi durumu çekilemedi (%s): %s", phone_or_jid, exc)
+        return {"status": None, "error": str(exc)}
+
+
+async def get_group_participants(
+    db: AsyncSession,
+    user_id: str,
+    conversation_id: int,
+) -> Dict[str, Any]:
+    """WhatsApp grup katılımcılarını ve metadata'sını çeker."""
+    try:
+        conv, jid = await _resolve_jid(db, user_id, conversation_id)
+        if not conv.is_group and "@g.us" not in jid:
+            return {"id": jid, "subject": "", "participants": []}
+        ws_session = await _require_user_session(db, user_id, session_id=conv.session_id)
+        return await gw.get_group_participants(str(ws_session.gateway_id), jid)
+    except Exception as exc:
+        logger.info("[WA-GROUP-PARTICIPANTS] Grup katılımcıları çekilemedi (%s): %s", conversation_id, exc)
+        return {"id": "", "subject": "", "participants": [], "error": str(exc)}
+
+
 async def start_conversation(
     db: AsyncSession,
     user_id: str,
@@ -1406,7 +1442,7 @@ async def update_conversation_status(
 
     conv = await _get_conversation_or_404(db, user_id, conversation_id)
     if conv.status != target:
-        now = datetime.utcnow()
+        now = utc_now_naive()
         conv.status = target
         if target == ConversationStatus.ARCHIVED:
             conv.archived_at = now

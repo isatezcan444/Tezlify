@@ -1,4 +1,5 @@
 import React, { useState, useLayoutEffect, useCallback, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Check,
   CheckCheck,
@@ -40,6 +41,26 @@ import { isMessagePinned, toggleMessagePin, subscribePinnedChanges } from '../li
 
 /** WhatsApp Web'in tepki cubugunda gosterdigi altı hizli ifade. */
 export const QUICK_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🙏'] as const;
+
+/** WhatsApp Web grup katilimcilari icin otantik renk paleti */
+export const GROUP_SENDER_COLORS = [
+  'text-[#00a884] dark:text-[#25D366]',
+  'text-[#53bdeb] dark:text-[#53bdeb]',
+  'text-[#e542a3] dark:text-[#ff72cb]',
+  'text-[#ff9f1c] dark:text-[#ffb03a]',
+  'text-[#9b5de5] dark:text-[#b388ff]',
+  'text-[#00bbf9] dark:text-[#38bdf8]',
+  'text-[#f15bb5] dark:text-[#f472b6]',
+  'text-[#2dd4bf] dark:text-[#2dd4bf]',
+];
+
+export function getSenderColorClass(name: string): string {
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) {
+    hash = (hash * 31 + name.charCodeAt(i)) >>> 0;
+  }
+  return GROUP_SENDER_COLORS[hash % GROUP_SENDER_COLORS.length];
+}
 
 export interface ChatBubbleProps {
   message: Message;
@@ -98,7 +119,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
   const [isStarred, setIsStarred] = useState<boolean>(() => isMessageStarred(message.id));
   const [isPinned, setIsPinned] = useState<boolean>(() => isMessagePinned(message.id));
   const [isMenuOpen, setIsMenuOpen] = useState(false);
-  const [menuPlacement, setMenuPlacement] = useState<'down' | 'up'>('down');
+  const [menuCoords, setMenuCoords] = useState<{ top: number; left: number; placement: 'up' | 'down' } | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const menuButtonRef = useRef<HTMLButtonElement>(null);
 
@@ -113,14 +134,28 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
     e.stopPropagation();
     if (!isMenuOpen && menuButtonRef.current) {
       const rect = menuButtonRef.current.getBoundingClientRect();
+      const menuWidth = 160;
+      const estimatedHeight = 240;
       const spaceBelow = window.innerHeight - rect.bottom;
-      if (spaceBelow < 280) {
-        setMenuPlacement('up');
-      } else {
-        setMenuPlacement('down');
+      const placement: 'up' | 'down' = spaceBelow < estimatedHeight + 15 ? 'up' : 'down';
+
+      let top = placement === 'up' ? rect.top - estimatedHeight - 4 : rect.bottom + 4;
+      if (top < 10) top = 10;
+      if (top + estimatedHeight > window.innerHeight - 10) {
+        top = Math.max(10, window.innerHeight - estimatedHeight - 10);
       }
+
+      let left = rect.right - menuWidth;
+      if (left < 10) left = 10;
+      if (left + menuWidth > window.innerWidth - 10) {
+        left = window.innerWidth - menuWidth - 10;
+      }
+
+      setMenuCoords({ top, left, placement });
+      setIsMenuOpen(true);
+    } else {
+      setIsMenuOpen(false);
     }
-    setIsMenuOpen((prev) => !prev);
   };
 
   React.useEffect(() => {
@@ -139,6 +174,9 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
 
   React.useEffect(() => {
     if (!isMenuOpen) return;
+    const handleScrollOrResize = () => {
+      setIsMenuOpen(false);
+    };
     const handleClickOutside = (e: MouseEvent) => {
       const target = e.target as Node;
       if (
@@ -155,9 +193,13 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
         setIsMenuOpen(false);
       }
     };
+    window.addEventListener('scroll', handleScrollOrResize, true);
+    window.addEventListener('resize', handleScrollOrResize);
     document.addEventListener('mousedown', handleClickOutside);
     document.addEventListener('keydown', handleKeyDown);
     return () => {
+      window.removeEventListener('scroll', handleScrollOrResize, true);
+      window.removeEventListener('resize', handleScrollOrResize);
       document.removeEventListener('mousedown', handleClickOutside);
       document.removeEventListener('keydown', handleKeyDown);
     };
@@ -694,37 +736,43 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
 
   return (
     <>
-      <div className={`flex w-full items-center ${groupedReactions.length > 0 ? 'mb-5 sm:mb-6' : 'mb-1.5 sm:mb-2'} ${isInbound ? 'justify-start' : 'justify-end'}`}>
+      <div
+        onClick={isSelectMode ? () => onToggleSelect?.(message.id) : undefined}
+        className={`relative flex w-full items-center transition-colors duration-150 ${
+          isSelectMode
+            ? `cursor-pointer py-1 px-2.5 -mx-2.5 rounded-lg ${
+                isSelected
+                  ? 'bg-[#00a884]/[0.08] dark:bg-[#00a884]/[0.15]'
+                  : 'hover:bg-slate-200/40 dark:hover:bg-white/[0.04]'
+              }`
+            : ''
+        } ${groupedReactions.length > 0 ? 'mb-3.5' : 'mb-1 sm:mb-1.5'} ${
+          isInbound ? 'justify-start' : 'justify-end'
+        }`}
+      >
         {isSelectMode && (
-          <div
-            onClick={(e) => {
-              e.stopPropagation();
-              onToggleSelect?.(message.id);
-            }}
-            data-testid={`select-checkbox-${message.id}`}
-            className={`w-5 h-5 rounded-full border flex items-center justify-center cursor-pointer transition-all shrink-0 select-none mr-2.5 ${
-              isSelected
-                ? 'bg-[#25D366] border-[#25D366] text-white shadow-sm'
-                : 'border-slate-300 dark:border-white/30 hover:border-[#25D366] bg-white/50 dark:bg-white/[0.05]'
-            }`}
-          >
-            {isSelected && <Check className="w-3 h-3 stroke-[3]" />}
+          <div className="w-8 shrink-0 flex items-center justify-start mr-1 select-none">
+            <div
+              data-testid={`select-checkbox-${message.id}`}
+              className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all shrink-0 ${
+                isSelected
+                  ? 'bg-[#00a884] dark:bg-[#25D366] border-[#00a884] dark:border-[#25D366] text-white shadow-sm'
+                  : 'border-slate-300 dark:border-white/40 bg-white/80 dark:bg-black/20 hover:border-[#00a884]'
+              }`}
+            >
+              {isSelected && <Check className="w-3 h-3 stroke-[3]" />}
+            </div>
           </div>
         )}
         <div
           id={message.id ? `msg-${message.id}` : undefined}
           data-msg-id={message.id}
-          onClick={isSelectMode ? () => onToggleSelect?.(message.id) : undefined}
-          className={`relative group max-w-[85%] sm:max-w-[75%] min-w-[76px] pl-3 pr-6 py-1.5 shadow-[0_1px_0.5px_rgba(11,20,26,0.13)] text-[13px] leading-relaxed transition-all duration-150 select-text ${
-            isSelectMode ? 'cursor-pointer hover:opacity-95' : ''
-          } ${
-            isSelectMode && isSelected ? 'ring-2 ring-[#00a884] dark:ring-[#25D366] ring-offset-1 dark:ring-offset-[#111b21]' : ''
-          } ${
+          className={`relative group max-w-[85%] sm:max-w-[75%] min-w-[76px] pl-2.5 pr-2.5 pt-1.5 pb-1 sm:pl-3 sm:pr-3 shadow-[0_1px_0.5px_rgba(11,20,26,0.13)] text-[13px] leading-relaxed transition-all duration-150 select-text ${
             isSearchActiveMatch ? 'ring-2 ring-[#00a884] dark:ring-[#25D366] shadow-md scale-[1.01]' : ''
           } ${
             isInbound
-              ? 'bg-white dark:bg-[#202c33] text-[#111b21] dark:text-[#e9edef] rounded-lg rounded-tl-none border-none'
-              : 'bg-[#d9fdd3] dark:bg-[#005c4b] text-[#111b21] dark:text-[#e9edef] rounded-lg rounded-tr-none border-none'
+              ? 'bg-white dark:bg-[#202c33] text-[#111b21] dark:text-[#e9edef] rounded-[7.5px] rounded-tl-none border-none'
+              : 'bg-[#d9fdd3] dark:bg-[#005c4b] text-[#111b21] dark:text-[#e9edef] rounded-[7.5px] rounded-tr-none border-none'
           }`}
         >
           {/* Authentic WhatsApp Web Corner Tail Notch */}
@@ -750,7 +798,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
 
           {/* Group Sender Name */}
           {senderLabel && (
-            <div className="text-[11px] font-bold text-[#00a884] dark:text-[#25D366] mb-1 select-none flex items-center gap-1">
+            <div className={`text-[12.5px] font-semibold leading-tight tracking-wide mb-1 select-none flex items-center gap-1 ${getSenderColorClass(senderLabel)}`}>
               <span>{senderLabel}</span>
             </div>
           )}
@@ -864,14 +912,18 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
             </div>
           )}
 
-          {/* WhatsApp Web Authentic Context Dropdown Menu */}
-          {isMenuOpen && !isSelectMode && (
+          {/* WhatsApp Web Authentic Context Dropdown Menu (Portaled & Compact) */}
+          {isMenuOpen && !isSelectMode && menuCoords && typeof document !== 'undefined' && createPortal(
             <div
               ref={menuRef}
               data-testid={`msg-context-menu-${message.id}`}
-              className={`absolute ${
-                menuPlacement === 'up' ? 'bottom-full mb-1' : 'top-6 mt-1'
-              } right-1 z-50 w-[185px] py-1.5 bg-white dark:bg-[#233138] border border-black/5 dark:border-white/5 rounded-md shadow-[0_2px_5px_0_rgba(11,20,26,.26),0_2px_10px_0_rgba(11,20,26,.16)] animate-in fade-in zoom-in-95 duration-100 flex flex-col text-[13px]`}
+              style={{
+                position: 'fixed',
+                top: `${menuCoords.top}px`,
+                left: `${menuCoords.left}px`,
+                width: '160px',
+              }}
+              className="z-[99999] py-1 bg-white dark:bg-[#233138] border border-black/5 dark:border-white/5 rounded-lg shadow-[0_2px_5px_0_rgba(11,20,26,.26),0_2px_10px_0_rgba(11,20,26,.16)] animate-in fade-in zoom-in-95 duration-100 flex flex-col text-[12.5px] select-none"
             >
               {/* 1. Cevapla */}
               {onReply && (
@@ -883,7 +935,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                     onReply(message);
                   }}
                   data-testid={`menu-reply-${message.id}`}
-                  className="w-full text-left px-4 py-2 text-[13px] text-[#3b4a54] dark:text-[#d1d7db] hover:bg-[#f5f6f6] dark:hover:bg-[#182229] transition-colors cursor-pointer select-none font-normal"
+                  className="w-full text-left px-3.5 py-1.5 text-[12.5px] text-[#3b4a54] dark:text-[#d1d7db] hover:bg-[#f5f6f6] dark:hover:bg-[#182229] active:bg-slate-200/50 dark:active:bg-white/[0.08] transition-colors cursor-pointer select-none font-normal"
                 >
                   {t('whatsapp.menuReply')}
                 </button>
@@ -899,7 +951,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                     setIsReactionBarOpen(true);
                   }}
                   data-testid={`menu-react-${message.id}`}
-                  className="w-full text-left px-4 py-2 text-[13px] text-[#3b4a54] dark:text-[#d1d7db] hover:bg-[#f5f6f6] dark:hover:bg-[#182229] transition-colors cursor-pointer select-none font-normal"
+                  className="w-full text-left px-3.5 py-1.5 text-[12.5px] text-[#3b4a54] dark:text-[#d1d7db] hover:bg-[#f5f6f6] dark:hover:bg-[#182229] active:bg-slate-200/50 dark:active:bg-white/[0.08] transition-colors cursor-pointer select-none font-normal"
                 >
                   {t('whatsapp.menuReact')}
                 </button>
@@ -920,7 +972,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                   );
                 }}
                 data-testid={`menu-star-${message.id}`}
-                className="w-full text-left px-4 py-2 text-[13px] text-[#3b4a54] dark:text-[#d1d7db] hover:bg-[#f5f6f6] dark:hover:bg-[#182229] transition-colors cursor-pointer select-none font-normal"
+                className="w-full text-left px-3.5 py-1.5 text-[12.5px] text-[#3b4a54] dark:text-[#d1d7db] hover:bg-[#f5f6f6] dark:hover:bg-[#182229] active:bg-slate-200/50 dark:active:bg-white/[0.08] transition-colors cursor-pointer select-none font-normal"
               >
                 {isStarred ? t('whatsapp.menuUnstar') : t('whatsapp.menuStar')}
               </button>
@@ -936,7 +988,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                   toast.success(nextPinned ? t('whatsapp.messagePinned') : t('whatsapp.messageUnpinned'));
                 }}
                 data-testid={`menu-pin-${message.id}`}
-                className="w-full text-left px-4 py-2 text-[13px] text-[#3b4a54] dark:text-[#d1d7db] hover:bg-[#f5f6f6] dark:hover:bg-[#182229] transition-colors cursor-pointer select-none font-normal"
+                className="w-full text-left px-3.5 py-1.5 text-[12.5px] text-[#3b4a54] dark:text-[#d1d7db] hover:bg-[#f5f6f6] dark:hover:bg-[#182229] active:bg-slate-200/50 dark:active:bg-white/[0.08] transition-colors cursor-pointer select-none font-normal"
               >
                 {isPinned ? t('whatsapp.menuUnpin') : t('whatsapp.menuPin')}
               </button>
@@ -951,7 +1003,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                     onForward(message);
                   }}
                   data-testid={`menu-forward-${message.id}`}
-                  className="w-full text-left px-4 py-2 text-[13px] text-[#3b4a54] dark:text-[#d1d7db] hover:bg-[#f5f6f6] dark:hover:bg-[#182229] transition-colors cursor-pointer select-none font-normal"
+                  className="w-full text-left px-3.5 py-1.5 text-[12.5px] text-[#3b4a54] dark:text-[#d1d7db] hover:bg-[#f5f6f6] dark:hover:bg-[#182229] active:bg-slate-200/50 dark:active:bg-white/[0.08] transition-colors cursor-pointer select-none font-normal"
                 >
                   {t('whatsapp.menuForward')}
                 </button>
@@ -968,7 +1020,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                     toast.success(t('common.copied'));
                   }}
                   data-testid={`menu-copy-${message.id}`}
-                  className="w-full text-left px-4 py-2 text-[13px] text-[#3b4a54] dark:text-[#d1d7db] hover:bg-[#f5f6f6] dark:hover:bg-[#182229] transition-colors cursor-pointer select-none font-normal"
+                  className="w-full text-left px-3.5 py-1.5 text-[12.5px] text-[#3b4a54] dark:text-[#d1d7db] hover:bg-[#f5f6f6] dark:hover:bg-[#182229] active:bg-slate-200/50 dark:active:bg-white/[0.08] transition-colors cursor-pointer select-none font-normal"
                 >
                   {t('whatsapp.menuCopy')}
                 </button>
@@ -977,7 +1029,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
               {/* Grup sohbetine ve karşı tarafa özel seçenekler */}
               {isGroup && isInbound && (
                 <>
-                  <div className="my-1 border-t border-slate-100 dark:border-white/[0.06]" />
+                  <div className="my-0.5 border-t border-slate-100 dark:border-white/[0.06]" />
                   {onPrivateReply && (
                     <button
                       type="button"
@@ -987,7 +1039,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                         onPrivateReply(message);
                       }}
                       data-testid={`menu-reply-privately-${message.id}`}
-                      className="w-full text-left px-4 py-2 text-[13px] text-[#3b4a54] dark:text-[#d1d7db] hover:bg-[#f5f6f6] dark:hover:bg-[#182229] transition-colors cursor-pointer select-none font-normal"
+                      className="w-full text-left px-3.5 py-1.5 text-[12.5px] text-[#3b4a54] dark:text-[#d1d7db] hover:bg-[#f5f6f6] dark:hover:bg-[#182229] active:bg-slate-200/50 dark:active:bg-white/[0.08] transition-colors cursor-pointer select-none font-normal"
                     >
                       {t('whatsapp.menuReplyPrivately')}
                     </button>
@@ -1001,7 +1053,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                         onDirectMessageSender(message.sender_phone || '', participantName);
                       }}
                       data-testid={`menu-direct-message-${message.id}`}
-                      className="w-full text-left px-4 py-2 text-[13px] text-[#3b4a54] dark:text-[#d1d7db] hover:bg-[#f5f6f6] dark:hover:bg-[#182229] transition-colors cursor-pointer select-none font-normal"
+                      className="w-full text-left px-3.5 py-1.5 text-[12.5px] text-[#3b4a54] dark:text-[#d1d7db] hover:bg-[#f5f6f6] dark:hover:bg-[#182229] active:bg-slate-200/50 dark:active:bg-white/[0.08] transition-colors cursor-pointer select-none font-normal"
                     >
                       {t('whatsapp.menuMessageSender', { name: participantName })}
                     </button>
@@ -1026,7 +1078,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                       }
                     }}
                     data-testid={`menu-report-${message.id}`}
-                    className="w-full text-left px-4 py-2 text-[13px] text-[#3b4a54] dark:text-[#d1d7db] hover:bg-[#f5f6f6] dark:hover:bg-[#182229] transition-colors cursor-pointer select-none font-normal"
+                    className="w-full text-left px-3.5 py-1.5 text-[12.5px] text-[#3b4a54] dark:text-[#d1d7db] hover:bg-[#f5f6f6] dark:hover:bg-[#182229] active:bg-slate-200/50 dark:active:bg-white/[0.08] transition-colors cursor-pointer select-none font-normal"
                   >
                     {t('whatsapp.menuReport')}
                   </button>
@@ -1036,7 +1088,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
               {/* Bireysel sohbette gelen mesaja şikayet */}
               {!isGroup && isInbound && (
                 <>
-                  <div className="my-1 border-t border-slate-100 dark:border-white/[0.06]" />
+                  <div className="my-0.5 border-t border-slate-100 dark:border-white/[0.06]" />
                   <button
                     type="button"
                     onClick={async (e) => {
@@ -1057,7 +1109,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                       }
                     }}
                     data-testid={`menu-report-${message.id}`}
-                    className="w-full text-left px-4 py-2 text-[13px] text-[#3b4a54] dark:text-[#d1d7db] hover:bg-[#f5f6f6] dark:hover:bg-[#182229] transition-colors cursor-pointer select-none font-normal"
+                    className="w-full text-left px-3.5 py-1.5 text-[12.5px] text-[#3b4a54] dark:text-[#d1d7db] hover:bg-[#f5f6f6] dark:hover:bg-[#182229] active:bg-slate-200/50 dark:active:bg-white/[0.08] transition-colors cursor-pointer select-none font-normal"
                   >
                     {t('whatsapp.menuReport')}
                   </button>
@@ -1067,7 +1119,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
               {/* Medya dosyası ise İndir */}
               {(resolvedMediaUrl || message.media_url || message.media_id) && (
                 <>
-                  <div className="my-1 border-t border-slate-100 dark:border-white/[0.06]" />
+                  <div className="my-0.5 border-t border-slate-100 dark:border-white/[0.06]" />
                   <button
                     type="button"
                     onClick={(e) => {
@@ -1076,7 +1128,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                       void handleDownloadMedia();
                     }}
                     data-testid={`menu-download-${message.id}`}
-                    className="w-full text-left px-4 py-2 text-[13px] text-[#3b4a54] dark:text-[#d1d7db] hover:bg-[#f5f6f6] dark:hover:bg-[#182229] transition-colors cursor-pointer select-none font-normal"
+                    className="w-full text-left px-3.5 py-1.5 text-[12.5px] text-[#3b4a54] dark:text-[#d1d7db] hover:bg-[#f5f6f6] dark:hover:bg-[#182229] active:bg-slate-200/50 dark:active:bg-white/[0.08] transition-colors cursor-pointer select-none font-normal"
                   >
                     {t('whatsapp.menuDownload')}
                   </button>
@@ -1086,7 +1138,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
               {/* Sil seçeneği */}
               {onDelete && (
                 <>
-                  <div className="my-1 border-t border-slate-100 dark:border-white/[0.06]" />
+                  <div className="my-0.5 border-t border-slate-100 dark:border-white/[0.06]" />
                   <button
                     type="button"
                     onClick={(e) => {
@@ -1095,7 +1147,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                       void onDelete(message);
                     }}
                     data-testid={`menu-delete-${message.id}`}
-                    className="w-full text-left px-4 py-2 text-[13px] text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 transition-colors cursor-pointer select-none font-normal"
+                    className="w-full text-left px-3.5 py-1.5 text-[12.5px] text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 active:bg-rose-100 dark:active:bg-rose-950/50 transition-colors cursor-pointer select-none font-normal"
                   >
                     {t('whatsapp.menuDelete')}
                   </button>
@@ -1103,7 +1155,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
               )}
 
               {/* Mesajları seç */}
-              <div className="my-1 border-t border-slate-100 dark:border-white/[0.06]" />
+              <div className="my-0.5 border-t border-slate-100 dark:border-white/[0.06]" />
               <button
                 type="button"
                 onClick={(e) => {
@@ -1116,11 +1168,12 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                   }
                 }}
                 data-testid={`menu-select-${message.id}`}
-                className="w-full text-left px-4 py-2 text-[13px] text-[#3b4a54] dark:text-[#d1d7db] hover:bg-[#f5f6f6] dark:hover:bg-[#182229] transition-colors cursor-pointer select-none font-normal"
+                className="w-full text-left px-3.5 py-1.5 text-[12.5px] text-[#3b4a54] dark:text-[#d1d7db] hover:bg-[#f5f6f6] dark:hover:bg-[#182229] active:bg-slate-200/50 dark:active:bg-white/[0.08] transition-colors cursor-pointer select-none font-normal"
               >
                 {t('whatsapp.menuSelect')}
               </button>
-            </div>
+            </div>,
+            document.body
           )}
 
           {canReact && !isSelectMode && isReactionBarOpen && (

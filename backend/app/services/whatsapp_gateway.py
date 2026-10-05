@@ -192,6 +192,14 @@ async def list_contacts(gateway_id: str) -> List[Dict[str, Any]]:
     return contacts
 
 
+async def fetch_contact_status(gateway_id: str, jid: str) -> Dict[str, Any]:
+    """Kişinin WhatsApp 'Hakkında' (About / Status) metnini gateway üzerinden çeker."""
+    data = await _request("GET", f"{_s(gateway_id)}/contacts/{jid}/status")
+    if not isinstance(data, dict):
+        raise WhatsAppGatewayError("Gateway contact status response is invalid.")
+    return data
+
+
 async def list_conversations(
     gateway_id: str,
     search: Optional[str] = None,
@@ -349,20 +357,36 @@ async def send_reaction(
     target_wa_message_id: str,
     emoji: str,
     target_from_me: bool = False,
+    participant_jid: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Bir mesaja tepki birakir (`emoji=""` tepkiyi geri ceker).
 
     Kendi ucu vardir: tepki bir mesaj GONDERIMI degildir ve `/messages`
     ucundan gecmesi, onu mesaj kaydi ureten yola sokardi.
+    Grup mesajlarinda `participant_jid` gereklidir (WhatsApp Web paritesi).
     """
+    body: Dict[str, Any] = {
+        "target_wa_message_id": target_wa_message_id,
+        "target_from_me": bool(target_from_me),
+        "emoji": emoji,
+    }
+    if participant_jid:
+        body["participant_jid"] = participant_jid
     return await _request(
         "POST",
         f"{_s(gateway_id)}/conversations/{jid}/reactions",
-        json={
-            "target_wa_message_id": target_wa_message_id,
-            "target_from_me": bool(target_from_me),
-            "emoji": emoji,
-        },
+        json=body,
+    )
+
+
+async def get_group_participants(
+    gateway_id: str,
+    jid: str,
+) -> Dict[str, Any]:
+    """Grup katılımcılarını ve metadata'sını gateway üzerinden çeker."""
+    return await _request(
+        "GET",
+        f"{_s(gateway_id)}/groups/{jid}/participants",
     )
 
 

@@ -468,3 +468,36 @@ async def test_outbound_reaction_requires_a_provider_id(monkeypatch):
         conversation_id = await _conversation_id()
         with pytest.raises(ValueError):
             await send_reaction(db, RX_USER, conversation_id, message_id, "❤️")
+
+
+@pytest.mark.asyncio
+async def test_outbound_reaction_in_group_passes_participant_jid(monkeypatch):
+    """Grup mesajina reaksiyon birakildiginda sender participant_jid gateway'e iletilir."""
+    from backend.app.services.whatsapp.orchestration import messaging as messaging_mod
+    from backend.app.models.conversation import Conversation
+
+    message_id = await _seed_message("RX_WA_GRP_1")
+    calls: list[dict] = []
+
+    async def _fake_send_reaction(gateway_id, jid, **kwargs):
+        calls.append({"gateway_id": gateway_id, "jid": jid, **kwargs})
+        return {"success": True}
+
+    monkeypatch.setattr(messaging_mod.gw, "send_reaction", _fake_send_reaction)
+
+    async with AsyncSessionLocal() as db:
+        msg = await db.get(Message, message_id)
+        msg.sender_phone = "+905076382749"
+        conv = await db.get(Conversation, msg.conversation_id)
+        conv.is_group = True
+        await db.commit()
+
+        conversation_id = conv.id
+        result = await send_reaction(db, RX_USER, conversation_id, message_id, "😂")
+
+    assert result["success"] is True
+    assert len(calls) == 1
+    assert calls[0]["target_wa_message_id"] == "RX_WA_GRP_1"
+    assert calls[0]["emoji"] == "😂"
+    assert calls[0]["participant_jid"] == "905076382749@s.whatsapp.net"
+

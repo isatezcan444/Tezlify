@@ -3,6 +3,8 @@ import logging
 import time
 from datetime import datetime
 from typing import List, Dict, Any
+
+from backend.app.core.datetime_utils import utc_now_naive
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -85,13 +87,13 @@ async def run_scraper_task(
         if not owner:
             job.status = ScraperJobStatus.FAILED
             job.error_message = "Is sahibi (user_id) atanmamis; sonuclar hicbir tenant'a guvenle yazilamaz."
-            job.completed_at = datetime.utcnow()
+            job.completed_at = utc_now_naive()
             await db.commit()
             logger.error("[SEARCH_JOB] job_id=%s sahipsiz — FAILED olarak kapatildi.", job_id)
             return
 
         job.status = ScraperJobStatus.RUNNING
-        job.started_at = datetime.utcnow()
+        job.started_at = utc_now_naive()
         await db.commit()
 
         await ws_manager.broadcast({
@@ -154,7 +156,7 @@ async def run_scraper_task(
             job.total_found = len(raw_leads)
             job.total_valid_phones = sum(1 for r in raw_leads if r.get("phone_e164"))
             job.total_new_leads = new_count
-            job.completed_at = datetime.utcnow()
+            job.completed_at = utc_now_naive()
             job.duration_seconds = int(time.time() - start_time)
 
             await db.commit()
@@ -180,7 +182,7 @@ async def run_scraper_task(
         except asyncio.CancelledError:
             logger.warning(f"[SEARCH_JOB_CANCELLED] job_id={job_id}")
             job.status = ScraperJobStatus.CANCELLED
-            job.completed_at = datetime.utcnow()
+            job.completed_at = utc_now_naive()
             job.duration_seconds = int(time.time() - start_time)
             await db.commit()
             await ws_manager.broadcast({
@@ -197,7 +199,7 @@ async def run_scraper_task(
                 if job:
                     job.status = ScraperJobStatus.FAILED
                     job.error_message = str(e)[:500]
-                    job.completed_at = datetime.utcnow()
+                    job.completed_at = utc_now_naive()
                     job.duration_seconds = int(time.time() - start_time)
                     await db.commit()
             except Exception as rollback_err:
@@ -251,7 +253,7 @@ async def start_scraper(
         total_found=0,
         total_valid_phones=0,
         total_new_leads=0,
-        created_at=datetime.utcnow(),
+        created_at=utc_now_naive(),
         user_id=current_user.id,
     )
     db.add(job)
@@ -374,7 +376,7 @@ async def cancel_scraper_job(
 
     if job.status in [ScraperJobStatus.PENDING, ScraperJobStatus.RUNNING]:
         job.status = ScraperJobStatus.CANCELLED
-        job.completed_at = datetime.utcnow()
+        job.completed_at = utc_now_naive()
         await db.commit()
 
     return {"message": "Tarama işi durduruldu", "job_id": job_id}

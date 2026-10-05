@@ -1124,6 +1124,28 @@ export const WhatsAppApi = {
     return data.contacts || [];
   },
 
+  async getContactStatus(phoneOrJid: string, sessionId?: number): Promise<{ status: string | null; setAt?: string | null }> {
+    const query = sessionId ? `?session_id=${sessionId}` : '';
+    const encoded = encodeURIComponent(phoneOrJid);
+    try {
+      const data = await apiGet<{ status?: string | null; setAt?: string | null }>(`/whatsapp/contacts/${encoded}/status${query}`);
+      return {
+        status: (data && typeof data.status === 'string') ? data.status : null,
+        setAt: data?.setAt || null,
+      };
+    } catch {
+      return { status: null };
+    }
+  },
+
+  async getGroupParticipants(conversationId: number): Promise<{ id: string; subject: string; participants: Array<{ id: string; name: string; phone?: string; is_me: boolean; admin?: string }> }> {
+    try {
+      return await apiGet(`/whatsapp/conversations/${conversationId}/participants`);
+    } catch {
+      return { id: '', subject: '', participants: [] };
+    }
+  },
+
   getLiveMessages(conversationId: number, onMessage: (msg: Message) => void): () => void {
     if (typeof window === 'undefined') return () => {};
     const handler = (e: Event) => {

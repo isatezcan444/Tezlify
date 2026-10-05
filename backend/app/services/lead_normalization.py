@@ -6,6 +6,8 @@ and merge business logic from database batch orchestration and persistence.
 from datetime import datetime
 from typing import Dict, Any, Optional, Tuple
 
+from backend.app.core.datetime_utils import utc_now_naive
+
 from backend.app.models.lead import (
     Lead,
     LeadStatus,
@@ -150,7 +152,7 @@ def merge_into_existing_lead(
     if maps_url and not (existing_lead.custom_data or {}).get("maps_url"):
         _set("custom_data", {**(existing_lead.custom_data or {}), "maps_url": maps_url})
     if changed:
-        _set("updated_at", datetime.utcnow())
+        _set("updated_at", utc_now_naive())
     return changed
 
 

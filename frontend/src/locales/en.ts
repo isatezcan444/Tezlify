@@ -690,6 +690,8 @@ export const en = {
     groupInfo: 'Group info',
     groupParticipantsCount: '{count} participants',
     aboutAndPhone: 'About and phone number',
+    defaultAbout: 'Hey there! I am using WhatsApp.',
+    statusLoading: 'Loading about...',
     groupDescription: 'Group description',
     noDescription: 'No description provided',
     mediaLinksDocs: 'Media, links and docs',

@@ -3,6 +3,7 @@ from sqlalchemy import Column, Integer, String, DateTime, Text, ForeignKey, Tabl
 from sqlalchemy.orm import relationship
 
 from backend.app.core.database import Base
+from backend.app.core.datetime_utils import utc_now_naive
 
 # Many-to-Many Association Table between CampaignGroup and Lead
 campaign_group_leads = Table(
@@ -10,7 +11,7 @@ campaign_group_leads = Table(
     Base.metadata,
     Column("group_id", Integer, ForeignKey("campaign_groups.id", ondelete="CASCADE"), primary_key=True),
     Column("lead_id", Integer, ForeignKey("leads.id", ondelete="CASCADE"), primary_key=True),
-    Column("added_at", DateTime, default=datetime.utcnow, nullable=False),
+    Column("added_at", DateTime, default=utc_now_naive, nullable=False),
 )
 
 class CampaignGroup(Base):
@@ -25,8 +26,8 @@ class CampaignGroup(Base):
     target_category = Column(String(100), nullable=True, index=True)
     target_location = Column(String(200), nullable=True)
 
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=utc_now_naive, nullable=False)
+    updated_at = Column(DateTime, default=utc_now_naive, onupdate=utc_now_naive, nullable=False)
 
     # Relationships
     leads = relationship(

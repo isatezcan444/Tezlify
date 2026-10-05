@@ -373,6 +373,49 @@ app.get('/sessions/:sessionId/contacts', withSession(async (req, res, sessionId)
   res.json({ contacts: sessionManager.listContacts(sessionId) });
 }));
 
+// Fetch contact About / Status from WhatsApp via Baileys sock.fetchStatus
+app.get('/sessions/:sessionId/contacts/:jid/status', withSession(async (req, res, sessionId) => {
+  const { jid } = req.params;
+  const session = sessionManager.getSession(sessionId);
+  if (!session || !session.sock) {
+    return res.status(404).json({ error: 'Session not connected' });
+  }
+  try {
+    const rawJid = jid.includes('@') ? jid : `${jid.replace(/[^0-9]/g, '')}@s.whatsapp.net`;
+    const result = await session.sock.fetchStatus(rawJid);
+    const item = Array.isArray(result) ? result[0] : result;
+    let statusText = null;
+    let setAtTime = null;
+    if (item) {
+      if (typeof item === 'string') {
+        statusText = item;
+      } else if (typeof item.status === 'string') {
+        statusText = item.status;
+        setAtTime = item.setAt || null;
+      } else if (item.status && typeof item.status === 'object') {
+        statusText = typeof item.status.status === 'string' ? item.status.status : null;
+        setAtTime = item.status.setAt || item.setAt || null;
+      }
+    }
+    return res.json({
+      status: statusText,
+      setAt: setAtTime,
+    });
+  } catch (err) {
+    return res.json({ status: null, error: err.message });
+  }
+}));
+
+// Group participants & metadata
+app.get('/sessions/:sessionId/groups/:jid/participants', withSession(async (req, res, sessionId) => {
+  try {
+    const result = await sessionManager.getGroupMetadata(sessionId, req.params.jid);
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+}));
+
 // List conversations (chats) for one session
 app.get('/sessions/:sessionId/conversations', withSession(async (req, res, sessionId) => {
   const { search, limit, offset } = req.query;
@@ -494,7 +537,7 @@ app.post('/sessions/:sessionId/conversations/:jid/media', withSession(async (req
 
 // React to an existing message (an empty `emoji` withdraws the reaction)
 app.post('/sessions/:sessionId/conversations/:jid/reactions', withSession(async (req, res, sessionId) => {
-  const { target_wa_message_id, target_from_me, emoji } = req.body || {};
+  const { target_wa_message_id, target_from_me, emoji, participant_jid } = req.body || {};
   if (!target_wa_message_id) {
     return res.status(400).json({ error: 'target_wa_message_id is required' });
   }
@@ -502,6 +545,7 @@ app.post('/sessions/:sessionId/conversations/:jid/reactions', withSession(async 
     target_wa_message_id,
     target_from_me,
     emoji,
+    participant_jid,
   });
   res.status(201).json(result);
 }));

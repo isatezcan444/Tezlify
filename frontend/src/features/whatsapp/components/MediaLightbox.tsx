@@ -45,6 +45,30 @@ export const MediaLightbox: React.FC<MediaLightboxProps> = ({
 
   const containerRef = useRef<HTMLDivElement | null>(null);
 
+  const [isClosing, setIsClosing] = useState(false);
+  const [shouldRender, setShouldRender] = useState(isOpen);
+
+  useEffect(() => {
+    if (isOpen) {
+      setShouldRender(true);
+      setIsClosing(false);
+    } else if (shouldRender) {
+      setIsClosing(true);
+      const timer = setTimeout(() => {
+        setShouldRender(false);
+        setIsClosing(false);
+      }, 200);
+      return () => clearTimeout(timer);
+    }
+  }, [isOpen, shouldRender]);
+
+  const handleClose = () => {
+    setIsClosing(true);
+    setTimeout(() => {
+      onClose();
+    }, 200);
+  };
+
   // Reset state on open or src change
   useEffect(() => {
     if (isOpen) {
@@ -63,7 +87,7 @@ export const MediaLightbox: React.FC<MediaLightboxProps> = ({
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.preventDefault();
-        onClose();
+        handleClose();
       } else if (e.key === '+' || e.key === '=') {
         e.preventDefault();
         setZoom((prev) => Math.min(prev + 0.25, 4));
@@ -187,7 +211,7 @@ export const MediaLightbox: React.FC<MediaLightboxProps> = ({
     setIsDragging(false);
   };
 
-  if (!isOpen || typeof document === 'undefined') return null;
+  if (!shouldRender || typeof document === 'undefined') return null;
 
   return createPortal(
     <div
@@ -196,7 +220,9 @@ export const MediaLightbox: React.FC<MediaLightboxProps> = ({
       aria-modal="true"
       aria-label={t('whatsapp.mediaOpenLightbox')}
       tabIndex={-1}
-      className="fixed inset-0 z-[99999] flex flex-col bg-[#0b141a]/95 backdrop-blur-md select-none outline-hidden"
+      className={`fixed inset-0 z-[99999] flex flex-col bg-[#0b141a]/95 backdrop-blur-md select-none outline-hidden transition-all duration-200 ease-out ${
+        isClosing ? 'opacity-0 scale-[0.98]' : 'opacity-100 scale-100 animate-in fade-in zoom-in-95 duration-200'
+      }`}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
       onWheel={handleWheel}
@@ -206,9 +232,9 @@ export const MediaLightbox: React.FC<MediaLightboxProps> = ({
         <div className="flex items-center gap-3 min-w-0">
           <button
             type="button"
-            onClick={onClose}
+            onClick={handleClose}
             aria-label={t('whatsapp.mediaClose')}
-            className="p-2 rounded-full text-slate-300 hover:text-white hover:bg-white/10 transition-colors cursor-pointer"
+            className="p-2 rounded-full text-slate-300 hover:text-white hover:bg-white/10 active:scale-90 transition-all cursor-pointer"
           >
             <ArrowLeft className="w-5 h-5" />
           </button>
@@ -292,10 +318,10 @@ export const MediaLightbox: React.FC<MediaLightboxProps> = ({
 
           <button
             type="button"
-            onClick={onClose}
+            onClick={handleClose}
             title={t('whatsapp.mediaClose')}
             aria-label={t('whatsapp.mediaClose')}
-            className="p-2 rounded-full text-slate-300 hover:text-white hover:bg-white/10 transition-colors cursor-pointer ml-1"
+            className="p-2 rounded-full text-slate-300 hover:text-white hover:bg-white/10 active:scale-90 transition-all cursor-pointer ml-1"
           >
             <X className="w-5 h-5 sm:w-6 sm:h-6" />
           </button>

@@ -1,6 +1,7 @@
 from datetime import datetime
 from sqlalchemy import Column, String, Integer, DateTime, Uuid
 from backend.app.core.database import Base
+from backend.app.core.datetime_utils import utc_now_naive
 
 
 class Profile(Base):
@@ -14,5 +15,5 @@ class Profile(Base):
     leads_monthly_limit = Column(Integer, default=50)
     leads_used_this_month = Column(Integer, default=0)
     messages_daily_limit = Column(Integer, default=20)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=utc_now_naive)
+    updated_at = Column(DateTime, default=utc_now_naive, onupdate=utc_now_naive)

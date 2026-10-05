@@ -690,6 +690,8 @@ export const tr = {
     groupInfo: 'Grup bilgisi',
     groupParticipantsCount: '{count} katılımcı',
     aboutAndPhone: 'Hakkında ve telefon numarası',
+    defaultAbout: 'Hey there! I am using WhatsApp.',
+    statusLoading: 'Hakkında bilgisi yükleniyor...',
     groupDescription: 'Grup açıklaması',
     noDescription: 'Açıklama belirtilmemiş',
     mediaLinksDocs: 'Medya, bağlantılar ve belgeler',

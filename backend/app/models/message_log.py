@@ -3,6 +3,7 @@ from datetime import datetime
 from sqlalchemy import Column, Integer, String, DateTime, Text, Enum, ForeignKey, Index, Uuid
 from sqlalchemy.orm import relationship
 from backend.app.core.database import Base
+from backend.app.core.datetime_utils import utc_now_naive
 
 class MessageStatus(str, enum.Enum):
     PENDING = "PENDING"
@@ -42,8 +43,8 @@ class MessageLog(Base):
     error_reason = Column(Text, nullable=True)
     delay_applied_seconds = Column(Integer, nullable=True)
     
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=utc_now_naive, nullable=False)
+    updated_at = Column(DateTime, default=utc_now_naive, onupdate=utc_now_naive, nullable=False)
 
     __table_args__ = (
         Index("idx_msg_status_sched", "status", "scheduled_for"),

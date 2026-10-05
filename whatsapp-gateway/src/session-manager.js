@@ -1197,19 +1197,40 @@ export function createSessionManager({
      * duzeltilen hataydi. Kalici gercekligi backend tutar (mesaj satirina bagli
      * tek satirlik reaksiyon), gateway yalnizca WhatsApp'a iletir.
      */
-    async sendReaction(sessionId, jid, { target_wa_message_id, target_from_me, emoji }) {
+    async sendReaction(sessionId, jid, { target_wa_message_id, target_from_me, emoji, participant_jid }) {
       const session = this._requireConnectedSession(sessionId);
-      const key = resolveJidKey(this._storeOf(session), jid);
+      const store = this._storeOf(session);
+      const key = resolveJidKey(store, jid);
       if (!target_wa_message_id) throw new Error('target_wa_message_id is required');
       const text = typeof emoji === 'string' ? emoji : '';
+
+      // In group chats, WhatsApp protocol mandates `participant` on the target message key
+      // if the message was sent by another participant (fromMe=false).
+      let resolvedParticipant = participant_jid || null;
+      if (key.endsWith('@g.us') && !target_from_me) {
+        if (!resolvedParticipant) {
+          const cachedMsg = (store.messagesByChat.get(key) || []).find((m) => m.wa_message_id === target_wa_message_id);
+          resolvedParticipant = cachedMsg?.participant_jid || null;
+        }
+        if (!resolvedParticipant) {
+          const rawMsg = store.rawMessagesByChat?.get(key)?.get(target_wa_message_id);
+          resolvedParticipant = rawMsg?.key?.participant || null;
+        }
+      }
+
+      const reactKey = {
+        remoteJid: key,
+        fromMe: Boolean(target_from_me),
+        id: target_wa_message_id,
+      };
+      if (key.endsWith('@g.us') && !target_from_me && resolvedParticipant) {
+        reactKey.participant = resolvedParticipant;
+      }
+
       await session.sock.sendMessage(key, {
         react: {
           text,
-          key: {
-            remoteJid: key,
-            fromMe: Boolean(target_from_me),
-            id: target_wa_message_id,
-          },
+          key: reactKey,
         },
       });
       return {
@@ -1840,9 +1861,9 @@ export function createSessionManager({
         media_caption: text || existingRecord?.media_caption || null,
         native_link_preview: nativeLinkPreview,
         wa_message_id: msg.key?.id || null,
-        sender_phone: fromMe ? 'ME' : (jidToPhone(key) || key),
+        sender_phone: fromMe ? 'ME' : (jidToPhone(msg.key?.participant || key) || (msg.key?.participant || key)),
         recipient_phone: fromMe ? (jidToPhone(key) || key) : 'ME',
-        sender_name: fromMe ? 'ME' : this._resolveDisplayName(session, key, msg.pushName),
+        sender_name: fromMe ? 'ME' : (isGroup && msg.key?.participant ? (this._resolveDisplayName(session, msg.key.participant, msg.pushName) || this._resolveDisplayName(session, key, msg.pushName)) : this._resolveDisplayName(session, key, msg.pushName)),
         sender_name_source: fromMe ? null : (contact?.name_source || null),
         participant_jid: msg.key?.participant || null,
         participant_name: isGroup ? this._resolveDisplayName(session, msg.key?.participant, msg.pushName) : null,
@@ -2810,6 +2831,37 @@ export function createSessionManager({
       this._applyArchivedState(session);
       this._scheduleBackgroundAvatarFetch(session);
       return { applied: true, reason: null };
+    },
+
+    async getGroupMetadata(sessionId, jid) {
+      const session = this._requireConnectedSession(sessionId);
+      const store = this._storeOf(session);
+      const key = resolveJidKey(store, jid);
+      if (!key.endsWith('@g.us')) {
+        throw new Error('Not a group JID');
+      }
+      const meta = await session.sock.groupMetadata(key);
+      const meJid = (session.sock.user?.id || session.state?.creds?.me?.id || '').split(':')[0].split('@')[0];
+      const participants = (meta?.participants || []).map((p) => {
+        const participantJid = p.id;
+        const partUser = (participantJid || '').split(':')[0].split('@')[0];
+        const isMe = Boolean(meJid && partUser && meJid === partUser);
+        const name = isMe
+          ? 'ME'
+          : (this._resolveDisplayName(session, participantJid, null) || jidToPhone(participantJid) || participantJid);
+        return {
+          id: participantJid,
+          phone: jidToPhone(participantJid) || null,
+          name,
+          admin: p.admin || null,
+          is_me: isMe,
+        };
+      });
+      return {
+        id: key,
+        subject: meta?.subject || '',
+        participants,
+      };
     },
 
     _resolveDisplayName(session, jid, fallbackPushName) {

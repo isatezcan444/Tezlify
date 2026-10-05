@@ -44,6 +44,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from backend.app.core.auth import get_user_filter
 from backend.app.core.database import AsyncSessionLocal
+from backend.app.core.datetime_utils import utc_now_naive
 from backend.app.models.contact import Contact
 from backend.app.models.conversation import Conversation, ConversationStatus
 from backend.app.models.message import Message
@@ -290,10 +291,10 @@ async def _merge_lease(
         yield False, None
         return
 
-    deadline = datetime.utcnow() + timedelta(seconds=max(0.0, wait_seconds))
+    deadline = utc_now_naive() + timedelta(seconds=max(0.0, wait_seconds))
     acquired = False
     while True:
-        now = datetime.utcnow()
+        now = utc_now_naive()
         try:
             inserted = await db.execute(
                 text(
@@ -323,7 +324,7 @@ async def _merge_lease(
             await db.rollback()
             logger.warning("merge kilidi alinamadi (%s): %s", lock_key, exc)
             break
-        if datetime.utcnow() >= deadline:
+        if utc_now_naive() >= deadline:
             break
         await asyncio.sleep(_MERGE_LOCK_POLL_SECONDS)
 
@@ -750,7 +751,7 @@ async def _merge_under_lease(
         legacy_conv.status = ConversationStatus.ARCHIVED
         legacy_conv.is_archived = True
         legacy_conv.unread_count = 0
-        legacy_conv.archived_at = datetime.utcnow()
+        legacy_conv.archived_at = utc_now_naive()
 
         await db.commit()
         await db.refresh(canonical_conv)
@@ -1111,7 +1112,7 @@ async def run_identity_sweep_once(
     arşivler, ikinci faz da tam o arşivde kalmış (yarışta yazılmış) satırları
     toplar — birinci fazın ürettiği artığı aynı turda temizler.
     """
-    _SWEEP_STATE["last_started_at"] = datetime.utcnow().isoformat()
+    _SWEEP_STATE["last_started_at"] = utc_now_naive().isoformat()
     run_started = time.monotonic()
     split_started = time.monotonic()
     report = await merge_deferred_lid_ghosts(
@@ -1146,7 +1147,7 @@ async def run_identity_sweep_once(
     if last_error:
         _SWEEP_STATE["errors_total"] = int(_SWEEP_STATE["errors_total"]) + 1
         _SWEEP_STATE["last_error"] = last_error
-    _SWEEP_STATE["last_finished_at"] = datetime.utcnow().isoformat()
+    _SWEEP_STATE["last_finished_at"] = utc_now_naive().isoformat()
     _SWEEP_STATE["last_report"] = {"splits": report, "stranded": stranded}
     return _SWEEP_STATE["last_report"]
 
@@ -1223,7 +1224,7 @@ def identity_sweep_metrics() -> Dict[str, Any]:
     runs = int(_SWEEP_STATE.get("runs") or 0)
     lock_attempts = int(_LOCK_METRICS["attempts"])
     return {
-        "generated_at": datetime.utcnow().isoformat(),
+        "generated_at": utc_now_naive().isoformat(),
         "process_local": True,
         "runs": runs,
         "merged_total": int(_SWEEP_STATE.get("merged_total") or 0),

@@ -98,13 +98,37 @@ export const DocumentViewer: React.FC<DocumentViewerProps> = ({
   const { Icon, tone, label } = resolveDocVisual(filename, mimeType);
   const displayName = filename || t('leads.documentFallbackName');
 
+  const [isClosing, setIsClosing] = useState(false);
+  const [shouldRender, setShouldRender] = useState(isOpen);
+
+  useEffect(() => {
+    if (isOpen) {
+      setShouldRender(true);
+      setIsClosing(false);
+    } else if (shouldRender) {
+      setIsClosing(true);
+      const timer = setTimeout(() => {
+        setShouldRender(false);
+        setIsClosing(false);
+      }, 200);
+      return () => clearTimeout(timer);
+    }
+  }, [isOpen, shouldRender]);
+
+  const handleClose = () => {
+    setIsClosing(true);
+    setTimeout(() => {
+      onClose();
+    }, 200);
+  };
+
   // Keyboard navigation: Escape to close
   useEffect(() => {
     if (!isOpen) return;
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.preventDefault();
-        onClose();
+        handleClose();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -249,7 +273,7 @@ export const DocumentViewer: React.FC<DocumentViewerProps> = ({
     }
   }, [src, displayName, downloading]);
 
-  if (!isOpen || typeof document === 'undefined') return null;
+  if (!shouldRender || typeof document === 'undefined') return null;
 
   return createPortal(
     <div
@@ -257,17 +281,19 @@ export const DocumentViewer: React.FC<DocumentViewerProps> = ({
       aria-modal="true"
       aria-label={displayName}
       tabIndex={-1}
-      className="fixed inset-0 z-[99999] flex flex-col bg-[#0b141a]/95 backdrop-blur-md select-none outline-hidden"
+      className={`fixed inset-0 z-[99999] flex flex-col bg-[#0b141a]/95 backdrop-blur-md select-none outline-hidden transition-all duration-200 ease-out ${
+        isClosing ? 'opacity-0 scale-[0.98]' : 'opacity-100 scale-100 animate-in fade-in zoom-in-95 duration-200'
+      }`}
     >
       {/* Top Header Bar */}
       <header className="h-16 px-4 flex items-center justify-between bg-black/40 border-b border-white/10 shrink-0 z-20">
         <div className="flex items-center gap-3 min-w-0">
           <button
             type="button"
-            onClick={onClose}
+            onClick={handleClose}
             aria-label={t('whatsapp.mediaClose')}
             title={t('whatsapp.mediaClose')}
-            className="p-2 rounded-full text-slate-300 hover:text-white hover:bg-white/10 transition-colors cursor-pointer"
+            className="p-2 rounded-full text-slate-300 hover:text-white hover:bg-white/10 active:scale-90 transition-all cursor-pointer"
           >
             <ArrowLeft className="w-5 h-5" />
           </button>
@@ -379,10 +405,10 @@ export const DocumentViewer: React.FC<DocumentViewerProps> = ({
           {/* Close button */}
           <button
             type="button"
-            onClick={onClose}
+            onClick={handleClose}
             title={t('whatsapp.mediaClose')}
             aria-label={t('whatsapp.mediaClose')}
-            className="p-2 rounded-full text-slate-300 hover:text-white hover:bg-white/10 transition-colors cursor-pointer"
+            className="p-2 rounded-full text-slate-300 hover:text-white hover:bg-white/10 active:scale-90 transition-all cursor-pointer"
           >
             <X className="w-5 h-5" />
           </button>

@@ -25,6 +25,7 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, Optional
 
+from backend.app.core.datetime_utils import utc_now_naive
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -75,7 +76,7 @@ async def record_pairing(
             existing.user_id = str(user_id)
             existing.session_name = session_name
             existing.logical_session_id = logical_session_id
-            existing.updated_at = datetime.utcnow()
+            existing.updated_at = utc_now_naive()
         else:
             db.add(
                 EphemeralPairing(
@@ -85,8 +86,8 @@ async def record_pairing(
                     session_name=session_name,
                     logical_session_id=logical_session_id,
                     consumed_at=None,
-                    created_at=datetime.utcnow(),
-                    updated_at=datetime.utcnow(),
+                    created_at=utc_now_naive(),
+                    updated_at=utc_now_naive(),
                 )
             )
         await db.commit()
@@ -191,8 +192,8 @@ async def consume_pairing(db: AsyncSession, gateway_session_id: str) -> bool:
         )
         if row is None:
             return False
-        row.consumed_at = datetime.utcnow()
-        row.updated_at = datetime.utcnow()
+        row.consumed_at = utc_now_naive()
+        row.updated_at = utc_now_naive()
         await db.commit()
         return True
     except Exception as exc:  # noqa: BLE001
@@ -214,8 +215,8 @@ async def consume_pairing_by_token(db: AsyncSession, pair_token: str) -> bool:
         )
         if row is None:
             return False
-        row.consumed_at = datetime.utcnow()
-        row.updated_at = datetime.utcnow()
+        row.consumed_at = utc_now_naive()
+        row.updated_at = utc_now_naive()
         await db.commit()
         return True
     except Exception as exc:  # noqa: BLE001

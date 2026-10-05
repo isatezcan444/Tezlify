@@ -30,6 +30,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.database import AsyncSessionLocal
+from backend.app.core.datetime_utils import utc_now_naive
 from backend.app.models.link_preview import LinkPreview
 from backend.app.services.link_preview.unfurl import UnfurlError, unfurl
 from backend.app.services.link_preview.ssrf import UnsafeUrlError
@@ -138,7 +139,7 @@ async def previews_by_message(
         logger.warning("Link onizlemeleri okunamadi: %s", exc)
         return {}
 
-    now = datetime.utcnow()
+    now = utc_now_naive()
     fresh: Dict[str, LinkPreview] = {}
     for row in found:
         if _is_fresh(row, now):
@@ -178,7 +179,7 @@ async def ensure_preview(db: AsyncSession, normalized_url: str) -> Optional[Link
     existing = await db.scalar(
         select(LinkPreview).where(LinkPreview.url_hash == digest)
     )
-    now = datetime.utcnow()
+    now = utc_now_naive()
     if existing is not None and _is_fresh(existing, now):
         return existing
 
@@ -345,7 +346,7 @@ async def refresh_preview(db: AsyncSession, url: str) -> Optional[LinkPreview]:
         select(LinkPreview).where(LinkPreview.url_hash == digest)
     )
     if existing is not None:
-        existing.expires_at = datetime.utcnow() - timedelta(seconds=1)
+        existing.expires_at = utc_now_naive() - timedelta(seconds=1)
         await db.commit()
     return await ensure_preview(db, normalized)
 
@@ -367,7 +368,7 @@ async def preview_for_text_message(
         return None
     digest = url_hash(norm)
     row = await db.scalar(select(LinkPreview).where(LinkPreview.url_hash == digest))
-    now = datetime.utcnow()
+    now = utc_now_naive()
     if row and _is_fresh(row, now) and row.status == "OK":
         return serialize_preview(row)
     try:
@@ -391,7 +392,7 @@ async def ingest_native_preview(
     if not norm:
         return None
     digest = url_hash(norm)
-    now = datetime.utcnow()
+    now = utc_now_naive()
     existing = await db.scalar(select(LinkPreview).where(LinkPreview.url_hash == digest))
     thumb_id = native.get("thumbnail_media_id")
     image_url = f"/api/v1/whatsapp/media/{thumb_id}" if thumb_id else None

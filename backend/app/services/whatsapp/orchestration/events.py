@@ -18,6 +18,8 @@ import time
 from typing import Any, Callable, Dict, FrozenSet, List, Optional, Tuple
 import uuid
 
+from backend.app.core.datetime_utils import utc_now_naive
+
 from sqlalchemy import delete, func, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -214,7 +216,7 @@ def apply_deferred_status(
         if row.status != ConversationMessageStatus.PENDING:
             return False
         row.status = ConversationMessageStatus.FAILED
-        row.failed_at = datetime.utcnow()
+        row.failed_at = utc_now_naive()
         row.error_message = str(event.get("error_message") or "Provider rejected the message.")[:300]
         return True
     return bool(advance(row, new_status))
@@ -935,7 +937,7 @@ class WhatsAppEventOrchestrator:
             is_group=is_group_jid,
             direction=direction.value,
         )
-        apply_last_message(conv, _as_naive_utc(_parse_dt(msg.get("created_at"))) or datetime.utcnow(), summary)
+        apply_last_message(conv, _as_naive_utc(_parse_dt(msg.get("created_at"))) or utc_now_naive(), summary)
         if direction == MessageDirection.INBOUND:
             conv.unread_count = (conv.unread_count or 0) + 1
             # Check if this inbound message is a reply to an outreach campaign / lead
@@ -1243,7 +1245,7 @@ class WhatsAppEventOrchestrator:
         if emoji and not from_me and target.direction == MessageDirection.OUTBOUND:
             if target.status != ConversationMessageStatus.READ:
                 target.status = ConversationMessageStatus.READ
-                target.read_at = _as_naive_utc(_parse_dt(event.get("created_at"))) or datetime.utcnow()
+                target.read_at = _as_naive_utc(_parse_dt(event.get("created_at"))) or utc_now_naive()
                 await db.flush()
                 try:
                     from backend.app.api.v1.websocket import ws_manager
@@ -1276,7 +1278,7 @@ class WhatsAppEventOrchestrator:
                 is_group="@g.us" in jid_str,
                 lang="tr",
             )
-            created_at_dt = _as_naive_utc(_parse_dt(event.get("created_at"))) or datetime.utcnow()
+            created_at_dt = _as_naive_utc(_parse_dt(event.get("created_at"))) or utc_now_naive()
             apply_last_message(conv, created_at_dt, reaction_preview)
             await db.flush()
 
@@ -1758,7 +1760,7 @@ class WhatsAppEventOrchestrator:
             # so the next stale snapshot could resurrect the badge.
             if (conv.unread_count or 0) > 0:
                 conv.unread_count = 0
-            conv.last_read_at = datetime.utcnow()
+            conv.last_read_at = utc_now_naive()
             await db.commit()
         elif event.get("event") == "message_status_updated":
             wa_id = event.get("wa_message_id")
@@ -1783,7 +1785,7 @@ class WhatsAppEventOrchestrator:
                     row.wa_message_id = wa_id or row.wa_message_id
                     if new_status == "FAILED" and row.status == ConversationMessageStatus.PENDING:
                         row.status = ConversationMessageStatus.FAILED
-                        row.failed_at = datetime.utcnow()
+                        row.failed_at = utc_now_naive()
                         row.error_message = event.get("error_message")
                     else:
                         advance_message_status(row, new_status)
@@ -2025,11 +2027,11 @@ class WhatsAppEventOrchestrator:
             row.error_message = str(err)[:1000]
             row.status = SessionStatus.DISCONNECTED
             row.is_phone_online = False
-            row.updated_at = datetime.utcnow()
+            row.updated_at = utc_now_naive()
         elif evt == "session_connecting":
             row.status = SessionStatus.CONNECTING
             row.is_phone_online = False
-            row.updated_at = datetime.utcnow()
+            row.updated_at = utc_now_naive()
         elif evt == "session_connected":
             row.status = SessionStatus.CONNECTED
             row.is_phone_online = True
@@ -2038,7 +2040,7 @@ class WhatsAppEventOrchestrator:
             phone = event.get("phone") or event.get("phone_number")
             if phone:
                 row.phone_number = str(phone)
-            row.updated_at = datetime.utcnow()
+            row.updated_at = utc_now_naive()
             if row.user_id and row.phone_number:
                 try:
                     await self.reconcile_self_identity(
@@ -2061,14 +2063,14 @@ class WhatsAppEventOrchestrator:
                 # SessionStatus has no LOGGED_OUT member; keep DISCONNECTED and
                 # surface the cause via error_message so the UI can react.
                 row.error_message = "WHATSAPP_LOGGED_OUT"
-            row.updated_at = datetime.utcnow()
+            row.updated_at = utc_now_naive()
         elif evt == "session_qr_updated":
             row.status = SessionStatus.SCAN_QR
             qr = event.get("qr_code")
             if qr:
                 row.qr_code = str(qr)
             row.error_message = None
-            row.updated_at = datetime.utcnow()
+            row.updated_at = utc_now_naive()
         return event
 
     async def _recover_message_new_after_integrity_error(

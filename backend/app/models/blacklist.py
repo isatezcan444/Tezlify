@@ -2,6 +2,7 @@ import enum
 from datetime import datetime
 from sqlalchemy import Column, Integer, String, Text, DateTime, Enum, JSON, Uuid
 from backend.app.core.database import Base
+from backend.app.core.datetime_utils import utc_now_naive
 
 
 class Blacklist(Base):
@@ -12,7 +13,7 @@ class Blacklist(Base):
     phone_e164 = Column(String(50), nullable=False, index=True)
     reason = Column(String(255), default="USER_REQUEST")  # USER_REQUEST, SPAM_REPORT, INVALID, OPT_OUT
     notes = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=utc_now_naive, nullable=False)
 
 
 class ScraperJobStatus(str, enum.Enum):
@@ -47,4 +48,4 @@ class ScraperJob(Base):
 
     started_at = Column(DateTime, nullable=True)
     completed_at = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=utc_now_naive, nullable=False)

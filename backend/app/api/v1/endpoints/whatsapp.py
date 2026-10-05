@@ -985,3 +985,29 @@ async def get_link_preview_image(
         headers={"Cache-Control": "private, max-age=86400"},
     )
 
+
+@router.get("/contacts/{phone_or_jid}/status")
+async def get_contact_status(
+    phone_or_jid: str,
+    session_id: Optional[int] = None,
+    current_user: AuthUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> Dict[str, Any]:
+    """WhatsApp kişi durumunu (About / Status) dinamik olarak çeker."""
+    return await whatsapp_service.get_contact_status(
+        db, current_user.id, phone_or_jid, session_id=session_id
+    )
+
+
+@router.get("/conversations/{conversation_id}/participants")
+async def get_group_participants(
+    conversation_id: int,
+    current_user: AuthUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> Dict[str, Any]:
+    """WhatsApp grup katılımcılarını ve metadata'sını çeker."""
+    return await whatsapp_service.get_group_participants(
+        db, current_user.id, conversation_id
+    )
+
+
