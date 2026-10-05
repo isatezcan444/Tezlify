@@ -19,7 +19,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 
-const PROD = 'https://api.130.162.247.20.sslip.io';
+const PROD = 'https://130.162.247.20.sslip.io';
 const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const PORT = 9444;
 
