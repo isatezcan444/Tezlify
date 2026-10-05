@@ -2835,9 +2835,12 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
 
   const fetchSessions = useCallback(async (silent = false) => {
     try {
-      setSessions(await WhatsAppRepository.getWhatsAppSessions());
+      const data = await WhatsAppRepository.getWhatsAppSessions();
+      setSessions(data);
+      return data;
     } catch (err: any) {
       if (!silent) toast.error(err?.message || t('common.error'), t('common.error'));
+      return [];
     }
   }, [t, toast]);
 
@@ -2846,7 +2849,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     setHubTab('conversations');
     setIsPostQrSyncing(true);
     setSyncGateDismissed(false);
-    fetchSessions(true);
+    void fetchSessions(true);
     onRefreshStats();
     // Faz 6 (PHASE-17 cache-first): QR sonrasi ONCE DB'deki kalici sohbet
     // snapshot'i aninda yuklenir (reconnect'te kullanici 2-3 sn'de listeyi
@@ -2859,13 +2862,17 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     // Faz 4: tek-authority loading gate de ayni anda beslenir (avatar sayaclari
     // dahil); `ready` aninda hook otomatik gecisi tetikler.
     void refreshLoadingGate();
-    // Backend session_connected aninda _schedule_initial_sync tetikler.
-    // UI tarafinda yaris durumunu onlemek icin kisa bir aralikla (600ms)
-    // fetchSessions sonrasi sync tetiklenir / benimsenir.
+    // Backend session_connected aninda promote_ephemeral_pairing sonrasi
+    // _schedule_initial_sync tetikler. UI tarafinda yaris durumunu onlemek icin
+    // fetchSessions ile bagli oturumun DB commit'i teyit edilir, ardindan sync tetiklenir.
     setTimeout(() => {
-      void fetchSessions(true);
-      void handleSyncChats();
-    }, 600);
+      void fetchSessions(true).then((latest) => {
+        const hasConnected = Array.isArray(latest) && latest.some((s: any) => s.status === 'CONNECTED');
+        if (hasConnected) {
+          void handleSyncChats();
+        }
+      });
+    }, 1200);
   }, [fetchSessions, onRefreshStats, refreshSyncStatus, loadConversations, handleSyncChats, refreshLoadingGate]);
 
   const handleOpenQrConnect = useCallback(() => {

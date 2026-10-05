@@ -26,7 +26,7 @@ from datetime import datetime
 from typing import Any, Dict, Optional
 
 from backend.app.core.datetime_utils import utc_now_naive
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.ephemeral_pairing import EphemeralPairing
@@ -226,20 +226,27 @@ async def consume_pairing_by_token(db: AsyncSession, pair_token: str) -> bool:
 
 
 async def has_unconsumed_pairing_for_user(db: AsyncSession, user_id: str) -> bool:
-    """True if there is an unconsumed ephemeral pairing for this user."""
+    """True if there is an unconsumed (or recently active within 30s) ephemeral pairing for this user."""
     if not user_id:
         return False
     try:
-        from backend.app.services.whatsapp.repositories.tenancy import get_user_filter
+        from datetime import timedelta
+        from backend.app.core.datetime_utils import utc_now_naive
+        from backend.app.core.auth import get_user_filter
+        cutoff = utc_now_naive() - timedelta(seconds=30)
         row = await db.scalar(
-            select(EphemeralPairing.id)
+            select(EphemeralPairing.pair_token)
             .where(
                 get_user_filter(EphemeralPairing.user_id, user_id),
-                EphemeralPairing.consumed_at.is_(None),
+                or_(
+                    EphemeralPairing.consumed_at.is_(None),
+                    EphemeralPairing.consumed_at >= cutoff,
+                ),
             )
             .limit(1)
         )
         return row is not None
     except Exception as exc:  # noqa: BLE001
+        logger.warning("[WhatsApp] has_unconsumed_pairing_for_user error: %s", exc)
         return False
 

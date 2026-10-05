@@ -1761,16 +1761,31 @@ class WhatsAppSyncOrchestrator:
                         from backend.app.services.whatsapp.orchestration.pairing_registry import (
                             has_unconsumed_pairing_for_user,
                         )
-                        has_pairing = has_active_ephemeral_pairing_for_user(owner) or await has_unconsumed_pairing_for_user(db, owner)
-                    except Exception:  # noqa: BLE001
+                        has_pairing = (
+                            has_active_ephemeral_pairing_for_user(owner)
+                            or await has_unconsumed_pairing_for_user(db, owner)
+                        )
+                    except Exception as p_err:  # noqa: BLE001
+                        logger.warning("[WhatsApp][Sync] Pairing check error for owner %s: %s", owner, p_err)
                         has_pairing = False
+
+                    if not has_pairing:
+                        try:
+                            from backend.app.models.whatsapp import SessionStatus
+                            all_user_sess = await user_sessions(db, owner, connected_only=False)
+                            has_pairing = any(
+                                s.status in (SessionStatus.CONNECTING, SessionStatus.SCAN_QR)
+                                for s in all_user_sess
+                            )
+                        except Exception:
+                            pass
 
                     if has_pairing:
                         logger.info(
-                            "[WhatsApp][Sync] Ephemeral pairing active for user %s; waiting up to 4s for promotion commit",
+                            "[WhatsApp][Sync] Active pairing or transition detected for user %s; waiting up to 5s for promotion commit",
                             owner,
                         )
-                        for _ in range(16):
+                        for _ in range(20):
                             await asyncio.sleep(0.25)
                             try:
                                 await db.rollback()
@@ -1779,7 +1794,7 @@ class WhatsAppSyncOrchestrator:
                             sessions_to_sync = await user_sessions(db, owner, connected_only=True)
                             if sessions_to_sync:
                                 logger.info(
-                                    "[WhatsApp][Sync] Ephemeral pairing promoted to session %s for user %s after wait",
+                                    "[WhatsApp][Sync] Session promoted/connected (%s) for user %s after wait",
                                     sessions_to_sync[0].id, owner,
                                 )
                                 break

@@ -423,7 +423,12 @@ def has_active_ephemeral_pairing_for_user(user_id: str) -> bool:
     if not user_id:
         return False
     uid = str(user_id)
-    return any(data.get("user_id") == uid for data in _ephemeral_pairings.values())
+    uid_clean = uid.replace("-", "")
+    for data in _ephemeral_pairings.values():
+        p_uid = str(data.get("user_id") or "")
+        if p_uid == uid or (uid_clean and p_uid.replace("-", "") == uid_clean):
+            return True
+    return False
 
 
 

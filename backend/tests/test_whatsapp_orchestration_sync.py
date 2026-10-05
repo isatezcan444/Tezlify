@@ -454,3 +454,35 @@ async def test_run_sync_job_waits_for_in_flight_ephemeral_pairing_promotion(monk
     finally:
         sessions_mod._ephemeral_pairings.pop(token, None)
 
+
+@pytest.mark.asyncio
+async def test_has_unconsumed_pairing_for_user_queries_pair_token():
+    """has_unconsumed_pairing_for_user must query pair_token, not nonexistent id, and respect cutoff."""
+    from backend.app.core.database import engine, AsyncSessionLocal
+    from backend.app.models.ephemeral_pairing import EphemeralPairing
+    from backend.app.services.whatsapp.orchestration.pairing_registry import has_unconsumed_pairing_for_user
+
+    async with engine.begin() as conn:
+        await conn.run_sync(EphemeralPairing.__table__.create, checkfirst=True)
+
+    import uuid
+    uid = f"test-unconsumed-user-{uuid.uuid4().hex[:8]}"
+    token = f"token-{uuid.uuid4().hex}"
+    gw_id = f"gw-{uuid.uuid4().hex}"
+    async with AsyncSessionLocal() as db:
+        pairing = EphemeralPairing(
+            pair_token=token,
+            gateway_session_id=gw_id,
+            user_id=uid,
+            session_name="Test Line",
+        )
+        db.add(pairing)
+        await db.commit()
+
+        assert await has_unconsumed_pairing_for_user(db, uid) is True
+        assert await has_unconsumed_pairing_for_user(db, "nonexistent-user-999") is False
+
+        await db.delete(pairing)
+        await db.commit()
+
+
