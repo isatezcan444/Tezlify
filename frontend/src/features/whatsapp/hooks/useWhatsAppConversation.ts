@@ -480,7 +480,7 @@ export function useWhatsAppConversation({
   return {
     conversation,
     messages: conversation?.messages || [],
-    hasMore: Boolean(conversation?.messages && conversation.messages.length >= 30 && conversation.has_more),
+    hasMore: Boolean(conversation?.has_more && (conversation?.messages?.length ?? 0) > 0),
     loading,
     loadingOlder,
     error,

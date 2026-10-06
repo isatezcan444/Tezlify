@@ -433,15 +433,12 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
     const isSelfSender = quoted.sender_name === 'ME' || quoted.sender_phone === 'ME';
     const displayName = isSelfSender ? t('whatsapp.youLabel') : (quoted.sender_name || t('whatsapp.participantFallback'));
     const senderColorClass = isSelfSender ? 'text-[#00a884] dark:text-[#25D366]' : getSenderColorClass(displayName);
-    const thumbSrc =
+    const thumbSrc = resolveMediaUrl(
       quoted.thumbnail ||
-      (quoted.media_url
-        ? resolveMediaUrl(quoted.media_url)
-        : quoted.media_id
-        ? resolveMediaUrl(`/api/v1/whatsapp/media/${quoted.media_id}`)
-        : quoted.stanza_id
-        ? resolveMediaUrl(`/api/v1/whatsapp/media/${quoted.stanza_id}`)
-        : null);
+      quoted.media_url ||
+      quoted.media_id ||
+      quoted.stanza_id
+    ) || null;
     const mType = (quoted.message_type || 'TEXT').toUpperCase();
 
     const mediaLabel = (() => {

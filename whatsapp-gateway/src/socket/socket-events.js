@@ -967,7 +967,7 @@ export function bindSocketEvents({
         };
         chats.set(key, merged);
         storedChats += 1;
-        if (!merged.avatar_url && storedChats <= 15) void ensureChatAvatar(key);
+        if (!merged.avatar_url && storedChats <= 50) void ensureChatAvatar(key);
         emitEvent({ event: 'conversation_updated', conversation: merged });
       }
       // A history chunk belongs only to the chats it names.  Resolving every

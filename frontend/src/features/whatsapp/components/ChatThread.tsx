@@ -1080,7 +1080,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
         >
           <div ref={contentWrapperRef} className="flex flex-col min-h-full space-y-1">
             <div className="flex-1 min-h-0" />
-            {messages.length >= 50 && hasMore && loadOlderButton}
+            {hasMore && loadOlderButton}
             {rows.map((row) => (
               <React.Fragment key={row.key}>{renderRowBody(row)}</React.Fragment>
             ))}
@@ -1121,7 +1121,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
         style={{ overflowAnchor: 'none', scrollBehavior: 'auto' }}
         className={`flex-1 min-w-0 p-4 overflow-y-auto overflow-x-hidden ${isReady ? 'opacity-100' : 'opacity-0'}`}
       >
-        {win.start <= 0 && messages.length >= 50 && hasMore && loadOlderButton}
+        {win.start <= 0 && hasMore && loadOlderButton}
         <div aria-hidden style={{ height: `${topSpacer}px` }} />
         {mountedRows.map((row) => (
           <div

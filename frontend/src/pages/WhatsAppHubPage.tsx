@@ -475,7 +475,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       onMessages: (convId, messages, meta) => {
         setMessagePaging((prev) => {
           const alreadyExhausted = prev[convId]?.hasMore === false && prev[convId]?.oldest === meta.oldest;
-          const hasMore = Boolean(!alreadyExhausted && messages.length >= 50 && meta.has_more);
+          const hasMore = Boolean(!alreadyExhausted && meta.has_more);
           return {
             ...prev,
             [convId]: {
@@ -540,6 +540,8 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   const [isNewChatModalOpen, setIsNewChatModalOpen] = useState<boolean>(false);
   const [isSyncingChats, setIsSyncingChats] = useState<boolean>(false);
   const conversationsGenerationRef = useRef(0);
+  const lastLoadedFilterRef = useRef<FilterTab>(convFilter);
+  const lastLoadedSearchRef = useRef<string>(convSearch);
   // Faz 6: WS handler'i guncel loadConversations kopyasini ve bilinen sohbet
   // id'lerini ref uzerinden okur (bayat closure / StrictMode çift calisma yok).
   const loadConversationsRef = useRef<((silent?: boolean) => Promise<void>) | null>(null);
@@ -721,7 +723,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
 
   const activeMessages = selectedConv ? (messagesMap[selectedConv.id] || []) : [];
   const activePaging = selectedConv ? messagePaging[selectedConv.id] : undefined;
-  const activeHasMore = Boolean(activeMessages.length >= 50 && activePaging?.hasMore && activePaging.oldest);
+  const activeHasMore = Boolean(activePaging?.hasMore && (activePaging.oldest || activeMessages.length > 0));
   const activeLoadingOlder = Boolean(activePaging?.loading);
   const activePagingError = Boolean(activePaging?.error);
   // Faz 16 (Sorun 2/10): ilk hidrasyon SURERKEN "mesaj yok" gosterilmez —
@@ -737,7 +739,9 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   const activeConv = selectedConv;
 
   const activeLoadOlder = useCallback(async () => {
-    if (!selectedConv || !activePaging?.hasMore || !activePaging.oldest || activePaging.loading) return;
+    const rawOldest = activePaging?.oldest ?? activeMessages[0]?.id;
+    const oldestId = rawOldest != null && !Number.isNaN(Number(rawOldest)) ? Number(rawOldest) : undefined;
+    if (!selectedConv || !activePaging?.hasMore || oldestId === undefined || activePaging.loading) return;
     const convId = selectedConv.id;
     // Claim the lock BEFORE reading any state. The `activePaging.loading` check
     // above cannot see a fetch that started in this same tick, because React has
@@ -753,7 +757,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     try {
       const res = await WhatsAppRepository.getConversationMessages(convId, {
         limit: 50,
-        before: activePaging.oldest,
+        before: oldestId,
         signal: controller.signal,
       });
       if (!isCurrentOlderPage(pagingLocksRef.current, convId, request)) return;
@@ -809,6 +813,9 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   }, []);
 
   const loadConversations = useCallback(async (isSilent: boolean = false) => {
+    if (!isSilent) {
+      conversationsGenerationRef.current += 1;
+    }
     const generation = conversationsGenerationRef.current;
     if (!isSilent) {
       setConvsLoading(true);
@@ -852,11 +859,18 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       // SILINMEZ (siralama tie'i ya da henuz kalici yazilmamis canli aktivite
       // yuzunden bir sohbetin kaybolmasi onlenir). `has_more=false` ise ilk
       // sayfa otoriter TAM listedir — sunucuda olmayan satir birakilir.
+      const filterChanged = convFilter !== lastLoadedFilterRef.current || convSearch !== lastLoadedSearchRef.current;
       setConversations((prev) => {
         const activeId = selectedConvRef.current?.id;
         const sanitizedItems = page.items.map((item) =>
           activeId && Number(item.id) === Number(activeId) ? { ...item, unread_count: 0 } : item
         );
+        // User-driven reload (tab switch, search, explicit refresh): do not contaminate with previous filter items
+        if (!isSilent || filterChanged) {
+          lastLoadedFilterRef.current = convFilter;
+          lastLoadedSearchRef.current = convSearch;
+          return sanitizedItems;
+        }
         const pageIds = new Set(sanitizedItems.map((c) => c.id));
         if (!page.has_more) return sanitizedItems;
         const retained = prev.filter((c) => !pageIds.has(c.id));
@@ -1179,11 +1193,18 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   }, []);
 
   useEffect(() => {
+    conversationsGenerationRef.current += 1;
+    nextConvOffsetRef.current = 0;
+    if (backgroundBackfillRef.current.timer) {
+      clearTimeout(backgroundBackfillRef.current.timer);
+      backgroundBackfillRef.current.timer = null;
+    }
+    backgroundBackfillRef.current.pages = 0;
     const timer = setTimeout(() => {
       loadConversations();
     }, convSearch ? 300 : 0);
     return () => clearTimeout(timer);
-  }, [loadConversations, convSearch]);
+  }, [loadConversations, convSearch, convFilter]);
 
   // Faz 16 (Sorun 2/10): secilen sohbetin mesaj hidrasyonu sohbet BASINA
   // izlenir. Basarisizlik YALNIZCA o sohbeti error durumuna alir; mevcut

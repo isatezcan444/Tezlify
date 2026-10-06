@@ -11,6 +11,8 @@
  * mutate the map directly. Hooking the map itself rather than each call site is
  * deliberate: a future `contacts.set(...)` cannot forget to persist.
  */
+import fs from 'fs';
+import path from 'path';
 import { createBoundedCache } from '../domain/bounded-cache.js';
 import { createContactCache } from './contact-cache.js';
 
@@ -42,6 +44,7 @@ function instrumentContacts(map, onChange) {
 
 export function createSessionStore({ sessionDir = null, sessionPhone = null, logger = null } = {}) {
   const store = {
+    sessionDir,
     contacts: new Map(), // jid -> contact
     chats: new Map(), // jid -> chat summary
     messagesByChat: new Map(), // jid -> Message[]
@@ -98,6 +101,27 @@ export function rememberRawMessage(store, jid, id, message) {
     store.rawMessageCount -= 1;
     if (firstMap.size === 0) rawMessagesByChat.delete(firstChat);
   }
+
+  // Persist raw media messages to disk so on-demand downloads survive container restarts
+  const hasMedia = Boolean(
+    message.imageMessage ||
+    message.videoMessage ||
+    message.documentMessage ||
+    message.audioMessage ||
+    message.stickerMessage
+  );
+  if (hasMedia && store.sessionDir && id) {
+    try {
+      const rawDir = path.join(store.sessionDir, 'raw_messages');
+      if (!fs.existsSync(rawDir)) fs.mkdirSync(rawDir, { recursive: true });
+      const rawPath = path.join(rawDir, `${id}.json`);
+      if (!fs.existsSync(rawPath)) {
+        fs.writeFileSync(rawPath, JSON.stringify({ jid, id, message }), 'utf8');
+      }
+    } catch {
+      // Best-effort disk persistence
+    }
+  }
 }
 
 export function lookupRawMessage(store, key) {
@@ -108,7 +132,25 @@ export function lookupRawMessage(store, key) {
   const alt = key.remoteJid.includes('@lid')
     ? lidToJid.get(key.remoteJid)
     : jidToLid.get(key.remoteJid);
-  return alt ? rawMessagesByChat.get(alt)?.get(key.id) : undefined;
+  const fromAlt = alt ? rawMessagesByChat.get(alt)?.get(key.id) : undefined;
+  if (fromAlt) return fromAlt;
+
+  // Fallback to disk if raw message exists in session directory
+  if (store.sessionDir && key.id) {
+    try {
+      const rawPath = path.join(store.sessionDir, 'raw_messages', `${key.id}.json`);
+      if (fs.existsSync(rawPath)) {
+        const parsed = JSON.parse(fs.readFileSync(rawPath, 'utf8'));
+        if (parsed?.message) {
+          rememberRawMessage(store, parsed.jid || key.remoteJid, key.id, parsed.message);
+          return parsed.message;
+        }
+      }
+    } catch {
+      // Best-effort disk lookup
+    }
+  }
+  return undefined;
 }
 
 export function messageTimestampMs(value) {

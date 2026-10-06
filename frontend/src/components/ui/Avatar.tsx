@@ -64,43 +64,50 @@ export const Avatar: React.FC<AvatarProps> = ({
     return resolved ? failedAvatarUrls.has(resolved) : false;
   });
 
+  const triggerAvatarRefresh = React.useCallback((targetPhone: string) => {
+    if (!targetPhone || inFlightAvatarRefreshes.has(targetPhone)) return;
+    const negativeExpiry = negativeAvatarPhones.get(targetPhone) || 0;
+    if (Date.now() < negativeExpiry) return;
+
+    inFlightAvatarRefreshes.add(targetPhone);
+    WhatsAppRepository.refreshAvatar(targetPhone)
+      .then((res) => {
+        if (res.success && res.avatar_url) {
+          const nextResolved = resolveMediaUrl(res.avatar_url) || res.avatar_url;
+          failedAvatarUrls.delete(nextResolved);
+          negativeAvatarPhones.delete(targetPhone);
+          setCurrentImage(nextResolved);
+          setImageError(false);
+          onRefresh?.(res.avatar_url);
+        } else {
+          negativeAvatarPhones.set(targetPhone, Date.now() + 10 * 60 * 1000);
+        }
+      })
+      .catch((err) => {
+        negativeAvatarPhones.set(targetPhone, Date.now() + 2 * 60 * 1000);
+        console.debug("[Avatar] Refresh attempt failed:", err);
+      })
+      .finally(() => {
+        inFlightAvatarRefreshes.delete(targetPhone);
+      });
+  }, [onRefresh]);
+
   React.useEffect(() => {
     setCurrentImage(resolved);
     setImageError(resolved ? failedAvatarUrls.has(resolved) : false);
-  }, [resolved]);
+
+    if (!resolved && phone) {
+      triggerAvatarRefresh(phone);
+    }
+  }, [resolved, phone, triggerAvatarRefresh]);
 
   const handleImageError = React.useCallback(() => {
     if (currentImage) failedAvatarUrls.add(currentImage);
     setImageError(true);
-
-    if (phone && !inFlightAvatarRefreshes.has(phone)) {
-      const negativeExpiry = negativeAvatarPhones.get(phone) || 0;
-      if (Date.now() < negativeExpiry) {
-        return;
-      }
-      inFlightAvatarRefreshes.add(phone);
-      WhatsAppRepository.refreshAvatar(phone)
-        .then((res) => {
-          if (res.success && res.avatar_url) {
-            const nextResolved = resolveMediaUrl(res.avatar_url) || res.avatar_url;
-            failedAvatarUrls.delete(nextResolved);
-            negativeAvatarPhones.delete(phone);
-            setCurrentImage(nextResolved);
-            setImageError(false);
-            onRefresh?.(res.avatar_url);
-          } else {
-            negativeAvatarPhones.set(phone, Date.now() + 10 * 60 * 1000);
-          }
-        })
-        .catch((err) => {
-          negativeAvatarPhones.set(phone, Date.now() + 2 * 60 * 1000);
-          console.debug("[Avatar] Refresh attempt failed:", err);
-        })
-        .finally(() => {
-          inFlightAvatarRefreshes.delete(phone);
-        });
+    if (phone) {
+      triggerAvatarRefresh(phone);
     }
-  }, [currentImage, phone, onRefresh]);
+  }, [currentImage, phone, triggerAvatarRefresh]);
 
   const sizeClasses = {
     xs: "w-6 h-6 text-[10px]",

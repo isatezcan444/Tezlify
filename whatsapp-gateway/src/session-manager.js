@@ -142,8 +142,8 @@ function resolveMessageStatus(msg, fromMe, reactions) {
 //  2) Gerçek gecikme pacing'de değil geri çekilmedeydi: ilk başarısız turdan
 //     sonra 30sn+60sn+120sn+5dk×4 = ~23.5dk bekleniyordu. İlk turlar kısa
 //     tutuldu; kalıcı eksikler ancak çok sonra (5dk) yeniden denenir.
-const AVATAR_SWEEP_BATCH = 2;
-const AVATAR_SWEEP_PAUSE_MS = 25; // 0.025s optimal pacing
+const AVATAR_SWEEP_BATCH = 8;
+const AVATAR_SWEEP_PAUSE_MS = 15; // 0.015s optimal pacing
 const AVATAR_SWEEP_MAX_PASSES = 8;
 // İlk turlar hızlı, sonra mesafeli. Kullanıcı fotoğrafı dakikalarca beklemez.
 const AVATAR_SWEEP_RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 15_000, 30_000, 60_000];
@@ -1622,16 +1622,36 @@ export function createSessionManager({
 
         for (const session of targetSessions) {
           const store = this._storeOf(session);
-          if (!store || !store.rawMessagesByChat) continue;
+          if (!store) continue;
 
           let foundRaw = null;
           let foundJid = null;
 
-          for (const [jid, byId] of store.rawMessagesByChat.entries()) {
-            if (byId.has(strId)) {
-              foundRaw = byId.get(strId);
-              foundJid = jid;
-              break;
+          if (store.rawMessagesByChat) {
+            for (const [jid, byId] of store.rawMessagesByChat.entries()) {
+              if (byId.has(strId)) {
+                foundRaw = byId.get(strId);
+                foundJid = jid;
+                break;
+              }
+            }
+          }
+
+          if (!foundRaw) {
+            const sDir = session.session_dir || store.sessionDir;
+            if (sDir) {
+              try {
+                const rawPath = path.join(sDir, 'raw_messages', `${strId}.json`);
+                if (fs.existsSync(rawPath)) {
+                  const parsed = JSON.parse(fs.readFileSync(rawPath, 'utf8'));
+                  if (parsed?.message) {
+                    foundRaw = parsed.message;
+                    foundJid = parsed.jid;
+                  }
+                }
+              } catch {
+                // best-effort
+              }
             }
           }
 
@@ -2316,7 +2336,7 @@ export function createSessionManager({
       if (retryAfter > Date.now()) return;
 
       const lastAttempt = avatarFetchAttemptedAt?.get(key) || 0;
-      if (Date.now() - lastAttempt < 45 * 1000) return;
+      if (Date.now() - lastAttempt < 10 * 1000) return;
       if (session.status !== 'CONNECTED' || !session.sock) return;
       if (typeof session.sock.profilePictureUrl !== 'function') return;
       avatarFetchInFlight.add(key);
@@ -3029,6 +3049,23 @@ export function createSessionManager({
       let mediaId = null;
       if (waMsgId && typeof mediaStore?.getMediaIdByWaId === 'function') {
         mediaId = mediaStore.getMediaIdByWaId(waMsgId);
+      }
+      if (!mediaId && rawMedia?.jpegThumbnail && typeof mediaStore?.storeMediaBuffer === 'function') {
+        try {
+          const thumbBuf = Buffer.isBuffer(rawMedia.jpegThumbnail)
+            ? rawMedia.jpegThumbnail
+            : Buffer.from(rawMedia.jpegThumbnail);
+          if (thumbBuf.length > 0) {
+            const storedThumb = mediaStore.storeMediaBuffer(session?.id, thumbBuf, {
+              mimeType: 'image/jpeg',
+              filename: `thumb_${waMsgId || Date.now()}.jpg`,
+              waMessageId: waMsgId,
+            });
+            mediaId = storedThumb?.media_id || null;
+          }
+        } catch {
+          // best-effort thumbnail persistence
+        }
       }
 
       const rawReactions = Array.isArray(msg.reactions)
