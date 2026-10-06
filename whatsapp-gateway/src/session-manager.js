@@ -141,12 +141,12 @@ function resolveMessageStatus(msg, fromMe, reactions) {
 //  2) Gerçek gecikme pacing'de değil geri çekilmedeydi: ilk başarısız turdan
 //     sonra 30sn+60sn+120sn+5dk×4 = ~23.5dk bekleniyordu. İlk turlar kısa
 //     tutuldu; kalıcı eksikler ancak çok sonra (5dk) yeniden denenir.
-const AVATAR_SWEEP_BATCH = 4;
-const AVATAR_SWEEP_PAUSE_MS = 150;
+const AVATAR_SWEEP_BATCH = 6;
+const AVATAR_SWEEP_PAUSE_MS = 25; // 0.025s optimal pacing
 const AVATAR_SWEEP_MAX_PASSES = 8;
-// İlk turlar hızlı (bir tur ~15sn), sonra mesafeli. Kullanıcı fotoğrafı dakikalarca beklemez.
-const AVATAR_SWEEP_RETRY_DELAYS_MS = [4_000, 8_000, 15_000, 30_000, 120_000, 120_000, 300_000];
-const AVATAR_QUERY_TIMEOUT_MS = 3500;
+// İlk turlar hızlı, sonra mesafeli. Kullanıcı fotoğrafı dakikalarca beklemez.
+const AVATAR_SWEEP_RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 15_000, 30_000, 60_000];
+const AVATAR_QUERY_TIMEOUT_MS = 2500;
 
 // ---------------------------------------------------------------------------
 // Sweep re-arm while the store is still filling.
@@ -2423,7 +2423,7 @@ export function createSessionManager({
               await Promise.all(
                 batch.map((chat) => this._ensureChatAvatar(session, chat.jid).catch(() => null))
               );
-              const jitter = Math.floor(Math.random() * 50);
+              const jitter = Math.floor(Math.random() * 10);
               await unrefSleep(AVATAR_SWEEP_PAUSE_MS + jitter);
             }
             const remaining = missingChats().length;

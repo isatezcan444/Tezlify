@@ -1050,18 +1050,31 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   // `loading_profiles` dondurmez). Kapı yalnızca gercek ilk senkron surerken
   // kapanır; profil fotografları arkada akar.
   const loadingGateActive = loadingGate?.phase === 'syncing_history';
-  const hasChatsWithNames =
-    conversations.length > 0 &&
-    sessionSync?.stage !== 'starting' &&
-    sessionSync?.stage !== 'contacts';
+
+  // Gercek tamamlanma kontrolu: asama complete veya faz ready olunca kapi kapanir
+  const isSyncComplete =
+    sessionSync?.stage === 'complete' ||
+    sessionSync?.phase === 'ready';
+
+  // Ilk senkron / QR baglanti asamasi:
+  const isInitialSync =
+    isPostQrSyncing ||
+    loadingGateActive ||
+    (initialSyncPending && !isSyncComplete);
+
+  const isSyncInProgress =
+    sessionSync?.phase === 'syncing' ||
+    loadingGateActive ||
+    isPostQrSyncing ||
+    isSyncingChats;
+
   const syncGateActive =
     hubTab === 'conversations' &&
     !syncGateDismissed &&
-    !hasChatsWithNames &&
-    (isPostQrSyncing ||
-      loadingGateActive ||
-      (initialSyncPending && (sessionSync?.phase === 'syncing' || sessionSync?.phase === 'error')) ||
-      (sessionSync?.phase === 'syncing' && isSyncingChats));
+    !isSyncComplete &&
+    (isInitialSync
+      ? (isSyncInProgress || sessionSync?.phase === 'error')
+      : (conversations.length === 0 && (isSyncInProgress || sessionSync?.phase === 'error')));
 
   // Uzun suren senkron kullaniciyi kapida kilitli birakmasin: bir esikten
   // sonra "yine de devam et" cikisi gorunur olur. Hata durumunda zaten
@@ -2628,7 +2641,6 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
           // Sohbetler sayfa sayfa INCREMENTAL eklenir — tam liste rebuild yok (§29).
           const incoming: Conversation[] = (eventData.conversations || []).map((c: any) => mapConversationItem(c));
           if (incoming.length > 0) {
-            setIsPostQrSyncing(false);
             setConversations((prev) => {
               const byId = new Map(prev.map((c) => [c.id, c]));
               for (const c of incoming) {
@@ -2730,6 +2742,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
             messages_synced: eventData.messages_synced ?? prev?.messages_synced,
             completed_at: eventData.finished_at || new Date().toISOString(),
           }));
+          setIsPostQrSyncing(false);
           setIsSyncingChats(false);
           activeSyncIdRef.current = null;
           syncMsgBufferRef.current = {};
@@ -2754,6 +2767,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
           acknowledgeFailedSync(syncId);
           failedSyncKeyRef.current = syncId;
           setSessionSync({ phase: 'error', stage: eventData.stage || 'failed', error: eventData.error || null, progress: 0 });
+          setIsPostQrSyncing(false);
           setIsSyncingChats(false);
           activeSyncIdRef.current = null;
           // A failed job is a real failure, never a hidden one. Re-ask the gate so
@@ -2886,22 +2900,21 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     setHubTab('conversations');
     setIsPostQrSyncing(true);
     setSyncGateDismissed(false);
+    setSessionSync({
+      phase: 'syncing',
+      stage: 'starting',
+      progress: 5,
+      chats_synced: 0,
+      contacts_synced: 0,
+      messages_synced: 0,
+      started_at: new Date().toISOString(),
+      completed_at: null,
+    });
     void fetchSessions(true);
     onRefreshStats();
-    // Faz 6 (PHASE-17 cache-first): QR sonrasi ONCE DB'deki kalici sohbet
-    // snapshot'i aninda yuklenir (reconnect'te kullanici 2-3 sn'de listeyi
-    // gorur); gercek zamanli tazeleme WS bootstrap/chats_snapshot olaylariyla
-    // ve job ile arkadan gelir. Sahte veri yok — yalnizca kalici gercek satirlar.
     loadConversations(true);
-    // Faz 7/11: QR sonrasi initial-sync hemen izlenmeye baslanir — devam eden
-    // job varsa GET /sync/job ile benimsenir, ilerleme WS olaylarinda akar.
     refreshSyncStatus();
-    // Faz 4: tek-authority loading gate de ayni anda beslenir (avatar sayaclari
-    // dahil); `ready` aninda hook otomatik gecisi tetikler.
     void refreshLoadingGate();
-    // Backend session_connected aninda promote_ephemeral_pairing sonrasi
-    // _schedule_initial_sync tetikler. UI tarafinda yaris durumunu onlemek icin
-    // fetchSessions ile bagli oturumun DB commit'i teyit edilir, ardindan sync tetiklenir.
     setTimeout(() => {
       void fetchSessions(true).then((latest) => {
         const hasConnected = Array.isArray(latest) && latest.some((s: any) => s.status === 'CONNECTED');
@@ -2909,7 +2922,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
           void handleSyncChats();
         }
       });
-    }, 1200);
+    }, 400);
   }, [fetchSessions, onRefreshStats, refreshSyncStatus, loadConversations, handleSyncChats, refreshLoadingGate]);
 
   const handleOpenQrConnect = useCallback(() => {

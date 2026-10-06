@@ -679,7 +679,7 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
         setPairingLifecycle('CONNECTED');
         setTimeout(() => {
           if (isMountedRef.current) onClose();
-        }, 1500);
+        }, 400);
       }
 
       // 3/4. Disconnect vs Logged-Out.
@@ -753,7 +753,7 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
               if (onSuccessRef.current) onSuccessRef.current({ id: res.session_id, phone_number: res.phone } as any);
               setTimeout(() => {
                 if (isMountedRef.current) onClose();
-              }, 1500);
+              }, 400);
             } else if (res.status === 'CONNECTING') {
               setPairingLifecycle('PAIRING_IN_PROGRESS');
               setModalState('CONNECTING');
@@ -791,7 +791,7 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
               if (onSuccessRef.current) onSuccessRef.current({ id: sid, phone_number: res.phone } as any);
               setTimeout(() => {
                 if (isMountedRef.current) onClose();
-              }, 1500);
+              }, 400);
             } else if (res.status === 'CONNECTING') {
               setModalState('CONNECTING');
             } else if (res.qr_code && res.qr_code !== qrCode) {
