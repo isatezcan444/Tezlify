@@ -367,9 +367,7 @@ function mapMessage(m: BackendMessage, convId: number): Message {
   // başlığı taşıyamaz, bu yüzden backend'in kabul ettiği ?token= sorgu
   // parametresi eklenir. WhatsApp Web paritesi: medya her zaman kimlikli
   // URL'den gelir; tokensiz URL 401'e düşer ve balon boş kalır.
-  const targetMediaId =
-    m.media_id ||
-    (m.message_type && m.message_type !== 'TEXT' && m.wa_message_id ? m.wa_message_id : undefined);
+  const targetMediaId = m.media_id;
 
   const mediaUrl = m.media_url || (targetMediaId
     ? (() => {
@@ -392,7 +390,7 @@ function mapMessage(m: BackendMessage, convId: number): Message {
     message_type: (m.message_type as Message['message_type']) || 'TEXT',
     status: (m.status as Message['status']) || 'RECEIVED',
     body: m.body ?? undefined,
-    media_id: m.media_id ?? (m.message_type !== 'TEXT' && m.wa_message_id ? m.wa_message_id : undefined),
+    media_id: m.media_id ?? undefined,
     media_mime_type: m.media_mime_type ?? undefined,
     media_filename: m.media_filename ?? undefined,
     media_caption: m.media_caption ?? undefined,

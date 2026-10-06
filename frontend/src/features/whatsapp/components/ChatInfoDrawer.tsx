@@ -757,7 +757,7 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
                   {mediaItems.map((m) => {
                     const rawSrc = resolveMediaUrl(
                       m.media_url ||
-                      (m.media_id ? `/api/v1/whatsapp/media/${m.media_id}` : (m.wa_message_id ? `/api/v1/whatsapp/media/${m.wa_message_id}` : undefined))
+                      (m.media_id ? `/api/v1/whatsapp/media/${m.media_id}` : undefined)
                     );
                     const isVideo = (m.message_type || '').toUpperCase() === 'VIDEO' || (m.media_mime_type || '').includes('video');
                     return (
@@ -808,7 +808,7 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
                     const { Icon, tone } = resolveDocVisual(m.media_filename, m.media_mime_type);
                     const rawSrc = resolveMediaUrl(
                       m.media_url ||
-                      (m.media_id ? `/api/v1/whatsapp/media/${m.media_id}` : (m.wa_message_id ? `/api/v1/whatsapp/media/${m.wa_message_id}` : undefined))
+                      (m.media_id ? `/api/v1/whatsapp/media/${m.media_id}` : undefined)
                     );
                     return (
                       <div

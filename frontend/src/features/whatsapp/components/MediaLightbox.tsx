@@ -64,9 +64,7 @@ export const MediaLightbox: React.FC<MediaLightboxProps> = ({
 
   const handleClose = () => {
     setIsClosing(true);
-    setTimeout(() => {
-      onClose();
-    }, 200);
+    onClose();
   };
 
   // Reset state on open or src change

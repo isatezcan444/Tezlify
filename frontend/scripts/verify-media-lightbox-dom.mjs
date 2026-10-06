@@ -58,9 +58,10 @@ try {
       `import { createRoot } from 'react-dom/client';`,
       `import { act } from 'react';`,
       `import { I18nProvider } from '${SRC}/context/I18nContext';`,
+      `import { ToastProvider } from '${SRC}/context/ToastContext';`,
       `import { MediaLightbox } from '${SRC}/features/whatsapp/components/MediaLightbox';`,
       `import { ChatBubble } from '${SRC}/features/whatsapp/components/ChatBubble';`,
-      `export { React, act, createRoot, I18nProvider, MediaLightbox, ChatBubble };`,
+      `export { React, act, createRoot, I18nProvider, ToastProvider, MediaLightbox, ChatBubble };`,
     ].join('\n'),
     'utf8',
   );
@@ -82,7 +83,7 @@ try {
     logLevel: 'silent',
   });
 
-  const { React, act, createRoot, I18nProvider, MediaLightbox, ChatBubble } = await import(out);
+  const { React, act, createRoot, I18nProvider, ToastProvider, MediaLightbox, ChatBubble } = await import(out);
   const h = React.createElement;
 
   let passed = 0;
@@ -109,7 +110,7 @@ try {
     const root = createRoot(host);
     roots.add(root);
     await act(async () => {
-      root.render(h(I18nProvider, null, element));
+      root.render(h(I18nProvider, null, h(ToastProvider, null, element)));
     });
     return { host, root };
   };
@@ -150,8 +151,8 @@ try {
     assert.ok(closed, 'Escape key must trigger onClose');
   });
 
-  // Test 2: ChatBubble media resolution fallback with wa_message_id
-  await check('ChatBubble resolves media URL from wa_message_id when media_id is null', async () => {
+  // Test 2: ChatBubble media resolution with retry when media_id is null
+  await check('ChatBubble surfaces retry button when media_id is null and resolves on click', async () => {
     const mediaMsg = {
       id: 101,
       conversation_id: 1,
@@ -171,8 +172,14 @@ try {
       })
     );
 
+    const retryBtn = host.querySelector('button');
+    assert.ok(retryBtn, 'ChatBubble must render a retry button when media_id is null');
+    await act(async () => {
+      retryBtn.click();
+    });
+
     const img = host.querySelector('img');
-    assert.ok(img, 'ChatBubble must render an <img> tag for IMAGE type with wa_message_id');
+    assert.ok(img, 'ChatBubble must render an <img> tag after retry click');
     assert.ok(
       img.src.includes('wamid_sample_12345'),
       `Image src must resolve with wa_message_id endpoint, got ${img.src}`
@@ -187,7 +194,7 @@ try {
       direction: 'INBOUND',
       message_type: 'IMAGE',
       status: 'READ',
-      wa_message_id: 'broken_media_id',
+      media_id: 'broken_media_id',
       created_at: new Date().toISOString(),
     };
 

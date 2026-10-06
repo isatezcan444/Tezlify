@@ -116,6 +116,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
   const [reacting, setReacting] = useState(false);
   const [imageLoadError, setImageLoadError] = useState(false);
   const [imageLoaded, setImageLoaded] = useState(false);
+  const [videoLoadError, setVideoLoadError] = useState(false);
   const [mediaRetryTs, setMediaRetryTs] = useState<number | null>(null);
   const [copied, setCopied] = useState(false);
   const [isStarred, setIsStarred] = useState<boolean>(() => isMessageStarred(message.id));
@@ -648,6 +649,19 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                   <ImageIcon className="w-10 h-10 mb-2 opacity-60" />
                   <span className="text-[11px] font-bold">{t('leads.imagePreview')}</span>
                   <span className="text-[9px] opacity-70 font-mono mt-0.5">{message.media_mime_type || 'image/jpeg'}</span>
+                  {message.wa_message_id && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setImageLoadError(false);
+                        setMediaRetryTs(Date.now());
+                      }}
+                      className="mt-2 px-2.5 py-1 text-[10px] font-semibold rounded bg-[#00a884] hover:bg-[#009272] text-white transition-colors cursor-pointer"
+                    >
+                      {t('whatsapp.mediaRetry')}
+                    </button>
+                  )}
                 </div>
               )}
             </div>
@@ -686,6 +700,18 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                     <span className="text-[11px] font-bold block">{t('leads.voiceMessage')}</span>
                     <span className="text-[9px] font-mono text-slate-400">{message.media_mime_type || 'audio/ogg'}</span>
                   </div>
+                  {message.wa_message_id && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setMediaRetryTs(Date.now());
+                      }}
+                      className="text-[10px] px-2 py-0.5 rounded bg-emerald-600 hover:bg-emerald-700 text-white transition-colors shrink-0 cursor-pointer"
+                    >
+                      {t('whatsapp.mediaRetry')}
+                    </button>
+                  )}
                 </div>
               )}
               {message.media_caption && (
@@ -732,6 +758,18 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                   <span className="text-[11px] font-bold block">{t('leads.voiceMessage')}</span>
                   <span className="text-[9px] font-mono text-slate-400">{message.media_mime_type || 'audio/ogg'}</span>
                 </div>
+                {message.wa_message_id && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setMediaRetryTs(Date.now());
+                    }}
+                    className="text-[10px] px-2 py-0.5 rounded bg-emerald-600 hover:bg-emerald-700 text-white transition-colors shrink-0 cursor-pointer"
+                  >
+                    {t('whatsapp.mediaRetry')}
+                  </button>
+                )}
               </div>
             )}
           </div>
@@ -745,7 +783,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
         return (
           <div className="space-y-2 w-[260px] max-w-full">
             <div className="relative group rounded-xl overflow-hidden bg-black/40 border border-black/5 dark:border-white/10 w-full h-[180px]">
-              {videoSrc ? (
+              {videoSrc && !videoLoadError ? (
                 <>
                   <video
                     controls
@@ -753,6 +791,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                     playsInline
                     src={videoSrc}
                     className="w-full h-full object-cover"
+                    onError={() => setVideoLoadError(true)}
                   />
                   <button
                     type="button"
@@ -767,11 +806,40 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                     <Eye className="w-4 h-4" />
                   </button>
                 </>
+              ) : videoLoadError ? (
+                <div className="w-full h-full flex flex-col items-center justify-center p-4 text-center bg-slate-200/50 dark:bg-white/[0.05]">
+                  <Video className="w-8 h-8 mb-1.5 text-rose-500/80" />
+                  <span className="text-[11px] font-bold text-slate-700 dark:text-slate-300">{t('whatsapp.mediaLoadFailed')}</span>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setVideoLoadError(false);
+                      setMediaRetryTs(Date.now());
+                    }}
+                    className="mt-2 px-2.5 py-1 text-[10px] font-semibold rounded bg-[#00a884] hover:bg-[#009272] text-white transition-colors cursor-pointer"
+                  >
+                    {t('whatsapp.mediaRetry')}
+                  </button>
+                </div>
               ) : (
                 <div className="w-full h-full flex flex-col items-center justify-center p-4 text-slate-500 dark:text-slate-400 bg-slate-200/50 dark:bg-white/[0.05]">
                   <Video className="w-8 h-8 mx-auto text-[#7367F0] mb-1.5" />
                   <span className="text-xs font-bold block">{t('leads.videoMessage')}</span>
                   <span className="text-[10px] text-slate-400 font-mono">{message.media_mime_type || 'video/mp4'}</span>
+                  {message.wa_message_id && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setVideoLoadError(false);
+                        setMediaRetryTs(Date.now());
+                      }}
+                      className="mt-2 px-2.5 py-1 text-[10px] font-semibold rounded bg-[#00a884] hover:bg-[#009272] text-white transition-colors cursor-pointer"
+                    >
+                      {t('whatsapp.mediaRetry')}
+                    </button>
+                  )}
                 </div>
               )}
             </div>
