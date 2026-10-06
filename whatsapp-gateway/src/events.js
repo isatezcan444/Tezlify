@@ -10,7 +10,7 @@ export function createEventBridge({ backendWsUrl, sessionManager, eventOutbox = 
 
   // QR-window (ephemeral) event buffer. See `bufferForPairing`.
   const pairingBuffers = new Map();
-  const pairingCapacity = 200;
+  const pairingCapacity = 2000;
   const pairingSessionCap = 20;
   let backendSocket = null;
   let reconnectTimer = null;

@@ -102,10 +102,20 @@ async def find_whatsapp_conversation(
 ) -> Optional[Conversation]:
     """JID'e karsilik gelen MEVCUT WhatsApp sohbeti; yoksa None (yaratmaz).
 
-    Durum olaylari (presence/read/ack) icin kullanilir: bu olaylar sohbet
+    Durum olaylari (presence/read/ack/delete) icin kullanilir: bu olaylar sohbet
     listesine yeni satir EKLEYEMEZ.
     """
-    phone = contact_phone_for_jid(jid)
+    lookup_jid = jid
+    if jid and (jid.endswith("@lid") or ("@" not in jid and len(jid) > 14)):
+        from backend.app.services.whatsapp.repositories.lid_mappings import resolve_lid_phone
+        mapped = await resolve_lid_phone(
+            db,
+            jid if "@" in jid else f"{jid}@lid",
+            user_id=user_id,
+        )
+        if mapped:
+            lookup_jid = mapped
+    phone = contact_phone_for_jid(lookup_jid)
     contact_id = await db.scalar(
         select(Contact.id).where(
             Contact.phone_e164 == phone,

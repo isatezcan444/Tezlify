@@ -244,7 +244,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
       (message.media_id
         ? `/api/v1/whatsapp/media/${message.media_id}`
         : undefined) ||
-      (message.message_type !== 'TEXT' && message.wa_message_id
+      (mediaRetryTs && message.message_type !== 'TEXT' && message.wa_message_id
         ? `/api/v1/whatsapp/media/${message.wa_message_id}`
         : undefined);
     const resolved = resolveMediaUrl(raw);
@@ -439,8 +439,6 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
         ? resolveMediaUrl(quoted.media_url)
         : quoted.media_id
         ? resolveMediaUrl(`/api/v1/whatsapp/media/${quoted.media_id}`)
-        : quoted.stanza_id
-        ? resolveMediaUrl(`/api/v1/whatsapp/media/${quoted.stanza_id}`)
         : null);
     const mType = (quoted.message_type || 'TEXT').toUpperCase();
 

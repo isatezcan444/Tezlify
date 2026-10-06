@@ -233,9 +233,11 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isOpen, onClose, lightboxSrc, docViewerSrc]);
 
-  // Extract media items from messages
+  // Extract media items from messages (only those with available media attachments)
   const mediaItems = useMemo(() => {
     return messages.filter((m) => {
+      const hasMedia = Boolean(m.media_id || m.media_url);
+      if (!hasMedia) return false;
       const type = (m.message_type || '').toUpperCase();
       const mime = (m.media_mime_type || '').toLowerCase();
       return (
@@ -247,9 +249,11 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
     });
   }, [messages]);
 
-  // Extract documents from messages
+  // Extract documents from messages (only those with available media attachments)
   const documentItems = useMemo(() => {
     return messages.filter((m) => {
+      const hasMedia = Boolean(m.media_id || m.media_url);
+      if (!hasMedia) return false;
       const type = (m.message_type || '').toUpperCase();
       const mime = (m.media_mime_type || '').toLowerCase();
       return (
