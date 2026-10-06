@@ -154,8 +154,27 @@ export function lookupRawMessage(store, key) {
 }
 
 export function messageTimestampMs(value) {
-  const seconds = Number(value);
-  return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : Date.now();
+  const sec = toPositiveSeconds(value);
+  return sec !== null ? sec * 1000 : Date.now();
+}
+
+/**
+ * Safely extracts milliseconds timestamp from a message record.
+ * Handles timestamp_s, created_at, and numeric id.
+ */
+export function getMessageEpochMs(m) {
+  if (!m) return 0;
+  if (typeof m.timestamp_s === 'number' && Number.isFinite(m.timestamp_s) && m.timestamp_s > 0) {
+    return m.timestamp_s * 1000;
+  }
+  if (m.created_at) {
+    const t = new Date(m.created_at).getTime();
+    if (Number.isFinite(t) && t > 0) return t;
+  }
+  if (typeof m.id === 'number' && Number.isFinite(m.id) && m.id > 0) {
+    return m.id;
+  }
+  return 0;
 }
 
 /**

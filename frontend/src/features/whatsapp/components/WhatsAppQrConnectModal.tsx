@@ -734,10 +734,9 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
 
     if (shouldPoll) {
       fallbackPollRef.current = setInterval(async () => {
+        const sid = activeSessionIdRef.current || sessionId;
+        const pToken = pairTokenRef.current || pairToken;
         try {
-          const sid = activeSessionIdRef.current || sessionId;
-          const pToken = pairTokenRef.current || pairToken;
-
           if (pToken) {
             const res = await WhatsAppRepository.getPairingQr(pToken);
             if (!isMountedRef.current) return;
@@ -815,6 +814,16 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
             }
           }
         } catch (pollErr: any) {
+          if (pToken && pollErr?.status === 404) {
+            // Ephemeral token was consumed (e.g. promoted via WS/event) or expired.
+            if (fallbackPollRef.current) {
+              clearInterval(fallbackPollRef.current);
+              fallbackPollRef.current = null;
+            }
+            pairTokenRef.current = null;
+            setPairToken(null);
+            return;
+          }
           // Both 404 and 502 are TRANSIENT here, not fatal. Two real causes:
           // 404 — the gateway is mid-rebuild after WhatsApp's restartRequired
           // (515), so GET /sessions/{id}/qr does not exist for those seconds.

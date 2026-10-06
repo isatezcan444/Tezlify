@@ -27,7 +27,14 @@ import {
   archivedPatch,
 } from '../utils/whatsapp-formatting.js';
 import { summarizeWaMessage, resolveDownloadableMedia } from '../messages/message-classifier.js';
-import { createSessionStore, messageTimestampMs, resolveChatActivitySeconds, rememberRawMessage } from '../messages/message-store.js';
+import {
+  createSessionStore,
+  messageTimestampMs,
+  toPositiveSeconds,
+  getMessageEpochMs,
+  resolveChatActivitySeconds,
+  rememberRawMessage,
+} from '../messages/message-store.js';
 import { safeWriteEncrypted, setCompanionActive } from './socket-connector.js';
 
 export function resolveHistoryWaitersForChunk({
@@ -40,7 +47,9 @@ export function resolveHistoryWaitersForChunk({
   for (const [flightKey, waiter] of pendingHistoryWaiters.entries()) {
     if (waiter.sessionId !== sessionId || !touchedChatKeys.has(waiter.key)) continue;
     const chatMsgs = messagesByChat.get(waiter.key) || [];
-    const matching = waiter.before ? chatMsgs.filter((m) => m.id < waiter.before) : chatMsgs;
+    const matching = waiter.before
+      ? chatMsgs.filter((m) => getMessageEpochMs(m) < Number(waiter.before))
+      : chatMsgs;
     waiter.resolve(matching);
     pendingHistoryWaiters.delete(flightKey);
     inFlightHistoryFetches.delete(flightKey);
@@ -682,8 +691,9 @@ export function bindSocketEvents({
       const lidHold = isLidJid(key);
       const existing = chats.get(key) || {};
       const contact = contacts.get(key);
-      const updTs = update.lastMessage?.messageTimestamp
-        ? new Date(messageTimestampMs(update.lastMessage.messageTimestamp)).toISOString()
+      const rawUpdTs = update.lastMessage?.messageTimestamp || update.conversationTimestamp;
+      const updTs = rawUpdTs
+        ? new Date(messageTimestampMs(rawUpdTs)).toISOString()
         : null;
       const updPreview = update.lastMessage
         ? (() => {
@@ -719,7 +729,11 @@ export function bindSocketEvents({
               rawContent?.stickerMessage
             );
             if (!hasMedia) {
-              const synth = historyMessageToRecord(update.lastMessage, key);
+              const msgPayload = {
+                ...update.lastMessage,
+                messageTimestamp: update.lastMessage.messageTimestamp || update.conversationTimestamp,
+              };
+              const synth = historyMessageToRecord(msgPayload, key);
               if (synth) {
                 const next = [...list, synth];
                 if (next.length > 2000) next.splice(0, next.length - 2000);
@@ -822,7 +836,7 @@ export function bindSocketEvents({
         const record = historyMessageToRecord(msg, key);
         if (!record) continue;
         list.push(record);
-        list.sort((a, b) => (a.id || 0) - (b.id || 0));
+        list.sort((a, b) => (getMessageEpochMs(a) || 0) - (getMessageEpochMs(b) || 0));
         if (list.length > 2000) list.splice(0, list.length - 2000);
         messagesByChat.set(key, list);
         storedMessages += 1;
@@ -922,7 +936,7 @@ export function bindSocketEvents({
         const contact = contacts.get(key);
         const list = messagesByChat.get(key) || [];
         const newest = list.reduce(
-          (acc, m) => (acc && Number(acc.id) >= Number(m.id) ? acc : m),
+          (acc, m) => (acc && getMessageEpochMs(acc) >= getMessageEpochMs(m) ? acc : m),
           null,
         );
         // WhatsApp Web orders the chat list by the ABSOLUTE last message in the

@@ -956,9 +956,44 @@ class WhatsAppSyncOrchestrator:
             if ts is not None:
                 conv.last_message_at = ts
             fixed += 1
+
+        # Faz 18: Zehirli zaman damgalari onarimi (Poisoned timestamp reconciliation)
+        # Eger bir sohbetin `last_message_at` degeri, o sohbetteki en yeni mesajin
+        # zaman damgasindan buyukse (ornegin sync sirasinda Date.now() ile sismisse),
+        # damgayi gercek en yeni mesajin zaman damgasina esitle.
+        all_conv_res = await db.execute(
+            select(Conversation)
+            .where(
+                get_user_filter(Conversation.user_id, user_id),
+                Conversation.channel == "WHATSAPP",
+                Conversation.last_message_at.is_not(None),
+            )
+        )
+        all_convs = all_conv_res.scalars().all()
+        if all_convs:
+            all_cids = [c.id for c in all_convs]
+            newest_msg_subq = (
+                select(
+                    Message.conversation_id,
+                    func.max(_msg_time_col()).label("newest_ts"),
+                )
+                .where(Message.conversation_id.in_(all_cids))
+                .group_by(Message.conversation_id)
+            )
+            subq_res = await db.execute(newest_msg_subq)
+            newest_map = {row.conversation_id: row.newest_ts for row in subq_res.all()}
+            for conv in all_convs:
+                newest_ts = newest_map.get(conv.id)
+                if newest_ts is not None:
+                    c_ts = _as_naive_utc(conv.last_message_at)
+                    t_ts = _as_naive_utc(newest_ts)
+                    if c_ts and t_ts and c_ts > t_ts:
+                        conv.last_message_at = t_ts
+                        fixed += 1
+
         if fixed:
             await db.flush()
-            logger.info("Faz 10 preview onarimi: %d sohbet guncellendi (owner=%s)", fixed, user_id)
+            logger.info("Faz 10/18 preview ve zaman damgasi onarimi: %d sohbet guncellendi (owner=%s)", fixed, user_id)
         return fixed
 
     async def _repair_phone_sender_names(self, db: AsyncSession, user_id: str) -> int:
@@ -1584,6 +1619,9 @@ class WhatsAppSyncOrchestrator:
                                         existing_msg.read_at = _as_naive_utc(_parse_dt(gm.get("created_at"))) or utc_now_naive()
                                 elif gw_status_str == "DELIVERED" and existing_msg.status == ConversationMessageStatus.SENT:
                                     existing_msg.status = ConversationMessageStatus.DELIVERED
+                            gw_msg_ts = _as_naive_utc(_parse_dt(gm.get("created_at")))
+                            if gw_msg_ts and existing_msg.external_timestamp and existing_msg.external_timestamp != gw_msg_ts:
+                                existing_msg.external_timestamp = gw_msg_ts
                             if rx_list and rx_list[-1].get("emoji"):
                                 last_rx = rx_list[-1]
                                 summary = _format_reaction_preview(
@@ -2702,6 +2740,9 @@ class WhatsAppSyncOrchestrator:
                                 existing_msg.read_at = _as_naive_utc(_parse_dt(gm.get("created_at"))) or utc_now_naive()
                         elif gw_status_str == "DELIVERED" and existing_msg.status == ConversationMessageStatus.SENT:
                             existing_msg.status = ConversationMessageStatus.DELIVERED
+                    gw_msg_ts = _as_naive_utc(_parse_dt(gm.get("created_at")))
+                    if gw_msg_ts and existing_msg.external_timestamp and existing_msg.external_timestamp != gw_msg_ts:
+                        existing_msg.external_timestamp = gw_msg_ts
                     if rx_list and rx_list[-1].get("emoji"):
                         last_rx = rx_list[-1]
                         summary = _format_reaction_preview(

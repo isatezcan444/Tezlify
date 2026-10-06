@@ -73,6 +73,8 @@ import {
   rememberRawMessage,
   lookupRawMessage,
   messageTimestampMs,
+  toPositiveSeconds,
+  getMessageEpochMs,
 } from './messages/message-store.js';
 
 import { createMediaStore } from './media/media-store.js';
@@ -978,12 +980,15 @@ export function createSessionManager({
 
       if (!targetId) {
         const list = store.messagesByChat.get(key) || [];
-        const candidates = before ? list.filter((m) => m.id < before) : list;
+        const beforeMs = before != null && !Number.isNaN(Number(before)) ? Number(before) : null;
+        const candidates = beforeMs !== null
+          ? list.filter((m) => (getMessageEpochMs(m) || 0) < beforeMs)
+          : list;
         const oldest = candidates[0] || list[0];
         if (oldest) {
           targetId = oldest.wa_message_id;
           targetFromMe = oldest.direction === 'OUTBOUND' || oldest.from_me;
-          targetTs = oldest.timestamp_s ? oldest.timestamp_s * 1000 : (oldest.id ? Number(oldest.id) : Date.now());
+          targetTs = oldest.timestamp_s ? oldest.timestamp_s * 1000 : (getMessageEpochMs(oldest) || Date.now());
         }
       }
 
@@ -1110,16 +1115,19 @@ export function createSessionManager({
             count: limit,
             oldestMsgId: oldestMsgId || list[0]?.wa_message_id,
             oldestMsgFromMe: oldestMsgFromMe !== undefined ? oldestMsgFromMe : (list[0]?.direction === 'OUTBOUND' || list[0]?.from_me),
-            oldestMsgTimestampMs: oldestMsgTimestampMs || (list[0]?.timestamp_s ? list[0].timestamp_s * 1000 : undefined),
+            oldestMsgTimestampMs: oldestMsgTimestampMs || (list[0]?.timestamp_s ? list[0].timestamp_s * 1000 : (getMessageEpochMs(list[0]) || undefined)),
             before,
             timeoutMs,
           });
           providerStatus = histResult?.status || 'OK';
           list = store.messagesByChat.get(key) || [];
           if (before) {
-            list = list.filter((m) => m.id < before);
+            const beforeMs = Number(before);
+            if (Number.isFinite(beforeMs)) {
+              list = list.filter((m) => getMsgTime(m) < beforeMs);
+            }
           }
-          list.sort((a, b) => (a.id || 0) - (b.id || 0));
+          list.sort((a, b) => getMsgTime(a) - getMsgTime(b));
         }
       }
 
@@ -1928,8 +1936,10 @@ export function createSessionManager({
         }
       }
 
-      const ts = messageTimestampMs(msg.messageTimestamp);
-      const timestampSeconds = Number(msg.messageTimestamp);
+      const chatConvTs = session?.store?.chats?.get(key)?.conversationTimestamp || session?.store?.chats?.get(key)?.lastMsgTimestamp;
+      const sec = toPositiveSeconds(msg.messageTimestamp) ?? toPositiveSeconds(msg.key?.timestamp) ?? toPositiveSeconds(chatConvTs);
+      const ts = sec !== null ? sec * 1000 : messageTimestampMs(msg.messageTimestamp);
+      const timestampSeconds = sec;
       const record = {
         id: ts,
         timestamp_s: Number.isFinite(timestampSeconds) && timestampSeconds > 0 ? timestampSeconds : null,
@@ -3024,8 +3034,10 @@ export function createSessionManager({
       const text = this._formatMentions(session, rawText, contextInfo);
       const mediaType = classifyMessageType(content);
       if (!hasRecognizedContent(content) && !text && !stubText) return null;
-      const ts = messageTimestampMs(msg.messageTimestamp);
-      const timestampSeconds = Number(msg.messageTimestamp);
+      const chatConvTs = session?.store?.chats?.get(key)?.conversationTimestamp || session?.store?.chats?.get(key)?.lastMsgTimestamp;
+      const sec = toPositiveSeconds(msg.messageTimestamp) ?? toPositiveSeconds(msg.key?.timestamp) ?? toPositiveSeconds(chatConvTs);
+      const ts = sec !== null ? sec * 1000 : messageTimestampMs(msg.messageTimestamp);
+      const timestampSeconds = sec;
       const rawMedia =
         content.imageMessage ||
         content.videoMessage ||
