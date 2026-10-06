@@ -1240,6 +1240,25 @@ class WhatsAppSyncOrchestrator:
                     by_contact[contact.id] = conv
             out.append((jid_str, contact, conv))
         if pending_conversations:
+            existing_cids = {c.contact_id for c in pending_conversations if c.contact_id is not None}
+            if existing_cids:
+                check_filters = [
+                    Conversation.contact_id.in_(existing_cids),
+                    Conversation.channel == "WHATSAPP",
+                    get_user_filter(Conversation.user_id, user_id),
+                ]
+                if session_id is not None:
+                    check_filters.append(Conversation.session_id == session_id)
+                c_res = await db.execute(select(Conversation).where(*check_filters))
+                found_convs = c_res.scalars().all()
+                if found_convs:
+                    found_map = {int(c.contact_id): c for c in found_convs if c.contact_id is not None}
+                    by_contact.update(found_map)
+                    pending_conversations = [
+                        c for c in pending_conversations
+                        if c.contact_id not in found_map
+                    ]
+        if pending_conversations:
             try:
                 async with db.begin_nested():
                     for conv in pending_conversations:
@@ -2597,12 +2616,14 @@ class WhatsAppSyncOrchestrator:
             logger.warning("On-demand hydrasyon basarisiz (conv=%s): %s", conv.id, exc)
             if sid_str:
                 try:
+                    from backend.app.services.whatsapp.exceptions import WhatsAppHistoryTimeout
+                    is_to = isinstance(exc, WhatsAppHistoryTimeout) or "ReadTimeout" in str(exc) or "timeout" in str(exc).lower()
                     await record_on_demand_provider_result(
                         db,
                         session_id=sid_str,
                         jid=jid,
                         requested_count=limit,
-                        provider_status="ERROR",
+                        provider_status="TIMEOUT" if is_to else "ERROR",
                         error_msg=str(exc),
                     )
                     await db.commit()

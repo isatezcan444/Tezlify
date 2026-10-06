@@ -268,10 +268,16 @@ async def get_messages(
     if oldest_msg_ts_ms is not None:
         params["oldest_msg_timestamp_ms"] = int(oldest_msg_ts_ms)
     # Budget the gateway may spend waiting for the phone to answer the history
-    # PDO. Omitted -> the gateway's own default (~15 s) applies.
+    # PDO. Omitted -> the gateway's own default (~12 s) applies.
     if timeout_ms is not None:
         params["timeout_ms"] = int(timeout_ms)
-    return await _request("GET", f"{_s(gateway_id)}/conversations/{jid}/messages", params=params)
+    try:
+        return await _request("GET", f"{_s(gateway_id)}/conversations/{jid}/messages", params=params)
+    except WhatsAppGatewayError as exc:
+        if fetch_provider and "ReadTimeout" in str(exc):
+            from backend.app.services.whatsapp.exceptions import WhatsAppHistoryTimeout
+            raise WhatsAppHistoryTimeout(f"Gateway read timeout while fetching provider history for {jid}: {exc}") from exc
+        raise
 
 
 async def request_older_history(
@@ -295,7 +301,13 @@ async def request_older_history(
         payload["before"] = int(before)
     if timeout_ms is not None:
         payload["timeout_ms"] = int(timeout_ms)
-    return await _request("POST", f"{_s(gateway_id)}/conversations/{jid}/history", json=payload)
+    try:
+        return await _request("POST", f"{_s(gateway_id)}/conversations/{jid}/history", json=payload)
+    except WhatsAppGatewayError as exc:
+        if "ReadTimeout" in str(exc):
+            from backend.app.services.whatsapp.exceptions import WhatsAppHistoryTimeout
+            raise WhatsAppHistoryTimeout(f"Gateway read timeout while requesting history for {jid}: {exc}") from exc
+        raise
 
 
 async def list_all_messages(

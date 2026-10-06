@@ -900,12 +900,14 @@ async def _hydrate_or_tolerate_provider_timeout(
             oldest_msg_from_me=oldest_msg_from_me,
             provider_timeout_ms=provider_timeout_ms,
         )
-    except WhatsAppHistoryTimeout:
+    except (WhatsAppHistoryTimeout, gw.WhatsAppGatewayError) as exc:
+        if isinstance(exc, gw.WhatsAppGatewayError) and "ReadTimeout" not in str(exc) and "timeout" not in str(exc).lower():
+            raise
         if not have_rows:
             raise
         logger.warning(
-            "Provider history timed out (conv=%s); serving local rows instead of failing",
-            conv.id,
+            "Provider history timed out (conv=%s); serving local rows instead of failing: %s",
+            conv.id, exc,
         )
         return []
 
@@ -1176,6 +1178,11 @@ async def get_messages(
             except Exception as exc:
                 if not new_future.done():
                     new_future.set_exception(exc)
+                    # Mark exception as retrieved to avoid unretrieved Future warnings when no other coroutines await it
+                    try:
+                        new_future.exception()
+                    except Exception:
+                        pass
                 raise
             finally:
                 _in_flight_history_fetches.pop(flight_key, None)

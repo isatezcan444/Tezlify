@@ -893,11 +893,16 @@ def _handle_byte_range(
         headers["Content-Length"] = str(total_len)
         return Response(content=data, media_type=mime or "application/octet-stream", headers=headers)
 
+    MAX_RANGE_CHUNK = 2 * 1024 * 1024  # 2MB chunks for open-ended streaming
     raw_range = range_header.replace("bytes=", "").strip()
     parts = raw_range.split("-")
     try:
         start = int(parts[0]) if parts[0] else 0
-        end = int(parts[1]) if len(parts) > 1 and parts[1] else total_len - 1
+        if len(parts) > 1 and parts[1]:
+            end = int(parts[1])
+        else:
+            # Open-ended range like "bytes=0-": cap chunk size to MAX_RANGE_CHUNK
+            end = min(start + MAX_RANGE_CHUNK - 1, total_len - 1)
     except ValueError:
         headers["Content-Length"] = str(total_len)
         return Response(content=data, media_type=mime or "application/octet-stream", headers=headers)
@@ -932,7 +937,11 @@ async def get_media(
     except NoWhatsAppSession as exc:
         raise _no_session(exc) from exc
     except LookupError as exc:
-        raise _not_found(exc) from exc
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+            headers={"Cache-Control": "private, max-age=300"},
+        ) from exc
     except Exception as exc:
         raise _bad_gateway(exc) from exc
     headers = {}

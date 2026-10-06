@@ -9,9 +9,18 @@
 export function resolveMediaUrl(url?: string | null): string | undefined {
   if (!url) return undefined;
 
+  const trimmed = url.trim();
+  if (!trimmed) return undefined;
+
+  // Placeholder / invalid keywords must not be resolved to pseudo-endpoints
+  const lower = trimmed.toLowerCase();
+  if (['image', 'video', 'audio', 'document', 'file', 'null', 'undefined'].includes(lower)) {
+    return undefined;
+  }
+
   // Blob or Data URLs are already local and authenticated
-  if (url.startsWith('blob:') || url.startsWith('data:')) {
-    return url;
+  if (trimmed.startsWith('blob:') || trimmed.startsWith('data:')) {
+    return trimmed;
   }
 
   let envApiUrl = '';

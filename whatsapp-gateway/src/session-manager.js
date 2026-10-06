@@ -955,7 +955,7 @@ export function createSessionManager({
     async requestOlderHistory(
       sessionId,
       jid,
-      { count = 50, oldestMsgId, oldestMsgFromMe, oldestMsgTimestampMs, before, timeoutMs = 25000 } = {}
+      { count = 50, oldestMsgId, oldestMsgFromMe, oldestMsgTimestampMs, before, timeoutMs = 12000 } = {}
     ) {
       const session = this._requireSession(sessionId);
       const store = this._storeOf(session);
@@ -1066,7 +1066,7 @@ export function createSessionManager({
     async getMessages(
       sessionId,
       jid,
-      { limit = 50, before, fetchProvider = false, oldestMsgId, oldestMsgFromMe, oldestMsgTimestampMs, timeoutMs = 25000 } = {}
+      { limit = 50, before, fetchProvider = false, oldestMsgId, oldestMsgFromMe, oldestMsgTimestampMs, timeoutMs = 12000 } = {}
     ) {
       const session = this._requireSession(sessionId);
       const store = this._storeOf(session);
@@ -1590,10 +1590,18 @@ export function createSessionManager({
         strId = String(meta.waMessageId);
       }
 
+      if (!this._failedMediaCache) {
+        this._failedMediaCache = new Map();
+      }
+      const inFlightKey = `${sessionId || 'any'}:${strId}`;
+      const failedAt = this._failedMediaCache.get(inFlightKey);
+      if (failedAt && Date.now() - failedAt < 300000) {
+        return null;
+      }
+
       if (!this._inFlightMediaDownloads) {
         this._inFlightMediaDownloads = new Map();
       }
-      const inFlightKey = `${sessionId || 'any'}:${strId}`;
       if (this._inFlightMediaDownloads.has(inFlightKey)) {
         return this._inFlightMediaDownloads.get(inFlightKey);
       }
@@ -1633,6 +1641,13 @@ export function createSessionManager({
             if (stored?.media_id) {
               return mediaStore.getMediaPath(session.id, stored.media_id);
             }
+          }
+        }
+        this._failedMediaCache.set(inFlightKey, Date.now());
+        if (this._failedMediaCache.size > 2000) {
+          const now = Date.now();
+          for (const [k, ts] of this._failedMediaCache.entries()) {
+            if (now - ts > 300000) this._failedMediaCache.delete(k);
           }
         }
         return null;

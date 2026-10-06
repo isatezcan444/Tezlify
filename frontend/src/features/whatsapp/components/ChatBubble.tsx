@@ -434,7 +434,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
     const displayName = isSelfSender ? t('whatsapp.youLabel') : (quoted.sender_name || t('whatsapp.participantFallback'));
     const senderColorClass = isSelfSender ? 'text-[#00a884] dark:text-[#25D366]' : getSenderColorClass(displayName);
     const thumbSrc =
-      quoted.thumbnail ||
+      (quoted.thumbnail ? resolveMediaUrl(quoted.thumbnail) : undefined) ||
       (quoted.media_url
         ? resolveMediaUrl(quoted.media_url)
         : quoted.media_id

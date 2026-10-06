@@ -751,7 +751,10 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
               ) : (
                 <div className="grid grid-cols-3 gap-1.5" data-testid="drawer-media-grid">
                   {mediaItems.map((m) => {
-                    const rawSrc = m.media_id ? resolveMediaUrl(m.media_id) : `/api/v1/whatsapp/media/${m.wa_message_id}`;
+                    const rawSrc = resolveMediaUrl(
+                      m.media_url ||
+                      (m.media_id ? `/api/v1/whatsapp/media/${m.media_id}` : (m.wa_message_id ? `/api/v1/whatsapp/media/${m.wa_message_id}` : undefined))
+                    );
                     const isVideo = (m.message_type || '').toUpperCase() === 'VIDEO' || (m.media_mime_type || '').includes('video');
                     return (
                       <div
@@ -773,6 +776,9 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
                             src={rawSrc}
                             alt={m.media_filename || 'media'}
                             loading="lazy"
+                            onError={(e) => {
+                              e.currentTarget.style.display = 'none';
+                            }}
                             className="w-full h-full object-cover transition-transform group-hover:scale-105"
                           />
                         )}
@@ -796,7 +802,10 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
                 <div className="space-y-1.5" data-testid="drawer-docs-list">
                   {documentItems.map((m) => {
                     const { Icon, tone } = resolveDocVisual(m.media_filename, m.media_mime_type);
-                    const rawSrc = m.media_id ? resolveMediaUrl(m.media_id) : `/api/v1/whatsapp/media/${m.wa_message_id}`;
+                    const rawSrc = resolveMediaUrl(
+                      m.media_url ||
+                      (m.media_id ? `/api/v1/whatsapp/media/${m.media_id}` : (m.wa_message_id ? `/api/v1/whatsapp/media/${m.wa_message_id}` : undefined))
+                    );
                     return (
                       <div
                         key={m.id}
