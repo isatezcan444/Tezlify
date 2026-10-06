@@ -911,6 +911,9 @@ class WhatsAppSyncOrchestrator:
         for conv, phone in candidates:
             msgs = by_conv.get(conv.id) or []
             if not msgs:
+                if conv.last_message_at is not None:
+                    conv.last_message_at = None
+                    fixed += 1
                 continue
             newest = max(
                 msgs,

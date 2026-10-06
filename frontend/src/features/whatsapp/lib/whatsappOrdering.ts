@@ -52,6 +52,18 @@ export function compareMessagesChronological(a: Message, b: Message): number {
 export function getConversationActivityTimestamp(c: Partial<Conversation> | null | undefined): number {
   if (!c) return 0;
 
+  const count = typeof c.message_count === 'number' ? c.message_count : null;
+  const anyConv = c as Record<string, unknown>;
+  const rawPreview = typeof c.last_message_preview === 'string'
+    ? c.last_message_preview
+    : (typeof anyConv.last_message === 'string' ? anyConv.last_message : '');
+  const hasPreview = Boolean(rawPreview && rawPreview.trim());
+  const isNoMessages =
+    c.last_message_state === 'NO_MESSAGES' ||
+    (count === 0 && !hasPreview && c.last_message_state !== 'REPAIRING' && c.last_message_state !== 'LOADING');
+
+  if (isNoMessages) return 0;
+
   if (c.last_message_at) {
     const d = parseServerTime(c.last_message_at);
     if (d && !isNaN(d.getTime())) return d.getTime();

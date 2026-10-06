@@ -61,6 +61,7 @@ import {
   hasRecognizedContent,
   summarizeWaMessage,
   systemContentMarker,
+  formatMessageStub,
   buildMediaContent,
   extractLinkPreviewMetadata,
   extractQuotedMessageMetadata,
@@ -1837,7 +1838,8 @@ export function createSessionManager({
       }
       const contact = contacts.get(key);
       const isGroup = jid.includes('@g.us');
-      const rawText = msg.message?.conversation || msg.message?.extendedTextMessage?.text || msg.message?.imageMessage?.caption || msg.message?.videoMessage?.caption || msg.message?.documentMessage?.caption || '';
+      const stubText = formatMessageStub(msg, (jid) => this._resolveDisplayName(session, jid, null));
+      const rawText = msg.message?.conversation || msg.message?.extendedTextMessage?.text || msg.message?.imageMessage?.caption || msg.message?.videoMessage?.caption || msg.message?.documentMessage?.caption || stubText || '';
       const contextInfo = msg.message?.extendedTextMessage?.contextInfo || msg.message?.imageMessage?.contextInfo || msg.message?.videoMessage?.contextInfo || msg.message?.documentMessage?.contextInfo;
       const text = this._formatMentions(session, rawText, contextInfo);
       const mediaType = classifyMessageType(msg.message);
@@ -1913,13 +1915,13 @@ export function createSessionManager({
         timestamp_s: Number.isFinite(timestampSeconds) && timestampSeconds > 0 ? timestampSeconds : null,
         conversation_id: key,
         direction: fromMe ? 'OUTBOUND' : 'INBOUND',
-        message_type: mediaType,
+        message_type: mediaType || 'TEXT',
         status: resolveMessageStatus(msg, fromMe, msg.reactions),
-        body: text || '',
+        body: text || stubText || '',
         media_id: mediaInfo?.media_id || existingRecord?.media_id || null,
         media_mime_type: mediaInfo?.mime_type || existingRecord?.media_mime_type || null,
         media_filename: mediaInfo?.filename || existingRecord?.media_filename || null,
-        media_caption: text || existingRecord?.media_caption || null,
+        media_caption: (text || stubText) || existingRecord?.media_caption || null,
         native_link_preview: nativeLinkPreview,
         quoted_message: quotedMeta || null,
         wa_message_id: msg.key?.id || null,
@@ -1949,7 +1951,7 @@ export function createSessionManager({
       // gosterir VE backend'in aktivite damgasi kapisini tetikler.
       const chatPreview =
         buildChatPreview(record, isGroup) ||
-        normalizePreviewText('TEXT', systemContentMarker(msg) || '');
+        normalizePreviewText('TEXT', stubText || systemContentMarker(msg) || '');
       this._touchChat(session, key, chatPreview, record.created_at);
       // Only messages we actually PUBLISH may be counted. A held (LID) message
       // is not emitted at all, so counting it made this counter describe a
@@ -2985,12 +2987,14 @@ export function createSessionManager({
     _historyMessageToRecord(session, msg, key) {
       session = this._sess(session);
       const content = msg.message || {};
+      const stubText = formatMessageStub(msg, (jid) => this._resolveDisplayName(session, jid, null));
       const rawText =
         content.conversation ||
         content.extendedTextMessage?.text ||
         content.imageMessage?.caption ||
         content.videoMessage?.caption ||
         content.documentMessage?.caption ||
+        stubText ||
         '';
       const contextInfo =
         content.extendedTextMessage?.contextInfo ||
@@ -2999,7 +3003,7 @@ export function createSessionManager({
         content.documentMessage?.contextInfo;
       const text = this._formatMentions(session, rawText, contextInfo);
       const mediaType = classifyMessageType(content);
-      if (!hasRecognizedContent(content) && !text) return null;
+      if (!hasRecognizedContent(content) && !text && !stubText) return null;
       const ts = messageTimestampMs(msg.messageTimestamp);
       const timestampSeconds = Number(msg.messageTimestamp);
       const rawMedia =
@@ -3059,11 +3063,11 @@ export function createSessionManager({
         direction: msg.key?.fromMe ? 'OUTBOUND' : 'INBOUND',
         message_type: mediaType || 'TEXT',
         status: resolveMessageStatus(msg, Boolean(msg.key?.fromMe), reactions),
-        body: text || '',
+        body: text || stubText || '',
         media_id: mediaId,
         media_mime_type: mediaMime,
         media_filename: mediaFilename,
-        media_caption: text || null,
+        media_caption: (text || stubText) || null,
         quoted_message: quotedMeta || null,
         wa_message_id: waMsgId,
         sender_phone: msg.key?.fromMe ? 'ME' : (jidToPhone(msg.key?.participant || key) || key),

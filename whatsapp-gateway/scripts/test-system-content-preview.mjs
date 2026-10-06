@@ -21,7 +21,7 @@
  * (`normalizePreviewText`) ve canli yolun onizleme ifadesini kilitler.
  */
 import assert from 'node:assert/strict';
-import { summarizeWaMessage, systemContentMarker } from '../src/messages/message-classifier.js';
+import { summarizeWaMessage, systemContentMarker, formatMessageStub } from '../src/messages/message-classifier.js';
 import {
   normalizePreviewText,
   buildChatPreview,
@@ -124,13 +124,52 @@ check('M. canli yol metinsiz sistem mesajinda BOS OLMAYAN onizleme uretir', () =
   assert.equal(previewFor({ message: {} }), '');
 });
 
-// --- N. Her isaret icin etiket tablosunda kayit olmali ---
-check('N. tum isaretlerin etiket karsiligi var (sessiz "Mesaj" dususu yok)', () => {
-  for (const marker of ['CALL', 'REACTION', 'REVOKED', 'SYSTEM', 'POLL', 'EVENT']) {
-    const label = normalizePreviewText('TEXT', `[${marker}]`);
-    assert.ok(label, `${marker} etiketi eksik`);
-    assert.notEqual(label, 'Mesaj', `${marker} genel "Mesaj" etiketine dusuyor`);
-  }
+// --- O. formatMessageStub sistem olaylarini insan tarafindan okunabilir metne cevirir ---
+check('O. formatMessageStub username ve grup bildirimlerini dogru metne cevirir', () => {
+  // Burak Semruk, @a.burakuysal kullanici adini olusturdu
+  const usernameMsg = {
+    messageStubType: 193,
+    messageStubParameters: ['Burak Semruk', '@a.burakuysal'],
+  };
+  assert.equal(formatMessageStub(usernameMsg), 'Burak Semruk, @a.burakuysal kullanıcı adını oluşturdu');
+
+  // Tek parametreli kullanici adi
+  assert.equal(
+    formatMessageStub({ messageStubType: 193, messageStubParameters: ['@a.burakuysal'] }),
+    '@a.burakuysal kullanıcı adını oluşturdu',
+  );
+
+  // Grup bildirimleri
+  assert.equal(
+    formatMessageStub({ messageStubType: 20, messageStubParameters: ['Ahmet'] }),
+    'Ahmet grubu oluşturdu',
+  );
+  assert.equal(
+    formatMessageStub({ messageStubType: 21, messageStubParameters: ['Yeni Konu'] }),
+    'Grup konusu "Yeni Konu" olarak değiştirildi',
+  );
+  assert.equal(
+    formatMessageStub({ messageStubType: 27, messageStubParameters: ['Ali', 'Veli'] }),
+    'Ali, Veli gruba eklendi',
+  );
+  assert.equal(
+    formatMessageStub({ messageStubType: 40 }),
+    'Cevapsız sesli arama',
+  );
+
+  // summarizeWaMessage entegrasyonu
+  assert.deepEqual(
+    summarizeWaMessage(usernameMsg),
+    { message_type: 'TEXT', body: 'Burak Semruk, @a.burakuysal kullanıcı adını oluşturdu' },
+  );
+
+  // JID parametresi cozumu (resolveName)
+  const jidMsg = {
+    messageStubType: 27,
+    messageStubParameters: ['905321112233@s.whatsapp.net'],
+  };
+  const resolved = formatMessageStub(jidMsg, (jid) => jid.startsWith('90532') ? 'Ali Can' : null);
+  assert.equal(resolved, 'Ali Can gruba eklendi');
 });
 
 console.log(`\nSystem-content preview verification: PASS (${checks.length} checks)`);

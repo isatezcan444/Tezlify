@@ -200,6 +200,129 @@ export function extractLinkPreviewMetadata(messageContent) {
  * `message_type` DEGISTIRILMEZ: DB enum'unda SYSTEM/REACTION degeri yok ve
  * bu yardimci yalnizca onizleme icindir.
  */
+/**
+ * Baileys messageStubType olaylarini (grup bildirimleri, kullanici adi olusturma,
+ * aramalar, sifreleme degisiklikleri vb.) insan tarafindan okunabilir metne cevirir.
+ *
+ * @param {object} waMsg - Baileys WAMessage nesnesi
+ * @param {Function} [resolveName] - JID -> gorunen ad donusturucu fonksiyon
+ * @returns {string|null} - Okunabilir metin veya stub degilse null
+ */
+export function formatMessageStub(waMsg, resolveName = null) {
+  if (!waMsg) return null;
+  const rawStub = waMsg.messageStubType;
+  if (!rawStub && rawStub !== 0) return null;
+  const stubNum = typeof rawStub?.toNumber === 'function' ? rawStub.toNumber() : Number(rawStub);
+  if (!Number.isFinite(stubNum) || stubNum <= 0) return null;
+
+  const rawParams = Array.isArray(waMsg.messageStubParameters) ? waMsg.messageStubParameters : [];
+  const resolveParam = (p) => {
+    if (typeof p !== 'string') return String(p || '');
+    if (p.includes('@s.whatsapp.net') || p.includes('@lid')) {
+      const resolved = typeof resolveName === 'function' ? resolveName(p) : null;
+      return resolved || p;
+    }
+    return p;
+  };
+  const params = rawParams.map(resolveParam);
+
+  // CHANGE_USERNAME = 193
+  if (stubNum === 193) {
+    if (params.length >= 2) {
+      const actor = params[0]?.trim();
+      const uname = params[1]?.trim();
+      return `${actor ? actor + ', ' : ''}${uname} kullanıcı adını oluşturdu`;
+    }
+    if (params.length === 1) {
+      const uname = params[0]?.trim();
+      return `${uname} kullanıcı adını oluşturdu`;
+    }
+    return 'Kullanıcı adı oluşturuldu';
+  }
+
+  // GROUP_CREATE = 20
+  if (stubNum === 20) {
+    const creator = params[0]?.trim();
+    return creator ? `${creator} grubu oluşturdu` : 'Grup oluşturuldu';
+  }
+
+  // GROUP_CHANGE_SUBJECT = 21
+  if (stubNum === 21) {
+    const subject = params[0]?.trim();
+    return subject ? `Grup konusu "${subject}" olarak değiştirildi` : 'Grup konusu değiştirildi';
+  }
+
+  // GROUP_CHANGE_ICON = 22
+  if (stubNum === 22) {
+    return 'Grup simgesi değiştirildi';
+  }
+
+  // GROUP_CHANGE_DESCRIPTION = 24
+  if (stubNum === 24) {
+    return 'Grup açıklaması değiştirildi';
+  }
+
+  // GROUP_PARTICIPANT_ADD = 27
+  if (stubNum === 27) {
+    const names = params.filter(Boolean).join(', ');
+    return names ? `${names} gruba eklendi` : 'Gruba yeni katılımcı eklendi';
+  }
+
+  // GROUP_PARTICIPANT_REMOVE = 28
+  if (stubNum === 28) {
+    const names = params.filter(Boolean).join(', ');
+    return names ? `${names} gruptan çıkarıldı` : 'Katılımcı gruptan çıkarıldı';
+  }
+
+  // GROUP_PARTICIPANT_PROMOTE = 29
+  if (stubNum === 29) {
+    const names = params.filter(Boolean).join(', ');
+    return names ? `${names} artık yönetici` : 'Yönetici olarak atandı';
+  }
+
+  // GROUP_PARTICIPANT_DEMOTE = 30
+  if (stubNum === 30) {
+    const names = params.filter(Boolean).join(', ');
+    return names ? `${names} artık yönetici değil` : 'Yöneticilikten çıkarıldı';
+  }
+
+  // GROUP_PARTICIPANT_LEAVE = 32
+  if (stubNum === 32) {
+    const names = params.filter(Boolean).join(', ');
+    return names ? `${names} gruptan ayrıldı` : 'Katılımcı gruptan ayrıldı';
+  }
+
+  // CALL_MISSED_VOICE = 40, CALL_MISSED_VIDEO = 41, CALL_MISSED_GROUP_VOICE = 45, CALL_MISSED_GROUP_VIDEO = 46
+  if (stubNum === 40) return 'Cevapsız sesli arama';
+  if (stubNum === 41) return 'Cevapsız görüntülü arama';
+  if (stubNum === 45) return 'Cevapsız grup sesli araması';
+  if (stubNum === 46) return 'Cevapsız grup görüntülü araması';
+
+  // E2E_IDENTITY_CHANGED = 38
+  if (stubNum === 38) return 'Güvenlik kodu değişti';
+
+  // E2E_ENCRYPTED = 39, E2E_ENCRYPTED_NOW = 71
+  if (stubNum === 39 || stubNum === 71) {
+    return 'Mesajlar ve aramalar uçtan uca şifrelidir';
+  }
+
+  // CHANGE_EPHEMERAL_SETTING = 69
+  if (stubNum === 69) return 'Süreli mesajlar ayarı güncellendi';
+
+  // Fallback: parametrelerde @ ile baslayan kullanici adi varsa
+  const usernameParam = params.find((p) => typeof p === 'string' && p.startsWith('@'));
+  if (usernameParam) {
+    const other = params.find((p) => p !== usernameParam);
+    return `${other ? other + ', ' : ''}${usernameParam} kullanıcı adını oluşturdu`;
+  }
+
+  if (params.length > 0) {
+    return params.filter(Boolean).join(', ');
+  }
+
+  return null;
+}
+
 export function systemContentMarker(waMsg) {
   const rawContent = waMsg?.message || {};
   const c = extractMessageContent(rawContent) || rawContent || {};
@@ -238,6 +361,8 @@ export function summarizeWaMessage(waMsg) {
     content.documentMessage?.caption ||
     '';
   if (text) return { message_type: classifyMessageType(content), body: text };
+  const stub = formatMessageStub(waMsg);
+  if (stub) return { message_type: 'TEXT', body: stub };
   // Metin yok. Medya tipleri icin `normalizePreviewText` kendi etiketini uretir;
   // metinsiz sistem turleri icin isareti biz veriyoruz ki preview bos kalmasin.
   return { message_type: classifyMessageType(content), body: systemContentMarker(waMsg) || '' };

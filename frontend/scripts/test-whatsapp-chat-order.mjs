@@ -214,4 +214,28 @@ assert.equal(avatarUpdateList[0].id, 12, 'Newer message chat must remain on top 
 assert.equal(avatarUpdateList[1].id, 10, 'Older chat with avatar update must remain below');
 console.log('✓ TEST-CHAT-ORDER-10 passed');
 
-console.log('[test-whatsapp-chat-order] ALL TEST-CHAT-ORDER (01-10) ASSERTIONS PASSED SUCCESSFULLY.');
+// TEST-CHAT-ORDER-11: Hayalet last_message_at tasiyan bos sohbet (message_count=0, preview yok) aktif sohbetin ustune CIKMAZ
+console.log("Running TEST-CHAT-ORDER-11: Empty conversation with ghost last_message_at must never outrank active chats");
+const ghostEmptyConv = {
+  id: 99,
+  last_message_at: '2026-10-04T08:34:17Z', // Pazar (Sunday ghost timestamp)
+  message_count: 0,
+  last_message_preview: null,
+  last_message_state: 'NO_MESSAGES',
+  created_at: '2026-09-01T10:00:00Z',
+};
+const fridayActiveConv = {
+  id: 20,
+  last_message_at: '2026-10-02T10:00:00Z', // Cuma (Friday active chat)
+  last_message_preview: 'Görüşmek üzere',
+  message_count: 5,
+  created_at: '2026-09-01T10:00:00Z',
+};
+let ghostList = [ghostEmptyConv, fridayActiveConv];
+ghostList.sort(compareConversationsByActivityDesc);
+assert.equal(ghostList[0].id, 20, 'Friday active conversation must stay above ghost empty conversation');
+assert.equal(ghostList[1].id, 99, 'Ghost empty conversation must be pushed to bottom');
+assert.equal(getConversationActivityTimestamp(ghostEmptyConv), 0, 'Ghost empty conv activity timestamp must evaluate to 0');
+console.log('✓ TEST-CHAT-ORDER-11 passed');
+
+console.log('[test-whatsapp-chat-order] ALL TEST-CHAT-ORDER (01-11) ASSERTIONS PASSED SUCCESSFULLY.');

@@ -705,3 +705,23 @@ async def test_inbound_regression_still_resolves_person_name():
         )).scalar_one()
         assert conv.last_message_preview == "Selam"
         assert conv.unread_count == before + 1
+
+
+@pytest.mark.asyncio
+async def test_repair_clears_poisoned_timestamp_on_empty_conversation():
+    """Mesajı olmayan ama zehirli last_message_at taşıyan sohbetin timestamp'i temizlenmeli."""
+    _contact_id, conv_id = await _seed_session_and_group(poisoned_ts=True)
+    async with AsyncSessionLocal() as db:
+        conv = (await db.execute(select(Conversation).where(Conversation.id == conv_id))).scalar_one()
+        assert conv.last_message_at is not None
+        assert conv.last_message_preview is None
+
+    async with AsyncSessionLocal() as db:
+        fixed = await _repair_last_message_previews(db, TEST_USER)
+        await db.commit()
+
+    assert fixed == 1
+    async with AsyncSessionLocal() as db:
+        conv = (await db.execute(select(Conversation).where(Conversation.id == conv_id))).scalar_one()
+        assert conv.last_message_at is None
+        assert conv.last_message_preview is None
