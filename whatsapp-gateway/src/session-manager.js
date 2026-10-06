@@ -1609,10 +1609,19 @@ export function createSessionManager({
         strId = String(meta.waMessageId);
       }
 
+      if (!this._failedMediaCache) {
+        this._failedMediaCache = new Map();
+      }
+      const inFlightKey = `${sessionId || 'any'}:${strId}`;
+      const FAILED_MEDIA_TTL_MS = 5 * 60 * 1000;
+      const lastFailedAt = this._failedMediaCache.get(inFlightKey);
+      if (lastFailedAt && (Date.now() - lastFailedAt) < FAILED_MEDIA_TTL_MS) {
+        return null;
+      }
+
       if (!this._inFlightMediaDownloads) {
         this._inFlightMediaDownloads = new Map();
       }
-      const inFlightKey = `${sessionId || 'any'}:${strId}`;
       if (this._inFlightMediaDownloads.has(inFlightKey)) {
         return this._inFlightMediaDownloads.get(inFlightKey);
       }
@@ -1634,6 +1643,7 @@ export function createSessionManager({
 
           let foundRaw = null;
           let foundJid = null;
+          let foundMeta = null;
 
           if (store.rawMessagesByChat) {
             for (const [jid, byId] of store.rawMessagesByChat.entries()) {
@@ -1655,6 +1665,7 @@ export function createSessionManager({
                   if (parsed?.message) {
                     foundRaw = parsed.message;
                     foundJid = parsed.jid;
+                    foundMeta = { fromMe: parsed.fromMe, participant: parsed.participant };
                   }
                 }
               } catch {
@@ -1664,16 +1675,27 @@ export function createSessionManager({
           }
 
           if (foundRaw && foundJid) {
+            const isFromMe = foundMeta?.fromMe ?? (
+              foundJid === session.phoneJid ||
+              Boolean(session.sock?.user?.id && foundJid?.startsWith(session.sock.user.id.split(':')[0]))
+            );
             const waMsg = {
-              key: { remoteJid: foundJid, id: strId },
+              key: {
+                remoteJid: foundJid,
+                id: strId,
+                fromMe: Boolean(isFromMe),
+                participant: foundMeta?.participant || undefined,
+              },
               message: foundRaw,
             };
             const stored = await mediaStore.storeIncomingMedia(session, waMsg, session.sock);
             if (stored?.media_id) {
+              this._failedMediaCache?.delete(inFlightKey);
               return mediaStore.getMediaPath(session.id, stored.media_id);
             }
           }
         }
+        this._failedMediaCache?.set(inFlightKey, Date.now());
         return null;
       })().finally(() => {
         this._inFlightMediaDownloads?.delete(inFlightKey);
@@ -1862,7 +1884,10 @@ export function createSessionManager({
 
       const lidHold = isLidJid(key);
       if (msg.key?.id && msg.message) {
-        rememberRawMessage(store, key, msg.key.id, msg.message);
+        rememberRawMessage(store, key, msg.key.id, msg.message, {
+          fromMe: msg.key.fromMe,
+          participant: msg.key.participant,
+        });
       }
       const contact = contacts.get(key);
       const isGroup = jid.includes('@g.us');

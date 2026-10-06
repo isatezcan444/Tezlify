@@ -74,7 +74,7 @@ export function createSessionStore({ sessionDir = null, sessionPhone = null, log
   return store;
 }
 
-export function rememberRawMessage(store, jid, id, message) {
+export function rememberRawMessage(store, jid, id, message, keyMeta = {}) {
   if (!store || !jid || !id || !message) return;
   const { rawMessagesByChat } = store;
   let byId = rawMessagesByChat.get(jid);
@@ -116,7 +116,17 @@ export function rememberRawMessage(store, jid, id, message) {
       if (!fs.existsSync(rawDir)) fs.mkdirSync(rawDir, { recursive: true });
       const rawPath = path.join(rawDir, `${id}.json`);
       if (!fs.existsSync(rawPath)) {
-        fs.writeFileSync(rawPath, JSON.stringify({ jid, id, message }), 'utf8');
+        fs.writeFileSync(
+          rawPath,
+          JSON.stringify({
+            jid,
+            id,
+            message,
+            fromMe: keyMeta?.fromMe,
+            participant: keyMeta?.participant,
+          }),
+          'utf8'
+        );
       }
     } catch {
       // Best-effort disk persistence

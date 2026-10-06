@@ -47,6 +47,7 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
   const resolvedUrl = resolveMediaUrl(url);
 
   const [isViewerOpen, setIsViewerOpen] = useState(false);
+  const [isUnavailable, setIsUnavailable] = useState(false);
   const [resolvedSize, setResolvedSize] = useState<string | null>(() => {
     if (typeof fileSize === 'number') return formatBytes(fileSize);
     if (typeof fileSize === 'string') return fileSize;
@@ -59,6 +60,10 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
     const controller = new AbortController();
     fetch(resolvedUrl, { method: 'HEAD', signal: controller.signal })
       .then((res) => {
+        if (!res.ok) {
+          if (res.status === 404) setIsUnavailable(true);
+          return;
+        }
         const len = res.headers.get('content-length');
         if (len) {
           const parsed = parseInt(len, 10);
@@ -86,16 +91,16 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
           role="button"
           tabIndex={0}
           onClick={() => {
-            if (resolvedUrl) setIsViewerOpen(true);
+            if (resolvedUrl && !isUnavailable) setIsViewerOpen(true);
           }}
           onKeyDown={(e) => {
-            if ((e.key === 'Enter' || e.key === ' ') && resolvedUrl) {
+            if ((e.key === 'Enter' || e.key === ' ') && resolvedUrl && !isUnavailable) {
               e.preventDefault();
               setIsViewerOpen(true);
             }
           }}
           className={`flex items-center gap-3 p-2.5 min-w-0 ${
-            resolvedUrl ? 'cursor-pointer hover:bg-black/5 dark:hover:bg-white/5 transition-colors' : ''
+            resolvedUrl && !isUnavailable ? 'cursor-pointer hover:bg-black/5 dark:hover:bg-white/5 transition-colors' : ''
           }`}
           title={displayName}
         >
@@ -120,7 +125,7 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
         </div>
 
         {/* Action Toolbar */}
-        {resolvedUrl ? (
+        {resolvedUrl && !isUnavailable ? (
           <div className={`flex items-stretch border-t ${isOutbound ? 'border-white/20' : 'border-black/5 dark:border-white/10'}`}>
             <button
               type="button"
@@ -170,7 +175,7 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
           <p className={`px-3 py-2 text-[10px] border-t ${mutedColor} ${
             isOutbound ? 'border-white/20' : 'border-black/5 dark:border-white/10'
           }`}>
-            {t('whatsapp.documentUnavailable')}
+            {resolvedUrl ? t('whatsapp.mediaExpiredOrMissing') : t('whatsapp.documentUnavailable')}
           </p>
         )}
       </div>

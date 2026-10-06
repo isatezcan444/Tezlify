@@ -85,7 +85,7 @@ export function bindSocketEvents({
   const store = manager._storeOf(session);
   const { contacts, chats, messagesByChat } = store;
   const normalizeJid = (jid) => resolveJidKey(store, jid);
-  const rememberRaw = (jid, msgId, message) => rememberRawMessage(store, jid, msgId, message);
+  const rememberRaw = (jid, msgId, message, keyMeta) => rememberRawMessage(store, jid, msgId, message, keyMeta);
   const applyLidMapping = (lid, phoneJid) => manager._applyLidMapping(session, lid, phoneJid);
   const resolveDisplayName = (jid, pushName) => manager._resolveDisplayName(session, jid, pushName);
   const historyMessageToRecord = (msg, key) => manager._historyMessageToRecord(session, msg, key);
@@ -830,7 +830,12 @@ export function bindSocketEvents({
           continue;
         }
 
-        if (msg.key.id && msg.message) rememberRaw(key, msg.key.id, msg.message);
+        if (msg.key.id && msg.message) {
+          rememberRaw(key, msg.key.id, msg.message, {
+            fromMe: msg.key.fromMe,
+            participant: msg.key.participant,
+          });
+        }
         const list = messagesByChat.get(key) || [];
         if (msg.key.id && list.some((m) => m.wa_message_id === msg.key.id)) continue;
         const record = historyMessageToRecord(msg, key);

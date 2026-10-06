@@ -213,7 +213,50 @@ export function createMediaStore({
           if (dlTimer) clearTimeout(dlTimer);
         }
       } catch (dlErr) {
-        logger?.debug({ dlErr: dlErr?.message, waMessageId }, 'downloadMediaMessage failed or timed out, checking thumbnail');
+        const statusCode = dlErr?.output?.statusCode || dlErr?.status;
+        logger?.debug({ dlErr: dlErr?.message, statusCode, waMessageId }, 'Initial downloadMediaMessage failed or timed out');
+
+        // Expired CDN URL recovery: Baileys misses Boom statusCode 403 in internal reuploadRequest.
+        // If the CDN rejected the request (403/404/410) or failed to fetch stream, ask the phone directly!
+        if (typeof sock?.updateMediaMessage === 'function' && (
+          statusCode === 403 || statusCode === 404 || statusCode === 410 ||
+          dlErr?.message?.includes('Failed to fetch stream')
+        )) {
+          try {
+            logger?.info({ waMessageId }, 'CDN link expired; requesting device media re-upload via sock.updateMediaMessage');
+            const updatedMsg = await Promise.race([
+              sock.updateMediaMessage(waMessage),
+              new Promise((_, reject) => setTimeout(() => reject(new Error('Device media reupload timeout (15s)')), 15_000))
+            ]);
+            if (updatedMsg?.message) {
+              logger?.info({ waMessageId }, 'Device media reupload succeeded, downloading refreshed media...');
+              buffer = await downloadMediaMessage(
+                updatedMsg,
+                'buffer',
+                {},
+                { logger }
+              );
+              if (buffer) {
+                // Update raw message on disk if available so future loads use fresh directPath
+                try {
+                  const sDir = session?.session_dir;
+                  if (sDir && waMessageId) {
+                    const rawPath = path.join(sDir, 'raw_messages', `${waMessageId}.json`);
+                    if (fs.existsSync(rawPath)) {
+                      const parsed = JSON.parse(fs.readFileSync(rawPath, 'utf8'));
+                      parsed.message = updatedMsg.message;
+                      fs.writeFileSync(rawPath, JSON.stringify(parsed), 'utf8');
+                    }
+                  }
+                } catch {
+                  // Non-fatal disk sync
+                }
+              }
+            }
+          } catch (reuploadErr) {
+            logger?.warn({ reuploadErr: reuploadErr?.message, waMessageId }, 'Device media reupload failed');
+          }
+        }
       }
 
       let mimeType = media.mimetype || 'application/octet-stream';

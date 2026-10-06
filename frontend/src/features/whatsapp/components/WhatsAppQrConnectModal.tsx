@@ -822,6 +822,8 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
             }
             pairTokenRef.current = null;
             setPairToken(null);
+            setErrorMessage(t('whatsapp.connectionFailed'));
+            setModalState('ERROR');
             return;
           }
           // Both 404 and 502 are TRANSIENT here, not fatal. Two real causes:

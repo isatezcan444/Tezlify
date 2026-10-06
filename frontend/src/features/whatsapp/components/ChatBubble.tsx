@@ -116,6 +116,8 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
   const [reacting, setReacting] = useState(false);
   const [imageLoadError, setImageLoadError] = useState(false);
   const [imageLoaded, setImageLoaded] = useState(false);
+  const [videoLoadError, setVideoLoadError] = useState(false);
+  const [stickerLoadError, setStickerLoadError] = useState(false);
   const [mediaRetryTs, setMediaRetryTs] = useState<number | null>(null);
   const [copied, setCopied] = useState(false);
   const [isStarred, setIsStarred] = useState<boolean>(() => isMessageStarred(message.id));
@@ -258,6 +260,9 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
 
   React.useEffect(() => {
     setImageLoaded(false);
+    setImageLoadError(false);
+    setVideoLoadError(false);
+    setStickerLoadError(false);
   }, [resolvedMediaUrl]);
   useLayoutEffect(() => {
     finishWaLatency('event_handler_to_message_commit_ms', message.id);
@@ -744,13 +749,14 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
         return (
           <div className="space-y-2 w-[260px] max-w-full">
             <div className="relative group rounded-xl overflow-hidden bg-black/40 border border-black/5 dark:border-white/10 w-full h-[180px]">
-              {videoSrc ? (
+              {videoSrc && !videoLoadError ? (
                 <>
                   <video
                     controls
                     preload="metadata"
                     playsInline
                     src={videoSrc}
+                    onError={() => setVideoLoadError(true)}
                     className="w-full h-full object-cover"
                   />
                   <button
@@ -766,6 +772,22 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                     <Eye className="w-4 h-4" />
                   </button>
                 </>
+              ) : videoLoadError ? (
+                <div className="w-full h-full flex flex-col items-center justify-center p-4 text-center bg-slate-200/50 dark:bg-white/[0.05]">
+                  <Video className="w-8 h-8 mb-1.5 text-rose-500/80" />
+                  <span className="text-[11px] font-bold text-slate-700 dark:text-slate-300">{t('whatsapp.mediaLoadFailed')}</span>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setVideoLoadError(false);
+                      setMediaRetryTs(Date.now());
+                    }}
+                    className="mt-2 px-2.5 py-1 text-[10px] font-semibold rounded bg-[#00a884] hover:bg-[#009272] text-white transition-colors cursor-pointer"
+                  >
+                    {t('whatsapp.mediaRetry')}
+                  </button>
+                </div>
               ) : (
                 <div className="w-full h-full flex flex-col items-center justify-center p-4 text-slate-500 dark:text-slate-400 bg-slate-200/50 dark:bg-white/[0.05]">
                   <Video className="w-8 h-8 mx-auto text-[#7367F0] mb-1.5" />
@@ -808,10 +830,11 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
 
       case 'STICKER':
         // Cikartma: balon icinde ciplak gorsel olarak durur.
-        return resolvedMediaUrl ? (
+        return resolvedMediaUrl && !stickerLoadError ? (
           <img
             src={resolvedMediaUrl}
             alt={t('whatsapp.stickerAlt')}
+            onError={() => setStickerLoadError(true)}
             className="w-32 h-32 object-contain"
           />
         ) : (
