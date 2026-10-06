@@ -418,6 +418,8 @@ def _gateway_sync_stats(sessions: Any, gateway_id: str) -> Dict[str, int]:
             return {
                 "chats_synced": int(sync.get("chats_synced") or 0),
                 "chats_unique": int(sync.get("chats_unique") or 0),
+                "contacts_synced": int(sync.get("contacts_synced") or 0),
+                "contacts_unique": int(sync.get("contacts_unique") or 0),
                 "messages_synced": int(sync.get("messages_synced") or 0),
             }
         return {}
@@ -1823,39 +1825,7 @@ class WhatsAppSyncOrchestrator:
                         await await_gateway_history_ready(gateway_id)
                     if job.cancel_requested:
                         raise asyncio.CancelledError()
-                    job.stage = "chats"
-                    if gateway_op_or_mark_relink is not None:
-                        data = await gateway_op_or_mark_relink(
-                            db, ws_session, lambda gid: gateway_client.list_conversations(gid)
-                        )
-                    else:
-                        data = await gateway_client.list_conversations(gateway_id)
-                    items = data.get("items", []) if isinstance(data, dict) else []
-                    all_items.extend(items)
-                    session_convs, session_jids = await persist_chat_snapshot(
-                        db, owner, items, session_id=ws_session.id
-                    )
-                    conv_out.extend(session_convs)
-                    jid_by_conv.update(session_jids)
-                    job.chats_total = len(conv_out)
-                    job.chats_synced = len(conv_out)
-                    if job.cancel_requested:
-                        raise asyncio.CancelledError()
-                    for page_start in range(0, len(session_convs), _SYNC_CHAT_PAGE_SIZE):
-                        await broadcast_sync_event(
-                            sync_event(
-                                job,
-                                "whatsapp_sync_chats_snapshot",
-                                total=job.chats_total,
-                                conversations=session_convs[page_start:page_start + _SYNC_CHAT_PAGE_SIZE],
-                            ),
-                            owner,
-                        )
-                    _mark_phase("chats")
-
-                    schedule_metadata_enrichment(gateway_id)
-                    _mark_phase("group_subjects")
-
+                    # 1. Contacts first: sync address book so names exist in DB
                     job.stage = "contacts"
                     try:
                         session_contacts = await sync_contacts(db, owner, session=ws_session)
@@ -1878,10 +1848,45 @@ class WhatsAppSyncOrchestrator:
                     )
                     _mark_phase("contacts")
 
+                    # 2. Chats second: list and persist conversations with resolved contact names
+                    job.stage = "chats"
+                    if gateway_op_or_mark_relink is not None:
+                        data = await gateway_op_or_mark_relink(
+                            db, ws_session, lambda gid: gateway_client.list_conversations(gid)
+                        )
+                    else:
+                        data = await gateway_client.list_conversations(gateway_id)
+                    items = data.get("items", []) if isinstance(data, dict) else []
+                    all_items.extend(items)
+                    session_convs, session_jids = await persist_chat_snapshot(
+                        db, owner, items, session_id=ws_session.id
+                    )
+                    conv_out.extend(session_convs)
+                    jid_by_conv.update(session_jids)
+                    job.chats_total = len(conv_out)
+                    job.chats_synced = len(conv_out)
+                    if job.cancel_requested:
+                        raise asyncio.CancelledError()
+
                     try:
                         await reapply_chat_names(db, owner, items)
                     except Exception as exc:
                         logger.warning("Sync job ad onarimi atlandi (owner=%s): %s", owner, exc)
+
+                    for page_start in range(0, len(session_convs), _SYNC_CHAT_PAGE_SIZE):
+                        await broadcast_sync_event(
+                            sync_event(
+                                job,
+                                "whatsapp_sync_chats_snapshot",
+                                total=job.chats_total,
+                                conversations=session_convs[page_start:page_start + _SYNC_CHAT_PAGE_SIZE],
+                            ),
+                            owner,
+                        )
+                    _mark_phase("chats")
+
+                    schedule_metadata_enrichment(gateway_id)
+                    _mark_phase("group_subjects")
 
                     job.stage = "messages"
                     # Kanali BIR kez yokla: hem ana turun hem de geri doldurma

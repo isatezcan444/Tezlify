@@ -849,9 +849,9 @@ async def test_25_sessionmaker_expire_on_commit_false_preserved():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_26_chats_snapshot_precedes_contacts_snapshot(mock_gateway, events):
-    """P0.3: sohbet anlik goruntusu REHBER fazindan once yayinlanir — kullanici
-    sohbete job'un ilk fazinda baslar (WhatsApp Web sirasi)."""
+async def test_26_contacts_snapshot_precedes_chats_snapshot(mock_gateway, events):
+    """Rehber fazi sohbet fazindan once yayinlanir — sohbetler ilk
+    gelirken numara yerine rehberdeki isimlerle yuklenir."""
     mock_gateway.list_conversations.return_value = {
         "items": [_chat(MOCK_JID, "Ayse Yilmaz")], "total": 1}
     job = await ws.request_sync(None, TEST_USER)
@@ -861,7 +861,7 @@ async def test_26_chats_snapshot_precedes_contacts_snapshot(mock_gateway, events
     names = [e["event"] for e in events]
     i_chats = names.index("whatsapp_sync_chats_snapshot")
     i_contacts = names.index("whatsapp_sync_contacts_snapshot")
-    assert i_chats < i_contacts, f"chats_oncelikli olmali: {names}"
+    assert i_contacts < i_chats, f"contacts_oncelikli olmali: {names}"
 
 
 @pytest.mark.asyncio

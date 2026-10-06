@@ -87,9 +87,8 @@ interface WhatsAppHubPageProps {
 
 // Faz 11 (§27): banner ilerlemesi GERÇEK job sayaçlarından türetilir — sahte
 // timer/progress üretilmez. Mesaj toplamı biliniyorsa oran, değilse asama.
-// Faz 6 (P0.3): job sirasi artik chats -> contacts -> messages (sohbetler
-// once gelir); asama agirliklari bu siraya gore guncellendi — ilerleme
-// geriye gitmez.
+// Gercek job sirasi: starting -> contacts -> chats -> messages -> finalizing -> complete
+// Rehber isimleri sohbetlerden once yuklenir; asama agirliklari bu siraya gore hesaplanir.
 function computeSyncProgress(
   stage: string,
   chatsSynced: number,
@@ -98,12 +97,12 @@ function computeSyncProgress(
   messagesTotal: number
 ): number {
   if (stage === 'complete') return 100;
-  if (messagesTotal > 0) return Math.min(99, Math.round((messagesSynced / messagesTotal) * 100));
+  if (messagesTotal > 0) return Math.min(99, Math.max(70, Math.round((messagesSynced / messagesTotal) * 100)));
   if (stage === 'finalizing') return 92;
-  if (stage === 'messages') return 85;
-  if (stage === 'contacts') return contactsSynced > 0 ? 70 : 60;
-  if (stage === 'chats') return chatsSynced > 0 ? 50 : 30;
-  return 4;
+  if (stage === 'messages') return 75;
+  if (stage === 'chats') return chatsSynced > 0 ? 60 : 45;
+  if (stage === 'contacts') return contactsSynced > 0 ? 35 : 20;
+  return 5;
 }
 
 // Faz 14: uzun suren ilk senkron sonrasi "yine de devam et" cikisi gorunur
@@ -1051,10 +1050,14 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   // `loading_profiles` dondurmez). Kapı yalnızca gercek ilk senkron surerken
   // kapanır; profil fotografları arkada akar.
   const loadingGateActive = loadingGate?.phase === 'syncing_history';
+  const hasChatsWithNames =
+    conversations.length > 0 &&
+    sessionSync?.stage !== 'starting' &&
+    sessionSync?.stage !== 'contacts';
   const syncGateActive =
     hubTab === 'conversations' &&
     !syncGateDismissed &&
-    conversations.length === 0 &&
+    !hasChatsWithNames &&
     (isPostQrSyncing ||
       loadingGateActive ||
       (initialSyncPending && (sessionSync?.phase === 'syncing' || sessionSync?.phase === 'error')) ||
@@ -2601,10 +2604,26 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
             started_at: eventData.started_at || new Date().toISOString(), completed_at: null,
           });
         } else if (eventData.event === 'whatsapp_sync_contacts_snapshot') {
-          setSessionSync((prev) => (prev && prev.phase === 'syncing' ? {
-            ...prev, stage: 'contacts', contacts_synced: eventData.total ?? prev.contacts_synced,
-            progress: computeSyncProgress('contacts', prev.chats_synced ?? 0, eventData.total ?? 0, prev.messages_synced ?? 0, 0),
-          } : prev));
+          setSessionSync((prev) => {
+            const base = prev || {
+              phase: 'syncing' as const,
+              stage: 'contacts',
+              progress: 20,
+              chats_synced: 0,
+              contacts_synced: 0,
+              messages_synced: 0,
+              started_at: new Date().toISOString(),
+              completed_at: null,
+            };
+            const total = eventData.total ?? base.contacts_synced ?? 0;
+            return {
+              ...base,
+              phase: 'syncing',
+              stage: 'contacts',
+              contacts_synced: total,
+              progress: computeSyncProgress('contacts', base.chats_synced ?? 0, total, base.messages_synced ?? 0, 0),
+            };
+          });
         } else if (eventData.event === 'whatsapp_sync_chats_snapshot') {
           // Sohbetler sayfa sayfa INCREMENTAL eklenir — tam liste rebuild yok (§29).
           const incoming: Conversation[] = (eventData.conversations || []).map((c: any) => mapConversationItem(c));
@@ -2622,10 +2641,26 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
             const isMobile = typeof window !== 'undefined' && window.innerWidth < 768;
             setSelectedConv((prev) => prev || (isMobile ? null : incoming[0]) || null);
           }
-          setSessionSync((prev) => (prev && prev.phase === 'syncing' ? {
-            ...prev, stage: 'chats', chats_synced: eventData.total ?? prev.chats_synced,
-            progress: computeSyncProgress('chats', eventData.total ?? 0, prev.contacts_synced ?? 0, prev.messages_synced ?? 0, 0),
-          } : prev));
+          setSessionSync((prev) => {
+            const base = prev || {
+              phase: 'syncing' as const,
+              stage: 'chats',
+              progress: 45,
+              chats_synced: 0,
+              contacts_synced: 0,
+              messages_synced: 0,
+              started_at: new Date().toISOString(),
+              completed_at: null,
+            };
+            const total = eventData.total ?? base.chats_synced ?? 0;
+            return {
+              ...base,
+              phase: 'syncing',
+              stage: 'chats',
+              chats_synced: total,
+              progress: computeSyncProgress('chats', total, base.contacts_synced ?? 0, base.messages_synced ?? 0, 0),
+            };
+          });
         } else if (eventData.event === 'whatsapp_sync_messages_chunk') {
           // Mesaj chunk'lari tampona birikir; YALNIZCA acik sohbetin store'u
           // incremental guncellenir — 16k mesajlik DOM rebuild yok (§29).

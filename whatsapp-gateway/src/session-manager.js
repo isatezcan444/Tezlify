@@ -939,14 +939,24 @@ export function createSessionManager({
       return {
         items: list.map((c) => {
           const contact = contacts.get(c.jid) || contacts.get(resolveJidKey(store, c.jid));
+          let effectiveName = c.name;
+          let effectiveNameSource = c.name_source;
           if (contact?.name && contact.name !== c.name) {
             const rankNew = NAME_RANK[contact.name_source] || 0;
-            const rankCur = NAME_RANK[c.name_source] || (c.name && /^\+\d+$/.test(c.name) ? 0 : NAME_RANK.history);
-            if (!c.name || /^\+\d+$/.test(c.name) || rankNew >= rankCur) {
-              return sanitizeChatForEmit({ ...c, name: contact.name, name_source: contact.name_source || null });
+            const isPhoneOrRaw = !c.name || isPhoneLikeName(c.name) || isRawIdentityName(c.name);
+            const rankCur = NAME_RANK[c.name_source] || (isPhoneOrRaw ? 0 : NAME_RANK.history);
+            if (isPhoneOrRaw || rankNew >= rankCur) {
+              effectiveName = contact.name;
+              effectiveNameSource = contact.name_source || null;
             }
           }
-          return sanitizeChatForEmit(c);
+          const effectiveAvatar = c.avatar_url || contact?.avatar_url || null;
+          return sanitizeChatForEmit({
+            ...c,
+            name: effectiveName,
+            name_source: effectiveNameSource,
+            avatar_url: effectiveAvatar,
+          });
         }),
         total,
       };
@@ -2341,6 +2351,8 @@ export function createSessionManager({
               this._emit({ event: 'contact_synced', contact: { ...contact }, gateway_session_id: session.id });
             }
           }
+        } else {
+          avatarNegativeCache?.set(key, Date.now() + 60 * 60 * 1000);
         }
       } catch (err) {
         // Ayrıştırma: "item-not-found" sunucuda profil resmi YOK demektir —
