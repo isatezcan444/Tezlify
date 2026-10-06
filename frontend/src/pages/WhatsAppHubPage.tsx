@@ -669,10 +669,11 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     refresh: refreshLoadingGate,
   } = useWhatsAppLoadingGate(
     useCallback(() => {
-      setIsPostQrSyncing(false);
-      setHubTab('conversations');
-      loadConversationsRef.current?.(true);
-    }, []),
+      if (!isPostQrSyncing && !isSyncingChats && activeSyncIdRef.current == null) {
+        setHubTab('conversations');
+        loadConversationsRef.current?.(true);
+      }
+    }, [isPostQrSyncing, isSyncingChats]),
   );
 
   // 'yazıyor...' durumu: conversation_id -> bool | { isTyping, senderName } (gateway presence_updated ile)
@@ -1051,10 +1052,10 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   // kapanır; profil fotografları arkada akar.
   const loadingGateActive = loadingGate?.phase === 'syncing_history';
 
-  // Gercek tamamlanma kontrolu: asama complete veya faz ready olunca kapi kapanir
+  // Gercek tamamlanma kontrolu: asama complete VE (faz ready veya progress 100) olunca kapi kapanir
   const isSyncComplete =
-    sessionSync?.stage === 'complete' ||
-    sessionSync?.phase === 'ready';
+    sessionSync?.stage === 'complete' &&
+    (sessionSync?.phase === 'ready' || (sessionSync?.progress ?? 0) >= 100);
 
   // Ilk senkron / QR baglanti asamasi:
   const isInitialSync =
@@ -1063,9 +1064,9 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     (initialSyncPending && !isSyncComplete);
 
   const isSyncInProgress =
+    isPostQrSyncing ||
     sessionSync?.phase === 'syncing' ||
     loadingGateActive ||
-    isPostQrSyncing ||
     isSyncingChats;
 
   const syncGateActive =
@@ -1145,7 +1146,9 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         // asla asili birakilmaz. `isSyncingChats` de temizlenir.
         activeSyncIdRef.current = null;
         setIsSyncingChats(false);
-        setSessionSync((prev) => (prev && prev.phase === 'syncing' ? null : prev));
+        if (!isPostQrSyncing) {
+          setSessionSync((prev) => (prev && prev.phase === 'syncing' ? null : prev));
+        }
       }
     } catch (err) {
       // Faz 13: hata MASKELENMEZ — startup'i kirletmeden gorunur loglanir.
@@ -2912,18 +2915,8 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     });
     void fetchSessions(true);
     onRefreshStats();
-    loadConversations(true);
-    refreshSyncStatus();
-    void refreshLoadingGate();
-    setTimeout(() => {
-      void fetchSessions(true).then((latest) => {
-        const hasConnected = Array.isArray(latest) && latest.some((s: any) => s.status === 'CONNECTED');
-        if (hasConnected) {
-          void handleSyncChats();
-        }
-      });
-    }, 400);
-  }, [fetchSessions, onRefreshStats, refreshSyncStatus, loadConversations, handleSyncChats, refreshLoadingGate]);
+    void handleSyncChats();
+  }, [fetchSessions, onRefreshStats, handleSyncChats]);
 
   const handleOpenQrConnect = useCallback(() => {
     setReconnectSessionId(undefined);

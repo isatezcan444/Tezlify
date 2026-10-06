@@ -119,6 +119,9 @@ function makeBackend(opts = {}) {
     if (u.includes('/whatsapp/sessions/')) {
       return json({ status: state.status, qr_code: state.qr, phone: state.phone, error_message: null });
     }
+    if (u.includes('/gateway/health')) {
+      return json({ status: 'healthy', gateway_available: true, available: true });
+    }
     return json({ error: 'unexpected ' + u }, 500);
   };
 

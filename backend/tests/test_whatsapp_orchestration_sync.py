@@ -487,20 +487,24 @@ async def test_has_unconsumed_pairing_for_user_queries_pair_token():
 
 
 @pytest.mark.asyncio
-async def test_await_gateway_history_ready_unblocks_early_when_chats_available():
-    """`_await_gateway_history_ready` unblocks immediately if chats_unique > 0 or chats_synced > 0 without waiting for phase='ready'."""
+async def test_await_gateway_history_ready_unblocks_when_ready(monkeypatch):
+    """`_await_gateway_history_ready` polls while syncing and unblocks when phase reaches 'ready'."""
     from unittest.mock import MagicMock, AsyncMock
     from backend.app.services.whatsapp.orchestration.sync import WhatsAppSyncOrchestrator
+    import backend.app.services.whatsapp.orchestration.sync as sync_module
 
+    responses = [
+        [{"id": "gw-early", "sync": {"phase": "syncing", "chats_unique": 15, "chats_synced": 15}}],
+        [{"id": "gw-early", "sync": {"phase": "ready", "chats_unique": 15, "chats_synced": 15}}],
+    ]
     mock_service = MagicMock()
     mock_service.gw = MagicMock()
-    mock_service.gw.list_sessions = AsyncMock(
-        return_value=[{"id": "gw-early", "sync": {"phase": "syncing", "chats_unique": 15, "chats_synced": 15}}]
-    )
+    mock_service.gw.list_sessions = AsyncMock(side_effect=responses)
     orchestrator = WhatsAppSyncOrchestrator(service=mock_service)
+    monkeypatch.setattr(sync_module, "_GATEWAY_HISTORY_READY_POLL_S", 0.01)
 
     phase = await orchestrator._await_gateway_history_ready("gw-early")
-    assert phase == "syncing"
-    assert mock_service.gw.list_sessions.call_count == 1
+    assert phase == "ready"
+    assert mock_service.gw.list_sessions.call_count == 2
 
 

@@ -378,8 +378,8 @@ _bulk_channel_cache: Dict[str, Dict[str, Any]] = {}
 # `phase: 'ready'` within 45 s even when no history arrives
 # (`HISTORY_NO_CHUNK_FALLBACK_MS`), so 120 s sits comfortably above every
 # self-resolving path — and a gateway that never answers must not pin the job.
-_GATEWAY_HISTORY_READY_TIMEOUT_S = 4.0
-_GATEWAY_HISTORY_READY_POLL_S = 0.2
+_GATEWAY_HISTORY_READY_TIMEOUT_S = 8.0
+_GATEWAY_HISTORY_READY_POLL_S = 0.25
 
 
 def _gateway_sync_phase(sessions: Any, gateway_id: str) -> str:
@@ -579,24 +579,6 @@ class WhatsAppSyncOrchestrator:
                 return last_phase
             last_phase = _gateway_sync_phase(sessions, gateway_id)
             if last_phase != "syncing":
-                return last_phase
-
-            # Progressive Readiness Check:
-            # If the gateway has ingested chats into memory and is making progress,
-            # unblock immediately so UI shows chats in ~0.5-1 seconds.
-            stats = _gateway_sync_stats(sessions, gateway_id)
-            if (
-                stats.get("chats_synced", 0) > 0
-                or stats.get("chats_unique", 0) > 0
-                or stats.get("contacts_synced", 0) > 0
-                or stats.get("contacts_unique", 0) > 0
-            ):
-                logger.info(
-                    "Gateway gecmis senkronu veri hazirladi (%s sohbet, %s rehber); ilerlemeli aktarim baslatiliyor (gateway=%s)",
-                    stats.get("chats_synced") or stats.get("chats_unique"),
-                    stats.get("contacts_synced") or stats.get("contacts_unique"),
-                    gateway_id,
-                )
                 return last_phase
 
             if time.monotonic() >= deadline:

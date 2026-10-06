@@ -137,6 +137,7 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
   const activeSessionIdRef = useRef<number | null>(existingSessionId || null);
   const isNewlyCreatedRef = useRef<boolean>(false);
   const isCancelledRef = useRef<boolean>(false);
+  const gatewayIdRef = useRef<string | null>(null);
 
   // Phase 6.8 — pairing lifecycle + idempotent cancellation.
   // A ref (not state): the effect cleanups must read the LATEST value
@@ -315,6 +316,7 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
           return;
         }
 
+        gatewayIdRef.current = pairing.gateway_id || null;
         pairTokenRef.current = pairing.pair_token;
         setPairToken(pairing.pair_token);
         setSessionName(pairing.session_name || nameToUse);
@@ -357,7 +359,7 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
           if (onSuccessRef.current) onSuccessRef.current({ id: targetSessionId } as any);
           setTimeout(() => {
             if (isMountedRef.current) onClose();
-          }, 1500);
+          }, 400);
           return;
         }
 
@@ -386,7 +388,7 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
           if (onSuccessRef.current) onSuccessRef.current({ id: res.session_id, phone_number: res.phone } as any);
           setTimeout(() => {
             if (isMountedRef.current) onClose();
-          }, 1500);
+          }, 400);
           return;
         }
 
@@ -612,7 +614,11 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
       const detail = (e as CustomEvent<any>).detail;
       if (!detail) return;
 
+      const currentPairToken = pairTokenRef.current || pairToken;
+      const currentGwId = gatewayIdRef.current;
       const targetMatches = 
+        (currentPairToken && detail.pair_token && String(detail.pair_token) === String(currentPairToken)) ||
+        (currentGwId && detail.session_id && String(detail.session_id) === String(currentGwId)) ||
         (sessionId && detail.session_id && String(detail.session_id) === String(sessionId)) ||
         (activeSessionIdRef.current && detail.session_id && String(detail.session_id) === String(activeSessionIdRef.current)) ||
         (sessionName && detail.session_name && detail.session_name === sessionName);
@@ -831,7 +837,7 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
             setModalState('ERROR');
           }
         }
-      }, 2500);
+      }, 1200);
     } else {
       if (fallbackPollRef.current) {
         clearInterval(fallbackPollRef.current);

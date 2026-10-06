@@ -52,14 +52,20 @@ export const WhatsAppSyncGate: React.FC<WhatsAppSyncGateProps> = ({
     0,
     Math.min(100, Math.round(loadingGate?.progress ?? sync?.progress ?? 0)),
   );
-  const counts = resolveSyncDisplayCounts(sync);
+  const syncCounts = resolveSyncDisplayCounts(sync);
+  const gateCounts = loadingGate?.counts;
+  const counts = {
+    contacts: syncCounts.contacts,
+    chats: Math.max(syncCounts.chats, gateCounts?.chats_synced ?? gateCounts?.chats_total ?? 0),
+    messages: Math.max(syncCounts.messages, gateCounts?.messages_synced ?? gateCounts?.messages_total ?? 0),
+  };
   const avatarCounts = loadingGate?.counts;
   const isProfileStage = loadingGate?.phase === 'loading_profiles';
 
   // F-9: dinamik asama anahtari cozulmezse ham anahtar yolu gosterilmez.
   const stageKey = isProfileStage
     ? 'whatsapp.syncStage.loading_profiles'
-    : `whatsapp.syncStage.${sync?.stage || 'starting'}`;
+    : `whatsapp.syncStage.${sync?.stage || loadingGate?.stage || 'starting'}`;
   const stageLabel = t(stageKey);
   const resolvedStage = stageLabel === stageKey ? t('whatsapp.syncingChats') : stageLabel;
 
