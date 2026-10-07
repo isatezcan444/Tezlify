@@ -220,6 +220,42 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     setMessagesToForward([]);
   }, [selectedConv?.id]);
 
+  // Window-level safety cleanup for drag-and-drop: ensures dropzone overlay never gets stuck
+  // if user cancels drag (Escape), drops outside, or drags out of the window.
+  useEffect(() => {
+    const handleGlobalDragLeave = (e: DragEvent) => {
+      if (!e.relatedTarget && (e.clientX <= 0 || e.clientY <= 0 || e.clientX >= window.innerWidth || e.clientY >= window.innerHeight)) {
+        setIsChatDragOver(false);
+        chatDragCounterRef.current = 0;
+      }
+    };
+    const handleGlobalDrop = () => {
+      setIsChatDragOver(false);
+      chatDragCounterRef.current = 0;
+    };
+    const handleGlobalDragEnd = () => {
+      setIsChatDragOver(false);
+      chatDragCounterRef.current = 0;
+    };
+    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setIsChatDragOver(false);
+        chatDragCounterRef.current = 0;
+      }
+    };
+
+    window.addEventListener('dragleave', handleGlobalDragLeave);
+    window.addEventListener('drop', handleGlobalDrop);
+    window.addEventListener('dragend', handleGlobalDragEnd);
+    window.addEventListener('keydown', handleGlobalKeyDown);
+    return () => {
+      window.removeEventListener('dragleave', handleGlobalDragLeave);
+      window.removeEventListener('drop', handleGlobalDrop);
+      window.removeEventListener('dragend', handleGlobalDragEnd);
+      window.removeEventListener('keydown', handleGlobalKeyDown);
+    };
+  }, []);
+
   useEffect(() => {
     if (!selectedConv?.is_group || !selectedConv?.id) return;
     const convId = selectedConv.id;
@@ -3281,8 +3317,11 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                   onDragEnter={(e) => {
                     e.preventDefault();
                     e.stopPropagation();
-                    chatDragCounterRef.current++;
-                    if (e.dataTransfer.types && Array.from(e.dataTransfer.types).includes('Files')) {
+                    const hasFiles = e.dataTransfer.types && Array.from(e.dataTransfer.types).some(
+                      (t) => t === 'Files' || t === 'application/x-moz-file'
+                    );
+                    if (hasFiles) {
+                      chatDragCounterRef.current++;
                       setIsChatDragOver(true);
                     }
                   }}
@@ -3298,6 +3337,9 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                   onDragOver={(e) => {
                     e.preventDefault();
                     e.stopPropagation();
+                    if (e.dataTransfer) {
+                      e.dataTransfer.dropEffect = 'copy';
+                    }
                   }}
                   onDrop={(e) => {
                     e.preventDefault();
@@ -3311,11 +3353,46 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                   }}
                 >
                   {isChatDragOver && (
-                    <div className="absolute inset-0 z-50 bg-slate-900/40 dark:bg-black/60 backdrop-blur-sm border-2 border-dashed border-[#25D366] rounded-2xl m-3 flex flex-col items-center justify-center pointer-events-none animate-in fade-in duration-150">
-                      <div className="w-16 h-16 rounded-2xl bg-[#25D366] text-white flex items-center justify-center shadow-lg shadow-[#25D366]/30 mb-3 animate-bounce">
+                    <div
+                      onDragEnter={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                      }}
+                      onDragOver={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        if (e.dataTransfer) {
+                          e.dataTransfer.dropEffect = 'copy';
+                        }
+                      }}
+                      onDragLeave={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        if (e.currentTarget === e.target) {
+                          chatDragCounterRef.current = 0;
+                          setIsChatDragOver(false);
+                        }
+                      }}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        chatDragCounterRef.current = 0;
+                        setIsChatDragOver(false);
+                        const droppedFiles = e.dataTransfer.files ? Array.from(e.dataTransfer.files) : [];
+                        if (droppedFiles.length > 0) {
+                          setStagedComposerFiles({ files: droppedFiles, timestamp: Date.now() });
+                        }
+                      }}
+                      onClick={() => {
+                        chatDragCounterRef.current = 0;
+                        setIsChatDragOver(false);
+                      }}
+                      className="absolute inset-0 z-50 bg-slate-900/60 dark:bg-black/75 backdrop-blur-sm border-2 border-dashed border-[#25D366] rounded-2xl m-3 flex flex-col items-center justify-center cursor-copy select-none animate-in fade-in duration-150"
+                    >
+                      <div className="w-16 h-16 rounded-2xl bg-[#25D366] text-white flex items-center justify-center shadow-lg shadow-[#25D366]/30 mb-3 animate-bounce pointer-events-none">
                         <Upload className="w-8 h-8" />
                       </div>
-                      <p className="text-base font-bold text-white shadow-sm">
+                      <p className="text-base font-bold text-white shadow-sm pointer-events-none">
                         {t('whatsapp.dropFilesHere')}
                       </p>
                     </div>
