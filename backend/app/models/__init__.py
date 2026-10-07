@@ -17,6 +17,7 @@ from backend.app.models.link_preview import LinkPreview
 from backend.app.models.profile import Profile
 from backend.app.models.whatsapp_session import WhatsAppSession, SessionStatus
 from backend.app.models.ephemeral_pairing import EphemeralPairing
+from backend.app.models.quick_reply import QuickReply
 
 __all__ = [
     "Base",
@@ -49,4 +50,5 @@ __all__ = [
     "WhatsAppSession",
     "SessionStatus",
     "EphemeralPairing",
+    "QuickReply",
 ]

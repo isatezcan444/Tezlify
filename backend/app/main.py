@@ -44,6 +44,7 @@ from backend.app.core.migrations import (
     purge_empty_ghost_conversations,
     ensure_campaigns_columns,
     ensure_keyset_and_ordering_indexes,
+    ensure_quick_replies_table,
 )
 from backend.app.core.seed import seed_demo_data_if_empty
 from backend.app.services.admin.ops_service import init_ops_state
@@ -158,6 +159,7 @@ async def lifespan(app: FastAPI):
     await purge_empty_ghost_conversations(engine)
     await ensure_campaigns_columns(engine)
     await ensure_keyset_and_ordering_indexes(engine)
+    await ensure_quick_replies_table(engine)
 
     # Boot tek başına yetmez: artan çiftler, canlı yolun ertelediği birleştirmeler
     # ve arşivlenen sohbette kalmış sahipsiz mesajlar ancak YENİDEN koşan bir

@@ -53,6 +53,7 @@ export const LeadDetailDrawer: React.FC<LeadDetailDrawerProps> = ({
   const [activeTab, setActiveTab] = useState<'overview' | 'chat'>(initialTab);
 
   const [isTemplateModalOpen, setIsTemplateModalOpen] = useState<boolean>(false);
+  const [insertedComposerText, setInsertedComposerText] = useState<{ text: string; timestamp: number } | null>(null);
 
   // Sync initialTab when drawer opens
   useEffect(() => {
@@ -340,6 +341,7 @@ export const LeadDetailDrawer: React.FC<LeadDetailDrawerProps> = ({
 
             {/* Live Composer */}
             <ChatComposer
+              insertedText={insertedComposerText}
               onSend={async (text) => {
                 try {
                   await sendMessage(text);
@@ -379,6 +381,10 @@ export const LeadDetailDrawer: React.FC<LeadDetailDrawerProps> = ({
               isOpen={isTemplateModalOpen}
               onClose={() => setIsTemplateModalOpen(false)}
               leadName={lead.name}
+              onSelectTemplate={(renderedText) => {
+                setInsertedComposerText({ text: renderedText, timestamp: Date.now() });
+                setIsTemplateModalOpen(false);
+              }}
               onSendTemplate={async (templateKey, variables) => {
                 try {
                   await sendTemplate(templateKey, variables);

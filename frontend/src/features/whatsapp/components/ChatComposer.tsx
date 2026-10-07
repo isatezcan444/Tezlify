@@ -45,6 +45,7 @@ export interface ChatComposerProps {
   placeholder?: string;
   replyingTo?: QuotedMessage | null;
   onCancelReply?: () => void;
+  insertedText?: { text: string; timestamp: number } | null;
 }
 
 export const ChatComposer: React.FC<ChatComposerProps> = ({
@@ -60,6 +61,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
   placeholder,
   replyingTo,
   onCancelReply,
+  insertedText,
 }) => {
   const { t } = useI18n();
   const toast = useToast();
@@ -381,6 +383,49 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
       refocusDraft();
     }
   }, [replyingTo, refocusDraft]);
+
+  useEffect(() => {
+    if (insertedText && insertedText.text) {
+      setText((current) => {
+        if (!current.trim()) {
+          return insertedText.text;
+        }
+        return `${current}\n${insertedText.text}`;
+      });
+      setTimeout(() => {
+        refocusDraft();
+        if (draftInputRef.current) {
+          draftInputRef.current.style.height = 'auto';
+          draftInputRef.current.style.height = `${Math.min(draftInputRef.current.scrollHeight, 120)}px`;
+        }
+      }, 30);
+    }
+  }, [insertedText, refocusDraft]);
+
+  useEffect(() => {
+    const handleInsertEvent = (e: any) => {
+      const incoming = e?.detail?.text;
+      if (typeof incoming === 'string' && incoming) {
+        setText((current) => {
+          if (!current.trim()) {
+            return incoming;
+          }
+          return `${current}\n${incoming}`;
+        });
+        setTimeout(() => {
+          refocusDraft();
+          if (draftInputRef.current) {
+            draftInputRef.current.style.height = 'auto';
+            draftInputRef.current.style.height = `${Math.min(draftInputRef.current.scrollHeight, 120)}px`;
+          }
+        }, 30);
+      }
+    };
+    window.addEventListener('tezlify:insert_quick_reply', handleInsertEvent);
+    return () => {
+      window.removeEventListener('tezlify:insert_quick_reply', handleInsertEvent);
+    };
+  }, [refocusDraft]);
 
   const handleSubmit = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();

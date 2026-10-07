@@ -5,7 +5,11 @@ from backend.app.core.config import settings
 def run_db_migrations():
     import asyncio
     from backend.app.core.database import engine
-    from backend.app.core.migrations import ensure_campaigns_columns
+    from backend.app.core.migrations import ensure_campaigns_columns, ensure_quick_replies_table
+    async def _run():
+        await ensure_campaigns_columns(engine)
+        await ensure_quick_replies_table(engine)
+
     try:
         loop = asyncio.get_event_loop()
     except RuntimeError:
@@ -15,9 +19,9 @@ def run_db_migrations():
         # already running loop
         import concurrent.futures
         with concurrent.futures.ThreadPoolExecutor() as pool:
-            pool.submit(lambda: asyncio.run(ensure_campaigns_columns(engine))).result()
+            pool.submit(lambda: asyncio.run(_run())).result()
     else:
-        loop.run_until_complete(ensure_campaigns_columns(engine))
+        loop.run_until_complete(_run())
 
 @pytest.fixture(autouse=True)
 def enable_history_expansion_in_tests():

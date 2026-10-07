@@ -50,7 +50,14 @@ from backend.app.schemas.whatsapp import (
     WhatsAppSyncStatusResponse,
     WhatsAppTypingRequest,
 )
-from backend.app.services import whatsapp_service
+from backend.app.schemas.quick_reply import (
+    QuickReplyCreate,
+    QuickReplyUpdate,
+    QuickReplyResponse,
+    QuickReplyListResponse,
+    QuickReplyDeleteResponse,
+)
+from backend.app.services import whatsapp_service, quick_reply_service
 from backend.app.services.link_preview.service import (
     get_preview_image_bytes as _get_preview_image_bytes,
 )
@@ -1020,5 +1027,79 @@ async def get_group_participants(
     return await whatsapp_service.get_group_participants(
         db, current_user.id, conversation_id
     )
+
+
+# ---------------------------------------------------------------------------
+# Hazır Cevaplar & Satış Şablonları (Quick Replies)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/quick-replies", response_model=QuickReplyListResponse)
+async def list_quick_replies(
+    category: Optional[str] = Query(None, description="Kategori filtresi"),
+    search: Optional[str] = Query(None, description="Kısayol, başlık veya içerik arama"),
+    current_user: AuthUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> QuickReplyListResponse:
+    """Kullanıcıya özel WhatsApp hazır cevapları listeler. Boşsa varsayılanları tohumlar."""
+    items = await quick_reply_service.list_quick_replies(
+        db, current_user.id, category=category, search=search
+    )
+    return QuickReplyListResponse(
+        items=[QuickReplyResponse.model_validate(item) for item in items],
+        total=len(items),
+    )
+
+
+@router.post(
+    "/quick-replies",
+    response_model=QuickReplyResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_quick_reply(
+    payload: QuickReplyCreate,
+    current_user: AuthUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> QuickReplyResponse:
+    """Yeni bir hazır cevap oluşturur."""
+    try:
+        item = await quick_reply_service.create_quick_reply(db, current_user.id, payload)
+        return QuickReplyResponse.model_validate(item)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+@router.patch("/quick-replies/{quick_reply_id}", response_model=QuickReplyResponse)
+async def update_quick_reply(
+    quick_reply_id: int,
+    payload: QuickReplyUpdate,
+    current_user: AuthUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> QuickReplyResponse:
+    """Mevcut hazır cevabı günceller."""
+    try:
+        item = await quick_reply_service.update_quick_reply(
+            db, current_user.id, quick_reply_id, payload
+        )
+        return QuickReplyResponse.model_validate(item)
+    except LookupError as exc:
+        raise _not_found(exc) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+@router.delete("/quick-replies/{quick_reply_id}", response_model=QuickReplyDeleteResponse)
+async def delete_quick_reply(
+    quick_reply_id: int,
+    current_user: AuthUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> QuickReplyDeleteResponse:
+    """Hazır cevabı siler."""
+    try:
+        await quick_reply_service.delete_quick_reply(db, current_user.id, quick_reply_id)
+        return QuickReplyDeleteResponse(success=True, id=quick_reply_id)
+    except LookupError as exc:
+        raise _not_found(exc) from exc
+
 
 

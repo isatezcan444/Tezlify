@@ -538,6 +538,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   const [drawerLead, setDrawerLead] = useState<Lead | null>(null);
   const [isLeadDrawerOpen, setIsLeadDrawerOpen] = useState<boolean>(false);
   const [isTemplateModalOpen, setIsTemplateModalOpen] = useState<boolean>(false);
+  const [insertedComposerText, setInsertedComposerText] = useState<{ text: string; timestamp: number } | null>(null);
   const [isNewChatModalOpen, setIsNewChatModalOpen] = useState<boolean>(false);
   const [isSyncingChats, setIsSyncingChats] = useState<boolean>(false);
   const conversationsGenerationRef = useRef(0);
@@ -3550,6 +3551,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                     key={selectedConv.id}
                     replyingTo={replyingTo}
                     onCancelReply={() => setReplyingTo(null)}
+                    insertedText={insertedComposerText}
                     onSend={async (text) => {
                       try {
                         await activeSendMessage(text);
@@ -3607,6 +3609,10 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                   isOpen={isTemplateModalOpen}
                   onClose={() => setIsTemplateModalOpen(false)}
                   leadName={selectedConv.lead_name}
+                  onSelectTemplate={(renderedText) => {
+                    setInsertedComposerText({ text: renderedText, timestamp: Date.now() });
+                    setIsTemplateModalOpen(false);
+                  }}
                   onSendTemplate={async (templateKey, variables) => {
                     try {
                       await activeSendTemplate(templateKey, variables);

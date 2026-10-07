@@ -23,6 +23,9 @@ import {
   ConversationDetail,
   ConversationMessagesResponse,
   MessageReaction,
+  QuickReply,
+  QuickReplyCreateRequest,
+  QuickReplyUpdateRequest,
   WhatsAppSession,
   WhatsAppTemplate,
   ConversationStatus,
@@ -334,23 +337,65 @@ export class WhatsAppRepository {
   }
 
   /**
-   * A6 — WhatsApp Business API templates (Cloud API) are NOT part of the
-   * Baileys gateway contract; the backend exposes no template endpoint.
-   * Fail CLOSED and honestly: the error propagates to the UI, which must
-   * surface a real toast/error state instead of a silent empty grid.
-   * (Error message is an i18n key — the UI layer translates it.)
+   * Quick Replies / Canned Responses CRUD
+   */
+  static async getQuickReplies(params?: { category?: string; search?: string }): Promise<QuickReply[]> {
+    await requireLive();
+    return WhatsAppApi.getQuickReplies(params);
+  }
+
+  static async createQuickReply(data: QuickReplyCreateRequest): Promise<QuickReply> {
+    await requireLive();
+    return WhatsAppApi.createQuickReply(data);
+  }
+
+  static async updateQuickReply(id: number, data: QuickReplyUpdateRequest): Promise<QuickReply> {
+    await requireLive();
+    return WhatsAppApi.updateQuickReply(id, data);
+  }
+
+  static async deleteQuickReply(id: number): Promise<{ success: boolean; id: number }> {
+    await requireLive();
+    return WhatsAppApi.deleteQuickReply(id);
+  }
+
+  /**
+   * Quick reply template bridge.
+   * Maps user's quick replies to WhatsAppTemplate structures for existing callers.
    */
   static async getTemplates(): Promise<WhatsAppTemplate[]> {
-    throw new WhatsAppApiError('whatsapp.templatesNotAvailable');
+    const qrs = await this.getQuickReplies();
+    return qrs.map((qr) => ({
+      key: qr.shortcut,
+      name: qr.title,
+      category: qr.category || 'GENERAL',
+      body_pattern: qr.content,
+      variables: (qr.variables || []).map((v) => ({
+        key: v.key,
+        label: v.label,
+        default_from: v.default_from,
+        default_value: v.default_value,
+      })),
+    }));
   }
 
   static async sendTemplate(
-    _conversationId: number,
-    _templateKey: string,
-    _variables: Record<string, string> = {},
-    _idempotencyKey?: string,
+    conversationId: number,
+    templateKey: string,
+    variables: Record<string, string> = {},
+    idempotencyKey?: string,
   ): Promise<any> {
-    throw new WhatsAppApiError('whatsapp.templatesNotAvailable');
+    await requireLive();
+    const templates = await this.getTemplates();
+    const tmpl = templates.find((t) => t.key === templateKey);
+    let body = tmpl ? tmpl.body_pattern : templateKey;
+    if (tmpl && tmpl.variables) {
+      for (const v of tmpl.variables) {
+        const val = variables[v.key] ?? v.default_value ?? '';
+        body = body.replace(new RegExp(`\\{${v.key}\\}`, 'g'), val);
+      }
+    }
+    return this.sendMessage(conversationId, body, idempotencyKey);
   }
 
   /**

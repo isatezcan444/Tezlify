@@ -17,6 +17,9 @@ import {
   LiveModeStatus,
   Message,
   MessageReaction,
+  QuickReply,
+  QuickReplyCreateRequest,
+  QuickReplyUpdateRequest,
   SessionSyncState,
   WhatsAppSession,
   WhatsAppSyncJob,
@@ -1180,6 +1183,27 @@ export const WhatsAppApi = {
     };
     window.addEventListener('tezlify:ws_event', handler);
     return () => window.removeEventListener('tezlify:ws_event', handler);
+  },
+
+  async getQuickReplies(params?: { category?: string; search?: string; signal?: AbortSignal }): Promise<QuickReply[]> {
+    const qs = new URLSearchParams();
+    if (params?.category) qs.set('category', params.category);
+    if (params?.search) qs.set('search', params.search);
+    const suffix = qs.toString() ? `?${qs.toString()}` : '';
+    const data = await apiGet<{ items: QuickReply[]; total: number }>(`/whatsapp/quick-replies${suffix}`, params?.signal);
+    return data.items || [];
+  },
+
+  async createQuickReply(data: QuickReplyCreateRequest): Promise<QuickReply> {
+    return apiSend<QuickReply>('/whatsapp/quick-replies', 'POST', data);
+  },
+
+  async updateQuickReply(id: number, data: QuickReplyUpdateRequest): Promise<QuickReply> {
+    return apiSend<QuickReply>(`/whatsapp/quick-replies/${id}`, 'PATCH', data);
+  },
+
+  async deleteQuickReply(id: number): Promise<{ success: boolean; id: number }> {
+    return apiSend<{ success: boolean; id: number }>(`/whatsapp/quick-replies/${id}`, 'DELETE');
   },
 
   useLiveMode,

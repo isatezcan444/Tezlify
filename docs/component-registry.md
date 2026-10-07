@@ -219,8 +219,8 @@ src/
 - **Import**: `import { SessionCard } from '@/features/whatsapp/components';`
 
 #### `TemplateSelectModal`
-- **Purpose**: Modal for selecting pre-approved WhatsApp business templates with automated recipient variable pre-filling, real-time message preview, and one-click dispatch.
-- **Props**: `isOpen: boolean`, `onClose: () => void`, `leadName?: string`, `onSendTemplate: (templateKey: string, variables: Record<string, string>) => Promise<void>`.
+- **Purpose**: Modal for selecting, searching, creating, editing, and deleting WhatsApp Quick Replies / Canned Responses with automated recipient variable pre-filling (`{isim}`), real-time message preview, and insertion directly into the chat composer or one-click dispatch.
+- **Props**: `isOpen: boolean`, `onClose: () => void`, `leadName?: string`, `onSelectTemplate?: (renderedText: string) => void`, `onSendTemplate?: (templateKey: string, variables: Record<string, string>) => Promise<void>`.
 - **Import**: `import { TemplateSelectModal } from '@/features/whatsapp/components';`
 
 #### `NewChatModal`

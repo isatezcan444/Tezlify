@@ -425,6 +425,41 @@ export interface WhatsAppTemplate {
   variables: WhatsAppTemplateVariable[];
 }
 
+export interface QuickReplyVariable {
+  key: string;
+  label: string;
+  default_from?: string;
+  default_value?: string;
+}
+
+export interface QuickReply {
+  id: number;
+  user_id?: string | null;
+  shortcut: string;
+  title: string;
+  content: string;
+  category?: string | null;
+  variables?: QuickReplyVariable[] | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface QuickReplyCreateRequest {
+  shortcut: string;
+  title: string;
+  content: string;
+  category?: string;
+  variables?: QuickReplyVariable[];
+}
+
+export interface QuickReplyUpdateRequest {
+  shortcut?: string;
+  title?: string;
+  content?: string;
+  category?: string;
+  variables?: QuickReplyVariable[];
+}
+
 export interface Conversation {
   id: number;
   lead_id?: number | null;

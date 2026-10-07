@@ -2065,4 +2065,14 @@ async def ensure_keyset_and_ordering_indexes(engine: AsyncEngine) -> None:
         logger.warning("[MIGRATION] ensure_keyset_and_ordering_indexes: %s", exc)
 
 
+async def ensure_quick_replies_table(engine: AsyncEngine) -> None:
+    """WhatsApp hazır cevaplar (whatsapp_quick_replies) tablosunu güvence altına alır."""
+    from backend.app.models.quick_reply import QuickReply
+
+    async with engine.begin() as conn:
+        await conn.run_sync(QuickReply.__table__.create, checkfirst=True)
+    logger.info("[MIGRATION] ensure_quick_replies_table verified")
+
+
+
 
