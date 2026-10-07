@@ -16,7 +16,6 @@ import {
   Mic,
   Music,
   Trash2,
-  Upload,
   X
 } from 'lucide-react';
 import { Button } from '../../../components/ui/button';
@@ -347,47 +346,6 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
     setIsFileModalOpen(true);
   };
 
-  // Drag & drop state and handlers for files/images
-  const [isDragOver, setIsDragOver] = useState(false);
-  const dragCounterRef = useRef(0);
-
-  const handleDragEnter = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    dragCounterRef.current++;
-    if (e.dataTransfer.items && e.dataTransfer.items.length > 0) {
-      setIsDragOver(true);
-    }
-  };
-
-  const handleDragLeave = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    dragCounterRef.current--;
-    if (dragCounterRef.current <= 0) {
-      dragCounterRef.current = 0;
-      setIsDragOver(false);
-    }
-  };
-
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-  };
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    dragCounterRef.current = 0;
-    setIsDragOver(false);
-    if (disabled || isClosed || !isWindowOpen) return;
-    const dropped = e.dataTransfer.files ? Array.from(e.dataTransfer.files) : [];
-    if (dropped.length > 0 && onSendMediaFile) {
-      setPendingFiles((prev) => (prev.length > 0 ? [...prev, ...dropped] : dropped));
-      setIsFileModalOpen(true);
-    }
-  };
-
   // Clipboard paste (Ctrl+V / Cmd+V) for screenshots, images and files
   const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement | HTMLInputElement>) => {
     if (disabled || isClosed || !isWindowOpen) return;
@@ -664,22 +622,9 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
   return (
     <div
       ref={composerRootRef}
-      onDragEnter={handleDragEnter}
-      onDragLeave={handleDragLeave}
-      onDragOver={handleDragOver}
-      onDrop={handleDrop}
       style={{ paddingBottom: 'max(0.75rem, env(safe-area-inset-bottom, 0px))' }}
       className="relative p-3 border-t border-slate-200/80 dark:border-white/[0.08] bg-slate-50/50 dark:bg-black/20"
     >
-      {/* Drop files overlay */}
-      {isDragOver && (
-        <div className="absolute inset-0 z-40 rounded-2xl bg-[#0b141a]/90 backdrop-blur-xs border-2 border-dashed border-[#25D366] flex items-center justify-center gap-2.5 animate-in fade-in duration-150 pointer-events-none">
-          <Upload className="w-5 h-5 text-[#25D366] animate-bounce" />
-          <span className="text-xs font-bold text-white tracking-wide">
-            {t('whatsapp.dropFilesHere')}
-          </span>
-        </div>
-      )}
 
       {/* 1. Closed Conversation Notice */}
       {isClosed && (
