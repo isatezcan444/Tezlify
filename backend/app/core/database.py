@@ -62,10 +62,7 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
         try:
             yield session
             if session.is_active:
-                try:
-                    await session.commit()
-                except Exception:
-                    pass
+                await session.commit()
         except Exception:
             if session.is_active:
                 try:
