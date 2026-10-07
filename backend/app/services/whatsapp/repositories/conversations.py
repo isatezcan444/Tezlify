@@ -13,16 +13,32 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
-_conversation_locks: Dict[Tuple[str, int], asyncio.Lock] = {}
+from collections import OrderedDict
+
+_MAX_CONVERSATION_LOCKS: int = 1000
+_conversation_locks: OrderedDict[Tuple[str, int], asyncio.Lock] = OrderedDict()
 
 
 def get_conversation_lock(user_id: str, conversation_id: int) -> asyncio.Lock:
     """Tek bir sohbet basina async kilit (manual scroll + background hydration kesisimi)."""
     key = (str(user_id), int(conversation_id))
     lock = _conversation_locks.get(key)
-    if lock is None:
-        lock = asyncio.Lock()
-        _conversation_locks[key] = lock
+    if lock is not None:
+        _conversation_locks.move_to_end(key)
+        return lock
+
+    while len(_conversation_locks) >= _MAX_CONVERSATION_LOCKS:
+        pruned = False
+        for old_key, old_lock in list(_conversation_locks.items()):
+            if not old_lock.locked():
+                del _conversation_locks[old_key]
+                pruned = True
+                break
+        if not pruned:
+            break
+
+    lock = asyncio.Lock()
+    _conversation_locks[key] = lock
     return lock
 
 
