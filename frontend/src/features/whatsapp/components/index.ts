@@ -16,3 +16,4 @@ export * from './MediaLightbox';
 export * from './DocumentViewer';
 export * from './ChatInfoDrawer';
 export * from './ForwardModal';
+export * from './MediaSendModal';

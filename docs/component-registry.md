@@ -268,6 +268,11 @@ src/
 - **Props**: `isOpen: boolean`, `onClose: () => void`, `messagesToForward: Message[]`, `conversations: Conversation[]`, `onConfirmForward: (targetConversationIds: number[], messages: Message[]) => Promise<void> | void`.
 - **Import**: `import { ForwardModal } from '@/features/whatsapp/components';`
 
+#### `MediaSendModal`
+- **Purpose**: WhatsApp Web authentic full-screen media and document send preview modal. Portaled to `document.body` with `z-[99999]`. Supports clipboard paste (`Ctrl+V` / `Cmd+V`), file drag-and-drop, and attachment file picker. Shows high-fidelity previews for images (with 90° rotation and HD badge), videos (with player and size badge), audio, and documents/archives (folded paper card with extension badge and file size). Features a capsule caption input with inline emoji picker and green circular WhatsApp send button.
+- **Props**: `isOpen: boolean`, `onClose: () => void`, `file: File | null`, `caption: string`, `onCaptionChange: (caption: string) => void`, `onSend: () => Promise<void> | void`, `isSending: boolean`, `onPickAnotherFile?: () => void`.
+- **Import**: `import { MediaSendModal } from '@/features/whatsapp/components';`
+
 #### `useWhatsAppLoadingGate` (hook)
 - **Purpose**: Single-authority QR post-pairing loading gate state (WhatsApp Web parity). Fed only by real signals — backend `GET /whatsapp/loading-gate` (REST bootstrap on mount + WS reconnect) and WS `whatsapp_loading_gate` / `session_sync_*` events. No polling, no fake timers. Fires the `onReady` callback exactly once when `phase` transitions to `ready`, so the hub can auto-switch to the Live Conversations tab and eagerly load chats.
 - **Signature**: `useWhatsAppLoadingGate(onReady?: () => void) => { gate, dismiss, refresh }`.

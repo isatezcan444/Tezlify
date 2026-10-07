@@ -16,12 +16,14 @@ import {
   Mic,
   Music,
   Trash2,
+  Upload,
   X
 } from 'lucide-react';
 import { Button } from '../../../components/ui/button';
 import { Tooltip } from '../../../components/ui/Tooltip';
 import { Modal } from '../../../components/ui/Modal';
 import { EmojiPicker } from './EmojiPicker';
+import { MediaSendModal } from './MediaSendModal';
 import { useI18n } from '../../../context/I18nContext';
 import { useToast } from '../../../context/ToastContext';
 
@@ -77,7 +79,6 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
   const [fileCaption, setFileCaption] = useState('');
   const [sendingFile, setSendingFile] = useState(false);
   const [isFileModalOpen, setIsFileModalOpen] = useState(false);
-  const [filePreviewUrl, setFilePreviewUrl] = useState<string | null>(null);
 
   // Live Voice Recording State
   const [isRecording, setIsRecording] = useState(false);
@@ -236,21 +237,6 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isRecording, cancelRecording]);
 
-  useEffect(() => {
-    if (!pendingFile) {
-      setFilePreviewUrl(null);
-      return;
-    }
-    if (pendingFile.type.startsWith('image/') || pendingFile.type.startsWith('audio/')) {
-      const url = URL.createObjectURL(pendingFile);
-      setFilePreviewUrl(url);
-      return () => {
-        URL.revokeObjectURL(url);
-      };
-    }
-    setFilePreviewUrl(null);
-  }, [pendingFile]);
-
   const attachMenuRef = useRef<HTMLDivElement>(null);
   const emojiContainerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -346,6 +332,107 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
     setFileCaption('');
     setIsFileModalOpen(true);
   };
+
+  // Drag & drop state and handlers for files/images
+  const [isDragOver, setIsDragOver] = useState(false);
+  const dragCounterRef = useRef(0);
+
+  const handleDragEnter = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current++;
+    if (e.dataTransfer.items && e.dataTransfer.items.length > 0) {
+      setIsDragOver(true);
+    }
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current--;
+    if (dragCounterRef.current <= 0) {
+      dragCounterRef.current = 0;
+      setIsDragOver(false);
+    }
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current = 0;
+    setIsDragOver(false);
+    if (disabled || isClosed || !isWindowOpen) return;
+    const file = e.dataTransfer.files?.[0];
+    if (file && onSendMediaFile) {
+      setPendingFile(file);
+      setFileCaption('');
+      setIsFileModalOpen(true);
+    }
+  };
+
+  // Clipboard paste (Ctrl+V / Cmd+V) for screenshots, images and files
+  const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement | HTMLInputElement>) => {
+    if (disabled || isClosed || !isWindowOpen) return;
+    const items = e.clipboardData?.items;
+    let fileFound: File | null = null;
+    if (items) {
+      for (let i = 0; i < items.length; i++) {
+        if (items[i].kind === 'file') {
+          fileFound = items[i].getAsFile();
+          if (fileFound) break;
+        }
+      }
+    }
+    if (!fileFound && e.clipboardData?.files && e.clipboardData.files.length > 0) {
+      fileFound = e.clipboardData.files[0];
+    }
+
+    if (fileFound && onSendMediaFile) {
+      e.preventDefault();
+      setPendingFile(fileFound);
+      setFileCaption('');
+      setIsFileModalOpen(true);
+    }
+  };
+
+  // Window-level paste listener: catches screenshots even if chat thread is focused
+  useEffect(() => {
+    const handleGlobalPaste = (e: ClipboardEvent) => {
+      if (disabled || isClosed || !isWindowOpen || !onSendMediaFile) return;
+      const target = e.target as HTMLElement | null;
+      if (target && target !== draftInputRef.current && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) {
+        if (!e.clipboardData?.files || e.clipboardData.files.length === 0) return;
+      }
+      const items = e.clipboardData?.items;
+      let fileFound: File | null = null;
+      if (items) {
+        for (let i = 0; i < items.length; i++) {
+          if (items[i].kind === 'file') {
+            fileFound = items[i].getAsFile();
+            if (fileFound) break;
+          }
+        }
+      }
+      if (!fileFound && e.clipboardData?.files && e.clipboardData.files.length > 0) {
+        fileFound = e.clipboardData.files[0];
+      }
+
+      if (fileFound) {
+        e.preventDefault();
+        setPendingFile(fileFound);
+        setFileCaption('');
+        setIsFileModalOpen(true);
+      }
+    };
+
+    window.addEventListener('paste', handleGlobalPaste);
+    return () => window.removeEventListener('paste', handleGlobalPaste);
+  }, [disabled, isClosed, isWindowOpen, onSendMediaFile]);
 
   // Single-flight guard. `sending` below is only for rendering; it cannot
   // prevent a duplicate, because React commits state asynchronously and a
@@ -505,8 +592,8 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
     }
   };
 
-  const handleFileSend = async (ev: React.FormEvent) => {
-    ev.preventDefault();
+  const handleFileSend = async (ev?: React.FormEvent) => {
+    if (ev) ev.preventDefault();
     if (!pendingFile || !onSendMediaFile || sendingFile) return;
     setSendingFile(true);
     try {
@@ -556,9 +643,23 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
   return (
     <div
       ref={composerRootRef}
+      onDragEnter={handleDragEnter}
+      onDragLeave={handleDragLeave}
+      onDragOver={handleDragOver}
+      onDrop={handleDrop}
       style={{ paddingBottom: 'max(0.75rem, env(safe-area-inset-bottom, 0px))' }}
-      className="p-3 border-t border-slate-200/80 dark:border-white/[0.08] bg-slate-50/50 dark:bg-black/20"
+      className="relative p-3 border-t border-slate-200/80 dark:border-white/[0.08] bg-slate-50/50 dark:bg-black/20"
     >
+      {/* Drop files overlay */}
+      {isDragOver && (
+        <div className="absolute inset-0 z-40 rounded-2xl bg-[#0b141a]/90 backdrop-blur-xs border-2 border-dashed border-[#25D366] flex items-center justify-center gap-2.5 animate-in fade-in duration-150 pointer-events-none">
+          <Upload className="w-5 h-5 text-[#25D366] animate-bounce" />
+          <span className="text-xs font-bold text-white tracking-wide">
+            {t('whatsapp.dropFilesHere')}
+          </span>
+        </div>
+      )}
+
       {/* 1. Closed Conversation Notice */}
       {isClosed && (
         <div className="flex items-center justify-between mb-2.5 px-3 py-2 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-600 dark:text-rose-400 text-xs">
@@ -827,6 +928,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
                   e.target.style.height = `${Math.min(e.target.scrollHeight, 120)}px`;
                 }}
                 onKeyDown={handleKeyDown}
+                onPaste={handlePaste}
                 placeholder={
                   isClosed
                     ? (t('whatsapp.closedPlaceholder'))
@@ -980,9 +1082,9 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
         </Modal>
       )}
 
-      {/* 5. Picked-File Caption Modal (WhatsApp Web: dosya sec -> aciklama -> gonder) */}
+      {/* 5. Picked-File Caption Modal (WhatsApp Web: dosya sec / yapistir / surukle -> onizle -> aciklama -> gonder) */}
       {isFileModalOpen && pendingFile && (
-        <Modal
+        <MediaSendModal
           isOpen={isFileModalOpen}
           onClose={() => {
             if (!sendingFile) {
@@ -990,74 +1092,13 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
               setPendingFile(null);
             }
           }}
-          title={t('whatsapp.sendFileTitle')}
-          subtitle={pendingFile.name}
-          icon={pendingFile.type.startsWith('image/') ? ImageIcon : pendingFile.type.startsWith('audio/') ? Music : FileText}
-          maxWidth="md"
-        >
-          <form onSubmit={handleFileSend} className="space-y-4">
-            {pendingFile.type.startsWith('image/') && filePreviewUrl && (
-              <div className="rounded-xl overflow-hidden border border-black/5 dark:border-white/10 bg-slate-950/5 dark:bg-black/20 flex items-center justify-center p-2">
-                <img
-                  src={filePreviewUrl}
-                  alt={pendingFile.name}
-                  className="max-h-52 w-auto object-contain"
-                />
-              </div>
-            )}
-            {pendingFile.type.startsWith('audio/') && filePreviewUrl && (
-              <div className="rounded-xl overflow-hidden border border-black/5 dark:border-white/10 bg-slate-950/5 dark:bg-black/20 p-3 flex flex-col items-center justify-center gap-2">
-                <div className="w-10 h-10 rounded-full bg-[#FF9F43]/15 text-[#FF9F43] flex items-center justify-center">
-                  <Music className="w-5 h-5" />
-                </div>
-                <audio controls src={filePreviewUrl} className="w-full h-10 mt-1" />
-              </div>
-            )}
-            <div className="space-y-1.5">
-              <label className="text-[11px] font-bold text-slate-700 dark:text-slate-300">
-                {t('whatsapp.captionLabel')}
-              </label>
-              <input
-                type="text"
-                value={fileCaption}
-                onChange={(e) => setFileCaption(e.target.value)}
-                placeholder={t('whatsapp.captionPlaceholder')}
-                className="w-full px-3 py-2 text-xs rounded-xl vuexy-input font-medium"
-              />
-            </div>
-            <p className="text-[10px] font-mono text-slate-400 dark:text-slate-500">
-              {pendingFile.type || 'application/octet-stream'} · {(pendingFile.size / 1024).toFixed(1)} KB
-            </p>
-            <div className="flex items-center justify-end space-x-2 pt-2 border-t border-slate-200/80 dark:border-white/[0.08]">
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  setIsFileModalOpen(false);
-                  setPendingFile(null);
-                }}
-                disabled={sendingFile}
-                className="text-xs font-bold"
-              >
-                {t('common.cancel')}
-              </Button>
-              <Button
-                type="submit"
-                size="sm"
-                disabled={sendingFile}
-                className="bg-[#25D366] hover:bg-[#1EBE5D] text-white text-xs font-bold space-x-1.5 shadow-sm cursor-pointer"
-              >
-                {sendingFile ? (
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                ) : (
-                  <Send className="w-3.5 h-3.5" />
-                )}
-                <span>{t('whatsapp.sendFileBtn')}</span>
-              </Button>
-            </div>
-          </form>
-        </Modal>
+          file={pendingFile}
+          caption={fileCaption}
+          onCaptionChange={setFileCaption}
+          onSend={handleFileSend}
+          isSending={sendingFile}
+          onPickAnotherFile={() => openFilePicker('*')}
+        />
       )}
     </div>
   );
