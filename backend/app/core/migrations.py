@@ -2028,4 +2028,41 @@ async def ensure_campaigns_columns(engine: AsyncEngine) -> None:
         logger.warning("[MIGRATION] ensure_campaigns_columns atlandi: %s", exc)
 
 
+async def ensure_keyset_and_ordering_indexes(engine: AsyncEngine) -> None:
+    """Creates composite indexes for message keyset pagination and conversation list ordering.
+
+    1. idx_msg_keyset_ordering:
+       ON messages (conversation_id, COALESCE(external_timestamp, sent_at, created_at) DESC, id DESC)
+    2. idx_conv_user_channel_last_msg:
+       ON conversations (user_id, channel, last_message_at DESC NULLS LAST, id DESC)
+    """
+    dialect = engine.dialect.name
+    try:
+        if dialect == "postgresql":
+            autocommit_engine = engine.execution_options(isolation_level="AUTOCOMMIT")
+            async with autocommit_engine.connect() as conn:
+                await conn.execute(text(
+                    "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_msg_keyset_ordering "
+                    "ON messages (conversation_id, COALESCE(external_timestamp, sent_at, created_at) DESC, id DESC)"
+                ))
+                await conn.execute(text(
+                    "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_conv_user_channel_last_msg "
+                    "ON conversations (user_id, channel, last_message_at DESC NULLS LAST, id DESC)"
+                ))
+                logger.info("[MIGRATION] PostgreSQL keyset and ordering indexes verified")
+        elif dialect == "sqlite":
+            async with engine.begin() as conn:
+                await conn.execute(text(
+                    "CREATE INDEX IF NOT EXISTS idx_msg_keyset_ordering "
+                    "ON messages (conversation_id, coalesce(external_timestamp, sent_at, created_at) DESC, id DESC)"
+                ))
+                await conn.execute(text(
+                    "CREATE INDEX IF NOT EXISTS idx_conv_user_channel_last_msg "
+                    "ON conversations (user_id, channel, last_message_at DESC, id DESC)"
+                ))
+                logger.info("[MIGRATION] SQLite keyset and ordering indexes verified")
+    except Exception as exc:
+        logger.warning("[MIGRATION] ensure_keyset_and_ordering_indexes: %s", exc)
+
+
 
