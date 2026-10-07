@@ -72,6 +72,7 @@ import {
   rememberRawMessage,
   lookupRawMessage,
   messageTimestampMs,
+  boundMessagesByChat,
 } from './messages/message-store.js';
 
 import { createMediaStore } from './media/media-store.js';
@@ -1949,6 +1950,7 @@ export function createSessionManager({
       if (chatMsgs.length > 2000) {
         chatMsgs.splice(0, chatMsgs.length - 2000);
       }
+      boundMessagesByChat(store, key);
       // Metinsiz sistem turleri (arama / ifade / silinmis mesaj / grup bildirimi)
       // `buildChatPreview`ten BOS doner. Onizlemeyi bos birakmak satiri UI'da bos
       // gosterir VE backend'in aktivite damgasi kapisini tetikler.
@@ -2060,6 +2062,7 @@ export function createSessionManager({
       if (outList.length > 2000) {
         outList.splice(0, outList.length - 2000);
       }
+      boundMessagesByChat(store, key);
       this._touchChat(session, key, buildChatPreview(msg, key.includes('@g.us')), msg.created_at);
       emitEvent({
         event: 'message_new',

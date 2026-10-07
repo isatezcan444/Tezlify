@@ -15,6 +15,22 @@ import { createBoundedCache } from '../domain/bounded-cache.js';
 import { createContactCache } from './contact-cache.js';
 
 export const RAW_MESSAGE_STORE_MAX = 2000;
+export const MESSAGES_BY_CHAT_MAX_CHATS = 300;
+
+export function boundMessagesByChat(store, currentKey) {
+  if (!store?.messagesByChat) return;
+  const { messagesByChat } = store;
+  if (currentKey && messagesByChat.has(currentKey)) {
+    const val = messagesByChat.get(currentKey);
+    messagesByChat.delete(currentKey);
+    messagesByChat.set(currentKey, val);
+  }
+  while (messagesByChat.size > MESSAGES_BY_CHAT_MAX_CHATS) {
+    const oldestKey = messagesByChat.keys().next().value;
+    if (!oldestKey || oldestKey === currentKey) break;
+    messagesByChat.delete(oldestKey);
+  }
+}
 
 const CONTACTS_MUTATORS = new Set(['set', 'delete', 'clear']);
 
