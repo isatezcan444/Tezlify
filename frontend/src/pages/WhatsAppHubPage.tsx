@@ -203,6 +203,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
 
   useEffect(() => {
     setReplyingTo(null);
+    setInsertedComposerText(null);
     setIsChatSearchOpen(false);
     setChatSearchQuery('');
     setChatSearchCurrentIndex(0);
@@ -1327,6 +1328,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   // loadConversations, refreshSyncStatus deps []) -> stable identity, no stale closure.
   const handleSelectConversation = useCallback((c: Conversation) => {
     setSelectedConv(c);
+    setInsertedComposerText(null);
     setMessageLoadState((prev) => (prev[c.id] === 'ready' ? prev : { ...prev, [c.id]: 'loading' }));
     if (c.unread_count > 0) {
       lastMarkedReadConvIdRef.current = c.id;
