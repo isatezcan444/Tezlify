@@ -48,6 +48,8 @@ export interface ChatComposerProps {
   replyingTo?: QuotedMessage | null;
   onCancelReply?: () => void;
   insertedText?: { text: string; timestamp: number } | null;
+  stagedFiles?: { files: File[]; timestamp: number } | null;
+  onClearStagedFiles?: () => void;
 }
 
 export const ChatComposer: React.FC<ChatComposerProps> = ({
@@ -64,6 +66,8 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
   replyingTo,
   onCancelReply,
   insertedText,
+  stagedFiles,
+  onClearStagedFiles,
 }) => {
   const { t } = useI18n();
   const toast = useToast();
@@ -75,9 +79,11 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
   const [mediaCaption, setMediaCaption] = useState('');
   const [mediaFilename, setMediaFilename] = useState('');
   const [sendingMedia, setSendingMedia] = useState(false);
-  const [pendingFile, setPendingFile] = useState<File | null>(null);
-  const [fileCaption, setFileCaption] = useState('');
-  const [sendingFile, setSendingFile] = useState(false);
+  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
+  const [activeFileIndex, setActiveFileIndex] = useState<number>(0);
+  const [fileCaptions, setFileCaptions] = useState<Record<number, string>>({});
+  const [sendingFiles, setSendingFiles] = useState(false);
+  const [sendingIndex, setSendingIndex] = useState<number>(0);
   const [isFileModalOpen, setIsFileModalOpen] = useState(false);
 
   // Live Voice Recording State
@@ -316,6 +322,16 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
     };
   }, []);
 
+  // Synchronize externally staged files (e.g. dropped onto the chat thread or column)
+  useEffect(() => {
+    if (stagedFiles && stagedFiles.files && stagedFiles.files.length > 0 && onSendMediaFile) {
+      setPendingFiles((prev) => (prev.length > 0 ? [...prev, ...stagedFiles.files] : stagedFiles.files));
+      setActiveFileIndex(0);
+      setIsFileModalOpen(true);
+      onClearStagedFiles?.();
+    }
+  }, [stagedFiles, onSendMediaFile, onClearStagedFiles]);
+
   const openFilePicker = (accept: string) => {
     if (fileInputRef.current) {
       fileInputRef.current.accept = accept;
@@ -325,11 +341,9 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
   };
 
   const handleFileChosen = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    if (!onSendMediaFile) return;
-    setPendingFile(file);
-    setFileCaption('');
+    const chosen = e.target.files ? Array.from(e.target.files) : [];
+    if (chosen.length === 0 || !onSendMediaFile) return;
+    setPendingFiles((prev) => (prev.length > 0 ? [...prev, ...chosen] : chosen));
     setIsFileModalOpen(true);
   };
 
@@ -367,10 +381,9 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
     dragCounterRef.current = 0;
     setIsDragOver(false);
     if (disabled || isClosed || !isWindowOpen) return;
-    const file = e.dataTransfer.files?.[0];
-    if (file && onSendMediaFile) {
-      setPendingFile(file);
-      setFileCaption('');
+    const dropped = e.dataTransfer.files ? Array.from(e.dataTransfer.files) : [];
+    if (dropped.length > 0 && onSendMediaFile) {
+      setPendingFiles((prev) => (prev.length > 0 ? [...prev, ...dropped] : dropped));
       setIsFileModalOpen(true);
     }
   };
@@ -379,23 +392,22 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
   const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement | HTMLInputElement>) => {
     if (disabled || isClosed || !isWindowOpen) return;
     const items = e.clipboardData?.items;
-    let fileFound: File | null = null;
+    const filesFound: File[] = [];
     if (items) {
       for (let i = 0; i < items.length; i++) {
         if (items[i].kind === 'file') {
-          fileFound = items[i].getAsFile();
-          if (fileFound) break;
+          const f = items[i].getAsFile();
+          if (f) filesFound.push(f);
         }
       }
     }
-    if (!fileFound && e.clipboardData?.files && e.clipboardData.files.length > 0) {
-      fileFound = e.clipboardData.files[0];
+    if (filesFound.length === 0 && e.clipboardData?.files) {
+      filesFound.push(...Array.from(e.clipboardData.files));
     }
 
-    if (fileFound && onSendMediaFile) {
+    if (filesFound.length > 0 && onSendMediaFile) {
       e.preventDefault();
-      setPendingFile(fileFound);
-      setFileCaption('');
+      setPendingFiles((prev) => (prev.length > 0 ? [...prev, ...filesFound] : filesFound));
       setIsFileModalOpen(true);
     }
   };
@@ -409,23 +421,22 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
         if (!e.clipboardData?.files || e.clipboardData.files.length === 0) return;
       }
       const items = e.clipboardData?.items;
-      let fileFound: File | null = null;
+      const filesFound: File[] = [];
       if (items) {
         for (let i = 0; i < items.length; i++) {
           if (items[i].kind === 'file') {
-            fileFound = items[i].getAsFile();
-            if (fileFound) break;
+            const f = items[i].getAsFile();
+            if (f) filesFound.push(f);
           }
         }
       }
-      if (!fileFound && e.clipboardData?.files && e.clipboardData.files.length > 0) {
-        fileFound = e.clipboardData.files[0];
+      if (filesFound.length === 0 && e.clipboardData?.files) {
+        filesFound.push(...Array.from(e.clipboardData.files));
       }
 
-      if (fileFound) {
+      if (filesFound.length > 0) {
         e.preventDefault();
-        setPendingFile(fileFound);
-        setFileCaption('');
+        setPendingFiles((prev) => (prev.length > 0 ? [...prev, ...filesFound] : filesFound));
         setIsFileModalOpen(true);
       }
     };
@@ -592,21 +603,31 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
     }
   };
 
-  const handleFileSend = async (ev?: React.FormEvent) => {
-    if (ev) ev.preventDefault();
-    if (!pendingFile || !onSendMediaFile || sendingFile) return;
-    setSendingFile(true);
+  const handleSendAllFiles = async () => {
+    if (pendingFiles.length === 0 || !onSendMediaFile || sendingFiles) return;
+    setSendingFiles(true);
     try {
-      await onSendMediaFile(pendingFile, fileCaption.trim() || undefined);
+      for (let i = 0; i < pendingFiles.length; i++) {
+        setSendingIndex(i);
+        const f = pendingFiles[i];
+        const cap = fileCaptions[i]?.trim() || undefined;
+        await onSendMediaFile(f, cap);
+        if (i < pendingFiles.length - 1) {
+          // Micro delay to maintain dispatch order
+          await new Promise((resolve) => setTimeout(resolve, 350));
+        }
+      }
       stopTypingSignal();
       setIsFileModalOpen(false);
-      setPendingFile(null);
-      setFileCaption('');
+      setPendingFiles([]);
+      setActiveFileIndex(0);
+      setFileCaptions({});
       refocusDraft();
     } catch (err) {
-      console.error('[ChatComposer] File send error:', err);
+      console.error('[ChatComposer] Multi-file send error:', err);
     } finally {
-      setSendingFile(false);
+      setSendingFiles(false);
+      setSendingIndex(0);
     }
   };
 
@@ -856,6 +877,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
         <input
           ref={fileInputRef}
           type="file"
+          multiple
           className="hidden"
           onChange={handleFileChosen}
           aria-hidden="true"
@@ -1083,21 +1105,26 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
       )}
 
       {/* 5. Picked-File Caption Modal (WhatsApp Web: dosya sec / yapistir / surukle -> onizle -> aciklama -> gonder) */}
-      {isFileModalOpen && pendingFile && (
+      {isFileModalOpen && pendingFiles.length > 0 && (
         <MediaSendModal
           isOpen={isFileModalOpen}
           onClose={() => {
-            if (!sendingFile) {
+            if (!sendingFiles) {
               setIsFileModalOpen(false);
-              setPendingFile(null);
+              setPendingFiles([]);
+              setFileCaptions({});
             }
           }}
-          file={pendingFile}
-          caption={fileCaption}
-          onCaptionChange={setFileCaption}
-          onSend={handleFileSend}
-          isSending={sendingFile}
-          onPickAnotherFile={() => openFilePicker('*')}
+          files={pendingFiles}
+          onFilesChange={setPendingFiles}
+          activeIndex={activeFileIndex}
+          onActiveIndexChange={setActiveFileIndex}
+          captions={fileCaptions}
+          onCaptionChange={(idx, val) => setFileCaptions((prev) => ({ ...prev, [idx]: val }))}
+          onSendAll={handleSendAllFiles}
+          isSending={sendingFiles}
+          sendingIndex={sendingIndex}
+          onAddMoreFiles={() => openFilePicker('*')}
         />
       )}
     </div>

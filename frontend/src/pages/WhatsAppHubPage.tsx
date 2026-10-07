@@ -19,6 +19,7 @@ import {
   CheckSquare,
   Forward,
   Copy,
+  Upload,
 } from 'lucide-react';
 import { Tooltip } from '../components/ui/Tooltip';
 import { startWaLatency } from '../features/whatsapp/lib/whatsappLatency';
@@ -194,6 +195,9 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   const [chatSearchCurrentIndex, setChatSearchCurrentIndex] = useState(0);
   const [messagesMap, setMessagesMap] = useState<Record<number, Message[]>>({});
   const [groupParticipantsMap, setGroupParticipantsMap] = useState<Record<number, Array<{ id: string; name: string; is_me: boolean }>>>({});
+  const [stagedComposerFiles, setStagedComposerFiles] = useState<{ files: File[]; timestamp: number } | null>(null);
+  const [isChatDragOver, setIsChatDragOver] = useState(false);
+  const chatDragCounterRef = useRef(0);
   // PHASE 2.K.1 (single variable = onRetry prop identity): dependency-safe refs
   // mirroring the existing conversationsRef/toastRef idiom. They let the retry
   // handler be a STABLE useCallback that reads the LATEST selectedConv/messagesMap
@@ -204,6 +208,9 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   useEffect(() => {
     setReplyingTo(null);
     setInsertedComposerText(null);
+    setStagedComposerFiles(null);
+    setIsChatDragOver(false);
+    chatDragCounterRef.current = 0;
     setIsChatSearchOpen(false);
     setChatSearchQuery('');
     setChatSearchCurrentIndex(0);
@@ -3269,7 +3276,50 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                 className="flex-1 w-full h-full flex overflow-hidden animate-in fade-in-50 duration-150 ease-out"
               >
                 {/* Main Chat Conversation Column */}
-                <div className="flex-1 flex flex-col min-w-0 h-full overflow-hidden">
+                <div
+                  className="relative flex-1 flex flex-col min-w-0 h-full overflow-hidden"
+                  onDragEnter={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    chatDragCounterRef.current++;
+                    if (e.dataTransfer.types && Array.from(e.dataTransfer.types).includes('Files')) {
+                      setIsChatDragOver(true);
+                    }
+                  }}
+                  onDragLeave={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    chatDragCounterRef.current--;
+                    if (chatDragCounterRef.current <= 0) {
+                      chatDragCounterRef.current = 0;
+                      setIsChatDragOver(false);
+                    }
+                  }}
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                  }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    chatDragCounterRef.current = 0;
+                    setIsChatDragOver(false);
+                    const droppedFiles = e.dataTransfer.files ? Array.from(e.dataTransfer.files) : [];
+                    if (droppedFiles.length > 0) {
+                      setStagedComposerFiles({ files: droppedFiles, timestamp: Date.now() });
+                    }
+                  }}
+                >
+                  {isChatDragOver && (
+                    <div className="absolute inset-0 z-50 bg-slate-900/40 dark:bg-black/60 backdrop-blur-sm border-2 border-dashed border-[#25D366] rounded-2xl m-3 flex flex-col items-center justify-center pointer-events-none animate-in fade-in duration-150">
+                      <div className="w-16 h-16 rounded-2xl bg-[#25D366] text-white flex items-center justify-center shadow-lg shadow-[#25D366]/30 mb-3 animate-bounce">
+                        <Upload className="w-8 h-8" />
+                      </div>
+                      <p className="text-base font-bold text-white shadow-sm">
+                        {t('whatsapp.dropFilesHere')}
+                      </p>
+                    </div>
+                  )}
                   {/* Active Chat Header */}
                   <div className="px-3 sm:px-4 py-2 sm:py-2.5 border-b border-slate-200/80 dark:border-white/[0.08] bg-slate-50/70 dark:bg-[#1f2430] flex items-center justify-between shrink-0 gap-2 sm:gap-3 min-w-0">
                     <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1">
@@ -3554,6 +3604,8 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                     replyingTo={replyingTo}
                     onCancelReply={() => setReplyingTo(null)}
                     insertedText={insertedComposerText}
+                    stagedFiles={stagedComposerFiles}
+                    onClearStagedFiles={() => setStagedComposerFiles(null)}
                     onSend={async (text) => {
                       try {
                         await activeSendMessage(text);

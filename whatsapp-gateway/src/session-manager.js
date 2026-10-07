@@ -1191,8 +1191,13 @@ export function createSessionManager({
         this._failOutbound(session.id, key, messageId, error);
         throw error;
       }
-      latency('provider_send_promise_ms', sendStarted, sessionId);
       const resolvedWaId = result?.key?.id || messageId;
+      if (result?.message) {
+        try {
+          const store = this._storeOf(session);
+          rememberRawMessage(store, key, resolvedWaId, result.message);
+        } catch { /* best effort */ }
+      }
       const msg = this._confirmOutboundSent(session.id, key, resolvedWaId, pending.client_message_id);
       return msg;
     },
@@ -1334,6 +1339,12 @@ export function createSessionManager({
         throw error;
       }
       const resolvedWaId = result?.key?.id || messageId;
+      if (result?.message) {
+        try {
+          const store = this._storeOf(session);
+          rememberRawMessage(store, key, resolvedWaId, result.message);
+        } catch { /* best effort */ }
+      }
       const msg = this._confirmOutboundSent(session.id, key, resolvedWaId, pending.client_message_id);
       return msg;
     },
@@ -1813,6 +1824,12 @@ export function createSessionManager({
         return this._ingestReactionMessage(sessionId, msg, key, reactionContent);
       }
 
+      if (msg.key?.id && msg.message) {
+        try {
+          rememberRawMessage(store, key, msg.key.id, msg.message);
+        } catch { /* best effort */ }
+      }
+
       const existingRecord = msg.key?.id
         ? (messagesByChat.get(key) || []).find((m) => m.wa_message_id && m.wa_message_id === msg.key.id)
         : null;
@@ -1838,9 +1855,6 @@ export function createSessionManager({
       }
 
       const lidHold = isLidJid(key);
-      if (msg.key?.id && msg.message) {
-        rememberRawMessage(store, key, msg.key.id, msg.message);
-      }
       const contact = contacts.get(key);
       const isGroup = jid.includes('@g.us');
       const rawText = msg.message?.conversation || msg.message?.extendedTextMessage?.text || msg.message?.imageMessage?.caption || msg.message?.videoMessage?.caption || msg.message?.documentMessage?.caption || '';
