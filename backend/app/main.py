@@ -299,6 +299,14 @@ async def websocket_endpoint(
             data = await websocket.receive_text()
             if data == "ping":
                 await websocket.send_text("pong")
+                continue
+            try:
+                msg = json.loads(data)
+                if isinstance(msg, dict) and msg.get("type") == "ping":
+                    await websocket.send_text(json.dumps({"type": "pong"}))
+                    continue
+            except Exception:
+                pass
     except WebSocketDisconnect:
         pass
     except Exception as e:

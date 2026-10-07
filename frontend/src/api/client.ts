@@ -714,6 +714,28 @@ export function createWebSocket(
   let attempt = 0;
   let authFailures = 0;
   let openedAt = 0;
+  let heartbeatTimer: any = null;
+  const HEARTBEAT_INTERVAL_MS = 25000;
+
+  function stopHeartbeat() {
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+    }
+  }
+
+  function startHeartbeat() {
+    stopHeartbeat();
+    heartbeatTimer = setInterval(() => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        try {
+          ws.send(JSON.stringify({ type: 'ping' }));
+        } catch (e) {
+          // ignore transient send failure if socket closing
+        }
+      }
+    }, HEARTBEAT_INTERVAL_MS);
+  }
 
   function backoffMs(): number {
     const exp = Math.min(WS_BACKOFF_BASE_MS * 2 ** Math.max(0, attempt - 1), WS_BACKOFF_MAX_MS);
@@ -735,6 +757,7 @@ export function createWebSocket(
   /** Döngüyü tamamen durdur ve kullanıcıya görünür hata ver. */
   function stopAndWarn() {
     isManuallyClosed = true;
+    stopHeartbeat();
     if (reconnectTimeout) clearTimeout(reconnectTimeout);
     console.error(
       '[Tezlify WS] WebSocket bağlantısı tekrar tekrar reddedildi. ' +
@@ -797,12 +820,16 @@ export function createWebSocket(
         openedAt = Date.now();
         attempt = 0;
         authFailures = 0;
+        startHeartbeat();
         onStatusChange?.(true);
       };
 
       ws.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
+          if (data && data.type === 'pong') {
+            return;
+          }
           onMessage(data);
         } catch (e) {
           // ignore non-json ping/pong
@@ -810,6 +837,7 @@ export function createWebSocket(
       };
 
       ws.onclose = (event) => {
+        stopHeartbeat();
         onStatusChange?.(false);
         if (isManuallyClosed) return;
         attempt += 1;
@@ -830,10 +858,12 @@ export function createWebSocket(
       };
 
       ws.onerror = (err) => {
+        stopHeartbeat();
         console.warn('[Tezlify WS] Error:', err);
         ws?.close();
       };
     } catch (e) {
+      stopHeartbeat();
       attempt += 1;
       scheduleReconnect();
     }
@@ -844,6 +874,7 @@ export function createWebSocket(
   return {
     close: () => {
       isManuallyClosed = true;
+      stopHeartbeat();
       // Bump first: any reconnect already in flight compares against this and
       // bails instead of resurrecting the socket we are closing.
       closeGeneration += 1;

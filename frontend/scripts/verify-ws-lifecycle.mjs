@@ -276,6 +276,21 @@ await check('a status-less error stays undefined, not a fake 404', () => {
   assert.ok(!(err.status === 404), 'an unknown status must not be mistaken for a transient 404');
 });
 
-console.log(`\n${passed}/11 checks passed`);
+await check('open socket ignores pong events and routes business events', () => {
+  FakeSocket.instances = [];
+  const incoming = [];
+  const sock = createWebSocket((msg) => incoming.push(msg));
+  const s = FakeSocket.instances[0];
+  s.open();
+  // Pong message must be swallowed and not leak to onMessage
+  s.onmessage({ data: JSON.stringify({ type: 'pong' }) });
+  assert.equal(incoming.length, 0, 'pong must not be forwarded to business listener');
+  // Business event must be delivered
+  s.onmessage({ data: JSON.stringify({ event: 'test_event' }) });
+  assert.equal(incoming.length, 1, 'real event must reach business listener');
+  sock.close();
+});
+
+console.log(`\n${passed}/12 checks passed`);
 await rm(tmp, { recursive: true, force: true });
-process.exit(passed === 11 ? 0 : 1);
+process.exit(passed === 12 ? 0 : 1);
