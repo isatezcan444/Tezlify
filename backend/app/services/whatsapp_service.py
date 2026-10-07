@@ -1034,16 +1034,36 @@ async def get_messages(
     # kullaniyoruz (yazicilarin kullandigi anahtarla ayni).
     history_session_id = await _history_evidence_session_id(db, user_id, conv)
     # If DB has fewer than page_size rows, check if an in-flight operation is already fetching this page.
-    if len(rows) < page_size:
+    attempts = 0
+    while len(rows) < page_size and attempts < 2:
+        attempts += 1
         flight_key = (conv.id, before)
         future = _in_flight_history_fetches.get(flight_key)
         if future is not None:
-            await future
-            res = await db.execute(base)
-            rows = list(res.scalars().all())
+            future.waiter_count = getattr(future, "waiter_count", 0) + 1
+            completed = False
+            try:
+                completed = await future
+            except asyncio.CancelledError:
+                current = asyncio.current_task()
+                if current and getattr(current, "cancelling", lambda: 0)() > 0:
+                    raise
+                completed = False
+            finally:
+                future.waiter_count = max(0, getattr(future, "waiter_count", 1) - 1)
+
+            if completed:
+                res = await db.execute(base)
+                rows = list(res.scalars().all())
+                break
+            else:
+                # In-flight producer was cancelled before completing.
+                # Loop around so this waiter can take over without stalling.
+                continue
         else:
             loop = asyncio.get_running_loop()
             new_future = loop.create_future()
+            new_future.waiter_count = 0
             _in_flight_history_fetches[flight_key] = new_future
             try:
                 async with _get_conversation_lock(user_id, conv.id):
@@ -1169,12 +1189,27 @@ async def get_messages(
                                     # actively asking for those messages, so the
                                     # gateway's own full budget applies.
                                     provider_timeout_ms=None,
-                                )
+                                    )
                                 if older:
                                     res = await db.execute(base)
                                     rows = list(res.scalars().all())
                 if not new_future.done():
                     new_future.set_result(True)
+            except asyncio.CancelledError:
+                if not new_future.done():
+                    # If other coroutines are actively waiting, do NOT cancel the shared future
+                    # (which would cancel innocent waiters). Signal completion failure (False)
+                    # so waiters wake up and take over the fetch.
+                    # If NO other coroutines are waiting, cancel the orphaned future cleanly.
+                    if getattr(new_future, "waiter_count", 0) > 0:
+                        new_future.set_result(False)
+                    else:
+                        new_future.cancel()
+                        try:
+                            new_future.exception()
+                        except (Exception, asyncio.CancelledError):
+                            pass
+                raise
             except Exception as exc:
                 if not new_future.done():
                     new_future.set_exception(exc)
@@ -1186,6 +1221,7 @@ async def get_messages(
                 raise
             finally:
                 _in_flight_history_fetches.pop(flight_key, None)
+            break
 
     # Kronolojik cikis siralamasi (eski→yeni)
     rows.sort(key=lambda r: (_msg_time(r) or datetime.min, r.id or 0))
