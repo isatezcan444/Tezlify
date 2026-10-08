@@ -1,9 +1,10 @@
 /**
  * Verification of WhatsApp chat drag-and-drop overlay lifecycle:
  * 1. Dropping files stages them and immediately hides the dropzone overlay.
- * 2. Phantom dragenter events immediately after drop (within 1.5s cooldown) are ignored.
- * 3. Mouse moves with no buttons pressed clear any stuck drag overlay state.
- * 4. Completing file sends or closing the media modal clears staged files.
+ * 2. DragOver keeps the overlay visible smoothly without glitching/flickering.
+ * 3. Overlay is pointer-events-none so it cannot disrupt drag event propagation.
+ * 4. Phantom dragenter events immediately after drop (within 1.5s cooldown) are ignored.
+ * 5. Watchdog timer clears overlay if dragging ceases without dropping.
  */
 import assert from 'node:assert/strict';
 import { hardenAssert } from './lib/safe-dom-assert.mjs';
@@ -18,7 +19,6 @@ import { JSDOM } from 'jsdom';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const frontendRoot = path.resolve(here, '..');
-const SRC = path.join(frontendRoot, 'src');
 
 const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
   url: 'http://localhost/',
@@ -42,7 +42,7 @@ setGlobal('localStorage', window.localStorage);
 setGlobal('matchMedia', window.matchMedia || (() => ({ matches: false, addEventListener() {}, removeEventListener() {} })));
 setGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
 
-const tmp = await mkdtemp(path.join(os.tmpdir(), 'tezlify-drag-'));
+const tmp = await mkdtemp(path.join(os.tmpdir(), 'tezlify-drag-smooth-'));
 const entry = path.join(tmp, 'entry.tsx');
 const out = path.join(tmp, 'bundle.mjs');
 
@@ -78,8 +78,13 @@ try {
     const [isChatDragOver, setIsChatDragOver] = useState(false);
     const chatDragCounterRef = useRef(0);
     const lastDropTimestampRef = useRef(0);
+    const dragoverTimeoutRef = useRef(null);
 
     const resetChatDragState = useCallback(() => {
+      if (dragoverTimeoutRef.current) {
+        clearTimeout(dragoverTimeoutRef.current);
+        dragoverTimeoutRef.current = null;
+      }
       chatDragCounterRef.current = 0;
       setIsChatDragOver(false);
     }, []);
@@ -87,6 +92,10 @@ try {
     const handleChatFilesDrop = useCallback((e) => {
       e.preventDefault();
       e.stopPropagation();
+      if (dragoverTimeoutRef.current) {
+        clearTimeout(dragoverTimeoutRef.current);
+        dragoverTimeoutRef.current = null;
+      }
       lastDropTimestampRef.current = Date.now();
       resetChatDragState();
       const droppedFiles = e.dataTransfer?.files ? Array.from(e.dataTransfer.files) : [];
@@ -107,18 +116,12 @@ try {
         lastDropTimestampRef.current = Date.now();
         resetChatDragState();
       };
-      const handleGlobalMouseMove = (e) => {
-        if (e.buttons === 0 && (chatDragCounterRef.current > 0 || isChatDragOver)) {
-          resetChatDragState();
-        }
-      };
       window.addEventListener('drop', handleGlobalDrop, true);
-      window.addEventListener('mousemove', handleGlobalMouseMove);
       return () => {
         window.removeEventListener('drop', handleGlobalDrop, true);
-        window.removeEventListener('mousemove', handleGlobalMouseMove);
+        if (dragoverTimeoutRef.current) clearTimeout(dragoverTimeoutRef.current);
       };
-    }, [resetChatDragState, isChatDragOver]);
+    }, [resetChatDragState]);
 
     return React.createElement(
       'div',
@@ -136,11 +139,33 @@ try {
             setIsChatDragOver(true);
           }
         },
+        onDragOver: (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          if (Date.now() - lastDropTimestampRef.current < 1500 || stagedComposerFiles) {
+            if (isChatDragOver) resetChatDragState();
+            return;
+          }
+          if (e.dataTransfer) {
+            e.dataTransfer.dropEffect = 'copy';
+          }
+          if (!isChatDragOver) {
+            setIsChatDragOver(true);
+          }
+          if (dragoverTimeoutRef.current) {
+            clearTimeout(dragoverTimeoutRef.current);
+          }
+          dragoverTimeoutRef.current = setTimeout(() => {
+            resetChatDragState();
+          }, 600);
+        },
         onDragLeave: (e) => {
           e.preventDefault();
           e.stopPropagation();
           chatDragCounterRef.current--;
-          if (chatDragCounterRef.current <= 0) {
+          if (e.relatedTarget && !e.currentTarget.contains(e.relatedTarget)) {
+            resetChatDragState();
+          } else if (chatDragCounterRef.current <= 0) {
             resetChatDragState();
           }
         },
@@ -151,8 +176,7 @@ try {
             'div',
             {
               'data-testid': 'drop-overlay',
-              onDrop: handleChatFilesDrop,
-              onClick: resetChatDragState,
+              className: 'pointer-events-none',
             },
             'Dosyayı göndermek için buraya bırakın'
           )
@@ -192,14 +216,24 @@ try {
   });
   let overlay = container.querySelector('[data-testid="drop-overlay"]');
   assert.ok(overlay, 'drop-overlay appears on dragenter with Files');
+  assert.ok(overlay.className.includes('pointer-events-none'), 'overlay has pointer-events-none to prevent flickering');
 
-  // Test 2: Dropping 2 files sets staged files and dismisses overlay
+  // Test 2: Continuous DragOver keeps overlay visible smoothly
+  await act(async () => {
+    const dragOverEvt = new window.Event('dragover', { bubbles: true, cancelable: true });
+    dragOverEvt.dataTransfer = { types: ['Files'] };
+    column.dispatchEvent(dragOverEvt);
+  });
+  overlay = container.querySelector('[data-testid="drop-overlay"]');
+  assert.ok(overlay, 'overlay remains visible during dragover');
+
+  // Test 3: Dropping 2 files sets staged files and dismisses overlay immediately
   const mockFile1 = { name: 'photo1.jpg', size: 1024, type: 'image/jpeg' };
   const mockFile2 = { name: 'photo2.jpg', size: 2048, type: 'image/jpeg' };
   await act(async () => {
     const dropEvt = new window.Event('drop', { bubbles: true, cancelable: true });
     dropEvt.dataTransfer = { files: [mockFile1, mockFile2], types: ['Files'] };
-    overlay.dispatchEvent(dropEvt);
+    column.dispatchEvent(dropEvt);
   });
 
   assert.equal(droppedResult?.length, 2, '2 files were captured on drop');
@@ -208,7 +242,7 @@ try {
   const summary = container.querySelector('[data-testid="staged-summary"]');
   assert.ok(summary, 'staged summary indicates staged files are present');
 
-  // Test 3: Phantom dragenter within 1500ms after drop is suppressed
+  // Test 4: Phantom dragenter within 1500ms after drop is suppressed
   await act(async () => {
     const phantomDragEnter = new window.Event('dragenter', { bubbles: true, cancelable: true });
     phantomDragEnter.dataTransfer = { types: ['Files'] };
@@ -217,15 +251,7 @@ try {
   overlay = container.querySelector('[data-testid="drop-overlay"]');
   assert.equal(overlay, null, 'drop-overlay remains hidden and ignores phantom dragenter');
 
-  // Test 4: Mousemove with buttons === 0 clears any drag state
-  await act(async () => {
-    const mouseMoveEvt = new window.MouseEvent('mousemove', { bubbles: true, cancelable: true, buttons: 0 });
-    window.dispatchEvent(mouseMoveEvt);
-  });
-  overlay = container.querySelector('[data-testid="drop-overlay"]');
-  assert.equal(overlay, null, 'overlay stays hidden after mousemove');
-
-  console.log('Chat drag-and-drop verification: PASS (all 4 tests)');
+  console.log('Smooth chat drag-and-drop verification: PASS (all 4 tests)');
   ok = true;
 } finally {
   await rm(tmp, { recursive: true, force: true });

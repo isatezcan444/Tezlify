@@ -199,8 +199,13 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   const [isChatDragOver, setIsChatDragOver] = useState(false);
   const chatDragCounterRef = useRef(0);
   const lastDropTimestampRef = useRef(0);
+  const dragoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   const resetChatDragState = useCallback(() => {
+    if (dragoverTimeoutRef.current) {
+      clearTimeout(dragoverTimeoutRef.current);
+      dragoverTimeoutRef.current = null;
+    }
     chatDragCounterRef.current = 0;
     setIsChatDragOver(false);
   }, []);
@@ -208,6 +213,10 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   const handleChatFilesDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
+    if (dragoverTimeoutRef.current) {
+      clearTimeout(dragoverTimeoutRef.current);
+      dragoverTimeoutRef.current = null;
+    }
     lastDropTimestampRef.current = Date.now();
     resetChatDragState();
     const droppedFiles = e.dataTransfer.files ? Array.from(e.dataTransfer.files) : [];
@@ -245,7 +254,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   }, [selectedConv?.id, resetChatDragState]);
 
   // Window-level safety cleanup for drag-and-drop: ensures dropzone overlay never gets stuck
-  // if user cancels drag (Escape), drops outside, drops anywhere in the window, or stops dragging.
+  // if user cancels drag (Escape), drops outside, or drops anywhere in the window.
   useEffect(() => {
     const handleGlobalDragLeave = (e: DragEvent) => {
       if (!e.relatedTarget && (e.clientX <= 0 || e.clientY <= 0 || e.clientX >= window.innerWidth || e.clientY >= window.innerHeight)) {
@@ -264,27 +273,21 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         resetChatDragState();
       }
     };
-    const handleGlobalMouseMove = (e: MouseEvent) => {
-      // If mouse is moving with no buttons pressed, user is NOT dragging a file from OS.
-      // Immediately reset any stuck drag overlay!
-      if (e.buttons === 0 && (chatDragCounterRef.current > 0 || isChatDragOver)) {
-        resetChatDragState();
-      }
-    };
 
     window.addEventListener('dragleave', handleGlobalDragLeave);
     window.addEventListener('drop', handleGlobalDrop, true);
     window.addEventListener('dragend', handleGlobalDragEnd, true);
     window.addEventListener('keydown', handleGlobalKeyDown);
-    window.addEventListener('mousemove', handleGlobalMouseMove);
     return () => {
       window.removeEventListener('dragleave', handleGlobalDragLeave);
       window.removeEventListener('drop', handleGlobalDrop, true);
       window.removeEventListener('dragend', handleGlobalDragEnd, true);
       window.removeEventListener('keydown', handleGlobalKeyDown);
-      window.removeEventListener('mousemove', handleGlobalMouseMove);
+      if (dragoverTimeoutRef.current) {
+        clearTimeout(dragoverTimeoutRef.current);
+      }
     };
-  }, [resetChatDragState, isChatDragOver]);
+  }, [resetChatDragState]);
 
   useEffect(() => {
     if (!selectedConv?.is_group || !selectedConv?.id) return;
@@ -3364,7 +3367,9 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                     e.preventDefault();
                     e.stopPropagation();
                     chatDragCounterRef.current--;
-                    if (chatDragCounterRef.current <= 0 || !e.currentTarget.contains(e.relatedTarget as Node)) {
+                    if (e.relatedTarget && !e.currentTarget.contains(e.relatedTarget as Node)) {
+                      resetChatDragState();
+                    } else if (chatDragCounterRef.current <= 0) {
                       resetChatDragState();
                     }
                   }}
@@ -3378,38 +3383,26 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                     if (e.dataTransfer) {
                       e.dataTransfer.dropEffect = 'copy';
                     }
+                    if (!isChatDragOver) {
+                      setIsChatDragOver(true);
+                    }
+                    if (dragoverTimeoutRef.current) {
+                      clearTimeout(dragoverTimeoutRef.current);
+                    }
+                    dragoverTimeoutRef.current = setTimeout(() => {
+                      resetChatDragState();
+                    }, 600);
                   }}
                   onDrop={handleChatFilesDrop}
                 >
                   {isChatDragOver && !stagedComposerFiles && (
                     <div
-                      onDragEnter={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                      }}
-                      onDragOver={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        if (e.dataTransfer) {
-                          e.dataTransfer.dropEffect = 'copy';
-                        }
-                      }}
-                      onDragLeave={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        if (!e.relatedTarget || !e.currentTarget.contains(e.relatedTarget as Node)) {
-                          resetChatDragState();
-                        }
-                      }}
-                      onDrop={handleChatFilesDrop}
-                      onClick={resetChatDragState}
-                      onMouseDown={resetChatDragState}
-                      className="absolute inset-0 z-50 bg-slate-900/60 dark:bg-black/75 backdrop-blur-sm border-2 border-dashed border-[#25D366] rounded-2xl m-3 flex flex-col items-center justify-center cursor-copy select-none animate-in fade-in duration-150"
+                      className="absolute inset-0 z-50 bg-slate-900/60 dark:bg-black/75 backdrop-blur-sm border-2 border-dashed border-[#25D366] rounded-2xl m-3 flex flex-col items-center justify-center pointer-events-none select-none animate-in fade-in duration-150"
                     >
-                      <div className="w-16 h-16 rounded-2xl bg-[#25D366] text-white flex items-center justify-center shadow-lg shadow-[#25D366]/30 mb-3 animate-bounce pointer-events-none">
+                      <div className="w-16 h-16 rounded-2xl bg-[#25D366] text-white flex items-center justify-center shadow-lg shadow-[#25D366]/30 mb-3 animate-bounce">
                         <Upload className="w-8 h-8" />
                       </div>
-                      <p className="text-base font-bold text-white shadow-sm pointer-events-none">
+                      <p className="text-base font-bold text-white shadow-sm">
                         {t('whatsapp.dropFilesHere')}
                       </p>
                     </div>
