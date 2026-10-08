@@ -11,16 +11,22 @@ import {
   Loader2,
 } from 'lucide-react';
 import { useI18n } from '../../../context/I18nContext';
+import {
+  notifyMediaPlaying,
+  pauseAllMedia,
+  registerMedia,
+} from '../lib/mediaCoordinator';
 
 export interface MediaLightboxProps {
   isOpen: boolean;
-  onClose: () => void;
+  onClose: (finalTime?: number) => void;
   src?: string | null;
   mediaType?: 'IMAGE' | 'VIDEO' | 'DOCUMENT';
   caption?: string | null;
   filename?: string | null;
   senderName?: string;
   timestamp?: string;
+  initialTime?: number;
 }
 
 export const MediaLightbox: React.FC<MediaLightboxProps> = ({
@@ -32,6 +38,7 @@ export const MediaLightbox: React.FC<MediaLightboxProps> = ({
   filename,
   senderName,
   timestamp,
+  initialTime = 0,
 }) => {
   const { t } = useI18n();
   const [zoom, setZoom] = useState(1);
@@ -44,6 +51,8 @@ export const MediaLightbox: React.FC<MediaLightboxProps> = ({
   const [mediaLoaded, setMediaLoaded] = useState(false);
 
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const lightboxVideoId = 'lightbox-media-video';
 
   const [isClosing, setIsClosing] = useState(false);
   const [shouldRender, setShouldRender] = useState(isOpen);
@@ -52,19 +61,50 @@ export const MediaLightbox: React.FC<MediaLightboxProps> = ({
     if (isOpen) {
       setShouldRender(true);
       setIsClosing(false);
+      if (mediaType === 'VIDEO') {
+        pauseAllMedia(lightboxVideoId);
+      }
     } else if (shouldRender) {
       setIsClosing(true);
+      if (videoRef.current && !videoRef.current.paused) {
+        videoRef.current.pause();
+      }
       const timer = setTimeout(() => {
         setShouldRender(false);
         setIsClosing(false);
       }, 200);
       return () => clearTimeout(timer);
     }
-  }, [isOpen, shouldRender]);
+  }, [isOpen, shouldRender, mediaType]);
+
+  // Clean pause on unmount or close
+  useEffect(() => {
+    if (!isOpen && videoRef.current && !videoRef.current.paused) {
+      videoRef.current.pause();
+    }
+  }, [isOpen]);
+
+  useEffect(() => {
+    const unregister = registerMedia(lightboxVideoId, videoRef.current, () => {
+      if (videoRef.current && !videoRef.current.paused) {
+        videoRef.current.pause();
+      }
+    });
+    return () => {
+      unregister();
+      if (videoRef.current && !videoRef.current.paused) {
+        videoRef.current.pause();
+      }
+    };
+  }, []);
 
   const handleClose = () => {
+    const finalTime = videoRef.current?.currentTime;
+    if (videoRef.current && !videoRef.current.paused) {
+      videoRef.current.pause();
+    }
     setIsClosing(true);
-    onClose();
+    onClose(finalTime);
   };
 
   // Reset state on open or src change
@@ -360,11 +400,24 @@ export const MediaLightbox: React.FC<MediaLightboxProps> = ({
         ) : mediaType === 'VIDEO' ? (
           <div className="max-w-4xl max-h-[80vh] w-full flex items-center justify-center">
             <video
+              ref={videoRef}
               src={src}
               controls
               autoPlay
               playsInline
-              className="max-h-[80vh] max-w-full rounded-lg shadow-2xl object-contain"
+              className="max-h-[80vh] max-w-full rounded-lg shadow-2xl object-contain bg-black"
+              onPlay={() => {
+                notifyMediaPlaying(lightboxVideoId, videoRef.current);
+              }}
+              onLoadedMetadata={() => {
+                if (typeof initialTime === 'number' && initialTime > 0 && videoRef.current) {
+                  try {
+                    videoRef.current.currentTime = initialTime;
+                  } catch {
+                    // Ignore seek error before metadata
+                  }
+                }
+              }}
             />
           </div>
         ) : (

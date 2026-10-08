@@ -42,6 +42,7 @@ import { isRawWhatsAppJid as isRawWhatsAppIdentity, identityKeys } from '../feat
 import { PEER_TYPING_TTL_MS, pruneExpiredTyping, resolveSyncDisplayCounts } from '../features/whatsapp/lib/whatsappSync';
 import { applyConversationEvent } from '../features/whatsapp/lib/whatsappConversationPatch';
 import { applyReactionToThread } from '../features/whatsapp/lib/whatsappReactions';
+import { pauseAllMedia } from '../features/whatsapp/lib/mediaCoordinator';
 import { WhatsAppSession, Conversation, ConversationStatus, ConversationMessageStatus, Lead, Message, LiveModeStatus, SessionSyncState } from '../types';
 import { WhatsAppApi, useLiveMode, mapConversationItem, mapMessageItem, type LidSplitCandidate } from '../features/whatsapp/api/whatsappApi';
 import { useWhatsAppLoadingGate } from '../features/whatsapp/hooks/useWhatsAppLoadingGate';
@@ -184,6 +185,11 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     conversationsRef.current = conversations;
   }, [conversations]);
   const [selectedConv, setSelectedConv] = useState<Conversation | null>(null);
+
+  // Automatically pause any running audio or video when active conversation changes
+  useEffect(() => {
+    pauseAllMedia();
+  }, [selectedConv?.id]);
   const [replyingTo, setReplyingTo] = useState<QuotedMessage | null>(null);
   const [isChatSearchOpen, setIsChatSearchOpen] = useState(false);
   const [isChatInfoOpen, setIsChatInfoOpen] = useState(false);

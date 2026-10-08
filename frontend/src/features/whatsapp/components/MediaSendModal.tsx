@@ -15,6 +15,7 @@ import {
 import { useI18n } from '../../../context/I18nContext';
 import { EmojiPicker } from './EmojiPicker';
 import { useDialogFocusTrap } from '../../../components/ui/Modal';
+import { notifyMediaPlaying, pauseAllMedia } from '../lib/mediaCoordinator';
 
 export interface MediaSendModalProps {
   isOpen: boolean;
@@ -168,14 +169,17 @@ export const MediaSendModal: React.FC<MediaSendModalProps> = ({
     setPreviewUrl(null);
   }, [currentFile]);
 
-  // Focus caption input after open
+  // Focus caption input after open and pause any background media
   useEffect(() => {
     if (isOpen) {
+      pauseAllMedia('media-send-modal');
       setIsEmojiOpen(false);
       const timer = setTimeout(() => {
         captionInputRef.current?.focus();
       }, 80);
       return () => clearTimeout(timer);
+    } else {
+      pauseAllMedia();
     }
   }, [isOpen, safeIndex]);
 
@@ -370,6 +374,7 @@ export const MediaSendModal: React.FC<MediaSendModalProps> = ({
             <video
               src={previewUrl}
               controls
+              onPlay={() => notifyMediaPlaying('media-send-modal')}
               className="max-h-[55vh] max-w-[88vw] rounded-xl shadow-2xl bg-black"
             />
             <div className="absolute top-4 left-4 px-3 py-1.5 rounded-full bg-black/60 backdrop-blur-sm text-xs font-mono text-white/90 flex items-center gap-1.5 shadow-md pointer-events-none">
@@ -387,7 +392,12 @@ export const MediaSendModal: React.FC<MediaSendModalProps> = ({
             </div>
             <p className="text-sm font-semibold text-white/90 truncate max-w-full">{currentFile.name}</p>
             <p className="text-xs text-white/50">{formattedSize}</p>
-            <audio controls src={previewUrl} className="w-full mt-2" />
+            <audio
+              controls
+              src={previewUrl}
+              onPlay={() => notifyMediaPlaying('media-send-modal')}
+              className="w-full mt-2"
+            />
           </div>
         )}
 

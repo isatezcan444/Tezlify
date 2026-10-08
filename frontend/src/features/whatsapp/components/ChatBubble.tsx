@@ -39,6 +39,12 @@ import { groupReactions } from '../lib/whatsappReactions';
 import { resolveMediaUrl } from '../../../lib/mediaUrl';
 import { isMessageStarred, toggleMessageStar, subscribeStarredChanges } from '../lib/starredMessages';
 import { isMessagePinned, toggleMessagePin, subscribePinnedChanges } from '../lib/pinnedMessages';
+import {
+  registerMedia,
+  notifyMediaPlaying,
+  MEDIA_PLAY_EVENT,
+  MEDIA_PAUSE_ALL_EVENT,
+} from '../lib/mediaCoordinator';
 
 /** WhatsApp Web'in tepki cubugunda gosterdigi altı hizli ifade. */
 export const QUICK_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🙏'] as const;
@@ -110,6 +116,9 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
   const isInbound = message.direction === 'INBOUND';
   const [isLightboxOpen, setIsLightboxOpen] = useState(false);
   const [lightboxMediaType, setLightboxMediaType] = useState<'IMAGE' | 'VIDEO' | 'DOCUMENT'>('IMAGE');
+  const [lightboxInitialTime, setLightboxInitialTime] = useState(0);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const videoMediaId = `chat-video-${message.id}`;
   const [retrying, setRetrying] = useState(false);
   const [isReactionBarOpen, setIsReactionBarOpen] = useState(false);
   const [isPickerOpen, setIsPickerOpen] = useState(false);
@@ -125,6 +134,51 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
   const [menuCoords, setMenuCoords] = useState<{ top: number; left: number; placement: 'up' | 'down' } | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const menuButtonRef = useRef<HTMLButtonElement>(null);
+
+  // Coordinate single active playback across all chat media
+  useEffect(() => {
+    const handleMediaPlay = (e: Event) => {
+      const custom = e as CustomEvent<{ id: string }>;
+      if (custom.detail?.id && custom.detail.id !== videoMediaId) {
+        if (videoRef.current && !videoRef.current.paused) {
+          videoRef.current.pause();
+        }
+      }
+    };
+    const handlePauseAll = (e: Event) => {
+      const custom = e as CustomEvent<{ exceptId?: string }>;
+      if (custom.detail?.exceptId !== videoMediaId) {
+        if (videoRef.current && !videoRef.current.paused) {
+          videoRef.current.pause();
+        }
+      }
+    };
+
+    window.addEventListener(MEDIA_PLAY_EVENT, handleMediaPlay);
+    window.addEventListener(MEDIA_PAUSE_ALL_EVENT, handlePauseAll);
+
+    const unregister = registerMedia(videoMediaId, videoRef.current, () => {
+      if (videoRef.current && !videoRef.current.paused) {
+        videoRef.current.pause();
+      }
+    });
+
+    return () => {
+      window.removeEventListener(MEDIA_PLAY_EVENT, handleMediaPlay);
+      window.removeEventListener(MEDIA_PAUSE_ALL_EVENT, handlePauseAll);
+      unregister();
+      if (videoRef.current && !videoRef.current.paused) {
+        videoRef.current.pause();
+      }
+    };
+  }, [videoMediaId]);
+
+  // Fail-safe: ensure inline video is paused whenever lightbox is opened
+  useEffect(() => {
+    if (isLightboxOpen && videoRef.current && !videoRef.current.paused) {
+      videoRef.current.pause();
+    }
+  }, [isLightboxOpen]);
 
   React.useEffect(() => {
     if (isSelectMode) {
@@ -786,16 +840,26 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
               {videoSrc && !videoLoadError ? (
                 <>
                   <video
+                    ref={videoRef}
                     controls
                     preload="metadata"
                     playsInline
                     src={videoSrc}
-                    className="w-full h-full object-cover"
+                    className="w-full h-full object-contain bg-black/90"
+                    onPlay={() => {
+                      notifyMediaPlaying(videoMediaId, videoRef.current);
+                    }}
                     onError={() => setVideoLoadError(true)}
                   />
                   <button
                     type="button"
-                    onClick={() => {
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      const currentPos = videoRef.current?.currentTime || 0;
+                      if (videoRef.current && !videoRef.current.paused) {
+                        videoRef.current.pause();
+                      }
+                      setLightboxInitialTime(currentPos);
                       setLightboxMediaType('VIDEO');
                       setIsLightboxOpen(true);
                     }}
@@ -1467,9 +1531,19 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
       {/* Authentic WhatsApp Web Full-Screen Media Lightbox */}
       <MediaLightbox
         isOpen={isLightboxOpen}
-        onClose={() => setIsLightboxOpen(false)}
+        onClose={(finalTime) => {
+          setIsLightboxOpen(false);
+          if (typeof finalTime === 'number' && videoRef.current) {
+            try {
+              videoRef.current.currentTime = finalTime;
+            } catch {
+              // Tolerates unready metadata
+            }
+          }
+        }}
         src={resolvedMediaUrl}
         mediaType={lightboxMediaType}
+        initialTime={lightboxInitialTime}
         caption={message.media_caption || undefined}
         filename={message.media_filename || undefined}
         senderName={isInbound ? (chatTitle || message.sender_phone || undefined) : undefined}

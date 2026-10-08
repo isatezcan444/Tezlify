@@ -1,6 +1,12 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Play, Pause, Mic, RotateCcw, AlertCircle } from 'lucide-react';
 import { useI18n } from '../../../context/I18nContext';
+import {
+  registerMedia,
+  notifyMediaPlaying,
+  MEDIA_PLAY_EVENT,
+  MEDIA_PAUSE_ALL_EVENT,
+} from '../lib/mediaCoordinator';
 
 export interface VoiceNotePlayerProps {
   src: string;
@@ -24,6 +30,48 @@ export const VoiceNotePlayer: React.FC<VoiceNotePlayerProps> = ({
   const [hasBeenPlayed, setHasBeenPlayed] = useState(isOutbound);
   const [audioError, setAudioError] = useState(false);
   const [retryKey, setRetryKey] = useState(0);
+  const voiceMediaId = React.useMemo(() => `voice-note-${src}`, [src]);
+
+  // Coordinate single active playback across all chat media
+  useEffect(() => {
+    const handleMediaPlay = (e: Event) => {
+      const custom = e as CustomEvent<{ id: string }>;
+      if (custom.detail?.id && custom.detail.id !== voiceMediaId) {
+        if (audioRef.current && !audioRef.current.paused) {
+          audioRef.current.pause();
+          setIsPlaying(false);
+        }
+      }
+    };
+    const handlePauseAll = (e: Event) => {
+      const custom = e as CustomEvent<{ exceptId?: string }>;
+      if (custom.detail?.exceptId !== voiceMediaId) {
+        if (audioRef.current && !audioRef.current.paused) {
+          audioRef.current.pause();
+          setIsPlaying(false);
+        }
+      }
+    };
+
+    window.addEventListener(MEDIA_PLAY_EVENT, handleMediaPlay);
+    window.addEventListener(MEDIA_PAUSE_ALL_EVENT, handlePauseAll);
+
+    const unregister = registerMedia(voiceMediaId, audioRef.current, () => {
+      if (audioRef.current && !audioRef.current.paused) {
+        audioRef.current.pause();
+      }
+      setIsPlaying(false);
+    });
+
+    return () => {
+      window.removeEventListener(MEDIA_PLAY_EVENT, handleMediaPlay);
+      window.removeEventListener(MEDIA_PAUSE_ALL_EVENT, handlePauseAll);
+      unregister();
+      if (audioRef.current && !audioRef.current.paused) {
+        audioRef.current.pause();
+      }
+    };
+  }, [voiceMediaId, retryKey]);
 
   // Generate pseudo-waveform bars with deterministic heights
   const bars = React.useMemo(() => {
@@ -63,6 +111,7 @@ export const VoiceNotePlayer: React.FC<VoiceNotePlayerProps> = ({
     const onPlay = () => {
       setIsPlaying(true);
       setHasBeenPlayed(true);
+      notifyMediaPlaying(voiceMediaId, audioRef.current);
     };
     const onPause = () => setIsPlaying(false);
     const onError = () => {
@@ -99,12 +148,13 @@ export const VoiceNotePlayer: React.FC<VoiceNotePlayerProps> = ({
     if (isPlaying) {
       audio.pause();
     } else {
+      notifyMediaPlaying(voiceMediaId, audio);
       audio.play().catch((err) => {
         console.error('[VoiceNotePlayer] play error:', err);
         setAudioError(true);
       });
     }
-  }, [isPlaying]);
+  }, [isPlaying, voiceMediaId]);
 
   const cycleRate = useCallback(() => {
     const nextIndex = (rateIndex + 1) % PLAYBACK_RATES.length;

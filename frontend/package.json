@@ -40,6 +40,7 @@
     "verify:production-whatsapp": "node scripts/verify-production-whatsapp.mjs",
     "verify:quick-reply-isolation": "node scripts/verify-quick-reply-isolation-dom.mjs",
     "verify:chat-drag-drop": "node scripts/verify-chat-drag-drop-dom.mjs",
+    "verify:media-coordination": "node scripts/verify-whatsapp-media-coordination.mjs",
     "measure:whatsapp-latency": "node scripts/measure-whatsapp-latency.mjs"
   },
   "dependencies": {
