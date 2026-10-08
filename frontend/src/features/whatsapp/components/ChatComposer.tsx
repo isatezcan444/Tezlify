@@ -580,6 +580,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
       setPendingFiles([]);
       setActiveFileIndex(0);
       setFileCaptions({});
+      onClearStagedFiles?.();
       refocusDraft();
     } catch (err) {
       console.error('[ChatComposer] Multi-file send error:', err);
@@ -1058,6 +1059,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
               setIsFileModalOpen(false);
               setPendingFiles([]);
               setFileCaptions({});
+              onClearStagedFiles?.();
             }
           }}
           files={pendingFiles}

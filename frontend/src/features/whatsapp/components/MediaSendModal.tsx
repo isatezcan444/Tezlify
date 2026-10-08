@@ -213,9 +213,17 @@ export const MediaSendModal: React.FC<MediaSendModalProps> = ({
   }, [isOpen, isEmojiOpen, isSending, onClose]);
 
   // Drag and drop onto the modal itself to append more files
+  const handleModalDragEnter = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+  };
+
   const handleModalDragOver = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
+    if (e.dataTransfer) {
+      e.dataTransfer.dropEffect = 'copy';
+    }
   };
 
   const handleModalDrop = (e: React.DragEvent) => {
@@ -291,6 +299,7 @@ export const MediaSendModal: React.FC<MediaSendModalProps> = ({
       aria-modal="true"
       aria-label={t('whatsapp.sendFileTitle')}
       tabIndex={-1}
+      onDragEnter={handleModalDragEnter}
       onDragOver={handleModalDragOver}
       onDrop={handleModalDrop}
       className="fixed inset-0 z-[99999] flex flex-col bg-[#0b141a] text-white select-none animate-in fade-in duration-150 outline-none"
