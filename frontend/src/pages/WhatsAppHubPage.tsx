@@ -2260,12 +2260,18 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                     : existing.last_message_at,
               message_count: isReplayedEvent ? (existing.message_count ?? 0) : (existing.message_count ?? 0) + 1,
               last_message_state: applyPreview ? 'RESOLVED' : existing.last_message_state,
-              unread_count:
-                isReplayedEvent
-                  ? existing.unread_count
-                  : isCurrentSelected || isOutbound
-                    ? 0
-                    : (existing.unread_count || 0) + 1,
+              unread_count: (() => {
+                if (isReplayedEvent) return existing.unread_count;
+                if (isCurrentSelected || isOutbound) return 0;
+                const explicitUc = eventData.unread_count ?? msgObj0?.unread_count;
+                if (explicitUc !== undefined && explicitUc !== null) {
+                  return Math.max(0, Number(explicitUc));
+                }
+                if (existing.last_message_at === msgTime && (existing.unread_count || 0) > 0) {
+                  return existing.unread_count;
+                }
+                return (existing.unread_count || 0) + 1;
+              })(),
               is_window_open: true, // Inbound message opens the 24h customer window!
               last_inbound_at: isReplayedEvent ? existing.last_inbound_at : !isOutbound ? msgTime : existing.last_inbound_at,
             };

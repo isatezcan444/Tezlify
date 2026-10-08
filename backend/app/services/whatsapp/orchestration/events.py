@@ -940,9 +940,14 @@ class WhatsAppEventOrchestrator:
             is_group=is_group_jid,
             direction=direction.value,
         )
-        apply_last_message(conv, _as_naive_utc(_parse_dt(msg.get("created_at"))) or utc_now_naive(), summary)
+        msg_dt = _as_naive_utc(_parse_dt(msg.get("created_at"))) or utc_now_naive()
+        apply_last_message(conv, msg_dt, summary)
         if direction == MessageDirection.INBOUND:
-            conv.unread_count = (conv.unread_count or 0) + 1
+            raw_uc = msg.get("unread_count") if msg.get("unread_count") is not None else event.get("unread_count")
+            if raw_uc is not None:
+                conv.unread_count = max(0, int(raw_uc))
+            else:
+                conv.unread_count = (conv.unread_count or 0) + 1
             # Check if this inbound message is a reply to an outreach campaign / lead
             try:
                 from backend.app.models.lead import Lead, LeadStatus
@@ -2139,11 +2144,17 @@ class WhatsAppEventOrchestrator:
         if canonical is None:
             return None
         advance_message_status(canonical, msg.get("status"))
+        body_updated = False
+        if not canonical.body and msg.get("body"):
+            canonical.body = msg.get("body")
+            body_updated = True
         if msg.get("media_id") and not canonical.media_id:
             canonical.media_id = msg.get("media_id")
             canonical.media_mime_type = msg.get("media_mime_type") or canonical.media_mime_type
             canonical.media_filename = msg.get("media_filename") or canonical.media_filename
             canonical.media_caption = msg.get("media_caption") or canonical.media_caption
+            body_updated = True
+        if body_updated:
             await db.commit()
         event["conversation_id"] = canonical.conversation_id
         event["jid"] = str(jid)

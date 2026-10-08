@@ -401,8 +401,21 @@ app.get('/sessions/:sessionId/contacts/:jid/status', withSession(async (req, res
         statusText = item.status;
         setAtTime = item.setAt || null;
       } else if (item.status && typeof item.status === 'object') {
-        statusText = typeof item.status.status === 'string' ? item.status.status : null;
+        statusText = typeof item.status.status === 'string'
+          ? item.status.status
+          : typeof item.status.text === 'string'
+            ? item.status.text
+            : null;
         setAtTime = item.status.setAt || item.setAt || null;
+      } else if (typeof item.text === 'string') {
+        statusText = item.text;
+        setAtTime = item.setAt || null;
+      }
+    }
+    if (!statusText && session.store?.contacts) {
+      const stored = session.store.contacts.get(rawJid);
+      if (stored?.status && typeof stored.status === 'string') {
+        statusText = stored.status;
       }
     }
     if (statusText && typeof statusText === 'string') {

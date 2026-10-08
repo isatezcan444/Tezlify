@@ -58,6 +58,7 @@ import {
 import {
   resolveDownloadableMedia,
   classifyMessageType,
+  unwrapMessageContent,
   hasRecognizedContent,
   summarizeWaMessage,
   systemContentMarker,
@@ -1830,37 +1831,31 @@ export function createSessionManager({
         } catch { /* best effort */ }
       }
 
+      const unwrapped = unwrapMessageContent(msg.message) || msg.message || {};
+      const lidHold = isLidJid(key);
+      const contact = contacts.get(key);
+      const isGroup = jid.includes('@g.us');
+      const rawText = unwrapped.conversation || unwrapped.extendedTextMessage?.text || unwrapped.imageMessage?.caption || unwrapped.videoMessage?.caption || unwrapped.documentMessage?.caption || '';
+      const contextInfo = unwrapped.extendedTextMessage?.contextInfo || unwrapped.imageMessage?.contextInfo || unwrapped.videoMessage?.contextInfo || unwrapped.documentMessage?.contextInfo;
+      const text = this._formatMentions(session, rawText, contextInfo);
+      const mediaType = classifyMessageType(unwrapped);
+
       const existingRecord = msg.key?.id
         ? (messagesByChat.get(key) || []).find((m) => m.wa_message_id && m.wa_message_id === msg.key.id)
         : null;
 
       if (existingRecord) {
         // A duplicate is only a duplicate if it carries nothing new.
-        //
-        // chats.update synthesises a message-less record from `lastMessage` and
-        // emits it, so the real messages.upsert for the same wa_message_id
-        // arrives afterwards. The old check matched on the id alone and
-        // returned null — discarding the record that actually carried the
-        // media, while the synthesised one has media_id hardcoded to null.
-        // The attachment was therefore lost permanently, not just delayed.
-        //
-        // So: an existing record that already has a media_id wins, and the
-        // media-less placeholder is upgraded in place instead of dropped.
-        const placeholder = !existingRecord.media_id;
-        const incomingHasMedia = Boolean(msg.message?.imageMessage || msg.message?.videoMessage
-          || msg.message?.audioMessage || msg.message?.documentMessage || msg.message?.stickerMessage);
+        // If an existing record was a placeholder with no media and empty body,
+        // and the incoming record carries real media or text, upgrade it in place.
+        const placeholder = !existingRecord.media_id && (!existingRecord.body || existingRecord.body.trim() === '');
+        const incomingHasMedia = Boolean(unwrapped.imageMessage || unwrapped.videoMessage
+          || unwrapped.audioMessage || unwrapped.documentMessage || unwrapped.stickerMessage);
+        const incomingHasText = Boolean(text && text.trim().length > 0);
         if (!placeholder) return null;
-        if (!incomingHasMedia) return null;
+        if (!incomingHasMedia && !incomingHasText) return null;
         // Fall through: the incoming record replaces the placeholder below.
       }
-
-      const lidHold = isLidJid(key);
-      const contact = contacts.get(key);
-      const isGroup = jid.includes('@g.us');
-      const rawText = msg.message?.conversation || msg.message?.extendedTextMessage?.text || msg.message?.imageMessage?.caption || msg.message?.videoMessage?.caption || msg.message?.documentMessage?.caption || '';
-      const contextInfo = msg.message?.extendedTextMessage?.contextInfo || msg.message?.imageMessage?.contextInfo || msg.message?.videoMessage?.contextInfo || msg.message?.documentMessage?.contextInfo;
-      const text = this._formatMentions(session, rawText, contextInfo);
-      const mediaType = classifyMessageType(msg.message);
       let mediaInfo = null;
       if (mediaType !== 'TEXT' && mediaType !== 'LOCATION' && mediaType !== 'CONTACT' && typeof this.storeIncomingMedia === 'function' && sock) {
         if (existingRecord?.media_id) {
@@ -1981,11 +1976,18 @@ export function createSessionManager({
       // it is a second, contradictory one.
       if (!lidHold) {
         const chat = chats.get(key);
-        if (chat && !fromMe) chat.unread_count = (chat.unread_count || 0) + 1;
+        if (chat && !fromMe) {
+          if (chat._unreadUpdatedForId !== msg.key?.id) {
+            chat.unread_count = (chat.unread_count || 0) + 1;
+            chat._unreadUpdatedForId = msg.key?.id;
+          }
+        }
+        record.unread_count = chat?.unread_count ?? (fromMe ? 0 : 1);
         emitEvent({
           event: 'message_new',
           conversation_id: key,
           message: record,
+          unread_count: record.unread_count,
         });
       }
       return record;

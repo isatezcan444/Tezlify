@@ -745,6 +745,7 @@ export function bindSocketEvents({
         last_message_at: updTs && !tsOlder ? updTs : existing.last_message_at,
         last_message_preview: updPreview && !tsOlder ? updPreview : existing.last_message_preview || '',
         unread_count: update.unreadCount ?? existing.unread_count ?? 0,
+        _unreadUpdatedForId: update.lastMessage?.key?.id || existing._unreadUpdatedForId,
         created_at: existing.created_at || new Date().toISOString(),
         updated_at: new Date().toISOString(),
       });

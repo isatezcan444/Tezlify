@@ -6,8 +6,50 @@
  */
 import { extractMessageContent, getContentType } from '@whiskeysockets/baileys';
 
+/**
+ * Deeply unwrap nested WhatsApp message envelopes.
+ * Handles deviceSentMessage (phone-sent multi-device echo), viewOnce, ephemeral,
+ * documentWithCaption, editedMessage, and Baileys extractMessageContent.
+ */
+export function unwrapMessageContent(content) {
+  if (!content || typeof content !== 'object') return content;
+  let current = content;
+  for (let i = 0; i < 6; i++) {
+    if (!current || typeof current !== 'object') break;
+    if (current.deviceSentMessage?.message) {
+      current = current.deviceSentMessage.message;
+    } else if (current.ephemeralMessage?.message) {
+      current = current.ephemeralMessage.message;
+    } else if (current.viewOnceMessage?.message) {
+      current = current.viewOnceMessage.message;
+    } else if (current.viewOnceMessageV2?.message) {
+      current = current.viewOnceMessageV2.message;
+    } else if (current.viewOnceMessageV2Extension?.message) {
+      current = current.viewOnceMessageV2Extension.message;
+    } else if (current.documentWithCaptionMessage?.message) {
+      current = current.documentWithCaptionMessage.message;
+    } else if (current.editedMessage?.message?.protocolMessage?.editedMessage) {
+      current = current.editedMessage.message.protocolMessage.editedMessage;
+    } else if (current.protocolMessage?.editedMessage) {
+      current = current.protocolMessage.editedMessage;
+    } else if (current.associatedChildMessage?.message) {
+      current = current.associatedChildMessage.message;
+    } else if (current.groupStatusMessage?.message) {
+      current = current.groupStatusMessage.message;
+    } else if (current.groupStatusMessageV2?.message) {
+      current = current.groupStatusMessageV2.message;
+    } else if (current.botInvokeMessage?.message) {
+      current = current.botInvokeMessage.message;
+    } else {
+      break;
+    }
+  }
+  const extracted = extractMessageContent(current);
+  return extracted || current;
+}
+
 export function resolveDownloadableMedia(messageContent) {
-  const content = extractMessageContent(messageContent);
+  const content = unwrapMessageContent(messageContent);
   const contentType = content ? getContentType(content) : null;
   const media = contentType ? content?.[contentType] : null;
   if (!media || typeof media !== 'object') return null;
@@ -16,24 +58,24 @@ export function resolveDownloadableMedia(messageContent) {
 }
 
 export function classifyMessageType(content) {
-  const c = extractMessageContent(content) || content || {};
+  const c = unwrapMessageContent(content) || {};
   if (c.imageMessage) return 'IMAGE';
   if (c.documentMessage) return 'DOCUMENT';
   if (c.audioMessage) return 'AUDIO';
-  if (c.videoMessage) return 'VIDEO';
+  if (c.videoMessage || c.ptvMessage) return 'VIDEO';
   if (c.stickerMessage) return 'STICKER';
   if (c.conversation || c.extendedTextMessage) return 'TEXT';
-  if (c.locationMessage) return 'LOCATION';
-  if (c.contactMessage) return 'CONTACT';
+  if (c.locationMessage || c.liveLocationMessage) return 'LOCATION';
+  if (c.contactMessage || c.contactsArrayMessage) return 'CONTACT';
   return 'TEXT';
 }
 
 export function hasRecognizedContent(content) {
-  const c = extractMessageContent(content) || content || {};
+  const c = unwrapMessageContent(content) || {};
   return Boolean(
-    c.imageMessage || c.documentMessage || c.audioMessage || c.videoMessage ||
+    c.imageMessage || c.documentMessage || c.audioMessage || c.videoMessage || c.ptvMessage ||
     c.stickerMessage || c.conversation || c.extendedTextMessage ||
-    c.locationMessage || c.contactMessage
+    c.locationMessage || c.liveLocationMessage || c.contactMessage || c.contactsArrayMessage
   );
 }
 
@@ -59,7 +101,7 @@ export function bufferToDataUrl(val, mimeType = 'image/jpeg') {
 }
 
 export function extractQuotedMessageMetadata(messageContent, resolveSenderName) {
-  const content = extractMessageContent(messageContent) || messageContent || {};
+  const content = unwrapMessageContent(messageContent) || messageContent || {};
   const contextInfo =
     content.extendedTextMessage?.contextInfo ||
     content.imageMessage?.contextInfo ||
@@ -229,7 +271,7 @@ export function systemContentMarker(waMsg) {
 
 export function summarizeWaMessage(waMsg) {
   const rawContent = waMsg?.message || {};
-  const content = extractMessageContent(rawContent) || rawContent;
+  const content = unwrapMessageContent(rawContent) || rawContent;
   const text =
     content.conversation ||
     content.extendedTextMessage?.text ||

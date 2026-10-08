@@ -983,9 +983,10 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
             );
           }
           return (
-            <p className="text-xs italic opacity-60 text-slate-500 dark:text-slate-400">
-              {t('whatsapp.unsupportedMessage')}
-            </p>
+            <div className="flex items-center gap-1.5 py-0.5 text-xs italic text-slate-500 dark:text-slate-400 select-none">
+              <Clock className="w-3.5 h-3.5 shrink-0 opacity-70 animate-pulse" />
+              <span>{t('whatsapp.waitingForMessage')}</span>
+            </div>
           );
         }
         return renderTextWithPreview(message.body || '');

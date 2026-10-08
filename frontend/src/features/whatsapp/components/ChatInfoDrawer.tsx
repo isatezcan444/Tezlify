@@ -123,7 +123,12 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
   const [isSearchingParticipants, setIsSearchingParticipants] = useState(false);
 
   const isGroup = Boolean(conversation.is_group);
-  const cleanPhone = conversation.lead_phone || (conversation as any).phone || '';
+  const cleanPhone =
+    conversation.lead_phone ||
+    (conversation as any).phone ||
+    (conversation as any).phone_number ||
+    (conversation as any).jid ||
+    '';
   const phoneForStatus = cleanPhone.startsWith('jid:') ? cleanPhone.slice(4) : cleanPhone;
 
   const isSelf = Boolean(
@@ -158,7 +163,7 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
     return () => {
       active = false;
     };
-  }, [isOpen, isGroup, cleanPhone, conversation.session_id]);
+  }, [isOpen, isGroup, phoneForStatus, conversation.session_id]);
 
   useEffect(() => {
     if (!isOpen || !isGroup || !conversation.id) {
@@ -562,8 +567,10 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
                   <Loader2 className="w-3 h-3 animate-spin" />
                   <span>{t('whatsapp.statusLoading')}</span>
                 </span>
+              ) : dynamicStatus ? (
+                dynamicStatus
               ) : (
-                dynamicStatus || t('whatsapp.defaultAbout')
+                <span className="text-slate-400 dark:text-slate-500 italic text-[11px]">{t('whatsapp.noAbout')}</span>
               )}
             </div>
           </div>
