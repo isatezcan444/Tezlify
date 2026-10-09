@@ -1874,6 +1874,14 @@ class WhatsAppSyncOrchestrator:
 
                     schedule_metadata_enrichment(gateway_id)
                     _mark_phase("group_subjects")
+                    try:
+                        await gateway_client.request_avatar_backfill(str(gateway_id))
+                    except Exception as avatar_exc:
+                        logger.warning(
+                            "Erken avatar backfill tetiklenemedi (gateway=%s): %s",
+                            gateway_id,
+                            avatar_exc,
+                        )
 
                     job.stage = "contacts"
                     try:

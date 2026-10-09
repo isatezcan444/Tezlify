@@ -146,12 +146,12 @@ function resolveMessageStatus(msg, fromMe, reactions) {
 //  2) Gerçek gecikme pacing'de değil geri çekilmedeydi: ilk başarısız turdan
 //     sonra 30sn+60sn+120sn+5dk×4 = ~23.5dk bekleniyordu. İlk turlar kısa
 //     tutuldu; kalıcı eksikler ancak çok sonra (5dk) yeniden denenir.
-const AVATAR_SWEEP_BATCH = 4;
-const AVATAR_SWEEP_PAUSE_MS = 150;
+const AVATAR_SWEEP_BATCH = 8;
+const AVATAR_SWEEP_PAUSE_MS = 80;
 const AVATAR_SWEEP_MAX_PASSES = 8;
-// İlk turlar hızlı (bir tur ~15sn), sonra mesafeli. Kullanıcı fotoğrafı dakikalarca beklemez.
-const AVATAR_SWEEP_RETRY_DELAYS_MS = [4_000, 8_000, 15_000, 30_000, 120_000, 120_000, 300_000];
-const AVATAR_QUERY_TIMEOUT_MS = 3500;
+// İlk turlar hızlı (bir tur ~3-4sn), sonra mesafeli. Kullanıcı fotoğrafı dakikalarca beklemez.
+const AVATAR_SWEEP_RETRY_DELAYS_MS = [2_000, 4_000, 8_000, 15_000, 30_000, 60_000, 120_000];
+const AVATAR_QUERY_TIMEOUT_MS = 2000;
 
 // ---------------------------------------------------------------------------
 // Sweep re-arm while the store is still filling.
@@ -2394,7 +2394,7 @@ export function createSessionManager({
       if (retryAfter > Date.now()) return;
 
       const lastAttempt = avatarFetchAttemptedAt?.get(key) || 0;
-      if (Date.now() - lastAttempt < 45 * 1000) return;
+      if (Date.now() - lastAttempt < 3 * 1000) return;
       if (session.status !== 'CONNECTED' || !session.sock) return;
       if (typeof session.sock.profilePictureUrl !== 'function') return;
       avatarFetchInFlight.add(key);

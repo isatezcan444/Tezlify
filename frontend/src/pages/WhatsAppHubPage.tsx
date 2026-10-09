@@ -726,6 +726,88 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   // chunk icin TAM liste yeniden render edilmez (§29) — yalnizca acik sohbet.
   const syncMsgBufferRef = useRef<Record<number, Message[]>>({});
 
+  // Batch queue for high-frequency conversation updates (avatar hydration, rapid WS signals)
+  const pendingConvPatchesRef = useRef<Map<number, (c: Conversation) => Conversation>>(new Map());
+  const convBatchTimerRef = useRef<any>(null);
+
+  const flushPendingConvPatches = useCallback(() => {
+    if (convBatchTimerRef.current) {
+      clearTimeout(convBatchTimerRef.current);
+      convBatchTimerRef.current = null;
+    }
+    const patches = pendingConvPatchesRef.current;
+    if (patches.size === 0) return;
+    const patchMap = new Map(patches);
+    patches.clear();
+
+    setConversations((prev) => {
+      let orderChanged = false;
+      const next = prev.map((c) => {
+        const patchFn = patchMap.get(Number(c.id));
+        if (!patchFn) return c;
+        const patched = patchFn(c);
+        if (patched.last_message_at !== c.last_message_at) {
+          orderChanged = true;
+        }
+        return patched;
+      });
+      return orderChanged ? next.sort(compareByLastMessageDesc) : next;
+    });
+  }, []);
+
+  const scheduleConvPatch = useCallback((convId: number, patchFn: (c: Conversation) => Conversation) => {
+    pendingConvPatchesRef.current.set(convId, patchFn);
+    if (!convBatchTimerRef.current) {
+      convBatchTimerRef.current = setTimeout(() => {
+        flushPendingConvPatches();
+      }, 40);
+    }
+  }, [flushPendingConvPatches]);
+
+  // Throttled sync state updates to eliminate render storms during bulk message sync
+  const lastSyncRenderTimeRef = useRef<number>(0);
+  const pendingSyncUpdaterRef = useRef<((prev: SessionSyncState | null) => SessionSyncState | null) | null>(null);
+  const syncThrottleTimerRef = useRef<any>(null);
+
+  const applyThrottledSessionSync = useCallback((updater: (prev: SessionSyncState | null) => SessionSyncState | null) => {
+    const now = performance.now();
+    pendingSyncUpdaterRef.current = updater;
+
+    if (now - lastSyncRenderTimeRef.current >= 80) {
+      if (syncThrottleTimerRef.current) {
+        clearTimeout(syncThrottleTimerRef.current);
+        syncThrottleTimerRef.current = null;
+      }
+      lastSyncRenderTimeRef.current = now;
+      const fn = pendingSyncUpdaterRef.current;
+      pendingSyncUpdaterRef.current = null;
+      if (fn) setSessionSync(fn);
+    } else if (!syncThrottleTimerRef.current) {
+      const remaining = Math.max(10, 80 - (now - lastSyncRenderTimeRef.current));
+      syncThrottleTimerRef.current = setTimeout(() => {
+        syncThrottleTimerRef.current = null;
+        lastSyncRenderTimeRef.current = performance.now();
+        const fn = pendingSyncUpdaterRef.current;
+        pendingSyncUpdaterRef.current = null;
+        if (fn) setSessionSync(fn);
+      }, remaining);
+    }
+  }, []);
+
+  const flushPendingConvPatchesRef = useRef(flushPendingConvPatches);
+  flushPendingConvPatchesRef.current = flushPendingConvPatches;
+  const scheduleConvPatchRef = useRef(scheduleConvPatch);
+  scheduleConvPatchRef.current = scheduleConvPatch;
+  const applyThrottledSessionSyncRef = useRef(applyThrottledSessionSync);
+  applyThrottledSessionSyncRef.current = applyThrottledSessionSync;
+
+  useEffect(() => {
+    return () => {
+      if (convBatchTimerRef.current) clearTimeout(convBatchTimerRef.current);
+      if (syncThrottleTimerRef.current) clearTimeout(syncThrottleTimerRef.current);
+    };
+  }, []);
+
   // Faz 14 — QR sonrasi senkron kapisi (WhatsApp Web paritesi). WhatsApp Web
   // eslestirme sonrasi sohbet listesini HEMEN acmaz; tum sohbetler ve kisiler
   // inene kadar tam ekran senkron ekrani gosterir. Ayni davranis burada: kapi
@@ -2545,25 +2627,17 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
             // (ornegin yeni bir grup "3Hacker" sohbet listesinde kayboluyordu).
             // Burada WS payload'i kanonik alan adlariyla gelir; gecici olarak
             // gosterilir, hedefli GET satiri DB gercegiyle mutabik kilar.
+            flushPendingConvPatchesRef.current();
             const seeded = mapConversationItem({ ...payload, id: resolvedId });
             setConversations((prev) => {
               if (prev.some((c) => Number(c.id) === Number(resolvedId))) return prev;
               const fresh: Conversation = { status: 'ACTIVE' as ConversationStatus, unread_count: isCurrentSelected ? 0 : (seeded.unread_count ?? 0), ...seeded };
               return [fresh, ...prev].sort(compareByLastMessageDesc);
             });
+            knownConvIdsRef.current.add(resolvedId);
             hydrateConversation(resolvedId);
           }
-          setConversations((prev) => {
-            const next = prev.map((c) => (Number(c.id) === Number(resolvedId) ? patch(c) : c));
-            // Sorun 2: patch son mesaji/siralamayi degistirdiyse liste zaman
-            // damgasina gore yeniden siralanir (API sirasiyla ayni kural).
-            const patched = next.find((c) => Number(c.id) === Number(resolvedId));
-            const before = prev.find((c) => Number(c.id) === Number(resolvedId));
-            if (patched && before && patched.last_message_at !== before.last_message_at) {
-              return [...next].sort(compareByLastMessageDesc);
-            }
-            return next;
-          });
+          scheduleConvPatchRef.current(resolvedId, patch);
           setSelectedConv((prev) => {
             if (!prev) {
               // Sorun 3 (WhatsApp Web akisi): ilk secilebilir sohbet, liste
@@ -2685,6 +2759,12 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         if (isStale && eventData.event !== 'whatsapp_sync_started') {
           // eski job'un olayi — sessizce yok say
         } else if (eventData.event === 'whatsapp_sync_started') {
+          if (syncThrottleTimerRef.current) {
+            clearTimeout(syncThrottleTimerRef.current);
+            syncThrottleTimerRef.current = null;
+          }
+          pendingSyncUpdaterRef.current = null;
+          lastSyncRenderTimeRef.current = performance.now();
           activeSyncIdRef.current = syncId;
           syncMsgBufferRef.current = {};
           setSessionSync({
@@ -2693,12 +2773,13 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
             started_at: eventData.started_at || new Date().toISOString(), completed_at: null,
           });
         } else if (eventData.event === 'whatsapp_sync_contacts_snapshot') {
-          setSessionSync((prev) => (prev && prev.phase === 'syncing' ? {
+          applyThrottledSessionSyncRef.current((prev) => (prev && prev.phase === 'syncing' ? {
             ...prev, stage: 'contacts', contacts_synced: eventData.total ?? prev.contacts_synced,
             progress: computeSyncProgress('contacts', prev.chats_synced ?? 0, eventData.total ?? 0, prev.messages_synced ?? 0, 0),
           } : prev));
         } else if (eventData.event === 'whatsapp_sync_chats_snapshot') {
           // Sohbetler sayfa sayfa INCREMENTAL eklenir — tam liste rebuild yok (§29).
+          flushPendingConvPatchesRef.current();
           const incoming: Conversation[] = (eventData.conversations || []).map((c: any) => mapConversationItem(c));
           if (incoming.length > 0) {
             setIsPostQrSyncing(false);
@@ -2714,7 +2795,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
             const isMobile = typeof window !== 'undefined' && window.innerWidth < 768;
             setSelectedConv((prev) => prev || (isMobile ? null : incoming[0]) || null);
           }
-          setSessionSync((prev) => (prev && prev.phase === 'syncing' ? {
+          applyThrottledSessionSyncRef.current((prev) => (prev && prev.phase === 'syncing' ? {
             ...prev, stage: 'chats', chats_synced: eventData.total ?? prev.chats_synced,
             progress: computeSyncProgress('chats', eventData.total ?? 0, prev.contacts_synced ?? 0, prev.messages_synced ?? 0, 0),
           } : prev));
@@ -2742,12 +2823,12 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
               });
             }
           }
-          setSessionSync((prev) => (prev && prev.phase === 'syncing' ? {
+          applyThrottledSessionSyncRef.current((prev) => (prev && prev.phase === 'syncing' ? {
             ...prev, stage: 'messages', messages_synced: eventData.synced ?? prev.messages_synced,
             progress: computeSyncProgress('messages', prev.chats_synced ?? 0, prev.contacts_synced ?? 0, eventData.synced ?? 0, eventData.total ?? 0),
           } : prev));
         } else if (eventData.event === 'whatsapp_sync_progress') {
-          setSessionSync((prev) => (prev && prev.phase === 'syncing' ? {
+          applyThrottledSessionSyncRef.current((prev) => (prev && prev.phase === 'syncing' ? {
             ...prev,
             stage: eventData.stage || prev.stage,
             chats_synced: eventData.chats_synced ?? prev.chats_synced,
@@ -2769,6 +2850,12 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         } else if (eventData.event === 'whatsapp_sync_complete') {
           // Tamamlanma: cozulmus TAM sohbet listesi gelir (preview'lar dahil) —
           // banner gercek bitiste kapanir, sahte kapanis yok (§20/§27).
+          flushPendingConvPatchesRef.current();
+          if (syncThrottleTimerRef.current) {
+            clearTimeout(syncThrottleTimerRef.current);
+            syncThrottleTimerRef.current = null;
+          }
+          pendingSyncUpdaterRef.current = null;
           const finalList: Conversation[] = (eventData.conversations || []).map((c: any) => mapConversationItem(c));
           if (finalList.length > 0) {
             setConversations((prev) => {
@@ -2808,6 +2895,12 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
           // Sorun 8: basarisizlik kullaniciya BIR KEZ gosterilir ve
           // acknowledged olarak isaretlenir — backend'de tutulan ayni job
           // sonraki sayfa acilisinda banner'i yeniden acmaz.
+          flushPendingConvPatchesRef.current();
+          if (syncThrottleTimerRef.current) {
+            clearTimeout(syncThrottleTimerRef.current);
+            syncThrottleTimerRef.current = null;
+          }
+          pendingSyncUpdaterRef.current = null;
           acknowledgeFailedSync(syncId);
           failedSyncKeyRef.current = syncId;
           setSessionSync({ phase: 'error', stage: eventData.stage || 'failed', error: eventData.error || null, progress: 0 });

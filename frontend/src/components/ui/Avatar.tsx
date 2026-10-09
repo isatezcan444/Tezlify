@@ -64,14 +64,18 @@ export const Avatar: React.FC<AvatarProps> = ({
     return resolved ? failedAvatarUrls.has(resolved) : false;
   });
 
+  const [isImageLoaded, setIsImageLoaded] = React.useState<boolean>(false);
+
   React.useEffect(() => {
     setCurrentImage(resolved);
+    setIsImageLoaded(false);
     setImageError(resolved ? failedAvatarUrls.has(resolved) : false);
   }, [resolved]);
 
   const handleImageError = React.useCallback(() => {
     if (currentImage) failedAvatarUrls.add(currentImage);
     setImageError(true);
+    setIsImageLoaded(false);
 
     if (phone && !inFlightAvatarRefreshes.has(phone)) {
       const negativeExpiry = negativeAvatarPhones.get(phone) || 0;
@@ -130,24 +134,34 @@ export const Avatar: React.FC<AvatarProps> = ({
     <div className="relative inline-flex shrink-0">
       <div
         className={cn(
-          "flex items-center justify-center font-bold tracking-wider select-none overflow-hidden aspect-square border border-black/5 dark:border-white/10 transition-transform",
+          "relative flex items-center justify-center font-bold tracking-wider select-none overflow-hidden aspect-square border border-black/5 dark:border-white/10 transition-transform",
           sizeClasses[size],
           shapeClasses[shape],
           colorClass,
           className
         )}
       >
-        {shouldRenderImage ? (
+        <span
+          className={cn(
+            "transition-opacity duration-300 ease-in-out select-none",
+            shouldRenderImage && isImageLoaded ? "opacity-0" : "opacity-100"
+          )}
+        >
+          {initials}
+        </span>
+        {shouldRenderImage && (
           <img
             src={currentImage}
             alt={name}
             loading="lazy"
             decoding="async"
+            onLoad={() => setIsImageLoaded(true)}
             onError={handleImageError}
-            className="w-full h-full object-cover aspect-square block"
+            className={cn(
+              "absolute inset-0 w-full h-full object-cover aspect-square block transition-opacity duration-300 ease-in-out",
+              isImageLoaded ? "opacity-100" : "opacity-0"
+            )}
           />
-        ) : (
-          <span>{initials}</span>
         )}
       </div>
 
