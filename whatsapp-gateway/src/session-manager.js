@@ -1835,6 +1835,24 @@ export function createSessionManager({
       }
 
       const unwrapped = unwrapMessageContent(msg.message) || msg.message || {};
+
+      // Protocol messages (history sync notifications, app state keys, ephemeral settings, peer data ops, revokes)
+      // are internal control frames and must never create a new chat bubble / message row.
+      if (unwrapped.protocolMessage) {
+        const ptype = Number(unwrapped.protocolMessage.type);
+        if (ptype === 0 && unwrapped.protocolMessage.key?.id) {
+          // REVOKE (0) = "Bu mesaj silindi": hedef mesaji bellek icinde guncelle
+          const targetWaId = unwrapped.protocolMessage.key.id;
+          const chatMsgs = messagesByChat.get(key) || [];
+          const target = chatMsgs.find((m) => m.wa_message_id === targetWaId);
+          if (target) {
+            target.body = '';
+            target.is_deleted = true;
+          }
+        }
+        return null;
+      }
+
       const lidHold = isLidJid(key);
       const contact = contacts.get(key);
       const isGroup = jid.includes('@g.us');
@@ -1872,6 +1890,7 @@ export function createSessionManager({
         unwrapped.documentMessage?.contextInfo;
       const text = contactPayload || locationPayload || pollPayload ? rawText : this._formatMentions(session, rawText, contextInfo);
       const mediaType = classifyMessageType(unwrapped);
+      if (!hasRecognizedContent(unwrapped) && !text) return null;
 
       const existingRecord = msg.key?.id
         ? (messagesByChat.get(key) || []).find((m) => m.wa_message_id && m.wa_message_id === msg.key.id)
@@ -3095,9 +3114,9 @@ export function createSessionManager({
             ? 'video/mp4'
             : mediaType === 'AUDIO'
               ? 'audio/ogg'
-              : content.documentMessage?.mimetype || null);
+              : unwrapped.documentMessage?.mimetype || null);
       const mediaFilename =
-        content.documentMessage?.fileName ||
+        unwrapped.documentMessage?.fileName ||
         rawMedia?.fileName ||
         null;
       const waMsgId = msg.key?.id || null;

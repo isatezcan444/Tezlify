@@ -820,7 +820,13 @@ export function bindSocketEvents({
         if (msg.key.id && msg.message) rememberRaw(key, msg.key.id, msg.message);
         const list = messagesByChat.get(key) || [];
         if (msg.key.id && list.some((m) => m.wa_message_id === msg.key.id)) continue;
-        const record = historyMessageToRecord(msg, key);
+        let record = null;
+        try {
+          record = historyMessageToRecord(msg, key);
+        } catch (msgErr) {
+          logger.warn({ msgErr, key, id: msg.key?.id }, 'Failed to parse history message to record');
+          continue;
+        }
         if (!record) continue;
         list.push(record);
         list.sort((a, b) => (a.id || 0) - (b.id || 0));
