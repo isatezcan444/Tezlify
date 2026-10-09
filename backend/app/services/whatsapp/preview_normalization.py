@@ -70,6 +70,21 @@ def normalize_preview_text(message_type: Optional[str], body: Optional[str]) -> 
     t = str(message_type or "TEXT").upper()
     text = (body or "").strip()
     if text:
+        if text.startswith("{"):
+            try:
+                import json
+                data = json.loads(text)
+                if t == "CONTACT" or "displayName" in data or "contacts" in data:
+                    name = data.get("displayName") or (data.get("contacts", [{}])[0].get("displayName") if isinstance(data.get("contacts"), list) and data.get("contacts") else None)
+                    return f"👤 {name}" if name else TYPE_PREVIEW_LABELS.get("CONTACT", "👤 Kişi kartı")
+                if t == "LOCATION" or "latitude" in data or "name" in data or "address" in data:
+                    loc = data.get("name") or data.get("address")
+                    return f"📍 {loc}" if loc else TYPE_PREVIEW_LABELS.get("LOCATION", "📍 Konum")
+                if "question" in data or "options" in data:
+                    q = data.get("question")
+                    return f"📊 {q}" if q else TYPE_PREVIEW_LABELS.get("POLL", "📊 Anket")
+            except Exception:
+                pass
         if text.startswith("[REACTION"):
             m_rx = re.match(r"^\[REACTION(?::(.+?))?\]$", text)
             if m_rx:

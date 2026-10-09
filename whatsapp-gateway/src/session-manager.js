@@ -65,6 +65,9 @@ import {
   buildMediaContent,
   extractLinkPreviewMetadata,
   extractQuotedMessageMetadata,
+  extractContactPayload,
+  extractLocationPayload,
+  extractPollPayload,
 } from './messages/message-classifier.js';
 
 import {
@@ -1835,9 +1838,39 @@ export function createSessionManager({
       const lidHold = isLidJid(key);
       const contact = contacts.get(key);
       const isGroup = jid.includes('@g.us');
-      const rawText = unwrapped.conversation || unwrapped.extendedTextMessage?.text || unwrapped.imageMessage?.caption || unwrapped.videoMessage?.caption || unwrapped.documentMessage?.caption || '';
-      const contextInfo = unwrapped.extendedTextMessage?.contextInfo || unwrapped.imageMessage?.contextInfo || unwrapped.videoMessage?.contextInfo || unwrapped.documentMessage?.contextInfo;
-      const text = this._formatMentions(session, rawText, contextInfo);
+      const contactPayload = extractContactPayload(unwrapped);
+      const locationPayload = extractLocationPayload(unwrapped);
+      const pollPayload = extractPollPayload(unwrapped);
+      let rawText = '';
+      if (contactPayload) {
+        rawText = JSON.stringify(contactPayload);
+      } else if (locationPayload) {
+        rawText = JSON.stringify(locationPayload);
+      } else if (pollPayload) {
+        rawText = JSON.stringify(pollPayload);
+      } else {
+        rawText =
+          unwrapped.conversation ||
+          unwrapped.extendedTextMessage?.text ||
+          unwrapped.imageMessage?.caption ||
+          unwrapped.videoMessage?.caption ||
+          unwrapped.documentMessage?.caption ||
+          unwrapped.interactiveMessage?.body?.text ||
+          unwrapped.templateMessage?.hydratedTemplate?.hydratedContentText ||
+          unwrapped.templateMessage?.fourRowTemplate?.content?.text ||
+          unwrapped.buttonsMessage?.contentText ||
+          unwrapped.buttonsResponseMessage?.selectedDisplayText ||
+          unwrapped.listResponseMessage?.title ||
+          unwrapped.groupInviteMessage?.caption ||
+          unwrapped.orderMessage?.orderTitle ||
+          '';
+      }
+      const contextInfo =
+        unwrapped.extendedTextMessage?.contextInfo ||
+        unwrapped.imageMessage?.contextInfo ||
+        unwrapped.videoMessage?.contextInfo ||
+        unwrapped.documentMessage?.contextInfo;
+      const text = contactPayload || locationPayload || pollPayload ? rawText : this._formatMentions(session, rawText, contextInfo);
       const mediaType = classifyMessageType(unwrapped);
 
       const existingRecord = msg.key?.id
@@ -1846,14 +1879,15 @@ export function createSessionManager({
 
       if (existingRecord) {
         // A duplicate is only a duplicate if it carries nothing new.
-        // If an existing record was a placeholder with no media and empty body,
-        // and the incoming record carries real media or text, upgrade it in place.
-        const placeholder = !existingRecord.media_id && (!existingRecord.body || existingRecord.body.trim() === '');
+        // If an existing record was a placeholder with no media and empty/marker body,
+        // or has a content change (retry decryption, edited message), upgrade it in place.
+        const placeholder = !existingRecord.media_id && (!existingRecord.body || existingRecord.body.trim() === '' || existingRecord.body.startsWith('['));
         const incomingHasMedia = Boolean(unwrapped.imageMessage || unwrapped.videoMessage
           || unwrapped.audioMessage || unwrapped.documentMessage || unwrapped.stickerMessage);
         const incomingHasText = Boolean(text && text.trim().length > 0);
-        if (!placeholder) return null;
-        if (!incomingHasMedia && !incomingHasText) return null;
+        const hasContentChange = incomingHasText && text !== existingRecord.body;
+        const hasMediaUpgrade = incomingHasMedia && !existingRecord.media_id;
+        if (!placeholder && !hasContentChange && !hasMediaUpgrade) return null;
         // Fall through: the incoming record replaces the placeholder below.
       }
       let mediaInfo = null;
@@ -1929,7 +1963,9 @@ export function createSessionManager({
         conversation_id: key,
         direction: fromMe ? 'OUTBOUND' : 'INBOUND',
         message_type: mediaType,
-        status: resolveMessageStatus(msg, fromMe, msg.reactions),
+        status: existingRecord?.status && (ACK_ORDER[existingRecord.status] ?? 0) > (ACK_ORDER[resolveMessageStatus(msg, fromMe, msg.reactions)] ?? 0)
+          ? existingRecord.status
+          : resolveMessageStatus(msg, fromMe, msg.reactions),
         body: text || '',
         media_id: mediaInfo?.media_id || existingRecord?.media_id || null,
         media_mime_type: mediaInfo?.mime_type || existingRecord?.media_mime_type || null,
@@ -1938,6 +1974,7 @@ export function createSessionManager({
         native_link_preview: nativeLinkPreview,
         quoted_message: quotedMeta || null,
         wa_message_id: msg.key?.id || null,
+        client_message_id: existingRecord?.client_message_id || null,
         sender_phone: fromMe ? 'ME' : (jidToPhone(msg.key?.participant || key) || (msg.key?.participant || key)),
         recipient_phone: fromMe ? (jidToPhone(key) || key) : 'ME',
         sender_name: fromMe ? 'ME' : (isGroup && msg.key?.participant ? (this._resolveDisplayName(session, msg.key.participant, msg.pushName) || this._resolveDisplayName(session, key, msg.pushName)) : this._resolveDisplayName(session, key, msg.pushName)),
@@ -3006,30 +3043,50 @@ export function createSessionManager({
 
     _historyMessageToRecord(session, msg, key) {
       session = this._sess(session);
-      const content = msg.message || {};
-      const rawText =
-        content.conversation ||
-        content.extendedTextMessage?.text ||
-        content.imageMessage?.caption ||
-        content.videoMessage?.caption ||
-        content.documentMessage?.caption ||
-        '';
+      const unwrapped = unwrapMessageContent(msg.message) || msg.message || {};
+      const contactPayload = extractContactPayload(unwrapped);
+      const locationPayload = extractLocationPayload(unwrapped);
+      const pollPayload = extractPollPayload(unwrapped);
+      let rawText = '';
+      if (contactPayload) {
+        rawText = JSON.stringify(contactPayload);
+      } else if (locationPayload) {
+        rawText = JSON.stringify(locationPayload);
+      } else if (pollPayload) {
+        rawText = JSON.stringify(pollPayload);
+      } else {
+        rawText =
+          unwrapped.conversation ||
+          unwrapped.extendedTextMessage?.text ||
+          unwrapped.imageMessage?.caption ||
+          unwrapped.videoMessage?.caption ||
+          unwrapped.documentMessage?.caption ||
+          unwrapped.interactiveMessage?.body?.text ||
+          unwrapped.templateMessage?.hydratedTemplate?.hydratedContentText ||
+          unwrapped.templateMessage?.fourRowTemplate?.content?.text ||
+          unwrapped.buttonsMessage?.contentText ||
+          unwrapped.buttonsResponseMessage?.selectedDisplayText ||
+          unwrapped.listResponseMessage?.title ||
+          unwrapped.groupInviteMessage?.caption ||
+          unwrapped.orderMessage?.orderTitle ||
+          '';
+      }
       const contextInfo =
-        content.extendedTextMessage?.contextInfo ||
-        content.imageMessage?.contextInfo ||
-        content.videoMessage?.contextInfo ||
-        content.documentMessage?.contextInfo;
-      const text = this._formatMentions(session, rawText, contextInfo);
-      const mediaType = classifyMessageType(content);
-      if (!hasRecognizedContent(content) && !text) return null;
+        unwrapped.extendedTextMessage?.contextInfo ||
+        unwrapped.imageMessage?.contextInfo ||
+        unwrapped.videoMessage?.contextInfo ||
+        unwrapped.documentMessage?.contextInfo;
+      const text = contactPayload || locationPayload || pollPayload ? rawText : this._formatMentions(session, rawText, contextInfo);
+      const mediaType = classifyMessageType(unwrapped);
+      if (!hasRecognizedContent(unwrapped) && !text) return null;
       const ts = messageTimestampMs(msg.messageTimestamp);
       const timestampSeconds = Number(msg.messageTimestamp);
       const rawMedia =
-        content.imageMessage ||
-        content.videoMessage ||
-        content.audioMessage ||
-        content.documentMessage ||
-        content.stickerMessage;
+        unwrapped.imageMessage ||
+        unwrapped.videoMessage ||
+        unwrapped.audioMessage ||
+        unwrapped.documentMessage ||
+        unwrapped.stickerMessage;
       const mediaMime =
         rawMedia?.mimetype ||
         (mediaType === 'IMAGE'

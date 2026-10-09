@@ -1095,11 +1095,26 @@ export function bindSocketEvents({
     });
   });
 
-  // --- Message acks ---
-  sock.ev.on('messages.update', (updates) => {
+  // --- Message acks & updates (retries/decryptions/edits) ---
+  sock.ev.on('messages.update', async (updates) => {
     if (ignoreStaleSocketEvent('messages.update')) return;
     for (const { key, update } of updates || []) {
-      manager._applyMessageAck(id, key, update);
+      if (update?.status) {
+        manager._applyMessageAck(id, key, update);
+      }
+      if (update?.message) {
+        try {
+          const msg = {
+            key,
+            message: update.message,
+            messageTimestamp: update.messageTimestamp || Math.floor(Date.now() / 1000),
+            pushName: update.pushName,
+          };
+          await manager._ingestUpsertMessage(msg, sock, id);
+        } catch (uErr) {
+          logger.debug({ uErr, key }, 'Failed to ingest updated message on retry/edit');
+        }
+      }
     }
   });
 }

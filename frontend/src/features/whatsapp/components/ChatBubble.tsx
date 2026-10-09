@@ -21,6 +21,13 @@ import {
   ChevronDown,
   Pin,
   FileText,
+  User,
+  ExternalLink,
+  MessageSquare,
+  BarChart2,
+  Ban,
+  PhoneCall,
+  Info,
 } from 'lucide-react';
 import { Conversation, Message, QuotedMessageData } from '../../../types';
 import { Tooltip } from '../../../components/ui/Tooltip';
@@ -915,26 +922,211 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
           </div>
         );
 
-      case 'LOCATION':
-      case 'OTHER': {
-        // D6: konum render'i artik ONCE message_type==='LOCATION'a bakar
-        // (backend/gateway `classifyMessageType` bunu uretir). Eski kontrol
-        // yalnizca Turkce 'Konum:' literaline bakıyordu; sunucu tarafi
-        // isareti (📍 Konum) de tolere edilir — bunlar VERI isaretleridir,
-        // UI metni degil (UI metni i18n'den gelir).
+      case 'CONTACT': {
         const bodyText = message.body || '';
-        const isLocation =
-          message.message_type === 'LOCATION' ||
-          /^📍?\s*Konum\b/i.test(bodyText);
-        if (isLocation) {
-          return (
-            <div className="flex items-center space-x-2.5 p-2.5 rounded-xl bg-slate-200/60 dark:bg-white/[0.06] border border-black/5 dark:border-white/10 min-w-0">
-              <MapPin className="w-5 h-5 text-rose-500 shrink-0" />
-              <span className="text-xs font-bold [overflow-wrap:anywhere] break-words min-w-0">
-                {bodyText || t('whatsapp.previewLocation')}
-              </span>
+        let contactData: {
+          displayName?: string;
+          phone?: string;
+          vcard?: string;
+          contacts?: Array<{ displayName: string; phone?: string; vcard?: string }>;
+        } | null = null;
+
+        if (bodyText.startsWith('{')) {
+          try {
+            contactData = JSON.parse(bodyText);
+          } catch {
+            contactData = null;
+          }
+        }
+
+        const contactsList =
+          contactData?.contacts && contactData.contacts.length > 0
+            ? contactData.contacts
+            : [
+                {
+                  displayName:
+                    contactData?.displayName ||
+                    (bodyText && !bodyText.startsWith('{') ? bodyText : t('whatsapp.contactCard')),
+                  phone: contactData?.phone || '',
+                  vcard: contactData?.vcard || '',
+                },
+              ];
+
+        return (
+          <div className="space-y-2 w-64 max-w-full">
+            {contactsList.map((c, idx) => {
+              const name = c.displayName || t('whatsapp.contactCard');
+              const phone = c.phone || '';
+              return (
+                <div
+                  key={idx}
+                  className="rounded-xl overflow-hidden bg-slate-100 dark:bg-white/[0.06] border border-black/5 dark:border-white/10 shadow-sm"
+                >
+                  <div className="p-3 flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-full bg-slate-200 dark:bg-slate-700/80 flex items-center justify-center shrink-0 text-slate-600 dark:text-slate-300">
+                      <User className="w-5 h-5" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <h4 className="font-semibold text-xs text-slate-900 dark:text-slate-100 truncate leading-tight">
+                        {name}
+                      </h4>
+                      {phone && (
+                        <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate mt-0.5">
+                          {phone}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                  <div className="border-t border-black/5 dark:border-white/10">
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (phone && onDirectMessageSender) {
+                          onDirectMessageSender(phone, name);
+                        } else if (phone) {
+                          navigator.clipboard.writeText(phone);
+                          toast.success(t('whatsapp.phoneCopied'), t('common.success'));
+                        } else {
+                          toast.info(t('whatsapp.contactCard'));
+                        }
+                      }}
+                      className="w-full py-2 px-3 flex items-center justify-center gap-1.5 text-xs font-semibold text-[#00a884] dark:text-[#25D366] hover:bg-black/[0.03] dark:hover:bg-white/[0.04] transition-colors cursor-pointer"
+                    >
+                      <MessageSquare className="w-3.5 h-3.5" />
+                      <span>{t('whatsapp.sendMessageToContact')}</span>
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        );
+      }
+
+      case 'LOCATION': {
+        const bodyText = message.body || '';
+        let locData: {
+          latitude?: number;
+          longitude?: number;
+          name?: string;
+          address?: string;
+          url?: string;
+          jpegThumbnail?: string;
+          isLive?: boolean;
+        } | null = null;
+
+        if (bodyText.startsWith('{')) {
+          try {
+            locData = JSON.parse(bodyText);
+          } catch {
+            locData = null;
+          }
+        }
+
+        const lat = locData?.latitude;
+        const lng = locData?.longitude;
+        const mapUrl =
+          locData?.url ||
+          (lat != null && lng != null ? `https://maps.google.com/?q=${lat},${lng}` : null);
+        const title =
+          locData?.name ||
+          locData?.address ||
+          (bodyText && !bodyText.startsWith('{') ? bodyText : t('whatsapp.previewLocation'));
+        const sub =
+          locData?.name && locData?.address
+            ? locData.address
+            : lat != null && lng != null
+              ? `${lat.toFixed(4)}, ${lng.toFixed(4)}`
+              : '';
+
+        return (
+          <div className="space-y-1.5 w-64 max-w-full">
+            <div className="rounded-xl overflow-hidden bg-slate-100 dark:bg-white/[0.06] border border-black/5 dark:border-white/10 shadow-sm">
+              {locData?.jpegThumbnail && (
+                <div className="relative h-28 w-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
+                  <img
+                    src={locData.jpegThumbnail}
+                    alt={title}
+                    className="w-full h-full object-cover"
+                  />
+                  <div className="absolute inset-0 bg-black/20 flex items-center justify-center">
+                    <MapPin className="w-7 h-7 text-rose-500 drop-shadow" />
+                  </div>
+                </div>
+              )}
+              <div className="p-3">
+                <div className="flex items-start gap-2.5">
+                  <MapPin className="w-4 h-4 text-rose-500 shrink-0 mt-0.5" />
+                  <div className="min-w-0 flex-1">
+                    <h4 className="font-semibold text-xs text-slate-900 dark:text-slate-100 truncate leading-tight">
+                      {locData?.isLive ? t('whatsapp.liveLocation') : title}
+                    </h4>
+                    {sub && (
+                      <p className="text-[11px] text-slate-500 dark:text-slate-400 line-clamp-2 mt-0.5">
+                        {sub}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </div>
+              {mapUrl && (
+                <div className="border-t border-black/5 dark:border-white/10">
+                  <a
+                    href={mapUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={(e) => e.stopPropagation()}
+                    className="w-full py-2 px-3 flex items-center justify-center gap-1.5 text-xs font-semibold text-[#00a884] dark:text-[#25D366] hover:bg-black/[0.03] dark:hover:bg-white/[0.04] transition-colors cursor-pointer"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" />
+                    <span>{t('whatsapp.openInMaps')}</span>
+                  </a>
+                </div>
+              )}
             </div>
-          );
+          </div>
+        );
+      }
+
+      case 'OTHER': {
+        const bodyText = message.body || '';
+        if (bodyText.startsWith('{')) {
+          try {
+            const pollData = JSON.parse(bodyText);
+            if (pollData.question || pollData.options) {
+              const question = pollData.question || t('whatsapp.pollQuestion');
+              const options = Array.isArray(pollData.options) ? pollData.options : [];
+              return (
+                <div className="space-y-2 w-64 max-w-full p-3 rounded-xl bg-slate-100 dark:bg-white/[0.06] border border-black/5 dark:border-white/10 shadow-sm">
+                  <div className="flex items-center gap-2 text-[#00a884] dark:text-[#25D366]">
+                    <BarChart2 className="w-4 h-4 shrink-0" />
+                    <span className="font-bold text-xs uppercase tracking-wider">
+                      {t('whatsapp.pollQuestion')}
+                    </span>
+                  </div>
+                  <h4 className="font-semibold text-xs text-slate-900 dark:text-slate-100">
+                    {question}
+                  </h4>
+                  {options.length > 0 && (
+                    <div className="space-y-1 pt-1">
+                      {options.map((opt: string, i: number) => (
+                        <div
+                          key={i}
+                          className="flex items-center gap-2 p-1.5 rounded-lg bg-black/[0.03] dark:bg-white/[0.04] text-xs text-slate-700 dark:text-slate-300"
+                        >
+                          <div className="w-3.5 h-3.5 rounded-full border border-slate-400 shrink-0" />
+                          <span className="truncate">{opt}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            }
+          } catch {
+            /* fallback to text */
+          }
         }
         return renderTextWithPreview(message.body || t('leads.mediaFallback'));
       }
@@ -954,8 +1146,36 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
           </div>
         );
 
+      case 'TEMPLATE':
+        return renderTextWithPreview(message.body || t('whatsapp.previewTemplate'));
+
       case 'TEXT':
-      default:
+      default: {
+        const trimmed = (message.body || '').trim();
+        if (trimmed === '[REVOKED]') {
+          return (
+            <div className="flex items-center gap-1.5 py-0.5 text-xs italic text-slate-500 dark:text-slate-400 select-none">
+              <Ban className="w-3.5 h-3.5 shrink-0 opacity-70" />
+              <span>{t('whatsapp.previewRevoked')}</span>
+            </div>
+          );
+        }
+        if (trimmed === '[CALL]') {
+          return (
+            <div className="flex items-center gap-1.5 py-0.5 text-xs italic text-slate-500 dark:text-slate-400 select-none">
+              <PhoneCall className="w-3.5 h-3.5 shrink-0 opacity-70" />
+              <span>{t('whatsapp.previewCall')}</span>
+            </div>
+          );
+        }
+        if (trimmed === '[SYSTEM]') {
+          return (
+            <div className="flex items-center gap-1.5 py-0.5 text-xs italic text-slate-500 dark:text-slate-400 select-none">
+              <Info className="w-3.5 h-3.5 shrink-0 opacity-70" />
+              <span>{t('whatsapp.previewSystem')}</span>
+            </div>
+          );
+        }
         if (!message.body && !message.link_preview) {
           if (resolvedMediaUrl) {
             return (
@@ -990,6 +1210,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
           );
         }
         return renderTextWithPreview(message.body || '');
+      }
     }
   };
 

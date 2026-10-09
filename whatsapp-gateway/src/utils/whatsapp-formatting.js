@@ -33,6 +33,24 @@ export function normalizePreviewText(messageType, body) {
   const t = String(messageType || 'TEXT').toUpperCase();
   const text = String(body || '').trim();
   if (text) {
+    if (text.startsWith('{')) {
+      try {
+        const data = JSON.parse(text);
+        if (t === 'CONTACT' || data.displayName || data.contacts) {
+          const name = data.displayName || data.contacts?.[0]?.displayName;
+          return name ? `👤 ${name}` : (TYPE_PREVIEW_LABELS.CONTACT || '👤 Kişi kartı');
+        }
+        if (t === 'LOCATION' || data.latitude || data.name || data.address) {
+          const loc = data.name || data.address;
+          return loc ? `📍 ${loc}` : (TYPE_PREVIEW_LABELS.LOCATION || '📍 Konum');
+        }
+        if (data.question || data.options) {
+          return data.question ? `📊 ${data.question}` : (TYPE_PREVIEW_LABELS.POLL || '📊 Anket');
+        }
+      } catch {
+        /* fallback below */
+      }
+    }
     const m = /^\[([A-Za-z_]+)\]$/.exec(text);
     if (m) {
       const inner = m[1].toUpperCase();

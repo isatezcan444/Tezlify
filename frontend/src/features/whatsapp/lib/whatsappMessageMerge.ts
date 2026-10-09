@@ -38,6 +38,8 @@ export function mergeWhatsAppMessages(current: Message[], incoming: Message[]): 
       ...previous,
       ...message,
       id: Number(previous.id) > 0 && !(Number(message.id) > 0) ? previous.id : message.id,
+      body: (message.body && message.body.trim() !== '') ? message.body : previous.body,
+      message_type: (message.message_type && message.message_type !== 'TEXT') ? message.message_type : (previous.message_type || message.message_type),
       wa_message_id: message.wa_message_id || previous.wa_message_id,
       client_message_id: message.client_message_id || previous.client_message_id,
       media_id: message.media_id || previous.media_id,

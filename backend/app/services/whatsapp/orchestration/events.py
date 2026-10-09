@@ -832,6 +832,17 @@ class WhatsAppEventOrchestrator:
                 # An early ACK may be buffered for this record; apply it before
                 # serializing so the broadcast carries the true status.
                 apply_deferred_status(canonical, advance=advance_message_status)
+                # Upgrade empty/placeholder body and message_type if new content arrived (e.g. retry decrypt, contact, location)
+                body_incoming = (msg.get("body") or "").strip()
+                canonical_body_empty = not (canonical.body and canonical.body.strip())
+                if body_incoming and (canonical_body_empty or (canonical.body and canonical.body.startswith("["))):
+                    canonical.body = msg.get("body")
+
+                if msg.get("message_type") and (canonical.message_type == MessageType.TEXT or canonical_body_empty):
+                    mtype_new = str(msg.get("message_type", "")).upper()
+                    if mtype_new in MessageType.__members__:
+                        canonical.message_type = MessageType[mtype_new]
+
                 if msg.get("media_id") and not canonical.media_id:
                     canonical.media_id = msg.get("media_id")
                     canonical.media_mime_type = msg.get("media_mime_type") or canonical.media_mime_type
@@ -839,6 +850,18 @@ class WhatsAppEventOrchestrator:
                     canonical.media_caption = msg.get("media_caption") or canonical.media_caption
                 if msg.get("quoted_message") and not getattr(canonical, "quoted_message", None):
                     canonical.quoted_message = msg.get("quoted_message")
+
+                if body_incoming or msg.get("media_id"):
+                    summary = build_last_message_summary(
+                        message_type=canonical.message_type.value,
+                        body=canonical.body or "",
+                        sender_name=canonical.sender_name,
+                        is_group=is_group_jid,
+                        direction=canonical.direction.value,
+                    )
+                    msg_dt = _as_naive_utc(_parse_dt(msg.get("created_at"))) or canonical.external_timestamp or canonical.created_at or utc_now_naive()
+                    apply_last_message(conv, msg_dt, summary)
+
                 await db.commit()
                 event["conversation_id"] = conv.id
                 event["message"] = serialize_message(canonical)

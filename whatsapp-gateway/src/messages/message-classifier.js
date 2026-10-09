@@ -64,9 +64,11 @@ export function classifyMessageType(content) {
   if (c.audioMessage) return 'AUDIO';
   if (c.videoMessage || c.ptvMessage) return 'VIDEO';
   if (c.stickerMessage) return 'STICKER';
-  if (c.conversation || c.extendedTextMessage) return 'TEXT';
   if (c.locationMessage || c.liveLocationMessage) return 'LOCATION';
   if (c.contactMessage || c.contactsArrayMessage) return 'CONTACT';
+  if (c.pollCreationMessage || c.pollCreationMessageV2 || c.pollCreationMessageV3 || c.pollUpdateMessage) return 'OTHER';
+  if (c.templateMessage) return 'TEMPLATE';
+  if (c.conversation || c.extendedTextMessage || c.interactiveMessage || c.buttonsMessage || c.buttonsResponseMessage || c.listResponseMessage || c.groupInviteMessage || c.orderMessage) return 'TEXT';
   return 'TEXT';
 }
 
@@ -75,7 +77,10 @@ export function hasRecognizedContent(content) {
   return Boolean(
     c.imageMessage || c.documentMessage || c.audioMessage || c.videoMessage || c.ptvMessage ||
     c.stickerMessage || c.conversation || c.extendedTextMessage ||
-    c.locationMessage || c.liveLocationMessage || c.contactMessage || c.contactsArrayMessage
+    c.locationMessage || c.liveLocationMessage || c.contactMessage || c.contactsArrayMessage ||
+    c.pollCreationMessage || c.pollCreationMessageV2 || c.pollCreationMessageV3 || c.pollUpdateMessage ||
+    c.interactiveMessage || c.templateMessage || c.buttonsMessage || c.buttonsResponseMessage ||
+    c.listResponseMessage || c.groupInviteMessage || c.orderMessage
   );
 }
 
@@ -269,15 +274,152 @@ export function systemContentMarker(waMsg) {
   return null;
 }
 
+export function parseVCardPhone(vcard) {
+  if (!vcard) return '';
+  const lines = String(vcard).split(/\r?\n/);
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (/^TEL/i.test(trimmed)) {
+      const idx = trimmed.indexOf(':');
+      if (idx !== -1) {
+        return trimmed.slice(idx + 1).trim();
+      }
+    }
+  }
+  return '';
+}
+
+export function parseVCardName(vcard) {
+  if (!vcard) return '';
+  const lines = String(vcard).split(/\r?\n/);
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (/^FN/i.test(trimmed)) {
+      const idx = trimmed.indexOf(':');
+      if (idx !== -1) {
+        return trimmed.slice(idx + 1).trim();
+      }
+    }
+  }
+  return '';
+}
+
+export function extractContactPayload(content) {
+  const c = unwrapMessageContent(content) || {};
+  if (c.contactMessage) {
+    const cm = c.contactMessage;
+    const vcard = cm.vcard || '';
+    const phone = parseVCardPhone(vcard);
+    const displayName = cm.displayName || parseVCardName(vcard) || phone || 'Kişi';
+    return {
+      displayName,
+      vcard,
+      phone,
+      contacts: [{ displayName, vcard, phone }],
+    };
+  }
+  if (c.contactsArrayMessage) {
+    const cam = c.contactsArrayMessage;
+    const rawList = Array.isArray(cam.contacts) ? cam.contacts : [];
+    const contacts = rawList.map((item) => {
+      const vc = item.vcard || '';
+      const ph = parseVCardPhone(vc);
+      const name = item.displayName || parseVCardName(vc) || ph || 'Kişi';
+      return { displayName: name, vcard: vc, phone: ph };
+    });
+    const displayName =
+      cam.displayName ||
+      (contacts.length > 0
+        ? contacts.length === 1
+          ? contacts[0].displayName
+          : `${contacts.length} kişi`
+        : 'Kişi');
+    return {
+      displayName,
+      contacts,
+      phone: contacts[0]?.phone || '',
+    };
+  }
+  return null;
+}
+
+export function extractLocationPayload(content) {
+  const c = unwrapMessageContent(content) || {};
+  if (c.locationMessage) {
+    const lm = c.locationMessage;
+    const lat = lm.degreesLatitude;
+    const lng = lm.degreesLongitude;
+    const url = lm.url || (lat != null && lng != null ? `https://maps.google.com/?q=${lat},${lng}` : '');
+    return {
+      latitude: lat,
+      longitude: lng,
+      name: lm.name || '',
+      address: lm.address || '',
+      url,
+      comment: lm.comment || '',
+      jpegThumbnail: bufferToDataUrl(lm.jpegThumbnail, 'image/jpeg'),
+      isLive: false,
+    };
+  }
+  if (c.liveLocationMessage) {
+    const llm = c.liveLocationMessage;
+    const lat = llm.degreesLatitude;
+    const lng = llm.degreesLongitude;
+    const url = lat != null && lng != null ? `https://maps.google.com/?q=${lat},${lng}` : '';
+    return {
+      latitude: lat,
+      longitude: lng,
+      caption: llm.caption || '',
+      url,
+      isLive: true,
+      jpegThumbnail: bufferToDataUrl(llm.jpegThumbnail, 'image/jpeg'),
+    };
+  }
+  return null;
+}
+
+export function extractPollPayload(content) {
+  const c = unwrapMessageContent(content) || {};
+  const poll = c.pollCreationMessage || c.pollCreationMessageV2 || c.pollCreationMessageV3;
+  if (poll) {
+    return {
+      question: poll.name || '',
+      options: (poll.options || []).map((o) => (typeof o === 'string' ? o : o.optionName || '')),
+      selectableOptionsCount: poll.selectableOptionsCount || 1,
+    };
+  }
+  return null;
+}
+
 export function summarizeWaMessage(waMsg) {
   const rawContent = waMsg?.message || {};
   const content = unwrapMessageContent(rawContent) || rawContent;
+  const contact = extractContactPayload(content);
+  if (contact) {
+    return { message_type: 'CONTACT', body: JSON.stringify(contact) };
+  }
+  const location = extractLocationPayload(content);
+  if (location) {
+    return { message_type: 'LOCATION', body: JSON.stringify(location) };
+  }
+  const poll = extractPollPayload(content);
+  if (poll) {
+    return { message_type: 'OTHER', body: JSON.stringify(poll) };
+  }
   const text =
     content.conversation ||
     content.extendedTextMessage?.text ||
     content.imageMessage?.caption ||
     content.videoMessage?.caption ||
     content.documentMessage?.caption ||
+    content.interactiveMessage?.body?.text ||
+    content.templateMessage?.hydratedTemplate?.hydratedContentText ||
+    content.templateMessage?.fourRowTemplate?.content?.text ||
+    content.buttonsMessage?.contentText ||
+    content.buttonsResponseMessage?.selectedDisplayText ||
+    content.listResponseMessage?.title ||
+    content.groupInviteMessage?.caption ||
+    content.orderMessage?.orderTitle ||
     '';
   if (text) return { message_type: classifyMessageType(content), body: text };
   // Metin yok. Medya tipleri icin `normalizePreviewText` kendi etiketini uretir;
