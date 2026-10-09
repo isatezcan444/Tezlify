@@ -1689,6 +1689,7 @@ class WhatsAppEventOrchestrator:
             if "archived" in payload:
                 conv.is_archived = bool(payload.get("archived"))
             name = payload.get("name")
+            contact = None
             if name or payload.get("avatar_url"):
                 contact = await upsert_contact(db, owner, str(jid), None)
                 _set_contact_name(contact, name, payload.get("name_source"))
@@ -1728,9 +1729,6 @@ class WhatsAppEventOrchestrator:
                     "Gateway unread_count gecersiz; mevcut deger korundu (conv=%s value=%r): %s",
                     conv.id, payload.get("unread_count"), exc,
                 )
-            await db.commit()
-            if owner != SYSTEM_USER_ID and schedule_chats_bootstrap is not None:
-                schedule_chats_bootstrap(owner)
             # Phase 2 (single authority): emit the SAME canonical conversation shape
             # that REST `list_conversations` emits. Previously the raw gateway object
             # was forwarded verbatim, which used different field names (e.g.
@@ -1738,7 +1736,7 @@ class WhatsAppEventOrchestrator:
             # about a conversation's identity, and the frontend merge
             # `{...existing, ...mapped}` could blank out known state.
             canonical_contact = (
-                await db.get(Contact, conv.contact_id) if conv.contact_id else None
+                contact or (await db.get(Contact, conv.contact_id) if conv.contact_id else None)
             )
             canonical_phone = canonical_contact.phone_e164 if canonical_contact else None
             canonical_is_group = bool(conv.is_group) or bool(
@@ -1781,6 +1779,9 @@ class WhatsAppEventOrchestrator:
                 if hasattr(conv.status, "value")
                 else str(conv.status),
             }
+            await db.commit()
+            if owner != SYSTEM_USER_ID and schedule_chats_bootstrap is not None:
+                schedule_chats_bootstrap(owner)
             return event
         if event.get("event") == "conversation_read":
             # `last_read_at` MUST be stamped alongside the counter: it is the

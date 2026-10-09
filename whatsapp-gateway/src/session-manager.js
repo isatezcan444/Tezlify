@@ -2431,14 +2431,19 @@ export function createSessionManager({
               this._emit({ event: 'contact_synced', contact: { ...contact }, gateway_session_id: session.id });
             }
           }
+        } else {
+          // WhatsApp 200 OK yanıtı döndü ancak profil resmi yok (gizlilik veya resimsiz).
+          // 1 saat negatif önbellek uygulanır; sonraki sweep pass'lerini tıkaması önlenir.
+          avatarNegativeCache?.set(key, Date.now() + 60 * 60 * 1000);
         }
       } catch (err) {
         // Ayrıştırma: "item-not-found" sunucuda profil resmi YOK demektir —
         // bunu her turda tekrar sormak rate-limit israfıdır. 1 saat negatif önbellek
         // uygulanır ve sweep döngüsünü tıkaması engellenir.
         const errMsg = String(err?.message || err);
-        const isTimeout = /timeout|timed out|408/i.test(errMsg);
-        const noPicture = /item-not-found|not-acceptable|40[46]/i.test(errMsg);
+        const errCode = Number(err?.data || err?.output?.statusCode || 0);
+        const isTimeout = /timeout|timed out|408/i.test(errMsg) || errCode === 408;
+        const noPicture = /item-not-found|not-acceptable|40[46]/i.test(errMsg) || errCode === 404 || errCode === 406;
         if (noPicture) {
           avatarNegativeCache?.set(key, Date.now() + 60 * 60 * 1000);
         } else if (isTimeout) {
