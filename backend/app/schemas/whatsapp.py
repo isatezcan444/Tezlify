@@ -394,6 +394,8 @@ class WhatsAppSyncJobResponse(BaseModel):
     backfill_hydrated: int = 0
     started_at: Optional[str] = None
     finished_at: Optional[str] = None
+    # Faz 24: Silent reconciliation indicator
+    silent: bool = False
     # Faz 6 (P0.1): faz bazinda gecen sure (sn, gercek olcum — time.monotonic
     # delta). Benchmark/raporlama icin; UI icin zorunlu degil.
     stage_timings: Dict[str, float] = Field(default_factory=dict)

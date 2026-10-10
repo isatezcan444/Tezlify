@@ -591,9 +591,10 @@ export const WhatsAppApi = {
     return apiSend<{ success: boolean }>(`/whatsapp/pairing/${pairToken}/cancel`, 'POST');
   },
 
-  async refreshAvatar(phone: string): Promise<{ success: boolean; avatar_url?: string | null; error?: string }> {
+  async refreshAvatar(phone: string, priority: string = 'normal'): Promise<{ success: boolean; avatar_url?: string | null; error?: string }> {
+    const qs = priority && priority !== 'normal' ? `?priority=${encodeURIComponent(priority)}` : '';
     return apiSend<{ success: boolean; avatar_url?: string | null; error?: string }>(
-      `/whatsapp/contacts/${encodeURIComponent(phone)}/avatar/refresh`,
+      `/whatsapp/contacts/${encodeURIComponent(phone)}/avatar/refresh${qs}`,
       'POST'
     );
   },

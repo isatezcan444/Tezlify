@@ -43,8 +43,42 @@ export const failedAvatarUrls = new Set<string>();
 export const inFlightAvatarRefreshes = new Set<string>();
 export const negativeAvatarPhones = new Map<string, number>();
 
-// Phase 22 (Rule 4): Global cache of successfully resolved/active avatar URLs by phone/JID
+// Phase 22 (Rule 4) & Phase 24: Global cache of successfully resolved/active avatar URLs by phone/JID
 export const resolvedAvatarCache = new Map<string, string>();
+
+const AVATAR_SESSION_CACHE_KEY = 'tezlify_avatar_cache';
+
+export function loadAvatarSessionCache(): void {
+  try {
+    if (typeof window === 'undefined' || !window.sessionStorage) return;
+    const raw = window.sessionStorage.getItem(AVATAR_SESSION_CACHE_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object') {
+      for (const [k, v] of Object.entries(parsed)) {
+        if (typeof v === 'string' && v) {
+          resolvedAvatarCache.set(k, v);
+        }
+      }
+    }
+  } catch {
+    /* sessionStorage disabled or unparseable */
+  }
+}
+
+export function saveAvatarToSessionCache(phoneKey: string, url: string): void {
+  try {
+    if (typeof window === 'undefined' || !window.sessionStorage) return;
+    const raw = window.sessionStorage.getItem(AVATAR_SESSION_CACHE_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    parsed[phoneKey] = url;
+    window.sessionStorage.setItem(AVATAR_SESSION_CACHE_KEY, JSON.stringify(parsed));
+  } catch {
+    /* sessionStorage quota or disabled */
+  }
+}
+
+loadAvatarSessionCache();
 
 // Phase 22: Observability metrics for avatar lifecycle
 export const avatarMetrics = {
@@ -81,13 +115,18 @@ function pumpAvatarRefreshQueue() {
   }
 }
 
-export function queueAvatarRefresh(task: () => Promise<void>) {
-  avatarRefreshQueue.push(() => {
+export function queueAvatarRefresh(task: () => Promise<void>, priority: 'high' | 'normal' | 'low' = 'normal') {
+  const run = () => {
     task().finally(() => {
       activeAvatarRefreshes = Math.max(0, activeAvatarRefreshes - 1);
       pumpAvatarRefreshQueue();
     });
-  });
+  };
+  if (priority === 'high') {
+    avatarRefreshQueue.unshift(run);
+  } else {
+    avatarRefreshQueue.push(run);
+  }
   pumpAvatarRefreshQueue();
 }
 
@@ -96,6 +135,13 @@ export const clearFailedAvatarUrlsCache = () => {
   inFlightAvatarRefreshes.clear();
   negativeAvatarPhones.clear();
   resolvedAvatarCache.clear();
+  try {
+    if (typeof window !== 'undefined' && window.sessionStorage) {
+      window.sessionStorage.removeItem(AVATAR_SESSION_CACHE_KEY);
+    }
+  } catch {
+    /* ignore */
+  }
   avatarMetrics.reset();
   avatarRefreshQueue.length = 0;
   activeAvatarRefreshes = 0;
@@ -128,22 +174,37 @@ export const Avatar: React.FC<AvatarProps> = ({
     return initialEffective ? failedAvatarUrls.has(initialEffective) : false;
   });
 
-  const [isImageLoaded, setIsImageLoaded] = React.useState<boolean>(false);
+  const [isImageLoaded, setIsImageLoaded] = React.useState<boolean>(() => {
+    return Boolean(initialEffective && !failedAvatarUrls.has(initialEffective));
+  });
 
   React.useEffect(() => {
     if (resolved) {
-      if (phone) resolvedAvatarCache.set(phone, resolved);
-      setCurrentImage(resolved);
-      setIsImageLoaded(false);
-      setImageError(failedAvatarUrls.has(resolved));
+      if (phone) {
+        resolvedAvatarCache.set(phone, resolved);
+        saveAvatarToSessionCache(phone, resolved);
+      }
+      setCurrentImage((prev) => {
+        if (prev !== resolved) {
+          setIsImageLoaded(false);
+          setImageError(failedAvatarUrls.has(resolved));
+          return resolved;
+        }
+        return prev;
+      });
     } else if (phone && resolvedAvatarCache.has(phone)) {
       // Phase 22 (Rule 1 & 2): Incoming prop is empty/undefined, but we already have
       // a verified avatar URL in the client cache — preserve it!
       avatarMetrics.avatar_url_preserved_after_empty_update++;
       const cachedUrl = resolvedAvatarCache.get(phone);
-      setCurrentImage(cachedUrl);
-      setIsImageLoaded(false);
-      setImageError(cachedUrl ? failedAvatarUrls.has(cachedUrl) : false);
+      setCurrentImage((prev) => {
+        if (prev !== cachedUrl) {
+          setIsImageLoaded(Boolean(cachedUrl));
+          setImageError(cachedUrl ? failedAvatarUrls.has(cachedUrl) : false);
+          return cachedUrl;
+        }
+        return prev;
+      });
     } else {
       setCurrentImage(undefined);
       setIsImageLoaded(false);
@@ -164,14 +225,18 @@ export const Avatar: React.FC<AvatarProps> = ({
     inFlightAvatarRefreshes.add(phone);
     queueAvatarRefresh(async () => {
       try {
-        const res = await WhatsAppRepository.refreshAvatar(phone);
+        const res = await WhatsAppRepository.refreshAvatar(phone, priority);
         if (res.success && res.avatar_url) {
           avatarMetrics.avatar_request_succeeded++;
           const nextResolved = resolveMediaUrl(res.avatar_url) || res.avatar_url;
-          if (phone) resolvedAvatarCache.set(phone, nextResolved);
+          if (phone) {
+            resolvedAvatarCache.set(phone, nextResolved);
+            saveAvatarToSessionCache(phone, nextResolved);
+          }
           failedAvatarUrls.delete(nextResolved);
           negativeAvatarPhones.delete(phone);
           setCurrentImage(nextResolved);
+          setIsImageLoaded(true);
           setImageError(false);
           onRefresh?.(res.avatar_url);
         } else {
@@ -185,8 +250,8 @@ export const Avatar: React.FC<AvatarProps> = ({
       } finally {
         inFlightAvatarRefreshes.delete(phone);
       }
-    });
-  }, [phone, onRefresh]);
+    }, priority);
+  }, [phone, priority, onRefresh]);
 
   const handleImageError = React.useCallback(() => {
     avatarMetrics.avatar_retry_scheduled++;
@@ -251,7 +316,7 @@ export const Avatar: React.FC<AvatarProps> = ({
             key={currentImage}
             src={currentImage}
             alt={name}
-            loading="lazy"
+            loading={priority === 'high' ? 'eager' : 'lazy'}
             decoding="async"
             onLoad={() => setIsImageLoaded(true)}
             onError={handleImageError}

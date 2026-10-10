@@ -271,9 +271,9 @@ app.post('/sessions', async (req, res) => {
 // Refresh contact avatar from WhatsApp
 app.post('/sessions/:id/avatar/refresh', async (req, res) => {
   try {
-    const { jid, force } = req.body || {};
+    const { jid, force, priority } = req.body || {};
     if (!jid) return res.status(400).json({ error: 'jid is required' });
-    const result = await sessionManager.refreshAvatar(req.params.id, jid, Boolean(force));
+    const result = await sessionManager.refreshAvatar(req.params.id, jid, Boolean(force), priority || 'normal');
     res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });

@@ -143,6 +143,51 @@ const MAX_BACKGROUND_CONVERSATION_PAGES = 5;
 // kalmali.
 const MESSAGE_LOAD_TIMEOUT_MS = 40_000;
 
+const CONVERSATIONS_CACHE_KEY = 'tezlify_cached_conversations';
+let _moduleConversationsCache: Conversation[] = [];
+
+export function clearCachedConversations(): void {
+  _moduleConversationsCache = [];
+  try {
+    if (typeof window !== 'undefined' && window.sessionStorage) {
+      window.sessionStorage.removeItem(CONVERSATIONS_CACHE_KEY);
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
+function getInitialCachedConversations(): Conversation[] {
+  if (_moduleConversationsCache.length > 0) return _moduleConversationsCache;
+  try {
+    if (typeof window !== 'undefined' && window.sessionStorage) {
+      const raw = window.sessionStorage.getItem(CONVERSATIONS_CACHE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          _moduleConversationsCache = parsed;
+          return parsed;
+        }
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  return [];
+}
+
+function saveCachedConversations(items: Conversation[]): void {
+  try {
+    const slice = items.slice(0, 50);
+    _moduleConversationsCache = slice;
+    if (typeof window !== 'undefined' && window.sessionStorage) {
+      window.sessionStorage.setItem(CONVERSATIONS_CACHE_KEY, JSON.stringify(slice));
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
 export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats }) => {
   const toast = useToast();
   const { t } = useI18n();
@@ -180,7 +225,8 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   }, [hubTab, refreshLidSplits]);
 
   // Live Conversations State (connected directly to WhatsApp session)
-  const [conversations, setConversations] = useState<Conversation[]>([]);
+  // Faz 24: Initial hydration cache — ekranda anında görünür liste (0ms), ardından arka planda sessiz mutabakat
+  const [conversations, setConversations] = useState<Conversation[]>(() => getInitialCachedConversations());
   const conversationsRef = useRef<Conversation[]>(conversations);
   useEffect(() => {
     conversationsRef.current = conversations;
@@ -1048,8 +1094,11 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     if (!isSilent) {
       setConvsLoading(true);
       // LOADING ≠ EMPTY ≠ ERROR (Sorun 1/16/17): ilk yukleme boyunca liste
-      // "sohbet yok" DEMEZ; yanlis ara durum gosterilmez.
-      setConvLoadState('loading');
+      // "sohbet yok" DEMEZ; yanlis ara durum gosterilmez. Eger cache'den gelen
+      // sohbetler varsa skeleton araya girmez, aninda liste gosterilir (Faz 24).
+      if (conversationsRef.current.length === 0) {
+        setConvLoadState('loading');
+      }
       setConvLoadError(null);
       // Yeni (kullanici kaynakli) yuklemede arka plan doldurma sayaci sifirlanir.
       backgroundBackfillRef.current.pages = 0;
@@ -1081,10 +1130,18 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
           return activeId && Number(merged.id) === Number(activeId) ? { ...merged, unread_count: 0 } : merged;
         });
         const pageIds = new Set(sanitizedItems.map((c) => c.id));
-        if (!page.has_more) return sanitizedItems;
+        if (!page.has_more) {
+          saveCachedConversations(sanitizedItems);
+          return sanitizedItems;
+        }
         const retained = prev.filter((c) => !pageIds.has(c.id));
-        if (!retained.length) return sanitizedItems;
-        return [...sanitizedItems, ...retained].sort(compareByLastMessageDesc);
+        if (!retained.length) {
+          saveCachedConversations(sanitizedItems);
+          return sanitizedItems;
+        }
+        const combined = [...sanitizedItems, ...retained].sort(compareByLastMessageDesc);
+        saveCachedConversations(combined);
+        return combined;
       });
       setHasMoreConvs(page.has_more);
       nextConvOffsetRef.current = page.next_offset ?? page.items.length;
@@ -3034,7 +3091,11 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     // (yeniden indirme YOK, §28) + sessiz mutabakat.
     const handleReconnect = () => {
       console.log('[WhatsAppHubPage] WebSocket reconnected. Performing silent reconciliation...');
-      void refreshSyncStatus();
+      // Faz 24: Reconnect sirasinda banner patlatilmaz; sessiz mutabakat yurutulur.
+      // Yalnizca kullanicinin baslattigi aktif bir sync veya ilk QR senkronu varsa durumu tazele.
+      if (activeSyncIdRef.current || isPostQrSyncing) {
+        void refreshSyncStatus();
+      }
       loadConversations(true);
       const activeId = selectedConvRef.current?.id;
       if (activeId) {
@@ -3102,18 +3163,14 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     // Faz 4: tek-authority loading gate de ayni anda beslenir (avatar sayaclari
     // dahil); `ready` aninda hook otomatik gecisi tetikler.
     void refreshLoadingGate();
-    // Backend session_connected aninda promote_ephemeral_pairing sonrasi
-    // _schedule_initial_sync tetikler. UI tarafinda yaris durumunu onlemek icin
-    // fetchSessions ile bagli oturumun DB commit'i teyit edilir, ardindan sync tetiklenir.
+    // Faz 24: Backend session_connected aninda promote_ephemeral_pairing sonrasi
+    // _schedule_initial_sync'i otomatik olarak calistirir. UI tarafindan ikinci bir
+    // handleSyncChats() cagirmak cift senkronizasyona ve cift uyarilara yol aciyordu.
+    // fetchSessions ile oturum teyit edilir; sync state'i backend WS olaylariyla akar.
     setTimeout(() => {
-      void fetchSessions(true).then((latest) => {
-        const hasConnected = Array.isArray(latest) && latest.some((s: any) => s.status === 'CONNECTED');
-        if (hasConnected) {
-          void handleSyncChats();
-        }
-      });
+      void fetchSessions(true);
     }, 1200);
-  }, [fetchSessions, onRefreshStats, refreshSyncStatus, loadConversations, handleSyncChats, refreshLoadingGate]);
+  }, [fetchSessions, onRefreshStats, refreshSyncStatus, loadConversations, refreshLoadingGate]);
 
   const handleOpenQrConnect = useCallback(() => {
     setReconnectSessionId(undefined);
@@ -3360,9 +3417,9 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
               ayni genislikte kalir. */}
           <div className={`w-full md:w-80 lg:w-96 md:max-w-80 lg:max-w-96 shrink-0 grow-0 h-full flex flex-col min-w-0 ${selectedConv ? 'hidden md:flex' : 'flex'}`}>
             {/* Faz 7/11: GERCEK initial-sync banneri — yalnizca backend'den
-                gelen asama/sayaclar gosterilir (sahte progress yok); job
-                gercekten tamamlaninca (whatsapp_sync_complete) kapanir. */}
-            {sessionSync?.phase === 'syncing' && (
+            {/* Faz 7/11/24: Initial-sync & user-initiated sync banner — sessiz arka plan senkronizasyonunda
+                kullaniciya gereksiz ikinci bildirim GÖSTERİLMEZ. */}
+            {(isPostQrSyncing || initialSyncPending || isSyncingChats) && sessionSync?.phase === 'syncing' && !(sessionSync as any)?.silent && (
               <div className="mx-3 mt-3 rounded-xl border border-[#7367F0]/30 bg-[#7367F0]/5 dark:bg-[#7367F0]/10 px-3 py-2.5 shrink-0">
                 <div className="flex items-center space-x-2">
                   <Loader2 className="w-3.5 h-3.5 animate-spin text-[#7367F0] shrink-0" />
@@ -3400,9 +3457,9 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                 </p>
               </div>
             )}
-            {/* Sorun 8: tamamlanma GERCEK bitise baglidir; bildirim kisaca
-                gosterilip kaybolur (sahte progress degil, tamamlanma mesaji). */}
-            {sessionSync?.phase === 'ready' && (
+            {/* Sorun 8 & Faz 24: tamamlanma GERCEK bitise baglidir; bildirim kisaca
+                gosterilip kaybolur (sessiz reconciles bildirim patlatmaz). */}
+            {(isPostQrSyncing || initialSyncPending || isSyncingChats) && sessionSync?.phase === 'ready' && (
               <div className="mx-3 mt-3 rounded-xl border border-[#28C76F]/40 bg-[#28C76F]/5 dark:bg-[#28C76F]/10 px-3 py-2.5 shrink-0 flex items-center space-x-2">
                 <CheckCircle2 className="w-3.5 h-3.5 text-[#28C76F] shrink-0" />
                 <span className="text-[11px] font-bold text-[#28C76F]">

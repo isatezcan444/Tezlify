@@ -465,11 +465,14 @@ async def sync_contacts(
 @router.post("/contacts/{phone}/avatar/refresh", response_model=WhatsAppAvatarRefreshResponse)
 async def refresh_contact_avatar(
     phone: str,
+    priority: Optional[str] = Query("normal"),
     db: AsyncSession = Depends(get_db),
     current_user: AuthUser = Depends(get_current_user),
 ) -> WhatsAppAvatarRefreshResponse:
     try:
-        res = await whatsapp_service.refresh_contact_avatar(db, current_user.id, phone)
+        res = await whatsapp_service.refresh_contact_avatar(
+            db, current_user.id, phone, priority=priority or "normal"
+        )
         return WhatsAppAvatarRefreshResponse(**res)
     except Exception as exc:
         raise _bad_gateway(exc) from exc

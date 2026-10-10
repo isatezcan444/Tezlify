@@ -686,7 +686,9 @@ async def cancel_pairing_session(
     return {"success": True, "cancelled": True}
 
 
-async def refresh_contact_avatar(db: AsyncSession, user_id: str, phone: str) -> Dict[str, Any]:
+async def refresh_contact_avatar(
+    db: AsyncSession, user_id: str, phone: str, priority: str = "normal"
+) -> Dict[str, Any]:
     """Refreshes contact avatar URL directly from WhatsApp via connected gateway session."""
     stmt = (
         select(WhatsAppSession)
@@ -708,7 +710,7 @@ async def refresh_contact_avatar(db: AsyncSession, user_id: str, phone: str) -> 
     clean_phone = strip_jid_prefix(phone)
     jid = clean_phone if ("@" in clean_phone) else f"{clean_phone.lstrip('+')}@s.whatsapp.net"
     try:
-        res = await gw.refresh_avatar(gateway_id, jid)
+        res = await gw.refresh_avatar(gateway_id, jid, priority=priority)
         new_url = res.get("avatar_url") if isinstance(res, dict) else None
 
         digits = clean_phone.lstrip('+').split('@')[0] if clean_phone else ""

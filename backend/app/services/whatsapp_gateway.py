@@ -143,8 +143,13 @@ async def create_session(name: str, ephemeral: bool = False) -> Dict[str, Any]:
     return await _request("POST", "/sessions", json=payload)
 
 
-async def refresh_avatar(gateway_id: str, jid: str) -> Dict[str, Any]:
-    return await _request("POST", f"{_s(gateway_id)}/avatar/refresh", json={"jid": jid}, timeout=5.0)
+async def refresh_avatar(gateway_id: str, jid: str, priority: str = "normal") -> Dict[str, Any]:
+    return await _request(
+        "POST",
+        f"{_s(gateway_id)}/avatar/refresh",
+        json={"jid": jid, "priority": priority},
+        timeout=5.0,
+    )
 
 
 async def request_avatar_backfill(gateway_id: str, force: bool = False) -> Dict[str, Any]:

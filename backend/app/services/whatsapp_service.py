@@ -1730,8 +1730,8 @@ def _sync_event(job: SyncJob, event: str, **fields: Any) -> Dict[str, Any]:
     return _sync_orchestrator._sync_event(job, event, **fields)
 
 
-async def request_sync(db: AsyncSession, user_id: str) -> SyncJob:
-    return await _sync_orchestrator.request_sync(db, user_id)
+async def request_sync(db: AsyncSession, user_id: str, silent: bool = False) -> SyncJob:
+    return await _sync_orchestrator.request_sync(db, user_id, silent=silent)
 
 
 def get_sync_job(user_id: str) -> Optional[Dict[str, Any]]:
@@ -1795,8 +1795,8 @@ def _schedule_initial_sync(
     )
 
 
-async def _run_initial_sync(owner: str) -> None:
-    return await _sync_orchestrator._run_initial_sync(owner)
+async def _run_initial_sync(owner: str, reconcile: bool = False) -> None:
+    return await _sync_orchestrator._run_initial_sync(owner, reconcile=reconcile)
 
 
 async def _run_background_history_expansion(user_id: str, gateway_id: str) -> None:

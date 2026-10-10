@@ -292,6 +292,7 @@ class SyncJob:
         "stage",
         "error",
         "cancel_requested",
+        "silent",
         "chats_total",
         "chats_synced",
         "contacts_synced",
@@ -307,13 +308,14 @@ class SyncJob:
         "stage_timings",
     )
 
-    def __init__(self, sync_id: str, user_id: str) -> None:
+    def __init__(self, sync_id: str, user_id: str, silent: bool = False) -> None:
         self.sync_id = sync_id
         self.user_id = user_id
         self.state = "SYNCING"
         self.stage = "starting"
         self.error: Optional[str] = None
         self.cancel_requested = False
+        self.silent = silent
         self.chats_total = 0
         self.chats_synced = 0
         self.contacts_synced = 0
@@ -336,6 +338,7 @@ class SyncJob:
             "state": self.state,
             "stage": self.stage,
             "error": self.error,
+            "silent": self.silent,
             "chats_total": self.chats_total,
             "chats_synced": self.chats_synced,
             "contacts_synced": self.contacts_synced,
@@ -620,12 +623,17 @@ class WhatsAppSyncOrchestrator:
     def _sync_event(self, job: SyncJob, event: str, **fields: Any) -> Dict[str, Any]:
         return {"event": event, "sync_id": job.sync_id, "user_id": job.user_id, **fields}
 
-    async def request_sync(self, db: AsyncSession, user_id: str) -> SyncJob:
+    async def request_sync(
+        self, db: AsyncSession, user_id: str, silent: bool = False
+    ) -> SyncJob:
         owner = str(user_id)
         job = self._sync_jobs.get(owner)
         if job is not None and job.state == "SYNCING":
+            # If the user explicitly initiates a sync (silent=False), un-silence the running job
+            if not silent and getattr(job, "silent", False):
+                job.silent = False
             return job
-        job = SyncJob(sync_id=uuid.uuid4().hex, user_id=owner)
+        job = SyncJob(sync_id=uuid.uuid4().hex, user_id=owner, silent=silent)
         self._sync_jobs[owner] = job
         run_sync_job = self._get_helper("_run_sync_job", self._run_sync_job)
         job.task = asyncio.create_task(run_sync_job(job))
@@ -1763,9 +1771,17 @@ class WhatsAppSyncOrchestrator:
         )
         list_conversations = self._get_helper("list_conversations", None)
         schedule_metadata_enrichment = self._get_helper("_schedule_metadata_enrichment", self._schedule_metadata_enrichment)
-        run_background_history_expansion = self._get_helper("_run_background_history_expansion", self._run_background_history_expansion)
-        broadcast_sync_event = self._get_helper("_broadcast_sync_event", self._broadcast_sync_event)
+        run_background_history_expansion = self._get_helper(
+            "_run_background_history_expansion", self._run_background_history_expansion
+        )
+        broadcast_sync_event_raw = self._get_helper("_broadcast_sync_event", self._broadcast_sync_event)
         sync_event = self._get_helper("_sync_event", self._sync_event)
+
+        async def broadcast_sync_event(payload: Dict[str, Any], target_owner: str) -> None:
+            # Faz 24: Silent reconciliation suppresses user-facing whatsapp_sync_* banner events
+            if getattr(job, "silent", False) and str(payload.get("event", "")).startswith("whatsapp_sync_"):
+                return
+            await broadcast_sync_event_raw(payload, target_owner)
 
         try:
             async with session_factory() as db:
@@ -2126,17 +2142,35 @@ class WhatsAppSyncOrchestrator:
             return
         self._initial_sync_inflight.add(owner_key)
         run_initial_sync = self._get_helper("_run_initial_sync", self._run_initial_sync)
-        asyncio.create_task(run_initial_sync(owner_key))
+        async def _invoke_run_initial_sync() -> None:
+            try:
+                await run_initial_sync(owner_key, reconcile=reconcile)
+            except TypeError:
+                await run_initial_sync(owner_key)
+        asyncio.create_task(_invoke_run_initial_sync())
 
-    async def _run_initial_sync(self, owner: str) -> None:
+    async def _run_initial_sync(self, owner: str, reconcile: bool = False) -> None:
         session_factory = self._get_helper("AsyncSessionLocal", AsyncSessionLocal)
         request_sync = self._get_helper("request_sync", self.request_sync)
+        user_sessions = self._get_helper("_user_sessions", None)
+        job = None
         try:
             async with session_factory() as db:
-                job = await request_sync(db, owner)
+                is_silent = reconcile
+                if not is_silent and user_sessions:
+                    try:
+                        active_sess = await user_sessions(db, owner, connected_only=True)
+                        if active_sess and all(getattr(s, "initial_sync_completed_at", None) is not None for s in active_sess):
+                            is_silent = True
+                    except Exception:
+                        pass
+                try:
+                    job = await request_sync(db, owner, silent=is_silent)
+                except TypeError:
+                    job = await request_sync(db, owner)
                 await asyncio.shield(job.done.wait())
             if job.state == "COMPLETED":
-                logger.info("Initial-sync hydration tamamlandi (owner=%s)", owner)
+                logger.info("Initial-sync hydration tamamlandi (owner=%s, silent=%s)", owner, is_silent)
                 try:
                     from backend.app.api.v1.websocket import ws_manager
                     await ws_manager.broadcast({"event": "conversations_updated", "user_id": owner})
@@ -2154,8 +2188,9 @@ class WhatsAppSyncOrchestrator:
             self._initial_sync_inflight.discard(owner)
             if owner in self._initial_sync_pending:
                 self._initial_sync_pending.discard(owner)
-                self._schedule_initial_sync(owner)
-            else:
+                self._schedule_initial_sync(owner, reconcile=True)
+
+            if owner not in self._initial_sync_pending and owner not in self._initial_sync_inflight:
                 # S-5: nothing further is queued for this owner, so every session
                 # marker belonging to it has been served by the runs above. Release
                 # them so a LATER genuine reconnect can reconcile again.

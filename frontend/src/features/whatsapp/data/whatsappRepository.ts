@@ -93,8 +93,8 @@ export class WhatsAppRepository {
     return WhatsAppApi.cancelPairing(pairToken);
   }
 
-  static async refreshAvatar(phone: string): Promise<{ success: boolean; avatar_url?: string | null; error?: string }> {
-    return WhatsAppApi.refreshAvatar(phone);
+  static async refreshAvatar(phone: string, priority: string = 'normal'): Promise<{ success: boolean; avatar_url?: string | null; error?: string }> {
+    return WhatsAppApi.refreshAvatar(phone, priority);
   }
 
   static async requestAvatarBackfill(force: boolean = false): Promise<{ success: boolean; missing?: number }> {
