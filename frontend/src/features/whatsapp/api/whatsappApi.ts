@@ -105,10 +105,12 @@ export interface LidSplitMergeResult {
 // ---------------------------------------------------------------------------
 let liveProbe: { value: boolean; checkedAt: number } | null = null;
 const LIVE_TTL_MS = 30_000;
+const NEGATIVE_LIVE_TTL_MS = 2_000;
 
 export function isLiveCached(): boolean | null {
   if (!liveProbe) return null;
-  if (Date.now() - liveProbe.checkedAt > LIVE_TTL_MS) return null;
+  const ttl = liveProbe.value ? LIVE_TTL_MS : NEGATIVE_LIVE_TTL_MS;
+  if (Date.now() - liveProbe.checkedAt > ttl) return null;
   return liveProbe.value;
 }
 

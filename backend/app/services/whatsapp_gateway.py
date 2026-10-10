@@ -102,7 +102,7 @@ async def _request(method: str, path: str, timeout: Optional[float] = None, **kw
 # ---------------------------------------------------------------------------
 
 async def health() -> Dict[str, Any]:
-    return await _request("GET", "/health")
+    return await _request("GET", "/health", timeout=3.0)
 
 
 async def list_sessions() -> List[Dict[str, Any]]:
@@ -120,7 +120,7 @@ async def create_session(name: str, ephemeral: bool = False) -> Dict[str, Any]:
 
 
 async def refresh_avatar(gateway_id: str, jid: str) -> Dict[str, Any]:
-    return await _request("POST", f"{_s(gateway_id)}/avatar/refresh", json={"jid": jid})
+    return await _request("POST", f"{_s(gateway_id)}/avatar/refresh", json={"jid": jid}, timeout=5.0)
 
 
 async def request_avatar_backfill(gateway_id: str, force: bool = False) -> Dict[str, Any]:

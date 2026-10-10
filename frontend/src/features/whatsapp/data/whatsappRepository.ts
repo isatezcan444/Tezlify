@@ -94,12 +94,10 @@ export class WhatsAppRepository {
   }
 
   static async refreshAvatar(phone: string): Promise<{ success: boolean; avatar_url?: string | null; error?: string }> {
-    await requireLive();
     return WhatsAppApi.refreshAvatar(phone);
   }
 
   static async requestAvatarBackfill(force: boolean = false): Promise<{ success: boolean; missing?: number }> {
-    await requireLive();
     return WhatsAppApi.requestAvatarBackfill(force);
   }
 
@@ -169,7 +167,8 @@ export class WhatsAppRepository {
     has_more: boolean;
     next_offset?: number;
   }> {
-    await requireLive(params?.signal);
+    // Sohbet kayıtları PostgreSQL veritabanında kalıcıdır. Sayfalama ve okuma
+    // sorguları gateway sağlık dalgalanmalarından etkilenmemelidir.
     return WhatsAppApi.getConversationsPage({
       status: params?.status as ConversationStatus | undefined,
       unread_only: params?.unread_only,

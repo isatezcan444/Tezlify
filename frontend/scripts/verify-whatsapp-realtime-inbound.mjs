@@ -120,6 +120,10 @@ export const WhatsAppRepository = {
   async sendTyping() { calls.push('sendTyping'); return ok({}); },
   async disconnectSession() { calls.push('disconnectSession'); return ok({}); },
   async deleteSession() { calls.push('deleteSession'); return ok({}); },
+  async requestAvatarBackfill() { calls.push('requestAvatarBackfill'); return { success: true }; },
+  async refreshAvatar() { calls.push('refreshAvatar'); return { success: true }; },
+  async getLidSplits() { calls.push('getLidSplits'); return { items: [], total: 0, truncated: false }; },
+  async mergeLidSplits() { calls.push('mergeLidSplits'); return { merged: true }; },
 };
 export const WhatsAppApi = {
   async getConversations() { calls.push('getConversations'); return G.conversations; },
@@ -372,7 +376,7 @@ try {
   }
   exitCode = fails.length ? 1 : 0;
 } catch (err) {
-  console.error(`\nFAIL: ${err?.message ?? err}`);
+  console.error(`\nFAIL: ${err?.stack || err?.message || err}`);
   exitCode = 1;
 } finally {
   await rm(tmp, { recursive: true, force: true });

@@ -42,10 +42,37 @@ export const failedAvatarUrls = new Set<string>();
 export const inFlightAvatarRefreshes = new Set<string>();
 export const negativeAvatarPhones = new Map<string, number>();
 
+// Bounded concurrency queue for avatar refresh requests (max 2 in-flight)
+const MAX_CONCURRENT_AVATAR_REFRESHES = 2;
+let activeAvatarRefreshes = 0;
+const avatarRefreshQueue: Array<() => void> = [];
+
+function pumpAvatarRefreshQueue() {
+  while (activeAvatarRefreshes < MAX_CONCURRENT_AVATAR_REFRESHES && avatarRefreshQueue.length > 0) {
+    const task = avatarRefreshQueue.shift();
+    if (task) {
+      activeAvatarRefreshes++;
+      task();
+    }
+  }
+}
+
+export function queueAvatarRefresh(task: () => Promise<void>) {
+  avatarRefreshQueue.push(() => {
+    task().finally(() => {
+      activeAvatarRefreshes = Math.max(0, activeAvatarRefreshes - 1);
+      pumpAvatarRefreshQueue();
+    });
+  });
+  pumpAvatarRefreshQueue();
+}
+
 export const clearFailedAvatarUrlsCache = () => {
   failedAvatarUrls.clear();
   inFlightAvatarRefreshes.clear();
   negativeAvatarPhones.clear();
+  avatarRefreshQueue.length = 0;
+  activeAvatarRefreshes = 0;
 };
 
 export const Avatar: React.FC<AvatarProps> = ({
@@ -83,8 +110,9 @@ export const Avatar: React.FC<AvatarProps> = ({
         return;
       }
       inFlightAvatarRefreshes.add(phone);
-      WhatsAppRepository.refreshAvatar(phone)
-        .then((res) => {
+      queueAvatarRefresh(async () => {
+        try {
+          const res = await WhatsAppRepository.refreshAvatar(phone);
           if (res.success && res.avatar_url) {
             const nextResolved = resolveMediaUrl(res.avatar_url) || res.avatar_url;
             failedAvatarUrls.delete(nextResolved);
@@ -95,14 +123,13 @@ export const Avatar: React.FC<AvatarProps> = ({
           } else {
             negativeAvatarPhones.set(phone, Date.now() + 10 * 60 * 1000);
           }
-        })
-        .catch((err) => {
+        } catch (err) {
           negativeAvatarPhones.set(phone, Date.now() + 2 * 60 * 1000);
           console.debug("[Avatar] Refresh attempt failed:", err);
-        })
-        .finally(() => {
+        } finally {
           inFlightAvatarRefreshes.delete(phone);
-        });
+        }
+      });
     }
   }, [currentImage, phone, onRefresh]);
 

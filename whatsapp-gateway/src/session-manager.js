@@ -2385,6 +2385,10 @@ export function createSessionManager({
       session = this._sess(session);
       const store = this._storeOf(session);
       const { chats, contacts, avatarFetchInFlight, avatarFetchAttemptedAt, avatarNegativeCache, avatarRetryAfter } = store;
+      if (!key || key === '0@s.whatsapp.net' || isBroadcastOnlyJid(key)) {
+        avatarNegativeCache?.set(key, Date.now() + 24 * 60 * 60 * 1000);
+        return;
+      }
       if (avatarFetchInFlight.has(key)) return;
 
       const negativeUntil = avatarNegativeCache?.get(key) || 0;
@@ -2572,8 +2576,20 @@ export function createSessionManager({
       }
       const store = this._storeOf(session);
       const key = resolveJidKey(store, jid);
+      if (!key || key === '0@s.whatsapp.net' || isBroadcastOnlyJid(key) || isDegenerateJid(key)) {
+        store?.avatarNegativeCache?.set(key || jid, Date.now() + 24 * 60 * 60 * 1000);
+        return { success: false, jid: key || jid, error: 'item-not-found' };
+      }
+      let timer = null;
       try {
-        const url = await session.sock.profilePictureUrl(key, 'preview');
+        const timeoutPromise = new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error('profile_picture_query_timeout')), AVATAR_QUERY_TIMEOUT_MS);
+          if (typeof timer?.unref === 'function') timer.unref();
+        });
+        timeoutPromise.catch(() => {});
+
+        const queryPromise = Promise.resolve().then(() => session.sock.profilePictureUrl(key, 'preview'));
+        const url = await Promise.race([queryPromise, timeoutPromise]);
         if (store) {
           if (url) {
             store.avatarNegativeCache?.delete(key);
@@ -2599,10 +2615,12 @@ export function createSessionManager({
         return { success: true, jid: key, avatar_url: url || null };
       } catch (err) {
         const errMsg = String(err?.message || err);
-        if (/item-not-found|not-acceptable|40[46]/i.test(errMsg)) {
+        if (/item-not-found|not-acceptable|40[46]|profile_picture_query_timeout/i.test(errMsg)) {
           store?.avatarNegativeCache?.set(key, Date.now() + 60 * 60 * 1000);
         }
-        return { success: false, jid: key, error: err.message };
+        return { success: false, jid: key, error: err.message || errMsg };
+      } finally {
+        if (timer) clearTimeout(timer);
       }
     },
 

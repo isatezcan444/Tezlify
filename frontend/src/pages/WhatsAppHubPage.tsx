@@ -165,7 +165,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   const refreshLidSplits = useCallback(async () => {
     try {
       const res = await WhatsAppRepository.getLidSplits();
-      setLidSplits(res.items);
+      setLidSplits(Array.isArray(res?.items) ? res.items : []);
     } catch (err) {
       // Gateway/DB sondası başarısız olabilir; ekranda yanlış bir "temiz"
       // iddiası üretmemek için yalnızca konsola yazılır.
