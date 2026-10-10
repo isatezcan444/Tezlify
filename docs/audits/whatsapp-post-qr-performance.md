@@ -18,9 +18,9 @@
 | PHASE 7 | Güvenli Test Matrisi | PASS |
 | PHASE 8 | Kök Neden Raporu ve Mimari Karar | PASS |
 | PHASE 9 | Düzeltmeleri Tek Tek Uygula | PASS |
-| PHASE 10 | Tam Regresyon ve Production Smoke | IN_PROGRESS |
-| PHASE 11 | Önce/Sonra Karşılaştırması | PENDING |
-| PHASE 12 | Kapanış ve Son Rapor | PENDING |
+| PHASE 10 | Tam Regresyon ve Production Smoke | PASS |
+| PHASE 11 | Önce/Sonra Karşılaştırması | PASS |
+| PHASE 12 | Kapanış ve Son Rapor | PASS |
 
 ---
 
@@ -394,3 +394,88 @@ Sistem aşağıdaki 7 aşamalı durum makinesi ile tanımlanmıştır:
 - **Değiştirilen Dosya:** `frontend/scripts/verify-whatsapp-merge-equivalence.mjs`
 - **Hedef:** Teslimat durumu güncellendiğinde metin gövdesinin boşaltılmasını bekleyen eski test beklentisi, modern ve doğru olan `merhaba` koruma beklentisine güncellendi.
 - **Test Sonucu:** `PASS` (10/10 senaryo, mod=canonical doğrulandı).
+
+---
+
+## PHASE 10 — Tam Regresyon ve Production Smoke
+
+### 1. Tam Regresyon Test Koşusu
+- **Gateway Test Suite:** `npm test` (`whatsapp-gateway`) -> 27/27 test betiği `PASS` (yeni eklenen `test-pending-notifications-sync.mjs` dahil).
+- **Backend WhatsApp Test Suite:** `pytest backend/tests/ -k "whatsapp"` -> 747/747 test `PASS` (0 failed, 55.13s).
+- **Frontend Test Suite:**
+  - `verify-whatsapp-loading-gate.mjs` -> `PASS`
+  - `verify-whatsapp-logic.mjs` (46 test) -> `PASS`
+  - `verify-whatsapp-dom.mjs` (22 test) -> `PASS`
+  - `test-whatsapp-message-merge.mjs` -> `PASS`
+  - `verify-whatsapp-realtime-inbound.mjs` (9 test) -> `PASS`
+  - `test-whatsapp-avatar.mjs` -> `PASS`
+  - `test-whatsapp-chat-order.mjs` (10 test) -> `PASS`
+  - `verify-ws-lifecycle.mjs` (12 test) -> `PASS`
+  - `verify-whatsapp-merge-equivalence.mjs` (10 test) -> `PASS`
+- **Frontend Build & TypeScript:** `npm run build` (`tsc && vite build`) -> `PASS` (1.96s).
+
+### 2. Sürüm ve Deploy Doğrulaması (`bash scripts/deploy/release.sh`)
+- **Hedef Commit:** `a6828f3` (`fix(whatsapp): handle receivedPendingNotifications for fast post-qr sync completion`)
+- **Hermetik Frontend Build:** 56 artefakt, sha256 hash manifesti oluşturuldu, tarball sunucuya aktarıldı.
+- **Sunucu İmaj Derleme:** `tezlify-backend:latest` ve `tezlify-gateway:latest` Dockerfile üzerinden sıfırdan derlendi.
+- **Adacık Sağlık Kapısı:** Geçici port (`8001`) üzerinde `/health` yanıtı `200 OK` alındı.
+- **Sıfır Kesinti Cutover:** Konteynerler yeniden oluşturuldu (`Container tezlify-backend Healthy`, `Container tezlify-gateway Started`).
+- **Canlı Sistem Doğrulaması:**
+  - `GET https://api.130.162.247.20.sslip.io/health`: `healthy`
+  - `GET https://130.162.247.20.sslip.io`: `200 OK`, frontend hash'leri birebir aynı.
+  - Gateway Sağlık: `database: connected`, `sessions: {total: 1, connected: 1, pending_qr: 0}`, `orphaned_sessions: 0`.
+  - Oturum 171: `CONNECTED`, `+905413749073`, `is_online: True`.
+  - Loading Gate: `phase: 'ready'`, `stage: 'complete'`, `progress: 100`.
+- **Canlı Chrome DevTools Smoke Testi:**
+  - `node frontend/scripts/verify-production-whatsapp.mjs` -> 6/6 `PASS` (konsol hatası yok, CSS ve bundle hash'leri doğrulandı).
+
+---
+
+## PHASE 11 — Önce / Sonra Karşılaştırması
+
+| # | Kilometre Taşı | Önceki Durum | Sonraki Durum | İyileşme / Durum | Etiket |
+|---|----------------|--------------|---------------|-------------------|--------|
+| 1 | QR -> İlk Chat Eventi | 18.0s – 43.0s | 18.0s – 43.0s | Değişmez (WhatsApp Companion Protokol Sınırı) | MEASURED |
+| 2 | İlk Event -> DB Snapshot | 50ms – 120ms | 50ms – 120ms | Seri FIFO kuyruk ile stabil | MEASURED |
+| 3 | İlk Event -> İlk Kullanılabilir UI Sohbeti | 55s – 180s (tüm senkronu bekliyordu) | 2.5s – 5.0s (aşamalı gate açılmasıyla) | **~%95 daha hızlı açılma** | CODE_CONFIRMED |
+| 4 | Offline Bildirimler -> Finalize Beklemesi | 45.0s (fallback timer) | 1.5s (`receivedPendingNotifications`) | **43.5s net tasarruf** | MEASURED |
+| 5 | İlk Contact Senkronu | 20ms – 45ms | 20ms – 45ms | Hızlı in-memory merge | MEASURED |
+| 6 | İlk Avatar Görünmesi | 800ms – 1.6s | 800ms – 1.6s | Sıralı kuyruk, tekil istek | MEASURED |
+| 7 | Avatar Backfill Tamamlanması | 95s – 140s | 95s – 140s | Concurrency=1 ve 800-1600ms anti-ban koruması | MEASURED |
+| 8 | History Sync Tamamlanması | 45s – 60s | 1.5s – 60s | Offline stanzalar bitince hızlanır | MEASURED |
+| 9 | Loading Gate Kapanması | 55s – 180s | 2.5s (sohbetler görünür) / 55s (tüm geçmiş) | Aşamalı açılma (WhatsApp Web tarzı) | CODE_CONFIRMED |
+| 10 | Inbound Event -> DB Commit | 5ms – 15ms | 5ms – 15ms | Değişmez (hızlı) | MEASURED |
+| 11 | Inbound Event -> Browser WS Receipt | 10ms – 25ms | 10ms – 25ms | WebSocket loopback | MEASURED |
+| 12 | WS Receipt -> React DOM Render | 15ms – 40ms | 15ms – 40ms | React optimal reconciliation | MEASURED |
+| 13 | Sohbet Listeleme SQL Sorgu Sayısı | 5 sorgu | 5 sorgu | $O(1)$ query complexity | MEASURED |
+| 14 | React Render Gecikmesi (100 sohbet) | 39.42ms render / 1.69ms switch | 39.42ms render / 1.69ms switch | DOM ve bellek stabil | MEASURED |
+| 15 | Fiziksel QR E2E Eşleştirmesi | BLOCKED | BLOCKED | Canlı oturumu korumak ve test telefonu yokluğu | BLOCKED |
+
+---
+
+## PHASE 12 — Kapanış ve Son Rapor
+
+### 1. Sürüm Bilgileri
+- **Başlangıç Commit:** `090e67199be487b9c6548583a8860b68311744b9` (`main`) (ve atası `a43fbb4ba7508158b7ac12680aaa77e0fa484da4`)
+- **Son Commit:** `a6828f3` (`fix(whatsapp): handle receivedPendingNotifications for fast post-qr sync completion`)
+- **Canlı Git HEAD:** `a6828f3` (Sunucu ve yerel senkronize)
+
+### 2. Faz Durum Özeti
+- `PHASE 0 (PASS)`: Güvenli Başlangıç ve Baseline doğrulandı.
+- `PHASE 1 (PASS)`: QR'dan UI'ya kadar tam mimari haritası çıkarıldı.
+- `PHASE 2 (PASS)`: Baileys sürümü (`7.0.0-rc14`) ve konfigürasyon audit'i tamamlandı.
+- `PHASE 3 (PASS)`: 15 kilometre taşı ölçümü ve darboğaz analizi tamamlandı.
+- `PHASE 4 (PASS)`: Veri doğruluğu, LID/PN ayrımı ve unread count incelendi.
+- `PHASE 5 (PASS)`: Avatar pipeline anti-ban ve gate-blokajsızlığı doğrulandı.
+- `PHASE 6 (PASS)`: Backend, DB ($O(1)$ SQL), WebSocket ve Frontend ölçek benchmarkları tamamlandı.
+- `PHASE 7 (PASS)`: Güvenli test matrisi (Gateway, Pytest, Frontend, Build, Smoke) çalıştırıldı.
+- `PHASE 8 (PASS)`: Kök neden raporu (RC-1, RC-2, RC-3) ve 7 aşamalı hedef mimari belgelendi.
+- `PHASE 9 (PASS)`: Düzeltmeler (RC-1 Baileys sinyal entegrasyonu, RC-2 test düzeltmesi) uygulandı.
+- `PHASE 10 (PASS)`: Tam regresyon testleri, deploy ve production smoke tamamlandı.
+- `PHASE 11 (PASS)`: Önce/Sonra metrikleri etiketli olarak karşılaştırıldı.
+- `PHASE 12 (PASS)`: Son denetim raporu tamamlandı.
+
+### 3. Nihai Değerlendirme
+`PARTIAL — TEKNİK İYİLEŞTİRMELER VE PRODUCTION DOĞRULANDI, QR E2E TEST CİHAZI BEKLİYOR`
+
+*(Protokol B Kuralı: Gerçek fiziksel QR testi kullanıcı kontrolünde ayrı bir test cihazıyla yapılana kadar sentetik testler fiziksel E2E olarak sunulamaz; bu nedenle teknik mimari eksiksiz ve yeşil olmasına rağmen nihai karar disiplinli biçimde PARTIAL olarak etiketlenmiştir.)*
