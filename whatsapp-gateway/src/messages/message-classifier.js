@@ -53,8 +53,16 @@ export function resolveDownloadableMedia(messageContent) {
   const contentType = content ? getContentType(content) : null;
   const media = contentType ? content?.[contentType] : null;
   if (!media || typeof media !== 'object') return null;
-  if (!('url' in media) && !('thumbnailDirectPath' in media)) return null;
-  return { contentType, media };
+  const hasDownloadable = Boolean(
+    ('url' in media && media.url) ||
+    ('directPath' in media && media.directPath) ||
+    ('thumbnailDirectPath' in media && media.thumbnailDirectPath) ||
+    ('mediaKey' in media && media.mediaKey) ||
+    ('jpegThumbnail' in media && media.jpegThumbnail)
+  );
+  if (!hasDownloadable) return null;
+  const mediaType = contentType ? contentType.replace('Message', '') : 'image';
+  return { contentType, mediaType, media };
 }
 
 export function classifyMessageType(content) {

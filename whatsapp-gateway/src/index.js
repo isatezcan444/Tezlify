@@ -611,9 +611,10 @@ app.delete('/sessions/:sessionId/conversations/:jid', withSession(async (req, re
 // Download media by media_id or wa_message_id (with on-demand fallback)
 app.get('/sessions/:sessionId/media/:mediaId', withSession(async (req, res, sessionId) => {
   const preferPreview = req.query.preview === 'true';
+  const retry = Boolean(req.query._retry || req.query.retry || req.query.force);
   let filePath = sessionManager.getMediaPath(sessionId, req.params.mediaId);
   if (!filePath || !fs.existsSync(filePath)) {
-    filePath = await sessionManager.downloadMediaOnDemand(sessionId, req.params.mediaId, { preferPreview });
+    filePath = await sessionManager.downloadMediaOnDemand(sessionId, req.params.mediaId, { preferPreview, retry });
   }
   if (!filePath || !fs.existsSync(filePath)) return res.status(404).json({ error: 'Media not found' });
   res.sendFile(filePath);
@@ -627,9 +628,10 @@ app.get('/media/:mediaId', async (req, res) => {
     return res.status(401).json({ error: 'Unauthorized' });
   }
   const preferPreview = req.query.preview === 'true';
+  const retry = Boolean(req.query._retry || req.query.retry || req.query.force);
   let filePath = sessionManager.getMediaPath(null, req.params.mediaId);
   if (!filePath || !fs.existsSync(filePath)) {
-    filePath = await sessionManager.downloadMediaOnDemand(null, req.params.mediaId, { preferPreview });
+    filePath = await sessionManager.downloadMediaOnDemand(null, req.params.mediaId, { preferPreview, retry });
   }
   if (!filePath || !fs.existsSync(filePath)) return res.status(404).json({ error: 'Media not found' });
   res.sendFile(filePath);

@@ -130,9 +130,19 @@ export function createRawMediaCache({
     }
   }
 
+  function get(id) {
+    return entriesById.get(String(id)) || null;
+  }
+
+  function has(id) {
+    return entriesById.has(String(id));
+  }
+
   return {
     schedule,
     load,
     flush,
+    get,
+    has,
   };
 }

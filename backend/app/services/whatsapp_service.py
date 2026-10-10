@@ -1703,9 +1703,9 @@ async def delete_conversation(
 
 
 async def get_media_bytes(
-    db: AsyncSession, user_id: str, media_id: str, preview: bool = False
+    db: AsyncSession, user_id: str, media_id: str, preview: bool = False, retry: bool = False
 ) -> Tuple[bytes, Optional[str], Optional[str]]:
-    return await _messaging_orchestrator.get_media_bytes(db, user_id, media_id, preview=preview)
+    return await _messaging_orchestrator.get_media_bytes(db, user_id, media_id, preview=preview, retry=retry)
 
 
 

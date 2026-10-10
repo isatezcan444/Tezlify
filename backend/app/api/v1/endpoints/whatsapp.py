@@ -939,19 +939,24 @@ async def get_media(
     media_id: str,
     request: Request,
     preview: bool = Query(False),
+    _retry: Optional[str] = Query(None),
+    retry: bool = Query(False),
     db: AsyncSession = Depends(get_db),
     current_user: AuthUser = Depends(get_current_user),
 ) -> Response:
     """Kimlik dogrulamali medya proxy'si — gateway'deki gelen medyayi sunar."""
+    is_retry = bool(_retry or retry)
     try:
-        data, mime, filename = await whatsapp_service.get_media_bytes(db, current_user.id, media_id, preview=preview)
+        data, mime, filename = await whatsapp_service.get_media_bytes(
+            db, current_user.id, media_id, preview=preview, retry=is_retry
+        )
     except NoWhatsAppSession as exc:
         raise _no_session(exc) from exc
     except LookupError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(exc),
-            headers={"Cache-Control": "private, max-age=300"},
+            headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
         ) from exc
     except Exception as exc:
         raise _bad_gateway(exc) from exc

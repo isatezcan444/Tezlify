@@ -7,8 +7,8 @@
 import fs from 'fs';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
-import { downloadMediaMessage } from '@whiskeysockets/baileys';
-import { resolveDownloadableMedia } from '../messages/message-classifier.js';
+import { downloadMediaMessage, downloadContentFromMessage } from '@whiskeysockets/baileys';
+import { resolveDownloadableMedia, unwrapMessageContent } from '../messages/message-classifier.js';
 
 export function createMediaStore({
   mediaDir,
@@ -206,7 +206,9 @@ export function createMediaStore({
         }
       }
 
-      const resolved = resolveDownloadableMedia(waMessage?.message);
+      const unwrappedMessage = unwrapMessageContent(waMessage?.message) || waMessage?.message;
+      const effectiveWaMessage = { ...waMessage, message: unwrappedMessage };
+      const resolved = resolveDownloadableMedia(unwrappedMessage);
       if (!resolved) {
         logger?.debug(
           { waMessageId },
@@ -214,7 +216,7 @@ export function createMediaStore({
         );
         return null;
       }
-      const { media } = resolved;
+      const { media, mediaType } = resolved;
 
       // P1 FAST-PATH: If caller requested preview only and thumbnail is present, return immediately (0ms)
       if (options?.preferPreview && media.jpegThumbnail) {
@@ -231,15 +233,40 @@ export function createMediaStore({
         }
       }
 
+      // If media.url is missing but directPath exists, provide fallback so Baileys internal validator doesn't reject
+      if (!media.url && media.directPath) {
+        media.url = 'https://mmg.whatsapp.net';
+      }
+
       let buffer = null;
       await acquireMediaDownloadSlot();
       try {
-        const dlPromise = downloadMediaMessage(
-          waMessage,
-          'buffer',
-          {},
-          { logger, reuploadRequest: sock?.updateMediaMessage }
-        );
+        const dlPromise = (async () => {
+          try {
+            return await downloadMediaMessage(
+              effectiveWaMessage,
+              'buffer',
+              {},
+              { logger, reuploadRequest: sock?.updateMediaMessage }
+            );
+          } catch (dlErr) {
+            // Direct fallback via downloadContentFromMessage if Baileys wrapper failed
+            if ((media.directPath || media.url) && media.mediaKey) {
+              try {
+                const stream = await downloadContentFromMessage(media, mediaType || 'image', {});
+                let buf = Buffer.from([]);
+                for await (const chunk of stream) {
+                  buf = Buffer.concat([buf, chunk]);
+                }
+                if (buf.length > 0) return buf;
+              } catch (directErr) {
+                logger?.debug({ directErr: directErr?.message, waMessageId }, 'downloadContentFromMessage fallback failed');
+              }
+            }
+            throw dlErr;
+          }
+        })();
+
         let dlTimer;
         const dlTimeout = new Promise((_, reject) => {
           dlTimer = setTimeout(() => reject(new Error('Media download timeout (10s)')), 10_000);

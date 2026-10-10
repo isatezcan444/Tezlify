@@ -464,9 +464,14 @@ async def send_typing(gateway_id: str, jid: str, typing: bool = True, duration_m
 # Media
 # ---------------------------------------------------------------------------
 
-async def fetch_media(gateway_id: str, media_id: str, preview: bool = False) -> bytes:
+async def fetch_media(gateway_id: str, media_id: str, preview: bool = False, retry: bool = False) -> bytes:
     """Gateway'den medya indirir (oturum kapsamli). Yalnızca 2xx bayt döner."""
-    query = "?preview=true" if preview else ""
+    params = []
+    if preview:
+        params.append("preview=true")
+    if retry:
+        params.append("_retry=true")
+    query = f"?{'&'.join(params)}" if params else ""
     url = f"{gateway_base()}{_s(gateway_id)}/media/{media_id}{query}"
     try:
         async with httpx.AsyncClient(timeout=gateway_timeout()) as client:
@@ -480,9 +485,14 @@ async def fetch_media(gateway_id: str, media_id: str, preview: bool = False) -> 
     return res.content
 
 
-async def fetch_media_unscoped(media_id: str, preview: bool = False) -> bytes:
+async def fetch_media_unscoped(media_id: str, preview: bool = False, retry: bool = False) -> bytes:
     """Gateway'den oturumsuz doğrudan medya indirir. Yalnızca 2xx bayt döner."""
-    query = "?preview=true" if preview else ""
+    params = []
+    if preview:
+        params.append("preview=true")
+    if retry:
+        params.append("_retry=true")
+    query = f"?{'&'.join(params)}" if params else ""
     url = f"{gateway_base()}/media/{media_id}{query}"
     try:
         async with httpx.AsyncClient(timeout=gateway_timeout()) as client:

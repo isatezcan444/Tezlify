@@ -1621,13 +1621,18 @@ export function createSessionManager({
         strId = String(meta.waMessageId);
       }
 
+      const isRetry = Boolean(options?.retry || options?.force);
       if (!this._failedMediaCache) {
         this._failedMediaCache = new Map();
       }
       const inFlightKey = `${sessionId || 'any'}:${strId}:${Boolean(options?.preferPreview)}`;
-      const failedAt = this._failedMediaCache.get(inFlightKey);
-      if (failedAt && Date.now() - failedAt < 300000) {
-        return null;
+      if (isRetry) {
+        this._failedMediaCache.delete(inFlightKey);
+      } else {
+        const failedAt = this._failedMediaCache.get(inFlightKey);
+        if (failedAt && Date.now() - failedAt < 300000) {
+          return null;
+        }
       }
 
       if (!this._inFlightMediaDownloads) {
@@ -1650,16 +1655,41 @@ export function createSessionManager({
 
         for (const session of targetSessions) {
           const store = this._storeOf(session);
-          if (!store || !store.rawMessagesByChat) continue;
+          if (!store) continue;
 
           let foundRaw = null;
           let foundJid = null;
 
-          for (const [jid, byId] of store.rawMessagesByChat.entries()) {
-            if (byId.has(strId)) {
-              foundRaw = byId.get(strId);
-              foundJid = jid;
-              break;
+          if (store.rawMessagesByChat) {
+            for (const [jid, byId] of store.rawMessagesByChat.entries()) {
+              if (byId.has(strId)) {
+                foundRaw = byId.get(strId);
+                foundJid = jid;
+                break;
+              }
+            }
+          }
+
+          if (!foundRaw && store.rawMediaCache && typeof store.rawMediaCache.get === 'function') {
+            const cached = store.rawMediaCache.get(strId);
+            if (cached) {
+              foundRaw = cached.message;
+              foundJid = cached.jid;
+            }
+          }
+
+          if (!foundRaw && store.messagesByChat) {
+            for (const [jid, msgs] of store.messagesByChat.entries()) {
+              if (Array.isArray(msgs)) {
+                const found = msgs.find(m => m.id === strId || m.wa_message_id === strId);
+                if (found?.media_id) {
+                  const p = mediaStore.getMediaPath(session.id, found.media_id);
+                  if (p && fs.existsSync(p)) {
+                    this._failedMediaCache?.delete(inFlightKey);
+                    return p;
+                  }
+                }
+              }
             }
           }
 
@@ -1670,6 +1700,7 @@ export function createSessionManager({
             };
             const stored = await mediaStore.storeIncomingMedia(session, waMsg, session.sock, options);
             if (stored?.media_id) {
+              this._failedMediaCache?.delete(inFlightKey);
               return mediaStore.getMediaPath(session.id, stored.media_id);
             }
           }

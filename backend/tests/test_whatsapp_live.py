@@ -1078,9 +1078,15 @@ async def test_media_proxy_endpoint(auth_headers, mock_gateway):
         assert res.status_code == 200
         assert res.content == b"FAKE_MEDIA_BYTES"
         assert res.headers["content-type"] == "image/png"
-        # Unknown media id → 404 (fail closed, no fake data)
+        # Query parameter _retry successfully accepted and proxied
+        res_retry = await client.get("/api/v1/whatsapp/media/media-abc-123?_retry=1791663109107", headers=auth_headers)
+        assert res_retry.status_code == 200
+        assert res_retry.content == b"FAKE_MEDIA_BYTES"
+
+        # Unknown media id → 404 (fail closed, no fake data, non-cached)
         res404 = await client.get("/api/v1/whatsapp/media/does-not-exist", headers=auth_headers)
         assert res404.status_code == 404
+        assert "no-store" in res404.headers.get("cache-control", "")
 
 
 @pytest.mark.asyncio

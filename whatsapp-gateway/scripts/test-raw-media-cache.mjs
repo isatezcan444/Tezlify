@@ -100,4 +100,48 @@ console.log('[test-raw-media-cache] Running regression tests...');
   console.log('  ok - 3. Debounce timer persists automatically without manual intervention');
 }
 
+// 5. DirectPath-only messages (no url) and deviceSentMessage wrapped media
+{
+  const dir = tmpSessionDir('directpath-devicesent');
+  const store = createSessionStore({ sessionDir: dir, logger });
+
+  const directPathOnlyMsg = {
+    imageMessage: {
+      directPath: '/v/t62.7118-24/direct-only.enc',
+      mimetype: 'image/png',
+      mediaKey: Buffer.from('fake-media-key-direct-path-32!!'),
+      fileSha256: Buffer.from('sha256-direct-only'),
+    },
+  };
+
+  const deviceSentMsg = {
+    deviceSentMessage: {
+      destinationJid: CHAT_JID,
+      message: {
+        imageMessage: {
+          directPath: '/v/t62.7118-24/device-sent.enc',
+          mimetype: 'image/jpeg',
+          mediaKey: Buffer.from('fake-media-key-device-sent-32!!'),
+        },
+      },
+    },
+  };
+
+  rememberRawMessage(store, CHAT_JID, 'DIRECT_ONLY_ID', directPathOnlyMsg);
+  rememberRawMessage(store, CHAT_JID, 'DEVICE_SENT_ID', deviceSentMsg);
+  store.rawMediaCache.flush();
+
+  assert.equal(store.rawMediaCache.has('DIRECT_ONLY_ID'), true, 'directPath-only message cached');
+  assert.equal(store.rawMediaCache.has('DEVICE_SENT_ID'), true, 'deviceSentMessage unwrapped and cached');
+
+  const cachedDirect = store.rawMediaCache.get('DIRECT_ONLY_ID');
+  assert.equal(cachedDirect?.id, 'DIRECT_ONLY_ID');
+  assert.equal(cachedDirect?.jid, CHAT_JID);
+
+  const cachedDeviceSent = store.rawMediaCache.get('DEVICE_SENT_ID');
+  assert.equal(cachedDeviceSent?.id, 'DEVICE_SENT_ID');
+
+  console.log('  ok - 4. directPath without url and deviceSentMessage correctly cached and retrieved via get()');
+}
+
 console.log('[test-raw-media-cache] All assertions passed successfully!');
