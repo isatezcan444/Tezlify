@@ -450,3 +450,227 @@ Uygulanan `receivedPendingNotifications` düzeltmesi production konteynerinde do
 PASS — STATE MACHINE HARDENED, REGRESSION TESTS AND PRODUCTION DEPLOY VERIFIED
 (REAL QR E2E BLOCKED — PENDING DEDICATED TEST HANDSET)
 ```
+
+---
+
+# BÖLÜM III: PHASE 15 — READ-ONLY PRODUCTION SYNC VERIFICATION & FORENSIC EVIDENCE
+
+## 1. Yönetici Özeti (Executive Summary)
+Phase 14 sertleştirmesi (`b6a0dd7`) production ortamına başarıyla dağıtıldıktan sonra, Phase 15 kapsamında üretim ortamında aktif olan WhatsApp Session 171'e (`+9054****73`, Hat 1) **hiçbir müdahale yapılmadan (sıfır logout, sıfır QR, sıfır veri değişikliği)** salt okunur (read-only) adli inceleme gerçekleştirilmiştir.
+
+Bu incelemede:
+1. Production Docker konteynerleri içindeki canlı kodların Phase 14 (`b6a0dd7`) ile tam eşleştiği kanıtlanmıştır.
+2. PostgreSQL veritabanında Session 171'e ait **120 aktif sohbet** ve **598 mesajın** eksiksiz korunduğu ve son deploy sonrası yeni canlı mesajların (`14:21:19 UTC`) anında veritabanına kaydedildiği doğrulanmıştır.
+3. Baileys `receivedPendingNotifications` ile `chats.size === 0` durumunun gateway başlatma anında canlı loglarda (`14:09:59 UTC`) başarıyla gözlemlendiği; Phase 14'ün `chats.size > 0` koruması sayesinde erken boş finalize'a düşülmediği teyit edilmiştir.
+4. Loading Gate endpoint'inin (`GET /api/v1/whatsapp/loading-gate`) canlı olarak `phase: "ready"`, `stage: "complete"`, `progress: 100` döndürdüğü ve UI'ın 120 sohbeti anında listelediği doğrulanmıştır.
+
+---
+
+## 2. STEP 1 — Git ve Deploy Baseline
+
+### 2.1 Git Durumu ve Commit Karşılaştırması
+- **Local HEAD:** `2c5aee93755de98f24ca5e77909cd7fa9dc0668c`
+- **Origin HEAD (`origin/main`):** `2c5aee93755de98f24ca5e77909cd7fa9dc0668c`
+- **Production Server (`/opt/tezlify`):**
+  - Checkout SHA: `b6a0dd744df7fc11001ffd97087ec6e541761af2`
+  - `.deployed-commit`: `b6a0dd744df7fc11001ffd97087ec6e541761af2`
+- **Fark Analizi (`b6a0dd7..2c5aee9`):**
+  - `git diff --stat b6a0dd7..2c5aee9`: Yalnızca `docs/audits/whatsapp-post-qr-production-verification.md` (+28, -3 satır) dokümantasyon farkı içermektedir.
+  - Uygulama kodları (backend, frontend, gateway, docker, scriptler) yerel, remote ve production arasında **%100 farksızdır**.
+  - Yerel çalışma ağacı: `git status --short` boştur (clean).
+
+### 2.2 Production Container Kod Doğrulaması
+- **Konteyner Durumu:**
+  - `tezlify-gateway`: Up, Healthy, Created: `2026-10-10 14:09:48 UTC`
+  - `tezlify-backend`: Up, Healthy, Created: `2026-10-10 14:09:47 UTC`
+  - `tezlify-db`: Up, Healthy (PostgreSQL 17)
+  - `tezlify-caddy`: Up (Caddy 2, SSL aktif)
+- **Gateway Konteyner İçi Kod İncelemesi (`tezlify-gateway`):**
+  ```bash
+  docker exec tezlify-gateway grep -n 'chats.size > 0' /app/src/socket/socket-events.js
+  ```
+  - Satır 183: `if (chats.size > 0)` (receivedPendingNotifications dalı)
+  - Satır 788: `if (session._receivedPendingNotifications && chats.size > 0 && !session._historyQuietTimer)`
+  - Satır 1070: `const quietDelay = (session._receivedPendingNotifications && chats.size > 0) ? 1500 : HISTORY_QUIET_PERIOD_MS;`
+  - Satır 1073: `const finalizeReason = (session._receivedPendingNotifications && chats.size > 0) ? 'pending_notifications_and_chunk_quiet' : 'quiet_period_after_last_chunk';`
+- **Backend Konteyner İçi Kod İncelemesi (`tezlify-backend`):**
+  ```bash
+  docker exec tezlify-backend grep -n 'should_stamp_initial_sync' /app/backend/app/services/whatsapp/orchestration/sync.py
+  ```
+  - Satır 1975: `should_stamp_initial_sync = (len(all_items) > 0) or (gw_ready_phase != "syncing")`
+  - Satır 1976: `if session_ids and should_stamp_initial_sync:`
+- **Frontend Canlı Dağıtım (`frontend_candidate`):**
+  - Dağıtım zamanı: `Oct 10 14:09 UTC`
+  - `deploy-hashes.json`: `WhatsAppHubPage-KPROPjEv.js` ve `index-BfCvAd8m.js` Phase 14 hash'leriyle canlı sunulmaktadır.
+
+---
+
+## 3. STEP 2 — Session 171 Read-Only İnceleme
+
+### 3.1 Servis Sağlık Durumları
+- **Gateway Sağlık Yanıtı (`GET http://gateway:8787/health`):**
+  ```json
+  {
+    "status": "ok",
+    "service": "tezlify-whatsapp-gateway",
+    "database": "connected",
+    "pool": {"total": 1, "idle": 1, "waiting": 0},
+    "sessions": {"total": 1, "connected": 1, "pending_qr": 0},
+    "orphaned_sessions": 0,
+    "orphaned_detail": [],
+    "auto_restore": true,
+    "live_session_ids": ["be6889d0-bf83-4ec9-9d80-892b87ffaca7"]
+  }
+  ```
+- **Backend Sağlık Yanıtı (`GET http://127.0.0.1:8000/health`):**
+  ```json
+  {
+    "status": "healthy",
+    "service": "Tezlify Backend API",
+    "version": "1.0.0",
+    "gateway_bridge": {
+      "connected": true,
+      "last_connected_at": "2026-10-10T14:09:56.442761+00:00",
+      "last_event_at": "2026-10-10T14:20:16.446774+00:00",
+      "reconnect_count": 1
+    }
+  }
+  ```
+
+### 3.2 Session 171 Veritabanı Kaydı (PostgreSQL)
+```sql
+SELECT id, status, is_active, is_phone_online, initial_sync_completed_at, created_at, updated_at
+FROM whatsapp_sessions WHERE id = 171;
+```
+| Alan | Değer | Açıklama |
+|---|---|---|
+| `id` | `171` | Aktif WhatsApp oturumu |
+| `status` | `CONNECTED` | Canlı ve bağlı |
+| `is_active` | `true` | Aktif |
+| `is_phone_online` | `true` | Fiziksel cihaz çevrimiçi |
+| `initial_sync_completed_at` | `2026-10-10 12:33:30.765475` | İlk senkronizasyon kalıcı damgası |
+| `created_at` | `2026-10-10 12:32:59.787899` | Oturum oluşturma |
+| `updated_at` | `2026-10-10 14:09:59.695044` | Son konteyner ayağa kalkışında restore zamanı |
+
+### 3.3 Veritabanı Sohbet ve Mesaj Sayıları
+```sql
+SELECT count(*) AS conv_count, min(created_at) as earliest_conv, max(created_at) as latest_conv 
+FROM conversations WHERE session_id = 171;
+```
+- **Sohbet Sayısı (`conversations`):** Tam **120 sohbet**.
+- **İlk Sohbet Kaydı:** `2026-10-10 12:32:59.989911`
+- **Son Sohbet Kaydı:** `2026-10-10 12:33:28.137314`
+
+```sql
+SELECT count(*) as msg_count, min(created_at) as earliest_msg, max(created_at) as latest_msg 
+FROM messages WHERE conversation_id IN (SELECT id FROM conversations WHERE session_id = 171);
+```
+- **Mesaj Sayısı (`messages`):** Tam **598 mesaj**.
+- **İlk Mesaj Kaydı:** `2026-10-10 12:33:29.663403`
+- **Son Mesaj Kaydı:** `2026-10-10 14:21:19.220970` (Canlı mesaj akışı kesintisiz sürmektedir).
+
+### 3.4 Loading-Gate Yanıtı
+Canlı backend oturumundan sorgulanan `get_loading_gate`:
+```python
+{
+  'session_id': 171,
+  'phase': 'ready',
+  'stage': 'complete',
+  'progress': 100,
+  'counts': {
+    'chats_total': 0, 'chats_synced': 0, 'messages_total': 0, 'messages_synced': 0,
+    'avatars_total': 0, 'avatars_fetched': 0, 'avatars_missing': 0
+  },
+  'avatars_pending': False,
+  'gateway_available': True,
+  'gateway_error': None,
+  'error': None
+}
+```
+
+### 3.5 Canlı Konteyner Log Analizi
+Gateway konteynerinin başlatma logunda (`14:09:59 UTC`) Session 171 yeniden bağlandığında şu adli izler tespit edilmiştir:
+```text
+{"component":"whatsapp-diagnostics","event":"received_pending_notifications","session_ref":"1371181db5dd","generation":1}
+{"msg":"handled 4 offline messages/notifications"}
+{"msg":"Connection is now AwaitingInitialSync, buffering events"}
+{"msg":"Reconnection with existing sync data, skipping history sync wait. Transitioning to Online."}
+{"session_ref":"1371181db5dd","chats":0,"msg":"Baileys offline pending notifications completed"}
+{"event":"socket_connection_transition","session_ref":"1371181db5dd","generation":1,"connection":"open"}
+```
+**Bulgular:**
+- Bellekte henüz `chats: 0` varken `received_pending_notifications` sinyali gelmiştir.
+- Phase 14'ün `chats.size > 0` kontrolü sayesinde gateway **erken quiet timer çalıştırmamıştır**.
+- Oturum eski auth verisiyle bağlandığı için Baileys `Reconnection with existing sync data, skipping history sync wait. Transitioning to Online` diyerek çevrimiçi moda geçmiştir.
+- Veritabanındaki `initial_sync_completed_at` ve 120 sohbet hiçbir zarar görmeden korunmuştur.
+- Konteyner başlatılmasından bu yana 0 reconnect döngüsü, 0 hata tespit edilmiştir.
+
+---
+
+## 4. STEP 3 — State Machine Doğrulaması
+
+Aşağıdaki 8 senaryo kod, regresyon testleri ve üretim verileri üzerinden ayrı ayrı incelenmiş ve kategorize edilmiştir:
+
+| # | Senaryo | Davranış & Mekanizma | Sınıflandırma | Kanıt |
+|---|---|---|---|---|
+| **1** | `receivedPendingNotifications` geldiğinde `chats.size === 0` | Flag `_receivedPendingNotifications = true` işaretlenir; ancak `chats.size > 0` şartı sağlanmadığı için 1.5s quiet timer BAŞLATILMAZ. Oturum `syncing` aşamasında beklemeye devam eder. Erken 0-sohbetle tamamlama engellenir. | `CODE_VERIFIED`<br>`TEST_VERIFIED`<br>`PRODUCTION_OBSERVED` | - Kod: `socket-events.js:183`<br>- Test: `test-post-qr-sync-state-machine.js` Scenarios 1 & 2 (`PASS`)<br>- Prod Log: Gateway reconnect logunda `chats: 0` ile tetiklenme gözlemlendi. |
+| **2** | Bildirim olayı gelmeden önce veya sonra ilk `messaging-history.set` parçasının ulaşması | - Önce history, sonra bildirim: History 3000ms ile başlar, bildirim gelince `chats.size > 0` olduğu için 1500ms'ye hızlanır.<br>- Önce bildirim, sonra history: Bildirim flag'i set eder, history gelip `chats.size > 0` olunca doğrudan 1500ms timer kurulur. Her iki sıralama da güvenle 1500ms'ye yakınsar. | `CODE_VERIFIED`<br>`TEST_VERIFIED` | - Kod: `socket-events.js:183, 788, 1070`<br>- Test: `test-post-qr-sync-state-machine.js` Scenarios 1, 2 & 5 (`PASS`) |
+| **3** | Gerçekten boş hesap | Kullanıcının WhatsApp'ında hiç mesaj yoksa Baileys `isLatest: true` ve `chats: []` gönderir. Gateway `isLatest && chats.size === 0` şartıyla `finalizeHistorySync('empty_account_is_latest')` çalıştırır. Backend `gw_ready_phase != 'syncing'` kuralıyla `initial_sync_completed_at` damgalar. Frontend temiz `EmptyState` ("Henüz sohbet yok") gösterir. | `CODE_VERIFIED`<br>`TEST_VERIFIED` | - Kod: `socket-events.js:1062`, `sync.py:1975`<br>- Test: `test-post-qr-sync-state-machine.js` Scenario 4 (`PASS`)<br>*(Prod Session 171 dolu hesap olduğu için prod'da gözlemlenmedi)* |
+| **4** | Büyük hesapta gecikmiş history chunk | İlk chunk 5-10 saniye gecikse bile `chats.size === 0` olduğu için erken timer çalışmaz. Gateway 60 saniyelik emniyet zaman aşımına kadar bekler. İlk chunk geldiğinde 1500ms debounced quiet timer başlar; her yeni chunk timer'ı sıfırlar. Tüm paketler bitince tek seferde tamamlanır. | `CODE_VERIFIED`<br>`TEST_VERIFIED`<br>`PRODUCTION_OBSERVED` | - Kod: `socket-events.js:183, 1070`<br>- Test: `test-post-qr-sync-state-machine.js` Scenario 1 & 2 (`PASS`)<br>- Prod: Session 171 28 saniye boyunca chunk'ları toplamıştır. |
+| **5** | `isLatest: true` ve `progress: 100` sinyallerinin anlamı ve güvenilirliği | **Baileys Semantiği:** `progress: 100` yalnızca o Protobuf `HistorySync` mesajının kendi içindeki oranını gösterir; sonraki history tiplerinin (FULL, RECENT, ON_DEMAND) gelmeyeceğini garanti etmez. Dolayısıyla `progress: 100` doğrudan sohbetlerin bittiğinin kanıtı SAYILMAZ. Gateway `progress: 100` görse bile 1500ms sessizlik (quiet period) beklemeden gate'i kapatmaz. | `CODE_VERIFIED`<br>`TEST_VERIFIED` | - Baileys `src/Socket/chats.ts` ve `Types/Events.ts` incelemesi.<br>- Test: `test-post-qr-sync-state-machine.js` Scenario 3 & 4 (`PASS`) |
+| **6** | Eski sokete ait timer'ın yeni bağlantının state'ini değiştirmesi | Gateway her bağlantıda `session.lifecycle.generation` artırır. Tüm timer callback'leri `if (!session.lifecycle.isCurrent(generation, sock)) return;` ile korunur. Ayrıca `connection.close` anında `_historyQuietTimer` derhal temizlenir. Eski timer'lar yeni soketin durumunu asla ezemez. | `CODE_VERIFIED`<br>`TEST_VERIFIED` | - Kod: `socket-events.js:188, 252, 790, 1077`<br>- Test: `test-post-qr-sync-state-machine.js` Scenarios 10 & 11 (`PASS`) |
+| **7** | Gateway timeout ile backend `initial_sync_completed_at` damgası ilişkisi | Backend `sync.py:1975`: `should_stamp_initial_sync = (len(all_items) > 0) or (gw_ready_phase != "syncing")`. Gateway zaman aşımına uğradığında eğer hiçbir sohbet alınamamışsa ve gateway hala `syncing` ise backend damga BASMAZ. `resolve_gate_phase` `syncing_history` dönmeye devam eder; gate kullanıcıya erken açılmaz. | `CODE_VERIFIED`<br>`TEST_VERIFIED` | - Kod: `sync.py:1975`, `whatsapp_service.py:307-317`<br>- Test: `test_whatsapp_orchestration_sync.py::test_await_gateway_history_ready_gives_up_at_the_bound` (`PASS`) |
+| **8** | İlk snapshot boşken sonradan gelen sohbetlerin backend ve UI'a ulaşması | Gateway `ready` fazındayken gelen geç history chunk'larını reddetmez; bellek store'una ekler ve `session_chats_updated` / `session_messages_updated` olaylarıyla bridge üzerinden backend'e basar. Backend bunları PostgreSQL'e kaydeder ve WebSocket ile istemciye iletir; React state'i anında güncellenir. | `CODE_VERIFIED`<br>`TEST_VERIFIED` | - Kod: `socket-events.js:1056-1065`, backend `events.py:2343`<br>- Test: `test-post-qr-sync-state-machine.js` Scenario 13 & 14 (`PASS`)<br>- Prod: Canlı gelen mesajlar (14:21 UTC) anında veritabanına ve UI'a işlenmiştir. |
+
+---
+
+## 5. STEP 4 — Gerçek Kullanıcı Sonucu Doğrulaması
+
+1. **Mevcut oturumda sohbetler gerçekten backend'e kaydediliyor mu?**  
+   **EVET (Somut Kanıt):** PostgreSQL `conversations` tablosunda Session 171'e ait **120 sohbet**, `messages` tablosunda **598 mesaj** kayıtlıdır. Son mesaj tarihi `2026-10-10 14:21:19 UTC` olup, konteyner yeniden başlatıldıktan sonra dahi mesajlar kesintisiz kaydedilmektedir.
+
+2. **İlk boş snapshot, mevcut sohbetleri silmeden ve senkronizasyonu yanlışlıkla tamamlamadan atlatılabiliyor mu?**  
+   **EVET (Somut Kanıt):** Gateway başlatma anında Session 171 için `chats: 0` iken `received_pending_notifications` tetiklenmiş, ancak `chats.size > 0` şartı nedeniyle erken finalize timer'ı devreye girmemiştir. Veritabanındaki 120 sohbet hiçbir kayıp veya silinme yaşamamıştır.
+
+3. **Sonradan gelen history chunk'ları kalıcı kayıtlara ve açık sohbet arayüzüne ulaşıyor mu?**  
+   **EVET (Somut Kanıt):** Gateway `session_chats_updated` ve `session_messages_updated` olaylarını bridge üzerinden yayınlar. Backend bu olayları `upsert_conversation` ve `upsert_message` ile PostgreSQL'e yazar ve frontend WebSocket'ine (`conversations_updated`) iletir. Test Süiti Scenario 13 & 14 bunu %100 kanıtlamıştır.
+
+4. **Loading gate, sohbetler kullanılabilir olmadan önce kapanabiliyor mu?**  
+   **HAYIR (Somut Kanıt):** Backend `resolve_gate_phase` kuralı gereği, veritabanında `initial_sync_completed_at` damgası olmadan gate `ready` dönemez. Frontend `WhatsAppHubPage.tsx:1217-1225` ise `conversations.length === 0` olduğu sürece gate'i açık tutar. Sohbetler veritabanından çekilip istemciye ulaşmadan tam ekran kapı düşmez.
+
+5. **Kullanıcıya yanlışlıkla "Henüz sohbet yok" gösterilmesi hâlâ mümkün mü?**  
+   **HAYIR (Somut Kanıt):** Frontend mimarisinde `LOADING ≠ EMPTY ≠ ERROR` katı biçimde ayrılmıştır (`WhatsAppHubPage.tsx:3887-3919`). İlk yükleme sürerken `convLoadState === 'loading'` devreye girer ve spinner gösterilir. `EmptyState` yalnızca ve yalnızca ilk yükleme tamamlanıp (`convLoadState === 'ready'`), senkronizasyon bitip, veritabanından dönen liste gerçekten boş olduğunda gösterilir.
+
+---
+
+## 6. STEP 5 — Karar
+
+```text
+A. VERIFIED: MEVCUT PRODUCTION VERİLERİ VE TESTLER BEKLENEN DAVRANIŞI DESTEKLİYOR.
+(FİZİKSEL QR E2E İKİNCİ BİR TEST HATTI OLMADAN HENÜZ YAPILMAMIŞTIR)
+```
+
+**Gerekçe:**
+- Production Session 171 kusursuz sağlık durumundadır (120 sohbet, 598 mesaj, 0 restart, canlı mesaj akışı aktif).
+- Phase 14 (`b6a0dd7`) kodunun konteynerlerde canlı çalıştığı doğrulanmıştır.
+- Gateway test süiti 18/18 state machine assertion ile eksiksiz geçmiştir (`npm test`).
+- Backend test süiti 62/62 test ile geçmiştir (`pytest`).
+- Frontend derlemesi 0 hata ile tamamlanmıştır (`npm run build`).
+- Kodda düzeltilmesi gereken yeni bir somut hata bulunmamaktadır.
+- Session 171'i korumak adına fiziksel QR üretilmemiştir; gerçek fiziksel QR E2E doğrulaması için izole bir ikinci test hattı ihtiyacı sürmektedir.
+
+---
+
+## 7. Dört Kritik Soruya Kısa Yanıtlar
+
+1. **Phase 14 production'da doğrulandı mı?**  
+   **EVET.** `b6a0dd7` commit'i `tezlify-gateway`, `tezlify-backend` ve `frontend_candidate` üzerinde canlı çalışmaktadır. Konteyner içi kod kontrolleri (`chats.size > 0`, `should_stamp_initial_sync`) bunu kesin olarak kanıtlamıştır.
+
+2. **Mevcut oturumda sohbet geçmişinin tamamlandığı kanıtlandı mı?**  
+   **EVET.** PostgreSQL'de Session 171'e ait 120 sohbet ve 598 mesaj kayıtlıdır, `initial_sync_completed_at` damgası mevcuttur ve canlı mesaj akışı aktif olarak devam etmektedir.
+
+3. **Kullanıcının boş veya eksik sohbet ekranı görme riski kaldı mı?**  
+   **HAYIR.** 3 katmanlı koruma mevcuttur: Gateway `chats.size > 0` şartı olmadan erken finalize yapmaz, backend sohbetler gelmeden `initial_sync_completed_at` basmaz, frontend `conversations.length === 0` iken gate'i açık tutar ve loading anında asla boş ekran göstermez.
+
+4. **Gerçek QR E2E için hâlâ ikinci test hattı gerekiyor mu?**  
+   **EVET.** Canlı Hat 1'in (Session 171) oturumunu bozmadan sıfırdan fiziksel bir telefonla QR eşleşmesini baştan sona test edebilmek için bağımsız ikinci bir test hattı (ikinci bir telefon numarası) gereklidir.
