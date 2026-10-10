@@ -20,6 +20,7 @@ import {
   Forward,
   Copy,
   Upload,
+  Lock,
 } from 'lucide-react';
 import { Tooltip } from '../components/ui/Tooltip';
 import { startWaLatency } from '../features/whatsapp/lib/whatsappLatency';
@@ -1041,31 +1042,27 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       }
 
       setSelectedConv((prev) => {
-        const isMobile = typeof window !== 'undefined' && window.innerWidth < 768;
-        if (!prev && page.items.length > 0) return isMobile ? null : page.items[0];
-        if (prev) {
-          const updated = page.items.find((c) => Number(c.id) === Number(prev.id));
-          if (updated) {
-            const sanitized = { ...updated, unread_count: 0 };
-            const currentMsgs = messagesMapRef.current?.[prev.id] || [];
-            const lastMsg = currentMsgs[currentMsgs.length - 1];
-            const isNewer = sanitized.last_message_at && (!lastMsg?.created_at || new Date(sanitized.last_message_at).getTime() > new Date(lastMsg.created_at).getTime());
-            // NO side effects in a state updater. This branch used to call
-            // hydrateConversationMessages here, which meant every list refresh
-            // (WebSocket event, background backfill, tab visibility) aborted the
-            // in-flight message fetch and started a new one — and StrictMode
-            // invoked the updater twice, doubling that. The fetch could then
-            // never finish, and the conversation sat on "Mesajlar yükleniyor"
-            // with no request behind it. The revalidation is driven by the
-            // effect below, which watches the preview timestamp.
-            if (isNewer) {
-              conversationsNewerThanMessagesRef.current.set(prev.id, sanitized.last_message_at as string);
-            }
-            return sanitized;
+        if (!prev) return null;
+        const updated = page.items.find((c) => Number(c.id) === Number(prev.id));
+        if (updated) {
+          const sanitized = { ...updated, unread_count: 0 };
+          const currentMsgs = messagesMapRef.current?.[prev.id] || [];
+          const lastMsg = currentMsgs[currentMsgs.length - 1];
+          const isNewer = sanitized.last_message_at && (!lastMsg?.created_at || new Date(sanitized.last_message_at).getTime() > new Date(lastMsg.created_at).getTime());
+          // NO side effects in a state updater. This branch used to call
+          // hydrateConversationMessages here, which meant every list refresh
+          // (WebSocket event, background backfill, tab visibility) aborted the
+          // in-flight message fetch and started a new one — and StrictMode
+          // invoked the updater twice, doubling that. The fetch could then
+          // never finish, and the conversation sat on "Mesajlar yükleniyor"
+          // with no request behind it. The revalidation is driven by the
+          // effect below, which watches the preview timestamp.
+          if (isNewer) {
+            conversationsNewerThanMessagesRef.current.set(prev.id, sanitized.last_message_at as string);
           }
-          if (conversationsRef.current.some((c) => Number(c.id) === Number(prev.id))) return prev;
-          return page.items.length > 0 ? page.items[0] : null;
+          return sanitized;
         }
+        if (conversationsRef.current.some((c) => Number(c.id) === Number(prev.id))) return prev;
         return null;
       });
 
@@ -2792,8 +2789,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
               }
               return Array.from(byId.values()).sort(compareByLastMessageDesc);
             });
-            const isMobile = typeof window !== 'undefined' && window.innerWidth < 768;
-            setSelectedConv((prev) => prev || (isMobile ? null : incoming[0]) || null);
+            setSelectedConv((prev) => prev || null);
           }
           applyThrottledSessionSyncRef.current((prev) => (prev && prev.phase === 'syncing' ? {
             ...prev, stage: 'chats', chats_synced: eventData.total ?? prev.chats_synced,
@@ -3890,50 +3886,67 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                 )}
               </div>
             ) : (
-              <div className="flex-1 flex items-center justify-center p-8 animate-in fade-in duration-200">
+              <div className="flex-1 flex flex-col h-full w-full overflow-hidden animate-in fade-in duration-200">
                 {/* Sorun 1/17: ilk yukleme surerken "sohbet yok" DENMEZ —
                     loading ile empty karismaz. */}
                 {convLoadState === 'loading' ? (
-                  <div className="flex flex-col items-center gap-3 text-slate-400 dark:text-slate-500">
+                  <div className="flex-1 flex flex-col items-center justify-center p-8 text-slate-400 dark:text-slate-500">
                     <Loader2 className="w-6 h-6 animate-spin text-[#7367F0]" />
-                    <p className="text-xs font-bold">{t('whatsapp.loadingChats')}</p>
+                    <p className="text-xs font-bold mt-3">{t('whatsapp.loadingChats')}</p>
                   </div>
                 ) : convLoadState === 'error' ? (
-                  <EmptyState
-                    icon={AlertTriangle}
-                    title={t('whatsapp.loadFailedChats')}
-                    description={convLoadError || t('whatsapp.conversationsLoadFailed')}
-                    action={{
-                      label: t('whatsapp.retryBtn'),
-                      onClick: () => {
-                        void loadConversations();
-                      },
-                      icon: RotateCcw,
-                    }}
-                  />
+                  <div className="flex-1 flex items-center justify-center p-8">
+                    <EmptyState
+                      icon={AlertTriangle}
+                      title={t('whatsapp.loadFailedChats')}
+                      description={convLoadError || t('whatsapp.conversationsLoadFailed')}
+                      action={{
+                        label: t('whatsapp.retryBtn'),
+                        onClick: () => {
+                          void loadConversations();
+                        },
+                        icon: RotateCcw,
+                      }}
+                    />
+                  </div>
+                ) : conversations.length === 0 ? (
+                  <div className="flex-1 flex items-center justify-center p-8">
+                    <EmptyState
+                      icon={MessageSquare}
+                      title={t('whatsapp.noConversations')}
+                      description={t('whatsapp.noConversationsDesc')}
+                      action={{
+                        label: t('whatsapp.newChat'),
+                        onClick: () => setIsNewChatModalOpen(true),
+                        icon: MessageSquarePlus,
+                      }}
+                    />
+                  </div>
                 ) : (
-                  <EmptyState
-                    icon={MessageSquare}
-                    title={
-                      conversations.length > 0
-                        ? (t('whatsapp.selectConversationTitle'))
-                        : (t('whatsapp.noConversations'))
-                    }
-                    description={
-                      conversations.length > 0
-                        ? (t('whatsapp.selectConversation'))
-                        : (t('whatsapp.noConversationsDesc'))
-                    }
-                    action={
-                      conversations.length === 0
-                        ? {
-                            label: t('whatsapp.newChat'),
-                            onClick: () => setIsNewChatModalOpen(true),
-                            icon: MessageSquarePlus,
-                          }
-                        : undefined
-                    }
-                  />
+                  <div className="flex-1 flex flex-col justify-between items-center py-12 px-6 select-none bg-slate-50/70 dark:bg-[#111b21] border-b-[6px] border-[#25D366]">
+                    <div />
+                    <div className="flex flex-col items-center justify-center text-center max-w-sm sm:max-w-md my-auto space-y-3.5">
+                      <div className="w-20 h-20 sm:w-24 sm:h-24 rounded-full flex items-center justify-center bg-slate-200/50 dark:bg-[#202c33] text-slate-400 dark:text-[#8696a0] ring-1 ring-slate-200/80 dark:ring-white/[0.05] shadow-xs">
+                        <WhatsAppIcon className="w-12 h-12 sm:w-14 sm:h-14" />
+                      </div>
+                      <h3 className="text-2xl sm:text-3xl font-light text-slate-700 dark:text-[#e9edef] tracking-tight">
+                        {t('whatsapp.onboardingTitle')}
+                      </h3>
+                      <p className="text-[11px] sm:text-xs text-slate-400 dark:text-[#8696a0]/80 font-mono tracking-wider">
+                        {t('whatsapp.onboardingVersion')}
+                      </p>
+                      <p className="text-xs sm:text-sm text-slate-500 dark:text-[#8696a0] leading-relaxed pt-1">
+                        {t('whatsapp.onboardingSubtitle')}
+                      </p>
+                    </div>
+                    <div className="mt-auto pt-6 flex items-center justify-center gap-1.5 text-xs text-slate-400 dark:text-[#8696a0]">
+                      <Lock className="w-3.5 h-3.5 text-slate-400 dark:text-[#8696a0] shrink-0" />
+                      <span>{t('whatsapp.onboardingSecurityPrefix')}</span>
+                      <span className="text-[#00a884] dark:text-[#25D366] font-medium">
+                        {t('whatsapp.onboardingSecurityHighlight')}
+                      </span>
+                    </div>
+                  </div>
                 )}
               </div>
             )}
