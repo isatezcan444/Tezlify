@@ -43,7 +43,8 @@
     "verify:media-coordination": "node scripts/verify-whatsapp-media-coordination.mjs",
     "measure:whatsapp-latency": "node scripts/measure-whatsapp-latency.mjs",
     "verify:coalesce": "node scripts/verify-whatsapp-request-coalescing.mjs",
-    "verify:avatar-persistence": "node scripts/test-avatar-persistence-zero-flicker.mjs"
+    "verify:avatar-persistence": "node scripts/test-avatar-persistence-zero-flicker.mjs",
+    "verify:health-recovery": "node scripts/verify-whatsapp-gateway-health-recovery.mjs"
   },
   "dependencies": {
     "class-variance-authority": "^0.7.1",

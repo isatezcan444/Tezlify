@@ -104,6 +104,7 @@ export interface LidSplitMergeResult {
 // Live probe (gateway erişilebilirliğini kısa süreli ölçer; mock fallback yok)
 // ---------------------------------------------------------------------------
 let liveProbe: { value: boolean; checkedAt: number } | null = null;
+let liveProbeInFlightPromise: Promise<boolean> | null = null;
 const LIVE_TTL_MS = 30_000;
 const NEGATIVE_LIVE_TTL_MS = 2_000;
 
@@ -121,29 +122,52 @@ export function invalidateLiveProbe(): void {
 export async function probeLive(signal?: AbortSignal): Promise<boolean> {
   const cached = isLiveCached();
   if (cached !== null) return cached;
+  if (liveProbeInFlightPromise) return liveProbeInFlightPromise;
+
   // A7: the real liveness signal is the backend's gateway health check.
-  // `GET /whatsapp/sessions` returns 200 even when the Baileys gateway is
-  // down (sessions are persisted), so probing it falsely reports "live".
   // Contract: GET /whatsapp/gateway/health -> 200 { gateway_available: true }
   // when the gateway is healthy, 503 { gateway_available: false, error }
   // otherwise. Fail CLOSED on any error / non-ok / missing flag.
-  try {
-    const res = await authFetch(`${API_BASE}/whatsapp/gateway/health`, { method: 'GET', signal });
-    if (!res.ok) {
-      liveProbe = { value: false, checkedAt: Date.now() };
-      return false;
+  // Coalesce concurrent in-flight probes and bounded-retry transient 503/DNS blips.
+  liveProbeInFlightPromise = (async () => {
+    const maxAttempts = 2;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const res = await authFetch(`${API_BASE}/whatsapp/gateway/health`, { method: 'GET', signal });
+        if (res.ok) {
+          const data = (await res.json().catch(() => null)) as { gateway_available?: boolean } | null;
+          const isHealthy = data?.gateway_available === true;
+          liveProbe = { value: isHealthy, checkedAt: Date.now() };
+          return isHealthy;
+        }
+        if (res.status === 503 && attempt < maxAttempts) {
+          // Short delay to ride out reconnect/DNS/event loop blips
+          await new Promise((resolve) => setTimeout(resolve, 350));
+          continue;
+        }
+        liveProbe = { value: false, checkedAt: Date.now() };
+        return false;
+      } catch (error) {
+        if (error instanceof Error && error.name === 'AbortError') throw error;
+        if (attempt < maxAttempts) {
+          await new Promise((resolve) => setTimeout(resolve, 350));
+          continue;
+        }
+        console.warn('[WhatsAppApi] Live probe failed', {
+          endpoint: `${API_BASE}/whatsapp/gateway/health`,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        liveProbe = { value: false, checkedAt: Date.now() };
+        return false;
+      }
     }
-    const data = (await res.json().catch(() => null)) as { gateway_available?: boolean } | null;
-    liveProbe = { value: data?.gateway_available === true, checkedAt: Date.now() };
-  } catch (error) {
-    if (error instanceof Error && error.name === 'AbortError') throw error;
-    console.warn('[WhatsAppApi] Live probe failed', {
-      endpoint: `${API_BASE}/whatsapp/gateway/health`,
-      error: error instanceof Error ? error.message : String(error),
-    });
     liveProbe = { value: false, checkedAt: Date.now() };
-  }
-  return liveProbe.value;
+    return false;
+  })().finally(() => {
+    liveProbeInFlightPromise = null;
+  });
+
+  return liveProbeInFlightPromise;
 }
 
 // ---------------------------------------------------------------------------

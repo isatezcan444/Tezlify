@@ -4,6 +4,7 @@
 hata durumları `WhatsAppGatewayError` içine sarılır; asla yanlış pozitif
 başarı döndürülmez (AGENTS.md Truthfulness savunması).
 """
+import asyncio
 import logging
 import re
 import time
@@ -101,8 +102,31 @@ async def _request(method: str, path: str, timeout: Optional[float] = None, **kw
 # Health & Sessions
 # ---------------------------------------------------------------------------
 
-async def health() -> Dict[str, Any]:
-    return await _request("GET", "/health", timeout=3.0)
+async def health(timeout: float = 7.0, max_retries: int = 2) -> Dict[str, Any]:
+    """Fail-closed gateway reachability probe (A7).
+
+    Gives the gateway 7.0s timeout and a bounded 2-attempt retry loop (with 300ms
+    backoff) to absorb transient Docker DNS resolution blips or Baileys crypto
+    bursts without generating false 503 errors.
+
+    Truthfulness: if the gateway remains unreachable after retries, raises
+    WhatsAppGatewayError. Never masks failure as healthy (AGENTS.md §1.1).
+    """
+    last_exc: Optional[Exception] = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            return await _request("GET", "/health", timeout=timeout)
+        except WhatsAppGatewayError as exc:
+            last_exc = exc
+            if attempt < max_retries:
+                logger.info(
+                    "[WA-GATEWAY-HTTP] Health probe gecici hata (deneme %d/%d), 300ms sonra yeniden deneniyor: %s",
+                    attempt, max_retries, exc,
+                )
+                await asyncio.sleep(0.3)
+    if last_exc:
+        raise last_exc
+    raise WhatsAppGatewayError("Gateway sağlık kontrolü başarısız oldu.")
 
 
 async def list_sessions() -> List[Dict[str, Any]]:

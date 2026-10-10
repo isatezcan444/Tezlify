@@ -168,10 +168,20 @@ app.get('/health', async (_req, res) => {
   let poolStats = null;
   if (gatewayPool) {
     try {
-      await gatewayPool.query('SELECT 1');
+      // Bounded 1500ms probe: so high sync pool load never stalls health checks
+      await Promise.race([
+        gatewayPool.query('SELECT 1'),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('db_probe_timeout')), 1500)),
+      ]);
       poolStats = { total: gatewayPool.totalCount, idle: gatewayPool.idleCount, waiting: gatewayPool.waitingCount };
     } catch {
-      dbOk = false;
+      // If pool has active clients (totalCount > 0), mark as busy rather than completely down
+      if (gatewayPool.totalCount > 0) {
+        dbOk = true;
+        poolStats = { total: gatewayPool.totalCount, idle: gatewayPool.idleCount, waiting: gatewayPool.waitingCount, busy: true };
+      } else {
+        dbOk = false;
+      }
     }
   }
   const isHealthy = dbOk;
