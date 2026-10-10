@@ -251,9 +251,8 @@ const ROWS = [
       { id: 1, client_message_id: 'C1', wa_message_id: 'W1', status: 'SENT', body: 'merhaba' },
       { id: 1, client_message_id: 'C1', wa_message_id: 'W1', status: 'DELIVERED' },
     ],
-    // DOCUMENTED: an event with no text blanks the body. Shared by both paths;
-    // not a divergence, so out of scope for the canonicalization.
-    expect: [1, { id: 1, status: 'DELIVERED', body: '' }],
+    // DOCUMENTED: status update preserves existing message body.
+    expect: [1, { id: 1, status: 'DELIVERED', body: 'merhaba' }],
   },
   {
     name: 'inbound then outbound ordering',

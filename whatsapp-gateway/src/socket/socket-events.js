@@ -169,6 +169,21 @@ export function bindSocketEvents({
         auth_updates: session._diagnosticAuthUpdates || 0,
       });
     }
+    if (update.receivedPendingNotifications) {
+      diagnostic('received_pending_notifications', { session_ref: sessionRef(id), generation });
+      logger.info({ session_ref: sessionRef(id) }, 'Baileys offline pending notifications completed');
+      emitEvent({ event: 'session_notifications_received', session_id: id });
+      if (session.sync && session.sync.phase === 'syncing') {
+        if (session._historyQuietTimer) {
+          clearTimeout(session._historyQuietTimer);
+        }
+        session._historyQuietTimer = setTimeout(() => {
+          if (session.sync && session.sync.phase === 'syncing') {
+            finalizeHistorySync('pending_notifications_completed');
+          }
+        }, 1500);
+      }
+    }
     if (qr) {
       latency('socket_start_to_provider_qr_ms', connectStarted, id);
       session.status = 'SCAN_QR';
