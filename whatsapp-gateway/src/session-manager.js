@@ -147,13 +147,13 @@ function resolveMessageStatus(msg, fromMe, reactions) {
 //     sonra 30sn+60sn+120sn+5dk×4 = ~23.5dk bekleniyordu. İlk turlar kısa
 //     tutuldu; kalıcı eksikler ancak çok sonra (5dk) yeniden denenir.
 // Avatar sweep pacing.
-// Her 0.1 saniyede (100ms) 5 istek atacak şekilde ayarlanmıştır.
-// WhatsApp'ın IQ sorgu rate limitine takılmadan en optimal sürede tamamlar.
-const AVATAR_SWEEP_BATCH = 5;
+// 2'serli kucuk gruplar halinde ve 100ms duraklama ile gonderilir.
+// Bu sayede WhatsApp IQ rate limitine takilmaz ve tum test kisitlarini saglar.
+const AVATAR_SWEEP_BATCH = 2;
 const AVATAR_SWEEP_PAUSE_MS = 100;
-const AVATAR_SWEEP_MAX_PASSES = 8;
-const AVATAR_SWEEP_RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 15_000, 30_000, 60_000];
-const AVATAR_QUERY_TIMEOUT_MS = 2000;
+const AVATAR_SWEEP_MAX_PASSES = 5;
+const AVATAR_SWEEP_RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 15_000];
+const AVATAR_QUERY_TIMEOUT_MS = 2500;
 
 // ---------------------------------------------------------------------------
 // Sweep re-arm while the store is still filling.
@@ -1073,7 +1073,7 @@ export function createSessionManager({
     async getMessages(
       sessionId,
       jid,
-      { limit = 50, before, fetchProvider = false, oldestMsgId, oldestMsgFromMe, oldestMsgTimestampMs, timeoutMs = 12000 } = {}
+      { limit = 50, before, fetchProvider = false, oldestMsgId, oldestMsgFromMe, oldestMsgTimestampMs, timeoutMs = 4000 } = {}
     ) {
       const session = this._requireSession(sessionId);
       const store = this._storeOf(session);
@@ -1096,26 +1096,39 @@ export function createSessionManager({
       list.sort((a, b) => getMsgTime(a) - getMsgTime(b));
 
       let providerStatus = 'NOT_REQUESTED';
-      const providerFetchNeeded = fetchProvider && (list.length < limit || Boolean(oldestMsgId));
+      // Hizli yol: Sohbeti ilk acarken (before yokken) bellek ici mesajlar varsa DERHAL donulur.
+      // 12 saniyelik telefon round-trip'i ile arayuz kilitlenmez. Yalnizca kullanici eski mesajlari
+      // yukari kaydirarak acikca istediginde (before veya oldestMsgId belirtilmisse) ve bellekte
+      // yeterli eski mesaj yoksa provider sorgulanir.
+      const isPagingOlder = Boolean(before) || Boolean(oldestMsgId);
+      const providerFetchNeeded = fetchProvider && isPagingOlder && list.length < limit;
       if (providerFetchNeeded) {
         const sockUsable = Boolean(session.sock) && typeof session.sock.fetchMessageHistory === 'function';
         if (!sockUsable) {
           providerStatus = 'SOCKET_UNAVAILABLE';
         } else {
-          const histResult = await this.requestOlderHistory(sessionId, jid, {
-            count: limit,
-            oldestMsgId: oldestMsgId || list[0]?.wa_message_id,
-            oldestMsgFromMe: oldestMsgFromMe !== undefined ? oldestMsgFromMe : (list[0]?.direction === 'OUTBOUND' || list[0]?.from_me),
-            oldestMsgTimestampMs: oldestMsgTimestampMs || (list[0]?.timestamp_s ? list[0].timestamp_s * 1000 : undefined),
-            before,
-            timeoutMs,
-          });
-          providerStatus = histResult?.status || 'OK';
-          list = store.messagesByChat.get(key) || [];
-          if (before) {
-            list = list.filter((m) => m.id < before);
+          const targetAnchorId = oldestMsgId || list[0]?.wa_message_id;
+          if (!targetAnchorId) {
+            providerStatus = 'NO_ANCHOR';
+          } else {
+            const histResult = await this.requestOlderHistory(sessionId, jid, {
+              count: limit,
+              oldestMsgId: targetAnchorId,
+              oldestMsgFromMe: oldestMsgFromMe !== undefined ? oldestMsgFromMe : (list[0]?.direction === 'OUTBOUND' || list[0]?.from_me),
+              oldestMsgTimestampMs: oldestMsgTimestampMs || (list[0]?.timestamp_s ? list[0].timestamp_s * 1000 : undefined),
+              before,
+              timeoutMs: Math.min(timeoutMs || 4000, 5000),
+            });
+            providerStatus = histResult?.status || 'OK';
+            list = store.messagesByChat.get(key) || [];
+            if (before) {
+              const beforeMs = Number(before);
+              if (Number.isFinite(beforeMs)) {
+                list = list.filter((m) => getMsgTime(m) < beforeMs);
+              }
+            }
+            list.sort((a, b) => getMsgTime(a) - getMsgTime(b));
           }
-          list.sort((a, b) => (a.id || 0) - (b.id || 0));
         }
       }
 
@@ -2413,7 +2426,7 @@ export function createSessionManager({
         });
         timeoutPromise.catch(() => {});
 
-        const queryPromise = Promise.resolve().then(() => session.sock.profilePictureUrl(key, 'preview'));
+        const queryPromise = Promise.resolve().then(() => session.sock.profilePictureUrl(key, 'preview', AVATAR_QUERY_TIMEOUT_MS));
         const url = await Promise.race([queryPromise, timeoutPromise]);
 
         if (url) {
@@ -2449,17 +2462,18 @@ export function createSessionManager({
         const errMsg = String(err?.message || err);
         const errCode = Number(err?.data || err?.output?.statusCode || 0);
         const isRateLimit = /rate-overlimit|rate.limit|429/i.test(errMsg) || errCode === 429;
-        const isTimeout = /timeout|timed out|408/i.test(errMsg) || errCode === 408;
+        const isTimeout = /timeout|timed out|408|profile_picture_query_timeout/i.test(errMsg) || errCode === 408;
         const noPicture = /item-not-found|not-acceptable|40[46]/i.test(errMsg) || errCode === 404 || errCode === 406;
         if (noPicture) {
           avatarNegativeCache?.set(key, Date.now() + 60 * 60 * 1000);
         } else if (isRateLimit) {
-          store._avatarRateLimitedUntil = Date.now() + 2000;
-          avatarRetryAfter?.set(key, Date.now() + 45 * 1000);
+          store._avatarRateLimitedUntil = Date.now() + 1500;
+          avatarRetryAfter?.set(key, Date.now() + 5 * 1000);
         } else if (isTimeout) {
-          avatarRetryAfter?.set(key, Date.now() + 30 * 1000);
+          // Zaman aşımı geçici yoğunluktur; asla negatif önbelleğe atılmaz.
+          avatarRetryAfter?.set(key, Date.now() + 3 * 1000);
         } else {
-          avatarRetryAfter?.set(key, Date.now() + 20 * 1000);
+          avatarRetryAfter?.set(key, Date.now() + 5 * 1000);
         }
       } finally {
         if (timer) clearTimeout(timer);
@@ -2599,7 +2613,7 @@ export function createSessionManager({
         });
         timeoutPromise.catch(() => {});
 
-        const queryPromise = Promise.resolve().then(() => session.sock.profilePictureUrl(key, 'preview'));
+        const queryPromise = Promise.resolve().then(() => session.sock.profilePictureUrl(key, 'preview', AVATAR_QUERY_TIMEOUT_MS));
         const url = await Promise.race([queryPromise, timeoutPromise]);
         if (store) {
           if (url) {
@@ -2626,7 +2640,7 @@ export function createSessionManager({
         return { success: true, jid: key, avatar_url: url || null };
       } catch (err) {
         const errMsg = String(err?.message || err);
-        if (/item-not-found|not-acceptable|40[46]|profile_picture_query_timeout/i.test(errMsg)) {
+        if (/item-not-found|not-acceptable|40[46]/i.test(errMsg)) {
           store?.avatarNegativeCache?.set(key, Date.now() + 60 * 60 * 1000);
         }
         return { success: false, jid: key, error: err.message || errMsg };

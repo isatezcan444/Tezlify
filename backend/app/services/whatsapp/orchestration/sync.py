@@ -270,7 +270,7 @@ async def _persist_sync_batch_safely(
 # (verified live). Only a phone-side history sync can supply those, which is out
 # of our control. This stage therefore recovers exactly the chats that ARE
 # recoverable — from gateway memory, with no provider round-trip at all.
-_BACKFILL_MAX_CHATS = 60          # hard cap on conversations per sync run
+_BACKFILL_MAX_CHATS = 250         # hard cap on conversations per sync run
 _BOOTSTRAP_EMIT_INTERVAL_S = 2.0
 _HISTORY_EXPANSION_MAX_CONVERSATIONS = 5        # Legacy alias for test compatibility
 _HISTORY_EXPANSION_INTERVAL_S = 2.0            # Legacy alias for test compatibility
@@ -1576,50 +1576,51 @@ class WhatsAppSyncOrchestrator:
                     wa = gm.get("wa_message_id")
                     rx_list = gm.get("reactions") or []
                     if wa and str(wa) in have:
-                        existing_msg = await db.scalar(
-                            select(Message).where(
-                                Message.conversation_id == cid,
-                                Message.wa_message_id == str(wa),
-                            )
-                        )
-                        if existing_msg:
-                            if rx_list:
-                                for rx in rx_list:
-                                    emoji = rx.get("emoji")
-                                    if emoji:
-                                        rx_from_me = bool(rx.get("from_me"))
-                                        rx_jid = _reaction_identity(rx_from_me, rx.get("reactor_jid"))
-                                        if not rx_jid and not rx_from_me and conv and "@g.us" not in str(conv.jid):
-                                            rx_jid = _reaction_identity(False, conv.jid)
-                                        if rx_jid:
-                                            await _upsert_reaction(
-                                                db,
-                                                user_id=job.user_id,
-                                                message_id=existing_msg.id,
-                                                conversation_id=cid,
-                                                reactor_jid=rx_jid,
-                                                from_me=rx_from_me,
-                                                emoji=emoji,
-                                            )
-                            gw_status_str = str(gm.get("status") or "").upper()
-                            has_rx = any(bool(r.get("emoji") or r.get("text")) for r in rx_list)
-                            if existing_msg.direction == MessageDirection.OUTBOUND:
-                                if (has_rx or gw_status_str == "READ") and existing_msg.status != ConversationMessageStatus.READ:
-                                    existing_msg.status = ConversationMessageStatus.READ
-                                    if not existing_msg.read_at:
-                                        existing_msg.read_at = _as_naive_utc(_parse_dt(gm.get("created_at"))) or utc_now_naive()
-                                elif gw_status_str == "DELIVERED" and existing_msg.status == ConversationMessageStatus.SENT:
-                                    existing_msg.status = ConversationMessageStatus.DELIVERED
-                            if rx_list and rx_list[-1].get("emoji"):
-                                last_rx = rx_list[-1]
-                                summary = _format_reaction_preview(
-                                    last_rx["emoji"],
-                                    from_me=bool(last_rx.get("from_me")),
-                                    sender_name=existing_msg.sender_name if "@g.us" in str(gm.get("conversation_id") or "") else None,
-                                    is_group="@g.us" in str(gm.get("conversation_id") or ""),
-                                    lang="tr",
+                        gw_status_str = str(gm.get("status") or "").upper()
+                        has_rx = any(bool(r.get("emoji") or r.get("text")) for r in rx_list)
+                        if has_rx or gw_status_str in ("READ", "DELIVERED"):
+                            existing_msg = await db.scalar(
+                                select(Message).where(
+                                    Message.conversation_id == cid,
+                                    Message.wa_message_id == str(wa),
                                 )
-                                apply_last_message(conv, _as_naive_utc(_parse_dt(gm.get("created_at"))), summary)
+                            )
+                            if existing_msg:
+                                if rx_list:
+                                    for rx in rx_list:
+                                        emoji = rx.get("emoji")
+                                        if emoji:
+                                            rx_from_me = bool(rx.get("from_me"))
+                                            rx_jid = _reaction_identity(rx_from_me, rx.get("reactor_jid"))
+                                            if not rx_jid and not rx_from_me and conv and "@g.us" not in str(conv.jid):
+                                                rx_jid = _reaction_identity(False, conv.jid)
+                                            if rx_jid:
+                                                await _upsert_reaction(
+                                                    db,
+                                                    user_id=job.user_id,
+                                                    message_id=existing_msg.id,
+                                                    conversation_id=cid,
+                                                    reactor_jid=rx_jid,
+                                                    from_me=rx_from_me,
+                                                    emoji=emoji,
+                                                )
+                                if existing_msg.direction == MessageDirection.OUTBOUND:
+                                    if (has_rx or gw_status_str == "READ") and existing_msg.status != ConversationMessageStatus.READ:
+                                        existing_msg.status = ConversationMessageStatus.READ
+                                        if not existing_msg.read_at:
+                                            existing_msg.read_at = _as_naive_utc(_parse_dt(gm.get("created_at"))) or utc_now_naive()
+                                    elif gw_status_str == "DELIVERED" and existing_msg.status == ConversationMessageStatus.SENT:
+                                        existing_msg.status = ConversationMessageStatus.DELIVERED
+                                if rx_list and rx_list[-1].get("emoji"):
+                                    last_rx = rx_list[-1]
+                                    summary = _format_reaction_preview(
+                                        last_rx["emoji"],
+                                        from_me=bool(last_rx.get("from_me")),
+                                        sender_name=existing_msg.sender_name if "@g.us" in str(gm.get("conversation_id") or "") else None,
+                                        is_group="@g.us" in str(gm.get("conversation_id") or ""),
+                                        lang="tr",
+                                    )
+                                    apply_last_message(conv, _as_naive_utc(_parse_dt(gm.get("created_at"))), summary)
                         continue
                     row = message_row_from_gateway(job.user_id, conv, gm)
                     if row is None:

@@ -2636,12 +2636,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
           }
           scheduleConvPatchRef.current(resolvedId, patch);
           setSelectedConv((prev) => {
-            if (!prev) {
-              // Sorun 3 (WhatsApp Web akisi): ilk secilebilir sohbet, liste
-              // dolarken hazirlanir — kullanici bos ekranla kalmaz.
-              const seeded = mapConversationItem({ ...payload, id: resolvedId });
-              return { status: 'ACTIVE' as ConversationStatus, unread_count: 0, ...seeded };
-            }
+            if (!prev) return null;
             return Number(prev.id) === Number(resolvedId) ? patch(prev) : prev;
           });
 
