@@ -65,8 +65,12 @@ export function createSessionStore({ sessionDir = null, sessionPhone = null, log
     jidToLid: new Map(), // phone jid -> lid jid
     avatarFetchInFlight: new Set(),
     avatarFetchAttemptedAt: createBoundedCache({ maxEntries: 10_000, ttlMs: 60 * 60 * 1000 }),
-    avatarNegativeCache: createBoundedCache({ maxEntries: 10_000, ttlMs: 60 * 60 * 1000 }),
-    avatarRetryAfter: createBoundedCache({ maxEntries: 10_000, ttlMs: 10 * 60 * 1000 }),
+    avatarNegativeCache: createBoundedCache({ maxEntries: 10_000, ttlMs: 24 * 60 * 60 * 1000 }),
+    avatarRetryAfter: createBoundedCache({ maxEntries: 10_000, ttlMs: 60 * 60 * 1000 }),
+    _avatarQueue: [],
+    _avatarInFlightMap: new Map(),
+    _avatarPumpRunning: false,
+    _avatarCircuitBreakerUntil: 0,
     rawMessagesByChat: new Map(), // jid -> Map<waMessageId, proto.IMessage>
     rawMessageCount: 0,
     // App-state sync health. `true` ONLY after a resync demonstrably advanced a
