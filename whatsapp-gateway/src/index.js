@@ -261,9 +261,9 @@ app.post('/sessions', async (req, res) => {
 // Refresh contact avatar from WhatsApp
 app.post('/sessions/:id/avatar/refresh', async (req, res) => {
   try {
-    const { jid } = req.body || {};
+    const { jid, force } = req.body || {};
     if (!jid) return res.status(400).json({ error: 'jid is required' });
-    const result = await sessionManager.refreshAvatar(req.params.id, jid);
+    const result = await sessionManager.refreshAvatar(req.params.id, jid, Boolean(force));
     res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -600,9 +600,10 @@ app.delete('/sessions/:sessionId/conversations/:jid', withSession(async (req, re
 
 // Download media by media_id or wa_message_id (with on-demand fallback)
 app.get('/sessions/:sessionId/media/:mediaId', withSession(async (req, res, sessionId) => {
+  const preferPreview = req.query.preview === 'true';
   let filePath = sessionManager.getMediaPath(sessionId, req.params.mediaId);
   if (!filePath || !fs.existsSync(filePath)) {
-    filePath = await sessionManager.downloadMediaOnDemand(sessionId, req.params.mediaId);
+    filePath = await sessionManager.downloadMediaOnDemand(sessionId, req.params.mediaId, { preferPreview });
   }
   if (!filePath || !fs.existsSync(filePath)) return res.status(404).json({ error: 'Media not found' });
   res.sendFile(filePath);
@@ -615,9 +616,10 @@ app.get('/media/:mediaId', async (req, res) => {
   if (!process.env.WHATSAPP_GATEWAY_SECRET || token !== process.env.WHATSAPP_GATEWAY_SECRET) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
+  const preferPreview = req.query.preview === 'true';
   let filePath = sessionManager.getMediaPath(null, req.params.mediaId);
   if (!filePath || !fs.existsSync(filePath)) {
-    filePath = await sessionManager.downloadMediaOnDemand(null, req.params.mediaId);
+    filePath = await sessionManager.downloadMediaOnDemand(null, req.params.mediaId, { preferPreview });
   }
   if (!filePath || !fs.existsSync(filePath)) return res.status(404).json({ error: 'Media not found' });
   res.sendFile(filePath);

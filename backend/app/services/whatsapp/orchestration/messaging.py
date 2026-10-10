@@ -563,6 +563,7 @@ class WhatsAppMessagingOrchestrator:
         db: AsyncSession,
         user_id: str,
         media_id: str,
+        preview: bool = False,
     ) -> Tuple[bytes, Optional[str], Optional[str]]:
         """Kullaniciya ait bir mesaja ait medyayi gateway'den proxy'ler."""
         conversation_gateway_id = self._get_helper("_conversation_gateway_id", _conversation_gateway_id)
@@ -582,7 +583,7 @@ class WhatsAppMessagingOrchestrator:
             fetch_unscoped = getattr(gateway_client, "fetch_media_unscoped", None)
             if fetch_unscoped:
                 try:
-                    data = await fetch_unscoped(media_id)
+                    data = await fetch_unscoped(media_id, preview=preview)
                     mime = None
                     if data.startswith(b"\xff\xd8\xff"):
                         mime = "image/jpeg"
@@ -610,12 +611,12 @@ class WhatsAppMessagingOrchestrator:
         # while waiting on the gateway media download.
         await db.commit()
         try:
-            data = await gateway_client.fetch_media(gateway_id, target_id)
+            data = await gateway_client.fetch_media(gateway_id, target_id, preview=preview)
         except LookupError:
             if target_id != media_id:
-                data = await gateway_client.fetch_media(gateway_id, media_id)
+                data = await gateway_client.fetch_media(gateway_id, media_id, preview=preview)
             elif wa_msg_id and target_id != wa_msg_id:
-                data = await gateway_client.fetch_media(gateway_id, wa_msg_id)
+                data = await gateway_client.fetch_media(gateway_id, wa_msg_id, preview=preview)
             else:
                 raise
 

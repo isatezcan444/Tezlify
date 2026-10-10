@@ -68,8 +68,10 @@ export function createSessionStore({ sessionDir = null, sessionPhone = null, log
     avatarNegativeCache: createBoundedCache({ maxEntries: 10_000, ttlMs: 24 * 60 * 60 * 1000 }),
     avatarRetryAfter: createBoundedCache({ maxEntries: 10_000, ttlMs: 60 * 60 * 1000 }),
     _avatarQueue: [],
+    _avatarHighPriorityQueue: [],
     _avatarInFlightMap: new Map(),
     _avatarPumpRunning: false,
+    _activeAvatarWorkers: 0,
     _avatarCircuitBreakerUntil: 0,
     rawMessagesByChat: new Map(), // jid -> Map<waMessageId, proto.IMessage>
     rawMessageCount: 0,

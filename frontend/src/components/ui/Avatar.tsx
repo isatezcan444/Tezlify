@@ -11,6 +11,7 @@ export interface AvatarProps {
   status?: "online" | "offline" | "busy" | "away";
   className?: string;
   phone?: string;
+  priority?: "high" | "normal" | "low";
   onRefresh?: (newUrl: string) => void;
 }
 
@@ -83,6 +84,7 @@ export const Avatar: React.FC<AvatarProps> = ({
   status,
   className,
   phone,
+  priority = "normal",
   onRefresh,
 }) => {
   const resolved = React.useMemo(() => resolveMediaUrl(image), [image]);
@@ -99,39 +101,47 @@ export const Avatar: React.FC<AvatarProps> = ({
     setImageError(resolved ? failedAvatarUrls.has(resolved) : false);
   }, [resolved]);
 
+  const fetchAvatar = React.useCallback((force: boolean = false) => {
+    if (!phone || inFlightAvatarRefreshes.has(phone)) return;
+    const negativeExpiry = negativeAvatarPhones.get(phone) || 0;
+    if (!force && Date.now() < negativeExpiry) return;
+
+    inFlightAvatarRefreshes.add(phone);
+    queueAvatarRefresh(async () => {
+      try {
+        const res = await WhatsAppRepository.refreshAvatar(phone);
+        if (res.success && res.avatar_url) {
+          const nextResolved = resolveMediaUrl(res.avatar_url) || res.avatar_url;
+          failedAvatarUrls.delete(nextResolved);
+          negativeAvatarPhones.delete(phone);
+          setCurrentImage(nextResolved);
+          setImageError(false);
+          onRefresh?.(res.avatar_url);
+        } else {
+          negativeAvatarPhones.set(phone, Date.now() + 10 * 60 * 1000);
+        }
+      } catch (err) {
+        negativeAvatarPhones.set(phone, Date.now() + 2 * 60 * 1000);
+        console.debug("[Avatar] Refresh attempt failed:", err);
+      } finally {
+        inFlightAvatarRefreshes.delete(phone);
+      }
+    });
+  }, [phone, onRefresh]);
+
   const handleImageError = React.useCallback(() => {
     if (currentImage) failedAvatarUrls.add(currentImage);
     setImageError(true);
     setIsImageLoaded(false);
+    fetchAvatar(true);
+  }, [currentImage, fetchAvatar]);
 
-    if (phone && !inFlightAvatarRefreshes.has(phone)) {
-      const negativeExpiry = negativeAvatarPhones.get(phone) || 0;
-      if (Date.now() < negativeExpiry) {
-        return;
-      }
-      inFlightAvatarRefreshes.add(phone);
-      queueAvatarRefresh(async () => {
-        try {
-          const res = await WhatsAppRepository.refreshAvatar(phone);
-          if (res.success && res.avatar_url) {
-            const nextResolved = resolveMediaUrl(res.avatar_url) || res.avatar_url;
-            failedAvatarUrls.delete(nextResolved);
-            negativeAvatarPhones.delete(phone);
-            setCurrentImage(nextResolved);
-            setImageError(false);
-            onRefresh?.(res.avatar_url);
-          } else {
-            negativeAvatarPhones.set(phone, Date.now() + 10 * 60 * 1000);
-          }
-        } catch (err) {
-          negativeAvatarPhones.set(phone, Date.now() + 2 * 60 * 1000);
-          console.debug("[Avatar] Refresh attempt failed:", err);
-        } finally {
-          inFlightAvatarRefreshes.delete(phone);
-        }
-      });
+  // Proactive hydration: when priority === 'high' and avatar URL is missing, request immediately
+  React.useEffect(() => {
+    if (!currentImage && phone && priority === 'high') {
+      fetchAvatar(false);
     }
-  }, [currentImage, phone, onRefresh]);
+  }, [currentImage, phone, priority, fetchAvatar]);
 
   const sizeClasses = {
     xs: "w-6 h-6 text-[10px]",

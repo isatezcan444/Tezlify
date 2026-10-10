@@ -168,7 +168,28 @@ export function createMediaStore({
     return { media_id: mediaId, mime_type: resolvedMime, filename: resolvedFilename, size_bytes: buffer.length };
   }
 
-  async function storeIncomingMedia(session, waMessage, sock) {
+  let activeMediaDownloads = 0;
+  const MAX_CONCURRENT_MEDIA_DOWNLOADS = 3;
+  const mediaDownloadWaiters = [];
+
+  async function acquireMediaDownloadSlot() {
+    if (activeMediaDownloads < MAX_CONCURRENT_MEDIA_DOWNLOADS) {
+      activeMediaDownloads++;
+      return;
+    }
+    await new Promise((resolve) => mediaDownloadWaiters.push(resolve));
+    activeMediaDownloads++;
+  }
+
+  function releaseMediaDownloadSlot() {
+    activeMediaDownloads = Math.max(0, activeMediaDownloads - 1);
+    if (mediaDownloadWaiters.length > 0) {
+      const next = mediaDownloadWaiters.shift();
+      if (next) next();
+    }
+  }
+
+  async function storeIncomingMedia(session, waMessage, sock, options = {}) {
     try {
       const waMessageId = waMessage?.key?.id;
       // If we already have this message's media on disk, reuse existing media_id!
@@ -194,7 +215,24 @@ export function createMediaStore({
         return null;
       }
       const { media } = resolved;
+
+      // P1 FAST-PATH: If caller requested preview only and thumbnail is present, return immediately (0ms)
+      if (options?.preferPreview && media.jpegThumbnail) {
+        const thumbBuf = Buffer.isBuffer(media.jpegThumbnail)
+          ? media.jpegThumbnail
+          : Buffer.from(media.jpegThumbnail);
+        if (thumbBuf.length > 0) {
+          logger?.debug({ waMessageId }, 'Fast path: returning jpegThumbnail preview');
+          return storeMediaBuffer(session?.id, thumbBuf, {
+            mimeType: 'image/jpeg',
+            filename: `thumb_${waMessageId || 'preview'}.jpeg`,
+            waMessageId,
+          });
+        }
+      }
+
       let buffer = null;
+      await acquireMediaDownloadSlot();
       try {
         const dlPromise = downloadMediaMessage(
           waMessage,
@@ -214,6 +252,8 @@ export function createMediaStore({
         }
       } catch (dlErr) {
         logger?.debug({ dlErr: dlErr?.message, waMessageId }, 'downloadMediaMessage failed or timed out, checking thumbnail');
+      } finally {
+        releaseMediaDownloadSlot();
       }
 
       let mimeType = media.mimetype || 'application/octet-stream';

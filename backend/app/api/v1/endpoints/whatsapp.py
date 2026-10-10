@@ -935,12 +935,13 @@ def _handle_byte_range(
 async def get_media(
     media_id: str,
     request: Request,
+    preview: bool = Query(False),
     db: AsyncSession = Depends(get_db),
     current_user: AuthUser = Depends(get_current_user),
 ) -> Response:
     """Kimlik dogrulamali medya proxy'si — gateway'deki gelen medyayi sunar."""
     try:
-        data, mime, filename = await whatsapp_service.get_media_bytes(db, current_user.id, media_id)
+        data, mime, filename = await whatsapp_service.get_media_bytes(db, current_user.id, media_id, preview=preview)
     except NoWhatsAppSession as exc:
         raise _no_session(exc) from exc
     except LookupError as exc:

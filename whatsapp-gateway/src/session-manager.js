@@ -1610,7 +1610,7 @@ export function createSessionManager({
       return mediaStore.getMediaPath(sessionId, mediaId);
     },
 
-    async downloadMediaOnDemand(sessionId, mediaIdOrWaId) {
+    async downloadMediaOnDemand(sessionId, mediaIdOrWaId, options = {}) {
       if (!mediaIdOrWaId) return null;
       let filePath = mediaStore.getMediaPath(sessionId, mediaIdOrWaId);
       if (filePath && fs.existsSync(filePath)) return filePath;
@@ -1624,7 +1624,7 @@ export function createSessionManager({
       if (!this._failedMediaCache) {
         this._failedMediaCache = new Map();
       }
-      const inFlightKey = `${sessionId || 'any'}:${strId}`;
+      const inFlightKey = `${sessionId || 'any'}:${strId}:${Boolean(options?.preferPreview)}`;
       const failedAt = this._failedMediaCache.get(inFlightKey);
       if (failedAt && Date.now() - failedAt < 300000) {
         return null;
@@ -1668,7 +1668,7 @@ export function createSessionManager({
               key: { remoteJid: foundJid, id: strId },
               message: foundRaw,
             };
-            const stored = await mediaStore.storeIncomingMedia(session, waMsg, session.sock);
+            const stored = await mediaStore.storeIncomingMedia(session, waMsg, session.sock, options);
             if (stored?.media_id) {
               return mediaStore.getMediaPath(session.id, stored.media_id);
             }
@@ -1690,8 +1690,8 @@ export function createSessionManager({
       return downloadPromise;
     },
 
-    async storeIncomingMedia(session, waMessage, sock) {
-      return mediaStore.storeIncomingMedia(session, waMessage, sock);
+    async storeIncomingMedia(session, waMessage, sock, options = {}) {
+      return mediaStore.storeIncomingMedia(session, waMessage, sock, options);
     },
 
     // -----------------------------------------------------------------------
@@ -2427,6 +2427,19 @@ export function createSessionManager({
         }
       }
 
+      // Promote existing item to high priority queue if requested
+      if (priority === 'high' && store._avatarQueue && store._avatarQueue.length > 0) {
+        const idx = store._avatarQueue.findIndex((item) => item.key === key);
+        if (idx !== -1) {
+          const [promoted] = store._avatarQueue.splice(idx, 1);
+          promoted.priority = 'high';
+          if (!store._avatarHighPriorityQueue) store._avatarHighPriorityQueue = [];
+          store._avatarHighPriorityQueue.push(promoted);
+          void this._pumpAvatarQueue(session);
+          return store._avatarInFlightMap?.get(key) || promise;
+        }
+      }
+
       if (store._avatarInFlightMap?.has(key)) {
         return store._avatarInFlightMap.get(key);
       }
@@ -2447,7 +2460,8 @@ export function createSessionManager({
       store._avatarInFlightMap.set(key, promise);
       const queueItem = { key, priority, resolve: resolveFn, reject: rejectFn };
       if (priority === 'high') {
-        store._avatarQueue.unshift(queueItem);
+        if (!store._avatarHighPriorityQueue) store._avatarHighPriorityQueue = [];
+        store._avatarHighPriorityQueue.push(queueItem);
       } else {
         store._avatarQueue.push(queueItem);
       }
@@ -2459,8 +2473,7 @@ export function createSessionManager({
       if (!session) return;
       session = this._sess(session);
       const store = this._storeOf(session);
-      if (!store || store._avatarPumpRunning) return;
-      store._avatarPumpRunning = true;
+      if (!store) return;
 
       const unrefSleep = (ms) => {
         let timer;
@@ -2469,112 +2482,142 @@ export function createSessionManager({
         return p;
       };
 
-      try {
-        while (store._avatarQueue && store._avatarQueue.length > 0) {
-          if (session._deleted || session._shuttingDown) break;
-          if (session.status !== 'CONNECTED' || !session.sock) break;
+      const MAX_CONCURRENT_WORKERS = (store._avatarHighPriorityQueue && store._avatarHighPriorityQueue.length > 0) ? 2 : 1;
+      if ((store._activeAvatarWorkers || 0) >= MAX_CONCURRENT_WORKERS) return;
 
-          if (store._avatarCircuitBreakerUntil && store._avatarCircuitBreakerUntil > Date.now()) {
-            const waitMs = Math.min(25000, store._avatarCircuitBreakerUntil - Date.now());
-            await unrefSleep(waitMs);
-          }
+      const runWorker = async () => {
+        try {
+          for (;;) {
+            if (session._deleted || session._shuttingDown) break;
+            if (session.status !== 'CONNECTED' || !session.sock) break;
 
-          const item = store._avatarQueue.shift();
-          if (!item) continue;
-          const { key, resolve } = item;
-
-          let timer = null;
-          try {
-            const timeoutPromise = new Promise((_, reject) => {
-              timer = setTimeout(() => reject(new Error('profile_picture_query_timeout')), AVATAR_QUERY_TIMEOUT_MS);
-              if (typeof timer?.unref === 'function') timer.unref();
-            });
-            timeoutPromise.catch(() => {});
-
-            const queryPromise = Promise.resolve().then(() => session.sock.profilePictureUrl(key, 'preview', AVATAR_QUERY_TIMEOUT_MS));
-            const url = await Promise.race([queryPromise, timeoutPromise]);
-
-            if (url) {
-              store.avatarNegativeCache?.delete(key);
-              store.avatarRetryAfter?.delete(key);
-              let emittedConv = false;
-              const chat = store.chats.get(key);
-              if (chat && chat.avatar_url !== url) {
-                chat.avatar_url = url;
-                chat.updated_at = new Date().toISOString();
-                if (!isLidJid(key)) {
-                  this._emit({ event: 'conversation_updated', conversation: { ...chat }, gateway_session_id: session.id });
-                  emittedConv = true;
-                }
-              }
-              const contact = store.contacts.get(key);
-              if (contact && contact.avatar_url !== url) {
-                contact.avatar_url = url;
-                contact.updated_at = new Date().toISOString();
-                if (!emittedConv) {
-                  this._emit({ event: 'contact_synced', contact: { ...contact }, gateway_session_id: session.id });
-                }
-              } else if (!emittedConv && !chat) {
-                this._emit({ event: 'contact_synced', contact: { jid: key, avatar_url: url }, gateway_session_id: session.id });
-              }
-              resolve({ success: true, jid: key, avatar_url: url });
-            } else {
-              // WhatsApp 200 OK dondu ancak profil resmi yok (gizlilik veya resimsiz).
-              // 24 saat negatif onbellek uygulanir; sonraki istekleri engeller.
-              store.avatarNegativeCache?.set(key, Date.now() + 24 * 60 * 60 * 1000, 24 * 60 * 60 * 1000);
-              resolve({ success: false, jid: key, error: 'item-not-found' });
+            if (store._avatarCircuitBreakerUntil && store._avatarCircuitBreakerUntil > Date.now()) {
+              const waitMs = Math.min(25000, store._avatarCircuitBreakerUntil - Date.now());
+              await unrefSleep(waitMs);
             }
-          } catch (err) {
-            const errMsg = String(err?.message || err);
-            const errCode = Number(err?.data || err?.output?.statusCode || 0);
 
-            const noPicture =
-              /item-not-found|not-authorized|not-acceptable|forbidden|40[1346]/i.test(errMsg) ||
-              errCode === 401 ||
-              errCode === 403 ||
-              errCode === 404 ||
-              errCode === 406;
-
-            const isRateLimit =
-              /rate-overlimit|rate.limit|429/i.test(errMsg) ||
-              errCode === 429;
-
-            const isTimeout =
-              /timeout|timed out|408|profile_picture_query_timeout|connection was lost/i.test(errMsg) ||
-              errCode === 408;
-
-            if (noPicture) {
-              store.avatarNegativeCache?.set(key, Date.now() + 24 * 60 * 60 * 1000, 24 * 60 * 60 * 1000);
-              resolve({ success: false, jid: key, error: 'item-not-found' });
-            } else if (isRateLimit) {
-              logger.warn({ key, errMsg }, 'WhatsApp profile picture rate limit triggered; circuit breaker active');
-              store._avatarCircuitBreakerUntil = Date.now() + 25 * 1000;
-              store.avatarRetryAfter?.set(key, Date.now() + 60 * 1000, 60 * 1000);
-              resolve({ success: false, jid: key, error: 'rate-overlimit' });
-            } else if (isTimeout) {
-              logger.info({ key, errMsg }, 'WhatsApp profile picture query timed out');
-              store._avatarCircuitBreakerUntil = Date.now() + 10 * 1000;
-              store.avatarRetryAfter?.set(key, Date.now() + 20 * 1000, 20 * 1000);
-              resolve({ success: false, jid: key, error: 'timeout' });
-            } else {
-              store.avatarRetryAfter?.set(key, Date.now() + 15 * 1000, 15 * 1000);
-              resolve({ success: false, jid: key, error: errMsg });
+            // Always process high-priority items first (P0 visible chats)
+            let item = null;
+            let isHigh = false;
+            if (store._avatarHighPriorityQueue && store._avatarHighPriorityQueue.length > 0) {
+              item = store._avatarHighPriorityQueue.shift();
+              isHigh = true;
+            } else if (store._avatarQueue && store._avatarQueue.length > 0) {
+              item = store._avatarQueue.shift();
+              isHigh = false;
             }
-          } finally {
-            if (timer) clearTimeout(timer);
-            store._avatarInFlightMap?.delete(key);
-            store.avatarFetchInFlight?.delete(key);
-          }
 
-          // Anti-ban pacing: ardisik istekler arasina rastgele bekleme suresi (jitter)
-          const isTest = !session.sock?.ev || typeof session.sock?.ev?.on !== 'function';
-          if (!isTest && store._avatarQueue.length > 0) {
-            const jitterMs = 800 + Math.floor(Math.random() * 800);
-            await unrefSleep(jitterMs);
+            if (!item) break;
+            const { key, resolve } = item;
+
+            let timer = null;
+            try {
+              const timeoutPromise = new Promise((_, reject) => {
+                timer = setTimeout(() => reject(new Error('profile_picture_query_timeout')), AVATAR_QUERY_TIMEOUT_MS);
+                if (typeof timer?.unref === 'function') timer.unref();
+              });
+              timeoutPromise.catch(() => {});
+
+              const queryPromise = Promise.resolve().then(() => session.sock.profilePictureUrl(key, 'preview', AVATAR_QUERY_TIMEOUT_MS));
+              const url = await Promise.race([queryPromise, timeoutPromise]);
+
+              if (url) {
+                store.avatarNegativeCache?.delete(key);
+                store.avatarRetryAfter?.delete(key);
+                let emittedConv = false;
+                const chat = store.chats.get(key);
+                if (chat && chat.avatar_url !== url) {
+                  chat.avatar_url = url;
+                  chat.updated_at = new Date().toISOString();
+                  if (!isLidJid(key)) {
+                    this._emit({ event: 'conversation_updated', conversation: { ...chat }, gateway_session_id: session.id });
+                    emittedConv = true;
+                  }
+                }
+                const contact = store.contacts.get(key);
+                if (contact && contact.avatar_url !== url) {
+                  contact.avatar_url = url;
+                  contact.updated_at = new Date().toISOString();
+                  if (!emittedConv) {
+                    this._emit({ event: 'contact_synced', contact: { ...contact }, gateway_session_id: session.id });
+                  }
+                } else if (!emittedConv && !chat) {
+                  this._emit({ event: 'contact_synced', contact: { jid: key, avatar_url: url }, gateway_session_id: session.id });
+                }
+                resolve({ success: true, jid: key, avatar_url: url });
+              } else {
+                // WhatsApp 200 OK dondu ancak profil resmi yok (gizlilik veya resimsiz).
+                // 24 saat negatif onbellek uygulanir; sonraki istekleri engeller.
+                store.avatarNegativeCache?.set(key, Date.now() + 24 * 60 * 60 * 1000, 24 * 60 * 60 * 1000);
+                resolve({ success: false, jid: key, error: 'item-not-found' });
+              }
+            } catch (err) {
+              const errMsg = String(err?.message || err);
+              const errCode = Number(err?.data || err?.output?.statusCode || 0);
+
+              const noPicture =
+                /item-not-found|not-authorized|not-acceptable|forbidden|40[1346]/i.test(errMsg) ||
+                errCode === 401 ||
+                errCode === 403 ||
+                errCode === 404 ||
+                errCode === 406;
+
+              const isRateLimit =
+                /rate-overlimit|rate.limit|429/i.test(errMsg) ||
+                errCode === 429;
+
+              const isTimeout =
+                /timeout|timed out|408|profile_picture_query_timeout|connection was lost/i.test(errMsg) ||
+                errCode === 408;
+
+              if (noPicture) {
+                store.avatarNegativeCache?.set(key, Date.now() + 24 * 60 * 60 * 1000, 24 * 60 * 60 * 1000);
+                resolve({ success: false, jid: key, error: 'item-not-found' });
+              } else if (isRateLimit) {
+                logger.warn({ key, errMsg }, 'WhatsApp profile picture rate limit triggered; circuit breaker active');
+                store._avatarCircuitBreakerUntil = Date.now() + 25 * 1000;
+                store.avatarRetryAfter?.set(key, Date.now() + 60 * 1000, 60 * 1000);
+                resolve({ success: false, jid: key, error: 'rate-overlimit' });
+              } else if (isTimeout) {
+                logger.info({ key, errMsg }, 'WhatsApp profile picture query timed out');
+                // Timeout on a single contact MUST NOT freeze the queue for other contacts!
+                store.avatarRetryAfter?.set(key, Date.now() + 20 * 1000, 20 * 1000);
+                resolve({ success: false, jid: key, error: 'timeout' });
+              } else {
+                store.avatarRetryAfter?.set(key, Date.now() + 15 * 1000, 15 * 1000);
+                resolve({ success: false, jid: key, error: errMsg });
+              }
+            } finally {
+              if (timer) clearTimeout(timer);
+              store._avatarInFlightMap?.delete(key);
+              store.avatarFetchInFlight?.delete(key);
+            }
+
+            // Anti-ban pacing:
+            const isTest = !session.sock?.ev || typeof session.sock?.ev?.on !== 'function';
+            if (!isTest) {
+              const moreHigh = store._avatarHighPriorityQueue && store._avatarHighPriorityQueue.length > 0;
+              const moreNormal = store._avatarQueue && store._avatarQueue.length > 0;
+              if (moreHigh) {
+                // High-priority (visible viewport) micro-pause (50-100ms)
+                await unrefSleep(50 + Math.floor(Math.random() * 50));
+              } else if (moreNormal) {
+                // Background sweep pacing (500-1000ms)
+                await unrefSleep(500 + Math.floor(Math.random() * 500));
+              }
+            }
           }
+        } finally {
+          store._activeAvatarWorkers = Math.max(0, (store._activeAvatarWorkers || 1) - 1);
+          store._avatarPumpRunning = (store._activeAvatarWorkers > 0);
         }
-      } finally {
-        store._avatarPumpRunning = false;
+      };
+
+      while ((store._activeAvatarWorkers || 0) < MAX_CONCURRENT_WORKERS &&
+             ((store._avatarHighPriorityQueue?.length || 0) + (store._avatarQueue?.length || 0)) > 0) {
+        store._activeAvatarWorkers = (store._activeAvatarWorkers || 0) + 1;
+        store._avatarPumpRunning = true;
+        void runWorker();
       }
     },
 
@@ -2692,14 +2735,14 @@ export function createSessionManager({
       return { success: true, missing, scheduled: Boolean(missing && connected) };
     },
 
-    async refreshAvatar(sessionId, jid) {
+    async refreshAvatar(sessionId, jid, force = false) {
       const session = this._requireSession(sessionId);
       if (!session.sock || session.status !== 'CONNECTED') {
         return { success: false, error: 'Session not connected' };
       }
       const store = this._storeOf(session);
       const key = resolveJidKey(store, jid) || jid;
-      return this._enqueueAvatarQuery(session, key, { priority: 'high', force: true });
+      return this._enqueueAvatarQuery(session, key, { priority: 'high', force: Boolean(force) });
     },
 
     _resolveArchivedJids(session) {

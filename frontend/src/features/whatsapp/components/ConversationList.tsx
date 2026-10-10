@@ -98,6 +98,7 @@ interface ConversationRowProps {
   typingSenderName?: string;
   isSyncing: boolean;
   onSelect: (id: number) => void;
+  priority?: 'high' | 'normal' | 'low';
   /** Satir uzerindeki "asagi ok" menusunun eylemleri (WhatsApp Web paritesi).
    * Hepsi opsiyonel: hicbiri verilmezse menu hic cizilmez. */
   onArchive?: (id: number) => void;
@@ -106,7 +107,7 @@ interface ConversationRowProps {
   onDelete?: (id: number) => void;
 }
 
-const ConversationRowComponent: React.FC<ConversationRowProps> = ({ id, name, avatarUrl, phone, lastMessagePreview, lastMessageAt, lastMessageState, messageCount, lastReactionEmoji, status, isArchived, unreadCount, isGroup, selected, typing, typingSenderName, isSyncing, onSelect, onArchive, onClose, onReopen, onDelete }) => {
+const ConversationRowComponent: React.FC<ConversationRowProps> = ({ id, name, avatarUrl, phone, lastMessagePreview, lastMessageAt, lastMessageState, messageCount, lastReactionEmoji, status, isArchived, unreadCount, isGroup, selected, typing, typingSenderName, isSyncing, priority = 'normal', onSelect, onArchive, onClose, onReopen, onDelete }) => {
   const { t, language } = useI18n();
   const isRawJid = isRawWhatsAppJid(phone);
   const cleanPhone = extractCleanPhone(phone);
@@ -189,6 +190,7 @@ const ConversationRowComponent: React.FC<ConversationRowProps> = ({ id, name, av
         phone={cleanPhone || (phone ? stripJidPrefix(phone) : undefined)}
         size="md"
         shape="rounded"
+        priority={priority}
       />
 
       <div className="flex-1 min-w-0">
@@ -465,11 +467,22 @@ const ConversationListComponent: React.FC<ConversationListProps> = ({
     { id: 'CLOSED', label: t('whatsapp.tabClosed'), icon: CheckCircle2 },
   ];
 
+  const [visibleStartIndex, setVisibleStartIndex] = useState(0);
+  const [visibleEndIndex, setVisibleEndIndex] = useState(15);
+
   const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
-    if (!onLoadMore || !hasMore || loadingMore) return;
     const target = e.currentTarget;
-    if (target.scrollHeight - target.scrollTop - target.clientHeight < 120) {
-      onLoadMore();
+    if (onLoadMore && hasMore && !loadingMore) {
+      if (target.scrollHeight - target.scrollTop - target.clientHeight < 120) {
+        onLoadMore();
+      }
+    }
+    const rowHeight = 72;
+    const start = Math.max(0, Math.floor(target.scrollTop / rowHeight) - 2);
+    const end = Math.min(deduplicated.length, Math.ceil((target.scrollTop + target.clientHeight) / rowHeight) + 2);
+    if (start !== visibleStartIndex || end !== visibleEndIndex) {
+      setVisibleStartIndex(start);
+      setVisibleEndIndex(end);
     }
   };
 
@@ -600,33 +613,37 @@ const ConversationListComponent: React.FC<ConversationListProps> = ({
             <p>{t(emptyStateKey)}</p>
           </div>
         ) : (
-          deduplicated.map((conv) => (
-            <ConversationRow
-              key={conv.id}
-              id={conv.id}
-              name={getConversationDisplayName(conv, t)}
-              avatarUrl={conv.lead_avatar_url}
-              phone={conv.lead_phone || (conv as any).phone}
-              lastMessagePreview={conv.last_message_preview}
-              lastMessageAt={conv.last_message_at}
-              lastMessageState={conv.last_message_state}
-              messageCount={conv.message_count}
-              lastReactionEmoji={conv.last_reaction?.emoji || undefined}
-              status={conv.status}
-              isArchived={Boolean(conv.is_archived)}
-              unreadCount={conv.unread_count}
-              isGroup={conv.is_group}
-              selected={selectedId === conv.id}
-              typing={typeof typingMap?.[conv.id] === 'object' ? !!(typingMap[conv.id] as any)?.isTyping : !!typingMap?.[conv.id]}
-              typingSenderName={typeof typingMap?.[conv.id] === 'object' ? (typingMap[conv.id] as any)?.senderName : undefined}
-              isSyncing={isSyncing}
-              onSelect={handleSelectById}
-              onArchive={handleArchiveById}
-              onClose={handleCloseById}
-              onReopen={handleReopenById}
-              onDelete={handleDeleteById}
-            />
-          ))
+          deduplicated.map((conv, index) => {
+            const isVisible = index >= visibleStartIndex && index <= visibleEndIndex;
+            return (
+              <ConversationRow
+                key={conv.id}
+                id={conv.id}
+                name={getConversationDisplayName(conv, t)}
+                avatarUrl={conv.lead_avatar_url}
+                phone={conv.lead_phone || (conv as any).phone}
+                lastMessagePreview={conv.last_message_preview}
+                lastMessageAt={conv.last_message_at}
+                lastMessageState={conv.last_message_state}
+                messageCount={conv.message_count}
+                lastReactionEmoji={conv.last_reaction?.emoji || undefined}
+                status={conv.status}
+                isArchived={Boolean(conv.is_archived)}
+                unreadCount={conv.unread_count}
+                isGroup={conv.is_group}
+                selected={selectedId === conv.id}
+                typing={typeof typingMap?.[conv.id] === 'object' ? !!(typingMap[conv.id] as any)?.isTyping : !!typingMap?.[conv.id]}
+                typingSenderName={typeof typingMap?.[conv.id] === 'object' ? (typingMap[conv.id] as any)?.senderName : undefined}
+                isSyncing={isSyncing}
+                priority={isVisible ? 'high' : 'low'}
+                onSelect={handleSelectById}
+                onArchive={handleArchiveById}
+                onClose={handleCloseById}
+                onReopen={handleReopenById}
+                onDelete={handleDeleteById}
+              />
+            );
+          })
         )}
         {loadingMore && (
           <div className="p-3 text-center text-xs text-slate-400 dark:text-slate-500 flex items-center justify-center space-x-2">
