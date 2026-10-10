@@ -41,7 +41,8 @@
     "verify:quick-reply-isolation": "node scripts/verify-quick-reply-isolation-dom.mjs",
     "verify:chat-drag-drop": "node scripts/verify-chat-drag-drop-dom.mjs",
     "verify:media-coordination": "node scripts/verify-whatsapp-media-coordination.mjs",
-    "measure:whatsapp-latency": "node scripts/measure-whatsapp-latency.mjs"
+    "measure:whatsapp-latency": "node scripts/measure-whatsapp-latency.mjs",
+    "verify:coalesce": "node scripts/verify-whatsapp-request-coalescing.mjs"
   },
   "dependencies": {
     "class-variance-authority": "^0.7.1",

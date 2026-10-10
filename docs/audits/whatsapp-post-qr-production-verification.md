@@ -932,3 +932,67 @@ Kişisel verileri (telefon, mesaj, avatar, auth) kesinlikle içermeyen, düşük
 B. TELEMETRY_REQUIRED & BOTTLENECK_PROVEN (REQUEST-COALESCING)
 ```
 *(Client-side T6 trace için telemetri gereklidir; frontend startup'taki 16 paralel istek fırtınası ise loglarla kanıtlanmış bir darboğazdır).*
+
+---
+
+# BÖLÜM VI: PHASE 18 — SAFE CONVERSATION REQUEST COALESCING, REGRESSION TESTS, PUSH & DEPLOY
+
+## 1. Sorunun Gözlenen Kanıtı
+- **Bulgu:** Phase 17 raporunda (Uvicorn access logları ve PostgreSQL connection havuzu metrikleri) production reconnect sırasında 5 saniyelik zaman penceresinde 16 paralel `GET /api/v1/whatsapp/conversations?limit=200&offset=0` isteği gözlemlendi.
+- **Kök Neden:** `WhatsAppHubPage.tsx` içerisinde bağımsız olay kaynakları (`tezlify:ws_connected`, `session_connected`, `useWhatsAppLoadingGate` ready, `sessionSync.phase === 'ready'`, component mount/search effect) aynı anda tetiklendiğinde her biri bağımsız olarak `loadConversations(true)` çağırıyordu. Bu çağrıların hiçbir in-flight koruması veya Promise birleştirmesi olmadığı için eş zamanlı tüm çağrılar Uvicorn/PostgreSQL katmanına ulaşıyor ve bağlantı havuzu çekişmesine (contention) yol açıyordu.
+
+## 2. Kod Değişikliğinin Özeti (Minimal & Safe Coalescing)
+- **Değiştirilen Dosyalar:**
+  - `frontend/src/pages/WhatsAppHubPage.tsx`
+  - `frontend/scripts/verify-whatsapp-request-coalescing.mjs`
+  - `frontend/package.json`
+- **Mekanizma:**
+  1. `conversationsInFlightPromiseRef`: Havada bekleyen aktif ağ çağrısının Promise referansını, filtre/arama anahtarını (`requestKey = `${convFilter}:${convSearch.trim()}``) ve nesil sayacını (`generation`) saklar.
+  2. **Safe Coalescing Kuralı:** Eğer eş zamanlı gelen bir çağrı aynı filtre ve arama kapsamındaysa (`!force && inFlight !== null && inFlight.key === requestKey`) yeni bir ağ çağrısı başlatılmaz; mevcut in-flight Promise yeniden kullanılır (`await inFlight.promise`).
+  3. **`force` Semantiği:** Kullanıcının açık yenileme veya retry eylemlerinde (`handleRetryLoadConversations`, hata ekranı butonu, oturum silme) `force = true` gönderilir. Bu durumda coalescing bypass edilir ve taze bir istek zorlanır.
+  4. **Güvenilir Temizlik (`finally` & sidecar `catch`):** `pagePromise.finally(...)` içinde in-flight ref yalnızca geçerli istekse temizlenir (`conversationsInFlightPromiseRef.current === entry`). Sidecar zincirine `.catch(() => {})` eklenerek Node.js ve tarayıcı unhandled rejection tuzakları fail-closed biçimde önlenmiştir.
+  5. **Nesil ve Bayat Yanıt Koruması:** Farklı filtre/arama veya `force` isteklerinde `conversationsGenerationRef.current` artırılır. Daha önce başlamış yavaş istekler tamamlandığında (`generation !== conversationsGenerationRef.current`) bayat yanıtlar state'e yazılmadan sessizce düşürülür.
+  6. **Sıfır PII:** Hiçbir telefon numarası, mesaj metni, avatar URL'si veya token loglara eklenmemiştir.
+
+## 3. Test Sonuçları & Kanıtlar
+- **Yeni Regresyon Test Süiti:** `frontend/scripts/verify-whatsapp-request-coalescing.mjs` (`npm run verify:coalesce`)
+  - **Test Türü:** JSDOM + Esbuild + Mocked Network Layer üzerinden gerçek React 18 component mount & lifecycle doğrulaması.
+  - **Senaryolar:**
+    1. `Scenario 1: 3 concurrent identical list requests produce exactly 1 network call` -> **PASS** (3 paralel reconnect isteği tam 1 network çağrısına indirgendi).
+    2. `Scenario 2: Sequential request after settlement issues a fresh network call` -> **PASS** (Tamamlanan isteğin ardından gelen çağrı yeni 2. isteği başlattı).
+    3. `Scenario 3: Request following a rejected promise clears in-flight lock and succeeds` -> **PASS** (Hata alan istek in-flight kilidini kilitli bırakmadı, sonraki çağrı başarılı oldu).
+    4. `Scenario 4: force=true bypasses coalescing and initiates fresh request` -> **PASS** (`force=true` coalescing'i atlayarak taze istek başlattı).
+    5. `Scenario 5: Distinct filter/search parameters do NOT coalesce` -> **PASS** ('ALL' ve 'UNREAD' filtreleri ayrı anahtarlarla bağımsız sorgulandı).
+    6. `Scenario 6: Stale responses from superseded requests are discarded` -> **PASS** (Eski nesil yanıtlar state'i ezmedi).
+    7. `Scenario 7: WebSocket message_new updates preview, ordering, and reconnect succeeds` -> **PASS** (Canlı mesaj akışı ve sıralama bütünlüğü korundu).
+- **Mevcut Frontend Testleri:**
+  - `verify:logic`: PASS (46 checks)
+  - `verify:dom`: PASS (22 checks)
+  - `verify:merge`: PASS
+  - `verify:realtime`: PASS (9/9 scenarios)
+  - `verify:loading-gate`: PASS
+  - `npm run build`: PASS (0 error, production bundle built)
+- **Backend Testleri:**
+  - `pytest backend/tests/ -k whatsapp -v`: PASS (747 passed, 4 skipped, 0 failed)
+
+## 4. Önce / Sonra İstek Sayısı ve Ölçümün Niteliği
+| Metrik | Değişiklik Öncesi | Değişiklik Sonrası | Ölçümün Niteliği |
+|---|---|---|---|
+| Eş zamanlı 3 reconnect isteğinde ağ çağrısı sayısı | 3 HTTP GET | 1 HTTP GET | **TEST_VERIFIED** (JSDOM gerçek component & stub sayacı) |
+| Production Reconnect penceresindeki (5s) toplam istek sayısı | 16 HTTP GET | NOT MEASURED (Deploy sonrası doğal trafikle gözlemlenecek) | **PRODUCTION_UNMEASURED** (Yapay yük testi kesin kurallarla yasaklanmıştır) |
+| Retry butonunda taze istek garantisi (`force=true`) | Rastgele yarış | Garantili fresh fetch | **CODE_VERIFIED & TEST_VERIFIED** |
+| Bayat filtre cevabının yeni filtreyi ezme riski | Mevcuttu | Engellendi (`generation` guard) | **TEST_VERIFIED** |
+
+## 5. Session 171'in Korunmasına İlişkin Doğrulama
+- Session 171 üzerinde hiçbir logout, QR üretme, veritabanı silme işlemi yapılmamıştır.
+- Değişiklik %100 istemci tarafı (`frontend/src/pages/WhatsAppHubPage.tsx`) kodudur; gateway ve backend veritabanı şemasına veya kimlik doğrulama verilerine dokunulmamıştır.
+
+## 6. Açık Kalan Riskler
+- Gerçek üretim ortamında ağ tasarrufu yalnızca doğal kullanıcı trafiği ve log gözlemiyle teyit edilebilir; yapay yük testi kural gereği çalıştırılmamıştır.
+- İkinci bağımsız test hattı olmadan fiziksel QR E2E testi yapılamaz.
+
+## 7. Karar Etiketi
+```text
+FIX_TESTED_PRODUCTION_UNMEASURED
+```
+*(Kod düzeltmesi JSDOM ve 7/7 regresyon testiyle tam olarak doğrulanmış, production build'den geçmiş; production DB/ağ yükündeki gerçek düşüş ise henüz doğal trafik altında ölçülmemiştir).*

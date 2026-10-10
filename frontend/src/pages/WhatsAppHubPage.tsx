@@ -626,9 +626,22 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   const [isNewChatModalOpen, setIsNewChatModalOpen] = useState<boolean>(false);
   const [isSyncingChats, setIsSyncingChats] = useState<boolean>(false);
   const conversationsGenerationRef = useRef(0);
+  // Phase 18: In-flight conversation request coalescing ref.
+  // Eş zamanlı gelen (aynı filtre/arama kapsamındaki) isteklerin tek bir
+  // ağ çağrısını (Promise) paylaşmasını sağlar; gereksiz API fırtınasını önler.
+  const conversationsInFlightPromiseRef = useRef<{
+    key: string;
+    generation: number;
+    promise: Promise<{
+      items: Conversation[];
+      total: number;
+      has_more: boolean;
+      next_offset?: number;
+    }>;
+  } | null>(null);
   // Faz 6: WS handler'i guncel loadConversations kopyasini ve bilinen sohbet
   // id'lerini ref uzerinden okur (bayat closure / StrictMode çift calisma yok).
-  const loadConversationsRef = useRef<((silent?: boolean) => Promise<void>) | null>(null);
+  const loadConversationsRef = useRef<((silent?: boolean, force?: boolean) => Promise<void>) | null>(null);
   const knownConvIdsRef = useRef<Set<number>>(new Set());
   const avatarBackfillTriggeredRef = useRef<boolean>(false);
   const hydratingConversationIds = useRef(new Set<number>());
@@ -975,8 +988,49 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     }, 800);
   }, []);
 
-  const loadConversations = useCallback(async (isSilent: boolean = false) => {
-    const generation = conversationsGenerationRef.current;
+  const loadConversations = useCallback(async (isSilent: boolean = false, force: boolean = false) => {
+    const requestKey = `${convFilter}:${convSearch.trim()}`;
+    const inFlight = conversationsInFlightPromiseRef.current;
+    const canCoalesce = !force && inFlight !== null && inFlight.key === requestKey;
+
+    let generation: number;
+    let pagePromise: Promise<{
+      items: Conversation[];
+      total: number;
+      has_more: boolean;
+      next_offset?: number;
+    }>;
+
+    if (canCoalesce && inFlight) {
+      generation = inFlight.generation;
+      pagePromise = inFlight.promise;
+    } else {
+      generation = ++conversationsGenerationRef.current;
+      pagePromise = WhatsAppRepository.getConversationsPage({
+        status:
+          convFilter === 'ALL' || convFilter === 'GROUPS' || convFilter === 'ARCHIVED'
+            ? undefined
+            : (convFilter as ConversationStatus),
+        unread_only: convFilter === 'UNREAD',
+        group_only: convFilter === 'GROUPS' ? true : undefined,
+        archived_only: convFilter === 'ARCHIVED' ? true : undefined,
+        search: convSearch.trim() || undefined,
+        limit: CONVERSATION_PAGE_SIZE,
+        offset: 0,
+      });
+      const entry = { key: requestKey, generation, promise: pagePromise };
+      conversationsInFlightPromiseRef.current = entry;
+      pagePromise
+        .finally(() => {
+          if (conversationsInFlightPromiseRef.current === entry) {
+            conversationsInFlightPromiseRef.current = null;
+          }
+        })
+        .catch(() => {
+          /* Sidecar cleanup chain — caller handles error via await pagePromise */
+        });
+    }
+
     if (!isSilent) {
       setConvsLoading(true);
       // LOADING ≠ EMPTY ≠ ERROR (Sorun 1/16/17): ilk yukleme boyunca liste
@@ -991,22 +1045,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       }
     }
     try {
-      // Sorun 4: GROUPS / ARCHIVED sekmeleri sunucu tarafı filtreyle yüklenir
-      // (is_group / is_archived || status=ARCHIVED) — istemcide eksik sayfa
-      // riski yok. ALL sekmesi arşivlenmeleri dışlar (ConversationList filtresi
-      // ile tutarlı), bu yüzden archived_only=false varsayılanı korunur.
-      const page = await WhatsAppRepository.getConversationsPage({
-        status:
-          convFilter === 'ALL' || convFilter === 'GROUPS' || convFilter === 'ARCHIVED'
-            ? undefined
-            : (convFilter as ConversationStatus),
-        unread_only: convFilter === 'UNREAD',
-        group_only: convFilter === 'GROUPS' ? true : undefined,
-        archived_only: convFilter === 'ARCHIVED' ? true : undefined,
-        search: convSearch.trim() || undefined,
-        limit: CONVERSATION_PAGE_SIZE,
-        offset: 0,
-      });
+      const page = await pagePromise;
       if (generation !== conversationsGenerationRef.current) return;
       // Bu istek yalnizca ILK sayfayi (offset=0) getirir. Eskiden burada
       // `setConversations(page.items)` ile listenin tamami degistiriliyordu;
@@ -1509,7 +1548,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   const handleNewChat = useCallback(() => setIsNewChatModalOpen(true), []);
 
   const handleRetryLoadConversations = useCallback(() => {
-    void loadConversations();
+    void loadConversations(false, true);
   }, [loadConversations]);
 
   // Sohbet listesi satir menusu (asagi ok) eylemleri icin ortak gerekce:
@@ -3150,12 +3189,12 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       setConversations([]);
       setSelectedConv(null);
       setMessagesMap({});
-      await loadConversations(true);
+      await loadConversations(true, true);
       toast.success(t('whatsapp.deletedSuccess'), t('common.success'));
       onRefreshStats();
     } catch (err: any) {
       toast.error(translateApiError(err, t) || t('whatsapp.deleteSessionFailed'), t('common.error'));
-      await loadConversations(true);
+      await loadConversations(true, true);
     } finally {
       setDeletingSessionId(null);
     }
@@ -3898,7 +3937,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                       action={{
                         label: t('whatsapp.retryBtn'),
                         onClick: () => {
-                          void loadConversations();
+                          void loadConversations(false, true);
                         },
                         icon: RotateCcw,
                       }}
