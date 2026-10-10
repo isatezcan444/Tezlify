@@ -13,6 +13,7 @@
  */
 import { createBoundedCache } from '../domain/bounded-cache.js';
 import { createContactCache } from './contact-cache.js';
+import { createRawMediaCache } from './raw-media-cache.js';
 
 export const RAW_MESSAGE_STORE_MAX = 2000;
 export const MESSAGES_BY_CHAT_MAX_CHATS = 300;
@@ -89,6 +90,10 @@ export function createSessionStore({ sessionDir = null, sessionPhone = null, log
     // Restore before the socket starts so labels are correct from the first
     // message after a restart, not only once WhatsApp re-emits contact data.
     contactCache.load(store, { currentPhone: sessionPhone });
+
+    const rawMediaCache = createRawMediaCache({ sessionDir, logger });
+    store.rawMediaCache = rawMediaCache;
+    rawMediaCache.load(store);
   }
   return store;
 }
@@ -103,6 +108,9 @@ export function rememberRawMessage(store, jid, id, message) {
   }
   if (!byId.has(id)) store.rawMessageCount += 1;
   byId.set(id, message);
+  if (store.rawMediaCache && typeof store.rawMediaCache.schedule === 'function') {
+    store.rawMediaCache.schedule(jid, id, message);
+  }
   if (byId.size > 500) {
     const oldest = byId.keys().next().value;
     byId.delete(oldest);

@@ -306,7 +306,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
       (message.media_id
         ? `/api/v1/whatsapp/media/${message.media_id}`
         : undefined) ||
-      (message.message_type !== 'TEXT' && message.wa_message_id
+      (mediaRetryTs && message.message_type !== 'TEXT' && message.wa_message_id
         ? `/api/v1/whatsapp/media/${message.wa_message_id}`
         : undefined);
     const resolved = resolveMediaUrl(raw);

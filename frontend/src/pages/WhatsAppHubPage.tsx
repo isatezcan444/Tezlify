@@ -670,12 +670,9 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     setConversations((prev) =>
       prev.map((c) => (c.id === convId ? { ...c, lead_avatar_url: url } : c))
     );
-    setSelectedConv((prev) => {
-      if (prev && prev.id === convId) {
-        return { ...prev, lead_avatar_url: url };
-      }
-      return prev;
-    });
+    setSelectedConv((curr) =>
+      curr && curr.id === convId ? { ...curr, lead_avatar_url: url } : curr
+    );
   }, []);
 
   // Faz 13 (truthfulness): okundu isaretleme artik GERCEK sonuc dondurur.
