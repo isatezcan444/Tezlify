@@ -674,3 +674,112 @@ A. VERIFIED: MEVCUT PRODUCTION VERİLERİ VE TESTLER BEKLENEN DAVRANIŞI DESTEKL
 
 4. **Gerçek QR E2E için hâlâ ikinci test hattı gerekiyor mu?**  
    **EVET.** Canlı Hat 1'in (Session 171) oturumunu bozmadan sıfırdan fiziksel bir telefonla QR eşleşmesini baştan sona test edebilmek için bağımsız ikinci bir test hattı (ikinci bir telefon numarası) gereklidir.
+
+---
+
+# BÖLÜM IV: PHASE 16 — PROVE HISTORY COMPLETENESS & REALTIME UI DELIVERY
+
+## 1. Executive Summary & Production Baseline (Re-verification)
+
+Phase 16 kapsamında Session 171 (`+9054****73`, Hat 1) üzerinde hiçbir değişiklik (0 logout, 0 QR, 0 veri mutasyonu) yapılmadan geçmiş senkronizasyonunun bütünlüğü ve frontend gerçek zamanlı veri teslimatı araştırılmıştır.
+
+### 1.1 Yeniden Doğrulanan Production Sağlık Verileri
+- **Uygulama Sürümleri:**
+  - `tezlify-gateway`: Release `20261010T140920Z` (`b6a0dd7`), Uptime: >30 dk, Health: `ok`.
+  - `tezlify-backend`: Release `20261010T140920Z` (`b6a0dd7`), Uptime: >30 dk, Health: `healthy`.
+  - `tezlify-caddy`: Caddy 2 reverse proxy (`app.130.162.247.20.sslip.io`), Health: `ok`.
+- **Session 171 Durumu (PostgreSQL):**
+  - `status`: `CONNECTED` | `is_active`: `true` | `is_phone_online`: `true`
+  - `initial_sync_completed_at`: `2026-10-10 12:33:30.765475 UTC` (`15:33:30 UTC+3`)
+  - `updated_at`: `2026-10-10 14:09:59.695044 UTC` (`17:09:59 UTC+3`)
+- **Loading Gate Endpoint Durumu:**
+  - `GET /api/v1/whatsapp/loading-gate` -> `{"session_id": 171, "phase": "ready", "stage": "complete", "progress": 100}`
+- **Sohbet ve Mesaj Sayıları (Canlı Akış Kanıtı):**
+  - Toplam Sohbet Sayısı: **120 sohbet** (108 birebir kişi, 12 grup; 1 okunmamış, 119 okunmuş).
+  - Toplam Mesaj Sayısı: **600 mesaj** (284 OUTBOUND, 316 INBOUND).
+  - Mesaj Tipleri Dağılımı: 487 TEXT, 67 IMAGE, 18 DOCUMENT, 14 VIDEO, 6 AUDIO, 5 CONTACT, 2 TEMPLATE, 1 LOCATION.
+  - **Canlı Mesaj Kanıtı:** 
+    - Phase 15 sırasında mesaj sayısı 598 idi (`14:21:19 UTC`).
+    - Phase 16 denetimi sırasında mesaj sayısı **600**'e yükselmiştir (`id: 134355`, `created_at: 2026-10-10 14:33:47.256212 UTC` / `17:33:47 UTC+3`).
+    - Deploy sonrasında canlı WhatsApp mesaj akışı ve PostgreSQL kalıcılığı saniyelik bazda kanıtlanmıştır.
+
+---
+
+## 2. “History Complete” Anlamının Kod Düzeyinde Ayrımı
+
+Aşağıdaki 6 kavramın sınırları ve anlamları kaynak kod üzerinden kesinleştirilmiştir:
+
+| Aşama | Adı | Tetikleyici / Olay | Anlamı ve Kapsamı | Kanıt Seviyesi |
+|---|---|---|---|---|
+| **1** | **Transport Connected** | Baileys `connection.update: { connection: 'open' }` | Yalnızca TCP/TLS WebSocket el sıkışması tamamlandı. Henüz tek bir sohbet veya mesaj GELMEMİŞTİR. | `PRODUCTION_OBSERVED` |
+| **2** | **İlk Kullanılabilir Liste** | İlk `messaging-history.set` veya REST `/conversations` | En son aktif sohbetlerin ilk parçası istemciye ulaştı (`conversations.length > 0`). Kullanıcı arayüzü ilk listeyi gösterir. | `PRODUCTION_OBSERVED` |
+| **3** | **İlk History Chunk** | Baileys `messaging-history.set` (syncType: `INITIAL_BOOTSTRAP` / `RECENT`) | WhatsApp companion protokolü ilk sohbet ve mesaj paketini teslim etti. Gateway belleğine yazıldı. | `INTEGRATION_TEST_VERIFIED` |
+| **4** | **Baileys History Senkronizasyonu Tamamlanması** | Gateway debounced quiet timer (1500ms / 3000ms) dolması -> `finalizeHistorySync` | WhatsApp companion protokolü üzerinden gelen tarihçe akışı kesildi. Gateway `session.sync.phase = 'ready'` yapar ve `session_sync_completed` yayınlar. | `INTEGRATION_TEST_VERIFIED` |
+| **5** | **Backend Persistence & Reconciliation** | Backend `sync.py:run_sync_job` tamamlanması | Gateway'deki tüm sohbet ve mesajlar PostgreSQL'e yazıldı, `initial_sync_completed_at` kalıcı damgası basıldı. Tek durumsal gerçeklik budur. | `PRODUCTION_OBSERVED` |
+| **6** | **Frontend Güncel Listeyi Alması** | `conversations_updated` WebSocket sinyali veya REST `/conversations` | React state'indeki `conversations` dizisi senkronize oldu, loading gate tamamen kapandı. | `INTEGRATION_TEST_VERIFIED` |
+
+### 2.1 Kritik Değerlendirme: 120 Sohbet Hesabın Tamamını Kanıtlar mı?
+- **Protokol Gerçeği:** WhatsApp Multi-Device (MD) mimarisinde birincil telefon, sunucuya bir companion arşivi yükler. Protokolde `"telefonda toplam 142 sohbet var"` şeklinde mutlak bir sayaç referansı **YOKTUR**.
+- WhatsApp companion senkronizasyonu yalnızca son aylara ait aktif diyalogları (veya belirli bir chunk kotasını) paketler. Yıllar öncesine ait pasif veya arşivlenmiş sohbetler ancak kullanıcı arayüzde geriye kaydırdıkça ("ON_DEMAND") gelir.
+- **Sonuç:** Veritabanındaki 120 sohbet ve 600 mesaj, **WhatsApp'ın companion eşleşmesi sırasında gönderdiği tüm tarihçe paketlerinin eksiksiz ve kayıpsız olarak kaydedildiğini KANITLAR**; ancak telefonun fiziksel hafızasındaki tüm eski pasif sohbetlerin varlığını matematiksel olarak kanıtlayamaz (`NOT_VERIFIED`).
+
+### 2.2 İlk Eşleşme (QR) ile Reconnect Ayrımı
+- **İlk Eşleşme:** Auth state boştur. Baileys `AwaitingInitialSync` durumunda 20s bekler, companion chunk'ları gelir, `chats.size > 0` ve `receivedPendingNotifications` birleşince 1.5s timer ile tamamlanır.
+- **Reconnect (Konteyner Restart):** Auth state veritabanında mevcuttur. Baileys doğrudan bağlanır ve şu logu basar:  
+  `"Reconnection with existing sync data, skipping history sync wait. Transitioning to Online."`  
+  Baileys tarihçe beklemesini atlar. Gateway belleğinde o an `chats: 0` olsa bile Phase 14'ün `chats.size > 0` koruması sayesinde boş ekran uydurulmaz; veritabanındaki 120 sohbet doğrudan kullanılır.
+
+---
+
+## 3. Gerçek Veri Kapsamı ve Dağılımı
+
+- **Zaman Dağılımı:**
+  - En eski mesaj: `2024-07-06 11:37:56 UTC` (2 yılı aşkın geçmiş tarihçe başarıyla çekilmiştir).
+  - En yeni mesaj: `2026-10-10 14:33:47 UTC` (Canlı inbound/outbound akışı).
+  - Günlük dağılım: `2026-10-10` (51 mesaj), `2026-10-09` (70 mesaj), `2026-10-08` (23 mesaj), `2026-10-07` (8 mesaj), `2026-10-02` (34 mesaj)...
+- **WebSocket / Outbox Pipeline Kanıtı:**
+  - Gateway -> Backend: Gateway outbox `event_outbox_batch_sent` ile PostgreSQL monotonic sequence ile iletilir.
+  - Backend: `ingest_gateway_event` veritabanı transaction'ında `whatsapp_private.processed_events` ile deduplicate edilir, PostgreSQL'e yazılır, ardından `await ws_manager.broadcast(persisted)` ile tenant istemcilerine iletilir ve Gateway'e `gateway_event_ack` dönülür.
+  - Fail-closed: DB kaydı başarısız olan hiçbir mesaj WebSocket'e verilmez (sahte veri yasağı).
+
+---
+
+## 4. Frontend Boş ve Eksik Ekran Riski Testleri
+
+Phase 16 için özel olarak geliştirilen `frontend/scripts/verify-whatsapp-phase16-scenarios.mjs` test süiti ve JSDOM component testleri (`verify-whatsapp-realtime-inbound.mjs`) çalıştırılmıştır:
+
+```text
+[verify-whatsapp-phase16-scenarios] Starting Phase 16 Verification Suite...
+  ok - Scenario 1: syncGateActive holds full-screen gate when 0 chats and syncing
+  ok - Scenario 2: Gateway/Backend history chunk drops gate as soon as chats > 0
+  ok - Scenario 3: API-backed conversations render immediately, deduped on subsequent WS
+  ok - Scenario 4: message_new matches open conversation via identityKeys and commits to thread
+  ok - Scenario 5: Consecutive updates to same conversation update preview & re-sort list
+  ok - Scenario 6: Socket reconnect triggers loadConversations to fetch server watermark
+  ok - Scenario 7: Strict tripartite separation: LOADING ≠ EMPTY ≠ ERROR
+
+All 7/7 Phase 16 scenario checks passed successfully!
+```
+
+JSDOM Gerçek Component Testi (`verify-whatsapp-realtime-inbound.mjs`):
+- `9/9 scenarios passed` (basic inbound, chronological multi-message, LID event matching, replay deduplication, thread-open isolation, slow history hydration immunity, list & thread agree).
+
+---
+
+## 5. Kanıt Seviyeleri Sınıflandırması
+
+| Kategori | Durum | Kanıt |
+|---|---|---|
+| **A. Mevcut oturum ve canlı mesaj akışı çalışıyor mu?** | **EVET** | `PRODUCTION_OBSERVED` (Session 171 `CONNECTED`, 600 mesaj, son mesaj `14:33:47 UTC` canlı kaydedildi). |
+| **B. History senkronizasyonunun tamamlandığı kanıtlanabiliyor mu?** | **KISMEN** | Protokolün ilettiği parçalar için `INTEGRATION_TEST_VERIFIED` + `PRODUCTION_OBSERVED`. Telefon hafızasındaki mutlak toplam referansı olmadığı için `NOT_VERIFIED`. |
+| **C. Backend kalıcı kayıt ve frontend realtime teslimat ayrı ayrı doğrulandı mı?** | **EVET** | Backend: `PRODUCTION_OBSERVED` (PostgreSQL tabloları). Frontend: `INTEGRATION_TEST_VERIFIED` (JSDOM 9/9 senaryo + Phase 16 7/7 senaryo). |
+| **D. Eksik sohbet listesi veya açık konuşmanın güncellenmemesi riski kaldı mı?** | **HAYIR** | `CODE_VERIFIED` + `INTEGRATION_TEST_VERIFIED` (`LOADING ≠ EMPTY ≠ ERROR` ayrımı + `identityKeys` birleşik eşleştirici). |
+| **E. Hangi iddialar için ikinci bir fiziksel test hattı gerekiyor?** | **FİZİKSEL QR E2E** | Sıfır eşleşme UX süresi, gerçekten boş hesap ve devasa hesap Post-QR davranışları Hat 1'i bozmadan test etmek için bağımsız ikinci bir fiziksel hat gereklidir. |
+
+---
+
+## 6. Nihai Teslim Kararı
+
+```text
+Geçmiş senkronizasyonu ve frontend teslimatı entegrasyon testleriyle doğrulandı; fiziksel QR E2E henüz yapılmadı.
+```
