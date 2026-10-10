@@ -310,8 +310,12 @@ function mapConversation(c: BackendConversation): Conversation {
   if (c.phone !== undefined) conv.lead_phone = c.phone || undefined;
   if (c.identity_state !== undefined) conv.identity_state = c.identity_state || undefined;
   if (c.is_group !== undefined || c.phone !== undefined) conv.is_group = isGroup;
-  if (c.is_archived !== undefined) conv.is_archived = Boolean(c.is_archived);
-  if (c.avatar_url !== undefined) conv.lead_avatar_url = c.avatar_url || undefined;
+  // Phase 22 (Rule 1 & 2): Avatar alanı yalnızca geçerli, boş olmayan bir string ise yazılır.
+  // null, undefined veya boş string ASLA `lead_avatar_url: undefined` olarak objeye eklenmez;
+  // böylece `{ ...existing, ...conv }` mevcut geçerli avatarı silemez.
+  if (typeof c.avatar_url === 'string' && c.avatar_url.trim()) {
+    conv.lead_avatar_url = c.avatar_url.trim();
+  }
   if (c.last_message_preview !== undefined) {
     conv.last_message_preview = c.last_message_preview || undefined;
   }

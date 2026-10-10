@@ -41,7 +41,7 @@ import {
 import { applyOlderPageResult } from '../features/whatsapp/lib/olderPageState';
 import { isRawWhatsAppJid as isRawWhatsAppIdentity, identityKeys } from '../features/whatsapp/lib/whatsappIdentity';
 import { PEER_TYPING_TTL_MS, pruneExpiredTyping, resolveSyncDisplayCounts } from '../features/whatsapp/lib/whatsappSync';
-import { applyConversationEvent } from '../features/whatsapp/lib/whatsappConversationPatch';
+import { applyConversationEvent, mergeConversationPreservingAvatar } from '../features/whatsapp/lib/whatsappConversationPatch';
 import { applyReactionToThread } from '../features/whatsapp/lib/whatsappReactions';
 import { pauseAllMedia } from '../features/whatsapp/lib/mediaCoordinator';
 import { WhatsAppSession, Conversation, ConversationStatus, ConversationMessageStatus, Lead, Message, LiveModeStatus, SessionSyncState } from '../types';
@@ -653,12 +653,29 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       if (!item) return;
       setConversations((prev) => {
         const existing = prev.find((c) => c.id === id);
-        const merged = existing && !shouldApplyPreview(item.last_message_at, existing.last_message_at)
+        if (!existing) {
+          return [...prev, item].sort(compareByLastMessageDesc);
+        }
+        const mergedBase = !shouldApplyPreview(item.last_message_at, existing.last_message_at)
           ? { ...item, ...existing } : { ...existing, ...item };
+        const merged = mergeConversationPreservingAvatar(existing, mergedBase);
         return [...prev.filter((c) => c.id !== id), merged].sort(compareByLastMessageDesc);
       });
     }).catch((error) => console.warn('[WhatsApp] Targeted conversation hydration failed', error))
       .finally(() => hydratingConversationIds.current.delete(id));
+  }, []);
+
+  const handleAvatarResolved = useCallback((convId: number, url: string) => {
+    if (!convId || !url) return;
+    setConversations((prev) =>
+      prev.map((c) => (c.id === convId ? { ...c, lead_avatar_url: url } : c))
+    );
+    setSelectedConv((prev) => {
+      if (prev && prev.id === convId) {
+        return { ...prev, lead_avatar_url: url };
+      }
+      return prev;
+    });
   }, []);
 
   // Faz 13 (truthfulness): okundu isaretleme artik GERCEK sonuc dondurur.
@@ -1060,9 +1077,12 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       // sayfa otoriter TAM listedir — sunucuda olmayan satir birakilir.
       setConversations((prev) => {
         const activeId = selectedConvRef.current?.id;
-        const sanitizedItems = page.items.map((item) =>
-          activeId && Number(item.id) === Number(activeId) ? { ...item, unread_count: 0 } : item
-        );
+        const prevMap = new Map(prev.map((c) => [c.id, c]));
+        const sanitizedItems = page.items.map((item) => {
+          const existing = prevMap.get(item.id);
+          const merged = existing ? mergeConversationPreservingAvatar(existing, item) : item;
+          return activeId && Number(merged.id) === Number(activeId) ? { ...merged, unread_count: 0 } : merged;
+        });
         const pageIds = new Set(sanitizedItems.map((c) => c.id));
         if (!page.has_more) return sanitizedItems;
         const retained = prev.filter((c) => !pageIds.has(c.id));
@@ -1084,7 +1104,8 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         if (!prev) return null;
         const updated = page.items.find((c) => Number(c.id) === Number(prev.id));
         if (updated) {
-          const sanitized = { ...updated, unread_count: 0 };
+          const merged = mergeConversationPreservingAvatar(prev, updated);
+          const sanitized = { ...merged, unread_count: 0 };
           const currentMsgs = messagesMapRef.current?.[prev.id] || [];
           const lastMsg = currentMsgs[currentMsgs.length - 1];
           const isNewer = sanitized.last_message_at && (!lastMsg?.created_at || new Date(sanitized.last_message_at).getTime() > new Date(lastMsg.created_at).getTime());
@@ -2756,7 +2777,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
           const mapped = mapConversationItem(eventData.conversation);
           setConversations((prev) => {
             if (prev.some((c) => c.id === mapped.id)) {
-              return prev.map((c) => (c.id === mapped.id ? { ...c, ...mapped } : c)).sort(compareByLastMessageDesc);
+              return prev.map((c) => (c.id === mapped.id ? mergeConversationPreservingAvatar(c, mapped) : c)).sort(compareByLastMessageDesc);
             }
             const fresh = { status: 'ACTIVE' as ConversationStatus, unread_count: 0, ...mapped };
             return [fresh, ...prev].sort(compareByLastMessageDesc);
@@ -2818,8 +2839,13 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
               const byId = new Map(prev.map((c) => [c.id, c]));
               for (const c of incoming) {
                 const existing = byId.get(c.id);
-                byId.set(c.id, existing && !shouldApplyPreview(c.last_message_at, existing.last_message_at)
-                  ? { ...c, ...existing } : { ...existing, ...c });
+                if (existing) {
+                  const base = !shouldApplyPreview(c.last_message_at, existing.last_message_at)
+                    ? { ...c, ...existing } : { ...existing, ...c };
+                  byId.set(c.id, mergeConversationPreservingAvatar(existing, base));
+                } else {
+                  byId.set(c.id, c);
+                }
               }
               return Array.from(byId.values()).sort(compareByLastMessageDesc);
             });
@@ -2892,7 +2918,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
               const byId = new Map(prev.map((c) => [c.id, c]));
               for (const item of finalList) {
                 const current = byId.get(item.id);
-                byId.set(item.id, current ? { ...current, ...item } : item);
+                byId.set(item.id, current ? mergeConversationPreservingAvatar(current, item) : item);
               }
               return [...byId.values()].sort(compareByLastMessageDesc);
             });
@@ -3462,6 +3488,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
               hasMore={hasMoreConvs}
               loadingMore={loadingMoreConvs}
               onSelect={handleSelectConversation}
+              onAvatarResolved={handleAvatarResolved}
               // Satir menusu (asagi ok). Dordunun de kimligi sabittir; satir
               // memo'su bu yuzden bozulmaz.
               onArchive={handleArchiveConversation}

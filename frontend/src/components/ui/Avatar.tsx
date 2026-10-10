@@ -43,6 +43,29 @@ export const failedAvatarUrls = new Set<string>();
 export const inFlightAvatarRefreshes = new Set<string>();
 export const negativeAvatarPhones = new Map<string, number>();
 
+// Phase 22 (Rule 4): Global cache of successfully resolved/active avatar URLs by phone/JID
+export const resolvedAvatarCache = new Map<string, string>();
+
+// Phase 22: Observability metrics for avatar lifecycle
+export const avatarMetrics = {
+  avatar_request_started: 0,
+  avatar_request_succeeded: 0,
+  avatar_request_failed: 0,
+  avatar_cache_hit: 0,
+  avatar_url_preserved_after_empty_update: 0,
+  avatar_duplicate_request_suppressed: 0,
+  avatar_retry_scheduled: 0,
+  reset() {
+    this.avatar_request_started = 0;
+    this.avatar_request_succeeded = 0;
+    this.avatar_request_failed = 0;
+    this.avatar_cache_hit = 0;
+    this.avatar_url_preserved_after_empty_update = 0;
+    this.avatar_duplicate_request_suppressed = 0;
+    this.avatar_retry_scheduled = 0;
+  },
+};
+
 // Bounded concurrency queue for avatar refresh requests (max 2 in-flight)
 const MAX_CONCURRENT_AVATAR_REFRESHES = 2;
 let activeAvatarRefreshes = 0;
@@ -72,6 +95,8 @@ export const clearFailedAvatarUrlsCache = () => {
   failedAvatarUrls.clear();
   inFlightAvatarRefreshes.clear();
   negativeAvatarPhones.clear();
+  resolvedAvatarCache.clear();
+  avatarMetrics.reset();
   avatarRefreshQueue.length = 0;
   activeAvatarRefreshes = 0;
 };
@@ -88,39 +113,73 @@ export const Avatar: React.FC<AvatarProps> = ({
   onRefresh,
 }) => {
   const resolved = React.useMemo(() => resolveMediaUrl(image), [image]);
-  const [currentImage, setCurrentImage] = React.useState<string | undefined>(resolved);
+  const cached = phone ? resolvedAvatarCache.get(phone) : undefined;
+  const initialEffective = resolved || cached;
+
+  const [currentImage, setCurrentImage] = React.useState<string | undefined>(() => {
+    if (initialEffective && !failedAvatarUrls.has(initialEffective)) {
+      if (!resolved && cached) avatarMetrics.avatar_cache_hit++;
+      return initialEffective;
+    }
+    return undefined;
+  });
+
   const [imageError, setImageError] = React.useState<boolean>(() => {
-    return resolved ? failedAvatarUrls.has(resolved) : false;
+    return initialEffective ? failedAvatarUrls.has(initialEffective) : false;
   });
 
   const [isImageLoaded, setIsImageLoaded] = React.useState<boolean>(false);
 
   React.useEffect(() => {
-    setCurrentImage(resolved);
-    setIsImageLoaded(false);
-    setImageError(resolved ? failedAvatarUrls.has(resolved) : false);
-  }, [resolved]);
+    if (resolved) {
+      if (phone) resolvedAvatarCache.set(phone, resolved);
+      setCurrentImage(resolved);
+      setIsImageLoaded(false);
+      setImageError(failedAvatarUrls.has(resolved));
+    } else if (phone && resolvedAvatarCache.has(phone)) {
+      // Phase 22 (Rule 1 & 2): Incoming prop is empty/undefined, but we already have
+      // a verified avatar URL in the client cache — preserve it!
+      avatarMetrics.avatar_url_preserved_after_empty_update++;
+      const cachedUrl = resolvedAvatarCache.get(phone);
+      setCurrentImage(cachedUrl);
+      setIsImageLoaded(false);
+      setImageError(cachedUrl ? failedAvatarUrls.has(cachedUrl) : false);
+    } else {
+      setCurrentImage(undefined);
+      setIsImageLoaded(false);
+      setImageError(false);
+    }
+  }, [resolved, phone]);
 
   const fetchAvatar = React.useCallback((force: boolean = false) => {
-    if (!phone || inFlightAvatarRefreshes.has(phone)) return;
+    if (!phone) return;
+    if (inFlightAvatarRefreshes.has(phone)) {
+      avatarMetrics.avatar_duplicate_request_suppressed++;
+      return;
+    }
     const negativeExpiry = negativeAvatarPhones.get(phone) || 0;
     if (!force && Date.now() < negativeExpiry) return;
 
+    avatarMetrics.avatar_request_started++;
     inFlightAvatarRefreshes.add(phone);
     queueAvatarRefresh(async () => {
       try {
         const res = await WhatsAppRepository.refreshAvatar(phone);
         if (res.success && res.avatar_url) {
+          avatarMetrics.avatar_request_succeeded++;
           const nextResolved = resolveMediaUrl(res.avatar_url) || res.avatar_url;
+          if (phone) resolvedAvatarCache.set(phone, nextResolved);
           failedAvatarUrls.delete(nextResolved);
           negativeAvatarPhones.delete(phone);
           setCurrentImage(nextResolved);
           setImageError(false);
           onRefresh?.(res.avatar_url);
         } else {
+          avatarMetrics.avatar_request_failed++;
           negativeAvatarPhones.set(phone, Date.now() + 10 * 60 * 1000);
         }
       } catch (err) {
+        avatarMetrics.avatar_request_failed++;
         negativeAvatarPhones.set(phone, Date.now() + 2 * 60 * 1000);
         console.debug("[Avatar] Refresh attempt failed:", err);
       } finally {
@@ -130,6 +189,7 @@ export const Avatar: React.FC<AvatarProps> = ({
   }, [phone, onRefresh]);
 
   const handleImageError = React.useCallback(() => {
+    avatarMetrics.avatar_retry_scheduled++;
     if (currentImage) failedAvatarUrls.add(currentImage);
     setImageError(true);
     setIsImageLoaded(false);
@@ -188,6 +248,7 @@ export const Avatar: React.FC<AvatarProps> = ({
         </span>
         {shouldRenderImage && (
           <img
+            key={currentImage}
             src={currentImage}
             alt={name}
             loading="lazy"

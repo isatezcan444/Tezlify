@@ -772,6 +772,7 @@ export function bindSocketEvents({
         name: contact?.name || existing.name || (key === '0@s.whatsapp.net' ? 'WhatsApp' : (lidHold ? '' : jidToPhone(key) || key)),
         name_source: contact?.name_source || existing.name_source || (key === '0@s.whatsapp.net' ? 'system' : null),
         phone: jidToPhone(key) || existing.phone || '',
+        avatar_url: contact?.avatar_url || existing.avatar_url || null,
         is_group: key.includes('@g.us'),
         // Arsiv durumu bilinmiyorsa anahtar HIC gonderilmez (bkz. `archivedPatch`).
         ...archivedPatch(update.archived ?? existing.archived),

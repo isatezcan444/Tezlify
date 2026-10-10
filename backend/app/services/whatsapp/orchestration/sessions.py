@@ -711,14 +711,19 @@ async def refresh_contact_avatar(db: AsyncSession, user_id: str, phone: str) -> 
         res = await gw.refresh_avatar(gateway_id, jid)
         new_url = res.get("avatar_url") if isinstance(res, dict) else None
 
-        # Update contact in DB if exists
+        digits = clean_phone.lstrip('+').split('@')[0] if clean_phone else ""
+        phone_with_plus = f"+{digits}" if digits else ""
         contact = await db.scalar(
             select(Contact).where(
                 get_user_filter(Contact.user_id, user_id),
                 or_(
                     Contact.phone_e164 == phone,
                     Contact.phone_e164 == clean_phone,
+                    Contact.phone_e164 == phone_with_plus,
+                    Contact.phone_e164 == digits,
                     Contact.phone_e164 == f"jid:{clean_phone}",
+                    Contact.phone_e164 == f"jid:{digits}",
+                    Contact.phone_e164 == f"jid:{digits}@s.whatsapp.net",
                 ),
             )
         )

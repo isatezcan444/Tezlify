@@ -28,6 +28,7 @@ export function transpile(srcPath) {
     compilerOptions: {
       module: ts.ModuleKind.ESNext,
       target: ts.ScriptTarget.ES2022,
+      jsx: ts.JsxEmit.ReactJSX,
     },
   }).outputText;
 }
@@ -71,8 +72,12 @@ export async function importTsModule(relativeFromScript, callerUrl) {
         out = out.replace(
           /(\bfrom\s*|^\s*import\s*|\bimport\s*\(\s*)(['"])(\.{1,2}\/[^'"]+?)\2/gm,
           (m, kw, q, spec) => {
-            const clean = spec.replace(/\.(mjs|js|json|css|ts|tsx)$/, '');
+            let clean = spec.replace(/\.(mjs|js|json|css|ts|tsx)$/, '');
             if (/\.(json|css)$/.test(spec)) return m;
+            const targetPath = path.resolve(dir, clean);
+            if (fs.existsSync(targetPath) && fs.statSync(targetPath).isDirectory()) {
+              clean = `${clean}/index`;
+            }
             return `${kw}${q}${clean}.harness.mjs${q}`;
           },
         );

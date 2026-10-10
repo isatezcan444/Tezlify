@@ -2303,6 +2303,7 @@ export function createSessionManager({
           name: contact?.name || phoneChatName || lidChatName || jidToPhone(phoneKey) || phoneKey,
           name_source: contact?.name_source || existingPhone.name_source || lidChat.name_source || null,
           phone: jidToPhone(phoneKey) || '',
+          avatar_url: lidChat.avatar_url || existingPhone.avatar_url || contact?.avatar_url || null,
           is_group: false,
           updated_at: new Date().toISOString(),
         };
@@ -2372,6 +2373,7 @@ export function createSessionManager({
         name: contact?.name || existing.name || (key === '0@s.whatsapp.net' ? 'WhatsApp' : jidToPhone(key) || key),
         name_source: contact?.name_source || existing.name_source || (key === '0@s.whatsapp.net' ? 'system' : null),
         phone: jidToPhone(key) || existing.phone || '',
+        avatar_url: contact?.avatar_url || existing.avatar_url || null,
         is_group: key.includes('@g.us'),
         // Arsiv durumu bilinmiyorsa anahtar HIC gonderilmez (bkz. `archivedPatch`).
         ...archivedPatch(existing.archived),

@@ -35,7 +35,12 @@ export function applyConversationEvent(
   const next: Conversation = { ...current, ...mapped };
 
   // Cozulmemis kimlikte mevcut ad korunur (gateway null gonderir).
-  if (!mapped.lead_name) next.lead_name = current.lead_name;
+  if (!mapped.lead_name && current.lead_name) next.lead_name = current.lead_name;
+
+  // Phase 22 (Rule 1 & 2): Mevcut geçerli avatar boş/null payload ile silinemez!
+  if (!mapped.lead_avatar_url && current.lead_avatar_url) {
+    next.lead_avatar_url = current.lead_avatar_url;
+  }
 
   const applyGw = Boolean(gwPreview) && shouldApplyPreview(gwTs, current.last_message_at);
   next.last_message_preview = applyGw ? gwPreview : current.last_message_preview;
@@ -49,4 +54,22 @@ export function applyConversationEvent(
   next.unread_count = resolveUnreadCount(current.unread_count, payload.unread_count);
 
   return next;
+}
+
+/**
+ * Phase 22 (Rule 1 & 2): Pure merge helper ensuring valid avatar & display name
+ * are never wiped out when updating or refetching conversation objects.
+ */
+export function mergeConversationPreservingAvatar(
+  existing: Conversation,
+  incoming: Partial<Conversation>
+): Conversation {
+  const merged: Conversation = { ...existing, ...incoming };
+  if (!incoming.lead_avatar_url && existing.lead_avatar_url) {
+    merged.lead_avatar_url = existing.lead_avatar_url;
+  }
+  if (!incoming.lead_name && existing.lead_name) {
+    merged.lead_name = existing.lead_name;
+  }
+  return merged;
 }

@@ -62,6 +62,8 @@ export interface ConversationListProps {
   onClose?: (id: number) => void;
   onReopen?: (id: number) => void;
   onDelete?: (id: number) => void;
+  /** Phase 22: Fired when an avatar is freshly resolved/refreshed, syncing back to parent state */
+  onAvatarResolved?: (id: number, newUrl: string) => void;
 }
 
 // PHASE 2.K.6 experiment: the conversation row extracted from the inline map, but
@@ -105,9 +107,10 @@ interface ConversationRowProps {
   onClose?: (id: number) => void;
   onReopen?: (id: number) => void;
   onDelete?: (id: number) => void;
+  onAvatarResolved?: (id: number, newUrl: string) => void;
 }
 
-const ConversationRowComponent: React.FC<ConversationRowProps> = ({ id, name, avatarUrl, phone, lastMessagePreview, lastMessageAt, lastMessageState, messageCount, lastReactionEmoji, status, isArchived, unreadCount, isGroup, selected, typing, typingSenderName, isSyncing, priority = 'normal', onSelect, onArchive, onClose, onReopen, onDelete }) => {
+const ConversationRowComponent: React.FC<ConversationRowProps> = ({ id, name, avatarUrl, phone, lastMessagePreview, lastMessageAt, lastMessageState, messageCount, lastReactionEmoji, status, isArchived, unreadCount, isGroup, selected, typing, typingSenderName, isSyncing, priority = 'normal', onSelect, onArchive, onClose, onReopen, onDelete, onAvatarResolved }) => {
   const { t, language } = useI18n();
   const isRawJid = isRawWhatsAppJid(phone);
   const cleanPhone = extractCleanPhone(phone);
@@ -191,6 +194,7 @@ const ConversationRowComponent: React.FC<ConversationRowProps> = ({ id, name, av
         size="md"
         shape="rounded"
         priority={priority}
+        onRefresh={(newUrl) => onAvatarResolved?.(id, newUrl)}
       />
 
       <div className="flex-1 min-w-0">
@@ -325,6 +329,7 @@ const ConversationListComponent: React.FC<ConversationListProps> = ({
   onClose,
   onReopen,
   onDelete,
+  onAvatarResolved,
 }) => {
 
   const { t, language } = useI18n();
@@ -641,6 +646,7 @@ const ConversationListComponent: React.FC<ConversationListProps> = ({
                 onClose={handleCloseById}
                 onReopen={handleReopenById}
                 onDelete={handleDeleteById}
+                onAvatarResolved={onAvatarResolved}
               />
             );
           })
