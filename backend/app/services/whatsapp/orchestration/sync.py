@@ -1491,7 +1491,18 @@ class WhatsAppSyncOrchestrator:
         existing_ids: Dict[int, Set[str]] = {}
         dedup_loaded: Set[int] = set()
 
-        since_epoch = None if recovery_pass else await _sync_watermark_epoch(db, job.user_id)
+        # Initial sync check: if this session hasn't completed initial sync yet,
+        # we must NOT filter history messages with a watermark (which could be poisoned
+        # by previous sessions or old test messages).
+        is_initial = (
+            ws_session is None
+            or getattr(ws_session, "initial_sync_completed_at", None) is None
+        )
+        if recovery_pass or is_initial:
+            since_epoch = None
+        else:
+            session_db_id = getattr(ws_session, "id", None) if ws_session else None
+            since_epoch = await _sync_watermark_epoch(db, job.user_id, session_id=session_db_id)
 
         # Geri doldurma turunda istek YALNIZCA hedef sohbetlerle sinirlanir.
         # jid listesi `conv_by_jid`'ten turetilir → LID takma adlari da kapsanir.
@@ -1791,19 +1802,22 @@ class WhatsAppSyncOrchestrator:
                         try:
                             from backend.app.models.whatsapp import SessionStatus
                             all_user_sess = await user_sessions(db, owner, connected_only=False)
-                            has_pairing = any(
-                                s.status in (SessionStatus.CONNECTING, SessionStatus.SCAN_QR)
+                            has_pairing = bool(all_user_sess) or any(
+                                s.status in (SessionStatus.CONNECTING, SessionStatus.SCAN_QR, SessionStatus.CONNECTED)
                                 for s in all_user_sess
                             )
                         except Exception:
                             pass
 
+                    if not has_pairing and getattr(job, "session_key", None):
+                        has_pairing = True
+
                     if has_pairing:
                         logger.info(
-                            "[WhatsApp][Sync] Active pairing or transition detected for user %s; waiting up to 5s for promotion commit",
+                            "[WhatsApp][Sync] Active pairing or transition detected for user %s; waiting up to 30s for promotion commit",
                             owner,
                         )
-                        for _ in range(20):
+                        for _ in range(120):
                             await asyncio.sleep(0.25)
                             try:
                                 await db.rollback()

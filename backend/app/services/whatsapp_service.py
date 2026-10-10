@@ -392,6 +392,21 @@ async def get_loading_gate(db: AsyncSession, user_id: str) -> Dict[str, Any]:
     job_stage = str(job_snap.get("stage") or "idle")
     job_error = job_snap.get("error")
 
+    # If the job recorded a transient "no connected session" error during ephemeral pairing,
+    # but the session is NOW demonstrably CONNECTED and has not finished initial sync,
+    # heal the error and schedule the initial sync.
+    is_no_session_err = job_error and (
+        "bagli bir whatsapp hatti yok" in job_error.lower()
+        or "bağlı bir whatsapp hattı yok" in job_error.lower()
+    )
+    if is_no_session_err and session.get("status") == "CONNECTED":
+        logger.info("[WhatsApp] Recovering from transient pre-promotion sync failure for user %s", user_id)
+        _sync_orchestrator._schedule_initial_sync(user_id)
+        job_snap = _sync_orchestrator.get_sync_job(user_id) or {}
+        job_state = str(job_snap.get("state") or "SYNCING")
+        job_stage = str(job_snap.get("stage") or "starting")
+        job_error = None
+
     phase, stage = resolve_gate_phase(
         job_state=job_state,
         job_stage=job_stage,

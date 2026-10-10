@@ -127,8 +127,17 @@ async def _finalize_promotion(
             gateway_session_id,
             exc,
         )
+    def _trigger_sync_if_needed(target_row: Optional[WhatsAppSession]) -> None:
+        if target_row and target_row.user_id:
+            try:
+                from backend.app.services.whatsapp.orchestration.sync import _schedule_initial_sync
+                _schedule_initial_sync(str(target_row.user_id), reconcile=False, session_key=gateway_session_id)
+            except Exception as sync_err:
+                logger.warning("[WhatsApp][Promotion] Initial sync trigger warning: %s", sync_err)
+
     try:
         await db.refresh(row)
+        _trigger_sync_if_needed(row)
         return row
     except Exception as exc:  # noqa: BLE001 - never fail a committed promotion here
         logger.warning(
@@ -141,7 +150,9 @@ async def _finalize_promotion(
             await db.rollback()
         except Exception:  # noqa: BLE001
             pass
-        return await db.scalar(select(WhatsAppSession).where(WhatsAppSession.id == row_id))
+        loaded = await db.scalar(select(WhatsAppSession).where(WhatsAppSession.id == row_id))
+        _trigger_sync_if_needed(loaded)
+        return loaded
 
 
 async def _resolve_owner(

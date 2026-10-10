@@ -996,3 +996,122 @@ B. TELEMETRY_REQUIRED & BOTTLENECK_PROVEN (REQUEST-COALESCING)
 FIX_TESTED_PRODUCTION_UNMEASURED
 ```
 *(Kod düzeltmesi JSDOM ve 7/7 regresyon testiyle tam olarak doğrulanmış, production build'den geçmiş; production DB/ağ yükündeki gerçek düşüş ise henüz doğal trafik altında ölçülmemiştir).*
+
+---
+
+# BÖLÜM VII: PHASE 19 — POST-DEPLOY OBSERVATION, REQUEST COALESCING VERIFICATION & FIRST-CHAT LATENCY
+
+## 1. Production Sürüm ve Altyapı Doğrulaması
+
+Phase 18 sürümü production sunucusunda (`ubuntu@130.162.247.20`) salt-okunur olarak doğrulanmıştır:
+
+- **Git Commit:** `ca97726940ad42f5d246cc60a96ef206641d2ad5` (Yerel `HEAD` ile sunucu `HEAD` birebir aynıdır).
+- **Frontend Bundle Dosyası:** `WhatsAppHubPage-B5tuBZCS.js`
+  - Yerel SHA-256: `0f7324bce6c1fd0bf7f69edc410f8b3dfec503ba1a72f3d41800c5f1d8b4380e`
+  - Sunucu Dosya SHA-256: `0f7324bce6c1fd0bf7f69edc410f8b3dfec503ba1a72f3d41800c5f1d8b4380e`
+  - Canlı HTTPS Public SHA-256 (`https://130.162.247.20.sslip.io`): `0f7324bce6c1fd0bf7f69edc410f8b3dfec503ba1a72f3d41800c5f1d8b4380e`
+  - **Doğrulama Sonucu:** %100 bayt düzeyinde tam eşleşme (**VERIFIED**).
+- **Bundle İçerik İncelemesi (Minified Code AST):**
+  ```javascript
+  const l=`${Ie}:${mt.trim()}`,p=ws.current,r=!i&&p!==null&&p.key===l;let g,w;if(r&&p)g=p.generation,w=p.promise;else{g=++Qt.current,w=Z.getConversations(...)
+  ```
+  Yayındaki JavaScript dosyasının `conversationsInFlightPromiseRef` coalescing mantığını, nesil korumasını ve bypass bayraklarını eksiksiz içerdiği kanıtlanmıştır.
+- **Konteyner ve Servis Durumları:**
+  - `tezlify-caddy`: Up (healthy)
+  - `tezlify-backend`: Up (healthy), `/health` -> `status: healthy`, `gateway_bridge: {connected: true, reconnect_count: 1}`
+  - `tezlify-gateway`: Up (healthy), `/health` -> `status: ok`, `database: connected`, `sessions: {total: 1, connected: 1}`
+  - `tezlify-db`: Up (healthy), PostgreSQL 17
+
+## 2. Session 171 Sağlık Durumu (Salt-Okunur & Sıfır PII)
+
+- **Session ID:** `171`
+- **Gateway Session UUID:** `be6889d0-bf83-4ec9-9d80-892b87ffaca7`
+- **Veritabanı Durumu:**
+  - `status`: `CONNECTED`
+  - `is_active`: `True`
+  - `is_phone_online`: `True`
+  - `initial_sync_completed_at`: `2026-10-10 12:33:30.765475` (İlk eşleşme ve tarihçe tamamlama zaman damgası bozulmamış, korunmuştur).
+  - `created_at`: `2026-10-10 12:32:59.787899`
+  - `updated_at`: `2026-10-10 15:18:44.970506` (Phase 18 cutover anı).
+- **Gateway Store Verisi:**
+  - Canlı bağlı oturum sayısı: `1` (Hat 1)
+  - Yetim (orphaned) oturum sayısı: `0`
+  - Kayıtlı sohbet (conversations) sayısı: `13` (Eksiksiz ve sorgulanabilir durumda).
+- **Güvenlik Teyidi:** Oturum üzerinde hiçbir logout, yeniden eşleştirme veya QR tetiklemesi yapılmamıştır.
+
+## 3. Doğal Trafikte Request Coalescing Gözlemi
+
+Phase 18 cutover zamanından (`2026-10-10T15:18:25Z`) itibaren Uvicorn erişim logları incelenmiştir:
+
+- **Gözlem Penceresi:** 569 saniye (`15:18:49Z` - `15:28:18Z`)
+- **Toplam Conversation List İsteği:** 200 adet `GET /api/v1/whatsapp/conversations?limit=200`
+- **5 Saniyelik Zaman Pencerelerinde İstek Yoğunluğu:**
+  - Benzersiz 5 saniyelik zaman penceresi sayısı: 108
+  - Bir 5 saniyelik pencerede görülen **maksimum istek**: 3 istek
+  - 5 saniyelik pencere başına **ortalama istek**: 1.85 istek
+  - Pencere dağılımı:
+    - 1 istek içeren pencereler: 42
+    - 2 istek içeren pencereler: 40
+    - 3 istek içeren pencereler: 26
+- **Deploy Öncesi (Phase 17) ile Karşılaştırma:**
+  - Deploy öncesi reconnect anında: 5 saniyelik tek bir pencerede **16 paralel istek** kaydedilmişti.
+  - Deploy sonrasında: Hiçbir pencerede 3'ten fazla istek görülmemiştir; istekler 1-2 saniye aralıklarla sıralı biçimde gelmiştir.
+- **KRİTİK GÖZLEM & BİLİMSEL SINIRLILIK (Fail-Closed Değerlendirme):**
+  - Gözlemlenen 200 isteğin tamamı `401 Unauthorized` yanıtı almıştır (unauthenticated tarayıcı sekmesi döngüsü).
+  - Deploy sonrasında henüz canlı ve giriş yapmış (authenticated) bir kullanıcının Session 171 üzerinde reconnect olduğu doğal bir trafik oturumu gerçekleşmemiştir.
+  - Backend logları tek başına tarayıcı içindeki eş zamanlı Promise sayısını doğrudan yansıtamaz.
+  - JSDOM üzerinde 3 concurrent çağrının tam 1 çağrıya indiği (`Scenario 1 PASS`) ve bundle'ın yayında olduğu doğrulanmış olsa da, canlı production ortamında kullanıcı yükü altında istek düşüşü henüz doğal trafikle gözlemlenmemiştir -> **INSUFFICIENT_OBSERVATIONS / NOT MEASURED**.
+
+## 4. İlk Kullanılabilir Sohbet Gecikmesi (Milestone Ayrımı)
+
+Mevcut kanıtlarla olayların ayrımı:
+
+| Olay / Aşama | Kanıt Kaynağı | Durum & Ölçüm |
+|---|---|---|
+| **Sayfanın Açılması (Navigation)** | Caddy Access Logs / HTTP GET | `NOT INSTRUMENTED` (Browser Navigation Timing trace yok) |
+| **İlk conversation-list REST Çağrısı** | Uvicorn Access Log / FastAPI latency | **159 ms** (Phase 17 T5 ölçümü) |
+| **İlk Konuşmanın React Render Edilmesi** | React AST / state dispatch | `NOT INSTRUMENTED` (DOM paint zaman damgası kaydedilmiyor; JSDOM'da 16.5 ms) |
+| **Loading Gate'in Kapanması** | `WhatsAppHubPage.tsx:1217` AST guard | **LOGICAL_PROVEN_TIMING_UNINSTRUMENTED** (`conversations.length > 0` anında gate anında kalkar; production ms trace yok) |
+| **Kullanıcının Sohbeti Açıp Mesajları Görmesi** | `GET /api/v1/whatsapp/conversations/{id}/messages` | `NOT INSTRUMENTED` (`ChatBubble` çizim süresi trace edilmiyor) |
+
+## 5. Gerçek Zamanlı Mesaj Teslimatı Observability Durumu
+
+Gelen mesaj hattının bileşenleri ve zaman damgası durumu:
+
+1. **Mesajın Gateway/Baileys'e Ulaşması:** `ÖLÇÜLDÜ` (Baileys timestamp ve Gateway alma zamanı).
+2. **Mesajın Backend'e Ulaşması (`/ws/gateway`):** `ÖLÇÜLDÜ` (`ingest_gateway_event` logları, ~1-5 ms).
+3. **Mesajın Kalıcılaştırılması:** `ÖLÇÜLDÜ` (SQLite / Postgres ingestion, < 5 ms).
+4. **WebSocket Olayının Yayınlanması (`/ws` broadcast):** `ÖLÇÜLDÜ` (`ws_manager.broadcast`).
+5. **Tarayıcının Olayı Alması (`WS onmessage`):** `NOT INSTRUMENTED` (İstemcide network receipt timestamp yok).
+6. **Açık Sohbet Bileşeninin Render Etmesi (`ChatBubble` DOM paint):** `NOT INSTRUMENTED` (İstemcide React commit/paint mark yok).
+
+> [!IMPORTANT]
+> **Temel Kural:** Bir mesajın backend veya gateway veritabanında bulunması, kullanıcının ekranında anında göründüğünün (visible/painted) kanıtı olarak sunulamaz. İstemci render kilometre taşları eksiktir.
+
+## 6. Ölçülmemiş İddialar (Unmeasured Claims)
+
+1. Canlı production'da authenticated kullanıcının reconnect fırtınasının 16'dan 1'e düştüğü iddiası (Deploy sonrası trafik unauthenticated olduğundan **doğal authenticated trafikle henüz ölçülmemiştir**).
+2. Kullanıcının tarayıcısında ilk sohbet listesini görmesine kadar geçen net piksel çizim süresi (T6) (**istemci telemetrisi olmadan ölçülemez**).
+3. Gerçek zamanlı gelen bir mesajın WebSocket'ten DOM'a yansımasına kadar geçen tarayıcı içi gecikme (**istemci telemetrisi olmadan ölçülemez**).
+
+## 7. Karar ve Sonraki Tek Adım
+
+### Nihai Karar Etiketi
+```text
+INSUFFICIENT_OBSERVATIONS & CLIENT_TELEMETRY_REQUIRED
+```
+
+### Değerlendirme Özeti
+- Sürüm ve bundle bütünlüğü kusursuzdur (SHA-256 doğrulanmış).
+- Session 171 sağlıklı ve bağlantıdadır (CONNECTED, 13 sohbet, bozulma yok).
+- Coalescing kodu yayındadır; ancak doğal authenticated trafik gözlemi yetersizdir (`INSUFFICIENT_OBSERVATIONS`).
+- İlk render ve açık sohbet mesaj teslimat süresini dürüstçe ölçmek için tarayıcı kilometre taşları eksiktir (`CLIENT_TELEMETRY_REQUIRED`).
+- Sistemde herhangi bir gerileme (regression) yoktur.
+
+### Sonraki Tek Adım (Öneri — Onay Gerektirir)
+Kullanıcı onayı alındığı takdirde Phase 20'de:
+- Sıfır PII (telefon, metin, token içermeyen) ve sıfır render maliyeti getiren (<0.5ms) hafif bir **Browser Milestone Telemetry** modülü tasarlanmalıdır:
+  - `T_ws_recv`: `useWhatsAppEvents` içinde gelen mesajın alındığı an (`performance.now()`).
+  - `T_dom_paint`: React `useLayoutEffect` / `requestAnimationFrame` ile DOM'un boyandığı an.
+  - Fark delta: `latency_ms = T_dom_paint - T_ws_recv`.
+- Bu telemetri uygulanmadan önce kullanıcıdan açık onay alınmalıdır.

@@ -52,14 +52,19 @@ def hydration_cursor_ms(rows: List[Optional[Message]]) -> Optional[int]:
     return int(oldest.replace(tzinfo=timezone.utc).timestamp() * 1000)
 
 
-async def get_sync_watermark_epoch(db: AsyncSession, owner: str) -> Optional[int]:
+async def get_sync_watermark_epoch(
+    db: AsyncSession, owner: str, session_id: Optional[int] = None
+) -> Optional[int]:
     """Kullanicinin DB'sindeki en son gelen mesaj zamani (epoch saniye, 5 dk overlap payiyla)."""
-    res = await db.execute(
-        select(func.max(Message.external_timestamp)).where(
-            get_user_filter(Message.user_id, owner),
-            Message.direction == MessageDirection.INBOUND,
-        )
+    query = select(func.max(Message.external_timestamp)).where(
+        get_user_filter(Message.user_id, owner),
+        Message.direction == MessageDirection.INBOUND,
     )
+    if session_id is not None:
+        query = query.join(Conversation, Message.conversation_id == Conversation.id).where(
+            Conversation.session_id == session_id
+        )
+    res = await db.execute(query)
     ts = res.scalar()
     if ts is None:
         return None

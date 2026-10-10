@@ -153,7 +153,7 @@ const AVATAR_SWEEP_BATCH = 1;
 const AVATAR_SWEEP_PAUSE_MS = 250;
 const AVATAR_SWEEP_MAX_PASSES = 5;
 const AVATAR_SWEEP_RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 15_000];
-const AVATAR_QUERY_TIMEOUT_MS = 7000;
+const AVATAR_QUERY_TIMEOUT_MS = 3500;
 
 // ---------------------------------------------------------------------------
 // Sweep re-arm while the store is still filling.
@@ -2947,7 +2947,7 @@ export function createSessionManager({
       try {
         const fetchPromise = session.sock.groupFetchAllParticipating();
         const timeoutPromise = new Promise((_, reject) =>
-          setTimeout(() => reject(new Error('groupFetchAllParticipating timeout')), 15000)
+          setTimeout(() => reject(new Error('groupFetchAllParticipating timeout')), 4000)
         );
         const all = await Promise.race([fetchPromise, timeoutPromise]);
         for (const meta of Object.values(all || {})) {
@@ -3024,7 +3024,7 @@ export function createSessionManager({
             try {
               const metaPromise = session.sock.groupMetadata(jid);
               const timeoutPromise = new Promise((_, reject) =>
-                setTimeout(() => reject(new Error('groupMetadata timeout')), 8000)
+                setTimeout(() => reject(new Error('groupMetadata timeout')), 2500)
               );
               const meta = await Promise.race([metaPromise, timeoutPromise]);
               if (session._groupSubjectsInFlight === 'cancelled') return;
