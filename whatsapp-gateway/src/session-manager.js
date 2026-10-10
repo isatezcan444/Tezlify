@@ -146,11 +146,13 @@ function resolveMessageStatus(msg, fromMe, reactions) {
 //  2) Gerçek gecikme pacing'de değil geri çekilmedeydi: ilk başarısız turdan
 //     sonra 30sn+60sn+120sn+5dk×4 = ~23.5dk bekleniyordu. İlk turlar kısa
 //     tutuldu; kalıcı eksikler ancak çok sonra (5dk) yeniden denenir.
-const AVATAR_SWEEP_BATCH = 8;
-const AVATAR_SWEEP_PAUSE_MS = 80;
+// Avatar sweep pacing.
+// Her 0.1 saniyede (100ms) 5 istek atacak şekilde ayarlanmıştır.
+// WhatsApp'ın IQ sorgu rate limitine takılmadan en optimal sürede tamamlar.
+const AVATAR_SWEEP_BATCH = 5;
+const AVATAR_SWEEP_PAUSE_MS = 100;
 const AVATAR_SWEEP_MAX_PASSES = 8;
-// İlk turlar hızlı (bir tur ~3-4sn), sonra mesafeli. Kullanıcı fotoğrafı dakikalarca beklemez.
-const AVATAR_SWEEP_RETRY_DELAYS_MS = [2_000, 4_000, 8_000, 15_000, 30_000, 60_000, 120_000];
+const AVATAR_SWEEP_RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 15_000, 30_000, 60_000];
 const AVATAR_QUERY_TIMEOUT_MS = 2000;
 
 // ---------------------------------------------------------------------------
@@ -2377,7 +2379,7 @@ export function createSessionManager({
         const isResolved = existing.name && !isRawIdentityName(existing.name);
         if (!isResolved) session._pendingGroupJids.add(key);
       }
-      if (isAvatarUrlExpired(chats.get(key)?.avatar_url)) void this._ensureChatAvatar(session, key);
+      if (isAvatarUrlExpired(chats.get(key)?.avatar_url)) void this._scheduleBackgroundAvatarFetch(session);
     },
 
     async _ensureChatAvatar(session, key) {
@@ -2446,14 +2448,18 @@ export function createSessionManager({
         // uygulanır ve sweep döngüsünü tıkaması engellenir.
         const errMsg = String(err?.message || err);
         const errCode = Number(err?.data || err?.output?.statusCode || 0);
+        const isRateLimit = /rate-overlimit|rate.limit|429/i.test(errMsg) || errCode === 429;
         const isTimeout = /timeout|timed out|408/i.test(errMsg) || errCode === 408;
         const noPicture = /item-not-found|not-acceptable|40[46]/i.test(errMsg) || errCode === 404 || errCode === 406;
         if (noPicture) {
           avatarNegativeCache?.set(key, Date.now() + 60 * 60 * 1000);
-        } else if (isTimeout) {
+        } else if (isRateLimit) {
+          store._avatarRateLimitedUntil = Date.now() + 2000;
           avatarRetryAfter?.set(key, Date.now() + 45 * 1000);
-        } else {
+        } else if (isTimeout) {
           avatarRetryAfter?.set(key, Date.now() + 30 * 1000);
+        } else {
+          avatarRetryAfter?.set(key, Date.now() + 20 * 1000);
         }
       } finally {
         if (timer) clearTimeout(timer);
@@ -2506,12 +2512,17 @@ export function createSessionManager({
             for (let i = 0; i < chatsToFetch.length; i += AVATAR_SWEEP_BATCH) {
               if (session._deleted || session._shuttingDown) break;
               if (session.status !== 'CONNECTED' || !session.sock) break;
+
+              if (store._avatarRateLimitedUntil && store._avatarRateLimitedUntil > Date.now()) {
+                const waitMs = Math.min(3000, store._avatarRateLimitedUntil - Date.now());
+                await unrefSleep(waitMs);
+              }
+
               const batch = chatsToFetch.slice(i, i + AVATAR_SWEEP_BATCH);
               await Promise.all(
                 batch.map((chat) => this._ensureChatAvatar(session, chat.jid).catch(() => null))
               );
-              const jitter = Math.floor(Math.random() * 50);
-              await unrefSleep(AVATAR_SWEEP_PAUSE_MS + jitter);
+              await unrefSleep(AVATAR_SWEEP_PAUSE_MS);
             }
             const remaining = missingChats().length;
             if (!remaining) break;

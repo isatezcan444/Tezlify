@@ -753,8 +753,10 @@ export function bindSocketEvents({
         session.sync.chats_unique = chats.size;
         session.sync.chats_synced = Math.max(session.sync.chats_synced || 0, chats.size);
       }
-      if (!chats.get(key)?.avatar_url) void ensureChatAvatar(key);
       emitEvent({ event: 'conversation_updated', conversation: chats.get(key) });
+    }
+    if (updates.length > 0) {
+      manager._scheduleBackgroundAvatarFetch(session);
     }
   });
 
@@ -974,7 +976,6 @@ export function bindSocketEvents({
         };
         chats.set(key, merged);
         storedChats += 1;
-        if (!merged.avatar_url && storedChats <= 15) void ensureChatAvatar(key);
         emitEvent({ event: 'conversation_updated', conversation: merged });
       }
       // A history chunk belongs only to the chats it names.  Resolving every
