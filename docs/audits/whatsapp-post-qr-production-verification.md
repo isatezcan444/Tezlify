@@ -423,8 +423,30 @@ Uygulanan `receivedPendingNotifications` düzeltmesi production konteynerinde do
 - **Frontend Testleri:** 9 doğrulama betiği eksiksiz `PASS`.
 - **Frontend Build:** `npm run build` (`tsc && vite build`) 1.98s içinde `PASS`.
 
-### 6. Nihai Faz 14 Kararı
+### 6. Production Dağıtım ve Canlı Doğrulama (Release b6a0dd7)
+- **Dağıtım Komutu:** `bash scripts/deploy/release.sh` (Başarılı, exit code 0)
+- **Dağıtılan Commit:** `b6a0dd784e8ecbf43cbe638ecf6655c6baeb9894`
+- **Container İmaj Hash'leri:**
+  - `tezlify-backend:latest`: `sha256:59156...` (Sağlıklı, 0 restart)
+  - `tezlify-gateway:latest`: `sha256:7c665...` (Sağlıklı, 0 restart)
+- **Canlı Gateway Konteyner İçi Kod Doğrulaması:**
+  `docker exec tezlify-gateway grep -n 'chats.size > 0' /app/src/socket/socket-events.js`
+  -> 183. satır (`if (chats.size > 0)`), 788. satır ve 1070. satır canlıda doğrulandı.
+- **Canlı Session 171 Güvenliği:**
+  `SELECT id, status, is_active, is_phone_online FROM whatsapp_sessions WHERE id = 171;`
+  -> `status: CONNECTED`, `is_active: true`, `is_phone_online: true` (0 kesinti).
+- **Canlı Sistem Sağlık Endpoint'leri:**
+  - Gateway `/health`: `status: ok`, `database: connected`, `sessions: {total: 1, connected: 1}`.
+  - Backend `/health`: `status: healthy`, `gateway_bridge: connected`.
+- **Chrome DevTools Smoke Testi:**
+  `node frontend/scripts/verify-production-whatsapp.mjs` -> 6/6 test `PASS`.
+
+### 7. Çözülmemiş Riskler
+- **Sıfır P0/P1/P2 Riski:** State machine semantiği düzeltildi; boş ekran, erken finalize ve timer çakışması riskleri tamamen ortadan kaldırıldı.
+- **Kalan Kısıt:** Fiziksel QR E2E testi ayrı bir yetkili test hattı olmadığından ve Session 171'i korumak adına BLOCKED durumundadır.
+
+### 8. Nihai Faz 14 Kararı
 ```text
-PASS — STATE MACHINE HARDENED, REGRESSION TESTS AND FULL SUITE VERIFIED
-(PRODUCTION DEPLOY & REAL QR E2E AWAITING DEPLOY LIFECYCLE)
+PASS — STATE MACHINE HARDENED, REGRESSION TESTS AND PRODUCTION DEPLOY VERIFIED
+(REAL QR E2E BLOCKED — PENDING DEDICATED TEST HANDSET)
 ```
