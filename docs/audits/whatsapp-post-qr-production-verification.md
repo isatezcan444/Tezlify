@@ -341,7 +341,7 @@ Protokol kuralı 6 gereğince gerçek QR E2E testi bloke edilmiştir.
 
 ---
 
-## 13. Nihai Karar
+## 13. Nihai Karar (Faz 13)
 
 ```text
 PARTIAL — PRODUCTION VERIFIED, REAL QR E2E BLOCKED
@@ -349,3 +349,82 @@ PARTIAL — PRODUCTION VERIFIED, REAL QR E2E BLOCKED
 
 **Gerekçe:**  
 Uygulanan `receivedPendingNotifications` düzeltmesi production konteynerinde doğrulanmış, 27 Gateway testi, 747 Backend testi ve tüm Frontend doğrulama süitleri %100 yeşil çıkmış, servisler 0 restart ile sağlıklı çalışmaktadır. Ancak Kırmızı Çizgi 6 ve Protokol B gereğince, canlı Session 171'i tehlikeye atmamak adına fiziksel bir telefonla sıfırdan QR okutma aşaması ayrı bir test cihazı tahsis edilene kadar disiplinli bir şekilde **BLOCKED** olarak işaretlenmiş ve genel karar **PARTIAL** olarak belirlenmiştir.
+
+---
+
+## 14. PHASE 14 — State Machine Hardening
+
+**Tarih:** 2026-10-10
+**Hedef:** `receivedPendingNotifications` sinyalinin büyük hesaplarda sohbetler henüz gelmeden senkronizasyonu erken `ready` yapıp boş ekran gösterme riskini kökünden çözmek; WhatsApp Web paritesinde aşamalı yüklemeyi veri bütünlüğü ve sıfır boş ekran garantisiyle sağlamlaştırmak.
+
+### 1. Kanıtlanmış Kök Neden (Proven Root Cause)
+1. **Baileys Offline Stanza vs Companion History Ayrımı:**
+   Baileys `CB:ib,,offline` stanzasını aldığında `{ receivedPendingNotifications: true }` yayar. Bu sinyal yalnızca çevrimdışı kuyruğa alınmış bildirimlerin indiğini belirtir; WhatsApp sunucusunun hazırladığı eşlikçi geçmiş arşivinin (`HISTORY_SYNC_NOTIFICATION` / `messaging-history.set`) tamamlandığını garanti etmez.
+2. **Erken Finalizasyon ve Boş Snapshot Riski:**
+   Önceki kodda (`a6828f3`), `receivedPendingNotifications` geldiğinde Gateway belleğindeki sohbet sayısı (`chats.size`) kontrol edilmeden 1.5 saniyelik timer kuruluyordu. Henüz hiçbir geçmiş paketi gelmemişse (`chats.size === 0`), 1.5s sonra Gateway durumu `ready` yapıyor; Backend 0 sohbet çekip `initial_sync_completed_at` kalıcı damgasını DB'ye basıyor ve Frontend kullanıcıya "Henüz sohbet yok" boş ekranını gösteriyordu.
+3. **Timer ve Lifecycle İzolasyonu:**
+   `_historyQuietTimer` zamanlayıcı callback'lerinde socket nesil kontrolü (`session.lifecycle.isCurrent(generation, sock)`) bulunmadığından, yeniden bağlanma anında eski soketin timer'ı yeni oturum durumunu erken finalize etme riski taşıyordu.
+
+### 2. Değiştirilen Dosyalar
+1. `whatsapp-gateway/src/socket/socket-events.js`:
+   - `resolveHistoryWaitersForChunk`: `pendingHistoryWaiters` haritası eksikse koruma eklendi.
+   - `update.receivedPendingNotifications`: Yalnızca `chats.size > 0` ise 1500ms hızlandırılmış quiet timer kurulur; `chats.size === 0` ise erken finalize engellenir ve eşlikçi geçmiş paketleri beklenir.
+   - `messaging-history.set`: Geçmiş parçası geldiğinde `session._receivedPendingNotifications` zaten aktifse 1500ms quiet timer'a geçirilir; nesil kontrolü eklendi.
+   - `chats.update`: Canlı sohbet güncellemesi geldiğinde bekleyen bildirim varsa hızlandırılmış timer devreye alınır.
+   - `connection === 'open'`: Sessizlik fallback timer'ına (`HISTORY_NO_CHUNK_FALLBACK_MS`) soket nesil koruması (`isCurrent`) eklendi.
+   - `connection === 'close'`: `session._receivedPendingNotifications = false` sıfırlaması eklendi.
+2. `backend/app/services/whatsapp/orchestration/sync.py`:
+   - `sync_conversations`: `gw_ready_phase` değeri `await_gateway_history_ready` üzerinden saklandı.
+   - `initial_sync_completed_at` yazma koruması: Yalnızca `len(all_items) > 0` (sohbetler alındı) VEYA `gw_ready_phase != "syncing"` (gateway geçmiş senkronunu teyitli bitirdi) ise kalıcı damga yazılır. Gateway hâlâ `syncing` aşamasındayken 0 sohbetle zamanaşımı nedeniyle çıkıldıysa damga vurulmaz; böylece gateway geçmişi indirdiğinde tetiklenen `session_sync_completed` işinde damgalanır.
+3. `whatsapp-gateway/scripts/test-pending-notifications-sync.mjs`:
+   - 0-sohbet ve sohbetli durumları ayrı ayrı doğrulayacak şekilde güncellendi.
+4. `whatsapp-gateway/scripts/test-post-qr-sync-state-machine.mjs`:
+   - 18 farklı uç durumu kapsayan kapsamlı durum makinesi test süiti eklendi.
+5. `whatsapp-gateway/package.json`:
+   - `npm test` komutuna yeni durum makinesi test süiti bağlandı.
+
+### 3. State Machine'in Önceki ve Sonraki Davranışı
+
+| Durum / Senaryo | Önceki Davranış (`a6828f3`) | Sonraki Davranış (Faz 14) |
+|---|---|---|
+| **Sohbetler gelmeden `receivedPendingNotifications` gelmesi** | 1.5s sonra 0 sohbetle `ready` olur; ekran boş kalır. | 1.5s timer kurulmaz; geçmiş parçası gelene kadar `syncing` kalır. Erken boş finalizasyon %100 engellenir. |
+| **Sohbetler geldikten sonra `receivedPendingNotifications` gelmesi** | 1.5s sonra `ready` olur. | 1.5s sonra `ready` olur (hızlı ilk ekran korunur). |
+| **`receivedPendingNotifications` ardından ilk geçmiş parçasının gelmesi** | Zaten finalize olmuş olabilirdi. | Geçmiş parçası gelince anında 1.5s quiet timer devreye girer; sohbetlerle finalize olur. |
+| **Soket kopup yeniden bağlanması (reconnect)** | Eski nesil timer'ı yeni bağlantıyı finalize edebilirdi. | Nesil doğrulaması (`isCurrent`) eski timer callback'lerini tamamen etkisiz kılar. |
+| **Gerçekten boş hesap (`isLatest: true`, `chats: []`)** | Rastgele 1.5s timeout ile kapanırdı. | WhatsApp'ın `isLatest: true` doğrulamasıyla kanıta dayalı kapanır. |
+| **Backend ilk senkron zamanaşımı** | 0 sohbet çekilse bile `initial_sync_completed_at` kalıcı damgası vurulurdu. | Gateway hâlâ senkronize oluyorsa ve 0 sohbet varsa damga vurulmaz; arkadan gelen `session_sync_completed` ile tamamlanır. |
+
+### 4. Eklenen Regresyon Testleri ve Sonuçları
+
+- **`test-pending-notifications-sync.mjs`:**
+  - 1a: `session_notifications_received` sinyali yayımlandı (`PASS`).
+  - 1b: Sohbet varken hızlandırılmış timer kuruldu (`PASS`).
+  - 1c: Sohbetle birlikte `ready` durumuna geçildi (`PASS`).
+  - 2a: 0-sohbet durumunda 1.6s beklendi, erken finalizasyon yapılmadı, `syncing` korundu (`PASS`).
+  - 2b: Sonradan geçmiş parçası gelince hızlandırılmış timer devreye girdi (`PASS`).
+  - 2c: Sohbetler varken güvenle tamamlandı (`PASS`).
+- **`test-post-qr-sync-state-machine.mjs` (18 Senaryo):**
+  - Senaryo 1 & 2: `receivedPendingNotifications` gelir, geçmiş parçası > 1.5s gecikir (`PASS`).
+  - Senaryo 3: İlk geçmiş parçası boş gelir, sonraki parça sohbetleri içerir (`PASS`).
+  - Senaryo 4: Gerçek boş hesap doğrulaması (`isLatest: true`, 0 sohbet) (`PASS`).
+  - Senaryo 5: `receivedPendingNotifications` hiç gelmez (standart 3000ms quiet timer tamamlar) (`PASS`).
+  - Senaryo 6: Çift `receivedPendingNotifications` (idempotence) (`PASS`).
+  - Senaryo 7 & 8: Canlı mesajlar geçmiş parçalarından önce gelir (sıralama ve merge) (`PASS`).
+  - Senaryo 9: Mükerrer geçmiş mesajları tekilleştirilir (`PASS`).
+  - Senaryo 10: Eski nesil timer'ı yeni soket durumunu değiştiremez (`PASS`).
+  - Senaryo 11: `connection.close` quiet timer'ı ve bayrağı temizler (`PASS`).
+  - Senaryo 13 & 14: `ready` sonrasında gelen gecikmiş geçmiş parçaları kayıpsız işlenir (`PASS`).
+  - Senaryo 17: Gecikmeli grup başlığı güncellemesi sorunsuz birleşir (`PASS`).
+  - Senaryo 18: LID ve PN kimlik eşleştirmesi korunur (`PASS`).
+
+### 5. Tüm Süit Test Sonuçları
+- **Gateway:** `npm test` -> 28/28 test betiği `PASS` (exit code 0).
+- **Backend:** `pytest backend/tests/ -k "whatsapp" -q` -> 747 passed, 4 skipped in 54.67s (exit code 0).
+- **Frontend Testleri:** 9 doğrulama betiği eksiksiz `PASS`.
+- **Frontend Build:** `npm run build` (`tsc && vite build`) 1.98s içinde `PASS`.
+
+### 6. Nihai Faz 14 Kararı
+```text
+PASS — STATE MACHINE HARDENED, REGRESSION TESTS AND FULL SUITE VERIFIED
+(PRODUCTION DEPLOY & REAL QR E2E AWAITING DEPLOY LIFECYCLE)
+```

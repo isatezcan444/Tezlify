@@ -1839,8 +1839,9 @@ class WhatsAppSyncOrchestrator:
                     # still arriving; the loading gate then opens and the list keeps
                     # growing (production report, 2026-10-02). `job.stage` stays
                     # "starting" for the duration, which is what the UI shows.
+                    gw_ready_phase = "ready"
                     if ws_session.initial_sync_completed_at is None:
-                        await await_gateway_history_ready(gateway_id)
+                        gw_ready_phase = await await_gateway_history_ready(gateway_id)
                     if job.cancel_requested:
                         raise asyncio.CancelledError()
                     job.stage = "chats"
@@ -1971,7 +1972,8 @@ class WhatsAppSyncOrchestrator:
                     getattr(_ws, "id", None) for _ws in sessions_to_sync
                 ]
                 session_ids = [sid for sid in session_ids if sid is not None]
-                if session_ids:
+                should_stamp_initial_sync = (len(all_items) > 0) or (gw_ready_phase != "syncing")
+                if session_ids and should_stamp_initial_sync:
                     await db.execute(
                         update(WhatsAppSession)
                         .where(
@@ -1980,10 +1982,10 @@ class WhatsAppSyncOrchestrator:
                         )
                         .values(initial_sync_completed_at=_initial_sync_now)
                     )
-                for _ws in sessions_to_sync:
-                    if hasattr(_ws, "__dict__"):
-                        _ws.__dict__["initial_sync_completed_at"] = _initial_sync_now
-                await db.commit()
+                    for _ws in sessions_to_sync:
+                        if hasattr(_ws, "__dict__"):
+                            _ws.__dict__["initial_sync_completed_at"] = _initial_sync_now
+                    await db.commit()
                 # Avatar backfill (QR sonrasi parite): kimi profil fotoğrafları
                 # rate limit / geç hydration nedeniyle ilk sweep'te düşer ve
                 # tek geçişli sweep'te başka retry tetikleyicisi olmadığından

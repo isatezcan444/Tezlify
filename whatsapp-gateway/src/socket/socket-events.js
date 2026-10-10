@@ -37,13 +37,14 @@ export function resolveHistoryWaitersForChunk({
   messagesByChat,
   touchedChatKeys,
 }) {
+  if (!pendingHistoryWaiters || typeof pendingHistoryWaiters.entries !== 'function') return;
   for (const [flightKey, waiter] of pendingHistoryWaiters.entries()) {
     if (waiter.sessionId !== sessionId || !touchedChatKeys.has(waiter.key)) continue;
     const chatMsgs = messagesByChat.get(waiter.key) || [];
     const matching = waiter.before ? chatMsgs.filter((m) => m.id < waiter.before) : chatMsgs;
     waiter.resolve(matching);
     pendingHistoryWaiters.delete(flightKey);
-    inFlightHistoryFetches.delete(flightKey);
+    inFlightHistoryFetches?.delete?.(flightKey);
   }
 }
 
@@ -171,17 +172,30 @@ export function bindSocketEvents({
     }
     if (update.receivedPendingNotifications) {
       diagnostic('received_pending_notifications', { session_ref: sessionRef(id), generation });
-      logger.info({ session_ref: sessionRef(id) }, 'Baileys offline pending notifications completed');
+      logger.info({ session_ref: sessionRef(id), chats: chats.size }, 'Baileys offline pending notifications completed');
+      session._receivedPendingNotifications = true;
       emitEvent({ event: 'session_notifications_received', session_id: id });
       if (session.sync && session.sync.phase === 'syncing') {
-        if (session._historyQuietTimer) {
-          clearTimeout(session._historyQuietTimer);
-        }
-        session._historyQuietTimer = setTimeout(() => {
-          if (session.sync && session.sync.phase === 'syncing') {
-            finalizeHistorySync('pending_notifications_completed');
+        // Semantics: receivedPendingNotifications signals offline stanza completion.
+        // It does NOT guarantee that the companion history archive (HISTORY_SYNC_NOTIFICATION) has completed.
+        // If we already have stored chats, we can safely accelerate quiet timer to 1500ms.
+        // If chats.size === 0, we MUST NOT finalize prematurely with 0 chats — await companion history chunks!
+        if (chats.size > 0) {
+          if (session._historyQuietTimer) {
+            clearTimeout(session._historyQuietTimer);
           }
-        }, 1500);
+          session._historyQuietTimer = setTimeout(() => {
+            if (!session.lifecycle.isCurrent(generation, sock)) return;
+            if (session.sync && session.sync.phase === 'syncing') {
+              finalizeHistorySync('pending_notifications_completed_with_chats');
+            }
+          }, 1500);
+        } else {
+          logger.info(
+            { session_ref: sessionRef(id), generation },
+            'Pending notifications received with 0 chats in store; awaiting companion history chunks before accelerating finalization'
+          );
+        }
       }
     }
     if (qr) {
@@ -431,7 +445,10 @@ export function bindSocketEvents({
         emitEvent({ event: 'session_sync_started', session_id: id, session_name: session.session_name, sync: session.sync });
         if (session._historyQuietTimer) clearTimeout(session._historyQuietTimer);
         session._historyQuietTimer = setTimeout(() => {
-          finalizeHistorySync('no_history_chunks_received');
+          if (!session.lifecycle.isCurrent(generation, sock)) return;
+          if (session.sync && session.sync.phase === 'syncing') {
+            finalizeHistorySync('no_history_chunks_received');
+          }
         }, HISTORY_NO_CHUNK_FALLBACK_MS);
       }
     }
@@ -444,6 +461,7 @@ export function bindSocketEvents({
         clearTimeout(session._historyQuietTimer);
         session._historyQuietTimer = null;
       }
+      session._receivedPendingNotifications = false;
       if (session.sync && session.sync.phase !== 'ready') {
         session.sync = { phase: 'idle' };
       }
@@ -767,6 +785,14 @@ export function bindSocketEvents({
       if (session.sync && session.sync.phase === 'syncing') {
         session.sync.chats_unique = chats.size;
         session.sync.chats_synced = Math.max(session.sync.chats_synced || 0, chats.size);
+        if (session._receivedPendingNotifications && chats.size > 0 && !session._historyQuietTimer) {
+          session._historyQuietTimer = setTimeout(() => {
+            if (!session.lifecycle.isCurrent(generation, sock)) return;
+            if (session.sync && session.sync.phase === 'syncing') {
+              finalizeHistorySync('pending_notifications_chats_updated');
+            }
+          }, 1500);
+        }
       }
       emitEvent({ event: 'conversation_updated', conversation: chats.get(key) });
     }
@@ -1039,11 +1065,20 @@ export function bindSocketEvents({
           void ensureGroupSubjects({ force: true });
         } else if (session.sync.phase === 'syncing') {
           if (session._historyQuietTimer) clearTimeout(session._historyQuietTimer);
+          // If offline pending notifications were completed AND we now have chats in memory,
+          // accelerate the quiet timer to 1500ms; otherwise use standard HISTORY_QUIET_PERIOD_MS (3000ms).
+          const quietDelay = (session._receivedPendingNotifications && chats.size > 0)
+            ? 1500
+            : HISTORY_QUIET_PERIOD_MS;
+          const finalizeReason = (session._receivedPendingNotifications && chats.size > 0)
+            ? 'pending_notifications_and_chunk_quiet'
+            : 'quiet_period_after_last_chunk';
           session._historyQuietTimer = setTimeout(() => {
+            if (!session.lifecycle.isCurrent(generation, sock)) return;
             if (session.sync && session.sync.phase === 'syncing') {
-              finalizeHistorySync('quiet_period_after_last_chunk');
+              finalizeHistorySync(finalizeReason);
             }
-          }, HISTORY_QUIET_PERIOD_MS);
+          }, quietDelay);
         }
       }
       logger.info({ storedChats, storedMessages, progress, isLatest }, 'History sync ingested');
