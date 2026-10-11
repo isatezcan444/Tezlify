@@ -51,6 +51,7 @@ await writeFile(
     `export { filterMatchingMessageIds, resolveActiveSearchMessageId, getNextSearchMatchIndex, getPrevSearchMatchIndex } from '${SRC}/features/whatsapp/lib/whatsappChatSearch';`,
     `export { hasDragFiles, isDragLeavingWindow, isDropCooldownActive, DRAG_DROP_COOLDOWN_MS } from '${SRC}/features/whatsapp/lib/whatsappChatDragDrop';`,
     `export { filterQuickReplies, extractQuickReplyCategories, renderQuickReplyContent } from '${SRC}/features/whatsapp/lib/whatsappQuickReplies';`,
+    `export { toggleSelectedMessageId, resolveSelectedMessages, formatMessagesForCopy } from '${SRC}/features/whatsapp/lib/whatsappChatSelection';`,
     `export { en } from '${SRC}/locales/en';`,
     `export { tr } from '${SRC}/locales/tr';`,
   ].join('\n'),
@@ -142,6 +143,9 @@ try {
     filterQuickReplies,
     extractQuickReplyCategories,
     renderQuickReplyContent,
+    toggleSelectedMessageId,
+    resolveSelectedMessages,
+    formatMessagesForCopy,
     PEER_TYPING_TTL_MS,
     pruneExpiredTyping,
     resolveSyncDisplayCounts,
@@ -1066,6 +1070,21 @@ try {
     assert.deepEqual(extractQuickReplyCategories(list), ['GENEL', 'DESTEK']);
     assert.equal(renderQuickReplyContent(list[0], {}, 'Ali'), 'Merhaba Ali');
     assert.equal(renderQuickReplyContent(list[1], { not: 'TEST' }), 'Detaylar: TEST');
+  });
+
+  check('§MessageSelection: toggleSelectedMessageId, resolveSelectedMessages, and formatMessagesForCopy operate strictly', () => {
+    let set = new Set();
+    set = toggleSelectedMessageId(set, 10);
+    set = toggleSelectedMessageId(set, 20);
+    assert.equal(set.size, 2);
+    set = toggleSelectedMessageId(set, 10);
+    assert.equal(set.size, 1);
+    assert.equal(set.has(20), true);
+
+    const msgs = [{ id: 10, body: 'A' }, { id: 20, body: 'B' }, { id: 30, body: 'C' }];
+    const resolved = resolveSelectedMessages(msgs, new Set([30, 10]));
+    assert.deepEqual(resolved.map((m) => m.id), [10, 30], 'Chronological order must be preserved');
+    assert.equal(formatMessagesForCopy(resolved), 'A\nC');
   });
 
   console.log(`\nWhatsApp frontend identity + ordering verification: PASS (${passed} checks)`);

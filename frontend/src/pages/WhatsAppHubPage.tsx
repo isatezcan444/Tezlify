@@ -77,6 +77,8 @@ import { useAntiBanSettings } from '../features/whatsapp/hooks/useAntiBanSetting
 import { useChatSearch } from '../features/whatsapp/hooks/useChatSearch';
 import { useChatDragAndDrop } from '../features/whatsapp/hooks/useChatDragAndDrop';
 import { useQuickReplyComposer } from '../features/whatsapp/hooks/useQuickReplies';
+import { useChatSelectionAndForward } from '../features/whatsapp/hooks/useChatSelectionAndForward';
+import { formatMessagesForCopy, resolveSelectedMessages } from '../features/whatsapp/lib/whatsappChatSelection';
 import { FilterTab } from '../features/whatsapp/components/ConversationList';
 import { useToast } from '../context/ToastContext';
 import { useI18n } from '../context/I18nContext';
@@ -242,10 +244,27 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   }, [selectedConv?.id]);
   const [replyingTo, setReplyingTo] = useState<QuotedMessage | null>(null);
   const [isChatInfoOpen, setIsChatInfoOpen] = useState(false);
-  const [isSelectMode, setIsSelectMode] = useState(false);
-  const [selectedMessageIds, setSelectedMessageIds] = useState<Set<number | string>>(new Set());
-  const [isForwardModalOpen, setIsForwardModalOpen] = useState(false);
-  const [messagesToForward, setMessagesToForward] = useState<Message[]>([]);
+  const {
+    isSelectMode,
+    setIsSelectMode,
+    selectedMessageIds,
+    setSelectedMessageIds,
+    isForwardModalOpen,
+    setIsForwardModalOpen,
+    messagesToForward,
+    setMessagesToForward,
+    enterSelectMode: handleEnterSelectMode,
+    exitSelectMode: handleCancelSelectMode,
+    toggleSelectMode: handleToggleSelectMode,
+    toggleSelectMessage: handleToggleSelectMessage,
+    openForwardSingleMessage: handleForwardSingleMessage,
+    openForwardSelectedMessages,
+    closeForwardModal: handleCloseForwardModal,
+    clearSelection,
+    resetSelectionAndForward,
+  } = useChatSelectionAndForward({
+    selectedConvId: selectedConv?.id,
+  });
   const [messagesMap, setMessagesMap] = useState<Record<number, Message[]>>({});
   const {
     isChatSearchOpen,
@@ -300,11 +319,8 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     clearInsertedComposerText();
     clearStagedFiles();
     resetChatSearch();
-    setIsSelectMode(false);
-    setSelectedMessageIds(new Set());
-    setIsForwardModalOpen(false);
-    setMessagesToForward([]);
-  }, [selectedConv?.id, clearStagedFiles, resetChatSearch, clearInsertedComposerText]);
+    resetSelectionAndForward();
+  }, [selectedConv?.id, clearStagedFiles, resetChatSearch, clearInsertedComposerText, resetSelectionAndForward]);
 
   useEffect(() => {
     if (!selectedConv?.is_group || !selectedConv?.id) return;
@@ -367,42 +383,19 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     });
   }, [youName]);
 
-  const handleToggleSelectMessage = useCallback((messageId: number | string) => {
-    setSelectedMessageIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(messageId)) {
-        next.delete(messageId);
-      } else {
-        next.add(messageId);
-      }
-      return next;
-    });
-  }, []);
-
-  const handleForwardSingleMessage = useCallback((msg: Message) => {
-    setMessagesToForward([msg]);
-    setIsForwardModalOpen(true);
-  }, []);
-
   const handleForwardSelectedMessages = useCallback(() => {
     const currentConv = selectedConvRef.current;
     if (!currentConv) return;
     const currentMsgs = messagesMap[currentConv.id] || [];
-    const msgs = currentMsgs.filter((m) => selectedMessageIds.has(m.id));
-    if (msgs.length === 0) return;
-    setMessagesToForward(msgs);
-    setIsForwardModalOpen(true);
-  }, [messagesMap, selectedMessageIds]);
+    openForwardSelectedMessages(currentMsgs);
+  }, [messagesMap, openForwardSelectedMessages]);
 
   const handleCopySelectedMessages = useCallback(async () => {
     const currentConv = selectedConvRef.current;
     if (!currentConv) return;
     const currentMsgs = messagesMap[currentConv.id] || [];
-    const msgs = currentMsgs.filter((m) => selectedMessageIds.has(m.id));
-    const text = msgs
-      .map((m) => m.body || m.media_caption || (m.media_filename ? `[${m.media_filename}]` : ''))
-      .filter(Boolean)
-      .join('\n');
+    const msgs = resolveSelectedMessages(currentMsgs, selectedMessageIds);
+    const text = formatMessagesForCopy(msgs);
     if (!text) return;
     try {
       await navigator.clipboard.writeText(text);
@@ -473,12 +466,6 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     toastRef.current.success(tRef.current('whatsapp.messageDeleted'));
   }, []);
 
-  const handleEnterSelectMode = useCallback((initialMessageId?: number | string) => {
-    setIsSelectMode(true);
-    if (initialMessageId != null) {
-      setSelectedMessageIds(new Set([initialMessageId]));
-    }
-  }, []);
 
   const handleReportMessage = useCallback(async (message: Message) => {
     const ok = await toastRef.current.confirm({
@@ -2212,8 +2199,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         toastRef.current.error(tRef.current('whatsapp.forwardFailed'));
       }
 
-      setIsSelectMode(false);
-      setSelectedMessageIds(new Set());
+      clearSelection();
 
       if (selectedConvRef.current && targetConversationIds.includes(selectedConvRef.current.id)) {
         void hydrateConversationMessages(selectedConvRef.current.id);
@@ -3649,12 +3635,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                       <Tooltip content={isSelectMode ? t('whatsapp.cancelSelection') : t('whatsapp.selectMessages')} position="bottom">
                         <button
                           type="button"
-                          onClick={() => {
-                            setIsSelectMode((prev) => {
-                              if (prev) setSelectedMessageIds(new Set());
-                              return !prev;
-                            });
-                          }}
+                          onClick={handleToggleSelectMode}
                           data-testid="chat-header-select-btn"
                           aria-label={isSelectMode ? t('whatsapp.cancelSelection') : t('whatsapp.selectMessages')}
                           title={isSelectMode ? t('whatsapp.cancelSelection') : t('whatsapp.selectMessages')}
@@ -3754,10 +3735,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                     <div className="flex items-center space-x-3">
                       <button
                         type="button"
-                        onClick={() => {
-                          setIsSelectMode(false);
-                          setSelectedMessageIds(new Set());
-                        }}
+                        onClick={handleCancelSelectMode}
                         title={t('whatsapp.cancelSelection')}
                         aria-label={t('whatsapp.cancelSelection')}
                         data-testid="cancel-selection-btn"
@@ -4056,10 +4034,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       {/* WhatsApp Message Forwarding Modal */}
       <ForwardModal
         isOpen={isForwardModalOpen}
-        onClose={() => {
-          setIsForwardModalOpen(false);
-          setMessagesToForward([]);
-        }}
+        onClose={handleCloseForwardModal}
         messagesToForward={messagesToForward}
         conversations={conversations}
         onConfirmForward={handleConfirmForward}
