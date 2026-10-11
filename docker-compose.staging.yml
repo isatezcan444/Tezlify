@@ -1,113 +1,145 @@
-networks:
-  tezlify-internal:
-    name: tezlify-internal
-    driver: bridge
+version: "3.8"
+name: tezlify-staging
 
-volumes:
-  caddy_data:
-  caddy_config:
-  wa_staging_sessions:
-  wa_staging_media:
-  pg_staging_data:
+networks:
+  tezlify-staging-internal:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/16
 
 services:
-  staging-db:
-    image: postgres:16-alpine
-    container_name: tezlify-staging-db
-    restart: unless-stopped
+  # Staging PostgreSQL: 100% isolated container for staging tests.
+  # NEVER connects to or mounts production database files.
+  db:
+    image: postgres:17-alpine
+    container_name: tezlify-db-staging
+    restart: always
     environment:
-      POSTGRES_USER: tezlify_stage
-      POSTGRES_PASSWORD: stage_secure_password_9988
       POSTGRES_DB: tezlify_staging
+      POSTGRES_USER: tezlify_staging
+      POSTGRES_PASSWORD: ${STAGING_DB_PASSWORD:-staging_dev_pass_only}
     volumes:
-      - pg_staging_data:/var/lib/postgresql/data
-    networks:
-      - tezlify-internal
-    expose:
-      - "5432"
+      - postgres_data_staging:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U tezlify_stage -d tezlify_staging"]
-      interval: 5s
-      timeout: 3s
+      test: ["CMD-SHELL", "pg_isready -U tezlify_staging -d tezlify_staging"]
+      interval: 10s
+      timeout: 5s
       retries: 5
+    networks:
+      - tezlify-staging-internal
 
   caddy:
     image: caddy:2-alpine
-    container_name: tezlify-caddy
-    restart: unless-stopped
+    container_name: tezlify-caddy-staging
+    restart: always
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     ports:
-      - "80:80"
-      - "443:443"
+      - "${STAGING_HTTP_PORT:-8080}:80"
+      - "${STAGING_HTTPS_PORT:-8443}:443"
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
-    networks:
-      - tezlify-internal
+      - ./Caddyfile.staging:/etc/caddy/Caddyfile:ro
+      - /opt/tezlify-staging/frontend_candidate:/srv/frontend:ro
+      - caddy_data_staging:/data
+      - caddy_config_staging:/config
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:80/caddy-health"]
-      interval: 10s
-      timeout: 3s
+      test: ["CMD", "caddy", "version"]
+      interval: 15s
+      timeout: 5s
       retries: 3
+    networks:
+      - tezlify-staging-internal
 
   backend:
     build:
       context: .
       dockerfile: backend/Dockerfile
-    container_name: tezlify-backend
-    restart: unless-stopped
+    container_name: tezlify-backend-staging
+    restart: always
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     expose:
       - "8000"
+    env_file:
+      - .env.staging
     environment:
-      - PORT=8000
-      - DATABASE_URL=postgresql+asyncpg://tezlify_stage:stage_secure_password_9988@staging-db:5432/tezlify_staging
-      - WHATSAPP_GATEWAY_URL=http://gateway:8787
-      - WHATSAPP_GATEWAY_SECRET=stage-gw-secret-token-389104812398
-      - SECRET_KEY=stage-backend-secret-key-oracle-staging-test-48192
-      - SCRAPER_ENGINE=HTTP
-      - SEED_DEMO_DATA=false
-    networks:
-      - tezlify-internal
+      PORT: 8000
+      ENVIRONMENT: "staging"
+      DATABASE_URL: "postgresql+asyncpg://tezlify_staging:${STAGING_DB_PASSWORD:-staging_dev_pass_only}@db:5432/tezlify_staging"
+      WHATSAPP_GATEWAY_URL: "http://gateway:8787"
+      SKIP_JOB_RECOVERY: "true"
+    volumes:
+      - /opt/tezlify-staging/runtime:/opt/tezlify/runtime:ro
+      - /opt/tezlify-staging/backups:/opt/tezlify/backups:ro
+      - /opt/tezlify-staging/monitoring:/opt/tezlify/monitoring:ro
+      - /run:/host/run:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /var/lib/docker/containers:/var/lib/docker/containers:rw
+      - /opt/tezlify-staging:/opt/tezlify/deploy:rw
     depends_on:
-      staging-db:
+      db:
         condition: service_healthy
-      gateway:
-        condition: service_started
     healthcheck:
-      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
-      interval: 10s
-      timeout: 4s
+      test: ["CMD", "python3", "-c", "import urllib.request; res = urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5); exit(0 if res.status == 200 else 1)"]
+      interval: 15s
+      timeout: 5s
       retries: 3
+      start_period: 30s
+    networks:
+      - tezlify-staging-internal
 
   gateway:
     build:
       context: .
       dockerfile: whatsapp-gateway/Dockerfile
-    container_name: tezlify-gateway
-    restart: unless-stopped
+    container_name: tezlify-gateway-staging
+    restart: always
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     expose:
       - "8787"
+    env_file:
+      - .env.staging
     environment:
-      - GATEWAY_PORT=8787
-      - GATEWAY_HOST=0.0.0.0
-      - BACKEND_WS_URL=ws://backend:8000/ws/gateway
-      - WHATSAPP_GATEWAY_SECRET=stage-gw-secret-token-389104812398
-      - GATEWAY_ENCRYPTION_KEY=staging-aes-key-for-oracle-stage-32char!
-      - DATABASE_URL=postgresql://tezlify_stage:stage_secure_password_9988@staging-db:5432/tezlify_staging
-      - REQUIRE_DURABLE_AUTH=true
-      - GATEWAY_DATABASE_POOL_MAX=3
-    volumes:
-      - wa_staging_sessions:/app/sessions
-      - wa_staging_media:/app/media
-    networks:
-      - tezlify-internal
+      GATEWAY_PORT: 8787
+      GATEWAY_HOST: 0.0.0.0
+      BACKEND_WS_URL: ws://backend:8000/ws/gateway
+      # SAFE STAGING INVARIANT: Auto-restore of WhatsApp sessions is disabled by default
+      # in staging to eliminate any chance of reconnecting production sessions.
+      WHATSAPP_AUTO_RESTORE: "false"
+      GATEWAY_RESTORE_CONCURRENCY: "1"
+      LOG_LEVEL: info
     depends_on:
-      staging-db:
+      backend:
         condition: service_healthy
+    volumes:
+      - whatsapp_sessions_staging:/app/sessions
+      - whatsapp_media_staging:/app/media
     healthcheck:
-      test: ["CMD", "node", "-e", "const r=require('node:http').request({hostname:'127.0.0.1',port:8787,path:'/health',timeout:3000},res=>{if(res.statusCode!==200)process.exit(1);res.on('data',()=>{});res.on('end',()=>process.exit(0))});r.on('error',()=>process.exit(1));r.end();"]
-      interval: 10s
-      timeout: 4s
+      test: ["CMD", "node", "-e", "require('node:http').get('http://127.0.0.1:8787/health', res => process.exit(res.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 15s
+      timeout: 5s
       retries: 3
+      start_period: 20s
+    networks:
+      - tezlify-staging-internal
+
+volumes:
+  postgres_data_staging:
+  caddy_data_staging:
+  caddy_config_staging:
+  whatsapp_sessions_staging:
+  whatsapp_media_staging:

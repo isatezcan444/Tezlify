@@ -1,0 +1,77 @@
+{
+    auto_https disable_redirects
+}
+
+(security_headers) {
+    header {
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "SAMEORIGIN"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        Permissions-Policy "camera=(), microphone=(self), geolocation=(), payment=()"
+        -Server
+        -Via
+    }
+}
+
+(backend_proxy_staging) {
+    reverse_proxy backend:8000 {
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+        lb_try_duration 10s
+        lb_try_interval 500ms
+        fail_duration 10s
+        health_uri /health
+        health_interval 10s
+        health_timeout 3s
+        health_status 200
+    }
+}
+
+# STAGING VIRTUAL HOST
+# Domain can be configured via STAGING_DOMAIN environment variable or default to localhost.
+{$STAGING_DOMAIN:localhost:8080} {
+    import security_headers
+    encode zstd gzip
+
+    handle /caddy-health {
+        respond "OK (STAGING)" 200
+    }
+
+    handle /api/* {
+        import backend_proxy_staging
+    }
+
+    handle /ws* {
+        import backend_proxy_staging
+    }
+
+    handle /health {
+        import backend_proxy_staging
+    }
+
+    handle /metrics {
+        import backend_proxy_staging
+    }
+
+    handle /docs* {
+        import backend_proxy_staging
+    }
+
+    handle /openapi.json {
+        import backend_proxy_staging
+    }
+
+    handle /assets/* {
+        root * /srv/frontend
+        file_server {
+            precompressed zstd gzip
+        }
+    }
+
+    handle {
+        root * /srv/frontend
+        try_files {path} /index.html
+        file_server
+    }
+}

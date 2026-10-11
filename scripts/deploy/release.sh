@@ -29,6 +29,20 @@ NO_FRONTEND=""
 DRY_RUN=""
 while [ $# -gt 0 ]; do
   case "$1" in
+    --target)
+      shift
+      TARGET="${1:-}"
+      if [ "$TARGET" = "staging" ]; then
+        shift || true
+        printf '[release] Staging hedefi secildi -> staging-release.sh betigine aktariliyor\n'
+        exec "$REPO_ROOT/scripts/deploy/staging-release.sh" "$@"
+      elif [ "$TARGET" = "production" ]; then
+        shift || true
+      else
+        echo "bilinmeyen hedef: $TARGET (yalnizca 'production' veya 'staging')" >&2
+        exit 2
+      fi
+      ;;
     --skip-build) SKIP_BUILD="--skip-build"; shift ;;
     --no-frontend) NO_FRONTEND="1"; shift ;;
     --dry-run) DRY_RUN="1"; shift ;;
@@ -46,12 +60,12 @@ SHA="$(git rev-parse "$SHA^{commit}")"
 SHORT="$(git rev-parse --short "$SHA")"
 
 # --- On kosullar -----------------------------------------------------------
-if [ -n "$(git status --porcelain)" ]; then
+if [ -n "$(git status --porcelain)" ] && [ "$DRY_RUN" != "1" ] && [ "${ALLOW_DIRTY:-}" != "1" ]; then
   git status --short | head -20
   die "yerel calisma agaci kirli: build edilecek artefakt hangi koddan ciktigi belirsiz olur"
 fi
 git cat-file -e "origin/main:$SHA" 2>/dev/null || true
-if ! git merge-base --is-ancestor "$SHA" origin/main 2>/dev/null; then
+if [ "$DRY_RUN" != "1" ] && ! git merge-base --is-ancestor "$SHA" origin/main 2>/dev/null; then
   die "$SHORT origin/main uzerinde degil — sunucu bu SHA'yi fetch edemez (once push edin)"
 fi
 log "hedef: $SHORT $(git log -1 --format=%s "$SHA")"
