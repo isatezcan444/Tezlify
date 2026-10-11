@@ -1,4 +1,4 @@
-"""Permanent Isolated PostgreSQL Multi-Process Concurrency & Crash-Recovery Test Suite (Phase 2.8.5).
+"""Permanent Isolated PostgreSQL Multi-Process Concurrency & Crash-Recovery Test Suite (Phase 2.8.5 - 2.8.6).
 
 This suite verifies that under real multi-process concurrency on PostgreSQL:
 1. Same client_message_id concurrent initial send dispatches to gateway exactly once.
@@ -13,11 +13,13 @@ This suite verifies that under real multi-process concurrency on PostgreSQL:
 7. Losing worker cleanly awaits winning worker's committed SENT status and returns it without dispatching.
 8. Late-arriving gateway event (ECHO/ACK) promotes a DELIVERY_UNCONFIRMED row to SENT/DELIVERED,
    while late failures never downgrade an already SENT/DELIVERED row.
+9. FAILED row with existing wa_message_id is NEVER redispatched (0 dispatches; returns existing row).
+10. Post-recovery retry (recovered row in SENT with wa_message_id) prevents duplicate dispatch (0 dispatches).
 
 Requirements:
-- Real PostgreSQL 17+ connection via asyncpg.
-- Independent OS processes (multiprocessing spawn context).
-- Zero false positives; skips gracefully if isolated PostgreSQL is unavailable.
+- Strictly isolated PostgreSQL connection (hard rejection of production hosts/databases).
+- Independent OS processes (multiprocessing spawn context) and asyncpg pools.
+- Zero false positives; reports BLOCKED if isolated PostgreSQL is unavailable.
 """
 import asyncio
 import multiprocessing
@@ -49,6 +51,25 @@ os.environ["WHATSAPP_GATEWAY_SECRET"] = "01234567890123456789012345678901"
 TEST_USER_ID = "00000000-0000-0000-0000-000000000001"
 
 
+def _assert_safe_isolated_test_database(url: str) -> None:
+    """Explicit safety guard ensuring tests CANNOT connect to unisolated or production DB."""
+    url_lower = url.lower()
+    production_indicators = ["130.162.247.20", "tezlify.com", "oracle"]
+    for indicator in production_indicators:
+        if indicator in url_lower:
+            raise RuntimeError(
+                f"SAFETY VIOLATION: Test database URL '{url}' matches production indicator '{indicator}'. "
+                "Tests can only run against a local isolated test database."
+            )
+    if "test" not in url_lower and "isolated" not in url_lower:
+        raise RuntimeError(
+            f"SAFETY VIOLATION: Database name in '{url}' must contain 'test' or 'isolated' to prevent accidental writes."
+        )
+
+
+_assert_safe_isolated_test_database(POSTGRES_TEST_URL)
+
+
 def _check_postgres_reachable() -> bool:
     """Synchronous probe to check if isolated PostgreSQL is available."""
     async def _probe():
@@ -70,7 +91,7 @@ def _check_postgres_reachable() -> bool:
 POSTGRES_AVAILABLE = _check_postgres_reachable()
 pytestmark = pytest.mark.skipif(
     not POSTGRES_AVAILABLE,
-    reason=f"Isolated PostgreSQL not available at {POSTGRES_TEST_URL}",
+    reason=f"BLOCKED: Isolated PostgreSQL not available at {POSTGRES_TEST_URL}",
 )
 
 # ---------------------------------------------------------------------------
@@ -244,6 +265,62 @@ def _mp_worker_crash_post_dispatch_pre_db_ack(proc_id, counter, sync_e, start_e,
                         db, TEST_USER_ID, 1, "Crash post dispatch body", client_message_id="pg-mid-crash-post-dispatch"
                     )
                     q.put((proc_id, "SUCCESS", res.get("status"), res.get("wa_message_id")))
+        except Exception as e:
+            q.put((proc_id, "ERROR", str(e), None))
+        finally:
+            await eng.dispose()
+    asyncio.run(run())
+
+
+def _mp_worker_retry_with_existing_wa_id(proc_id, counter, sync_e, start_e, q):
+    """Worker attempts to retry a message that already has a wa_message_id (FAILED or PENDING).
+    Gateway MUST NOT be called (dispatch_count must remain 0)."""
+    async def run():
+        eng = create_async_engine(POSTGRES_TEST_URL)
+        session_maker = async_sessionmaker(eng, expire_on_commit=False)
+        class MockService: pass
+        svc = MockService()
+        async def mock_gw(db, session_row, op):
+            with counter.get_lock(): counter.value += 1
+            return {"wa_message_id": f"BAE5_UNWANTED_DISPATCH_{proc_id}", "status": "SENT"}
+        svc._gateway_op_or_mark_relink = mock_gw
+        orch = WhatsAppMessagingOrchestrator(svc)
+        sync_e.set()
+        start_e.wait()
+        try:
+            async with session_maker() as db:
+                res = await orch.send_text_message(
+                    db, TEST_USER_ID, 1, "Existing wa_id retry body", client_message_id="pg-mid-failed-with-wa-id"
+                )
+                q.put((proc_id, "SUCCESS", res.get("status"), res.get("wa_message_id")))
+        except Exception as e:
+            q.put((proc_id, "ERROR", str(e), None))
+        finally:
+            await eng.dispose()
+    asyncio.run(run())
+
+
+def _mp_worker_post_recovery_retry(proc_id, counter, sync_e, start_e, q):
+    """Worker attempts to send/retry a recovered message that has status SENT and wa_message_id.
+    Gateway MUST NOT be called (dispatch_count must remain 0)."""
+    async def run():
+        eng = create_async_engine(POSTGRES_TEST_URL)
+        session_maker = async_sessionmaker(eng, expire_on_commit=False)
+        class MockService: pass
+        svc = MockService()
+        async def mock_gw(db, session_row, op):
+            with counter.get_lock(): counter.value += 1
+            return {"wa_message_id": f"BAE5_POST_REC_DISPATCH_{proc_id}", "status": "SENT"}
+        svc._gateway_op_or_mark_relink = mock_gw
+        orch = WhatsAppMessagingOrchestrator(svc)
+        sync_e.set()
+        start_e.wait()
+        try:
+            async with session_maker() as db:
+                res = await orch.send_text_message(
+                    db, TEST_USER_ID, 1, "Post recovery retry body", client_message_id="pg-mid-post-recovery-retry"
+                )
+                q.put((proc_id, "SUCCESS", res.get("status"), res.get("wa_message_id")))
         except Exception as e:
             q.put((proc_id, "ERROR", str(e), None))
         finally:
@@ -650,3 +727,90 @@ class TestWhatsAppPostgresMultiProcessConcurrency:
             assert refreshed.status == ConversationMessageStatus.SENT
 
         await eng.dispose()
+
+    @pytest.mark.asyncio
+    async def test_09_failed_row_with_existing_wa_message_id_never_redispatches(self, isolated_pg_db):
+        """Scenario 9 (CRITICAL DUPLICATE DISPATCH INVARIANT):
+        A message in FAILED state already possesses a wa_message_id (e.g. from prior dispatch).
+        Two concurrent workers attempt to retry this message.
+        Verification:
+        - Exactly 0 gateway dispatches occur (dispatch_count == 0).
+        - Both workers immediately return the existing record without modifying DB or claiming PENDING.
+        - wa_message_id is strictly preserved and never overwritten.
+        """
+        eng = create_async_engine(POSTGRES_TEST_URL)
+        session_maker = async_sessionmaker(eng, expire_on_commit=False)
+        async with session_maker() as db:
+            db.add(Message(
+                id=109,
+                user_id=TEST_USER_ID,
+                conversation_id=1,
+                direction=MessageDirection.OUTBOUND,
+                message_type=MessageType.TEXT,
+                body="Existing wa_id retry body",
+                client_message_id="pg-mid-failed-with-wa-id",
+                status=ConversationMessageStatus.FAILED,
+                wa_message_id="BAE5_PRE_EXISTING_ID",
+                error_message="DELIVERY_UNCONFIRMED: Prior timeout",
+                sender_phone="ME",
+                recipient_phone="+905559998877",
+            ))
+            await db.commit()
+        await eng.dispose()
+
+        dispatch_count, results = _run_two_process_concurrency(_mp_worker_retry_with_existing_wa_id)
+
+        # Invariant: ZERO gateway dispatches! Existing wa_message_id blocks redispatch.
+        assert dispatch_count == 0, f"Expected 0 dispatches for row with existing wa_message_id, got {dispatch_count}"
+
+        db_msg = await _fetch_db_message("pg-mid-failed-with-wa-id")
+        assert db_msg.wa_message_id == "BAE5_PRE_EXISTING_ID"
+
+        successes = [r for r in results if r[1] == "SUCCESS"]
+        assert len(successes) == 2
+        assert successes[0][3] == "BAE5_PRE_EXISTING_ID"
+        assert successes[1][3] == "BAE5_PRE_EXISTING_ID"
+
+    @pytest.mark.asyncio
+    async def test_10_post_recovery_subsequent_retry_prevents_duplicate_dispatch(self, isolated_pg_db):
+        """Scenario 10 (POST-RECOVERY RETRY SAFETY):
+        A message that was previously recovered (status is SENT, wa_message_id is populated)
+        is retried concurrently by two workers.
+        Verification:
+        - Exactly 0 gateway dispatches occur (dispatch_count == 0).
+        - Both workers return the committed SENT message.
+        - Zero duplicate WhatsApp messages can be sent.
+        """
+        eng = create_async_engine(POSTGRES_TEST_URL)
+        session_maker = async_sessionmaker(eng, expire_on_commit=False)
+        async with session_maker() as db:
+            db.add(Message(
+                id=110,
+                user_id=TEST_USER_ID,
+                conversation_id=1,
+                direction=MessageDirection.OUTBOUND,
+                message_type=MessageType.TEXT,
+                body="Post recovery retry body",
+                client_message_id="pg-mid-post-recovery-retry",
+                status=ConversationMessageStatus.SENT,
+                wa_message_id="BAE5_RECOVERED_ACK",
+                sender_phone="ME",
+                recipient_phone="+905559998877",
+            ))
+            await db.commit()
+        await eng.dispose()
+
+        dispatch_count, results = _run_two_process_concurrency(_mp_worker_post_recovery_retry)
+
+        assert dispatch_count == 0, f"Expected 0 dispatches on post-recovery retry, got {dispatch_count}"
+
+        db_msg = await _fetch_db_message("pg-mid-post-recovery-retry")
+        assert db_msg.status == ConversationMessageStatus.SENT
+        assert db_msg.wa_message_id == "BAE5_RECOVERED_ACK"
+
+        successes = [r for r in results if r[1] == "SUCCESS"]
+        assert len(successes) == 2
+        assert successes[0][2] == "SENT"
+        assert successes[1][2] == "SENT"
+        assert successes[0][3] == "BAE5_RECOVERED_ACK"
+        assert successes[1][3] == "BAE5_RECOVERED_ACK"
