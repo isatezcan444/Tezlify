@@ -288,6 +288,7 @@ class SyncJob:
     __slots__ = (
         "sync_id",
         "user_id",
+        "session_key",
         "state",
         "stage",
         "error",
@@ -308,9 +309,16 @@ class SyncJob:
         "stage_timings",
     )
 
-    def __init__(self, sync_id: str, user_id: str, silent: bool = False) -> None:
+    def __init__(
+        self,
+        sync_id: str,
+        user_id: str,
+        silent: bool = False,
+        session_key: Optional[str] = None,
+    ) -> None:
         self.sync_id = sync_id
         self.user_id = user_id
+        self.session_key = session_key
         self.state = "SYNCING"
         self.stage = "starting"
         self.error: Optional[str] = None
@@ -335,6 +343,8 @@ class SyncJob:
         """Returns real status for GET /sync/job and WebSocket reconnect recovery."""
         return {
             "sync_id": self.sync_id,
+            "user_id": self.user_id,
+            "session_key": self.session_key,
             "state": self.state,
             "stage": self.stage,
             "error": self.error,
@@ -624,7 +634,11 @@ class WhatsAppSyncOrchestrator:
         return {"event": event, "sync_id": job.sync_id, "user_id": job.user_id, **fields}
 
     async def request_sync(
-        self, db: AsyncSession, user_id: str, silent: bool = False
+        self,
+        db: AsyncSession,
+        user_id: str,
+        silent: bool = False,
+        session_key: Optional[str] = None,
     ) -> SyncJob:
         owner = str(user_id)
         job = self._sync_jobs.get(owner)
@@ -632,8 +646,15 @@ class WhatsAppSyncOrchestrator:
             # If the user explicitly initiates a sync (silent=False), un-silence the running job
             if not silent and getattr(job, "silent", False):
                 job.silent = False
+            if session_key and not getattr(job, "session_key", None):
+                job.session_key = session_key
             return job
-        job = SyncJob(sync_id=uuid.uuid4().hex, user_id=owner, silent=silent)
+        job = SyncJob(
+            sync_id=uuid.uuid4().hex,
+            user_id=owner,
+            silent=silent,
+            session_key=session_key,
+        )
         self._sync_jobs[owner] = job
         run_sync_job = self._get_helper("_run_sync_job", self._run_sync_job)
         job.task = asyncio.create_task(run_sync_job(job))
@@ -1816,7 +1837,7 @@ class WhatsAppSyncOrchestrator:
 
                     if not has_pairing:
                         try:
-                            from backend.app.models.whatsapp import SessionStatus
+                            from backend.app.models.whatsapp_session import SessionStatus
                             all_user_sess = await user_sessions(db, owner, connected_only=False)
                             has_pairing = bool(all_user_sess) or any(
                                 s.status in (SessionStatus.CONNECTING, SessionStatus.SCAN_QR, SessionStatus.CONNECTED)
@@ -1827,6 +1848,15 @@ class WhatsAppSyncOrchestrator:
 
                     if not has_pairing and getattr(job, "session_key", None):
                         has_pairing = True
+
+                    if not has_pairing:
+                        try:
+                            gateway_client = self._get_helper("gw", gw)
+                            gw_sessions = await gateway_client.list_sessions()
+                            if gw_sessions and any(s.get("status") == "CONNECTED" for s in gw_sessions):
+                                has_pairing = True
+                        except Exception:
+                            pass
 
                     if has_pairing:
                         logger.info(
@@ -2144,12 +2174,17 @@ class WhatsAppSyncOrchestrator:
         run_initial_sync = self._get_helper("_run_initial_sync", self._run_initial_sync)
         async def _invoke_run_initial_sync() -> None:
             try:
-                await run_initial_sync(owner_key, reconcile=reconcile)
+                await run_initial_sync(owner_key, reconcile=reconcile, session_key=session_key)
             except TypeError:
-                await run_initial_sync(owner_key)
+                try:
+                    await run_initial_sync(owner_key, reconcile=reconcile)
+                except TypeError:
+                    await run_initial_sync(owner_key)
         asyncio.create_task(_invoke_run_initial_sync())
 
-    async def _run_initial_sync(self, owner: str, reconcile: bool = False) -> None:
+    async def _run_initial_sync(
+        self, owner: str, reconcile: bool = False, session_key: Optional[str] = None
+    ) -> None:
         session_factory = self._get_helper("AsyncSessionLocal", AsyncSessionLocal)
         request_sync = self._get_helper("request_sync", self.request_sync)
         user_sessions = self._get_helper("_user_sessions", None)
@@ -2165,9 +2200,12 @@ class WhatsAppSyncOrchestrator:
                     except Exception:
                         pass
                 try:
-                    job = await request_sync(db, owner, silent=is_silent)
+                    job = await request_sync(db, owner, silent=is_silent, session_key=session_key)
                 except TypeError:
-                    job = await request_sync(db, owner)
+                    try:
+                        job = await request_sync(db, owner, silent=is_silent)
+                    except TypeError:
+                        job = await request_sync(db, owner)
                 await asyncio.shield(job.done.wait())
             if job.state == "COMPLETED":
                 logger.info("Initial-sync hydration tamamlandi (owner=%s, silent=%s)", owner, is_silent)

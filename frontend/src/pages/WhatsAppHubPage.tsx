@@ -1386,19 +1386,28 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       } else if (job.state === 'COMPLETED') {
         setSessionSync((prev) => (prev ? { ...prev, phase: 'ready', progress: 100, stage: 'complete' } : prev));
       } else if (job.state === 'FAILED') {
-        // Sorun 8: FAILED job backend'de (in-process kayit) tutulabilir ve
-        // sayfa her acildiginda ayni hata yeniden render edilirdi. Kullanici
-        // tarafindan bir kez gorulmus (acknowledged) bir basarisizlik ARTIK
-        // normal initial-load durumunu bozmaz; yeni bir sync denemesi yeni
-        // sync_id uretir ve yeni hatalar normal sekilde gosterilir.
-        const failureKey = job.sync_id || job.finished_at || null;
-        if (failureKey && acknowledgedFailedSyncId.current === failureKey) {
+        const errStr = (job.error || '').toLowerCase();
+        const isNoSession = errStr.includes('bagli bir whatsapp hatti yok') || errStr.includes('bağlı bir whatsapp hattı yok');
+        const hasConnectedSession = sessions.some((s) => s.status === 'CONNECTED');
+        if (isNoSession && hasConnectedSession) {
           activeSyncIdRef.current = null;
           setIsSyncingChats(false);
-          setSessionSync((prev) => (prev && prev.phase !== 'syncing' ? null : prev));
+          setSessionSync((prev) => (prev && prev.phase === 'syncing' ? null : prev));
         } else {
-          failedSyncKeyRef.current = failureKey;
-          setSessionSync({ phase: 'error', stage: job.stage, error: job.error ?? null, progress: 0 });
+          // Sorun 8: FAILED job backend'de (in-process kayit) tutulabilir ve
+          // sayfa her acildiginda ayni hata yeniden render edilirdi. Kullanici
+          // tarafindan bir kez gorulmus (acknowledged) bir basarisizlik ARTIK
+          // normal initial-load durumunu bozmaz; yeni bir sync denemesi yeni
+          // sync_id uretir ve yeni hatalar normal sekilde gosterilir.
+          const failureKey = job.sync_id || job.finished_at || null;
+          if (failureKey && acknowledgedFailedSyncId.current === failureKey) {
+            activeSyncIdRef.current = null;
+            setIsSyncingChats(false);
+            setSessionSync((prev) => (prev && prev.phase !== 'syncing' ? null : prev));
+          } else {
+            failedSyncKeyRef.current = failureKey;
+            setSessionSync({ phase: 'error', stage: job.stage, error: job.error ?? null, progress: 0 });
+          }
         }
       } else {
         // IDLE ya da taninmayan durum: calisan/bilinen bir job YOK. Bu, isin
@@ -1590,7 +1599,10 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       void refreshSyncStatus();
       const errMsg = (err?.message || '').toLowerCase();
       const isNoSession = errMsg.includes('bagli bir whatsapp hatti yok') || errMsg.includes('bağlı bir whatsapp hattı yok');
-      if (!isNoSession || !isPostQrSyncing) {
+      const hasConnectedSession = sessions.some((s) => s.status === 'CONNECTED');
+      if (isNoSession && (hasConnectedSession || isPostQrSyncing)) {
+        // Suppress false-positive no-session toast during transition or with connected session
+      } else {
         toastRef.current.error(err.message || tRef.current('whatsapp.syncFailed'), tRef.current('common.error'));
       }
     }
@@ -3012,22 +3024,24 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
           }
           pendingSyncUpdaterRef.current = null;
           acknowledgeFailedSync(syncId);
-          failedSyncKeyRef.current = syncId;
-          setSessionSync({ phase: 'error', stage: eventData.stage || 'failed', error: eventData.error || null, progress: 0 });
-          setIsSyncingChats(false);
-          activeSyncIdRef.current = null;
-          // A failed job is a real failure, never a hidden one. Re-ask the gate so
-          // it reports `error` (with the retry affordance) instead of leaving the
-          // full-screen gate stuck on `syncing_history` — the job snapshot stays
-          // `FAILED` in memory, so the backend answers honestly.
-          void refreshLoadingGate();
-          if (eventData.error_code === 'RELINK_REQUIRED') {
-            fetchSessions(true);
-            toast.error(t('whatsapp.syncRelinkRequired'), t('common.error'));
+          const errStr = (eventData.error || '').toLowerCase();
+          const isNoSession = errStr.includes('bagli bir whatsapp hatti yok') || errStr.includes('bağlı bir whatsapp hattı yok');
+          const hasConnectedSession = sessions.some((s) => s.status === 'CONNECTED');
+          if (isNoSession && hasConnectedSession) {
+            activeSyncIdRef.current = null;
+            setIsSyncingChats(false);
+            setSessionSync((prev) => (prev && prev.phase === 'syncing' ? null : prev));
           } else {
-            const errStr = (eventData.error || '').toLowerCase();
-            const isNoSession = errStr.includes('bagli bir whatsapp hatti yok') || errStr.includes('bağlı bir whatsapp hattı yok');
-            if (!isNoSession || !isPostQrSyncing) {
+            setSessionSync({ phase: 'error', stage: eventData.stage || 'failed', error: eventData.error || null, progress: 0 });
+            setIsSyncingChats(false);
+            activeSyncIdRef.current = null;
+            void refreshLoadingGate();
+            if (eventData.error_code === 'RELINK_REQUIRED') {
+              fetchSessions(true);
+              toast.error(t('whatsapp.syncRelinkRequired'), t('common.error'));
+            } else if (isNoSession && isPostQrSyncing) {
+              // Suppress during post-QR transition
+            } else {
               toast.error(eventData.error || t('whatsapp.syncFailed'), t('common.error'));
             }
           }

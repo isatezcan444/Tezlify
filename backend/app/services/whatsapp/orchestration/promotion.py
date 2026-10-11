@@ -136,6 +136,11 @@ async def _finalize_promotion(
                 logger.warning("[WhatsApp][Promotion] Initial sync trigger warning: %s", sync_err)
 
     try:
+        await db.commit()
+    except Exception as commit_err:  # noqa: BLE001
+        logger.warning("[WhatsApp][Promotion] Pre-sync commit warning: %s", commit_err)
+
+    try:
         await db.refresh(row)
         _trigger_sync_if_needed(row)
         return row

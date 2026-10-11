@@ -1735,7 +1735,12 @@ async def request_sync(db: AsyncSession, user_id: str, silent: bool = False) -> 
 
 
 def get_sync_job(user_id: str) -> Optional[Dict[str, Any]]:
-    return _sync_orchestrator.get_sync_job(user_id)
+    snap = _sync_orchestrator.get_sync_job(user_id)
+    if snap and snap.get("state") == "FAILED":
+        err = str(snap.get("error") or "").lower()
+        if "bagli bir whatsapp hatti yok" in err or "bağlı bir whatsapp hattı yok" in err:
+            return None
+    return snap
 
 
 def _cancel_stale_sync_jobs(user_id: str) -> int:
