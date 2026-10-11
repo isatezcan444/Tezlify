@@ -78,12 +78,49 @@ _gateway_bridge = {
 }
 
 
+async def recover_stranded_outbound_messages() -> int:
+    """Sunucu yeniden başlatıldığında açıkta kalan PENDING giden mesajları DELIVERY_UNCONFIRMED durumuna alır.
+
+    Bu işlem SKIP_JOB_RECOVERY ayarından bağımsız olarak çalışır çünkü mesaj teslimat
+    durumu bir kampanya/tarama işi değil, sohbet bütünlüğü kuralıdır.
+    """
+    from backend.app.core.database import AsyncSessionLocal
+    from backend.app.models.message import (
+        ConversationMessageStatus,
+        Message,
+        MessageDirection,
+    )
+    from backend.app.core.datetime_utils import utc_now_naive
+
+    async with AsyncSessionLocal() as db:
+        stranded_msgs = await db.execute(
+            update(Message)
+            .where(
+                Message.direction == MessageDirection.OUTBOUND,
+                Message.status == ConversationMessageStatus.PENDING,
+                Message.wa_message_id.is_(None),
+            )
+            .values(
+                status=ConversationMessageStatus.FAILED,
+                failed_at=utc_now_naive(),
+                error_message="DELIVERY_UNCONFIRMED: Sunucu yeniden başlatıldı; teslimat sonucu doğrulanamadı. Tekrar deneyebilirsiniz.",
+            )
+        )
+        await db.commit()
+        if stranded_msgs.rowcount:
+            logger.warning("[RECOVERY] %d takılı PENDING mesaj DELIVERY_UNCONFIRMED durumuna alındı.", stranded_msgs.rowcount)
+        return stranded_msgs.rowcount or 0
+
+
 async def recover_stuck_jobs() -> None:
     """Sunucu yeniden başlatıldığında arka planda kalmış işleri güvenli duruma alır.
 
     - Aktif (ACTIVE) kampanyalar -> PAUSED (kullanıcı devam kararı verir)
     - RUNNING/PENDING tarama işleri -> FAILED (açık mesajla)
+    - Açıkta kalan PENDING giden mesajlar -> DELIVERY_UNCONFIRMED (SKIP_JOB_RECOVERY'den bağımsız)
     """
+    await recover_stranded_outbound_messages()
+
     if os.getenv("SKIP_JOB_RECOVERY", "false").lower() in ("true", "1"):
         logger.info("[RECOVERY] SKIP_JOB_RECOVERY is set; skipping background job mutations.")
         return
@@ -104,32 +141,11 @@ async def recover_stuck_jobs() -> None:
                 error_message="Sunucu yeniden başlatıldı; iş kaldırıldı. Yeniden başlatın.",
             )
         )
-        from backend.app.models.message import (
-            ConversationMessageStatus,
-            Message,
-            MessageDirection,
-        )
-        from backend.app.core.datetime_utils import utc_now_naive
-        stranded_msgs = await db.execute(
-            update(Message)
-            .where(
-                Message.direction == MessageDirection.OUTBOUND,
-                Message.status == ConversationMessageStatus.PENDING,
-                Message.wa_message_id.is_(None),
-            )
-            .values(
-                status=ConversationMessageStatus.FAILED,
-                failed_at=utc_now_naive(),
-                error_message="DELIVERY_UNCONFIRMED: Sunucu yeniden başlatıldı; teslimat sonucu doğrulanamadı. Tekrar deneyebilirsiniz.",
-            )
-        )
         await db.commit()
         if paused.rowcount:
             logger.warning("[RECOVERY] %d ACTIVE kampanya PAUSED durumuna alındı.", paused.rowcount)
         if failed.rowcount:
             logger.warning("[RECOVERY] %d takılı tarama işi FAILED durumuna alındı.", failed.rowcount)
-        if stranded_msgs.rowcount:
-            logger.warning("[RECOVERY] %d takılı PENDING mesaj FAILED durumuna alındı.", stranded_msgs.rowcount)
 
 
 @asynccontextmanager

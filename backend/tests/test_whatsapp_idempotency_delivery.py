@@ -32,7 +32,7 @@ from backend.app.services.whatsapp.orchestration.messaging import (
     send_media_message,
     send_text_message,
 )
-from backend.app.main import recover_stuck_jobs
+from backend.app.main import recover_stuck_jobs, recover_stranded_outbound_messages
 
 
 class TestWhatsAppIdempotencyDelivery:
@@ -573,3 +573,107 @@ class TestWhatsAppIdempotencyDelivery:
             assert row_holder is not None
             assert row_holder.status == ConversationMessageStatus.FAILED
             assert "DELIVERY_UNCONFIRMED" in row_holder.error_message
+
+    @pytest.mark.asyncio
+    async def test_recover_stranded_messages_runs_even_when_skip_job_recovery_is_true(self):
+        """Even when SKIP_JOB_RECOVERY is true, stranded outbound messages are recovered without mutating Campaign/Scraper jobs."""
+        db = AsyncMock()
+        mock_result = MagicMock()
+        mock_result.rowcount = 5
+        db.execute.return_value = mock_result
+
+        with patch("os.getenv", return_value="true"), \
+             patch("backend.app.core.database.AsyncSessionLocal") as session_maker:
+
+            session_maker.return_value.__aenter__.return_value = db
+
+            # Calling recover_stuck_jobs() when SKIP_JOB_RECOVERY is true
+            await recover_stuck_jobs()
+
+            # Message update must execute (1 execute call for Message update)
+            assert db.execute.await_count == 1
+            assert db.commit.called
+
+    @pytest.mark.asyncio
+    async def test_late_winning_worker_advances_unconfirmed_row_to_sent(self):
+        """Scenario 7: Worker B timed out (DELIVERY_UNCONFIRMED); delayed Worker A subsequently completes with valid wa_message_id -> transitions cleanly to SENT."""
+        db = AsyncMock()
+        conv = MagicMock(id=10, is_group=False, last_message_at=None)
+        session_row = WhatsAppSession(id=1, user_id="usr-1", gateway_id="gw-1", status=SessionStatus.CONNECTED)
+
+        # Row that was previously marked FAILED / DELIVERY_UNCONFIRMED by timed-out Worker B
+        unconfirmed_row = Message(
+            id=777,
+            user_id="usr-1",
+            conversation_id=10,
+            direction=MessageDirection.OUTBOUND,
+            message_type=MessageType.TEXT,
+            body="Late winning test",
+            client_message_id="late-win-mid-1",
+            status=ConversationMessageStatus.FAILED,
+            error_message="DELIVERY_UNCONFIRMED: Gönderim zaman aşımına uğradı",
+            sender_phone="ME",
+            recipient_phone="+90555",
+        )
+        db.scalar.return_value = unconfirmed_row
+
+        gateway_dispatch = AsyncMock(return_value={"wa_message_id": "BAE5_LATE_WINNER", "status": "SENT"})
+
+        with patch("backend.app.services.whatsapp.orchestration.messaging._resolve_jid", return_value=(conv, "90555@s.whatsapp.net")), \
+             patch("backend.app.services.whatsapp.orchestration.messaging._conversation_session", return_value=session_row), \
+             patch("backend.app.services.whatsapp.orchestration.messaging._gateway_op_or_mark_relink", gateway_dispatch):
+
+            res = await send_text_message(db, "usr-1", 10, "Late winning test", client_message_id="late-win-mid-1")
+
+            assert res["status"] == "SENT"
+            assert res["wa_message_id"] == "BAE5_LATE_WINNER"
+            assert unconfirmed_row.status == ConversationMessageStatus.SENT
+            assert unconfirmed_row.error_message is None
+            assert unconfirmed_row.wa_message_id == "BAE5_LATE_WINNER"
+
+    @pytest.mark.asyncio
+    async def test_late_worker_failure_does_not_revert_sent_or_delivered_row(self):
+        """Scenario 8: If row was already marked SENT or DELIVERED, a late-failing worker does not revert it to FAILED."""
+        db = AsyncMock()
+        conv = MagicMock(id=10, is_group=False, last_message_at=None)
+        session_row = WhatsAppSession(id=1, user_id="usr-1", gateway_id="gw-1", status=SessionStatus.CONNECTED)
+
+        delivered_row = Message(
+            id=888,
+            user_id="usr-1",
+            conversation_id=10,
+            direction=MessageDirection.OUTBOUND,
+            message_type=MessageType.TEXT,
+            body="Delivered message",
+            client_message_id="deliv-mid-1",
+            status=ConversationMessageStatus.DELIVERED,
+            wa_message_id="BAE5_ALREADY_DELIVERED",
+            sender_phone="ME",
+            recipient_phone="+90555",
+        )
+
+        # In exception handler, db.refresh is called
+        async def mock_refresh(row):
+            row.status = ConversationMessageStatus.DELIVERED
+            row.wa_message_id = "BAE5_ALREADY_DELIVERED"
+
+        db.refresh = AsyncMock(side_effect=mock_refresh)
+        db.scalar.return_value = None
+
+        def capture_add(row):
+            pass
+
+        db.add = MagicMock(side_effect=capture_add)
+
+        gateway_dispatch = AsyncMock(side_effect=Exception("Delayed network error"))
+
+        with patch("backend.app.services.whatsapp.orchestration.messaging._resolve_jid", return_value=(conv, "90555@s.whatsapp.net")), \
+             patch("backend.app.services.whatsapp.orchestration.messaging._conversation_session", return_value=session_row), \
+             patch("backend.app.services.whatsapp.orchestration.messaging._gateway_op_or_mark_relink", gateway_dispatch):
+
+            with pytest.raises(Exception, match="Delayed network error"):
+                await send_text_message(db, "usr-1", 10, "Delivered message", client_message_id="deliv-mid-1")
+
+            # Must NOT be reverted to FAILED!
+            assert delivered_row.status == ConversationMessageStatus.DELIVERED
+            assert delivered_row.wa_message_id == "BAE5_ALREADY_DELIVERED"

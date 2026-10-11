@@ -450,8 +450,7 @@ class WhatsAppMessagingOrchestrator:
             await db.refresh(row)
             row.wa_message_id = send_res["wa_message_id"]
             target_status = send_res.get("status")
-            is_group = bool(conv.is_group) or ("@g.us" in str(jid))
-            if is_group and target_status in (None, "PENDING"):
+            if target_status in (None, "PENDING"):
                 target_status = ConversationMessageStatus.SENT.value
             advance_message_status(row, target_status)
             # Faz 10 (P2): gonderim yolu da paylasilan kurali kullanir (tek kaynak).
@@ -631,8 +630,7 @@ class WhatsAppMessagingOrchestrator:
             if send_res.get("media_mime_type") and not row.media_mime_type:
                 row.media_mime_type = send_res["media_mime_type"]
             target_status = send_res.get("status")
-            is_group = bool(conv.is_group) or ("@g.us" in str(jid))
-            if is_group and target_status in (None, "PENDING"):
+            if target_status in (None, "PENDING"):
                 target_status = ConversationMessageStatus.SENT.value
             advance_message_status(row, target_status)
             apply_last_message(
