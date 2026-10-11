@@ -50,6 +50,7 @@ await writeFile(
     `export { applyConversationEvent } from '${SRC}/features/whatsapp/lib/whatsappConversationPatch';`,
     `export { filterMatchingMessageIds, resolveActiveSearchMessageId, getNextSearchMatchIndex, getPrevSearchMatchIndex } from '${SRC}/features/whatsapp/lib/whatsappChatSearch';`,
     `export { hasDragFiles, isDragLeavingWindow, isDropCooldownActive, DRAG_DROP_COOLDOWN_MS } from '${SRC}/features/whatsapp/lib/whatsappChatDragDrop';`,
+    `export { filterQuickReplies, extractQuickReplyCategories, renderQuickReplyContent } from '${SRC}/features/whatsapp/lib/whatsappQuickReplies';`,
     `export { en } from '${SRC}/locales/en';`,
     `export { tr } from '${SRC}/locales/tr';`,
   ].join('\n'),
@@ -138,6 +139,9 @@ try {
     isDragLeavingWindow,
     isDropCooldownActive,
     DRAG_DROP_COOLDOWN_MS,
+    filterQuickReplies,
+    extractQuickReplyCategories,
+    renderQuickReplyContent,
     PEER_TYPING_TTL_MS,
     pruneExpiredTyping,
     resolveSyncDisplayCounts,
@@ -1050,6 +1054,18 @@ try {
     assert.equal(isDragLeavingWindow({ clientX: 200, clientY: 200 }, 800, 600), false);
     assert.equal(isDropCooldownActive(1000, 1500, DRAG_DROP_COOLDOWN_MS), true);
     assert.equal(isDropCooldownActive(1000, 3000, DRAG_DROP_COOLDOWN_MS), false);
+  });
+
+  check('§QuickReplies: filterQuickReplies, extractCategories, and renderContent operate strictly', () => {
+    const list = [
+      { id: 1, shortcut: '/selam', title: 'Selam', content: 'Merhaba {isim}', category: 'GENEL' },
+      { id: 2, shortcut: '/bilgi', title: 'Bilgi', content: 'Detaylar: {not}', category: 'DESTEK', variables: [{ key: 'not', default_value: 'YOK' }] },
+    ];
+    assert.equal(filterQuickReplies(list, 'selam').length, 1);
+    assert.equal(filterQuickReplies(list, 'bilgi', 'GENEL').length, 0);
+    assert.deepEqual(extractQuickReplyCategories(list), ['GENEL', 'DESTEK']);
+    assert.equal(renderQuickReplyContent(list[0], {}, 'Ali'), 'Merhaba Ali');
+    assert.equal(renderQuickReplyContent(list[1], { not: 'TEST' }), 'Detaylar: TEST');
   });
 
   console.log(`\nWhatsApp frontend identity + ordering verification: PASS (${passed} checks)`);

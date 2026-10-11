@@ -76,6 +76,7 @@ import { LeadDetailDrawer } from '../features/leads/components';
 import { useAntiBanSettings } from '../features/whatsapp/hooks/useAntiBanSettings';
 import { useChatSearch } from '../features/whatsapp/hooks/useChatSearch';
 import { useChatDragAndDrop } from '../features/whatsapp/hooks/useChatDragAndDrop';
+import { useQuickReplyComposer } from '../features/whatsapp/hooks/useQuickReplies';
 import { FilterTab } from '../features/whatsapp/components/ConversationList';
 import { useToast } from '../context/ToastContext';
 import { useI18n } from '../context/I18nContext';
@@ -275,6 +276,17 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   } = useChatDragAndDrop({
     selectedConvId: selectedConv?.id,
   });
+  const {
+    isTemplateModalOpen,
+    setIsTemplateModalOpen,
+    openQuickReplyModal,
+    closeQuickReplyModal,
+    insertedComposerText,
+    clearInsertedComposerText,
+    handleSelectTemplate,
+  } = useQuickReplyComposer({
+    selectedConvId: selectedConv?.id,
+  });
 
   // PHASE 2.K.1 (single variable = onRetry prop identity): dependency-safe refs
   // mirroring the existing conversationsRef/toastRef idiom. They let the retry
@@ -285,14 +297,14 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
 
   useEffect(() => {
     setReplyingTo(null);
-    setInsertedComposerText(null);
+    clearInsertedComposerText();
     clearStagedFiles();
     resetChatSearch();
     setIsSelectMode(false);
     setSelectedMessageIds(new Set());
     setIsForwardModalOpen(false);
     setMessagesToForward([]);
-  }, [selectedConv?.id, clearStagedFiles, resetChatSearch]);
+  }, [selectedConv?.id, clearStagedFiles, resetChatSearch, clearInsertedComposerText]);
 
   useEffect(() => {
     if (!selectedConv?.is_group || !selectedConv?.id) return;
@@ -579,8 +591,6 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   // Lead Detail Drawer State for Conversation -> Lead navigation
   const [drawerLead, setDrawerLead] = useState<Lead | null>(null);
   const [isLeadDrawerOpen, setIsLeadDrawerOpen] = useState<boolean>(false);
-  const [isTemplateModalOpen, setIsTemplateModalOpen] = useState<boolean>(false);
-  const [insertedComposerText, setInsertedComposerText] = useState<{ text: string; timestamp: number } | null>(null);
   const [isNewChatModalOpen, setIsNewChatModalOpen] = useState<boolean>(false);
   const [isSyncingChats, setIsSyncingChats] = useState<boolean>(false);
   const conversationsGenerationRef = useRef(0);
@@ -1527,7 +1537,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   // loadConversations, refreshSyncStatus deps []) -> stable identity, no stale closure.
   const handleSelectConversation = useCallback((c: Conversation) => {
     setSelectedConv(c);
-    setInsertedComposerText(null);
+    clearInsertedComposerText();
     setMessageLoadState((prev) => (prev[c.id] === 'ready' ? prev : { ...prev, [c.id]: 'loading' }));
     if (c.unread_count > 0) {
       lastMarkedReadConvIdRef.current = c.id;
@@ -1542,7 +1552,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         prev.map((item) => (item.id === c.id ? { ...item, unread_count: 0 } : item))
       );
     }
-  }, [reportReadSync]);
+  }, [reportReadSync, clearInsertedComposerText]);
 
   const handleNewChat = useCallback(() => setIsNewChatModalOpen(true), []);
 
@@ -3806,7 +3816,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                         throw err;
                       }
                     }}
-                    onSendTemplate={() => setIsTemplateModalOpen(true)}
+                    onSendTemplate={openQuickReplyModal}
                     onSendMediaFile={async (file, caption) => {
                       try {
                         await activeSendMediaFile(file, caption);
@@ -3848,12 +3858,9 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                 {/* Template Select Modal */}
                 <TemplateSelectModal
                   isOpen={isTemplateModalOpen}
-                  onClose={() => setIsTemplateModalOpen(false)}
+                  onClose={closeQuickReplyModal}
                   leadName={selectedConv.lead_name}
-                  onSelectTemplate={(renderedText) => {
-                    setInsertedComposerText({ text: renderedText, timestamp: Date.now() });
-                    setIsTemplateModalOpen(false);
-                  }}
+                  onSelectTemplate={handleSelectTemplate}
                   onSendTemplate={async (templateKey, variables) => {
                     try {
                       await activeSendTemplate(templateKey, variables);

@@ -61,7 +61,8 @@ try {
       `import { I18nProvider } from '${SRC}/context/I18nContext';`,
       `import { ToastProvider } from '${SRC}/context/ToastContext';`,
       `import { ChatComposer } from '${SRC}/features/whatsapp/components/ChatComposer';`,
-      `export { React, useState, useCallback, act, createRoot, I18nProvider, ToastProvider, ChatComposer };`,
+      `import { useQuickReplyComposer } from '${SRC}/features/whatsapp/hooks/useQuickReplies';`,
+      `export { React, useState, useCallback, act, createRoot, I18nProvider, ToastProvider, ChatComposer, useQuickReplyComposer };`,
     ].join('\n'),
     'utf8',
   );
@@ -79,7 +80,7 @@ try {
     logLevel: 'silent',
   });
 
-  const { React, useState, useCallback, act, createRoot, I18nProvider, ToastProvider, ChatComposer } = await import(out);
+  const { React, useState, useCallback, act, createRoot, I18nProvider, ToastProvider, ChatComposer, useQuickReplyComposer } = await import(out);
 
   let passed = 0;
   const roots = new Set();
@@ -106,27 +107,25 @@ try {
   // Harness replicating WhatsAppHubPage's conversation selection and composer mounting
   function ConversationHarness({ onSend = async () => {} }) {
     const [selectedConv, setSelectedConv] = useState({ id: 101, name: 'Chat A' });
-    const [insertedComposerText, setInsertedComposerText] = useState(null);
-
-    const handleSelectConversation = useCallback((c) => {
-      setSelectedConv(c);
-      setInsertedComposerText(null); // The fix: reset quick reply insertion state
-    }, []);
+    const {
+      insertedComposerText,
+      handleSelectTemplate,
+    } = useQuickReplyComposer({ selectedConvId: selectedConv.id });
 
     return React.createElement(
       'div',
       { id: 'harness' },
       React.createElement('button', {
         id: 'btn-select-a',
-        onClick: () => handleSelectConversation({ id: 101, name: 'Chat A' }),
+        onClick: () => setSelectedConv({ id: 101, name: 'Chat A' }),
       }, 'Chat A'),
       React.createElement('button', {
         id: 'btn-select-b',
-        onClick: () => handleSelectConversation({ id: 202, name: 'Chat B' }),
+        onClick: () => setSelectedConv({ id: 202, name: 'Chat B' }),
       }, 'Chat B'),
       React.createElement('button', {
         id: 'btn-insert-qr',
-        onClick: () => setInsertedComposerText({ text: 'Quick Reply Template for Chat A', timestamp: Date.now() }),
+        onClick: () => handleSelectTemplate('Quick Reply Template for Chat A'),
       }, 'Insert Quick Reply'),
       React.createElement(ChatComposer, {
         key: selectedConv.id,

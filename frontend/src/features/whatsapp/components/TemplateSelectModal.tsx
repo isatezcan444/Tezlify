@@ -20,6 +20,12 @@ import { Modal } from '../../../components/ui/Modal';
 import { Button } from '../../../components/ui/button';
 import { useI18n } from '../../../context/I18nContext';
 import { useToast } from '../../../context/ToastContext';
+import {
+  filterQuickReplies,
+  extractQuickReplyCategories,
+  resolveQuickReplyVariables,
+  renderQuickReplyContent,
+} from '../lib/whatsappQuickReplies';
 
 export interface TemplateSelectModalProps {
   isOpen: boolean;
@@ -92,20 +98,7 @@ export const TemplateSelectModal: React.FC<TemplateSelectModalProps> = ({
   }, [isOpen, leadName]);
 
   const initVariables = (qr: QuickReply, name: string) => {
-    const initial: Record<string, string> = {};
-    const safeName = (name || '').trim();
-    if (qr.variables && qr.variables.length > 0) {
-      for (const v of qr.variables) {
-        if (v.default_from === 'lead_name') {
-          initial[v.key] = safeName;
-        } else {
-          initial[v.key] = v.default_value || '';
-        }
-      }
-    } else {
-      initial['isim'] = safeName;
-    }
-    setVariables(initial);
+    setVariables(resolveQuickReplyVariables(qr, name));
   };
 
   const selectedQr = useMemo(() => {
@@ -119,48 +112,16 @@ export const TemplateSelectModal: React.FC<TemplateSelectModalProps> = ({
 
   // Distinct categories
   const categories = useMemo(() => {
-    const cats = new Set<string>();
-    for (const qr of quickReplies) {
-      if (qr.category) cats.add(qr.category.trim());
-    }
-    return Array.from(cats);
+    return extractQuickReplyCategories(quickReplies);
   }, [quickReplies]);
 
   // Filtered list
   const filteredQuickReplies = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase();
-    return quickReplies.filter((qr) => {
-      const matchesCategory =
-        selectedCategory === 'ALL' ||
-        (qr.category || '').toLowerCase() === selectedCategory.toLowerCase();
-      if (!matchesCategory) return false;
-      if (!q) return true;
-      return (
-        qr.title.toLowerCase().includes(q) ||
-        qr.shortcut.toLowerCase().includes(q) ||
-        qr.content.toLowerCase().includes(q)
-      );
-    });
+    return filterQuickReplies(quickReplies, searchQuery, selectedCategory);
   }, [quickReplies, selectedCategory, searchQuery]);
 
   const getRenderedContent = (qr: QuickReply | null) => {
-    if (!qr) return '';
-    let rendered = qr.content;
-    const safeLeadName = (leadName || '').trim();
-    if (qr.variables && qr.variables.length > 0) {
-      for (const v of qr.variables) {
-        const val =
-          variables[v.key] !== undefined
-            ? variables[v.key]
-            : v.default_from === 'lead_name'
-            ? safeLeadName
-            : v.default_value || '';
-        rendered = rendered.replace(new RegExp(`\\{${v.key}\\}`, 'g'), val);
-      }
-    } else {
-      rendered = rendered.replace(/\{isim\}/g, safeLeadName);
-    }
-    return rendered;
+    return renderQuickReplyContent(qr, variables, leadName);
   };
 
   const handleInsert = () => {

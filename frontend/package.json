@@ -39,6 +39,7 @@
     "verify:whatsapp-theme": "node scripts/verify-whatsapp-theme.mjs",
     "verify:production-whatsapp": "node scripts/verify-production-whatsapp.mjs",
     "verify:quick-reply-isolation": "node scripts/verify-quick-reply-isolation-dom.mjs",
+    "verify:quick-replies": "node scripts/test-whatsapp-quick-replies.mjs",
     "verify:chat-drag-drop": "node scripts/verify-chat-drag-drop-dom.mjs",
     "verify:chat-search": "node scripts/test-whatsapp-chat-search.mjs",
     "verify:media-coordination": "node scripts/verify-whatsapp-media-coordination.mjs",
