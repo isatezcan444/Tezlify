@@ -43,6 +43,8 @@ import { LinkPreviewCard } from './LinkPreviewCard';
 import { VoiceNotePlayer } from './VoiceNotePlayer';
 import { MediaLightbox } from './MediaLightbox';
 import { groupReactions } from '../lib/whatsappReactions';
+import { useMessageContextMenu } from '../hooks/useMessageContextMenu';
+import { useMessageReactions } from '../hooks/useMessageReactions';
 import { resolveMediaUrl } from '../../../lib/mediaUrl';
 import { isMessageStarred, toggleMessageStar, subscribeStarredChanges } from '../lib/starredMessages';
 import { isMessagePinned, toggleMessagePin, subscribePinnedChanges } from '../lib/pinnedMessages';
@@ -127,9 +129,6 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const videoMediaId = `chat-video-${message.id}`;
   const [retrying, setRetrying] = useState(false);
-  const [isReactionBarOpen, setIsReactionBarOpen] = useState(false);
-  const [isPickerOpen, setIsPickerOpen] = useState(false);
-  const [reacting, setReacting] = useState(false);
   const [imageLoadError, setImageLoadError] = useState(false);
   const [imageLoaded, setImageLoaded] = useState(false);
   const [videoLoadError, setVideoLoadError] = useState(false);
@@ -137,10 +136,34 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
   const [copied, setCopied] = useState(false);
   const [isStarred, setIsStarred] = useState<boolean>(() => isMessageStarred(message.id));
   const [isPinned, setIsPinned] = useState<boolean>(() => isMessagePinned(message.id));
-  const [isMenuOpen, setIsMenuOpen] = useState(false);
-  const [menuCoords, setMenuCoords] = useState<{ top: number; left: number; placement: 'up' | 'down' } | null>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
-  const menuButtonRef = useRef<HTMLButtonElement>(null);
+
+  const {
+    isMenuOpen,
+    setIsMenuOpen,
+    menuCoords,
+    menuRef,
+    menuButtonRef,
+    handleToggleMenu,
+  } = useMessageContextMenu({ isSelectMode });
+
+  // Tepki yalnizca KALICI (sayisal id'li) mesaja birakilabilir: iyimser satirin
+  // henuz sunucu kimligi yoktur ve `/reactions` ucu ona 404 donerdi.
+  const canReact = !isSelectMode && Boolean(onReact) && typeof message.id === 'number' && message.id > 0;
+
+  const {
+    isReactionBarOpen,
+    setIsReactionBarOpen,
+    isPickerOpen,
+    setIsPickerOpen,
+    reacting,
+    reactionBarRef,
+    handleReact,
+  } = useMessageReactions({
+    messageId: message.id,
+    canReact,
+    onReact,
+    isSelectMode,
+  });
 
   // Coordinate single active playback across all chat media
   useEffect(() => {
@@ -187,40 +210,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
     }
   }, [isLightboxOpen]);
 
-  React.useEffect(() => {
-    if (isSelectMode) {
-      setIsMenuOpen(false);
-      setIsReactionBarOpen(false);
-    }
-  }, [isSelectMode]);
 
-  const handleToggleMenu = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (!isMenuOpen && menuButtonRef.current) {
-      const rect = menuButtonRef.current.getBoundingClientRect();
-      const menuWidth = 160;
-      const estimatedHeight = 240;
-      const spaceBelow = window.innerHeight - rect.bottom;
-      const placement: 'up' | 'down' = spaceBelow < estimatedHeight + 15 ? 'up' : 'down';
-
-      let top = placement === 'up' ? rect.top - estimatedHeight - 4 : rect.bottom + 4;
-      if (top < 10) top = 10;
-      if (top + estimatedHeight > window.innerHeight - 10) {
-        top = Math.max(10, window.innerHeight - estimatedHeight - 10);
-      }
-
-      let left = rect.right - menuWidth;
-      if (left < 10) left = 10;
-      if (left + menuWidth > window.innerWidth - 10) {
-        left = window.innerWidth - menuWidth - 10;
-      }
-
-      setMenuCoords({ top, left, placement });
-      setIsMenuOpen(true);
-    } else {
-      setIsMenuOpen(false);
-    }
-  };
 
   React.useEffect(() => {
     setIsStarred(isMessageStarred(message.id));
@@ -236,38 +226,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
     });
   }, [message.id]);
 
-  React.useEffect(() => {
-    if (!isMenuOpen) return;
-    const handleScrollOrResize = () => {
-      setIsMenuOpen(false);
-    };
-    const handleClickOutside = (e: MouseEvent) => {
-      const target = e.target as Node;
-      if (
-        menuRef.current &&
-        !menuRef.current.contains(target) &&
-        menuButtonRef.current &&
-        !menuButtonRef.current.contains(target)
-      ) {
-        setIsMenuOpen(false);
-      }
-    };
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        setIsMenuOpen(false);
-      }
-    };
-    window.addEventListener('scroll', handleScrollOrResize, true);
-    window.addEventListener('resize', handleScrollOrResize);
-    document.addEventListener('mousedown', handleClickOutside);
-    document.addEventListener('keydown', handleKeyDown);
-    return () => {
-      window.removeEventListener('scroll', handleScrollOrResize, true);
-      window.removeEventListener('resize', handleScrollOrResize);
-      document.removeEventListener('mousedown', handleClickOutside);
-      document.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [isMenuOpen]);
+
 
   const highlightMatches = useCallback(
     (text: string): React.ReactNode => {
@@ -342,9 +301,6 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
     return formatMessageTime(dateStr, language);
   };
 
-  // Tepki yalnizca KALICI (sayisal id'li) mesaja birakilabilir: iyimser satirin
-  // henuz sunucu kimligi yoktur ve `/reactions` ucu ona 404 donerdi.
-  const canReact = !isSelectMode && Boolean(onReact) && typeof message.id === 'number' && message.id > 0;
 
   // Ayni ifadeyi birden fazla kisi biraktiysa tek rozet + sayac gosterilir
   // (WhatsApp Web paritesi). "Benim" isaretli rozete tiklamak ifadeyi GERI CEKER.
@@ -355,37 +311,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
     [message.reactions],
   );
 
-  // Hizli tepki cubugu disina tiklaninca kapanir (WhatsApp Web paritesi).
-  const reactionBarRef = React.useRef<HTMLDivElement | null>(null);
-  React.useEffect(() => {
-    if (!isReactionBarOpen) return;
-    const onPointerDown = (e: MouseEvent | TouchEvent) => {
-      if (!reactionBarRef.current) return;
-      if (!reactionBarRef.current.contains(e.target as Node)) setIsReactionBarOpen(false);
-    };
-    document.addEventListener('mousedown', onPointerDown);
-    document.addEventListener('touchstart', onPointerDown);
-    return () => {
-      document.removeEventListener('mousedown', onPointerDown);
-      document.removeEventListener('touchstart', onPointerDown);
-    };
-  }, [isReactionBarOpen]);
 
-  const handleReact = async (emoji: string) => {
-    if (!canReact || !onReact || reacting) return;
-    setIsReactionBarOpen(false);
-    setIsPickerOpen(false);
-    setReacting(true);
-    try {
-      await onReact(message.id, emoji);
-    } catch (err) {
-      // Hata YUTULMAZ ama balonu da dusurmez: cagiran (sohbet ekrani) iyimser
-      // rozeti geri alir ve toast gosterir; burada konsola iz birakilir.
-      console.error('[ChatBubble] Reaction failed:', err);
-    } finally {
-      setReacting(false);
-    }
-  };
 
   // I-5 / F-13: the group sender label is resolved by the SAME canonical
   // display helper as the conversation identity. A raw technical JID

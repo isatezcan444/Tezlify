@@ -52,6 +52,7 @@ await writeFile(
     `export { hasDragFiles, isDragLeavingWindow, isDropCooldownActive, DRAG_DROP_COOLDOWN_MS } from '${SRC}/features/whatsapp/lib/whatsappChatDragDrop';`,
     `export { filterQuickReplies, extractQuickReplyCategories, renderQuickReplyContent } from '${SRC}/features/whatsapp/lib/whatsappQuickReplies';`,
     `export { toggleSelectedMessageId, resolveSelectedMessages, formatMessagesForCopy } from '${SRC}/features/whatsapp/lib/whatsappChatSelection';`,
+    `export { calculateContextMenuPosition } from '${SRC}/features/whatsapp/lib/whatsappContextMenu';`,
     `export { en } from '${SRC}/locales/en';`,
     `export { tr } from '${SRC}/locales/tr';`,
   ].join('\n'),
@@ -146,6 +147,7 @@ try {
     toggleSelectedMessageId,
     resolveSelectedMessages,
     formatMessagesForCopy,
+    calculateContextMenuPosition,
     PEER_TYPING_TTL_MS,
     pruneExpiredTyping,
     resolveSyncDisplayCounts,
@@ -1085,6 +1087,33 @@ try {
     const resolved = resolveSelectedMessages(msgs, new Set([30, 10]));
     assert.deepEqual(resolved.map((m) => m.id), [10, 30], 'Chronological order must be preserved');
     assert.equal(formatMessagesForCopy(resolved), 'A\nC');
+  });
+
+  check('§ContextMenuPosition: calculateContextMenuPosition clamps within viewport and adapts placement', () => {
+    const downPos = calculateContextMenuPosition({
+      buttonRect: { top: 100, bottom: 120, left: 300, right: 320 },
+      windowWidth: 1024,
+      windowHeight: 768,
+    });
+    assert.equal(downPos.placement, 'down');
+    assert.equal(downPos.top, 124);
+    assert.equal(downPos.left, 160);
+
+    const upPos = calculateContextMenuPosition({
+      buttonRect: { top: 580, bottom: 600, left: 400, right: 420 },
+      windowWidth: 1024,
+      windowHeight: 768,
+    });
+    assert.equal(upPos.placement, 'up');
+    assert.equal(upPos.top, 336);
+
+    const clamped = calculateContextMenuPosition({
+      buttonRect: { top: 50, bottom: 70, left: 50, right: 70 },
+      windowWidth: 1000,
+      windowHeight: 300,
+    });
+    assert.equal(clamped.top, 10, 'Top must be clamped to min 10px');
+    assert.equal(clamped.left, 10, 'Left must be clamped to min 10px');
   });
 
   console.log(`\nWhatsApp frontend identity + ordering verification: PASS (${passed} checks)`);
