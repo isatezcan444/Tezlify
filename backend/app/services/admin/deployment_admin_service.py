@@ -133,11 +133,13 @@ def get_deployment_metadata() -> AdminDeploymentResponse:
             "caddy": "caddy:2-alpine",
             "db": "postgres:17-alpine",
         }
+        is_staging = os.environ.get("ENVIRONMENT", "").strip().lower() == "staging"
+        c_suffix = "-staging" if is_staging else ""
         for cname in ["backend", "gateway", "caddy", "db"]:
             cdata = raw_containers.get(cname, {})
             containers_list.append(
                 AdminContainerDeploymentState(
-                    name=f"tezlify-{cname}" if not cname.startswith("tezlify") else cname,
+                    name=f"tezlify-{cname}{c_suffix}" if not cname.startswith("tezlify") else cname,
                     image=image_defaults.get(cname, "unknown"),
                     status=cdata.get("status", "running"),
                     started_at=cdata.get("started_at"),

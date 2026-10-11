@@ -48,15 +48,23 @@ DRY_RUN=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --staging-host)
+    --staging-host|--host)
       shift
       STAGING_HOST="${1:-}"
       shift || true
       ;;
-    --staging-env)
+    --staging-host=*|--host=*)
+      STAGING_HOST="${1#*=}"
+      shift
+      ;;
+    --staging-env|--env)
       shift
       STAGING_ENV_FILE="${1:-}"
       shift || true
+      ;;
+    --staging-env=*|--env=*)
+      STAGING_ENV_FILE="${1#*=}"
+      shift
       ;;
     --skip-build)
       SKIP_BUILD="--skip-build"
@@ -66,7 +74,7 @@ while [ $# -gt 0 ]; do
       NO_FRONTEND="1"
       shift
       ;;
-    --dry-run)
+    --dry-run|--plan)
       DRY_RUN="1"
       shift
       ;;
@@ -100,11 +108,34 @@ for pattern in "${PROD_FORBIDDEN_PATTERNS[@]}"; do
   fi
 done
 
-# 1.2b DNS Cozumleme ile Production IP Cakisim Kontrolu (Alias / CNAME / hosts korumasi)
+# 1.2b DNS ve IP Cozumleme ile Coklu Adres/IPv6/CNAME Production Cakisim Kontrolu
 TARGET_RAW_HOST="${STAGING_HOST#*@}"
-RESOLVED_IP="$(python3 -c "import socket; print(socket.gethostbyname('${TARGET_RAW_HOST}'))" 2>/dev/null || true)"
-if [ "$RESOLVED_IP" = "$PROD_HOST_IP" ]; then
-  die "STAGING_HOST ($STAGING_HOST) DNS cozumlemesinde production IP'sine ($PROD_HOST_IP) isaret ediyor! Islem derhal durduruldu."
+TARGET_CLEAN_HOST="${TARGET_RAW_HOST%%:*}"
+
+DNS_COLLISION="$(python3 -c "
+import socket, sys
+host = sys.argv[1]
+prod_ip = sys.argv[2]
+prod_patterns = ['130.162.247.20', 'sslip.io']
+
+try:
+    # getaddrinfo tum A ve AAAA kayitlarini dondurur (IPv4 ve IPv6)
+    addr_infos = socket.getaddrinfo(host, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+    for info in addr_infos:
+        ip = str(info[4][0])
+        if ip == prod_ip:
+            print(f'IP_COLLISION:{ip}')
+            sys.exit(0)
+        for pat in prod_patterns:
+            if pat in ip:
+                print(f'PATTERN_COLLISION:{ip}')
+                sys.exit(0)
+except Exception:
+    pass
+" "$TARGET_CLEAN_HOST" "$PROD_HOST_IP" 2>/dev/null || true)"
+
+if [ -n "$DNS_COLLISION" ]; then
+  die "STAGING_HOST ($STAGING_HOST) DNS/IP cozumlemesinde production adresi ($DNS_COLLISION) tespit edildi! Canli sunucu guvenligi icin islem derhal durduruldu."
 fi
 
 # 1.3 Staging Environment Dosyasi Kontrolu
@@ -113,7 +144,7 @@ if [ ! -f "$STAGING_ENV_FILE" ]; then
 fi
 
 # 1.4 Veritabani Izolasyon Kontrolu
-if grep -q "$PROD_HOST_IP" "$STAGING_ENV_FILE" 2>/dev/null; then
+if grep -v '^[[:space:]]*#' "$STAGING_ENV_FILE" | grep -q "$PROD_HOST_IP" 2>/dev/null; then
   die "$STAGING_ENV_FILE icindeki DATABASE_URL veya baglanti bilgisi production IP'sini ($PROD_HOST_IP) iceriyor! Canli veritabani riski nedeniyle deployment durduruldu."
 fi
 
@@ -180,19 +211,21 @@ if [ "$DRY_RUN" = "1" ]; then
 fi
 
 # 5. GERCEK DAGITIM (Yalnizca dogrulanmis Staging Sunucusu ile)
+SSH_OPTS=(-o "BatchMode=yes" -o "StrictHostKeyChecking=yes" -o "ConnectTimeout=15")
+
 log "Staging host anahtari ve baglantisi test ediliyor: $STAGING_HOST"
-if ! ssh -i "$SSH_KEY" -o BatchMode=yes -o ConnectTimeout=10 "$STAGING_HOST" "echo staging_connected" >/dev/null 2>&1; then
-  die "Staging sunucusuna ($STAGING_HOST) erisilemiyor veya SSH host anahtari dogrulanamadi."
+if ! ssh -i "$SSH_KEY" "${SSH_OPTS[@]}" "$STAGING_HOST" "echo staging_connected" >/dev/null 2>&1; then
+  die "Staging sunucusuna ($STAGING_HOST) erisilemiyor veya SSH host anahtari dogrulanamadi (StrictHostKeyChecking=yes zorunludur)."
 fi
 
 log "Staging sunucusuna artefaktlar aktariliyor..."
-scp -i "$SSH_KEY" -o ConnectTimeout=20 "$STAGING_ENV_FILE" "$STAGING_HOST:/opt/tezlify-staging/.env.staging"
-scp -i "$SSH_KEY" -o ConnectTimeout=20 "$STAGING_COMPOSE" "$STAGING_HOST:/opt/tezlify-staging/docker-compose.staging.yml"
+scp -i "$SSH_KEY" "${SSH_OPTS[@]}" "$STAGING_ENV_FILE" "$STAGING_HOST:/opt/tezlify-staging/.env.staging"
+scp -i "$SSH_KEY" "${SSH_OPTS[@]}" "$STAGING_COMPOSE" "$STAGING_HOST:/opt/tezlify-staging/docker-compose.staging.yml"
 if [ -n "$FRONTEND_TAR" ] && [ -f "$FRONTEND_TAR" ]; then
-  scp -i "$SSH_KEY" -o ConnectTimeout=20 "$FRONTEND_TAR" "$STAGING_HOST:/tmp/"
+  scp -i "$SSH_KEY" "${SSH_OPTS[@]}" "$FRONTEND_TAR" "$STAGING_HOST:/tmp/"
 fi
 
 log "Staging servisleri baslatiliyor..."
-ssh -i "$SSH_KEY" "$STAGING_HOST" "cd /opt/tezlify-staging && docker compose -f docker-compose.staging.yml up -d"
+ssh -i "$SSH_KEY" "${SSH_OPTS[@]}" "$STAGING_HOST" "cd /opt/tezlify-staging && docker compose -f docker-compose.staging.yml up -d"
 
 log "Staging dagitimi tamamlandi."

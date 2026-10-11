@@ -36,28 +36,101 @@ logger = logging.getLogger(__name__)
 
 DEPLOY_DIR = os.environ.get("TEZLIFY_DEPLOY_DIR", "/opt/tezlify/deploy")
 _is_staging = os.environ.get("ENVIRONMENT", "").lower() == "staging"
-COMPOSE_FILE = os.environ.get(
-    "TEZLIFY_COMPOSE_FILE",
-    os.path.join(DEPLOY_DIR, "docker-compose.staging.yml" if _is_staging else "docker-compose.prod.yml"),
-)
+
+
+class OperationError(Exception):
+    """Raised when an operation cannot be started (validation/concurrency/safety)."""
+
+    def __init__(self, message: str, code: str = "operation_rejected"):
+        super().__init__(message)
+        self.message = message
+        self.code = code
+
+
+def _validate_environment_consistency() -> None:
+    """Ensure environment, compose project, compose file and container suffix do not contradict each other.
+
+    Fail-closed invariant: prevents staging from targeting production containers,
+    and prevents production from targeting staging containers or configs.
+    """
+    env = os.environ.get("ENVIRONMENT", "").strip().lower()
+    is_staging = (env == "staging")
+
+    project = os.environ.get("TEZLIFY_COMPOSE_PROJECT")
+    suffix = os.environ.get("TEZLIFY_CONTAINER_SUFFIX")
+    compose_file = os.environ.get("TEZLIFY_COMPOSE_FILE")
+
+    if is_staging:
+        if project is not None and project == "tezlify":
+            raise OperationError(
+                "Environment contradiction: ENVIRONMENT=staging cannot run with TEZLIFY_COMPOSE_PROJECT='tezlify'. "
+                "Must be 'tezlify-staging' or an isolated staging project name.",
+                code="env_contradiction",
+            )
+        if suffix is not None and suffix == "":
+            raise OperationError(
+                "Environment contradiction: ENVIRONMENT=staging cannot run with empty TEZLIFY_CONTAINER_SUFFIX. "
+                "Must target staging-suffixed containers (e.g. '-staging').",
+                code="env_contradiction",
+            )
+        if compose_file is not None and os.path.basename(compose_file) == "docker-compose.prod.yml":
+            raise OperationError(
+                "Environment contradiction: ENVIRONMENT=staging cannot point to docker-compose.prod.yml.",
+                code="env_contradiction",
+            )
+    else:
+        # Non-staging (production or default)
+        if project is not None and project == "tezlify-staging":
+            raise OperationError(
+                f"Environment contradiction: ENVIRONMENT='{env or 'production'}' cannot run with TEZLIFY_COMPOSE_PROJECT='tezlify-staging'.",
+                code="env_contradiction",
+            )
+        if suffix is not None and suffix == "-staging":
+            raise OperationError(
+                f"Environment contradiction: ENVIRONMENT='{env or 'production'}' cannot run with TEZLIFY_CONTAINER_SUFFIX='-staging'.",
+                code="env_contradiction",
+            )
+        if compose_file is not None and os.path.basename(compose_file) == "docker-compose.staging.yml":
+            raise OperationError(
+                f"Environment contradiction: ENVIRONMENT='{env or 'production'}' cannot point to docker-compose.staging.yml.",
+                code="env_contradiction",
+            )
+
+
+def _get_compose_project() -> str:
+    _validate_environment_consistency()
+    env = os.environ.get("ENVIRONMENT", "").strip().lower()
+    return os.environ.get(
+        "TEZLIFY_COMPOSE_PROJECT",
+        "tezlify-staging" if env == "staging" else "tezlify",
+    )
+
+
+def _get_compose_file() -> str:
+    _validate_environment_consistency()
+    env = os.environ.get("ENVIRONMENT", "").strip().lower()
+    deploy_dir = os.environ.get("TEZLIFY_DEPLOY_DIR", "/opt/tezlify/deploy")
+    return os.environ.get(
+        "TEZLIFY_COMPOSE_FILE",
+        os.path.join(deploy_dir, "docker-compose.staging.yml" if env == "staging" else "docker-compose.prod.yml"),
+    )
+
+
+COMPOSE_FILE = os.path.join(DEPLOY_DIR, "docker-compose.staging.yml" if _is_staging else "docker-compose.prod.yml")
+COMPOSE_PROJECT = "tezlify-staging" if _is_staging else "tezlify"
 
 # Services the Operations Center is allowed to act on. Anything not in this
 # tuple cannot be targeted at all.
 ALLOWED_SERVICES: Tuple[str, ...] = ("backend", "gateway", "caddy")
 
-# Compose project name; `-p` keeps us from touching another compose project
-# that may run on the same host.
-COMPOSE_PROJECT = os.environ.get(
-    "TEZLIFY_COMPOSE_PROJECT",
-    "tezlify-staging" if _is_staging else "tezlify",
-)
-
 
 def _container_name(service: str) -> str:
     """Resolve container name respecting staging suffix when in staging."""
+    _validate_environment_consistency()
+    env = os.environ.get("ENVIRONMENT", "").strip().lower()
     suffix = os.environ.get(
         "TEZLIFY_CONTAINER_SUFFIX",
-        "-staging" if _is_staging else "",
+        "-staging" if env == "staging" else "",
     )
     return f"tezlify-{service}{suffix}"
 
@@ -93,7 +166,7 @@ def redact(text: str, limit: int = 4000) -> str:
 
 def _compose_argv(*args: str) -> List[str]:
     """Build a fixed `docker compose` argv. Never interpolates user input."""
-    return ["docker", "compose", "-p", COMPOSE_PROJECT, "-f", COMPOSE_FILE, *args]
+    return ["docker", "compose", "-p", _get_compose_project(), "-f", _get_compose_file(), *args]
 
 
 class OperationSpec:
@@ -138,15 +211,6 @@ class OperationSpec:
             return self.build_steps()
         assert self.build_argv is not None
         return [("run", self.build_argv())]
-
-
-class OperationError(Exception):
-    """Raised when an operation cannot be started (validation/concurrency)."""
-
-    def __init__(self, message: str, code: str = "operation_rejected"):
-        super().__init__(message)
-        self.message = message
-        self.code = code
 
 
 def _build_restart(service: str) -> List[str]:

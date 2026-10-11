@@ -40,6 +40,18 @@ while [ $# -gt 0 ]; do
         exit 2
       fi
       ;;
+    --target=*)
+      TARGET="${1#*=}"
+      if [ "$TARGET" = "staging" ]; then
+        IS_STAGING="1"
+      elif [ "$TARGET" = "production" ]; then
+        :
+      else
+        echo "bilinmeyen hedef: $TARGET (yalnizca 'production' veya 'staging')" >&2
+        exit 2
+      fi
+      shift
+      ;;
     *)
       FORWARD_ARGS+=("$1")
       shift
@@ -62,7 +74,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --skip-build) SKIP_BUILD="--skip-build"; shift ;;
     --no-frontend) NO_FRONTEND="1"; shift ;;
-    --dry-run) DRY_RUN="1"; shift ;;
+    --dry-run|--plan) DRY_RUN="1"; shift ;;
     -*) echo "bilinmeyen secenek: $1" >&2; exit 2 ;;
     *) SHA="$1"; shift ;;
   esac

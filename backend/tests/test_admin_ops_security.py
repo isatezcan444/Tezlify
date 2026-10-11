@@ -525,3 +525,71 @@ def test_history_is_paged_and_filterable():
         ops._op_registry.clear()
         ops._order.clear()
         ops._audit.clear()
+
+
+def test_environment_consistency_validation(monkeypatch):
+    """Contradicting environment variables must fail-closed with OperationError."""
+    # Staging targeting prod project
+    monkeypatch.setenv("ENVIRONMENT", "staging")
+    monkeypatch.setenv("TEZLIFY_COMPOSE_PROJECT", "tezlify")
+    with pytest.raises(ops.OperationError) as exc:
+        ops._container_name("backend")
+    assert exc.value.code == "env_contradiction"
+
+    # Staging with empty suffix
+    monkeypatch.delenv("TEZLIFY_COMPOSE_PROJECT", raising=False)
+    monkeypatch.setenv("TEZLIFY_CONTAINER_SUFFIX", "")
+    with pytest.raises(ops.OperationError) as exc:
+        ops._container_name("backend")
+    assert exc.value.code == "env_contradiction"
+
+    # Staging pointing to prod compose file
+    monkeypatch.delenv("TEZLIFY_CONTAINER_SUFFIX", raising=False)
+    monkeypatch.setenv("TEZLIFY_COMPOSE_FILE", "/opt/tezlify/deploy/docker-compose.prod.yml")
+    with pytest.raises(ops.OperationError) as exc:
+        ops._compose_argv("ps")
+    assert exc.value.code == "env_contradiction"
+
+    # Prod targeting staging project
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.delenv("TEZLIFY_COMPOSE_FILE", raising=False)
+    monkeypatch.setenv("TEZLIFY_COMPOSE_PROJECT", "tezlify-staging")
+    with pytest.raises(ops.OperationError) as exc:
+        ops._compose_argv("ps")
+    assert exc.value.code == "env_contradiction"
+
+    # Prod targeting staging suffix
+    monkeypatch.delenv("TEZLIFY_COMPOSE_PROJECT", raising=False)
+    monkeypatch.setenv("TEZLIFY_CONTAINER_SUFFIX", "-staging")
+    with pytest.raises(ops.OperationError) as exc:
+        ops._container_name("backend")
+    assert exc.value.code == "env_contradiction"
+
+    # Prod targeting staging compose file
+    monkeypatch.delenv("TEZLIFY_CONTAINER_SUFFIX", raising=False)
+    monkeypatch.setenv("TEZLIFY_COMPOSE_FILE", "/opt/tezlify/deploy/docker-compose.staging.yml")
+    with pytest.raises(ops.OperationError) as exc:
+        ops._compose_argv("ps")
+    assert exc.value.code == "env_contradiction"
+
+
+def test_environment_consistent_resolution(monkeypatch):
+    """When consistent, environment resolutions resolve correctly."""
+    # Staging clean
+    monkeypatch.setenv("ENVIRONMENT", "staging")
+    monkeypatch.delenv("TEZLIFY_COMPOSE_PROJECT", raising=False)
+    monkeypatch.delenv("TEZLIFY_CONTAINER_SUFFIX", raising=False)
+    monkeypatch.delenv("TEZLIFY_COMPOSE_FILE", raising=False)
+
+    assert ops._container_name("backend") == "tezlify-backend-staging"
+    argv = ops._compose_argv("ps")
+    assert "tezlify-staging" in argv
+    assert any("docker-compose.staging.yml" in part for part in argv)
+
+    # Production clean
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    assert ops._container_name("backend") == "tezlify-backend"
+    argv_prod = ops._compose_argv("ps")
+    assert "tezlify" in argv_prod
+    assert "tezlify-staging" not in argv_prod
+    assert any("docker-compose.prod.yml" in part for part in argv_prod)
