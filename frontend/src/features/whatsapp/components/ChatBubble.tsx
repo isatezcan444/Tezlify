@@ -250,6 +250,15 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
   const handleRetryClick = async (e: React.MouseEvent) => {
     e.stopPropagation();
     if (!onRetry || retrying) return;
+    if (message.error_message && message.error_message.includes('DELIVERY_UNCONFIRMED')) {
+      const ok = await toast.confirm({
+        title: t('whatsapp.deliveryUnconfirmedTitle'),
+        message: t('whatsapp.deliveryUnconfirmedConfirm'),
+        confirmText: t('whatsapp.retryBtn'),
+        variant: 'warning',
+      });
+      if (!ok) return;
+    }
     setRetrying(true);
     try {
       await onRetry(message.id);
@@ -1600,27 +1609,38 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
             </div>
           )}
 
-          {/* Failed State Retry Action */}
-          {!isInbound && message.status === 'FAILED' && onRetry && (
-            <div className="flex items-center justify-between space-x-2 mt-1.5 pt-1.5 border-t border-rose-300 dark:border-rose-800/50 select-none">
-              <span className="text-[10px] text-rose-600 dark:text-rose-400 font-bold">
-                {t('whatsapp.msgFailed')}
-              </span>
-              <button
-                type="button"
-                onClick={handleRetryClick}
-                disabled={retrying}
-                className="flex items-center space-x-1 px-2 py-0.5 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-[10px] font-extrabold text-rose-700 dark:text-rose-300 transition-all cursor-pointer disabled:opacity-50 border border-rose-300 dark:border-rose-700/50"
-              >
-                {retrying ? (
-                  <Loader2 className="w-3 h-3 animate-spin" />
-                ) : (
-                  <RotateCcw className="w-3 h-3" />
-                )}
-                <span>{t('whatsapp.retryBtn')}</span>
-              </button>
-            </div>
-          )}
+          {/* Failed / Delivery Unconfirmed State Retry Action */}
+          {!isInbound && message.status === 'FAILED' && onRetry && (() => {
+            const isUnconfirmed = Boolean(message.error_message?.includes('DELIVERY_UNCONFIRMED'));
+            return (
+              <div className={`flex items-center justify-between space-x-2 mt-1.5 pt-1.5 border-t select-none ${
+                isUnconfirmed ? 'border-amber-300 dark:border-amber-800/50' : 'border-rose-300 dark:border-rose-800/50'
+              }`}>
+                <span className={`text-[10px] font-bold ${
+                  isUnconfirmed ? 'text-amber-600 dark:text-amber-400' : 'text-rose-600 dark:text-rose-400'
+                }`}>
+                  {isUnconfirmed ? t('whatsapp.msgDeliveryUnconfirmed') : t('whatsapp.msgFailed')}
+                </span>
+                <button
+                  type="button"
+                  onClick={handleRetryClick}
+                  disabled={retrying}
+                  className={`flex items-center space-x-1 px-2 py-0.5 rounded-lg text-[10px] font-extrabold transition-all cursor-pointer disabled:opacity-50 border ${
+                    isUnconfirmed
+                      ? 'bg-amber-500/20 hover:bg-amber-500/30 text-amber-700 dark:text-amber-300 border-amber-300 dark:border-amber-700/50'
+                      : 'bg-rose-500/20 hover:bg-rose-500/30 text-rose-700 dark:text-rose-300 border-rose-300 dark:border-rose-700/50'
+                  }`}
+                >
+                  {retrying ? (
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                  ) : (
+                    <RotateCcw className="w-3 h-3" />
+                  )}
+                  <span>{t('whatsapp.retryBtn')}</span>
+                </button>
+              </div>
+            );
+          })()}
         </div>
       </div>
 

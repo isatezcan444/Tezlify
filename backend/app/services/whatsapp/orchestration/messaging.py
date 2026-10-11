@@ -329,6 +329,37 @@ class WhatsAppMessagingOrchestrator:
                         db, clean, user_id=user_id, conversation_id=conv.id
                     )
                     return self.serialize_message(existing, preview=preview_data)
+
+                # Mesaj PENDING durumundaysa eşzamanlı/aktif bir gönderim süreci devam ediyor olabilir:
+                if existing.status == ConversationMessageStatus.PENDING:
+                    for _ in range(25):
+                        await asyncio.sleep(0.2)
+                        refreshed = await db.scalar(
+                            select(Message).where(
+                                Message.id == existing.id,
+                                get_user_filter(Message.user_id, user_id),
+                            )
+                        )
+                        if refreshed and (refreshed.status in _TERMINAL_OUTBOUND_STATUSES or refreshed.wa_message_id):
+                            preview_data = await preview_for_text_message(
+                                db, clean, user_id=user_id, conversation_id=conv.id
+                            )
+                            return self.serialize_message(refreshed, preview=preview_data)
+                        if refreshed and refreshed.status == ConversationMessageStatus.FAILED:
+                            existing = refreshed
+                            break
+
+                    if existing.status == ConversationMessageStatus.PENDING and not existing.wa_message_id:
+                        # Bekleme süresi bittiğinde güvenli olmayan ikinci dispatch yapılmaz:
+                        existing.status = ConversationMessageStatus.FAILED
+                        existing.failed_at = utc_now_naive()
+                        existing.error_message = "DELIVERY_UNCONFIRMED: Gönderim zaman aşımına uğradı; teslimat durumu doğrulanamadı."
+                        await db.commit()
+                        preview_data = await preview_for_text_message(
+                            db, clean, user_id=user_id, conversation_id=conv.id
+                        )
+                        return self.serialize_message(existing, preview=preview_data)
+
                 row = existing
                 row.status = ConversationMessageStatus.PENDING
                 row.failed_at = None
@@ -371,8 +402,8 @@ class WhatsAppMessagingOrchestrator:
                             db, clean, user_id=user_id, conversation_id=conv.id
                         )
                         return self.serialize_message(existing, preview=preview_data)
-                    for _ in range(15):
-                        await asyncio.sleep(0.1)
+                    for _ in range(25):
+                        await asyncio.sleep(0.2)
                         refreshed = await db.scalar(
                             select(Message).where(
                                 Message.id == existing.id,
@@ -384,6 +415,19 @@ class WhatsAppMessagingOrchestrator:
                                 db, clean, user_id=user_id, conversation_id=conv.id
                             )
                             return self.serialize_message(refreshed, preview=preview_data)
+                        if refreshed and refreshed.status == ConversationMessageStatus.FAILED:
+                            existing = refreshed
+                            break
+                    if existing.status == ConversationMessageStatus.PENDING and not existing.wa_message_id:
+                        # Invariant E: Güvenli olmayan fallback dispatch yok!
+                        existing.status = ConversationMessageStatus.FAILED
+                        existing.failed_at = utc_now_naive()
+                        existing.error_message = "DELIVERY_UNCONFIRMED: Eşzamanlı gönderim zaman aşımına uğradı; teslimat durumu doğrulanamadı."
+                        await db.commit()
+                        preview_data = await preview_for_text_message(
+                            db, clean, user_id=user_id, conversation_id=conv.id
+                        )
+                        return self.serialize_message(existing, preview=preview_data)
                     row = existing
 
             try:
@@ -396,7 +440,11 @@ class WhatsAppMessagingOrchestrator:
                 if row.status == ConversationMessageStatus.PENDING and not row.wa_message_id:
                     row.status = ConversationMessageStatus.FAILED
                     row.failed_at = utc_now_naive()
-                    row.error_message = str(exc)[:300]
+                    err_str = str(exc)
+                    if any(k in err_str.lower() for k in ("timeout", "connect", "timed out", "502", "504", "network")):
+                        row.error_message = f"DELIVERY_UNCONFIRMED: {err_str[:250]}"
+                    else:
+                        row.error_message = err_str[:300]
                     await db.commit()
                 raise
             await db.refresh(row)
@@ -472,6 +520,31 @@ class WhatsAppMessagingOrchestrator:
                     raise ValueError("client_message_id farklı bir medya için yeniden kullanılamaz.")
                 if existing.status in _TERMINAL_OUTBOUND_STATUSES or existing.wa_message_id:
                     return self.serialize_message(existing)
+
+                # Medya PENDING durumundaysa eşzamanlı/aktif bir gönderim süreci devam ediyor olabilir:
+                if existing.status == ConversationMessageStatus.PENDING:
+                    for _ in range(25):
+                        await asyncio.sleep(0.2)
+                        refreshed = await db.scalar(
+                            select(Message).where(
+                                Message.id == existing.id,
+                                get_user_filter(Message.user_id, user_id),
+                            )
+                        )
+                        if refreshed and (refreshed.status in _TERMINAL_OUTBOUND_STATUSES or refreshed.wa_message_id):
+                            return self.serialize_message(refreshed)
+                        if refreshed and refreshed.status == ConversationMessageStatus.FAILED:
+                            existing = refreshed
+                            break
+
+                    if existing.status == ConversationMessageStatus.PENDING and not existing.wa_message_id:
+                        # Bekleme süresi bittiğinde güvenli olmayan ikinci dispatch yapılmaz:
+                        existing.status = ConversationMessageStatus.FAILED
+                        existing.failed_at = utc_now_naive()
+                        existing.error_message = "DELIVERY_UNCONFIRMED: Gönderim zaman aşımına uğradı; teslimat durumu doğrulanamadı."
+                        await db.commit()
+                        return self.serialize_message(existing)
+
                 row = existing
                 row.status = ConversationMessageStatus.PENDING
                 row.failed_at = None
@@ -512,8 +585,8 @@ class WhatsAppMessagingOrchestrator:
                         raise ValueError("client_message_id farklı bir medya için yeniden kullanılamaz.")
                     if existing.status in _TERMINAL_OUTBOUND_STATUSES or existing.wa_message_id:
                         return self.serialize_message(existing)
-                    for _ in range(15):
-                        await asyncio.sleep(0.1)
+                    for _ in range(25):
+                        await asyncio.sleep(0.2)
                         refreshed = await db.scalar(
                             select(Message).where(
                                 Message.id == existing.id,
@@ -522,6 +595,16 @@ class WhatsAppMessagingOrchestrator:
                         )
                         if refreshed and (refreshed.status in _TERMINAL_OUTBOUND_STATUSES or refreshed.wa_message_id):
                             return self.serialize_message(refreshed)
+                        if refreshed and refreshed.status == ConversationMessageStatus.FAILED:
+                            existing = refreshed
+                            break
+                    if existing.status == ConversationMessageStatus.PENDING and not existing.wa_message_id:
+                        # Invariant E: Güvenli olmayan fallback dispatch yok!
+                        existing.status = ConversationMessageStatus.FAILED
+                        existing.failed_at = utc_now_naive()
+                        existing.error_message = "DELIVERY_UNCONFIRMED: Eşzamanlı gönderim zaman aşımına uğradı; teslimat durumu doğrulanamadı."
+                        await db.commit()
+                        return self.serialize_message(existing)
                     row = existing
 
             try:
@@ -534,7 +617,11 @@ class WhatsAppMessagingOrchestrator:
                 if row.status == ConversationMessageStatus.PENDING and not row.wa_message_id:
                     row.status = ConversationMessageStatus.FAILED
                     row.failed_at = utc_now_naive()
-                    row.error_message = str(exc)[:300]
+                    err_str = str(exc)
+                    if any(k in err_str.lower() for k in ("timeout", "connect", "timed out", "502", "504", "network")):
+                        row.error_message = f"DELIVERY_UNCONFIRMED: {err_str[:250]}"
+                    else:
+                        row.error_message = err_str[:300]
                     await db.commit()
                 raise
             await db.refresh(row)

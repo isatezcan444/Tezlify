@@ -464,3 +464,112 @@ class TestWhatsAppIdempotencyDelivery:
             assert found.wa_message_id == "WA-REAL-001"
 
         await engine.dispose()
+
+    @pytest.mark.asyncio
+    async def test_in_flight_pending_existing_message_waits_and_returns_winning_dispatch(self):
+        """When existing message is found in PENDING state (concurrent worker), code waits and returns winning dispatch."""
+        db = AsyncMock()
+        conv = MagicMock(id=10, is_group=False, last_message_at=None)
+        session_row = WhatsAppSession(id=1, user_id="usr-1", gateway_id="gw-1", status=SessionStatus.CONNECTED)
+
+        msg = Message(
+            id=606,
+            conversation_id=10,
+            direction=MessageDirection.OUTBOUND,
+            message_type=MessageType.TEXT,
+            body="Existing pending test",
+            client_message_id="exist-mid-606",
+            status=ConversationMessageStatus.PENDING,
+            wa_message_id=None,
+        )
+
+        poll_count = 0
+
+        async def dynamic_scalar(query):
+            nonlocal poll_count
+            poll_count += 1
+            if poll_count == 1:
+                return msg  # Initial query finds existing PENDING
+            else:
+                msg.status = ConversationMessageStatus.SENT
+                msg.wa_message_id = "wa-exist-606"
+                return msg
+
+        db.add = MagicMock()
+        db.scalar.side_effect = dynamic_scalar
+        gateway_dispatch = AsyncMock()
+
+        with patch("backend.app.services.whatsapp.orchestration.messaging._resolve_jid", return_value=(conv, "90555@s.whatsapp.net")), \
+             patch("backend.app.services.whatsapp.orchestration.messaging._conversation_session", return_value=session_row), \
+             patch("backend.app.services.whatsapp.orchestration.messaging._gateway_op_or_mark_relink", gateway_dispatch):
+
+            res = await send_text_message(db, "usr-1", 10, "Existing pending test", client_message_id="exist-mid-606")
+
+            assert res["id"] == 606
+            assert res["status"] == "SENT"
+            assert res["wa_message_id"] == "wa-exist-606"
+            gateway_dispatch.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_wait_timeout_marks_delivery_unconfirmed_without_fallback_dispatch(self):
+        """Invariant E: When wait loop expires while message is still PENDING, marks DELIVERY_UNCONFIRMED with NO fallback dispatch."""
+        db = AsyncMock()
+        conv = MagicMock(id=10, is_group=False, last_message_at=None)
+        session_row = WhatsAppSession(id=1, user_id="usr-1", gateway_id="gw-1", status=SessionStatus.CONNECTED)
+
+        stuck_msg = Message(
+            id=707,
+            conversation_id=10,
+            direction=MessageDirection.OUTBOUND,
+            message_type=MessageType.TEXT,
+            body="Timeout test",
+            client_message_id="timeout-mid-707",
+            status=ConversationMessageStatus.PENDING,
+            wa_message_id=None,
+        )
+
+        db.add = MagicMock()
+        db.scalar.return_value = stuck_msg
+        gateway_dispatch = AsyncMock()
+
+        with patch("asyncio.sleep", new_callable=AsyncMock), \
+             patch("backend.app.services.whatsapp.orchestration.messaging._resolve_jid", return_value=(conv, "90555@s.whatsapp.net")), \
+             patch("backend.app.services.whatsapp.orchestration.messaging._conversation_session", return_value=session_row), \
+             patch("backend.app.services.whatsapp.orchestration.messaging._gateway_op_or_mark_relink", gateway_dispatch):
+
+            res = await send_text_message(db, "usr-1", 10, "Timeout test", client_message_id="timeout-mid-707")
+
+            assert res["id"] == 707
+            assert res["status"] == "FAILED"
+            assert "DELIVERY_UNCONFIRMED" in (res.get("error_message") or "")
+            # Crucial: NO fallback gateway dispatch occurred!
+            gateway_dispatch.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_gateway_timeout_marks_delivery_unconfirmed(self):
+        """When gateway call times out, message is marked with DELIVERY_UNCONFIRMED."""
+        db = AsyncMock()
+        conv = MagicMock(id=10, is_group=False, last_message_at=None)
+        session_row = WhatsAppSession(id=1, user_id="usr-1", gateway_id="gw-1", status=SessionStatus.CONNECTED)
+
+        row_holder = None
+
+        def capture_add(row):
+            nonlocal row_holder
+            row_holder = row
+
+        db.add = MagicMock(side_effect=capture_add)
+        db.scalar.return_value = None
+
+        gateway_dispatch = AsyncMock(side_effect=Exception("Gateway HTTP connection timeout after 15s"))
+
+        with patch("backend.app.services.whatsapp.orchestration.messaging._resolve_jid", return_value=(conv, "90555@s.whatsapp.net")), \
+             patch("backend.app.services.whatsapp.orchestration.messaging._conversation_session", return_value=session_row), \
+             patch("backend.app.services.whatsapp.orchestration.messaging._gateway_op_or_mark_relink", gateway_dispatch):
+
+            with pytest.raises(Exception, match="timeout"):
+                await send_text_message(db, "usr-1", 10, "Gateway timeout test", client_message_id="gw-timeout-mid-1")
+
+            assert row_holder is not None
+            assert row_holder.status == ConversationMessageStatus.FAILED
+            assert "DELIVERY_UNCONFIRMED" in row_holder.error_message

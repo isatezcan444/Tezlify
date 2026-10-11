@@ -155,10 +155,10 @@ class TestWhatsAppMessagingOrchestration:
 
     @pytest.mark.asyncio
     async def test_pending_idempotent_retry_redispatches_same_client_id(self):
-        """A crash after the PENDING commit must not strand the message forever."""
+        """A message recovered to FAILED/DELIVERY_UNCONFIRMED after crash is redispatched without creating duplicate rows."""
         db = AsyncMock()
         conv = MagicMock(id=10, is_group=False, last_message_at=None)
-        pending = Message(
+        recovered = Message(
             id=102,
             user_id="usr-1",
             conversation_id=10,
@@ -166,11 +166,12 @@ class TestWhatsAppMessagingOrchestration:
             message_type=MessageType.TEXT,
             body="Retry me",
             client_message_id="client-pending-1",
-            status=ConversationMessageStatus.PENDING,
+            status=ConversationMessageStatus.FAILED,
+            error_message="DELIVERY_UNCONFIRMED: Sunucu yeniden başlatıldı",
             sender_phone="ME",
             recipient_phone="+90555",
         )
-        db.scalar.return_value = pending
+        db.scalar.return_value = recovered
         session_row = WhatsAppSession(id=1, user_id="usr-1", gateway_id="gw-1")
 
         with patch("backend.app.services.whatsapp.orchestration.messaging._resolve_jid", return_value=(conv, "90555@s.whatsapp.net")), \
@@ -186,6 +187,8 @@ class TestWhatsAppMessagingOrchestration:
         dispatch.assert_awaited_once()
         assert result["status"] == "SENT"
         assert result["wa_message_id"] == "wa-retry-1"
+        assert recovered.status == ConversationMessageStatus.SENT
+        assert recovered.error_message is None
         db.add.assert_not_called()
 
     @pytest.mark.asyncio

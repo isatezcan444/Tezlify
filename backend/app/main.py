@@ -120,7 +120,7 @@ async def recover_stuck_jobs() -> None:
             .values(
                 status=ConversationMessageStatus.FAILED,
                 failed_at=utc_now_naive(),
-                error_message="Sunucu yeniden başlatıldı; teslimat sonucu doğrulanamadı. Tekrar deneyebilirsiniz.",
+                error_message="DELIVERY_UNCONFIRMED: Sunucu yeniden başlatıldı; teslimat sonucu doğrulanamadı. Tekrar deneyebilirsiniz.",
             )
         )
         await db.commit()
