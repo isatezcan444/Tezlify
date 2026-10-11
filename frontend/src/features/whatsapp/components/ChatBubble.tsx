@@ -48,12 +48,7 @@ import { useMessageReactions } from '../hooks/useMessageReactions';
 import { resolveMediaUrl } from '../../../lib/mediaUrl';
 import { isMessageStarred, toggleMessageStar, subscribeStarredChanges } from '../lib/starredMessages';
 import { isMessagePinned, toggleMessagePin, subscribePinnedChanges } from '../lib/pinnedMessages';
-import {
-  registerMedia,
-  notifyMediaPlaying,
-  MEDIA_PLAY_EVENT,
-  MEDIA_PAUSE_ALL_EVENT,
-} from '../lib/mediaCoordinator';
+import { useMediaCoordinator } from '../hooks/useMediaCoordinator';
 
 /** WhatsApp Web'in tepki cubugunda gosterdigi altı hizli ifade. */
 export const QUICK_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🙏'] as const;
@@ -166,42 +161,10 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
   });
 
   // Coordinate single active playback across all chat media
-  useEffect(() => {
-    const handleMediaPlay = (e: Event) => {
-      const custom = e as CustomEvent<{ id: string }>;
-      if (custom.detail?.id && custom.detail.id !== videoMediaId) {
-        if (videoRef.current && !videoRef.current.paused) {
-          videoRef.current.pause();
-        }
-      }
-    };
-    const handlePauseAll = (e: Event) => {
-      const custom = e as CustomEvent<{ exceptId?: string }>;
-      if (custom.detail?.exceptId !== videoMediaId) {
-        if (videoRef.current && !videoRef.current.paused) {
-          videoRef.current.pause();
-        }
-      }
-    };
-
-    window.addEventListener(MEDIA_PLAY_EVENT, handleMediaPlay);
-    window.addEventListener(MEDIA_PAUSE_ALL_EVENT, handlePauseAll);
-
-    const unregister = registerMedia(videoMediaId, videoRef.current, () => {
-      if (videoRef.current && !videoRef.current.paused) {
-        videoRef.current.pause();
-      }
-    });
-
-    return () => {
-      window.removeEventListener(MEDIA_PLAY_EVENT, handleMediaPlay);
-      window.removeEventListener(MEDIA_PAUSE_ALL_EVENT, handlePauseAll);
-      unregister();
-      if (videoRef.current && !videoRef.current.paused) {
-        videoRef.current.pause();
-      }
-    };
-  }, [videoMediaId]);
+  const { notifyPlay: notifyVideoPlay, notifyPause: notifyVideoPause, notifyEnded: notifyVideoEnded } = useMediaCoordinator({
+    mediaId: videoMediaId,
+    elementRef: videoRef,
+  });
 
   // Fail-safe: ensure inline video is paused whenever lightbox is opened
   useEffect(() => {
@@ -780,9 +743,18 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                     src={videoSrc}
                     className="w-full h-full object-contain bg-black/90"
                     onPlay={() => {
-                      notifyMediaPlaying(videoMediaId, videoRef.current);
+                      notifyVideoPlay();
                     }}
-                    onError={() => setVideoLoadError(true)}
+                    onPause={() => {
+                      notifyVideoPause();
+                    }}
+                    onEnded={() => {
+                      notifyVideoEnded();
+                    }}
+                    onError={() => {
+                      setVideoLoadError(true);
+                      notifyVideoEnded();
+                    }}
                   />
                   <button
                     type="button"

@@ -1,12 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Play, Pause, Mic, RotateCcw, AlertCircle } from 'lucide-react';
 import { useI18n } from '../../../context/I18nContext';
-import {
-  registerMedia,
-  notifyMediaPlaying,
-  MEDIA_PLAY_EVENT,
-  MEDIA_PAUSE_ALL_EVENT,
-} from '../lib/mediaCoordinator';
+import { useMediaCoordinator } from '../hooks/useMediaCoordinator';
 
 export interface VoiceNotePlayerProps {
   src: string;
@@ -32,46 +27,15 @@ export const VoiceNotePlayer: React.FC<VoiceNotePlayerProps> = ({
   const [retryKey, setRetryKey] = useState(0);
   const voiceMediaId = React.useMemo(() => `voice-note-${src}`, [src]);
 
-  // Coordinate single active playback across all chat media
-  useEffect(() => {
-    const handleMediaPlay = (e: Event) => {
-      const custom = e as CustomEvent<{ id: string }>;
-      if (custom.detail?.id && custom.detail.id !== voiceMediaId) {
-        if (audioRef.current && !audioRef.current.paused) {
-          audioRef.current.pause();
-          setIsPlaying(false);
-        }
-      }
-    };
-    const handlePauseAll = (e: Event) => {
-      const custom = e as CustomEvent<{ exceptId?: string }>;
-      if (custom.detail?.exceptId !== voiceMediaId) {
-        if (audioRef.current && !audioRef.current.paused) {
-          audioRef.current.pause();
-          setIsPlaying(false);
-        }
-      }
-    };
+  const handleExternalPause = useCallback(() => {
+    setIsPlaying(false);
+  }, []);
 
-    window.addEventListener(MEDIA_PLAY_EVENT, handleMediaPlay);
-    window.addEventListener(MEDIA_PAUSE_ALL_EVENT, handlePauseAll);
-
-    const unregister = registerMedia(voiceMediaId, audioRef.current, () => {
-      if (audioRef.current && !audioRef.current.paused) {
-        audioRef.current.pause();
-      }
-      setIsPlaying(false);
-    });
-
-    return () => {
-      window.removeEventListener(MEDIA_PLAY_EVENT, handleMediaPlay);
-      window.removeEventListener(MEDIA_PAUSE_ALL_EVENT, handlePauseAll);
-      unregister();
-      if (audioRef.current && !audioRef.current.paused) {
-        audioRef.current.pause();
-      }
-    };
-  }, [voiceMediaId, retryKey]);
+  const { notifyPlay, notifyPause, notifyEnded } = useMediaCoordinator({
+    mediaId: voiceMediaId,
+    elementRef: audioRef,
+    onExternalPause: handleExternalPause,
+  });
 
   // Generate pseudo-waveform bars with deterministic heights
   const bars = React.useMemo(() => {
@@ -107,13 +71,17 @@ export const VoiceNotePlayer: React.FC<VoiceNotePlayerProps> = ({
       setIsPlaying(false);
       setCurrentTime(0);
       setHasBeenPlayed(true);
+      notifyEnded();
     };
     const onPlay = () => {
       setIsPlaying(true);
       setHasBeenPlayed(true);
-      notifyMediaPlaying(voiceMediaId, audioRef.current);
+      notifyPlay();
     };
-    const onPause = () => setIsPlaying(false);
+    const onPause = () => {
+      setIsPlaying(false);
+      notifyPause();
+    };
     const onError = () => {
       if (audio.error && audio.error.code === 1) {
         // MEDIA_ERR_ABORTED - normal during range probe or chunk transition
@@ -121,6 +89,7 @@ export const VoiceNotePlayer: React.FC<VoiceNotePlayerProps> = ({
       }
       setAudioError(true);
       setIsPlaying(false);
+      notifyEnded();
     };
 
     audio.addEventListener('timeupdate', onTimeUpdate);
@@ -140,7 +109,7 @@ export const VoiceNotePlayer: React.FC<VoiceNotePlayerProps> = ({
       audio.removeEventListener('pause', onPause);
       audio.removeEventListener('error', onError);
     };
-  }, [src, retryKey, duration]);
+  }, [src, retryKey, duration, notifyPlay, notifyPause, notifyEnded]);
 
   const togglePlay = useCallback(() => {
     const audio = audioRef.current;
@@ -148,13 +117,14 @@ export const VoiceNotePlayer: React.FC<VoiceNotePlayerProps> = ({
     if (isPlaying) {
       audio.pause();
     } else {
-      notifyMediaPlaying(voiceMediaId, audio);
+      notifyPlay();
       audio.play().catch((err) => {
         console.error('[VoiceNotePlayer] play error:', err);
+        setIsPlaying(false);
         setAudioError(true);
       });
     }
-  }, [isPlaying, voiceMediaId]);
+  }, [isPlaying, notifyPlay]);
 
   const cycleRate = useCallback(() => {
     const nextIndex = (rateIndex + 1) % PLAYBACK_RATES.length;

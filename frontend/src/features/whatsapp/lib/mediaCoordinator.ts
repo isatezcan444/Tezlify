@@ -34,7 +34,7 @@ export function registerMedia(
 
   return () => {
     const existing = registeredMedia.get(id);
-    if (existing && (!element || existing.element === element)) {
+    if (existing) {
       registeredMedia.delete(id);
     }
     if (activeMediaId === id) {
@@ -137,4 +137,32 @@ export function isMediaActive(id: string): boolean {
  */
 export function getActiveMediaId(): string | null {
   return activeMediaId;
+}
+
+/**
+ * Notify the coordinator that a media element has been paused.
+ * Clears activeMediaId if this element was currently active.
+ */
+export function notifyMediaPaused(id?: string): void {
+  if (!id || activeMediaId === id) {
+    activeMediaId = null;
+  }
+}
+
+/**
+ * Notify the coordinator that a media element has completed playback.
+ * Clears activeMediaId if this element was currently active.
+ */
+export function notifyMediaEnded(id?: string): void {
+  if (!id || activeMediaId === id) {
+    activeMediaId = null;
+  }
+}
+
+/**
+ * Reset all registered media and active state (for test isolation and cleanup).
+ */
+export function clearAllRegisteredMedia(): void {
+  registeredMedia.clear();
+  activeMediaId = null;
 }
