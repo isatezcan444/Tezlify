@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   LayoutTemplate,
   Send,
@@ -57,6 +57,7 @@ export const TemplateSelectModal: React.FC<TemplateSelectModalProps> = ({
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [variables, setVariables] = useState<Record<string, string>>({});
   const [sending, setSending] = useState<boolean>(false);
+  const directSendLockRef = useRef<boolean>(false);
 
   // Form mode: 'LIST' | 'CREATE' | 'EDIT'
   const [formMode, setFormMode] = useState<'LIST' | 'CREATE' | 'EDIT'>('LIST');
@@ -136,7 +137,8 @@ export const TemplateSelectModal: React.FC<TemplateSelectModalProps> = ({
   };
 
   const handleDirectSend = async () => {
-    if (!selectedQr || sending) return;
+    if (!selectedQr || sending || directSendLockRef.current) return;
+    directSendLockRef.current = true;
     setSending(true);
     try {
       if (onSendTemplate) {
@@ -148,6 +150,7 @@ export const TemplateSelectModal: React.FC<TemplateSelectModalProps> = ({
     } catch (err) {
       console.error('[TemplateSelectModal] Direct send failed:', err);
     } finally {
+      directSendLockRef.current = false;
       setSending(false);
     }
   };

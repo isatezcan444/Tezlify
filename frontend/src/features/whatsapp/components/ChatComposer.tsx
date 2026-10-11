@@ -409,8 +409,9 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
   // The backend's idempotency check does not catch it either: it is keyed on
   // client_message_id, and each send mints a fresh one, so two sends of the same
   // text are two unrelated messages and both reach WhatsApp.
-  // See lib/sendLock.
   const sendLockRef = useRef(createSendLock());
+  const filesSendLockRef = useRef(createSendLock());
+  const mediaUrlSendLockRef = useRef(createSendLock());
 
   /**
    * WhatsApp Web keeps the cursor in the draft field after Enter, so the next
@@ -537,23 +538,25 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
 
   const handleMediaSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!mediaUrl.trim() || !mediaModalType || !onSendMedia || sendingMedia) return;
+    if (!mediaUrl.trim() || !mediaModalType || !onSendMedia || mediaUrlSendLockRef.current.isLocked()) return;
 
     setSendingMedia(true);
     try {
-      await onSendMedia(
-        mediaModalType,
-        mediaUrl.trim(),
-        mediaCaption.trim() || undefined,
-        mediaFilename.trim() || undefined
-      );
-      setMediaModalType(null);
-      setMediaUrl('');
-      setMediaCaption('');
-      setMediaFilename('');
-      stopTypingSignal();
-      // The modal took focus; hand it back to the draft field it closed over.
-      refocusDraft();
+      await mediaUrlSendLockRef.current.run(async () => {
+        await onSendMedia(
+          mediaModalType,
+          mediaUrl.trim(),
+          mediaCaption.trim() || undefined,
+          mediaFilename.trim() || undefined
+        );
+        setMediaModalType(null);
+        setMediaUrl('');
+        setMediaCaption('');
+        setMediaFilename('');
+        stopTypingSignal();
+        // The modal took focus; hand it back to the draft field it closed over.
+        refocusDraft();
+      });
     } catch (err) {
       console.error('[ChatComposer] Media send error:', err);
     } finally {
@@ -562,26 +565,50 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
   };
 
   const handleSendAllFiles = async () => {
-    if (pendingFiles.length === 0 || !onSendMediaFile || sendingFiles) return;
+    if (pendingFiles.length === 0 || !onSendMediaFile || filesSendLockRef.current.isLocked()) return;
     setSendingFiles(true);
     try {
-      for (let i = 0; i < pendingFiles.length; i++) {
-        setSendingIndex(i);
-        const f = pendingFiles[i];
-        const cap = fileCaptions[i]?.trim() || undefined;
-        await onSendMediaFile(f, cap);
-        if (i < pendingFiles.length - 1) {
-          // Micro delay to maintain dispatch order
-          await new Promise((resolve) => setTimeout(resolve, 350));
+      await filesSendLockRef.current.run(async () => {
+        let sentCount = 0;
+        try {
+          for (let i = 0; i < pendingFiles.length; i++) {
+            setSendingIndex(i);
+            const f = pendingFiles[i];
+            const cap = fileCaptions[i]?.trim() || undefined;
+            await onSendMediaFile(f, cap);
+            sentCount = i + 1;
+            if (i < pendingFiles.length - 1) {
+              // Micro delay to maintain dispatch order
+              await new Promise((resolve) => setTimeout(resolve, 350));
+            }
+          }
+          stopTypingSignal();
+          setIsFileModalOpen(false);
+          setPendingFiles([]);
+          setActiveFileIndex(0);
+          setFileCaptions({});
+          onClearStagedFiles?.();
+          refocusDraft();
+        } catch (err) {
+          // If some files were sent before failure, remove only the sent files
+          // so retry will not re-send already dispatched files!
+          if (sentCount > 0) {
+            setPendingFiles((prev) => prev.slice(sentCount));
+            setActiveFileIndex(0);
+            setFileCaptions((prev) => {
+              const nextCaps: Record<number, string> = {};
+              Object.entries(prev).forEach(([key, val]) => {
+                const numKey = Number(key);
+                if (numKey >= sentCount) {
+                  nextCaps[numKey - sentCount] = val;
+                }
+              });
+              return nextCaps;
+            });
+          }
+          throw err;
         }
-      }
-      stopTypingSignal();
-      setIsFileModalOpen(false);
-      setPendingFiles([]);
-      setActiveFileIndex(0);
-      setFileCaptions({});
-      onClearStagedFiles?.();
-      refocusDraft();
+      });
     } catch (err) {
       console.error('[ChatComposer] Multi-file send error:', err);
     } finally {

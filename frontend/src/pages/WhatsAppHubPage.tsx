@@ -313,6 +313,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   // at call time (no stale closure). The state declarations above are unchanged.
   const selectedConvRef = useRef(selectedConv);
   selectedConvRef.current = selectedConv;
+  const retryingMsgIdsRef = useRef<Set<string | number>>(new Set());
 
   useEffect(() => {
     setReplyingTo(null);
@@ -1749,6 +1750,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
 
   const activeSendMessage = async (text: string) => {
     if (!selectedConv || !text.trim()) return;
+    const targetConvId = selectedConv.id;
     const trimmed = text.trim();
     const tempClientMid = `cmsg_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
     const tempId = `optimistic_${tempClientMid}`;
@@ -1756,7 +1758,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
 
     const optimisticMsg: Message = {
       id: tempId,
-      conversation_id: selectedConv.id,
+      conversation_id: targetConvId,
       direction: 'OUTBOUND',
       message_type: 'TEXT',
       status: 'PENDING',
@@ -1769,7 +1771,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     // F-6: snapshot the pre-optimistic activity so a FAILED send can be rolled
     // back — a message that never went out must not stay pinned at the top of
     // the list as if it were the latest real activity.
-    const previousConversation = conversations.find((c) => c.id === selectedConv.id);
+    const previousConversation = conversations.find((c) => c.id === targetConvId);
     const previousActivity = {
       last_message_preview: previousConversation?.last_message_preview,
       last_message_at: previousConversation?.last_message_at,
@@ -1778,11 +1780,11 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     // Optimistic UI feedback (0ms perceived delay)
     setMessagesMap((prev) => ({
       ...prev,
-      [selectedConv.id]: [...(prev[selectedConv.id] || []), optimisticMsg],
+      [targetConvId]: [...(prev[targetConvId] || []), optimisticMsg],
     }));
     setConversations((prev) => {
       const updated = prev.map((c) =>
-        c.id === selectedConv.id
+        c.id === targetConvId
           ? { ...c, last_message_preview: trimmed, last_message_at: nowIso }
           : c
       );
@@ -1790,11 +1792,11 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     });
 
     try {
-      const res = await WhatsAppRepository.sendMessage(selectedConv.id, trimmed, tempClientMid);
+      const res = await WhatsAppRepository.sendMessage(targetConvId, trimmed, tempClientMid);
       // Reconcile temporary message with backend response (which has status 'PENDING', real id, client_message_id)
       setMessagesMap((prev) => ({
         ...prev,
-        [selectedConv.id]: (prev[selectedConv.id] || []).map((m) =>
+        [targetConvId]: (prev[targetConvId] || []).map((m) =>
           m.id === tempId || m.client_message_id === tempClientMid
             ? {
                 ...m,
@@ -1810,7 +1812,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     } catch (err: any) {
       setMessagesMap((prev) => ({
         ...prev,
-        [selectedConv.id]: (prev[selectedConv.id] || []).map((m) =>
+        [targetConvId]: (prev[targetConvId] || []).map((m) =>
           m.id === tempId || m.client_message_id === tempClientMid
             ? { ...m, status: 'FAILED', error_message: translateApiError(err, t) || t('whatsapp.msgFailed') }
             : m
@@ -1822,7 +1824,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       setConversations((prev) =>
         prev
           .map((c) =>
-            c.id === selectedConv.id
+            c.id === targetConvId
               ? restoreConversationActivity(
                   c,
                   { last_message_preview: trimmed, last_message_at: nowIso },
@@ -1844,12 +1846,25 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     // every render and therefore also saw the latest state at call time).
     const selectedConv = selectedConvRef.current;
     if (!selectedConv) return;
+    if (retryingMsgIdsRef.current.has(msgId)) return;
+    retryingMsgIdsRef.current.add(msgId);
+
     // Optimistic rows (client-only string ids) must never hit /retry. Re-POST
     // with the existing client_message_id so idempotency holds and the row is
     // reconciled with the real numeric DB id.
     const convId = selectedConv.id;
     const target = (messagesMapRef.current[convId] || []).find((m) => m.id === msgId);
     const isRealDbId = typeof msgId === 'number' && Number.isInteger(msgId) && msgId > 0;
+
+    // Immediately reflect PENDING status on the row so spinner appears and double click is locked
+    setMessagesMap((prev) => ({
+      ...prev,
+      [convId]: (prev[convId] || []).map((m) =>
+        m.id === msgId ? { ...m, status: 'PENDING', error_message: undefined } : m
+      ),
+    }));
+
+    try {
       if (!isRealDbId) {
         const clientMid = target?.client_message_id;
         if (!target || !clientMid || (!target.body && !target.media_url)) {
@@ -1859,13 +1874,36 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         }
         let res: any;
         if (target.message_type && target.message_type !== 'TEXT' && target.media_url) {
-          res = await WhatsAppRepository.sendMedia(convId, {
+          let mediaPayload: any = {
             media_type: target.message_type,
             media_url: target.media_url,
             caption: target.media_caption || undefined,
             filename: target.media_filename || undefined,
             mime_type: target.media_mime_type || undefined,
-          }, clientMid);
+          };
+          if (typeof target.media_url === 'string' && target.media_url.startsWith('blob:')) {
+            try {
+              const blobRes = await fetch(target.media_url);
+              const blob = await blobRes.blob();
+              const base64 = await new Promise<string>((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onloadend = () => {
+                  const resultStr = reader.result as string;
+                  const b64 = resultStr.includes(',') ? resultStr.split(',')[1] : resultStr;
+                  resolve(b64);
+                };
+                reader.onerror = reject;
+                reader.readAsDataURL(blob);
+              });
+              if (base64) {
+                mediaPayload.media_base64 = base64;
+                delete mediaPayload.media_url;
+              }
+            } catch (blobErr) {
+              console.warn('[WhatsAppHubPage] Blob conversion for retry failed, using raw url:', blobErr);
+            }
+          }
+          res = await WhatsAppRepository.sendMedia(convId, mediaPayload, clientMid);
         } else {
           res = await WhatsAppRepository.sendMessage(convId, target.body || '', clientMid);
         }
@@ -1893,9 +1931,19 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
           m.id === msgId ? { ...m, status: res.status, error_message: undefined } : m
         ),
       }));
-    // No try/catch: F-7 requires no toast here because the UI caller owns the
-    // single user-facing toast. A catch that only rethrows would be a no-op
-    // wrapper, so the error propagates untouched instead.
+    } catch (err: any) {
+      setMessagesMap((prev) => ({
+        ...prev,
+        [convId]: (prev[convId] || []).map((m) =>
+          m.id === msgId
+            ? { ...m, status: 'FAILED', error_message: translateApiError(err, tRef.current) || tRef.current('whatsapp.msgFailed') }
+            : m
+        ),
+      }));
+      throw err;
+    } finally {
+      retryingMsgIdsRef.current.delete(msgId);
+    }
   }, []);
 
   // PHASE 2.K.1 (single variable): STABLE onRetry handler. Same behavior as the
@@ -2034,6 +2082,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   const activeSendMediaFile = async (file: File, caption?: string) => {
     resetChatDragState();
     if (!selectedConv) return;
+    const targetConvId = selectedConv.id;
     const ext = (file.name.split('.').pop() || '').toLowerCase();
     const mt = file.type || '';
     let msgType: Message['message_type'] = 'DOCUMENT';
@@ -2052,7 +2101,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     const objectUrl = URL.createObjectURL(file);
     const newMsg: Message = {
       id: tempId,
-      conversation_id: selectedConv.id,
+      conversation_id: targetConvId,
       direction: 'OUTBOUND',
       message_type: msgType,
       status: 'PENDING',
@@ -2067,14 +2116,14 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     };
     setMessagesMap((prev) => ({
       ...prev,
-      [selectedConv.id]: [...(prev[selectedConv.id] || []), newMsg],
+      [targetConvId]: [...(prev[targetConvId] || []), newMsg],
     }));
 
     try {
-      const res = await WhatsAppRepository.sendMediaFile(selectedConv.id, file, caption, tempClientMid);
+      const res = await WhatsAppRepository.sendMediaFile(targetConvId, file, caption, tempClientMid);
       setMessagesMap((prev) => ({
         ...prev,
-        [selectedConv.id]: (prev[selectedConv.id] || []).map((m) =>
+        [targetConvId]: (prev[targetConvId] || []).map((m) =>
           m.id === tempId || m.client_message_id === tempClientMid
             ? {
                 ...m,
@@ -2091,7 +2140,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       const previewText = caption || file.name || (msgType === 'IMAGE' ? t('whatsapp.previewImage') : t('whatsapp.previewDocument'));
       setConversations((prev) =>
         prev.map((c) =>
-          c.id === selectedConv.id
+          c.id === targetConvId
             ? { ...c, last_message_preview: previewText, last_message_at: nowIso }
             : c
         ).sort(compareByLastMessageDesc)
@@ -2099,7 +2148,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     } catch (err: any) {
       setMessagesMap((prev) => ({
         ...prev,
-        [selectedConv.id]: (prev[selectedConv.id] || []).map((m) =>
+        [targetConvId]: (prev[targetConvId] || []).map((m) =>
           m.id === tempId || m.client_message_id === tempClientMid
             ? { ...m, status: 'FAILED', error_message: err.message }
             : m
