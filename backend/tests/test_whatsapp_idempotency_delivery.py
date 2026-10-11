@@ -207,6 +207,7 @@ class TestWhatsAppIdempotencyDelivery:
                 return None  # First check sees nothing
             return existing_committed  # Second check after IntegrityError sees committed row
 
+        db.add = MagicMock()
         db.scalar.side_effect = dynamic_scalar
         db.commit.side_effect = [
             IntegrityError("duplicate key", params=None, orig=Exception("unique constraint violated")),
@@ -263,6 +264,7 @@ class TestWhatsAppIdempotencyDelivery:
         conv2 = MagicMock(id=2, is_group=False, last_message_at=None)
         session_row = WhatsAppSession(id=1, user_id="usr-1", gateway_id="gw-1", status=SessionStatus.CONNECTED)
 
+        db.add = MagicMock()
         db.scalar.return_value = None  # No duplicate within each conversation
 
         gateway_dispatch = AsyncMock(side_effect=[
@@ -341,3 +343,124 @@ class TestWhatsAppIdempotencyDelivery:
 
             assert db.execute.await_count >= 3
             assert db.commit.called
+
+    @pytest.mark.asyncio
+    async def test_cross_worker_race_condition_waits_and_returns_winning_dispatch(self):
+        """When IntegrityError occurs and existing row is PENDING, code waits for winning worker to complete and returns it."""
+        db = AsyncMock()
+        conv = MagicMock(id=10, is_group=False, last_message_at=None)
+        session_row = WhatsAppSession(id=1, user_id="usr-1", gateway_id="gw-1", status=SessionStatus.CONNECTED)
+
+        # In-flight message: initially PENDING, then transitions to SENT
+        in_flight_msg = Message(
+            id=505,
+            conversation_id=10,
+            direction=MessageDirection.OUTBOUND,
+            message_type=MessageType.TEXT,
+            body="Cross worker test",
+            client_message_id="cross-mid-505",
+            status=ConversationMessageStatus.PENDING,
+            wa_message_id=None,
+        )
+
+        poll_count = 0
+
+        async def dynamic_scalar(query):
+            nonlocal poll_count
+            poll_count += 1
+            if poll_count == 1:
+                return None  # First check sees nothing
+            elif poll_count == 2:
+                return in_flight_msg  # Check right after IntegrityError: PENDING
+            else:
+                # Winning worker committed!
+                in_flight_msg.status = ConversationMessageStatus.SENT
+                in_flight_msg.wa_message_id = "wa-cross-505"
+                return in_flight_msg
+
+        db.add = MagicMock()
+        db.scalar.side_effect = dynamic_scalar
+        db.commit.side_effect = [
+            IntegrityError("duplicate key", params=None, orig=Exception("unique constraint")),
+            None,
+        ]
+
+        gateway_dispatch = AsyncMock()
+
+        with patch("backend.app.services.whatsapp.orchestration.messaging._resolve_jid", return_value=(conv, "90555@s.whatsapp.net")), \
+             patch("backend.app.services.whatsapp.orchestration.messaging._conversation_session", return_value=session_row), \
+             patch("backend.app.services.whatsapp.orchestration.messaging._gateway_op_or_mark_relink", gateway_dispatch):
+
+            res = await send_text_message(db, "usr-1", 10, "Cross worker test", client_message_id="cross-mid-505")
+
+            assert res["id"] == 505
+            assert res["status"] == "SENT"
+            assert res["wa_message_id"] == "wa-cross-505"
+            gateway_dispatch.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_real_db_unique_constraint_rollback_and_read(self):
+        """Uses a real SQLite database to verify physical unique constraint enforcement, transaction rollback, and re-query."""
+        from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+        from backend.app.core.database import Base
+
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        session_factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+
+        async with session_factory() as session:
+            # Create a real conversation
+            conv = Conversation(id=1, channel="WHATSAPP")
+            session.add(conv)
+            await session.commit()
+
+            # Insert first message with client_message_id="real-db-key-1"
+            msg1 = Message(
+                conversation_id=1,
+                direction=MessageDirection.OUTBOUND,
+                message_type=MessageType.TEXT,
+                body="First insert",
+                client_message_id="real-db-key-1",
+                recipient_phone="905551234567",
+                status=ConversationMessageStatus.SENT,
+                wa_message_id="WA-REAL-001",
+            )
+            session.add(msg1)
+            await session.commit()
+
+            # Attempt a duplicate insert with the same (conversation_id, client_message_id)
+            msg2 = Message(
+                conversation_id=1,
+                direction=MessageDirection.OUTBOUND,
+                message_type=MessageType.TEXT,
+                body="Duplicate insert",
+                client_message_id="real-db-key-1",
+                recipient_phone="905551234567",
+                status=ConversationMessageStatus.PENDING,
+            )
+            session.add(msg2)
+
+            # Assert that the real database enforces the unique constraint and raises IntegrityError
+            with pytest.raises(IntegrityError):
+                await session.commit()
+
+            # Execute rollback on the real transaction
+            await session.rollback()
+
+            # Verify that after rollback, the session is clean and the original row can be read safely
+            from sqlalchemy import select
+            found = await session.scalar(
+                select(Message).where(
+                    Message.conversation_id == 1,
+                    Message.client_message_id == "real-db-key-1",
+                )
+            )
+            assert found is not None
+            assert found.id == msg1.id
+            assert found.body == "First insert"
+            assert found.status == ConversationMessageStatus.SENT
+            assert found.wa_message_id == "WA-REAL-001"
+
+        await engine.dispose()

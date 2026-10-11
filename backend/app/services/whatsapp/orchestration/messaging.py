@@ -371,6 +371,19 @@ class WhatsAppMessagingOrchestrator:
                             db, clean, user_id=user_id, conversation_id=conv.id
                         )
                         return self.serialize_message(existing, preview=preview_data)
+                    for _ in range(15):
+                        await asyncio.sleep(0.1)
+                        refreshed = await db.scalar(
+                            select(Message).where(
+                                Message.id == existing.id,
+                                get_user_filter(Message.user_id, user_id),
+                            )
+                        )
+                        if refreshed and (refreshed.status in _TERMINAL_OUTBOUND_STATUSES or refreshed.wa_message_id):
+                            preview_data = await preview_for_text_message(
+                                db, clean, user_id=user_id, conversation_id=conv.id
+                            )
+                            return self.serialize_message(refreshed, preview=preview_data)
                     row = existing
 
             try:
@@ -499,6 +512,16 @@ class WhatsAppMessagingOrchestrator:
                         raise ValueError("client_message_id farklı bir medya için yeniden kullanılamaz.")
                     if existing.status in _TERMINAL_OUTBOUND_STATUSES or existing.wa_message_id:
                         return self.serialize_message(existing)
+                    for _ in range(15):
+                        await asyncio.sleep(0.1)
+                        refreshed = await db.scalar(
+                            select(Message).where(
+                                Message.id == existing.id,
+                                get_user_filter(Message.user_id, user_id),
+                            )
+                        )
+                        if refreshed and (refreshed.status in _TERMINAL_OUTBOUND_STATUSES or refreshed.wa_message_id):
+                            return self.serialize_message(refreshed)
                     row = existing
 
             try:
