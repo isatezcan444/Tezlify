@@ -677,3 +677,168 @@ class TestWhatsAppIdempotencyDelivery:
             # Must NOT be reverted to FAILED!
             assert delivered_row.status == ConversationMessageStatus.DELIVERED
             assert delivered_row.wa_message_id == "BAE5_ALREADY_DELIVERED"
+
+    @pytest.mark.asyncio
+    async def test_atomic_claim_contention_losing_worker_awaits_and_returns_winning_dispatch(self):
+        """Cross-Worker Atomic Claim: When worker B gets rowcount=0 on claim UPDATE, it awaits winner and does NOT dispatch."""
+        db = AsyncMock()
+        conv = MagicMock(id=10, is_group=False, last_message_at=None)
+        session_row = WhatsAppSession(id=1, user_id="usr-1", gateway_id="gw-1", status=SessionStatus.CONNECTED)
+
+        failed_msg = Message(
+            id=901,
+            user_id="usr-1",
+            conversation_id=10,
+            direction=MessageDirection.OUTBOUND,
+            message_type=MessageType.TEXT,
+            body="Atomic claim test",
+            client_message_id="atomic-mid-901",
+            status=ConversationMessageStatus.FAILED,
+            error_message="Previous error",
+            wa_message_id=None,
+        )
+
+        # Mock claim_res with rowcount = 0 (another worker claimed first)
+        mock_claim_res = MagicMock(rowcount=0)
+        db.execute = AsyncMock(return_value=mock_claim_res)
+
+        poll_count = 0
+        async def dynamic_scalar(query):
+            nonlocal poll_count
+            poll_count += 1
+            if poll_count == 1:
+                return failed_msg  # Initial query
+            else:
+                # Winner worker committed SENT
+                failed_msg.status = ConversationMessageStatus.SENT
+                failed_msg.wa_message_id = "wa-atomic-winner-901"
+                return failed_msg
+
+        db.scalar.side_effect = dynamic_scalar
+        gateway_dispatch = AsyncMock()
+
+        with patch("asyncio.sleep", new_callable=AsyncMock), \
+             patch("backend.app.services.whatsapp.orchestration.messaging._resolve_jid", return_value=(conv, "90555@s.whatsapp.net")), \
+             patch("backend.app.services.whatsapp.orchestration.messaging._conversation_session", return_value=session_row), \
+             patch("backend.app.services.whatsapp.orchestration.messaging._gateway_op_or_mark_relink", gateway_dispatch):
+
+            res = await send_text_message(db, "usr-1", 10, "Atomic claim test", client_message_id="atomic-mid-901")
+
+            assert res["id"] == 901
+            assert res["status"] == "SENT"
+            assert res["wa_message_id"] == "wa-atomic-winner-901"
+            # Crucial: Losing worker NEVER calls gateway!
+            gateway_dispatch.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_atomic_claim_media_contention_losing_worker_awaits_winner(self):
+        """Cross-Worker Atomic Claim (Media): When worker B gets rowcount=0 on media retry claim, it awaits winner."""
+        db = AsyncMock()
+        conv = MagicMock(id=10, is_group=False, last_message_at=None)
+        session_row = WhatsAppSession(id=1, user_id="usr-1", gateway_id="gw-1", status=SessionStatus.CONNECTED)
+
+        failed_media = Message(
+            id=902,
+            user_id="usr-1",
+            conversation_id=10,
+            direction=MessageDirection.OUTBOUND,
+            message_type=MessageType.IMAGE,
+            body="https://example.com/photo.jpg",
+            media_mime_type="image/jpeg",
+            client_message_id="atomic-media-mid-902",
+            status=ConversationMessageStatus.FAILED,
+            error_message="Previous error",
+            wa_message_id=None,
+        )
+
+        mock_claim_res = MagicMock(rowcount=0)
+        db.execute = AsyncMock(return_value=mock_claim_res)
+
+        poll_count = 0
+        async def dynamic_scalar(query):
+            nonlocal poll_count
+            poll_count += 1
+            if poll_count == 1:
+                return failed_media
+            else:
+                failed_media.status = ConversationMessageStatus.SENT
+                failed_media.wa_message_id = "wa-atomic-media-winner-902"
+                return failed_media
+
+        db.scalar.side_effect = dynamic_scalar
+        gateway_dispatch = AsyncMock()
+
+        with patch("asyncio.sleep", new_callable=AsyncMock), \
+             patch("backend.app.services.whatsapp.orchestration.messaging._resolve_jid", return_value=(conv, "90555@s.whatsapp.net")), \
+             patch("backend.app.services.whatsapp.orchestration.messaging._conversation_session", return_value=session_row), \
+             patch("backend.app.services.whatsapp.orchestration.messaging._gateway_op_or_mark_relink", gateway_dispatch):
+
+            media_payload = {
+                "client_message_id": "atomic-media-mid-902",
+                "media_url": "https://example.com/photo.jpg",
+                "mime_type": "image/jpeg",
+            }
+            res = await send_media_message(db, "usr-1", 10, media_payload)
+
+            assert res["id"] == 902
+            assert res["status"] == "SENT"
+            assert res["wa_message_id"] == "wa-atomic-media-winner-902"
+            gateway_dispatch.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_atomic_claim_timeout_marks_delivery_unconfirmed_without_fallback_dispatch(self):
+        """Cross-Worker Atomic Claim Timeout: When winning worker never commits and timeout expires, marks DELIVERY_UNCONFIRMED."""
+        db = AsyncMock()
+        conv = MagicMock(id=10, is_group=False, last_message_at=None)
+        session_row = WhatsAppSession(id=1, user_id="usr-1", gateway_id="gw-1", status=SessionStatus.CONNECTED)
+
+        msg = Message(
+            id=903,
+            user_id="usr-1",
+            conversation_id=10,
+            direction=MessageDirection.OUTBOUND,
+            message_type=MessageType.TEXT,
+            body="Timeout claim test",
+            client_message_id="atomic-mid-903",
+            status=ConversationMessageStatus.FAILED,
+            wa_message_id=None,
+        )
+
+        mock_claim_res = MagicMock(rowcount=0)
+        db.execute = AsyncMock(return_value=mock_claim_res)
+
+        # Winning worker set it to PENDING, but never finished
+        pending_msg = Message(
+            id=903,
+            user_id="usr-1",
+            conversation_id=10,
+            direction=MessageDirection.OUTBOUND,
+            message_type=MessageType.TEXT,
+            body="Timeout claim test",
+            client_message_id="atomic-mid-903",
+            status=ConversationMessageStatus.PENDING,
+            wa_message_id=None,
+        )
+
+        poll_count = 0
+        async def dynamic_scalar(query):
+            nonlocal poll_count
+            poll_count += 1
+            if poll_count == 1:
+                return msg
+            return pending_msg
+
+        db.scalar.side_effect = dynamic_scalar
+        gateway_dispatch = AsyncMock()
+
+        with patch("asyncio.sleep", new_callable=AsyncMock), \
+             patch("backend.app.services.whatsapp.orchestration.messaging._resolve_jid", return_value=(conv, "90555@s.whatsapp.net")), \
+             patch("backend.app.services.whatsapp.orchestration.messaging._conversation_session", return_value=session_row), \
+             patch("backend.app.services.whatsapp.orchestration.messaging._gateway_op_or_mark_relink", gateway_dispatch):
+
+            res = await send_text_message(db, "usr-1", 10, "Timeout claim test", client_message_id="atomic-mid-903")
+
+            assert res["id"] == 903
+            assert res["status"] == "FAILED"
+            assert "DELIVERY_UNCONFIRMED" in (res.get("error_message") or "")
+            gateway_dispatch.assert_not_called()

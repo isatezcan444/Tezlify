@@ -18,7 +18,7 @@ import uuid
 
 from backend.app.core.datetime_utils import utc_now_naive
 
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -303,6 +303,7 @@ class WhatsAppMessagingOrchestrator:
         gateway_client = self._get_helper("gw", gw)
 
         conv, jid = await resolve_jid(db, user_id, conversation_id)
+        conv_id = conv.id
         clean = body.strip()
         if not clean:
             # ValueError, not LookupError: the conversation was found, the
@@ -313,11 +314,11 @@ class WhatsAppMessagingOrchestrator:
         session_row = await conversation_session(db, user_id, conv)
         client_message_id = client_message_id or str(uuid.uuid4())
 
-        async with acquire_send_lock(conv.id, client_message_id):
+        async with acquire_send_lock(conv_id, client_message_id):
             existing = await db.scalar(
                 select(Message).where(
                     Message.client_message_id == client_message_id,
-                    Message.conversation_id == conv.id,
+                    Message.conversation_id == conv_id,
                     get_user_filter(Message.user_id, user_id),
                 )
             )
@@ -326,7 +327,7 @@ class WhatsAppMessagingOrchestrator:
                     raise ValueError("client_message_id farklı bir mesaj için yeniden kullanılamaz.")
                 if existing.status in _TERMINAL_OUTBOUND_STATUSES or existing.wa_message_id:
                     preview_data = await preview_for_text_message(
-                        db, clean, user_id=user_id, conversation_id=conv.id
+                        db, clean, user_id=user_id, conversation_id=conv_id
                     )
                     return self.serialize_message(existing, preview=preview_data)
 
@@ -335,14 +336,16 @@ class WhatsAppMessagingOrchestrator:
                     for _ in range(25):
                         await asyncio.sleep(0.2)
                         refreshed = await db.scalar(
-                            select(Message).where(
+                            select(Message)
+                            .where(
                                 Message.id == existing.id,
                                 get_user_filter(Message.user_id, user_id),
                             )
+                            .execution_options(populate_existing=True)
                         )
                         if refreshed and (refreshed.status in _TERMINAL_OUTBOUND_STATUSES or refreshed.wa_message_id):
                             preview_data = await preview_for_text_message(
-                                db, clean, user_id=user_id, conversation_id=conv.id
+                                db, clean, user_id=user_id, conversation_id=conv_id
                             )
                             return self.serialize_message(refreshed, preview=preview_data)
                         if refreshed and refreshed.status == ConversationMessageStatus.FAILED:
@@ -356,19 +359,61 @@ class WhatsAppMessagingOrchestrator:
                         existing.error_message = "DELIVERY_UNCONFIRMED: Gönderim zaman aşımına uğradı; teslimat durumu doğrulanamadı."
                         await db.commit()
                         preview_data = await preview_for_text_message(
-                            db, clean, user_id=user_id, conversation_id=conv.id
+                            db, clean, user_id=user_id, conversation_id=conv_id
                         )
                         return self.serialize_message(existing, preview=preview_data)
 
-                row = existing
-                row.status = ConversationMessageStatus.PENDING
-                row.failed_at = None
-                row.error_message = None
+                # Atomik DB Dispatch Claim: Eşzamanlı process'ler aynı FAILED kaydı retry
+                # etmeye çalıştığında yalnızca biri satırı PENDING durumuna geçirebilir.
+                claim_stmt = (
+                    update(Message)
+                    .where(
+                        Message.id == existing.id,
+                        Message.status == ConversationMessageStatus.FAILED,
+                        Message.wa_message_id.is_(None),
+                        get_user_filter(Message.user_id, user_id),
+                    )
+                    .values(
+                        status=ConversationMessageStatus.PENDING,
+                        failed_at=None,
+                        error_message=None,
+                    )
+                )
+                claim_res = await db.execute(claim_stmt)
                 await db.commit()
+                if not claim_res.rowcount:
+                    # Başka bir worker bizden önce claim etti veya satır terminal duruma geçti.
+                    for _ in range(25):
+                        await asyncio.sleep(0.2)
+                        refreshed = await db.scalar(
+                            select(Message)
+                            .where(
+                                Message.id == existing.id,
+                                get_user_filter(Message.user_id, user_id),
+                            )
+                            .execution_options(populate_existing=True)
+                        )
+                        if refreshed and (refreshed.status in _TERMINAL_OUTBOUND_STATUSES or refreshed.wa_message_id):
+                            preview_data = await preview_for_text_message(
+                                db, clean, user_id=user_id, conversation_id=conv_id
+                            )
+                            return self.serialize_message(refreshed, preview=preview_data)
+                    if refreshed and refreshed.status == ConversationMessageStatus.PENDING and not refreshed.wa_message_id:
+                        refreshed.status = ConversationMessageStatus.FAILED
+                        refreshed.failed_at = utc_now_naive()
+                        refreshed.error_message = "DELIVERY_UNCONFIRMED: Eşzamanlı gönderim zaman aşımına uğradı; teslimat durumu doğrulanamadı."
+                        await db.commit()
+                    preview_data = await preview_for_text_message(
+                        db, clean, user_id=user_id, conversation_id=conv_id
+                    )
+                    return self.serialize_message(refreshed or existing, preview=preview_data)
+
+                await db.refresh(existing)
+                row = existing
             else:
                 row = Message(
                     user_id=user_id,
-                    conversation_id=conv.id,
+                    conversation_id=conv_id,
                     direction=MessageDirection.OUTBOUND,
                     message_type=MessageType.TEXT,
                     body=clean,
@@ -387,11 +432,13 @@ class WhatsAppMessagingOrchestrator:
                 except IntegrityError:
                     await db.rollback()
                     existing = await db.scalar(
-                        select(Message).where(
+                        select(Message)
+                        .where(
                             Message.client_message_id == client_message_id,
-                            Message.conversation_id == conv.id,
+                            Message.conversation_id == conv_id,
                             get_user_filter(Message.user_id, user_id),
                         )
+                        .execution_options(populate_existing=True)
                     )
                     if existing is None:
                         raise
@@ -399,20 +446,22 @@ class WhatsAppMessagingOrchestrator:
                         raise ValueError("client_message_id farklı bir mesaj için yeniden kullanılamaz.")
                     if existing.status in _TERMINAL_OUTBOUND_STATUSES or existing.wa_message_id:
                         preview_data = await preview_for_text_message(
-                            db, clean, user_id=user_id, conversation_id=conv.id
+                            db, clean, user_id=user_id, conversation_id=conv_id
                         )
                         return self.serialize_message(existing, preview=preview_data)
                     for _ in range(25):
                         await asyncio.sleep(0.2)
                         refreshed = await db.scalar(
-                            select(Message).where(
+                            select(Message)
+                            .where(
                                 Message.id == existing.id,
                                 get_user_filter(Message.user_id, user_id),
                             )
+                            .execution_options(populate_existing=True)
                         )
                         if refreshed and (refreshed.status in _TERMINAL_OUTBOUND_STATUSES or refreshed.wa_message_id):
                             preview_data = await preview_for_text_message(
-                                db, clean, user_id=user_id, conversation_id=conv.id
+                                db, clean, user_id=user_id, conversation_id=conv_id
                             )
                             return self.serialize_message(refreshed, preview=preview_data)
                         if refreshed and refreshed.status == ConversationMessageStatus.FAILED:
@@ -425,7 +474,7 @@ class WhatsAppMessagingOrchestrator:
                         existing.error_message = "DELIVERY_UNCONFIRMED: Eşzamanlı gönderim zaman aşımına uğradı; teslimat durumu doğrulanamadı."
                         await db.commit()
                         preview_data = await preview_for_text_message(
-                            db, clean, user_id=user_id, conversation_id=conv.id
+                            db, clean, user_id=user_id, conversation_id=conv_id
                         )
                         return self.serialize_message(existing, preview=preview_data)
                     row = existing
@@ -436,7 +485,10 @@ class WhatsAppMessagingOrchestrator:
                 )
                 send_res = _validated_send_result(gateway_result)
             except Exception as exc:
-                await db.refresh(row)
+                try:
+                    await db.refresh(row)
+                except Exception:
+                    pass
                 if row.status == ConversationMessageStatus.PENDING and not row.wa_message_id:
                     row.status = ConversationMessageStatus.FAILED
                     row.failed_at = utc_now_naive()
@@ -445,9 +497,15 @@ class WhatsAppMessagingOrchestrator:
                         row.error_message = f"DELIVERY_UNCONFIRMED: {err_str[:250]}"
                     else:
                         row.error_message = err_str[:300]
-                    await db.commit()
+                    try:
+                        await db.commit()
+                    except Exception:
+                        await db.rollback()
                 raise
-            await db.refresh(row)
+            try:
+                await db.refresh(row)
+            except Exception:
+                pass
             row.wa_message_id = send_res["wa_message_id"]
             target_status = send_res.get("status")
             if target_status in (None, "PENDING"):
@@ -463,7 +521,7 @@ class WhatsAppMessagingOrchestrator:
             )
             await db.commit()
             preview_data = await preview_for_text_message(
-                db, clean, user_id=user_id, conversation_id=conv.id
+                db, clean, user_id=user_id, conversation_id=conv_id
             )
             return self.serialize_message(row, preview=preview_data)
 
@@ -484,6 +542,7 @@ class WhatsAppMessagingOrchestrator:
         gateway_client = self._get_helper("gw", gw)
 
         conv, jid = await resolve_jid(db, user_id, conversation_id)
+        conv_id = conv.id
         session_row = await conversation_session(db, user_id, conv)
         client_message_id = media.get("client_message_id") or str(uuid.uuid4())
         media = {**media, "client_message_id": client_message_id}
@@ -506,11 +565,11 @@ class WhatsAppMessagingOrchestrator:
         _now = utc_now_naive()
         expected_body = (caption or filename or media.get("media_url") or "")[:4000]
 
-        async with acquire_send_lock(conv.id, client_message_id):
+        async with acquire_send_lock(conv_id, client_message_id):
             existing = await db.scalar(
                 select(Message).where(
                     Message.client_message_id == client_message_id,
-                    Message.conversation_id == conv.id,
+                    Message.conversation_id == conv_id,
                     get_user_filter(Message.user_id, user_id),
                 )
             )
@@ -525,10 +584,12 @@ class WhatsAppMessagingOrchestrator:
                     for _ in range(25):
                         await asyncio.sleep(0.2)
                         refreshed = await db.scalar(
-                            select(Message).where(
+                            select(Message)
+                            .where(
                                 Message.id == existing.id,
                                 get_user_filter(Message.user_id, user_id),
                             )
+                            .execution_options(populate_existing=True)
                         )
                         if refreshed and (refreshed.status in _TERMINAL_OUTBOUND_STATUSES or refreshed.wa_message_id):
                             return self.serialize_message(refreshed)
@@ -544,15 +605,51 @@ class WhatsAppMessagingOrchestrator:
                         await db.commit()
                         return self.serialize_message(existing)
 
-                row = existing
-                row.status = ConversationMessageStatus.PENDING
-                row.failed_at = None
-                row.error_message = None
+                # Atomik DB Dispatch Claim: Eşzamanlı process'ler aynı FAILED kaydı retry
+                # etmeye çalıştığında yalnızca biri satırı PENDING durumuna geçirebilir.
+                claim_stmt = (
+                    update(Message)
+                    .where(
+                        Message.id == existing.id,
+                        Message.status == ConversationMessageStatus.FAILED,
+                        Message.wa_message_id.is_(None),
+                        get_user_filter(Message.user_id, user_id),
+                    )
+                    .values(
+                        status=ConversationMessageStatus.PENDING,
+                        failed_at=None,
+                        error_message=None,
+                    )
+                )
+                claim_res = await db.execute(claim_stmt)
                 await db.commit()
+                if not claim_res.rowcount:
+                    # Başka bir worker bizden önce claim etti veya satır terminal duruma geçti.
+                    for _ in range(25):
+                        await asyncio.sleep(0.2)
+                        refreshed = await db.scalar(
+                            select(Message)
+                            .where(
+                                Message.id == existing.id,
+                                get_user_filter(Message.user_id, user_id),
+                            )
+                            .execution_options(populate_existing=True)
+                        )
+                        if refreshed and (refreshed.status in _TERMINAL_OUTBOUND_STATUSES or refreshed.wa_message_id):
+                            return self.serialize_message(refreshed)
+                    if refreshed and refreshed.status == ConversationMessageStatus.PENDING and not refreshed.wa_message_id:
+                        refreshed.status = ConversationMessageStatus.FAILED
+                        refreshed.failed_at = utc_now_naive()
+                        refreshed.error_message = "DELIVERY_UNCONFIRMED: Eşzamanlı gönderim zaman aşımına uğradı; teslimat durumu doğrulanamadı."
+                        await db.commit()
+                    return self.serialize_message(refreshed or existing)
+
+                await db.refresh(existing)
+                row = existing
             else:
                 row = Message(
                     user_id=user_id,
-                    conversation_id=conv.id,
+                    conversation_id=conv_id,
                     direction=MessageDirection.OUTBOUND,
                     message_type=msg_type,
                     body=expected_body,
@@ -572,11 +669,13 @@ class WhatsAppMessagingOrchestrator:
                 except IntegrityError:
                     await db.rollback()
                     existing = await db.scalar(
-                        select(Message).where(
+                        select(Message)
+                        .where(
                             Message.client_message_id == client_message_id,
-                            Message.conversation_id == conv.id,
+                            Message.conversation_id == conv_id,
                             get_user_filter(Message.user_id, user_id),
                         )
+                        .execution_options(populate_existing=True)
                     )
                     if existing is None:
                         raise
@@ -587,10 +686,12 @@ class WhatsAppMessagingOrchestrator:
                     for _ in range(25):
                         await asyncio.sleep(0.2)
                         refreshed = await db.scalar(
-                            select(Message).where(
+                            select(Message)
+                            .where(
                                 Message.id == existing.id,
                                 get_user_filter(Message.user_id, user_id),
                             )
+                            .execution_options(populate_existing=True)
                         )
                         if refreshed and (refreshed.status in _TERMINAL_OUTBOUND_STATUSES or refreshed.wa_message_id):
                             return self.serialize_message(refreshed)
@@ -612,7 +713,10 @@ class WhatsAppMessagingOrchestrator:
                 )
                 send_res = _validated_send_result(gateway_result)
             except Exception as exc:
-                await db.refresh(row)
+                try:
+                    await db.refresh(row)
+                except Exception:
+                    pass
                 if row.status == ConversationMessageStatus.PENDING and not row.wa_message_id:
                     row.status = ConversationMessageStatus.FAILED
                     row.failed_at = utc_now_naive()
@@ -621,9 +725,15 @@ class WhatsAppMessagingOrchestrator:
                         row.error_message = f"DELIVERY_UNCONFIRMED: {err_str[:250]}"
                     else:
                         row.error_message = err_str[:300]
-                    await db.commit()
+                    try:
+                        await db.commit()
+                    except Exception:
+                        await db.rollback()
                 raise
-            await db.refresh(row)
+            try:
+                await db.refresh(row)
+            except Exception:
+                pass
             row.wa_message_id = send_res["wa_message_id"]
             if send_res.get("media_id"):
                 row.media_id = send_res["media_id"]
