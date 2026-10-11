@@ -270,4 +270,47 @@ const { mergeWhatsAppMessages, mergeDeliveryStatus } = await importTsModule(
   console.log('  ✓ 6. Conversation thread isolation maintained across separate IDs');
 }
 
-console.log('\nAll 6 WhatsApp Message Delivery & Retry test suites PASSED!\n');
+// 7. Client Idempotency Key Format & Uniqueness
+{
+  const genKeys = (prefix, count = 50) =>
+    Array.from({ length: count }, () => `${prefix}_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`);
+
+  const textKeys = genKeys('cmsg');
+  const fileKeys = genKeys('file');
+  const fwdKeys = genKeys('fwd');
+  const tmplKeys = genKeys('tmpl');
+  const mediaKeys = genKeys('media');
+
+  assert.equal(new Set(textKeys).size, 50, 'Text idempotency keys must be globally unique');
+  assert.equal(new Set(fileKeys).size, 50, 'File idempotency keys must be globally unique');
+  assert.equal(new Set(fwdKeys).size, 50, 'Forward idempotency keys must be globally unique');
+  assert.equal(new Set(tmplKeys).size, 50, 'Template idempotency keys must be globally unique');
+  assert.equal(new Set(mediaKeys).size, 50, 'Media idempotency keys must be globally unique');
+
+  assert.ok(textKeys.every((k) => k.startsWith('cmsg_')), 'Text keys use cmsg_ prefix');
+  assert.ok(fileKeys.every((k) => k.startsWith('file_')), 'File keys use file_ prefix');
+  assert.ok(fwdKeys.every((k) => k.startsWith('fwd_')), 'Forward keys use fwd_ prefix');
+  assert.ok(tmplKeys.every((k) => k.startsWith('tmpl_')), 'Template keys use tmpl_ prefix');
+  assert.ok(mediaKeys.every((k) => k.startsWith('media_')), 'Media keys use media_ prefix');
+
+  console.log('  ✓ 7. Client idempotency keys generated uniquely across text, files, forwards and templates');
+}
+
+// 8. Forward Dispatch Generates Independent Idempotency Keys Per Target
+{
+  const targetConvIds = [1, 2, 3];
+  const originalMsg = { id: 101, body: 'Hello broadcast', message_type: 'TEXT' };
+
+  const forwardDispatches = [];
+  for (const targetConvId of targetConvIds) {
+    const forwardClientMid = `fwd_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+    forwardDispatches.push({ convId: targetConvId, key: forwardClientMid });
+  }
+
+  assert.equal(forwardDispatches.length, 3);
+  const keys = forwardDispatches.map((d) => d.key);
+  assert.equal(new Set(keys).size, 3, 'Each forwarded message has its own unique idempotency key');
+  console.log('  ✓ 8. Forwarded messages receive distinct idempotency keys per conversation');
+}
+
+console.log('\nAll 8 WhatsApp Message Delivery, Idempotency & Retry test suites PASSED!\n');

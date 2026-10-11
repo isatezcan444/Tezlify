@@ -8,6 +8,8 @@ Preserves strict transaction boundaries:
 - Automatic transition to FAILED on gateway exception
 - Advance status to SENT/DELIVERED and update conversation last message summary
 """
+import asyncio
+from contextlib import asynccontextmanager
 from datetime import datetime
 import logging
 import re
@@ -17,6 +19,7 @@ import uuid
 from backend.app.core.datetime_utils import utc_now_naive
 
 from sqlalchemy import or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.auth import get_user_filter
@@ -69,6 +72,41 @@ _TERMINAL_OUTBOUND_STATUSES = {
     ConversationMessageStatus.READ,
 }
 _ACCEPTED_GATEWAY_STATUSES = {"PENDING", "SENT", "DELIVERED", "READ"}
+
+
+class _RefCountedLock:
+    def __init__(self) -> None:
+        self.lock = asyncio.Lock()
+        self.ref_count = 0
+
+
+_send_locks: Dict[Tuple[int, str], _RefCountedLock] = {}
+_locks_meta_lock = asyncio.Lock()
+
+
+@asynccontextmanager
+async def _acquire_send_lock(conv_id: int, client_msg_id: str):
+    """Acquires a granular lock per (conversation_id, client_message_id) tuple.
+
+    Serializes concurrent dispatches of the identical logical message to prevent
+    duplicate gateway submissions and race conditions at the database level.
+    Deletes the lock when no coroutines remain waiting to prevent memory leaks.
+    """
+    key = (conv_id, client_msg_id)
+    async with _locks_meta_lock:
+        if key not in _send_locks:
+            _send_locks[key] = _RefCountedLock()
+        entry = _send_locks[key]
+        entry.ref_count += 1
+
+    async with entry.lock:
+        try:
+            yield
+        finally:
+            async with _locks_meta_lock:
+                entry.ref_count -= 1
+                if entry.ref_count <= 0 and key in _send_locks:
+                    del _send_locks[key]
 
 
 def _validated_send_result(raw: Any) -> Dict[str, Any]:
@@ -261,6 +299,7 @@ class WhatsAppMessagingOrchestrator:
         gateway_op_or_mark_relink = self._get_helper("_gateway_op_or_mark_relink", _gateway_op_or_mark_relink)
         advance_message_status = self._get_helper("_advance_message_status", _advance_message_status)
         apply_last_message = self._get_helper("_apply_last_message", _apply_last_message)
+        acquire_send_lock = self._get_helper("_acquire_send_lock", _acquire_send_lock)
         gateway_client = self._get_helper("gw", gw)
 
         conv, jid = await resolve_jid(db, user_id, conversation_id)
@@ -273,74 +312,100 @@ class WhatsAppMessagingOrchestrator:
         _now = utc_now_naive()
         session_row = await conversation_session(db, user_id, conv)
         client_message_id = client_message_id or str(uuid.uuid4())
-        existing = await db.scalar(
-            select(Message).where(
-                Message.client_message_id == client_message_id,
-                Message.conversation_id == conv.id,
-                get_user_filter(Message.user_id, user_id),
+
+        async with acquire_send_lock(conv.id, client_message_id):
+            existing = await db.scalar(
+                select(Message).where(
+                    Message.client_message_id == client_message_id,
+                    Message.conversation_id == conv.id,
+                    get_user_filter(Message.user_id, user_id),
+                )
             )
-        )
-        if existing is not None:
-            if existing.body != clean or existing.message_type != MessageType.TEXT:
-                raise ValueError("client_message_id farklı bir mesaj için yeniden kullanılamaz.")
-            if existing.status in _TERMINAL_OUTBOUND_STATUSES:
-                return self.serialize_message(existing)
-            row = existing
-            row.status = ConversationMessageStatus.PENDING
-            row.failed_at = None
-            row.error_message = None
-            await db.commit()
-        else:
-            row = Message(
-                user_id=user_id,
-                conversation_id=conv.id,
-                direction=MessageDirection.OUTBOUND,
-                message_type=MessageType.TEXT,
-                body=clean,
-                wa_message_id=None,
-                client_message_id=client_message_id,
-                sender_phone="ME",
-                recipient_phone=jid_to_phone(jid) or jid,
-                status=ConversationMessageStatus.PENDING,
-                # Gonderilen mesaj da ZAMAN EKSENINDE yer alir; aksi halde siralama
-                # ve keyset sayfalamasi disinda kalip sohbetten kayboluyordu.
-                external_timestamp=_now,
-            )
-            db.add(row)
-            await db.commit()
-        try:
-            gateway_result = await gateway_op_or_mark_relink(
-                db, session_row, lambda gid: gateway_client.send_text_message(gid, jid, clean, client_message_id)
-            )
-            send_res = _validated_send_result(gateway_result)
-        except Exception as exc:
-            await db.refresh(row)
-            if row.status == ConversationMessageStatus.PENDING:
-                row.status = ConversationMessageStatus.FAILED
-                row.failed_at = utc_now_naive()
-                row.error_message = str(exc)[:300]
+            if existing is not None:
+                if existing.body != clean or existing.message_type != MessageType.TEXT:
+                    raise ValueError("client_message_id farklı bir mesaj için yeniden kullanılamaz.")
+                if existing.status in _TERMINAL_OUTBOUND_STATUSES or existing.wa_message_id:
+                    preview_data = await preview_for_text_message(
+                        db, clean, user_id=user_id, conversation_id=conv.id
+                    )
+                    return self.serialize_message(existing, preview=preview_data)
+                row = existing
+                row.status = ConversationMessageStatus.PENDING
+                row.failed_at = None
+                row.error_message = None
                 await db.commit()
-            raise
-        await db.refresh(row)
-        row.wa_message_id = send_res["wa_message_id"]
-        target_status = send_res.get("status")
-        is_group = bool(conv.is_group) or ("@g.us" in str(jid))
-        if is_group and target_status in (None, "PENDING"):
-            target_status = ConversationMessageStatus.SENT.value
-        advance_message_status(row, target_status)
-        # Faz 10 (P2): gonderim yolu da paylasilan kurali kullanir (tek kaynak).
-        apply_last_message(
-            conv,
-            utc_now_naive(),
-            build_last_message_summary(
-                message_type="TEXT", body=clean, direction=MessageDirection.OUTBOUND.value
-            ),
-        )
-        await db.commit()
-        preview_data = await preview_for_text_message(
-            db, clean, user_id=user_id, conversation_id=conv.id
-        )
-        return self.serialize_message(row, preview=preview_data)
+            else:
+                row = Message(
+                    user_id=user_id,
+                    conversation_id=conv.id,
+                    direction=MessageDirection.OUTBOUND,
+                    message_type=MessageType.TEXT,
+                    body=clean,
+                    wa_message_id=None,
+                    client_message_id=client_message_id,
+                    sender_phone="ME",
+                    recipient_phone=jid_to_phone(jid) or jid,
+                    status=ConversationMessageStatus.PENDING,
+                    # Gonderilen mesaj da ZAMAN EKSENINDE yer alir; aksi halde siralama
+                    # ve keyset sayfalamasi disinda kalip sohbetten kayboluyordu.
+                    external_timestamp=_now,
+                )
+                try:
+                    db.add(row)
+                    await db.commit()
+                except IntegrityError:
+                    await db.rollback()
+                    existing = await db.scalar(
+                        select(Message).where(
+                            Message.client_message_id == client_message_id,
+                            Message.conversation_id == conv.id,
+                            get_user_filter(Message.user_id, user_id),
+                        )
+                    )
+                    if existing is None:
+                        raise
+                    if existing.body != clean or existing.message_type != MessageType.TEXT:
+                        raise ValueError("client_message_id farklı bir mesaj için yeniden kullanılamaz.")
+                    if existing.status in _TERMINAL_OUTBOUND_STATUSES or existing.wa_message_id:
+                        preview_data = await preview_for_text_message(
+                            db, clean, user_id=user_id, conversation_id=conv.id
+                        )
+                        return self.serialize_message(existing, preview=preview_data)
+                    row = existing
+
+            try:
+                gateway_result = await gateway_op_or_mark_relink(
+                    db, session_row, lambda gid: gateway_client.send_text_message(gid, jid, clean, client_message_id)
+                )
+                send_res = _validated_send_result(gateway_result)
+            except Exception as exc:
+                await db.refresh(row)
+                if row.status == ConversationMessageStatus.PENDING and not row.wa_message_id:
+                    row.status = ConversationMessageStatus.FAILED
+                    row.failed_at = utc_now_naive()
+                    row.error_message = str(exc)[:300]
+                    await db.commit()
+                raise
+            await db.refresh(row)
+            row.wa_message_id = send_res["wa_message_id"]
+            target_status = send_res.get("status")
+            is_group = bool(conv.is_group) or ("@g.us" in str(jid))
+            if is_group and target_status in (None, "PENDING"):
+                target_status = ConversationMessageStatus.SENT.value
+            advance_message_status(row, target_status)
+            # Faz 10 (P2): gonderim yolu da paylasilan kurali kullanir (tek kaynak).
+            apply_last_message(
+                conv,
+                utc_now_naive(),
+                build_last_message_summary(
+                    message_type="TEXT", body=clean, direction=MessageDirection.OUTBOUND.value
+                ),
+            )
+            await db.commit()
+            preview_data = await preview_for_text_message(
+                db, clean, user_id=user_id, conversation_id=conv.id
+            )
+            return self.serialize_message(row, preview=preview_data)
 
     async def send_media_message(
         self,
@@ -355,18 +420,14 @@ class WhatsAppMessagingOrchestrator:
         gateway_op_or_mark_relink = self._get_helper("_gateway_op_or_mark_relink", _gateway_op_or_mark_relink)
         advance_message_status = self._get_helper("_advance_message_status", _advance_message_status)
         apply_last_message = self._get_helper("_apply_last_message", _apply_last_message)
+        acquire_send_lock = self._get_helper("_acquire_send_lock", _acquire_send_lock)
         gateway_client = self._get_helper("gw", gw)
 
         conv, jid = await resolve_jid(db, user_id, conversation_id)
         session_row = await conversation_session(db, user_id, conv)
-        media = {**media, "client_message_id": media.get("client_message_id") or str(uuid.uuid4())}
-        existing = await db.scalar(
-            select(Message).where(
-                Message.client_message_id == media["client_message_id"],
-                Message.conversation_id == conv.id,
-                get_user_filter(Message.user_id, user_id),
-            )
-        )
+        client_message_id = media.get("client_message_id") or str(uuid.uuid4())
+        media = {**media, "client_message_id": client_message_id}
+
         mtype_str = (media.get("media_type") or "").upper()
         mime_val = (media.get("mime_type") or "").lower()
         filename_val = (media.get("filename") or "").lower()
@@ -384,71 +445,97 @@ class WhatsAppMessagingOrchestrator:
         filename = media.get("filename")
         _now = utc_now_naive()
         expected_body = (caption or filename or media.get("media_url") or "")[:4000]
-        if existing is not None:
-            if existing.body != expected_body or existing.message_type != msg_type:
-                raise ValueError("client_message_id farklı bir medya için yeniden kullanılamaz.")
-            if existing.status in _TERMINAL_OUTBOUND_STATUSES:
-                return self.serialize_message(existing)
-            row = existing
-            row.status = ConversationMessageStatus.PENDING
-            row.failed_at = None
-            row.error_message = None
-            await db.commit()
-        else:
-            row = Message(
-                user_id=user_id,
-                conversation_id=conv.id,
-                direction=MessageDirection.OUTBOUND,
-                message_type=msg_type,
-                body=expected_body,
-                media_id=None,
-                media_filename=filename,
-                media_caption=caption,
-                wa_message_id=None,
-                client_message_id=media.get("client_message_id"),
-                sender_phone="ME",
-                recipient_phone=jid_to_phone(jid) or jid,
-                status=ConversationMessageStatus.PENDING,
-                external_timestamp=_now,
+
+        async with acquire_send_lock(conv.id, client_message_id):
+            existing = await db.scalar(
+                select(Message).where(
+                    Message.client_message_id == client_message_id,
+                    Message.conversation_id == conv.id,
+                    get_user_filter(Message.user_id, user_id),
+                )
             )
-            db.add(row)
-            # Faz 10 (P2): "[Medya]" yerine paylasilan kuralin tip etiketi.
-            await db.commit()
-        try:
-            gateway_result = await gateway_op_or_mark_relink(
-                db, session_row, lambda gid: gateway_client.send_media_message(gid, jid, media)
-            )
-            send_res = _validated_send_result(gateway_result)
-        except Exception as exc:
-            await db.refresh(row)
-            if row.status == ConversationMessageStatus.PENDING:
-                row.status = ConversationMessageStatus.FAILED
-                row.failed_at = utc_now_naive()
-                row.error_message = str(exc)[:300]
+            if existing is not None:
+                if existing.body != expected_body or existing.message_type != msg_type:
+                    raise ValueError("client_message_id farklı bir medya için yeniden kullanılamaz.")
+                if existing.status in _TERMINAL_OUTBOUND_STATUSES or existing.wa_message_id:
+                    return self.serialize_message(existing)
+                row = existing
+                row.status = ConversationMessageStatus.PENDING
+                row.failed_at = None
+                row.error_message = None
                 await db.commit()
-            raise
-        await db.refresh(row)
-        row.wa_message_id = send_res["wa_message_id"]
-        if send_res.get("media_id"):
-            row.media_id = send_res["media_id"]
-        if send_res.get("media_mime_type") and not row.media_mime_type:
-            row.media_mime_type = send_res["media_mime_type"]
-        target_status = send_res.get("status")
-        is_group = bool(conv.is_group) or ("@g.us" in str(jid))
-        if is_group and target_status in (None, "PENDING"):
-            target_status = ConversationMessageStatus.SENT.value
-        advance_message_status(row, target_status)
-        apply_last_message(
-            conv,
-            utc_now_naive(),
-            build_last_message_summary(
-                message_type=mtype_str,
-                body=caption or filename,
-                direction=MessageDirection.OUTBOUND.value,
-            ),
-        )
-        await db.commit()
-        return self.serialize_message(row)
+            else:
+                row = Message(
+                    user_id=user_id,
+                    conversation_id=conv.id,
+                    direction=MessageDirection.OUTBOUND,
+                    message_type=msg_type,
+                    body=expected_body,
+                    media_id=None,
+                    media_filename=filename,
+                    media_caption=caption,
+                    wa_message_id=None,
+                    client_message_id=client_message_id,
+                    sender_phone="ME",
+                    recipient_phone=jid_to_phone(jid) or jid,
+                    status=ConversationMessageStatus.PENDING,
+                    external_timestamp=_now,
+                )
+                try:
+                    db.add(row)
+                    await db.commit()
+                except IntegrityError:
+                    await db.rollback()
+                    existing = await db.scalar(
+                        select(Message).where(
+                            Message.client_message_id == client_message_id,
+                            Message.conversation_id == conv.id,
+                            get_user_filter(Message.user_id, user_id),
+                        )
+                    )
+                    if existing is None:
+                        raise
+                    if existing.body != expected_body or existing.message_type != msg_type:
+                        raise ValueError("client_message_id farklı bir medya için yeniden kullanılamaz.")
+                    if existing.status in _TERMINAL_OUTBOUND_STATUSES or existing.wa_message_id:
+                        return self.serialize_message(existing)
+                    row = existing
+
+            try:
+                gateway_result = await gateway_op_or_mark_relink(
+                    db, session_row, lambda gid: gateway_client.send_media_message(gid, jid, media)
+                )
+                send_res = _validated_send_result(gateway_result)
+            except Exception as exc:
+                await db.refresh(row)
+                if row.status == ConversationMessageStatus.PENDING and not row.wa_message_id:
+                    row.status = ConversationMessageStatus.FAILED
+                    row.failed_at = utc_now_naive()
+                    row.error_message = str(exc)[:300]
+                    await db.commit()
+                raise
+            await db.refresh(row)
+            row.wa_message_id = send_res["wa_message_id"]
+            if send_res.get("media_id"):
+                row.media_id = send_res["media_id"]
+            if send_res.get("media_mime_type") and not row.media_mime_type:
+                row.media_mime_type = send_res["media_mime_type"]
+            target_status = send_res.get("status")
+            is_group = bool(conv.is_group) or ("@g.us" in str(jid))
+            if is_group and target_status in (None, "PENDING"):
+                target_status = ConversationMessageStatus.SENT.value
+            advance_message_status(row, target_status)
+            apply_last_message(
+                conv,
+                utc_now_naive(),
+                build_last_message_summary(
+                    message_type=mtype_str,
+                    body=caption or filename,
+                    direction=MessageDirection.OUTBOUND.value,
+                ),
+            )
+            await db.commit()
+            return self.serialize_message(row)
 
     async def mark_conversation_read(
         self,

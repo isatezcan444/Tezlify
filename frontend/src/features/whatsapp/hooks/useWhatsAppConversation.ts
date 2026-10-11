@@ -284,7 +284,8 @@ export function useWhatsAppConversation({
   // Send template helper
   const sendTemplate = useCallback(async (templateKey: string, variables: Record<string, string> = {}) => {
     if (!conversation) return;
-    const resMsg = await WhatsAppRepository.sendTemplate(conversation.id, templateKey, variables);
+    const clientMid = `tmpl_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+    const resMsg = await WhatsAppRepository.sendTemplate(conversation.id, templateKey, variables, clientMid);
     setConversation((prev) => {
       if (!prev) return prev;
       const isDuplicate = prev.messages.some(
@@ -342,12 +343,13 @@ export function useWhatsAppConversation({
   // Send outbound media helper
   const sendMedia = useCallback(async (mediaType: 'IMAGE' | 'DOCUMENT', mediaUrl: string, caption?: string, filename?: string) => {
     if (!conversation) return;
+    const clientMid = `media_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
     const resMsg = await WhatsAppRepository.sendMedia(conversation.id, {
       media_type: mediaType,
       media_url: mediaUrl,
       caption,
       filename,
-    });
+    }, clientMid);
     setConversation((prev) => {
       if (!prev) return prev;
       const isDuplicate = prev.messages.some(

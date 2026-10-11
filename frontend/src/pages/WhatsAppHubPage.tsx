@@ -2220,17 +2220,22 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       for (const targetConvId of targetConversationIds) {
         for (const msg of msgs) {
           try {
+            const forwardClientMid = `fwd_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
             if (msg.message_type === 'TEXT' || (!msg.media_url && msg.body)) {
-              await WhatsAppRepository.sendMessage(targetConvId, msg.body || '');
+              await WhatsAppRepository.sendMessage(targetConvId, msg.body || '', forwardClientMid);
               successCount++;
             } else if (msg.media_url) {
-              await WhatsAppRepository.sendMedia(targetConvId, {
-                media_type: msg.message_type || 'IMAGE',
-                media_url: msg.media_url,
-                caption: msg.media_caption || undefined,
-                filename: msg.media_filename || undefined,
-                mime_type: msg.media_mime_type || undefined,
-              });
+              await WhatsAppRepository.sendMedia(
+                targetConvId,
+                {
+                  media_type: msg.message_type || 'IMAGE',
+                  media_url: msg.media_url,
+                  caption: msg.media_caption || undefined,
+                  filename: msg.media_filename || undefined,
+                  mime_type: msg.media_mime_type || undefined,
+                },
+                forwardClientMid
+              );
               successCount++;
             }
           } catch (err) {

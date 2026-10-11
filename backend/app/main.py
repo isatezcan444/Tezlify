@@ -104,11 +104,32 @@ async def recover_stuck_jobs() -> None:
                 error_message="Sunucu yeniden başlatıldı; iş kaldırıldı. Yeniden başlatın.",
             )
         )
+        from backend.app.models.message import (
+            ConversationMessageStatus,
+            Message,
+            MessageDirection,
+        )
+        from backend.app.core.datetime_utils import utc_now_naive
+        stranded_msgs = await db.execute(
+            update(Message)
+            .where(
+                Message.direction == MessageDirection.OUTBOUND,
+                Message.status == ConversationMessageStatus.PENDING,
+                Message.wa_message_id.is_(None),
+            )
+            .values(
+                status=ConversationMessageStatus.FAILED,
+                failed_at=utc_now_naive(),
+                error_message="Sunucu yeniden başlatıldı; teslimat sonucu doğrulanamadı. Tekrar deneyebilirsiniz.",
+            )
+        )
         await db.commit()
         if paused.rowcount:
             logger.warning("[RECOVERY] %d ACTIVE kampanya PAUSED durumuna alındı.", paused.rowcount)
         if failed.rowcount:
             logger.warning("[RECOVERY] %d takılı tarama işi FAILED durumuna alındı.", failed.rowcount)
+        if stranded_msgs.rowcount:
+            logger.warning("[RECOVERY] %d takılı PENDING mesaj FAILED durumuna alındı.", stranded_msgs.rowcount)
 
 
 @asynccontextmanager
