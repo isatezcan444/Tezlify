@@ -26,9 +26,7 @@ const PINO_WARN = new Set([40]);
 
 /** Parse a line's structured level, or null when it carries none. */
 function structuredLevel(line: string): LogLevel | null {
-  // Cheap pre-check: almost no log line is JSON, and JSON.parse on every one of
-  // a few hundred lines is measurable in the render path.
-  if (!line.includes('"level"')) return null;
+  if (typeof line !== 'string' || !line.includes('"level"')) return null;
   let parsed: unknown;
   try {
     parsed = JSON.parse(line);
@@ -54,6 +52,7 @@ function structuredLevel(line: string): LogLevel | null {
 
 /** Classify any log line, JSON or plain text. */
 export function classifyLogLevel(line: string): LogLevel {
+  if (typeof line !== 'string' || !line.trim()) return 'INFO';
   const structured = structuredLevel(line);
   if (structured) return structured;
 

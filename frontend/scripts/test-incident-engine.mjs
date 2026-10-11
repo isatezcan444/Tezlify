@@ -135,6 +135,79 @@ try {
     assert.equal(unavailableSummary.isStale, true);
   });
 
+  check('adversarial: malformed, null, non-string, and empty log entries handled without crashing', () => {
+    const maliciousLogs = {
+      backend: [
+        null,
+        undefined,
+        '',
+        '   ',
+        12345,
+        '{"corrupted_json": true',
+        '2026-10-11T23:00:00Z [ERROR] Valid error after malformed lines',
+      ],
+      gateway: null,
+      caddy: [''],
+    };
+
+    const incidents = groupLogsIntoIncidents(maliciousLogs, null);
+    assert.equal(incidents.length, 1);
+    assert.equal(incidents[0].service, 'backend');
+  });
+
+  check('adversarial: secret tokens, passwords, and authorization headers redacted in fingerprint and title', () => {
+    const tokenLine1 = '2026-10-11T23:00:00Z [ERROR] Request failed with Bearer eyJhbGciOiJIUzI1NiJ9.secret1 and token=secrettoken1';
+    const tokenLine2 = '2026-10-11T23:00:01Z [ERROR] Request failed with Bearer eyJhbGciOiJIUzI1NiJ9.secret2 and token=secrettoken2';
+
+    const norm1 = normalizeLogPattern(tokenLine1);
+    const norm2 = normalizeLogPattern(tokenLine2);
+
+    assert.ok(!norm1.includes('secret1'), 'Secret 1 must be redacted');
+    assert.ok(!norm2.includes('secret2'), 'Secret 2 must be redacted');
+    assert.equal(norm1, norm2, 'Normalized patterns must be identical regardless of variable secrets');
+
+    const logs = { backend: [tokenLine1, tokenLine2] };
+    const incidents = groupLogsIntoIncidents(logs, null);
+    assert.equal(incidents.length, 1, 'Token differences must not fragment identical incidents');
+    assert.ok(!incidents[0].titleDefault.includes('secret1'), 'Title must not leak tokens');
+  });
+
+  check('adversarial: identical error string across different services produces separate isolated incidents', () => {
+    const logs = {
+      backend: ['2026-10-11T23:00:00Z [ERROR] Connection timeout while contacting worker'],
+      gateway: ['2026-10-11T23:00:00Z [ERROR] Connection timeout while contacting worker'],
+    };
+
+    const incidents = groupLogsIntoIncidents(logs, null);
+    assert.equal(incidents.length, 2, 'Different services must never merge into a single incident');
+    const services = incidents.map((i) => i.service).sort();
+    assert.deepEqual(services, ['backend', 'gateway']);
+  });
+
+  check('adversarial: distinct HTTP status codes (404 vs 500) remain separate incidents', () => {
+    const logs = {
+      backend: [
+        '2026-10-11T23:00:00Z [ERROR] HTTP 404 Not Found on /api/v1/leads',
+        '2026-10-11T23:00:01Z [ERROR] HTTP 500 Internal Server Error on /api/v1/leads',
+      ],
+    };
+
+    const incidents = groupLogsIntoIncidents(logs, null);
+    assert.equal(incidents.length, 2, 'HTTP 404 and HTTP 500 must produce distinct incidents');
+  });
+
+  check('adversarial: uncatalogued errors set confidence to unknown and do not guess root cause', () => {
+    const logs = {
+      backend: ['2026-10-11T23:00:00Z [ERROR] Custom vendor exception occurred in pipeline step X'],
+    };
+
+    const incidents = groupLogsIntoIncidents(logs, null);
+    assert.equal(incidents.length, 1);
+    assert.equal(incidents[0].confidence, 'unknown', 'Unknown errors must not fabricate high confidence root causes');
+    assert.equal(incidents[0].possibleCauseKey, 'admin.incidents.genericCause');
+    assert.equal(incidents[0].actionRiskLevel, 'safe');
+  });
+
   console.log(`\nIncident engine tests: PASS (${passed} checks)`);
 } finally {
   await rm(tmp, { recursive: true, force: true });

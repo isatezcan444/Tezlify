@@ -97,6 +97,9 @@ export function normalizeLogPattern(line: string): string {
     .replace(/\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(:\d+)?\b/g, '<IP>')
     // Strip hex memory addresses
     .replace(/0x[0-9a-fA-F]+/g, '<HEX>')
+    // Strip auth tokens and secrets
+    .replace(/(bearer\s+)[a-zA-Z0-9_\-\.]+/gi, '$1<TOKEN>')
+    .replace(/(token|secret|password|api_key|auth)=([^\s&"']+)/gi, '$1=<REDACTED>')
     // Strip trailing line numbers in code references
     .replace(/:line\s*\d+/gi, '')
     .replace(/:\d+\b/g, '')
@@ -296,6 +299,7 @@ export function groupLogsIntoIncidents(
 
     for (let i = 0; i < lines.length; i += 1) {
       const line = lines[i];
+      if (!line || typeof line !== 'string' || !line.trim()) continue;
       const level = classifyLogLevel(line);
       if (level !== 'ERROR' && level !== 'WARN') continue;
 
@@ -330,7 +334,7 @@ export function groupLogsIntoIncidents(
           severity,
           severityReasonKey: matched?.severityReasonKey || 'admin.incidents.defaultSeverityReason',
           titleKey: matched?.titleKey || 'admin.incidents.genericTitle',
-          titleDefault: matched?.titleDefault || `[${service.toUpperCase()}] ${level}: ${line.slice(0, 90)}...`,
+          titleDefault: matched?.titleDefault || `[${service.toUpperCase()}] ${level}: ${norm.slice(0, 80)}...`,
           whatHappenedKey: matched?.whatHappenedKey || 'admin.incidents.genericWhat',
           whatHappenedDefault: matched?.whatHappenedDefault || `${service} servisinde bir hata kaydı tespit edildi.`,
           impactKey: matched?.impactKey || 'admin.incidents.genericImpact',
