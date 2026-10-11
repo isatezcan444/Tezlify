@@ -1,15 +1,25 @@
-import type { ReactNode } from 'react';
+import React, { useMemo, type ReactNode } from 'react';
 import {
   Activity,
   AlertTriangle,
+  ArrowRight,
   CheckCircle2,
+  CircleAlert,
+  Clock,
   Database,
   Server,
   ShieldCheck,
+  Sparkles,
 } from 'lucide-react';
 import { useI18n } from '../../../context/I18nContext';
 import { Card, CardHeader, CardTitle, CardContent } from '../../ui/card';
-import { StatusBadge } from '../../ui/StatusBadge';
+import { StatusBadge, StatusVariant } from '../../ui/StatusBadge';
+import { Button } from '../../ui/button';
+import {
+  computeExecutiveSummary,
+  type ExecutiveHealthState,
+  type Incident,
+} from './incidentEngine';
 import type {
   AdminOverviewResponse,
   OpsHealthCheck,
@@ -39,15 +49,17 @@ export interface OverviewPanelProps {
    * nothing at all.
    */
   ghostConnected?: string[];
+  incidents?: Incident[];
+  lastUpdated?: string;
+  hasTelemetryError?: boolean;
+  onNavigateTab?: (tab: 'overview' | 'system' | 'errors' | 'logs' | 'history') => void;
 }
 
 /**
  * At-a-glance health of the whole deployment.
  *
  * Composes data the Operations Center ALREADY fetches (the admin overview plus
- * the ops status/health payloads) rather than introducing new endpoints. It is
- * read-only: every action lives in the System and Deployment tabs, so an
- * operator gets a summary first and acts deliberately.
+ * the ops status/health payloads) into a human-centric Executive Health Center.
  */
 export function OverviewPanel({
   overview,
@@ -59,21 +71,88 @@ export function OverviewPanel({
   orphanedCount = 0,
   orphanedDetail = [],
   ghostConnected = [],
+  incidents = [],
+  lastUpdated = '',
+  hasTelemetryError = false,
+  onNavigateTab,
 }: OverviewPanelProps) {
   const { t } = useI18n();
+
+  const executive = useMemo(() => {
+    return computeExecutiveSummary({
+      services,
+      health,
+      operations,
+      incidents,
+      orphanedCount,
+      ghostConnected,
+      lastUpdated,
+      hasTelemetryError,
+    });
+  }, [
+    services,
+    health,
+    operations,
+    incidents,
+    orphanedCount,
+    ghostConnected,
+    lastUpdated,
+    hasTelemetryError,
+  ]);
 
   const running = services.filter((s) => s.status === 'running').length;
   const down = services.filter((s) => s.status !== 'running');
   const whatsapp = health?.whatsapp;
+
+  const getExecutiveBadge = (state: ExecutiveHealthState) => {
+    switch (state) {
+      case 'healthy':
+        return {
+          variant: 'active' as StatusVariant,
+          label: t('admin.ops.statusHealthy'),
+          icon: <CheckCircle2 className="w-4 h-4 text-emerald-500" />,
+          cardBorder: 'border-emerald-200 dark:border-emerald-900/40 bg-emerald-50/40 dark:bg-emerald-950/10',
+          textColor: 'text-emerald-800 dark:text-emerald-300',
+        };
+      case 'attention':
+        return {
+          variant: 'warning' as StatusVariant,
+          label: t('admin.attention'),
+          icon: <AlertTriangle className="w-4 h-4 text-amber-500" />,
+          cardBorder: 'border-amber-200 dark:border-amber-900/40 bg-amber-50/40 dark:bg-amber-950/10',
+          textColor: 'text-amber-800 dark:text-amber-300',
+        };
+      case 'critical':
+        return {
+          variant: 'danger' as StatusVariant,
+          label: t('admin.statusCritical'),
+          icon: <CircleAlert className="w-4 h-4 text-rose-500" />,
+          cardBorder: 'border-rose-200 dark:border-rose-900/40 bg-rose-50/40 dark:bg-rose-950/10',
+          textColor: 'text-rose-800 dark:text-rose-300',
+        };
+      case 'unavailable':
+      default:
+        return {
+          variant: 'neutral' as StatusVariant,
+          label: t('admin.ops.healthNoData'),
+          icon: <Activity className="w-4 h-4 text-slate-400" />,
+          cardBorder: 'border-slate-200 dark:border-white/[0.08] bg-slate-50/50 dark:bg-white/[0.02]',
+          textColor: 'text-slate-700 dark:text-slate-300',
+        };
+    }
+  };
+
+  const execBadge = getExecutiveBadge(executive.healthState);
 
   const tiles: { icon: ReactNode; label: string; value: string; tone: string }[] = [
     {
       icon: <Server className="w-4 h-4" />,
       label: t('admin.ops.overviewServices'),
       value: `${running}/${services.length}`,
-      tone: down.length === 0 && services.length > 0
-        ? 'text-emerald-600 dark:text-emerald-400'
-        : 'text-amber-600 dark:text-amber-400',
+      tone:
+        down.length === 0 && services.length > 0
+          ? 'text-emerald-600 dark:text-emerald-400'
+          : 'text-amber-600 dark:text-amber-400',
     },
     {
       icon: <Activity className="w-4 h-4" />,
@@ -92,8 +171,6 @@ export function OverviewPanel({
       tone: 'text-slate-600 dark:text-slate-300',
     },
     {
-      // WhatsApp connectivity is reported apart from the pass/fail verdict: a
-      // logged-out session needs an operator to re-pair, it is not a failure.
       icon: <ShieldCheck className="w-4 h-4" />,
       label: t('admin.ops.overviewWhatsapp'),
       value: whatsapp?.state
@@ -107,12 +184,142 @@ export function OverviewPanel({
 
   return (
     <div className="space-y-6">
+      {/* 1. Executive Operations Summary Banner */}
+      <Card className={`border shadow-sm transition-all duration-200 ${execBadge.cardBorder}`}>
+        <CardContent className="p-5 space-y-4">
+          <div className="flex items-start justify-between gap-4 flex-wrap">
+            <div className="flex items-center gap-3">
+              <div className="p-2.5 rounded-xl bg-white dark:bg-[#1E2333] shadow-sm border border-slate-200/60 dark:border-white/[0.08]">
+                {execBadge.icon}
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h3 className="text-base font-bold text-slate-800 dark:text-white">
+                    {t('admin.ops.executiveBannerTitle')}
+                  </h3>
+                  <StatusBadge
+                    status={execBadge.variant}
+                    label={execBadge.label}
+                    size="sm"
+                    pulse={executive.healthState === 'critical' || executive.healthState === 'attention'}
+                  />
+                </div>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                  {t(executive.healthDescriptionKey)}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 text-[11px] font-mono text-slate-400 dark:text-slate-500">
+              <Clock className="w-3.5 h-3.5" />
+              <span>{t('admin.lastUpdated')} {executive.lastUpdated}</span>
+            </div>
+          </div>
+
+          {/* Executive KPI Matrix */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 pt-1">
+            <div className="p-3 rounded-lg bg-white/80 dark:bg-[#1E2333]/70 border border-slate-200/50 dark:border-white/[0.06]">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                {t('admin.ops.activeIncidents')}
+              </span>
+              <div className="flex items-center justify-between gap-2 mt-1">
+                <span className="text-sm font-bold text-slate-800 dark:text-white">
+                  {executive.activeIncidentsCount === 0
+                    ? t('admin.ops.noIncidentsReported')
+                    : t('admin.ops.incidentsDetected', { count: String(executive.activeIncidentsCount) })}
+                </span>
+                {executive.criticalIncidentsCount > 0 && (
+                  <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-rose-100 text-rose-700 dark:bg-rose-950/40 dark:text-rose-400">
+                    {t('admin.ops.criticalCount', { count: String(executive.criticalIncidentsCount) })}
+                  </span>
+                )}
+              </div>
+            </div>
+
+            <div className="p-3 rounded-lg bg-white/80 dark:bg-[#1E2333]/70 border border-slate-200/50 dark:border-white/[0.06]">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                {t('admin.ops.troubledServices')}
+              </span>
+              <p className="text-sm font-bold text-slate-800 dark:text-white mt-1 truncate">
+                {executive.troubledServices.length === 0
+                  ? t('admin.ops.allServicesHealthy')
+                  : executive.troubledServices.join(', ')}
+              </p>
+            </div>
+
+            <div className="p-3 rounded-lg bg-white/80 dark:bg-[#1E2333]/70 border border-slate-200/50 dark:border-white/[0.06]">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                {t('admin.ops.waStreamStatus')}
+              </span>
+              <div className="flex items-center justify-between gap-2 mt-1">
+                <span className="text-sm font-bold text-slate-800 dark:text-white">
+                  {executive.whatsappState.connected
+                    ? t('admin.ops.statusRunning')
+                    : t('admin.ops.statusStopped')}
+                </span>
+                {executive.whatsappState.hasOrphans && (
+                  <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-rose-100 text-rose-700 dark:bg-rose-950/40 dark:text-rose-400">
+                    {t('admin.ops.orphansCount', { count: String(executive.whatsappState.orphanCount) })}
+                  </span>
+                )}
+              </div>
+            </div>
+
+            <div className="p-3 rounded-lg bg-white/80 dark:bg-[#1E2333]/70 border border-slate-200/50 dark:border-white/[0.06]">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                {t('admin.ops.lastDeployStatus')}
+              </span>
+              <p className="text-sm font-bold text-slate-800 dark:text-white mt-1 truncate">
+                {executive.lastOperation.label} ({executive.lastOperation.status})
+              </p>
+            </div>
+          </div>
+
+          {/* Actionable Guidance Box */}
+          <div className="p-3.5 rounded-lg bg-white dark:bg-[#1E2333] border border-slate-200/80 dark:border-white/[0.08] flex items-start justify-between gap-4 flex-wrap">
+            <div className="space-y-0.5 max-w-2xl">
+              <span className="text-[11px] font-bold uppercase tracking-wide text-vuexy-primary flex items-center gap-1.5">
+                <Sparkles className="w-3.5 h-3.5" />
+                {t('admin.ops.recommendedAction')}
+              </span>
+              <p className="text-xs text-slate-700 dark:text-slate-200">
+                {t(executive.recommendedActionKey) || executive.recommendedActionDefault}
+              </p>
+            </div>
+
+            {onNavigateTab && (
+              <div className="flex items-center gap-2 shrink-0">
+                {executive.activeIncidentsCount > 0 && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => onNavigateTab('errors')}
+                    className="text-xs gap-1.5 cursor-pointer"
+                  >
+                    <span>{t('admin.ops.viewIncidents')}</span>
+                    <ArrowRight className="w-3 h-3" />
+                  </Button>
+                )}
+                <Button
+                  variant="default"
+                  size="sm"
+                  onClick={() => onNavigateTab('system')}
+                  className="text-xs gap-1.5 cursor-pointer bg-vuexy-primary hover:bg-vuexy-primary/90 text-white"
+                >
+                  <span>{t('admin.ops.viewSystem')}</span>
+                  <ArrowRight className="w-3 h-3" />
+                </Button>
+              </div>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* 2. Technical System Tiles */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         {tiles.map((tile, i) => (
           <Card
             key={tile.label}
-            // Same staggered entrance as the history list, so the summary reads
-            // as assembling rather than appearing at once.
             style={{ animationDelay: `${i * 45}ms` }}
             className="border-slate-200 dark:border-white/[0.06] animate-stagger-in"
           >
@@ -127,6 +334,7 @@ export function OverviewPanel({
         ))}
       </div>
 
+      {/* 3. Persistence Warning */}
       {!persistenceOk && (
         <Card className="border-amber-300 dark:border-amber-700/50 bg-amber-50 dark:bg-amber-950/20">
           <CardContent className="pt-4 flex items-start gap-3">
@@ -138,10 +346,7 @@ export function OverviewPanel({
         </Card>
       )}
 
-      {/* A session can report CONNECTED and still store nothing: re-pairing
-          deletes the old whatsapp_sessions row while the gateway keeps the
-          session in memory. Without this the operator sees a healthy system and
-          discovers the problem as missing message history. */}
+      {/* 4. Orphaned Sessions Alert */}
       {orphanedCount > 0 && (
         <Card className="border-rose-300 dark:border-rose-700/50 bg-rose-50 dark:bg-rose-950/20">
           <CardContent className="pt-4 space-y-2">
@@ -170,9 +375,7 @@ export function OverviewPanel({
         </Card>
       )}
 
-      {/* A line can be CONNECTED in the database and dead at the gateway. The
-          UI said "connected" and nothing arrived — this is the state behind the
-          unexplained `chats: 0`, so it gets said out loud. */}
+      {/* 5. Ghost Connected Alert */}
       {ghostConnected.length > 0 && (
         <Card className="border-amber-300 dark:amber-700/50 bg-amber-50 dark:bg-amber-950/20">
           <CardContent className="pt-4 space-y-2">
@@ -198,7 +401,10 @@ export function OverviewPanel({
         </Card>
       )}
 
+      {/* 6. Service List */}
       <ServiceList services={services} loading={loading} />
+
+      {/* 7. Recent Operations */}
       <RecentOperations operations={operations} />
     </div>
   );

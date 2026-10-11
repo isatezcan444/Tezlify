@@ -229,11 +229,22 @@ export const AdminOperationsPage: React.FC = () => {
     }
   }, [t]);
 
-  // Seed the error feed once so it is not empty on first visit.
+  // Seed the logs for all services so the incident engine and error center have complete visibility immediately.
   useEffect(() => {
     if (!showAdmin) return;
-    void fetchLogs('gateway');
-  }, [showAdmin, fetchLogs]);
+    const servicesToSeed = ['gateway', 'backend', 'caddy'];
+    void Promise.allSettled(
+      servicesToSeed.map(async (svc) => {
+        try {
+          const res = await OpsApi.getLogs(svc, 200);
+          setLogsByService((prev) => ({ ...prev, [svc]: res.lines }));
+          if (svc === 'gateway') setLogs(res.lines);
+        } catch {
+          // Graceful fallback: non-fatal if an individual service log is unreachable
+        }
+      })
+    );
+  }, [showAdmin]);
 
   const runOperation = useCallback(async (entry: OpsCatalogueEntry) => {
     if (entry.destructive) {
@@ -395,6 +406,9 @@ export const AdminOperationsPage: React.FC = () => {
           orphanedCount={whatsappRuntime?.orphaned_count ?? 0}
           orphanedDetail={whatsappRuntime?.orphaned_detail ?? []}
           ghostConnected={whatsappRuntime?.ghost_connected ?? []}
+          lastUpdated={lastUpdated}
+          hasTelemetryError={Boolean(error && !status)}
+          onNavigateTab={(nextTab) => setTab(nextTab)}
         />
       )}
       {tab === 'system' && (

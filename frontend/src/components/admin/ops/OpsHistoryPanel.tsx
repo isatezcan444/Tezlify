@@ -274,14 +274,25 @@ export const OpsHistoryPanel: React.FC<OpsHistoryPanelProps> = ({
                     <div className="px-3 pb-3 space-y-2 border-t border-slate-200 dark:border-white/[0.06] pt-3">
                       <div className="flex items-center justify-between gap-2 flex-wrap text-[11px]">
                         <span className="text-slate-500 dark:text-[#7E7F96]">
-                          Başlangıç: <strong className="font-mono text-slate-700 dark:text-slate-300">{formatOpsDateTime(op.started_at)}</strong>
-                          {op.finished_at && <> · Bitiş: <strong className="font-mono text-slate-700 dark:text-slate-300">{formatOpsDateTime(op.finished_at)}</strong></>}
+                          {t('admin.ops.startedAt')}: <strong className="font-mono text-slate-700 dark:text-slate-300">{formatOpsDateTime(op.started_at)}</strong>
+                          {op.finished_at && <> · {t('admin.ops.finishedAt')}: <strong className="font-mono text-slate-700 dark:text-slate-300">{formatOpsDateTime(op.finished_at)}</strong></>}
+                          {typeof op.exit_code === 'number' && (
+                            <> · <span className="font-medium text-slate-600 dark:text-slate-400">
+                              {op.exit_code === 0
+                                ? t('admin.ops.exitCodeSuccess')
+                                : op.exit_code === 137
+                                ? t('admin.ops.exitCodeOom')
+                                : op.exit_code === 143
+                                ? t('admin.ops.exitCodeSigterm')
+                                : t('admin.ops.exitCodeError', { code: String(op.exit_code) })}
+                            </span></>
+                          )}
                         </span>
                         <Button
                           variant="outline"
                           size="sm"
                           onClick={() => {
-                            const details = `[${op.label}] (${op.status})\nBaşlangıç: ${formatOpsDateTime(op.started_at)}\nBitiş: ${formatOpsDateTime(op.finished_at)}\nSüre: ${op.duration_ms || 0}ms\nYapan: ${op.actor || '-'}\n${op.error ? `Hata: ${op.error}\n` : ''}\nLoglar:\n${op.logs.join('\n')}`;
+                            const details = `[${op.label}] (${op.status})\n${t('admin.ops.startedAt')}: ${formatOpsDateTime(op.started_at)}\n${t('admin.ops.finishedAt')}: ${formatOpsDateTime(op.finished_at)}\n${t('admin.ops.duration')}: ${op.duration_ms || 0}ms\n${t('admin.ops.actor')}: ${op.actor || '-'}\n${typeof op.exit_code === 'number' ? `${t('admin.ops.exitCode')}: ${op.exit_code}\n` : ''}${op.error ? `${t('admin.ops.errorLabel')}: ${op.error}\n` : ''}\nLoglar:\n${op.logs.join('\n')}`;
                             navigator.clipboard.writeText(details);
                             setCopiedOpId(op.id);
                             setTimeout(() => setCopiedOpId(null), 2000);
@@ -298,13 +309,18 @@ export const OpsHistoryPanel: React.FC<OpsHistoryPanelProps> = ({
                       )}
                       {op.health && (
                         <p className="text-[11px] text-slate-500 dark:text-[#7E7F96]">
-                          {t('admin.ops.stepHealthCheck')}: {op.health.all_healthy ? 'OK' : 'FAIL'}
+                          {t('admin.ops.stepHealthCheck')}: {op.health.all_healthy ? t('admin.ops.healthVerifiedBadge') : t('admin.ops.healthPendingBadge')}
                         </p>
                       )}
                       {op.logs.length > 0 ? (
-                        <pre className="max-h-56 overflow-auto rounded-md bg-slate-50 dark:bg-[#0F1222] p-2.5 text-[11px] font-mono whitespace-pre-wrap break-all text-slate-700 dark:text-slate-300">
-                          {op.logs.slice(-200).join('\n')}
-                        </pre>
+                        <div className="space-y-1">
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                            {t('admin.ops.rawOutput')}
+                          </span>
+                          <pre className="max-h-56 overflow-auto rounded-md bg-slate-50 dark:bg-[#0F1222] p-2.5 text-[11px] font-mono whitespace-pre-wrap break-all text-slate-700 dark:text-slate-300">
+                            {op.logs.slice(-200).join('\n')}
+                          </pre>
+                        </div>
                       ) : (
                         <p className="text-[11px] text-slate-400 dark:text-slate-500">{t('admin.ops.noData')}</p>
                       )}

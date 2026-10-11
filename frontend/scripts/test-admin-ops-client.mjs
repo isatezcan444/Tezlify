@@ -343,8 +343,8 @@ check('the caddy config no longer requests a certificate for a dead domain', () 
   const siteBlock = caddy.slice(siteStart, caddy.indexOf('\n}', siteStart));
   assert.ok(!siteBlock.includes('tls internal'),
     'the sslip site must not switch the issuing CA');
-  // The site must still exist and still serve the API.
-  assert.ok(siteBlock.includes('reverse_proxy backend:8000'),
+  // The site must still exist and still serve the API (either direct or via snippet).
+  assert.ok(siteBlock.includes('reverse_proxy backend:8000') || siteBlock.includes('backend_proxy_https'),
     'the sslip site must still proxy the backend');
 });
 

@@ -22,6 +22,7 @@
     "verify:ops-client": "node scripts/test-admin-ops-client.mjs",
     "verify:ops-dom": "node scripts/verify-admin-ops-dom.mjs",
     "audit:admin-i18n": "node scripts/audit-admin-i18n.mjs",
+    "verify:incident-engine": "node scripts/test-incident-engine.mjs",
     "lint": "eslint src --ext .ts,.tsx --resolve-plugins-relative-to . --max-warnings 0",
     "lint:report": "eslint src --ext .ts,.tsx --resolve-plugins-relative-to .",
     "verify:dialog-a11y": "node scripts/verify-dialog-a11y-dom.mjs",

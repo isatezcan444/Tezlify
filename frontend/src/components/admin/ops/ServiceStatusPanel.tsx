@@ -154,33 +154,54 @@ export const ServiceStatusPanel: React.FC<ServiceStatusPanelProps> = ({
 
                 <div className="flex flex-col gap-1.5 mt-auto pt-2">
                   {actions.length > 0 ? (
-                    actions.map((act) => {
-                      const busy = busyName === act.name || running?.name === act.name;
-                      const isHotReload = act.name.includes('reload');
-                      return (
-                        <Button
-                          key={act.name}
-                          variant={isHotReload ? 'default' : 'outline'}
-                          size="sm"
-                          disabled={busy || Boolean(running)}
-                          onClick={() => onRun(act)}
-                          className={`w-full gap-2 cursor-pointer transition-all duration-150 active:scale-[0.98] ${
-                            isHotReload
-                              ? 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm'
-                              : 'border-slate-200 dark:border-white/[0.08]'
-                          }`}
-                        >
-                          {busy ? (
-                            <Activity className="w-3.5 h-3.5 animate-spin" />
-                          ) : isHotReload ? (
-                            <Zap className="w-3.5 h-3.5" />
-                          ) : (
-                            <RefreshCw className="w-3.5 h-3.5" />
-                          )}
-                          <span className="truncate">{act.label}</span>
-                        </Button>
-                      );
-                    })
+                    <>
+                      {actions.map((act) => {
+                        const busy = busyName === act.name || running?.name === act.name;
+                        const isHotReload = act.name.includes('reload');
+                        const isGateway = act.name.includes('gateway');
+                        const isBackend = act.name.includes('backend');
+
+                        const riskText = isHotReload
+                          ? t('admin.ops.riskLowDesc')
+                          : isGateway
+                          ? t('admin.ops.riskMediumDesc')
+                          : isBackend
+                          ? t('admin.ops.riskMediumDesc')
+                          : t('admin.ops.riskHighDesc');
+
+                        return (
+                          <div key={act.name} className="space-y-1">
+                            <Button
+                              variant={isHotReload ? 'default' : 'outline'}
+                              size="sm"
+                              disabled={busy || Boolean(running)}
+                              onClick={() => onRun(act)}
+                              title={`${act.label} — ${riskText}`}
+                              className={`w-full gap-2 cursor-pointer transition-all duration-150 active:scale-[0.98] ${
+                                isHotReload
+                                  ? 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm'
+                                  : 'border-slate-200 dark:border-white/[0.08]'
+                              }`}
+                            >
+                              {busy ? (
+                                <Activity className="w-3.5 h-3.5 animate-spin" />
+                              ) : isHotReload ? (
+                                <Zap className="w-3.5 h-3.5" />
+                              ) : (
+                                <RefreshCw className="w-3.5 h-3.5" />
+                              )}
+                              <span className="truncate">{act.label}</span>
+                            </Button>
+                            <div className="flex items-center justify-between text-[10px] text-slate-400 dark:text-slate-500 px-0.5">
+                              <span>{isHotReload ? t('admin.ops.hotReloadReversible') : t('admin.ops.irreversible')}</span>
+                              <span className={isHotReload ? 'text-emerald-600 dark:text-emerald-400 font-medium' : 'text-amber-600 dark:text-amber-400 font-medium'}>
+                                {isHotReload ? t('admin.ops.riskSafe') : t('admin.ops.riskCaution')}
+                              </span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </>
                   ) : (
                     <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-snug">
                       {t('admin.ops.dangerZoneDesc')}
