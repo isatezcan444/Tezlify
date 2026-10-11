@@ -23,19 +23,16 @@ FRONTEND_DIR="$REPO_ROOT/frontend"
 API_HEALTH_URL="https://api.130.162.247.20.sslip.io/health"
 FRONTEND_URL="https://130.162.247.20.sslip.io"
 
-SHA=""
-SKIP_BUILD=""
-NO_FRONTEND=""
-DRY_RUN=""
+FORWARD_ARGS=()
+IS_STAGING=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --target)
       shift
       TARGET="${1:-}"
       if [ "$TARGET" = "staging" ]; then
+        IS_STAGING="1"
         shift || true
-        printf '[release] Staging hedefi secildi -> staging-release.sh betigine aktariliyor\n'
-        exec "$REPO_ROOT/scripts/deploy/staging-release.sh" "$@"
       elif [ "$TARGET" = "production" ]; then
         shift || true
       else
@@ -43,6 +40,26 @@ while [ $# -gt 0 ]; do
         exit 2
       fi
       ;;
+    *)
+      FORWARD_ARGS+=("$1")
+      shift
+      ;;
+  esac
+done
+
+if [ "$IS_STAGING" = "1" ]; then
+  printf '[release] Staging hedefi secildi -> staging-release.sh betigine aktariliyor\n'
+  exec "$REPO_ROOT/scripts/deploy/staging-release.sh" "${FORWARD_ARGS[@]}"
+fi
+
+set -- "${FORWARD_ARGS[@]}"
+
+SHA=""
+SKIP_BUILD=""
+NO_FRONTEND=""
+DRY_RUN=""
+while [ $# -gt 0 ]; do
+  case "$1" in
     --skip-build) SKIP_BUILD="--skip-build"; shift ;;
     --no-frontend) NO_FRONTEND="1"; shift ;;
     --dry-run) DRY_RUN="1"; shift ;;

@@ -34,10 +34,12 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-# Where the production compose project lives on the host. Mounted into the
-# backend container at /opt/tezlify/deploy (see docker-compose.prod.yml).
 DEPLOY_DIR = os.environ.get("TEZLIFY_DEPLOY_DIR", "/opt/tezlify/deploy")
-COMPOSE_FILE = os.path.join(DEPLOY_DIR, "docker-compose.prod.yml")
+_is_staging = os.environ.get("ENVIRONMENT", "").lower() == "staging"
+COMPOSE_FILE = os.environ.get(
+    "TEZLIFY_COMPOSE_FILE",
+    os.path.join(DEPLOY_DIR, "docker-compose.staging.yml" if _is_staging else "docker-compose.prod.yml"),
+)
 
 # Services the Operations Center is allowed to act on. Anything not in this
 # tuple cannot be targeted at all.
@@ -45,7 +47,19 @@ ALLOWED_SERVICES: Tuple[str, ...] = ("backend", "gateway", "caddy")
 
 # Compose project name; `-p` keeps us from touching another compose project
 # that may run on the same host.
-COMPOSE_PROJECT = os.environ.get("TEZLIFY_COMPOSE_PROJECT", "tezlify")
+COMPOSE_PROJECT = os.environ.get(
+    "TEZLIFY_COMPOSE_PROJECT",
+    "tezlify-staging" if _is_staging else "tezlify",
+)
+
+
+def _container_name(service: str) -> str:
+    """Resolve container name respecting staging suffix when in staging."""
+    suffix = os.environ.get(
+        "TEZLIFY_CONTAINER_SUFFIX",
+        "-staging" if _is_staging else "",
+    )
+    return f"tezlify-{service}{suffix}"
 
 # Bound on the in-memory operation history surfaced by the API.
 MAX_OPERATION_HISTORY = 50
@@ -158,7 +172,7 @@ OPERATIONS: Dict[str, OperationSpec] = {
     ),
     "reload_caddy": OperationSpec(
         "reload_caddy", "Hot reload edge proxy (zero downtime)",
-        lambda: ["docker", "exec", "tezlify-caddy", "caddy", "reload", "--config", "/etc/caddy/Caddyfile"],
+        lambda: ["docker", "exec", _container_name("caddy"), "caddy", "reload", "--config", "/etc/caddy/Caddyfile"],
         destructive=True, cooldown=10, timeout=30,
         description="Reload Caddy configuration without dropping active connections or restarting the container.",
     ),
@@ -743,7 +757,7 @@ async def get_service_status() -> List[Dict[str, Any]]:
             }
     result = []
     for service in ("caddy", "backend", "gateway", "db"):
-        name = f"tezlify-{service}"
+        name = _container_name(service)
         result.append(rows.get(name) or {
             "name": name, "status": "absent", "state": "absent", "image": None,
             "health": None, "uptime": None, "started_at": None,
@@ -930,7 +944,7 @@ async def _container_log_path(service: str) -> Optional[str]:
     if service not in LOG_SERVICES:
         raise OperationError("Unknown log service", code="unknown_service")
     proc = await asyncio.create_subprocess_exec(
-        "docker", "inspect", "--format", "{{.LogPath}}", f"tezlify-{service}",
+        "docker", "inspect", "--format", "{{.LogPath}}", _container_name(service),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
     )
@@ -1043,15 +1057,18 @@ async def run_health_check() -> Dict[str, Any]:
         if not running:
             details[name] = {"container": svc.get("state")}
 
+    b_name = _container_name("backend")
+    g_name = _container_name("gateway")
+
     backend_http = await _probe_backend_http()
     if backend_http is not None:
-        details.setdefault("tezlify-backend", {})["http_health"] = backend_http
-        checks["tezlify-backend"] = bool(checks.get("tezlify-backend")) and bool(backend_http)
+        details.setdefault(b_name, {})["http_health"] = backend_http
+        checks[b_name] = bool(checks.get(b_name)) and bool(backend_http)
 
     gateway_http = await _probe_gateway_health()
     if gateway_http is not None:
-        details.setdefault("tezlify-gateway", {})["http_health"] = gateway_http
-        checks["tezlify-gateway"] = bool(checks.get("tezlify-gateway")) and bool(gateway_http)
+        details.setdefault(g_name, {})["http_health"] = gateway_http
+        checks[g_name] = bool(checks.get(g_name)) and bool(gateway_http)
 
     session = await _whatsapp_session_state()
     return {

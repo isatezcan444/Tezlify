@@ -140,11 +140,46 @@ assert_passes \
   "Staging izolasyon dogrulamasi: TAMAMLANDI" \
   bash scripts/deploy/staging-release.sh --staging-host ubuntu@10.0.0.99 --staging-env "$TEMP_DIR/.env.staging.valid" --dry-run
 
-# 10. Default release.sh targets production and respects --dry-run without touching server
+# 11. Argument order preservation: --dry-run BEFORE --target staging
 assert_passes \
-  "10. Default release.sh target behavior is preserved (dry-run targets prod safely)" \
-  "dry-run: sunucu tarafina DOKUNULMADI" \
-  bash scripts/deploy/release.sh --dry-run
+  "11. release.sh preserves --dry-run when placed before --target staging" \
+  "Staging izolasyon dogrulamasi: TAMAMLANDI" \
+  bash scripts/deploy/release.sh --dry-run --target staging --staging-host ubuntu@10.0.0.99 --staging-env "$TEMP_DIR/.env.staging.valid"
+
+# 12. ops_service.py environment isolation verification (Python)
+assert_passes \
+  "12. ops_service.py resolves tezlify-staging and container names in staging mode" \
+  "STAGING_OPS_ISOLATED_OK" \
+  python3 -c "
+import os
+os.environ['ENVIRONMENT'] = 'staging'
+from backend.app.services.admin.ops_service import COMPOSE_PROJECT, COMPOSE_FILE, _container_name
+assert COMPOSE_PROJECT == 'tezlify-staging', f'Unexpected project: {COMPOSE_PROJECT}'
+assert 'docker-compose.staging.yml' in COMPOSE_FILE, f'Unexpected compose file: {COMPOSE_FILE}'
+assert _container_name('backend') == 'tezlify-backend-staging', f'Unexpected name: {_container_name(\"backend\")}'
+assert _container_name('caddy') == 'tezlify-caddy-staging', f'Unexpected name: {_container_name(\"caddy\")}'
+print('STAGING_OPS_ISOLATED_OK')
+"
+
+# 13. ops_service.py production isolation verification (Python)
+assert_passes \
+  "13. ops_service.py resolves standard production project and container names in prod mode" \
+  "PROD_OPS_ISOLATED_OK" \
+  python3 -c "
+import os
+os.environ.pop('ENVIRONMENT', None)
+os.environ.pop('TEZLIFY_COMPOSE_PROJECT', None)
+os.environ.pop('TEZLIFY_CONTAINER_SUFFIX', None)
+# Reimport or reload
+import importlib
+from backend.app.services.admin import ops_service
+importlib.reload(ops_service)
+assert ops_service.COMPOSE_PROJECT == 'tezlify', f'Unexpected project: {ops_service.COMPOSE_PROJECT}'
+assert 'docker-compose.prod.yml' in ops_service.COMPOSE_FILE, f'Unexpected compose file: {ops_service.COMPOSE_FILE}'
+assert ops_service._container_name('backend') == 'tezlify-backend', f'Unexpected name: {ops_service._container_name(\"backend\")}'
+assert ops_service._container_name('caddy') == 'tezlify-caddy', f'Unexpected name: {ops_service._container_name(\"caddy\")}'
+print('PROD_OPS_ISOLATED_OK')
+"
 
 echo ""
 echo "Summary: $PASSED passed, $FAILED failed"

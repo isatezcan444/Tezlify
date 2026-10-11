@@ -100,6 +100,13 @@ for pattern in "${PROD_FORBIDDEN_PATTERNS[@]}"; do
   fi
 done
 
+# 1.2b DNS Cozumleme ile Production IP Cakisim Kontrolu (Alias / CNAME / hosts korumasi)
+TARGET_RAW_HOST="${STAGING_HOST#*@}"
+RESOLVED_IP="$(python3 -c "import socket; print(socket.gethostbyname('${TARGET_RAW_HOST}'))" 2>/dev/null || true)"
+if [ "$RESOLVED_IP" = "$PROD_HOST_IP" ]; then
+  die "STAGING_HOST ($STAGING_HOST) DNS cozumlemesinde production IP'sine ($PROD_HOST_IP) isaret ediyor! Islem derhal durduruldu."
+fi
+
 # 1.3 Staging Environment Dosyasi Kontrolu
 if [ ! -f "$STAGING_ENV_FILE" ]; then
   die "Staging environment dosyasi ($STAGING_ENV_FILE) bulunamadi. Lutfen .env.staging dosyasini hazirlayin (ornek: .env.staging.example)."

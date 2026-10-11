@@ -78,6 +78,9 @@ services:
       DATABASE_URL: "postgresql+asyncpg://tezlify_staging:${STAGING_DB_PASSWORD:-staging_dev_pass_only}@db:5432/tezlify_staging"
       WHATSAPP_GATEWAY_URL: "http://gateway:8787"
       SKIP_JOB_RECOVERY: "true"
+      TEZLIFY_COMPOSE_PROJECT: "tezlify-staging"
+      TEZLIFY_COMPOSE_FILE: "/opt/tezlify/deploy/docker-compose.staging.yml"
+      TEZLIFY_CONTAINER_SUFFIX: "-staging"
     volumes:
       - /opt/tezlify-staging/runtime:/opt/tezlify/runtime:ro
       - /opt/tezlify-staging/backups:/opt/tezlify/backups:ro
