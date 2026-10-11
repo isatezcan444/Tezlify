@@ -75,6 +75,7 @@ import {
 import { LeadDetailDrawer } from '../features/leads/components';
 import { useAntiBanSettings } from '../features/whatsapp/hooks/useAntiBanSettings';
 import { useChatSearch } from '../features/whatsapp/hooks/useChatSearch';
+import { useChatDragAndDrop } from '../features/whatsapp/hooks/useChatDragAndDrop';
 import { FilterTab } from '../features/whatsapp/components/ConversationList';
 import { useToast } from '../context/ToastContext';
 import { useI18n } from '../context/I18nContext';
@@ -262,42 +263,18 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     messages: selectedConv ? messagesMap[selectedConv.id] : undefined,
   });
   const [groupParticipantsMap, setGroupParticipantsMap] = useState<Record<number, Array<{ id: string; name: string; is_me: boolean }>>>({});
-  const [stagedComposerFiles, setStagedComposerFiles] = useState<{ files: File[]; timestamp: number } | null>(null);
-  const [isChatDragOver, setIsChatDragOver] = useState(false);
-  const chatDragCounterRef = useRef(0);
-  const lastDropTimestampRef = useRef(0);
-  const dragoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-
-  const resetChatDragState = useCallback(() => {
-    if (dragoverTimeoutRef.current) {
-      clearTimeout(dragoverTimeoutRef.current);
-      dragoverTimeoutRef.current = null;
-    }
-    chatDragCounterRef.current = 0;
-    setIsChatDragOver(false);
-  }, []);
-
-  const handleChatFilesDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (dragoverTimeoutRef.current) {
-      clearTimeout(dragoverTimeoutRef.current);
-      dragoverTimeoutRef.current = null;
-    }
-    lastDropTimestampRef.current = Date.now();
-    resetChatDragState();
-    const droppedFiles = e.dataTransfer.files ? Array.from(e.dataTransfer.files) : [];
-    if (droppedFiles.length > 0) {
-      setStagedComposerFiles({ files: droppedFiles, timestamp: Date.now() });
-    }
-  }, [resetChatDragState]);
-
-  // If files are staged or open in modal, drag-over overlay must never remain active
-  useEffect(() => {
-    if (stagedComposerFiles) {
-      resetChatDragState();
-    }
-  }, [stagedComposerFiles, resetChatDragState]);
+  const {
+    isChatDragOver,
+    stagedComposerFiles,
+    clearStagedFiles,
+    resetChatDragState,
+    handleDragEnter: handleChatDragEnter,
+    handleDragLeave: handleChatDragLeave,
+    handleDragOver: handleChatDragOver,
+    handleDrop: handleChatFilesDrop,
+  } = useChatDragAndDrop({
+    selectedConvId: selectedConv?.id,
+  });
 
   // PHASE 2.K.1 (single variable = onRetry prop identity): dependency-safe refs
   // mirroring the existing conversationsRef/toastRef idiom. They let the retry
@@ -309,50 +286,13 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   useEffect(() => {
     setReplyingTo(null);
     setInsertedComposerText(null);
-    setStagedComposerFiles(null);
-    resetChatDragState();
+    clearStagedFiles();
     resetChatSearch();
     setIsSelectMode(false);
     setSelectedMessageIds(new Set());
     setIsForwardModalOpen(false);
     setMessagesToForward([]);
-  }, [selectedConv?.id, resetChatDragState, resetChatSearch]);
-
-  // Window-level safety cleanup for drag-and-drop: ensures dropzone overlay never gets stuck
-  // if user cancels drag (Escape), drops outside, or drops anywhere in the window.
-  useEffect(() => {
-    const handleGlobalDragLeave = (e: DragEvent) => {
-      if (!e.relatedTarget && (e.clientX <= 0 || e.clientY <= 0 || e.clientX >= window.innerWidth || e.clientY >= window.innerHeight)) {
-        resetChatDragState();
-      }
-    };
-    const handleGlobalDrop = () => {
-      lastDropTimestampRef.current = Date.now();
-      resetChatDragState();
-    };
-    const handleGlobalDragEnd = () => {
-      resetChatDragState();
-    };
-    const handleGlobalKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        resetChatDragState();
-      }
-    };
-
-    window.addEventListener('dragleave', handleGlobalDragLeave);
-    window.addEventListener('drop', handleGlobalDrop, true);
-    window.addEventListener('dragend', handleGlobalDragEnd, true);
-    window.addEventListener('keydown', handleGlobalKeyDown);
-    return () => {
-      window.removeEventListener('dragleave', handleGlobalDragLeave);
-      window.removeEventListener('drop', handleGlobalDrop, true);
-      window.removeEventListener('dragend', handleGlobalDragEnd, true);
-      window.removeEventListener('keydown', handleGlobalKeyDown);
-      if (dragoverTimeoutRef.current) {
-        clearTimeout(dragoverTimeoutRef.current);
-      }
-    };
-  }, [resetChatDragState]);
+  }, [selectedConv?.id, clearStagedFiles, resetChatSearch]);
 
   useEffect(() => {
     if (!selectedConv?.is_group || !selectedConv?.id) return;
@@ -3550,51 +3490,9 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                 {/* Main Chat Conversation Column */}
                 <div
                   className="relative flex-1 flex flex-col min-w-0 h-full overflow-hidden"
-                  onDragEnter={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    // Ignore phantom drag events immediately after a drop or if files are already staged
-                    if (Date.now() - lastDropTimestampRef.current < 1500 || stagedComposerFiles) {
-                      return;
-                    }
-                    const hasFiles = e.dataTransfer.types && Array.from(e.dataTransfer.types).some(
-                      (t) => t === 'Files' || t === 'application/x-moz-file'
-                    );
-                    if (hasFiles) {
-                      chatDragCounterRef.current++;
-                      setIsChatDragOver(true);
-                    }
-                  }}
-                  onDragLeave={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    chatDragCounterRef.current--;
-                    if (e.relatedTarget && !e.currentTarget.contains(e.relatedTarget as Node)) {
-                      resetChatDragState();
-                    } else if (chatDragCounterRef.current <= 0) {
-                      resetChatDragState();
-                    }
-                  }}
-                  onDragOver={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    if (Date.now() - lastDropTimestampRef.current < 1500 || stagedComposerFiles) {
-                      if (isChatDragOver) resetChatDragState();
-                      return;
-                    }
-                    if (e.dataTransfer) {
-                      e.dataTransfer.dropEffect = 'copy';
-                    }
-                    if (!isChatDragOver) {
-                      setIsChatDragOver(true);
-                    }
-                    if (dragoverTimeoutRef.current) {
-                      clearTimeout(dragoverTimeoutRef.current);
-                    }
-                    dragoverTimeoutRef.current = setTimeout(() => {
-                      resetChatDragState();
-                    }, 600);
-                  }}
+                  onDragEnter={handleChatDragEnter}
+                  onDragLeave={handleChatDragLeave}
+                  onDragOver={handleChatDragOver}
                   onDrop={handleChatFilesDrop}
                 >
                   {isChatDragOver && !stagedComposerFiles && (
@@ -3894,10 +3792,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                     onCancelReply={() => setReplyingTo(null)}
                     insertedText={insertedComposerText}
                     stagedFiles={stagedComposerFiles}
-                    onClearStagedFiles={() => {
-                      setStagedComposerFiles(null);
-                      resetChatDragState();
-                    }}
+                    onClearStagedFiles={clearStagedFiles}
                     onSend={async (text) => {
                       try {
                         await activeSendMessage(text);

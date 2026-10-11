@@ -49,6 +49,7 @@ await writeFile(
     `export { mergeWhatsAppMessages, mergeDeliveryStatus } from '${SRC}/features/whatsapp/lib/whatsappMessageMerge';`,
     `export { applyConversationEvent } from '${SRC}/features/whatsapp/lib/whatsappConversationPatch';`,
     `export { filterMatchingMessageIds, resolveActiveSearchMessageId, getNextSearchMatchIndex, getPrevSearchMatchIndex } from '${SRC}/features/whatsapp/lib/whatsappChatSearch';`,
+    `export { hasDragFiles, isDragLeavingWindow, isDropCooldownActive, DRAG_DROP_COOLDOWN_MS } from '${SRC}/features/whatsapp/lib/whatsappChatDragDrop';`,
     `export { en } from '${SRC}/locales/en';`,
     `export { tr } from '${SRC}/locales/tr';`,
   ].join('\n'),
@@ -133,6 +134,10 @@ try {
     resolveActiveSearchMessageId,
     getNextSearchMatchIndex,
     getPrevSearchMatchIndex,
+    hasDragFiles,
+    isDragLeavingWindow,
+    isDropCooldownActive,
+    DRAG_DROP_COOLDOWN_MS,
     PEER_TYPING_TTL_MS,
     pruneExpiredTyping,
     resolveSyncDisplayCounts,
@@ -1036,6 +1041,15 @@ try {
     assert.equal(getNextSearchMatchIndex(2, 0), 1);
     assert.equal(getNextSearchMatchIndex(2, 1), 0);
     assert.equal(getPrevSearchMatchIndex(2, 0), 1);
+  });
+
+  check('§DragDrop: hasDragFiles, isDragLeavingWindow, and isDropCooldownActive operate strictly', () => {
+    assert.equal(hasDragFiles(['Files']), true);
+    assert.equal(hasDragFiles(['text/plain']), false);
+    assert.equal(isDragLeavingWindow({ clientX: -2, clientY: 50 }, 800, 600), true);
+    assert.equal(isDragLeavingWindow({ clientX: 200, clientY: 200 }, 800, 600), false);
+    assert.equal(isDropCooldownActive(1000, 1500, DRAG_DROP_COOLDOWN_MS), true);
+    assert.equal(isDropCooldownActive(1000, 3000, DRAG_DROP_COOLDOWN_MS), false);
   });
 
   console.log(`\nWhatsApp frontend identity + ordering verification: PASS (${passed} checks)`);
