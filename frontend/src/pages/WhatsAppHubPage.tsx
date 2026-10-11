@@ -74,6 +74,7 @@ import {
 } from '../features/whatsapp/components';
 import { LeadDetailDrawer } from '../features/leads/components';
 import { useAntiBanSettings } from '../features/whatsapp/hooks/useAntiBanSettings';
+import { useChatSearch } from '../features/whatsapp/hooks/useChatSearch';
 import { FilterTab } from '../features/whatsapp/components/ConversationList';
 import { useToast } from '../context/ToastContext';
 import { useI18n } from '../context/I18nContext';
@@ -238,15 +239,28 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     pauseAllMedia();
   }, [selectedConv?.id]);
   const [replyingTo, setReplyingTo] = useState<QuotedMessage | null>(null);
-  const [isChatSearchOpen, setIsChatSearchOpen] = useState(false);
   const [isChatInfoOpen, setIsChatInfoOpen] = useState(false);
   const [isSelectMode, setIsSelectMode] = useState(false);
   const [selectedMessageIds, setSelectedMessageIds] = useState<Set<number | string>>(new Set());
   const [isForwardModalOpen, setIsForwardModalOpen] = useState(false);
   const [messagesToForward, setMessagesToForward] = useState<Message[]>([]);
-  const [chatSearchQuery, setChatSearchQuery] = useState('');
-  const [chatSearchCurrentIndex, setChatSearchCurrentIndex] = useState(0);
   const [messagesMap, setMessagesMap] = useState<Record<number, Message[]>>({});
+  const {
+    isChatSearchOpen,
+    setIsChatSearchOpen,
+    chatSearchQuery,
+    setChatSearchQuery,
+    chatSearchCurrentIndex,
+    setChatSearchCurrentIndex,
+    matchingMessageIds,
+    activeSearchMessageId,
+    handleNextSearchMatch,
+    handlePrevSearchMatch,
+    resetSearch: resetChatSearch,
+  } = useChatSearch({
+    selectedConvId: selectedConv?.id,
+    messages: selectedConv ? messagesMap[selectedConv.id] : undefined,
+  });
   const [groupParticipantsMap, setGroupParticipantsMap] = useState<Record<number, Array<{ id: string; name: string; is_me: boolean }>>>({});
   const [stagedComposerFiles, setStagedComposerFiles] = useState<{ files: File[]; timestamp: number } | null>(null);
   const [isChatDragOver, setIsChatDragOver] = useState(false);
@@ -297,14 +311,12 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     setInsertedComposerText(null);
     setStagedComposerFiles(null);
     resetChatDragState();
-    setIsChatSearchOpen(false);
-    setChatSearchQuery('');
-    setChatSearchCurrentIndex(0);
+    resetChatSearch();
     setIsSelectMode(false);
     setSelectedMessageIds(new Set());
     setIsForwardModalOpen(false);
     setMessagesToForward([]);
-  }, [selectedConv?.id, resetChatDragState]);
+  }, [selectedConv?.id, resetChatDragState, resetChatSearch]);
 
   // Window-level safety cleanup for drag-and-drop: ensures dropzone overlay never gets stuck
   // if user cancels drag (Escape), drops outside, or drops anywhere in the window.
@@ -528,46 +540,6 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     }
   }, []);
 
-  const matchingMessageIds = React.useMemo(() => {
-    const q = chatSearchQuery.trim().toLowerCase();
-    if (!q || !selectedConv || !messagesMap[selectedConv.id]?.length) return [];
-    return messagesMap[selectedConv.id]
-      .filter((msg) => {
-        const body = (msg.body || '').toLowerCase();
-        const caption = (msg.media_caption || '').toLowerCase();
-        const filename = (msg.media_filename || '').toLowerCase();
-        return body.includes(q) || caption.includes(q) || filename.includes(q);
-      })
-      .map((msg) => msg.id as number);
-  }, [selectedConv, messagesMap, chatSearchQuery]);
-
-  const activeSearchMessageId =
-    matchingMessageIds.length > 0
-      ? matchingMessageIds[chatSearchCurrentIndex] ?? matchingMessageIds[0]
-      : null;
-
-  const handleNextSearchMatch = useCallback(() => {
-    if (matchingMessageIds.length <= 1) return;
-    setChatSearchCurrentIndex((prev) => (prev + 1) % matchingMessageIds.length);
-  }, [matchingMessageIds.length]);
-
-  const handlePrevSearchMatch = useCallback(() => {
-    if (matchingMessageIds.length <= 1) return;
-    setChatSearchCurrentIndex(
-      (prev) => (prev - 1 + matchingMessageIds.length) % matchingMessageIds.length
-    );
-  }, [matchingMessageIds.length]);
-
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f' && selectedConv) {
-        e.preventDefault();
-        setIsChatSearchOpen((open) => !open);
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedConv]);
 
   const lastMarkedReadConvIdRef = useRef<number | null>(null);
   const messagesMapRef = useRef(messagesMap);

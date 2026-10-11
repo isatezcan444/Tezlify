@@ -48,6 +48,7 @@ await writeFile(
     `export { resolveUnreadCount } from '${SRC}/features/whatsapp/lib/whatsappUnread';`,
     `export { mergeWhatsAppMessages, mergeDeliveryStatus } from '${SRC}/features/whatsapp/lib/whatsappMessageMerge';`,
     `export { applyConversationEvent } from '${SRC}/features/whatsapp/lib/whatsappConversationPatch';`,
+    `export { filterMatchingMessageIds, resolveActiveSearchMessageId, getNextSearchMatchIndex, getPrevSearchMatchIndex } from '${SRC}/features/whatsapp/lib/whatsappChatSearch';`,
     `export { en } from '${SRC}/locales/en';`,
     `export { tr } from '${SRC}/locales/tr';`,
   ].join('\n'),
@@ -128,6 +129,10 @@ try {
     mergeWhatsAppMessages,
     mergeDeliveryStatus,
     applyConversationEvent,
+    filterMatchingMessageIds,
+    resolveActiveSearchMessageId,
+    getNextSearchMatchIndex,
+    getPrevSearchMatchIndex,
     PEER_TYPING_TTL_MS,
     pruneExpiredTyping,
     resolveSyncDisplayCounts,
@@ -1014,6 +1019,23 @@ try {
     const patched = applyConversationEvent({ ...baseUi }, { id: baseUi.id, unread_count: 0 }, fakeT);
     assert.equal(patched.lead_name, baseUi.lead_name, 'an unresolved identity must keep the known name');
     assert.equal(patched.unread_count, 0, 'the badge must still be applied');
+  });
+
+  check('§Search: filterMatchingMessageIds, active resolution, and navigation indices work identically', () => {
+    const msgs = [
+      { id: 1, body: 'Merhaba dünya', media_caption: null, media_filename: null },
+      { id: 2, body: null, media_caption: 'Fatura eki', media_filename: null },
+      { id: 3, body: 'İyi günler', media_caption: null, media_filename: 'sozlesme.pdf' },
+    ];
+    assert.deepEqual(filterMatchingMessageIds(msgs, 'fatura'), [2]);
+    assert.deepEqual(filterMatchingMessageIds(msgs, 'pdf'), [3]);
+    assert.deepEqual(filterMatchingMessageIds(msgs, '   '), []);
+    assert.equal(resolveActiveSearchMessageId([1, 2], 0), 1);
+    assert.equal(resolveActiveSearchMessageId([1, 2], 1), 2);
+    assert.equal(resolveActiveSearchMessageId([1, 2], 99), 1);
+    assert.equal(getNextSearchMatchIndex(2, 0), 1);
+    assert.equal(getNextSearchMatchIndex(2, 1), 0);
+    assert.equal(getPrevSearchMatchIndex(2, 0), 1);
   });
 
   console.log(`\nWhatsApp frontend identity + ordering verification: PASS (${passed} checks)`);
