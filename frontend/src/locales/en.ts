@@ -1875,7 +1875,7 @@ export const en = {
     backups: {
       title: 'Backup & Disaster Recovery',
       subtitle: 'PostgreSQL, media and config backup status, certification and disaster recovery state',
-      readOnlyNotice: 'This screen is strictly read-only. No backup creation, deletion, restore or off-host sync can be initiated here.',
+      readOnlyNotice: 'Backup creates a secure archive in the background without locking the live database. Data deletion or restoration cannot be triggered from this panel, ensuring system safety.',
       overallStatus: 'Overall Backup Status',
       certificationStatus: 'Certification Status',
       offHostStatus: 'Off-Host Backup Status',

@@ -1875,7 +1875,7 @@ export const tr = {
     backups: {
       title: 'Yedekleme & Felaket Kurtarma',
       subtitle: 'PostgreSQL, medya ve yapılandırma yedek durumu, sertifikasyon ve felaket kurtarma hazırlığı',
-      readOnlyNotice: 'Bu ekran tamamen salt okunur. Yedek oluşturma, silme, geri yükleme veya harici senkronizasyon başlatılamaz.',
+      readOnlyNotice: 'Yedekleme işlemi arka planda canlı veritabanını dondurmadan güvenli arşiv oluşturur. Veri silme veya geri yükleme bu panelden yapılamaz, sistem güvenliği korunur.',
       overallStatus: 'Genel Yedekleme Durumu',
       certificationStatus: 'Sertifikasyon Durumu',
       offHostStatus: 'Harici Yedekleme Durumu',
