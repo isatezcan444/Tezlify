@@ -390,15 +390,18 @@ export const AdminDeploymentPage: React.FC<AdminDeploymentPageProps> = ({ onNavi
   const depCommit = frontendRelease.deployed_commit ? frontendRelease.deployed_commit.trim() : null;
   const isConsistent = srcCommit && depCommit ? srcCommit.slice(0, 7) === depCommit.slice(0, 7) : null;
 
-  // Overall status
-  const overallStatus =
-    deploymentData.overall_status || (rebootRequired ? 'WARN' : 'OK');
-  const overallVariant: StatusVariant =
-    overallStatus === 'OK' ? 'online' : overallStatus === 'WARN' ? 'warning' : 'danger';
+  // Normalize overall status
+  const rawStatus = (deploymentData.overall_status || '').toUpperCase();
+  const isFailed = deploying?.status === 'failed' || rawStatus === 'FAILED' || rawStatus === 'CRITICAL';
+  const isWarn = !isFailed && (rawStatus === 'WARN' || rawStatus === 'WARNING' || Boolean(rebootRequired) || !isWorkingTreeClean);
+  const isHealthy = !isFailed && !isWarn;
+
+  const overallStatus = isFailed ? 'CRITICAL' : isWarn ? 'WARN' : 'OK';
+  const overallVariant: StatusVariant = isHealthy ? 'online' : isWarn ? 'warning' : 'danger';
   const overallLabel =
-    overallStatus === 'OK'
+    isHealthy
       ? t('admin.deployment.statusOk')
-      : overallStatus === 'WARN'
+      : isWarn
       ? t('admin.deployment.statusWarn')
       : t('admin.deployment.statusCritical');
 
@@ -422,21 +425,21 @@ export const AdminDeploymentPage: React.FC<AdminDeploymentPageProps> = ({ onNavi
     >
       <div className="space-y-6">
         <ExecutiveGuidanceCard
-          status={deploying?.status === 'failed' ? 'critical' : deploying?.status === 'running' ? 'warn' : overallStatus === 'OK' ? 'ok' : 'warn'}
+          status={isFailed ? 'critical' : deploying?.status === 'running' || isWarn ? 'warn' : 'ok'}
           badgeLabel={deploying?.status === 'running' ? t('admin.ops.runningOperationBadge') : overallLabel}
           title={t('admin.deployment.title')}
           subtitle={t('admin.deployment.subtitle')}
           currentState={
             deploying?.status === 'running'
               ? t('admin.deployment.guidanceDeployRunning')
-              : overallStatus === 'OK'
-              ? `${t('admin.deployment.currentRelease')}: ${srcCommit ? srcCommit.slice(0, 7) : '—'} (${gitState.branch || 'main'})`
-              : t('admin.deployment.guidanceDeployFailed')
+              : isFailed
+              ? t('admin.deployment.guidanceDeployFailed')
+              : `${t('admin.deployment.currentRelease')}: ${srcCommit ? srcCommit.slice(0, 7) : '—'} (${gitState.branch || 'main'})`
           }
           severity={{
-            level: deploying?.status === 'failed' ? 'critical' : overallStatus === 'OK' ? 'normal' : 'medium',
+            level: isFailed ? 'critical' : isWarn ? 'medium' : 'normal',
             label: overallLabel,
-            description: deploying?.status === 'failed'
+            description: isFailed
               ? t('admin.deployment.deployOutcomeFailedTitle')
               : isWorkingTreeClean
               ? t('admin.deployment.cleanWorkingTreeExpl')
@@ -445,37 +448,24 @@ export const AdminDeploymentPage: React.FC<AdminDeploymentPageProps> = ({ onNavi
           businessImpact={
             deploying?.status === 'running'
               ? t('admin.ops.deployRestartsBackendNote')
-              : overallStatus === 'OK'
+              : isHealthy
               ? t('admin.guidance.zeroCustomerImpact')
               : t('admin.deployment.warning')
           }
           recommendedAction={{
-            label: deploying?.status === 'failed'
+            label: isFailed
               ? t('admin.deployment.goToOpsCenter')
-              : overallStatus === 'OK'
+              : isHealthy
               ? t('admin.guidance.noActionNeeded')
               : t('admin.deployment.releaseReadiness'),
-            description: deploying?.status === 'failed'
-              ? t('admin.deployment.deployOutcomeFailedDesc', { step: deploying.step || deploying.current_step || '-' })
+            description: isFailed
+              ? t('admin.deployment.deployOutcomeFailedDesc', { step: deploying?.step || deploying?.current_step || '-' })
               : t('admin.deployment.pipelineExplanation'),
-            buttonText: deploying?.status === 'failed' && onNavigate ? t('admin.deployment.goToOpsCenter') : undefined,
-            onAction: deploying?.status === 'failed' && onNavigate ? () => onNavigate('admin-operations') : undefined,
+            buttonText: (onNavigate && !isHealthy) ? t('admin.deployment.goToOpsCenter') : undefined,
+            onAction: (onNavigate && !isHealthy) ? () => onNavigate('admin-operations') : undefined,
             icon: Server,
           }}
           actionOutcome={t('admin.deployment.safeRollbackNotice')}
-          extraActions={
-            onNavigate && (
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => onNavigate('admin-operations')}
-                className="gap-1.5 text-xs font-semibold cursor-pointer border-slate-200 dark:border-white/[0.08]"
-              >
-                <Server className="w-3.5 h-3.5 text-vuexy-primary" />
-                {t('admin.deployment.goToOpsCenter')}
-              </Button>
-            )
-          }
           technicalDetails={
             <div className="space-y-2 text-xs">
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">

@@ -475,24 +475,11 @@ export const AdminMonitoringPage: React.FC<AdminMonitoringPageProps> = ({ onNavi
             description: failingInvariants === 0
               ? t('admin.guidance.noActionNeededDesc')
               : t('admin.monitoring.readOnlyNotice'),
-            buttonText: onNavigate ? t('admin.actionGoToOps') : undefined,
-            onAction: onNavigate ? () => onNavigate('admin-operations') : undefined,
+            buttonText: (onNavigate && failingInvariants > 0) ? t('admin.actionGoToOps') : undefined,
+            onAction: (onNavigate && failingInvariants > 0) ? () => onNavigate('admin-operations') : undefined,
             icon: ShieldCheck,
           }}
           actionOutcome={t('admin.monitoring.readOnlyNotice')}
-          extraActions={
-            onNavigate && (
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => onNavigate('admin-operations')}
-                className="gap-1.5 text-xs font-semibold cursor-pointer border-slate-200 dark:border-white/[0.08]"
-              >
-                <Activity className="w-3.5 h-3.5 text-vuexy-primary" />
-                {t('admin.actionGoToOps')}
-              </Button>
-            )
-          }
           technicalDetails={
             <div className="space-y-2 text-xs">
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
@@ -516,18 +503,6 @@ export const AdminMonitoringPage: React.FC<AdminMonitoringPageProps> = ({ onNavi
             </div>
           }
         />
-        {/* Read-Only Notice Banner */}
-        <div className="flex items-start gap-3 p-3.5 rounded-xl bg-slate-50 dark:bg-white/[0.02] border border-slate-200/60 dark:border-white/[0.06] text-xs text-slate-600 dark:text-slate-300">
-          <Info className="w-4 h-4 text-[#7367F0] shrink-0 mt-0.5" />
-          <div className="space-y-1">
-            <span className="font-semibold text-slate-800 dark:text-white">
-              {t('admin.monitoring.readOnlyNotice')}
-            </span>
-            <p className="text-slate-500 dark:text-slate-400">
-              {t('admin.monitoring.zeroSessionsNotice')}
-            </p>
-          </div>
-        </div>
 
         {/* Operational Attention Reasons if WARN or CRITICAL */}
         {overall_status_reasons && overall_status_reasons.length > 0 && (

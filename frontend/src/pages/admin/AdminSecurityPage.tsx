@@ -213,12 +213,15 @@ export const AdminSecurityPage: React.FC<AdminSecurityPageProps> = ({ onNavigate
   } = data;
 
   const isRebootRequired = Boolean(kernel?.reboot_required);
-  const overallVariant: StatusVariant =
-    overall_status === 'PASS' ? 'online' : overall_status === 'WARNING' ? 'warning' : 'danger';
+  const rawStatus = (overall_status || '').toUpperCase();
+  const isPass = ['PASS', 'SECURE', 'OK'].includes(rawStatus);
+  const isWarn = !isPass && (['WARNING', 'WARN'].includes(rawStatus) || (warnings && warnings.length > 0));
+
+  const overallVariant: StatusVariant = isPass ? 'online' : isWarn ? 'warning' : 'danger';
   const overallLabel =
-    overall_status === 'PASS'
+    isPass
       ? t('admin.security.statusPass')
-      : overall_status === 'WARNING'
+      : isWarn
       ? t('admin.security.statusWarning')
       : t('admin.security.statusCritical');
 
@@ -276,48 +279,39 @@ export const AdminSecurityPage: React.FC<AdminSecurityPageProps> = ({ onNavigate
     >
       <div className="space-y-6">
         <ExecutiveGuidanceCard
-          status={overall_status === 'PASS' ? 'ok' : overall_status === 'WARNING' ? 'warn' : 'critical'}
+          status={isPass ? 'ok' : isWarn ? 'warn' : 'critical'}
           badgeLabel={overallLabel}
           title={t('admin.security.title')}
           subtitle={t('admin.security.subtitle')}
           currentState={
-            overall_status === 'PASS'
+            isPass
               ? `${t('admin.security.certificationStatus')}: ${certification_status || t('admin.security.statusHardened')}`
-              : t('admin.security.statusWarning')
+              : isWarn
+              ? t('admin.security.statusWarning')
+              : t('admin.security.statusCritical')
           }
           severity={{
-            level: overall_status === 'PASS' ? 'normal' : 'low',
+            level: isPass ? 'normal' : isWarn ? 'low' : 'high',
             label: overallLabel,
-            description: overall_status === 'PASS'
+            description: isPass
               ? t('admin.security.zeroCriticalIssues')
-              : t('admin.security.warningsSubtitle'),
+              : warnings && warnings.length > 0
+              ? t('admin.security.warningsSubtitle')
+              : t('admin.security.zeroCriticalIssues'),
           }}
           businessImpact={t('admin.guidance.zeroCustomerImpact')}
           recommendedAction={{
-            label: overall_status === 'PASS'
+            label: isPass
               ? t('admin.guidance.noActionNeeded')
               : t('admin.security.safeNextStep'),
             description: isRebootRequired
               ? t('admin.security.nextStepReboot')
               : t('admin.guidance.noActionNeededDesc'),
-            buttonText: onNavigate ? t('admin.actionGoToOps') : undefined,
-            onAction: onNavigate ? () => onNavigate('admin-operations') : undefined,
+            buttonText: (onNavigate && !isPass) ? t('admin.actionGoToOps') : undefined,
+            onAction: (onNavigate && !isPass) ? () => onNavigate('admin-operations') : undefined,
             icon: Lock,
           }}
           actionOutcome={t('admin.security.readOnlyNotice')}
-          extraActions={
-            onNavigate && (
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => onNavigate('admin-operations')}
-                className="gap-1.5 text-xs font-semibold cursor-pointer border-slate-200 dark:border-white/[0.08]"
-              >
-                <Lock className="w-3.5 h-3.5 text-vuexy-primary" />
-                {t('admin.actionGoToOps')}
-              </Button>
-            )
-          }
           technicalDetails={
             <div className="space-y-2 text-xs">
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
@@ -341,23 +335,14 @@ export const AdminSecurityPage: React.FC<AdminSecurityPageProps> = ({ onNavigate
             </div>
           }
         />
-        {/* Strict Read-Only Notice */}
-        <div className="flex items-start gap-3 p-3.5 rounded-xl bg-slate-50 dark:bg-white/[0.02] border border-slate-200/60 dark:border-white/[0.06] text-xs text-slate-600 dark:text-slate-300">
-          <Info className="w-4 h-4 text-[#7367F0] shrink-0 mt-0.5" />
-          <div className="space-y-1">
-            <span className="font-semibold text-slate-800 dark:text-white">
-              {t('admin.security.readOnlyNotice')}
-            </span>
-          </div>
-        </div>
 
         {/* Top Summary Stats Cards */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
           <StatsCard
             title={t('admin.security.overallStatus')}
             value={overallLabel}
-            subText={t('admin.security.zeroCriticalIssues')}
-            icon={ShieldCheck}
+            subText={isPass ? t('admin.security.zeroCriticalIssues') : t('admin.security.warningsSubtitle')}
+            icon={isPass ? ShieldCheck : ShieldAlert}
             iconVariant={overallVariant === 'online' ? 'success' : 'warning'}
           />
           <StatsCard

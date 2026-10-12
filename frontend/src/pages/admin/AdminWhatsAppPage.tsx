@@ -356,24 +356,11 @@ export const AdminWhatsAppPage: React.FC<AdminWhatsAppPageProps> = ({ onNavigate
             description: overallStatus === 'OK'
               ? t('admin.guidance.noActionNeededDesc')
               : t('admin.whatsapp.readOnlyNotice'),
-            buttonText: onNavigate ? t('admin.whatsapp.manageSessionsBtn') : undefined,
-            onAction: onNavigate ? () => onNavigate('whatsapp') : undefined,
+            buttonText: (onNavigate && overallStatus !== 'OK') ? t('admin.whatsapp.manageSessionsBtn') : undefined,
+            onAction: (onNavigate && overallStatus !== 'OK') ? () => onNavigate('whatsapp') : undefined,
             icon: Smartphone,
           }}
           actionOutcome={t('admin.whatsapp.readOnlyNotice')}
-          extraActions={
-            onNavigate && (
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => onNavigate('whatsapp')}
-                className="gap-1.5 cursor-pointer text-xs shrink-0 border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300"
-              >
-                <Smartphone className="w-3.5 h-3.5 text-emerald-500" />
-                {t('admin.whatsapp.manageSessionsBtn')}
-              </Button>
-            )
-          }
           technicalDetails={
             <div className="space-y-2 text-xs">
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
@@ -397,24 +384,6 @@ export const AdminWhatsAppPage: React.FC<AdminWhatsAppPageProps> = ({ onNavigate
             </div>
           }
         />
-        {/* Read-only Advisory Banner */}
-        <div className="flex items-center justify-between flex-wrap gap-2 px-4 py-2.5 rounded-lg bg-indigo-50/70 dark:bg-indigo-950/30 border border-indigo-200/60 dark:border-indigo-800/40 text-xs text-indigo-700 dark:text-indigo-300">
-          <div className="flex items-center gap-2.5">
-            <Info className="w-4 h-4 shrink-0" />
-            <span>{t('admin.whatsapp.readOnlyNotice')}</span>
-          </div>
-          {onNavigate && (
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => onNavigate('whatsapp')}
-              className="gap-1.5 cursor-pointer text-xs shrink-0 border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-100/60 dark:hover:bg-indigo-900/40"
-            >
-              <Smartphone className="w-3.5 h-3.5 text-emerald-500" />
-              {t('admin.whatsapp.manageSessionsBtn')}
-            </Button>
-          )}
-        </div>
 
         {/* 1. Gateway Bridge & Runtime Card */}
         <Card className="bg-white dark:bg-[#2F3349] border-slate-200/80 dark:border-white/[0.08] shadow-sm">

@@ -352,8 +352,8 @@ export const AdminBackupsPage: React.FC<AdminBackupsPageProps> = ({ onNavigate }
             <Skeleton key={i} className="h-28 rounded-xl" />
           ))}
         </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-5">
-          {[0, 1, 2, 3].map((i) => (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+          {[0, 1, 2].map((i) => (
             <Skeleton key={i} className="h-56 rounded-xl" />
           ))}
         </div>
@@ -424,24 +424,11 @@ export const AdminBackupsPage: React.FC<AdminBackupsPageProps> = ({ onNavigate }
             description: isVerified
               ? t('admin.guidance.noActionNeededDesc')
               : t('admin.backups.distinctionAlertBody'),
-            buttonText: onNavigate ? t('admin.actionGoToOps') : undefined,
-            onAction: onNavigate ? () => onNavigate('admin-operations') : undefined,
+            buttonText: (onNavigate && !isVerified) ? t('admin.actionGoToOps') : undefined,
+            onAction: (onNavigate && !isVerified) ? () => onNavigate('admin-operations') : undefined,
             icon: Database,
           }}
           actionOutcome={t('admin.backups.readOnlyNotice')}
-          extraActions={
-            onNavigate && (
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => onNavigate('admin-operations')}
-                className="gap-1.5 text-xs font-semibold cursor-pointer border-slate-200 dark:border-white/[0.08]"
-              >
-                <HardDrive className="w-3.5 h-3.5 text-vuexy-primary" />
-                {t('admin.actionGoToOps')}
-              </Button>
-            )
-          }
           technicalDetails={
             <div className="space-y-2 text-xs">
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
@@ -466,29 +453,7 @@ export const AdminBackupsPage: React.FC<AdminBackupsPageProps> = ({ onNavigate }
           }
         />
 
-        {/* Educational Distinction Alert Card */}
-        <div className="p-4 rounded-xl bg-indigo-50/70 dark:bg-indigo-950/25 border border-indigo-200/60 dark:border-indigo-800/40 flex items-start gap-3">
-          <Info className="w-5 h-5 text-indigo-600 dark:text-indigo-400 shrink-0 mt-0.5" />
-          <div className="space-y-1">
-            <h4 className="font-bold text-sm text-indigo-950 dark:text-indigo-200">
-              {t('admin.backups.distinctionAlertTitle')}
-            </h4>
-            <p className="text-xs text-indigo-800/80 dark:text-indigo-300/80 leading-relaxed">
-              {t('admin.backups.distinctionAlertBody')}
-            </p>
-          </div>
-        </div>
-        {/* Read-Only Notice */}
-        <div className="flex items-start gap-3 p-3.5 rounded-xl bg-slate-50 dark:bg-white/[0.02] border border-slate-200/60 dark:border-white/[0.06] text-xs text-slate-600 dark:text-slate-300">
-          <Info className="w-4 h-4 text-[#7367F0] shrink-0 mt-0.5" />
-          <div className="space-y-1">
-            <span className="font-semibold text-slate-800 dark:text-white">
-              {t('admin.backups.readOnlyNotice')}
-            </span>
-          </div>
-        </div>
-
-        {/* Off-Host Warning Banner */}
+        {/* Off-Host Warning Banner (Surfaced only if configuration is missing) */}
         {!isOffHostConfigured && (
           <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-start gap-3">
             <CloudOff className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
@@ -508,7 +473,13 @@ export const AdminBackupsPage: React.FC<AdminBackupsPageProps> = ({ onNavigate }
           <StatsCard
             title={t('admin.backups.certificationStatus')}
             value={isVerified ? '✓' : '—'}
-            subText={hasPostgres ? certification_status : t('admin.backups.notAvailable')}
+            subText={
+              hasPostgres
+                ? isVerified
+                  ? t('admin.backups.statusVerified')
+                  : t('admin.backups.uncertified')
+                : t('admin.backups.notAvailable')
+            }
             icon={ShieldCheck}
             iconVariant={isVerified ? 'success' : 'warning'}
           />
@@ -545,8 +516,8 @@ export const AdminBackupsPage: React.FC<AdminBackupsPageProps> = ({ onNavigate }
           />
         </div>
 
-        {/* Backup Category Cards — 4-col on xl, 2-col on md, 1-col on mobile */}
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-5">
+        {/* Backup Category Cards — 3-col on md/xl */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
           {/* PostgreSQL */}
           <BackupFileCard
             title={t('admin.backups.postgresBackup')}
@@ -574,32 +545,6 @@ export const AdminBackupsPage: React.FC<AdminBackupsPageProps> = ({ onNavigate }
             iconColor="#FF9F43"
             t={t}
           />
-          {/* Total Storage card */}
-          <Card className="border-slate-200 dark:border-white/[0.06] bg-white dark:bg-[#2F3349] shadow-sm">
-            <CardHeader className="pb-3 border-b border-slate-100 dark:border-white/[0.06]">
-              <div className="flex items-center gap-2.5">
-                <div className="w-9 h-9 rounded-xl flex items-center justify-center bg-blue-50 dark:bg-blue-900/20">
-                  <HardDrive className="w-4.5 h-4.5 text-blue-500" />
-                </div>
-                <div>
-                  <CardTitle className="text-sm font-bold text-slate-800 dark:text-white">
-                    {t('admin.backups.totalStorage')}
-                  </CardTitle>
-                  <p className="text-[11px] text-slate-400 dark:text-[#7E7F96]">
-                    {t('admin.backups.totalStorageSubtitle')}
-                  </p>
-                </div>
-              </div>
-            </CardHeader>
-            <CardContent className="pt-5 flex flex-col items-center justify-center text-center min-h-[120px]">
-              <span className="text-3xl font-extrabold font-mono text-[#7367F0] dark:text-[#A59DF8]">
-                {total_backup_disk_usage.human}
-              </span>
-              <span className="text-xs text-slate-400 dark:text-[#7E7F96] mt-1">
-                {total_backup_disk_usage.bytes.toLocaleString()} bytes
-              </span>
-            </CardContent>
-          </Card>
         </div>
 
         {/* Disaster Recovery Status */}

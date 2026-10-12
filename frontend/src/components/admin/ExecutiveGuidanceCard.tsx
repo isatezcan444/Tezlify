@@ -137,16 +137,16 @@ export const ExecutiveGuidanceCard: React.FC<ExecutiveGuidanceCardProps> = ({
 
   return (
     <Card className={`border shadow-sm transition-all overflow-hidden ${wrapper}`}>
-      <CardContent className="p-5 sm:p-6 space-y-5">
+      <CardContent className="p-4 sm:p-5 space-y-3.5">
         {/* Header Block: Title, Badges, Direct Actions */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 dark:border-white/[0.06] pb-4">
-          <div className="flex items-start sm:items-center gap-3">
-            <div className={`w-11 h-11 rounded-xl flex items-center justify-center shrink-0 shadow-xs ${iconBg}`}>
-              <Icon className="w-5 h-5" />
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 dark:border-white/[0.06] pb-3">
+          <div className="flex items-start sm:items-center gap-2.5">
+            <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 shadow-xs ${iconBg}`}>
+              <Icon className="w-4.5 h-4.5" />
             </div>
             <div>
               <div className="flex items-center gap-2 flex-wrap">
-                <h3 className="text-base sm:text-lg font-bold text-slate-900 dark:text-white leading-tight">
+                <h3 className="text-sm sm:text-base font-bold text-slate-900 dark:text-white leading-tight">
                   {title}
                 </h3>
                 <StatusBadge
@@ -156,7 +156,7 @@ export const ExecutiveGuidanceCard: React.FC<ExecutiveGuidanceCardProps> = ({
                   size="sm"
                 />
               </div>
-              <p className="text-xs text-slate-500 dark:text-vuexy-dark-muted mt-0.5">
+              <p className="text-[11px] sm:text-xs text-slate-500 dark:text-vuexy-dark-muted mt-0.5">
                 {subtitle}
               </p>
             </div>
@@ -164,7 +164,7 @@ export const ExecutiveGuidanceCard: React.FC<ExecutiveGuidanceCardProps> = ({
 
           <div className="flex items-center gap-2 flex-wrap">
             {extraActions}
-            {recommendedAction.onAction && recommendedAction.buttonText && (
+            {recommendedAction.onAction && recommendedAction.buttonText && !extraActions && (
               <Button
                 size="sm"
                 variant="default"
@@ -178,31 +178,28 @@ export const ExecutiveGuidanceCard: React.FC<ExecutiveGuidanceCardProps> = ({
           </div>
         </div>
 
-        {/* 5 Core Executive Questions Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5">
+        {/* 5 Core Executive Questions Grid — 5 cols on lg for a compact 1-row dashboard strip */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-2.5">
           {/* Soru 1: Şu anda sistemin durumu ne? */}
-          <div className="p-3.5 rounded-xl bg-white/80 dark:bg-[#2F3349]/80 border border-slate-200/80 dark:border-white/[0.06] shadow-xs flex flex-col justify-between space-y-2">
+          <div className="p-3 rounded-xl bg-white/80 dark:bg-[#2F3349]/80 border border-slate-200/80 dark:border-white/[0.06] shadow-xs flex flex-col justify-between">
             <div>
-              <div className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-slate-400 dark:text-[#7E7F96]">
-                <Activity className="w-3.5 h-3.5 text-vuexy-primary" />
-                <span>{t('admin.guidance.qCurrentState')}</span>
+              <div className="flex items-center gap-1.5 text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-slate-400 dark:text-[#7E7F96]">
+                <Activity className="w-3.5 h-3.5 text-vuexy-primary shrink-0" />
+                <span className="truncate">{t('admin.guidance.qCurrentState')}</span>
               </div>
-              <p className="text-xs sm:text-sm font-semibold text-slate-800 dark:text-slate-100 mt-2 leading-snug">
+              <p className="text-xs sm:text-[13px] font-semibold text-slate-800 dark:text-slate-100 mt-1.5 leading-snug">
                 {currentState}
               </p>
-            </div>
-            <div className="text-[10px] text-slate-400 dark:text-slate-500 pt-1 border-t border-slate-100 dark:border-white/[0.04]">
-              {t('admin.guidance.qCurrentStateHint')}
             </div>
           </div>
 
           {/* Soru 2: Bir sorun varsa ne kadar önemli? */}
-          <div className="p-3.5 rounded-xl bg-white/80 dark:bg-[#2F3349]/80 border border-slate-200/80 dark:border-white/[0.06] shadow-xs flex flex-col justify-between space-y-2">
+          <div className="p-3 rounded-xl bg-white/80 dark:bg-[#2F3349]/80 border border-slate-200/80 dark:border-white/[0.06] shadow-xs flex flex-col justify-between">
             <div>
-              <div className="flex items-center justify-between gap-1.5">
-                <div className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-slate-400 dark:text-[#7E7F96]">
-                  <AlertTriangle className="w-3.5 h-3.5 text-amber-500" />
-                  <span>{t('admin.guidance.qSeverity')}</span>
+              <div className="flex items-center justify-between gap-1 text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-slate-400 dark:text-[#7E7F96]">
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <AlertTriangle className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                  <span className="truncate">{t('admin.guidance.qSeverity')}</span>
                 </div>
                 <StatusBadge
                   status={getSeverityBadgeVariant(severity.level)}
@@ -210,65 +207,53 @@ export const ExecutiveGuidanceCard: React.FC<ExecutiveGuidanceCardProps> = ({
                   size="sm"
                 />
               </div>
-              <p className="text-xs sm:text-sm font-semibold text-slate-800 dark:text-slate-100 mt-2 leading-snug">
+              <p className="text-xs sm:text-[13px] font-semibold text-slate-800 dark:text-slate-100 mt-1.5 leading-snug">
                 {severity.description || severity.label}
               </p>
-            </div>
-            <div className="text-[10px] text-slate-400 dark:text-slate-500 pt-1 border-t border-slate-100 dark:border-white/[0.04]">
-              {t('admin.guidance.qSeverityHint')}
             </div>
           </div>
 
           {/* Soru 3: Bu sorun beni veya müşterilerimi nasıl etkiliyor? */}
-          <div className="p-3.5 rounded-xl bg-white/80 dark:bg-[#2F3349]/80 border border-slate-200/80 dark:border-white/[0.06] shadow-xs flex flex-col justify-between space-y-2">
+          <div className="p-3 rounded-xl bg-white/80 dark:bg-[#2F3349]/80 border border-slate-200/80 dark:border-white/[0.06] shadow-xs flex flex-col justify-between">
             <div>
-              <div className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-slate-400 dark:text-[#7E7F96]">
-                <ShieldCheck className="w-3.5 h-3.5 text-emerald-500" />
-                <span>{t('admin.guidance.qImpact')}</span>
+              <div className="flex items-center gap-1.5 text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-slate-400 dark:text-[#7E7F96]">
+                <ShieldCheck className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                <span className="truncate">{t('admin.guidance.qImpact')}</span>
               </div>
-              <p className="text-xs sm:text-sm font-semibold text-slate-800 dark:text-slate-100 mt-2 leading-snug">
+              <p className="text-xs sm:text-[13px] font-semibold text-slate-800 dark:text-slate-100 mt-1.5 leading-snug">
                 {businessImpact}
               </p>
-            </div>
-            <div className="text-[10px] text-slate-400 dark:text-slate-500 pt-1 border-t border-slate-100 dark:border-white/[0.04]">
-              {t('admin.guidance.qImpactHint')}
             </div>
           </div>
 
           {/* Soru 4: Şimdi ne yapmalıyım? */}
-          <div className="p-3.5 rounded-xl bg-white/80 dark:bg-[#2F3349]/80 border border-slate-200/80 dark:border-white/[0.06] shadow-xs flex flex-col justify-between space-y-2 lg:col-span-2">
+          <div className="p-3 rounded-xl bg-white/80 dark:bg-[#2F3349]/80 border border-slate-200/80 dark:border-white/[0.06] shadow-xs flex flex-col justify-between">
             <div>
-              <div className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-slate-400 dark:text-[#7E7F96]">
-                <CheckCircle2 className="w-3.5 h-3.5 text-blue-500" />
-                <span>{t('admin.guidance.qRecommendedAction')}</span>
+              <div className="flex items-center gap-1.5 text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-slate-400 dark:text-[#7E7F96]">
+                <CheckCircle2 className="w-3.5 h-3.5 text-blue-500 shrink-0" />
+                <span className="truncate">{t('admin.guidance.qRecommendedAction')}</span>
               </div>
-              <div className="mt-2 space-y-1">
-                <span className="text-xs sm:text-sm font-bold text-slate-800 dark:text-white block">
+              <div className="mt-1.5 space-y-0.5">
+                <span className="text-xs sm:text-[13px] font-bold text-slate-800 dark:text-white block leading-snug">
                   {recommendedAction.label}
                 </span>
-                <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                <p className="text-[11px] text-slate-500 dark:text-slate-300 leading-snug">
                   {recommendedAction.description}
                 </p>
               </div>
             </div>
-            <div className="text-[10px] text-slate-400 dark:text-slate-500 pt-1 border-t border-slate-100 dark:border-white/[0.04]">
-              {t('admin.guidance.qRecommendedActionHint')}
-            </div>
           </div>
 
           {/* Soru 5: Bu işlemi yaparsam ne olacak? */}
-          <div className="p-3.5 rounded-xl bg-white/80 dark:bg-[#2F3349]/80 border border-slate-200/80 dark:border-white/[0.06] shadow-xs flex flex-col justify-between space-y-2">
+          <div className="p-3 rounded-xl bg-white/80 dark:bg-[#2F3349]/80 border border-slate-200/80 dark:border-white/[0.06] shadow-xs flex flex-col justify-between">
             <div>
-              <div className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-slate-400 dark:text-[#7E7F96]">
-                <Terminal className="w-3.5 h-3.5 text-purple-500" />
-                <span>{t('admin.guidance.qOutcome')}</span>
+              <div className="flex items-center gap-1.5 text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-slate-400 dark:text-[#7E7F96]">
+                <Terminal className="w-3.5 h-3.5 text-purple-500 shrink-0" />
+                <span className="truncate">{t('admin.guidance.qOutcome')}</span>
               </div>
-              <p className="text-xs sm:text-sm font-semibold text-slate-800 dark:text-slate-100 mt-2 leading-snug">
+              <p className="text-xs sm:text-[13px] font-semibold text-slate-800 dark:text-slate-100 mt-1.5 leading-snug">
                 {actionOutcome}
               </p>
-            </div>
-            <div className="text-[10px] text-slate-400 dark:text-slate-500 pt-1 border-t border-slate-100 dark:border-white/[0.04]">
-              {t('admin.guidance.qOutcomeHint')}
             </div>
           </div>
         </div>

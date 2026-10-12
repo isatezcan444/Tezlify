@@ -313,15 +313,6 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
               <Button
                 size="sm"
                 variant="outline"
-                onClick={() => onNavigate('admin-operations')}
-                className="gap-1.5 text-xs font-semibold cursor-pointer border-slate-200 dark:border-white/[0.08]"
-              >
-                <Terminal className="w-3.5 h-3.5 text-vuexy-primary" />
-                {t('admin.actionGoToOps')}
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
                 onClick={() => onNavigate('admin-whatsapp')}
                 className="gap-1.5 text-xs font-semibold cursor-pointer border-slate-200 dark:border-white/[0.08]"
               >

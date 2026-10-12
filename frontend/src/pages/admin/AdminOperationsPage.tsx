@@ -459,33 +459,11 @@ export const AdminOperationsPage: React.FC<AdminOperationsPageProps> = ({ onNavi
           description: status?.health?.all_healthy
             ? t('admin.guidance.noActionNeededDesc')
             : t('admin.ops.safeRestartNotice'),
-          buttonText: tab !== 'errors' ? t('admin.ops.tabErrors') : undefined,
-          onAction: tab !== 'errors' ? () => setTab('errors') : undefined,
+          buttonText: (!status?.health?.all_healthy && tab !== 'errors') ? t('admin.ops.tabErrors') : undefined,
+          onAction: (!status?.health?.all_healthy && tab !== 'errors') ? () => setTab('errors') : undefined,
           icon: Terminal,
         }}
         actionOutcome={t('admin.ops.safeRestartNotice')}
-        extraActions={
-          <div className="flex items-center gap-2">
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => setTab('logs')}
-              className="gap-1.5 text-xs font-semibold cursor-pointer border-slate-200 dark:border-white/[0.08]"
-            >
-              <Terminal className="w-3.5 h-3.5 text-vuexy-primary" />
-              {t('admin.ops.tabLogs')}
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => setTab('history')}
-              className="gap-1.5 text-xs font-semibold cursor-pointer border-slate-200 dark:border-white/[0.08]"
-            >
-              <Layers className="w-3.5 h-3.5 text-blue-500" />
-              {t('admin.ops.tabHistory')}
-            </Button>
-          </div>
-        }
         technicalDetails={
           <div className="space-y-2 text-xs">
             <p className="font-semibold text-slate-700 dark:text-slate-200">
