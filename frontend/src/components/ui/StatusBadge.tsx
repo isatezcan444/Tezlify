@@ -89,13 +89,13 @@ export const StatusBadge: React.FC<StatusBadgeProps> = ({
   return (
     <span
       className={cn(
-        "inline-flex items-center gap-1.5 font-bold uppercase tracking-wider rounded-full border transition-colors",
-        size === "sm" ? "px-2 py-0.5 text-[10px]" : "px-2.5 py-1 text-[11px]",
+        "inline-flex items-center gap-1.5 font-semibold tracking-normal rounded-full border transition-colors select-none",
+        size === "sm" ? "px-2 py-0.5 text-[10px]" : "px-2.5 py-0.5 text-[11px]",
         current.badge,
         className
       )}
     >
-      <span className="relative flex h-2 w-2">
+      <span className="relative flex h-1.5 w-1.5 shrink-0">
         {pulse && (
           <span
             className={cn(
@@ -104,9 +104,9 @@ export const StatusBadge: React.FC<StatusBadgeProps> = ({
             )}
           />
         )}
-        <span className={cn("relative inline-flex rounded-full h-2 w-2", current.dot)} />
+        <span className={cn("relative inline-flex rounded-full h-1.5 w-1.5", current.dot)} />
       </span>
-      <span>{displayText}</span>
+      <span className="truncate">{displayText}</span>
     </span>
   );
 };

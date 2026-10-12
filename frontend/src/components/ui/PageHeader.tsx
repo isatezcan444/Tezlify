@@ -25,7 +25,7 @@ export const PageHeader: React.FC<PageHeaderProps> = ({
       <div className="space-y-0.5">
         <div className="flex items-center gap-2 flex-wrap">
           {Icon && <IconTile icon={Icon} size="sm" tone="primary" />}
-          <h2 className="text-lg sm:text-xl font-extrabold text-slate-800 dark:text-white tracking-tight">
+          <h2 className="text-lg sm:text-xl font-bold text-slate-800 dark:text-white tracking-tight">
             {title}
           </h2>
           {badge}

@@ -31,25 +31,33 @@ export const StatsCard: React.FC<StatsCardProps> = ({
   className,
   onClick,
 }) => {
+  const strVal = String(value ?? '');
+  const isLongVal = strVal.length > 13;
+
   return (
     <Card
       onClick={onClick}
       className={cn(
-        'h-full flex flex-col justify-between transition-all duration-200 select-none group',
-        onClick ? 'cursor-pointer hover:shadow-md hover:border-vuexy-primary/30' : 'hover:shadow-sm',
+        'h-full flex flex-col justify-between transition-all duration-200 select-none group border-slate-200/80 dark:border-white/[0.06] bg-white dark:bg-[#2F3349]',
+        onClick ? 'cursor-pointer hover:shadow-md hover:border-vuexy-primary/30' : 'hover:shadow-xs',
         className
       )}
     >
-      <CardContent className="p-5 flex flex-col justify-between h-full flex-1">
+      <CardContent className="p-4 sm:p-5 flex flex-col justify-between h-full flex-1">
         <div className="flex items-start justify-between gap-3">
           <div className="flex-1 min-w-0">
             <span
-              className="text-[11px] font-bold text-slate-500 dark:text-vuexy-dark-muted uppercase tracking-wider block h-7 leading-tight line-clamp-2"
+              className="text-[10px] font-bold text-slate-400 dark:text-[#7E7F96] uppercase tracking-wider block leading-snug truncate"
               title={title}
             >
               {title}
             </span>
-            <div className="text-2xl font-extrabold text-slate-800 dark:text-white tracking-tight mt-1.5">
+            <div
+              className={cn(
+                'font-bold text-slate-800 dark:text-white tracking-tight mt-1.5',
+                isLongVal ? 'text-base sm:text-lg leading-snug' : 'text-xl sm:text-2xl'
+              )}
+            >
               {value}
             </div>
           </div>
@@ -57,29 +65,30 @@ export const StatsCard: React.FC<StatsCardProps> = ({
             icon={Icon}
             size="md"
             tone={iconVariant}
-            className="font-bold transition-transform group-hover:scale-105 shrink-0 mt-0.5"
+            className="transition-transform group-hover:scale-105 shrink-0 mt-0.5"
           />
         </div>
 
         {(badge || subText) && (
-          <div className="mt-4 pt-2.5 flex flex-col justify-end gap-1.5 text-xs">
-            <div className="min-h-[22px] flex items-center">
-              {badge && (
+          <div className="mt-3.5 pt-2.5 border-t border-slate-100 dark:border-white/[0.04] flex flex-col justify-end gap-1.5">
+            {badge && (
+              <div className="min-h-[20px] flex items-center">
                 <Badge
                   variant={badge.variant || 'success'}
                   className="text-[10px] font-semibold px-2 py-0.5 whitespace-nowrap inline-flex"
                 >
                   {badge.text}
                 </Badge>
-              )}
-            </div>
-            <div className="min-h-[16px] flex items-center">
-              {subText && (
-                <span className="text-slate-400 dark:text-vuexy-dark-muted text-[11px] font-medium leading-tight">
-                  {subText}
-                </span>
-              )}
-            </div>
+              </div>
+            )}
+            {subText && (
+              <p
+                className="text-slate-400 dark:text-[#7E7F96] text-[11px] font-normal leading-relaxed line-clamp-2"
+                title={subText}
+              >
+                {subText}
+              </p>
+            )}
           </div>
         )}
       </CardContent>

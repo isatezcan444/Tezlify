@@ -33,6 +33,25 @@ interface AdminOverviewPageProps {
   onNavigate?: (tab: string) => void;
 }
 
+const formatUptime = (raw?: string, isTr = true): string => {
+  if (!raw) return '—';
+  let cleaned = raw.replace(/^up\s+/i, '').trim();
+  if (isTr) {
+    cleaned = cleaned
+      .replace(/(\d+)\s*days?/gi, '$1 gün')
+      .replace(/(\d+)\s*hours?/gi, '$1 sa')
+      .replace(/(\d+)\s*(?:minutes?|mins?)/gi, '$1 dk')
+      .replace(/(\d+)\s*(?:seconds?|secs?)/gi, '$1 sn');
+  } else {
+    cleaned = cleaned
+      .replace(/(\d+)\s*days?/gi, '$1d')
+      .replace(/(\d+)\s*hours?/gi, '$1h')
+      .replace(/(\d+)\s*(?:minutes?|mins?)/gi, '$1m')
+      .replace(/(\d+)\s*(?:seconds?|secs?)/gi, '$1s');
+  }
+  return cleaned;
+};
+
 export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate }) => {
   const { t } = useI18n();
   const { user, profile, isAdmin } = useAuth();
@@ -303,10 +322,12 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
               : data.overall_status === 'WARN'
               ? t('admin.guidance.severityMedium')
               : t('admin.guidance.severityCritical'),
-          description:
-            data.overall_status_reasons && data.overall_status_reasons.length > 0
-              ? data.overall_status_reasons.join(', ')
-              : t('admin.executiveAllGood'),
+          description: (() => {
+            const reasons = data.overall_status_reasons || [];
+            if (reasons.length === 0) return t('admin.executiveAllGood');
+            const primary = reasons[0].replace(/\(\/var\/run\/[^\)]+\)/g, '').trim();
+            return reasons.length > 1 ? `${primary} (${reasons.length})` : primary;
+          })(),
         }}
         businessImpact={
           data.overall_status === 'OK'
@@ -374,8 +395,8 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
 
       {/* 5. Executive Quick Navigation Hub */}
       {onNavigate && (
-        <Card className="border border-slate-200 dark:border-white/[0.08] bg-white dark:bg-[#2F3349] shadow-sm">
-          <CardHeader className="p-4 sm:p-5 border-b border-slate-100 dark:border-white/[0.06]">
+        <Card className="border border-slate-200/80 dark:border-white/[0.06] bg-white dark:bg-[#2F3349] shadow-sm">
+          <CardHeader className="p-4 sm:p-5 border-b border-slate-100 dark:border-white/[0.04]">
             <CardTitle className="text-sm font-bold text-slate-800 dark:text-white flex items-center gap-2">
               <Activity className="w-4 h-4 text-vuexy-primary" />
               {t('admin.quickNavTitle')}
@@ -384,12 +405,12 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
           <CardContent className="p-4 sm:p-5">
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
               {[
-                { tab: 'admin-operations', label: t('admin.ops.title'), icon: Terminal, color: 'text-vuexy-primary' },
-                { tab: 'admin-whatsapp', label: t('admin.whatsapp.title'), icon: Layers, color: 'text-emerald-500' },
-                { tab: 'admin-deployment', label: t('admin.deployment.title'), icon: Server, color: 'text-blue-500' },
-                { tab: 'admin-monitoring', label: t('admin.monitoring.title'), icon: Activity, color: 'text-purple-500' },
-                { tab: 'admin-security', label: t('admin.security.title'), icon: Lock, color: 'text-amber-500' },
-                { tab: 'admin-backups', label: t('admin.backups.title'), icon: Archive, color: 'text-teal-500' },
+                { tab: 'admin-operations', label: t('admin.ops.title'), icon: Terminal, color: 'text-vuexy-primary', bg: 'bg-[#7367F0]/10' },
+                { tab: 'admin-whatsapp', label: t('admin.whatsapp.title'), icon: Layers, color: 'text-emerald-500', bg: 'bg-[#28C76F]/10' },
+                { tab: 'admin-deployment', label: t('admin.deployment.title'), icon: Server, color: 'text-blue-500', bg: 'bg-[#00CFE8]/10' },
+                { tab: 'admin-monitoring', label: t('admin.monitoring.title'), icon: Activity, color: 'text-purple-500', bg: 'bg-[#7367F0]/10' },
+                { tab: 'admin-security', label: t('admin.security.title'), icon: Lock, color: 'text-amber-500', bg: 'bg-[#FF9F43]/10' },
+                { tab: 'admin-backups', label: t('admin.backups.title'), icon: Archive, color: 'text-teal-500', bg: 'bg-[#28C76F]/10' },
               ].map((item) => {
                 const IconComponent = item.icon;
                 return (
@@ -397,12 +418,12 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
                     key={item.tab}
                     type="button"
                     onClick={() => onNavigate(item.tab)}
-                    className="p-3 rounded-xl border border-slate-200/80 dark:border-white/[0.06] bg-slate-50/50 dark:bg-white/[0.02] hover:bg-slate-100/80 dark:hover:bg-white/[0.05] transition-all flex flex-col items-center text-center gap-2 cursor-pointer group"
+                    className="p-3 rounded-xl border border-slate-200/60 dark:border-white/[0.06] bg-slate-50/50 dark:bg-white/[0.02] hover:bg-white dark:hover:bg-white/[0.06] hover:border-vuexy-primary/30 hover:shadow-xs transition-all flex flex-col items-center text-center gap-2 cursor-pointer group min-h-[76px] justify-center"
                   >
-                    <div className={`p-2 rounded-lg bg-white dark:bg-white/[0.05] shadow-xs group-hover:scale-105 transition-transform ${item.color}`}>
+                    <div className={`p-2 rounded-lg ${item.bg} ${item.color} group-hover:scale-105 transition-transform shrink-0`}>
                       <IconComponent className="w-4 h-4" />
                     </div>
-                    <span className="text-xs font-semibold text-slate-700 dark:text-slate-200 leading-tight">
+                    <span className="text-xs font-semibold text-slate-700 dark:text-slate-200 leading-tight truncate w-full px-1">
                       {item.label}
                     </span>
                   </button>
@@ -445,7 +466,7 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
         {/* Uptime & Reboot */}
         <StatsCard
           title={t('admin.hostUptime')}
-          value={data.system.uptime.replace('up ', '')}
+          value={formatUptime(data.system.uptime, true)}
           subText={data.system.reboot_required ? t('admin.rebootRequiredHelp') : t('admin.rebootNotRequiredHelp')}
           icon={Clock}
           iconVariant={data.system.reboot_required ? 'danger' : 'success'}
