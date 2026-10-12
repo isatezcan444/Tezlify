@@ -22,41 +22,63 @@ Bu rehber, Tezlify B2B Lead & Outreach platformunun production ortamından (`130
 
 | Kaynak / Katman | Production Değeri | Staging Değeri (Zorunlu İzolasyon) |
 | :--- | :--- | :--- |
-| **Sunucu / Host** | `130.162.247.20` (Oracle Cloud VM) | **Ayrı VM / Sunucu** (Örn: `staging.tezlify.internal` veya ayrı IP) |
+| **Sunucu / Host** | `130.162.247.20` (Oracle Cloud VM) | **Ayrı VM / Sunucu** (Örn: `staging.tezlify.internal` veya bağımsız IP) |
+| **Docker Daemon & Socket** | Production Docker Daemon (`/var/run/docker.sock`) | **Fiziksel/Sanal Olarak Ayrı Docker Daemon** (Root erişim izolasyonu) |
 | **Docker Compose Projesi** | `tezlify` (varsayılan) | `name: tezlify-staging` |
 | **Compose Dosyası** | `docker-compose.prod.yml` | `docker-compose.staging.yml` |
 | **Konteyner İsimleri** | `tezlify-backend`, `tezlify-gateway`, `tezlify-caddy`, `tezlify-db` | `tezlify-backend-staging`, `tezlify-gateway-staging`, `tezlify-caddy-staging`, `tezlify-db-staging` |
 | **Docker Köprü Ağı** | `tezlify_tezlify-internal` (Subnet `172.29.0.0/16`) | `tezlify-staging-internal` (Subnet `172.30.0.0/16`) |
 | **Oturum Volume'ü** | `whatsapp_sessions` | `whatsapp_sessions_staging` |
 | **Veritabanı** | Canlı `tezlify-db` (Port 5432 dahili) | Bağımsız `tezlify-db-staging` (Boş/Demo şemalı) |
-| **Ortam Dosyası** | `.env.production` | `.env.staging` (Ayrı anahtarlar) |
+| **Ortam Dosyası** | `.env.production` | `.env.staging` (Ayrı anahtarlar, yerelde hazırlanıp scp ile aktarılır) |
 | **Caddy Yapılandırması** | `Caddyfile` | `Caddyfile.staging` |
 | **Erişim Alan Adı** | `app.130.162.247.20.sslip.io` | `staging.tezlify.io` veya Staging IP |
 
+> [!WARNING]
+> **DOCKER SOCKET VE DAEMON İZOLASYONU GEREKSİNİMİ:**
+> `docker-compose.staging.yml` içerisinde `backend` servisine `/var/run/docker.sock` bağlanmaktadır. Bu soket, Yönetim & Operasyon Merkezi'nin konteyner metriklerini okuması ve yeniden başlatma yapabilmesi için gereklidir. Ancak Docker socket erişimi, host üzerindeki Docker daemon'a **root düzeyinde tam erişim** anlamına gelir.
+> Eğer staging konteynerleri canlı sunucu (`130.162.247.20`) üzerinde çalıştırılırsa, staging backend'i bu soket üzerinden canlı `tezlify-backend` veya `tezlify-gateway` konteynerlerini durdurabilir veya silebilir. Bu nedenle **staging ortamının production ile aynı Docker daemon'ı paylaşması kesinlikle yasaktır; ayrı bir VM zorunludur.**
+
 ---
 
-## 3. Gerekli Staging Environment Değişkenleri (`.env.staging`)
+## 3. Bağımsız Staging Ortam Dosyasının Hazırlanması (`.env.staging`)
 
-Staging sunucusunda `/opt/tezlify-staging/.env.staging` dosyası oluşturulmalıdır. Örnek şablon repository kökünde `.env.staging.example` olarak sunulmuştur:
+Dağıtım betiği (`staging-release.sh`) geliştirici makinesinde çalışır ve yerel ortam dosyasını denetleyip güvenliğini onayladıktan sonra `scp` ile staging sunucusuna (`/opt/tezlify-staging/.env.staging`) aktarır.
+
+### 3.1 Yerel Ortam Dosyasını Hazırlama
+Repository kökünde `.env.staging.example` şablonu kopyalanarak `.env.staging` oluşturulmalıdır:
+
+```bash
+cp .env.staging.example .env.staging
+```
+
+### 3.2 Zorunlu Bağımsız Değişkenler ve Sırlar
+`.env.staging` dosyasında aşağıdaki bağımsız değişkenler tanımlanmalıdır (asla production değerleri kopyalanamaz):
 
 ```bash
 ENVIRONMENT=staging
 STAGING_DOMAIN=staging.tezlify.io
 
-# İzole Staging Veritabanı (db konteynerine dahili ağdan bağlanır)
+# İzole Staging Veritabanı (db konteynerine dahili ağdan bağlanır - PROD IP ASLA YAZILAMAZ)
 STAGING_DB_PASSWORD=<guclu_rastgele_staging_parolasi>
 DATABASE_URL=postgresql+asyncpg://tezlify_staging:<guclu_rastgele_staging_parolasi>@db:5432/tezlify_staging
 
 # Staging Güvenlik ve Şifreleme Anahtarları (Production ile ortak olamaz!)
+SECRET_KEY=<en_az_32_karakter_benzersiz_staging_secret_key>
 JWT_SECRET=<en_az_32_karakter_benzersiz_staging_jwt_secret>
 WHATSAPP_GATEWAY_SECRET=<en_az_32_karakter_benzersiz_gateway_secret>
 GATEWAY_ENCRYPTION_KEY=<32_bayt_hex_veya_base64_aes_staging_key>
 
 # İstemci ve CORS
-BACKEND_CORS_ORIGINS=["https://staging.tezlify.io"]
-ADMIN_DEFAULT_EMAIL=admin@staging.tezlify.local
+BACKEND_CORS_ORIGINS=["https://staging.tezlify.io","http://localhost:8080"]
+ADMIN_EMAILS=["staging-admin@tezlify.local"]
+ADMIN_DEFAULT_EMAIL=staging-admin@tezlify.local
 
-# WhatsApp Güvenlik Kilidi (FAIL-SAFE DEĞERLER)
+# Operations Center Staging Ayarları
+TEZLIFY_COMPOSE_PROJECT=tezlify-staging
+TEZLIFY_CONTAINER_SUFFIX=-staging
+
+# WhatsApp Güvenlik Kilidi (FAIL-SAFE DEĞERLER: true olamaz!)
 WHATSAPP_AUTO_RESTORE=false
 WHATSAPP_GATEWAY_URL=http://gateway:8787
 GATEWAY_RESTORE_CONCURRENCY=1
@@ -89,35 +111,59 @@ Staging ortamında WhatsApp modülü test edilirken Meta anti-fraud politikalar�
 
 Staging sunucusuna ilk dağıtım yapılmadan önce şu kontroller tamamlanmalıdır:
 
-- [ ] Staging VM'i oluşturuldu ve SSH erişimi doğrulandı (`ssh -i ~/.ssh/id_tezlify_staging ubuntu@<staging_ip>`).
-- [ ] Staging sunucusunun IP'sinin `130.162.247.20` olmadığı doğrulandı.
-- [ ] Staging sunucusunda Docker ve Docker Compose v2 yüklendi.
-- [ ] `/opt/tezlify-staging` dizini oluşturuldu.
-- [ ] `.env.staging` dosyası hazırlandı; `DATABASE_URL` içinde production IP'sinin geçmediği doğrulandı.
-- [ ] `WHATSAPP_AUTO_RESTORE` değerinin `false` olduğu teyit edildi.
+- [ ] **Staging VM Ön Koşulu:** Ayrı bir VM sağlandı (Production IP `130.162.247.20` kesinlikle kullanılmamaktadır).
+- [ ] **Host & SSH Gereksinimi:** Staging SSH anahtarı (`~/.ssh/id_tezlify_staging`) hazır ve `StrictHostKeyChecking=yes` doğrulaması tamamlandı (`ssh -i ~/.ssh/id_tezlify_staging ubuntu@<staging_ip>`).
+- [ ] **Docker Kurulumu:** Staging sunucusunda Docker ve Docker Compose v2 yüklendi, daemon çalışıyor.
+- [ ] **Uzak Dizin:** Staging sunucusunda `/opt/tezlify-staging` dizini oluşturuldu ve deployment kullanıcısına yazma yetkisi verildi.
+- [ ] **Yerel Ortam Dosyası:** Yerel repository kökünde `.env.staging` hazırlandı; `DATABASE_URL` içinde production IP'sinin geçmediği doğrulandı.
+- [ ] **WhatsApp Koruması:** `WHATSAPP_AUTO_RESTORE` değerinin `false` olduğu teyit edildi.
+- [ ] **Ağ Portları:** Staging VM üzerinde 8080 (HTTP) ve 8443 (HTTPS) portlarının erişilebilir olduğu doğrulandı.
 
 ---
 
-## 6. Staging Dağıtım Komutları
+## 6. CLI Sözleşmesi ve Dağıtım Komutları
 
-Geliştirici makinesinden dağıtım iki şekilde başlatılabilir:
+### 6.1 Desteklenen CLI Seçenekleri
 
-### Yöntem A: Aday Dağıtım Planını Test Etme (Dry-Run — Önerilen İlk Adım)
+| Betik | Seçenek / Parametre | Açıklama |
+| :--- | :--- | :--- |
+| `staging-release.sh` | `--staging-host <HOST>` / `--host <HOST>` | Staging SSH hedefi (örn: `ubuntu@<staging_ip>`). Zorunludur. |
+| `staging-release.sh` | `--staging-env <PATH>` / `--env <PATH>` | Yerel staging env dosyası (varsayılan: `.env.staging`). |
+| `staging-release.sh` | `--dry-run` / `--plan` | Uzak komut çalıştırmaz; planı ve fail-closed kurallarını yerelde doğrular. |
+| `staging-release.sh` | `--skip-build` | Frontend Vite derleme adımını atlar. |
+| `staging-release.sh` | `--no-frontend` | Frontend dağıtımını hariç tutar. |
+| `staging-release.sh` | `[sha]` | Hedef Git commit SHA (varsayılan: `HEAD`). |
+| `release.sh` | `--target staging` / `--target=staging` | Çağrıyı `staging-release.sh` betiğine yönlendirir, diğer tüm argümanları korur. |
+| `release.sh` | `--target production` / `--target=production` | Canlı sunucuya dağıtım yolunu çalıştırır (varsayılan). |
+
+> [!NOTE]
+> `--target staging` seçeneği `release.sh` üzerinde tanımlıdır ve yürütmeyi `staging-release.sh` betiğine devreder. `staging-release.sh` doğrudan çalıştırıldığında `--target` argümanı kabul edilmez (fail-closed exit 2 döner).
+
+### 6.2 Güvenli Plan / Dry-Run Komutları (Önerilen İlk Adım)
+
+Uzak sunucuya bağlanmadan önce planı ve izolasyon kurallarını yerel olarak doğrulamak için:
+
 ```bash
-# Sadece planı ve fail-closed kontrollerini doğrular, uzak sunucuya bağlanmaz:
-STAGING_HOST="ubuntu@<staging_ip>" bash scripts/deploy/staging-release.sh --dry-run
+# Yöntem 1: staging-release.sh doğrudan CLI bayrağı ile:
+bash scripts/deploy/staging-release.sh --staging-host ubuntu@<staging_ip> --dry-run
+
+# Yöntem 1b: Alternatif alias'lar ile:
+bash scripts/deploy/staging-release.sh --host=ubuntu@<staging_ip> --plan
+
+# Yöntem 2: release.sh üzerinden staging delegasyonu ile:
+bash scripts/deploy/release.sh --target staging --staging-host ubuntu@<staging_ip> --dry-run
 ```
 
-### Yöntem B: Gerçek Staging Dağıtımı
-```bash
-# Staging sunucusuna artefaktları aktarır ve servisleri ayağa kaldırır:
-STAGING_HOST="ubuntu@<staging_ip>" bash scripts/deploy/staging-release.sh
-```
+### 6.3 Gerçek Staging Dağıtım Komutu
 
-### Yöntem C: Standart Release Scripti Üzerinden Staging Delegasyonu
+Staging VM hazır olduğunda ve yerel `.env.staging` oluşturulduğunda gerçek dağıtım başlatılır:
+
 ```bash
-# release.sh üzerinden doğrudan staging çağrısı:
-STAGING_HOST="ubuntu@<staging_ip>" bash scripts/deploy/release.sh --target staging --dry-run
+# Yöntem 1: Doğrudan staging betiği ile:
+bash scripts/deploy/staging-release.sh --staging-host ubuntu@<staging_ip>
+
+# Yöntem 2: release.sh delegasyonu ile:
+bash scripts/deploy/release.sh --target staging --staging-host ubuntu@<staging_ip>
 ```
 
 ---
@@ -143,20 +189,26 @@ curl -fsS http://localhost:8080/health
 # 3. Caddy Sağlık Probu:
 curl -fsS http://localhost:8080/caddy-health
 # Beklenen Yanıt: OK (STAGING)
+
+# 4. Ops Center API Kontrolü:
+curl -fsS http://localhost:8080/api/v1/admin/operations/status
 ```
 
 ---
 
-## 8. Rollback (Geri Alma) Prosedürü
+## 8. Güvenli Geri Dönüş Prosedürü (Rollback)
 
 Staging dağıtımında bir sorun tespit edilirse:
 
 ```bash
-# Servisleri durdur:
+# 1. Staging servislerini durdur:
 cd /opt/tezlify-staging && docker compose -f docker-compose.staging.yml down
 
-# Önceki sürüme dönmek için compose'u önceki etiketle veya commit ile yeniden başlat:
-docker compose -f docker-compose.staging.yml up -d
+# 2. Önceki bilinen kararlı commit SHA'sına geri dönerek yeniden dağıt:
+bash scripts/deploy/staging-release.sh <onceki_kararli_sha> --staging-host ubuntu@<staging_ip>
+
+# 3. Veya staging sunucusunda servisleri yeniden başlat:
+docker compose -f /opt/tezlify-staging/docker-compose.staging.yml up -d
 ```
 
 ---
@@ -176,3 +228,27 @@ Staging sunucusu üzerinde periyodik güvenlik denetimi:
    docker exec -it tezlify-db-staging psql -U tezlify_staging -d tezlify_staging -c "SELECT count(*) FROM leads;"
    # Beklenen: 0 veya demo kayıt sayısı.
    ```
+
+---
+
+## 10. Production'a Geçiş İçin Ayrı Onay ve Kabul Kriterleri (Production Gate)
+
+Staging ortamında doğrulanmamış hiçbir kod canlı sunucuya (`130.162.247.20`) dağıtılamaz. Canlıya geçiş öncesinde aşağıdaki kabul kriterlerinin tamamı eksiksiz karşılanmalıdır:
+
+1. **Staging Servis Sağlığı (100% Yeşil):**
+   - Tüm staging konteynerleri (`tezlify-db-staging`, `tezlify-backend-staging`, `tezlify-gateway-staging`, `tezlify-caddy-staging`) en az 1 saat kesintisiz ve sağlıklı (`healthy`) çalışmalıdır.
+2. **Operasyon Merkezi Fonksiyonel Doğrulaması:**
+   - Staging Yönetim & Operasyon Merkezi (`/admin/operations`) üzerinden `reload_caddy`, `clear_logs` ve `restart_backend` operasyonları denenmeli ve sıfır hata ile tamamlanmalıdır.
+   - `test_restart_all_never_touches_postgres` kuralının canlıda da korunduğu, veritabanının yeniden başlatılmadığı teyit edilmelidir.
+3. **WhatsApp Oturum & İzolasyon Doğrulaması:**
+   - Yalnızca operatör tarafından tahsis edilmiş ikincil bir test SIM numarası ile staging QR bağlantısı test edilmelidir. Canlı Hat 1 / Session 180 numarası kesinlikle kullanılmamalıdır.
+   - Test bitiminde oturum arayüzden sonlandırılmalı (`logout`) ve `whatsapp_sessions_staging` volume'ünün canlı oturumlarla hiçbir fiziksel teması olmadığı teyit edilmelidir.
+4. **Veritabanı İzolasyonu Teyidi:**
+   - Staging veritabanında canlı verilerin bulunmadığı ve production veritabanına hiçbir ağ bağlantısı açılmadığı Bölüm 9'daki adımlarla kanıtlanmalıdır.
+5. **SRE / Lead Engineer İmzalı Onayı:**
+   - Staging kabul formu teknik ekip tarafından imzalanmadan production dağıtım süreci başlatılamaz.
+6. **Müstakil Production Release:**
+   - Kabul kriterleri sağlandıktan sonra, yalnızca onaylı komutla canlı sunucu dağıtımı yürütülür:
+     ```bash
+     bash scripts/deploy/release.sh
+     ```
