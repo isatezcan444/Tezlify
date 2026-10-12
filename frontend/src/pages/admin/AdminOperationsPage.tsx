@@ -497,7 +497,7 @@ export const AdminOperationsPage: React.FC<AdminOperationsPageProps> = ({ onNavi
                 )}
               </div>
             </div>
-            {activeOp.logs.length > 0 && (
+            {activeOp.logs && activeOp.logs.length > 0 && (
               <pre className="max-h-20 overflow-auto rounded bg-slate-900 text-slate-200 p-2 text-[10px] font-mono whitespace-pre-wrap break-all leading-tight">
                 {activeOp.logs.slice(-3).join('\n')}
               </pre>
@@ -577,7 +577,7 @@ export const AdminOperationsPage: React.FC<AdminOperationsPageProps> = ({ onNavi
                   {opLogs.label}
                 </p>
                 <pre className="max-h-64 overflow-auto rounded-lg bg-slate-50 dark:bg-[#0F1222] p-3 text-[11px] font-mono whitespace-pre-wrap break-all text-slate-700 dark:text-slate-300">
-                  {opLogs.logs.length
+                  {opLogs.logs && opLogs.logs.length
                     ? opLogs.logs.slice(-200).join('\n')
                     : t('admin.ops.noData')}
                 </pre>

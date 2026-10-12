@@ -331,6 +331,13 @@ try {
       'paging must be hidden when the whole history fits on one page');
   });
 
+  await check('OpsHistoryPanel tolerates undefined operations or audit without throwing', async () => {
+    // Regression check: panel must render EmptyState cleanly even when
+    // unpopulated or partial props are passed, never throwing on .length
+    await mount(h(OpsHistoryPanel, {}));
+    assert.ok(text().length > 0, 'panel must render empty state without throwing');
+  });
+
   await check('OverviewPanel warns that a session is connected but not stored', async () => {
     // The failure this prevents: an operator sees CONNECTED, assumes the session
     // is fine, and only discovers the gap as missing message history.

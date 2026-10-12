@@ -89,8 +89,8 @@ function statusOf(op: OpsOperation) {
 
 
 export const OpsHistoryPanel: React.FC<OpsHistoryPanelProps> = ({
-  operations,
-  audit,
+  operations = [],
+  audit = [],
   totalOperations = 0,
   offset = 0,
   pageSize = 20,
