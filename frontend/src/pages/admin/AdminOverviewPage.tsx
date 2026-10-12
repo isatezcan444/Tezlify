@@ -22,6 +22,7 @@ import { useI18n } from '../../context/I18nContext';
 import { AdminApi } from '../../api/admin';
 import { AdminOverviewResponse } from '../../types/admin';
 import { AdminShell } from '../../components/admin/AdminShell';
+import { ExecutiveGuidanceCard } from '../../components/admin/ExecutiveGuidanceCard';
 import { Card, CardHeader, CardTitle, CardContent } from '../../components/ui/card';
 import { StatsCard } from '../../components/ui/StatsCard';
 import { StatusBadge, StatusVariant } from '../../components/ui/StatusBadge';
@@ -231,6 +232,14 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
     return name;
   };
 
+  const getServiceDescription = (name: string): string => {
+    if (name.includes('backend')) return t('admin.serviceBackendDesc');
+    if (name.includes('gateway')) return t('admin.serviceGatewayDesc');
+    if (name.includes('caddy')) return t('admin.serviceCaddyDesc');
+    if (name.includes('db')) return t('admin.serviceDbDesc');
+    return t('admin.productionServices');
+  };
+
   return (
     <AdminShell
       title={t('admin.operationsCenter')}
@@ -247,111 +256,104 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
         />
       }
     >
-      {/* 4. Executive Status & Action Guidance Card */}
-      <Card
-        className={`border shadow-sm transition-all ${
+      {/* 4. Executive Status & Action Guidance Card (5 Core Questions) */}
+      <ExecutiveGuidanceCard
+        status={data.overall_status === 'OK' ? 'ok' : data.overall_status === 'WARN' ? 'warn' : 'critical'}
+        badgeLabel={getOverallStatusLabel()}
+        title={t('admin.executiveGuidanceTitle')}
+        subtitle={t('admin.executiveGuidanceSubtitle')}
+        currentState={
           data.overall_status === 'OK'
-            ? 'border-emerald-200/80 dark:border-emerald-900/40 bg-gradient-to-br from-emerald-50/40 to-white dark:from-emerald-950/10 dark:to-[#2F3349]'
+            ? t('admin.guidance.systemHealthyState')
             : data.overall_status === 'WARN'
-            ? 'border-amber-200/80 dark:border-amber-900/40 bg-gradient-to-br from-amber-50/40 to-white dark:from-amber-950/10 dark:to-[#2F3349]'
-            : 'border-rose-200/80 dark:border-rose-900/40 bg-gradient-to-br from-rose-50/40 to-white dark:from-rose-950/10 dark:to-[#2F3349]'
-        }`}
-      >
-        <CardContent className="p-5 sm:p-6 space-y-4">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 dark:border-white/[0.06] pb-4">
-            <div className="flex items-center gap-3">
-              <div
-                className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
-                  data.overall_status === 'OK'
-                    ? 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400'
-                    : data.overall_status === 'WARN'
-                    ? 'bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400'
-                    : 'bg-rose-100 dark:bg-rose-900/30 text-rose-600 dark:text-rose-400'
-                }`}
+            ? t('admin.guidance.systemWarningState')
+            : t('admin.guidance.systemCriticalState')
+        }
+        severity={{
+          level: data.overall_status === 'OK' ? 'normal' : data.overall_status === 'WARN' ? 'medium' : 'critical',
+          label:
+            data.overall_status === 'OK'
+              ? t('admin.guidance.severityNormal')
+              : data.overall_status === 'WARN'
+              ? t('admin.guidance.severityMedium')
+              : t('admin.guidance.severityCritical'),
+          description:
+            data.overall_status_reasons && data.overall_status_reasons.length > 0
+              ? data.overall_status_reasons.join(', ')
+              : t('admin.executiveAllGood'),
+        }}
+        businessImpact={
+          data.overall_status === 'OK'
+            ? t('admin.guidance.zeroCustomerImpact')
+            : data.overall_status_reasons?.[0]?.toLowerCase().includes('reboot')
+            ? t('admin.rebootRequiredHelp')
+            : t('admin.executiveAttentionBody')
+        }
+        recommendedAction={{
+          label:
+            data.overall_status === 'OK'
+              ? t('admin.guidance.noActionNeeded')
+              : t('admin.actionGoToOps'),
+          description:
+            data.overall_status === 'OK'
+              ? t('admin.guidance.noActionNeededDesc')
+              : t('admin.executiveAttentionBody'),
+          buttonText: data.overall_status !== 'OK' && onNavigate ? t('admin.actionGoToOps') : undefined,
+          onAction: data.overall_status !== 'OK' && onNavigate ? () => onNavigate('admin-operations') : undefined,
+          icon: Terminal,
+        }}
+        actionOutcome={
+          data.overall_status === 'OK'
+            ? t('admin.guidance.noActionOutcome')
+            : t('admin.guidance.safeActionTaken')
+        }
+        extraActions={
+          onNavigate && (
+            <div className="flex items-center gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => onNavigate('admin-operations')}
+                className="gap-1.5 text-xs font-semibold cursor-pointer border-slate-200 dark:border-white/[0.08]"
               >
-                {data.overall_status === 'OK' ? (
-                  <ShieldCheck className="w-5 h-5" />
-                ) : data.overall_status === 'WARN' ? (
-                  <AlertTriangle className="w-5 h-5" />
-                ) : (
-                  <ShieldAlert className="w-5 h-5" />
-                )}
-              </div>
-              <div>
-                <h3 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
-                  {t('admin.executiveGuidanceTitle')}
-                  <StatusBadge
-                    status={getOverallStatusVariant()}
-                    label={getOverallStatusLabel()}
-                    size="sm"
-                  />
-                </h3>
-                <p className="text-xs text-slate-500 dark:text-vuexy-dark-muted">
-                  {t('admin.executiveGuidanceSubtitle')}
-                </p>
-              </div>
+                <Terminal className="w-3.5 h-3.5 text-vuexy-primary" />
+                {t('admin.actionGoToOps')}
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => onNavigate('admin-whatsapp')}
+                className="gap-1.5 text-xs font-semibold cursor-pointer border-slate-200 dark:border-white/[0.08]"
+              >
+                <Layers className="w-3.5 h-3.5 text-emerald-500" />
+                {t('admin.actionGoToWhatsApp')}
+              </Button>
             </div>
-
-            {onNavigate && (
-              <div className="flex items-center gap-2 flex-wrap">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => onNavigate('admin-operations')}
-                  className="gap-1.5 text-xs font-semibold cursor-pointer border-slate-200 dark:border-white/[0.08]"
-                >
-                  <Terminal className="w-3.5 h-3.5 text-vuexy-primary" />
-                  {t('admin.actionGoToOps')}
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => onNavigate('admin-whatsapp')}
-                  className="gap-1.5 text-xs font-semibold cursor-pointer border-slate-200 dark:border-white/[0.08]"
-                >
-                  <Layers className="w-3.5 h-3.5 text-emerald-500" />
-                  {t('admin.actionGoToWhatsApp')}
-                </Button>
+          )
+        }
+        technicalDetails={
+          <div className="space-y-2 text-xs">
+            <div className="font-mono text-slate-600 dark:text-slate-300">
+              <span className="font-semibold text-slate-700 dark:text-slate-200">Load Average: </span>
+              {data.system.load_average.join(', ')} | CPU Cores: {data.system.cpu_cores}
+            </div>
+            <div className="font-mono text-slate-600 dark:text-slate-300">
+              <span className="font-semibold text-slate-700 dark:text-slate-200">Memory: </span>
+              {data.system.memory_used_mb} MB / {data.system.memory_total_mb} MB ({data.system.memory_available_mb} MB avail)
+            </div>
+            {data.overall_status_reasons && data.overall_status_reasons.length > 0 && (
+              <div className="mt-2 pt-2 border-t border-slate-200/50 dark:border-white/[0.05]">
+                <span className="font-semibold text-slate-700 dark:text-slate-200">System Warnings:</span>
+                <ul className="list-disc list-inside mt-1 space-y-1 text-amber-600 dark:text-amber-400">
+                  {data.overall_status_reasons.map((r, i) => (
+                    <li key={i}>{r}</li>
+                  ))}
+                </ul>
               </div>
             )}
           </div>
-
-          <div className="text-sm font-medium text-slate-700 dark:text-slate-300">
-            {data.overall_status === 'OK'
-              ? t('admin.executiveAllGood')
-              : data.overall_status === 'WARN'
-              ? t('admin.executiveAttentionBody')
-              : t('admin.executiveCriticalBody')}
-          </div>
-
-          {/* Operational Issues & Action Steps */}
-          {data.overall_status_reasons && data.overall_status_reasons.length > 0 && (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2">
-              {data.overall_status_reasons.map((reason, idx) => (
-                <div
-                  key={idx}
-                  className="p-3.5 rounded-xl bg-white/80 dark:bg-[#2F3349]/80 border border-slate-200/80 dark:border-white/[0.08] shadow-xs space-y-2"
-                >
-                  <div className="flex items-center gap-2 text-xs font-semibold text-slate-800 dark:text-white">
-                    <span className="w-2 h-2 rounded-full bg-amber-500 shrink-0" />
-                    <span className="truncate">{reason}</span>
-                  </div>
-                  <div className="text-[11px] text-slate-500 dark:text-slate-400 space-y-1">
-                    <div className="flex items-center gap-1">
-                      <strong className="text-slate-700 dark:text-slate-300">{t('admin.impactLabel')}</strong>
-                      <span>
-                        {reason.toLowerCase().includes('reboot')
-                          ? t('admin.rebootRequiredHelp')
-                          : t('admin.attentionSubtitle')}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </CardContent>
-      </Card>
+        }
+      />
 
       {/* 5. Executive Quick Navigation Hub */}
       {onNavigate && (
@@ -478,7 +480,10 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
                       <h5 className="text-xs font-bold text-slate-800 dark:text-white truncate" title={c.name}>
                         {getServiceDisplayName(c.name)}
                       </h5>
-                      <span className="text-[11px] font-mono text-slate-400 dark:text-slate-500">
+                      <p className="text-[11px] text-slate-500 dark:text-vuexy-dark-muted line-clamp-1 mt-0.5">
+                        {getServiceDescription(c.name)}
+                      </p>
+                      <span className="text-[10px] font-mono text-slate-400 dark:text-slate-500 block mt-0.5">
                         {c.name}
                       </span>
                     </div>

@@ -463,6 +463,16 @@ restarting a service and shipping code are different risk classes.
 - **Returns**: `connected: boolean`
 - **Import**: `import { useOpsEvents } from '@/hooks/useOpsEvents';`
 
+### `ExecutiveGuidanceCard` (`components/admin/ExecutiveGuidanceCard.tsx`)
+- **Purpose**: Unified executive card answering the 5 Core Business Questions across all seven admin pages. Bridges technical invariants and business impacts so non-technical decision makers understand current state, severity, customer blast radius, safe action, and outcome. Provides expandable technical details for advanced inspection.
+- **Props**: `{ status: GuidanceStatus; badgeLabel?: string; title: string; subtitle: string; currentState: string; severity: { level: SeverityLevel; label: string; description?: string }; businessImpact: string; recommendedAction: { label: string; description: string; buttonText?: string; onAction?: () => void; icon?: LucideIcon }; actionOutcome: string; extraActions?: React.ReactNode; technicalDetails?: React.ReactNode; defaultExpandDetails?: boolean }`
+- **Import**: `import { ExecutiveGuidanceCard } from '@/components/admin';`
+
+### `AdminShell` (`components/admin/AdminShell.tsx`)
+- **Purpose**: Consistent high-level shell for all seven admin pages with animated page-enter transitions, standardized PageHeader, live telemetric badge, last-updated timestamp, and refresh action.
+- **Import**: `import { AdminShell } from '@/components/admin';`
+
+
 ### `LinkPreviewCard`
 - **Purpose**: WhatsApp Web-shaped preview card for a link found in a message body — image, site name, title, description and an open action. Rendered under the text, never instead of it.
 - **Props**: `{ preview: LinkPreview; isOutbound?: boolean }`

@@ -21,6 +21,7 @@ import {
   AdminObservationRecord 
 } from '../../types/admin';
 import { AdminShell } from '../../components/admin/AdminShell';
+import { ExecutiveGuidanceCard } from '../../components/admin/ExecutiveGuidanceCard';
 import { Card, CardHeader, CardTitle, CardContent } from '../../components/ui/card';
 import { StatsCard } from '../../components/ui/StatsCard';
 import { StatusBadge, StatusVariant } from '../../components/ui/StatusBadge';
@@ -443,6 +444,78 @@ export const AdminMonitoringPage: React.FC<AdminMonitoringPageProps> = ({ onNavi
       lastUpdated={lastUpdated}
     >
       <div className="space-y-6">
+        <ExecutiveGuidanceCard
+          status={overall_status === 'OK' ? 'ok' : overall_status === 'WARN' ? 'warn' : 'critical'}
+          badgeLabel={overallBadgeText}
+          title={t('admin.monitoring.title')}
+          subtitle={t('admin.monitoring.subtitle')}
+          currentState={
+            overall_status === 'OK'
+              ? t('admin.guidance.systemHealthyState')
+              : (failingInvariants > 0
+                ? `${failingInvariants} ${t('admin.monitoring.failing')} (${t('admin.monitoring.statusFail')})`
+                : t('admin.guidance.systemWarningState'))
+          }
+          severity={{
+            level: overall_status === 'OK' ? 'normal' : failingInvariants > 0 ? 'high' : 'medium',
+            label: overallBadgeText,
+            description: failingInvariants > 0
+              ? `${failingInvariants} / ${totalInvariants} ${t('admin.monitoring.invariantsTitle')}`
+              : t('admin.executiveAllGood'),
+          }}
+          businessImpact={
+            failingInvariants === 0
+              ? t('admin.guidance.zeroCustomerImpact')
+              : t('admin.monitoring.verifiedNotice')
+          }
+          recommendedAction={{
+            label: failingInvariants === 0
+              ? t('admin.guidance.noActionNeeded')
+              : t('admin.actionGoToOps'),
+            description: failingInvariants === 0
+              ? t('admin.guidance.noActionNeededDesc')
+              : t('admin.monitoring.readOnlyNotice'),
+            buttonText: onNavigate ? t('admin.actionGoToOps') : undefined,
+            onAction: onNavigate ? () => onNavigate('admin-operations') : undefined,
+            icon: ShieldCheck,
+          }}
+          actionOutcome={t('admin.monitoring.readOnlyNotice')}
+          extraActions={
+            onNavigate && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => onNavigate('admin-operations')}
+                className="gap-1.5 text-xs font-semibold cursor-pointer border-slate-200 dark:border-white/[0.08]"
+              >
+                <Activity className="w-3.5 h-3.5 text-vuexy-primary" />
+                {t('admin.actionGoToOps')}
+              </Button>
+            )
+          }
+          technicalDetails={
+            <div className="space-y-2 text-xs">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                <div className="p-2 rounded bg-white dark:bg-white/[0.03] border border-slate-200/50 dark:border-white/[0.05]">
+                  <span className="text-[10px] text-slate-400 block">{t('admin.monitoring.passing')}</span>
+                  <span className="font-bold text-emerald-600 dark:text-emerald-400">{passingInvariants}</span>
+                </div>
+                <div className="p-2 rounded bg-white dark:bg-white/[0.03] border border-slate-200/50 dark:border-white/[0.05]">
+                  <span className="text-[10px] text-slate-400 block">{t('admin.monitoring.failing')}</span>
+                  <span className="font-bold text-rose-600 dark:text-rose-400">{failingInvariants}</span>
+                </div>
+                <div className="p-2 rounded bg-white dark:bg-white/[0.03] border border-slate-200/50 dark:border-white/[0.05]">
+                  <span className="text-[10px] text-slate-400 block">{t('admin.monitoring.unknown')}</span>
+                  <span className="font-bold text-amber-600 dark:text-amber-400">{unknownInvariants}</span>
+                </div>
+                <div className="p-2 rounded bg-white dark:bg-white/[0.03] border border-slate-200/50 dark:border-white/[0.05]">
+                  <span className="text-[10px] text-slate-400 block">{t('admin.monitoring.obsSampleCount')}</span>
+                  <span className="font-bold text-slate-800 dark:text-slate-200">{observation.sample_count}</span>
+                </div>
+              </div>
+            </div>
+          }
+        />
         {/* Read-Only Notice Banner */}
         <div className="flex items-start gap-3 p-3.5 rounded-xl bg-slate-50 dark:bg-white/[0.02] border border-slate-200/60 dark:border-white/[0.06] text-xs text-slate-600 dark:text-slate-300">
           <Info className="w-4 h-4 text-[#7367F0] shrink-0 mt-0.5" />

@@ -33,6 +33,7 @@ import {
   OpsStatusResponse,
 } from '../../types/admin';
 import { AdminShell } from '../../components/admin/AdminShell';
+import { ExecutiveGuidanceCard } from '../../components/admin/ExecutiveGuidanceCard';
 import { Card, CardHeader, CardTitle, CardContent } from '../../components/ui/card';
 import { StatsCard } from '../../components/ui/StatsCard';
 import { StatusBadge, StatusVariant } from '../../components/ui/StatusBadge';
@@ -420,6 +421,85 @@ export const AdminDeploymentPage: React.FC<AdminDeploymentPageProps> = ({ onNavi
       lastUpdated={lastUpdated}
     >
       <div className="space-y-6">
+        <ExecutiveGuidanceCard
+          status={deploying?.status === 'failed' ? 'critical' : deploying?.status === 'running' ? 'warn' : overallStatus === 'OK' ? 'ok' : 'warn'}
+          badgeLabel={deploying?.status === 'running' ? t('admin.ops.runningOperationBadge') : overallLabel}
+          title={t('admin.deployment.title')}
+          subtitle={t('admin.deployment.subtitle')}
+          currentState={
+            deploying?.status === 'running'
+              ? t('admin.deployment.guidanceDeployRunning')
+              : overallStatus === 'OK'
+              ? `${t('admin.deployment.currentRelease')}: ${srcCommit ? srcCommit.slice(0, 7) : '—'} (${gitState.branch || 'main'})`
+              : t('admin.deployment.guidanceDeployFailed')
+          }
+          severity={{
+            level: deploying?.status === 'failed' ? 'critical' : overallStatus === 'OK' ? 'normal' : 'medium',
+            label: overallLabel,
+            description: deploying?.status === 'failed'
+              ? t('admin.deployment.deployOutcomeFailedTitle')
+              : isWorkingTreeClean
+              ? t('admin.deployment.cleanWorkingTreeExpl')
+              : t('admin.deployment.dirtyWorkingTreeExpl'),
+          }}
+          businessImpact={
+            deploying?.status === 'running'
+              ? t('admin.ops.deployRestartsBackendNote')
+              : overallStatus === 'OK'
+              ? t('admin.guidance.zeroCustomerImpact')
+              : t('admin.deployment.warning')
+          }
+          recommendedAction={{
+            label: deploying?.status === 'failed'
+              ? t('admin.deployment.goToOpsCenter')
+              : overallStatus === 'OK'
+              ? t('admin.guidance.noActionNeeded')
+              : t('admin.deployment.releaseReadiness'),
+            description: deploying?.status === 'failed'
+              ? t('admin.deployment.deployOutcomeFailedDesc', { step: deploying.step || deploying.current_step || '-' })
+              : t('admin.deployment.pipelineExplanation'),
+            buttonText: deploying?.status === 'failed' && onNavigate ? t('admin.deployment.goToOpsCenter') : undefined,
+            onAction: deploying?.status === 'failed' && onNavigate ? () => onNavigate('admin-operations') : undefined,
+            icon: Server,
+          }}
+          actionOutcome={t('admin.deployment.safeRollbackNotice')}
+          extraActions={
+            onNavigate && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => onNavigate('admin-operations')}
+                className="gap-1.5 text-xs font-semibold cursor-pointer border-slate-200 dark:border-white/[0.08]"
+              >
+                <Server className="w-3.5 h-3.5 text-vuexy-primary" />
+                {t('admin.deployment.goToOpsCenter')}
+              </Button>
+            )
+          }
+          technicalDetails={
+            <div className="space-y-2 text-xs">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                <div className="p-2 rounded bg-white dark:bg-white/[0.03] border border-slate-200/50 dark:border-white/[0.05]">
+                  <span className="text-[10px] text-slate-400 block">{t('admin.deployment.commit')}</span>
+                  <span className="font-mono font-bold text-slate-800 dark:text-slate-200">{srcCommit ? srcCommit.slice(0, 10) : '—'}</span>
+                </div>
+                <div className="p-2 rounded bg-white dark:bg-white/[0.03] border border-slate-200/50 dark:border-white/[0.05]">
+                  <span className="text-[10px] text-slate-400 block">{t('admin.deployment.branch')}</span>
+                  <span className="font-bold text-slate-800 dark:text-slate-200">{gitState.branch || 'main'}</span>
+                </div>
+                <div className="p-2 rounded bg-white dark:bg-white/[0.03] border border-slate-200/50 dark:border-white/[0.05]">
+                  <span className="text-[10px] text-slate-400 block">{t('admin.deployment.containersRunning')}</span>
+                  <span className="font-bold text-emerald-600 dark:text-emerald-400">{runningContainersCount} / {containers.length}</span>
+                </div>
+                <div className="p-2 rounded bg-white dark:bg-white/[0.03] border border-slate-200/50 dark:border-white/[0.05]">
+                  <span className="text-[10px] text-slate-400 block">{t('admin.deployment.workingTree')}</span>
+                  <span className="font-bold text-slate-800 dark:text-slate-200">{isWorkingTreeClean ? t('admin.deployment.clean') : t('admin.deployment.dirty')}</span>
+                </div>
+              </div>
+            </div>
+          }
+        />
+
         {/* Deployment actions live at the TOP: an operator arriving here to ship
             a commit should not have to scroll past every read-only metric. */}
         <DeployPanel

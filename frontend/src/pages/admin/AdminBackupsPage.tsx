@@ -20,6 +20,7 @@ import { useI18n } from '../../context/I18nContext';
 import { AdminApi } from '../../api/admin';
 import { AdminBackupsResponse, AdminBackupFileInfo } from '../../types/admin';
 import { AdminShell } from '../../components/admin/AdminShell';
+import { ExecutiveGuidanceCard } from '../../components/admin/ExecutiveGuidanceCard';
 import { Card, CardHeader, CardTitle, CardContent } from '../../components/ui/card';
 import { StatsCard } from '../../components/ui/StatsCard';
 import { StatusBadge, StatusVariant } from '../../components/ui/StatusBadge';
@@ -390,6 +391,93 @@ export const AdminBackupsPage: React.FC<AdminBackupsPageProps> = ({ onNavigate }
       lastUpdated={lastUpdated}
     >
       <div className="space-y-6">
+        <ExecutiveGuidanceCard
+          status={isVerified ? 'ok' : hasPostgres ? 'warn' : 'critical'}
+          badgeLabel={overallBadgeText}
+          title={t('admin.backups.title')}
+          subtitle={t('admin.backups.subtitle')}
+          currentState={
+            isVerified
+              ? t('admin.backups.statusVerified')
+              : hasPostgres
+              ? `${t('admin.backups.postgresBackup')}: ${postgres.size_human ?? '—'} (${t('admin.backups.uncertified')})`
+              : t('admin.backups.notAvailable')
+          }
+          severity={{
+            level: isVerified ? 'normal' : hasPostgres ? 'medium' : 'high',
+            label: overallBadgeText,
+            description: isVerified
+              ? t('admin.backups.certified')
+              : hasPostgres
+              ? t('admin.backups.uncertified')
+              : t('admin.backups.noBackupFound'),
+          }}
+          businessImpact={
+            isVerified
+              ? t('admin.guidance.zeroCustomerImpact')
+              : hasPostgres
+              ? t('admin.backups.distinctionAlertBody')
+              : t('admin.backups.noBackupFound')
+          }
+          recommendedAction={{
+            label: isVerified ? t('admin.guidance.noActionNeeded') : t('admin.backups.safeNextStep'),
+            description: isVerified
+              ? t('admin.guidance.noActionNeededDesc')
+              : t('admin.backups.distinctionAlertBody'),
+            buttonText: onNavigate ? t('admin.actionGoToOps') : undefined,
+            onAction: onNavigate ? () => onNavigate('admin-operations') : undefined,
+            icon: Database,
+          }}
+          actionOutcome={t('admin.backups.readOnlyNotice')}
+          extraActions={
+            onNavigate && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => onNavigate('admin-operations')}
+                className="gap-1.5 text-xs font-semibold cursor-pointer border-slate-200 dark:border-white/[0.08]"
+              >
+                <HardDrive className="w-3.5 h-3.5 text-vuexy-primary" />
+                {t('admin.actionGoToOps')}
+              </Button>
+            )
+          }
+          technicalDetails={
+            <div className="space-y-2 text-xs">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                <div className="p-2 rounded bg-white dark:bg-white/[0.03] border border-slate-200/50 dark:border-white/[0.05]">
+                  <span className="text-[10px] text-slate-400 block">{t('admin.backups.postgresBackup')}</span>
+                  <span className="font-bold text-slate-800 dark:text-slate-200">{postgres.latest_backup_filename || '—'}</span>
+                </div>
+                <div className="p-2 rounded bg-white dark:bg-white/[0.03] border border-slate-200/50 dark:border-white/[0.05]">
+                  <span className="text-[10px] text-slate-400 block">{t('admin.backups.size')}</span>
+                  <span className="font-bold text-emerald-600 dark:text-emerald-400">{postgres.size_human || '—'}</span>
+                </div>
+                <div className="p-2 rounded bg-white dark:bg-white/[0.03] border border-slate-200/50 dark:border-white/[0.05]">
+                  <span className="text-[10px] text-slate-400 block">{t('admin.backups.totalStorage')}</span>
+                  <span className="font-bold text-slate-800 dark:text-slate-200">{total_backup_disk_usage.human}</span>
+                </div>
+                <div className="p-2 rounded bg-white dark:bg-white/[0.03] border border-slate-200/50 dark:border-white/[0.05]">
+                  <span className="text-[10px] text-slate-400 block">{t('admin.backups.offHostStatus')}</span>
+                  <span className="font-bold text-slate-800 dark:text-slate-200">{off_host_status}</span>
+                </div>
+              </div>
+            </div>
+          }
+        />
+
+        {/* Educational Distinction Alert Card */}
+        <div className="p-4 rounded-xl bg-indigo-50/70 dark:bg-indigo-950/25 border border-indigo-200/60 dark:border-indigo-800/40 flex items-start gap-3">
+          <Info className="w-5 h-5 text-indigo-600 dark:text-indigo-400 shrink-0 mt-0.5" />
+          <div className="space-y-1">
+            <h4 className="font-bold text-sm text-indigo-950 dark:text-indigo-200">
+              {t('admin.backups.distinctionAlertTitle')}
+            </h4>
+            <p className="text-xs text-indigo-800/80 dark:text-indigo-300/80 leading-relaxed">
+              {t('admin.backups.distinctionAlertBody')}
+            </p>
+          </div>
+        </div>
         {/* Read-Only Notice */}
         <div className="flex items-start gap-3 p-3.5 rounded-xl bg-slate-50 dark:bg-white/[0.02] border border-slate-200/60 dark:border-white/[0.06] text-xs text-slate-600 dark:text-slate-300">
           <Info className="w-4 h-4 text-[#7367F0] shrink-0 mt-0.5" />

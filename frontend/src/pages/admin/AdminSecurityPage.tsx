@@ -21,6 +21,7 @@ import { useI18n } from '../../context/I18nContext';
 import { AdminApi } from '../../api/admin';
 import { AdminSecurityResponse } from '../../types/admin';
 import { AdminShell } from '../../components/admin/AdminShell';
+import { ExecutiveGuidanceCard } from '../../components/admin/ExecutiveGuidanceCard';
 import { Card, CardHeader, CardTitle, CardContent } from '../../components/ui/card';
 import { StatsCard } from '../../components/ui/StatsCard';
 import { StatusBadge, StatusVariant } from '../../components/ui/StatusBadge';
@@ -274,6 +275,72 @@ export const AdminSecurityPage: React.FC<AdminSecurityPageProps> = ({ onNavigate
       lastUpdated={lastUpdated}
     >
       <div className="space-y-6">
+        <ExecutiveGuidanceCard
+          status={overall_status === 'PASS' ? 'ok' : overall_status === 'WARNING' ? 'warn' : 'critical'}
+          badgeLabel={overallLabel}
+          title={t('admin.security.title')}
+          subtitle={t('admin.security.subtitle')}
+          currentState={
+            overall_status === 'PASS'
+              ? `${t('admin.security.certificationStatus')}: ${certification_status || t('admin.security.statusHardened')}`
+              : t('admin.security.statusWarning')
+          }
+          severity={{
+            level: overall_status === 'PASS' ? 'normal' : 'low',
+            label: overallLabel,
+            description: overall_status === 'PASS'
+              ? t('admin.security.zeroCriticalIssues')
+              : t('admin.security.warningsSubtitle'),
+          }}
+          businessImpact={t('admin.guidance.zeroCustomerImpact')}
+          recommendedAction={{
+            label: overall_status === 'PASS'
+              ? t('admin.guidance.noActionNeeded')
+              : t('admin.security.safeNextStep'),
+            description: isRebootRequired
+              ? t('admin.security.nextStepReboot')
+              : t('admin.guidance.noActionNeededDesc'),
+            buttonText: onNavigate ? t('admin.actionGoToOps') : undefined,
+            onAction: onNavigate ? () => onNavigate('admin-operations') : undefined,
+            icon: Lock,
+          }}
+          actionOutcome={t('admin.security.readOnlyNotice')}
+          extraActions={
+            onNavigate && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => onNavigate('admin-operations')}
+                className="gap-1.5 text-xs font-semibold cursor-pointer border-slate-200 dark:border-white/[0.08]"
+              >
+                <Lock className="w-3.5 h-3.5 text-vuexy-primary" />
+                {t('admin.actionGoToOps')}
+              </Button>
+            )
+          }
+          technicalDetails={
+            <div className="space-y-2 text-xs">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                <div className="p-2 rounded bg-white dark:bg-white/[0.03] border border-slate-200/50 dark:border-white/[0.05]">
+                  <span className="text-[10px] text-slate-400 block">{t('admin.security.sshHardening')}</span>
+                  <span className="font-bold text-emerald-600 dark:text-emerald-400">{ssh.status}</span>
+                </div>
+                <div className="p-2 rounded bg-white dark:bg-white/[0.03] border border-slate-200/50 dark:border-white/[0.05]">
+                  <span className="text-[10px] text-slate-400 block">{t('admin.security.firewallStatus')}</span>
+                  <span className="font-bold text-emerald-600 dark:text-emerald-400">{firewall.status}</span>
+                </div>
+                <div className="p-2 rounded bg-white dark:bg-white/[0.03] border border-slate-200/50 dark:border-white/[0.05]">
+                  <span className="text-[10px] text-slate-400 block">{t('admin.security.publicPorts')}</span>
+                  <span className="font-mono font-bold text-slate-800 dark:text-slate-200">{(firewall.public_ports || firewall.allowed_ports).join(', ')}</span>
+                </div>
+                <div className="p-2 rounded bg-white dark:bg-white/[0.03] border border-slate-200/50 dark:border-white/[0.05]">
+                  <span className="text-[10px] text-slate-400 block">{t('admin.security.rebootRequired')}</span>
+                  <span className="font-bold text-slate-800 dark:text-slate-200">{isRebootRequired ? t('admin.security.yes') : t('admin.security.no')}</span>
+                </div>
+              </div>
+            </div>
+          }
+        />
         {/* Strict Read-Only Notice */}
         <div className="flex items-start gap-3 p-3.5 rounded-xl bg-slate-50 dark:bg-white/[0.02] border border-slate-200/60 dark:border-white/[0.06] text-xs text-slate-600 dark:text-slate-300">
           <Info className="w-4 h-4 text-[#7367F0] shrink-0 mt-0.5" />

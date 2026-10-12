@@ -20,6 +20,7 @@ import {
   OverallSystemStatus 
 } from '../../types/admin';
 import { AdminShell } from '../../components/admin/AdminShell';
+import { ExecutiveGuidanceCard } from '../../components/admin/ExecutiveGuidanceCard';
 import { Card, CardHeader, CardTitle, CardContent } from '../../components/ui/card';
 import { StatsCard } from '../../components/ui/StatsCard';
 import { StatusBadge, StatusVariant } from '../../components/ui/StatusBadge';
@@ -318,6 +319,84 @@ export const AdminWhatsAppPage: React.FC<AdminWhatsAppPageProps> = ({ onNavigate
       onRefresh={() => void fetchWhatsApp(false)}
     >
       <div className="space-y-6">
+        <ExecutiveGuidanceCard
+          status={overallStatus === 'OK' ? 'ok' : overallStatus === 'WARN' ? 'warn' : 'critical'}
+          badgeLabel={overallBadgeLabel}
+          title={t('admin.whatsapp.title')}
+          subtitle={t('admin.whatsapp.subtitle')}
+          currentState={
+            overallStatus === 'OK'
+              ? `${t('admin.whatsapp.bridgeConnected')} • ${t('admin.whatsapp.subLiveOnline')}`
+              : (data?.db_session_summary.relink_required
+                ? t('admin.whatsapp.statusRelinkRequired')
+                : data?.db_session_summary.scan_qr
+                ? t('admin.whatsapp.statusScanQr')
+                : t('admin.whatsapp.bridgeDisconnected'))
+          }
+          severity={{
+            level: overallStatus === 'OK' ? 'normal' : overallStatus === 'WARN' ? 'medium' : 'critical',
+            label: overallBadgeLabel,
+            description: overallStatus === 'OK'
+              ? t('admin.whatsapp.bridgeConnected')
+              : (data?.socket_leases.duplicate_count
+                ? t('admin.guidance.systemWarningState')
+                : t('admin.whatsapp.bridgeDisconnected')),
+          }}
+          businessImpact={
+            overallStatus === 'OK'
+              ? t('admin.guidance.zeroCustomerImpact')
+              : (data?.db_session_summary.relink_required
+                ? t('admin.whatsapp.subSessionExpired')
+                : t('admin.whatsapp.gatewayBridgeNote'))
+          }
+          recommendedAction={{
+            label: overallStatus === 'OK'
+              ? t('admin.guidance.noActionNeeded')
+              : t('admin.whatsapp.manageSessionsBtn'),
+            description: overallStatus === 'OK'
+              ? t('admin.guidance.noActionNeededDesc')
+              : t('admin.whatsapp.readOnlyNotice'),
+            buttonText: onNavigate ? t('admin.whatsapp.manageSessionsBtn') : undefined,
+            onAction: onNavigate ? () => onNavigate('whatsapp') : undefined,
+            icon: Smartphone,
+          }}
+          actionOutcome={t('admin.whatsapp.readOnlyNotice')}
+          extraActions={
+            onNavigate && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => onNavigate('whatsapp')}
+                className="gap-1.5 cursor-pointer text-xs shrink-0 border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300"
+              >
+                <Smartphone className="w-3.5 h-3.5 text-emerald-500" />
+                {t('admin.whatsapp.manageSessionsBtn')}
+              </Button>
+            )
+          }
+          technicalDetails={
+            <div className="space-y-2 text-xs">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                <div className="p-2 rounded bg-white dark:bg-white/[0.03] border border-slate-200/50 dark:border-white/[0.05]">
+                  <span className="text-[10px] text-slate-400 block">{t('admin.whatsapp.activeSessionsGateway')}</span>
+                  <span className="font-bold text-slate-800 dark:text-slate-200">{data?.gateway_runtime.session_count ?? 0}</span>
+                </div>
+                <div className="p-2 rounded bg-white dark:bg-white/[0.03] border border-slate-200/50 dark:border-white/[0.05]">
+                  <span className="text-[10px] text-slate-400 block">{t('admin.whatsapp.gatewayHealth')}</span>
+                  <span className="font-bold text-emerald-600 dark:text-emerald-400">{data?.gateway_runtime.health_status ?? 'unknown'}</span>
+                </div>
+                <div className="p-2 rounded bg-white dark:bg-white/[0.03] border border-slate-200/50 dark:border-white/[0.05]">
+                  <span className="text-[10px] text-slate-400 block">{t('admin.whatsapp.colActive')} Leases</span>
+                  <span className="font-bold text-slate-800 dark:text-slate-200">{data?.socket_leases.active_count ?? 0}</span>
+                </div>
+                <div className="p-2 rounded bg-white dark:bg-white/[0.03] border border-slate-200/50 dark:border-white/[0.05]">
+                  <span className="text-[10px] text-slate-400 block">{t('admin.whatsapp.reconnectCount')}</span>
+                  <span className="font-bold text-slate-800 dark:text-slate-200">{data?.gateway_bridge.reconnect_count ?? 0}</span>
+                </div>
+              </div>
+            </div>
+          }
+        />
         {/* Read-only Advisory Banner */}
         <div className="flex items-center justify-between flex-wrap gap-2 px-4 py-2.5 rounded-lg bg-indigo-50/70 dark:bg-indigo-950/30 border border-indigo-200/60 dark:border-indigo-800/40 text-xs text-indigo-700 dark:text-indigo-300">
           <div className="flex items-center gap-2.5">

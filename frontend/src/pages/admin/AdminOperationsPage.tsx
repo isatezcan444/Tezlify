@@ -20,7 +20,8 @@ import { useI18n } from '../../context/I18nContext';
 import { useToast } from '../../context/ToastContext';
 import { AdminApi, OpsApi } from '../../api/admin';
 import { AdminShell } from '../../components/admin/AdminShell';
-import { ArrowLeft, CheckCircle2, Loader2, ShieldAlert, X, XCircle } from 'lucide-react';
+import { ExecutiveGuidanceCard } from '../../components/admin/ExecutiveGuidanceCard';
+import { ArrowLeft, CheckCircle2, Loader2, ShieldAlert, X, XCircle, Terminal, Layers } from 'lucide-react';
 import { Card, CardContent } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
 import { ServiceStatusPanel } from '../../components/admin/ops/ServiceStatusPanel';
@@ -427,6 +428,80 @@ export const AdminOperationsPage: React.FC<AdminOperationsPageProps> = ({ onNavi
       isRefreshing={loading}
       onRefresh={() => void fetchStatus(false)}
     >
+      <ExecutiveGuidanceCard
+        status={status?.health?.all_healthy ? 'ok' : 'warn'}
+        badgeLabel={status?.health?.all_healthy ? t('admin.ops.healthAllOk') : t('admin.ops.healthSomeDown')}
+        title={t('admin.ops.servicesTitle')}
+        subtitle={t('admin.ops.servicesSubtitle')}
+        currentState={
+          status?.health?.all_healthy
+            ? t('admin.guidance.systemHealthyState')
+            : t('admin.guidance.systemWarningState')
+        }
+        severity={{
+          level: status?.health?.all_healthy ? 'normal' : 'high',
+          label: status?.health?.all_healthy
+            ? t('admin.guidance.severityNormal')
+            : t('admin.guidance.severityHigh'),
+          description: status?.health?.all_healthy
+            ? t('admin.guidance.noActionNeededDesc')
+            : t('admin.ops.healthSomeDown'),
+        }}
+        businessImpact={
+          status?.health?.all_healthy
+            ? t('admin.guidance.zeroCustomerImpact')
+            : t('admin.ops.healthSomeDown')
+        }
+        recommendedAction={{
+          label: status?.health?.all_healthy
+            ? t('admin.guidance.noActionNeeded')
+            : t('admin.ops.tabErrors'),
+          description: status?.health?.all_healthy
+            ? t('admin.guidance.noActionNeededDesc')
+            : t('admin.ops.safeRestartNotice'),
+          buttonText: tab !== 'errors' ? t('admin.ops.tabErrors') : undefined,
+          onAction: tab !== 'errors' ? () => setTab('errors') : undefined,
+          icon: Terminal,
+        }}
+        actionOutcome={t('admin.ops.safeRestartNotice')}
+        extraActions={
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setTab('logs')}
+              className="gap-1.5 text-xs font-semibold cursor-pointer border-slate-200 dark:border-white/[0.08]"
+            >
+              <Terminal className="w-3.5 h-3.5 text-vuexy-primary" />
+              {t('admin.ops.tabLogs')}
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setTab('history')}
+              className="gap-1.5 text-xs font-semibold cursor-pointer border-slate-200 dark:border-white/[0.08]"
+            >
+              <Layers className="w-3.5 h-3.5 text-blue-500" />
+              {t('admin.ops.tabHistory')}
+            </Button>
+          </div>
+        }
+        technicalDetails={
+          <div className="space-y-2 text-xs">
+            <p className="font-semibold text-slate-700 dark:text-slate-200">
+              {t('admin.ops.servicesTitle')} ({services.length}):
+            </p>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              {services.map((svc) => (
+                <div key={svc.name} className="p-2 rounded bg-white dark:bg-white/[0.03] border border-slate-200/50 dark:border-white/[0.05]">
+                  <span className="font-bold text-slate-700 dark:text-slate-200 block truncate">{svc.name}</span>
+                  <span className="text-[10px] text-slate-500 dark:text-slate-400 block">{svc.status} {svc.health ? `(${svc.health})` : ''}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        }
+      />
       {tabBar}
       {activeOp && (
         <Card className={`border shadow-sm transition-all duration-200 ${
