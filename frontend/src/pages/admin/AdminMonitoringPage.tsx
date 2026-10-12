@@ -349,7 +349,7 @@ export const AdminMonitoringPage: React.FC<AdminMonitoringPageProps> = ({ onNavi
       cell: (item) => (
         <StatusBadge 
           status={item.all_invariants_pass ? 'online' : 'danger'}
-          label={item.all_invariants_pass ? 'PASS' : 'FAIL'}
+          label={item.all_invariants_pass ? t('admin.monitoring.statusPass') : t('admin.monitoring.statusFail')}
           size="sm"
         />
       ),

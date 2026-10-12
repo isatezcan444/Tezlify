@@ -145,6 +145,7 @@ const DrCheckRow: React.FC<{
   passed: boolean | null;
   isWarning?: boolean;
 }> = ({ label, passed, isWarning = false }) => {
+  const { t } = useI18n();
   const icon =
     passed === null ? (
       <AlertTriangle className="w-4 h-4 text-slate-400" />
@@ -180,7 +181,13 @@ const DrCheckRow: React.FC<{
             ? 'warning'
             : 'danger'
         }
-        label={passed === null ? 'UNKNOWN' : passed ? 'OK' : 'WARN'}
+        label={
+          passed === null
+            ? t('admin.backups.unknownUpper')
+            : passed
+            ? t('admin.backups.okUpper')
+            : t('admin.backups.warnUpper')
+        }
         size="sm"
       />
     </div>

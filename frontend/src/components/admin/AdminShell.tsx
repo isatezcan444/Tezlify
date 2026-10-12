@@ -30,11 +30,18 @@ export const AdminShell: React.FC<AdminShellProps> = ({
   const headerActions = (
     <div className="flex items-center gap-3 flex-wrap">
       {lastUpdated && (
-        <div className="hidden sm:flex flex-col text-right">
-          <span className="text-[11px] text-slate-400 dark:text-vuexy-dark-muted font-medium">
-            {t('admin.lastUpdated')} <strong className="text-slate-600 dark:text-slate-200">{lastUpdated}</strong>
+        <div className="flex flex-col text-right">
+          <span className="text-[11px] text-slate-500 dark:text-vuexy-dark-muted font-medium flex items-center justify-end gap-1.5">
+            <span
+              className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                isRefreshing ? 'bg-amber-400 animate-ping' : 'bg-emerald-500'
+              }`}
+              title={isRefreshing ? t('admin.staleDataBadge') : t('admin.liveMonitoringBadge')}
+            />
+            <span className="hidden sm:inline">{t('admin.lastUpdated')}</span>
+            <strong className="text-slate-700 dark:text-slate-200">{lastUpdated}</strong>
           </span>
-          <span className="text-[10px] text-slate-400/80 dark:text-slate-500">
+          <span className="hidden sm:inline text-[10px] text-slate-400/80 dark:text-slate-500">
             {t('admin.autoRefresh')}
           </span>
         </div>

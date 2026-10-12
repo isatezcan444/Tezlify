@@ -289,7 +289,7 @@ export const AdminSecurityPage: React.FC<AdminSecurityPageProps> = ({ onNavigate
           <StatsCard
             title={t('admin.security.overallStatus')}
             value={overallLabel}
-            subText="Zero Critical Issues"
+            subText={t('admin.security.zeroCriticalIssues')}
             icon={ShieldCheck}
             iconVariant={overallVariant === 'online' ? 'success' : 'warning'}
           />

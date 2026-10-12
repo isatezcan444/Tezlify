@@ -8,7 +8,14 @@ import {
   Server, 
   ShieldAlert, 
   CheckCircle2, 
-  ArrowLeft
+  ArrowLeft,
+  ArrowRight,
+  ShieldCheck,
+  Layers,
+  Terminal,
+  Activity,
+  Archive,
+  Lock
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useI18n } from '../../context/I18nContext';
@@ -240,45 +247,160 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
         />
       }
     >
-      {/* 4. Attention / Operational Warnings Section */}
-      {data.overall_status_reasons && data.overall_status_reasons.length > 0 && data.overall_status !== 'OK' && (
-        <Card className="border-l-4 border-l-[#FF9F43] bg-amber-50/50 dark:bg-amber-950/10 border-slate-200 dark:border-white/[0.08] shadow-sm">
-          <CardContent className="p-5">
-            <div className="flex items-start gap-3.5">
-              <div className="p-2 rounded-lg bg-[#FF9F43]/15 text-[#FF9F43] shrink-0 mt-0.5">
-                <AlertTriangle className="w-5 h-5" />
+      {/* 4. Executive Status & Action Guidance Card */}
+      <Card
+        className={`border shadow-sm transition-all ${
+          data.overall_status === 'OK'
+            ? 'border-emerald-200/80 dark:border-emerald-900/40 bg-gradient-to-br from-emerald-50/40 to-white dark:from-emerald-950/10 dark:to-[#2F3349]'
+            : data.overall_status === 'WARN'
+            ? 'border-amber-200/80 dark:border-amber-900/40 bg-gradient-to-br from-amber-50/40 to-white dark:from-amber-950/10 dark:to-[#2F3349]'
+            : 'border-rose-200/80 dark:border-rose-900/40 bg-gradient-to-br from-rose-50/40 to-white dark:from-rose-950/10 dark:to-[#2F3349]'
+        }`}
+      >
+        <CardContent className="p-5 sm:p-6 space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 dark:border-white/[0.06] pb-4">
+            <div className="flex items-center gap-3">
+              <div
+                className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
+                  data.overall_status === 'OK'
+                    ? 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400'
+                    : data.overall_status === 'WARN'
+                    ? 'bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400'
+                    : 'bg-rose-100 dark:bg-rose-900/30 text-rose-600 dark:text-rose-400'
+                }`}
+              >
+                {data.overall_status === 'OK' ? (
+                  <ShieldCheck className="w-5 h-5" />
+                ) : data.overall_status === 'WARN' ? (
+                  <AlertTriangle className="w-5 h-5" />
+                ) : (
+                  <ShieldAlert className="w-5 h-5" />
+                )}
               </div>
-              <div className="space-y-1.5 flex-1">
-                <h4 className="text-sm font-bold text-slate-800 dark:text-white">
-                  {t('admin.attention')}
-                </h4>
-                <p className="text-xs text-slate-500 dark:text-vuexy-dark-muted font-medium">
-                  {t('admin.attentionSubtitle')}
+              <div>
+                <h3 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                  {t('admin.executiveGuidanceTitle')}
+                  <StatusBadge
+                    status={getOverallStatusVariant()}
+                    label={getOverallStatusLabel()}
+                    size="sm"
+                  />
+                </h3>
+                <p className="text-xs text-slate-500 dark:text-vuexy-dark-muted">
+                  {t('admin.executiveGuidanceSubtitle')}
                 </p>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-2 pt-2">
-                  {data.overall_status_reasons.map((reason, idx) => (
-                    <div
-                      key={idx}
-                      className="flex items-center gap-2 text-xs font-medium text-slate-700 dark:text-slate-300 bg-white dark:bg-[#2F3349] p-2.5 rounded-lg border border-slate-200/80 dark:border-white/[0.06]"
-                    >
-                      <span className="w-1.5 h-1.5 rounded-full bg-[#FF9F43] shrink-0" />
-                      <span className="truncate">{reason}</span>
-                    </div>
-                  ))}
-                </div>
               </div>
+            </div>
+
+            {onNavigate && (
+              <div className="flex items-center gap-2 flex-wrap">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => onNavigate('admin-operations')}
+                  className="gap-1.5 text-xs font-semibold cursor-pointer border-slate-200 dark:border-white/[0.08]"
+                >
+                  <Terminal className="w-3.5 h-3.5 text-vuexy-primary" />
+                  {t('admin.actionGoToOps')}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => onNavigate('admin-whatsapp')}
+                  className="gap-1.5 text-xs font-semibold cursor-pointer border-slate-200 dark:border-white/[0.08]"
+                >
+                  <Layers className="w-3.5 h-3.5 text-emerald-500" />
+                  {t('admin.actionGoToWhatsApp')}
+                </Button>
+              </div>
+            )}
+          </div>
+
+          <div className="text-sm font-medium text-slate-700 dark:text-slate-300">
+            {data.overall_status === 'OK'
+              ? t('admin.executiveAllGood')
+              : data.overall_status === 'WARN'
+              ? t('admin.executiveAttentionBody')
+              : t('admin.executiveCriticalBody')}
+          </div>
+
+          {/* Operational Issues & Action Steps */}
+          {data.overall_status_reasons && data.overall_status_reasons.length > 0 && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2">
+              {data.overall_status_reasons.map((reason, idx) => (
+                <div
+                  key={idx}
+                  className="p-3.5 rounded-xl bg-white/80 dark:bg-[#2F3349]/80 border border-slate-200/80 dark:border-white/[0.08] shadow-xs space-y-2"
+                >
+                  <div className="flex items-center gap-2 text-xs font-semibold text-slate-800 dark:text-white">
+                    <span className="w-2 h-2 rounded-full bg-amber-500 shrink-0" />
+                    <span className="truncate">{reason}</span>
+                  </div>
+                  <div className="text-[11px] text-slate-500 dark:text-slate-400 space-y-1">
+                    <div className="flex items-center gap-1">
+                      <strong className="text-slate-700 dark:text-slate-300">{t('admin.impactLabel')}</strong>
+                      <span>
+                        {reason.toLowerCase().includes('reboot')
+                          ? t('admin.rebootRequiredHelp')
+                          : t('admin.attentionSubtitle')}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* 5. Executive Quick Navigation Hub */}
+      {onNavigate && (
+        <Card className="border border-slate-200 dark:border-white/[0.08] bg-white dark:bg-[#2F3349] shadow-sm">
+          <CardHeader className="p-4 sm:p-5 border-b border-slate-100 dark:border-white/[0.06]">
+            <CardTitle className="text-sm font-bold text-slate-800 dark:text-white flex items-center gap-2">
+              <Activity className="w-4 h-4 text-vuexy-primary" />
+              {t('admin.quickNavTitle')}
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="p-4 sm:p-5">
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+              {[
+                { tab: 'admin-operations', label: t('admin.ops.title'), icon: Terminal, color: 'text-vuexy-primary' },
+                { tab: 'admin-whatsapp', label: t('admin.whatsapp.title'), icon: Layers, color: 'text-emerald-500' },
+                { tab: 'admin-deployment', label: t('admin.deployment.title'), icon: Server, color: 'text-blue-500' },
+                { tab: 'admin-monitoring', label: t('admin.monitoring.title'), icon: Activity, color: 'text-purple-500' },
+                { tab: 'admin-security', label: t('admin.security.title'), icon: Lock, color: 'text-amber-500' },
+                { tab: 'admin-backups', label: t('admin.backups.title'), icon: Archive, color: 'text-teal-500' },
+              ].map((item) => {
+                const IconComponent = item.icon;
+                return (
+                  <button
+                    key={item.tab}
+                    type="button"
+                    onClick={() => onNavigate(item.tab)}
+                    className="p-3 rounded-xl border border-slate-200/80 dark:border-white/[0.06] bg-slate-50/50 dark:bg-white/[0.02] hover:bg-slate-100/80 dark:hover:bg-white/[0.05] transition-all flex flex-col items-center text-center gap-2 cursor-pointer group"
+                  >
+                    <div className={`p-2 rounded-lg bg-white dark:bg-white/[0.05] shadow-xs group-hover:scale-105 transition-transform ${item.color}`}>
+                      <IconComponent className="w-4 h-4" />
+                    </div>
+                    <span className="text-xs font-semibold text-slate-700 dark:text-slate-200 leading-tight">
+                      {item.label}
+                    </span>
+                  </button>
+                );
+              })}
             </div>
           </CardContent>
         </Card>
       )}
 
-      {/* 5. System Resource Cards (4-col grid) */}
+      {/* 6. System Resource Cards (4-col grid) */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6">
         {/* CPU & Load */}
         <StatsCard
           title={t('admin.cpuLoad')}
           value={`${data.system.cpu_cores} ${t('admin.cores')}`}
-          subText={`${t('admin.loadAvg')}: ${data.system.load_average.join(' / ')}`}
+          subText={`${t('admin.loadAvg')}: ${data.system.load_average.join(' / ')} • ${data.system.load_average[0] < data.system.cpu_cores ? t('admin.loadNormal') : t('admin.loadHigh')}`}
           icon={Cpu}
           iconVariant="primary"
         />
@@ -287,7 +409,7 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
         <StatsCard
           title={t('admin.memory')}
           value={`${(data.system.memory_used_mb / 1024).toFixed(1)} GB`}
-          subText={`${t('admin.memoryAvail')}: ${(data.system.memory_available_mb / 1024).toFixed(1)} GB / ${(data.system.memory_total_mb / 1024).toFixed(1)} GB`}
+          subText={`${t('admin.ramUsedPercent', { percent: ((data.system.memory_used_mb / Math.max(1, data.system.memory_total_mb)) * 100).toFixed(0) })} • ${(data.system.memory_available_mb / 1024).toFixed(1)} GB ${t('admin.memoryAvail')}`}
           icon={Server}
           iconVariant="info"
         />
@@ -296,7 +418,7 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
         <StatsCard
           title={t('admin.disk')}
           value={`${data.system.disk_used_percent}%`}
-          subText={`${data.system.disk_used_gb} GB ${t('admin.diskUsed')} / ${data.system.disk_total_gb} GB`}
+          subText={`${data.system.disk_used_gb} GB / ${data.system.disk_total_gb} GB • ${data.system.disk_used_percent < 85 ? t('admin.diskAdequate') : t('admin.diskCritical')}`}
           icon={HardDrive}
           iconVariant="warning"
         />
@@ -305,7 +427,7 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
         <StatsCard
           title={t('admin.hostUptime')}
           value={data.system.uptime.replace('up ', '')}
-          subText={data.system.reboot_required ? t('admin.rebootPending') : t('admin.rebootNotRequiredBadge')}
+          subText={data.system.reboot_required ? t('admin.rebootRequiredHelp') : t('admin.rebootNotRequiredHelp')}
           icon={Clock}
           iconVariant={data.system.reboot_required ? 'danger' : 'success'}
           badge={
@@ -316,18 +438,31 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
         />
       </div>
 
-      {/* 6. Production Services Fleet Cards */}
+      {/* 7. Production Services Fleet Cards */}
       <Card className="border border-slate-200 dark:border-white/[0.08] bg-white dark:bg-[#2F3349] shadow-sm">
-        <CardHeader className="p-5 border-b border-slate-100 dark:border-white/[0.06] flex flex-row items-center justify-between">
+        <CardHeader className="p-5 border-b border-slate-100 dark:border-white/[0.06] flex flex-row items-center justify-between flex-wrap gap-2">
           <div>
             <CardTitle className="text-base font-bold text-slate-800 dark:text-white flex items-center gap-2">
               <Server className="w-4 h-4 text-vuexy-primary" />
               {t('admin.productionServices')}
             </CardTitle>
           </div>
-          <span className="text-xs font-semibold text-slate-400 dark:text-vuexy-dark-muted">
-            {data.containers.length} Core Containers
-          </span>
+          <div className="flex items-center gap-3">
+            <span className="text-xs font-semibold text-slate-400 dark:text-vuexy-dark-muted">
+              {t('admin.coreContainersCount', { count: data.containers.length })}
+            </span>
+            {onNavigate && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => onNavigate('admin-operations')}
+                className="gap-1.5 text-xs font-medium cursor-pointer"
+              >
+                <Terminal className="w-3.5 h-3.5" />
+                {t('admin.actionGoToOps')}
+              </Button>
+            )}
+          </div>
         </CardHeader>
         <CardContent className="p-5">
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -349,7 +484,7 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
                     </div>
                     <StatusBadge
                       status={isRunning ? 'active' : 'danger'}
-                      label={isRunning ? 'Running' : c.status}
+                      label={isRunning ? t('admin.statusRunning') : c.status}
                       size="sm"
                     />
                   </div>
@@ -383,7 +518,7 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
         </CardContent>
       </Card>
 
-      {/* 7. Database Summary Card */}
+      {/* 8. Database Summary Card */}
       <Card className="border border-slate-200 dark:border-white/[0.08] bg-white dark:bg-[#2F3349] shadow-sm">
         <CardHeader className="p-5 border-b border-slate-100 dark:border-white/[0.06] flex flex-row items-center justify-between">
           <CardTitle className="text-base font-bold text-slate-800 dark:text-white flex items-center gap-2">
@@ -392,7 +527,7 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
           </CardTitle>
           <StatusBadge
             status={data.database.health === 'healthy' ? 'active' : 'danger'}
-            label={data.database.health === 'healthy' ? 'Healthy' : data.database.health}
+            label={data.database.health === 'healthy' ? t('admin.statusHealthy') : data.database.health}
             size="sm"
           />
         </CardHeader>
@@ -430,7 +565,7 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
                 {t('admin.totalConnections')}
               </span>
               <span className="text-lg font-bold text-slate-800 dark:text-white mt-1 block">
-                {data.database.connections_total} / 100
+                {t('admin.dbConnectionsLimit', { active: data.database.connections_active, total: data.database.connections_total, max: 100 })}
               </span>
             </div>
           </div>
