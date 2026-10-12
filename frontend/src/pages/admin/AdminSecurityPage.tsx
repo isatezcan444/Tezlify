@@ -303,14 +303,14 @@ export const AdminSecurityPage: React.FC<AdminSecurityPageProps> = ({ onNavigate
           <StatsCard
             title={t('admin.security.sshHardening')}
             value={t('admin.security.statusHardened')}
-            subText="Key-Only Auth"
+            subText={t('admin.security.subKeyOnlyAuth')}
             icon={Lock}
             iconVariant="primary"
           />
           <StatsCard
             title={t('admin.security.firewall')}
             value={t('admin.security.statusActive')}
-            subText="Ports: 22, 80, 443"
+            subText={t('admin.security.subAllowedPorts')}
             icon={Flame}
             iconVariant="info"
           />
@@ -339,11 +339,17 @@ export const AdminSecurityPage: React.FC<AdminSecurityPageProps> = ({ onNavigate
               <div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-start gap-3">
                 <AlertTriangle className="w-4.5 h-4.5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
                 <div className="space-y-1 flex-1">
-                  <span className="font-bold text-xs text-amber-700 dark:text-amber-300 block">
-                    {t('admin.security.rebootWarningTitle')}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <span className="font-bold text-xs text-amber-700 dark:text-amber-300 block">
+                      {t('admin.security.rebootWarningTitle')}
+                    </span>
+                    <StatusBadge status="warning" label={t('admin.security.priorityMedium')} size="sm" />
+                  </div>
                   <p className="text-[11px] text-amber-800/80 dark:text-amber-200/70 leading-relaxed">
                     {t('admin.security.rebootWarningDesc')}
+                  </p>
+                  <p className="text-[10px] text-amber-700 dark:text-amber-300 font-medium">
+                    {t('admin.security.safeNextStep')} {t('admin.security.nextStepReboot')}
                   </p>
                 </div>
                 <StatusBadge status="warning" label={t('admin.security.rebootRequired')} size="sm" />
@@ -354,11 +360,17 @@ export const AdminSecurityPage: React.FC<AdminSecurityPageProps> = ({ onNavigate
             <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-white/[0.02] border border-slate-200/50 dark:border-white/[0.04] flex items-start gap-3">
               <HelpCircle className="w-4.5 h-4.5 text-slate-400 shrink-0 mt-0.5" />
               <div className="space-y-1 flex-1">
-                <span className="font-bold text-xs text-slate-700 dark:text-slate-200 block">
-                  {t('admin.security.warnFail2ban')}
-                </span>
+                <div className="flex items-center gap-2">
+                  <span className="font-bold text-xs text-slate-700 dark:text-slate-200 block">
+                    {t('admin.security.warnFail2ban')}
+                  </span>
+                  <StatusBadge status="offline" label={t('admin.security.priorityLow')} size="sm" />
+                </div>
                 <p className="text-[11px] text-slate-500 dark:text-[#7E7F96] leading-relaxed">
                   {t('admin.security.warnFail2banDesc')}
+                </p>
+                <p className="text-[10px] text-slate-500 dark:text-slate-400 font-medium">
+                  {t('admin.security.safeNextStep')} {t('admin.security.nextStepFail2ban')}
                 </p>
               </div>
               <StatusBadge status="offline" label={t('admin.security.notConfigured')} size="sm" />
@@ -368,11 +380,17 @@ export const AdminSecurityPage: React.FC<AdminSecurityPageProps> = ({ onNavigate
             <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-white/[0.02] border border-slate-200/50 dark:border-white/[0.04] flex items-start gap-3">
               <Info className="w-4.5 h-4.5 text-sky-500 shrink-0 mt-0.5" />
               <div className="space-y-1 flex-1">
-                <span className="font-bold text-xs text-slate-700 dark:text-slate-200 block">
-                  {t('admin.security.warnHsts')}
-                </span>
+                <div className="flex items-center gap-2">
+                  <span className="font-bold text-xs text-slate-700 dark:text-slate-200 block">
+                    {t('admin.security.warnHsts')}
+                  </span>
+                  <StatusBadge status="warning" label={t('admin.security.priorityLow')} size="sm" />
+                </div>
                 <p className="text-[11px] text-slate-500 dark:text-[#7E7F96] leading-relaxed">
                   {t('admin.security.warnHstsDesc')}
+                </p>
+                <p className="text-[10px] text-slate-500 dark:text-slate-400 font-medium">
+                  {t('admin.security.safeNextStep')} {t('admin.security.nextStepHsts')}
                 </p>
               </div>
               <StatusBadge status="warning" label={t('admin.security.notEnabledByDesign')} size="sm" />
@@ -382,11 +400,17 @@ export const AdminSecurityPage: React.FC<AdminSecurityPageProps> = ({ onNavigate
             <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-white/[0.02] border border-slate-200/50 dark:border-white/[0.04] flex items-start gap-3">
               <Info className="w-4.5 h-4.5 text-indigo-500 shrink-0 mt-0.5" />
               <div className="space-y-1 flex-1">
-                <span className="font-bold text-xs text-slate-700 dark:text-slate-200 block">
-                  {t('admin.security.warnCsp')}
-                </span>
+                <div className="flex items-center gap-2">
+                  <span className="font-bold text-xs text-slate-700 dark:text-slate-200 block">
+                    {t('admin.security.warnCsp')}
+                  </span>
+                  <StatusBadge status="offline" label={t('admin.security.priorityLow')} size="sm" />
+                </div>
                 <p className="text-[11px] text-slate-500 dark:text-[#7E7F96] leading-relaxed">
                   {t('admin.security.warnCspDesc')}
+                </p>
+                <p className="text-[10px] text-slate-500 dark:text-slate-400 font-medium">
+                  {t('admin.security.safeNextStep')} {t('admin.security.nextStepCsp')}
                 </p>
               </div>
               <StatusBadge status="offline" label={t('admin.security.notConfigured')} size="sm" />

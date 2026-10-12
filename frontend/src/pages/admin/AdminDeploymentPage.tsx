@@ -424,18 +424,74 @@ export const AdminDeploymentPage: React.FC<AdminDeploymentPageProps> = ({ onNavi
           onRun={runDeploy}
         />
 
-        {deploying && deploying.status === 'running' && (
-          <Card>
-            <CardContent className="pt-4">
-              <div className="flex items-center gap-2 text-sm font-bold text-slate-700 dark:text-slate-200">
-                <RefreshCw className="w-4 h-4 animate-spin text-vuexy-primary" />
-                {deploying.label}
-                {deploying.total_steps > 1 && deploying.current_step && (
-                  <span className="text-[11px] font-bold uppercase tracking-wide text-vuexy-primary">
-                    {t('admin.ops.stageProgress')} {deploying.current_step}
-                  </span>
-                )}
+        {deploying && (
+          <Card className={`border shadow-sm transition-all duration-200 ${
+            deploying.status === 'running'
+              ? 'border-vuexy-primary/40 bg-vuexy-primary/[0.04]'
+              : deploying.status === 'succeeded'
+              ? 'border-emerald-500/40 bg-emerald-500/[0.04]'
+              : 'border-rose-500/40 bg-rose-500/[0.04]'
+          }`}>
+            <CardContent className="pt-3.5 pb-3.5 space-y-2">
+              <div className="flex items-center justify-between gap-3 flex-wrap">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  {deploying.status === 'running' ? (
+                    <RefreshCw className="w-4 h-4 animate-spin text-vuexy-primary shrink-0" />
+                  ) : deploying.status === 'succeeded' ? (
+                    <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
+                  ) : (
+                    <XCircle className="w-4 h-4 text-rose-500 shrink-0" />
+                  )}
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-bold text-slate-800 dark:text-white truncate">
+                        {deploying.label}
+                      </span>
+                      {deploying.total_steps > 1 && deploying.current_step && (
+                        <span className="text-[11px] font-bold uppercase tracking-wide text-vuexy-primary">
+                          {t('admin.ops.stageProgress')} {deploying.current_step}
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                      {deploying.status === 'running'
+                        ? t('admin.ops.deployRestartsBackendNote')
+                        : deploying.status === 'succeeded'
+                        ? t('admin.deployment.deployOutcomeSuccessDesc')
+                        : t('admin.deployment.deployOutcomeFailedDesc', {
+                            step: deploying.step || deploying.current_step || '-',
+                          })}
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  {deploying.status === 'failed' && onNavigate && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => onNavigate('admin-operations')}
+                      className="text-xs cursor-pointer h-7"
+                    >
+                      {t('admin.deployment.goToOpsCenter')}
+                    </Button>
+                  )}
+                  {deploying.status !== 'running' && (
+                    <button
+                      type="button"
+                      onClick={() => setDeploying(null)}
+                      className="p-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded cursor-pointer"
+                      title={t('admin.ops.dismissBanner')}
+                    >
+                      <XCircle className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
               </div>
+              {deploying.logs.length > 0 && (
+                <pre className="max-h-24 overflow-auto rounded bg-slate-900 text-slate-200 p-2 text-[10px] font-mono whitespace-pre-wrap break-all leading-tight">
+                  {deploying.logs.slice(-3).join('\n')}
+                </pre>
+              )}
             </CardContent>
           </Card>
         )}

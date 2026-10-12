@@ -20,7 +20,9 @@ import { useI18n } from '../../context/I18nContext';
 import { useToast } from '../../context/ToastContext';
 import { AdminApi, OpsApi } from '../../api/admin';
 import { AdminShell } from '../../components/admin/AdminShell';
+import { CheckCircle2, Loader2, X, XCircle } from 'lucide-react';
 import { Card, CardContent } from '../../components/ui/card';
+import { Button } from '../../components/ui/button';
 import { ServiceStatusPanel } from '../../components/admin/ops/ServiceStatusPanel';
 import { OpsLogsPanel } from '../../components/admin/ops/OpsLogsPanel';
 import { formatBytes } from '../../components/admin/ops/formatBytes';
@@ -76,6 +78,7 @@ export const AdminOperationsPage: React.FC = () => {
   const [logsLoading, setLogsLoading] = useState(false);
   const [logsByService, setLogsByService] = useState<Record<string, string[]>>({});
   const [opLogs, setOpLogs] = useState<OpsOperation | null>(null);
+  const [dismissedOpId, setDismissedOpId] = useState<string | null>(null);
   const [clearingLogs, setClearingLogs] = useState(false);
   const [lastUpdated, setLastUpdated] = useState('');
   const busyRef = useRef(false);
@@ -248,11 +251,22 @@ export const AdminOperationsPage: React.FC = () => {
 
   const runOperation = useCallback(async (entry: OpsCatalogueEntry) => {
     if (entry.destructive) {
+      const confirmMsg =
+        entry.name.startsWith('deploy')
+          ? t('admin.ops.confirmDeployBody')
+          : entry.name === 'restart_gateway'
+          ? t('admin.ops.confirmRestartGateway')
+          : entry.name === 'restart_backend'
+          ? t('admin.ops.confirmRestartBackend')
+          : entry.name === 'restart_caddy' || entry.name === 'reload_caddy'
+          ? t('admin.ops.confirmRestartCaddy')
+          : entry.name === 'docker_prune'
+          ? t('admin.ops.confirmPrune')
+          : t('admin.ops.confirmRestartBody');
+
       const ok = await toast.confirm({
         title: t('admin.ops.confirmTitle'),
-        message: entry.name.startsWith('deploy')
-          ? t('admin.ops.confirmDeployBody')
-          : t('admin.ops.confirmRestartBody'),
+        message: confirmMsg,
         confirmText: t('admin.ops.confirmProceed'),
         cancelText: t('admin.ops.cancel'),
         variant: 'warning',
@@ -378,6 +392,10 @@ export const AdminOperationsPage: React.FC = () => {
     </div>
   );
 
+  const activeOp =
+    (status?.running || (opLogs && opLogs.status === 'running' ? opLogs : null)) ??
+    (opLogs && opLogs.id !== dismissedOpId ? opLogs : null);
+
   return (
     <AdminShell
       title={t('admin.ops.title')}
@@ -387,6 +405,83 @@ export const AdminOperationsPage: React.FC = () => {
       onRefresh={() => void fetchStatus(false)}
     >
       {tabBar}
+      {activeOp && (
+        <Card className={`border shadow-sm transition-all duration-200 ${
+          activeOp.status === 'running'
+            ? 'border-vuexy-primary/40 bg-vuexy-primary/[0.04]'
+            : activeOp.status === 'succeeded'
+            ? 'border-emerald-500/40 bg-emerald-500/[0.04]'
+            : 'border-rose-500/40 bg-rose-500/[0.04]'
+        }`}>
+          <CardContent className="pt-3.5 pb-3.5 space-y-2">
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <div className="flex items-center gap-2.5 min-w-0">
+                {activeOp.status === 'running' ? (
+                  <Loader2 className="w-4 h-4 text-vuexy-primary animate-spin shrink-0" />
+                ) : activeOp.status === 'succeeded' ? (
+                  <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
+                ) : (
+                  <XCircle className="w-4 h-4 text-rose-500 shrink-0" />
+                )}
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold text-slate-800 dark:text-white truncate">
+                      {activeOp.label}
+                    </span>
+                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                      activeOp.status === 'running'
+                        ? 'bg-vuexy-primary/15 text-vuexy-primary'
+                        : activeOp.status === 'succeeded'
+                        ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
+                        : 'bg-rose-500/15 text-rose-600 dark:text-rose-400'
+                    }`}>
+                      {activeOp.status === 'running'
+                        ? t('admin.ops.runningOperationBadge')
+                        : activeOp.status === 'succeeded'
+                        ? t('admin.ops.operationSucceeded')
+                        : t('admin.ops.operationFailed')}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                    {activeOp.status === 'running'
+                      ? t('admin.ops.activeOpBannerDesc')
+                      : activeOp.status === 'succeeded'
+                      ? t('admin.ops.completedOpSuccess')
+                      : t('admin.ops.completedOpFailed')}
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                {tab !== 'history' && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setTab('history')}
+                    className="text-xs cursor-pointer h-7"
+                  >
+                    {t('admin.ops.tabHistory')}
+                  </Button>
+                )}
+                {activeOp.status !== 'running' && (
+                  <button
+                    type="button"
+                    onClick={() => setDismissedOpId(activeOp.id)}
+                    className="p-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded cursor-pointer"
+                    title={t('admin.ops.dismissBanner')}
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
+            </div>
+            {activeOp.logs.length > 0 && (
+              <pre className="max-h-20 overflow-auto rounded bg-slate-900 text-slate-200 p-2 text-[10px] font-mono whitespace-pre-wrap break-all leading-tight">
+                {activeOp.logs.slice(-3).join('\n')}
+              </pre>
+            )}
+          </CardContent>
+        </Card>
+      )}
       <div key={tab} className="animate-fade-in">
       {error && !status && (
         <Card>

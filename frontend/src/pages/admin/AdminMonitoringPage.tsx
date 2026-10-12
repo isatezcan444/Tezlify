@@ -289,21 +289,48 @@ export const AdminMonitoringPage: React.FC<AdminMonitoringPageProps> = ({ onNavi
     {
       id: 'name',
       header: t('admin.monitoring.colInvariantName'),
-      cell: (item) => (
-        <div className="font-medium text-xs text-slate-800 dark:text-white">
-          {item.name}
-        </div>
-      ),
+      cell: (item) => {
+        const descKey =
+          item.id === 'R1' ? 'admin.monitoring.invR1Desc' :
+          item.id === 'R2' ? 'admin.monitoring.invR2Desc' :
+          item.id === 'R3' ? 'admin.monitoring.invR3Desc' :
+          item.id === 'R4' ? 'admin.monitoring.invR4Desc' :
+          item.id === 'R5' ? 'admin.monitoring.invR5Desc' :
+          item.id === 'R6' ? 'admin.monitoring.invR6Desc' :
+          item.id === 'R7' ? 'admin.monitoring.invR7Desc' :
+          item.id === 'R8' ? 'admin.monitoring.invR8Desc' :
+          item.id === 'R9' ? 'admin.monitoring.invR9Desc' :
+          item.id === 'R10' ? 'admin.monitoring.invR10Desc' :
+          item.id === 'R11' ? 'admin.monitoring.invR11Desc' :
+          item.id === 'R12' ? 'admin.monitoring.invR12Desc' :
+          item.id === 'R13' ? 'admin.monitoring.invR13Desc' : null;
+
+        return (
+          <div className="space-y-0.5 max-w-md py-0.5">
+            <span className="font-semibold text-xs text-slate-800 dark:text-white block">
+              {item.name}
+            </span>
+            {descKey && (
+              <span className="text-[11px] text-slate-500 dark:text-slate-400 block leading-snug">
+                {t(descKey)}
+              </span>
+            )}
+          </div>
+        );
+      },
     },
     {
       id: 'status',
       header: t('admin.monitoring.colInvariantStatus'),
       cell: (item) => {
         const isPass = item.passed === true;
-        const variant: StatusVariant = isPass ? 'online' : 'danger';
-        const label = isPass 
-          ? t('admin.monitoring.statusPass') 
-          : t('admin.monitoring.statusFail');
+        const isFail = item.passed === false;
+        const variant: StatusVariant = isPass ? 'online' : isFail ? 'danger' : 'offline';
+        const label = isPass
+          ? t('admin.monitoring.statusPass')
+          : isFail
+          ? t('admin.monitoring.statusFail')
+          : t('admin.monitoring.unknown');
         return (
           <div className="flex items-center gap-1.5">
             <StatusBadge status={variant} label={label} size="sm" />
@@ -729,6 +756,10 @@ export const AdminMonitoringPage: React.FC<AdminMonitoringPageProps> = ({ onNavi
             </div>
           </CardHeader>
           <CardContent className="pt-0 p-0">
+            <div className="p-3 bg-slate-50 dark:bg-white/[0.02] border-b border-slate-100 dark:border-white/[0.04] text-[11px] text-slate-500 dark:text-slate-400 flex items-center gap-2">
+              <Info className="w-3.5 h-3.5 text-[#7367F0] shrink-0" />
+              <span>{t('admin.monitoring.historyDisclaimer')}</span>
+            </div>
             <DataTable<AdminObservationRecord>
               data={recent_observations}
               columns={historyColumns}

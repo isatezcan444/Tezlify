@@ -121,12 +121,37 @@ export const ServiceStatusPanel: React.FC<ServiceStatusPanelProps> = ({
               >
                 <div>
                   <div className="flex items-start justify-between gap-2">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <Server className="w-4 h-4 text-slate-400 shrink-0" />
-                      <span className="text-sm font-bold text-slate-700 dark:text-white truncate">{short}</span>
+                    <div className="flex items-start gap-2 min-w-0">
+                      <Server className="w-4 h-4 text-slate-400 shrink-0 mt-0.5" />
+                      <div className="min-w-0">
+                        <span className="text-sm font-bold text-slate-700 dark:text-white truncate block">{short}</span>
+                        <span className="text-[10px] text-slate-400 dark:text-slate-500 truncate block">
+                          {short === 'backend' ? t('admin.ops.roleBackend') :
+                           short === 'gateway' ? t('admin.ops.roleGateway') :
+                           short === 'caddy' ? t('admin.ops.roleCaddy') :
+                           short === 'db' ? t('admin.ops.roleDb') : ''}
+                        </span>
+                      </div>
                     </div>
                     <StatusBadge status={statusVariant(svc)} label={statusLabelKey(svc, t)} size="sm" />
                   </div>
+                  {(() => {
+                    const isHealthy = health?.checks?.[short] ?? health?.checks?.[svc.name];
+                    if (isHealthy === false) {
+                      const detail = health?.details?.[short] ?? health?.details?.[svc.name];
+                      const reason = detail
+                        ? String(typeof detail === 'object' && detail !== null && 'error' in (detail as Record<string, unknown>)
+                          ? (detail as Record<string, unknown>).error
+                          : JSON.stringify(detail))
+                        : short;
+                      return (
+                        <div className="mt-2 p-1.5 rounded bg-rose-50 dark:bg-rose-950/30 border border-rose-200/50 dark:border-rose-900/30 text-[10px] text-rose-600 dark:text-rose-400 leading-snug">
+                          {t('admin.ops.serviceHealthFailed', { reason })}
+                        </div>
+                      );
+                    }
+                    return null;
+                  })()}
 
                   <dl className="text-[11px] space-y-1 mt-3">
                     <div className="flex justify-between gap-2">
@@ -204,7 +229,7 @@ export const ServiceStatusPanel: React.FC<ServiceStatusPanelProps> = ({
                     </>
                   ) : (
                     <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-snug">
-                      {t('admin.ops.dangerZoneDesc')}
+                      {short === 'db' ? t('admin.ops.dbProtectedNote') : t('admin.ops.dangerZoneDesc')}
                     </p>
                   )}
                 </div>

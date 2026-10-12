@@ -526,10 +526,14 @@ export const AdminBackupsPage: React.FC<AdminBackupsPageProps> = ({ onNavigate }
             </div>
           </CardHeader>
           <CardContent className="pt-4 divide-y divide-slate-100 dark:divide-white/[0.04]">
+            <div className="pb-3 text-[11px] text-slate-500 dark:text-slate-400 flex items-start gap-2">
+              <Info className="w-3.5 h-3.5 text-[#7367F0] shrink-0 mt-0.5" />
+              <span>{t('admin.backups.drRunbookNote')}</span>
+            </div>
             <DrCheckRow label={t('admin.backups.checkPostgresExists')} passed={hasPostgres} />
-            <DrCheckRow label={t('admin.backups.checkRestoreVerified')} passed={isVerified} />
-            {/* Isolated restore = implied by BACKUP_RESTORE_VERIFIED; we show same status */}
-            <DrCheckRow label={t('admin.backups.checkIsolatedRestore')} passed={isVerified} />
+            <DrCheckRow label={t('admin.backups.checkRestoreVerified')} passed={hasPostgres ? isVerified : null} />
+            {/* Isolated restore = implied by BACKUP_RESTORE_VERIFIED; guarded by file presence */}
+            <DrCheckRow label={t('admin.backups.checkIsolatedRestore')} passed={hasPostgres ? isVerified : null} />
             <DrCheckRow label={t('admin.backups.checkMediaBackup')} passed={hasMedia} />
             <DrCheckRow label={t('admin.backups.checkConfigBackup')} passed={hasConfig} />
             <DrCheckRow

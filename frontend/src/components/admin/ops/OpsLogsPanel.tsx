@@ -121,7 +121,7 @@ export const OpsLogsPanel: React.FC<OpsLogsPanelProps> = ({
               {t('admin.ops.logsTitle')}
             </CardTitle>
             <p className="text-xs text-slate-500 dark:text-[#7E7F96] mt-0.5">
-              {t('admin.ops.logsService')}: <strong>{activeService}</strong>
+              {t('admin.ops.logsService')}: <strong>{activeService}</strong> · <span>{t('admin.ops.logsLineCount', { count: String(visible.length) })}</span>
             </p>
           </div>
           <div className="flex items-center gap-1.5 flex-wrap">
@@ -134,10 +134,10 @@ export const OpsLogsPanel: React.FC<OpsLogsPanelProps> = ({
                   ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-600 dark:text-emerald-400 shadow-sm shadow-emerald-500/10'
                   : 'bg-slate-100 dark:bg-white/[0.05] border-slate-200 dark:border-white/[0.08] text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
               }`}
-              title={autoRefresh ? 'Canlı akış aktif (Her 5s otomatik yenileniyor)' : 'Canlı akışı başlat (Her 5s otomatik yenile)'}
+              title={autoRefresh ? t('admin.ops.liveStreamActiveTitle') : t('admin.ops.liveStreamStartTitle')}
             >
               <span className={`w-2 h-2 rounded-full ${autoRefresh ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400'}`} />
-              <span>{autoRefresh ? 'Canlı Akış (5s)' : 'Canlı Akış'}</span>
+              <span>{autoRefresh ? t('admin.ops.liveStreamRunning') : t('admin.ops.liveStreamToggle')}</span>
             </button>
 
             {/* Copy visible logs button */}
@@ -268,9 +268,21 @@ export const OpsLogsPanel: React.FC<OpsLogsPanelProps> = ({
         ) : error ? (
           <p className="text-xs text-rose-600 dark:text-rose-400">{error}</p>
         ) : visible.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-10 text-slate-400">
-            <FileText className="w-7 h-7 mb-2 opacity-40" />
-            <p className="text-xs">{t('admin.ops.logsEmpty')}</p>
+          <div className="flex flex-col items-center justify-center py-10 text-slate-400 text-center space-y-2">
+            <FileText className="w-7 h-7 mb-1 opacity-40" />
+            <p className="text-xs font-semibold text-slate-600 dark:text-slate-300">
+              {lines.length === 0 ? t('admin.ops.logsEmptyDisk') : t('admin.ops.logsNoMatch')}
+            </p>
+            {lines.length > 0 && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => { setLevel('ALL'); setQuery(''); }}
+                className="text-xs cursor-pointer"
+              >
+                {t('admin.ops.logsResetFilter')}
+              </Button>
+            )}
           </div>
         ) : (
           <pre className="max-h-[460px] overflow-auto rounded-lg bg-slate-50 dark:bg-[#0F1222] p-3 text-[11px] leading-relaxed">

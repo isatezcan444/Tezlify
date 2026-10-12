@@ -219,7 +219,11 @@ export const OpsHistoryPanel: React.FC<OpsHistoryPanelProps> = ({
             <EmptyState
               icon={ShieldAlert}
               title={t('admin.ops.noOperations')}
-              description={t('admin.ops.operationsSubtitle')}
+              description={
+                statusFilter !== 'ALL' || nameQuery.trim()
+                  ? t('admin.ops.emptyHistoryFiltered')
+                  : t('admin.ops.operationsSubtitle')
+              }
             />
           ) : (
             operations.map((op, idx) => {
@@ -246,7 +250,17 @@ export const OpsHistoryPanel: React.FC<OpsHistoryPanelProps> = ({
                       <XCircle className="w-4 h-4 text-rose-500 shrink-0" />
                     )}
                     <div className="min-w-0 flex-1">
-                      <p className="text-xs font-bold text-slate-700 dark:text-slate-200">{op.label}</p>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <p className="text-xs font-bold text-slate-700 dark:text-slate-200">{op.label}</p>
+                        {op.status === 'failed' && op.error && (
+                          <span
+                            className="text-[10px] font-semibold text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-950/30 px-1.5 py-0.5 rounded border border-rose-200/50 dark:border-rose-900/30 truncate max-w-xs"
+                            title={op.error}
+                          >
+                            {t('admin.ops.failureReason')}: {op.error}
+                          </span>
+                        )}
+                      </div>
                       <p className="text-[10px] text-slate-400 dark:text-slate-500 flex items-center gap-1.5 flex-wrap">
                         <span className="font-mono text-slate-500 dark:text-slate-400">{formatOpsDateTime(op.started_at)}</span>
                         <span>·</span>
@@ -292,7 +306,7 @@ export const OpsHistoryPanel: React.FC<OpsHistoryPanelProps> = ({
                           variant="outline"
                           size="sm"
                           onClick={() => {
-                            const details = `[${op.label}] (${op.status})\n${t('admin.ops.startedAt')}: ${formatOpsDateTime(op.started_at)}\n${t('admin.ops.finishedAt')}: ${formatOpsDateTime(op.finished_at)}\n${t('admin.ops.duration')}: ${op.duration_ms || 0}ms\n${t('admin.ops.actor')}: ${op.actor || '-'}\n${typeof op.exit_code === 'number' ? `${t('admin.ops.exitCode')}: ${op.exit_code}\n` : ''}${op.error ? `${t('admin.ops.errorLabel')}: ${op.error}\n` : ''}\nLoglar:\n${op.logs.join('\n')}`;
+                            const details = `[${op.label}] (${op.status})\n${t('admin.ops.startedAt')}: ${formatOpsDateTime(op.started_at)}\n${t('admin.ops.finishedAt')}: ${formatOpsDateTime(op.finished_at)}\n${t('admin.ops.duration')}: ${op.duration_ms || 0}ms\n${t('admin.ops.actor')}: ${op.actor || '-'}\n${typeof op.exit_code === 'number' ? `${t('admin.ops.exitCode')}: ${op.exit_code}\n` : ''}${op.error ? `${t('admin.ops.errorLabel')}: ${op.error}\n` : ''}\n${t('admin.ops.tabLogs')}:\n${op.logs.join('\n')}`;
                             navigator.clipboard.writeText(details);
                             setCopiedOpId(op.id);
                             setTimeout(() => setCopiedOpId(null), 2000);
