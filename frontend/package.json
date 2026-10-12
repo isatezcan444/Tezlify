@@ -21,6 +21,7 @@
     "verify:pairing-browser": "node scripts/verify-whatsapp-pairing-browser.mjs",
     "verify:ops-client": "node scripts/test-admin-ops-client.mjs",
     "verify:ops-dom": "node scripts/verify-admin-ops-dom.mjs",
+    "verify:admin-all": "node scripts/verify-admin-all-pages.mjs",
     "audit:admin-i18n": "node scripts/audit-admin-i18n.mjs",
     "verify:incident-engine": "node scripts/test-incident-engine.mjs",
     "lint": "eslint src --ext .ts,.tsx --resolve-plugins-relative-to . --max-warnings 0",

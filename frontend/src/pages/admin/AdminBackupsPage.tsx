@@ -366,16 +366,18 @@ export const AdminBackupsPage: React.FC<AdminBackupsPageProps> = ({ onNavigate }
   const { certification_status, off_host_status, postgres, media, config, total_backup_disk_usage } =
     data;
 
-  const isVerified = certification_status === 'BACKUP_RESTORE_VERIFIED';
-  const isOffHostConfigured = off_host_status !== 'OFF_HOST_BACKUP_NOT_CONFIGURED';
-
   const hasPostgres = Boolean(postgres.latest_backup_filename);
   const hasMedia = Boolean(media.latest_backup_filename);
   const hasConfig = Boolean(config.latest_backup_filename);
 
-  const overallBadgeVariant: StatusVariant = isVerified ? 'online' : 'warning';
+  const isVerified = Boolean(hasPostgres && certification_status === 'BACKUP_RESTORE_VERIFIED');
+  const isOffHostConfigured = off_host_status !== 'OFF_HOST_BACKUP_NOT_CONFIGURED';
+
+  const overallBadgeVariant: StatusVariant = isVerified ? 'online' : hasPostgres ? 'warning' : 'offline';
   const overallBadgeText = isVerified
     ? t('admin.backups.statusVerified')
+    : hasPostgres
+    ? t('admin.backups.uncertified')
     : t('admin.backups.notAvailable');
 
   return (
@@ -418,7 +420,7 @@ export const AdminBackupsPage: React.FC<AdminBackupsPageProps> = ({ onNavigate }
           <StatsCard
             title={t('admin.backups.certificationStatus')}
             value={isVerified ? '✓' : '—'}
-            subText={certification_status}
+            subText={hasPostgres ? certification_status : t('admin.backups.notAvailable')}
             icon={ShieldCheck}
             iconVariant={isVerified ? 'success' : 'warning'}
           />
@@ -442,11 +444,13 @@ export const AdminBackupsPage: React.FC<AdminBackupsPageProps> = ({ onNavigate }
           />
           <StatsCard
             title={t('admin.backups.overallStatus')}
-            value={isVerified ? 'OK' : 'WARN'}
+            value={isVerified ? 'OK' : hasPostgres ? 'WARN' : 'OFFLINE'}
             subText={
               isVerified
                 ? t('admin.backups.certified')
-                : t('admin.backups.uncertified')
+                : hasPostgres
+                ? t('admin.backups.uncertified')
+                : t('admin.backups.notAvailable')
             }
             icon={isVerified ? ShieldCheck : ShieldAlert}
             iconVariant={isVerified ? 'success' : 'warning'}
@@ -531,9 +535,9 @@ export const AdminBackupsPage: React.FC<AdminBackupsPageProps> = ({ onNavigate }
               <span>{t('admin.backups.drRunbookNote')}</span>
             </div>
             <DrCheckRow label={t('admin.backups.checkPostgresExists')} passed={hasPostgres} />
-            <DrCheckRow label={t('admin.backups.checkRestoreVerified')} passed={hasPostgres ? isVerified : null} />
+            <DrCheckRow label={t('admin.backups.checkRestoreVerified')} passed={hasPostgres ? (isVerified ? true : false) : null} />
             {/* Isolated restore = implied by BACKUP_RESTORE_VERIFIED; guarded by file presence */}
-            <DrCheckRow label={t('admin.backups.checkIsolatedRestore')} passed={hasPostgres ? isVerified : null} />
+            <DrCheckRow label={t('admin.backups.checkIsolatedRestore')} passed={hasPostgres ? (isVerified ? true : false) : null} />
             <DrCheckRow label={t('admin.backups.checkMediaBackup')} passed={hasMedia} />
             <DrCheckRow label={t('admin.backups.checkConfigBackup')} passed={hasConfig} />
             <DrCheckRow

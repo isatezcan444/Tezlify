@@ -290,20 +290,8 @@ export const AdminMonitoringPage: React.FC<AdminMonitoringPageProps> = ({ onNavi
       id: 'name',
       header: t('admin.monitoring.colInvariantName'),
       cell: (item) => {
-        const descKey =
-          item.id === 'R1' ? 'admin.monitoring.invR1Desc' :
-          item.id === 'R2' ? 'admin.monitoring.invR2Desc' :
-          item.id === 'R3' ? 'admin.monitoring.invR3Desc' :
-          item.id === 'R4' ? 'admin.monitoring.invR4Desc' :
-          item.id === 'R5' ? 'admin.monitoring.invR5Desc' :
-          item.id === 'R6' ? 'admin.monitoring.invR6Desc' :
-          item.id === 'R7' ? 'admin.monitoring.invR7Desc' :
-          item.id === 'R8' ? 'admin.monitoring.invR8Desc' :
-          item.id === 'R9' ? 'admin.monitoring.invR9Desc' :
-          item.id === 'R10' ? 'admin.monitoring.invR10Desc' :
-          item.id === 'R11' ? 'admin.monitoring.invR11Desc' :
-          item.id === 'R12' ? 'admin.monitoring.invR12Desc' :
-          item.id === 'R13' ? 'admin.monitoring.invR13Desc' : null;
+        const match = item.id.match(/^R(1[0-3]|[1-9])(?:_|$)/i);
+        const descKey = match ? `admin.monitoring.invR${match[1]}Desc` : null;
 
         return (
           <div className="space-y-0.5 max-w-md py-0.5">

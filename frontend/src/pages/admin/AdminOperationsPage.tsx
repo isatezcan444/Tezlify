@@ -20,7 +20,7 @@ import { useI18n } from '../../context/I18nContext';
 import { useToast } from '../../context/ToastContext';
 import { AdminApi, OpsApi } from '../../api/admin';
 import { AdminShell } from '../../components/admin/AdminShell';
-import { CheckCircle2, Loader2, X, XCircle } from 'lucide-react';
+import { ArrowLeft, CheckCircle2, Loader2, ShieldAlert, X, XCircle } from 'lucide-react';
 import { Card, CardContent } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
 import { ServiceStatusPanel } from '../../components/admin/ops/ServiceStatusPanel';
@@ -54,7 +54,11 @@ const OPS_TABS: { id: OpsTab; key: string }[] = [
 // time and would invalidate every memo downstream of it.
 const EMPTY_SERVICES: OpsServiceStatus[] = [];
 
-export const AdminOperationsPage: React.FC = () => {
+interface AdminOperationsPageProps {
+  onNavigate?: (tab: string) => void;
+}
+
+export const AdminOperationsPage: React.FC<AdminOperationsPageProps> = ({ onNavigate }) => {
   const { t } = useI18n();
   const { user, profile, isAdmin } = useAuth();
   const toast = useToast();
@@ -347,12 +351,31 @@ export const AdminOperationsPage: React.FC = () => {
 
   if (!showAdmin) {
     return (
-      <div className="max-w-2xl mx-auto mt-12 px-4">
-        <Card>
-          <CardContent className="pt-4">
-            <p className="text-sm text-rose-600 dark:text-rose-400">
+      <div className="max-w-2xl mx-auto mt-12 px-4 select-none">
+        <Card className="border-red-200 dark:border-red-900/40 bg-white dark:bg-[#2F3349] shadow-sm">
+          <CardContent className="p-8 text-center space-y-4">
+            <div className="w-16 h-16 mx-auto rounded-full bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 flex items-center justify-center">
+              <ShieldAlert className="w-8 h-8" />
+            </div>
+            <h3 className="text-xl font-bold text-slate-800 dark:text-white">
               {t('admin.accessDeniedTitle')}
+            </h3>
+            <p className="text-sm text-slate-500 dark:text-vuexy-dark-muted max-w-md mx-auto">
+              {t('admin.accessDeniedDesc')}
             </p>
+            {onNavigate && (
+              <div className="pt-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => onNavigate('dashboard')}
+                  className="gap-2 cursor-pointer"
+                >
+                  <ArrowLeft className="w-4 h-4" />
+                  {t('common.back')}
+                </Button>
+              </div>
+            )}
           </CardContent>
         </Card>
       </div>

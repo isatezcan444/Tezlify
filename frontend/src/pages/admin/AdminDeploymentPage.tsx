@@ -104,7 +104,12 @@ export const AdminDeploymentPage: React.FC<AdminDeploymentPageProps> = ({ onNavi
 
   useEffect(() => {
     if (!isAdmin && !profile?.is_admin && !user?.is_admin) return;
-    OpsApi.getStatus(5).then(setOpsStatus).catch(() => undefined);
+    OpsApi.getStatus(5).then((res) => {
+      setOpsStatus(res);
+      if (res.running && res.running.name.startsWith('deploy')) {
+        setDeploying(res.running);
+      }
+    }).catch(() => undefined);
   }, [isAdmin, profile?.is_admin, user?.is_admin]);
 
   const runDeploy = useCallback(async (entry: OpsCatalogueEntry) => {

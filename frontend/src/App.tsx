@@ -444,7 +444,7 @@ const AppContent: React.FC = () => {
             <AdminBackupsPage onNavigate={handleNavigate} />
           )}
           {activeTab === 'admin-operations' && (
-            <AdminOperationsPage />
+            <AdminOperationsPage onNavigate={handleNavigate} />
           )}
           {activeTab === 'admin-deployment' && (
             <AdminDeploymentPage onNavigate={handleNavigate} />

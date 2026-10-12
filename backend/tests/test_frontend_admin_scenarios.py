@@ -509,6 +509,17 @@ def test_frontend_admin_monitoring_scenarios_and_invariants():
       const passing = mockInvariants.filter(i => i.passed === true).length;
       const failing = mockInvariants.filter(i => i.passed === false).length;
       if (passing !== 12 || failing !== 1) throw new Error('Passing/failing calculation failed');
+
+      // Invariant description matching for both full IDs (R1_no_unexpected_restarts) and short IDs (R1)
+      const matchDesc = (id) => {
+        const m = id.match(/^R(1[0-3]|[1-9])(?:_|$)/i);
+        return m ? `admin.monitoring.invR${m[1]}Desc` : null;
+      };
+      if (matchDesc('R1_no_unexpected_restarts') !== 'admin.monitoring.invR1Desc') throw new Error('Full ID match failed');
+      if (matchDesc('R13_all_containers_running') !== 'admin.monitoring.invR13Desc') throw new Error('R13 match failed');
+      if (matchDesc('R2') !== 'admin.monitoring.invR2Desc') throw new Error('Short ID match failed');
+      if (matchDesc('X1') !== null) throw new Error('Invalid ID must return null');
+      results.push('invariant_description_matching_verified');
       results.push('invariant_matrix_verified');
 
       // 12 & 13: Recent observations and empty history
@@ -669,6 +680,16 @@ def test_frontend_admin_backups_scenarios_and_invariants():
       const isCertified = (status) => status === 'BACKUP_RESTORE_VERIFIED';
       if (!isCertified(mockData.certification_status)) throw new Error('Restore certification check failed');
       if (isCertified('NOT_CERTIFIED')) throw new Error('Non-certified check failed');
+
+      // Truthful verification: must be gated by file presence
+      const isTruthfullyVerified = (hasFile, certStatus) => Boolean(hasFile && certStatus === 'BACKUP_RESTORE_VERIFIED');
+      if (isTruthfullyVerified(false, 'BACKUP_RESTORE_VERIFIED') !== false) {
+        throw new Error('Missing file must not claim verified restore');
+      }
+      if (isTruthfullyVerified(true, 'BACKUP_RESTORE_VERIFIED') !== true) {
+        throw new Error('Present file with certified status must be verified');
+      }
+      results.push('backup_truthfulness_gated_verified');
       results.push('restore_certification_verified');
 
       // 10: Off-host warning
