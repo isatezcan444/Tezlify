@@ -206,6 +206,16 @@ export interface AdminBackupDiskUsage {
   human: string;
 }
 
+export interface AdminBackupHistoryItem {
+  filename: string;
+  category: 'postgres' | 'media' | 'config';
+  size_bytes: number;
+  size_human: string;
+  created_at: string;
+  age_hours: number;
+  sha256?: string | null;
+}
+
 export interface AdminBackupsResponse {
   timestamp: string;
   certification_status: string;
@@ -214,7 +224,9 @@ export interface AdminBackupsResponse {
   media: AdminBackupFileInfo;
   config: AdminBackupFileInfo;
   total_backup_disk_usage: AdminBackupDiskUsage;
+  backup_files?: AdminBackupHistoryItem[];
 }
+
 
 // ---------------------------------------------------------------------------
 // Deployment & Infrastructure Definitions

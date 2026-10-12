@@ -101,6 +101,12 @@ async def test_admin_create_backup_endpoint(admin_headers, tmp_path, monkeypatch
         assert validated.postgres.latest_backup_filename is not None
         assert validated.config.latest_backup_filename is not None
         assert validated.media.latest_backup_filename is not None
+        assert len(validated.backup_files) >= 3
+        cats = {f.category for f in validated.backup_files}
+        assert "postgres" in cats
+        assert "config" in cats
+        assert "media" in cats
+
 
 
 

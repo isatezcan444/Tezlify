@@ -525,18 +525,6 @@ export const AdminBackupsPage: React.FC<AdminBackupsPageProps> = ({ onNavigate }
       onRefresh={() => fetchBackups(false)}
       isRefreshing={refreshing}
       lastUpdated={lastUpdated}
-      actions={
-        <Button
-          variant="default"
-          size="sm"
-          disabled={operatingType !== null}
-          onClick={() => handleRunBackup('full')}
-          className="bg-[#7367F0] hover:bg-[#685dd8] text-white font-semibold text-xs flex items-center gap-1.5 shadow-xs"
-        >
-          <RefreshCw className={`w-3.5 h-3.5 ${operatingType === 'full' ? 'animate-spin' : ''}`} />
-          <span>{operatingType === 'full' ? t('admin.backups.backupInProgress') : t('admin.backups.takeBackupNow')}</span>
-        </Button>
-      }
     >
       <div className="space-y-6">
         <ExecutiveGuidanceCard
@@ -572,17 +560,14 @@ export const AdminBackupsPage: React.FC<AdminBackupsPageProps> = ({ onNavigate }
               : t('admin.backups.noBackupFound')
           }
           recommendedAction={{
-            label: t('admin.backups.takeBackupNow'),
-            description: isVerified
-              ? t('admin.backups.localBackupDesc')
-              : t('admin.backups.distinctionAlertBody'),
-            buttonText: t('admin.backups.takeBackupNow'),
-            onAction: () => handleRunBackup('full'),
+            label: t('admin.backups.actionGuideTitle'),
+            description: t('admin.backups.actionGuideDesc'),
             icon: Database,
           }}
           actionOutcome={t('admin.backups.readOnlyNotice')}
           technicalDetails={
             <div className="space-y-2 text-xs">
+
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                 <div className="p-2 rounded bg-white dark:bg-white/[0.03] border border-slate-200/50 dark:border-white/[0.05]">
                   <span className="text-[10px] text-slate-400 block">{t('admin.backups.postgresBackup')}</span>
@@ -629,6 +614,11 @@ export const AdminBackupsPage: React.FC<AdminBackupsPageProps> = ({ onNavigate }
               <div className="pt-2 border-t border-emerald-100/60 dark:border-emerald-900/20 flex items-center justify-between">
                 <span className="text-[11px] text-slate-400 dark:text-slate-500">
                   {t('admin.backups.totalStorage')}: <strong className="text-slate-700 dark:text-slate-200 font-semibold">{total_backup_disk_usage.human}</strong>
+                  {data.backup_files && data.backup_files.length > 0 && (
+                    <span className="ml-1.5 font-medium text-slate-500 dark:text-slate-400">
+                      • {data.backup_files.length} {t('admin.backups.historyColFile').toLowerCase()}
+                    </span>
+                  )}
                 </span>
                 <Button
                   variant="default"
@@ -638,7 +628,7 @@ export const AdminBackupsPage: React.FC<AdminBackupsPageProps> = ({ onNavigate }
                   className="text-xs font-semibold flex items-center gap-1.5 bg-[#7367F0] hover:bg-[#685dd8] text-white shadow-xs"
                 >
                   <RefreshCw className={`w-3.5 h-3.5 ${operatingType === 'full' ? 'animate-spin' : ''}`} />
-                  <span>{t('admin.backups.takeFullBackup')}</span>
+                  <span>{operatingType === 'full' ? t('admin.backups.backupInProgress') : t('admin.backups.takeBackupNow')}</span>
                 </Button>
               </div>
             </CardContent>
@@ -743,9 +733,6 @@ export const AdminBackupsPage: React.FC<AdminBackupsPageProps> = ({ onNavigate }
             info={postgres}
             iconColor="#7367F0"
             t={t}
-            isOperating={operatingType === 'postgres'}
-            onRunAction={() => handleRunBackup('postgres')}
-            actionText={t('admin.backups.backupDatabaseOnly')}
           />
           {/* Media */}
           <BackupFileCard
@@ -755,9 +742,6 @@ export const AdminBackupsPage: React.FC<AdminBackupsPageProps> = ({ onNavigate }
             info={media}
             iconColor="#28C76F"
             t={t}
-            isOperating={operatingType === 'media'}
-            onRunAction={() => handleRunBackup('media')}
-            actionText={t('admin.backups.backupMediaOnly')}
           />
           {/* Config */}
           <BackupFileCard
@@ -767,9 +751,6 @@ export const AdminBackupsPage: React.FC<AdminBackupsPageProps> = ({ onNavigate }
             info={config}
             iconColor="#FF9F43"
             t={t}
-            isOperating={operatingType === 'config'}
-            onRunAction={() => handleRunBackup('config')}
-            actionText={t('admin.backups.backupConfigOnly')}
           />
         </div>
 
@@ -807,26 +788,95 @@ export const AdminBackupsPage: React.FC<AdminBackupsPageProps> = ({ onNavigate }
           </CardContent>
         </Card>
 
-        {/* History — not available from current API */}
-        <Card className="border-slate-200 dark:border-white/[0.06] bg-white dark:bg-[#2F3349] shadow-sm">
+        {/* Backup History Table */}
+        <Card className="border-slate-200 dark:border-white/[0.06] bg-white dark:bg-[#2F3349] shadow-sm overflow-hidden">
           <CardHeader className="pb-3 border-b border-slate-100 dark:border-white/[0.06]">
-            <div className="flex items-center gap-2">
-              <Database className="w-5 h-5 text-[#7367F0]" />
-              <div>
-                <CardTitle className="text-base text-slate-800 dark:text-white">
-                  {t('admin.backups.historyTitle')}
-                </CardTitle>
-                <p className="text-xs text-slate-400 dark:text-[#7E7F96]">
-                  {t('admin.backups.historySubtitle')}
-                </p>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Database className="w-5 h-5 text-[#7367F0]" />
+                <div>
+                  <CardTitle className="text-base text-slate-800 dark:text-white">
+                    {t('admin.backups.historyTitle')}
+                  </CardTitle>
+                  <p className="text-xs text-slate-400 dark:text-[#7E7F96]">
+                    {t('admin.backups.historySubtitle')}
+                  </p>
+                </div>
               </div>
+              {data.backup_files && data.backup_files.length > 0 && (
+                <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-slate-100 dark:bg-white/[0.05] text-slate-600 dark:text-slate-300">
+                  {data.backup_files.length} {t('admin.backups.historyColFile').toLowerCase()}
+                </span>
+              )}
             </div>
           </CardHeader>
-          <CardContent className="pt-6 pb-8 flex flex-col items-center justify-center text-center gap-2">
-            <Inbox className="w-8 h-8 text-slate-300 dark:text-white/20" />
-            <p className="text-sm font-semibold text-slate-600 dark:text-slate-300">
-              {t('admin.backups.noHistoryAvailable')}
-            </p>
+          <CardContent className="p-0">
+            {!data.backup_files || data.backup_files.length === 0 ? (
+              <div className="pt-6 pb-8 flex flex-col items-center justify-center text-center gap-2 px-4">
+                <Inbox className="w-8 h-8 text-slate-300 dark:text-white/20" />
+                <p className="text-sm font-semibold text-slate-600 dark:text-slate-300">
+                  {t('admin.backups.noHistoryAvailable')}
+                </p>
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs text-slate-600 dark:text-slate-300 divide-y divide-slate-100 dark:divide-white/[0.04]">
+                  <thead className="bg-slate-50/80 dark:bg-white/[0.02] text-[11px] font-semibold text-slate-400 dark:text-[#7E7F96] uppercase tracking-wider">
+                    <tr>
+                      <th className="py-3 px-4">{t('admin.backups.historyColCategory')}</th>
+                      <th className="py-3 px-4">{t('admin.backups.historyColFile')}</th>
+                      <th className="py-3 px-4">{t('admin.backups.historyColSize')}</th>
+                      <th className="py-3 px-4">{t('admin.backups.historyColDate')}</th>
+                      <th className="py-3 px-4">{t('admin.backups.historyColAge')}</th>
+                      <th className="py-3 px-4">{t('admin.backups.historyColIntegrity')}</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 dark:divide-white/[0.04]">
+                    {data.backup_files.map((file, idx) => {
+                      const isPg = file.category === 'postgres';
+                      const isMed = file.category === 'media';
+                      const catBadge = isPg
+                        ? { label: t('admin.backups.categoryPostgres'), color: 'bg-[#7367F0]/10 text-[#7367F0] border-[#7367F0]/20' }
+                        : isMed
+                        ? { label: t('admin.backups.categoryMedia'), color: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20' }
+                        : { label: t('admin.backups.categoryConfig'), color: 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20' };
+
+                      return (
+                        <tr key={file.filename + idx} className="hover:bg-slate-50/60 dark:hover:bg-white/[0.02] transition-colors">
+                          <td className="py-3 px-4 whitespace-nowrap">
+                            <span className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold border ${catBadge.color}`}>
+                              {catBadge.label}
+                            </span>
+                          </td>
+                          <td className="py-3 px-4 font-mono font-medium text-slate-800 dark:text-slate-200">
+                            {file.filename}
+                          </td>
+                          <td className="py-3 px-4 whitespace-nowrap font-semibold text-slate-700 dark:text-slate-300">
+                            {file.size_human}
+                          </td>
+                          <td className="py-3 px-4 whitespace-nowrap text-slate-500 dark:text-slate-400">
+                            {formatDateTime(file.created_at)}
+                          </td>
+                          <td className="py-3 px-4 whitespace-nowrap text-slate-500 dark:text-slate-400">
+                            {file.age_hours.toFixed(1)} {t('admin.backups.ageHoursUnit')}
+                          </td>
+                          <td className="py-3 px-4 whitespace-nowrap">
+                            {file.sha256 ? (
+                              <span className="inline-flex items-center gap-1 font-mono text-[11px] text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded" title={file.sha256}>
+                                <CheckCircle2 className="w-3 h-3" />
+                                {file.sha256.slice(0, 10)}…
+                              </span>
+                            ) : (
+                              <span className="text-slate-400 text-[11px]">—</span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </CardContent>
         </Card>
       </div>

@@ -253,6 +253,18 @@ class AdminBackupCreateRequest(BaseModel):
     backup_type: Literal["full", "postgres", "config", "media"] = "full"
 
 
+class AdminBackupHistoryItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    filename: str
+    category: Literal["postgres", "media", "config"]
+    size_bytes: int
+    size_human: str
+    created_at: str
+    age_hours: float
+    sha256: Optional[str] = None
+
+
 class AdminBackupsResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -263,6 +275,8 @@ class AdminBackupsResponse(BaseModel):
     media: AdminBackupFileInfo
     config: AdminBackupFileInfo
     total_backup_disk_usage: AdminBackupDiskUsage
+    backup_files: List[AdminBackupHistoryItem] = Field(default_factory=list)
+
 
 
 # ---------------------------------------------------------------------------

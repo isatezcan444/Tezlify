@@ -23,6 +23,7 @@ from backend.app.schemas.admin import (
     AdminBackupFileInfo,
     AdminBackupDiskUsage,
     AdminBackupsResponse,
+    AdminBackupHistoryItem,
 )
 
 from backend.app.services.admin.admin_common import format_bytes_human
@@ -44,6 +45,9 @@ def _inspect_backup_dir(dir_path: str) -> AdminBackupFileInfo:
     try:
         for entry in os.scandir(dir_path):
             if entry.is_file() and not entry.name.startswith("."):
+                # Exclude checksum and temporary files
+                if entry.name.endswith(".sha256") or entry.name.endswith(".tmp"):
+                    continue
                 stat = entry.stat()
                 if stat.st_mtime > latest_mtime:
                     latest_mtime = stat.st_mtime
@@ -67,6 +71,59 @@ def _inspect_backup_dir(dir_path: str) -> AdminBackupFileInfo:
         created_at=created_dt.isoformat(),
         age_hours=age_hours,
     )
+
+
+def _list_backup_history(backups_root: str) -> list[AdminBackupHistoryItem]:
+    categories: list[tuple[str, str]] = [
+        ("postgres", os.path.join(backups_root, "postgres")),
+        ("media", os.path.join(backups_root, "media")),
+        ("config", os.path.join(backups_root, "config")),
+    ]
+    items: list[AdminBackupHistoryItem] = []
+    now_dt = datetime.now(timezone.utc)
+
+    for cat_name, cat_dir in categories:
+        if not os.path.exists(cat_dir) or not os.path.isdir(cat_dir):
+            continue
+        try:
+            for entry in os.scandir(cat_dir):
+                if (
+                    not entry.is_file()
+                    or entry.name.startswith(".")
+                    or entry.name.endswith(".sha256")
+                    or entry.name.endswith(".tmp")
+                ):
+                    continue
+                stat = entry.stat()
+                created_dt = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc)
+                age_hours = round(max(0.0, (now_dt - created_dt).total_seconds() / 3600.0), 1)
+
+                sha256_hash: Optional[str] = None
+                sha256_file = os.path.join(cat_dir, f"{entry.name}.sha256")
+                if os.path.exists(sha256_file):
+                    try:
+                        with open(sha256_file, "r") as sf:
+                            sha256_hash = sf.read().strip().split()[0]
+                    except Exception:
+                        pass
+
+                items.append(
+                    AdminBackupHistoryItem(
+                        filename=entry.name,
+                        category=cat_name,  # type: ignore[arg-type]
+                        size_bytes=stat.st_size,
+                        size_human=_format_size_human(stat.st_size),
+                        created_at=created_dt.isoformat(),
+                        age_hours=age_hours,
+                        sha256=sha256_hash,
+                    )
+                )
+        except Exception as e:
+            logger.debug("Failed listing backup history in %s: %s", cat_dir, e)
+
+    # Sort descending by creation date (newest first)
+    items.sort(key=lambda x: x.created_at, reverse=True)
+    return items
 
 
 def _compute_total_backup_usage(root_dir: str) -> Tuple[int, str]:
@@ -108,6 +165,7 @@ def get_backups_metadata() -> AdminBackupsResponse:
             bytes=tot_bytes,
             human=tot_human,
         ),
+        backup_files=_list_backup_history(backups_root),
     )
 
 
