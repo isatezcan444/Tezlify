@@ -61,10 +61,18 @@ done
 
 if [ "$IS_STAGING" = "1" ]; then
   printf '[release] Staging hedefi secildi -> staging-release.sh betigine aktariliyor\n'
-  exec "$REPO_ROOT/scripts/deploy/staging-release.sh" "${FORWARD_ARGS[@]}"
+  if [ "${#FORWARD_ARGS[@]}" -gt 0 ]; then
+    exec "$REPO_ROOT/scripts/deploy/staging-release.sh" "${FORWARD_ARGS[@]}"
+  else
+    exec "$REPO_ROOT/scripts/deploy/staging-release.sh"
+  fi
 fi
 
-set -- "${FORWARD_ARGS[@]}"
+if [ "${#FORWARD_ARGS[@]}" -gt 0 ]; then
+  set -- "${FORWARD_ARGS[@]}"
+else
+  set --
+fi
 
 SHA=""
 SKIP_BUILD=""
