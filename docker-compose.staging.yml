@@ -42,7 +42,7 @@ services:
       - "${STAGING_HTTP_PORT:-8080}:80"
       - "${STAGING_HTTPS_PORT:-8443}:443"
     volumes:
-      - ./Caddyfile.staging:/etc/caddy/Caddyfile:ro
+      - /opt/tezlify-staging/Caddyfile.staging:/etc/caddy/Caddyfile:ro
       - /opt/tezlify-staging/frontend_candidate:/srv/frontend:ro
       - caddy_data_staging:/data
       - caddy_config_staging:/config
