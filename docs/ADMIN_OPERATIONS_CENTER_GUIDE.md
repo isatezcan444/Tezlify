@@ -183,14 +183,15 @@ backend/app/
   - Telemetri geçmişi ve anomali tespiti.
 
 ### 5. Yedekleme ve Kurtarma (`AdminBackupsPage` / `admin-backups`)
-- **Amaç:** Veri tabanı ve medya yedeklerinin diskteki varlığını ve boyutunu denetleme.
-- **API:** `AdminApi.getBackups()` (`GET /api/v1/admin/backups`).
+- **Amaç:** Veri tabanı ve medya yedeklerinin diskteki varlığını ve boyutunu denetleme, tek tıkla canlı sistem/veritabanı yedeği alma ve harici bulut yedekleme stratejisini yönetme.
+- **API:**
+  - `AdminApi.getBackups()` (`GET /api/v1/admin/backups`) — Mevcut yedek arşivleri, boyutları ve SHA256 özetleri.
+  - `AdminApi.takeManualBackup(backupType)` (`POST /api/v1/admin/backups/create`) — Anlık canlı PostgreSQL dump (`pg_dump -Fc`), konfigürasyon arşivi veya medya yedeği tetikleme.
 - **Bileşenler:**
-  - PostgreSQL Dump Dosyaları (`.sql.gz` listesi, boyut, oluşturulma tarihi, SHA256).
-  - Medya ve WhatsApp Görsel Yedekleri.
-  - Konfigürasyon Dosyası Yedekleri.
-  - Toplam Disk Tüketimi ve Eski Yedekleri Temizleme Bilgisi.
-  - *Not:* İkili dosya indirme (binary download) güvenlik gereği kapalıdır; yalnızca meta veri denetlenir.
+  - **Yedekleme Stratejisi Kartları:** Yerel Sunucu Yedeği (Online ve anında yedekleme butonu) ile Harici Bulut Senkronizasyonu (İsteğe bağlı kurulum kılavuzu modali).
+  - **Kategori Bazlı Yedekleme:** PostgreSQL Dump, Sistem Konfigürasyonu (`Caddyfile`, `docker-compose.prod.yml`, `.env` anahtarları) ve Medya/Görseller için bağımsız veya toplu "Yedekle" butonları.
+  - **Yedek Arşiv Tablosu:** Dosya adı, türü, boyutu, oluşturulma tarihi ve SHA256 bütünlük özeti.
+  - *Not:* İkili dosya indirme (binary download) güvenlik gereği API üzerinden kapalıdır; host düzeyinde güvenli depolanır.
 
 ### 6. Dağıtım ve Altyapı (`AdminDeploymentPage` / `admin-deployment`)
 - **Amaç:** Canlıdaki kodun hangi commit'te olduğunu ve dağıtım sağlığını doğrulama.
