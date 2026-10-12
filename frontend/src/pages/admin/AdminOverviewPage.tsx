@@ -141,8 +141,34 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
       <AdminShell
         title={t('admin.operationsCenter')}
         subtitle={t('titles.adminOverviewSub')}
+        isRefreshing={true}
       >
         <div className="space-y-6">
+          {/* Executive Guidance Skeleton Card */}
+          <Card className="border border-slate-200/80 dark:border-white/[0.08] bg-white dark:bg-[#2F3349] shadow-sm">
+            <CardContent className="p-4 sm:p-5 space-y-4">
+              <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-white/[0.06]">
+                <div className="flex items-center gap-3">
+                  <Skeleton className="w-9 h-9 rounded-xl" />
+                  <div className="space-y-1.5">
+                    <Skeleton className="h-5 w-44 rounded-md" />
+                    <Skeleton className="h-3 w-64 rounded-md" />
+                  </div>
+                </div>
+                <Skeleton className="h-6 w-28 rounded-full" />
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3">
+                {[1, 2, 3, 4, 5].map((i) => (
+                  <div key={i} className="p-3.5 rounded-xl bg-slate-50/80 dark:bg-white/[0.02] border border-slate-100 dark:border-white/[0.04] space-y-2.5">
+                    <Skeleton className="h-3.5 w-24 rounded-md" />
+                    <Skeleton className="h-4 w-full rounded-md" />
+                    <Skeleton className="h-3 w-3/4 rounded-md" />
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6">
             {[1, 2, 3, 4].map((i) => (
               <Card key={i} className="p-5 space-y-3 bg-white dark:bg-[#2F3349]">

@@ -339,26 +339,50 @@ export const AdminBackupsPage: React.FC<AdminBackupsPageProps> = ({ onNavigate }
   // 3. Loading
   if (loading && !data) {
     return (
-      <div className="space-y-6">
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-4 border-b border-slate-200 dark:border-white/[0.06]">
-          <div className="space-y-2">
-            <Skeleton className="h-8 w-72 rounded-lg" />
-            <Skeleton className="h-4 w-96 rounded-md" />
+      <AdminShell
+        title={t('admin.backups.title')}
+        subtitle={t('admin.backups.subtitle')}
+        isRefreshing={true}
+      >
+        <div className="space-y-6">
+          {/* Executive Guidance Skeleton Card */}
+          <Card className="border border-slate-200/80 dark:border-white/[0.08] bg-white dark:bg-[#2F3349] shadow-sm">
+            <CardContent className="p-4 sm:p-5 space-y-4">
+              <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-white/[0.06]">
+                <div className="flex items-center gap-3">
+                  <Skeleton className="w-9 h-9 rounded-xl" />
+                  <div className="space-y-1.5">
+                    <Skeleton className="h-5 w-44 rounded-md" />
+                    <Skeleton className="h-3 w-64 rounded-md" />
+                  </div>
+                </div>
+                <Skeleton className="h-6 w-28 rounded-full" />
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3">
+                {[1, 2, 3, 4, 5].map((i) => (
+                  <div key={i} className="p-3.5 rounded-xl bg-slate-50/80 dark:bg-white/[0.02] border border-slate-100 dark:border-white/[0.04] space-y-2.5">
+                    <Skeleton className="h-3.5 w-24 rounded-md" />
+                    <Skeleton className="h-4 w-full rounded-md" />
+                    <Skeleton className="h-3 w-3/4 rounded-md" />
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+            {[0, 1, 2, 3].map((i) => (
+              <Skeleton key={i} className="h-28 rounded-xl" />
+            ))}
           </div>
-          <Skeleton className="h-9 w-32 rounded-lg" />
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+            {[0, 1, 2].map((i) => (
+              <Skeleton key={i} className="h-56 rounded-xl" />
+            ))}
+          </div>
+          <Skeleton className="h-64 w-full rounded-xl" />
         </div>
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-          {[0, 1, 2, 3].map((i) => (
-            <Skeleton key={i} className="h-28 rounded-xl" />
-          ))}
-        </div>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-          {[0, 1, 2].map((i) => (
-            <Skeleton key={i} className="h-56 rounded-xl" />
-          ))}
-        </div>
-        <Skeleton className="h-64 w-full rounded-xl" />
-      </div>
+      </AdminShell>
     );
   }
 
@@ -405,9 +429,13 @@ export const AdminBackupsPage: React.FC<AdminBackupsPageProps> = ({ onNavigate }
           }
           severity={{
             level: isVerified ? 'normal' : hasPostgres ? 'medium' : 'high',
-            label: overallBadgeText,
+            label: isVerified
+              ? t('admin.guidance.severityNormal')
+              : hasPostgres
+              ? t('admin.guidance.severityMedium')
+              : t('admin.guidance.severityHigh'),
             description: isVerified
-              ? t('admin.backups.certified')
+              ? t('admin.backups.statusVerified')
               : hasPostgres
               ? t('admin.backups.uncertified')
               : t('admin.backups.noBackupFound'),

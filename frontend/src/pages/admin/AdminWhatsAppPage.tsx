@@ -297,6 +297,69 @@ export const AdminWhatsAppPage: React.FC<AdminWhatsAppPageProps> = ({ onNavigate
     },
   ];
 
+  if (loading && !data) {
+    return (
+      <AdminShell
+        title={t('admin.whatsapp.title')}
+        subtitle={t('admin.whatsapp.subtitle')}
+        isRefreshing={true}
+      >
+        <div className="space-y-6">
+          {/* Executive Guidance Skeleton Card */}
+          <Card className="border border-slate-200/80 dark:border-white/[0.08] bg-white dark:bg-[#2F3349] shadow-sm">
+            <CardContent className="p-4 sm:p-5 space-y-4">
+              <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-white/[0.06]">
+                <div className="flex items-center gap-3">
+                  <Skeleton className="w-9 h-9 rounded-xl" />
+                  <div className="space-y-1.5">
+                    <Skeleton className="h-5 w-44 rounded-md" />
+                    <Skeleton className="h-3 w-64 rounded-md" />
+                  </div>
+                </div>
+                <Skeleton className="h-6 w-28 rounded-full" />
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3">
+                {[1, 2, 3, 4, 5].map((i) => (
+                  <div key={i} className="p-3.5 rounded-xl bg-slate-50/80 dark:bg-white/[0.02] border border-slate-100 dark:border-white/[0.04] space-y-2.5">
+                    <Skeleton className="h-3.5 w-24 rounded-md" />
+                    <Skeleton className="h-4 w-full rounded-md" />
+                    <Skeleton className="h-3 w-3/4 rounded-md" />
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Gateway bridge skeleton */}
+          <Card className="p-5 bg-white dark:bg-[#2F3349] border border-slate-200/80 dark:border-white/[0.08] space-y-4">
+            <div className="flex items-center justify-between">
+              <Skeleton className="h-5 w-48 rounded-md" />
+              <Skeleton className="h-6 w-24 rounded-full" />
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+              {[1, 2, 3, 4].map((i) => (
+                <div key={i} className="p-3 bg-slate-50/80 dark:bg-white/[0.02] rounded-xl space-y-2">
+                  <Skeleton className="h-3 w-20 rounded-md" />
+                  <Skeleton className="h-5 w-28 rounded-md" />
+                </div>
+              ))}
+            </div>
+          </Card>
+
+          {/* Stats row skeleton */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+            {[1, 2, 3, 4].map((i) => (
+              <Skeleton key={i} className="h-28 rounded-xl" />
+            ))}
+          </div>
+
+          {/* Session table skeleton */}
+          <Skeleton className="h-64 w-full rounded-xl" />
+        </div>
+      </AdminShell>
+    );
+  }
+
   const overallBadgeStatus: StatusVariant = 
     overallStatus === 'CRITICAL' ? 'danger' : overallStatus === 'WARN' ? 'warning' : 'active';
   const overallBadgeLabel = 
@@ -335,7 +398,11 @@ export const AdminWhatsAppPage: React.FC<AdminWhatsAppPageProps> = ({ onNavigate
           }
           severity={{
             level: overallStatus === 'OK' ? 'normal' : overallStatus === 'WARN' ? 'medium' : 'critical',
-            label: overallBadgeLabel,
+            label: overallStatus === 'OK'
+              ? t('admin.guidance.severityNormal')
+              : overallStatus === 'WARN'
+              ? t('admin.guidance.severityMedium')
+              : t('admin.guidance.severityCritical'),
             description: overallStatus === 'OK'
               ? t('admin.whatsapp.bridgeConnected')
               : (data?.socket_leases.duplicate_count

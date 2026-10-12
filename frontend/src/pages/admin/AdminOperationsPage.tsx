@@ -21,9 +21,10 @@ import { useToast } from '../../context/ToastContext';
 import { AdminApi, OpsApi } from '../../api/admin';
 import { AdminShell } from '../../components/admin/AdminShell';
 import { ExecutiveGuidanceCard } from '../../components/admin/ExecutiveGuidanceCard';
-import { ArrowLeft, CheckCircle2, Loader2, ShieldAlert, X, XCircle, Terminal, Layers } from 'lucide-react';
+import { ArrowLeft, CheckCircle2, Loader2, ShieldAlert, X, XCircle, Terminal, Layers, AlertTriangle } from 'lucide-react';
 import { Card, CardContent } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
+import { Skeleton } from '../../components/ui/Skeleton';
 import { ServiceStatusPanel } from '../../components/admin/ops/ServiceStatusPanel';
 import { OpsLogsPanel } from '../../components/admin/ops/OpsLogsPanel';
 import { formatBytes } from '../../components/admin/ops/formatBytes';
@@ -75,7 +76,7 @@ export const AdminOperationsPage: React.FC<AdminOperationsPageProps> = ({ onNavi
   // ORPHANED session (connected, but its DB row is gone). It lives on the
   // admin WhatsApp payload, which this page already has access to through the
   // read-only admin API, so no new call and no new endpoint is needed.
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busyName, setBusyName] = useState<string | null>(null);
   const [logService, setLogService] = useState<string>('gateway');
@@ -380,6 +381,116 @@ export const AdminOperationsPage: React.FC<AdminOperationsPageProps> = ({ onNavi
           </CardContent>
         </Card>
       </div>
+    );
+  }
+
+  // 1. Initial Loading Skeleton State (Shimmer shine effect, zero mock/dummy flash)
+  if (loading && !status) {
+    return (
+      <AdminShell
+        title={t('admin.ops.title')}
+        subtitle={t('admin.ops.subtitle')}
+        isRefreshing={true}
+      >
+        <div className="space-y-6">
+          {/* Executive Guidance Skeleton Card */}
+          <Card className="border border-slate-200/80 dark:border-white/[0.08] bg-white dark:bg-[#2F3349] shadow-sm">
+            <CardContent className="p-4 sm:p-5 space-y-4">
+              <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-white/[0.06]">
+                <div className="flex items-center gap-3">
+                  <Skeleton className="w-9 h-9 rounded-xl" />
+                  <div className="space-y-1.5">
+                    <Skeleton className="h-5 w-44 rounded-md" />
+                    <Skeleton className="h-3 w-64 rounded-md" />
+                  </div>
+                </div>
+                <Skeleton className="h-6 w-28 rounded-full" />
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3">
+                {[1, 2, 3, 4, 5].map((i) => (
+                  <div key={i} className="p-3.5 rounded-xl bg-slate-50/80 dark:bg-white/[0.02] border border-slate-100 dark:border-white/[0.04] space-y-2.5">
+                    <Skeleton className="h-3.5 w-24 rounded-md" />
+                    <Skeleton className="h-4 w-full rounded-md" />
+                    <Skeleton className="h-3 w-3/4 rounded-md" />
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Tab bar skeleton */}
+          <div className="flex items-center gap-2">
+            {[1, 2, 3, 4, 5].map((i) => (
+              <Skeleton key={i} className="h-8 w-24 rounded-lg" />
+            ))}
+          </div>
+
+          {/* Overview Panel Skeleton */}
+          <Card className="border border-slate-200/80 dark:border-white/[0.08] bg-white dark:bg-[#2F3349] p-5 space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <Skeleton className="w-10 h-10 rounded-xl" />
+                <div className="space-y-1.5">
+                  <Skeleton className="h-5 w-52 rounded-md" />
+                  <Skeleton className="h-3.5 w-72 rounded-md" />
+                </div>
+              </div>
+              <Skeleton className="h-4 w-32 rounded-md" />
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+              {[1, 2, 3, 4].map((i) => (
+                <div key={i} className="p-3.5 rounded-xl bg-slate-50/80 dark:bg-white/[0.02] border border-slate-100 dark:border-white/[0.04] space-y-2">
+                  <Skeleton className="h-3 w-20 rounded-md" />
+                  <Skeleton className="h-5 w-32 rounded-md" />
+                </div>
+              ))}
+            </div>
+          </Card>
+
+          {/* Services list skeleton */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {[1, 2, 3, 4].map((i) => (
+              <Card key={i} className="p-4 bg-white dark:bg-[#2F3349] space-y-3 border border-slate-200/80 dark:border-white/[0.08]">
+                <div className="flex items-center justify-between">
+                  <Skeleton className="h-4 w-28 rounded-md" />
+                  <Skeleton className="h-5 w-16 rounded-full" />
+                </div>
+                <Skeleton className="h-3 w-40 rounded-md" />
+              </Card>
+            ))}
+          </div>
+        </div>
+      </AdminShell>
+    );
+  }
+
+  // 2. Error Retry State
+  if (error && !status) {
+    return (
+      <AdminShell
+        title={t('admin.ops.title')}
+        subtitle={t('admin.ops.subtitle')}
+      >
+        <Card className="border-amber-200 dark:border-amber-900/40 bg-white dark:bg-[#2F3349] p-8 text-center space-y-4">
+          <div className="w-12 h-12 mx-auto rounded-full bg-amber-50 dark:bg-amber-900/20 text-amber-600 dark:text-amber-400 flex items-center justify-center">
+            <AlertTriangle className="w-6 h-6" />
+          </div>
+          <h3 className="text-lg font-bold text-slate-800 dark:text-white">
+            {t('admin.errorTitle')}
+          </h3>
+          <p className="text-sm text-slate-500 dark:text-vuexy-dark-muted max-w-md mx-auto">
+            {error}
+          </p>
+          <Button
+            variant="default"
+            size="sm"
+            onClick={() => void fetchStatus(true)}
+            className="cursor-pointer"
+          >
+            {t('admin.retry')}
+          </Button>
+        </Card>
+      </AdminShell>
     );
   }
 

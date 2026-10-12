@@ -15,6 +15,7 @@ import { useI18n } from '../../../context/I18nContext';
 import { Card, CardHeader, CardTitle, CardContent } from '../../ui/card';
 import { StatusBadge, StatusVariant } from '../../ui/StatusBadge';
 import { Button } from '../../ui/button';
+import { Skeleton } from '../../ui/Skeleton';
 import {
   computeExecutiveSummary,
   type ExecutiveHealthState,
@@ -77,6 +78,33 @@ export function OverviewPanel({
   onNavigateTab,
 }: OverviewPanelProps) {
   const { t } = useI18n();
+
+  if (loading && (!services || services.length === 0)) {
+    return (
+      <div className="space-y-6">
+        <Card className="border border-slate-200/80 dark:border-white/[0.08] bg-white dark:bg-[#2F3349] p-5 space-y-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <Skeleton className="w-10 h-10 rounded-xl" />
+              <div className="space-y-1.5">
+                <Skeleton className="h-5 w-52 rounded-md" />
+                <Skeleton className="h-3.5 w-72 rounded-md" />
+              </div>
+            </div>
+            <Skeleton className="h-4 w-32 rounded-md" />
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            {[1, 2, 3, 4].map((i) => (
+              <div key={i} className="p-3.5 rounded-lg bg-slate-50/80 dark:bg-white/[0.02] border border-slate-100 dark:border-white/[0.04] space-y-2">
+                <Skeleton className="h-3 w-20 rounded-md" />
+                <Skeleton className="h-5 w-32 rounded-md" />
+              </div>
+            ))}
+          </div>
+        </Card>
+      </div>
+    );
+  }
 
   const executive = useMemo(() => {
     return computeExecutiveSummary({

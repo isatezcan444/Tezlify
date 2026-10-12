@@ -178,66 +178,67 @@ export const ExecutiveGuidanceCard: React.FC<ExecutiveGuidanceCardProps> = ({
           </div>
         </div>
 
-        {/* 5 Core Executive Questions Grid — 5 cols on lg for a compact 1-row dashboard strip */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-2.5">
+        {/* 5 Core Executive Questions Grid — fully responsive: 1-col mobile, 2-col tablet, 3-col laptop, 5-col desktop */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3">
           {/* Soru 1: Şu anda sistemin durumu ne? */}
-          <div className="p-3 rounded-xl bg-white/80 dark:bg-[#2F3349]/80 border border-slate-200/80 dark:border-white/[0.06] shadow-xs flex flex-col justify-between">
+          <div className="p-3.5 rounded-xl bg-white/80 dark:bg-[#2F3349]/80 border border-slate-200/80 dark:border-white/[0.06] shadow-xs flex flex-col justify-between min-w-0">
             <div>
-              <div className="flex items-center gap-1.5 text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-slate-400 dark:text-[#7E7F96]">
+              <div className="flex items-center gap-1.5 text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-slate-400 dark:text-[#7E7F96] min-w-0">
                 <Activity className="w-3.5 h-3.5 text-vuexy-primary shrink-0" />
-                <span className="truncate">{t('admin.guidance.qCurrentState')}</span>
+                <span className="truncate" title={t('admin.guidance.qCurrentState')}>{t('admin.guidance.qCurrentState')}</span>
               </div>
-              <p className="text-xs sm:text-[13px] font-semibold text-slate-800 dark:text-slate-100 mt-1.5 leading-snug">
+              <p className="text-xs sm:text-[13px] font-semibold text-slate-800 dark:text-slate-100 mt-2 leading-snug break-words">
                 {currentState}
               </p>
             </div>
           </div>
 
           {/* Soru 2: Bir sorun varsa ne kadar önemli? */}
-          <div className="p-3 rounded-xl bg-white/80 dark:bg-[#2F3349]/80 border border-slate-200/80 dark:border-white/[0.06] shadow-xs flex flex-col justify-between">
+          <div className="p-3.5 rounded-xl bg-white/80 dark:bg-[#2F3349]/80 border border-slate-200/80 dark:border-white/[0.06] shadow-xs flex flex-col justify-between min-w-0">
             <div>
-              <div className="flex items-center justify-between gap-1 text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-slate-400 dark:text-[#7E7F96]">
+              <div className="flex items-center justify-between gap-1.5 text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-slate-400 dark:text-[#7E7F96] min-w-0">
                 <div className="flex items-center gap-1.5 min-w-0">
                   <AlertTriangle className="w-3.5 h-3.5 text-amber-500 shrink-0" />
-                  <span className="truncate">{t('admin.guidance.qSeverity')}</span>
+                  <span className="truncate" title={t('admin.guidance.qSeverity')}>{t('admin.guidance.qSeverity')}</span>
                 </div>
                 <StatusBadge
                   status={getSeverityBadgeVariant(severity.level)}
                   label={severity.label}
                   size="sm"
+                  className="shrink-0 max-w-[130px] truncate"
                 />
               </div>
-              <p className="text-xs sm:text-[13px] font-semibold text-slate-800 dark:text-slate-100 mt-1.5 leading-snug">
+              <p className="text-xs sm:text-[13px] font-semibold text-slate-800 dark:text-slate-100 mt-2 leading-snug break-words">
                 {severity.description || severity.label}
               </p>
             </div>
           </div>
 
           {/* Soru 3: Bu sorun beni veya müşterilerimi nasıl etkiliyor? */}
-          <div className="p-3 rounded-xl bg-white/80 dark:bg-[#2F3349]/80 border border-slate-200/80 dark:border-white/[0.06] shadow-xs flex flex-col justify-between">
+          <div className="p-3.5 rounded-xl bg-white/80 dark:bg-[#2F3349]/80 border border-slate-200/80 dark:border-white/[0.06] shadow-xs flex flex-col justify-between min-w-0">
             <div>
-              <div className="flex items-center gap-1.5 text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-slate-400 dark:text-[#7E7F96]">
+              <div className="flex items-center gap-1.5 text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-slate-400 dark:text-[#7E7F96] min-w-0">
                 <ShieldCheck className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
-                <span className="truncate">{t('admin.guidance.qImpact')}</span>
+                <span className="truncate" title={t('admin.guidance.qImpact')}>{t('admin.guidance.qImpact')}</span>
               </div>
-              <p className="text-xs sm:text-[13px] font-semibold text-slate-800 dark:text-slate-100 mt-1.5 leading-snug">
+              <p className="text-xs sm:text-[13px] font-semibold text-slate-800 dark:text-slate-100 mt-2 leading-snug break-words">
                 {businessImpact}
               </p>
             </div>
           </div>
 
           {/* Soru 4: Şimdi ne yapmalıyım? */}
-          <div className="p-3 rounded-xl bg-white/80 dark:bg-[#2F3349]/80 border border-slate-200/80 dark:border-white/[0.06] shadow-xs flex flex-col justify-between">
+          <div className="p-3.5 rounded-xl bg-white/80 dark:bg-[#2F3349]/80 border border-slate-200/80 dark:border-white/[0.06] shadow-xs flex flex-col justify-between min-w-0">
             <div>
-              <div className="flex items-center gap-1.5 text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-slate-400 dark:text-[#7E7F96]">
+              <div className="flex items-center gap-1.5 text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-slate-400 dark:text-[#7E7F96] min-w-0">
                 <CheckCircle2 className="w-3.5 h-3.5 text-blue-500 shrink-0" />
-                <span className="truncate">{t('admin.guidance.qRecommendedAction')}</span>
+                <span className="truncate" title={t('admin.guidance.qRecommendedAction')}>{t('admin.guidance.qRecommendedAction')}</span>
               </div>
-              <div className="mt-1.5 space-y-0.5">
+              <div className="mt-2 space-y-0.5">
                 <span className="text-xs sm:text-[13px] font-bold text-slate-800 dark:text-white block leading-snug">
                   {recommendedAction.label}
                 </span>
-                <p className="text-[11px] text-slate-500 dark:text-slate-300 leading-snug">
+                <p className="text-[11px] text-slate-500 dark:text-slate-300 leading-snug break-words">
                   {recommendedAction.description}
                 </p>
               </div>
@@ -245,13 +246,13 @@ export const ExecutiveGuidanceCard: React.FC<ExecutiveGuidanceCardProps> = ({
           </div>
 
           {/* Soru 5: Bu işlemi yaparsam ne olacak? */}
-          <div className="p-3 rounded-xl bg-white/80 dark:bg-[#2F3349]/80 border border-slate-200/80 dark:border-white/[0.06] shadow-xs flex flex-col justify-between">
+          <div className="p-3.5 rounded-xl bg-white/80 dark:bg-[#2F3349]/80 border border-slate-200/80 dark:border-white/[0.06] shadow-xs flex flex-col justify-between min-w-0">
             <div>
-              <div className="flex items-center gap-1.5 text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-slate-400 dark:text-[#7E7F96]">
+              <div className="flex items-center gap-1.5 text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-slate-400 dark:text-[#7E7F96] min-w-0">
                 <Terminal className="w-3.5 h-3.5 text-purple-500 shrink-0" />
-                <span className="truncate">{t('admin.guidance.qOutcome')}</span>
+                <span className="truncate" title={t('admin.guidance.qOutcome')}>{t('admin.guidance.qOutcome')}</span>
               </div>
-              <p className="text-xs sm:text-[13px] font-semibold text-slate-800 dark:text-slate-100 mt-1.5 leading-snug">
+              <p className="text-xs sm:text-[13px] font-semibold text-slate-800 dark:text-slate-100 mt-2 leading-snug break-words">
                 {actionOutcome}
               </p>
             </div>

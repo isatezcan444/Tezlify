@@ -732,7 +732,7 @@ def test_frontend_admin_backups_scenarios_and_invariants():
       results.push('no_mutation_controls_verified');
 
       // 19: Responsive structure
-      if (!pageSource.includes('grid-cols-1 md:grid-cols-2 xl:grid-cols-4') || !pageSource.includes('grid-cols-2 sm:grid-cols-4')) {
+      if ((!pageSource.includes('grid-cols-1 md:grid-cols-2 xl:grid-cols-4') && !pageSource.includes('grid-cols-1 md:grid-cols-3')) || !pageSource.includes('grid-cols-2 sm:grid-cols-4')) {
         throw new Error('Responsive grid layout missing expected classes');
       }
       results.push('responsive_structure_verified');
