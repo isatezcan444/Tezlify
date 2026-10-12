@@ -89,6 +89,22 @@ async def test_admin_backups_endpoint(admin_headers):
 
 
 @pytest.mark.asyncio
+async def test_admin_create_backup_endpoint(admin_headers, tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "TEZLIFY_BACKUPS_DIR", str(tmp_path / "backups"))
+    monkeypatch.setenv("TESTING", "1")
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        res = await ac.post("/api/v1/admin/backups/create", headers=admin_headers, json={"backup_type": "full"})
+        assert res.status_code == 200, res.text
+        data = res.json()
+        validated = AdminBackupsResponse.model_validate(data)
+        assert validated.postgres.latest_backup_filename is not None
+        assert validated.config.latest_backup_filename is not None
+        assert validated.media.latest_backup_filename is not None
+
+
+
+@pytest.mark.asyncio
 async def test_admin_deployment_endpoint(admin_headers):
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:

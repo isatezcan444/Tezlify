@@ -83,7 +83,7 @@ services:
       TEZLIFY_CONTAINER_SUFFIX: "-staging"
     volumes:
       - /opt/tezlify-staging/runtime:/opt/tezlify/runtime:ro
-      - /opt/tezlify-staging/backups:/opt/tezlify/backups:ro
+      - /opt/tezlify-staging/backups:/opt/tezlify/backups:rw
       - /opt/tezlify-staging/monitoring:/opt/tezlify/monitoring:ro
       - /run:/host/run:ro
       - /var/run/docker.sock:/var/run/docker.sock

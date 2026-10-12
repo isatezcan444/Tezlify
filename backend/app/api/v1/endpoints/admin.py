@@ -4,7 +4,7 @@ All routes are protected by `require_admin` dependency and strictly read-only.
 Zero mutation operations exist on this router.
 """
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Body, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.auth import AuthUser
@@ -15,13 +15,14 @@ from backend.app.schemas.admin import (
     AdminWhatsAppResponse,
     AdminMonitoringResponse,
     AdminBackupsResponse,
+    AdminBackupCreateRequest,
     AdminDeploymentResponse,
     AdminSecurityResponse,
 )
 from backend.app.services.admin.overview_service import get_overview_metrics
 from backend.app.services.admin.whatsapp_admin_service import get_whatsapp_operations_metrics
 from backend.app.services.admin.monitoring_admin_service import get_monitoring_metrics
-from backend.app.services.admin.backups_admin_service import get_backups_metadata
+from backend.app.services.admin.backups_admin_service import get_backups_metadata, trigger_backup
 from backend.app.services.admin.deployment_admin_service import get_deployment_metadata
 from backend.app.services.admin.security_admin_service import get_security_audit
 
@@ -60,6 +61,18 @@ async def get_backups(
 ) -> AdminBackupsResponse:
     """Read-only backups inspection: postgres, media, and config file metadata with total disk consumption."""
     return get_backups_metadata()
+
+
+@router.post("/backups/create", response_model=AdminBackupsResponse)
+async def create_backup(
+    payload: AdminBackupCreateRequest = Body(default_factory=AdminBackupCreateRequest),
+    current_admin: AuthUser = Depends(require_admin),
+) -> AdminBackupsResponse:
+    """Trigger an on-demand system, database, media, or config backup."""
+    try:
+        return await trigger_backup(payload.backup_type)
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.get("/deployment", response_model=AdminDeploymentResponse)

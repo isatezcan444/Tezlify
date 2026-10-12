@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Database,
   Image,
@@ -17,6 +18,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useI18n } from '../../context/I18nContext';
+import { useToast } from '../../context/ToastContext';
 import { AdminApi } from '../../api/admin';
 import { AdminBackupsResponse, AdminBackupFileInfo } from '../../types/admin';
 import { AdminShell } from '../../components/admin/AdminShell';
@@ -49,7 +51,7 @@ const formatDateTime = (isoString?: string | null): string => {
   }
 };
 
-// Renders a single backup category card with file metadata
+// Renders a single backup category card with file metadata and an action trigger
 const BackupFileCard: React.FC<{
   title: string;
   subtitle: string;
@@ -57,85 +59,115 @@ const BackupFileCard: React.FC<{
   info: AdminBackupFileInfo;
   iconColor: string;
   t: (key: string) => string;
-}> = ({ title, subtitle, icon: Icon, info, iconColor, t }) => {
+  isOperating?: boolean;
+  onRunAction?: () => void;
+  actionText?: string;
+}> = ({
+  title,
+  subtitle,
+  icon: Icon,
+  info,
+  iconColor,
+  t,
+  isOperating = false,
+  onRunAction,
+  actionText,
+}) => {
   const hasBackup = Boolean(info.latest_backup_filename);
 
   return (
-    <Card className="border-slate-200 dark:border-white/[0.06] bg-white dark:bg-[#2F3349] shadow-sm">
-      <CardHeader className="pb-3 border-b border-slate-100 dark:border-white/[0.06]">
-        <div className="flex items-center gap-2.5">
-          <div
-            className="w-9 h-9 rounded-xl flex items-center justify-center"
-            style={{ backgroundColor: `${iconColor}18` }}
+    <Card className="border-slate-200 dark:border-white/[0.06] bg-white dark:bg-[#2F3349] shadow-sm flex flex-col justify-between">
+      <div>
+        <CardHeader className="pb-3 border-b border-slate-100 dark:border-white/[0.06]">
+          <div className="flex items-center gap-2.5">
+            <div
+              className="w-9 h-9 rounded-xl flex items-center justify-center"
+              style={{ backgroundColor: `${iconColor}18` }}
+            >
+              <Icon className="w-4.5 h-4.5" style={{ color: iconColor }} />
+            </div>
+            <div>
+              <CardTitle className="text-sm font-bold text-slate-800 dark:text-white">
+                {title}
+              </CardTitle>
+              <p className="text-[11px] text-slate-400 dark:text-[#7E7F96]">{subtitle}</p>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent className="pt-4 space-y-3">
+          {!hasBackup ? (
+            <div className="flex flex-col items-center justify-center py-6 text-center space-y-2">
+              <Inbox className="w-7 h-7 text-slate-300 dark:text-white/20" />
+              <p className="text-xs font-semibold text-slate-600 dark:text-slate-300">
+                {t('admin.backups.notAvailable')}
+              </p>
+              <p className="text-[11px] text-slate-400 dark:text-slate-500">
+                {t('admin.backups.noBackupFound')}
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-2.5">
+              {/* Filename */}
+              <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-200/40 dark:border-white/[0.03]">
+                <span className="text-[10px] uppercase font-semibold text-slate-400 block tracking-wider">
+                  {t('admin.backups.filename')}
+                </span>
+                <span
+                  className="font-mono text-xs font-medium text-slate-700 dark:text-slate-200 mt-0.5 block break-all"
+                  title={info.latest_backup_filename ?? undefined}
+                >
+                  {info.latest_backup_filename}
+                </span>
+              </div>
+              {/* Size + Age grid */}
+              <div className="grid grid-cols-2 gap-2">
+                <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-200/40 dark:border-white/[0.03]">
+                  <span className="text-[10px] uppercase font-semibold text-slate-400 block tracking-wider">
+                    {t('admin.backups.size')}
+                  </span>
+                  <span className="font-mono text-xs font-bold text-slate-800 dark:text-white mt-0.5 block">
+                    {info.size_human ?? '—'}
+                  </span>
+                </div>
+                <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-200/40 dark:border-white/[0.03]">
+                  <span className="text-[10px] uppercase font-semibold text-slate-400 block tracking-wider">
+                    {t('admin.backups.ageHours')}
+                  </span>
+                  <span className="font-mono text-xs font-bold text-slate-800 dark:text-white mt-0.5 block">
+                    {info.age_hours != null
+                      ? `${info.age_hours.toFixed(1)} ${t('admin.backups.ageHoursUnit')}`
+                      : '—'}
+                  </span>
+                </div>
+              </div>
+              {/* Created At */}
+              <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-200/40 dark:border-white/[0.03]">
+                <span className="text-[10px] uppercase font-semibold text-slate-400 block tracking-wider">
+                  {t('admin.backups.createdAt')}
+                </span>
+                <span className="font-mono text-xs text-slate-600 dark:text-slate-300 mt-0.5 block">
+                  {formatDateTime(info.created_at)}
+                </span>
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </div>
+
+      {onRunAction && actionText && (
+        <div className="px-5 pb-4 pt-1">
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={isOperating}
+            onClick={onRunAction}
+            className="w-full text-xs font-semibold flex items-center justify-center gap-1.5 h-8.5 border-slate-200/80 dark:border-white/[0.08] hover:bg-[#7367F0]/10 hover:text-[#7367F0] hover:border-[#7367F0]/30 transition-all"
           >
-            <Icon className="w-4.5 h-4.5" style={{ color: iconColor }} />
-          </div>
-          <div>
-            <CardTitle className="text-sm font-bold text-slate-800 dark:text-white">
-              {title}
-            </CardTitle>
-            <p className="text-[11px] text-slate-400 dark:text-[#7E7F96]">{subtitle}</p>
-          </div>
+            <RefreshCw className={`w-3.5 h-3.5 ${isOperating ? 'animate-spin' : ''}`} />
+            <span>{actionText}</span>
+          </Button>
         </div>
-      </CardHeader>
-      <CardContent className="pt-4">
-        {!hasBackup ? (
-          <div className="flex flex-col items-center justify-center py-6 text-center space-y-2">
-            <Inbox className="w-7 h-7 text-slate-300 dark:text-white/20" />
-            <p className="text-xs font-semibold text-slate-600 dark:text-slate-300">
-              {t('admin.backups.notAvailable')}
-            </p>
-            <p className="text-[11px] text-slate-400 dark:text-slate-500">
-              {t('admin.backups.noBackupFound')}
-            </p>
-          </div>
-        ) : (
-          <div className="space-y-2.5">
-            {/* Filename */}
-            <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-200/40 dark:border-white/[0.03]">
-              <span className="text-[10px] uppercase font-semibold text-slate-400 block tracking-wider">
-                {t('admin.backups.filename')}
-              </span>
-              <span
-                className="font-mono text-xs font-medium text-slate-700 dark:text-slate-200 mt-0.5 block break-all"
-                title={info.latest_backup_filename ?? undefined}
-              >
-                {info.latest_backup_filename}
-              </span>
-            </div>
-            {/* Size + Age grid */}
-            <div className="grid grid-cols-2 gap-2">
-              <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-200/40 dark:border-white/[0.03]">
-                <span className="text-[10px] uppercase font-semibold text-slate-400 block tracking-wider">
-                  {t('admin.backups.size')}
-                </span>
-                <span className="font-mono text-xs font-bold text-slate-800 dark:text-white mt-0.5 block">
-                  {info.size_human ?? '—'}
-                </span>
-              </div>
-              <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-200/40 dark:border-white/[0.03]">
-                <span className="text-[10px] uppercase font-semibold text-slate-400 block tracking-wider">
-                  {t('admin.backups.ageHours')}
-                </span>
-                <span className="font-mono text-xs font-bold text-slate-800 dark:text-white mt-0.5 block">
-                  {info.age_hours != null
-                    ? `${info.age_hours.toFixed(1)} ${t('admin.backups.ageHoursUnit')}`
-                    : '—'}
-                </span>
-              </div>
-            </div>
-            {/* Created At */}
-            <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-200/40 dark:border-white/[0.03]">
-              <span className="text-[10px] uppercase font-semibold text-slate-400 block tracking-wider">
-                {t('admin.backups.createdAt')}
-              </span>
-              <span className="font-mono text-xs text-slate-600 dark:text-slate-300 mt-0.5 block">
-                {formatDateTime(info.created_at)}
-              </span>
-            </div>
-          </div>
-        )}
-      </CardContent>
+      )}
     </Card>
   );
 };
@@ -195,13 +227,77 @@ const DrCheckRow: React.FC<{
   );
 };
 
+// Off-Host Guide Modal
+const OffHostGuideModal: React.FC<{
+  isOpen: boolean;
+  onClose: () => void;
+  t: (key: string) => string;
+}> = ({ isOpen, onClose, t }) => {
+  if (!isOpen) return null;
+  return createPortal(
+    <div className="fixed inset-0 z-[99999] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-150">
+      <div className="relative w-full max-w-lg bg-white dark:bg-[#2F3349] rounded-2xl shadow-xl border border-slate-200 dark:border-white/[0.08] overflow-hidden">
+        <div className="p-5 border-b border-slate-100 dark:border-white/[0.06] flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-amber-500/10 text-amber-600 dark:text-amber-400 flex items-center justify-center">
+              <CloudOff className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="text-base font-bold text-slate-800 dark:text-white">
+                {t('admin.backups.offHostGuideTitle')}
+              </h3>
+              <p className="text-xs text-slate-400 dark:text-[#7E7F96]">
+                {t('admin.backups.offHostGuideSubtitle')}
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 p-1 rounded-lg transition-colors"
+          >
+            <XCircle className="w-5 h-5" />
+          </button>
+        </div>
+        <div className="p-5 space-y-3.5 text-xs">
+          <p className="text-slate-600 dark:text-slate-300 leading-relaxed font-medium">
+            {t('admin.backups.offHostWarningDesc')}
+          </p>
+          <div className="space-y-2 p-3.5 rounded-xl bg-slate-50 dark:bg-white/[0.02] border border-slate-200/50 dark:border-white/[0.04]">
+            <p className="font-semibold text-slate-700 dark:text-slate-200">
+              {t('admin.backups.offHostStep1')}
+            </p>
+            <p className="font-semibold text-slate-700 dark:text-slate-200">
+              {t('admin.backups.offHostStep2')}
+            </p>
+            <p className="font-semibold text-slate-700 dark:text-slate-200">
+              {t('admin.backups.offHostStep3')}
+            </p>
+          </div>
+          <p className="text-[11px] text-slate-400 dark:text-slate-500 italic">
+            {t('admin.backups.offHostGuideNote')}
+          </p>
+        </div>
+        <div className="p-4 bg-slate-50 dark:bg-white/[0.02] border-t border-slate-100 dark:border-white/[0.06] flex justify-end">
+          <Button variant="default" size="sm" onClick={onClose} className="px-5">
+            {t('admin.backups.close')}
+          </Button>
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+};
+
 export const AdminBackupsPage: React.FC<AdminBackupsPageProps> = ({ onNavigate }) => {
   const { t } = useI18n();
   const { user, profile, isAdmin } = useAuth();
+  const toast = useToast();
 
   const [data, setData] = useState<AdminBackupsResponse | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [refreshing, setRefreshing] = useState<boolean>(false);
+  const [operatingType, setOperatingType] = useState<string | null>(null);
+  const [showGuideModal, setShowGuideModal] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<string>('');
 
@@ -233,6 +329,22 @@ export const AdminBackupsPage: React.FC<AdminBackupsPageProps> = ({ onNavigate }
     },
     [t]
   );
+
+  const handleRunBackup = async (type: 'full' | 'postgres' | 'config' | 'media' = 'full') => {
+    if (operatingType) return;
+    setOperatingType(type);
+    toast.info(t('admin.backups.backupInProgress'));
+    try {
+      const updated = await AdminApi.takeManualBackup(type);
+      setData(updated);
+      setLastUpdated(new Date().toLocaleTimeString());
+      toast.success(t('admin.backups.backupSuccess'));
+    } catch (err: any) {
+      toast.error(`${t('admin.backups.backupFailed')}: ${err.message || ''}`);
+    } finally {
+      setOperatingType(null);
+    }
+  };
 
   useEffect(() => {
     if (!showAdmin) {
@@ -413,6 +525,18 @@ export const AdminBackupsPage: React.FC<AdminBackupsPageProps> = ({ onNavigate }
       onRefresh={() => fetchBackups(false)}
       isRefreshing={refreshing}
       lastUpdated={lastUpdated}
+      actions={
+        <Button
+          variant="default"
+          size="sm"
+          disabled={operatingType !== null}
+          onClick={() => handleRunBackup('full')}
+          className="bg-[#7367F0] hover:bg-[#685dd8] text-white font-semibold text-xs flex items-center gap-1.5 shadow-xs"
+        >
+          <RefreshCw className={`w-3.5 h-3.5 ${operatingType === 'full' ? 'animate-spin' : ''}`} />
+          <span>{operatingType === 'full' ? t('admin.backups.backupInProgress') : t('admin.backups.takeBackupNow')}</span>
+        </Button>
+      }
     >
       <div className="space-y-6">
         <ExecutiveGuidanceCard
@@ -448,12 +572,12 @@ export const AdminBackupsPage: React.FC<AdminBackupsPageProps> = ({ onNavigate }
               : t('admin.backups.noBackupFound')
           }
           recommendedAction={{
-            label: isVerified ? t('admin.guidance.noActionNeeded') : t('admin.backups.safeNextStep'),
+            label: t('admin.backups.takeBackupNow'),
             description: isVerified
-              ? t('admin.guidance.noActionNeededDesc')
+              ? t('admin.backups.localBackupDesc')
               : t('admin.backups.distinctionAlertBody'),
-            buttonText: (onNavigate && !isVerified) ? t('admin.actionGoToOps') : undefined,
-            onAction: (onNavigate && !isVerified) ? () => onNavigate('admin-operations') : undefined,
+            buttonText: t('admin.backups.takeBackupNow'),
+            onAction: () => handleRunBackup('full'),
             icon: Database,
           }}
           actionOutcome={t('admin.backups.readOnlyNotice')}
@@ -481,20 +605,85 @@ export const AdminBackupsPage: React.FC<AdminBackupsPageProps> = ({ onNavigate }
           }
         />
 
-        {/* Off-Host Warning Banner (Surfaced only if configuration is missing) */}
-        {!isOffHostConfigured && (
-          <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-start gap-3">
-            <CloudOff className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
-            <div className="space-y-1">
-              <p className="font-bold text-sm text-amber-700 dark:text-amber-300">
-                {t('admin.backups.offHostWarningTitle')}
-              </p>
-              <p className="text-xs text-amber-800/80 dark:text-amber-200/70 leading-relaxed">
-                {t('admin.backups.offHostWarningDesc')}
-              </p>
-            </div>
-          </div>
-        )}
+        {/* 2-Column Backup Strategy & Storage Overview */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {/* 1. Local Server Backup (Active & Secure) */}
+          <Card className="border-emerald-200/70 dark:border-emerald-900/30 bg-emerald-50/20 dark:bg-emerald-950/10 shadow-xs">
+            <CardContent className="p-4 sm:p-5 flex flex-col justify-between h-full gap-4">
+              <div className="flex items-start gap-3">
+                <div className="w-10 h-10 rounded-xl bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0">
+                  <HardDrive className="w-5 h-5" />
+                </div>
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-sm font-bold text-slate-800 dark:text-white">
+                      {t('admin.backups.localBackupTitle')}
+                    </h3>
+                    <StatusBadge status="online" label={t('admin.backups.localBackupStatus')} size="sm" />
+                  </div>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+                    {t('admin.backups.localBackupDesc')}
+                  </p>
+                </div>
+              </div>
+              <div className="pt-2 border-t border-emerald-100/60 dark:border-emerald-900/20 flex items-center justify-between">
+                <span className="text-[11px] text-slate-400 dark:text-slate-500">
+                  {t('admin.backups.totalStorage')}: <strong className="text-slate-700 dark:text-slate-200 font-semibold">{total_backup_disk_usage.human}</strong>
+                </span>
+                <Button
+                  variant="default"
+                  size="sm"
+                  disabled={operatingType !== null}
+                  onClick={() => handleRunBackup('full')}
+                  className="text-xs font-semibold flex items-center gap-1.5 bg-[#7367F0] hover:bg-[#685dd8] text-white shadow-xs"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${operatingType === 'full' ? 'animate-spin' : ''}`} />
+                  <span>{t('admin.backups.takeFullBackup')}</span>
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* 2. Off-Host Cloud Sync (Optional) */}
+          <Card className="border-amber-200/70 dark:border-amber-900/30 bg-amber-50/20 dark:bg-amber-950/10 shadow-xs">
+            <CardContent className="p-4 sm:p-5 flex flex-col justify-between h-full gap-4">
+              <div className="flex items-start gap-3">
+                <div className="w-10 h-10 rounded-xl bg-amber-500/10 text-amber-600 dark:text-amber-400 flex items-center justify-center shrink-0">
+                  <CloudOff className="w-5 h-5" />
+                </div>
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-sm font-bold text-slate-800 dark:text-white">
+                      {t('admin.backups.offHostOptionalTitle')}
+                    </h3>
+                    <StatusBadge
+                      status={isOffHostConfigured ? 'online' : 'warning'}
+                      label={isOffHostConfigured ? t('admin.backups.configured') : t('admin.backups.notConfigured')}
+                      size="sm"
+                    />
+                  </div>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+                    {t('admin.backups.offHostOptionalDesc')}
+                  </p>
+                </div>
+              </div>
+              <div className="pt-2 border-t border-amber-100/60 dark:border-amber-900/20 flex items-center justify-between">
+                <span className="text-[11px] text-slate-400 dark:text-slate-500">
+                  {isOffHostConfigured ? t('admin.backups.configured') : t('admin.backups.offHostWarningTitle')}
+                </span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setShowGuideModal(true)}
+                  className="text-xs font-semibold flex items-center gap-1.5 border-amber-300 dark:border-amber-800/50 hover:bg-amber-500/10 text-amber-700 dark:text-amber-300"
+                >
+                  <Info className="w-3.5 h-3.5" />
+                  <span>{t('admin.backups.howToConfigureOffHost')}</span>
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
 
         {/* Summary Stats Row */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
@@ -554,6 +743,9 @@ export const AdminBackupsPage: React.FC<AdminBackupsPageProps> = ({ onNavigate }
             info={postgres}
             iconColor="#7367F0"
             t={t}
+            isOperating={operatingType === 'postgres'}
+            onRunAction={() => handleRunBackup('postgres')}
+            actionText={t('admin.backups.backupDatabaseOnly')}
           />
           {/* Media */}
           <BackupFileCard
@@ -563,6 +755,9 @@ export const AdminBackupsPage: React.FC<AdminBackupsPageProps> = ({ onNavigate }
             info={media}
             iconColor="#28C76F"
             t={t}
+            isOperating={operatingType === 'media'}
+            onRunAction={() => handleRunBackup('media')}
+            actionText={t('admin.backups.backupMediaOnly')}
           />
           {/* Config */}
           <BackupFileCard
@@ -572,6 +767,9 @@ export const AdminBackupsPage: React.FC<AdminBackupsPageProps> = ({ onNavigate }
             info={config}
             iconColor="#FF9F43"
             t={t}
+            isOperating={operatingType === 'config'}
+            onRunAction={() => handleRunBackup('config')}
+            actionText={t('admin.backups.backupConfigOnly')}
           />
         </div>
 
@@ -632,6 +830,12 @@ export const AdminBackupsPage: React.FC<AdminBackupsPageProps> = ({ onNavigate }
           </CardContent>
         </Card>
       </div>
+
+      <OffHostGuideModal
+        isOpen={showGuideModal}
+        onClose={() => setShowGuideModal(false)}
+        t={t}
+      />
     </AdminShell>
   );
 };

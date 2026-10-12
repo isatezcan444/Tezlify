@@ -70,6 +70,23 @@ export class AdminApi {
   }
 
   /**
+   * Triggers an on-demand system, database, media, or configuration backup.
+   */
+  static async takeManualBackup(backupType: 'full' | 'postgres' | 'config' | 'media' = 'full'): Promise<AdminBackupsResponse> {
+    const res = await authFetch(`${API_BASE}/admin/backups/create`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ backup_type: backupType }),
+    });
+    if (!res.ok) {
+      if (res.status === 403) throw new Error('ACCESS_DENIED');
+      const errMsg = await parseError(res, 'Yedekleme başlatılamadı');
+      throw new Error(errMsg);
+    }
+    return res.json();
+  }
+
+  /**
    * Fetches read-only deployment and infrastructure metadata: source control, frontend releases, containers, host state.
    * Zero mutations, zero restarts, zero secrets.
    */

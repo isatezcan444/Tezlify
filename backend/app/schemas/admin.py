@@ -6,7 +6,7 @@ Invariants:
 - Phone numbers are masked; message bodies and raw payloads are strictly excluded.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -245,6 +245,12 @@ class AdminBackupDiskUsage(BaseModel):
 
     bytes: int = 0
     human: str = "0 B"
+
+
+class AdminBackupCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    backup_type: Literal["full", "postgres", "config", "media"] = "full"
 
 
 class AdminBackupsResponse(BaseModel):
