@@ -733,10 +733,13 @@ export function bindSocketEvents({
           })()
         : null;
       const tsOlder = updTs && existing.last_message_at && String(updTs) < String(existing.last_message_at);
-      if (update.lastMessage?.key?.id) {
+      const lastMsgId = update.lastMessage?.key?.id;
+      const isFromMe = Boolean(update.lastMessage?.key?.fromMe);
+
+      if (lastMsgId) {
         try {
           const list = messagesByChat.get(key) || [];
-          const known = list.some((m) => m.wa_message_id && m.wa_message_id === update.lastMessage.key.id);
+          const known = list.some((m) => m.wa_message_id && m.wa_message_id === lastMsgId);
           if (!known) {
             // Medya mesajlari (resim, video, ses, dokuman) icin chats.update
             // uzerinden media_id=null yer tutucu uretilmemelidir. Baileys ayni
@@ -757,7 +760,18 @@ export function bindSocketEvents({
                 const next = [...list, synth];
                 if (next.length > 2000) next.splice(0, next.length - 2000);
                 messagesByChat.set(key, next);
-                emitEvent({ event: 'message_new', conversation_id: key, message: synth });
+
+                if (!isFromMe && !lidHold && existing._unreadUpdatedForId !== lastMsgId) {
+                  existing.unread_count = (existing.unread_count || 0) + 1;
+                  existing._unreadUpdatedForId = lastMsgId;
+                }
+                synth.unread_count = existing.unread_count ?? (isFromMe ? 0 : 1);
+                emitEvent({
+                  event: 'message_new',
+                  conversation_id: key,
+                  message: synth,
+                  unread_count: synth.unread_count,
+                });
               }
             }
           }
@@ -765,6 +779,27 @@ export function bindSocketEvents({
           logger.warn({ err }, 'chats.update lastMessage sentezlenemedi');
         }
       }
+
+      // Baileys `chats.update` icinde `unreadCount` alanini tekil bir mesajin artisi (+1)
+      // olarak gonderir (veya 100ms tamponda birlestirilmisse +2). Bu deger toplam okunmamis
+      // sayisi DEGILDIR. Kor kopyalama her yeni mesajda sayaci 1'e (veya 2'ye) sifirliyordu.
+      // - update.unreadCount === 0: kullanici telefondan okudu -> 0
+      // - update.unreadCount < 0: kullanici telefondan "okunmadi" isaretledi -> en az 1
+      // - existing.unread_count == null && update.unreadCount != null: henuz kaydedilmemis sohbet
+      // - Diger tum durumlarda: existing.unread_count (mesaj basina bir kez artan akumulatif sayac) korunur.
+      let resolvedUnread = existing.unread_count ?? 0;
+      let resolvedUnreadUpdatedId = existing._unreadUpdatedForId;
+
+      if (existing.unread_count == null && update.unreadCount != null) {
+        resolvedUnread = Math.max(0, Number(update.unreadCount));
+        resolvedUnreadUpdatedId = lastMsgId || null;
+      } else if (update.unreadCount === 0) {
+        resolvedUnread = 0;
+        resolvedUnreadUpdatedId = null;
+      } else if (typeof update.unreadCount === 'number' && update.unreadCount < 0) {
+        resolvedUnread = Math.max(1, existing.unread_count || 1);
+      }
+
       chats.set(key, {
         ...existing,
         id: key,
@@ -778,8 +813,8 @@ export function bindSocketEvents({
         ...archivedPatch(update.archived ?? existing.archived),
         last_message_at: updTs && !tsOlder ? updTs : existing.last_message_at,
         last_message_preview: updPreview && !tsOlder ? updPreview : existing.last_message_preview || '',
-        unread_count: update.unreadCount ?? existing.unread_count ?? 0,
-        _unreadUpdatedForId: update.lastMessage?.key?.id || existing._unreadUpdatedForId,
+        unread_count: resolvedUnread,
+        _unreadUpdatedForId: resolvedUnreadUpdatedId,
         created_at: existing.created_at || new Date().toISOString(),
         updated_at: new Date().toISOString(),
       });

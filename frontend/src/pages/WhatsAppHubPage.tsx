@@ -2434,7 +2434,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                 if (explicitUc !== undefined && explicitUc !== null) {
                   return Math.max(0, Number(explicitUc));
                 }
-                if (existing.last_message_at === msgTime && (existing.unread_count || 0) > 0) {
+                if (existing.last_message_at === msgTime && !waIdForDedup && (existing.unread_count || 0) > 0) {
                   return existing.unread_count;
                 }
                 return (existing.unread_count || 0) + 1;

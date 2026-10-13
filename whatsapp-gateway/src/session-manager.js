@@ -1423,7 +1423,10 @@ export function createSessionManager({
       }
       if (gatewayOk) {
         const chat = chats.get(key);
-        if (chat) chat.unread_count = 0;
+        if (chat) {
+          chat.unread_count = 0;
+          chat._unreadUpdatedForId = null;
+        }
         this._emit({
           event: 'conversation_read',
           conversation_id: key,
