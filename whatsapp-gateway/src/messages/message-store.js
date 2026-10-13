@@ -15,7 +15,7 @@ import { createBoundedCache } from '../domain/bounded-cache.js';
 import { createContactCache } from './contact-cache.js';
 import { createRawMediaCache } from './raw-media-cache.js';
 
-export const RAW_MESSAGE_STORE_MAX = 2000;
+export const RAW_MESSAGE_STORE_MAX = 10000;
 export const MESSAGES_BY_CHAT_MAX_CHATS = 300;
 
 export function boundMessagesByChat(store, currentKey) {
@@ -138,7 +138,12 @@ export function lookupRawMessage(store, key) {
   const alt = key.remoteJid.includes('@lid')
     ? lidToJid.get(key.remoteJid)
     : jidToLid.get(key.remoteJid);
-  return alt ? rawMessagesByChat.get(alt)?.get(key.id) : undefined;
+  if (alt && rawMessagesByChat.get(alt)?.has(key.id)) return rawMessagesByChat.get(alt).get(key.id);
+  if (store.rawMediaCache && typeof store.rawMediaCache.get === 'function') {
+    const cached = store.rawMediaCache.get(key.id);
+    if (cached?.message) return cached.message;
+  }
+  return undefined;
 }
 
 export function messageTimestampMs(value) {

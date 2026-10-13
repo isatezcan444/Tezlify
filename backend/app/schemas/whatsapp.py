@@ -377,6 +377,8 @@ class WhatsAppSyncJobResponse(BaseModel):
     """
 
     sync_id: Optional[str] = None
+    user_id: Optional[str] = None
+    session_key: Optional[str] = None
     state: str = "IDLE"
     stage: str = "idle"
     error: Optional[str] = None

@@ -19,7 +19,7 @@ import { resolveDownloadableMedia } from './message-classifier.js';
 
 export const RAW_MEDIA_CACHE_FILE = 'raw-media-cache.json';
 export const RAW_MEDIA_CACHE_VERSION = 1;
-export const RAW_MEDIA_CACHE_MAX_ENTRIES = 500;
+export const RAW_MEDIA_CACHE_MAX_ENTRIES = 5000;
 export const RAW_MEDIA_CACHE_SAVE_DEBOUNCE_MS = 2000;
 
 export function createRawMediaCache({

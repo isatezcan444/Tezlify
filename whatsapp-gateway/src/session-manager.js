@@ -1696,9 +1696,20 @@ export function createSessionManager({
             }
           }
 
+          let fromMe = false;
+          if (foundJid && store.messagesByChat) {
+            const chatMsgs = store.messagesByChat.get(foundJid);
+            if (Array.isArray(chatMsgs)) {
+              const foundRec = chatMsgs.find(m => m.id === strId || m.wa_message_id === strId);
+              if (foundRec) {
+                fromMe = Boolean(foundRec.direction === 'OUTBOUND' || foundRec.from_me);
+              }
+            }
+          }
+
           if (foundRaw && foundJid) {
             const waMsg = {
-              key: { remoteJid: foundJid, id: strId },
+              key: { remoteJid: foundJid, id: strId, fromMe },
               message: foundRaw,
             };
             const stored = await mediaStore.storeIncomingMedia(session, waMsg, session.sock, options);
@@ -1706,6 +1717,10 @@ export function createSessionManager({
               this._failedMediaCache?.delete(inFlightKey);
               return mediaStore.getMediaPath(session.id, stored.media_id);
             }
+          } else if (!foundRaw && foundJid && session.sock && !session.sock.isClosed && typeof session.sock.requestPlaceholderResend === 'function') {
+            try {
+              session.sock.requestPlaceholderResend({ remoteJid: foundJid, id: strId, fromMe }).catch(() => {});
+            } catch { /* best effort */ }
           }
         }
         this._failedMediaCache.set(inFlightKey, Date.now());
