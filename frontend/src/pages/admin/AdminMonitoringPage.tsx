@@ -10,7 +10,9 @@ import {
   ArrowLeft, 
   RefreshCw, 
   Info,
-  Inbox
+  Inbox,
+  ChevronDown,
+  ChevronUp
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useI18n } from '../../context/I18nContext';
@@ -71,6 +73,8 @@ export const AdminMonitoringPage: React.FC<AdminMonitoringPageProps> = ({ onNavi
   const [refreshing, setRefreshing] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<string>('');
+  const [showAdvancedInvariants, setShowAdvancedInvariants] = useState<boolean>(true);
+  const [showAdvancedTelemetry, setShowAdvancedTelemetry] = useState<boolean>(false);
 
   const fetchingRef = useRef<boolean>(false);
   const showAdmin = Boolean(isAdmin || profile?.is_admin || user?.is_admin);
@@ -457,6 +461,23 @@ export const AdminMonitoringPage: React.FC<AdminMonitoringPageProps> = ({ onNavi
   const isSystemMonitorActive = system_monitor.timer_status === 'active';
   const isWaObserverActive = whatsapp_observer.timer_status === 'active';
 
+  const isWindowComplete =
+    observation.observation_status === 'OBSERVATION_WINDOW_COMPLETE' ||
+    progressPercent >= 100 ||
+    (observation.remaining_seconds != null && observation.remaining_seconds <= 0);
+
+  const failingList = invariants.filter((inv) => !inv.passed);
+  const hasDeadLetterFail = failingList.some(
+    (inv) => inv.id.includes('dead_letter') || inv.name.toLowerCase().includes('dead letter')
+  );
+
+  const businessImpactText =
+    failingInvariants === 0
+      ? t('admin.guidance.zeroCustomerImpact')
+      : hasDeadLetterFail
+      ? t('admin.monitoring.impactDeadLetter')
+      : `${failingInvariants} ${t('admin.monitoring.failingInvariantsAlert')}`;
+
   return (
     <AdminShell
       title={t('admin.monitoring.title')}
@@ -490,23 +511,23 @@ export const AdminMonitoringPage: React.FC<AdminMonitoringPageProps> = ({ onNavi
               ? `${failingInvariants} / ${totalInvariants} ${t('admin.monitoring.invariantsTitle')}`
               : t('admin.executiveAllGood'),
           }}
-          businessImpact={
-            failingInvariants === 0
-              ? t('admin.guidance.zeroCustomerImpact')
-              : t('admin.monitoring.verifiedNotice')
-          }
+          businessImpact={businessImpactText}
           recommendedAction={{
             label: failingInvariants === 0
               ? t('admin.guidance.noActionNeeded')
-              : t('admin.actionGoToOps'),
+              : t('admin.monitoring.actionReviewFailing'),
             description: failingInvariants === 0
               ? t('admin.guidance.noActionNeededDesc')
-              : t('admin.monitoring.readOnlyNotice'),
+              : t('admin.monitoring.actionReviewDesc'),
             buttonText: (onNavigate && failingInvariants > 0) ? t('admin.actionGoToOps') : undefined,
             onAction: (onNavigate && failingInvariants > 0) ? () => onNavigate('admin-operations') : undefined,
             icon: ShieldCheck,
           }}
-          actionOutcome={t('admin.monitoring.readOnlyNotice')}
+          actionOutcome={
+            failingInvariants === 0
+              ? t('admin.guidance.noActionOutcome')
+              : t('admin.monitoring.actionOutcomeOps')
+          }
           technicalDetails={
             <div className="space-y-2 text-xs">
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
@@ -530,6 +551,42 @@ export const AdminMonitoringPage: React.FC<AdminMonitoringPageProps> = ({ onNavi
             </div>
           }
         />
+
+        {/* Prominent Active Failing Invariant Alert */}
+        {failingList.length > 0 && (
+          <div className="p-4 rounded-xl bg-rose-50/90 dark:bg-rose-950/20 border border-rose-200 dark:border-rose-900/40 space-y-3">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <div className="flex items-center gap-2 font-bold text-rose-700 dark:text-rose-400 text-xs">
+                <ShieldAlert className="w-4 h-4 shrink-0" />
+                <span>{t('admin.monitoring.failingInvariantsBoxTitle')} ({failingList.length})</span>
+              </div>
+              {onNavigate && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => onNavigate('admin-operations')}
+                  className="text-xs h-7 border-rose-200 dark:border-rose-900/50 text-rose-700 dark:text-rose-300 hover:bg-rose-100 dark:hover:bg-rose-900/40 cursor-pointer"
+                >
+                  {t('admin.actionGoToOps')}
+                </Button>
+              )}
+            </div>
+            <p className="text-[11px] text-rose-600/90 dark:text-rose-300/80">
+              {t('admin.monitoring.failingInvariantsBoxDesc')}
+            </p>
+            <div className="space-y-2 pt-1">
+              {failingList.map((fail) => (
+                <div key={fail.id} className="text-xs text-rose-800 dark:text-rose-200 flex items-start gap-2.5 bg-white/70 dark:bg-[#2F3349] p-3 rounded-lg border border-rose-100 dark:border-white/[0.06] shadow-xs">
+                  <span className="font-mono font-bold text-rose-600 dark:text-rose-400 shrink-0 text-xs mt-0.5">{fail.id}:</span>
+                  <div className="min-w-0 flex-1">
+                    <span className="font-bold block text-slate-800 dark:text-white">{fail.name}</span>
+                    <span className="text-[11px] text-slate-600 dark:text-slate-300 block mt-0.5">{fail.safe_summary || fail.name}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Operational Attention Reasons if WARN or CRITICAL */}
         {overall_status_reasons && overall_status_reasons.length > 0 && (
@@ -562,13 +619,15 @@ export const AdminMonitoringPage: React.FC<AdminMonitoringPageProps> = ({ onNavi
             </div>
             <div className="flex items-center gap-2">
               <StatusBadge
-                status={observation.observation_status === 'OBSERVATION_WINDOW_INCOMPLETE' ? 'warning' : 'online'}
+                status={isWindowComplete ? 'online' : observation.observation_status === 'OBSERVATION_WINDOW_INCOMPLETE' ? 'warning' : 'pending'}
                 label={
-                  observation.observation_status === 'OBSERVATION_WINDOW_INCOMPLETE'
-                    ? t('admin.monitoring.stateIncomplete')
-                    : observation.observation_status === 'WHATSAPP_LONG_RUN_PARTIAL'
-                      ? t('admin.monitoring.statePartial')
-                      : observation.observation_status
+                  isWindowComplete
+                    ? t('admin.monitoring.stateVerified')
+                    : observation.observation_status === 'OBSERVATION_WINDOW_INCOMPLETE'
+                      ? t('admin.monitoring.stateIncomplete')
+                      : observation.observation_status === 'WHATSAPP_LONG_RUN_PARTIAL'
+                        ? t('admin.monitoring.statePartial')
+                        : observation.observation_status
                 }
                 size="md"
               />
@@ -648,104 +707,27 @@ export const AdminMonitoringPage: React.FC<AdminMonitoringPageProps> = ({ onNavi
                   <span className="font-mono">{formatDateTime(observation.latest_observation_timestamp)}</span>
                 </div>
               </div>
-              <div className="font-medium text-amber-600 dark:text-amber-400 flex items-center gap-1.5">
-                <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-                <span>{t('admin.monitoring.verifiedNotice')}</span>
+              <div className="font-medium flex items-center gap-1.5">
+                {isWindowComplete ? (
+                  <div className="text-emerald-600 dark:text-emerald-400 flex items-center gap-1.5 flex-wrap">
+                    <CheckCircle2 className="w-4 h-4 shrink-0" />
+                    <span>{t('admin.monitoring.obsWindowCompleteNotice')}</span>
+                    {failingInvariants > 0 && (
+                      <span className="text-amber-600 dark:text-amber-400 text-[11px] font-normal">
+                        ({t('admin.monitoring.obsCertificationPending')})
+                      </span>
+                    )}
+                  </div>
+                ) : (
+                  <div className="text-amber-600 dark:text-amber-400 flex items-center gap-1.5">
+                    <Clock className="w-4 h-4 shrink-0" />
+                    <span>{t('admin.monitoring.verifiedNotice')}</span>
+                  </div>
+                )}
               </div>
             </div>
           </CardContent>
         </Card>
-
-        {/* SECTION: TIMERS GRID */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-          {/* Card 1: System Monitor Timer */}
-          <Card className="border-slate-200 dark:border-white/[0.06] bg-white dark:bg-[#2F3349] shadow-sm">
-            <CardHeader className="pb-3 border-b border-slate-100 dark:border-white/[0.06] flex flex-row items-center justify-between">
-              <div className="flex items-center gap-2.5">
-                <Activity className="w-5 h-5 text-[#28C76F]" />
-                <div>
-                  <CardTitle className="text-sm font-bold text-slate-800 dark:text-white">
-                    {t('admin.monitoring.systemMonitorTimer')}
-                  </CardTitle>
-                  <p className="text-[11px] text-slate-400 dark:text-[#7E7F96]">
-                    tezlify-monitor.timer
-                  </p>
-                </div>
-              </div>
-              <StatusBadge
-                status={isSystemMonitorActive ? 'online' : 'danger'}
-                label={isSystemMonitorActive ? t('admin.monitoring.timerActive') : t('admin.monitoring.timerInactive')}
-                size="sm"
-              />
-            </CardHeader>
-            <CardContent className="pt-4 space-y-3">
-              <div className="grid grid-cols-2 gap-2 text-xs">
-                <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-200/40 dark:border-white/[0.03]">
-                  <span className="text-[10px] uppercase font-semibold text-slate-400 block">{t('admin.monitoring.timerInterval')}</span>
-                  <span className="font-mono font-medium text-slate-700 dark:text-slate-200 mt-0.5 block truncate">
-                    {system_monitor.interval || 'every 3m'}
-                  </span>
-                </div>
-                <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-200/40 dark:border-white/[0.03]">
-                  <span className="text-[10px] uppercase font-semibold text-slate-400 block">{t('admin.monitoring.timerLastRun')}</span>
-                  <span className="font-mono font-medium text-slate-700 dark:text-slate-200 mt-0.5 block truncate">
-                    {formatDateTime(system_monitor.latest_run)}
-                  </span>
-                </div>
-              </div>
-              {!isSystemMonitorActive && (
-                <div className="p-2.5 rounded-lg bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-900/40 text-[11px] text-red-700 dark:text-red-300 flex items-center gap-2">
-                  <ShieldAlert className="w-4 h-4 shrink-0 text-[#EA5455]" />
-                  <span>{t('admin.monitoring.timerWarningInactive')}</span>
-                </div>
-              )}
-            </CardContent>
-          </Card>
-
-          {/* Card 2: WhatsApp Reliability Observer */}
-          <Card className="border-slate-200 dark:border-white/[0.06] bg-white dark:bg-[#2F3349] shadow-sm">
-            <CardHeader className="pb-3 border-b border-slate-100 dark:border-white/[0.06] flex flex-row items-center justify-between">
-              <div className="flex items-center gap-2.5">
-                <ShieldCheck className="w-5 h-5 text-[#7367F0]" />
-                <div>
-                  <CardTitle className="text-sm font-bold text-slate-800 dark:text-white">
-                    {t('admin.monitoring.waObserverTimer')}
-                  </CardTitle>
-                  <p className="text-[11px] text-slate-400 dark:text-[#7E7F96]">
-                    tezlify-wa-observer.timer
-                  </p>
-                </div>
-              </div>
-              <StatusBadge
-                status={isWaObserverActive ? 'online' : 'danger'}
-                label={isWaObserverActive ? t('admin.monitoring.timerActive') : t('admin.monitoring.timerInactive')}
-                size="sm"
-              />
-            </CardHeader>
-            <CardContent className="pt-4 space-y-3">
-              <div className="grid grid-cols-2 gap-2 text-xs">
-                <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-200/40 dark:border-white/[0.03]">
-                  <span className="text-[10px] uppercase font-semibold text-slate-400 block">{t('admin.monitoring.timerInterval')}</span>
-                  <span className="font-mono font-medium text-slate-700 dark:text-slate-200 mt-0.5 block truncate">
-                    {whatsapp_observer.interval || 'every 5m'}
-                  </span>
-                </div>
-                <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-200/40 dark:border-white/[0.03]">
-                  <span className="text-[10px] uppercase font-semibold text-slate-400 block">{t('admin.monitoring.timerLastRun')}</span>
-                  <span className="font-mono font-medium text-slate-700 dark:text-slate-200 mt-0.5 block truncate">
-                    {formatDateTime(whatsapp_observer.latest_run)}
-                  </span>
-                </div>
-              </div>
-              {!isWaObserverActive && (
-                <div className="p-2.5 rounded-lg bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-900/40 text-[11px] text-red-700 dark:text-red-300 flex items-center gap-2">
-                  <ShieldAlert className="w-4 h-4 shrink-0 text-[#EA5455]" />
-                  <span>{t('admin.monitoring.timerWarningInactive')}</span>
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        </div>
 
         {/* SECTION: INVARIANT SUMMARY STATS */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
@@ -761,7 +743,7 @@ export const AdminMonitoringPage: React.FC<AdminMonitoringPageProps> = ({ onNavi
             value={failingInvariants}
             subText={t('admin.monitoring.statusFail')}
             icon={ShieldAlert}
-            iconVariant="danger"
+            iconVariant={failingInvariants > 0 ? 'danger' : 'secondary'}
           />
           <StatsCard
             title={t('admin.monitoring.unknown')}
@@ -779,68 +761,184 @@ export const AdminMonitoringPage: React.FC<AdminMonitoringPageProps> = ({ onNavi
           />
         </div>
 
-        {/* SECTION: R1-R13 INVARIANT MATRIX */}
-        <Card className="border-slate-200 dark:border-white/[0.06] bg-white dark:bg-[#2F3349] shadow-sm">
-          <CardHeader className="pb-3 border-b border-slate-100 dark:border-white/[0.06]">
-            <div className="flex items-center gap-2">
+        {/* SECTION: R1-R13 INVARIANT MATRIX (Collapsible) */}
+        <Card className="border-slate-200 dark:border-white/[0.06] bg-white dark:bg-[#2F3349] shadow-sm overflow-hidden">
+          <CardHeader 
+            className="pb-3 border-b border-slate-100 dark:border-white/[0.06] flex flex-row items-center justify-between cursor-pointer select-none"
+            onClick={() => setShowAdvancedInvariants((prev) => !prev)}
+          >
+            <div className="flex items-center gap-2.5">
               <ShieldCheck className="w-5 h-5 text-[#7367F0]" />
               <div>
-                <CardTitle className="text-base text-slate-800 dark:text-white">
-                  {t('admin.monitoring.invariantsTitle')}
+                <CardTitle className="text-base text-slate-800 dark:text-white flex items-center gap-2">
+                  <span>{t('admin.monitoring.advancedInvariants')}</span>
+                  <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-slate-100 dark:bg-white/[0.05] text-slate-600 dark:text-slate-300">
+                    {passingInvariants}/{totalInvariants} {t('admin.monitoring.passing')}
+                  </span>
                 </CardTitle>
                 <p className="text-xs text-slate-400 dark:text-[#7E7F96]">
-                  {t('admin.monitoring.invariantsSubtitle')}
+                  {t('admin.monitoring.advancedInvariantsSubtitle')}
                 </p>
               </div>
             </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="gap-1 text-xs text-slate-500 hover:text-slate-800 dark:hover:text-white cursor-pointer"
+              onClick={(e) => {
+                e.stopPropagation();
+                setShowAdvancedInvariants((prev) => !prev);
+              }}
+            >
+              <span>{showAdvancedInvariants ? t('admin.monitoring.hideDetails') : t('admin.monitoring.showDetails')}</span>
+              {showAdvancedInvariants ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+            </Button>
           </CardHeader>
-          <CardContent className="pt-0 p-0">
-            <DataTable<AdminInvariantStatus>
-              data={invariants}
-              columns={invariantColumns}
-              rowKey={(item) => item.id}
-            />
-          </CardContent>
+          {showAdvancedInvariants && (
+            <CardContent className="pt-0 p-0">
+              <DataTable<AdminInvariantStatus>
+                data={invariants}
+                columns={invariantColumns}
+                rowKey={(item) => item.id}
+              />
+            </CardContent>
+          )}
         </Card>
 
-        {/* SECTION: OBSERVATION HISTORY */}
-        <Card className="border-slate-200 dark:border-white/[0.06] bg-white dark:bg-[#2F3349] shadow-sm">
-          <CardHeader className="pb-3 border-b border-slate-100 dark:border-white/[0.06]">
-            <div className="flex items-center gap-2">
-              <Layers className="w-5 h-5 text-[#7367F0]" />
+        {/* SECTION: ADVANCED TELEMETRY & TIMERS (Collapsible) */}
+        <Card className="border-slate-200 dark:border-white/[0.06] bg-white dark:bg-[#2F3349] shadow-sm overflow-hidden">
+          <CardHeader 
+            className="pb-3 border-b border-slate-100 dark:border-white/[0.06] flex flex-row items-center justify-between cursor-pointer select-none"
+            onClick={() => setShowAdvancedTelemetry((prev) => !prev)}
+          >
+            <div className="flex items-center gap-2.5">
+              <Activity className="w-5 h-5 text-[#28C76F]" />
               <div>
                 <CardTitle className="text-base text-slate-800 dark:text-white">
-                  {t('admin.monitoring.historyTitle')}
+                  {t('admin.monitoring.advancedTelemetry')}
                 </CardTitle>
                 <p className="text-xs text-slate-400 dark:text-[#7E7F96]">
-                  {t('admin.monitoring.historySubtitle')}
+                  {t('admin.monitoring.advancedTelemetrySubtitle')}
                 </p>
               </div>
             </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="gap-1 text-xs text-slate-500 hover:text-slate-800 dark:hover:text-white cursor-pointer"
+              onClick={(e) => {
+                e.stopPropagation();
+                setShowAdvancedTelemetry((prev) => !prev);
+              }}
+            >
+              <span>{showAdvancedTelemetry ? t('admin.monitoring.hideDetails') : t('admin.monitoring.showDetails')}</span>
+              {showAdvancedTelemetry ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+            </Button>
           </CardHeader>
-          <CardContent className="pt-0 p-0">
-            <div className="p-3 bg-slate-50 dark:bg-white/[0.02] border-b border-slate-100 dark:border-white/[0.04] text-[11px] text-slate-500 dark:text-slate-400 flex items-center gap-2">
-              <Info className="w-3.5 h-3.5 text-[#7367F0] shrink-0" />
-              <span>{t('admin.monitoring.historyDisclaimer')}</span>
-            </div>
-            <DataTable<AdminObservationRecord>
-              data={recent_observations}
-              columns={historyColumns}
-              rowKey={(item) => item.timestamp}
-              emptyState={
-
-                <div className="p-8 text-center text-slate-400 dark:text-[#7E7F96] space-y-2">
-                  <Inbox className="w-8 h-8 mx-auto text-slate-300 dark:text-white/20" />
-                  <p className="font-semibold text-sm text-slate-700 dark:text-slate-300">
-                    {t('admin.monitoring.emptyHistoryTitle')}
-                  </p>
-                  <p className="text-xs">
-                    {t('admin.monitoring.emptyHistoryDesc')}
-                  </p>
+          {showAdvancedTelemetry && (
+            <CardContent className="pt-5 space-y-6">
+              {/* Timers Grid */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                {/* System Monitor Timer */}
+                <div className="p-4 rounded-xl border border-slate-200 dark:border-white/[0.06] bg-slate-50/50 dark:bg-white/[0.02] space-y-3">
+                  <div className="flex items-center justify-between pb-2 border-b border-slate-200/50 dark:border-white/[0.04]">
+                    <div>
+                      <span className="text-xs font-bold text-slate-800 dark:text-white block">
+                        {t('admin.monitoring.systemMonitorTimer')}
+                      </span>
+                      <span className="text-[10px] text-slate-400 font-mono">tezlify-monitor.timer</span>
+                    </div>
+                    <StatusBadge
+                      status={isSystemMonitorActive ? 'online' : 'danger'}
+                      label={isSystemMonitorActive ? t('admin.monitoring.timerActive') : t('admin.monitoring.timerInactive')}
+                      size="sm"
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 text-xs">
+                    <div className="p-2 rounded bg-white dark:bg-white/[0.03] border border-slate-200/40 dark:border-white/[0.03]">
+                      <span className="text-[10px] uppercase font-semibold text-slate-400 block">{t('admin.monitoring.timerInterval')}</span>
+                      <span className="font-mono font-medium text-slate-700 dark:text-slate-200 mt-0.5 block truncate">
+                        {system_monitor.interval || 'every 3m'}
+                      </span>
+                    </div>
+                    <div className="p-2 rounded bg-white dark:bg-white/[0.03] border border-slate-200/40 dark:border-white/[0.03]">
+                      <span className="text-[10px] uppercase font-semibold text-slate-400 block">{t('admin.monitoring.timerLastRun')}</span>
+                      <span className="font-mono font-medium text-slate-700 dark:text-slate-200 mt-0.5 block truncate">
+                        {formatDateTime(system_monitor.latest_run)}
+                      </span>
+                    </div>
+                  </div>
+                  {!isSystemMonitorActive && (
+                    <div className="p-2 rounded bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-900/40 text-[11px] text-red-700 dark:text-red-300 flex items-center gap-2">
+                      <ShieldAlert className="w-4 h-4 shrink-0 text-[#EA5455]" />
+                      <span>{t('admin.monitoring.timerWarningInactive')}</span>
+                    </div>
+                  )}
                 </div>
-              }
-            />
-          </CardContent>
+
+                {/* WhatsApp Observer Timer */}
+                <div className="p-4 rounded-xl border border-slate-200 dark:border-white/[0.06] bg-slate-50/50 dark:bg-white/[0.02] space-y-3">
+                  <div className="flex items-center justify-between pb-2 border-b border-slate-200/50 dark:border-white/[0.04]">
+                    <div>
+                      <span className="text-xs font-bold text-slate-800 dark:text-white block">
+                        {t('admin.monitoring.waObserverTimer')}
+                      </span>
+                      <span className="text-[10px] text-slate-400 font-mono">tezlify-wa-observer.timer</span>
+                    </div>
+                    <StatusBadge
+                      status={isWaObserverActive ? 'online' : 'danger'}
+                      label={isWaObserverActive ? t('admin.monitoring.timerActive') : t('admin.monitoring.timerInactive')}
+                      size="sm"
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 text-xs">
+                    <div className="p-2 rounded bg-white dark:bg-white/[0.03] border border-slate-200/40 dark:border-white/[0.03]">
+                      <span className="text-[10px] uppercase font-semibold text-slate-400 block">{t('admin.monitoring.timerInterval')}</span>
+                      <span className="font-mono font-medium text-slate-700 dark:text-slate-200 mt-0.5 block truncate">
+                        {whatsapp_observer.interval || 'every 5m'}
+                      </span>
+                    </div>
+                    <div className="p-2 rounded bg-white dark:bg-white/[0.03] border border-slate-200/40 dark:border-white/[0.03]">
+                      <span className="text-[10px] uppercase font-semibold text-slate-400 block">{t('admin.monitoring.timerLastRun')}</span>
+                      <span className="font-mono font-medium text-slate-700 dark:text-slate-200 mt-0.5 block truncate">
+                        {formatDateTime(whatsapp_observer.latest_run)}
+                      </span>
+                    </div>
+                  </div>
+                  {!isWaObserverActive && (
+                    <div className="p-2 rounded bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-900/40 text-[11px] text-red-700 dark:text-red-300 flex items-center gap-2">
+                      <ShieldAlert className="w-4 h-4 shrink-0 text-[#EA5455]" />
+                      <span>{t('admin.monitoring.timerWarningInactive')}</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Observation History Table */}
+              <div className="rounded-xl border border-slate-200 dark:border-white/[0.06] overflow-hidden">
+                <div className="p-3 bg-slate-50 dark:bg-white/[0.02] border-b border-slate-100 dark:border-white/[0.04] text-[11px] text-slate-500 dark:text-slate-400 flex items-center gap-2">
+                  <Info className="w-3.5 h-3.5 text-[#7367F0] shrink-0" />
+                  <span>{t('admin.monitoring.historyDisclaimer')}</span>
+                </div>
+                <DataTable<AdminObservationRecord>
+                  data={recent_observations}
+                  columns={historyColumns}
+                  rowKey={(item) => item.timestamp}
+                  emptyState={
+                    <div className="p-8 text-center text-slate-400 dark:text-[#7E7F96] space-y-2">
+                      <Inbox className="w-8 h-8 mx-auto text-slate-300 dark:text-white/20" />
+                      <p className="font-semibold text-sm text-slate-700 dark:text-slate-300">
+                        {t('admin.monitoring.emptyHistoryTitle')}
+                      </p>
+                      <p className="text-xs">
+                        {t('admin.monitoring.emptyHistoryDesc')}
+                      </p>
+                    </div>
+                  }
+                />
+              </div>
+            </CardContent>
+          )}
         </Card>
       </div>
     </AdminShell>

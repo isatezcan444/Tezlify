@@ -15,6 +15,8 @@ import {
   CheckCircle2,
   XCircle,
   HelpCircle,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useI18n } from '../../context/I18nContext';
@@ -41,6 +43,7 @@ export const AdminSecurityPage: React.FC<AdminSecurityPageProps> = ({ onNavigate
   const [refreshing, setRefreshing] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<string>('');
+  const [showTechnicalAudit, setShowTechnicalAudit] = useState<boolean>(false);
 
   const fetchingRef = useRef<boolean>(false);
   const showAdmin = Boolean(isAdmin || profile?.is_admin || user?.is_admin);
@@ -494,369 +497,412 @@ export const AdminSecurityPage: React.FC<AdminSecurityPageProps> = ({ onNavigate
           </CardContent>
         </Card>
 
-        {/* Main 2-Column Grid: SSH & Firewall */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {/* Card 1: SSH Hardening */}
-          <Card className="border-slate-200 dark:border-white/[0.06] bg-white dark:bg-[#2F3349] shadow-sm">
-            <CardHeader className="pb-3 border-b border-slate-100 dark:border-white/[0.06]">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2.5">
-                  <div className="w-8 h-8 rounded-lg bg-indigo-500/10 flex items-center justify-center text-indigo-500">
-                    <Lock className="w-4 h-4" />
-                  </div>
-                  <div>
-                    <CardTitle className="text-sm font-bold text-slate-800 dark:text-white">
-                      {t('admin.security.sshHardening')}
-                    </CardTitle>
-                    <p className="text-[11px] text-slate-400 dark:text-[#7E7F96]">
-                      {t('admin.security.sshHardeningSubtitle')}
-                    </p>
-                  </div>
-                </div>
-                <StatusBadge status="online" label={ssh.status} size="sm" />
-              </div>
-            </CardHeader>
-            <CardContent className="pt-4 space-y-3">
-              <div className="grid grid-cols-2 gap-3">
-                <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-200/40 dark:border-white/[0.03]">
-                  <span className="text-[10px] uppercase font-semibold text-slate-400 block tracking-wider">
-                    {t('admin.security.rootLogin')}
-                  </span>
-                  <span className="font-mono text-xs font-bold text-[#28C76F] mt-0.5 block">
-                    {ssh.permit_root_login.toUpperCase()} ({t('admin.security.statusDisabled')} ✓)
-                  </span>
-                </div>
-                <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-200/40 dark:border-white/[0.03]">
-                  <span className="text-[10px] uppercase font-semibold text-slate-400 block tracking-wider">
-                    {t('admin.security.passwordAuth')}
-                  </span>
-                  <span className="font-mono text-xs font-bold text-[#28C76F] mt-0.5 block">
-                    {ssh.password_authentication.toUpperCase()} ({t('admin.security.statusDisabled')} ✓)
-                  </span>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-200/40 dark:border-white/[0.03]">
-                  <span className="text-[10px] uppercase font-semibold text-slate-400 block tracking-wider">
-                    {t('admin.security.pubkeyAuth')}
-                  </span>
-                  <span className="font-mono text-xs font-bold text-[#28C76F] mt-0.5 block">
-                    {ssh.pubkey_authentication.toUpperCase()} ({t('admin.security.statusEnabled')} ✓)
-                  </span>
-                </div>
-                <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-200/40 dark:border-white/[0.03]">
-                  <span className="text-[10px] uppercase font-semibold text-slate-400 block tracking-wider">
-                    {t('admin.security.maxAuthTries')}
-                  </span>
-                  <span className="font-mono text-xs font-bold text-slate-800 dark:text-white mt-0.5 block">
-                    {ssh.max_auth_tries ?? 4}
-                  </span>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Card 2: Firewall (UFW) */}
-          <Card className="border-slate-200 dark:border-white/[0.06] bg-white dark:bg-[#2F3349] shadow-sm">
-            <CardHeader className="pb-3 border-b border-slate-100 dark:border-white/[0.06]">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2.5">
-                  <div className="w-8 h-8 rounded-lg bg-amber-500/10 flex items-center justify-center text-amber-500">
-                    <Flame className="w-4 h-4" />
-                  </div>
-                  <div>
-                    <CardTitle className="text-sm font-bold text-slate-800 dark:text-white">
-                      {t('admin.security.firewall')}
-                    </CardTitle>
-                    <p className="text-[11px] text-slate-400 dark:text-[#7E7F96]">
-                      {t('admin.security.firewallSubtitle')}
-                    </p>
-                  </div>
-                </div>
-                <StatusBadge status={firewall.ufw_active ? 'online' : 'danger'} label={firewall.status} size="sm" />
-              </div>
-            </CardHeader>
-            <CardContent className="pt-4 space-y-3">
-              <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-200/40 dark:border-white/[0.03]">
-                <span className="text-[10px] uppercase font-semibold text-slate-400 block tracking-wider">
-                  {t('admin.security.publicPorts')}
-                </span>
-                <div className="flex flex-wrap gap-2 mt-1.5">
-                  {(firewall.public_ports || firewall.allowed_ports || ['22/tcp', '80/tcp', '443/tcp']).map(
-                    (p) => (
-                      <span
-                        key={p}
-                        className="font-mono text-xs px-2.5 py-0.5 rounded-md bg-[#28C76F]/10 text-[#28C76F] border border-[#28C76F]/20 font-bold"
-                      >
-                        {p}
-                      </span>
-                    )
-                  )}
-                </div>
-              </div>
-
-              <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-200/40 dark:border-white/[0.03]">
-                <span className="text-[10px] uppercase font-semibold text-slate-400 block tracking-wider">
-                  {t('admin.security.internalPorts')}
-                </span>
-                <div className="flex flex-wrap gap-2 mt-1.5">
-                  {(firewall.internal_ports || ['8000/tcp', '8787/tcp', '5432/tcp']).map((p) => (
-                    <span
-                      key={p}
-                      className="font-mono text-xs px-2.5 py-0.5 rounded-md bg-slate-100 dark:bg-white/[0.06] text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-white/[0.08]"
-                    >
-                      {p} (Private Only)
-                    </span>
-                  ))}
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-
-        {/* Section 3: Container Security Isolation Table */}
+        {/* Technical Audit Collapsible Section */}
         <Card className="border-slate-200 dark:border-white/[0.06] bg-white dark:bg-[#2F3349] shadow-sm">
           <CardHeader className="pb-3 border-b border-slate-100 dark:border-white/[0.06]">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2.5">
-                <div className="w-8 h-8 rounded-lg bg-sky-500/10 flex items-center justify-center text-sky-500">
-                  <Box className="w-4 h-4" />
+                <div className="w-8 h-8 rounded-lg bg-indigo-500/10 flex items-center justify-center text-indigo-500">
+                  <Lock className="w-4 h-4" />
                 </div>
                 <div>
                   <CardTitle className="text-sm font-bold text-slate-800 dark:text-white">
-                    {t('admin.security.containerSecurity')}
+                    {t('admin.security.technicalAuditTitle')}
                   </CardTitle>
                   <p className="text-[11px] text-slate-400 dark:text-[#7E7F96]">
-                    {t('admin.security.containerSecuritySubtitle')}
+                    {t('admin.security.technicalAuditSubtitle')}
                   </p>
                 </div>
               </div>
-              <StatusBadge status="online" label="4/4 SECURE" size="sm" />
+              <div className="flex items-center gap-2">
+                <StatusBadge status="online" label="4/4 AUDITED" size="sm" />
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setShowTechnicalAudit((v) => !v)}
+                  className="text-xs h-7 px-2.5 flex items-center gap-1.5"
+                >
+                  <span>{showTechnicalAudit ? t('admin.monitoring.hideDetails') : t('admin.monitoring.showDetails')}</span>
+                  {showTechnicalAudit ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                </Button>
+              </div>
             </div>
           </CardHeader>
-          <CardContent className="pt-4">
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse text-xs">
-                <thead>
-                  <tr className="border-b border-slate-200 dark:border-white/[0.06] text-[10px] uppercase font-bold text-slate-400 tracking-wider">
-                    <th className="pb-2.5">{t('admin.security.colContainer')}</th>
-                    <th className="pb-2.5">{t('admin.security.colBaseOs')}</th>
-                    <th className="pb-2.5">{t('admin.security.colPrivileged')}</th>
-                    <th className="pb-2.5">{t('admin.security.colUser')}</th>
-                    <th className="pb-2.5">{t('admin.security.colDockerSocket')}</th>
-                    <th className="pb-2.5">{t('admin.security.colHostPorts')}</th>
-                    <th className="pb-2.5 text-right">{t('admin.security.colStatus')}</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 dark:divide-white/[0.04]">
-                  {containerFleet.map((c) => (
-                    <tr key={c.name} className="hover:bg-slate-50/50 dark:hover:bg-white/[0.01]">
-                      <td className="py-3 font-mono font-bold text-slate-800 dark:text-white">
-                        {c.name}
-                      </td>
-                      <td className="py-3 font-mono text-slate-600 dark:text-slate-300 text-[11px]">
-                        {c.base_os || 'Linux'}
-                      </td>
-                      <td className="py-3">
-                        <span
-                          className={`font-mono font-semibold ${
-                            c.privileged ? 'text-[#EA5455]' : 'text-[#28C76F]'
-                          }`}
-                        >
-                          {c.privileged ? 'TRUE' : 'FALSE'}
+          {!showTechnicalAudit ? (
+            <CardContent className="pt-3 pb-3">
+              <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400 flex-wrap gap-2">
+                <span>SSH: <strong className="text-emerald-600 dark:text-emerald-400 font-semibold">{ssh.status}</strong> • UFW: <strong className="text-emerald-600 dark:text-emerald-400 font-semibold">{firewall.status}</strong> ({(firewall.public_ports || firewall.allowed_ports).join(', ')}) • Fleet: <strong className="text-emerald-600 dark:text-emerald-400 font-semibold">4/4 Secure</strong> • PostgreSQL: <strong className="text-emerald-600 dark:text-emerald-400 font-semibold">{postgresql?.auth_encryption || 'SCRAM-SHA-256'}</strong></span>
+                <span className="text-[11px] font-mono text-slate-400">{kernel?.distro || 'Ubuntu'} ({kernel?.architecture || 'aarch64'})</span>
+              </div>
+            </CardContent>
+          ) : (
+            <CardContent className="pt-4 space-y-6">
+              {/* Main 2-Column Grid: SSH & Firewall */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                {/* Card 1: SSH Hardening */}
+                <Card className="border-slate-200 dark:border-white/[0.06] bg-white dark:bg-[#2F3349] shadow-sm">
+                  <CardHeader className="pb-3 border-b border-slate-100 dark:border-white/[0.06]">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-8 h-8 rounded-lg bg-indigo-500/10 flex items-center justify-center text-indigo-500">
+                          <Lock className="w-4 h-4" />
+                        </div>
+                        <div>
+                          <CardTitle className="text-sm font-bold text-slate-800 dark:text-white">
+                            {t('admin.security.sshHardening')}
+                          </CardTitle>
+                          <p className="text-[11px] text-slate-400 dark:text-[#7E7F96]">
+                            {t('admin.security.sshHardeningSubtitle')}
+                          </p>
+                        </div>
+                      </div>
+                      <StatusBadge status="online" label={ssh.status} size="sm" />
+                    </div>
+                  </CardHeader>
+                  <CardContent className="pt-4 space-y-3">
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-200/40 dark:border-white/[0.03]">
+                        <span className="text-[10px] uppercase font-semibold text-slate-400 block tracking-wider">
+                          {t('admin.security.rootLogin')}
                         </span>
-                      </td>
-                      <td className="py-3 font-mono text-slate-600 dark:text-slate-300">
-                        {c.user || 'root'}
-                      </td>
-                      <td className="py-3">
-                        <span
-                          className={`font-mono font-semibold ${
-                            c.docker_socket_mounted ? 'text-[#EA5455]' : 'text-[#28C76F]'
-                          }`}
-                        >
-                          {c.docker_socket_mounted ? 'MOUNTED' : t('admin.security.absent')}
+                        <span className="font-mono text-xs font-bold text-[#28C76F] mt-0.5 block">
+                          {ssh.permit_root_login.toUpperCase()} ({t('admin.security.statusDisabled')} ✓)
                         </span>
-                      </td>
-                      <td className="py-3 font-mono text-slate-600 dark:text-slate-300">
-                        {c.host_ports && c.host_ports.length > 0
-                          ? c.host_ports.join(', ')
-                          : t('admin.security.none')}
-                      </td>
-                      <td className="py-3 text-right">
+                      </div>
+                      <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-200/40 dark:border-white/[0.03]">
+                        <span className="text-[10px] uppercase font-semibold text-slate-400 block tracking-wider">
+                          {t('admin.security.passwordAuth')}
+                        </span>
+                        <span className="font-mono text-xs font-bold text-[#28C76F] mt-0.5 block">
+                          {ssh.password_authentication.toUpperCase()} ({t('admin.security.statusDisabled')} ✓)
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-200/40 dark:border-white/[0.03]">
+                        <span className="text-[10px] uppercase font-semibold text-slate-400 block tracking-wider">
+                          {t('admin.security.pubkeyAuth')}
+                        </span>
+                        <span className="font-mono text-xs font-bold text-[#28C76F] mt-0.5 block">
+                          {ssh.pubkey_authentication.toUpperCase()} ({t('admin.security.statusEnabled')} ✓)
+                        </span>
+                      </div>
+                      <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-200/40 dark:border-white/[0.03]">
+                        <span className="text-[10px] uppercase font-semibold text-slate-400 block tracking-wider">
+                          {t('admin.security.maxAuthTries')}
+                        </span>
+                        <span className="font-mono text-xs font-bold text-slate-800 dark:text-white mt-0.5 block">
+                          {ssh.max_auth_tries ?? 4}
+                        </span>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+
+                {/* Card 2: Firewall (UFW) */}
+                <Card className="border-slate-200 dark:border-white/[0.06] bg-white dark:bg-[#2F3349] shadow-sm">
+                  <CardHeader className="pb-3 border-b border-slate-100 dark:border-white/[0.06]">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-8 h-8 rounded-lg bg-amber-500/10 flex items-center justify-center text-amber-500">
+                          <Flame className="w-4 h-4" />
+                        </div>
+                        <div>
+                          <CardTitle className="text-sm font-bold text-slate-800 dark:text-white">
+                            {t('admin.security.firewall')}
+                          </CardTitle>
+                          <p className="text-[11px] text-slate-400 dark:text-[#7E7F96]">
+                            {t('admin.security.firewallSubtitle')}
+                          </p>
+                        </div>
+                      </div>
+                      <StatusBadge status={firewall.ufw_active ? 'online' : 'danger'} label={firewall.status} size="sm" />
+                    </div>
+                  </CardHeader>
+                  <CardContent className="pt-4 space-y-3">
+                    <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-200/40 dark:border-white/[0.03]">
+                      <span className="text-[10px] uppercase font-semibold text-slate-400 block tracking-wider">
+                        {t('admin.security.publicPorts')}
+                      </span>
+                      <div className="flex flex-wrap gap-2 mt-1.5">
+                        {(firewall.public_ports || firewall.allowed_ports || ['22/tcp', '80/tcp', '443/tcp']).map(
+                          (p) => (
+                            <span
+                              key={p}
+                              className="font-mono text-xs px-2.5 py-0.5 rounded-md bg-[#28C76F]/10 text-[#28C76F] border border-[#28C76F]/20 font-bold"
+                            >
+                              {p}
+                            </span>
+                          )
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-200/40 dark:border-white/[0.03]">
+                      <span className="text-[10px] uppercase font-semibold text-slate-400 block tracking-wider">
+                        {t('admin.security.internalPorts')}
+                      </span>
+                      <div className="flex flex-wrap gap-2 mt-1.5">
+                        {(firewall.internal_ports || ['8000/tcp', '8787/tcp', '5432/tcp']).map((p) => (
+                          <span
+                            key={p}
+                            className="font-mono text-xs px-2.5 py-0.5 rounded-md bg-slate-100 dark:bg-white/[0.06] text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-white/[0.08]"
+                          >
+                            {p} (Private Only)
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              </div>
+
+              {/* Section 3: Container Security Isolation Table */}
+              <Card className="border-slate-200 dark:border-white/[0.06] bg-white dark:bg-[#2F3349] shadow-sm">
+                <CardHeader className="pb-3 border-b border-slate-100 dark:border-white/[0.06]">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-8 h-8 rounded-lg bg-sky-500/10 flex items-center justify-center text-sky-500">
+                        <Box className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <CardTitle className="text-sm font-bold text-slate-800 dark:text-white">
+                          {t('admin.security.containerSecurity')}
+                        </CardTitle>
+                        <p className="text-[11px] text-slate-400 dark:text-[#7E7F96]">
+                          {t('admin.security.containerSecuritySubtitle')}
+                        </p>
+                      </div>
+                    </div>
+                    <StatusBadge status="online" label="4/4 SECURE" size="sm" />
+                  </div>
+                </CardHeader>
+                <CardContent className="pt-4">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left border-collapse text-xs">
+                      <thead>
+                        <tr className="border-b border-slate-200 dark:border-white/[0.06] text-[10px] uppercase font-bold text-slate-400 tracking-wider">
+                          <th className="pb-2.5">{t('admin.security.colContainer')}</th>
+                          <th className="pb-2.5">{t('admin.security.colBaseOs')}</th>
+                          <th className="pb-2.5">{t('admin.security.colPrivileged')}</th>
+                          <th className="pb-2.5">{t('admin.security.colUser')}</th>
+                          <th className="pb-2.5">{t('admin.security.colDockerSocket')}</th>
+                          <th className="pb-2.5">{t('admin.security.colHostPorts')}</th>
+                          <th className="pb-2.5 text-right">{t('admin.security.colStatus')}</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 dark:divide-white/[0.04]">
+                        {containerFleet.map((c) => (
+                          <tr key={c.name} className="hover:bg-slate-50/50 dark:hover:bg-white/[0.01]">
+                            <td className="py-3 font-mono font-bold text-slate-800 dark:text-white">
+                              {c.name}
+                            </td>
+                            <td className="py-3 font-mono text-slate-600 dark:text-slate-300 text-[11px]">
+                              {c.base_os || 'Linux'}
+                            </td>
+                            <td className="py-3">
+                              <span
+                                className={`font-mono font-semibold ${
+                                  c.privileged ? 'text-[#EA5455]' : 'text-[#28C76F]'
+                                }`}
+                              >
+                                {c.privileged ? 'TRUE' : 'FALSE'}
+                              </span>
+                            </td>
+                            <td className="py-3 font-mono text-slate-600 dark:text-slate-300">
+                              {c.user || 'root'}
+                            </td>
+                            <td className="py-3">
+                              <span
+                                className={`font-mono font-semibold ${
+                                  c.docker_socket_mounted ? 'text-[#EA5455]' : 'text-[#28C76F]'
+                                }`}
+                              >
+                                {c.docker_socket_mounted ? 'MOUNTED' : t('admin.security.absent')}
+                              </span>
+                            </td>
+                            <td className="py-3 font-mono text-slate-600 dark:text-slate-300">
+                              {c.host_ports && c.host_ports.length > 0
+                                ? c.host_ports.join(', ')
+                                : t('admin.security.none')}
+                            </td>
+                            <td className="py-3 text-right">
+                              <StatusBadge
+                                status={c.status === 'SECURE' ? 'online' : 'warning'}
+                                label={c.status}
+                                size="sm"
+                              />
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* Section 4 & 5: PostgreSQL Security & Caddy Security Headers */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                {/* Card 4: PostgreSQL Security */}
+                <Card className="border-slate-200 dark:border-white/[0.06] bg-white dark:bg-[#2F3349] shadow-sm">
+                  <CardHeader className="pb-3 border-b border-slate-100 dark:border-white/[0.06]">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-8 h-8 rounded-lg bg-emerald-500/10 flex items-center justify-center text-emerald-500">
+                          <Database className="w-4 h-4" />
+                        </div>
+                        <div>
+                          <CardTitle className="text-sm font-bold text-slate-800 dark:text-white">
+                            {t('admin.security.postgresSecurity')}
+                          </CardTitle>
+                          <p className="text-[11px] text-slate-400 dark:text-[#7E7F96]">
+                            {t('admin.security.postgresSecuritySubtitle')}
+                          </p>
+                        </div>
+                      </div>
+                      <StatusBadge status="online" label="SECURE" size="sm" />
+                    </div>
+                  </CardHeader>
+                  <CardContent className="pt-4 space-y-3">
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-200/40 dark:border-white/[0.03]">
+                        <span className="text-[10px] uppercase font-semibold text-slate-400 block tracking-wider">
+                          {t('admin.security.internalOnly')}
+                        </span>
+                        <span className="font-mono text-xs font-bold text-[#28C76F] mt-0.5 block">
+                          {postgresql?.internal_only !== false ? t('admin.security.yes') : t('admin.security.no')} ✓
+                        </span>
+                      </div>
+                      <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-200/40 dark:border-white/[0.03]">
+                        <span className="text-[10px] uppercase font-semibold text-slate-400 block tracking-wider">
+                          {t('admin.security.authEncryption')}
+                        </span>
+                        <span className="font-mono text-xs font-bold text-slate-800 dark:text-white mt-0.5 block">
+                          {postgresql?.auth_encryption || 'SCRAM-SHA-256'}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-200/40 dark:border-white/[0.03]">
+                      <span className="text-[10px] uppercase font-semibold text-slate-400 block tracking-wider">
+                        {t('admin.security.publicExposure')}
+                      </span>
+                      <span className="font-mono text-xs font-bold text-[#28C76F] mt-0.5 block">
+                        {t('admin.security.no')} (Private Docker Bridge Only) ✓
+                      </span>
+                    </div>
+                  </CardContent>
+                </Card>
+
+                {/* Card 5: Caddy Edge Security Headers */}
+                <Card className="border-slate-200 dark:border-white/[0.06] bg-white dark:bg-[#2F3349] shadow-sm">
+                  <CardHeader className="pb-3 border-b border-slate-100 dark:border-white/[0.06]">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-8 h-8 rounded-lg bg-teal-500/10 flex items-center justify-center text-teal-500">
+                          <Globe className="w-4 h-4" />
+                        </div>
+                        <div>
+                          <CardTitle className="text-sm font-bold text-slate-800 dark:text-white">
+                            {t('admin.security.caddySecurity')}
+                          </CardTitle>
+                          <p className="text-[11px] text-slate-400 dark:text-[#7E7F96]">
+                            {t('admin.security.caddySecuritySubtitle')}
+                          </p>
+                        </div>
+                      </div>
+                      <StatusBadge status="online" label={caddy.security_headers_state} size="sm" />
+                    </div>
+                  </CardHeader>
+                  <CardContent className="pt-4 space-y-2.5">
+                    {Object.entries(caddy.details).map(([headerKey, headerVal]) => (
+                      <div
+                        key={headerKey}
+                        className="flex items-center justify-between py-1.5 border-b border-slate-100 dark:border-white/[0.04] last:border-0 text-xs"
+                      >
+                        <span className="font-mono font-medium text-slate-700 dark:text-slate-200">
+                          {headerKey}
+                        </span>
+                        <span className="font-mono font-bold text-[#28C76F] text-[11px]">
+                          {headerVal}
+                        </span>
+                      </div>
+                    ))}
+                  </CardContent>
+                </Card>
+              </div>
+
+              {/* Section 6: Host OS & Kernel Hardening Card */}
+              <Card className="border-slate-200 dark:border-white/[0.06] bg-white dark:bg-[#2F3349] shadow-sm">
+                <CardHeader className="pb-3 border-b border-slate-100 dark:border-white/[0.06]">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-8 h-8 rounded-lg bg-purple-500/10 flex items-center justify-center text-purple-500">
+                        <Cpu className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <CardTitle className="text-sm font-bold text-slate-800 dark:text-white">
+                          {t('admin.security.hostKernel')}
+                        </CardTitle>
+                        <p className="text-[11px] text-slate-400 dark:text-[#7E7F96]">
+                          {t('admin.security.hostKernelSubtitle')}
+                        </p>
+                      </div>
+                    </div>
+                    <StatusBadge
+                      status={isRebootRequired ? 'warning' : 'online'}
+                      label={isRebootRequired ? t('admin.security.rebootRequired') : t('admin.security.statusPass')}
+                      size="sm"
+                    />
+                  </div>
+                </CardHeader>
+                <CardContent className="pt-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
+                    <div className="p-3 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-200/40 dark:border-white/[0.03]">
+                      <span className="text-[10px] uppercase font-semibold text-slate-400 block tracking-wider">
+                        {t('admin.security.hostDistro')}
+                      </span>
+                      <span className="font-mono text-xs font-bold text-slate-800 dark:text-white mt-1 block">
+                        {kernel?.distro || 'Ubuntu 24.04.4 LTS'}
+                      </span>
+                    </div>
+
+                    <div className="p-3 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-200/40 dark:border-white/[0.03]">
+                      <span className="text-[10px] uppercase font-semibold text-slate-400 block tracking-wider">
+                        {t('admin.security.kernelVersion')}
+                      </span>
+                      <span className="font-mono text-xs font-bold text-slate-800 dark:text-white mt-1 block truncate">
+                        {kernel?.kernel || '6.17.0-1020-oracle'}
+                      </span>
+                    </div>
+
+                    <div className="p-3 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-200/40 dark:border-white/[0.03]">
+                      <span className="text-[10px] uppercase font-semibold text-slate-400 block tracking-wider">
+                        {t('admin.security.architecture')}
+                      </span>
+                      <span className="font-mono text-xs font-bold text-slate-800 dark:text-white mt-1 block">
+                        {kernel?.architecture || 'aarch64'}
+                      </span>
+                    </div>
+
+                    <div className="p-3 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-200/40 dark:border-white/[0.03]">
+                      <span className="text-[10px] uppercase font-semibold text-slate-400 block tracking-wider">
+                        {t('admin.security.maintenanceStatus')}
+                      </span>
+                      <div className="mt-1">
                         <StatusBadge
-                          status={c.status === 'SECURE' ? 'online' : 'warning'}
-                          label={c.status}
+                          status={isRebootRequired ? 'warning' : 'online'}
+                          label={isRebootRequired ? t('admin.security.rebootRequired') : t('admin.security.statusPass')}
                           size="sm"
                         />
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Section 4 & 5: PostgreSQL Security & Caddy Security Headers */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {/* Card 4: PostgreSQL Security */}
-          <Card className="border-slate-200 dark:border-white/[0.06] bg-white dark:bg-[#2F3349] shadow-sm">
-            <CardHeader className="pb-3 border-b border-slate-100 dark:border-white/[0.06]">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2.5">
-                  <div className="w-8 h-8 rounded-lg bg-emerald-500/10 flex items-center justify-center text-emerald-500">
-                    <Database className="w-4 h-4" />
+                      </div>
+                    </div>
                   </div>
-                  <div>
-                    <CardTitle className="text-sm font-bold text-slate-800 dark:text-white">
-                      {t('admin.security.postgresSecurity')}
-                    </CardTitle>
-                    <p className="text-[11px] text-slate-400 dark:text-[#7E7F96]">
-                      {t('admin.security.postgresSecuritySubtitle')}
-                    </p>
-                  </div>
-                </div>
-                <StatusBadge status="online" label="SECURE" size="sm" />
-              </div>
-            </CardHeader>
-            <CardContent className="pt-4 space-y-3">
-              <div className="grid grid-cols-2 gap-3">
-                <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-200/40 dark:border-white/[0.03]">
-                  <span className="text-[10px] uppercase font-semibold text-slate-400 block tracking-wider">
-                    {t('admin.security.internalOnly')}
-                  </span>
-                  <span className="font-mono text-xs font-bold text-[#28C76F] mt-0.5 block">
-                    {postgresql?.internal_only !== false ? t('admin.security.yes') : t('admin.security.no')} ✓
-                  </span>
-                </div>
-                <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-200/40 dark:border-white/[0.03]">
-                  <span className="text-[10px] uppercase font-semibold text-slate-400 block tracking-wider">
-                    {t('admin.security.authEncryption')}
-                  </span>
-                  <span className="font-mono text-xs font-bold text-slate-800 dark:text-white mt-0.5 block">
-                    {postgresql?.auth_encryption || 'SCRAM-SHA-256'}
-                  </span>
-                </div>
-              </div>
-
-              <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-200/40 dark:border-white/[0.03]">
-                <span className="text-[10px] uppercase font-semibold text-slate-400 block tracking-wider">
-                  {t('admin.security.publicExposure')}
-                </span>
-                <span className="font-mono text-xs font-bold text-[#28C76F] mt-0.5 block">
-                  {t('admin.security.no')} (Private Docker Bridge Only) ✓
-                </span>
-              </div>
+                </CardContent>
+              </Card>
             </CardContent>
-          </Card>
-
-          {/* Card 5: Caddy Edge Security Headers */}
-          <Card className="border-slate-200 dark:border-white/[0.06] bg-white dark:bg-[#2F3349] shadow-sm">
-            <CardHeader className="pb-3 border-b border-slate-100 dark:border-white/[0.06]">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2.5">
-                  <div className="w-8 h-8 rounded-lg bg-teal-500/10 flex items-center justify-center text-teal-500">
-                    <Globe className="w-4 h-4" />
-                  </div>
-                  <div>
-                    <CardTitle className="text-sm font-bold text-slate-800 dark:text-white">
-                      {t('admin.security.caddySecurity')}
-                    </CardTitle>
-                    <p className="text-[11px] text-slate-400 dark:text-[#7E7F96]">
-                      {t('admin.security.caddySecuritySubtitle')}
-                    </p>
-                  </div>
-                </div>
-                <StatusBadge status="online" label={caddy.security_headers_state} size="sm" />
-              </div>
-            </CardHeader>
-            <CardContent className="pt-4 space-y-2.5">
-              {Object.entries(caddy.details).map(([headerKey, headerVal]) => (
-                <div
-                  key={headerKey}
-                  className="flex items-center justify-between py-1.5 border-b border-slate-100 dark:border-white/[0.04] last:border-0 text-xs"
-                >
-                  <span className="font-mono font-medium text-slate-700 dark:text-slate-200">
-                    {headerKey}
-                  </span>
-                  <span className="font-mono font-bold text-[#28C76F] text-[11px]">
-                    {headerVal}
-                  </span>
-                </div>
-              ))}
-            </CardContent>
-          </Card>
-        </div>
-
-        {/* Section 6: Host OS & Kernel Hardening Card */}
-        <Card className="border-slate-200 dark:border-white/[0.06] bg-white dark:bg-[#2F3349] shadow-sm">
-          <CardHeader className="pb-3 border-b border-slate-100 dark:border-white/[0.06]">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2.5">
-                <div className="w-8 h-8 rounded-lg bg-purple-500/10 flex items-center justify-center text-purple-500">
-                  <Cpu className="w-4 h-4" />
-                </div>
-                <div>
-                  <CardTitle className="text-sm font-bold text-slate-800 dark:text-white">
-                    {t('admin.security.hostKernel')}
-                  </CardTitle>
-                  <p className="text-[11px] text-slate-400 dark:text-[#7E7F96]">
-                    {t('admin.security.hostKernelSubtitle')}
-                  </p>
-                </div>
-              </div>
-              <StatusBadge
-                status={isRebootRequired ? 'warning' : 'online'}
-                label={isRebootRequired ? t('admin.security.rebootRequired') : t('admin.security.statusPass')}
-                size="sm"
-              />
-            </div>
-          </CardHeader>
-          <CardContent className="pt-4">
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
-              <div className="p-3 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-200/40 dark:border-white/[0.03]">
-                <span className="text-[10px] uppercase font-semibold text-slate-400 block tracking-wider">
-                  {t('admin.security.hostDistro')}
-                </span>
-                <span className="font-mono text-xs font-bold text-slate-800 dark:text-white mt-1 block">
-                  {kernel?.distro || 'Ubuntu 24.04.4 LTS'}
-                </span>
-              </div>
-
-              <div className="p-3 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-200/40 dark:border-white/[0.03]">
-                <span className="text-[10px] uppercase font-semibold text-slate-400 block tracking-wider">
-                  {t('admin.security.kernelVersion')}
-                </span>
-                <span className="font-mono text-xs font-bold text-slate-800 dark:text-white mt-1 block truncate">
-                  {kernel?.kernel || '6.17.0-1020-oracle'}
-                </span>
-              </div>
-
-              <div className="p-3 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-200/40 dark:border-white/[0.03]">
-                <span className="text-[10px] uppercase font-semibold text-slate-400 block tracking-wider">
-                  {t('admin.security.architecture')}
-                </span>
-                <span className="font-mono text-xs font-bold text-slate-800 dark:text-white mt-1 block">
-                  {kernel?.architecture || 'aarch64'}
-                </span>
-              </div>
-
-              <div className="p-3 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-200/40 dark:border-white/[0.03]">
-                <span className="text-[10px] uppercase font-semibold text-slate-400 block tracking-wider">
-                  {t('admin.security.maintenanceStatus')}
-                </span>
-                <div className="mt-1">
-                  <StatusBadge
-                    status={isRebootRequired ? 'warning' : 'online'}
-                    label={isRebootRequired ? t('admin.security.rebootRequired') : t('admin.security.statusPass')}
-                    size="sm"
-                  />
-                </div>
-              </div>
-            </div>
-          </CardContent>
+          )}
         </Card>
       </div>
     </AdminShell>

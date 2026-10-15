@@ -24,7 +24,6 @@ import { AdminBackupsResponse, AdminBackupFileInfo } from '../../types/admin';
 import { AdminShell } from '../../components/admin/AdminShell';
 import { ExecutiveGuidanceCard } from '../../components/admin/ExecutiveGuidanceCard';
 import { Card, CardHeader, CardTitle, CardContent } from '../../components/ui/card';
-import { StatsCard } from '../../components/ui/StatsCard';
 import { StatusBadge, StatusVariant } from '../../components/ui/StatusBadge';
 import { Button } from '../../components/ui/button';
 import { Skeleton } from '../../components/ui/Skeleton';
@@ -675,54 +674,6 @@ export const AdminBackupsPage: React.FC<AdminBackupsPageProps> = ({ onNavigate }
           </Card>
         </div>
 
-        {/* Summary Stats Row */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-          <StatsCard
-            title={t('admin.backups.certificationStatus')}
-            value={isVerified ? '✓' : '—'}
-            subText={
-              hasPostgres
-                ? isVerified
-                  ? t('admin.backups.statusVerified')
-                  : t('admin.backups.uncertified')
-                : t('admin.backups.notAvailable')
-            }
-            icon={ShieldCheck}
-            iconVariant={isVerified ? 'success' : 'warning'}
-          />
-          <StatsCard
-            title={t('admin.backups.offHostStatus')}
-            value={isOffHostConfigured ? '✓' : '!'}
-            subText={
-              isOffHostConfigured
-                ? t('admin.backups.configured')
-                : t('admin.backups.notConfigured')
-            }
-            icon={isOffHostConfigured ? ShieldCheck : CloudOff}
-            iconVariant={isOffHostConfigured ? 'success' : 'warning'}
-          />
-          <StatsCard
-            title={t('admin.backups.totalStorage')}
-            value={total_backup_disk_usage.human}
-            subText={t('admin.backups.totalStorageSubtitle')}
-            icon={HardDrive}
-            iconVariant="primary"
-          />
-          <StatsCard
-            title={t('admin.backups.overallStatus')}
-            value={isVerified ? 'OK' : hasPostgres ? 'WARN' : 'OFFLINE'}
-            subText={
-              isVerified
-                ? t('admin.backups.certified')
-                : hasPostgres
-                ? t('admin.backups.uncertified')
-                : t('admin.backups.notAvailable')
-            }
-            icon={isVerified ? ShieldCheck : ShieldAlert}
-            iconVariant={isVerified ? 'success' : 'warning'}
-          />
-        </div>
-
         {/* Backup Category Cards — 3-col on md/xl */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
           {/* PostgreSQL */}
@@ -757,22 +708,30 @@ export const AdminBackupsPage: React.FC<AdminBackupsPageProps> = ({ onNavigate }
         {/* Disaster Recovery Status */}
         <Card className="border-slate-200 dark:border-white/[0.06] bg-white dark:bg-[#2F3349] shadow-sm">
           <CardHeader className="pb-3 border-b border-slate-100 dark:border-white/[0.06]">
-            <div className="flex items-center gap-2">
-              <ShieldCheck className="w-5 h-5 text-[#7367F0]" />
-              <div>
-                <CardTitle className="text-base text-slate-800 dark:text-white">
-                  {t('admin.backups.drStatus')}
-                </CardTitle>
-                <p className="text-xs text-slate-400 dark:text-[#7E7F96]">
-                  {t('admin.backups.drSubtitle')}
-                </p>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <ShieldCheck className="w-5 h-5 text-[#7367F0]" />
+                <div>
+                  <CardTitle className="text-base text-slate-800 dark:text-white">
+                    {t('admin.backups.drStatus')}
+                  </CardTitle>
+                  <p className="text-xs text-slate-400 dark:text-[#7E7F96]">
+                    {t('admin.backups.drSubtitle')}
+                  </p>
+                </div>
               </div>
+              <StatusBadge status="warning" label={t('admin.backups.cliOnlyBadge')} size="sm" />
             </div>
           </CardHeader>
           <CardContent className="pt-4 divide-y divide-slate-100 dark:divide-white/[0.04]">
-            <div className="pb-3 text-[11px] text-slate-500 dark:text-slate-400 flex items-start gap-2">
-              <Info className="w-3.5 h-3.5 text-[#7367F0] shrink-0 mt-0.5" />
-              <span>{t('admin.backups.drRunbookNote')}</span>
+            <div className="pb-3 text-xs space-y-1">
+              <div className="flex items-start gap-2 text-slate-700 dark:text-slate-200 font-medium">
+                <Info className="w-4 h-4 text-[#7367F0] shrink-0 mt-0.5" />
+                <span>{t('admin.backups.cliOnlyNotice')}</span>
+              </div>
+              <p className="text-[11px] text-slate-400 dark:text-slate-500 pl-6">
+                {t('admin.backups.drRunbookNote')}
+              </p>
             </div>
             <DrCheckRow label={t('admin.backups.checkPostgresExists')} passed={hasPostgres} />
             <DrCheckRow label={t('admin.backups.checkRestoreVerified')} passed={hasPostgres ? (isVerified ? true : false) : null} />

@@ -8,8 +8,10 @@ import {
   AlertTriangle,
   ArrowLeft,
   Smartphone,
+  Info,
   RefreshCw,
-  Info
+  ChevronDown,
+  ChevronUp
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useI18n } from '../../context/I18nContext';
@@ -41,6 +43,7 @@ export const AdminWhatsAppPage: React.FC<AdminWhatsAppPageProps> = ({ onNavigate
   const [refreshing, setRefreshing] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<string>('');
+  const [showLeaseDetails, setShowLeaseDetails] = useState<boolean>(false);
 
   const fetchingRef = useRef<boolean>(false);
   const showAdmin = Boolean(isAdmin || profile?.is_admin || user?.is_admin);
@@ -569,84 +572,107 @@ export const AdminWhatsAppPage: React.FC<AdminWhatsAppPageProps> = ({ onNavigate
           />
         </div>
 
-        {/* 3. Socket Ownership & Leases Card */}
-        <Card className="bg-white dark:bg-[#2F3349] border-slate-200/80 dark:border-white/[0.08] shadow-sm">
-          <CardHeader className="pb-3 border-b border-slate-100 dark:border-white/[0.06]">
-            <div className="flex items-center justify-between flex-wrap gap-2">
-              <div className="flex items-center gap-2.5">
-                <Layers className="w-5 h-5 text-indigo-600 dark:text-indigo-400 shrink-0" />
-                <div>
-                  <CardTitle className="text-sm font-semibold text-slate-800 dark:text-white">
-                    {t('admin.whatsapp.socketOwnership')}
-                  </CardTitle>
-                  <p className="text-xs text-slate-500 dark:text-[#7E7F96]">
-                    {t('admin.whatsapp.socketOwnershipSubtitle')}
-                  </p>
-                </div>
-              </div>
+        {/* 3. Socket Ownership & Leases Card (Collapsible) */}
+        {(() => {
+          const hasLeaseIssue = Boolean(
+            (data?.socket_leases.duplicate_count ?? 0) > 0 || (data?.socket_leases.stale_count ?? 0) > 0
+          );
+          const isLeaseExpanded = showLeaseDetails || hasLeaseIssue;
 
-              {loading ? (
-                <Skeleton className="h-6 w-24 rounded-full" />
-              ) : (
-                <StatusBadge
-                  status={
-                    (data?.socket_leases.duplicate_count ?? 0) > 0 || (data?.socket_leases.stale_count ?? 0) > 0
-                      ? 'warning'
-                      : 'active'
-                  }
-                  label={
-                    (data?.socket_leases.duplicate_count ?? 0) > 0 || (data?.socket_leases.stale_count ?? 0) > 0
-                      ? t('admin.whatsapp.socketStatusWarning')
-                      : t('admin.whatsapp.socketStatusNormal')
-                  }
-                  size="sm"
-                />
+          return (
+            <Card className="bg-white dark:bg-[#2F3349] border-slate-200/80 dark:border-white/[0.08] shadow-sm overflow-hidden">
+              <CardHeader 
+                className="pb-3 border-b border-slate-100 dark:border-white/[0.06] cursor-pointer select-none"
+                onClick={() => setShowLeaseDetails((prev) => !prev)}
+              >
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <div className="flex items-center gap-2.5">
+                    <Layers className="w-5 h-5 text-indigo-600 dark:text-indigo-400 shrink-0" />
+                    <div>
+                      <CardTitle className="text-sm font-semibold text-slate-800 dark:text-white flex items-center gap-2">
+                        <span>{t('admin.whatsapp.socketOwnership')}</span>
+                        <span className="text-[11px] font-normal text-slate-400">
+                          ({data?.socket_leases.active_count ?? 0} {t('admin.whatsapp.activeLeases')})
+                        </span>
+                      </CardTitle>
+                      <p className="text-xs text-slate-500 dark:text-[#7E7F96]">
+                        {t('admin.whatsapp.socketOwnershipSubtitle')}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-3">
+                    {loading ? (
+                      <Skeleton className="h-6 w-24 rounded-full" />
+                    ) : (
+                      <StatusBadge
+                        status={hasLeaseIssue ? 'warning' : 'active'}
+                        label={hasLeaseIssue ? t('admin.whatsapp.socketStatusWarning') : t('admin.whatsapp.socketStatusNormal')}
+                        size="sm"
+                      />
+                    )}
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="gap-1 text-xs text-slate-500 hover:text-slate-800 dark:hover:text-white cursor-pointer h-7 px-2"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setShowLeaseDetails((prev) => !prev);
+                      }}
+                    >
+                      <span>{isLeaseExpanded ? t('admin.monitoring.hideDetails') : t('admin.monitoring.showDetails')}</span>
+                      {isLeaseExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                    </Button>
+                  </div>
+                </div>
+              </CardHeader>
+              {isLeaseExpanded && (
+                <CardContent className="pt-4">
+                  {loading ? (
+                    <div className="grid grid-cols-3 gap-4">
+                      {[...Array(3)].map((_, i) => (
+                        <Skeleton key={i} className="h-14 w-full rounded-lg" />
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
+                      <div className="p-3.5 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-100 dark:border-white/[0.04]">
+                        <span className="text-slate-400 dark:text-[#7E7F96] block mb-1">
+                          {t('admin.whatsapp.activeLeases')}
+                        </span>
+                        <span className="text-base font-bold text-slate-800 dark:text-white font-mono">
+                          {data?.socket_leases.active_count ?? 0}
+                        </span>
+                      </div>
+
+                      <div className="p-3.5 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-100 dark:border-white/[0.04]">
+                        <span className="text-slate-400 dark:text-[#7E7F96] block mb-1">
+                          {t('admin.whatsapp.duplicateLeases')}
+                        </span>
+                        <span className={`text-base font-bold font-mono ${
+                          (data?.socket_leases.duplicate_count ?? 0) > 0 ? 'text-rose-600 dark:text-rose-400' : 'text-slate-800 dark:text-white'
+                        }`}>
+                          {data?.socket_leases.duplicate_count ?? 0}
+                        </span>
+                      </div>
+
+                      <div className="p-3.5 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-100 dark:border-white/[0.04]">
+                        <span className="text-slate-400 dark:text-[#7E7F96] block mb-1">
+                          {t('admin.whatsapp.staleLeases')}
+                        </span>
+                        <span className={`text-base font-bold font-mono ${
+                          (data?.socket_leases.stale_count ?? 0) > 0 ? 'text-amber-600 dark:text-amber-400' : 'text-slate-800 dark:text-white'
+                        }`}>
+                          {data?.socket_leases.stale_count ?? 0}
+                        </span>
+                      </div>
+                    </div>
+                  )}
+                </CardContent>
               )}
-            </div>
-          </CardHeader>
-          <CardContent className="pt-4">
-            {loading ? (
-              <div className="grid grid-cols-3 gap-4">
-                {[...Array(3)].map((_, i) => (
-                  <Skeleton key={i} className="h-14 w-full rounded-lg" />
-                ))}
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
-                <div className="p-3.5 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-100 dark:border-white/[0.04]">
-                  <span className="text-slate-400 dark:text-[#7E7F96] block mb-1">
-                    {t('admin.whatsapp.activeLeases')}
-                  </span>
-                  <span className="text-base font-bold text-slate-800 dark:text-white font-mono">
-                    {data?.socket_leases.active_count ?? 0}
-                  </span>
-                </div>
-
-                <div className="p-3.5 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-100 dark:border-white/[0.04]">
-                  <span className="text-slate-400 dark:text-[#7E7F96] block mb-1">
-                    {t('admin.whatsapp.duplicateLeases')}
-                  </span>
-                  <span className={`text-base font-bold font-mono ${
-                    (data?.socket_leases.duplicate_count ?? 0) > 0 ? 'text-rose-600 dark:text-rose-400' : 'text-slate-800 dark:text-white'
-                  }`}>
-                    {data?.socket_leases.duplicate_count ?? 0}
-                  </span>
-                </div>
-
-                <div className="p-3.5 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-100 dark:border-white/[0.04]">
-                  <span className="text-slate-400 dark:text-[#7E7F96] block mb-1">
-                    {t('admin.whatsapp.staleLeases')}
-                  </span>
-                  <span className={`text-base font-bold font-mono ${
-                    (data?.socket_leases.stale_count ?? 0) > 0 ? 'text-amber-600 dark:text-amber-400' : 'text-slate-800 dark:text-white'
-                  }`}>
-                    {data?.socket_leases.stale_count ?? 0}
-                  </span>
-                </div>
-              </div>
-            )}
-          </CardContent>
-        </Card>
+            </Card>
+          );
+        })()}
 
         {/* 4. Message Pipeline (Outbox / Retry / Dead Letter) */}
         <Card className="bg-white dark:bg-[#2F3349] border-slate-200/80 dark:border-white/[0.08] shadow-sm">

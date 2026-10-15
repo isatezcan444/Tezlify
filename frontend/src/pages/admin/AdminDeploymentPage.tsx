@@ -17,6 +17,8 @@ import {
   HardDrive,
   Globe,
   FileCode2,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useI18n } from '../../context/I18nContext';
@@ -73,6 +75,7 @@ export const AdminDeploymentPage: React.FC<AdminDeploymentPageProps> = ({ onNavi
   const [refreshing, setRefreshing] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<string>('');
+  const [showHostDetails, setShowHostDetails] = useState<boolean>(false);
 
   // ---- Deployment actions -------------------------------------------------
   // The write side of deployment lives HERE, not on the server operations page.
@@ -1007,83 +1010,103 @@ export const AdminDeploymentPage: React.FC<AdminDeploymentPageProps> = ({ onNavi
                   </p>
                 </div>
               </div>
-              <StatusBadge
-                status={rebootRequired ? 'warning' : 'online'}
-                label={rebootRequired ? t('admin.rebootRequiredBadge') : t('admin.rebootNotRequiredBadge')}
-                size="sm"
-              />
+              <div className="flex items-center gap-2">
+                <StatusBadge
+                  status={rebootRequired ? 'warning' : 'online'}
+                  label={rebootRequired ? t('admin.rebootRequiredBadge') : t('admin.rebootNotRequiredBadge')}
+                  size="sm"
+                />
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setShowHostDetails((v) => !v)}
+                  className="text-xs h-7 px-2.5 flex items-center gap-1.5"
+                >
+                  <span>{showHostDetails ? t('admin.deployment.hideHostDetails') : t('admin.deployment.showHostDetails')}</span>
+                  {showHostDetails ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                </Button>
+              </div>
             </div>
           </CardHeader>
-          <CardContent className="pt-4">
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
-              <div className="p-3 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-200/40 dark:border-white/[0.03]">
-                <span className="text-[10px] uppercase font-semibold text-slate-400 block tracking-wider">
-                  {t('admin.deployment.distro')}
-                </span>
-                <span className="font-mono text-xs font-bold text-slate-800 dark:text-white mt-1 block">
-                  {hostState.distro}
-                </span>
+          {!showHostDetails ? (
+            <CardContent className="pt-3 pb-3">
+              <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
+                <span>{hostState.distro} • {hostState.cpu_cores || 4} Cores ({hostState.architecture || 'aarch64'}) • {hostState.memory_total_mb ? `${(hostState.memory_total_mb / 1024).toFixed(1)} GB` : '23.9 GB'} RAM</span>
+                <span className="font-mono text-[11px]">{t('admin.deployment.uptime')}: {hostState.uptime || '—'}</span>
+              </div>
+            </CardContent>
+          ) : (
+            <CardContent className="pt-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
+                <div className="p-3 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-200/40 dark:border-white/[0.03]">
+                  <span className="text-[10px] uppercase font-semibold text-slate-400 block tracking-wider">
+                    {t('admin.deployment.distro')}
+                  </span>
+                  <span className="font-mono text-xs font-bold text-slate-800 dark:text-white mt-1 block">
+                    {hostState.distro}
+                  </span>
+                </div>
+
+                <div className="p-3 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-200/40 dark:border-white/[0.03]">
+                  <span className="text-[10px] uppercase font-semibold text-slate-400 block tracking-wider">
+                    {t('admin.deployment.kernel')}
+                  </span>
+                  <span className="font-mono text-xs font-bold text-slate-800 dark:text-white mt-1 block truncate">
+                    {hostState.kernel}
+                  </span>
+                </div>
+
+                <div className="p-3 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-200/40 dark:border-white/[0.03]">
+                  <span className="text-[10px] uppercase font-semibold text-slate-400 block tracking-wider">
+                    {t('admin.deployment.cpuCores')} / {t('admin.deployment.architecture')}
+                  </span>
+                  <span className="font-mono text-xs font-bold text-slate-800 dark:text-white mt-1 block">
+                    {hostState.cpu_cores || 4} Cores ({hostState.architecture || 'aarch64'})
+                  </span>
+                </div>
+
+                <div className="p-3 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-200/40 dark:border-white/[0.03]">
+                  <span className="text-[10px] uppercase font-semibold text-slate-400 block tracking-wider">
+                    {t('admin.deployment.memory')}
+                  </span>
+                  <span className="font-mono text-xs font-bold text-slate-800 dark:text-white mt-1 block">
+                    {hostState.memory_total_mb
+                      ? `${(hostState.memory_total_mb / 1024).toFixed(1)} GB`
+                      : '23.9 GB'}
+                  </span>
+                </div>
               </div>
 
-              <div className="p-3 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-200/40 dark:border-white/[0.03]">
-                <span className="text-[10px] uppercase font-semibold text-slate-400 block tracking-wider">
-                  {t('admin.deployment.kernel')}
-                </span>
-                <span className="font-mono text-xs font-bold text-slate-800 dark:text-white mt-1 block truncate">
-                  {hostState.kernel}
-                </span>
-              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mt-4">
+                <div className="p-3 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-200/40 dark:border-white/[0.03]">
+                  <span className="text-[10px] uppercase font-semibold text-slate-400 block tracking-wider">
+                    {t('admin.deployment.uptime')}
+                  </span>
+                  <span className="font-mono text-xs text-slate-700 dark:text-slate-200 mt-1 block">
+                    {hostState.uptime || '—'}
+                  </span>
+                </div>
 
-              <div className="p-3 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-200/40 dark:border-white/[0.03]">
-                <span className="text-[10px] uppercase font-semibold text-slate-400 block tracking-wider">
-                  {t('admin.deployment.cpuCores')} / {t('admin.deployment.architecture')}
-                </span>
-                <span className="font-mono text-xs font-bold text-slate-800 dark:text-white mt-1 block">
-                  {hostState.cpu_cores || 4} Cores ({hostState.architecture || 'aarch64'})
-                </span>
-              </div>
+                <div className="p-3 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-200/40 dark:border-white/[0.03]">
+                  <span className="text-[10px] uppercase font-semibold text-slate-400 block tracking-wider">
+                    {t('admin.deployment.deploymentDir')}
+                  </span>
+                  <span className="font-mono text-xs text-slate-700 dark:text-slate-200 mt-1 block">
+                    {deploymentData.deployment_directory}
+                  </span>
+                </div>
 
-              <div className="p-3 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-200/40 dark:border-white/[0.03]">
-                <span className="text-[10px] uppercase font-semibold text-slate-400 block tracking-wider">
-                  {t('admin.deployment.memory')}
-                </span>
-                <span className="font-mono text-xs font-bold text-slate-800 dark:text-white mt-1 block">
-                  {hostState.memory_total_mb
-                    ? `${(hostState.memory_total_mb / 1024).toFixed(1)} GB`
-                    : '23.9 GB'}
-                </span>
+                <div className="p-3 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-200/40 dark:border-white/[0.03]">
+                  <span className="text-[10px] uppercase font-semibold text-slate-400 block tracking-wider">
+                    {t('admin.deployment.publicEdge')}
+                  </span>
+                  <span className="font-mono text-xs text-slate-700 dark:text-slate-200 mt-1 block truncate">
+                    https://api.130.162.247.20.sslip.io/
+                  </span>
+                </div>
               </div>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mt-4">
-              <div className="p-3 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-200/40 dark:border-white/[0.03]">
-                <span className="text-[10px] uppercase font-semibold text-slate-400 block tracking-wider">
-                  {t('admin.deployment.uptime')}
-                </span>
-                <span className="font-mono text-xs text-slate-700 dark:text-slate-200 mt-1 block">
-                  {hostState.uptime || '—'}
-                </span>
-              </div>
-
-              <div className="p-3 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-200/40 dark:border-white/[0.03]">
-                <span className="text-[10px] uppercase font-semibold text-slate-400 block tracking-wider">
-                  {t('admin.deployment.deploymentDir')}
-                </span>
-                <span className="font-mono text-xs text-slate-700 dark:text-slate-200 mt-1 block">
-                  {deploymentData.deployment_directory}
-                </span>
-              </div>
-
-              <div className="p-3 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-200/40 dark:border-white/[0.03]">
-                <span className="text-[10px] uppercase font-semibold text-slate-400 block tracking-wider">
-                  {t('admin.deployment.publicEdge')}
-                </span>
-                <span className="font-mono text-xs text-slate-700 dark:text-slate-200 mt-1 block truncate">
-                  https://api.130.162.247.20.sslip.io/
-                </span>
-              </div>
-            </div>
-          </CardContent>
+            </CardContent>
+          )}
         </Card>
       </div>
     </AdminShell>
