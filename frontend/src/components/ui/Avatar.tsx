@@ -56,7 +56,7 @@ export function loadAvatarSessionCache(): void {
     const parsed = JSON.parse(raw);
     if (parsed && typeof parsed === 'object') {
       for (const [k, v] of Object.entries(parsed)) {
-        if (typeof v === 'string' && v) {
+        if (typeof v === 'string' && v && !['changed', 'remove', 'null', 'undefined'].includes(v.trim().toLowerCase())) {
           resolvedAvatarCache.set(k, v);
         }
       }

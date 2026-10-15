@@ -38,6 +38,20 @@ class TestWhatsAppAvatarPersistence:
         set_contact_avatar(contact, "")
         assert get_contact_avatar(contact) == test_url
 
+        # Setting 'changed' or 'remove' sentinels must NOT overwrite valid avatar
+        set_contact_avatar(contact, "changed")
+        assert get_contact_avatar(contact) == test_url
+        set_contact_avatar(contact, "remove")
+        assert get_contact_avatar(contact) == test_url
+
+        # If contact initially has legacy 'changed' in custom_attributes, get_contact_avatar returns None
+        # and set_contact_avatar purges it
+        corrupted = Contact(id=2, user_id="u-test", phone_e164="+905551112233", custom_attributes={"avatar_url": "changed"})
+        assert get_contact_avatar(corrupted) is None
+        set_contact_avatar(corrupted, "changed")
+        assert "avatar_url" not in corrupted.custom_attributes
+        assert get_contact_avatar(corrupted) is None
+
     @pytest.mark.asyncio
     async def test_refresh_contact_avatar_matches_phone_without_plus(self):
         # Database contact stored with E.164 plus

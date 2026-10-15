@@ -18,14 +18,21 @@ from backend.app.services.whatsapp.identity import (
 )
 
 
+_INVALID_AVATAR_SENTINELS = frozenset({"changed", "remove", "null", "undefined", "none", "error", "false", "true"})
+
+
 def set_contact_avatar(contact: Contact, avatar_url: Optional[str]) -> None:
     """Contact avatarini custom_attributes icine yazar."""
-    if not avatar_url:
-        return
     attrs = dict(contact.custom_attributes or {})
-    if attrs.get("avatar_url") == avatar_url:
+    if not avatar_url or str(avatar_url).strip().lower() in _INVALID_AVATAR_SENTINELS:
+        if "avatar_url" in attrs and str(attrs.get("avatar_url", "")).strip().lower() in _INVALID_AVATAR_SENTINELS:
+            del attrs["avatar_url"]
+            contact.custom_attributes = attrs
         return
-    attrs["avatar_url"] = avatar_url
+    clean_url = str(avatar_url).strip()
+    if attrs.get("avatar_url") == clean_url:
+        return
+    attrs["avatar_url"] = clean_url
     contact.custom_attributes = attrs
 
 
@@ -35,7 +42,12 @@ def get_contact_avatar(contact: Optional[Contact]) -> Optional[str]:
         return None
     attrs = contact.custom_attributes or {}
     value = attrs.get("avatar_url") if isinstance(attrs, dict) else None
-    return str(value) if value else None
+    if not value:
+        return None
+    val_str = str(value).strip()
+    if val_str.lower() in _INVALID_AVATAR_SENTINELS:
+        return None
+    return val_str
 
 
 def set_contact_name(contact: Contact, name: Optional[str], source: Optional[str]) -> bool:

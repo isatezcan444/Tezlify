@@ -23,6 +23,7 @@
  */
 import fs from 'fs';
 import path from 'path';
+import { sanitizeAvatarUrl } from '../domain/bounded-cache.js';
 
 export const CONTACTS_CACHE_FILE = 'contacts-cache.json';
 export const CONTACTS_CACHE_VERSION = 1;
@@ -59,7 +60,7 @@ function sanitizeEntry(jid, contact) {
       name: String(contact.name).trim(),
       name_source: contact.name_source || null,
       phone: contact.phone || null,
-      avatar_url: contact.avatar_url || null,
+      avatar_url: sanitizeAvatarUrl(contact.avatar_url) || null,
     },
   ];
 }

@@ -53,6 +53,23 @@ export function isAvatarUrlExpired(url, leadMs = AVATAR_URL_EXPIRY_LEAD_MS, nowM
   return expiry - Math.max(0, leadMs) <= nowMs;
 }
 
+/**
+ * Sanitizes avatar URL strings, ensuring sentinel values like 'changed', 'remove',
+ * 'null', or 'undefined' are never treated as valid URLs.
+ *
+ * @param {string|null|undefined} url
+ * @returns {string|null}
+ */
+export function sanitizeAvatarUrl(url) {
+  if (!url || typeof url !== 'string') return null;
+  const trimmed = url.trim();
+  const lower = trimmed.toLowerCase();
+  if (['changed', 'remove', 'null', 'undefined', 'error', 'none', 'false', 'true'].includes(lower)) {
+    return null;
+  }
+  return trimmed;
+}
+
 /** Small process-local cache implementing Baileys' CacheStore contract. */
 export function createBoundedCache({ maxEntries = 10_000, ttlMs = 60 * 60 * 1000 } = {}) {
   const entries = new Map();

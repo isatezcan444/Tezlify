@@ -29,6 +29,7 @@ import {
 import { summarizeWaMessage, resolveDownloadableMedia } from '../messages/message-classifier.js';
 import { createSessionStore, messageTimestampMs, resolveChatActivitySeconds, rememberRawMessage } from '../messages/message-store.js';
 import { safeWriteEncrypted, setCompanionActive } from './socket-connector.js';
+import { sanitizeAvatarUrl } from '../domain/bounded-cache.js';
 
 export function resolveHistoryWaitersForChunk({
   pendingHistoryWaiters,
@@ -807,7 +808,7 @@ export function bindSocketEvents({
         name: contact?.name || existing.name || (key === '0@s.whatsapp.net' ? 'WhatsApp' : (lidHold ? '' : jidToPhone(key) || key)),
         name_source: contact?.name_source || existing.name_source || (key === '0@s.whatsapp.net' ? 'system' : null),
         phone: jidToPhone(key) || existing.phone || '',
-        avatar_url: contact?.avatar_url || existing.avatar_url || null,
+        avatar_url: sanitizeAvatarUrl(contact?.avatar_url) || sanitizeAvatarUrl(existing.avatar_url) || null,
         is_group: key.includes('@g.us'),
         // Arsiv durumu bilinmiyorsa anahtar HIC gonderilmez (bkz. `archivedPatch`).
         ...archivedPatch(update.archived ?? existing.archived),
@@ -868,7 +869,7 @@ export function bindSocketEvents({
           jid: c.id,
           name: merged.name || jidToPhone(c.id) || c.id,
           phone: jidToPhone(c.id) || merged.phone || '',
-          avatar_url: c.imgUrl || merged.avatar_url || null,
+          avatar_url: sanitizeAvatarUrl(c.imgUrl) || (c.imgUrl === 'remove' ? null : sanitizeAvatarUrl(merged.avatar_url)) || null,
           updated_at: new Date().toISOString(),
         });
       }
@@ -1041,7 +1042,7 @@ export function bindSocketEvents({
           is_group: key.includes('@g.us'),
           // Arsiv durumu bilinmiyorsa anahtar HIC gonderilmez (bkz. `archivedPatch`).
           ...archivedPatch(chat.archived ?? existing.archived),
-          avatar_url: chat.avatar_url || contact?.avatar_url || existing.avatar_url || null,
+          avatar_url: sanitizeAvatarUrl(chat.avatar_url) || sanitizeAvatarUrl(contact?.avatar_url) || sanitizeAvatarUrl(existing.avatar_url) || null,
           last_message_at: stampOlder ? existing.last_message_at : nextLastMessageAt,
           last_message_preview:
             (newest ? buildChatPreview(newest, key.includes('@g.us')) : '') ||

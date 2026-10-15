@@ -2074,5 +2074,32 @@ async def ensure_quick_replies_table(engine: AsyncEngine) -> None:
     logger.info("[MIGRATION] ensure_quick_replies_table verified")
 
 
+async def clean_invalid_avatar_sentinels(engine: AsyncEngine) -> None:
+    """Temizler: contacts.custom_attributes icindeki gecersiz 'changed', 'remove', 'null' sentinel avatar_url degerleri."""
+    dialect = engine.dialect.name
+    try:
+        async with engine.begin() as conn:
+            if dialect == "postgresql":
+                await conn.execute(
+                    text(
+                        "UPDATE contacts "
+                        "SET custom_attributes = (custom_attributes::jsonb - 'avatar_url')::json "
+                        "WHERE (custom_attributes::jsonb->>'avatar_url') IN ('changed', 'remove', 'null', 'undefined', 'none', 'error', 'false', 'true');"
+                    )
+                )
+            elif dialect == "sqlite":
+                await conn.execute(
+                    text(
+                        "UPDATE contacts "
+                        "SET custom_attributes = json_remove(custom_attributes, '$.avatar_url') "
+                        "WHERE json_extract(custom_attributes, '$.avatar_url') IN ('changed', 'remove', 'null', 'undefined', 'none', 'error', 'false', 'true');"
+                    )
+                )
+        logger.info("[MIGRATION] clean_invalid_avatar_sentinels verified")
+    except Exception as exc:
+        logger.warning("[MIGRATION] clean_invalid_avatar_sentinels atlandi: %s", exc)
+
+
+
 
 

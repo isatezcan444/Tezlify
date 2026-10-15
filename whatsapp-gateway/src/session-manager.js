@@ -12,7 +12,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { performance } from 'perf_hooks';
 import { diagnostic, sessionRef, latency } from './observability.js';
 import { SocketLifecycle } from './domain/socket-lifecycle.js';
-import { createBoundedCache, isAvatarUrlExpired } from './domain/bounded-cache.js';
+import { createBoundedCache, isAvatarUrlExpired, sanitizeAvatarUrl } from './domain/bounded-cache.js';
 import { expandAppStateKeys } from 'whatsapp-rust-bridge';
 import { hmacSign } from '@whiskeysockets/baileys/lib/Utils/crypto.js';
 
@@ -889,7 +889,7 @@ export function createSessionManager({
           name,
           notify: c.notify || null,
           name_source: c.name_source || 'contacts',
-          avatar_url: c.avatar_url || null,
+          avatar_url: sanitizeAvatarUrl(c.avatar_url),
         });
       }
 
@@ -898,9 +898,10 @@ export function createSessionManager({
         if (!ch.jid || isLidJid(ch.jid) || isBroadcastOnlyJid(ch.jid) || ch.jid.includes('@g.us')) continue;
         const phone = ch.phone || jidToPhone(ch.jid);
         if (!phone) continue;
+        const sanitizedChatAvatar = sanitizeAvatarUrl(ch.avatar_url);
         if (result.has(ch.jid)) {
           const existing = result.get(ch.jid);
-          if (!existing.avatar_url && ch.avatar_url) existing.avatar_url = ch.avatar_url;
+          if (!existing.avatar_url && sanitizedChatAvatar) existing.avatar_url = sanitizedChatAvatar;
         } else if (isSavedContactName(ch.name, phone) && (ch.name_source === 'addressbook' || ch.name_source === 'history')) {
           result.set(ch.jid, {
             id: ch.jid,
@@ -908,7 +909,7 @@ export function createSessionManager({
             name: ch.name,
             notify: null,
             name_source: ch.name_source,
-            avatar_url: ch.avatar_url || null,
+            avatar_url: sanitizedChatAvatar,
           });
         }
       }
@@ -2137,16 +2138,25 @@ export function createSessionManager({
         if (update.name) merged = mergeContactName(merged, update.name, 'addressbook');
         if (update.verifiedName) merged = mergeContactName(merged, update.verifiedName, 'verified');
         if (update.notify) merged = mergeContactName(merged, update.notify, 'push');
+        const imgChanged = update.imgUrl === 'changed';
+        const imgRemoved = update.imgUrl === null || update.imgUrl === 'remove';
+        const validImgUrl = sanitizeAvatarUrl(update.imgUrl);
+        const resolvedAvatar = validImgUrl || (imgRemoved ? null : (sanitizeAvatarUrl(merged.avatar_url) || null));
         contacts.set(jid, {
           ...merged,
           id: jid,
           jid,
           name: merged.name || jidToPhone(jid) || jid,
           phone: jidToPhone(jid) || merged.phone || '',
-          avatar_url: update.imgUrl || merged.avatar_url || null,
+          avatar_url: resolvedAvatar,
           updated_at: new Date().toISOString(),
         });
-        if (!lidHold) emitEvent({ event: 'contact_synced', contact: contacts.get(jid) });
+        if (!lidHold) {
+          emitEvent({ event: 'contact_synced', contact: contacts.get(jid) });
+          if (imgChanged) {
+            void this._enqueueAvatarQuery(session, jid, { priority: 'high', force: true });
+          }
+        }
       }
     },
 
@@ -2322,7 +2332,7 @@ export function createSessionManager({
         const merged = mergeContactName(contacts.get(phoneKey) || {}, pending.name, pending.name_source || 'addressbook');
         const avatarMerged = {
           ...merged,
-          avatar_url: merged.avatar_url || pending.avatar_url || null,
+          avatar_url: sanitizeAvatarUrl(merged.avatar_url) || sanitizeAvatarUrl(pending.avatar_url) || null,
           lid: lidKey,
         };
         contacts.set(phoneKey, {
@@ -2352,7 +2362,7 @@ export function createSessionManager({
           name: contact?.name || phoneChatName || lidChatName || jidToPhone(phoneKey) || phoneKey,
           name_source: contact?.name_source || existingPhone.name_source || lidChat.name_source || null,
           phone: jidToPhone(phoneKey) || '',
-          avatar_url: lidChat.avatar_url || existingPhone.avatar_url || contact?.avatar_url || null,
+          avatar_url: sanitizeAvatarUrl(lidChat.avatar_url) || sanitizeAvatarUrl(existingPhone.avatar_url) || sanitizeAvatarUrl(contact?.avatar_url) || null,
           is_group: false,
           updated_at: new Date().toISOString(),
         };
@@ -2422,7 +2432,7 @@ export function createSessionManager({
         name: contact?.name || existing.name || (key === '0@s.whatsapp.net' ? 'WhatsApp' : jidToPhone(key) || key),
         name_source: contact?.name_source || existing.name_source || (key === '0@s.whatsapp.net' ? 'system' : null),
         phone: jidToPhone(key) || existing.phone || '',
-        avatar_url: contact?.avatar_url || existing.avatar_url || null,
+        avatar_url: sanitizeAvatarUrl(contact?.avatar_url) || sanitizeAvatarUrl(existing.avatar_url) || null,
         is_group: key.includes('@g.us'),
         // Arsiv durumu bilinmiyorsa anahtar HIC gonderilmez (bkz. `archivedPatch`).
         ...archivedPatch(existing.archived),
@@ -3015,7 +3025,7 @@ export function createSessionManager({
             // Sabit `false` yazmak, backend'in `"archived" in payload`
             // korumasini devre disi birakip bilinen bir arsivi ezerdi.
             ...archivedPatch(undefined),
-            avatar_url: meta?.imgUrl || null,
+            avatar_url: sanitizeAvatarUrl(meta?.imgUrl),
             last_message_at: null,
             last_message_preview: '',
             unread_count: 0,

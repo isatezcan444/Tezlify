@@ -1105,6 +1105,8 @@ class WhatsAppEventOrchestrator:
         if avatar_url:
             _set_contact_avatar(contact, avatar_url)
         await db.commit()
+        if "avatar_url" in contact_payload:
+            contact_payload["avatar_url"] = _get_contact_avatar(contact)
         return event
 
     async def reconcile_legacy_split_conversation(
@@ -1695,6 +1697,8 @@ class WhatsAppEventOrchestrator:
                 _set_contact_name(contact, name, payload.get("name_source"))
                 _set_contact_avatar(contact, payload.get("avatar_url"))
                 await db.flush()
+                if "avatar_url" in payload:
+                    payload["avatar_url"] = _get_contact_avatar(contact)
             preview = payload.get("last_message_preview")
             if preview:
                 gw_ts = _as_naive_utc(_parse_dt(payload.get("last_message_at")))

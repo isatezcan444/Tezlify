@@ -14,7 +14,10 @@ export function resolveMediaUrl(url?: string | null): string | undefined {
 
   // Placeholder / invalid keywords must not be resolved to pseudo-endpoints
   const lower = trimmed.toLowerCase();
-  if (['image', 'video', 'audio', 'document', 'file', 'null', 'undefined'].includes(lower)) {
+  if ([
+    'image', 'video', 'audio', 'document', 'file', 'null', 'undefined',
+    'changed', 'remove', 'error', 'none', 'false', 'true', 'unknown'
+  ].includes(lower)) {
     return undefined;
   }
 
@@ -41,6 +44,10 @@ export function resolveMediaUrl(url?: string | null): string | undefined {
   let pathOrUrl = url.trim();
   // Raw media ID or UUID (not a full URL or path) is resolved to the whatsapp media endpoint
   if (!pathOrUrl.startsWith('/') && !pathOrUrl.startsWith('http://') && !pathOrUrl.startsWith('https://')) {
+    // Only resolve strings that look like a valid media ID (alphanumeric, dashes, underscores, min length 8)
+    if (!/^[a-zA-Z0-9_\-]{8,}$/.test(pathOrUrl)) {
+      return undefined;
+    }
     pathOrUrl = `/api/v1/whatsapp/media/${pathOrUrl}`;
   }
 
