@@ -570,9 +570,8 @@ export const AdminDeploymentPage: React.FC<AdminDeploymentPageProps> = ({ onNavi
                   {deploying.status === 'failed' && onNavigate && (
                     <Button
                       variant="outline"
-                      size="sm"
                       onClick={() => onNavigate('admin-operations')}
-                      className="text-xs cursor-pointer h-7"
+                      className="min-h-[40px] h-10 px-4 rounded-xl text-xs font-bold border border-slate-200 dark:border-white/[0.1] bg-white dark:bg-[#2F3349] hover:bg-slate-50 dark:hover:bg-[#363B53] flex items-center justify-center cursor-pointer transition-colors"
                     >
                       {t('admin.deployment.goToOpsCenter')}
                     </Button>
@@ -1018,12 +1017,11 @@ export const AdminDeploymentPage: React.FC<AdminDeploymentPageProps> = ({ onNavi
                 />
                 <Button
                   variant="outline"
-                  size="sm"
                   onClick={() => setShowHostDetails((v) => !v)}
-                  className="text-xs h-7 px-2.5 flex items-center gap-1.5"
+                  className="min-h-[40px] h-10 px-4 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 border border-slate-200/80 dark:border-white/[0.08] hover:bg-slate-50 dark:hover:bg-white/[0.04] transition-colors cursor-pointer"
                 >
                   <span>{showHostDetails ? t('admin.deployment.hideHostDetails') : t('admin.deployment.showHostDetails')}</span>
-                  {showHostDetails ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                  {showHostDetails ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
                 </Button>
               </div>
             </div>

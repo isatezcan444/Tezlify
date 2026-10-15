@@ -492,17 +492,17 @@ export const AdminOperationsPage: React.FC<AdminOperationsPageProps> = ({ onNavi
   }
 
   const tabBar = (
-    <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
+    <div className="flex items-center gap-2 overflow-x-auto pb-1.5 scrollbar-thin">
       {OPS_TABS.map((item) => (
         <button
           key={item.id}
           type="button"
           onClick={() => setTab(item.id)}
           className={
-            'px-3 py-1.5 rounded-lg text-xs font-bold whitespace-nowrap cursor-pointer ' +
-            'transition-all duration-200 ease-out active:scale-[0.97] ' +
+            'min-h-[42px] px-4 py-2 rounded-xl text-xs sm:text-sm font-bold whitespace-nowrap cursor-pointer ' +
+            'transition-all duration-200 ease-out active:scale-[0.97] flex items-center justify-center ' +
             (tab === item.id
-              ? 'bg-vuexy-primary text-white shadow-sm'
+              ? 'bg-vuexy-primary text-white shadow-md shadow-vuexy-primary/30'
               : 'bg-slate-100 dark:bg-white/[0.06] text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-white/[0.1]')
           }
         >
@@ -512,7 +512,7 @@ export const AdminOperationsPage: React.FC<AdminOperationsPageProps> = ({ onNavi
       {/* A stale panel must never be mistaken for a live one. */}
       <span
         className={
-          'ml-auto pl-2 text-[11px] font-bold whitespace-nowrap ' +
+          'ml-auto pl-3 text-xs font-bold whitespace-nowrap ' +
           (realtimeConnected
             ? 'text-emerald-600 dark:text-emerald-400'
             : 'text-amber-600 dark:text-amber-400')
@@ -594,9 +594,8 @@ export const AdminOperationsPage: React.FC<AdminOperationsPageProps> = ({ onNavi
                 {tab !== 'history' && (
                   <Button
                     variant="outline"
-                    size="sm"
                     onClick={() => setTab('history')}
-                    className="text-xs cursor-pointer h-7"
+                    className="min-h-[40px] h-10 px-4 rounded-xl text-xs font-bold border border-slate-200 dark:border-white/[0.1] bg-white dark:bg-[#2F3349] hover:bg-slate-50 dark:hover:bg-[#363B53] flex items-center justify-center cursor-pointer transition-colors"
                   >
                     {t('admin.ops.tabHistory')}
                   </Button>

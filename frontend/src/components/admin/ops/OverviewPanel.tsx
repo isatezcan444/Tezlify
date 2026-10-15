@@ -316,26 +316,24 @@ export function OverviewPanel({
             </div>
 
             {onNavigateTab && (
-              <div className="flex items-center gap-2 shrink-0">
+              <div className="flex items-center gap-2.5 shrink-0 w-full sm:w-auto">
                 {executive.activeIncidentsCount > 0 && (
                   <Button
                     variant="outline"
-                    size="sm"
                     onClick={() => onNavigateTab('errors')}
-                    className="text-xs gap-1.5 cursor-pointer"
+                    className="min-h-[40px] h-10 px-4 rounded-xl text-xs font-semibold gap-2 cursor-pointer border-slate-200 dark:border-white/[0.08]"
                   >
                     <span>{t('admin.ops.viewIncidents')}</span>
-                    <ArrowRight className="w-3 h-3" />
+                    <ArrowRight className="w-3.5 h-3.5" />
                   </Button>
                 )}
                 <Button
                   variant="default"
-                  size="sm"
                   onClick={() => onNavigateTab('system')}
-                  className="text-xs gap-1.5 cursor-pointer bg-vuexy-primary hover:bg-vuexy-primary/90 text-white"
+                  className="min-h-[40px] h-10 px-5 rounded-xl text-xs sm:text-sm font-bold gap-2 cursor-pointer bg-vuexy-primary hover:bg-vuexy-primary/90 text-white shadow-md shadow-vuexy-primary/20"
                 >
                   <span>{t('admin.ops.viewSystem')}</span>
-                  <ArrowRight className="w-3 h-3" />
+                  <ArrowRight className="w-3.5 h-3.5" />
                 </Button>
               </div>
             )}

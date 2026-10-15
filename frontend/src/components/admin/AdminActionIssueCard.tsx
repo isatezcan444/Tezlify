@@ -132,48 +132,46 @@ export const AdminActionIssueCard: React.FC<AdminActionIssueCardProps> = ({
         </div>
 
         {/* Action Buttons */}
-        <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5 pt-1">
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 pt-2">
           {details ? (
             <button
               type="button"
               onClick={() => setShowDetails(!showDetails)}
-              className="text-xs font-semibold text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 inline-flex items-center gap-1 cursor-pointer"
+              className="min-h-[40px] px-1 py-1 text-xs font-semibold text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 inline-flex items-center gap-1.5 cursor-pointer select-none transition-colors"
             >
               <span>{showDetails ? 'Ayrıntıları Gizle' : 'Teknik Ayrıntıları Gör'}</span>
-              {showDetails ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+              {showDetails ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
             </button>
-          ) : <div />}
+          ) : <div className="hidden sm:block" />}
 
-          <div className="flex items-center gap-2 justify-end flex-wrap">
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 sm:justify-end w-full sm:w-auto">
             {secondaryAction && (
               <Button
                 variant={secondaryAction.variant || 'outline'}
-                size="sm"
                 disabled={secondaryAction.disabled || secondaryAction.loading}
                 onClick={secondaryAction.onClick}
-                className="text-xs font-semibold h-8.5 px-3 cursor-pointer"
+                className="min-h-[44px] h-11 px-5 w-full sm:w-auto text-xs sm:text-sm font-semibold rounded-xl flex items-center justify-center gap-2 border border-slate-300 dark:border-white/[0.12] bg-white dark:bg-[#2F3349] hover:bg-slate-50 dark:hover:bg-[#363B53] text-slate-700 dark:text-slate-200 transition-all active:scale-[0.98] cursor-pointer"
               >
-                {secondaryAction.loading && <Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" />}
-                {secondaryAction.icon && React.createElement(secondaryAction.icon, { className: 'w-3.5 h-3.5 mr-1.5' })}
-                <span>{secondaryAction.label}</span>
+                {secondaryAction.loading && <Loader2 className="w-4 h-4 animate-spin" />}
+                {secondaryAction.icon && !secondaryAction.loading && React.createElement(secondaryAction.icon, { className: 'w-4 h-4 shrink-0' })}
+                <span className="truncate">{secondaryAction.label}</span>
               </Button>
             )}
 
             {primaryAction && (
               <Button
                 variant={primaryAction.variant || 'default'}
-                size="sm"
                 disabled={primaryAction.disabled || primaryAction.loading}
                 onClick={primaryAction.onClick}
-                className={`text-xs font-bold h-8.5 px-4 cursor-pointer ${
+                className={`min-h-[44px] h-11 px-5 w-full sm:w-auto text-xs sm:text-sm font-bold rounded-xl flex items-center justify-center gap-2 shadow-sm transition-all active:scale-[0.98] cursor-pointer ${
                   severity === 'critical'
-                    ? 'bg-rose-600 hover:bg-rose-700 text-white'
-                    : 'bg-[#7367F0] hover:bg-[#685dd8] text-white'
+                    ? 'bg-rose-600 hover:bg-rose-700 text-white shadow-rose-600/20'
+                    : 'bg-[#7367F0] hover:bg-[#685dd8] text-white shadow-[#7367F0]/30'
                 }`}
               >
-                {primaryAction.loading && <Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" />}
-                {primaryAction.icon && React.createElement(primaryAction.icon, { className: 'w-3.5 h-3.5 mr-1.5' })}
-                <span>{primaryAction.label}</span>
+                {primaryAction.loading && <Loader2 className="w-4 h-4 animate-spin" />}
+                {primaryAction.icon && !primaryAction.loading && React.createElement(primaryAction.icon, { className: 'w-4 h-4 shrink-0' })}
+                <span className="truncate">{primaryAction.label}</span>
               </Button>
             )}
           </div>

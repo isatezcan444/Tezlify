@@ -507,14 +507,14 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
             </span>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-5">
             {/* Buton 1: WhatsApp Bağla / WhatsApp Bağlantısını Görüntüle */}
             <Card 
               onClick={() => onNavigate?.(isWaFullyConnected ? 'admin-whatsapp' : 'whatsapp')}
-              className="border border-slate-200/80 dark:border-white/[0.08] hover:border-[#7367F0]/50 hover:shadow-md transition-all cursor-pointer p-4 bg-white dark:bg-[#2F3349] group flex flex-col justify-between"
+              className="border border-slate-200/80 dark:border-white/[0.08] hover:border-[#7367F0]/60 hover:shadow-lg transition-all duration-200 active:scale-[0.99] cursor-pointer p-4 sm:p-5 rounded-2xl bg-white dark:bg-[#2F3349] group flex flex-col justify-between min-h-[148px] sm:min-h-[156px]"
             >
               <div className="flex items-start justify-between gap-3">
-                <div className="p-2.5 rounded-xl bg-emerald-500/10 text-[#28C76F] group-hover:bg-[#28C76F] group-hover:text-white transition-colors">
+                <div className="w-11 h-11 rounded-xl bg-emerald-500/10 text-[#28C76F] group-hover:bg-[#28C76F] group-hover:text-white transition-colors flex items-center justify-center shrink-0">
                   <Smartphone className="w-5 h-5" />
                 </div>
                 <StatusBadge 
@@ -523,13 +523,13 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
                   size="sm" 
                 />
               </div>
-              <div className="mt-3 space-y-1">
-                <h3 className="text-sm font-bold text-slate-800 dark:text-white group-hover:text-[#7367F0] transition-colors">
+              <div className="mt-4 space-y-1">
+                <h3 className="text-sm font-bold text-slate-800 dark:text-white group-hover:text-[#7367F0] transition-colors leading-snug">
                   {isWaFullyConnected 
                     ? t('admin.overviewAnswers.actionViewWhatsApp')
                     : t('admin.overviewAnswers.actionConnectWhatsApp')}
                 </h3>
-                <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-snug">
+                <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed line-clamp-2">
                   {isWaFullyConnected 
                     ? `${waConnectedCount} aktif oturum bağlı ve mesaj almaya hazır.`
                     : 'Yeni bir WhatsApp hattı bağlayın veya QR kodu taratın.'}
@@ -540,23 +540,23 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
             {/* Buton 2: WhatsApp Durumunu Kontrol Et */}
             <Card 
               onClick={handleCheckWhatsApp}
-              className="border border-slate-200/80 dark:border-white/[0.08] hover:border-[#7367F0]/50 hover:shadow-md transition-all cursor-pointer p-4 bg-white dark:bg-[#2F3349] group flex flex-col justify-between"
+              className="border border-slate-200/80 dark:border-white/[0.08] hover:border-[#7367F0]/60 hover:shadow-lg transition-all duration-200 active:scale-[0.99] cursor-pointer p-4 sm:p-5 rounded-2xl bg-white dark:bg-[#2F3349] group flex flex-col justify-between min-h-[148px] sm:min-h-[156px]"
             >
               <div className="flex items-start justify-between gap-3">
-                <div className="p-2.5 rounded-xl bg-[#7367F0]/10 text-[#7367F0] group-hover:bg-[#7367F0] group-hover:text-white transition-colors">
+                <div className="w-11 h-11 rounded-xl bg-[#7367F0]/10 text-[#7367F0] group-hover:bg-[#7367F0] group-hover:text-white transition-colors flex items-center justify-center shrink-0">
                   {isCheckingWa ? <Loader2 className="w-5 h-5 animate-spin" /> : <Radio className="w-5 h-5" />}
                 </div>
-                <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider">
+                <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider bg-slate-100 dark:bg-white/[0.06] px-2 py-0.5 rounded-md">
                   Tanılama
                 </span>
               </div>
-              <div className="mt-3 space-y-1">
-                <h3 className="text-sm font-bold text-slate-800 dark:text-white group-hover:text-[#7367F0] transition-colors">
+              <div className="mt-4 space-y-1">
+                <h3 className="text-sm font-bold text-slate-800 dark:text-white group-hover:text-[#7367F0] transition-colors leading-snug">
                   {isCheckingWa 
                     ? t('admin.overviewAnswers.actionCheckingWhatsApp') 
                     : t('admin.overviewAnswers.actionCheckWhatsApp')}
                 </h3>
-                <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-snug">
+                <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed line-clamp-2">
                   Ağ geçidi bağlantısını ve anlık mesaj kuyruğunu anında test edin.
                 </p>
               </div>
@@ -565,25 +565,25 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
             {/* Buton 3: Şimdi Yedek Al */}
             <Card 
               onClick={handleRunBackup}
-              className={`border border-slate-200/80 dark:border-white/[0.08] hover:border-[#7367F0]/50 hover:shadow-md transition-all p-4 bg-white dark:bg-[#2F3349] group flex flex-col justify-between ${
-                isBackingUp ? 'opacity-80 pointer-events-none' : 'cursor-pointer'
+              className={`border border-slate-200/80 dark:border-white/[0.08] hover:border-[#7367F0]/60 hover:shadow-lg transition-all duration-200 p-4 sm:p-5 rounded-2xl bg-white dark:bg-[#2F3349] group flex flex-col justify-between min-h-[148px] sm:min-h-[156px] ${
+                isBackingUp ? 'opacity-80 pointer-events-none' : 'cursor-pointer active:scale-[0.99]'
               }`}
             >
               <div className="flex items-start justify-between gap-3">
-                <div className="p-2.5 rounded-xl bg-indigo-500/10 text-indigo-500 group-hover:bg-indigo-600 group-hover:text-white transition-colors">
+                <div className="w-11 h-11 rounded-xl bg-indigo-500/10 text-indigo-500 group-hover:bg-indigo-600 group-hover:text-white transition-colors flex items-center justify-center shrink-0">
                   {isBackingUp ? <Loader2 className="w-5 h-5 animate-spin" /> : <Database className="w-5 h-5" />}
                 </div>
-                <span className="text-[10px] font-bold text-indigo-500 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-950/30 px-2 py-0.5 rounded">
+                <span className="text-[10px] font-bold text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-950/40 px-2 py-0.5 rounded-md">
                   Doğrudan İşlem
                 </span>
               </div>
-              <div className="mt-3 space-y-1">
-                <h3 className="text-sm font-bold text-slate-800 dark:text-white group-hover:text-[#7367F0] transition-colors">
+              <div className="mt-4 space-y-1">
+                <h3 className="text-sm font-bold text-slate-800 dark:text-white group-hover:text-[#7367F0] transition-colors leading-snug">
                   {isBackingUp 
                     ? t('admin.overviewAnswers.actionBackingUp') 
                     : t('admin.overviewAnswers.actionTakeBackup')}
                 </h3>
-                <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-snug">
+                <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed line-clamp-2">
                   Veritabanı ve sistem yapılandırmasının tam yedeğini tek tıkla oluşturun.
                 </p>
               </div>
@@ -592,21 +592,21 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
             {/* Buton 4: Son Yedeği Görüntüle */}
             <Card 
               onClick={() => onNavigate?.('admin-backups')}
-              className="border border-slate-200/80 dark:border-white/[0.08] hover:border-[#7367F0]/50 hover:shadow-md transition-all cursor-pointer p-4 bg-white dark:bg-[#2F3349] group flex flex-col justify-between"
+              className="border border-slate-200/80 dark:border-white/[0.08] hover:border-[#7367F0]/60 hover:shadow-lg transition-all duration-200 active:scale-[0.99] cursor-pointer p-4 sm:p-5 rounded-2xl bg-white dark:bg-[#2F3349] group flex flex-col justify-between min-h-[148px] sm:min-h-[156px]"
             >
               <div className="flex items-start justify-between gap-3">
-                <div className="p-2.5 rounded-xl bg-amber-500/10 text-amber-500 group-hover:bg-amber-500 group-hover:text-white transition-colors">
+                <div className="w-11 h-11 rounded-xl bg-amber-500/10 text-amber-500 group-hover:bg-amber-500 group-hover:text-white transition-colors flex items-center justify-center shrink-0">
                   <Clock className="w-5 h-5" />
                 </div>
-                <span className="text-[10px] font-semibold text-slate-500 dark:text-slate-400">
+                <span className="text-[10px] font-semibold text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-white/[0.06] px-2 py-0.5 rounded-md">
                   {latestBackupSize || '—'}
                 </span>
               </div>
-              <div className="mt-3 space-y-1">
-                <h3 className="text-sm font-bold text-slate-800 dark:text-white group-hover:text-[#7367F0] transition-colors">
+              <div className="mt-4 space-y-1">
+                <h3 className="text-sm font-bold text-slate-800 dark:text-white group-hover:text-[#7367F0] transition-colors leading-snug">
                   {t('admin.overviewAnswers.actionViewBackup')}
                 </h3>
-                <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-snug">
+                <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed line-clamp-2">
                   {latestBackupTime ? `Son yedek: ${formatDateTime(latestBackupTime)}` : 'Henüz arşivlenmiş yedek bulunmuyor.'}
                 </p>
               </div>
@@ -622,10 +622,10 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
                   onNavigate('admin-operations');
                 }
               }}
-              className="border border-slate-200/80 dark:border-white/[0.08] hover:border-[#7367F0]/50 hover:shadow-md transition-all cursor-pointer p-4 bg-white dark:bg-[#2F3349] group flex flex-col justify-between"
+              className="border border-slate-200/80 dark:border-white/[0.08] hover:border-[#7367F0]/60 hover:shadow-lg transition-all duration-200 active:scale-[0.99] cursor-pointer p-4 sm:p-5 rounded-2xl bg-white dark:bg-[#2F3349] group flex flex-col justify-between min-h-[148px] sm:min-h-[156px]"
             >
               <div className="flex items-start justify-between gap-3">
-                <div className={`p-2.5 rounded-xl transition-colors ${
+                <div className={`w-11 h-11 rounded-xl transition-colors flex items-center justify-center shrink-0 ${
                   issuesList.length > 0 
                     ? 'bg-rose-500/10 text-rose-500 group-hover:bg-rose-500 group-hover:text-white' 
                     : 'bg-emerald-500/10 text-emerald-500 group-hover:bg-emerald-500 group-hover:text-white'
@@ -638,11 +638,11 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
                   size="sm" 
                 />
               </div>
-              <div className="mt-3 space-y-1">
-                <h3 className="text-sm font-bold text-slate-800 dark:text-white group-hover:text-[#7367F0] transition-colors">
+              <div className="mt-4 space-y-1">
+                <h3 className="text-sm font-bold text-slate-800 dark:text-white group-hover:text-[#7367F0] transition-colors leading-snug">
                   {t('admin.overviewAnswers.actionViewIssues')}
                 </h3>
-                <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-snug">
+                <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed line-clamp-2">
                   {issuesList.length > 0 
                     ? `${issuesList.length} müdahale gerektiren konuyu inceleyin.`
                     : 'Sistemde tespit edilen kritik bir sorun bulunmuyor.'}
@@ -653,21 +653,21 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
             {/* Buton 6: Dağıtım Durumunu Gör */}
             <Card 
               onClick={() => onNavigate?.('admin-operations')}
-              className="border border-slate-200/80 dark:border-white/[0.08] hover:border-[#7367F0]/50 hover:shadow-md transition-all cursor-pointer p-4 bg-white dark:bg-[#2F3349] group flex flex-col justify-between"
+              className="border border-slate-200/80 dark:border-white/[0.08] hover:border-[#7367F0]/60 hover:shadow-lg transition-all duration-200 active:scale-[0.99] cursor-pointer p-4 sm:p-5 rounded-2xl bg-white dark:bg-[#2F3349] group flex flex-col justify-between min-h-[148px] sm:min-h-[156px]"
             >
               <div className="flex items-start justify-between gap-3">
-                <div className="p-2.5 rounded-xl bg-cyan-500/10 text-cyan-500 group-hover:bg-cyan-500 group-hover:text-white transition-colors">
+                <div className="w-11 h-11 rounded-xl bg-cyan-500/10 text-cyan-500 group-hover:bg-cyan-500 group-hover:text-white transition-colors flex items-center justify-center shrink-0">
                   <Server className="w-5 h-5" />
                 </div>
-                <span className="text-[10px] font-semibold text-slate-400">
+                <span className="text-[10px] font-semibold text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-white/[0.06] px-2 py-0.5 rounded-md">
                   {data.containers.filter(c => c.status.toLowerCase() === 'running').length} / {data.containers.length} Servis
                 </span>
               </div>
-              <div className="mt-3 space-y-1">
-                <h3 className="text-sm font-bold text-slate-800 dark:text-white group-hover:text-[#7367F0] transition-colors">
+              <div className="mt-4 space-y-1">
+                <h3 className="text-sm font-bold text-slate-800 dark:text-white group-hover:text-[#7367F0] transition-colors leading-snug">
                   {t('admin.overviewAnswers.actionViewDeployment')}
                 </h3>
-                <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-snug">
+                <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed line-clamp-2">
                   Canlı sürüm, git commit geçmişi ve servis çalışma durumlarını açın.
                 </p>
               </div>
@@ -740,7 +740,7 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
           <button
             type="button"
             onClick={() => setShowInfraDetails((prev) => !prev)}
-            className="w-full p-4 sm:p-5 flex items-center justify-between text-left hover:bg-slate-50/60 dark:hover:bg-white/[0.02] transition-colors cursor-pointer select-none"
+            className="w-full min-h-[56px] p-4 sm:p-5 flex items-center justify-between text-left hover:bg-slate-50/60 dark:hover:bg-white/[0.02] transition-colors cursor-pointer select-none"
           >
             <div className="flex items-center gap-3">
               <div className="w-8 h-8 rounded-lg bg-slate-100 dark:bg-white/[0.05] text-slate-600 dark:text-slate-300 flex items-center justify-center">

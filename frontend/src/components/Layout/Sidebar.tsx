@@ -118,7 +118,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           aria-label={t('common.close')}
           type="button"
           onClick={onCloseMobile}
-          className="lg:hidden p-2 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/[0.05] cursor-pointer"
+          className="lg:hidden min-h-[44px] min-w-[44px] p-2.5 rounded-xl text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/[0.05] flex items-center justify-center cursor-pointer"
         >
           <X className="w-5 h-5" />
         </button>
@@ -150,7 +150,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   key={item.id}
                   data-tab-id={item.id}
                   onClick={() => handleTabClick(item.id)}
-                  className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-lg text-xs font-semibold transition-all duration-150 group cursor-pointer ${
+                  className={`w-full min-h-[42px] flex items-center justify-between px-3.5 py-2 rounded-xl text-xs font-semibold transition-all duration-150 group cursor-pointer ${
                     isActive
                       ? 'bg-gradient-to-r from-[#7367F0] to-[#867BFF] text-white shadow-md shadow-[#7367F0]/40 font-bold'
                       : 'text-slate-600 dark:text-[#DBD7EC] hover:bg-slate-100 dark:hover:bg-white/[0.04] hover:text-slate-900 dark:hover:text-white'
@@ -158,7 +158,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 >
                   <div className="flex items-center space-x-3 truncate">
                     <Icon
-                      className={`w-4.5 h-4.5 shrink-0 transition-colors ${
+                      className={`w-5 h-5 shrink-0 transition-colors ${
                         isActive ? 'text-white' : 'text-slate-400 dark:text-[#7E7F96] group-hover:text-slate-700 dark:group-hover:text-slate-200'
                       }`}
                     />

@@ -160,10 +160,9 @@ const BackupFileCard: React.FC<{
         <div className="px-4 pb-3.5 pt-1">
           <Button
             variant="outline"
-            size="sm"
             disabled={isOperating}
             onClick={onRunAction}
-            className="w-full text-xs font-semibold flex items-center justify-center gap-1.5 h-8 border-slate-200/80 dark:border-white/[0.08] hover:bg-[#7367F0]/10 hover:text-[#7367F0] hover:border-[#7367F0]/30 transition-all cursor-pointer"
+            className="w-full min-h-[40px] h-10 px-4 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 border border-slate-200/80 dark:border-white/[0.08] hover:bg-[#7367F0]/10 hover:text-[#7367F0] hover:border-[#7367F0]/30 transition-all cursor-pointer"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${isOperating ? 'animate-spin' : ''}`} />
             <span>{actionText}</span>
@@ -521,18 +520,18 @@ export const AdminBackupsPage: React.FC<AdminBackupsPageProps> = ({ onNavigate }
           <div className="flex items-center gap-1.5 p-1 rounded-xl bg-slate-100 dark:bg-white/[0.04] border border-slate-200/60 dark:border-white/[0.05]">
             <button
               type="button"
-              className="px-4 py-1.5 rounded-lg text-xs font-bold bg-white dark:bg-[#2F3349] text-slate-800 dark:text-white shadow-xs cursor-default flex items-center gap-2"
+              className="min-h-[40px] px-4 py-2 rounded-lg text-xs font-bold bg-white dark:bg-[#2F3349] text-slate-800 dark:text-white shadow-xs cursor-default flex items-center gap-2"
             >
-              <Database className="w-3.5 h-3.5 text-[#7367F0]" />
+              <Database className="w-4 h-4 text-[#7367F0]" />
               <span>{t('admin.backups.tabBackups')}</span>
             </button>
             {onNavigate && (
               <button
                 type="button"
                 onClick={() => onNavigate('admin-security')}
-                className="px-4 py-1.5 rounded-lg text-xs font-medium text-slate-500 hover:text-slate-800 dark:hover:text-white transition-colors cursor-pointer flex items-center gap-2"
+                className="min-h-[40px] px-4 py-2 rounded-lg text-xs font-medium text-slate-500 hover:text-slate-800 dark:hover:text-white transition-colors cursor-pointer flex items-center gap-2"
               >
-                <Lock className="w-3.5 h-3.5 text-slate-400" />
+                <Lock className="w-4 h-4 text-slate-400" />
                 <span>{t('admin.backups.tabSecurity')}</span>
               </button>
             )}
@@ -561,13 +560,12 @@ export const AdminBackupsPage: React.FC<AdminBackupsPageProps> = ({ onNavigate }
               </div>
 
               {/* Primary Action Button */}
-              <div className="flex items-center gap-3 shrink-0">
+              <div className="w-full sm:w-auto flex items-center gap-3 shrink-0">
                 <Button
                   variant="default"
-                  size="lg"
                   disabled={operatingType !== null}
                   onClick={() => handleRunBackup('full')}
-                  className="px-6 py-2.5 h-11 bg-gradient-to-r from-[#7367F0] to-[#867BFF] hover:from-[#685dd8] hover:to-[#766bf3] text-white font-bold text-sm shadow-md shadow-[#7367F0]/30 rounded-xl flex items-center gap-2 cursor-pointer transition-all active:scale-[0.98]"
+                  className="w-full sm:w-auto min-h-[48px] h-12 px-7 bg-gradient-to-r from-[#7367F0] to-[#867BFF] hover:from-[#685dd8] hover:to-[#766bf3] text-white font-bold text-sm shadow-md shadow-[#7367F0]/30 rounded-xl flex items-center justify-center gap-2.5 cursor-pointer transition-all active:scale-[0.98]"
                 >
                   {operatingType === 'full' ? (
                     <RefreshCw className="w-4 h-4 animate-spin text-white" />

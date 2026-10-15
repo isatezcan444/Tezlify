@@ -540,12 +540,11 @@ export const AdminSecurityPage: React.FC<AdminSecurityPageProps> = ({ onNavigate
                 <StatusBadge status="online" label="4/4 AUDITED" size="sm" />
                 <Button
                   variant="outline"
-                  size="sm"
                   onClick={() => setShowTechnicalAudit((v) => !v)}
-                  className="text-xs h-7 px-2.5 flex items-center gap-1.5"
+                  className="min-h-[40px] h-10 px-4 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 border border-slate-200/80 dark:border-white/[0.08] hover:bg-slate-50 dark:hover:bg-white/[0.04] transition-colors cursor-pointer"
                 >
                   <span>{showTechnicalAudit ? t('admin.monitoring.hideDetails') : t('admin.monitoring.showDetails')}</span>
-                  {showTechnicalAudit ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                  {showTechnicalAudit ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
                 </Button>
               </div>
             </div>

@@ -331,8 +331,12 @@ export const ErrorFeed: React.FC<ErrorFeedProps> = ({
                     </div>
 
                     {/* Action buttons */}
-                    <div className="flex items-center justify-between gap-2 flex-wrap pt-1 border-t border-slate-100 dark:border-white/[0.06]">
-                      <Button variant="outline" size="sm" onClick={() => onViewLogs(err.service)}>
+                    <div className="flex items-center justify-between gap-2 flex-wrap pt-2 border-t border-slate-100 dark:border-white/[0.06]">
+                      <Button
+                        variant="outline"
+                        onClick={() => onViewLogs(err.service)}
+                        className="min-h-[40px] h-10 px-4 rounded-xl text-xs font-semibold cursor-pointer border-slate-200 dark:border-white/[0.08]"
+                      >
                         {t('admin.ops.viewLogs')}
                       </Button>
                       <div className="flex items-center gap-2">
@@ -340,9 +344,9 @@ export const ErrorFeed: React.FC<ErrorFeedProps> = ({
                           <Button
                             key={action.name}
                             variant="destructive"
-                            size="sm"
                             disabled={Boolean(runningName)}
                             onClick={() => onRun(action)}
+                            className="min-h-[40px] h-10 px-4 rounded-xl text-xs font-bold cursor-pointer shadow-sm"
                           >
                             {action.label}
                           </Button>

@@ -55,9 +55,9 @@ export function DeployPanel({ catalogue, running, busyName, onRun }: DeployPanel
         <Button
           onClick={() => action && onRun(action)}
           disabled={!action || blocked || busy}
-          className="gap-2"
+          className="min-h-[44px] h-11 px-5 rounded-xl font-bold text-sm gap-2 cursor-pointer shadow-md shadow-vuexy-primary/30"
         >
-          <Rocket className="w-3.5 h-3.5" />
+          <Rocket className="w-4 h-4" />
           {t('admin.ops.deployFull')}
         </Button>
         {blocked && (

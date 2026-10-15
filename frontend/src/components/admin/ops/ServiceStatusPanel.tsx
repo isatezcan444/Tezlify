@@ -198,22 +198,21 @@ export const ServiceStatusPanel: React.FC<ServiceStatusPanelProps> = ({
                           <div key={act.name} className="space-y-1">
                             <Button
                               variant={isHotReload ? 'default' : 'outline'}
-                              size="sm"
                               disabled={busy || Boolean(running)}
                               onClick={() => onRun(act)}
                               title={`${act.label} — ${riskText}`}
-                              className={`w-full gap-2 cursor-pointer transition-all duration-150 active:scale-[0.98] ${
+                              className={`w-full min-h-[44px] h-11 px-4 rounded-xl text-xs sm:text-sm font-bold flex items-center justify-center gap-2 cursor-pointer transition-all duration-150 active:scale-[0.98] ${
                                 isHotReload
-                                  ? 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm'
-                                  : 'border-slate-200 dark:border-white/[0.08]'
+                                  ? 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-md shadow-emerald-600/20'
+                                  : 'border-slate-200 dark:border-white/[0.08] bg-white dark:bg-[#2F3349] hover:bg-slate-50 dark:hover:bg-[#363B53] text-slate-700 dark:text-slate-200'
                               }`}
                             >
                               {busy ? (
-                                <Activity className="w-3.5 h-3.5 animate-spin" />
+                                <Activity className="w-4 h-4 animate-spin shrink-0" />
                               ) : isHotReload ? (
-                                <Zap className="w-3.5 h-3.5" />
+                                <Zap className="w-4 h-4 shrink-0" />
                               ) : (
-                                <RefreshCw className="w-3.5 h-3.5" />
+                                <RefreshCw className="w-4 h-4 shrink-0" />
                               )}
                               <span className="truncate">{act.label}</span>
                             </Button>
@@ -256,17 +255,16 @@ export const ServiceStatusPanel: React.FC<ServiceStatusPanelProps> = ({
                   <Button
                     key={act.name}
                     variant="outline"
-                    size="sm"
                     disabled={busy || Boolean(running)}
                     onClick={() => onRun(act)}
-                    className="gap-2 cursor-pointer border-slate-200 dark:border-white/[0.08]"
+                    className="min-h-[42px] h-11 px-5 rounded-xl text-xs sm:text-sm font-bold flex items-center justify-center gap-2 cursor-pointer border-slate-200 dark:border-white/[0.08] bg-white dark:bg-[#2F3349] hover:bg-slate-50 dark:hover:bg-[#363B53] text-slate-700 dark:text-slate-200"
                   >
                     {busy ? (
-                      <Activity className="w-3.5 h-3.5 animate-spin text-vuexy-primary" />
+                      <Activity className="w-4 h-4 animate-spin text-vuexy-primary shrink-0" />
                     ) : isPrune ? (
-                      <Trash2 className="w-3.5 h-3.5 text-amber-500" />
+                      <Trash2 className="w-4 h-4 text-amber-500 shrink-0" />
                     ) : (
-                      <RefreshCw className="w-3.5 h-3.5" />
+                      <RefreshCw className="w-4 h-4 shrink-0" />
                     )}
                     <span>{act.label}</span>
                   </Button>

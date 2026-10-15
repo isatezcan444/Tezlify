@@ -49,10 +49,9 @@ export const AdminShell: React.FC<AdminShellProps> = ({
       {onRefresh && (
         <Button
           variant="outline"
-          size="sm"
           onClick={onRefresh}
           disabled={isRefreshing}
-          className="gap-2 cursor-pointer border-slate-200 dark:border-white/[0.08]"
+          className="min-h-[40px] h-10 px-4 rounded-xl text-xs font-semibold gap-2 cursor-pointer border-slate-200/80 dark:border-white/[0.08] hover:bg-slate-50 dark:hover:bg-white/[0.04] transition-colors"
           aria-label={t('admin.refreshNow')}
         >
           <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin text-vuexy-primary' : ''}`} />

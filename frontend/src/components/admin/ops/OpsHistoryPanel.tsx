@@ -129,13 +129,12 @@ export const OpsHistoryPanel: React.FC<OpsHistoryPanelProps> = ({
                 {t('admin.ops.operationsSubtitle')}
               </p>
             </div>
-            <div className="flex items-center gap-1.5">
+            <div className="flex items-center gap-2">
               <Button
                 variant="outline"
-                size="sm"
                 onClick={() => exportHistory('csv')}
                 disabled={operations.length === 0 && audit.length === 0}
-                className="cursor-pointer gap-1.5"
+                className="min-h-[38px] h-9 sm:h-10 px-3.5 rounded-xl text-xs font-semibold cursor-pointer gap-2 border-slate-200 dark:border-white/[0.08]"
                 title={t('admin.ops.exportHistoryHint')}
               >
                 <Download className="w-3.5 h-3.5" />
@@ -143,10 +142,9 @@ export const OpsHistoryPanel: React.FC<OpsHistoryPanelProps> = ({
               </Button>
               <Button
                 variant="outline"
-                size="sm"
                 onClick={() => exportHistory('json')}
                 disabled={operations.length === 0 && audit.length === 0}
-                className="cursor-pointer gap-1.5"
+                className="min-h-[38px] h-9 sm:h-10 px-3.5 rounded-xl text-xs font-semibold cursor-pointer gap-2 border-slate-200 dark:border-white/[0.08]"
                 title={t('admin.ops.exportHistoryHint')}
               >
                 <Download className="w-3.5 h-3.5" />
@@ -304,14 +302,13 @@ export const OpsHistoryPanel: React.FC<OpsHistoryPanelProps> = ({
                         </span>
                         <Button
                           variant="outline"
-                          size="sm"
                           onClick={() => {
                             const details = `[${op.label}] (${op.status})\n${t('admin.ops.startedAt')}: ${formatOpsDateTime(op.started_at)}\n${t('admin.ops.finishedAt')}: ${formatOpsDateTime(op.finished_at)}\n${t('admin.ops.duration')}: ${op.duration_ms || 0}ms\n${t('admin.ops.actor')}: ${op.actor || '-'}\n${typeof op.exit_code === 'number' ? `${t('admin.ops.exitCode')}: ${op.exit_code}\n` : ''}${op.error ? `${t('admin.ops.errorLabel')}: ${op.error}\n` : ''}\n${t('admin.ops.tabLogs')}:\n${op.logs.join('\n')}`;
                             navigator.clipboard.writeText(details);
                             setCopiedOpId(op.id);
                             setTimeout(() => setCopiedOpId(null), 2000);
                           }}
-                          className="gap-1.5 cursor-pointer text-xs h-7"
+                          className="gap-1.5 cursor-pointer text-xs min-h-[36px] h-9 px-3 rounded-lg border-slate-200 dark:border-white/[0.08]"
                           title={copiedOpId === op.id ? t('common.copied') : t('common.copy')}
                         >
                           {copiedOpId === op.id ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
