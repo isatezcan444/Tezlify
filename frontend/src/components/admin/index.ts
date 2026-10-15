@@ -12,3 +12,10 @@ export type {
   GuidanceStatus,
   SeverityLevel,
 } from './ExecutiveGuidanceCard';
+
+export { AdminActionIssueCard } from './AdminActionIssueCard';
+export type {
+  AdminActionIssueCardProps,
+  IssueAction,
+  IssueSeverity,
+} from './AdminActionIssueCard';

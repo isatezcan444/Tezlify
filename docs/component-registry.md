@@ -472,6 +472,11 @@ restarting a service and shipping code are different risk classes.
 - **Purpose**: Consistent high-level shell for all seven admin pages with animated page-enter transitions, standardized PageHeader, live telemetric badge, last-updated timestamp, and refresh action.
 - **Import**: `import { AdminShell } from '@/components/admin';`
 
+### `AdminActionIssueCard` (`components/admin/AdminActionIssueCard.tsx`)
+- **Purpose**: Reusable action-first operational issue card for the Tezlify Management Center. Answers what happened, real severity, user/system impact, recommended remediation action, with standardized primary/secondary action buttons and optional expandable technical details.
+- **Props**: `{ title: string; description: string; severity: 'critical' | 'warning' | 'info'; statusLabel?: string; impact: string; recommendedAction: string; primaryAction?: IssueAction; secondaryAction?: IssueAction; details?: React.ReactNode; className?: string; }`
+- **Import**: `import { AdminActionIssueCard } from '@/components/admin';`
+
 
 ### `LinkPreviewCard`
 - **Purpose**: WhatsApp Web-shaped preview card for a link found in a message body — image, site name, title, description and an open action. Rendered under the text, never instead of it.

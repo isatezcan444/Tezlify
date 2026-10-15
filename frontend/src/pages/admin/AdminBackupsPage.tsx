@@ -32,6 +32,7 @@ import { Card, CardHeader, CardTitle, CardContent } from '../../components/ui/ca
 import { StatusBadge, StatusVariant } from '../../components/ui/StatusBadge';
 import { Button } from '../../components/ui/button';
 import { Skeleton } from '../../components/ui/Skeleton';
+import { AdminActionIssueCard } from '../../components/admin/AdminActionIssueCard';
 
 interface AdminBackupsPageProps {
   onNavigate?: (tab: string) => void;
@@ -693,6 +694,40 @@ export const AdminBackupsPage: React.FC<AdminBackupsPageProps> = ({ onNavigate }
             </div>
           </CardContent>
         </Card>
+
+        {/* Real Issue / Security Warning if failed or off-host unconfigured */}
+        {!hasPostgres && (
+          <AdminActionIssueCard
+            title="Henüz PostgreSQL Yedeği Bulunmuyor"
+            description="Üretim veritabanına ait kayıtlı bir yedek dosyası bulunamadı. Veri güvenliği için ilk yedeğinizi oluşturun."
+            severity="warning"
+            statusLabel="Yedek Yok"
+            impact="Olası bir sistem arızasında son verilere ulaşılamama riski doğar."
+            recommendedAction="Aşağıdaki butonu kullanarak hemen bir tam sistem yedeği başlatın."
+            primaryAction={{
+              label: t('admin.backups.runBackupHeroBtn'),
+              onClick: () => handleRunBackup('full'),
+              loading: operatingType !== null,
+              icon: RefreshCw,
+            }}
+          />
+        )}
+
+        {!isOffHostConfigured && (
+          <AdminActionIssueCard
+            title="Harici (Bulut) Yedekleme Yapılandırılmadı"
+            description="Tüm sistem ve veritabanı yedekleriniz yerel sunucuda güvenle saklanmaktadır; ancak sunucu donanım arızalarına karşı harici bulut senkronizasyonu önerilir."
+            severity="info"
+            statusLabel="Opsiyonel Güvenlik"
+            impact="Sunucu donanımı arızalanırsa yerel diske erişim kesintiye uğrayabilir."
+            recommendedAction="İsteğe bağlı olarak bulut depolama (S3 / R2) entegrasyon adımlarını inceleyin."
+            primaryAction={{
+              label: 'Kurulum Rehberini Aç',
+              onClick: () => setShowGuideModal(true),
+              icon: Info,
+            }}
+          />
+        )}
 
         {/* 2. CLI Restore Guidance Box (Honest & Secure: No Fake Restore Button) */}
         <Card className="border border-slate-200/70 dark:border-white/[0.06] bg-slate-50/50 dark:bg-white/[0.01]">

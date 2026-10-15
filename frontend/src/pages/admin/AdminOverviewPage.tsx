@@ -9,22 +9,24 @@ import {
   ShieldAlert, 
   CheckCircle2, 
   ArrowLeft,
-  ArrowRight,
-  ShieldCheck,
   Smartphone,
   ChevronDown,
   ChevronUp,
-  Terminal,
   Activity,
   Layers,
   Wrench,
   Radio,
+  Loader2,
+  RefreshCw,
+  ExternalLink,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useI18n } from '../../context/I18nContext';
+import { useToast } from '../../context/ToastContext';
 import { AdminApi } from '../../api/admin';
 import { AdminOverviewResponse, AdminWhatsAppResponse, AdminBackupsResponse } from '../../types/admin';
 import { AdminShell } from '../../components/admin/AdminShell';
+import { AdminActionIssueCard, IssueSeverity } from '../../components/admin/AdminActionIssueCard';
 import { Card, CardHeader, CardTitle, CardContent } from '../../components/ui/card';
 import { StatsCard } from '../../components/ui/StatsCard';
 import { StatusBadge, StatusVariant } from '../../components/ui/StatusBadge';
@@ -74,6 +76,7 @@ const formatDateTime = (isoString?: string | null): string => {
 export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate }) => {
   const { t } = useI18n();
   const { user, profile, isAdmin } = useAuth();
+  const toast = useToast();
 
   const [data, setData] = useState<AdminOverviewResponse | null>(null);
   const [waData, setWaData] = useState<AdminWhatsAppResponse | null>(null);
@@ -83,6 +86,10 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<string>('');
   const [showInfraDetails, setShowInfraDetails] = useState<boolean>(false);
+
+  // In-flight action states
+  const [isBackingUp, setIsBackingUp] = useState<boolean>(false);
+  const [isCheckingWa, setIsCheckingWa] = useState<boolean>(false);
 
   const fetchingRef = useRef<boolean>(false);
   const showAdmin = Boolean(isAdmin || profile?.is_admin || user?.is_admin);
@@ -160,6 +167,42 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
     };
   }, [showAdmin, fetchOverview]);
 
+  // Real action: Take Backup Now
+  const handleRunBackup = async () => {
+    if (isBackingUp) return;
+    setIsBackingUp(true);
+    try {
+      await AdminApi.takeManualBackup('full');
+      toast.success(t('admin.overviewAnswers.backupSuccessToast'));
+      await fetchOverview(false);
+    } catch (err: any) {
+      toast.error(err?.message || t('admin.overviewAnswers.backupErrorToast'));
+    } finally {
+      setIsBackingUp(false);
+    }
+  };
+
+  // Real action: Check WhatsApp Health
+  const handleCheckWhatsApp = async () => {
+    if (isCheckingWa) return;
+    setIsCheckingWa(true);
+    try {
+      const res = await AdminApi.getWhatsApp();
+      setWaData(res);
+      if (!res.gateway_bridge.connected) {
+        toast.warning(t('admin.overviewAnswers.waHealthDisconnected'));
+      } else if (res.db_session_summary.connected > 0) {
+        toast.success(t('admin.overviewAnswers.waHealthGood', { count: res.db_session_summary.connected }));
+      } else {
+        toast.info(t('admin.overviewAnswers.waHealthNoSessions'));
+      }
+    } catch (err: any) {
+      toast.error(err?.message || t('admin.errorDesc'));
+    } finally {
+      setIsCheckingWa(false);
+    }
+  };
+
   // 1. Access Denied Guard (Non-Admin)
   if (!showAdmin || error === 'ACCESS_DENIED') {
     return (
@@ -198,15 +241,15 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
   if (loading && !data) {
     return (
       <AdminShell
-        title={t('nav.adminOverview')}
-        subtitle={t('titles.adminOverviewSub')}
+        title={t('admin.overviewAnswers.hubTitle')}
+        subtitle={t('admin.overviewAnswers.hubSubtitle')}
         isRefreshing={true}
       >
         <div className="space-y-6">
           <Card className="p-6 space-y-4 bg-white dark:bg-[#2F3349]">
             <Skeleton className="h-6 w-48" />
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-              {[1, 2, 3, 4].map((i) => (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+              {[1, 2, 3, 4, 5, 6].map((i) => (
                 <Skeleton key={i} className="h-28 rounded-xl" />
               ))}
             </div>
@@ -220,8 +263,8 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
   if (error && !data) {
     return (
       <AdminShell
-        title={t('nav.adminOverview')}
-        subtitle={t('titles.adminOverviewSub')}
+        title={t('admin.overviewAnswers.hubTitle')}
+        subtitle={t('admin.overviewAnswers.hubSubtitle')}
       >
         <Card className="border-amber-200 dark:border-amber-900/40 bg-white dark:bg-[#2F3349] p-8 text-center space-y-4">
           <div className="w-12 h-12 mx-auto rounded-full bg-amber-50 dark:bg-amber-900/20 text-amber-600 dark:text-amber-400 flex items-center justify-center">
@@ -262,217 +305,437 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
   // WhatsApp connection facts
   const isWaBridgeConnected = waData?.gateway_bridge.connected ?? true;
   const waConnectedCount = waData?.db_session_summary.connected ?? 0;
-  const waTotalCount = waData?.db_session_summary.total ?? 0;
+  const waScanQrCount = waData?.db_session_summary.scan_qr ?? 0;
+  const waRelinkCount = waData?.db_session_summary.relink_required ?? 0;
+  const isWaFullyConnected = isWaBridgeConnected && waConnectedCount > 0;
 
   // Backup facts
   const latestBackupTime = backupData?.postgres.created_at;
   const latestBackupSize = backupData?.postgres.size_human;
+  const hasPostgresBackup = Boolean(backupData?.postgres?.latest_backup_filename);
 
-  // Action resolution
-  const hasIssues = data.overall_status !== 'OK';
-  const issueDescription = (() => {
-    if (!hasIssues) return t('admin.overviewAnswers.issueNone');
-    const reasons = data.overall_status_reasons || [];
-    if (reasons.length > 0) {
-      return reasons[0].replace(/\(\/var\/run\/[^\)]+\)/g, '').trim();
-    }
-    if (data.system.reboot_required) {
-      return t('admin.rebootRequiredHelp');
-    }
-    return t('admin.executiveAttentionBody');
-  })();
+  // Derive real active issues
+  interface DerivedIssue {
+    id: string;
+    title: string;
+    description: string;
+    severity: IssueSeverity;
+    statusLabel: string;
+    impact: string;
+    recommendedAction: string;
+    primaryAction?: {
+      label: string;
+      onClick: () => void | Promise<void>;
+      loading?: boolean;
+      icon?: React.ComponentType<{ className?: string }>;
+    };
+    secondaryAction?: {
+      label: string;
+      onClick: () => void | Promise<void>;
+      icon?: React.ComponentType<{ className?: string }>;
+    };
+  }
 
-  const recommendedActionTarget = (() => {
-    if (!isWaBridgeConnected || (waData?.db_session_summary.scan_qr ?? 0) > 0) {
-      return { tab: 'admin-whatsapp', label: t('admin.overviewAnswers.quickWhatsApp') };
-    }
-    if (hasIssues) {
-      return { tab: 'admin-operations', label: t('admin.overviewAnswers.quickOps') };
-    }
-    return null;
-  })();
+  const issuesList: DerivedIssue[] = [];
 
-  const getServiceDisplayName = (name: string): string => {
-    if (name.includes('backend')) return t('admin.serviceBackend');
-    if (name.includes('gateway')) return t('admin.serviceGateway');
-    if (name.includes('caddy')) return t('admin.serviceCaddy');
-    if (name.includes('db')) return t('admin.serviceDb');
-    return name;
-  };
+  // Issue 1: Gateway Bridge Disconnected
+  if (waData && !waData.gateway_bridge.connected) {
+    issuesList.push({
+      id: 'wa-bridge-down',
+      title: 'WhatsApp Ağ Geçidi Bağlantısı Kesik',
+      description: 'WhatsApp servis köprüsü ile bağlantı kurulamıyor. Oturum durumları alınamıyor.',
+      severity: 'critical',
+      statusLabel: 'Kritik Kesinti',
+      impact: 'Gelen ve giden WhatsApp mesaj iletimi durduruldu.',
+      recommendedAction: 'Ağ geçidi bağlantısını kontrol edin veya servisi inceleyin.',
+      primaryAction: {
+        label: t('admin.overviewAnswers.actionCheckWhatsApp'),
+        onClick: handleCheckWhatsApp,
+        loading: isCheckingWa,
+        icon: RefreshCw,
+      },
+      secondaryAction: onNavigate ? {
+        label: t('admin.overviewAnswers.quickOps'),
+        onClick: () => onNavigate('admin-operations'),
+        icon: Wrench,
+      } : undefined,
+    });
+  }
+
+  // Issue 2: WhatsApp Session Needs QR Scan or Relink
+  if (waData && isWaBridgeConnected && (waScanQrCount > 0 || waRelinkCount > 0)) {
+    issuesList.push({
+      id: 'wa-relink-needed',
+      title: 'WhatsApp Yeniden Eşleştirme Bekliyor',
+      description: `${waScanQrCount + waRelinkCount} oturumun telefon ile QR kod eşleştirmesi yapması gerekiyor.`,
+      severity: 'warning',
+      statusLabel: 'Eşleştirme Gerekli',
+      impact: 'İlgili hat üzerinden müşterilere mesaj iletimi geçici olarak durdu.',
+      recommendedAction: 'WhatsApp Hub sayfasına giderek telefonunuzdan QR kodu taratın.',
+      primaryAction: onNavigate ? {
+        label: t('admin.overviewAnswers.actionConnectWhatsApp'),
+        onClick: () => onNavigate('whatsapp'),
+        icon: Smartphone,
+      } : undefined,
+      secondaryAction: onNavigate ? {
+        label: 'Oturumları Gör',
+        onClick: () => onNavigate('admin-whatsapp'),
+      } : undefined,
+    });
+  } else if (waData && isWaBridgeConnected && waConnectedCount === 0 && (waData.db_session_summary.total ?? 0) === 0) {
+    // Issue 3: No WhatsApp Sessions Registered
+    issuesList.push({
+      id: 'wa-no-sessions',
+      title: 'Bağlı WhatsApp Oturumu Bulunmuyor',
+      description: 'Sistemde kayıtlı veya bağlı aktif bir WhatsApp hesabı yok.',
+      severity: 'warning',
+      statusLabel: 'Bağlantı Yok',
+      impact: 'Müşteri adaylarına WhatsApp üzerinden erişim sağlanamaz.',
+      recommendedAction: 'WhatsApp Hub üzerinden ilk numaranızı güvenle bağlayın.',
+      primaryAction: onNavigate ? {
+        label: t('admin.overviewAnswers.actionConnectWhatsApp'),
+        onClick: () => onNavigate('whatsapp'),
+        icon: Smartphone,
+      } : undefined,
+    });
+  }
+
+  // Issue 4: No Backup Yet
+  if (backupData && !hasPostgresBackup && !loading) {
+    issuesList.push({
+      id: 'backup-none',
+      title: 'Henüz Alınmış Bir Yedek Yok',
+      description: 'Sistemde kayıtlı bir veritabanı yedeği bulunmuyor.',
+      severity: 'warning',
+      statusLabel: 'Yedek Yok',
+      impact: 'Sistem arızalarına karşı veritabanı korumasız durumdadır.',
+      recommendedAction: 'Tek tıkla ilk tam sistem yedeğini oluşturun.',
+      primaryAction: {
+        label: t('admin.overviewAnswers.actionTakeBackup'),
+        onClick: handleRunBackup,
+        loading: isBackingUp,
+        icon: Database,
+      },
+      secondaryAction: onNavigate ? {
+        label: t('admin.overviewAnswers.actionViewBackup'),
+        onClick: () => onNavigate('admin-backups'),
+      } : undefined,
+    });
+  }
+
+  // Issue 6: Critical Disk Usage
+  if (data.system.disk_used_percent > 85) {
+    issuesList.push({
+      id: 'disk-critical',
+      title: 'Disk Alanı Kritik Seviyede',
+      description: `Disk doluluk oranı %${data.system.disk_used_percent} seviyesine ulaştı.`,
+      severity: 'critical',
+      statusLabel: 'Kritik Doluluk',
+      impact: 'Disk dolarsa veri tabanı yazma işlemleri ve servisler durabilir.',
+      recommendedAction: 'Eski logları ve gereksiz dosyaları inceleyip temizleyin.',
+      primaryAction: onNavigate ? {
+        label: t('admin.overviewAnswers.issueViewDisk'),
+        onClick: () => onNavigate('admin-operations'),
+        icon: Wrench,
+      } : undefined,
+    });
+  }
+
+  // Issue 7: Stopped Containers
+  const stoppedContainers = data.containers.filter((c) => c.status.toLowerCase() !== 'running');
+  if (stoppedContainers.length > 0) {
+    issuesList.push({
+      id: 'containers-down',
+      title: 'Durdurulmuş Servis Konteyneri Var',
+      description: `Şu servisler şu an çalışmıyor: ${stoppedContainers.map((c) => c.name).join(', ')}.`,
+      severity: 'critical',
+      statusLabel: 'Servis Durdu',
+      impact: 'İlgili servisin sunduğu işlevler kullanılamaz.',
+      recommendedAction: 'Sistem İşlemleri ekranından servis loglarını inceleyin.',
+      primaryAction: onNavigate ? {
+        label: 'Servisleri İncele',
+        onClick: () => onNavigate('admin-operations'),
+        icon: Server,
+      } : undefined,
+    });
+  }
+
+  // Issue 8: Kernel Reboot Required
+  if (data.system.reboot_required) {
+    issuesList.push({
+      id: 'reboot-required',
+      title: 'Güvenlik Yamaları İçin Yeniden Başlatma Gerekli',
+      description: 'İşletim sistemine yeni güvenlik yamaları uygulandı (/var/run/reboot-required). Güncellemelerin aktif olması için sunucunun planlı olarak yeniden başlatılması gerekir.',
+      severity: 'info',
+      statusLabel: 'Planlı Bakım',
+      impact: 'Sistem çalışmaya devam eder; ancak en son çekirdek yamaları yeniden başlatma yapılana dek devreye girmez.',
+      recommendedAction: 'Mesai saatleri dışında sunucuyu güvenli bir şekilde yeniden başlatın.',
+      primaryAction: onNavigate ? {
+        label: t('admin.overviewAnswers.quickOps'),
+        onClick: () => onNavigate('admin-operations'),
+        icon: Wrench,
+      } : undefined,
+    });
+  }
 
   return (
     <AdminShell
-      title={t('nav.adminOverview')}
-      subtitle={t('titles.adminOverviewSub')}
+      title={t('admin.overviewAnswers.hubTitle')}
+      subtitle={t('admin.overviewAnswers.hubSubtitle')}
       lastUpdated={lastUpdated}
       onRefresh={() => void fetchOverview(false)}
       isRefreshing={refreshing}
       badge={<StatusBadge status={overallVariant} label={overallLabel} size="md" />}
     >
-      <div className="space-y-6">
-        {/* A. GENEL BAKIŞ — 5 TEMEL SORU KARTI */}
-        <Card className="border border-slate-200/80 dark:border-white/[0.08] bg-white dark:bg-[#2F3349] shadow-sm overflow-hidden">
-          <CardHeader className="p-5 sm:p-6 border-b border-slate-100 dark:border-white/[0.06] flex flex-row items-center justify-between flex-wrap gap-3">
+      <div className="space-y-8">
+        {/* =========================================================================
+            BÖLÜM 1: HIZLI İŞLEMLER (Büyük, açık ve anlaşılır aksiyon butonları)
+           ========================================================================= */}
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
             <div>
-              <CardTitle className="text-base font-extrabold text-slate-800 dark:text-white flex items-center gap-2.5">
+              <h2 className="text-base font-extrabold text-slate-800 dark:text-white flex items-center gap-2">
                 <Activity className="w-5 h-5 text-[#7367F0]" />
-                <span>{t('admin.executiveGuidanceTitle')}</span>
-              </CardTitle>
-              <p className="text-xs text-slate-400 dark:text-[#7E7F96] mt-0.5">
-                {t('admin.executiveGuidanceSubtitle')}
+                <span>{t('admin.overviewAnswers.quickActionsTitle')}</span>
+              </h2>
+              <p className="text-xs text-slate-400 dark:text-[#7E7F96]">
+                {t('admin.overviewAnswers.quickActionsSubtitle')}
               </p>
             </div>
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-slate-400">Durum:</span>
-              <StatusBadge status={overallVariant} label={overallLabel} size="sm" />
-            </div>
-          </CardHeader>
+            <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-slate-100 dark:bg-white/[0.05] text-slate-600 dark:text-slate-300">
+              6 Temel İşlem
+            </span>
+          </div>
 
-          <CardContent className="p-5 sm:p-6 space-y-5">
-            {/* 4 Answers Cards Grid */}
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-              {/* Soru 1: Sistem çalışıyor mu? */}
-              <div className="p-4 rounded-xl bg-slate-50/80 dark:bg-white/[0.02] border border-slate-100 dark:border-white/[0.04] space-y-1.5 flex flex-col justify-between">
-                <div>
-                  <div className="flex items-center gap-2 text-slate-400 dark:text-[#7E7F96]">
-                    <Server className="w-4 h-4 text-[#7367F0]" />
-                    <span className="text-[11px] font-semibold uppercase tracking-wider">
-                      {t('admin.overviewAnswers.systemStatus')}
-                    </span>
-                  </div>
-                  <div className="text-sm font-bold text-slate-800 dark:text-white mt-2">
-                    {data.overall_status === 'OK'
-                      ? t('admin.overviewAnswers.systemStatusOk')
-                      : data.overall_status === 'WARN'
-                      ? t('admin.overviewAnswers.systemStatusWarn')
-                      : t('admin.overviewAnswers.systemStatusCritical')}
-                  </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {/* Buton 1: WhatsApp Bağla / WhatsApp Bağlantısını Görüntüle */}
+            <Card 
+              onClick={() => onNavigate?.(isWaFullyConnected ? 'admin-whatsapp' : 'whatsapp')}
+              className="border border-slate-200/80 dark:border-white/[0.08] hover:border-[#7367F0]/50 hover:shadow-md transition-all cursor-pointer p-4 bg-white dark:bg-[#2F3349] group flex flex-col justify-between"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="p-2.5 rounded-xl bg-emerald-500/10 text-[#28C76F] group-hover:bg-[#28C76F] group-hover:text-white transition-colors">
+                  <Smartphone className="w-5 h-5" />
                 </div>
-                <div className="pt-2 text-[11px] text-slate-400">
-                  {data.containers.filter((c) => c.status.toLowerCase() === 'running').length} / {data.containers.length} servis aktif
-                </div>
+                <StatusBadge 
+                  status={isWaFullyConnected ? 'online' : isWaBridgeConnected ? 'warning' : 'danger'} 
+                  label={isWaFullyConnected ? 'Bağlı' : 'Bağlantı Yok'} 
+                  size="sm" 
+                />
               </div>
-
-              {/* Soru 2: WhatsApp bağlantısı sağlıklı mı? */}
-              <div className="p-4 rounded-xl bg-slate-50/80 dark:bg-white/[0.02] border border-slate-100 dark:border-white/[0.04] space-y-1.5 flex flex-col justify-between">
-                <div>
-                  <div className="flex items-center gap-2 text-slate-400 dark:text-[#7E7F96]">
-                    <Smartphone className="w-4 h-4 text-[#28C76F]" />
-                    <span className="text-[11px] font-semibold uppercase tracking-wider">
-                      {t('admin.overviewAnswers.whatsAppStatus')}
-                    </span>
-                  </div>
-                  <div className="text-sm font-bold text-slate-800 dark:text-white mt-2">
-                    {isWaBridgeConnected ? (
-                      waConnectedCount > 0 ? (
-                        <span className="text-emerald-600 dark:text-emerald-400">
-                          {t('admin.overviewAnswers.whatsAppOk', { count: waConnectedCount })}
-                        </span>
-                      ) : (
-                        <span>{t('admin.overviewAnswers.whatsAppNoSession')}</span>
-                      )
-                    ) : (
-                      <span className="text-rose-500 font-bold">
-                        {t('admin.overviewAnswers.whatsAppDown')}
-                      </span>
-                    )}
-                  </div>
-                </div>
-                <div className="pt-2 text-[11px] text-slate-400">
-                  Toplam {waTotalCount} kayıtlı oturum
-                </div>
+              <div className="mt-3 space-y-1">
+                <h3 className="text-sm font-bold text-slate-800 dark:text-white group-hover:text-[#7367F0] transition-colors">
+                  {isWaFullyConnected 
+                    ? t('admin.overviewAnswers.actionViewWhatsApp')
+                    : t('admin.overviewAnswers.actionConnectWhatsApp')}
+                </h3>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-snug">
+                  {isWaFullyConnected 
+                    ? `${waConnectedCount} aktif oturum bağlı ve mesaj almaya hazır.`
+                    : 'Yeni bir WhatsApp hattı bağlayın veya QR kodu taratın.'}
+                </p>
               </div>
+            </Card>
 
-              {/* Soru 3: Son yedekleme ne zaman? */}
-              <div className="p-4 rounded-xl bg-slate-50/80 dark:bg-white/[0.02] border border-slate-100 dark:border-white/[0.04] space-y-1.5 flex flex-col justify-between">
-                <div>
-                  <div className="flex items-center gap-2 text-slate-400 dark:text-[#7E7F96]">
-                    <Database className="w-4 h-4 text-[#FF9F43]" />
-                    <span className="text-[11px] font-semibold uppercase tracking-wider">
-                      {t('admin.overviewAnswers.lastBackupTime')}
-                    </span>
-                  </div>
-                  <div className="text-sm font-bold text-slate-800 dark:text-white mt-2">
-                    {latestBackupTime ? (
-                      formatDateTime(latestBackupTime)
-                    ) : (
-                      <span className="text-slate-400">{t('admin.overviewAnswers.lastBackupNone')}</span>
-                    )}
-                  </div>
+            {/* Buton 2: WhatsApp Durumunu Kontrol Et */}
+            <Card 
+              onClick={handleCheckWhatsApp}
+              className="border border-slate-200/80 dark:border-white/[0.08] hover:border-[#7367F0]/50 hover:shadow-md transition-all cursor-pointer p-4 bg-white dark:bg-[#2F3349] group flex flex-col justify-between"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="p-2.5 rounded-xl bg-[#7367F0]/10 text-[#7367F0] group-hover:bg-[#7367F0] group-hover:text-white transition-colors">
+                  {isCheckingWa ? <Loader2 className="w-5 h-5 animate-spin" /> : <Radio className="w-5 h-5" />}
                 </div>
-                <div className="pt-2 text-[11px] text-slate-400">
-                  {latestBackupSize ? `Boyut: ${latestBackupSize}` : 'Otomatik plan devrede'}
-                </div>
-              </div>
-
-              {/* Soru 4: Müdahale gerektiren bir sorun var mı? */}
-              <div className="p-4 rounded-xl bg-slate-50/80 dark:bg-white/[0.02] border border-slate-100 dark:border-white/[0.04] space-y-1.5 flex flex-col justify-between">
-                <div>
-                  <div className="flex items-center gap-2 text-slate-400 dark:text-[#7E7F96]">
-                    <ShieldCheck className="w-4 h-4 text-[#00CFE8]" />
-                    <span className="text-[11px] font-semibold uppercase tracking-wider">
-                      {t('admin.overviewAnswers.issueStatus')}
-                    </span>
-                  </div>
-                  <div className={`text-xs font-bold mt-2 line-clamp-2 ${hasIssues ? 'text-amber-600 dark:text-amber-400' : 'text-emerald-600 dark:text-emerald-400'}`}>
-                    {issueDescription}
-                  </div>
-                </div>
-                <div className="pt-2 text-[11px] text-slate-400">
-                  {hasIssues ? 'İnceleme önerilir' : 'Sistem stabil'}
-                </div>
-              </div>
-            </div>
-
-            {/* Quick Action Navigation Bar */}
-            <div className="pt-3 border-t border-slate-100 dark:border-white/[0.06] flex flex-col sm:flex-row items-center justify-between gap-3">
-              <div className="text-xs text-slate-500 dark:text-slate-400 font-medium">
-                <strong>{t('admin.overviewAnswers.actionNeeded')}:</strong>{' '}
-                <span>
-                  {recommendedActionTarget
-                    ? issueDescription
-                    : t('admin.overviewAnswers.actionNone')}
+                <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider">
+                  Tanılama
                 </span>
               </div>
-
-              <div className="flex items-center gap-2.5 flex-wrap w-full sm:w-auto justify-end">
-                {onNavigate && (
-                  <>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => onNavigate('admin-whatsapp')}
-                      className="text-xs font-semibold gap-1.5 h-8.5 cursor-pointer border-slate-200 dark:border-white/[0.08]"
-                    >
-                      <Smartphone className="w-3.5 h-3.5 text-emerald-500" />
-                      <span>{t('admin.overviewAnswers.quickWhatsApp')}</span>
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => onNavigate('admin-operations')}
-                      className="text-xs font-semibold gap-1.5 h-8.5 cursor-pointer border-slate-200 dark:border-white/[0.08]"
-                    >
-                      <Wrench className="w-3.5 h-3.5 text-indigo-500" />
-                      <span>{t('admin.overviewAnswers.quickOps')}</span>
-                    </Button>
-                    <Button
-                      variant="default"
-                      size="sm"
-                      onClick={() => onNavigate('admin-backups')}
-                      className="text-xs font-semibold gap-1.5 h-8.5 bg-[#7367F0] hover:bg-[#685dd8] text-white cursor-pointer shadow-xs"
-                    >
-                      <Database className="w-3.5 h-3.5" />
-                      <span>{t('admin.overviewAnswers.quickBackup')}</span>
-                    </Button>
-                  </>
-                )}
+              <div className="mt-3 space-y-1">
+                <h3 className="text-sm font-bold text-slate-800 dark:text-white group-hover:text-[#7367F0] transition-colors">
+                  {isCheckingWa 
+                    ? t('admin.overviewAnswers.actionCheckingWhatsApp') 
+                    : t('admin.overviewAnswers.actionCheckWhatsApp')}
+                </h3>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-snug">
+                  Ağ geçidi bağlantısını ve anlık mesaj kuyruğunu anında test edin.
+                </p>
               </div>
-            </div>
-          </CardContent>
-        </Card>
+            </Card>
 
-        {/* B. SECONDARY COLLAPSIBLE SECTION: CPU, RAM, Disk, Containers & DB details */}
+            {/* Buton 3: Şimdi Yedek Al */}
+            <Card 
+              onClick={handleRunBackup}
+              className={`border border-slate-200/80 dark:border-white/[0.08] hover:border-[#7367F0]/50 hover:shadow-md transition-all p-4 bg-white dark:bg-[#2F3349] group flex flex-col justify-between ${
+                isBackingUp ? 'opacity-80 pointer-events-none' : 'cursor-pointer'
+              }`}
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="p-2.5 rounded-xl bg-indigo-500/10 text-indigo-500 group-hover:bg-indigo-600 group-hover:text-white transition-colors">
+                  {isBackingUp ? <Loader2 className="w-5 h-5 animate-spin" /> : <Database className="w-5 h-5" />}
+                </div>
+                <span className="text-[10px] font-bold text-indigo-500 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-950/30 px-2 py-0.5 rounded">
+                  Doğrudan İşlem
+                </span>
+              </div>
+              <div className="mt-3 space-y-1">
+                <h3 className="text-sm font-bold text-slate-800 dark:text-white group-hover:text-[#7367F0] transition-colors">
+                  {isBackingUp 
+                    ? t('admin.overviewAnswers.actionBackingUp') 
+                    : t('admin.overviewAnswers.actionTakeBackup')}
+                </h3>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-snug">
+                  Veritabanı ve sistem yapılandırmasının tam yedeğini tek tıkla oluşturun.
+                </p>
+              </div>
+            </Card>
+
+            {/* Buton 4: Son Yedeği Görüntüle */}
+            <Card 
+              onClick={() => onNavigate?.('admin-backups')}
+              className="border border-slate-200/80 dark:border-white/[0.08] hover:border-[#7367F0]/50 hover:shadow-md transition-all cursor-pointer p-4 bg-white dark:bg-[#2F3349] group flex flex-col justify-between"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="p-2.5 rounded-xl bg-amber-500/10 text-amber-500 group-hover:bg-amber-500 group-hover:text-white transition-colors">
+                  <Clock className="w-5 h-5" />
+                </div>
+                <span className="text-[10px] font-semibold text-slate-500 dark:text-slate-400">
+                  {latestBackupSize || '—'}
+                </span>
+              </div>
+              <div className="mt-3 space-y-1">
+                <h3 className="text-sm font-bold text-slate-800 dark:text-white group-hover:text-[#7367F0] transition-colors">
+                  {t('admin.overviewAnswers.actionViewBackup')}
+                </h3>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-snug">
+                  {latestBackupTime ? `Son yedek: ${formatDateTime(latestBackupTime)}` : 'Henüz arşivlenmiş yedek bulunmuyor.'}
+                </p>
+              </div>
+            </Card>
+
+            {/* Buton 5: Sistem Sorunlarını Gör */}
+            <Card 
+              onClick={() => {
+                const el = document.getElementById('active-issues-section');
+                if (el) {
+                  el.scrollIntoView({ behavior: 'smooth' });
+                } else if (onNavigate) {
+                  onNavigate('admin-operations');
+                }
+              }}
+              className="border border-slate-200/80 dark:border-white/[0.08] hover:border-[#7367F0]/50 hover:shadow-md transition-all cursor-pointer p-4 bg-white dark:bg-[#2F3349] group flex flex-col justify-between"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className={`p-2.5 rounded-xl transition-colors ${
+                  issuesList.length > 0 
+                    ? 'bg-rose-500/10 text-rose-500 group-hover:bg-rose-500 group-hover:text-white' 
+                    : 'bg-emerald-500/10 text-emerald-500 group-hover:bg-emerald-500 group-hover:text-white'
+                }`}>
+                  <AlertTriangle className="w-5 h-5" />
+                </div>
+                <StatusBadge 
+                  status={issuesList.length > 0 ? 'warning' : 'online'} 
+                  label={issuesList.length > 0 ? `${issuesList.length} Konu` : 'Sorun Yok'} 
+                  size="sm" 
+                />
+              </div>
+              <div className="mt-3 space-y-1">
+                <h3 className="text-sm font-bold text-slate-800 dark:text-white group-hover:text-[#7367F0] transition-colors">
+                  {t('admin.overviewAnswers.actionViewIssues')}
+                </h3>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-snug">
+                  {issuesList.length > 0 
+                    ? `${issuesList.length} müdahale gerektiren konuyu inceleyin.`
+                    : 'Sistemde tespit edilen kritik bir sorun bulunmuyor.'}
+                </p>
+              </div>
+            </Card>
+
+            {/* Buton 6: Dağıtım Durumunu Gör */}
+            <Card 
+              onClick={() => onNavigate?.('admin-operations')}
+              className="border border-slate-200/80 dark:border-white/[0.08] hover:border-[#7367F0]/50 hover:shadow-md transition-all cursor-pointer p-4 bg-white dark:bg-[#2F3349] group flex flex-col justify-between"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="p-2.5 rounded-xl bg-cyan-500/10 text-cyan-500 group-hover:bg-cyan-500 group-hover:text-white transition-colors">
+                  <Server className="w-5 h-5" />
+                </div>
+                <span className="text-[10px] font-semibold text-slate-400">
+                  {data.containers.filter(c => c.status.toLowerCase() === 'running').length} / {data.containers.length} Servis
+                </span>
+              </div>
+              <div className="mt-3 space-y-1">
+                <h3 className="text-sm font-bold text-slate-800 dark:text-white group-hover:text-[#7367F0] transition-colors">
+                  {t('admin.overviewAnswers.actionViewDeployment')}
+                </h3>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-snug">
+                  Canlı sürüm, git commit geçmişi ve servis çalışma durumlarını açın.
+                </p>
+              </div>
+            </Card>
+          </div>
+        </div>
+
+        {/* =========================================================================
+            BÖLÜM 2: ŞU AN BİR SORUN VAR MI? (Gerçek sistem verilerine dayalı)
+           ========================================================================= */}
+        <div id="active-issues-section" className="space-y-3 pt-2">
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="text-base font-extrabold text-slate-800 dark:text-white flex items-center gap-2">
+                <ShieldAlert className="w-5 h-5 text-[#7367F0]" />
+                <span>{t('admin.overviewAnswers.issuesTitle')}</span>
+              </h2>
+              <p className="text-xs text-slate-400 dark:text-[#7E7F96]">
+                Sistem durumu ve müdahale gerektiren operasyonel konular
+              </p>
+            </div>
+            {issuesList.length > 0 && (
+              <span className="text-xs font-bold text-amber-600 dark:text-amber-400">
+                {issuesList.length} Aktif Konu
+              </span>
+            )}
+          </div>
+
+          {issuesList.length === 0 ? (
+            /* Sistem Tamamen Sağlıklı Durum Kartı */
+            <Card className="border border-emerald-500/30 bg-emerald-50/50 dark:bg-emerald-950/15 p-6 rounded-2xl shadow-xs">
+              <div className="flex items-start sm:items-center gap-4">
+                <div className="w-12 h-12 rounded-xl bg-emerald-500/20 text-[#28C76F] flex items-center justify-center shrink-0">
+                  <CheckCircle2 className="w-7 h-7 text-[#28C76F]" />
+                </div>
+                <div className="space-y-1">
+                  <h3 className="text-base font-bold text-emerald-800 dark:text-emerald-300">
+                    {t('admin.overviewAnswers.allClearTitle')}
+                  </h3>
+                  <p className="text-xs text-emerald-600 dark:text-emerald-400">
+                    {t('admin.overviewAnswers.allClearDesc')}
+                  </p>
+                </div>
+              </div>
+            </Card>
+          ) : (
+            /* Aktif Sorunlar Listesi */
+            <div className="space-y-3.5">
+              {issuesList.map((issue) => (
+                <AdminActionIssueCard
+                  key={issue.id}
+                  title={issue.title}
+                  description={issue.description}
+                  severity={issue.severity}
+                  statusLabel={issue.statusLabel}
+                  impact={issue.impact}
+                  recommendedAction={issue.recommendedAction}
+                  primaryAction={issue.primaryAction}
+                  secondaryAction={issue.secondaryAction}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* =========================================================================
+            BÖLÜM 3: GELİŞMİŞ SİSTEM METRİKLERİ & KONTEYNERLER (Varsayılan Kapalı)
+           ========================================================================= */}
         <div className="border border-slate-200/80 dark:border-white/[0.06] rounded-2xl bg-white dark:bg-[#2F3349] overflow-hidden shadow-xs">
           <button
             type="button"
@@ -518,9 +781,9 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
                 <StatsCard
                   title={t('admin.memory')}
                   value={`${(data.system.memory_used_mb / 1024).toFixed(1)} GB`}
-                  subText={`${t('admin.ramUsedPercent', { percent: ((data.system.memory_used_mb / Math.max(1, data.system.memory_total_mb)) * 100).toFixed(0) })}`}
-                  icon={Server}
-                  iconVariant="info"
+                  subText={`${t('admin.memoryTotal')}: ${(data.system.memory_total_mb / 1024).toFixed(1)} GB`}
+                  icon={Activity}
+                  iconVariant="warning"
                 />
 
                 {/* Disk */}
@@ -529,77 +792,102 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
                   value={`${data.system.disk_used_percent}%`}
                   subText={`${data.system.disk_used_gb} GB / ${data.system.disk_total_gb} GB`}
                   icon={HardDrive}
-                  iconVariant="warning"
+                  iconVariant={data.system.disk_used_percent > 85 ? 'danger' : 'success'}
                 />
 
-                {/* Uptime & Reboot */}
+                {/* Uptime */}
                 <StatsCard
                   title={t('admin.hostUptime')}
                   value={formatUptime(data.system.uptime, true)}
-                  subText={data.system.reboot_required ? t('admin.rebootRequiredHelp') : t('admin.rebootNotRequiredHelp')}
+                  subText={data.system.reboot_required ? t('admin.rebootRequiredBadge') : t('admin.rebootNotRequiredBadge')}
                   icon={Clock}
-                  iconVariant={data.system.reboot_required ? 'danger' : 'success'}
-                  badge={
-                    data.system.reboot_required
-                      ? { text: t('admin.rebootRequiredBadge'), variant: 'danger' }
-                      : { text: t('admin.rebootNotRequiredBadge'), variant: 'success' }
-                  }
+                  iconVariant={data.system.reboot_required ? 'warning' : 'primary'}
                 />
               </div>
 
-              {/* Production Services Fleet Cards */}
-              <div className="space-y-3">
-                <h4 className="text-xs font-bold text-slate-800 dark:text-white flex items-center gap-2">
-                  <Layers className="w-3.5 h-3.5 text-indigo-500" />
-                  <span>{t('admin.productionServices')} ({data.containers.length})</span>
-                </h4>
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-                  {data.containers.map((c) => {
-                    const isRunning = c.status.toLowerCase() === 'running';
-                    return (
-                      <div
-                        key={c.name}
-                        className="p-3 rounded-xl border border-slate-100 dark:border-white/[0.04] bg-slate-50/50 dark:bg-white/[0.02] flex flex-col justify-between space-y-2 text-xs"
-                      >
-                        <div className="flex items-start justify-between gap-2">
-                          <div>
-                            <span className="font-bold text-slate-800 dark:text-white block truncate">
-                              {getServiceDisplayName(c.name)}
-                            </span>
-                            <span className="text-[10px] font-mono text-slate-400 block">
+              {/* Containers & Database Grid */}
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                {/* Production Containers Table */}
+                <Card className="lg:col-span-2 border border-slate-100 dark:border-white/[0.06] bg-slate-50/50 dark:bg-white/[0.01]">
+                  <CardHeader className="p-4 border-b border-slate-100 dark:border-white/[0.06]">
+                    <CardTitle className="text-xs font-bold text-slate-800 dark:text-white flex items-center gap-2">
+                      <Layers className="w-4 h-4 text-[#7367F0]" />
+                      <span>{t('admin.productionServices')}</span>
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="p-0 overflow-x-auto">
+                    <table className="w-full text-xs text-left">
+                      <thead className="bg-slate-100/70 dark:bg-white/[0.03] text-slate-400 dark:text-[#7E7F96] uppercase text-[10px] font-semibold border-b border-slate-100 dark:border-white/[0.06]">
+                        <tr>
+                          <th className="py-2.5 px-4">Servis</th>
+                          <th className="py-2.5 px-4">Durum</th>
+                          <th className="py-2.5 px-4">Yeniden Başlatma</th>
+                          <th className="py-2.5 px-4">Bellek (RSS)</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 dark:divide-white/[0.04]">
+                        {data.containers.map((c) => (
+                          <tr key={c.name} className="hover:bg-slate-100/40 dark:hover:bg-white/[0.02]">
+                            <td className="py-2.5 px-4 font-semibold text-slate-800 dark:text-white">
                               {c.name}
-                            </span>
-                          </div>
-                          <StatusBadge
-                            status={isRunning ? 'online' : 'danger'}
-                            label={isRunning ? t('admin.statusRunning') : c.status}
-                            size="sm"
-                          />
-                        </div>
-                        <div className="grid grid-cols-2 gap-1 text-[10px] border-t border-slate-100 dark:border-white/[0.04] pt-2 text-slate-500">
-                          <div>Bellek: <strong className="text-slate-700 dark:text-slate-300">{c.rss_mb} MB</strong></div>
-                          <div>Restart: <strong className="text-slate-700 dark:text-slate-300">{c.restart_count}</strong></div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
+                            </td>
+                            <td className="py-2.5 px-4">
+                              <StatusBadge
+                                status={c.status.toLowerCase() === 'running' ? 'online' : 'danger'}
+                                label={c.status.toUpperCase()}
+                                size="sm"
+                              />
+                            </td>
+                            <td className="py-2.5 px-4 text-slate-600 dark:text-slate-300">
+                              {c.restart_count}
+                            </td>
+                            <td className="py-2.5 px-4 font-mono text-[11px] text-slate-500">
+                              {c.rss_mb ? `${c.rss_mb} MB` : '—'}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </CardContent>
+                </Card>
 
-              {/* Database Connection Pool Metrics */}
-              <div className="p-4 rounded-xl bg-slate-50/70 dark:bg-white/[0.02] border border-slate-200/50 dark:border-white/[0.04] flex items-center justify-between flex-wrap gap-4 text-xs">
-                <div className="flex items-center gap-2.5">
-                  <Database className="w-4 h-4 text-[#7367F0]" />
-                  <div>
-                    <span className="font-bold text-slate-800 dark:text-white block">PostgreSQL 17 Havuzu</span>
-                    <span className="text-[11px] text-slate-400">Veritabanı boyutu: {data.database.database_size_mb} MB</span>
-                  </div>
-                </div>
-                <div className="flex items-center gap-4 text-slate-600 dark:text-slate-300 font-medium">
-                  <div>Aktif: <strong className="text-emerald-600 dark:text-emerald-400 font-bold">{data.database.connections_active}</strong></div>
-                  <div>Boşta: <strong className="font-bold">{data.database.connections_idle}</strong></div>
-                  <div>Toplam: <strong className="font-bold">{data.database.connections_total} / 100</strong></div>
-                </div>
+                {/* Database Connection Pool */}
+                <Card className="border border-slate-100 dark:border-white/[0.06] bg-slate-50/50 dark:bg-white/[0.01]">
+                  <CardHeader className="p-4 border-b border-slate-100 dark:border-white/[0.06]">
+                    <CardTitle className="text-xs font-bold text-slate-800 dark:text-white flex items-center gap-2">
+                      <Database className="w-4 h-4 text-[#7367F0]" />
+                      <span>{t('admin.database')}</span>
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="p-4 space-y-3 text-xs">
+                    <div className="flex justify-between items-center py-1 border-b border-slate-100 dark:border-white/[0.04]">
+                      <span className="text-slate-500 dark:text-slate-400">{t('admin.dbHealth')}</span>
+                      <StatusBadge
+                        status={data.database.health === 'healthy' ? 'online' : 'danger'}
+                        label={data.database.health.toUpperCase()}
+                        size="sm"
+                      />
+                    </div>
+                    <div className="flex justify-between items-center py-1 border-b border-slate-100 dark:border-white/[0.04]">
+                      <span className="text-slate-500 dark:text-slate-400">{t('admin.dbSize')}</span>
+                      <span className="font-semibold text-slate-800 dark:text-white">
+                        {data.database.database_size_mb} MB
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-center py-1 border-b border-slate-100 dark:border-white/[0.04]">
+                      <span className="text-slate-500 dark:text-slate-400">{t('admin.activeConnections')}</span>
+                      <span className="font-semibold text-emerald-600 dark:text-emerald-400">
+                        {data.database.connections_active}
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-center py-1">
+                      <span className="text-slate-500 dark:text-slate-400">{t('admin.totalConnections')}</span>
+                      <span className="font-semibold text-slate-800 dark:text-white">
+                        {data.database.connections_total}
+                      </span>
+                    </div>
+                  </CardContent>
+                </Card>
               </div>
             </div>
           )}

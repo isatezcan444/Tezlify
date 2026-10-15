@@ -27,6 +27,7 @@ import { StatusBadge, StatusVariant } from '../../components/ui/StatusBadge';
 import { Button } from '../../components/ui/button';
 import { Skeleton } from '../../components/ui/Skeleton';
 import { DataTable, ColumnDef } from '../../components/data-display/DataTable';
+import { AdminActionIssueCard } from '../../components/admin/AdminActionIssueCard';
 
 interface AdminWhatsAppPageProps {
   onNavigate?: (tab: string) => void;
@@ -373,28 +374,47 @@ export const AdminWhatsAppPage: React.FC<AdminWhatsAppPageProps> = ({ onNavigate
               )}
             </div>
 
-            {/* Alert if sessions need action */}
-            {(scanQrCount > 0 || relinkCount > 0) && (
-              <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-between gap-3 text-xs">
-                <div className="flex items-center gap-2.5 text-amber-700 dark:text-amber-300">
-                  <AlertTriangle className="w-4.5 h-4.5 shrink-0" />
-                  <span>
-                    {relinkCount > 0
-                      ? `${relinkCount} oturumun bağlantısı sonlandı; tekrar eşleştirilmesi gerekiyor.`
-                      : `${scanQrCount} oturum QR kod taraması bekliyor.`}
-                  </span>
-                </div>
-                {onNavigate && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => onNavigate('whatsapp')}
-                    className="text-xs font-semibold border-amber-300 dark:border-amber-700 text-amber-800 dark:text-amber-200 h-7 px-2.5 cursor-pointer"
-                  >
-                    Eşleştir
-                  </Button>
-                )}
-              </div>
+            {/* Standard Issue Card if Gateway Bridge is Disconnected */}
+            {!isBridgeConnected && (
+              <AdminActionIssueCard
+                title="WhatsApp Ağ Geçidi Bağlantısı Kesik"
+                description="WhatsApp servis köprüsü ile iletişim kurulamıyor."
+                severity="critical"
+                statusLabel="Kritik Kesinti"
+                impact="Gelen ve giden WhatsApp mesajları iletilemez."
+                recommendedAction="Ağ geçidi servisini kontrol edin veya bağlantıyı yenileyin."
+                primaryAction={{
+                  label: 'Yeniden Bağlanmayı Dene',
+                  onClick: () => void fetchWhatsApp(false),
+                  loading: refreshing,
+                  icon: RefreshCw,
+                }}
+                secondaryAction={onNavigate ? {
+                  label: 'Sistem İşlemlerine Git',
+                  onClick: () => onNavigate('admin-operations'),
+                } : undefined}
+              />
+            )}
+
+            {/* Standard Issue Card if sessions need QR action */}
+            {isBridgeConnected && (scanQrCount > 0 || relinkCount > 0) && (
+              <AdminActionIssueCard
+                title={relinkCount > 0 ? 'WhatsApp Oturumu Sonlandı' : 'WhatsApp QR Kod Doğrulaması Bekliyor'}
+                description={
+                  relinkCount > 0
+                    ? `${relinkCount} oturumun bağlantısı sonlandı; tekrar eşleştirilmesi gerekiyor.`
+                    : `${scanQrCount} oturum QR kod taraması bekliyor.`
+                }
+                severity="warning"
+                statusLabel="Eşleştirme Gerekli"
+                impact="İlgili hat üzerinden müşterilere mesaj iletimi durduruldu."
+                recommendedAction="WhatsApp Hub sayfasına giderek telefonunuzdan QR kodu taratın."
+                primaryAction={onNavigate ? {
+                  label: 'WhatsApp Hub\'ı Aç',
+                  onClick: () => onNavigate('whatsapp'),
+                  icon: Smartphone,
+                } : undefined}
+              />
             )}
 
             {/* Clean Sessions Summary Cards (4 blocks) */}
