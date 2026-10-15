@@ -595,7 +595,7 @@ export const AdminOperationsPage: React.FC<AdminOperationsPageProps> = ({ onNavi
                   <Button
                     variant="outline"
                     onClick={() => setTab('history')}
-                    className="min-h-[40px] h-10 px-4 rounded-xl text-xs font-bold border border-slate-200 dark:border-white/[0.1] bg-white dark:bg-[#2F3349] hover:bg-slate-50 dark:hover:bg-[#363B53] flex items-center justify-center cursor-pointer transition-colors"
+                    className="h-9 px-3.5 rounded-lg text-xs font-semibold border border-slate-200 dark:border-white/[0.1] bg-white dark:bg-[#2F3349] hover:bg-slate-50 dark:hover:bg-[#363B53] flex items-center justify-center cursor-pointer transition-colors active:scale-[0.98]"
                   >
                     {t('admin.ops.tabHistory')}
                   </Button>

@@ -571,7 +571,7 @@ export const AdminDeploymentPage: React.FC<AdminDeploymentPageProps> = ({ onNavi
                     <Button
                       variant="outline"
                       onClick={() => onNavigate('admin-operations')}
-                      className="min-h-[40px] h-10 px-4 rounded-xl text-xs font-bold border border-slate-200 dark:border-white/[0.1] bg-white dark:bg-[#2F3349] hover:bg-slate-50 dark:hover:bg-[#363B53] flex items-center justify-center cursor-pointer transition-colors"
+                      className="h-9 px-3.5 rounded-lg text-xs font-semibold border border-slate-200 dark:border-white/[0.1] bg-white dark:bg-[#2F3349] hover:bg-slate-50 dark:hover:bg-[#363B53] flex items-center justify-center cursor-pointer transition-colors active:scale-[0.98]"
                     >
                       {t('admin.deployment.goToOpsCenter')}
                     </Button>
@@ -1018,7 +1018,7 @@ export const AdminDeploymentPage: React.FC<AdminDeploymentPageProps> = ({ onNavi
                 <Button
                   variant="outline"
                   onClick={() => setShowHostDetails((v) => !v)}
-                  className="min-h-[40px] h-10 px-4 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 border border-slate-200/80 dark:border-white/[0.08] hover:bg-slate-50 dark:hover:bg-white/[0.04] transition-colors cursor-pointer"
+                  className="h-9 px-3.5 rounded-lg text-xs font-semibold flex items-center justify-center gap-2 border border-slate-200/80 dark:border-white/[0.08] hover:bg-slate-50 dark:hover:bg-white/[0.04] transition-colors cursor-pointer active:scale-[0.98]"
                 >
                   <span>{showHostDetails ? t('admin.deployment.hideHostDetails') : t('admin.deployment.showHostDetails')}</span>
                   {showHostDetails ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}

@@ -564,7 +564,7 @@ export const AdminMonitoringPage: React.FC<AdminMonitoringPageProps> = ({ onNavi
                 <Button
                   variant="outline"
                   onClick={() => onNavigate('admin-operations')}
-                  className="min-h-[40px] h-10 px-4 rounded-xl text-xs font-bold border-rose-200 dark:border-rose-900/50 text-rose-700 dark:text-rose-300 hover:bg-rose-100 dark:hover:bg-rose-900/40 cursor-pointer flex items-center justify-center"
+                  className="h-9 px-3.5 rounded-lg text-xs font-semibold border-rose-200 dark:border-rose-900/50 text-rose-700 dark:text-rose-300 hover:bg-rose-100 dark:hover:bg-rose-900/40 cursor-pointer flex items-center justify-center active:scale-[0.98]"
                 >
                   {t('admin.actionGoToOps')}
                 </Button>

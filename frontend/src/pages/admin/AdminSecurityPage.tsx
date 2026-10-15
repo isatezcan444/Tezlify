@@ -312,20 +312,24 @@ export const AdminSecurityPage: React.FC<AdminSecurityPageProps> = ({ onNavigate
               <button
                 type="button"
                 onClick={() => onNavigate('admin-backups')}
-                className="px-4 py-1.5 rounded-lg text-xs font-medium text-slate-500 hover:text-slate-800 dark:hover:text-white transition-colors cursor-pointer flex items-center gap-2"
+                className="min-h-[40px] px-4 py-2 rounded-lg text-xs font-medium text-slate-500 hover:text-slate-800 dark:hover:text-white transition-colors cursor-pointer flex items-center gap-2"
               >
-                <Database className="w-3.5 h-3.5 text-slate-400" />
+                <Database className="w-4 h-4 text-slate-400" />
                 <span>{t('admin.backups.tabBackups')}</span>
               </button>
             )}
             <button
               type="button"
-              className="px-4 py-1.5 rounded-lg text-xs font-bold bg-white dark:bg-[#2F3349] text-slate-800 dark:text-white shadow-xs cursor-default flex items-center gap-2"
+              className="min-h-[40px] px-4 py-2 rounded-lg text-xs font-bold bg-white dark:bg-[#2F3349] text-slate-800 dark:text-white shadow-xs cursor-default flex items-center gap-2"
             >
-              <Lock className="w-3.5 h-3.5 text-[#7367F0]" />
+              <Lock className="w-4 h-4 text-[#7367F0]" />
               <span>{t('admin.backups.tabSecurity')}</span>
             </button>
           </div>
+
+          <span className="text-[11px] text-slate-400 dark:text-slate-500 hidden sm:inline">
+            {certification_status || t('admin.security.statusHardened')}
+          </span>
         </div>
         <ExecutiveGuidanceCard
           status={isPass ? 'ok' : isWarn ? 'warn' : 'critical'}
@@ -541,7 +545,7 @@ export const AdminSecurityPage: React.FC<AdminSecurityPageProps> = ({ onNavigate
                 <Button
                   variant="outline"
                   onClick={() => setShowTechnicalAudit((v) => !v)}
-                  className="min-h-[40px] h-10 px-4 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 border border-slate-200/80 dark:border-white/[0.08] hover:bg-slate-50 dark:hover:bg-white/[0.04] transition-colors cursor-pointer"
+                  className="h-9 px-3.5 rounded-lg text-xs font-semibold flex items-center justify-center gap-2 border border-slate-200/80 dark:border-white/[0.08] hover:bg-slate-50 dark:hover:bg-white/[0.04] transition-all active:scale-[0.98] cursor-pointer"
                 >
                   <span>{showTechnicalAudit ? t('admin.monitoring.hideDetails') : t('admin.monitoring.showDetails')}</span>
                   {showTechnicalAudit ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}

@@ -342,12 +342,12 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
   if (waData && !waData.gateway_bridge.connected) {
     issuesList.push({
       id: 'wa-bridge-down',
-      title: 'WhatsApp Ağ Geçidi Bağlantısı Kesik',
-      description: 'WhatsApp servis köprüsü ile bağlantı kurulamıyor. Oturum durumları alınamıyor.',
+      title: t('admin.overviewAnswers.issueWaDisconnectedTitle'),
+      description: t('admin.overviewAnswers.issueWaDisconnectedDesc'),
       severity: 'critical',
-      statusLabel: 'Kritik Kesinti',
-      impact: 'Gelen ve giden WhatsApp mesaj iletimi durduruldu.',
-      recommendedAction: 'Ağ geçidi bağlantısını kontrol edin veya servisi inceleyin.',
+      statusLabel: t('admin.overviewAnswers.issueWaDisconnectedStatus'),
+      impact: t('admin.overviewAnswers.issueWaDisconnectedImpact'),
+      recommendedAction: t('admin.overviewAnswers.issueWaDisconnectedAction'),
       primaryAction: {
         label: t('admin.overviewAnswers.actionCheckWhatsApp'),
         onClick: handleCheckWhatsApp,
@@ -366,19 +366,19 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
   if (waData && isWaBridgeConnected && (waScanQrCount > 0 || waRelinkCount > 0)) {
     issuesList.push({
       id: 'wa-relink-needed',
-      title: 'WhatsApp Yeniden Eşleştirme Bekliyor',
-      description: `${waScanQrCount + waRelinkCount} oturumun telefon ile QR kod eşleştirmesi yapması gerekiyor.`,
+      title: t('admin.overviewAnswers.issueWaRelinkTitle'),
+      description: t('admin.overviewAnswers.issueWaRelinkDesc', { count: waScanQrCount + waRelinkCount }),
       severity: 'warning',
-      statusLabel: 'Eşleştirme Gerekli',
-      impact: 'İlgili hat üzerinden müşterilere mesaj iletimi geçici olarak durdu.',
-      recommendedAction: 'WhatsApp Hub sayfasına giderek telefonunuzdan QR kodu taratın.',
+      statusLabel: t('admin.overviewAnswers.issueWaRelinkStatus'),
+      impact: t('admin.overviewAnswers.issueWaRelinkImpact'),
+      recommendedAction: t('admin.overviewAnswers.issueWaRelinkAction'),
       primaryAction: onNavigate ? {
         label: t('admin.overviewAnswers.actionConnectWhatsApp'),
         onClick: () => onNavigate('whatsapp'),
         icon: Smartphone,
       } : undefined,
       secondaryAction: onNavigate ? {
-        label: 'Oturumları Gör',
+        label: t('admin.overviewAnswers.actionViewSessions'),
         onClick: () => onNavigate('admin-whatsapp'),
       } : undefined,
     });
@@ -386,12 +386,12 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
     // Issue 3: No WhatsApp Sessions Registered
     issuesList.push({
       id: 'wa-no-sessions',
-      title: 'Bağlı WhatsApp Oturumu Bulunmuyor',
-      description: 'Sistemde kayıtlı veya bağlı aktif bir WhatsApp hesabı yok.',
+      title: t('admin.overviewAnswers.issueWaNoSessionsTitle'),
+      description: t('admin.overviewAnswers.issueWaNoSessionsDesc'),
       severity: 'warning',
-      statusLabel: 'Bağlantı Yok',
-      impact: 'Müşteri adaylarına WhatsApp üzerinden erişim sağlanamaz.',
-      recommendedAction: 'WhatsApp Hub üzerinden ilk numaranızı güvenle bağlayın.',
+      statusLabel: t('admin.overviewAnswers.issueWaNoSessionsStatus'),
+      impact: t('admin.overviewAnswers.issueWaNoSessionsImpact'),
+      recommendedAction: t('admin.overviewAnswers.issueWaNoSessionsAction'),
       primaryAction: onNavigate ? {
         label: t('admin.overviewAnswers.actionConnectWhatsApp'),
         onClick: () => onNavigate('whatsapp'),
@@ -404,12 +404,12 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
   if (backupData && !hasPostgresBackup && !loading) {
     issuesList.push({
       id: 'backup-none',
-      title: 'Henüz Alınmış Bir Yedek Yok',
-      description: 'Sistemde kayıtlı bir veritabanı yedeği bulunmuyor.',
+      title: t('admin.overviewAnswers.issueBackupNoneTitle'),
+      description: t('admin.overviewAnswers.issueBackupNoneDesc'),
       severity: 'warning',
-      statusLabel: 'Yedek Yok',
-      impact: 'Sistem arızalarına karşı veritabanı korumasız durumdadır.',
-      recommendedAction: 'Tek tıkla ilk tam sistem yedeğini oluşturun.',
+      statusLabel: t('admin.overviewAnswers.issueBackupNoneStatus'),
+      impact: t('admin.overviewAnswers.issueBackupNoneImpact'),
+      recommendedAction: t('admin.overviewAnswers.issueBackupNoneAction'),
       primaryAction: {
         label: t('admin.overviewAnswers.actionTakeBackup'),
         onClick: handleRunBackup,
@@ -427,12 +427,12 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
   if (data.system.disk_used_percent > 85) {
     issuesList.push({
       id: 'disk-critical',
-      title: 'Disk Alanı Kritik Seviyede',
-      description: `Disk doluluk oranı %${data.system.disk_used_percent} seviyesine ulaştı.`,
+      title: t('admin.overviewAnswers.issueDiskCriticalTitle'),
+      description: t('admin.overviewAnswers.issueDiskCriticalDesc', { percent: data.system.disk_used_percent }),
       severity: 'critical',
-      statusLabel: 'Kritik Doluluk',
-      impact: 'Disk dolarsa veri tabanı yazma işlemleri ve servisler durabilir.',
-      recommendedAction: 'Eski logları ve gereksiz dosyaları inceleyip temizleyin.',
+      statusLabel: t('admin.overviewAnswers.issueDiskCriticalStatus'),
+      impact: t('admin.overviewAnswers.issueDiskCriticalImpact'),
+      recommendedAction: t('admin.overviewAnswers.issueDiskCriticalAction'),
       primaryAction: onNavigate ? {
         label: t('admin.overviewAnswers.issueViewDisk'),
         onClick: () => onNavigate('admin-operations'),
@@ -446,14 +446,14 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
   if (stoppedContainers.length > 0) {
     issuesList.push({
       id: 'containers-down',
-      title: 'Durdurulmuş Servis Konteyneri Var',
-      description: `Şu servisler şu an çalışmıyor: ${stoppedContainers.map((c) => c.name).join(', ')}.`,
+      title: t('admin.overviewAnswers.issueStoppedContainersTitle'),
+      description: t('admin.overviewAnswers.issueStoppedContainersDesc', { containers: stoppedContainers.map((c) => c.name).join(', ') }),
       severity: 'critical',
-      statusLabel: 'Servis Durdu',
-      impact: 'İlgili servisin sunduğu işlevler kullanılamaz.',
-      recommendedAction: 'Sistem İşlemleri ekranından servis loglarını inceleyin.',
+      statusLabel: t('admin.overviewAnswers.issueStoppedContainersStatus'),
+      impact: t('admin.overviewAnswers.issueStoppedContainersImpact'),
+      recommendedAction: t('admin.overviewAnswers.issueStoppedContainersAction'),
       primaryAction: onNavigate ? {
-        label: 'Servisleri İncele',
+        label: t('admin.overviewAnswers.issueInspectServices'),
         onClick: () => onNavigate('admin-operations'),
         icon: Server,
       } : undefined,
@@ -464,12 +464,12 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
   if (data.system.reboot_required) {
     issuesList.push({
       id: 'reboot-required',
-      title: 'Güvenlik Yamaları İçin Yeniden Başlatma Gerekli',
-      description: 'İşletim sistemine yeni güvenlik yamaları uygulandı (/var/run/reboot-required). Güncellemelerin aktif olması için sunucunun planlı olarak yeniden başlatılması gerekir.',
+      title: t('admin.overviewAnswers.issueRebootRequiredTitle'),
+      description: t('admin.overviewAnswers.issueRebootRequiredDesc'),
       severity: 'info',
-      statusLabel: 'Planlı Bakım',
-      impact: 'Sistem çalışmaya devam eder; ancak en son çekirdek yamaları yeniden başlatma yapılana dek devreye girmez.',
-      recommendedAction: 'Mesai saatleri dışında sunucuyu güvenli bir şekilde yeniden başlatın.',
+      statusLabel: t('admin.overviewAnswers.issueRebootRequiredStatus'),
+      impact: t('admin.overviewAnswers.issueRebootRequiredImpact'),
+      recommendedAction: t('admin.overviewAnswers.issueRebootRequiredAction'),
       primaryAction: onNavigate ? {
         label: t('admin.overviewAnswers.quickOps'),
         onClick: () => onNavigate('admin-operations'),
@@ -489,7 +489,7 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
     >
       <div className="space-y-8">
         {/* =========================================================================
-            BÖLÜM 1: HIZLI İŞLEMLER (Büyük, açık ve anlaşılır aksiyon butonları)
+            BÖLÜM 1: HIZLI İŞLEMLER (Vuexy standart boyut ve zarif aksiyon butonları)
            ========================================================================= */}
         <div className="space-y-3">
           <div className="flex items-center justify-between">
@@ -503,36 +503,36 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
               </p>
             </div>
             <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-slate-100 dark:bg-white/[0.05] text-slate-600 dark:text-slate-300">
-              6 Temel İşlem
+              {t('admin.overviewAnswers.sixBasicActions')}
             </span>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-5">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5 sm:gap-4">
             {/* Buton 1: WhatsApp Bağla / WhatsApp Bağlantısını Görüntüle */}
             <Card 
               onClick={() => onNavigate?.(isWaFullyConnected ? 'admin-whatsapp' : 'whatsapp')}
-              className="border border-slate-200/80 dark:border-white/[0.08] hover:border-[#7367F0]/60 hover:shadow-lg transition-all duration-200 active:scale-[0.99] cursor-pointer p-4 sm:p-5 rounded-2xl bg-white dark:bg-[#2F3349] group flex flex-col justify-between min-h-[148px] sm:min-h-[156px]"
+              className="border border-slate-200/80 dark:border-white/[0.08] hover:border-[#7367F0]/50 hover:shadow-md bg-white/90 dark:bg-[#2F3349]/90 backdrop-blur-sm transition-all duration-150 active:scale-[0.99] cursor-pointer p-4 rounded-xl group flex flex-col justify-between min-h-[120px] sm:min-h-[128px]"
             >
               <div className="flex items-start justify-between gap-3">
-                <div className="w-11 h-11 rounded-xl bg-emerald-500/10 text-[#28C76F] group-hover:bg-[#28C76F] group-hover:text-white transition-colors flex items-center justify-center shrink-0">
-                  <Smartphone className="w-5 h-5" />
+                <div className="w-9 h-9 rounded-lg bg-emerald-500/10 text-[#28C76F] group-hover:bg-[#28C76F] group-hover:text-white transition-colors flex items-center justify-center shrink-0">
+                  <Smartphone className="w-4 h-4" />
                 </div>
                 <StatusBadge 
                   status={isWaFullyConnected ? 'online' : isWaBridgeConnected ? 'warning' : 'danger'} 
-                  label={isWaFullyConnected ? 'Bağlı' : 'Bağlantı Yok'} 
+                  label={isWaFullyConnected ? t('admin.overviewAnswers.connected') : t('admin.overviewAnswers.notConnected')} 
                   size="sm" 
                 />
               </div>
-              <div className="mt-4 space-y-1">
-                <h3 className="text-sm font-bold text-slate-800 dark:text-white group-hover:text-[#7367F0] transition-colors leading-snug">
+              <div className="mt-3 space-y-0.5">
+                <h3 className="text-xs sm:text-sm font-bold text-slate-800 dark:text-white group-hover:text-[#7367F0] transition-colors leading-snug">
                   {isWaFullyConnected 
                     ? t('admin.overviewAnswers.actionViewWhatsApp')
                     : t('admin.overviewAnswers.actionConnectWhatsApp')}
                 </h3>
                 <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed line-clamp-2">
                   {isWaFullyConnected 
-                    ? `${waConnectedCount} aktif oturum bağlı ve mesaj almaya hazır.`
-                    : 'Yeni bir WhatsApp hattı bağlayın veya QR kodu taratın.'}
+                    ? t('admin.overviewAnswers.waConnectedDesc', { count: waConnectedCount })
+                    : t('admin.overviewAnswers.waConnectNewDesc')}
                 </p>
               </div>
             </Card>
@@ -540,24 +540,24 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
             {/* Buton 2: WhatsApp Durumunu Kontrol Et */}
             <Card 
               onClick={handleCheckWhatsApp}
-              className="border border-slate-200/80 dark:border-white/[0.08] hover:border-[#7367F0]/60 hover:shadow-lg transition-all duration-200 active:scale-[0.99] cursor-pointer p-4 sm:p-5 rounded-2xl bg-white dark:bg-[#2F3349] group flex flex-col justify-between min-h-[148px] sm:min-h-[156px]"
+              className="border border-slate-200/80 dark:border-white/[0.08] hover:border-[#7367F0]/50 hover:shadow-md bg-white/90 dark:bg-[#2F3349]/90 backdrop-blur-sm transition-all duration-150 active:scale-[0.99] cursor-pointer p-4 rounded-xl group flex flex-col justify-between min-h-[120px] sm:min-h-[128px]"
             >
               <div className="flex items-start justify-between gap-3">
-                <div className="w-11 h-11 rounded-xl bg-[#7367F0]/10 text-[#7367F0] group-hover:bg-[#7367F0] group-hover:text-white transition-colors flex items-center justify-center shrink-0">
-                  {isCheckingWa ? <Loader2 className="w-5 h-5 animate-spin" /> : <Radio className="w-5 h-5" />}
+                <div className="w-9 h-9 rounded-lg bg-[#7367F0]/10 text-[#7367F0] group-hover:bg-[#7367F0] group-hover:text-white transition-colors flex items-center justify-center shrink-0">
+                  {isCheckingWa ? <Loader2 className="w-4 h-4 animate-spin" /> : <Radio className="w-4 h-4" />}
                 </div>
                 <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider bg-slate-100 dark:bg-white/[0.06] px-2 py-0.5 rounded-md">
-                  Tanılama
+                  {t('admin.overviewAnswers.badgeDiagnostic')}
                 </span>
               </div>
-              <div className="mt-4 space-y-1">
-                <h3 className="text-sm font-bold text-slate-800 dark:text-white group-hover:text-[#7367F0] transition-colors leading-snug">
+              <div className="mt-3 space-y-0.5">
+                <h3 className="text-xs sm:text-sm font-bold text-slate-800 dark:text-white group-hover:text-[#7367F0] transition-colors leading-snug">
                   {isCheckingWa 
                     ? t('admin.overviewAnswers.actionCheckingWhatsApp') 
                     : t('admin.overviewAnswers.actionCheckWhatsApp')}
                 </h3>
                 <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed line-clamp-2">
-                  Ağ geçidi bağlantısını ve anlık mesaj kuyruğunu anında test edin.
+                  {t('admin.overviewAnswers.waDiagnosticDesc')}
                 </p>
               </div>
             </Card>
@@ -565,26 +565,26 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
             {/* Buton 3: Şimdi Yedek Al */}
             <Card 
               onClick={handleRunBackup}
-              className={`border border-slate-200/80 dark:border-white/[0.08] hover:border-[#7367F0]/60 hover:shadow-lg transition-all duration-200 p-4 sm:p-5 rounded-2xl bg-white dark:bg-[#2F3349] group flex flex-col justify-between min-h-[148px] sm:min-h-[156px] ${
+              className={`border border-slate-200/80 dark:border-white/[0.08] hover:border-[#7367F0]/50 hover:shadow-md bg-white/90 dark:bg-[#2F3349]/90 backdrop-blur-sm transition-all duration-150 p-4 rounded-xl group flex flex-col justify-between min-h-[120px] sm:min-h-[128px] ${
                 isBackingUp ? 'opacity-80 pointer-events-none' : 'cursor-pointer active:scale-[0.99]'
               }`}
             >
               <div className="flex items-start justify-between gap-3">
-                <div className="w-11 h-11 rounded-xl bg-indigo-500/10 text-indigo-500 group-hover:bg-indigo-600 group-hover:text-white transition-colors flex items-center justify-center shrink-0">
-                  {isBackingUp ? <Loader2 className="w-5 h-5 animate-spin" /> : <Database className="w-5 h-5" />}
+                <div className="w-9 h-9 rounded-lg bg-indigo-500/10 text-indigo-500 group-hover:bg-indigo-600 group-hover:text-white transition-colors flex items-center justify-center shrink-0">
+                  {isBackingUp ? <Loader2 className="w-4 h-4 animate-spin" /> : <Database className="w-4 h-4" />}
                 </div>
                 <span className="text-[10px] font-bold text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-950/40 px-2 py-0.5 rounded-md">
-                  Doğrudan İşlem
+                  {t('admin.overviewAnswers.badgeDirectAction')}
                 </span>
               </div>
-              <div className="mt-4 space-y-1">
-                <h3 className="text-sm font-bold text-slate-800 dark:text-white group-hover:text-[#7367F0] transition-colors leading-snug">
+              <div className="mt-3 space-y-0.5">
+                <h3 className="text-xs sm:text-sm font-bold text-slate-800 dark:text-white group-hover:text-[#7367F0] transition-colors leading-snug">
                   {isBackingUp 
                     ? t('admin.overviewAnswers.actionBackingUp') 
                     : t('admin.overviewAnswers.actionTakeBackup')}
                 </h3>
                 <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed line-clamp-2">
-                  Veritabanı ve sistem yapılandırmasının tam yedeğini tek tıkla oluşturun.
+                  {t('admin.overviewAnswers.backupDirectActionDesc')}
                 </p>
               </div>
             </Card>
@@ -592,22 +592,22 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
             {/* Buton 4: Son Yedeği Görüntüle */}
             <Card 
               onClick={() => onNavigate?.('admin-backups')}
-              className="border border-slate-200/80 dark:border-white/[0.08] hover:border-[#7367F0]/60 hover:shadow-lg transition-all duration-200 active:scale-[0.99] cursor-pointer p-4 sm:p-5 rounded-2xl bg-white dark:bg-[#2F3349] group flex flex-col justify-between min-h-[148px] sm:min-h-[156px]"
+              className="border border-slate-200/80 dark:border-white/[0.08] hover:border-[#7367F0]/50 hover:shadow-md bg-white/90 dark:bg-[#2F3349]/90 backdrop-blur-sm transition-all duration-150 active:scale-[0.99] cursor-pointer p-4 rounded-xl group flex flex-col justify-between min-h-[120px] sm:min-h-[128px]"
             >
               <div className="flex items-start justify-between gap-3">
-                <div className="w-11 h-11 rounded-xl bg-amber-500/10 text-amber-500 group-hover:bg-amber-500 group-hover:text-white transition-colors flex items-center justify-center shrink-0">
-                  <Clock className="w-5 h-5" />
+                <div className="w-9 h-9 rounded-lg bg-amber-500/10 text-amber-500 group-hover:bg-amber-500 group-hover:text-white transition-colors flex items-center justify-center shrink-0">
+                  <Clock className="w-4 h-4" />
                 </div>
                 <span className="text-[10px] font-semibold text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-white/[0.06] px-2 py-0.5 rounded-md">
                   {latestBackupSize || '—'}
                 </span>
               </div>
-              <div className="mt-4 space-y-1">
-                <h3 className="text-sm font-bold text-slate-800 dark:text-white group-hover:text-[#7367F0] transition-colors leading-snug">
+              <div className="mt-3 space-y-0.5">
+                <h3 className="text-xs sm:text-sm font-bold text-slate-800 dark:text-white group-hover:text-[#7367F0] transition-colors leading-snug">
                   {t('admin.overviewAnswers.actionViewBackup')}
                 </h3>
                 <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed line-clamp-2">
-                  {latestBackupTime ? `Son yedek: ${formatDateTime(latestBackupTime)}` : 'Henüz arşivlenmiş yedek bulunmuyor.'}
+                  {latestBackupTime ? t('admin.overviewAnswers.latestBackupAt', { time: formatDateTime(latestBackupTime) }) : t('admin.overviewAnswers.noBackupArchived')}
                 </p>
               </div>
             </Card>
@@ -622,30 +622,30 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
                   onNavigate('admin-operations');
                 }
               }}
-              className="border border-slate-200/80 dark:border-white/[0.08] hover:border-[#7367F0]/60 hover:shadow-lg transition-all duration-200 active:scale-[0.99] cursor-pointer p-4 sm:p-5 rounded-2xl bg-white dark:bg-[#2F3349] group flex flex-col justify-between min-h-[148px] sm:min-h-[156px]"
+              className="border border-slate-200/80 dark:border-white/[0.08] hover:border-[#7367F0]/50 hover:shadow-md bg-white/90 dark:bg-[#2F3349]/90 backdrop-blur-sm transition-all duration-150 active:scale-[0.99] cursor-pointer p-4 rounded-xl group flex flex-col justify-between min-h-[120px] sm:min-h-[128px]"
             >
               <div className="flex items-start justify-between gap-3">
-                <div className={`w-11 h-11 rounded-xl transition-colors flex items-center justify-center shrink-0 ${
+                <div className={`w-9 h-9 rounded-lg transition-colors flex items-center justify-center shrink-0 ${
                   issuesList.length > 0 
                     ? 'bg-rose-500/10 text-rose-500 group-hover:bg-rose-500 group-hover:text-white' 
                     : 'bg-emerald-500/10 text-emerald-500 group-hover:bg-emerald-500 group-hover:text-white'
                 }`}>
-                  <AlertTriangle className="w-5 h-5" />
+                  <AlertTriangle className="w-4 h-4" />
                 </div>
                 <StatusBadge 
                   status={issuesList.length > 0 ? 'warning' : 'online'} 
-                  label={issuesList.length > 0 ? `${issuesList.length} Konu` : 'Sorun Yok'} 
+                  label={issuesList.length > 0 ? t('admin.overviewAnswers.issuesBadgeCount', { count: issuesList.length }) : t('admin.overviewAnswers.noIssuesBadge')} 
                   size="sm" 
                 />
               </div>
-              <div className="mt-4 space-y-1">
-                <h3 className="text-sm font-bold text-slate-800 dark:text-white group-hover:text-[#7367F0] transition-colors leading-snug">
+              <div className="mt-3 space-y-0.5">
+                <h3 className="text-xs sm:text-sm font-bold text-slate-800 dark:text-white group-hover:text-[#7367F0] transition-colors leading-snug">
                   {t('admin.overviewAnswers.actionViewIssues')}
                 </h3>
                 <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed line-clamp-2">
                   {issuesList.length > 0 
-                    ? `${issuesList.length} müdahale gerektiren konuyu inceleyin.`
-                    : 'Sistemde tespit edilen kritik bir sorun bulunmuyor.'}
+                    ? t('admin.overviewAnswers.issuesReviewCount', { count: issuesList.length })
+                    : t('admin.overviewAnswers.noIssuesDesc')}
                 </p>
               </div>
             </Card>
@@ -653,22 +653,22 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
             {/* Buton 6: Dağıtım Durumunu Gör */}
             <Card 
               onClick={() => onNavigate?.('admin-operations')}
-              className="border border-slate-200/80 dark:border-white/[0.08] hover:border-[#7367F0]/60 hover:shadow-lg transition-all duration-200 active:scale-[0.99] cursor-pointer p-4 sm:p-5 rounded-2xl bg-white dark:bg-[#2F3349] group flex flex-col justify-between min-h-[148px] sm:min-h-[156px]"
+              className="border border-slate-200/80 dark:border-white/[0.08] hover:border-[#7367F0]/50 hover:shadow-md bg-white/90 dark:bg-[#2F3349]/90 backdrop-blur-sm transition-all duration-150 active:scale-[0.99] cursor-pointer p-4 rounded-xl group flex flex-col justify-between min-h-[120px] sm:min-h-[128px]"
             >
               <div className="flex items-start justify-between gap-3">
-                <div className="w-11 h-11 rounded-xl bg-cyan-500/10 text-cyan-500 group-hover:bg-cyan-500 group-hover:text-white transition-colors flex items-center justify-center shrink-0">
-                  <Server className="w-5 h-5" />
+                <div className="w-9 h-9 rounded-lg bg-cyan-500/10 text-cyan-500 group-hover:bg-cyan-500 group-hover:text-white transition-colors flex items-center justify-center shrink-0">
+                  <Server className="w-4 h-4" />
                 </div>
                 <span className="text-[10px] font-semibold text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-white/[0.06] px-2 py-0.5 rounded-md">
-                  {data.containers.filter(c => c.status.toLowerCase() === 'running').length} / {data.containers.length} Servis
+                  {t('admin.overviewAnswers.serviceBadgeCount', { running: data.containers.filter(c => c.status.toLowerCase() === 'running').length, total: data.containers.length })}
                 </span>
               </div>
-              <div className="mt-4 space-y-1">
-                <h3 className="text-sm font-bold text-slate-800 dark:text-white group-hover:text-[#7367F0] transition-colors leading-snug">
+              <div className="mt-3 space-y-0.5">
+                <h3 className="text-xs sm:text-sm font-bold text-slate-800 dark:text-white group-hover:text-[#7367F0] transition-colors leading-snug">
                   {t('admin.overviewAnswers.actionViewDeployment')}
                 </h3>
                 <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed line-clamp-2">
-                  Canlı sürüm, git commit geçmişi ve servis çalışma durumlarını açın.
+                  {t('admin.overviewAnswers.deploymentCardDesc')}
                 </p>
               </div>
             </Card>
@@ -686,25 +686,25 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
                 <span>{t('admin.overviewAnswers.issuesTitle')}</span>
               </h2>
               <p className="text-xs text-slate-400 dark:text-[#7E7F96]">
-                Sistem durumu ve müdahale gerektiren operasyonel konular
+                {t('admin.overviewAnswers.issuesSectionSubtitle')}
               </p>
             </div>
             {issuesList.length > 0 && (
               <span className="text-xs font-bold text-amber-600 dark:text-amber-400">
-                {issuesList.length} Aktif Konu
+                {t('admin.overviewAnswers.activeIssuesCount', { count: issuesList.length })}
               </span>
             )}
           </div>
 
           {issuesList.length === 0 ? (
             /* Sistem Tamamen Sağlıklı Durum Kartı */
-            <Card className="border border-emerald-500/30 bg-emerald-50/50 dark:bg-emerald-950/15 p-6 rounded-2xl shadow-xs">
+            <Card className="border border-emerald-500/30 bg-emerald-50/50 dark:bg-emerald-950/15 p-5 rounded-2xl shadow-xs">
               <div className="flex items-start sm:items-center gap-4">
-                <div className="w-12 h-12 rounded-xl bg-emerald-500/20 text-[#28C76F] flex items-center justify-center shrink-0">
-                  <CheckCircle2 className="w-7 h-7 text-[#28C76F]" />
+                <div className="w-10 h-10 rounded-xl bg-emerald-500/20 text-[#28C76F] flex items-center justify-center shrink-0">
+                  <CheckCircle2 className="w-6 h-6 text-[#28C76F]" />
                 </div>
                 <div className="space-y-1">
-                  <h3 className="text-base font-bold text-emerald-800 dark:text-emerald-300">
+                  <h3 className="text-sm font-bold text-emerald-800 dark:text-emerald-300">
                     {t('admin.overviewAnswers.allClearTitle')}
                   </h3>
                   <p className="text-xs text-emerald-600 dark:text-emerald-400">
@@ -740,7 +740,7 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
           <button
             type="button"
             onClick={() => setShowInfraDetails((prev) => !prev)}
-            className="w-full min-h-[56px] p-4 sm:p-5 flex items-center justify-between text-left hover:bg-slate-50/60 dark:hover:bg-white/[0.02] transition-colors cursor-pointer select-none"
+            className="w-full min-h-[48px] p-3.5 sm:p-4 flex items-center justify-between text-left hover:bg-slate-50/60 dark:hover:bg-white/[0.02] transition-colors cursor-pointer select-none"
           >
             <div className="flex items-center gap-3">
               <div className="w-8 h-8 rounded-lg bg-slate-100 dark:bg-white/[0.05] text-slate-600 dark:text-slate-300 flex items-center justify-center">
@@ -753,7 +753,7 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
                     : t('admin.overviewAnswers.showInfraDetails')}
                 </h3>
                 <p className="text-[11px] text-slate-400 dark:text-[#7E7F96]">
-                  İşlemci yükü, RAM, disk kullanımı, konteyner bellekleri ve veritabanı bağlantı havuzu
+                  {t('admin.overviewAnswers.infraDetailsSubtitle')}
                 </p>
               </div>
             </div>
@@ -819,10 +819,10 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
                     <table className="w-full text-xs text-left">
                       <thead className="bg-slate-100/70 dark:bg-white/[0.03] text-slate-400 dark:text-[#7E7F96] uppercase text-[10px] font-semibold border-b border-slate-100 dark:border-white/[0.06]">
                         <tr>
-                          <th className="py-2.5 px-4">Servis</th>
-                          <th className="py-2.5 px-4">Durum</th>
-                          <th className="py-2.5 px-4">Yeniden Başlatma</th>
-                          <th className="py-2.5 px-4">Bellek (RSS)</th>
+                          <th className="py-2.5 px-4">{t('admin.overviewAnswers.colService')}</th>
+                          <th className="py-2.5 px-4">{t('admin.overviewAnswers.colStatus')}</th>
+                          <th className="py-2.5 px-4">{t('admin.overviewAnswers.colRestartCount')}</th>
+                          <th className="py-2.5 px-4">{t('admin.overviewAnswers.colMemory')}</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100 dark:divide-white/[0.04]">

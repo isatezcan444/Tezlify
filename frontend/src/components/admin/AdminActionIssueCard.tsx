@@ -10,6 +10,7 @@ import {
 import { Card, CardContent } from '../ui/card';
 import { Button } from '../ui/button';
 import { StatusBadge, StatusVariant } from '../ui/StatusBadge';
+import { useI18n } from '../../context/I18nContext';
 
 export type IssueSeverity = 'critical' | 'warning' | 'info';
 
@@ -48,6 +49,7 @@ export const AdminActionIssueCard: React.FC<AdminActionIssueCardProps> = ({
   details,
   className = '',
 }) => {
+  const { t } = useI18n();
   const [showDetails, setShowDetails] = useState(false);
 
   const config = {
@@ -55,7 +57,7 @@ export const AdminActionIssueCard: React.FC<AdminActionIssueCardProps> = ({
       border: 'border-rose-300/80 dark:border-rose-900/50',
       bg: 'bg-rose-50/50 dark:bg-rose-950/15',
       badgeStatus: 'danger' as StatusVariant,
-      badgeDefault: 'Kritik',
+      badgeDefault: t('admin.overviewAnswers.badgeCritical'),
       icon: <AlertCircle className="w-5 h-5 text-rose-600 dark:text-rose-400 shrink-0" />,
       accentBg: 'bg-rose-100 dark:bg-rose-900/30 text-rose-700 dark:text-rose-300',
     },
@@ -63,7 +65,7 @@ export const AdminActionIssueCard: React.FC<AdminActionIssueCardProps> = ({
       border: 'border-amber-300/80 dark:border-amber-900/50',
       bg: 'bg-amber-50/50 dark:bg-amber-950/15',
       badgeStatus: 'warning' as StatusVariant,
-      badgeDefault: 'Dikkat Gerekiyor',
+      badgeDefault: t('admin.overviewAnswers.badgeWarning'),
       icon: <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0" />,
       accentBg: 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300',
     },
@@ -71,7 +73,7 @@ export const AdminActionIssueCard: React.FC<AdminActionIssueCardProps> = ({
       border: 'border-blue-300/80 dark:border-blue-900/50',
       bg: 'bg-blue-50/50 dark:bg-blue-950/15',
       badgeStatus: 'info' as StatusVariant,
-      badgeDefault: 'Bilgi',
+      badgeDefault: t('admin.overviewAnswers.badgeInfo'),
       icon: <Info className="w-5 h-5 text-blue-600 dark:text-blue-400 shrink-0" />,
       accentBg: 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300',
     },
@@ -107,7 +109,7 @@ export const AdminActionIssueCard: React.FC<AdminActionIssueCardProps> = ({
         <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5 p-3 rounded-xl bg-white/70 dark:bg-[#1E2333]/70 border border-slate-200/60 dark:border-white/[0.04] text-xs">
           <div className="space-y-0.5">
             <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-[#7E7F96] block">
-              Durum
+              {t('admin.overviewAnswers.issueStatusLabel')}
             </span>
             <span className="font-semibold text-slate-700 dark:text-slate-200">
               {statusLabel || config.badgeDefault}
@@ -115,7 +117,7 @@ export const AdminActionIssueCard: React.FC<AdminActionIssueCardProps> = ({
           </div>
           <div className="space-y-0.5">
             <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-[#7E7F96] block">
-              Etkisi
+              {t('admin.overviewAnswers.issueImpactLabel')}
             </span>
             <span className="text-slate-600 dark:text-slate-300">
               {impact}
@@ -123,7 +125,7 @@ export const AdminActionIssueCard: React.FC<AdminActionIssueCardProps> = ({
           </div>
           <div className="space-y-0.5">
             <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-[#7E7F96] block">
-              Önerilen İşlem
+              {t('admin.overviewAnswers.issueRecommendedLabel')}
             </span>
             <span className="font-semibold text-slate-800 dark:text-white">
               {recommendedAction}
@@ -137,9 +139,9 @@ export const AdminActionIssueCard: React.FC<AdminActionIssueCardProps> = ({
             <button
               type="button"
               onClick={() => setShowDetails(!showDetails)}
-              className="min-h-[40px] px-1 py-1 text-xs font-semibold text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 inline-flex items-center gap-1.5 cursor-pointer select-none transition-colors"
+              className="h-8 px-2 text-xs font-semibold text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 inline-flex items-center gap-1.5 cursor-pointer select-none transition-colors"
             >
-              <span>{showDetails ? 'Ayrıntıları Gizle' : 'Teknik Ayrıntıları Gör'}</span>
+              <span>{showDetails ? t('admin.overviewAnswers.hideDetails') : t('admin.overviewAnswers.showDetails')}</span>
               {showDetails ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
             </button>
           ) : <div className="hidden sm:block" />}
@@ -150,7 +152,7 @@ export const AdminActionIssueCard: React.FC<AdminActionIssueCardProps> = ({
                 variant={secondaryAction.variant || 'outline'}
                 disabled={secondaryAction.disabled || secondaryAction.loading}
                 onClick={secondaryAction.onClick}
-                className="min-h-[44px] h-11 px-5 w-full sm:w-auto text-xs sm:text-sm font-semibold rounded-xl flex items-center justify-center gap-2 border border-slate-300 dark:border-white/[0.12] bg-white dark:bg-[#2F3349] hover:bg-slate-50 dark:hover:bg-[#363B53] text-slate-700 dark:text-slate-200 transition-all active:scale-[0.98] cursor-pointer"
+                className="h-9 px-4 w-full sm:w-auto text-xs font-semibold rounded-lg flex items-center justify-center gap-2 border border-slate-200 dark:border-white/[0.12] bg-white dark:bg-[#2F3349] hover:bg-slate-50 dark:hover:bg-[#363B53] text-slate-700 dark:text-slate-200 transition-all active:scale-[0.98] cursor-pointer"
               >
                 {secondaryAction.loading && <Loader2 className="w-4 h-4 animate-spin" />}
                 {secondaryAction.icon && !secondaryAction.loading && React.createElement(secondaryAction.icon, { className: 'w-4 h-4 shrink-0' })}
@@ -163,7 +165,7 @@ export const AdminActionIssueCard: React.FC<AdminActionIssueCardProps> = ({
                 variant={primaryAction.variant || 'default'}
                 disabled={primaryAction.disabled || primaryAction.loading}
                 onClick={primaryAction.onClick}
-                className={`min-h-[44px] h-11 px-5 w-full sm:w-auto text-xs sm:text-sm font-bold rounded-xl flex items-center justify-center gap-2 shadow-sm transition-all active:scale-[0.98] cursor-pointer ${
+                className={`h-9 px-4 w-full sm:w-auto text-xs font-bold rounded-lg flex items-center justify-center gap-2 shadow-xs hover:shadow-sm transition-all active:scale-[0.98] cursor-pointer ${
                   severity === 'critical'
                     ? 'bg-rose-600 hover:bg-rose-700 text-white shadow-rose-600/20'
                     : 'bg-[#7367F0] hover:bg-[#685dd8] text-white shadow-[#7367F0]/30'

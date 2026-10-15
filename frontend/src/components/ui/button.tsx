@@ -8,15 +8,15 @@ const buttonVariants = cva(
     variants: {
       variant: {
         default:
-          "bg-[#7367F0] text-white hover:bg-[#685DD8] shadow-md shadow-[#7367F0]/30 font-bold",
+          "bg-[#7367F0] text-white hover:bg-[#685DD8] shadow-xs hover:shadow-md hover:shadow-[#7367F0]/30 font-bold",
         success:
-          "bg-[#28C76F] text-white hover:bg-[#24B263] shadow-md shadow-[#28C76F]/30 font-bold",
+          "bg-[#28C76F] text-white hover:bg-[#24B263] shadow-xs hover:shadow-md hover:shadow-[#28C76F]/30 font-bold",
         destructive:
-          "bg-[#EA5455] text-white hover:bg-[#D43D3E] shadow-md shadow-[#EA5455]/30 font-bold",
+          "bg-[#EA5455] text-white hover:bg-[#D43D3E] shadow-xs hover:shadow-md hover:shadow-[#EA5455]/30 font-bold",
         warning:
-          "bg-[#FF9F43] text-white hover:bg-[#E58A32] shadow-md shadow-[#FF9F43]/30 font-bold",
+          "bg-[#FF9F43] text-white hover:bg-[#E58A32] shadow-xs hover:shadow-md hover:shadow-[#FF9F43]/30 font-bold",
         outline:
-          "border border-slate-300 dark:border-white/[0.12] bg-white dark:bg-[#2F3349] text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-[#363B53]",
+          "border border-slate-200 dark:border-white/[0.12] bg-white dark:bg-[#2F3349] text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-[#363B53] hover:border-slate-300 dark:hover:border-white/[0.2]",
         secondary:
           "bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700",
         ghost:
@@ -26,14 +26,14 @@ const buttonVariants = cva(
           "bg-[#7367F0]/10 text-[#7367F0] hover:bg-[#7367F0]/20 font-bold",
       },
       size: {
-        default: "h-9 px-4 py-2",
-        sm: "h-8 rounded-md px-3 text-xs",
-        md: "min-h-[44px] h-11 px-5 py-2.5 rounded-xl text-sm font-semibold",
-        action: "min-h-[44px] h-11 px-5 py-2.5 rounded-xl text-sm font-bold",
-        lg: "min-h-[48px] h-12 rounded-xl px-6 text-sm font-bold",
-        hero: "min-h-[48px] h-12 rounded-xl px-6 py-3 text-sm font-bold",
-        touch: "min-h-[44px] min-w-[44px] px-4 py-2.5 rounded-xl text-xs font-semibold",
-        icon: "min-h-[40px] min-w-[40px] h-10 w-10 rounded-xl p-0",
+        default: "h-9 px-3.5 py-1.5 rounded-lg",
+        sm: "h-8 rounded-lg px-3 text-xs",
+        md: "h-9.5 px-4 py-2 rounded-lg text-xs sm:text-sm font-semibold",
+        action: "h-9.5 px-4 py-2 rounded-lg text-xs sm:text-sm font-semibold",
+        lg: "h-10 rounded-xl px-4.5 py-2 text-sm font-bold",
+        hero: "h-10.5 rounded-xl px-5 py-2.5 text-sm font-bold",
+        touch: "min-h-[38px] px-3.5 py-2 rounded-lg text-xs font-semibold",
+        icon: "h-9 w-9 rounded-lg p-0",
       },
     },
     defaultVariants: {

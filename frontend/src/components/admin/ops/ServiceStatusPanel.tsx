@@ -201,7 +201,7 @@ export const ServiceStatusPanel: React.FC<ServiceStatusPanelProps> = ({
                               disabled={busy || Boolean(running)}
                               onClick={() => onRun(act)}
                               title={`${act.label} — ${riskText}`}
-                              className={`w-full min-h-[44px] h-11 px-4 rounded-xl text-xs sm:text-sm font-bold flex items-center justify-center gap-2 cursor-pointer transition-all duration-150 active:scale-[0.98] ${
+                              className={`w-full h-9 px-3.5 rounded-lg text-xs font-bold flex items-center justify-center gap-2 cursor-pointer transition-all duration-150 active:scale-[0.98] ${
                                 isHotReload
                                   ? 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-md shadow-emerald-600/20'
                                   : 'border-slate-200 dark:border-white/[0.08] bg-white dark:bg-[#2F3349] hover:bg-slate-50 dark:hover:bg-[#363B53] text-slate-700 dark:text-slate-200'
