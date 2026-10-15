@@ -78,13 +78,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
     sections.push({
       title: t('nav.sectionAdmin'),
       items: [
-        { id: 'admin-overview', label: t('nav.adminOverview'), icon: Activity, badge: 'System', badgeVariant: 'primary' as const },
+        { id: 'admin-overview', label: t('nav.adminOverview'), icon: Activity, badge: null },
         { id: 'admin-whatsapp', label: t('nav.adminWhatsApp'), icon: MessageSquare, badge: null },
-        { id: 'admin-monitoring', label: t('nav.adminMonitoring'), icon: ShieldCheck, badge: null },
-        { id: 'admin-backups', label: t('nav.adminBackups'), icon: Database, badge: null },
         { id: 'admin-operations', label: t('nav.adminOperations'), icon: Wrench, badge: null },
-        { id: 'admin-deployment', label: t('nav.adminDeployment'), icon: Server, badge: null },
-        { id: 'admin-security', label: t('nav.adminSecurity'), icon: Lock, badge: null },
+        { id: 'admin-backups', label: t('nav.adminBackups'), icon: Database, badge: null },
       ]
     });
   }

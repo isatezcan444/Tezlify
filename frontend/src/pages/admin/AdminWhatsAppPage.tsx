@@ -11,7 +11,8 @@ import {
   Info,
   RefreshCw,
   ChevronDown,
-  ChevronUp
+  ChevronUp,
+  ExternalLink,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useI18n } from '../../context/I18nContext';
@@ -19,12 +20,9 @@ import { AdminApi } from '../../api/admin';
 import { 
   AdminWhatsAppResponse, 
   AdminWhatsAppSessionSummary,
-  OverallSystemStatus 
 } from '../../types/admin';
 import { AdminShell } from '../../components/admin/AdminShell';
-import { ExecutiveGuidanceCard } from '../../components/admin/ExecutiveGuidanceCard';
 import { Card, CardHeader, CardTitle, CardContent } from '../../components/ui/card';
-import { StatsCard } from '../../components/ui/StatsCard';
 import { StatusBadge, StatusVariant } from '../../components/ui/StatusBadge';
 import { Button } from '../../components/ui/button';
 import { Skeleton } from '../../components/ui/Skeleton';
@@ -33,6 +31,23 @@ import { DataTable, ColumnDef } from '../../components/data-display/DataTable';
 interface AdminWhatsAppPageProps {
   onNavigate?: (tab: string) => void;
 }
+
+const formatDateTime = (isoString?: string | null): string => {
+  if (!isoString) return '—';
+  try {
+    const d = new Date(isoString);
+    if (isNaN(d.getTime())) return isoString;
+    return d.toLocaleString([], {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  } catch {
+    return isoString;
+  }
+};
 
 export const AdminWhatsAppPage: React.FC<AdminWhatsAppPageProps> = ({ onNavigate }) => {
   const { t } = useI18n();
@@ -43,7 +58,7 @@ export const AdminWhatsAppPage: React.FC<AdminWhatsAppPageProps> = ({ onNavigate
   const [refreshing, setRefreshing] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<string>('');
-  const [showLeaseDetails, setShowLeaseDetails] = useState<boolean>(false);
+  const [showAdvancedLeases, setShowAdvancedLeases] = useState<boolean>(false);
 
   const fetchingRef = useRef<boolean>(false);
   const showAdmin = Boolean(isAdmin || profile?.is_admin || user?.is_admin);
@@ -74,7 +89,6 @@ export const AdminWhatsAppPage: React.FC<AdminWhatsAppPageProps> = ({ onNavigate
     }
   }, [t]);
 
-  // Initial fetch and 30s polling
   useEffect(() => {
     if (!showAdmin) {
       setLoading(false);
@@ -84,7 +98,6 @@ export const AdminWhatsAppPage: React.FC<AdminWhatsAppPageProps> = ({ onNavigate
     void fetchWhatsApp(true);
 
     const intervalId = setInterval(() => {
-      // Pause polling if the tab is hidden
       if (document.visibilityState === 'hidden') return;
       void fetchWhatsApp(false);
     }, 30000);
@@ -103,7 +116,7 @@ export const AdminWhatsAppPage: React.FC<AdminWhatsAppPageProps> = ({ onNavigate
     };
   }, [showAdmin, fetchWhatsApp]);
 
-  // 1. Access Denied Guard (Non-Admin)
+  // 1. Access Denied Guard
   if (!showAdmin || error === 'ACCESS_DENIED') {
     return (
       <div className="max-w-2xl mx-auto mt-12 px-4 select-none">
@@ -130,7 +143,7 @@ export const AdminWhatsAppPage: React.FC<AdminWhatsAppPageProps> = ({ onNavigate
                 variant="outline"
                 size="sm"
                 onClick={() => onNavigate('dashboard')}
-                className="flex items-center gap-2"
+                className="flex items-center gap-2 cursor-pointer"
               >
                 <ArrowLeft className="w-4 h-4" />
                 {t('titles.dashboard')}
@@ -142,7 +155,7 @@ export const AdminWhatsAppPage: React.FC<AdminWhatsAppPageProps> = ({ onNavigate
     );
   }
 
-  // 2. Error State (Non-403)
+  // 2. Error State
   if (error && !data) {
     return (
       <div className="max-w-2xl mx-auto mt-12 px-4 select-none">
@@ -160,102 +173,108 @@ export const AdminWhatsAppPage: React.FC<AdminWhatsAppPageProps> = ({ onNavigate
               </div>
             </div>
           </CardHeader>
-          <CardContent className="pt-4">
-            <Button
-              variant="default"
-              size="sm"
-              onClick={() => void fetchWhatsApp(true)}
-              className="flex items-center gap-2"
-            >
-              <RefreshCw className="w-4 h-4" />
-              {t('admin.retry')}
-            </Button>
+          <CardContent className="pt-4 space-y-4">
+            <p className="text-sm text-slate-600 dark:text-slate-300">{t('admin.errorDesc')}</p>
+            <div className="flex items-center gap-3">
+              <Button
+                variant="default"
+                size="sm"
+                onClick={() => fetchWhatsApp(true)}
+                disabled={refreshing}
+                className="flex items-center gap-2 cursor-pointer"
+              >
+                <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
+                {t('admin.retry')}
+              </Button>
+              {onNavigate && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => onNavigate('admin-overview')}
+                  className="flex items-center gap-2 cursor-pointer"
+                >
+                  <ArrowLeft className="w-4 h-4" />
+                  {t('nav.adminOverview')}
+                </Button>
+              )}
+            </div>
           </CardContent>
         </Card>
       </div>
     );
   }
 
-  // Calculate Overall Status
-  let overallStatus: OverallSystemStatus = 'OK';
-  if (data) {
-    if (!data.gateway_bridge.connected) {
-      overallStatus = 'CRITICAL';
-    } else if (
-      data.socket_leases.duplicate_count > 0 ||
-      data.socket_leases.stale_count > 0 ||
-      data.db_session_summary.relink_required > 0
-    ) {
-      overallStatus = 'WARN';
-    }
+  // 3. Loading Skeleton
+  if (loading && !data) {
+    return (
+      <AdminShell
+        title={t('nav.adminWhatsApp')}
+        subtitle={t('admin.whatsapp.subtitle')}
+        isRefreshing={true}
+      >
+        <div className="space-y-6">
+          <Card className="border border-slate-200/80 dark:border-white/[0.08] bg-white dark:bg-[#2F3349] p-6 space-y-4">
+            <Skeleton className="h-6 w-48 rounded-md" />
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+              {[1, 2, 3, 4].map((i) => (
+                <Skeleton key={i} className="h-24 rounded-xl" />
+              ))}
+            </div>
+          </Card>
+          <Skeleton className="h-64 w-full rounded-xl" />
+        </div>
+      </AdminShell>
+    );
   }
 
-  // Helper date formatter
-  const formatDateTime = (dateStr?: string | null) => {
-    if (!dateStr) return '—';
-    try {
-      const d = new Date(dateStr);
-      return isNaN(d.getTime()) ? dateStr : d.toLocaleString();
-    } catch {
-      return dateStr;
-    }
-  };
+  if (!data) return null;
 
-  // Helper status badge mapper
-  const renderSessionStatusBadge = (status: string) => {
-    switch (status) {
-      case 'CONNECTED':
-        return <StatusBadge status="online" label={t('admin.whatsapp.statusConnected')} size="sm" />;
-      case 'SCAN_QR':
-        return <StatusBadge status="warning" label={t('admin.whatsapp.statusScanQr')} size="sm" />;
-      case 'RELINK_REQUIRED':
-        return <StatusBadge status="danger" label={t('admin.whatsapp.statusRelinkRequired')} size="sm" />;
-      case 'CONNECTING':
-        return <StatusBadge status="pending" label={t('admin.whatsapp.statusConnecting')} size="sm" />;
-      case 'RESTORING':
-        return <StatusBadge status="info" label={t('admin.whatsapp.statusRestoring')} size="sm" />;
-      case 'BANNED':
-        return <StatusBadge status="danger" label={t('admin.whatsapp.statusBanned')} size="sm" />;
-      case 'ERROR':
-        return <StatusBadge status="failed" label={t('admin.whatsapp.statusError')} size="sm" />;
-      case 'UNAVAILABLE':
-        return <StatusBadge status="neutral" label={t('admin.whatsapp.statusUnavailable')} size="sm" />;
-      case 'DISCONNECTED':
-        return <StatusBadge status="offline" label={t('admin.whatsapp.statusDisconnected')} size="sm" />;
-      default:
-        return <StatusBadge status="neutral" label={status || t('admin.whatsapp.statusUnknown')} size="sm" />;
-    }
-  };
+  const isBridgeConnected = data.gateway_bridge.connected;
+  const connectedCount = data.db_session_summary.connected;
+  const totalCount = data.db_session_summary.total;
+  const scanQrCount = data.db_session_summary.scan_qr;
+  const relinkCount = data.db_session_summary.relink_required;
 
-  // DataTable Column Definitions
+  const overallBadgeVariant: StatusVariant = !isBridgeConnected
+    ? 'danger'
+    : relinkCount > 0
+    ? 'warning'
+    : 'online';
+
+  const overallBadgeLabel = !isBridgeConnected
+    ? t('admin.whatsapp.bridgeDisconnected')
+    : relinkCount > 0
+    ? t('admin.whatsapp.statusRelinkRequired')
+    : t('admin.whatsapp.bridgeConnected');
+
+  // Table columns
   const columns: ColumnDef<AdminWhatsAppSessionSummary>[] = [
-    {
-      id: 'id',
-      header: t('admin.whatsapp.colId'),
-      cell: (item) => (
-        <span className="font-mono text-xs font-semibold text-slate-700 dark:text-slate-300">
-          #{item.id}
-        </span>
-      ),
-      width: '80px',
-    },
     {
       id: 'session_name',
       header: t('admin.whatsapp.colSessionName'),
+      accessorKey: 'session_name',
       cell: (item) => (
         <div className="flex items-center gap-2">
-          <Smartphone className="w-4 h-4 text-slate-400 shrink-0" />
-          <span className="font-medium text-xs text-slate-800 dark:text-white truncate max-w-[140px]">
-            {item.session_name}
-          </span>
+          <div className="w-7 h-7 rounded-lg bg-indigo-50 dark:bg-indigo-950/30 text-indigo-600 dark:text-indigo-400 flex items-center justify-center shrink-0">
+            <Smartphone className="w-3.5 h-3.5" />
+          </div>
+          <div>
+            <span className="font-semibold text-slate-800 dark:text-slate-100 block text-xs">
+              {item.session_name}
+            </span>
+            <span className="text-[10px] text-slate-400 font-mono">
+              ID #{item.id}
+            </span>
+          </div>
         </div>
       ),
     },
     {
       id: 'phone_number_masked',
       header: t('admin.whatsapp.colPhone'),
+      accessorKey: 'phone_number_masked',
       cell: (item) => (
-        <span className="font-mono text-xs font-medium text-slate-600 dark:text-slate-300">
+        <span className="font-mono text-xs font-semibold text-slate-700 dark:text-slate-200">
           {item.phone_number_masked || '—'}
         </span>
       ),
@@ -263,527 +282,263 @@ export const AdminWhatsAppPage: React.FC<AdminWhatsAppPageProps> = ({ onNavigate
     {
       id: 'status',
       header: t('admin.whatsapp.colStatus'),
-      cell: (item) => renderSessionStatusBadge(item.status),
-    },
-    {
-      id: 'is_phone_online',
-      header: t('admin.whatsapp.colOnline'),
-      cell: (item) => (
-        <StatusBadge 
-          status={item.is_phone_online ? 'online' : 'offline'}
-          label={item.is_phone_online ? t('admin.whatsapp.phoneOnline') : t('admin.whatsapp.phoneOffline')}
-          size="sm"
-        />
-      ),
-    },
-    {
-      id: 'is_active',
-      header: t('admin.whatsapp.colActive'),
-      cell: (item) => (
-        <span className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold ${
-          item.is_active 
-            ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400 border border-emerald-200/60 dark:border-emerald-800/40' 
-            : 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400'
-        }`}>
-          {item.is_active ? t('common.active') : t('common.inactive')}
-        </span>
-      ),
+      accessorKey: 'status',
+      cell: (item) => {
+        const isOnline = item.status?.toUpperCase() === 'CONNECTED';
+        const isQr = item.status?.toUpperCase() === 'SCAN_QR';
+        const isRelink = item.status?.toUpperCase() === 'RELINK_REQUIRED';
+
+        const variant: StatusVariant = isOnline ? 'online' : isQr ? 'warning' : isRelink ? 'danger' : 'offline';
+        const label = isOnline
+          ? t('admin.whatsapp.statusConnected')
+          : isQr
+          ? t('admin.whatsapp.statusScanQr')
+          : isRelink
+          ? t('admin.whatsapp.statusRelinkRequired')
+          : item.status;
+
+        return <StatusBadge status={variant} label={label} size="sm" />;
+      },
     },
     {
       id: 'updated_at',
       header: t('admin.whatsapp.colUpdatedAt'),
+      accessorKey: 'updated_at',
       cell: (item) => (
-        <span className="text-xs text-slate-500 dark:text-slate-400 whitespace-nowrap">
+        <span className="text-xs text-slate-500 dark:text-slate-400">
           {formatDateTime(item.updated_at)}
         </span>
       ),
     },
+    {
+      id: 'actions',
+      header: '',
+      cell: () => (
+        onNavigate ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => onNavigate('whatsapp')}
+            className="text-[11px] font-semibold text-[#7367F0] hover:text-[#685dd8] gap-1 h-7 px-2 cursor-pointer"
+          >
+            <span>Yönet</span>
+            <ExternalLink className="w-3 h-3" />
+          </Button>
+        ) : null
+      ),
+    },
   ];
-
-  if (loading && !data) {
-    return (
-      <AdminShell
-        title={t('admin.whatsapp.title')}
-        subtitle={t('admin.whatsapp.subtitle')}
-        isRefreshing={true}
-      >
-        <div className="space-y-6">
-          {/* Executive Guidance Skeleton Card */}
-          <Card className="border border-slate-200/80 dark:border-white/[0.08] bg-white dark:bg-[#2F3349] shadow-sm">
-            <CardContent className="p-4 sm:p-5 space-y-4">
-              <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-white/[0.06]">
-                <div className="flex items-center gap-3">
-                  <Skeleton className="w-9 h-9 rounded-xl" />
-                  <div className="space-y-1.5">
-                    <Skeleton className="h-5 w-44 rounded-md" />
-                    <Skeleton className="h-3 w-64 rounded-md" />
-                  </div>
-                </div>
-                <Skeleton className="h-6 w-28 rounded-full" />
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3">
-                {[1, 2, 3, 4, 5].map((i) => (
-                  <div key={i} className="p-3.5 rounded-xl bg-slate-50/80 dark:bg-white/[0.02] border border-slate-100 dark:border-white/[0.04] space-y-2.5">
-                    <Skeleton className="h-3.5 w-24 rounded-md" />
-                    <Skeleton className="h-4 w-full rounded-md" />
-                    <Skeleton className="h-3 w-3/4 rounded-md" />
-                  </div>
-                ))}
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Gateway bridge skeleton */}
-          <Card className="p-5 bg-white dark:bg-[#2F3349] border border-slate-200/80 dark:border-white/[0.08] space-y-4">
-            <div className="flex items-center justify-between">
-              <Skeleton className="h-5 w-48 rounded-md" />
-              <Skeleton className="h-6 w-24 rounded-full" />
-            </div>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-              {[1, 2, 3, 4].map((i) => (
-                <div key={i} className="p-3 bg-slate-50/80 dark:bg-white/[0.02] rounded-xl space-y-2">
-                  <Skeleton className="h-3 w-20 rounded-md" />
-                  <Skeleton className="h-5 w-28 rounded-md" />
-                </div>
-              ))}
-            </div>
-          </Card>
-
-          {/* Stats row skeleton */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-            {[1, 2, 3, 4].map((i) => (
-              <Skeleton key={i} className="h-28 rounded-xl" />
-            ))}
-          </div>
-
-          {/* Session table skeleton */}
-          <Skeleton className="h-64 w-full rounded-xl" />
-        </div>
-      </AdminShell>
-    );
-  }
-
-  const overallBadgeStatus: StatusVariant = 
-    overallStatus === 'CRITICAL' ? 'danger' : overallStatus === 'WARN' ? 'warning' : 'active';
-  const overallBadgeLabel = 
-    overallStatus === 'CRITICAL' ? t('admin.statusCritical') : overallStatus === 'WARN' ? t('admin.statusWarn') : t('admin.statusOk');
 
   return (
     <AdminShell
-      title={t('admin.whatsapp.title')}
+      title={t('nav.adminWhatsApp')}
       subtitle={t('admin.whatsapp.subtitle')}
-      badge={
-        <StatusBadge
-          status={overallBadgeStatus}
-          label={overallBadgeLabel}
-          pulse={overallStatus !== 'OK'}
-          size="sm"
-        />
-      }
+      badge={<StatusBadge status={overallBadgeVariant} label={overallBadgeLabel} size="md" />}
       lastUpdated={lastUpdated}
       isRefreshing={refreshing}
       onRefresh={() => void fetchWhatsApp(false)}
     >
       <div className="space-y-6">
-        <ExecutiveGuidanceCard
-          status={overallStatus === 'OK' ? 'ok' : overallStatus === 'WARN' ? 'warn' : 'critical'}
-          badgeLabel={overallBadgeLabel}
-          title={t('admin.whatsapp.title')}
-          subtitle={t('admin.whatsapp.subtitle')}
-          currentState={
-            overallStatus === 'OK'
-              ? `${t('admin.whatsapp.bridgeConnected')} • ${t('admin.whatsapp.subLiveOnline')}`
-              : (data?.db_session_summary.relink_required
-                ? t('admin.whatsapp.statusRelinkRequired')
-                : data?.db_session_summary.scan_qr
-                ? t('admin.whatsapp.statusScanQr')
-                : t('admin.whatsapp.bridgeDisconnected'))
-          }
-          severity={{
-            level: overallStatus === 'OK' ? 'normal' : overallStatus === 'WARN' ? 'medium' : 'critical',
-            label: overallStatus === 'OK'
-              ? t('admin.guidance.severityNormal')
-              : overallStatus === 'WARN'
-              ? t('admin.guidance.severityMedium')
-              : t('admin.guidance.severityCritical'),
-            description: overallStatus === 'OK'
-              ? t('admin.whatsapp.bridgeConnected')
-              : (data?.socket_leases.duplicate_count
-                ? t('admin.guidance.systemWarningState')
-                : t('admin.whatsapp.bridgeDisconnected')),
-          }}
-          businessImpact={
-            overallStatus === 'OK'
-              ? t('admin.guidance.zeroCustomerImpact')
-              : (data?.db_session_summary.relink_required
-                ? t('admin.whatsapp.subSessionExpired')
-                : t('admin.whatsapp.gatewayBridgeNote'))
-          }
-          recommendedAction={{
-            label: overallStatus === 'OK'
-              ? t('admin.guidance.noActionNeeded')
-              : t('admin.whatsapp.manageSessionsBtn'),
-            description: overallStatus === 'OK'
-              ? t('admin.guidance.noActionNeededDesc')
-              : t('admin.whatsapp.readOnlyNotice'),
-            buttonText: (onNavigate && overallStatus !== 'OK') ? t('admin.whatsapp.manageSessionsBtn') : undefined,
-            onAction: (onNavigate && overallStatus !== 'OK') ? () => onNavigate('whatsapp') : undefined,
-            icon: Smartphone,
-          }}
-          actionOutcome={t('admin.whatsapp.readOnlyNotice')}
-          technicalDetails={
-            <div className="space-y-2 text-xs">
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                <div className="p-2 rounded bg-white dark:bg-white/[0.03] border border-slate-200/50 dark:border-white/[0.05]">
-                  <span className="text-[10px] text-slate-400 block">{t('admin.whatsapp.activeSessionsGateway')}</span>
-                  <span className="font-bold text-slate-800 dark:text-slate-200">{data?.gateway_runtime.session_count ?? 0}</span>
-                </div>
-                <div className="p-2 rounded bg-white dark:bg-white/[0.03] border border-slate-200/50 dark:border-white/[0.05]">
-                  <span className="text-[10px] text-slate-400 block">{t('admin.whatsapp.gatewayHealth')}</span>
-                  <span className="font-bold text-emerald-600 dark:text-emerald-400">{data?.gateway_runtime.health_status ?? 'unknown'}</span>
-                </div>
-                <div className="p-2 rounded bg-white dark:bg-white/[0.03] border border-slate-200/50 dark:border-white/[0.05]">
-                  <span className="text-[10px] text-slate-400 block">{t('admin.whatsapp.colActive')} Leases</span>
-                  <span className="font-bold text-slate-800 dark:text-slate-200">{data?.socket_leases.active_count ?? 0}</span>
-                </div>
-                <div className="p-2 rounded bg-white dark:bg-white/[0.03] border border-slate-200/50 dark:border-white/[0.05]">
-                  <span className="text-[10px] text-slate-400 block">{t('admin.whatsapp.reconnectCount')}</span>
-                  <span className="font-bold text-slate-800 dark:text-slate-200">{data?.gateway_bridge.reconnect_count ?? 0}</span>
-                </div>
-              </div>
-            </div>
-          }
-        />
-
-        {/* 1. Gateway Bridge & Runtime Card */}
-        <Card className="bg-white dark:bg-[#2F3349] border-slate-200/80 dark:border-white/[0.08] shadow-sm">
-          <CardHeader className="pb-3 border-b border-slate-100 dark:border-white/[0.06]">
-            <div className="flex items-center justify-between flex-wrap gap-2">
-              <div className="flex items-center gap-2.5">
-                <Radio className="w-5 h-5 text-indigo-600 dark:text-indigo-400 shrink-0" />
-                <div>
-                  <CardTitle className="text-sm font-semibold text-slate-800 dark:text-white">
+        {/* 1. HERO CONNECTION CARD — PLAIN, HUMAN-CENTRIC */}
+        <Card className="border border-slate-200/80 dark:border-white/[0.08] bg-white dark:bg-[#2F3349] shadow-sm overflow-hidden">
+          <CardContent className="p-5 sm:p-7 space-y-6">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-5 border-b border-slate-100 dark:border-white/[0.06]">
+              <div className="space-y-1">
+                <div className="flex items-center gap-2.5">
+                  <h2 className="text-lg font-extrabold text-slate-800 dark:text-white tracking-tight">
                     {t('admin.whatsapp.gatewayBridge')}
-                  </CardTitle>
-                  <p className="text-xs text-slate-500 dark:text-[#7E7F96]">
-                    {t('admin.whatsapp.gatewaySubtitle')}
-                  </p>
+                  </h2>
+                  <StatusBadge status={overallBadgeVariant} label={overallBadgeLabel} size="sm" />
                 </div>
-              </div>
-
-              {loading ? (
-                <Skeleton className="h-6 w-28 rounded-full" />
-              ) : (
-                <StatusBadge 
-                  status={data?.gateway_bridge.connected ? 'online' : 'danger'}
-                  label={data?.gateway_bridge.connected 
-                    ? t('admin.whatsapp.bridgeConnected') 
-                    : t('admin.whatsapp.bridgeDisconnected')
-                  }
-                  size="sm"
-                />
-              )}
-            </div>
-          </CardHeader>
-          <CardContent className="pt-4">
-            {loading ? (
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-                {[...Array(4)].map((_, i) => (
-                  <Skeleton key={i} className="h-14 w-full rounded-lg" />
-                ))}
-              </div>
-            ) : (
-              <div className="space-y-3">
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-xs">
-                  <div className="p-3 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-100 dark:border-white/[0.04]">
-                    <span className="text-slate-400 dark:text-[#7E7F96] block mb-1">
-                      {t('admin.whatsapp.reconnectCount')}
-                    </span>
-                    <span className="text-sm font-bold text-slate-700 dark:text-slate-200 font-mono">
-                      {data?.gateway_bridge.reconnect_count ?? 0}
-                    </span>
-                  </div>
-
-                  <div className="p-3 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-100 dark:border-white/[0.04]">
-                    <span className="text-slate-400 dark:text-[#7E7F96] block mb-1">
-                      {t('admin.whatsapp.gatewayHealth')}
-                    </span>
-                    <span className="text-sm font-bold text-emerald-600 dark:text-emerald-400 uppercase font-mono">
-                      {data?.gateway_runtime.health_status ?? 'unknown'}
-                    </span>
-                  </div>
-
-                  <div className="p-3 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-100 dark:border-white/[0.04]">
-                    <span className="text-slate-400 dark:text-[#7E7F96] block mb-1">
-                      {t('admin.whatsapp.lastConnected')}
-                    </span>
-                    <span className="text-xs font-medium text-slate-700 dark:text-slate-300">
-                      {formatDateTime(data?.gateway_bridge.last_connected_at)}
-                    </span>
-                  </div>
-
-                  <div className="p-3 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-100 dark:border-white/[0.04]">
-                    <span className="text-slate-400 dark:text-[#7E7F96] block mb-1">
-                      {t('admin.whatsapp.lastEvent')}
-                    </span>
-                    <span className="text-xs font-medium text-slate-700 dark:text-slate-300">
-                      {formatDateTime(data?.gateway_bridge.last_event_at)}
-                    </span>
-                  </div>
-                </div>
-
-                <p className="text-[11px] text-slate-400 dark:text-[#7E7F96] italic">
-                  💡 {t('admin.whatsapp.gatewayBridgeNote')}
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  {isBridgeConnected
+                    ? `${connectedCount} / ${totalCount} aktif oturum bağlı ve mesaj almaya hazır.`
+                    : 'WhatsApp ağ geçidi bağlantısı kesik. Lütfen servis durumunu kontrol edin.'}
                 </p>
               </div>
+
+              {/* Primary Action Button to Manage / Connect Sessions */}
+              {onNavigate && (
+                <div className="shrink-0">
+                  <Button
+                    variant="default"
+                    size="lg"
+                    onClick={() => onNavigate('whatsapp')}
+                    className="px-5 py-2.5 h-11 bg-gradient-to-r from-[#7367F0] to-[#867BFF] hover:from-[#685dd8] hover:to-[#766bf3] text-white font-bold text-sm shadow-md shadow-[#7367F0]/30 rounded-xl flex items-center gap-2 cursor-pointer transition-all active:scale-[0.98]"
+                  >
+                    <Smartphone className="w-4 h-4 text-white" />
+                    <span>{t('admin.whatsapp.manageSessionsBtn')}</span>
+                  </Button>
+                </div>
+              )}
+            </div>
+
+            {/* Alert if sessions need action */}
+            {(scanQrCount > 0 || relinkCount > 0) && (
+              <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-between gap-3 text-xs">
+                <div className="flex items-center gap-2.5 text-amber-700 dark:text-amber-300">
+                  <AlertTriangle className="w-4.5 h-4.5 shrink-0" />
+                  <span>
+                    {relinkCount > 0
+                      ? `${relinkCount} oturumun bağlantısı sonlandı; tekrar eşleştirilmesi gerekiyor.`
+                      : `${scanQrCount} oturum QR kod taraması bekliyor.`}
+                  </span>
+                </div>
+                {onNavigate && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => onNavigate('whatsapp')}
+                    className="text-xs font-semibold border-amber-300 dark:border-amber-700 text-amber-800 dark:text-amber-200 h-7 px-2.5 cursor-pointer"
+                  >
+                    Eşleştir
+                  </Button>
+                )}
+              </div>
             )}
+
+            {/* Clean Sessions Summary Cards (4 blocks) */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+              <div className="p-4 rounded-xl bg-slate-50/80 dark:bg-white/[0.02] border border-slate-100 dark:border-white/[0.04] space-y-1">
+                <span className="text-[11px] font-semibold uppercase text-slate-400 block tracking-wider">
+                  {t('admin.whatsapp.connectedSessions')}
+                </span>
+                <span className="text-xl font-extrabold text-emerald-600 dark:text-emerald-400 font-mono block">
+                  {connectedCount}
+                </span>
+                <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                  {t('admin.whatsapp.subLiveOnline')}
+                </span>
+              </div>
+
+              <div className="p-4 rounded-xl bg-slate-50/80 dark:bg-white/[0.02] border border-slate-100 dark:border-white/[0.04] space-y-1">
+                <span className="text-[11px] font-semibold uppercase text-slate-400 block tracking-wider">
+                  {t('admin.whatsapp.scanQrSessions')}
+                </span>
+                <span className={`text-xl font-extrabold font-mono block ${scanQrCount > 0 ? 'text-amber-500' : 'text-slate-700 dark:text-slate-200'}`}>
+                  {scanQrCount}
+                </span>
+                <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                  {t('admin.whatsapp.subAwaitingAuth')}
+                </span>
+              </div>
+
+              <div className="p-4 rounded-xl bg-slate-50/80 dark:bg-white/[0.02] border border-slate-100 dark:border-white/[0.04] space-y-1">
+                <span className="text-[11px] font-semibold uppercase text-slate-400 block tracking-wider">
+                  {t('admin.whatsapp.relinkRequiredSessions')}
+                </span>
+                <span className={`text-xl font-extrabold font-mono block ${relinkCount > 0 ? 'text-rose-500' : 'text-slate-700 dark:text-slate-200'}`}>
+                  {relinkCount}
+                </span>
+                <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                  {t('admin.whatsapp.subSessionExpired')}
+                </span>
+              </div>
+
+              <div className="p-4 rounded-xl bg-slate-50/80 dark:bg-white/[0.02] border border-slate-100 dark:border-white/[0.04] space-y-1">
+                <span className="text-[11px] font-semibold uppercase text-slate-400 block tracking-wider">
+                  {t('admin.whatsapp.totalSessions')}
+                </span>
+                <span className="text-xl font-extrabold text-slate-800 dark:text-white font-mono block">
+                  {totalCount}
+                </span>
+                <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                  {t('admin.whatsapp.subDbRegistered')}
+                </span>
+              </div>
+            </div>
           </CardContent>
         </Card>
 
-        {/* 2. Session Fleet Summary Cards */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          <StatsCard
-            title={t('admin.whatsapp.totalSessions')}
-            value={loading ? '...' : String(data?.db_session_summary.total ?? 0)}
-            subText={t('admin.whatsapp.subDbRegistered')}
-            icon={Smartphone}
-            iconVariant="primary"
-          />
-          <StatsCard
-            title={t('admin.whatsapp.connectedSessions')}
-            value={loading ? '...' : String(data?.db_session_summary.connected ?? 0)}
-            subText={t('admin.whatsapp.subLiveOnline')}
-            icon={CheckCircle2}
-            iconVariant="success"
-          />
-          <StatsCard
-            title={t('admin.whatsapp.scanQrSessions')}
-            value={loading ? '...' : String(data?.db_session_summary.scan_qr ?? 0)}
-            subText={t('admin.whatsapp.subAwaitingAuth')}
-            icon={AlertTriangle}
-            iconVariant="warning"
-          />
-          <StatsCard
-            title={t('admin.whatsapp.relinkRequiredSessions')}
-            value={loading ? '...' : String(data?.db_session_summary.relink_required ?? 0)}
-            subText={t('admin.whatsapp.subSessionExpired')}
-            icon={ShieldAlert}
-            iconVariant="danger"
-          />
-        </div>
-
-        {/* 3. Socket Ownership & Leases Card (Collapsible) */}
-        {(() => {
-          const hasLeaseIssue = Boolean(
-            (data?.socket_leases.duplicate_count ?? 0) > 0 || (data?.socket_leases.stale_count ?? 0) > 0
-          );
-          const isLeaseExpanded = showLeaseDetails || hasLeaseIssue;
-
-          return (
-            <Card className="bg-white dark:bg-[#2F3349] border-slate-200/80 dark:border-white/[0.08] shadow-sm overflow-hidden">
-              <CardHeader 
-                className="pb-3 border-b border-slate-100 dark:border-white/[0.06] cursor-pointer select-none"
-                onClick={() => setShowLeaseDetails((prev) => !prev)}
-              >
-                <div className="flex items-center justify-between flex-wrap gap-2">
-                  <div className="flex items-center gap-2.5">
-                    <Layers className="w-5 h-5 text-indigo-600 dark:text-indigo-400 shrink-0" />
-                    <div>
-                      <CardTitle className="text-sm font-semibold text-slate-800 dark:text-white flex items-center gap-2">
-                        <span>{t('admin.whatsapp.socketOwnership')}</span>
-                        <span className="text-[11px] font-normal text-slate-400">
-                          ({data?.socket_leases.active_count ?? 0} {t('admin.whatsapp.activeLeases')})
-                        </span>
-                      </CardTitle>
-                      <p className="text-xs text-slate-500 dark:text-[#7E7F96]">
-                        {t('admin.whatsapp.socketOwnershipSubtitle')}
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-3">
-                    {loading ? (
-                      <Skeleton className="h-6 w-24 rounded-full" />
-                    ) : (
-                      <StatusBadge
-                        status={hasLeaseIssue ? 'warning' : 'active'}
-                        label={hasLeaseIssue ? t('admin.whatsapp.socketStatusWarning') : t('admin.whatsapp.socketStatusNormal')}
-                        size="sm"
-                      />
-                    )}
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="gap-1 text-xs text-slate-500 hover:text-slate-800 dark:hover:text-white cursor-pointer h-7 px-2"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setShowLeaseDetails((prev) => !prev);
-                      }}
-                    >
-                      <span>{isLeaseExpanded ? t('admin.monitoring.hideDetails') : t('admin.monitoring.showDetails')}</span>
-                      {isLeaseExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-                    </Button>
-                  </div>
-                </div>
-              </CardHeader>
-              {isLeaseExpanded && (
-                <CardContent className="pt-4">
-                  {loading ? (
-                    <div className="grid grid-cols-3 gap-4">
-                      {[...Array(3)].map((_, i) => (
-                        <Skeleton key={i} className="h-14 w-full rounded-lg" />
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
-                      <div className="p-3.5 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-100 dark:border-white/[0.04]">
-                        <span className="text-slate-400 dark:text-[#7E7F96] block mb-1">
-                          {t('admin.whatsapp.activeLeases')}
-                        </span>
-                        <span className="text-base font-bold text-slate-800 dark:text-white font-mono">
-                          {data?.socket_leases.active_count ?? 0}
-                        </span>
-                      </div>
-
-                      <div className="p-3.5 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-100 dark:border-white/[0.04]">
-                        <span className="text-slate-400 dark:text-[#7E7F96] block mb-1">
-                          {t('admin.whatsapp.duplicateLeases')}
-                        </span>
-                        <span className={`text-base font-bold font-mono ${
-                          (data?.socket_leases.duplicate_count ?? 0) > 0 ? 'text-rose-600 dark:text-rose-400' : 'text-slate-800 dark:text-white'
-                        }`}>
-                          {data?.socket_leases.duplicate_count ?? 0}
-                        </span>
-                      </div>
-
-                      <div className="p-3.5 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-100 dark:border-white/[0.04]">
-                        <span className="text-slate-400 dark:text-[#7E7F96] block mb-1">
-                          {t('admin.whatsapp.staleLeases')}
-                        </span>
-                        <span className={`text-base font-bold font-mono ${
-                          (data?.socket_leases.stale_count ?? 0) > 0 ? 'text-amber-600 dark:text-amber-400' : 'text-slate-800 dark:text-white'
-                        }`}>
-                          {data?.socket_leases.stale_count ?? 0}
-                        </span>
-                      </div>
-                    </div>
-                  )}
-                </CardContent>
-              )}
-            </Card>
-          );
-        })()}
-
-        {/* 4. Message Pipeline (Outbox / Retry / Dead Letter) */}
-        <Card className="bg-white dark:bg-[#2F3349] border-slate-200/80 dark:border-white/[0.08] shadow-sm">
-          <CardHeader className="pb-3 border-b border-slate-100 dark:border-white/[0.06]">
+        {/* 2. MESSAGE PIPELINE & PLAIN EXPLANATION */}
+        <Card className="border border-slate-200/80 dark:border-white/[0.08] bg-white dark:bg-[#2F3349] shadow-sm">
+          <CardHeader className="p-5 border-b border-slate-100 dark:border-white/[0.06]">
             <div className="flex items-center gap-2.5">
-              <Send className="w-5 h-5 text-indigo-600 dark:text-indigo-400 shrink-0" />
+              <Send className="w-5 h-5 text-[#7367F0]" />
               <div>
-                <CardTitle className="text-sm font-semibold text-slate-800 dark:text-white">
+                <CardTitle className="text-sm font-bold text-slate-800 dark:text-white">
                   {t('admin.whatsapp.messagePipeline')}
                 </CardTitle>
-                <p className="text-xs text-slate-500 dark:text-[#7E7F96]">
+                <p className="text-[11px] text-slate-400 dark:text-[#7E7F96]">
                   {t('admin.whatsapp.pipelineSubtitle')}
                 </p>
               </div>
             </div>
           </CardHeader>
-          <CardContent className="pt-4 space-y-3">
-            {loading ? (
-              <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
-                {[...Array(5)].map((_, i) => (
-                  <Skeleton key={i} className="h-14 w-full rounded-lg" />
-                ))}
+          <CardContent className="p-5 space-y-4">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+              <div className="p-3 rounded-xl bg-slate-50 dark:bg-white/[0.02] border border-slate-100 dark:border-white/[0.04]">
+                <span className="text-[10px] text-slate-400 font-semibold uppercase block mb-1">
+                  {t('admin.whatsapp.delivered')}
+                </span>
+                <span className="text-lg font-bold text-emerald-600 dark:text-emerald-400 font-mono">
+                  {(data.outbox.delivered ?? 0).toLocaleString()}
+                </span>
               </div>
-            ) : (
-              <>
-                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 text-xs">
-                  <div className="p-3 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-100 dark:border-white/[0.04]">
-                    <span className="text-slate-400 dark:text-[#7E7F96] block mb-1">
-                      {t('admin.whatsapp.delivered')}
-                    </span>
-                    <span className="text-sm font-bold text-emerald-600 dark:text-emerald-400 font-mono">
-                      {(data?.outbox.delivered ?? 0).toLocaleString()}
-                    </span>
-                  </div>
 
-                  <div className="p-3 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-100 dark:border-white/[0.04]">
-                    <span className="text-slate-400 dark:text-[#7E7F96] block mb-1">
-                      {t('admin.whatsapp.pending')}
-                    </span>
-                    <span className="text-sm font-bold text-slate-700 dark:text-slate-300 font-mono">
-                      {(data?.outbox.pending ?? 0).toLocaleString()}
-                    </span>
-                  </div>
+              <div className="p-3 rounded-xl bg-slate-50 dark:bg-white/[0.02] border border-slate-100 dark:border-white/[0.04]">
+                <span className="text-[10px] text-slate-400 font-semibold uppercase block mb-1">
+                  {t('admin.whatsapp.pending')}
+                </span>
+                <span className="text-lg font-bold text-slate-700 dark:text-slate-200 font-mono">
+                  {(data.outbox.pending ?? 0).toLocaleString()}
+                </span>
+              </div>
 
-                  <div className="p-3 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-100 dark:border-white/[0.04]">
-                    <span className="text-slate-400 dark:text-[#7E7F96] block mb-1">
-                      {t('admin.whatsapp.inFlight')}
-                    </span>
-                    <span className="text-sm font-bold text-indigo-600 dark:text-indigo-400 font-mono">
-                      {(data?.outbox.in_flight ?? 0).toLocaleString()}
-                    </span>
-                  </div>
+              <div className="p-3 rounded-xl bg-slate-50 dark:bg-white/[0.02] border border-slate-100 dark:border-white/[0.04]">
+                <span className="text-[10px] text-slate-400 font-semibold uppercase block mb-1">
+                  {t('admin.whatsapp.inFlight')}
+                </span>
+                <span className="text-lg font-bold text-[#7367F0] font-mono">
+                  {(data.outbox.in_flight ?? 0).toLocaleString()}
+                </span>
+              </div>
 
-                  <div className="p-3 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-100 dark:border-white/[0.04]">
-                    <span className="text-slate-400 dark:text-[#7E7F96] block mb-1">
-                      {t('admin.whatsapp.deadLetters')}
-                    </span>
-                    <span className={`text-sm font-bold font-mono ${
-                      (data?.outbox.dead_letter ?? 0) > 0 ? 'text-amber-600 dark:text-amber-400' : 'text-slate-700 dark:text-slate-300'
-                    }`}>
-                      {(data?.outbox.dead_letter ?? 0).toLocaleString()}
-                    </span>
-                  </div>
+              <div className="p-3 rounded-xl bg-slate-50 dark:bg-white/[0.02] border border-slate-100 dark:border-white/[0.04]">
+                <span className="text-[10px] text-slate-400 font-semibold uppercase block mb-1">
+                  {t('admin.whatsapp.deadLetters')}
+                </span>
+                <span className={`text-lg font-bold font-mono ${
+                  (data.outbox.dead_letter ?? 0) > 0 ? 'text-amber-500' : 'text-slate-700 dark:text-slate-200'
+                }`}>
+                  {(data.outbox.dead_letter ?? 0).toLocaleString()}
+                </span>
+              </div>
+            </div>
 
-                  <div className="p-3 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-100 dark:border-white/[0.04]">
-                    <span className="text-slate-400 dark:text-[#7E7F96] block mb-1">
-                      {t('admin.whatsapp.retryBacklog')}
-                    </span>
-                    <span className="text-sm font-bold text-slate-700 dark:text-slate-300 font-mono">
-                      {(data?.retry.retry_backlog ?? 0).toLocaleString()}
-                    </span>
-                  </div>
-                </div>
-
-                <p className="text-[11px] text-slate-400 dark:text-[#7E7F96] italic">
-                  ℹ️ {t('admin.whatsapp.deadLetterNote')}
-                </p>
-              </>
-            )}
+            <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed bg-slate-50/70 dark:bg-white/[0.02] p-3 rounded-xl border border-slate-100 dark:border-white/[0.03]">
+              💡 <strong>Bilgi:</strong> {t('admin.whatsapp.deadLetterNote')} WhatsApp hesabı olmayan veya engelli numaralar kalıcı hata durumunda hatta zarar vermemek adına güvenle kenara ayrılır.
+            </p>
           </CardContent>
         </Card>
 
-        {/* 5. WhatsApp Sessions Fleet Table */}
-        <Card className="bg-white dark:bg-[#2F3349] border-slate-200/80 dark:border-white/[0.08] shadow-sm overflow-hidden">
-          <CardHeader className="pb-3 border-b border-slate-100 dark:border-white/[0.06]">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2.5">
-                <Smartphone className="w-5 h-5 text-indigo-600 dark:text-indigo-400 shrink-0" />
-                <div>
-                  <CardTitle className="text-sm font-semibold text-slate-800 dark:text-white">
-                    {t('admin.whatsapp.sessionsTableTitle')}
-                  </CardTitle>
-                  <p className="text-xs text-slate-500 dark:text-[#7E7F96]">
-                    {t('admin.whatsapp.sessionsTableSubtitle')}
-                  </p>
-                </div>
+        {/* 3. SESSIONS FLEET TABLE */}
+        <Card className="border border-slate-200/80 dark:border-white/[0.08] bg-white dark:bg-[#2F3349] shadow-sm overflow-hidden">
+          <CardHeader className="p-5 border-b border-slate-100 dark:border-white/[0.06] flex items-center justify-between">
+            <div className="flex items-center gap-2.5">
+              <Smartphone className="w-5 h-5 text-[#7367F0]" />
+              <div>
+                <CardTitle className="text-sm font-bold text-slate-800 dark:text-white">
+                  {t('admin.whatsapp.sessionsTableTitle')}
+                </CardTitle>
+                <p className="text-[11px] text-slate-400 dark:text-[#7E7F96]">
+                  {t('admin.whatsapp.sessionsTableSubtitle')}
+                </p>
               </div>
-              <span className="text-xs font-semibold px-2 py-0.5 rounded bg-slate-100 dark:bg-white/[0.05] text-slate-600 dark:text-slate-300">
-                {data?.sessions.length ?? 0} {t('admin.whatsapp.totalSessions')}
-              </span>
             </div>
+            <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-slate-100 dark:bg-white/[0.05] text-slate-600 dark:text-slate-300">
+              {data.sessions.length} oturum
+            </span>
           </CardHeader>
           <CardContent className="p-0">
             <DataTable<AdminWhatsAppSessionSummary>
               columns={columns}
-              data={data?.sessions || []}
+              data={data.sessions || []}
               loading={loading}
               rowKey={(item) => item.id}
               emptyState={
                 <div className="py-12 px-4 text-center">
-                  <Smartphone className="w-10 h-10 text-slate-300 dark:text-slate-600 mx-auto mb-3" />
+                  <Smartphone className="w-8 h-8 text-slate-300 dark:text-slate-600 mx-auto mb-2" />
                   <h4 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-1">
                     {t('admin.whatsapp.emptySessionsTitle')}
                   </h4>
@@ -795,6 +550,74 @@ export const AdminWhatsAppPage: React.FC<AdminWhatsAppPageProps> = ({ onNavigate
             />
           </CardContent>
         </Card>
+
+        {/* 4. COLLAPSIBLE ADVANCED SECTION: Socket Ownership, Leases & Runtime */}
+        <div className="border border-slate-200/80 dark:border-white/[0.06] rounded-2xl bg-white dark:bg-[#2F3349] overflow-hidden shadow-xs">
+          <button
+            type="button"
+            onClick={() => setShowAdvancedLeases((prev) => !prev)}
+            className="w-full p-4 sm:p-5 flex items-center justify-between text-left hover:bg-slate-50/60 dark:hover:bg-white/[0.02] transition-colors cursor-pointer select-none"
+          >
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 rounded-lg bg-slate-100 dark:bg-white/[0.05] text-slate-600 dark:text-slate-300 flex items-center justify-center">
+                <Layers className="w-4 h-4" />
+              </div>
+              <div>
+                <h3 className="text-xs font-bold text-slate-800 dark:text-white">
+                  {showAdvancedLeases
+                    ? 'Gelişmiş Ağ Geçidi ve Soket Ayrıntılarını Gizle'
+                    : 'Gelişmiş Ağ Geçidi, Soket ve Kiralama Ayrıntıları'}
+                </h3>
+                <p className="text-[11px] text-slate-400 dark:text-[#7E7F96]">
+                  Soket kiralama takibi, çift kiralama kontrolü ve Baileys çalışma zamanı telemetrisi
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 text-xs font-semibold text-slate-500 dark:text-slate-400">
+              <span>{showAdvancedLeases ? t('admin.monitoring.hideDetails') : t('admin.monitoring.showDetails')}</span>
+              {showAdvancedLeases ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+            </div>
+          </button>
+
+          {showAdvancedLeases && (
+            <div className="p-5 border-t border-slate-100 dark:border-white/[0.06] space-y-4 animate-fade-in text-xs">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="p-3 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-100 dark:border-white/[0.04]">
+                  <span className="text-[10px] text-slate-400 block mb-1 uppercase tracking-wider">
+                    {t('admin.whatsapp.activeLeases')}
+                  </span>
+                  <span className="text-base font-bold text-slate-800 dark:text-white font-mono">
+                    {data.socket_leases.active_count ?? 0}
+                  </span>
+                </div>
+
+                <div className="p-3 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-100 dark:border-white/[0.04]">
+                  <span className="text-[10px] text-slate-400 block mb-1 uppercase tracking-wider">
+                    {t('admin.whatsapp.duplicateLeases')}
+                  </span>
+                  <span className="text-base font-bold text-slate-800 dark:text-white font-mono">
+                    {data.socket_leases.duplicate_count ?? 0}
+                  </span>
+                </div>
+
+                <div className="p-3 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-100 dark:border-white/[0.04]">
+                  <span className="text-[10px] text-slate-400 block mb-1 uppercase tracking-wider">
+                    {t('admin.whatsapp.reconnectCount')}
+                  </span>
+                  <span className="text-base font-bold text-slate-800 dark:text-white font-mono">
+                    {data.gateway_bridge.reconnect_count ?? 0}
+                  </span>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3 text-[11px] text-slate-500">
+                <div>Son Bağlantı: <strong className="text-slate-700 dark:text-slate-300 font-mono">{formatDateTime(data.gateway_bridge.last_connected_at)}</strong></div>
+                <div>Son Olay: <strong className="text-slate-700 dark:text-slate-300 font-mono">{formatDateTime(data.gateway_bridge.last_event_at)}</strong></div>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
     </AdminShell>
   );

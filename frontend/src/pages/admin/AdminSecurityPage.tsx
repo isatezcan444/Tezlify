@@ -305,6 +305,28 @@ export const AdminSecurityPage: React.FC<AdminSecurityPageProps> = ({ onNavigate
       lastUpdated={lastUpdated}
     >
       <div className="space-y-6">
+        {/* Navigation Tabs: Backup & Security Unified */}
+        <div className="flex items-center justify-between pb-1">
+          <div className="flex items-center gap-1.5 p-1 rounded-xl bg-slate-100 dark:bg-white/[0.04] border border-slate-200/60 dark:border-white/[0.05]">
+            {onNavigate && (
+              <button
+                type="button"
+                onClick={() => onNavigate('admin-backups')}
+                className="px-4 py-1.5 rounded-lg text-xs font-medium text-slate-500 hover:text-slate-800 dark:hover:text-white transition-colors cursor-pointer flex items-center gap-2"
+              >
+                <Database className="w-3.5 h-3.5 text-slate-400" />
+                <span>{t('admin.backups.tabBackups')}</span>
+              </button>
+            )}
+            <button
+              type="button"
+              className="px-4 py-1.5 rounded-lg text-xs font-bold bg-white dark:bg-[#2F3349] text-slate-800 dark:text-white shadow-xs cursor-default flex items-center gap-2"
+            >
+              <Lock className="w-3.5 h-3.5 text-[#7367F0]" />
+              <span>{t('admin.backups.tabSecurity')}</span>
+            </button>
+          </div>
+        </div>
         <ExecutiveGuidanceCard
           status={isPass ? 'ok' : isWarn ? 'warn' : 'critical'}
           badgeLabel={overallLabel}

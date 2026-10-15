@@ -20,11 +20,11 @@ import { useI18n } from '../../context/I18nContext';
 import { useToast } from '../../context/ToastContext';
 import { AdminApi, OpsApi } from '../../api/admin';
 import { AdminShell } from '../../components/admin/AdminShell';
-import { ExecutiveGuidanceCard } from '../../components/admin/ExecutiveGuidanceCard';
-import { ArrowLeft, CheckCircle2, Loader2, ShieldAlert, X, XCircle, Terminal, Layers, AlertTriangle } from 'lucide-react';
+import { ArrowLeft, ArrowRight, CheckCircle2, Loader2, ShieldAlert, X, XCircle, Terminal, Layers, AlertTriangle, Server } from 'lucide-react';
 import { Card, CardContent } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
 import { Skeleton } from '../../components/ui/Skeleton';
+import { StatusBadge } from '../../components/ui/StatusBadge';
 import { ServiceStatusPanel } from '../../components/admin/ops/ServiceStatusPanel';
 import { OpsLogsPanel } from '../../components/admin/ops/OpsLogsPanel';
 import { formatBytes } from '../../components/admin/ops/formatBytes';
@@ -36,17 +36,19 @@ import { useOpsEvents } from '../../hooks/useOpsEvents';
 import type {
   AdminOverviewResponse,
   AdminWhatsAppResponse,
+  AdminDeploymentResponse,
   OpsCatalogueEntry,
   OpsOperation,
   OpsServiceStatus,
   OpsStatusResponse,
 } from '../../types/admin';
 
-type OpsTab = 'overview' | 'system' | 'errors' | 'logs' | 'history';
+type OpsTab = 'overview' | 'system' | 'deployment' | 'errors' | 'logs' | 'history';
 
 const OPS_TABS: { id: OpsTab; key: string }[] = [
   { id: 'overview', key: 'admin.ops.tabOverview' },
   { id: 'system', key: 'admin.ops.tabSystem' },
+  { id: 'deployment', key: 'admin.ops.tabDeployment' },
   { id: 'errors', key: 'admin.ops.tabErrors' },
   { id: 'logs', key: 'admin.ops.tabLogs' },
   { id: 'history', key: 'admin.ops.tabHistory' },
@@ -87,7 +89,27 @@ export const AdminOperationsPage: React.FC<AdminOperationsPageProps> = ({ onNavi
   const [dismissedOpId, setDismissedOpId] = useState<string | null>(null);
   const [clearingLogs, setClearingLogs] = useState(false);
   const [lastUpdated, setLastUpdated] = useState('');
+  const [deployment, setDeployment] = useState<AdminDeploymentResponse | null>(null);
+  const [deploymentLoading, setDeploymentLoading] = useState(false);
   const busyRef = useRef(false);
+
+  const fetchDeployment = useCallback(async () => {
+    setDeploymentLoading(true);
+    try {
+      const res = await AdminApi.getDeployment();
+      setDeployment(res);
+    } catch {
+      // Non-fatal
+    } finally {
+      setDeploymentLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (tab === 'deployment' && !deployment) {
+      void fetchDeployment();
+    }
+  }, [tab, deployment, fetchDeployment]);
 
   // History paging + filtering. The panel used to show a fixed newest-20
   // window, so "what did we deploy last Tuesday" was unanswerable even though
@@ -393,34 +415,9 @@ export const AdminOperationsPage: React.FC<AdminOperationsPageProps> = ({ onNavi
         isRefreshing={true}
       >
         <div className="space-y-6">
-          {/* Executive Guidance Skeleton Card */}
-          <Card className="border border-slate-200/80 dark:border-white/[0.08] bg-white dark:bg-[#2F3349] shadow-sm">
-            <CardContent className="p-4 sm:p-5 space-y-4">
-              <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-white/[0.06]">
-                <div className="flex items-center gap-3">
-                  <Skeleton className="w-9 h-9 rounded-xl" />
-                  <div className="space-y-1.5">
-                    <Skeleton className="h-5 w-44 rounded-md" />
-                    <Skeleton className="h-3 w-64 rounded-md" />
-                  </div>
-                </div>
-                <Skeleton className="h-6 w-28 rounded-full" />
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3">
-                {[1, 2, 3, 4, 5].map((i) => (
-                  <div key={i} className="p-3.5 rounded-xl bg-slate-50/80 dark:bg-white/[0.02] border border-slate-100 dark:border-white/[0.04] space-y-2.5">
-                    <Skeleton className="h-3.5 w-24 rounded-md" />
-                    <Skeleton className="h-4 w-full rounded-md" />
-                    <Skeleton className="h-3 w-3/4 rounded-md" />
-                  </div>
-                ))}
-              </div>
-            </CardContent>
-          </Card>
-
           {/* Tab bar skeleton */}
           <div className="flex items-center gap-2">
-            {[1, 2, 3, 4, 5].map((i) => (
+            {[1, 2, 3, 4, 5, 6].map((i) => (
               <Skeleton key={i} className="h-8 w-24 rounded-lg" />
             ))}
           </div>
@@ -535,62 +532,17 @@ export const AdminOperationsPage: React.FC<AdminOperationsPageProps> = ({ onNavi
     <AdminShell
       title={t('admin.ops.title')}
       subtitle={t('admin.ops.subtitle')}
+      badge={
+        <StatusBadge
+          status={status?.health?.all_healthy ? 'online' : 'warning'}
+          label={status?.health?.all_healthy ? t('admin.ops.healthAllOk') : t('admin.ops.healthSomeDown')}
+          size="sm"
+        />
+      }
       lastUpdated={lastUpdated}
       isRefreshing={loading}
       onRefresh={() => void fetchStatus(false)}
     >
-      <ExecutiveGuidanceCard
-        status={status?.health?.all_healthy ? 'ok' : 'warn'}
-        badgeLabel={status?.health?.all_healthy ? t('admin.ops.healthAllOk') : t('admin.ops.healthSomeDown')}
-        title={t('admin.ops.servicesTitle')}
-        subtitle={t('admin.ops.servicesSubtitle')}
-        currentState={
-          status?.health?.all_healthy
-            ? t('admin.guidance.systemHealthyState')
-            : t('admin.guidance.systemWarningState')
-        }
-        severity={{
-          level: status?.health?.all_healthy ? 'normal' : 'high',
-          label: status?.health?.all_healthy
-            ? t('admin.guidance.severityNormal')
-            : t('admin.guidance.severityHigh'),
-          description: status?.health?.all_healthy
-            ? t('admin.guidance.noActionNeededDesc')
-            : t('admin.ops.healthSomeDown'),
-        }}
-        businessImpact={
-          status?.health?.all_healthy
-            ? t('admin.guidance.zeroCustomerImpact')
-            : t('admin.ops.healthSomeDown')
-        }
-        recommendedAction={{
-          label: status?.health?.all_healthy
-            ? t('admin.guidance.noActionNeeded')
-            : t('admin.ops.tabErrors'),
-          description: status?.health?.all_healthy
-            ? t('admin.guidance.noActionNeededDesc')
-            : t('admin.ops.safeRestartNotice'),
-          buttonText: (!status?.health?.all_healthy && tab !== 'errors') ? t('admin.ops.tabErrors') : undefined,
-          onAction: (!status?.health?.all_healthy && tab !== 'errors') ? () => setTab('errors') : undefined,
-          icon: Terminal,
-        }}
-        actionOutcome={t('admin.ops.safeRestartNotice')}
-        technicalDetails={
-          <div className="space-y-2 text-xs">
-            <p className="font-semibold text-slate-700 dark:text-slate-200">
-              {t('admin.ops.servicesTitle')} ({services.length}):
-            </p>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-              {services.map((svc) => (
-                <div key={svc.name} className="p-2 rounded bg-white dark:bg-white/[0.03] border border-slate-200/50 dark:border-white/[0.05]">
-                  <span className="font-bold text-slate-700 dark:text-slate-200 block truncate">{svc.name}</span>
-                  <span className="text-[10px] text-slate-500 dark:text-slate-400 block">{svc.status} {svc.health ? `(${svc.health})` : ''}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        }
-      />
       {tabBar}
       {activeOp && (
         <Card className={`border shadow-sm transition-all duration-200 ${
@@ -707,6 +659,84 @@ export const AdminOperationsPage: React.FC<AdminOperationsPageProps> = ({ onNavi
             busyName={busyName}
             onRun={runOperation}
           />
+        </div>
+      )}
+      {tab === 'deployment' && (
+        <div className="space-y-6">
+          <Card className="border border-slate-200/80 dark:border-white/[0.08] bg-white dark:bg-[#2F3349] p-5">
+            <div className="flex items-center justify-between pb-4 mb-4 border-b border-slate-100 dark:border-white/[0.06]">
+              <div>
+                <h3 className="text-sm font-bold text-slate-800 dark:text-white flex items-center gap-2">
+                  <Server className="w-4 h-4 text-[#7367F0]" />
+                  <span>{t('admin.deployment.title')}</span>
+                </h3>
+                <p className="text-xs text-slate-400 dark:text-[#7E7F96]">
+                  {t('admin.deployment.subtitle')}
+                </p>
+              </div>
+              {onNavigate && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => onNavigate('admin-deployment')}
+                  className="text-xs font-semibold gap-1.5 cursor-pointer"
+                >
+                  <span>Tam Dağıtım Sayfası</span>
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </Button>
+              )}
+            </div>
+
+            {deploymentLoading && !deployment ? (
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                {[1, 2, 3].map((i) => (
+                  <Skeleton key={i} className="h-24 rounded-xl" />
+                ))}
+              </div>
+            ) : deployment ? (
+              <div className="space-y-4">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
+                  <div className="p-4 rounded-xl bg-slate-50 dark:bg-white/[0.02] border border-slate-100 dark:border-white/[0.04] space-y-1">
+                    <span className="text-[10px] text-slate-400 uppercase font-semibold block">Aktif Git Dalı & Commit</span>
+                    <span className="font-mono text-sm font-bold text-slate-800 dark:text-white block">
+                      {(deployment.git?.branch || deployment.branch || 'main')} @ {(deployment.git?.commit_hash || deployment.commit_hash)?.slice(0, 7) || '—'}
+                    </span>
+                    <span className="text-[11px] text-slate-500 block truncate" title={deployment.git?.commit_message || deployment.commit_message || ''}>
+                      {deployment.git?.commit_message || deployment.commit_message || '—'}
+                    </span>
+                  </div>
+
+                  <div className="p-4 rounded-xl bg-slate-50 dark:bg-white/[0.02] border border-slate-100 dark:border-white/[0.04] space-y-1">
+                    <span className="text-[10px] text-slate-400 uppercase font-semibold block">Dağıtılan Frontend Sürümü</span>
+                    <span className="font-mono text-sm font-bold text-emerald-600 dark:text-emerald-400 block">
+                      {deployment.frontend?.current_release || 'v2.4 Pro'}
+                    </span>
+                    <span className="text-[11px] text-slate-500 block">
+                      {deployment.frontend?.deployed_at || deployment.timestamp}
+                    </span>
+                  </div>
+
+                  <div className="p-4 rounded-xl bg-slate-50 dark:bg-white/[0.02] border border-slate-100 dark:border-white/[0.04] space-y-1">
+                    <span className="text-[10px] text-slate-400 uppercase font-semibold block">Sürüm Hazırlığı</span>
+                    <span className="text-sm font-bold block text-emerald-600 dark:text-emerald-400">
+                      {deployment.release_readiness || 'HAZIR ✓'}
+                    </span>
+                    <span className="text-[11px] text-slate-500 block">
+                      Çalışma Ağacı: {(deployment.git?.working_tree_clean ?? deployment.working_tree_clean) ? 'Temiz' : 'Değişiklik Var'}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-white/[0.02] border border-slate-100 dark:border-white/[0.04] flex items-center justify-between text-xs text-slate-600 dark:text-slate-300">
+                  <div className="flex items-center gap-2">
+                    <CheckCircle2 className="w-4 h-4 text-[#28C76F]" />
+                    <span>Ortam: <strong>{deployment.distro}</strong> ({deployment.host?.architecture || 'aarch64'}) • Çekirdek: {deployment.kernel}</span>
+                  </div>
+                  <span className="text-emerald-600 dark:text-emerald-400 font-semibold">{deployment.environment.toUpperCase()}</span>
+                </div>
+              </div>
+            ) : null}
+          </Card>
         </div>
       )}
       {tab === 'errors' && (

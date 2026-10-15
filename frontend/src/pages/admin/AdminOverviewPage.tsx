@@ -11,18 +11,20 @@ import {
   ArrowLeft,
   ArrowRight,
   ShieldCheck,
-  Layers,
+  Smartphone,
+  ChevronDown,
+  ChevronUp,
   Terminal,
   Activity,
-  Archive,
-  Lock
+  Layers,
+  Wrench,
+  Radio,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useI18n } from '../../context/I18nContext';
 import { AdminApi } from '../../api/admin';
-import { AdminOverviewResponse } from '../../types/admin';
+import { AdminOverviewResponse, AdminWhatsAppResponse, AdminBackupsResponse } from '../../types/admin';
 import { AdminShell } from '../../components/admin/AdminShell';
-import { ExecutiveGuidanceCard } from '../../components/admin/ExecutiveGuidanceCard';
 import { Card, CardHeader, CardTitle, CardContent } from '../../components/ui/card';
 import { StatsCard } from '../../components/ui/StatsCard';
 import { StatusBadge, StatusVariant } from '../../components/ui/StatusBadge';
@@ -52,15 +54,35 @@ const formatUptime = (raw?: string, isTr = true): string => {
   return cleaned;
 };
 
+const formatDateTime = (isoString?: string | null): string => {
+  if (!isoString) return '—';
+  try {
+    const d = new Date(isoString);
+    if (isNaN(d.getTime())) return isoString;
+    return d.toLocaleString([], {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  } catch {
+    return isoString;
+  }
+};
+
 export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate }) => {
   const { t } = useI18n();
   const { user, profile, isAdmin } = useAuth();
 
   const [data, setData] = useState<AdminOverviewResponse | null>(null);
+  const [waData, setWaData] = useState<AdminWhatsAppResponse | null>(null);
+  const [backupData, setBackupData] = useState<AdminBackupsResponse | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [refreshing, setRefreshing] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<string>('');
+  const [showInfraDetails, setShowInfraDetails] = useState<boolean>(false);
 
   const fetchingRef = useRef<boolean>(false);
   const showAdmin = Boolean(isAdmin || profile?.is_admin || user?.is_admin);
@@ -73,17 +95,36 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
     else setRefreshing(true);
 
     try {
-      const res = await AdminApi.getOverview();
-      setData(res);
-      setError(null);
+      const [overviewRes, waRes, backupRes] = await Promise.allSettled([
+        AdminApi.getOverview(),
+        AdminApi.getWhatsApp(),
+        AdminApi.getBackups(),
+      ]);
+
+      if (overviewRes.status === 'fulfilled') {
+        setData(overviewRes.value);
+        setError(null);
+      } else {
+        const err = overviewRes.reason;
+        if (err?.message === 'ACCESS_DENIED') {
+          setError('ACCESS_DENIED');
+        } else {
+          setError(err?.message || t('admin.errorDesc'));
+        }
+      }
+
+      if (waRes.status === 'fulfilled') {
+        setWaData(waRes.value);
+      }
+
+      if (backupRes.status === 'fulfilled') {
+        setBackupData(backupRes.value);
+      }
+
       const now = new Date();
       setLastUpdated(now.toLocaleTimeString());
     } catch (err: any) {
-      if (err.message === 'ACCESS_DENIED') {
-        setError('ACCESS_DENIED');
-      } else {
-        setError(err.message || t('admin.errorDesc'));
-      }
+      setError(err?.message || t('admin.errorDesc'));
     } finally {
       if (isInitial) setLoading(false);
       setRefreshing(false);
@@ -101,7 +142,6 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
     void fetchOverview(true);
 
     const intervalId = setInterval(() => {
-      // Pause polling if the tab is hidden
       if (document.visibilityState === 'hidden') return;
       void fetchOverview(false);
     }, 30000);
@@ -154,49 +194,15 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
     );
   }
 
-  // 2. Loading State (Initial Skeleton)
-  if (loading) {
+  // 2. Loading State
+  if (loading && !data) {
     return (
       <AdminShell
-        title={t('admin.operationsCenter')}
+        title={t('nav.adminOverview')}
         subtitle={t('titles.adminOverviewSub')}
         isRefreshing={true}
       >
         <div className="space-y-6">
-          {/* Executive Guidance Skeleton Card */}
-          <Card className="border border-slate-200/80 dark:border-white/[0.08] bg-white dark:bg-[#2F3349] shadow-sm">
-            <CardContent className="p-4 sm:p-5 space-y-4">
-              <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-white/[0.06]">
-                <div className="flex items-center gap-3">
-                  <Skeleton className="w-9 h-9 rounded-xl" />
-                  <div className="space-y-1.5">
-                    <Skeleton className="h-5 w-44 rounded-md" />
-                    <Skeleton className="h-3 w-64 rounded-md" />
-                  </div>
-                </div>
-                <Skeleton className="h-6 w-28 rounded-full" />
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3">
-                {[1, 2, 3, 4, 5].map((i) => (
-                  <div key={i} className="p-3.5 rounded-xl bg-slate-50/80 dark:bg-white/[0.02] border border-slate-100 dark:border-white/[0.04] space-y-2.5">
-                    <Skeleton className="h-3.5 w-24 rounded-md" />
-                    <Skeleton className="h-4 w-full rounded-md" />
-                    <Skeleton className="h-3 w-3/4 rounded-md" />
-                  </div>
-                ))}
-              </div>
-            </CardContent>
-          </Card>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6">
-            {[1, 2, 3, 4].map((i) => (
-              <Card key={i} className="p-5 space-y-3 bg-white dark:bg-[#2F3349]">
-                <Skeleton className="h-4 w-24" />
-                <Skeleton className="h-8 w-32" />
-                <Skeleton className="h-3 w-40" />
-              </Card>
-            ))}
-          </div>
           <Card className="p-6 space-y-4 bg-white dark:bg-[#2F3349]">
             <Skeleton className="h-6 w-48" />
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -214,7 +220,7 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
   if (error && !data) {
     return (
       <AdminShell
-        title={t('admin.operationsCenter')}
+        title={t('nav.adminOverview')}
         subtitle={t('titles.adminOverviewSub')}
       >
         <Card className="border-amber-200 dark:border-amber-900/40 bg-white dark:bg-[#2F3349] p-8 text-center space-y-4">
@@ -243,31 +249,48 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
   if (!data) return null;
 
   // Status mapping
-  const getOverallStatusVariant = (): StatusVariant => {
-    switch (data.overall_status) {
-      case 'OK':
-        return 'active';
-      case 'WARN':
-        return 'warning';
-      case 'CRITICAL':
-        return 'danger';
-      default:
-        return 'neutral';
-    }
-  };
+  const overallVariant: StatusVariant =
+    data.overall_status === 'OK' ? 'online' : data.overall_status === 'WARN' ? 'warning' : 'danger';
 
-  const getOverallStatusLabel = (): string => {
-    switch (data.overall_status) {
-      case 'OK':
-        return t('admin.statusOk');
-      case 'WARN':
-        return t('admin.statusWarn');
-      case 'CRITICAL':
-        return t('admin.statusCritical');
-      default:
-        return data.overall_status;
+  const overallLabel =
+    data.overall_status === 'OK'
+      ? t('admin.statusOk')
+      : data.overall_status === 'WARN'
+      ? t('admin.statusWarn')
+      : t('admin.statusCritical');
+
+  // WhatsApp connection facts
+  const isWaBridgeConnected = waData?.gateway_bridge.connected ?? true;
+  const waConnectedCount = waData?.db_session_summary.connected ?? 0;
+  const waTotalCount = waData?.db_session_summary.total ?? 0;
+
+  // Backup facts
+  const latestBackupTime = backupData?.postgres.created_at;
+  const latestBackupSize = backupData?.postgres.size_human;
+
+  // Action resolution
+  const hasIssues = data.overall_status !== 'OK';
+  const issueDescription = (() => {
+    if (!hasIssues) return t('admin.overviewAnswers.issueNone');
+    const reasons = data.overall_status_reasons || [];
+    if (reasons.length > 0) {
+      return reasons[0].replace(/\(\/var\/run\/[^\)]+\)/g, '').trim();
     }
-  };
+    if (data.system.reboot_required) {
+      return t('admin.rebootRequiredHelp');
+    }
+    return t('admin.executiveAttentionBody');
+  })();
+
+  const recommendedActionTarget = (() => {
+    if (!isWaBridgeConnected || (waData?.db_session_summary.scan_qr ?? 0) > 0) {
+      return { tab: 'admin-whatsapp', label: t('admin.overviewAnswers.quickWhatsApp') };
+    }
+    if (hasIssues) {
+      return { tab: 'admin-operations', label: t('admin.overviewAnswers.quickOps') };
+    }
+    return null;
+  })();
 
   const getServiceDisplayName = (name: string): string => {
     if (name.includes('backend')) return t('admin.serviceBackend');
@@ -277,303 +300,311 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
     return name;
   };
 
-  const getServiceDescription = (name: string): string => {
-    if (name.includes('backend')) return t('admin.serviceBackendDesc');
-    if (name.includes('gateway')) return t('admin.serviceGatewayDesc');
-    if (name.includes('caddy')) return t('admin.serviceCaddyDesc');
-    if (name.includes('db')) return t('admin.serviceDbDesc');
-    return t('admin.productionServices');
-  };
-
   return (
     <AdminShell
-      title={t('admin.operationsCenter')}
+      title={t('nav.adminOverview')}
       subtitle={t('titles.adminOverviewSub')}
       lastUpdated={lastUpdated}
       onRefresh={() => void fetchOverview(false)}
       isRefreshing={refreshing}
-      badge={
-        <StatusBadge
-          status={getOverallStatusVariant()}
-          label={getOverallStatusLabel()}
-          pulse={data.overall_status !== 'OK'}
-          size="sm"
-        />
-      }
+      badge={<StatusBadge status={overallVariant} label={overallLabel} size="md" />}
     >
-      {/* 4. Executive Status & Action Guidance Card (5 Core Questions) */}
-      <ExecutiveGuidanceCard
-        status={data.overall_status === 'OK' ? 'ok' : data.overall_status === 'WARN' ? 'warn' : 'critical'}
-        badgeLabel={getOverallStatusLabel()}
-        title={t('admin.executiveGuidanceTitle')}
-        subtitle={t('admin.executiveGuidanceSubtitle')}
-        currentState={
-          data.overall_status === 'OK'
-            ? t('admin.guidance.systemHealthyState')
-            : data.overall_status === 'WARN'
-            ? t('admin.guidance.systemWarningState')
-            : t('admin.guidance.systemCriticalState')
-        }
-        severity={{
-          level: data.overall_status === 'OK' ? 'normal' : data.overall_status === 'WARN' ? 'medium' : 'critical',
-          label:
-            data.overall_status === 'OK'
-              ? t('admin.guidance.severityNormal')
-              : data.overall_status === 'WARN'
-              ? t('admin.guidance.severityMedium')
-              : t('admin.guidance.severityCritical'),
-          description: (() => {
-            const reasons = data.overall_status_reasons || [];
-            if (reasons.length === 0) return t('admin.executiveAllGood');
-            const primary = reasons[0].replace(/\(\/var\/run\/[^\)]+\)/g, '').trim();
-            return reasons.length > 1 ? `${primary} (${reasons.length})` : primary;
-          })(),
-        }}
-        businessImpact={
-          data.overall_status === 'OK'
-            ? t('admin.guidance.zeroCustomerImpact')
-            : data.overall_status_reasons?.[0]?.toLowerCase().includes('reboot')
-            ? t('admin.rebootRequiredHelp')
-            : t('admin.executiveAttentionBody')
-        }
-        recommendedAction={{
-          label:
-            data.overall_status === 'OK'
-              ? t('admin.guidance.noActionNeeded')
-              : t('admin.actionGoToOps'),
-          description:
-            data.overall_status === 'OK'
-              ? t('admin.guidance.noActionNeededDesc')
-              : t('admin.executiveAttentionBody'),
-          buttonText: data.overall_status !== 'OK' && onNavigate ? t('admin.actionGoToOps') : undefined,
-          onAction: data.overall_status !== 'OK' && onNavigate ? () => onNavigate('admin-operations') : undefined,
-          icon: Terminal,
-        }}
-        actionOutcome={
-          data.overall_status === 'OK'
-            ? t('admin.guidance.noActionOutcome')
-            : t('admin.guidance.safeActionTaken')
-        }
-        extraActions={
-          onNavigate && (
+      <div className="space-y-6">
+        {/* A. GENEL BAKIŞ — 5 TEMEL SORU KARTI */}
+        <Card className="border border-slate-200/80 dark:border-white/[0.08] bg-white dark:bg-[#2F3349] shadow-sm overflow-hidden">
+          <CardHeader className="p-5 sm:p-6 border-b border-slate-100 dark:border-white/[0.06] flex flex-row items-center justify-between flex-wrap gap-3">
+            <div>
+              <CardTitle className="text-base font-extrabold text-slate-800 dark:text-white flex items-center gap-2.5">
+                <Activity className="w-5 h-5 text-[#7367F0]" />
+                <span>{t('admin.executiveGuidanceTitle')}</span>
+              </CardTitle>
+              <p className="text-xs text-slate-400 dark:text-[#7E7F96] mt-0.5">
+                {t('admin.executiveGuidanceSubtitle')}
+              </p>
+            </div>
             <div className="flex items-center gap-2">
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => onNavigate('admin-whatsapp')}
-                className="gap-1.5 text-xs font-semibold cursor-pointer border-slate-200 dark:border-white/[0.08]"
-              >
-                <Layers className="w-3.5 h-3.5 text-emerald-500" />
-                {t('admin.actionGoToWhatsApp')}
-              </Button>
+              <span className="text-xs text-slate-400">Durum:</span>
+              <StatusBadge status={overallVariant} label={overallLabel} size="sm" />
             </div>
-          )
-        }
-        technicalDetails={
-          <div className="space-y-2 text-xs">
-            <div className="font-mono text-slate-600 dark:text-slate-300">
-              <span className="font-semibold text-slate-700 dark:text-slate-200">Load Average: </span>
-              {data.system.load_average.join(', ')} | CPU Cores: {data.system.cpu_cores}
-            </div>
-            <div className="font-mono text-slate-600 dark:text-slate-300">
-              <span className="font-semibold text-slate-700 dark:text-slate-200">Memory: </span>
-              {data.system.memory_used_mb} MB / {data.system.memory_total_mb} MB ({data.system.memory_available_mb} MB avail)
-            </div>
-            {data.overall_status_reasons && data.overall_status_reasons.length > 0 && (
-              <div className="mt-2 pt-2 border-t border-slate-200/50 dark:border-white/[0.05]">
-                <span className="font-semibold text-slate-700 dark:text-slate-200">System Warnings:</span>
-                <ul className="list-disc list-inside mt-1 space-y-1 text-amber-600 dark:text-amber-400">
-                  {data.overall_status_reasons.map((r, i) => (
-                    <li key={i}>{r}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
-          </div>
-        }
-      />
+          </CardHeader>
 
-
-      {/* 6. System Resource Cards (4-col grid) */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6">
-        {/* CPU & Load */}
-        <StatsCard
-          title={t('admin.cpuLoad')}
-          value={`${data.system.cpu_cores} ${t('admin.cores')}`}
-          subText={`${t('admin.loadAvg')}: ${data.system.load_average.join(' / ')} • ${data.system.load_average[0] < data.system.cpu_cores ? t('admin.loadNormal') : t('admin.loadHigh')}`}
-          icon={Cpu}
-          iconVariant="primary"
-        />
-
-        {/* Memory */}
-        <StatsCard
-          title={t('admin.memory')}
-          value={`${(data.system.memory_used_mb / 1024).toFixed(1)} GB`}
-          subText={`${t('admin.ramUsedPercent', { percent: ((data.system.memory_used_mb / Math.max(1, data.system.memory_total_mb)) * 100).toFixed(0) })} • ${(data.system.memory_available_mb / 1024).toFixed(1)} GB ${t('admin.memoryAvail')}`}
-          icon={Server}
-          iconVariant="info"
-        />
-
-        {/* Disk */}
-        <StatsCard
-          title={t('admin.disk')}
-          value={`${data.system.disk_used_percent}%`}
-          subText={`${data.system.disk_used_gb} GB / ${data.system.disk_total_gb} GB • ${data.system.disk_used_percent < 85 ? t('admin.diskAdequate') : t('admin.diskCritical')}`}
-          icon={HardDrive}
-          iconVariant="warning"
-        />
-
-        {/* Uptime & Reboot */}
-        <StatsCard
-          title={t('admin.hostUptime')}
-          value={formatUptime(data.system.uptime, true)}
-          subText={data.system.reboot_required ? t('admin.rebootRequiredHelp') : t('admin.rebootNotRequiredHelp')}
-          icon={Clock}
-          iconVariant={data.system.reboot_required ? 'danger' : 'success'}
-          badge={
-            data.system.reboot_required
-              ? { text: t('admin.rebootRequiredBadge'), variant: 'danger' }
-              : { text: t('admin.rebootNotRequiredBadge'), variant: 'success' }
-          }
-        />
-      </div>
-
-      {/* 7. Production Services Fleet Cards */}
-      <Card className="border border-slate-200 dark:border-white/[0.08] bg-white dark:bg-[#2F3349] shadow-sm">
-        <CardHeader className="p-5 border-b border-slate-100 dark:border-white/[0.06] flex flex-row items-center justify-between flex-wrap gap-2">
-          <div>
-            <CardTitle className="text-base font-bold text-slate-800 dark:text-white flex items-center gap-2">
-              <Server className="w-4 h-4 text-vuexy-primary" />
-              {t('admin.productionServices')}
-            </CardTitle>
-          </div>
-          <div className="flex items-center gap-3">
-            <span className="text-xs font-semibold text-slate-400 dark:text-vuexy-dark-muted">
-              {t('admin.coreContainersCount', { count: data.containers.length })}
-            </span>
-            {onNavigate && (
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => onNavigate('admin-operations')}
-                className="gap-1.5 text-xs font-medium cursor-pointer"
-              >
-                <Terminal className="w-3.5 h-3.5" />
-                {t('admin.actionGoToOps')}
-              </Button>
-            )}
-          </div>
-        </CardHeader>
-        <CardContent className="p-5">
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            {data.containers.map((c) => {
-              const isRunning = c.status.toLowerCase() === 'running';
-              return (
-                <div
-                  key={c.name}
-                  className="p-4 rounded-xl border border-slate-100 dark:border-white/[0.06] bg-slate-50/50 dark:bg-white/[0.02] flex flex-col justify-between space-y-3"
-                >
-                  <div className="flex items-start justify-between gap-2">
-                    <div>
-                      <h5 className="text-xs font-bold text-slate-800 dark:text-white truncate" title={c.name}>
-                        {getServiceDisplayName(c.name)}
-                      </h5>
-                      <p className="text-[11px] text-slate-500 dark:text-vuexy-dark-muted line-clamp-1 mt-0.5">
-                        {getServiceDescription(c.name)}
-                      </p>
-                      <span className="text-[10px] font-mono text-slate-400 dark:text-slate-500 block mt-0.5">
-                        {c.name}
-                      </span>
-                    </div>
-                    <StatusBadge
-                      status={isRunning ? 'active' : 'danger'}
-                      label={isRunning ? t('admin.statusRunning') : c.status}
-                      size="sm"
-                    />
+          <CardContent className="p-5 sm:p-6 space-y-5">
+            {/* 4 Answers Cards Grid */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+              {/* Soru 1: Sistem çalışıyor mu? */}
+              <div className="p-4 rounded-xl bg-slate-50/80 dark:bg-white/[0.02] border border-slate-100 dark:border-white/[0.04] space-y-1.5 flex flex-col justify-between">
+                <div>
+                  <div className="flex items-center gap-2 text-slate-400 dark:text-[#7E7F96]">
+                    <Server className="w-4 h-4 text-[#7367F0]" />
+                    <span className="text-[11px] font-semibold uppercase tracking-wider">
+                      {t('admin.overviewAnswers.systemStatus')}
+                    </span>
                   </div>
-
-                  <div className="grid grid-cols-2 gap-2 text-[11px] border-t border-slate-100 dark:border-white/[0.06] pt-2.5">
-                    <div>
-                      <span className="text-slate-400 dark:text-slate-500 block">{t('admin.restarts')}</span>
-                      <strong className="text-slate-700 dark:text-slate-200 font-semibold">{c.restart_count}</strong>
-                    </div>
-                    <div>
-                      <span className="text-slate-400 dark:text-slate-500 block">{t('admin.rssMemory')}</span>
-                      <strong className="text-slate-700 dark:text-slate-200 font-semibold">{c.rss_mb} MB</strong>
-                    </div>
-                    <div>
-                      <span className="text-slate-400 dark:text-slate-500 block">{t('admin.oomKilled')}</span>
-                      <strong className={c.oom_killed ? 'text-red-500 font-bold' : 'text-slate-700 dark:text-slate-200 font-semibold'}>
-                        {c.oom_killed ? t('admin.oomYes') : t('admin.oomNo')}
-                      </strong>
-                    </div>
-                    <div>
-                      <span className="text-slate-400 dark:text-slate-500 block">{t('common.status')}</span>
-                      <strong className="text-slate-700 dark:text-slate-200 font-semibold uppercase text-[10px]">
-                        {c.status}
-                      </strong>
-                    </div>
+                  <div className="text-sm font-bold text-slate-800 dark:text-white mt-2">
+                    {data.overall_status === 'OK'
+                      ? t('admin.overviewAnswers.systemStatusOk')
+                      : data.overall_status === 'WARN'
+                      ? t('admin.overviewAnswers.systemStatusWarn')
+                      : t('admin.overviewAnswers.systemStatusCritical')}
                   </div>
                 </div>
-              );
-            })}
-          </div>
-        </CardContent>
-      </Card>
+                <div className="pt-2 text-[11px] text-slate-400">
+                  {data.containers.filter((c) => c.status.toLowerCase() === 'running').length} / {data.containers.length} servis aktif
+                </div>
+              </div>
 
-      {/* 8. Database Summary Card */}
-      <Card className="border border-slate-200 dark:border-white/[0.08] bg-white dark:bg-[#2F3349] shadow-sm">
-        <CardHeader className="p-5 border-b border-slate-100 dark:border-white/[0.06] flex flex-row items-center justify-between">
-          <CardTitle className="text-base font-bold text-slate-800 dark:text-white flex items-center gap-2">
-            <Database className="w-4 h-4 text-[#7367F0]" />
-            {t('admin.database')}
-          </CardTitle>
-          <StatusBadge
-            status={data.database.health === 'healthy' ? 'active' : 'danger'}
-            label={data.database.health === 'healthy' ? t('admin.statusHealthy') : data.database.health}
-            size="sm"
-          />
-        </CardHeader>
-        <CardContent className="p-5">
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-            <div className="p-3.5 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-100 dark:border-white/[0.04]">
-              <span className="text-xs text-slate-500 dark:text-vuexy-dark-muted font-medium block">
-                {t('admin.dbSize')}
-              </span>
-              <span className="text-lg font-bold text-slate-800 dark:text-white mt-1 block">
-                {data.database.database_size_mb} MB
-              </span>
+              {/* Soru 2: WhatsApp bağlantısı sağlıklı mı? */}
+              <div className="p-4 rounded-xl bg-slate-50/80 dark:bg-white/[0.02] border border-slate-100 dark:border-white/[0.04] space-y-1.5 flex flex-col justify-between">
+                <div>
+                  <div className="flex items-center gap-2 text-slate-400 dark:text-[#7E7F96]">
+                    <Smartphone className="w-4 h-4 text-[#28C76F]" />
+                    <span className="text-[11px] font-semibold uppercase tracking-wider">
+                      {t('admin.overviewAnswers.whatsAppStatus')}
+                    </span>
+                  </div>
+                  <div className="text-sm font-bold text-slate-800 dark:text-white mt-2">
+                    {isWaBridgeConnected ? (
+                      waConnectedCount > 0 ? (
+                        <span className="text-emerald-600 dark:text-emerald-400">
+                          {t('admin.overviewAnswers.whatsAppOk', { count: waConnectedCount })}
+                        </span>
+                      ) : (
+                        <span>{t('admin.overviewAnswers.whatsAppNoSession')}</span>
+                      )
+                    ) : (
+                      <span className="text-rose-500 font-bold">
+                        {t('admin.overviewAnswers.whatsAppDown')}
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <div className="pt-2 text-[11px] text-slate-400">
+                  Toplam {waTotalCount} kayıtlı oturum
+                </div>
+              </div>
+
+              {/* Soru 3: Son yedekleme ne zaman? */}
+              <div className="p-4 rounded-xl bg-slate-50/80 dark:bg-white/[0.02] border border-slate-100 dark:border-white/[0.04] space-y-1.5 flex flex-col justify-between">
+                <div>
+                  <div className="flex items-center gap-2 text-slate-400 dark:text-[#7E7F96]">
+                    <Database className="w-4 h-4 text-[#FF9F43]" />
+                    <span className="text-[11px] font-semibold uppercase tracking-wider">
+                      {t('admin.overviewAnswers.lastBackupTime')}
+                    </span>
+                  </div>
+                  <div className="text-sm font-bold text-slate-800 dark:text-white mt-2">
+                    {latestBackupTime ? (
+                      formatDateTime(latestBackupTime)
+                    ) : (
+                      <span className="text-slate-400">{t('admin.overviewAnswers.lastBackupNone')}</span>
+                    )}
+                  </div>
+                </div>
+                <div className="pt-2 text-[11px] text-slate-400">
+                  {latestBackupSize ? `Boyut: ${latestBackupSize}` : 'Otomatik plan devrede'}
+                </div>
+              </div>
+
+              {/* Soru 4: Müdahale gerektiren bir sorun var mı? */}
+              <div className="p-4 rounded-xl bg-slate-50/80 dark:bg-white/[0.02] border border-slate-100 dark:border-white/[0.04] space-y-1.5 flex flex-col justify-between">
+                <div>
+                  <div className="flex items-center gap-2 text-slate-400 dark:text-[#7E7F96]">
+                    <ShieldCheck className="w-4 h-4 text-[#00CFE8]" />
+                    <span className="text-[11px] font-semibold uppercase tracking-wider">
+                      {t('admin.overviewAnswers.issueStatus')}
+                    </span>
+                  </div>
+                  <div className={`text-xs font-bold mt-2 line-clamp-2 ${hasIssues ? 'text-amber-600 dark:text-amber-400' : 'text-emerald-600 dark:text-emerald-400'}`}>
+                    {issueDescription}
+                  </div>
+                </div>
+                <div className="pt-2 text-[11px] text-slate-400">
+                  {hasIssues ? 'İnceleme önerilir' : 'Sistem stabil'}
+                </div>
+              </div>
             </div>
 
-            <div className="p-3.5 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-100 dark:border-white/[0.04]">
-              <span className="text-xs text-slate-500 dark:text-vuexy-dark-muted font-medium block">
-                {t('admin.activeConnections')}
-              </span>
-              <span className="text-lg font-bold text-[#28C76F] mt-1 block">
-                {data.database.connections_active}
-              </span>
+            {/* Quick Action Navigation Bar */}
+            <div className="pt-3 border-t border-slate-100 dark:border-white/[0.06] flex flex-col sm:flex-row items-center justify-between gap-3">
+              <div className="text-xs text-slate-500 dark:text-slate-400 font-medium">
+                <strong>{t('admin.overviewAnswers.actionNeeded')}:</strong>{' '}
+                <span>
+                  {recommendedActionTarget
+                    ? issueDescription
+                    : t('admin.overviewAnswers.actionNone')}
+                </span>
+              </div>
+
+              <div className="flex items-center gap-2.5 flex-wrap w-full sm:w-auto justify-end">
+                {onNavigate && (
+                  <>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => onNavigate('admin-whatsapp')}
+                      className="text-xs font-semibold gap-1.5 h-8.5 cursor-pointer border-slate-200 dark:border-white/[0.08]"
+                    >
+                      <Smartphone className="w-3.5 h-3.5 text-emerald-500" />
+                      <span>{t('admin.overviewAnswers.quickWhatsApp')}</span>
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => onNavigate('admin-operations')}
+                      className="text-xs font-semibold gap-1.5 h-8.5 cursor-pointer border-slate-200 dark:border-white/[0.08]"
+                    >
+                      <Wrench className="w-3.5 h-3.5 text-indigo-500" />
+                      <span>{t('admin.overviewAnswers.quickOps')}</span>
+                    </Button>
+                    <Button
+                      variant="default"
+                      size="sm"
+                      onClick={() => onNavigate('admin-backups')}
+                      className="text-xs font-semibold gap-1.5 h-8.5 bg-[#7367F0] hover:bg-[#685dd8] text-white cursor-pointer shadow-xs"
+                    >
+                      <Database className="w-3.5 h-3.5" />
+                      <span>{t('admin.overviewAnswers.quickBackup')}</span>
+                    </Button>
+                  </>
+                )}
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* B. SECONDARY COLLAPSIBLE SECTION: CPU, RAM, Disk, Containers & DB details */}
+        <div className="border border-slate-200/80 dark:border-white/[0.06] rounded-2xl bg-white dark:bg-[#2F3349] overflow-hidden shadow-xs">
+          <button
+            type="button"
+            onClick={() => setShowInfraDetails((prev) => !prev)}
+            className="w-full p-4 sm:p-5 flex items-center justify-between text-left hover:bg-slate-50/60 dark:hover:bg-white/[0.02] transition-colors cursor-pointer select-none"
+          >
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 rounded-lg bg-slate-100 dark:bg-white/[0.05] text-slate-600 dark:text-slate-300 flex items-center justify-center">
+                <Server className="w-4 h-4" />
+              </div>
+              <div>
+                <h3 className="text-xs font-bold text-slate-800 dark:text-white">
+                  {showInfraDetails
+                    ? t('admin.overviewAnswers.hideInfraDetails')
+                    : t('admin.overviewAnswers.showInfraDetails')}
+                </h3>
+                <p className="text-[11px] text-slate-400 dark:text-[#7E7F96]">
+                  İşlemci yükü, RAM, disk kullanımı, konteyner bellekleri ve veritabanı bağlantı havuzu
+                </p>
+              </div>
             </div>
 
-            <div className="p-3.5 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-100 dark:border-white/[0.04]">
-              <span className="text-xs text-slate-500 dark:text-vuexy-dark-muted font-medium block">
-                {t('admin.idleConnections')}
-              </span>
-              <span className="text-lg font-bold text-slate-600 dark:text-slate-300 mt-1 block">
-                {data.database.connections_idle}
-              </span>
+            <div className="flex items-center gap-2 text-xs font-semibold text-slate-500 dark:text-slate-400">
+              <span>{showInfraDetails ? t('admin.monitoring.hideDetails') : t('admin.monitoring.showDetails')}</span>
+              {showInfraDetails ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
             </div>
+          </button>
 
-            <div className="p-3.5 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-100 dark:border-white/[0.04]">
-              <span className="text-xs text-slate-500 dark:text-vuexy-dark-muted font-medium block">
-                {t('admin.totalConnections')}
-              </span>
-              <span className="text-lg font-bold text-slate-800 dark:text-white mt-1 block">
-                {t('admin.dbConnectionsLimit', { active: data.database.connections_active, total: data.database.connections_total, max: 100 })}
-              </span>
+          {showInfraDetails && (
+            <div className="p-5 border-t border-slate-100 dark:border-white/[0.06] space-y-6 animate-fade-in">
+              {/* System Resource Cards (4-col grid) */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                {/* CPU & Load */}
+                <StatsCard
+                  title={t('admin.cpuLoad')}
+                  value={`${data.system.cpu_cores} ${t('admin.cores')}`}
+                  subText={`${t('admin.loadAvg')}: ${data.system.load_average.join(' / ')}`}
+                  icon={Cpu}
+                  iconVariant="primary"
+                />
+
+                {/* Memory */}
+                <StatsCard
+                  title={t('admin.memory')}
+                  value={`${(data.system.memory_used_mb / 1024).toFixed(1)} GB`}
+                  subText={`${t('admin.ramUsedPercent', { percent: ((data.system.memory_used_mb / Math.max(1, data.system.memory_total_mb)) * 100).toFixed(0) })}`}
+                  icon={Server}
+                  iconVariant="info"
+                />
+
+                {/* Disk */}
+                <StatsCard
+                  title={t('admin.disk')}
+                  value={`${data.system.disk_used_percent}%`}
+                  subText={`${data.system.disk_used_gb} GB / ${data.system.disk_total_gb} GB`}
+                  icon={HardDrive}
+                  iconVariant="warning"
+                />
+
+                {/* Uptime & Reboot */}
+                <StatsCard
+                  title={t('admin.hostUptime')}
+                  value={formatUptime(data.system.uptime, true)}
+                  subText={data.system.reboot_required ? t('admin.rebootRequiredHelp') : t('admin.rebootNotRequiredHelp')}
+                  icon={Clock}
+                  iconVariant={data.system.reboot_required ? 'danger' : 'success'}
+                  badge={
+                    data.system.reboot_required
+                      ? { text: t('admin.rebootRequiredBadge'), variant: 'danger' }
+                      : { text: t('admin.rebootNotRequiredBadge'), variant: 'success' }
+                  }
+                />
+              </div>
+
+              {/* Production Services Fleet Cards */}
+              <div className="space-y-3">
+                <h4 className="text-xs font-bold text-slate-800 dark:text-white flex items-center gap-2">
+                  <Layers className="w-3.5 h-3.5 text-indigo-500" />
+                  <span>{t('admin.productionServices')} ({data.containers.length})</span>
+                </h4>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                  {data.containers.map((c) => {
+                    const isRunning = c.status.toLowerCase() === 'running';
+                    return (
+                      <div
+                        key={c.name}
+                        className="p-3 rounded-xl border border-slate-100 dark:border-white/[0.04] bg-slate-50/50 dark:bg-white/[0.02] flex flex-col justify-between space-y-2 text-xs"
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div>
+                            <span className="font-bold text-slate-800 dark:text-white block truncate">
+                              {getServiceDisplayName(c.name)}
+                            </span>
+                            <span className="text-[10px] font-mono text-slate-400 block">
+                              {c.name}
+                            </span>
+                          </div>
+                          <StatusBadge
+                            status={isRunning ? 'online' : 'danger'}
+                            label={isRunning ? t('admin.statusRunning') : c.status}
+                            size="sm"
+                          />
+                        </div>
+                        <div className="grid grid-cols-2 gap-1 text-[10px] border-t border-slate-100 dark:border-white/[0.04] pt-2 text-slate-500">
+                          <div>Bellek: <strong className="text-slate-700 dark:text-slate-300">{c.rss_mb} MB</strong></div>
+                          <div>Restart: <strong className="text-slate-700 dark:text-slate-300">{c.restart_count}</strong></div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Database Connection Pool Metrics */}
+              <div className="p-4 rounded-xl bg-slate-50/70 dark:bg-white/[0.02] border border-slate-200/50 dark:border-white/[0.04] flex items-center justify-between flex-wrap gap-4 text-xs">
+                <div className="flex items-center gap-2.5">
+                  <Database className="w-4 h-4 text-[#7367F0]" />
+                  <div>
+                    <span className="font-bold text-slate-800 dark:text-white block">PostgreSQL 17 Havuzu</span>
+                    <span className="text-[11px] text-slate-400">Veritabanı boyutu: {data.database.database_size_mb} MB</span>
+                  </div>
+                </div>
+                <div className="flex items-center gap-4 text-slate-600 dark:text-slate-300 font-medium">
+                  <div>Aktif: <strong className="text-emerald-600 dark:text-emerald-400 font-bold">{data.database.connections_active}</strong></div>
+                  <div>Boşta: <strong className="font-bold">{data.database.connections_idle}</strong></div>
+                  <div>Toplam: <strong className="font-bold">{data.database.connections_total} / 100</strong></div>
+                </div>
+              </div>
             </div>
-          </div>
-        </CardContent>
-      </Card>
+          )}
+        </div>
+      </div>
     </AdminShell>
   );
 };
