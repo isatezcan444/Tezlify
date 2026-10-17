@@ -1155,6 +1155,9 @@ export const en = {
     noConnectedSessionToast: 'Please link a WhatsApp line from the WhatsApp tab first to launch the campaign.',
     dailyLimitBadge: 'Daily Limit: {limit}',
     senderSession: 'Sender Line',
+    selectCurrentPage: 'Select On This Page ({count})',
+    selectedBadgeCount: '{selected} / {total} Selected',
+    bulkSelectHint: 'Select cards to perform bulk actions',
   },
   blacklist: {
     title: 'Blacklist',
@@ -1358,6 +1361,7 @@ export const en = {
     guideDesc: 'Collect businesses discovered via Lead Finder or defined here into a single group, so you never have to search the same businesses again for each campaign.',
     guideQuickTitle: 'Quick Usage:',
     guideQuickDesc: 'Lead Finder → Save Results to Group → Campaign Groups → Launch Campaign.',
+    bulkSelectHint: 'Select groups to perform bulk actions',
   },
   auth: {
     welcomeBack: 'Welcome Back',

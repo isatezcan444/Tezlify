@@ -25,7 +25,7 @@ export const SettingsPage: React.FC = () => {
     (import.meta.env?.VITE_GATEWAY_URL as string | undefined) || 'https://api.tezlify.com';
 
   return (
-    <div className="space-y-6 pb-16 max-w-4xl select-none animate-fade-in">
+    <div className="space-y-6 pb-16 w-full select-none animate-fade-in">
       {/* Page Header */}
       <PageHeader
         title={t('settings.title')}

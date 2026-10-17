@@ -1155,6 +1155,9 @@ export const tr = {
     noConnectedSessionToast: 'Kampanyayı başlatmak için lütfen önce WhatsApp sekmesinden bir hat bağlayın.',
     dailyLimitBadge: 'Günlük Limit: {limit}',
     senderSession: 'Gönderici Hat',
+    selectCurrentPage: 'Bu Sayfadakileri Seç ({count})',
+    selectedBadgeCount: '{selected} / {total} Seçildi',
+    bulkSelectHint: 'Toplu işlem için kartları seçebilirsiniz',
   },
   blacklist: {
     title: 'Kara Liste',
@@ -1358,6 +1361,7 @@ export const tr = {
     guideDesc: 'İşletme Ara ekranından bulduğunuz veya burada belirlediğiniz hedef kitledeki işletmeleri bir grupta toplar. Bu sayede aynı işletmeleri her kampanya için tekrar aramak zorunda kalmazsınız.',
     guideQuickTitle: 'Hızlı Kullanım:',
     guideQuickDesc: 'İşletme Ara → Sonuçları Gruba Kaydet → Kampanya Grupları → Kampanya Başlat.',
+    bulkSelectHint: 'Toplu işlem için grupları seçebilirsiniz',
   },
   auth: {
     welcomeBack: 'Tekrar Hoş Geldiniz',

@@ -546,6 +546,7 @@ export const LeadFinderPage: React.FC<LeadFinderPageProps> = ({ onNavigate, onRe
                 type="button"
                 onClick={handleToggleSelectAll}
                 title={isAllSelected ? t('common.clearSelection') : t('common.selectAll')}
+                aria-label={isAllSelected ? t('common.clearSelection') : t('common.selectAll')}
                 className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/[0.05] transition-colors cursor-pointer"
               >
                 {isAllSelected ? (

@@ -82,6 +82,7 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
             type="button"
             onClick={toggleTheme}
             title={theme === 'light' ? t('header.darkMode') : t('header.lightMode')}
+            aria-label={theme === 'light' ? t('header.darkMode') : t('header.lightMode')}
             className="p-2 rounded-lg text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/[0.05] transition-all duration-150 active:scale-95 cursor-pointer"
           >
             {theme === 'light' ? (
@@ -96,7 +97,6 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
             type="button"
             className="relative p-2 rounded-lg text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/[0.05] transition-colors cursor-pointer"
             title={t('header.notifications')}
-          
             aria-label={t('header.notifications')}>
             <Bell className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
             <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-[#EA5455]" />
@@ -148,6 +148,7 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
                 onClick={() => signOut()}
                 className="p-1.5 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-500/10 transition-colors cursor-pointer"
                 title={t('auth.signOut')}
+                aria-label={t('auth.signOut')}
               >
                 <LogOut className="w-4 h-4" />
               </button>

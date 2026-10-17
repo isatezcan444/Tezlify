@@ -278,7 +278,7 @@ export const CampaignsPage: React.FC<CampaignsPageProps> = ({
     const confirmed = await toast.confirm({
       title: `${t('campaigns.deleteCampaign')} (${count})`,
       message: t('campaigns.bulkDeleteConfirm', { count }),
-      confirmText: t('common.delete') || 'Sil',
+      confirmText: t('common.delete'),
       variant: 'danger',
     });
     if (!confirmed) return;
@@ -287,13 +287,13 @@ export const CampaignsPage: React.FC<CampaignsPageProps> = ({
     try {
       const targetIds = selectAllMatching ? campaigns.map((c) => c.id) : selectedIds;
       const res = await ApiClient.bulkDeleteCampaigns(targetIds);
-      toast.success(res.message || `${res.deleted_count} kampanya silindi.`, t('common.success'));
+      toast.success(res.message || t('campaigns.campaignDeletedSuccess'), t('common.success'));
       setSelectedIds([]);
       setSelectAllMatching(false);
       fetchCampaigns();
       onRefreshStats();
     } catch (err: any) {
-      toast.error(err.message || 'Toplu silme işlemi başarısız oldu.', t('toast.errorTitle'));
+      toast.error(err.message || t('campaigns.campaignDeleteError'), t('toast.errorTitle'));
     } finally {
       setIsBulkDeleting(false);
     }
@@ -416,7 +416,7 @@ export const CampaignsPage: React.FC<CampaignsPageProps> = ({
                 actions={
                   <ToolbarActionButton tone="danger" onClick={handleBulkDelete} disabled={isBulkDeleting}>
                     <Trash2 className="w-3.5 h-3.5" />
-                    <span>{isBulkDeleting ? t('common.loading') : `Seçilenleri Sil (${selectedIds.length})`}</span>
+                    <span>{isBulkDeleting ? t('common.loading') : t('leads.bulkDelete', { count: selectedIds.length })}</span>
                   </ToolbarActionButton>
                 }
               />
@@ -428,20 +428,21 @@ export const CampaignsPage: React.FC<CampaignsPageProps> = ({
                     type="checkbox"
                     checked={isAllPageSelected}
                     onChange={handleToggleSelectAllPage}
+                    aria-label={t('campaigns.selectCurrentPage', { count: currentPageCampaigns.length })}
                     className="w-4 h-4 rounded text-[#7367F0] focus:ring-[#7367F0] focus:ring-offset-0 border-slate-300 dark:border-white/20 dark:bg-[#25293C] cursor-pointer transition-all"
                   />
                   <span className="group-hover:text-[#7367F0] transition-colors">
-                    Bu Sayfadakileri Seç ({currentPageCampaigns.length})
+                    {t('campaigns.selectCurrentPage', { count: currentPageCampaigns.length })}
                   </span>
                 </label>
 
                 {selectedIds.length > 0 ? (
                   <Badge variant="primary" className="text-[10px] font-mono px-2 py-0.5">
-                    {selectedIds.length} / {campaigns.length} Seçildi
+                    {t('campaigns.selectedBadgeCount', { selected: selectedIds.length, total: campaigns.length })}
                   </Badge>
                 ) : (
                   <span className="text-[11px] text-slate-400 dark:text-[#7E7F96] font-medium hidden sm:inline">
-                    Toplu işlem için kartları seçebilirsiniz
+                    {t('campaigns.bulkSelectHint')}
                   </span>
                 )}
               </Card>

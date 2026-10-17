@@ -53,6 +53,7 @@ export const LeadFinderResultCard: React.FC<LeadFinderResultCardProps> = ({
               type="button"
               onClick={() => onToggleSelect(leadKey)}
               title={isSelected ? t('common.clearSelection') : t('common.selectAll')}
+              aria-label={isSelected ? t('common.clearSelection') : t('common.selectAll')}
               className="p-1 rounded hover:bg-slate-200 dark:hover:bg-white/[0.08] transition-colors shrink-0 cursor-pointer"
             >
               {isSelected ? (

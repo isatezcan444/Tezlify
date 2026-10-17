@@ -87,7 +87,7 @@ export const CampaignGroupsPage: React.FC<CampaignGroupsPageProps> = ({
       setGroups((prev) => prev.filter((g) => g.id !== group.id));
       if (onRefreshStats) onRefreshStats();
     } catch (err: any) {
-      toast.error(err.message || 'Grup silinemedi.');
+      toast.error(err.message || t('campaignGroups.deleteGroupTitle'));
     }
   };
 
@@ -230,20 +230,21 @@ export const CampaignGroupsPage: React.FC<CampaignGroupsPageProps> = ({
                     type="checkbox"
                     checked={isAllPageSelected}
                     onChange={handleToggleSelectAllPage}
+                    aria-label={t('campaigns.selectCurrentPage', { count: currentPageGroups.length })}
                     className="w-4 h-4 rounded text-[#7367F0] focus:ring-[#7367F0] focus:ring-offset-0 border-slate-300 dark:border-white/20 dark:bg-[#25293C] cursor-pointer transition-all"
                   />
                   <span className="group-hover:text-[#7367F0] transition-colors">
-                    Bu Sayfadakileri Seç ({currentPageGroups.length})
+                    {t('campaigns.selectCurrentPage', { count: currentPageGroups.length })}
                   </span>
                 </label>
 
                 {selectedIds.length > 0 ? (
                   <Badge variant="primary" className="text-[10px] font-mono px-2 py-0.5">
-                    {selectedIds.length} / {groups.length} Seçildi
+                    {t('campaigns.selectedBadgeCount', { selected: selectedIds.length, total: groups.length })}
                   </Badge>
                 ) : (
                   <span className="text-[11px] text-slate-400 dark:text-[#7E7F96] font-medium hidden sm:inline">
-                    Toplu işlem için grupları seçebilirsiniz
+                    {t('campaignGroups.bulkSelectHint')}
                   </span>
                 )}
               </Card>

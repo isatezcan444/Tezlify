@@ -80,8 +80,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
       items: [
         { id: 'admin-overview', label: t('nav.adminOverview'), icon: Activity, badge: null },
         { id: 'admin-whatsapp', label: t('nav.adminWhatsApp'), icon: MessageSquare, badge: null },
+        { id: 'admin-monitoring', label: t('nav.adminMonitoring'), icon: Activity, badge: null },
         { id: 'admin-operations', label: t('nav.adminOperations'), icon: Wrench, badge: null },
         { id: 'admin-backups', label: t('nav.adminBackups'), icon: Database, badge: null },
+        { id: 'admin-deployment', label: t('nav.adminDeployment'), icon: Server, badge: null },
+        { id: 'admin-security', label: t('nav.adminSecurity'), icon: Lock, badge: null },
       ]
     });
   }
@@ -91,6 +94,17 @@ export const Sidebar: React.FC<SidebarProps> = ({
     setActiveTab(tabId);
     if (onCloseMobile) onCloseMobile();
   };
+
+  React.useEffect(() => {
+    if (!isOpenMobile) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onCloseMobile?.();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpenMobile, onCloseMobile]);
 
   const sidebarContent = (
     <div className="flex flex-col h-full bg-white dark:bg-[#2F3349] select-none">
@@ -212,6 +226,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
         typeof document !== 'undefined' &&
         createPortal(
           <div 
+            role="dialog"
+            aria-modal="true"
+            aria-label={t('common.menuTitle')}
             className="lg:hidden fixed inset-0 z-50 bg-black/60 backdrop-blur-sm transition-opacity duration-300 animate-fade-in"
             onClick={onCloseMobile}
           >

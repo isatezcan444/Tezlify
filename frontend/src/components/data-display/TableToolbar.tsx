@@ -44,7 +44,7 @@ export const TableToolbar: React.FC<TableToolbarProps> = ({
         </div>
 
         {actionsSlot && (
-          <div className="flex items-center space-x-2 shrink-0 self-end lg:self-auto">
+          <div className="flex items-center space-x-2 shrink-0 self-start sm:self-auto flex-wrap gap-2">
             {actionsSlot}
           </div>
         )}

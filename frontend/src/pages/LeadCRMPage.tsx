@@ -668,6 +668,7 @@ export const LeadCRMPage: React.FC<LeadCRMPageProps> = ({ onRefreshStats }) => {
                     onClick={handleToggleSelectAllPage}
                     className="p-1 rounded hover:bg-slate-200 dark:hover:bg-white/[0.08] text-slate-500 dark:text-slate-300 transition-colors cursor-pointer"
                     title={isAllCurrentPageSelected ? t('common.clearSelection') : t('common.selectAll')}
+                    aria-label={isAllCurrentPageSelected ? t('common.clearSelection') : t('common.selectAll')}
                   >
                     {selectAllMatching || isAllCurrentPageSelected ? (
                       <CheckSquare className="w-4 h-4 text-[#7367F0]" />
@@ -722,6 +723,8 @@ export const LeadCRMPage: React.FC<LeadCRMPageProps> = ({ onRefreshStats }) => {
                           type="button"
                           onClick={() => handleToggleSingleSelect(lead.id)}
                           className="p-1 rounded hover:bg-slate-200 dark:hover:bg-white/[0.08] text-slate-500 dark:text-slate-300 transition-colors cursor-pointer"
+                          aria-label={isSelected ? t('common.clearSelection') : t('common.selectAll')}
+                          title={isSelected ? t('common.clearSelection') : t('common.selectAll')}
                         >
                           {isSelected ? (
                             <CheckSquare className="w-4 h-4 text-[#7367F0]" />
@@ -809,6 +812,7 @@ export const LeadCRMPage: React.FC<LeadCRMPageProps> = ({ onRefreshStats }) => {
                         <select
                           value={lead.status}
                           onChange={(e) => handleStatusChange(lead.id, e.target.value as LeadStatus)}
+                          aria-label={t('leads.colStatus')}
                           className={`px-2.5 py-1 rounded-lg text-xs font-bold border transition-colors cursor-pointer ${
                             lead.status === 'NEW'
                               ? 'bg-blue-50 text-blue-600 border-blue-200 dark:bg-blue-500/10 dark:text-blue-400 dark:border-blue-500/20'
@@ -865,13 +869,18 @@ export const LeadCRMPage: React.FC<LeadCRMPageProps> = ({ onRefreshStats }) => {
                             className="text-slate-400 hover:text-[#EA5455] hover:bg-[#EA5455]/10"
                           />
                           <Dropdown
+                            portal
+                            align="right"
                             trigger={
-                              <div
-                                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-white/[0.08] transition-colors"
+                              <span
+                                role="button"
+                                tabIndex={0}
+                                className="inline-flex items-center justify-center p-1.5 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-white/[0.08] transition-colors cursor-pointer"
                                 title={t('leads.colActions')}
+                                aria-label={t('leads.colActions')}
                               >
                                 <MoreVertical className="w-4 h-4" />
-                              </div>
+                              </span>
                             }
                             items={[
                               {

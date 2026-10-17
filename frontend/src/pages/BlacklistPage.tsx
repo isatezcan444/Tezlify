@@ -317,6 +317,7 @@ export const BlacklistPage: React.FC = () => {
                     onClick={handleToggleSelectAllPage}
                     className="p-1 rounded hover:bg-slate-200 dark:hover:bg-white/[0.08] text-slate-500 dark:text-slate-300 transition-colors cursor-pointer"
                     title={isAllCurrentPageSelected ? t('common.clearSelection') : t('common.selectAll')}
+                    aria-label={isAllCurrentPageSelected ? t('common.clearSelection') : t('common.selectAll')}
                   >
                     {selectAllMatching || isAllCurrentPageSelected ? (
                       <CheckSquare className="w-4 h-4 text-[#7367F0]" />
@@ -370,6 +371,8 @@ export const BlacklistPage: React.FC = () => {
                           type="button"
                           onClick={() => handleToggleSingleSelect(entry.id)}
                           className="p-1 rounded hover:bg-slate-200 dark:hover:bg-white/[0.08] text-slate-500 dark:text-slate-300 transition-colors cursor-pointer"
+                          aria-label={isSelected ? t('common.clearSelection') : t('common.selectAll')}
+                          title={isSelected ? t('common.clearSelection') : t('common.selectAll')}
                         >
                           {isSelected ? (
                             <CheckSquare className="w-4 h-4 text-[#7367F0]" />
