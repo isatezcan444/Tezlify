@@ -528,9 +528,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
     // request is made, and report nothing to the user because nothing failed.
     if (sendLockRef.current.isLocked()) return;
 
-    // Snapshot the RAW draft, not the trimmed text: `clean` drops trailing
-    // whitespace, so comparing the live value against it would leave a draft
-    // of "merhaba " behind after a successful send.
+    // Snapshot the RAW draft, not the trimmed text: needed to restore if send fails
     const draft = text;
     let textToSend = clean;
     if (replyingTo && replyingTo.body) {
@@ -538,27 +536,30 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
       textToSend = `> ${snippet}\n\n${clean}`;
     }
 
+    // IMMEDIATELY clear the input field and reset states so the user can
+    // start typing their next message without text concatenation or visual lag:
+    setText('');
+    if (draftInputRef.current) {
+      draftInputRef.current.value = '';
+      draftInputRef.current.style.height = 'auto';
+    }
+    if (replyingTo && onCancelReply) {
+      onCancelReply();
+    }
+    setIsEmojiOpen(false);
+    stopTypingSignal();
+    refocusDraft();
+
     setSending(true);
     try {
       await sendLockRef.current.run(async () => {
         await onSend(textToSend);
-        // Clear only the draft we actually sent. The field stays editable
-        // while the send is in flight (you can start the next message before
-        // the last one lands), so anything typed in the meantime is a NEW
-        // message and must survive; an unconditional `setText('')` would have
-        // silently eaten it.
-        setText((current) => (current === draft ? '' : current));
-        if (draftInputRef.current) {
-          draftInputRef.current.style.height = 'auto';
-        }
-        if (replyingTo && onCancelReply) {
-          onCancelReply();
-        }
-        setIsEmojiOpen(false);
-        stopTypingSignal();
       });
     } catch (err) {
       console.error('[ChatComposer] Send error:', err);
+      // If the field is still empty, restore the draft so the user doesn't lose what they typed.
+      // If they already started typing their next message, do not overwrite it.
+      setText((current) => (current === '' ? draft : current));
     } finally {
       setSending(false);
       refocusDraft();

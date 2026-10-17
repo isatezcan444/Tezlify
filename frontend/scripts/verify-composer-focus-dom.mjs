@@ -261,6 +261,20 @@ try {
     assert.equal(send.calls.length, 1, 'and it stays rejected after the send completes');
   });
 
+  await check('the draft field is cleared immediately on Enter before send completes', async () => {
+    const send = deferredSend();
+    const { input } = await mount(send.onSend);
+
+    await typeInto(input, 'anlik temizleme');
+    await pressEnter(input);
+    assert.equal(send.calls[0], 'anlik temizleme');
+    assert.equal(input.value, '', 'the draft field must clear immediately without waiting for server response');
+
+    await send.finish();
+    await flush();
+    assert.equal(input.value, '');
+  });
+
   // ---------------------------------------------------------------- emoji panel
 
   const click = async (el) => {
@@ -359,8 +373,8 @@ try {
     assert.equal(toggle.getAttribute('aria-expanded'), 'false');
   });
 
-  console.log(`\n${passed}/8 composer focus + emoji checks passed`);
-  ok = passed === 8;
+  console.log(`\n${passed}/9 composer focus + emoji checks passed`);
+  ok = passed === 9;
 } catch (err) {
   console.error(`\nFAIL: ${err?.message ?? err}`);
 } finally {
