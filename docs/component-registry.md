@@ -279,7 +279,7 @@ src/
 - **Import**: `import { useWhatsAppLoadingGate } from '@/features/whatsapp/hooks/useWhatsAppLoadingGate';`
 
 #### `WhatsAppSettingsPanel`
-- **Purpose**: Dedicated WhatsApp personalization and notification settings panel. Features synthesized audio notifications using HTML5 Web Audio API (5 authentic presets: WhatsApp Klasik, Modern Pop, Kristal Çan, Akustik Marimba, Zarif Tık), instant test/preview buttons, volume slider, desktop notifications permission toggle, custom wallpaper themes with authentic SVG WhatsApp doodles, background opacity/dimming slider, live interactive chat preview box, and keyboard dispatch preferences (Enter to send vs Shift+Enter).
+- **Purpose**: Dedicated WhatsApp personalization and notification settings panel. Features synthesized audio notifications using HTML5 Web Audio API (5 authentic presets: WhatsApp Klasik, Modern Pop, Kristal Çan, Akustik Marimba, Zarif Tık), instant test/preview buttons, volume slider, desktop notifications permission toggle, custom wallpaper color themes (WhatsApp Varsayılanı, Gece Mavisi, Zümrüt Yeşili, Sıcak Bej, Minimal Kömür, Leylak), live interactive chat preview box, and keyboard dispatch preferences (Enter to send vs Shift+Enter).
 - **Props**: None (self-contained domain panel subscribing to `useWhatsAppSettings`).
 - **Import**: `import { WhatsAppSettingsPanel } from '@/features/whatsapp/components';`
 

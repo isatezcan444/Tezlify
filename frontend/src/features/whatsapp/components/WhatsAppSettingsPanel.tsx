@@ -85,8 +85,6 @@ export const WhatsAppSettingsPanel: React.FC = () => {
   const isDark = typeof document !== 'undefined' && document.documentElement.classList.contains('dark');
   const previewWallpaperStyle = getChatWallpaperStyle({
     themeId: settings.wallpaperTheme,
-    showDoodle: settings.wallpaperDoodle,
-    opacity: settings.wallpaperOpacity,
     isDark,
   });
 
@@ -400,28 +398,6 @@ export const WhatsAppSettingsPanel: React.FC = () => {
               </div>
             </div>
 
-            {/* Doodle pattern toggle */}
-            <div className="flex items-center justify-between">
-              <div>
-                <div className="text-xs font-bold text-slate-800 dark:text-white flex items-center gap-1.5">
-                  <Sparkles className="w-3.5 h-3.5 text-amber-500" />
-                  {t('whatsapp.showDoodles')}
-                </div>
-                <div className="text-[11px] text-slate-400 dark:text-[#7E7F96]">
-                  {t('whatsapp.showDoodlesDesc')}
-                </div>
-              </div>
-              <label className="relative inline-flex items-center cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={settings.wallpaperDoodle}
-                  onChange={(e) => updateSettings({ wallpaperDoodle: e.target.checked })}
-                  className="sr-only peer"
-                />
-                <div className="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer dark:bg-slate-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#FF9F43]" />
-              </label>
-            </div>
-
             {/* Theme Swatches */}
             <div>
               <label className="text-xs font-bold text-slate-700 dark:text-slate-200 block mb-2.5">
@@ -455,27 +431,6 @@ export const WhatsAppSettingsPanel: React.FC = () => {
                 })}
               </div>
             </div>
-
-            {/* Opacity Slider */}
-            {settings.wallpaperDoodle && (
-              <div className="pt-2">
-                <div className="flex items-center justify-between text-xs font-bold text-slate-700 dark:text-slate-200 mb-2">
-                  <span>{t('whatsapp.wallpaperOpacity')}</span>
-                  <span className="text-slate-500 dark:text-slate-400 font-mono text-[11px]">
-                    {Math.round(settings.wallpaperOpacity * 100)}%
-                  </span>
-                </div>
-                <input
-                  type="range"
-                  min="0.1"
-                  max="1"
-                  step="0.05"
-                  value={settings.wallpaperOpacity}
-                  onChange={(e) => updateSettings({ wallpaperOpacity: parseFloat(e.target.value) })}
-                  className="w-full h-1.5 bg-slate-200 dark:bg-slate-700 rounded-lg appearance-none cursor-pointer accent-[#FF9F43]"
-                />
-              </div>
-            )}
 
             {/* Interactive Live Chat Preview */}
             <div className="pt-3">
