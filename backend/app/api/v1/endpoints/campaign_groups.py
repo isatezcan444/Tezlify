@@ -9,7 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.database import get_db
-from backend.app.core.auth import AuthUser, get_current_user, get_user_filter
+from backend.app.core.auth import AuthUser, get_current_user, get_user_filter, check_entity_ownership
 from backend.app.models.campaign_group import CampaignGroup, campaign_group_leads
 from backend.app.models.lead import Lead
 from backend.app.schemas.campaign_group import (
@@ -46,9 +46,12 @@ async def list_campaign_groups(
     res = await db.execute(stmt)
     groups = res.scalars().all()
 
+    group_ids = [g.id for g in groups]
+    counts_map = await CampaignGroupService.get_bulk_group_counts(db, group_ids)
+
     results = []
     for g in groups:
-        total, wa = await _get_group_counts(db, g.id)
+        total, wa = counts_map.get(g.id, (0, 0))
         group_resp = CampaignGroupResponse(
             id=g.id,
             name=g.name,
@@ -112,8 +115,13 @@ async def create_campaign_group(
     # If lead_ids provided (e.g. from Business Discovery or manual creation)
     if group_in.lead_ids:
         distinct_lead_ids = list(set(group_in.lead_ids))
-        # Verify valid leads exist
-        leads_res = await db.execute(select(Lead.id).where(Lead.id.in_(distinct_lead_ids)))
+        # Verify valid leads exist and belong to the current user (tenant isolation)
+        leads_res = await db.execute(
+            select(Lead.id).where(
+                Lead.id.in_(distinct_lead_ids),
+                get_user_filter(Lead.user_id, current_user.id),
+            )
+        )
         valid_lead_ids = [row[0] for row in leads_res.fetchall()]
 
         await _bulk_insert_memberships(db, group.id, valid_lead_ids)
@@ -142,7 +150,7 @@ async def get_campaign_group(
 ):
     """Get group details and list of all leads currently in the group."""
     group = await db.get(CampaignGroup, group_id)
-    if not group or (os.getenv("PYTEST_CURRENT_TEST") is None and group.user_id != current_user.id):
+    if not group or not check_entity_ownership(group, current_user):
         raise HTTPException(status_code=404, detail="Kampanya grubu bulunamadı.")
 
     # Query leads in this group
@@ -179,7 +187,7 @@ async def update_campaign_group(
 ):
     """Update campaign group metadata (name, description, target_category, target_location)."""
     group = await db.get(CampaignGroup, group_id)
-    if not group or (os.getenv("PYTEST_CURRENT_TEST") is None and group.user_id != current_user.id):
+    if not group or not check_entity_ownership(group, current_user):
         raise HTTPException(status_code=404, detail="Kampanya grubu bulunamadı.")
 
     update_data = group_in.model_dump(exclude_unset=True)
@@ -212,7 +220,7 @@ async def delete_campaign_group(
 ):
     """Delete a campaign group. Note: This deletes group memberships, but NEVER deletes Leads."""
     group = await db.get(CampaignGroup, group_id)
-    if not group or (os.getenv("PYTEST_CURRENT_TEST") is None and group.user_id != current_user.id):
+    if not group or not check_entity_ownership(group, current_user):
         raise HTTPException(status_code=404, detail="Kampanya grubu bulunamadı.")
 
     await db.delete(group)
@@ -233,7 +241,7 @@ async def add_leads_to_campaign_group(
     - Returns exact added_count and existing_count with a clean user-facing message.
     """
     group = await db.get(CampaignGroup, group_id)
-    if not group or (os.getenv("PYTEST_CURRENT_TEST") is None and group.user_id != current_user.id):
+    if not group or not check_entity_ownership(group, current_user):
         raise HTTPException(status_code=404, detail="Kampanya grubu bulunamadı.")
 
     return await CampaignGroupService.add_leads_to_group(
@@ -253,7 +261,7 @@ async def remove_lead_from_campaign_group(
 ):
     """Remove a single lead from a campaign group. (Does not delete the lead)."""
     group = await db.get(CampaignGroup, group_id)
-    if not group or (os.getenv("PYTEST_CURRENT_TEST") is None and group.user_id != current_user.id):
+    if not group or not check_entity_ownership(group, current_user):
         raise HTTPException(status_code=404, detail="Kampanya grubu bulunamadı.")
 
     del_stmt = delete(campaign_group_leads).where(
@@ -287,12 +295,22 @@ async def bulk_delete_campaign_groups(
     if not req.group_ids:
         return {"deleted_count": 0, "message": "Silinecek kampanya grubu belirtilmedi."}
 
-    deleted_count = 0
-    for gid in req.group_ids:
-        group = await db.get(CampaignGroup, gid)
-        if group and (os.getenv("PYTEST_CURRENT_TEST") is not None or group.user_id == current_user.id):
-            await db.delete(group)
-            deleted_count += 1
+    valid_groups_res = await db.execute(
+        select(CampaignGroup.id).where(
+            CampaignGroup.id.in_(req.group_ids),
+            get_user_filter(CampaignGroup.user_id, current_user.id),
+        )
+    )
+    valid_ids = [r[0] for r in valid_groups_res.fetchall()]
+    if not valid_ids:
+        return {"deleted_count": 0, "message": "Silinecek kampanya grubu bulunamadı."}
 
+    await db.execute(
+        delete(campaign_group_leads).where(campaign_group_leads.c.group_id.in_(valid_ids))
+    )
+    res = await db.execute(
+        delete(CampaignGroup).where(CampaignGroup.id.in_(valid_ids))
+    )
     await db.commit()
+    deleted_count = res.rowcount or len(valid_ids)
     return {"deleted_count": deleted_count, "message": f"{deleted_count} kampanya grubu başarıyla silindi."}

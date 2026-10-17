@@ -50,7 +50,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.whatsapp_session import WhatsAppSession, SessionStatus
-from backend.app.services.whatsapp.orchestration import pairing_registry
+import backend.app.services.whatsapp.orchestration.pairing_registry as pairing_registry
 from backend.app.services.whatsapp.orchestration.relink import (
     RelinkCandidateAmbiguous,
     RelinkCandidateNotFound,
@@ -130,8 +130,9 @@ async def _finalize_promotion(
     def _trigger_sync_if_needed(target_row: Optional[WhatsAppSession]) -> None:
         if target_row and target_row.user_id:
             try:
-                from backend.app.services.whatsapp.orchestration.sync import _schedule_initial_sync
-                _schedule_initial_sync(str(target_row.user_id), reconcile=False, session_key=gateway_session_id)
+                import importlib
+                sync_mod = importlib.import_module("backend.app.services.whatsapp.orchestration.sync")
+                sync_mod._schedule_initial_sync(str(target_row.user_id), reconcile=False, session_key=gateway_session_id)
             except Exception as sync_err:
                 logger.warning("[WhatsApp][Promotion] Initial sync trigger warning: %s", sync_err)
 

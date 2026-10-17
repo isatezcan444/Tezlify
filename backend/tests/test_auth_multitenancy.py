@@ -204,3 +204,86 @@ async def test_multitenancy_lead_isolation_native_sessions():
         # User B CANNOT get User A's lead (404 / isolated)
         res_get_b = await ac.get(f"/api/v1/leads/{lead_a_id}", headers={"Authorization": f"Bearer {token_b}"})
         assert res_get_b.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_multitenancy_campaign_groups_isolation():
+    """Verifies campaign group isolation between tenants:
+    1. Tenant B cannot access Tenant A's group.
+    2. Tenant B cannot attach Tenant A's leads to their own group.
+    3. Tenant B cannot bulk delete Tenant A's groups.
+    """
+    u_svc = UserService()
+    s_svc = SessionService()
+    unique_suffix = uuid.uuid4().hex[:6]
+
+    async with AsyncSessionLocal() as db:
+        user_a = await u_svc.get_or_create_from_oauth(
+            db,
+            provider="google",
+            provider_subject=f"tenant-grp-a-{unique_suffix}",
+            email=f"grp_a_{unique_suffix}@tezlify.com",
+            display_name=f"User Grp A {unique_suffix}",
+        )
+        user_b = await u_svc.get_or_create_from_oauth(
+            db,
+            provider="google",
+            provider_subject=f"tenant-grp-b-{unique_suffix}",
+            email=f"grp_b_{unique_suffix}@tezlify.com",
+            display_name=f"User Grp B {unique_suffix}",
+        )
+        _, token_a = await s_svc.create_session(db, user_id=user_a.id)
+        _, token_b = await s_svc.create_session(db, user_id=user_b.id)
+        await db.commit()
+
+    unique_phone = f"+90555{random.randint(1000000, 9999999)}"
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        # User A creates a lead
+        res_lead = await ac.post(
+            "/api/v1/leads",
+            json={"name": f"Lead A {unique_suffix}", "phone": unique_phone, "category": "Klinik"},
+            headers={"Authorization": f"Bearer {token_a}"},
+        )
+        assert res_lead.status_code == 201
+        lead_a_id = res_lead.json()["id"]
+
+        # User A creates a group containing their lead
+        res_grp_a = await ac.post(
+            "/api/v1/campaign-groups",
+            json={"name": f"Group A {unique_suffix}", "lead_ids": [lead_a_id]},
+            headers={"Authorization": f"Bearer {token_a}"},
+        )
+        assert res_grp_a.status_code == 201
+        grp_a_id = res_grp_a.json()["id"]
+        assert res_grp_a.json()["total_leads_count"] == 1
+
+        # 1. User B tries to get User A's group -> 404
+        res_get_grp = await ac.get(f"/api/v1/campaign-groups/{grp_a_id}", headers={"Authorization": f"Bearer {token_b}"})
+        assert res_get_grp.status_code == 404
+
+        # 2. User B tries to create a group poaching User A's lead_id -> lead is rejected by tenant check
+        res_grp_b = await ac.post(
+            "/api/v1/campaign-groups",
+            json={"name": f"Group B {unique_suffix}", "lead_ids": [lead_a_id]},
+            headers={"Authorization": f"Bearer {token_b}"},
+        )
+        assert res_grp_b.status_code == 201
+        grp_b_id = res_grp_b.json()["id"]
+        # Total leads count MUST be 0 since lead_a does not belong to User B!
+        assert res_grp_b.json()["total_leads_count"] == 0
+
+        # 3. User B tries to bulk delete User A's group -> deleted_count must be 0
+        res_del = await ac.post(
+            "/api/v1/campaign-groups/bulk-delete",
+            json={"group_ids": [grp_a_id]},
+            headers={"Authorization": f"Bearer {token_b}"},
+        )
+        assert res_del.status_code == 200
+        assert res_del.json()["deleted_count"] == 0
+
+        # Verify User A's group is still alive
+        res_verify_a = await ac.get(f"/api/v1/campaign-groups/{grp_a_id}", headers={"Authorization": f"Bearer {token_a}"})
+        assert res_verify_a.status_code == 200
+        assert res_verify_a.json()["id"] == grp_a_id

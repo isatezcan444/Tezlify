@@ -5,7 +5,7 @@ Coordinates campaign group membership operations, bulk lead insertions,
 integrity conflict handling, and lead count aggregations.
 """
 from datetime import datetime, timezone
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 from sqlalchemy import select, func, insert, case
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -76,6 +76,33 @@ class CampaignGroupService:
         if not row:
             return 0, 0
         return int(row[0] or 0), int(row[1] or 0)
+
+    @staticmethod
+    async def get_bulk_group_counts(
+        db: AsyncSession, group_ids: List[int]
+    ) -> Dict[int, Tuple[int, int]]:
+        """Returns a dict mapping group_id -> (total_leads_count, whatsapp_eligible_count)
+        computed in a single query."""
+        if not group_ids:
+            return {}
+        stmt = (
+            select(
+                campaign_group_leads.c.group_id,
+                func.count(Lead.id).label("total"),
+                func.coalesce(
+                    func.sum(case((Lead.is_whatsapp_eligible == True, 1), else_=0)), 0
+                ).label("wa_eligible"),
+            )
+            .select_from(campaign_group_leads)
+            .join(Lead, Lead.id == campaign_group_leads.c.lead_id)
+            .where(campaign_group_leads.c.group_id.in_(group_ids))
+            .group_by(campaign_group_leads.c.group_id)
+        )
+        res = await db.execute(stmt)
+        counts = {gid: (0, 0) for gid in group_ids}
+        for row in res.all():
+            counts[row[0]] = (int(row[1] or 0), int(row[2] or 0))
+        return counts
 
     @classmethod
     async def add_leads_to_group(

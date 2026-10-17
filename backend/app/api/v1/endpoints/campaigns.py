@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete
 
 from backend.app.core.database import get_db
-from backend.app.core.auth import AuthUser, get_current_user, get_user_filter
+from backend.app.core.auth import AuthUser, get_current_user, get_user_filter, check_entity_ownership
 from backend.app.models.campaign import Campaign, CampaignStatus
 from backend.app.schemas.campaign import (
     CampaignResponse,
@@ -117,7 +117,7 @@ async def get_campaign(
     current_user: AuthUser = Depends(get_current_user),
 ):
     campaign = await db.get(Campaign, campaign_id)
-    if not campaign or (os.getenv("PYTEST_CURRENT_TEST") is None and campaign.user_id != current_user.id):
+    if not campaign or not check_entity_ownership(campaign, current_user):
         raise HTTPException(status_code=404, detail="Kampanya bulunamadı")
     return campaign
 
@@ -130,7 +130,7 @@ async def update_campaign(
     current_user: AuthUser = Depends(get_current_user),
 ):
     campaign = await db.get(Campaign, campaign_id)
-    if not campaign or (os.getenv("PYTEST_CURRENT_TEST") is None and campaign.user_id != current_user.id):
+    if not campaign or not check_entity_ownership(campaign, current_user):
         raise HTTPException(status_code=404, detail="Kampanya bulunamadı")
 
     update_data = campaign_in.model_dump(exclude_unset=True)
@@ -149,7 +149,7 @@ async def delete_campaign(
     current_user: AuthUser = Depends(get_current_user),
 ):
     campaign = await db.get(Campaign, campaign_id)
-    if not campaign or (os.getenv("PYTEST_CURRENT_TEST") is None and campaign.user_id != current_user.id):
+    if not campaign or not check_entity_ownership(campaign, current_user):
         raise HTTPException(status_code=404, detail="Kampanya bulunamadı")
     
     if CampaignRunner.is_campaign_running(campaign_id):
@@ -208,7 +208,7 @@ async def launch_campaign(
     current_user: AuthUser = Depends(get_current_user),
 ):
     campaign = await db.get(Campaign, campaign_id)
-    if not campaign or (os.getenv("PYTEST_CURRENT_TEST") is None and campaign.user_id != current_user.id):
+    if not campaign or not check_entity_ownership(campaign, current_user):
         raise HTTPException(status_code=404, detail="Kampanya bulunamadı")
 
     if campaign.status == CampaignStatus.ACTIVE or CampaignRunner.is_campaign_running(campaign_id):
@@ -265,7 +265,7 @@ async def pause_campaign(
     current_user: AuthUser = Depends(get_current_user),
 ):
     campaign = await db.get(Campaign, campaign_id)
-    if not campaign or (os.getenv("PYTEST_CURRENT_TEST") is None and campaign.user_id != current_user.id):
+    if not campaign or not check_entity_ownership(campaign, current_user):
         raise HTTPException(status_code=404, detail="Kampanya bulunamadı")
 
     campaign.status = CampaignStatus.PAUSED

@@ -58,9 +58,7 @@ from backend.app.services.whatsapp.identity import (
     phone_to_jid,
     safe_display_name as _safe_display_name,
 )
-from backend.app.services.whatsapp.orchestration.messaging import (
-    serialize_message as _serialize_message,
-)
+
 from backend.app.services.whatsapp.preview_normalization import (
     as_naive_utc as _as_naive_utc,
     build_last_message_summary,
@@ -1492,7 +1490,10 @@ class WhatsAppSyncOrchestrator:
         gateway_op_or_mark_relink = self._get_helper("_gateway_op_or_mark_relink", None)
         message_row_from_gateway = self._get_helper("_message_row_from_gateway", _message_row_from_gateway)
         apply_last_message = self._get_helper("_apply_last_message", _apply_last_message)
-        serialize_message = self._get_helper("_serialize_message", _serialize_message)
+        from backend.app.services.whatsapp.orchestration.messaging import (
+            serialize_message as _default_serialize_message,
+        )
+        serialize_message = self._get_helper("_serialize_message", _default_serialize_message)
         broadcast_sync_event = self._get_helper("_broadcast_sync_event", self._broadcast_sync_event)
         sync_event = self._get_helper("_sync_event", self._sync_event)
 

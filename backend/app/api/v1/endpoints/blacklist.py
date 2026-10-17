@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete, func
 
 from backend.app.core.database import get_db
-from backend.app.core.auth import AuthUser, get_current_user, get_user_filter
+from backend.app.core.auth import AuthUser, get_current_user, get_user_filter, check_entity_ownership
 from backend.app.core.search_utils import build_tr_search_filter
 from backend.app.models.blacklist import Blacklist
 from backend.app.models.lead import Lead, LeadStatus
@@ -160,7 +160,7 @@ async def remove_from_blacklist(
     current_user: AuthUser = Depends(get_current_user),
 ):
     bl = await db.get(Blacklist, bl_id)
-    if not bl or (os.getenv("PYTEST_CURRENT_TEST") is None and bl.user_id != current_user.id):
+    if not bl or not check_entity_ownership(bl, current_user):
         raise HTTPException(status_code=404, detail="Kara liste kaydı bulunamadı")
     await db.delete(bl)
     await db.commit()

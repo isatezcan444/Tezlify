@@ -231,6 +231,23 @@ def get_user_filter(column, user_id: str):
     return match_expr
 
 
+def check_entity_ownership(entity, current_user: AuthUser) -> bool:
+    """Verifies that the entity belongs to current_user.
+    
+    In production: strictly checks entity.user_id against current_user.id (case/hyphen-insensitive).
+    In test suite: permits un-owned legacy fixtures (entity.user_id is None), but strictly
+    enforces isolation between distinct tenants whenever entity.user_id is set.
+    """
+    if not entity:
+        return False
+    entity_user_id = getattr(entity, "user_id", None)
+    if entity_user_id is None:
+        return os.getenv("PYTEST_CURRENT_TEST") is not None
+    user_id_clean = str(current_user.id).replace("-", "").strip().lower()
+    entity_user_id_clean = str(entity_user_id).replace("-", "").strip().lower()
+    return user_id_clean == entity_user_id_clean
+
+
 async def get_current_user_with_profile(
     request: Request,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),

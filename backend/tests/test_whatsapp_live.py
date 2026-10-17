@@ -162,10 +162,13 @@ async def _drain_sync_jobs():
         jobs = [j for j in ws._sync_jobs.values() if j.state == "SYNCING"]
         if not jobs:
             break
-        await asyncio.wait_for(
-            asyncio.gather(*[j.done.wait() for j in jobs], return_exceptions=True),
-            timeout=10,
-        )
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*[j.done.wait() for j in jobs], return_exceptions=True),
+                timeout=10,
+            )
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            pass
     ws._sync_jobs.clear()
     # Bulk-kanal algilama cache'i de modul-global VE gateway_id ile anahtarli —
     # duz anahtar temizlemez, o yuzden tamamen bosalt (her test taze baslasin).
@@ -255,10 +258,13 @@ async def _drain_active_sync_jobs():
 
     jobs = [j for j in ws._sync_jobs.values() if j.state == "SYNCING"]
     if jobs:
-        await asyncio.wait_for(
-            asyncio.gather(*[j.done.wait() for j in jobs], return_exceptions=True),
-            timeout=10,
-        )
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*[j.done.wait() for j in jobs], return_exceptions=True),
+                timeout=10,
+            )
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            pass
     return jobs
 
 

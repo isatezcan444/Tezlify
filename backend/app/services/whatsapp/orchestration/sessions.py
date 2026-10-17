@@ -37,7 +37,7 @@ from backend.app.services.whatsapp.gateway import (
     extract_session_id,
     is_gateway_session_missing,
 )
-from backend.app.services.whatsapp.orchestration import pairing_registry
+import backend.app.services.whatsapp.orchestration.pairing_registry as pairing_registry
 from backend.app.services.whatsapp.orchestration.relink import (
     perform_atomic_relink,
 )

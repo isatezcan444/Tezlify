@@ -6,7 +6,7 @@ from sqlalchemy import select, func, delete, insert
 from sqlalchemy.exc import IntegrityError
 
 from backend.app.core.database import get_db
-from backend.app.core.auth import AuthUser, get_current_user, get_user_filter
+from backend.app.core.auth import AuthUser, get_current_user, get_user_filter, check_entity_ownership
 from backend.app.models.lead import Lead, LeadStatus
 from backend.app.models.blacklist import Blacklist
 from backend.app.schemas.lead import (
@@ -200,7 +200,7 @@ async def update_lead(
     current_user: AuthUser = Depends(get_current_user),
 ):
     lead = await db.get(Lead, lead_id)
-    if not lead or (os.getenv("PYTEST_CURRENT_TEST") is None and lead.user_id != current_user.id):
+    if not lead or not check_entity_ownership(lead, current_user):
         raise HTTPException(status_code=404, detail="Müşteri adayı bulunamadı")
 
     update_data = lead_in.model_dump(exclude_unset=True)
@@ -235,7 +235,7 @@ async def delete_lead(
     current_user: AuthUser = Depends(get_current_user),
 ):
     lead = await db.get(Lead, lead_id)
-    if not lead or (os.getenv("PYTEST_CURRENT_TEST") is None and lead.user_id != current_user.id):
+    if not lead or not check_entity_ownership(lead, current_user):
         raise HTTPException(status_code=404, detail="Müşteri adayı bulunamadı")
     await db.delete(lead)
     await db.commit()

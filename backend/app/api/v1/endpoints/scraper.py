@@ -12,7 +12,7 @@ from sqlalchemy import select
 import os
 from backend.app.core.database import get_db, AsyncSessionLocal
 from backend.app.core.config import settings
-from backend.app.core.auth import AuthUser, get_current_user, verify_lead_quota, get_user_filter
+from backend.app.core.auth import AuthUser, get_current_user, verify_lead_quota, get_user_filter, check_entity_ownership
 from backend.app.models.profile import Profile
 from backend.app.models.blacklist import ScraperJob, ScraperJobStatus
 from backend.app.models.lead import Lead
@@ -354,7 +354,7 @@ async def get_scraper_job(
     current_user: AuthUser = Depends(get_current_user),
 ):
     job = await db.get(ScraperJob, job_id)
-    if not job or (os.getenv("PYTEST_CURRENT_TEST") is None and job.user_id != current_user.id):
+    if not job or not check_entity_ownership(job, current_user):
         raise HTTPException(status_code=404, detail="Tarama işi bulunamadı")
     return job
 
@@ -366,7 +366,7 @@ async def cancel_scraper_job(
     current_user: AuthUser = Depends(get_current_user),
 ):
     job = await db.get(ScraperJob, job_id)
-    if not job or (os.getenv("PYTEST_CURRENT_TEST") is None and job.user_id != current_user.id):
+    if not job or not check_entity_ownership(job, current_user):
         raise HTTPException(status_code=404, detail="Tarama işi bulunamadı")
 
     task = active_tasks.get(job_id)
