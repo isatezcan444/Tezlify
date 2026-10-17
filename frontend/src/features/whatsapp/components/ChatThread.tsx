@@ -146,6 +146,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
   const isDark = typeof document !== 'undefined' && document.documentElement.classList.contains('dark');
   const wallpaperStyle = getChatWallpaperStyle({
     themeId: settings.wallpaperTheme,
+    customColor: settings.customWallpaperColor,
     isDark,
   });
   const containerRef = useRef<HTMLDivElement>(null);

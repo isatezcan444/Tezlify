@@ -13,6 +13,7 @@ export interface WhatsAppCustomizationSettings {
   playWhenTabActive: boolean;
   desktopNotificationsEnabled: boolean;
   wallpaperTheme: WallpaperThemeId;
+  customWallpaperColor: string;
   fontSize: 'small' | 'medium' | 'large';
   enterIsSend: boolean;
 }
@@ -24,6 +25,7 @@ export const DEFAULT_WHATSAPP_SETTINGS: WhatsAppCustomizationSettings = {
   playWhenTabActive: true,
   desktopNotificationsEnabled: false,
   wallpaperTheme: 'whatsapp_default',
+  customWallpaperColor: '#0b141a',
   fontSize: 'medium',
   enterIsSend: true,
 };

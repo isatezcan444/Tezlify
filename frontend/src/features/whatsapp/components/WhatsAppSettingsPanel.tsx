@@ -12,6 +12,7 @@ import {
   Type,
   CornerDownLeft,
   Sparkles,
+  Pipette,
 } from 'lucide-react';
 import { useI18n } from '../../../context/I18nContext';
 import { useToast } from '../../../context/ToastContext';
@@ -22,6 +23,7 @@ import { useWhatsAppSettings } from '../hooks/useWhatsAppSettings';
 import { SOUND_PRESETS, type SoundPresetId } from '../lib/whatsappAudio';
 import {
   WALLPAPER_THEMES,
+  QUICK_PALETTE_COLORS,
   getChatWallpaperStyle,
   type WallpaperThemeId,
 } from '../lib/whatsappWallpapers';
@@ -85,6 +87,7 @@ export const WhatsAppSettingsPanel: React.FC = () => {
   const isDark = typeof document !== 'undefined' && document.documentElement.classList.contains('dark');
   const previewWallpaperStyle = getChatWallpaperStyle({
     themeId: settings.wallpaperTheme,
+    customColor: settings.customWallpaperColor,
     isDark,
   });
 
@@ -429,6 +432,102 @@ export const WhatsAppSettingsPanel: React.FC = () => {
                     </button>
                   );
                 })}
+              </div>
+            </div>
+
+            {/* Custom Color Palette Section */}
+            <div className="pt-2 border-t border-slate-100 dark:border-white/[0.06]">
+              <div className="flex items-center justify-between mb-2">
+                <label className="text-xs font-bold text-slate-700 dark:text-slate-200 flex items-center gap-1.5">
+                  <Pipette className="w-3.5 h-3.5 text-[#7367F0]" />
+                  {t('whatsapp.customColor')}
+                </label>
+                {settings.wallpaperTheme === 'custom' && (
+                  <Badge variant="primary" className="text-[10px] py-0 px-1.5 font-bold">
+                    {t('common.active') || 'Aktif'}
+                  </Badge>
+                )}
+              </div>
+
+              {/* Native color picker & hex input */}
+              <div className="flex items-center gap-2.5 p-2.5 rounded-xl border border-slate-200/80 dark:border-white/[0.08] bg-slate-50/60 dark:bg-white/[0.02]">
+                <div className="relative w-8 h-8 rounded-lg overflow-hidden shrink-0 border border-slate-300 dark:border-white/[0.15] shadow-xs cursor-pointer">
+                  <input
+                    type="color"
+                    value={settings.customWallpaperColor || '#0b141a'}
+                    onChange={(e) => {
+                      updateSettings({
+                        wallpaperTheme: 'custom',
+                        customWallpaperColor: e.target.value,
+                      });
+                    }}
+                    className="absolute -top-2 -left-2 w-12 h-12 cursor-pointer border-0 p-0"
+                    title={t('whatsapp.customColorPicker')}
+                  />
+                </div>
+
+                <div className="flex-1 flex items-center gap-1.5">
+                  <span className="text-xs font-mono font-bold text-slate-400 select-none">#</span>
+                  <input
+                    type="text"
+                    maxLength={7}
+                    value={settings.customWallpaperColor ? settings.customWallpaperColor.replace('#', '') : ''}
+                    onChange={(e) => {
+                      const val = e.target.value.replace(/[^0-9a-fA-F]/g, '');
+                      if (val.length <= 6) {
+                        const hex = `#${val}`;
+                        updateSettings({
+                          wallpaperTheme: 'custom',
+                          customWallpaperColor: hex,
+                        });
+                      }
+                    }}
+                    placeholder="0b141a"
+                    className="w-full bg-white dark:bg-[#25293C] text-xs font-mono font-semibold text-slate-800 dark:text-white px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-white/[0.08] focus:outline-none focus:border-[#7367F0]"
+                  />
+                </div>
+
+                <Button
+                  size="sm"
+                  variant={settings.wallpaperTheme === 'custom' ? 'default' : 'outline'}
+                  onClick={() => updateSettings({ wallpaperTheme: 'custom' })}
+                  className="text-xs font-bold shrink-0 h-8"
+                >
+                  {settings.wallpaperTheme === 'custom' ? '✓ ' + (t('common.selected') || 'Seçildi') : (t('common.select') || 'Seç')}
+                </Button>
+              </div>
+
+              {/* Quick Color Palette Dots */}
+              <div className="pt-2">
+                <span className="text-[10px] font-bold text-slate-400 dark:text-[#7E7F96] uppercase tracking-wider block mb-1.5">
+                  {t('whatsapp.customColorPresets')}
+                </span>
+                <div className="flex items-center gap-2 flex-wrap">
+                  {QUICK_PALETTE_COLORS.map((hex) => {
+                    const isCurrent =
+                      settings.wallpaperTheme === 'custom' &&
+                      settings.customWallpaperColor.toLowerCase() === hex.toLowerCase();
+                    return (
+                      <button
+                        key={hex}
+                        type="button"
+                        onClick={() => {
+                          updateSettings({
+                            wallpaperTheme: 'custom',
+                            customWallpaperColor: hex,
+                          });
+                        }}
+                        style={{ backgroundColor: hex }}
+                        title={hex}
+                        className={`w-6 h-6 rounded-full border border-slate-300 dark:border-white/[0.2] transition-transform hover:scale-110 cursor-pointer flex items-center justify-center shadow-xs ${
+                          isCurrent ? 'ring-2 ring-[#7367F0] scale-110' : ''
+                        }`}
+                      >
+                        {isCurrent && <Check className="w-3 h-3 text-white drop-shadow-sm" />}
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
             </div>
 

@@ -6,7 +6,8 @@ export type WallpaperThemeId =
   | 'emerald'
   | 'warm_sand'
   | 'charcoal'
-  | 'soft_lilac';
+  | 'soft_lilac'
+  | 'custom';
 
 export interface WallpaperThemeMeta {
   id: WallpaperThemeId;
@@ -62,13 +63,39 @@ export const WALLPAPER_THEMES: WallpaperThemeMeta[] = [
 ];
 
 /**
+ * Curated quick-select color swatches for the custom palette picker.
+ */
+export const QUICK_PALETTE_COLORS = [
+  '#0b141a', // WhatsApp Dark
+  '#111b21', // WhatsApp Panel Dark
+  '#0f172a', // Slate 900
+  '#1e293b', // Slate 800
+  '#18181b', // Zinc 900
+  '#052e16', // Deep Forest Green
+  '#172554', // Deep Blue
+  '#2e1065', // Deep Purple
+  '#efeae2', // WhatsApp Classic Light
+  '#f8fafc', // Slate 50
+  '#ecfdf5', // Emerald 50
+  '#fef3c7', // Warm Amber 100
+];
+
+/**
  * Returns complete CSS properties for rendering the clean WhatsApp wallpaper background.
  */
 export function getChatWallpaperStyle(params: {
   themeId: WallpaperThemeId;
+  customColor?: string;
   isDark?: boolean;
 }): CSSProperties {
-  const { themeId, isDark = false } = params;
+  const { themeId, customColor, isDark = false } = params;
+
+  if (themeId === 'custom' && customColor) {
+    return {
+      backgroundColor: customColor,
+    };
+  }
+
   const theme = WALLPAPER_THEMES.find((t) => t.id === themeId) || WALLPAPER_THEMES[0];
   const bgColor = isDark ? theme.darkBg : theme.lightBg;
 
