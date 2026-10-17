@@ -470,13 +470,24 @@ async def subscribe_presence(gateway_id: str, jid: str) -> Dict[str, Any]:
 # Media
 # ---------------------------------------------------------------------------
 
-async def fetch_media(gateway_id: str, media_id: str, preview: bool = False, retry: bool = False) -> bytes:
+async def fetch_media(
+    gateway_id: str,
+    media_id: str,
+    preview: bool = False,
+    retry: bool = False,
+    jid: Optional[str] = None,
+    from_me: Optional[bool] = None,
+) -> bytes:
     """Gateway'den medya indirir (oturum kapsamli). Yalnızca 2xx bayt döner."""
     params = []
     if preview:
         params.append("preview=true")
     if retry:
         params.append("_retry=true")
+    if jid:
+        params.append(f"jid={urllib.parse.quote(jid)}")
+    if from_me is not None:
+        params.append(f"from_me={'true' if from_me else 'false'}")
     query = f"?{'&'.join(params)}" if params else ""
     url = f"{gateway_base()}{_s(gateway_id)}/media/{media_id}{query}"
     try:
@@ -491,13 +502,23 @@ async def fetch_media(gateway_id: str, media_id: str, preview: bool = False, ret
     return res.content
 
 
-async def fetch_media_unscoped(media_id: str, preview: bool = False, retry: bool = False) -> bytes:
+async def fetch_media_unscoped(
+    media_id: str,
+    preview: bool = False,
+    retry: bool = False,
+    jid: Optional[str] = None,
+    from_me: Optional[bool] = None,
+) -> bytes:
     """Gateway'den oturumsuz doğrudan medya indirir. Yalnızca 2xx bayt döner."""
     params = []
     if preview:
         params.append("preview=true")
     if retry:
         params.append("_retry=true")
+    if jid:
+        params.append(f"jid={urllib.parse.quote(jid)}")
+    if from_me is not None:
+        params.append(f"from_me={'true' if from_me else 'false'}")
     query = f"?{'&'.join(params)}" if params else ""
     url = f"{gateway_base()}/media/{media_id}{query}"
     try:

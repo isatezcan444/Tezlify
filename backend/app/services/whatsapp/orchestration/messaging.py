@@ -23,6 +23,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.auth import get_user_filter
+from backend.app.models.contact import Contact
 from backend.app.models.conversation import Conversation
 from backend.app.models.message import (
     ConversationMessageStatus,
@@ -935,16 +936,36 @@ class WhatsAppMessagingOrchestrator:
         wa_msg_id = row.wa_message_id
         mime = row.media_mime_type
         filename = getattr(row, "media_filename", None)
+
+        chat_jid = None
+        if conv and conv.contact_id:
+            c_res = await db.execute(select(Contact).where(Contact.id == conv.contact_id))
+            contact = c_res.scalar_one_or_none()
+            if contact:
+                if contact.custom_attributes and isinstance(contact.custom_attributes, dict):
+                    chat_jid = contact.custom_attributes.get("jid")
+                if not chat_jid and contact.phone_e164:
+                    clean_phone = re.sub(r"\D", "", contact.phone_e164)
+                    if clean_phone:
+                        chat_jid = f"{clean_phone}@s.whatsapp.net"
+        is_from_me = (row.direction == MessageDirection.OUTBOUND)
+
         # Commit the read transaction so the DB connection is released to the pool
         # while waiting on the gateway media download.
         await db.commit()
         try:
-            data = await gateway_client.fetch_media(gateway_id, target_id, preview=preview, retry=retry)
+            data = await gateway_client.fetch_media(
+                gateway_id, target_id, preview=preview, retry=retry, jid=chat_jid, from_me=is_from_me
+            )
         except LookupError:
             if target_id != media_id:
-                data = await gateway_client.fetch_media(gateway_id, media_id, preview=preview, retry=retry)
+                data = await gateway_client.fetch_media(
+                    gateway_id, media_id, preview=preview, retry=retry, jid=chat_jid, from_me=is_from_me
+                )
             elif wa_msg_id and target_id != wa_msg_id:
-                data = await gateway_client.fetch_media(gateway_id, wa_msg_id, preview=preview, retry=retry)
+                data = await gateway_client.fetch_media(
+                    gateway_id, wa_msg_id, preview=preview, retry=retry, jid=chat_jid, from_me=is_from_me
+                )
             else:
                 raise
 
