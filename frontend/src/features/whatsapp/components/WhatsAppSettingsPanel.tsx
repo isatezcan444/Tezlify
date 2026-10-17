@@ -23,7 +23,6 @@ import { useWhatsAppSettings } from '../hooks/useWhatsAppSettings';
 import { SOUND_PRESETS, type SoundPresetId } from '../lib/whatsappAudio';
 import {
   WALLPAPER_THEMES,
-  QUICK_PALETTE_COLORS,
   getChatWallpaperStyle,
   type WallpaperThemeId,
 } from '../lib/whatsappWallpapers';
@@ -495,39 +494,6 @@ export const WhatsAppSettingsPanel: React.FC = () => {
                 >
                   {settings.wallpaperTheme === 'custom' ? '✓ ' + (t('common.selected') || 'Seçildi') : (t('common.select') || 'Seç')}
                 </Button>
-              </div>
-
-              {/* Quick Color Palette Dots */}
-              <div className="pt-2">
-                <span className="text-[10px] font-bold text-slate-400 dark:text-[#7E7F96] uppercase tracking-wider block mb-1.5">
-                  {t('whatsapp.customColorPresets')}
-                </span>
-                <div className="flex items-center gap-2 flex-wrap">
-                  {QUICK_PALETTE_COLORS.map((hex) => {
-                    const isCurrent =
-                      settings.wallpaperTheme === 'custom' &&
-                      settings.customWallpaperColor.toLowerCase() === hex.toLowerCase();
-                    return (
-                      <button
-                        key={hex}
-                        type="button"
-                        onClick={() => {
-                          updateSettings({
-                            wallpaperTheme: 'custom',
-                            customWallpaperColor: hex,
-                          });
-                        }}
-                        style={{ backgroundColor: hex }}
-                        title={hex}
-                        className={`w-6 h-6 rounded-full border border-slate-300 dark:border-white/[0.2] transition-transform hover:scale-110 cursor-pointer flex items-center justify-center shadow-xs ${
-                          isCurrent ? 'ring-2 ring-[#7367F0] scale-110' : ''
-                        }`}
-                      >
-                        {isCurrent && <Check className="w-3 h-3 text-white drop-shadow-sm" />}
-                      </button>
-                    );
-                  })}
-                </div>
               </div>
             </div>
 
