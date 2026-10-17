@@ -278,6 +278,16 @@ src/
 - **Signature**: `useWhatsAppLoadingGate(onReady?: () => void) => { gate, dismiss, refresh }`.
 - **Import**: `import { useWhatsAppLoadingGate } from '@/features/whatsapp/hooks/useWhatsAppLoadingGate';`
 
+#### `WhatsAppSettingsPanel`
+- **Purpose**: Dedicated WhatsApp personalization and notification settings panel. Features synthesized audio notifications using HTML5 Web Audio API (5 authentic presets: WhatsApp Klasik, Modern Pop, Kristal Çan, Akustik Marimba, Zarif Tık), instant test/preview buttons, volume slider, desktop notifications permission toggle, custom wallpaper themes with authentic SVG WhatsApp doodles, background opacity/dimming slider, live interactive chat preview box, and keyboard dispatch preferences (Enter to send vs Shift+Enter).
+- **Props**: None (self-contained domain panel subscribing to `useWhatsAppSettings`).
+- **Import**: `import { WhatsAppSettingsPanel } from '@/features/whatsapp/components';`
+
+#### `useWhatsAppSettings` (hook)
+- **Purpose**: Centralized reactive state hook and persistence manager for WhatsApp personalizations. Reads/writes to `localStorage` (`tezlify_whatsapp_customization`) and broadcasts updates via window events so that active chat threads and settings panels remain synchronized across browser tabs without page reload.
+- **Signature**: `useWhatsAppSettings() => { settings, updateSettings, resetSettings, testSound, requestNotificationPermission, notifyInbound }`.
+- **Import**: `import { useWhatsAppSettings } from '@/features/whatsapp/hooks/useWhatsAppSettings';`
+
 ---
 
 ### Campaign Feature Components (`features/campaigns/components/`)

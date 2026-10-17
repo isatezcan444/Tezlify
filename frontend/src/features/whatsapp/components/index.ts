@@ -17,3 +17,4 @@ export * from './DocumentViewer';
 export * from './ChatInfoDrawer';
 export * from './ForwardModal';
 export * from './MediaSendModal';
+export * from './WhatsAppSettingsPanel';

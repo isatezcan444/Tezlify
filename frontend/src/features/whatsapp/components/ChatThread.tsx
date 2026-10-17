@@ -10,6 +10,8 @@ import { useI18n } from '../../../context/I18nContext';
 import { parseServerTime, formatMessageDate } from '../../../lib/utils';
 import { finishWaLatency } from '../lib/whatsappLatency';
 import { compareMessagesChronological } from '../lib/whatsappOrdering';
+import { useWhatsAppSettings } from '../hooks/useWhatsAppSettings';
+import { getChatWallpaperStyle } from '../lib/whatsappWallpapers';
 
 /** WhatsApp Web tarzı 'yazıyor...' balonu (üç zıplayan nokta). */
 const TypingBubble: React.FC<{ label: string }> = ({ label }) => (
@@ -140,6 +142,14 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
   activeMessageId,
 }) => {
   const { t, language } = useI18n();
+  const { settings } = useWhatsAppSettings();
+  const isDark = typeof document !== 'undefined' && document.documentElement.classList.contains('dark');
+  const wallpaperStyle = getChatWallpaperStyle({
+    themeId: settings.wallpaperTheme,
+    showDoodle: settings.wallpaperDoodle,
+    opacity: settings.wallpaperOpacity,
+    isDark,
+  });
   const containerRef = useRef<HTMLDivElement>(null);
   const contentWrapperRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -1062,7 +1072,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
   // Byte-identical DOM + behaviour to the pre-K.19 production component.
   if (!virtualize) {
     return (
-      <div className="relative flex-1 min-w-0 flex flex-col min-h-0 whatsapp-chat-bg">
+      <div className="relative flex-1 min-w-0 flex flex-col min-h-0" style={wallpaperStyle}>
         {pagingBanner}
         <div
           ref={containerRef}
@@ -1105,7 +1115,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
   const mountedRows = win.end >= win.start ? rows.slice(win.start, win.end + 1) : [];
 
   return (
-    <div className="relative flex-1 min-w-0 flex flex-col min-h-0 whatsapp-chat-bg">
+    <div className="relative flex-1 min-w-0 flex flex-col min-h-0" style={wallpaperStyle}>
       {pagingBanner}
       <div
         ref={containerRef}

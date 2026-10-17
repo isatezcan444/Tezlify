@@ -21,6 +21,7 @@ import {
   Copy,
   Upload,
   Lock,
+  Sliders,
 } from 'lucide-react';
 import { Tooltip } from '../components/ui/Tooltip';
 import { startWaLatency } from '../features/whatsapp/lib/whatsappLatency';
@@ -44,6 +45,7 @@ import { PEER_TYPING_TTL_MS, pruneExpiredTyping, resolveSyncDisplayCounts } from
 import { applyConversationEvent, mergeConversationPreservingAvatar } from '../features/whatsapp/lib/whatsappConversationPatch';
 import { applyReactionToThread } from '../features/whatsapp/lib/whatsappReactions';
 import { pauseAllMedia } from '../features/whatsapp/lib/mediaCoordinator';
+import { initAudioUnlock } from '../features/whatsapp/lib/whatsappAudio';
 import { WhatsAppSession, Conversation, ConversationStatus, ConversationMessageStatus, Lead, Message, LiveModeStatus, SessionSyncState } from '../types';
 import { WhatsAppApi, useLiveMode, mapConversationItem, mapMessageItem, type LidSplitCandidate } from '../features/whatsapp/api/whatsappApi';
 import { useWhatsAppLoadingGate } from '../features/whatsapp/hooks/useWhatsAppLoadingGate';
@@ -67,6 +69,7 @@ import {
   NewChatModal,
   WhatsAppSyncGate,
   AntiBanPanel,
+  WhatsAppSettingsPanel,
   ChatSearchBar,
   ChatInfoDrawer,
   ForwardModal,
@@ -74,6 +77,7 @@ import {
 } from '../features/whatsapp/components';
 import { LeadDetailDrawer } from '../features/leads/components';
 import { useAntiBanSettings } from '../features/whatsapp/hooks/useAntiBanSettings';
+import { useWhatsAppSettings } from '../features/whatsapp/hooks/useWhatsAppSettings';
 import { useChatSearch } from '../features/whatsapp/hooks/useChatSearch';
 import { useChatDragAndDrop } from '../features/whatsapp/hooks/useChatDragAndDrop';
 import { useQuickReplyComposer } from '../features/whatsapp/hooks/useQuickReplies';
@@ -204,8 +208,16 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   const [disconnectingSessionId, setDisconnectingSessionId] = useState<number | null>(null);
   const [deletingSessionId, setDeletingSessionId] = useState<number | null>(null);
 
-  // Tab State: 'conversations' | 'sessions' | 'antiban'
-  const [hubTab, setHubTab] = useState<'conversations' | 'sessions' | 'antiban'>('conversations');
+  // Tab State: 'conversations' | 'sessions' | 'antiban' | 'settings'
+  const [hubTab, setHubTab] = useState<'conversations' | 'sessions' | 'antiban' | 'settings'>('conversations');
+
+  const { notifyInbound } = useWhatsAppSettings();
+  const notifyInboundRef = useRef(notifyInbound);
+  notifyInboundRef.current = notifyInbound;
+
+  useEffect(() => {
+    return initAudioUnlock();
+  }, []);
 
   // Yönetim yüzeyi: bekleyen LID/telefon bölünmüş sohbetleri. Liste SUNUCUDAN
   // okunur; istemci hiçbir koşulda "bekleyen yok" VARSAYMAZ — sonda
@@ -2460,6 +2472,14 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         // background conversation must not keep a stale "yazıyor...".
         if (!isOutbound && convId != null) clearPeerTyping(convId);
 
+        // Alert on incoming genuine messages (play sound preset / desktop notification)
+        if (!isOutbound && !isReplayedEvent) {
+          notifyInboundRef.current(
+            senderLabel || t('whatsapp.newIncomingMessage'),
+            typeof msgText === 'string' ? msgText : ''
+          );
+        }
+
         const targetConvId = convId ?? (isActiveConversation && activeConv ? Number(activeConv.id) : null);
 
         if (targetConvId != null) {
@@ -3357,6 +3377,19 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
               <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse shrink-0" />
             )}
           </button>
+
+          <button
+            type="button"
+            onClick={() => setHubTab('settings')}
+            className={`flex-1 md:flex-initial py-1.5 px-3.5 rounded-xl text-xs font-extrabold transition-all flex items-center justify-center space-x-2 cursor-pointer whitespace-nowrap ${
+              hubTab === 'settings'
+                ? 'bg-white dark:bg-[#7367F0] text-slate-900 dark:text-white shadow-xs'
+                : 'text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white'
+            }`}
+          >
+            <Sliders className="w-3.5 h-3.5 shrink-0" />
+            <span className="whitespace-nowrap">{t('whatsapp.tabSettings')}</span>
+          </button>
         </div>
       </div>
 
@@ -4044,6 +4077,11 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       {/* 3. WHATSAPP ANTI-BAN YAPILANDIRMASI SUITE */}
       {/* ========================================================================= */}
       {hubTab === 'antiban' && <AntiBanPanel />}
+
+      {/* ========================================================================= */}
+      {/* 4. WHATSAPP KİŞİSELLEŞTİRME & AYARLAR */}
+      {/* ========================================================================= */}
+      {hubTab === 'settings' && <WhatsAppSettingsPanel />}
 
       {/* Lead Detail Drawer for Conversation -> Lead Navigation */}
       <LeadDetailDrawer
