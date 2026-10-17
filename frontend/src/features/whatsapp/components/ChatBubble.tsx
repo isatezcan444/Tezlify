@@ -53,24 +53,39 @@ import { useMediaCoordinator } from '../hooks/useMediaCoordinator';
 /** WhatsApp Web'in tepki cubugunda gosterdigi altı hizli ifade. */
 export const QUICK_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🙏'] as const;
 
-/** WhatsApp Web grup katilimcilari icin otantik renk paleti */
+/** WhatsApp Web grup katilimcilari icin otantik 20 renkli palet (light & dark mode uyumlu) */
 export const GROUP_SENDER_COLORS = [
-  'text-[#00a884] dark:text-[#25D366]',
-  'text-[#53bdeb] dark:text-[#53bdeb]',
-  'text-[#e542a3] dark:text-[#ff72cb]',
-  'text-[#ff9f1c] dark:text-[#ffb03a]',
-  'text-[#9b5de5] dark:text-[#b388ff]',
-  'text-[#00bbf9] dark:text-[#38bdf8]',
-  'text-[#f15bb5] dark:text-[#f472b6]',
-  'text-[#2dd4bf] dark:text-[#2dd4bf]',
+  'text-[#00a884] dark:text-[#25D366]', // 0: WhatsApp Teal / Green
+  'text-[#e11d48] dark:text-[#ff5b5b]', // 1: Coral Red (Cevat Aydın)
+  'text-[#0284c7] dark:text-[#53bdeb]', // 2: Sky Blue
+  'text-[#d97706] dark:text-[#ffb03a]', // 3: Amber Orange
+  'text-[#7c3aed] dark:text-[#b388ff]', // 4: Purple / Violet
+  'text-[#db2777] dark:text-[#ff72cb]', // 5: Magenta Pink
+  'text-[#0d9488] dark:text-[#2dd4bf]', // 6: Teal Mint
+  'text-[#4f46e5] dark:text-[#818cf8]', // 7: Indigo
+  'text-[#ca8a04] dark:text-[#facc15]', // 8: Sunflower Gold
+  'text-[#be123c] dark:text-[#fb7185]', // 9: Crimson Red
+  'text-[#0891b2] dark:text-[#22d3ee]', // 10: Deep Cyan
+  'text-[#65a30d] dark:text-[#a3e635]', // 11: Lime
+  'text-[#c026d3] dark:text-[#f472b6]', // 12: Hot Pink
+  'text-[#059669] dark:text-[#25D366]', // 13: WhatsApp Light Green (Tolga Cebeci)
+  'text-[#ea580c] dark:text-[#fb923c]', // 14: Tangerine Orange
+  'text-[#9333ea] dark:text-[#c084fc]', // 15: Orchid / Lavender
+  'text-[#2563eb] dark:text-[#38bdf8]', // 16: Electric Blue
+  'text-[#9f1239] dark:text-[#f43f5e]', // 17: Deep Rose
+  'text-[#047857] dark:text-[#34d399]', // 18: Sea Green
+  'text-[#6d28d9] dark:text-[#a78bfa]', // 19: Royal Violet
 ];
 
-export function getSenderColorClass(name: string): string {
-  let hash = 0;
-  for (let i = 0; i < name.length; i++) {
-    hash = (hash * 31 + name.charCodeAt(i)) >>> 0;
+export function getSenderColorClass(name?: string | null, fallbackKey?: string | null): string {
+  const seed = String(name || fallbackKey || '').trim();
+  if (!seed) return GROUP_SENDER_COLORS[0];
+  let h = 2166136261;
+  for (let i = 0; i < seed.length; i++) {
+    h ^= seed.charCodeAt(i);
+    h = Math.imul(h, 16777619);
   }
-  return GROUP_SENDER_COLORS[hash % GROUP_SENDER_COLORS.length];
+  return GROUP_SENDER_COLORS[(h >>> 0) % GROUP_SENDER_COLORS.length];
 }
 
 const EXPIRED_MEDIA_CACHE = new Set<string>();
@@ -444,7 +459,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
   const renderQuotedBlock = (quoted: QuotedMessageData) => {
     const isSelfSender = quoted.sender_name === 'ME' || quoted.sender_phone === 'ME';
     const displayName = isSelfSender ? t('whatsapp.youLabel') : (quoted.sender_name || t('whatsapp.participantFallback'));
-    const senderColorClass = isSelfSender ? 'text-[#00a884] dark:text-[#25D366]' : getSenderColorClass(displayName);
+    const senderColorClass = isSelfSender ? 'text-[#00a884] dark:text-[#25D366]' : getSenderColorClass(displayName, quoted.sender_phone);
     const thumbSrc =
       (quoted.thumbnail ? resolveMediaUrl(quoted.thumbnail) : undefined) ||
       (quoted.media_url
@@ -1315,7 +1330,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
 
           {/* Group Sender Name */}
           {senderLabel && (
-            <div className={`text-[12.5px] font-semibold leading-tight tracking-wide mb-1 select-none flex items-center gap-1 ${getSenderColorClass(senderLabel)}`}>
+            <div className={`text-[12.5px] font-semibold leading-tight tracking-wide mb-1 select-none flex items-center gap-1 ${getSenderColorClass(senderLabel, message.sender_phone)}`}>
               <span>{senderLabel}</span>
             </div>
           )}
