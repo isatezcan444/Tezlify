@@ -108,18 +108,18 @@ export const WhatsAppSettingsPanel: React.FC = () => {
     <div className="space-y-6 max-w-5xl mx-auto pb-12 animate-in fade-in duration-200">
       {/* Header Banner */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-5 rounded-2xl bg-gradient-to-r from-white to-slate-50 dark:from-[#2F3349] dark:to-[#25293C] border border-slate-200/80 dark:border-white/[0.08] shadow-xs">
-        <div className="flex items-center space-x-3.5">
+        <div className="flex items-center space-x-3.5 min-w-0">
           <div className="w-11 h-11 rounded-xl bg-gradient-to-br from-[#7367F0]/20 to-[#28C76F]/20 flex items-center justify-center text-[#7367F0] dark:text-[#25D366] shrink-0 border border-[#7367F0]/20">
             <Sliders className="w-5 h-5" />
           </div>
-          <div>
-            <h1 className="text-base sm:text-lg font-extrabold text-slate-800 dark:text-white flex items-center gap-2">
-              {t('whatsapp.settingsTitle')}
-              <Badge variant="primary" className="text-[10px] uppercase font-bold tracking-wider py-0 px-1.5">
+          <div className="min-w-0">
+            <h1 className="text-base sm:text-lg font-extrabold text-slate-800 dark:text-white flex items-center gap-2 flex-wrap">
+              <span>{t('whatsapp.settingsTitle')}</span>
+              <Badge variant="primary" className="text-[10px] uppercase font-bold tracking-wider py-0 px-1.5 shrink-0">
                 {t('whatsapp.settingsBadge') || 'Özelleştirme'}
               </Badge>
             </h1>
-            <p className="text-xs text-slate-500 dark:text-[#7E7F96]">
+            <p className="text-xs text-slate-500 dark:text-[#7E7F96] truncate sm:whitespace-normal">
               {t('whatsapp.settingsSubtitle')}
             </p>
           </div>
@@ -136,28 +136,28 @@ export const WhatsAppSettingsPanel: React.FC = () => {
         </Button>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+      <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
         {/* Left Column: Sound & Interaction Settings */}
-        <div className="lg:col-span-7 space-y-6">
+        <div className="xl:col-span-7 space-y-6">
           {/* 1. Sesli Bildirimler Card */}
           <Card className="p-5 space-y-5 bg-white dark:bg-[#2F3349] border-slate-200/80 dark:border-white/[0.08]">
-            <div className="flex items-center justify-between border-b border-slate-100 dark:border-white/[0.06] pb-3.5">
-              <div className="flex items-center space-x-2.5">
-                <div className="w-8 h-8 rounded-lg bg-[#28C76F]/10 flex items-center justify-center text-[#28C76F]">
+            <div className="flex items-center justify-between border-b border-slate-100 dark:border-white/[0.06] pb-3.5 gap-3">
+              <div className="flex items-center space-x-2.5 min-w-0 pr-2">
+                <div className="w-8 h-8 rounded-lg bg-[#28C76F]/10 flex items-center justify-center text-[#28C76F] shrink-0">
                   <Volume2 className="w-4 h-4" />
                 </div>
-                <div>
-                  <h2 className="text-sm font-extrabold text-slate-800 dark:text-white">
+                <div className="min-w-0">
+                  <h2 className="text-sm font-extrabold text-slate-800 dark:text-white truncate">
                     {t('whatsapp.soundNotifications')}
                   </h2>
-                  <p className="text-[11px] text-slate-400 dark:text-[#7E7F96]">
+                  <p className="text-[11px] text-slate-400 dark:text-[#7E7F96] truncate sm:whitespace-normal">
                     {t('whatsapp.soundNotificationsDesc')}
                   </p>
                 </div>
               </div>
 
               {/* Master Sound Toggle */}
-              <label className="relative inline-flex items-center cursor-pointer">
+              <label className="relative inline-flex items-center cursor-pointer shrink-0">
                 <input
                   type="checkbox"
                   checked={settings.soundEnabled}
@@ -187,15 +187,15 @@ export const WhatsAppSettingsPanel: React.FC = () => {
                             updateSettings({ soundPreset: preset.id });
                             handleTestSound(preset.id);
                           }}
-                          className={`flex items-center justify-between p-3 rounded-xl border transition-all cursor-pointer ${
+                          className={`flex items-center justify-between p-3 rounded-xl border transition-all cursor-pointer gap-2 ${
                             isSelected
                               ? 'bg-[#7367F0]/10 dark:bg-[#7367F0]/20 border-[#7367F0] dark:border-[#7367F0]/60 shadow-xs'
                               : 'bg-slate-50/60 dark:bg-white/[0.02] border-slate-200/80 dark:border-white/[0.06] hover:border-slate-300 dark:hover:border-white/[0.12]'
                           }`}
                         >
-                          <div className="flex items-center space-x-3">
+                          <div className="flex items-center space-x-3 min-w-0 flex-1 pr-2">
                             <div
-                              className={`w-4 h-4 rounded-full border flex items-center justify-center ${
+                              className={`w-4 h-4 rounded-full border flex items-center justify-center shrink-0 ${
                                 isSelected
                                   ? 'border-[#7367F0] bg-[#7367F0] text-white'
                                   : 'border-slate-300 dark:border-slate-600'
@@ -203,16 +203,16 @@ export const WhatsAppSettingsPanel: React.FC = () => {
                             >
                               {isSelected && <div className="w-1.5 h-1.5 rounded-full bg-white" />}
                             </div>
-                            <div>
-                              <div className="text-xs font-bold text-slate-800 dark:text-white flex items-center gap-1.5">
-                                {t(preset.nameKey)}
+                            <div className="min-w-0 flex-1">
+                              <div className="text-xs font-bold text-slate-800 dark:text-white flex items-center gap-1.5 truncate">
+                                <span>{t(preset.nameKey)}</span>
                                 {isSelected && (
-                                  <span className="text-[10px] font-extrabold text-[#7367F0] dark:text-[#A59DF8]">
+                                  <span className="text-[10px] font-extrabold text-[#7367F0] dark:text-[#A59DF8] shrink-0">
                                     ✓
                                   </span>
                                 )}
                               </div>
-                              <div className="text-[10px] text-slate-400 dark:text-[#7E7F96]">
+                              <div className="text-[10px] text-slate-400 dark:text-[#7E7F96] truncate">
                                 {t(preset.descKey)}
                               </div>
                             </div>
@@ -225,7 +225,7 @@ export const WhatsAppSettingsPanel: React.FC = () => {
                               handleTestSound(preset.id);
                             }}
                             title={t('whatsapp.testSound')}
-                            className={`p-1.5 rounded-lg border transition-all cursor-pointer ${
+                            className={`p-1.5 rounded-lg border transition-all cursor-pointer shrink-0 ${
                               isPlaying
                                 ? 'bg-[#28C76F] text-white border-[#28C76F] animate-pulse'
                                 : 'bg-white dark:bg-[#25293C] text-slate-600 dark:text-slate-300 border-slate-200 dark:border-white/[0.08] hover:bg-slate-100 dark:hover:bg-white/[0.08]'
@@ -277,23 +277,23 @@ export const WhatsAppSettingsPanel: React.FC = () => {
 
           {/* 2. Masaüstü Bildirimleri Card */}
           <Card className="p-5 space-y-4 bg-white dark:bg-[#2F3349] border-slate-200/80 dark:border-white/[0.08]">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center space-x-2.5">
-                <div className="w-8 h-8 rounded-lg bg-[#00CFE8]/10 flex items-center justify-center text-[#00CFE8]">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="flex items-center space-x-2.5 min-w-0 pr-2">
+                <div className="w-8 h-8 rounded-lg bg-[#00CFE8]/10 flex items-center justify-center text-[#00CFE8] shrink-0">
                   <Bell className="w-4 h-4" />
                 </div>
-                <div>
-                  <h2 className="text-sm font-extrabold text-slate-800 dark:text-white">
+                <div className="min-w-0">
+                  <h2 className="text-sm font-extrabold text-slate-800 dark:text-white truncate">
                     {t('whatsapp.desktopNotifications')}
                   </h2>
-                  <p className="text-[11px] text-slate-400 dark:text-[#7E7F96]">
+                  <p className="text-[11px] text-slate-400 dark:text-[#7E7F96] truncate sm:whitespace-normal">
                     {t('whatsapp.desktopNotificationsDesc')}
                   </p>
                 </div>
               </div>
 
               {notificationPermission === 'granted' ? (
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 shrink-0 self-start sm:self-auto">
                   <Button
                     size="sm"
                     variant="outline"
@@ -303,12 +303,12 @@ export const WhatsAppSettingsPanel: React.FC = () => {
                     <Bell className="w-3.5 h-3.5 text-[#7367F0]" />
                     <span>{t('whatsapp.testNotification')}</span>
                   </Button>
-                  <Badge variant="success" className="text-xs">
+                  <Badge variant="success" className="text-xs shrink-0">
                     {t('whatsapp.notificationsGranted')}
                   </Badge>
                 </div>
               ) : notificationPermission === 'denied' ? (
-                <Badge variant="danger" className="text-xs">
+                <Badge variant="danger" className="text-xs shrink-0 self-start sm:self-auto">
                   {t('whatsapp.notificationsDenied')}
                 </Badge>
               ) : (
@@ -316,7 +316,7 @@ export const WhatsAppSettingsPanel: React.FC = () => {
                   size="sm"
                   variant="outline"
                   onClick={handleRequestPermission}
-                  className="text-xs font-bold"
+                  className="text-xs font-bold shrink-0 self-start sm:self-auto"
                 >
                   {t('whatsapp.enableNotifications')}
                 </Button>
@@ -330,11 +330,11 @@ export const WhatsAppSettingsPanel: React.FC = () => {
             )}
 
             {notificationPermission === 'granted' && (
-              <div className="flex items-center justify-between pt-2 border-t border-slate-100 dark:border-white/[0.06]">
-                <span className="text-xs font-medium text-slate-600 dark:text-slate-300">
+              <div className="flex items-center justify-between pt-2 border-t border-slate-100 dark:border-white/[0.06] gap-3">
+                <span className="text-xs font-medium text-slate-600 dark:text-slate-300 min-w-0 pr-2">
                   {t('whatsapp.desktopNotificationsActive') || 'Sekme arka plandayken sistem bildirimi göster'}
                 </span>
-                <label className="relative inline-flex items-center cursor-pointer">
+                <label className="relative inline-flex items-center cursor-pointer shrink-0">
                   <input
                     type="checkbox"
                     checked={settings.desktopNotificationsEnabled}
@@ -350,22 +350,22 @@ export const WhatsAppSettingsPanel: React.FC = () => {
           {/* 3. Sohbet Davranışları & Yazı Boyutu */}
           <Card className="p-5 space-y-4 bg-white dark:bg-[#2F3349] border-slate-200/80 dark:border-white/[0.08]">
             <div className="flex items-center space-x-2.5 border-b border-slate-100 dark:border-white/[0.06] pb-3">
-              <div className="w-8 h-8 rounded-lg bg-[#7367F0]/10 flex items-center justify-center text-[#7367F0]">
+              <div className="w-8 h-8 rounded-lg bg-[#7367F0]/10 flex items-center justify-center text-[#7367F0] shrink-0">
                 <CornerDownLeft className="w-4 h-4" />
               </div>
-              <div>
-                <h2 className="text-sm font-extrabold text-slate-800 dark:text-white">
+              <div className="min-w-0">
+                <h2 className="text-sm font-extrabold text-slate-800 dark:text-white truncate">
                   {t('whatsapp.chatPreferences')}
                 </h2>
-                <p className="text-[11px] text-slate-400 dark:text-[#7E7F96]">
+                <p className="text-[11px] text-slate-400 dark:text-[#7E7F96] truncate sm:whitespace-normal">
                   {t('whatsapp.chatPreferencesDesc') || 'Klavyeden mesaj gönderme ve görünüm ayarları'}
                 </p>
               </div>
             </div>
 
             {/* Enter tuşu davranışı */}
-            <div className="flex items-center justify-between">
-              <div>
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0 pr-2">
                 <div className="text-xs font-bold text-slate-800 dark:text-white">
                   {t('whatsapp.enterToSend')}
                 </div>
@@ -373,7 +373,7 @@ export const WhatsAppSettingsPanel: React.FC = () => {
                   {t('whatsapp.enterToSendDesc')}
                 </div>
               </div>
-              <label className="relative inline-flex items-center cursor-pointer">
+              <label className="relative inline-flex items-center cursor-pointer shrink-0">
                 <input
                   type="checkbox"
                   checked={settings.enterIsSend}
@@ -399,7 +399,7 @@ export const WhatsAppSettingsPanel: React.FC = () => {
                       key={size}
                       type="button"
                       onClick={() => updateSettings({ fontSize: size })}
-                      className={`py-2 px-3 rounded-xl text-xs font-bold transition-all cursor-pointer border ${
+                      className={`py-2 px-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer border text-center truncate ${
                         isSelected
                           ? 'bg-[#7367F0] text-white border-[#7367F0] shadow-xs'
                           : 'bg-slate-50 dark:bg-white/[0.03] text-slate-600 dark:text-slate-300 border-slate-200 dark:border-white/[0.08] hover:border-slate-300'
@@ -415,17 +415,17 @@ export const WhatsAppSettingsPanel: React.FC = () => {
         </div>
 
         {/* Right Column: Wallpaper Customization & Interactive Live Preview */}
-        <div className="lg:col-span-5 space-y-6">
+        <div className="xl:col-span-5 space-y-6">
           <Card className="p-5 space-y-5 bg-white dark:bg-[#2F3349] border-slate-200/80 dark:border-white/[0.08]">
             <div className="flex items-center space-x-2.5 border-b border-slate-100 dark:border-white/[0.06] pb-3.5">
-              <div className="w-8 h-8 rounded-lg bg-[#FF9F43]/10 flex items-center justify-center text-[#FF9F43]">
+              <div className="w-8 h-8 rounded-lg bg-[#FF9F43]/10 flex items-center justify-center text-[#FF9F43] shrink-0">
                 <Palette className="w-4 h-4" />
               </div>
-              <div>
-                <h2 className="text-sm font-extrabold text-slate-800 dark:text-white">
+              <div className="min-w-0">
+                <h2 className="text-sm font-extrabold text-slate-800 dark:text-white truncate">
                   {t('whatsapp.chatWallpaper')}
                 </h2>
-                <p className="text-[11px] text-slate-400 dark:text-[#7E7F96]">
+                <p className="text-[11px] text-slate-400 dark:text-[#7E7F96] truncate sm:whitespace-normal">
                   {t('whatsapp.chatWallpaperDesc')}
                 </p>
               </div>
@@ -436,7 +436,7 @@ export const WhatsAppSettingsPanel: React.FC = () => {
               <label className="text-xs font-bold text-slate-700 dark:text-slate-200 block mb-2.5">
                 {t('whatsapp.wallpaperThemeSelect') || 'Renk Teması'}
               </label>
-              <div className="grid grid-cols-2 gap-2.5">
+              <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-2 gap-2.5">
                 {WALLPAPER_THEMES.map((theme) => {
                   const isSelected = settings.wallpaperTheme === theme.id;
                   return (
@@ -444,7 +444,8 @@ export const WhatsAppSettingsPanel: React.FC = () => {
                       key={theme.id}
                       type="button"
                       onClick={() => updateSettings({ wallpaperTheme: theme.id })}
-                      className={`flex items-center space-x-2.5 p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
+                      title={t(theme.nameKey)}
+                      className={`flex items-center space-x-2.5 p-2.5 rounded-xl border text-left transition-all cursor-pointer min-w-0 ${
                         isSelected
                           ? 'border-[#7367F0] ring-2 ring-[#7367F0]/30 bg-[#7367F0]/5 dark:bg-[#7367F0]/15'
                           : 'border-slate-200/80 dark:border-white/[0.08] bg-slate-50/60 dark:bg-white/[0.02] hover:border-slate-300'
@@ -456,7 +457,7 @@ export const WhatsAppSettingsPanel: React.FC = () => {
                       >
                         {isSelected && <Check className="w-3 h-3 text-white" />}
                       </div>
-                      <span className="text-xs font-semibold text-slate-700 dark:text-slate-200 truncate">
+                      <span className="text-[11px] sm:text-xs font-semibold text-slate-700 dark:text-slate-200 truncate leading-tight">
                         {t(theme.nameKey)}
                       </span>
                     </button>
@@ -496,7 +497,7 @@ export const WhatsAppSettingsPanel: React.FC = () => {
                   />
                 </div>
 
-                <div className="flex-1 flex items-center gap-1.5">
+                <div className="flex-1 min-w-0 flex items-center gap-1.5">
                   <span className="text-xs font-mono font-bold text-slate-400 select-none">#</span>
                   <input
                     type="text"
@@ -513,7 +514,7 @@ export const WhatsAppSettingsPanel: React.FC = () => {
                       }
                     }}
                     placeholder="0b141a"
-                    className="w-full bg-white dark:bg-[#25293C] text-xs font-mono font-semibold text-slate-800 dark:text-white px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-white/[0.08] focus:outline-none focus:border-[#7367F0]"
+                    className="w-full min-w-0 bg-white dark:bg-[#25293C] text-xs font-mono font-semibold text-slate-800 dark:text-white px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-white/[0.08] focus:outline-none focus:border-[#7367F0]"
                   />
                 </div>
 
