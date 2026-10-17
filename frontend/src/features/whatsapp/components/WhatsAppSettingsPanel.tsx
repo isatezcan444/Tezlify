@@ -36,6 +36,7 @@ export const WhatsAppSettingsPanel: React.FC = () => {
     resetSettings,
     testSound,
     requestNotificationPermission,
+    testDesktopNotification,
   } = useWhatsAppSettings();
 
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>(
@@ -64,9 +65,22 @@ export const WhatsAppSettingsPanel: React.FC = () => {
       setNotificationPermission(Notification.permission);
     }
     if (granted) {
+      updateSettings({ desktopNotificationsEnabled: true });
       toast.success(t('whatsapp.notificationsGranted'), t('common.success'));
     } else {
       toast.error(t('whatsapp.notificationsDenied'), t('common.error'));
+    }
+  };
+
+  const handleTestDesktopNotification = async () => {
+    const success = await testDesktopNotification(
+      t('whatsapp.testNotificationTitle'),
+      t('whatsapp.testNotificationBody')
+    );
+    if (success) {
+      toast.success(t('whatsapp.testNotificationTitle') + ' — ' + (t('whatsapp.testNotification') || 'Bildirim gönderildi'), t('common.success'));
+    } else {
+      toast.error(t('whatsapp.notificationsDeniedHelp') || t('whatsapp.notificationsDenied'), t('common.error'));
     }
   };
 
@@ -279,9 +293,20 @@ export const WhatsAppSettingsPanel: React.FC = () => {
               </div>
 
               {notificationPermission === 'granted' ? (
-                <Badge variant="success" className="text-xs">
-                  {t('whatsapp.notificationsGranted')}
-                </Badge>
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={handleTestDesktopNotification}
+                    className="text-xs font-bold space-x-1.5 cursor-pointer hover:border-[#7367F0]/50"
+                  >
+                    <Bell className="w-3.5 h-3.5 text-[#7367F0]" />
+                    <span>{t('whatsapp.testNotification')}</span>
+                  </Button>
+                  <Badge variant="success" className="text-xs">
+                    {t('whatsapp.notificationsGranted')}
+                  </Badge>
+                </div>
               ) : notificationPermission === 'denied' ? (
                 <Badge variant="danger" className="text-xs">
                   {t('whatsapp.notificationsDenied')}
@@ -297,6 +322,12 @@ export const WhatsAppSettingsPanel: React.FC = () => {
                 </Button>
               )}
             </div>
+
+            {notificationPermission === 'denied' && (
+              <div className="p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-700 dark:text-rose-400 text-xs leading-relaxed">
+                {t('whatsapp.notificationsDeniedHelp')}
+              </div>
+            )}
 
             {notificationPermission === 'granted' && (
               <div className="flex items-center justify-between pt-2 border-t border-slate-100 dark:border-white/[0.06]">

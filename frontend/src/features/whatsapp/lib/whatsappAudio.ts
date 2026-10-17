@@ -242,6 +242,63 @@ export function playSoundPreset(presetId: SoundPresetId = 'whatsapp_classic', vo
 }
 
 /**
+ * SVG Data URI for crisp WhatsApp notification badge (zero network dependency).
+ */
+export const WHATSAPP_NOTIFICATION_ICON =
+  'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 24 24" fill="%2325D366"><path d="M12.04 2c-5.46 0-9.91 4.45-9.91 9.91 0 1.75.46 3.45 1.32 4.95L2.05 22l5.25-1.38c1.45.79 3.08 1.21 4.74 1.21 5.46 0 9.91-4.45 9.91-9.91 0-5.46-4.45-9.92-9.91-9.92z"/><path fill="%23ffffff" d="M17.5 14.4c-.2-.1-1.3-.7-1.5-.7-.2-.1-.4-.1-.5.1-.2.2-.6.7-.8.9-.2.2-.3.2-.5.1-.3-.1-1.1-.4-2.1-1.3-.8-.7-1.3-1.6-1.5-1.9-.2-.3 0-.4.1-.6.1-.1.3-.3.4-.5.1-.2.2-.3.3-.5.1-.2 0-.3 0-.5-.1-.1-.5-1.3-.7-1.8-.2-.5-.4-.4-.5-.4h-.5c-.2 0-.5.1-.7.3-.2.3-1 1-1 2.4s1 2.8 1.2 3c.2.2 2 3.1 4.9 4.3 2.9 1.2 2.9.8 3.4.8.5 0 1.6-.7 1.8-1.3.2-.7.2-1.2.1-1.4-.1-.2-.3-.3-.5-.4z"/></svg>';
+
+/**
+ * Fires a desktop notification with macOS Notification Center support.
+ */
+export async function showDesktopNotification(options: {
+  title: string;
+  body?: string;
+  tag?: string;
+  onClick?: () => void;
+}): Promise<boolean> {
+  if (typeof window === 'undefined' || !('Notification' in window)) {
+    return false;
+  }
+  if (Notification.permission !== 'granted') {
+    return false;
+  }
+  try {
+    const title = options.title || 'WhatsApp';
+    const body = options.body ? (options.body.length > 120 ? `${options.body.slice(0, 117)}...` : options.body) : 'Yeni mesaj';
+    const tag = options.tag || `wa-msg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+
+    const notif = new Notification(title, {
+      body,
+      icon: WHATSAPP_NOTIFICATION_ICON,
+      badge: WHATSAPP_NOTIFICATION_ICON,
+      tag,
+      silent: false,
+    });
+
+    notif.onclick = () => {
+      try {
+        window.focus();
+      } catch (_) {}
+      if (options.onClick) {
+        options.onClick();
+      } else {
+        window.dispatchEvent(new CustomEvent('tezlify:navigate_tab', { detail: { tab: 'whatsapp' } }));
+      }
+      notif.close();
+    };
+
+    notif.onerror = (e) => {
+      console.warn('[WhatsApp Audio] Desktop notification dispatch error:', e);
+    };
+
+    return true;
+  } catch (err) {
+    console.warn('[WhatsApp Audio] Desktop notification failed to construct:', err);
+    return false;
+  }
+}
+
+/**
  * Triggers an inbound message alert with anti-cacophony throttling.
  */
 export function triggerInboundNotification(params: {
@@ -251,9 +308,10 @@ export function triggerInboundNotification(params: {
   desktopNotificationsEnabled?: boolean;
   senderName?: string;
   body?: string;
+  forceDesktopNotification?: boolean;
 }): void {
   const now = Date.now();
-  if (now - lastPlayedAt < THROTTLE_WINDOW_MS) {
+  if (!params.forceDesktopNotification && now - lastPlayedAt < THROTTLE_WINDOW_MS) {
     return; // Throttled
   }
   lastPlayedAt = now;
@@ -267,28 +325,21 @@ export function triggerInboundNotification(params: {
     }
   }
 
-  // 2. Desktop Notification if tab is in background and enabled
-  if (
-    params.desktopNotificationsEnabled &&
-    typeof window !== 'undefined' &&
-    'Notification' in window &&
-    Notification.permission === 'granted' &&
-    document.hidden
-  ) {
-    try {
-      const title = params.senderName || 'WhatsApp';
-      const body = params.body ? (params.body.length > 80 ? `${params.body.slice(0, 77)}...` : params.body) : 'Yeni mesaj';
-      const notif = new Notification(title, {
-        body,
-        icon: '/favicon.ico',
-        tag: 'whatsapp-inbound-msg',
-      });
-      notif.onclick = () => {
-        window.focus();
-        notif.close();
-      };
-    } catch (e) {
-      console.warn('[WhatsApp Audio] Failed to trigger desktop notification:', e);
-    }
+  // 2. Desktop Notification
+  const canSendDesktop =
+    params.forceDesktopNotification ||
+    (params.desktopNotificationsEnabled &&
+      typeof window !== 'undefined' &&
+      'Notification' in window &&
+      Notification.permission === 'granted');
+
+  if (canSendDesktop) {
+    const title = params.senderName || 'WhatsApp';
+    const body = params.body ? (params.body.length > 80 ? `${params.body.slice(0, 77)}...` : params.body) : 'Yeni mesaj';
+
+    void showDesktopNotification({
+      title,
+      body,
+    });
   }
 }

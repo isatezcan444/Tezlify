@@ -9,6 +9,7 @@ import { ApiClient, subscribeRealtime } from './api/client';
 import { DashboardStats } from './types';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { LoginPage } from './pages/LoginPage';
+import { useWhatsAppSettings } from './features/whatsapp/hooks/useWhatsAppSettings';
 
 /* Route-level code splitting.
    The 922 KB bundle was a single file because all 15 pages were static imports,
@@ -128,6 +129,12 @@ const AppContent: React.FC = () => {
   const toast = useToast();
   const { t } = useI18n();
 
+  const { notifyInbound } = useWhatsAppSettings();
+  const notifyInboundRef = useRef(notifyInbound);
+  notifyInboundRef.current = notifyInbound;
+  const activeTabRef = useRef(activeTab);
+  activeTabRef.current = activeTab;
+
   const handleNavigate = (tab: string, prefillData?: any) => {
     if (tab === 'campaigns' && prefillData) {
       setCampaignPrefill(prefillData);
@@ -136,6 +143,18 @@ const AppContent: React.FC = () => {
     }
     setActiveTab(tab);
   };
+
+  // Listen to desktop notification clicks or internal cross-tab navigation requests
+  useEffect(() => {
+    const handleNavEvent = (e: Event) => {
+      const customEvent = e as CustomEvent<{ tab?: string; prefill?: any }>;
+      if (customEvent.detail?.tab) {
+        handleNavigate(customEvent.detail.tab, customEvent.detail.prefill);
+      }
+    };
+    window.addEventListener('tezlify:navigate_tab', handleNavEvent);
+    return () => window.removeEventListener('tezlify:navigate_tab', handleNavEvent);
+  }, []);
 
   // Faz 12 (P0 — ağ fırtınası kök nedeni): İSTATİSTİK POLLING'İ KALDIRILDI.
   //
@@ -198,6 +217,44 @@ const AppContent: React.FC = () => {
               t('toast.messageSentTitle')
             );
             scheduleStatsRefresh();
+          } else if (eventData.event === 'message_new') {
+            // Inbound WhatsApp message alert when user is on another tab (Dashboard, Leads, Campaigns, etc.)
+            const isOutbound =
+              eventData.direction === 'outbound' ||
+              eventData.is_outbound === true ||
+              eventData.message?.direction === 'outbound' ||
+              eventData.message?.is_outbound === true;
+
+            if (!isOutbound && activeTabRef.current !== 'whatsapp') {
+              const senderLabel =
+                eventData.sender_name ||
+                eventData.sender_phone ||
+                eventData.lead_phone ||
+                eventData.phone ||
+                t('whatsapp.newIncomingMessage') ||
+                'WhatsApp';
+              const msgText =
+                eventData.content ||
+                eventData.text ||
+                eventData.message?.content ||
+                eventData.message?.text ||
+                '';
+
+              notifyInboundRef.current(
+                senderLabel,
+                typeof msgText === 'string' ? msgText : ''
+              );
+
+              const previewSnippet =
+                typeof msgText === 'string' && msgText.trim()
+                  ? (msgText.length > 60 ? msgText.slice(0, 57) + '...' : msgText)
+                  : '';
+
+              toast.info(
+                previewSnippet ? `${senderLabel}: ${previewSnippet}` : senderLabel,
+                t('whatsapp.newIncomingMessage') || 'Yeni WhatsApp Mesajı'
+              );
+            }
           } else if (eventData.event === 'scraper_completed') {
             toast.info(
               t('toast.scraperCompletedMsg', { found: eventData.total_found, leads: eventData.total_new_leads }),

@@ -3,6 +3,7 @@ import {
   type SoundPresetId,
   playSoundPreset,
   triggerInboundNotification,
+  showDesktopNotification,
 } from '../lib/whatsappAudio';
 import { type WallpaperThemeId } from '../lib/whatsappWallpapers';
 
@@ -37,9 +38,13 @@ function getStoredSettings(): WhatsAppCustomizationSettings {
   if (typeof window === 'undefined') return DEFAULT_WHATSAPP_SETTINGS;
   try {
     const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
-    if (!raw) return DEFAULT_WHATSAPP_SETTINGS;
-    const parsed = JSON.parse(raw);
-    return { ...DEFAULT_WHATSAPP_SETTINGS, ...parsed };
+    const parsed = raw ? JSON.parse(raw) : {};
+    const hasGranted = 'Notification' in window && Notification.permission === 'granted';
+    return {
+      ...DEFAULT_WHATSAPP_SETTINGS,
+      desktopNotificationsEnabled: hasGranted ? (parsed.desktopNotificationsEnabled ?? true) : Boolean(parsed.desktopNotificationsEnabled),
+      ...parsed,
+    };
   } catch (err) {
     console.warn('[WhatsApp Settings] Failed to read stored settings:', err);
     return DEFAULT_WHATSAPP_SETTINGS;
@@ -121,6 +126,18 @@ export function useWhatsAppSettings() {
     }
   }, [updateSettings]);
 
+  const testDesktopNotification = useCallback(async (title?: string, body?: string): Promise<boolean> => {
+    if (typeof window === 'undefined' || !('Notification' in window)) return false;
+    if (Notification.permission !== 'granted') {
+      const granted = await requestNotificationPermission();
+      if (!granted) return false;
+    }
+    return await showDesktopNotification({
+      title: title || 'Tezlify WhatsApp',
+      body: body || 'Chrome masaüstü bildirimi başarıyla çalışıyor! 🔔',
+    });
+  }, [requestNotificationPermission]);
+
   const notifyInbound = useCallback((senderName?: string, body?: string) => {
     triggerInboundNotification({
       soundEnabled: settings.soundEnabled,
@@ -138,6 +155,7 @@ export function useWhatsAppSettings() {
     resetSettings,
     testSound,
     requestNotificationPermission,
+    testDesktopNotification,
     notifyInbound,
   };
 }
