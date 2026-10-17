@@ -24,6 +24,7 @@ import {
   Plus,
   Loader2,
   MessageSquare,
+  UserPlus,
 } from 'lucide-react';
 import { Conversation, Message } from '../../../types';
 import { ApiClient } from '../../../api/client';
@@ -42,6 +43,7 @@ import {
 } from '../lib/starredMessages';
 import { MediaLightbox } from './MediaLightbox';
 import { DocumentViewer, resolveDocVisual } from './DocumentViewer';
+import { getSenderColorClass } from './ChatBubble';
 
 export interface ChatInfoDrawerProps {
   isOpen: boolean;
@@ -121,6 +123,8 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
   const [loadingParticipants, setLoadingParticipants] = useState(false);
   const [participantSearch, setParticipantSearch] = useState('');
   const [isSearchingParticipants, setIsSearchingParticipants] = useState(false);
+  const [copiedPartPhone, setCopiedPartPhone] = useState<string | null>(null);
+  const [addingPartPhone, setAddingPartPhone] = useState<string | null>(null);
 
   const isGroup = Boolean(conversation.is_group);
   const cleanPhone =
@@ -191,15 +195,92 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
     };
   }, [isOpen, isGroup, conversation.id]);
 
+  // Merged & fallback participants: combine API participants with unique participants from chat messages
+  const effectiveParticipants = useMemo(() => {
+    const map = new Map<string, { id: string; name: string; phone?: string; is_me: boolean; admin?: string }>();
+
+    // 1. Group participants returned by backend API
+    for (const p of groupParticipants) {
+      const key = (p.phone || p.id).replace(/\D/g, '') || p.id;
+      map.set(key, { ...p });
+    }
+
+    // 2. Discover from messages (essential fallback when gateway participant list is not yet synced)
+    if (isGroup && messages && messages.length > 0) {
+      for (const m of messages) {
+        if (m.direction === 'OUTBOUND') {
+          if (!Array.from(map.values()).some((v) => v.is_me)) {
+            map.set('me', {
+              id: 'me',
+              name: language === 'tr' ? 'Siz' : 'You',
+              phone: undefined,
+              is_me: true,
+            });
+          }
+        } else {
+          const phone = m.sender_phone;
+          const name = m.sender_name || (phone ? formatPhoneNumber(phone) : undefined);
+          const rawKey = phone ? phone.replace(/\D/g, '') : name;
+          if (rawKey) {
+            const existing = map.get(rawKey);
+            if (!existing) {
+              map.set(rawKey, {
+                id: phone || rawKey,
+                name: name || phone || (language === 'tr' ? 'Katılımcı' : 'Participant'),
+                phone: phone || undefined,
+                is_me: false,
+              });
+            } else if ((!existing.name || !isRealContactName(existing.name)) && name && isRealContactName(name)) {
+              existing.name = name;
+            }
+          }
+        }
+      }
+    }
+
+    return Array.from(map.values());
+  }, [groupParticipants, isGroup, messages, language]);
+
   const filteredParticipants = useMemo(() => {
-    if (!participantSearch.trim()) return groupParticipants;
+    if (!participantSearch.trim()) return effectiveParticipants;
     const q = participantSearch.toLowerCase().trim();
-    return groupParticipants.filter((p) => {
+    return effectiveParticipants.filter((p) => {
       const nameMatch = p.name && p.name.toLowerCase().includes(q);
       const phoneMatch = p.phone && p.phone.includes(q);
       return nameMatch || phoneMatch;
     });
-  }, [groupParticipants, participantSearch]);
+  }, [effectiveParticipants, participantSearch]);
+
+  const handleCopyParticipantPhone = (phone?: string) => {
+    if (!phone) return;
+    navigator.clipboard.writeText(phone);
+    setCopiedPartPhone(phone);
+    toast.success(t('whatsapp.phoneCopied'), t('common.success'));
+    setTimeout(() => setCopiedPartPhone(null), 2000);
+  };
+
+  const handleAddParticipantToCrm = async (p: { name: string; phone?: string; id: string }) => {
+    const phone = p.phone || p.id;
+    if (!phone || addingPartPhone) return;
+    setAddingPartPhone(phone);
+    try {
+      const created = await ApiClient.createLead({
+        name: p.name || phone,
+        phone,
+        phone_e164: phone,
+        is_whatsapp_eligible: true,
+        status: 'NEW' as any,
+      });
+      toast.success(t('whatsapp.addedToCrmSuccess'));
+      if (onOpenLead && created?.id) {
+        onOpenLead(created.id);
+      }
+    } catch (err: any) {
+      toast.error(err.message || 'CRM adayı eklenemedi');
+    } finally {
+      setAddingPartPhone(null);
+    }
+  };
 
   const handleAddToCrm = async () => {
     if (!cleanPhone || isAddingLead) return;
@@ -591,10 +672,10 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
                 <div className="flex items-center space-x-2">
                   <Users className="w-4 h-4 text-[#7367F0]" />
                   <span className="text-xs font-extrabold text-slate-800 dark:text-slate-200">
-                    {t('whatsapp.groupParticipantsCount', { count: String(groupParticipants.length) })}
+                    {t('whatsapp.groupParticipantsCount', { count: String(effectiveParticipants.length) })}
                   </span>
                 </div>
-                {groupParticipants.length > 5 && (
+                {effectiveParticipants.length > 5 && (
                   <button
                     type="button"
                     onClick={() => {
@@ -623,7 +704,7 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
               )}
 
               <div className="p-2 max-h-72 overflow-y-auto custom-scrollbar space-y-1">
-                {loadingParticipants ? (
+                {loadingParticipants && filteredParticipants.length === 0 ? (
                   <div className="py-6 flex items-center justify-center space-x-2 text-slate-400 text-xs">
                     <Loader2 className="w-4 h-4 animate-spin" />
                     <span>{t('common.loading')}</span>
@@ -646,10 +727,14 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
                       : !isMe && p.name && !isRealContactName(p.name) && p.name !== partName
                       ? `~${p.name}`
                       : null;
+                    const senderColor = isMe
+                      ? 'text-[#7367F0]'
+                      : getSenderColorClass(partName, p.phone || p.id);
 
                     return (
                       <div
                         key={p.id}
+                        data-testid={`participant-row-${p.id}`}
                         className="flex items-center justify-between p-2 rounded-xl hover:bg-slate-100 dark:hover:bg-white/[0.04] transition-colors group"
                       >
                         <div className="flex items-center space-x-2.5 min-w-0 flex-1">
@@ -662,7 +747,7 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
                           />
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center space-x-1.5">
-                              <span className={`text-xs font-bold truncate ${isMe ? 'text-[#7367F0]' : 'text-slate-800 dark:text-slate-200'}`}>
+                              <span className={`text-xs font-bold truncate ${senderColor}`}>
                                 {partName}
                               </span>
                             </div>
@@ -674,21 +759,56 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
                           </div>
                         </div>
 
-                        <div className="flex items-center space-x-1.5 shrink-0 ml-2">
+                        <div className="flex items-center space-x-1 shrink-0 ml-2">
                           {isAdmin && (
                             <span className="px-1.5 py-0.5 rounded text-[9.5px] font-bold border border-[#25D366]/40 text-[#25D366] dark:text-[#25D366]">
                               {t('whatsapp.groupAdmin')}
                             </span>
                           )}
-                          {!isMe && p.phone && onDirectMessageParticipant && (
-                            <button
-                              type="button"
-                              onClick={() => onDirectMessageParticipant(p.phone!, partName)}
-                              title={t('whatsapp.messageParticipant')}
-                              className="opacity-0 group-hover:opacity-100 p-1.5 rounded-lg text-slate-400 hover:text-[#7367F0] hover:bg-slate-200/50 dark:hover:bg-white/10 transition-all cursor-pointer"
-                            >
-                              <MessageSquare className="w-3.5 h-3.5" />
-                            </button>
+                          {!isMe && p.phone && (
+                            <div className="flex items-center space-x-0.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+                              <button
+                                type="button"
+                                onClick={() => handleCopyParticipantPhone(p.phone)}
+                                title={t('whatsapp.copyParticipantPhone')}
+                                aria-label={t('whatsapp.copyParticipantPhone')}
+                                data-testid={`copy-participant-${p.id}`}
+                                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-200/50 dark:hover:bg-white/10 transition-all cursor-pointer"
+                              >
+                                {copiedPartPhone === p.phone ? (
+                                  <Check className="w-3.5 h-3.5 text-emerald-500" />
+                                ) : (
+                                  <Copy className="w-3.5 h-3.5" />
+                                )}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleAddParticipantToCrm(p)}
+                                disabled={addingPartPhone === p.phone}
+                                title={t('whatsapp.addParticipantToCrm')}
+                                aria-label={t('whatsapp.addParticipantToCrm')}
+                                data-testid={`add-lead-participant-${p.id}`}
+                                className="p-1.5 rounded-lg text-slate-400 hover:text-emerald-600 dark:hover:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/30 transition-all cursor-pointer"
+                              >
+                                {addingPartPhone === p.phone ? (
+                                  <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-500" />
+                                ) : (
+                                  <UserPlus className="w-3.5 h-3.5" />
+                                )}
+                              </button>
+                              {onDirectMessageParticipant && (
+                                <button
+                                  type="button"
+                                  onClick={() => onDirectMessageParticipant(p.phone!, partName)}
+                                  title={t('whatsapp.messageParticipant')}
+                                  aria-label={t('whatsapp.messageParticipant')}
+                                  data-testid={`direct-msg-participant-${p.id}`}
+                                  className="p-1.5 rounded-lg text-slate-400 hover:text-[#7367F0] hover:bg-slate-200/50 dark:hover:bg-white/10 transition-all cursor-pointer"
+                                >
+                                  <MessageSquare className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                            </div>
                           )}
                         </div>
                       </div>

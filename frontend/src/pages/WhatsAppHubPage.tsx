@@ -3909,6 +3909,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                 ) : (
                   <ChatComposer
                     key={selectedConv.id}
+                    leadName={selectedConv.lead_name || ''}
                     replyingTo={replyingTo}
                     onCancelReply={() => setReplyingTo(null)}
                     insertedText={insertedComposerText}

@@ -1,6 +1,6 @@
 import { createSendLock } from '../lib/sendLock';
 import { insertAtCaret } from '../lib/emojiData';
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { 
   Send, 
   Lock, 
@@ -16,7 +16,8 @@ import {
   Mic,
   Music,
   Trash2,
-  X
+  X,
+  Zap,
 } from 'lucide-react';
 import { Button } from '../../../components/ui/button';
 import { Tooltip } from '../../../components/ui/Tooltip';
@@ -25,6 +26,9 @@ import { EmojiPicker } from './EmojiPicker';
 import { MediaSendModal } from './MediaSendModal';
 import { useI18n } from '../../../context/I18nContext';
 import { useToast } from '../../../context/ToastContext';
+import { QuickReply } from '../../../types';
+import { WhatsAppRepository } from '../data/whatsappRepository';
+import { filterQuickReplies, renderQuickReplyContent } from '../lib/whatsappQuickReplies';
 
 export interface QuotedMessage {
   id: number | string;
@@ -44,6 +48,7 @@ export interface ChatComposerProps {
   isClosed?: boolean;
   isWindowOpen?: boolean;
   placeholder?: string;
+  leadName?: string;
   replyingTo?: QuotedMessage | null;
   onCancelReply?: () => void;
   insertedText?: { text: string; timestamp: number } | null;
@@ -62,6 +67,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
   isClosed = false,
   isWindowOpen = true,
   placeholder,
+  leadName,
   replyingTo,
   onCancelReply,
   insertedText,
@@ -84,6 +90,46 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
   const [sendingFiles, setSendingFiles] = useState(false);
   const [sendingIndex, setSendingIndex] = useState<number>(0);
   const [isFileModalOpen, setIsFileModalOpen] = useState(false);
+
+  // Quick Replies (Canned Responses) Shortcut ('/') State
+  const [quickReplies, setQuickReplies] = useState<QuickReply[]>([]);
+  const [isQuickRepliesLoaded, setIsQuickRepliesLoaded] = useState<boolean>(false);
+  const [quickReplyIndex, setQuickReplyIndex] = useState<number>(0);
+  const [isQuickRepliesDismissed, setIsQuickRepliesDismissed] = useState<boolean>(false);
+
+  useEffect(() => {
+    let active = true;
+    WhatsAppRepository.getQuickReplies()
+      .then((data) => {
+        if (active && Array.isArray(data)) {
+          setQuickReplies(data);
+          setIsQuickRepliesLoaded(true);
+        }
+      })
+      .catch((err) => {
+        console.warn('[ChatComposer] Failed to load quick replies for shortcut:', err);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const isTypingShortcut = text.startsWith('/') && !isQuickRepliesDismissed;
+  const shortcutQuery = isTypingShortcut ? text.slice(1) : '';
+  const matchedQuickReplies = useMemo(() => {
+    if (!isTypingShortcut || !isQuickRepliesLoaded) return [];
+    return filterQuickReplies(quickReplies, shortcutQuery);
+  }, [isTypingShortcut, isQuickRepliesLoaded, quickReplies, shortcutQuery]);
+
+  useEffect(() => {
+    setQuickReplyIndex(0);
+  }, [shortcutQuery]);
+
+  useEffect(() => {
+    if (!text.startsWith('/')) {
+      setIsQuickRepliesDismissed(false);
+    }
+  }, [text]);
 
   // Live Voice Recording State
   const [isRecording, setIsRecording] = useState(false);
@@ -477,6 +523,22 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
     }
   }, [replyingTo, refocusDraft]);
 
+  const handleSelectQuickReply = useCallback(
+    (qr: QuickReply) => {
+      const rendered = renderQuickReplyContent(qr, { name: leadName || '' });
+      setText(rendered);
+      setIsQuickRepliesDismissed(true);
+      setTimeout(() => {
+        refocusDraft();
+        if (draftInputRef.current) {
+          draftInputRef.current.style.height = 'auto';
+          draftInputRef.current.style.height = `${Math.min(draftInputRef.current.scrollHeight, 120)}px`;
+        }
+      }, 30);
+    },
+    [leadName, refocusDraft]
+  );
+
   useEffect(() => {
     if (insertedText && insertedText.text) {
       setText((current) => {
@@ -567,6 +629,32 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement | HTMLInputElement>) => {
+    if (isTypingShortcut && matchedQuickReplies.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setQuickReplyIndex((prev) => (prev + 1) % matchedQuickReplies.length);
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setQuickReplyIndex((prev) => (prev - 1 + matchedQuickReplies.length) % matchedQuickReplies.length);
+        return;
+      }
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault();
+        const chosen = matchedQuickReplies[quickReplyIndex];
+        if (chosen) {
+          handleSelectQuickReply(chosen);
+        }
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setIsQuickRepliesDismissed(true);
+        return;
+      }
+    }
+
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSubmit();
@@ -944,6 +1032,78 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
           <>
             {/* Multiline Textarea Input */}
             <div className="relative flex-1 min-w-0">
+              {/* Quick Replies Shortcut ('/') Floating Popover */}
+              {isTypingShortcut && (
+                <div
+                  data-testid="composer-quick-replies-popover"
+                  className="absolute bottom-full mb-2 left-0 right-0 z-30 bg-white dark:bg-[#202c33] rounded-2xl shadow-xl border border-slate-200/90 dark:border-white/[0.08] overflow-hidden animate-in fade-in slide-in-from-bottom-2 duration-150"
+                >
+                  <div className="px-3.5 py-2 border-b border-slate-100 dark:border-white/[0.06] flex items-center justify-between bg-slate-50/70 dark:bg-black/20">
+                    <div className="flex items-center space-x-1.5 text-xs font-bold text-slate-700 dark:text-slate-200">
+                      <Zap className="w-3.5 h-3.5 text-[#7367F0]" />
+                      <span>{t('whatsapp.quickRepliesShortTitle')}</span>
+                      <span className="text-[10px] text-slate-400 font-normal">({matchedQuickReplies.length})</span>
+                    </div>
+                    <div className="flex items-center space-x-2">
+                      <span className="text-[10px] text-slate-400 hidden sm:inline">
+                        {t('whatsapp.quickRepliesHint')}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setIsQuickRepliesDismissed(true)}
+                        className="p-1 rounded-md text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-200/50 dark:hover:bg-white/10 transition-colors cursor-pointer"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="max-h-56 overflow-y-auto custom-scrollbar p-1.5 space-y-0.5">
+                    {matchedQuickReplies.length === 0 ? (
+                      <div className="py-4 text-center text-xs text-slate-400">
+                        {t('whatsapp.noQuickRepliesFound')}
+                      </div>
+                    ) : (
+                      matchedQuickReplies.map((qr, idx) => {
+                        const isSelected = idx === quickReplyIndex;
+                        return (
+                          <div
+                            key={qr.id}
+                            data-testid={`quick-reply-item-${qr.shortcut}`}
+                            onClick={() => handleSelectQuickReply(qr)}
+                            onMouseEnter={() => setQuickReplyIndex(idx)}
+                            className={`flex items-start justify-between p-2 rounded-xl text-left cursor-pointer transition-colors ${
+                              isSelected
+                                ? 'bg-[#7367F0]/10 dark:bg-[#7367F0]/20 text-[#7367F0]'
+                                : 'hover:bg-slate-100 dark:hover:bg-white/[0.04] text-slate-700 dark:text-slate-200'
+                            }`}
+                          >
+                            <div className="min-w-0 flex-1 pr-2">
+                              <div className="flex items-center space-x-1.5">
+                                <span className="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-[#7367F0]/15 text-[#7367F0]">
+                                  /{qr.shortcut}
+                                </span>
+                                <span className="text-xs font-bold truncate">
+                                  {qr.title}
+                                </span>
+                              </div>
+                              <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate mt-0.5">
+                                {qr.content}
+                              </p>
+                            </div>
+                            {isSelected && (
+                              <span className="text-[10px] font-mono text-[#7367F0] shrink-0 self-center hidden sm:inline">
+                                Enter ↵
+                              </span>
+                            )}
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
+              )}
+
               <textarea
                 ref={draftInputRef as any}
                 rows={1}

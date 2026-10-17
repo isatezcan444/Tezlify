@@ -1034,6 +1034,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
         type="button"
         onClick={handleLoadOlder}
         disabled={loadingOlder}
+        data-testid="load-older-messages-btn"
         className="inline-flex items-center space-x-1.5 px-3 py-1 rounded-full text-xs font-bold text-[#7367F0] bg-[#7367F0]/10 hover:bg-[#7367F0]/20 border border-[#7367F0]/20 transition-all cursor-pointer disabled:opacity-50"
       >
         {loadingOlder ? (
@@ -1089,7 +1090,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
         >
           <div ref={contentWrapperRef} className="flex flex-col min-h-full space-y-1">
             <div className="flex-1 min-h-0" />
-            {messages.length >= 50 && hasMore && loadOlderButton}
+            {hasMore && loadOlderButton}
             {rows.map((row) => (
               <React.Fragment key={row.key}>{renderRowBody(row)}</React.Fragment>
             ))}
@@ -1130,7 +1131,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
         style={{ overflowAnchor: 'none', scrollBehavior: 'auto' }}
         className={`flex-1 min-w-0 p-4 overflow-y-auto overflow-x-hidden ${isReady ? 'opacity-100' : 'opacity-0'}`}
       >
-        {win.start <= 0 && messages.length >= 50 && hasMore && loadOlderButton}
+        {win.start <= 0 && hasMore && loadOlderButton}
         <div aria-hidden style={{ height: `${topSpacer}px` }} />
         {mountedRows.map((row) => (
           <div
