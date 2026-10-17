@@ -161,24 +161,24 @@ export const Modal: React.FC<ModalProps> = ({
         aria-modal="true"
         tabIndex={-1}
         className={cn(
-          'w-full bg-white dark:bg-vuexy-dark-card rounded-2xl shadow-2xl border border-slate-200/80 dark:border-white/[0.08] p-6 animate-scale-up',
+          'w-full max-h-[calc(100dvh-2rem)] flex flex-col bg-white dark:bg-vuexy-dark-card rounded-2xl shadow-2xl border border-slate-200/80 dark:border-white/[0.08] p-4 sm:p-6 animate-scale-up my-auto overscroll-contain',
           maxWidthClasses[maxWidth] || maxWidthClasses.md,
           className
         )}
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="flex items-start justify-between gap-3 mb-4">
-          <div className="flex items-center space-x-3">
+        <div className="flex items-start justify-between gap-3 mb-4 shrink-0">
+          <div className="flex items-center space-x-3 min-w-0">
             {Icon && (
               <IconTile icon={Icon} size="md" tone={iconTone} />
             )}
-            <div>
-              <h3 className="text-base font-extrabold text-slate-800 dark:text-white tracking-tight">
+            <div className="min-w-0">
+              <h3 className="text-base font-extrabold text-slate-800 dark:text-white tracking-tight truncate">
                 {title}
               </h3>
               {subtitle && (
-                <p className="text-[11px] text-slate-400 dark:text-vuexy-dark-muted font-medium mt-0.5">
+                <p className="text-[11px] text-slate-400 dark:text-vuexy-dark-muted font-medium mt-0.5 truncate">
                   {subtitle}
                 </p>
               )}
@@ -189,18 +189,18 @@ export const Modal: React.FC<ModalProps> = ({
             type="button"
             aria-label={t("common.close")}
             onClick={onClose}
-            className="p-1 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/[0.06] transition-colors cursor-pointer"
+            className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/[0.06] transition-colors cursor-pointer shrink-0"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        {/* Content Body — typography is owned by the caller */}
-        <div>{children}</div>
+        {/* Content Body — scrollable when exceeding viewport on mobile/tablet */}
+        <div className="overflow-y-auto flex-1 min-h-0 pr-1 -mr-1 overscroll-contain">{children}</div>
 
         {/* Optional Footer */}
         {footer && (
-          <div className="mt-5 pt-4 border-t border-slate-100 dark:border-white/[0.06] flex items-center justify-end space-x-2.5">
+          <div className="mt-5 pt-4 border-t border-slate-100 dark:border-white/[0.06] flex items-center justify-end space-x-2.5 shrink-0">
             {footer}
           </div>
         )}

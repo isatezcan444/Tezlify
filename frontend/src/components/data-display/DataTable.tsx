@@ -72,7 +72,7 @@ export function DataTable<T>({
 
   return (
     <div className={cn('vuexy-card overflow-hidden shadow-sm flex flex-col', className)}>
-      <div className="overflow-x-auto min-w-full flex-1">
+      <div className="overflow-x-auto min-w-full flex-1 overscroll-x-contain">
         <table className="w-full text-left border-collapse text-xs">
           {/* Table Header */}
           <thead>

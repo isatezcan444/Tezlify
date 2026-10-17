@@ -878,7 +878,7 @@ export const WhatsAppQrConnectModal: React.FC<WhatsAppQrConnectModalProps> = ({
       aria-labelledby="qr-modal-title"
     >
       <div 
-        className="w-full max-w-sm rounded-2xl bg-white dark:bg-[#2F3349] p-6 text-center space-y-4 shadow-2xl border border-slate-200/80 dark:border-white/[0.1] animate-scale-in"
+        className="w-full max-w-sm max-h-[calc(100dvh-2rem)] flex flex-col overflow-y-auto rounded-2xl bg-white dark:bg-[#2F3349] p-4 sm:p-6 text-center space-y-4 shadow-2xl border border-slate-200/80 dark:border-white/[0.1] animate-scale-in my-auto overscroll-contain"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}

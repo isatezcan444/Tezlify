@@ -657,7 +657,7 @@ export const LeadCRMPage: React.FC<LeadCRMPageProps> = ({ onRefreshStats }) => {
 
       {/* Leads Table Card */}
       <Card className="overflow-hidden shadow-sm">
-        <div className="overflow-x-auto min-w-full">
+        <div className="overflow-x-auto min-w-full overscroll-x-contain">
           <table className="w-full text-left border-collapse text-xs">
             <thead>
               <tr className="border-b border-slate-200/80 dark:border-white/[0.08] bg-slate-50/75 dark:bg-white/[0.02] text-slate-500 dark:text-[#7E7F96] font-bold uppercase tracking-wider text-[11px]">

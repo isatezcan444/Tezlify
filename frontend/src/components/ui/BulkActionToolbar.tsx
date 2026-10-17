@@ -67,8 +67,9 @@ export const BulkActionToolbar: React.FC<BulkActionToolbarProps> = ({
 
   return (
     <div
+      style={{ bottom: 'max(1rem, env(safe-area-inset-bottom, 1rem))' }}
       className={cn(
-        'sticky bottom-4 z-30 p-3.5 rounded-xl bg-gradient-to-r from-vuexy-primary to-[#867BFF] text-white shadow-lg shadow-vuexy-primary/20 flex flex-col sm:flex-row sm:items-center justify-between gap-3 animate-fade-in select-none',
+        'sticky z-30 p-3.5 rounded-xl bg-gradient-to-r from-vuexy-primary to-[#867BFF] text-white shadow-lg shadow-vuexy-primary/20 flex flex-col sm:flex-row sm:items-center justify-between gap-3 animate-fade-in select-none',
         className
       )}
     >

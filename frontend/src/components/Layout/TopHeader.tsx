@@ -108,8 +108,7 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
               type="button"
               onClick={onOpenSettings}
               title={t('header.settings')}
-              className="p-2 rounded-lg text-slate-500 hover:text-[#7367F0] dark:text-slate-400 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/[0.05] transition-colors cursor-pointer"
-            
+              className="hidden sm:inline-flex p-2 rounded-lg text-slate-500 hover:text-[#7367F0] dark:text-slate-400 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/[0.05] transition-colors cursor-pointer"
               aria-label={t('header.settings')}>
               <Settings className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
             </button>
