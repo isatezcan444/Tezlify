@@ -9,6 +9,7 @@ import logging
 import re
 import time
 from typing import Any, Dict, List, Optional
+import urllib.parse
 
 import httpx
 

@@ -2070,3 +2070,48 @@ async def test_pagination_reaches_oldest_history_without_skipping(auth_headers, 
 
     assert len(seen) == 60, f"tum gecmise ulasilmali, ulasilan: {len(seen)}"
     assert seen[0] == "gecmis-000" and seen[-1] == "gecmis-059"
+
+
+@pytest.mark.asyncio
+async def test_fetch_media_query_params_encoding(monkeypatch):
+    """fetch_media encodes jid and from_me correctly without NameError or bad query params."""
+    from backend.app.services import whatsapp_gateway as gw
+
+    recorded_url = None
+
+    class MockResponse:
+        status_code = 200
+        content = b"TEST_IMAGE_BYTES"
+
+    class MockClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def get(self, url, headers=None):
+            nonlocal recorded_url
+            recorded_url = url
+            return MockResponse()
+
+    monkeypatch.setattr(gw.settings, "WHATSAPP_GATEWAY_SECRET", "test-secret-at-least-32-bytes-long-12345")
+    monkeypatch.setattr(gw.httpx, "AsyncClient", MockClient)
+
+    res = await gw.fetch_media(
+        gateway_id="gw123",
+        media_id="med456",
+        preview=True,
+        retry=True,
+        jid="905076382749@s.whatsapp.net",
+        from_me=False,
+    )
+    assert res == b"TEST_IMAGE_BYTES"
+    assert recorded_url is not None
+    assert "preview=true" in recorded_url
+    assert "_retry=true" in recorded_url
+    assert "jid=905076382749%40s.whatsapp.net" in recorded_url
+    assert "from_me=false" in recorded_url
