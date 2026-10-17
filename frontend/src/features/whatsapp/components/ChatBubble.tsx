@@ -80,11 +80,14 @@ export function markMediaExpired(id?: string | null) {
   const strId = String(id);
   EXPIRED_MEDIA_CACHE.add(strId);
   try {
-    const raw = sessionStorage.getItem('tezlify_expired_media');
+    const raw = (typeof localStorage !== 'undefined' ? localStorage.getItem('tezlify_expired_media') : null) ||
+                (typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('tezlify_expired_media') : null);
     const list: string[] = raw ? JSON.parse(raw) : [];
     if (!list.includes(strId)) {
       list.push(strId);
-      sessionStorage.setItem('tezlify_expired_media', JSON.stringify(list.slice(-500)));
+      const serialized = JSON.stringify(list.slice(-1000));
+      if (typeof localStorage !== 'undefined') localStorage.setItem('tezlify_expired_media', serialized);
+      if (typeof sessionStorage !== 'undefined') sessionStorage.setItem('tezlify_expired_media', serialized);
     }
   } catch { /* best effort */ }
 }
@@ -94,7 +97,8 @@ export function isMediaExpired(id?: string | null): boolean {
   const strId = String(id);
   if (EXPIRED_MEDIA_CACHE.has(strId)) return true;
   try {
-    const raw = sessionStorage.getItem('tezlify_expired_media');
+    const raw = (typeof localStorage !== 'undefined' ? localStorage.getItem('tezlify_expired_media') : null) ||
+                (typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('tezlify_expired_media') : null);
     if (raw) {
       const list = JSON.parse(raw);
       if (Array.isArray(list) && list.includes(strId)) {
@@ -161,9 +165,19 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
   const [imageLoaded, setImageLoaded] = useState(false);
   const [videoLoadError, setVideoLoadError] = useState(false);
   const mediaWaId = message.wa_message_id || message.media_id;
+  const isOutboundWithoutMedia =
+    message.direction === 'OUTBOUND' &&
+    !message.media_id &&
+    !message.media_url &&
+    message.message_type !== 'TEXT';
+  const isPermanentlyExpired =
+    Boolean(message.error_message && message.error_message.includes('MEDIA_EXPIRED')) ||
+    isOutboundWithoutMedia ||
+    isMediaExpired(mediaWaId);
+
   const [mediaRetryTs, setMediaRetryTs] = useState<number | null>(null);
   const [mediaRetrying, setMediaRetrying] = useState(false);
-  const [mediaRetryFailed, setMediaRetryFailed] = useState<boolean>(() => isMediaExpired(mediaWaId));
+  const [mediaRetryFailed, setMediaRetryFailed] = useState<boolean>(() => isPermanentlyExpired);
   const [copied, setCopied] = useState(false);
   const [isStarred, setIsStarred] = useState<boolean>(() => isMessageStarred(message.id));
   const [isPinned, setIsPinned] = useState<boolean>(() => isMessagePinned(message.id));
@@ -259,7 +273,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
     setTimeout(() => setCopied(false), 2000);
   };
   const resolvedMediaUrl = React.useMemo(() => {
-    if (!message.media_id && !message.media_url && (mediaRetryFailed || isMediaExpired(mediaWaId))) {
+    if (isPermanentlyExpired || mediaRetryFailed || isMediaExpired(mediaWaId)) {
       return undefined;
     }
     const raw =
@@ -276,7 +290,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
       return `${resolved}${sep}_retry=${mediaRetryTs}`;
     }
     return resolved;
-  }, [message.media_url, message.media_id, message.wa_message_id, message.message_type, mediaRetryTs, mediaRetryFailed, mediaWaId]);
+  }, [message.media_url, message.media_id, message.wa_message_id, message.message_type, mediaRetryTs, mediaRetryFailed, mediaWaId, isPermanentlyExpired]);
 
   React.useEffect(() => {
     setImageLoaded(false);
@@ -912,20 +926,26 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                   <span className="text-xs font-bold block">{t('leads.videoMessage')}</span>
                   <span className="text-[10px] text-slate-400 font-mono">{message.media_mime_type || 'video/mp4'}</span>
                   {message.wa_message_id && (
-                    <button
-                      type="button"
-                      disabled={mediaRetrying}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setVideoLoadError(false);
-                        setMediaRetrying(true);
-                        setMediaRetryTs(Date.now());
-                      }}
-                      className="mt-2 px-2.5 py-1 text-[10px] font-semibold rounded bg-[#00a884] hover:bg-[#009272] disabled:opacity-50 text-white transition-colors cursor-pointer flex items-center justify-center gap-1"
-                    >
-                      {mediaRetrying && <Loader2 className="w-3 h-3 animate-spin" />}
-                      {mediaRetrying ? t('whatsapp.mediaRetrying') : t('whatsapp.mediaRetry')}
-                    </button>
+                    (mediaRetryFailed || isMediaExpired(mediaWaId) || isPermanentlyExpired) ? (
+                      <span className="text-[10px] text-slate-500 dark:text-slate-400 mt-1 text-center px-2">
+                        {t('whatsapp.mediaExpiredOrUnavailable')}
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        disabled={mediaRetrying}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setVideoLoadError(false);
+                          setMediaRetrying(true);
+                          setMediaRetryTs(Date.now());
+                        }}
+                        className="mt-2 px-2.5 py-1 text-[10px] font-semibold rounded bg-[#00a884] hover:bg-[#009272] disabled:opacity-50 text-white transition-colors cursor-pointer flex items-center justify-center gap-1"
+                      >
+                        {mediaRetrying && <Loader2 className="w-3 h-3 animate-spin" />}
+                        {mediaRetrying ? t('whatsapp.mediaRetrying') : t('whatsapp.mediaRetry')}
+                      </button>
+                    )
                   )}
                 </div>
               )}

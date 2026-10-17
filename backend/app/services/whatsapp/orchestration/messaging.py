@@ -958,16 +958,24 @@ class WhatsAppMessagingOrchestrator:
                 gateway_id, target_id, preview=preview, retry=retry, jid=chat_jid, from_me=is_from_me
             )
         except LookupError:
-            if target_id != media_id:
-                data = await gateway_client.fetch_media(
-                    gateway_id, media_id, preview=preview, retry=retry, jid=chat_jid, from_me=is_from_me
-                )
-            elif wa_msg_id and target_id != wa_msg_id:
-                data = await gateway_client.fetch_media(
-                    gateway_id, wa_msg_id, preview=preview, retry=retry, jid=chat_jid, from_me=is_from_me
-                )
-            else:
-                raise
+            try:
+                if target_id != media_id:
+                    data = await gateway_client.fetch_media(
+                        gateway_id, media_id, preview=preview, retry=retry, jid=chat_jid, from_me=is_from_me
+                    )
+                elif wa_msg_id and target_id != wa_msg_id:
+                    data = await gateway_client.fetch_media(
+                        gateway_id, wa_msg_id, preview=preview, retry=retry, jid=chat_jid, from_me=is_from_me
+                    )
+                else:
+                    raise
+            except LookupError:
+                try:
+                    row.error_message = "MEDIA_EXPIRED"
+                    await db.commit()
+                except Exception:
+                    pass
+                raise LookupError(f"Medya süresi doldu veya bulunamadı: {media_id}")
 
         if not mime and data:
             if data.startswith(b"\xff\xd8\xff"):
