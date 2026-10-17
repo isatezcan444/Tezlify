@@ -592,6 +592,12 @@ app.post('/sessions/:sessionId/conversations/:jid/typing', withSession(async (re
   res.json(result);
 }));
 
+// Subscribe to live presence updates ("yazıyor…", online status)
+app.post('/sessions/:sessionId/conversations/:jid/presence/subscribe', withSession(async (req, res, sessionId) => {
+  const result = await sessionManager.subscribePresence(sessionId, req.params.jid);
+  res.json(result);
+}));
+
 // Mark conversation as read
 app.post('/sessions/:sessionId/conversations/:jid/read', withSession(async (req, res, sessionId) => {
   const result = await sessionManager.markConversationRead(sessionId, req.params.jid);

@@ -828,6 +828,28 @@ class WhatsAppMessagingOrchestrator:
             "error": result.get("error") if isinstance(result, dict) else "Gateway returned an invalid typing response.",
         }
 
+    async def subscribe_presence(
+        self,
+        db: AsyncSession,
+        user_id: str,
+        conversation_id: int,
+    ) -> Dict[str, Any]:
+        """Sohbet icin karsi taraftan 'yaziyor...' ve varlik olaylarini dinlemeyi baslatir."""
+        resolve_jid = self._get_helper("_resolve_jid", _resolve_jid)
+        conversation_session = self._get_helper("_conversation_session", _conversation_session)
+        gateway_op_or_mark_relink = self._get_helper("_gateway_op_or_mark_relink", _gateway_op_or_mark_relink)
+        gateway_client = self._get_helper("gw", gw)
+
+        conv, jid = await resolve_jid(db, user_id, conversation_id)
+        session_row = await conversation_session(db, user_id, conv)
+        result = await gateway_op_or_mark_relink(
+            db, session_row, lambda gid: gateway_client.subscribe_presence(gid, jid)
+        )
+        return {
+            "success": bool(result.get("success")) if isinstance(result, dict) else False,
+            "error": result.get("error") if isinstance(result, dict) else None,
+        }
+
     async def get_message(
         self,
         db: AsyncSession,
@@ -963,5 +985,6 @@ send_text_message = _default_orchestrator.send_text_message
 send_media_message = _default_orchestrator.send_media_message
 mark_conversation_read = _default_orchestrator.mark_conversation_read
 send_typing = _default_orchestrator.send_typing
+subscribe_presence = _default_orchestrator.subscribe_presence
 get_message = _default_orchestrator.get_message
 get_media_bytes = _default_orchestrator.get_media_bytes

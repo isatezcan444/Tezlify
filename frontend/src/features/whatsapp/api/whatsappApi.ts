@@ -1112,6 +1112,15 @@ export const WhatsAppApi = {
     return data;
   },
 
+  /** Sohbet icin karsi taraftan 'yazıyor...' ve cevrimici varlik olaylarini dinler. */
+  async subscribePresence(conversationId: number): Promise<{ success: boolean; error?: string }> {
+    try {
+      return await apiSend<{ success: boolean; error?: string }>(`/whatsapp/conversations/${conversationId}/presence/subscribe`, 'POST');
+    } catch {
+      return { success: false };
+    }
+  },
+
   /**
    * Sohbetin CRM durumunu (ACTIVE / ARCHIVED / CLOSED) kalici olarak yazar.
    *

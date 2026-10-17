@@ -29,6 +29,7 @@ from backend.app.services.whatsapp.orchestration.messaging import (
     send_media_message,
     send_text_message,
     send_typing,
+    subscribe_presence,
     serialize_message,
 )
 
@@ -101,6 +102,7 @@ __all__ = [
     "send_media_message",
     "mark_conversation_read",
     "send_typing",
+    "subscribe_presence",
     "get_media_bytes",
     # Events
     "WhatsAppEventOrchestrator",

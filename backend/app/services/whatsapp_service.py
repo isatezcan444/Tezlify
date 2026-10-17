@@ -1350,6 +1350,10 @@ async def send_typing(db: AsyncSession, user_id: str, conversation_id: int, typi
     return await _messaging_orchestrator.send_typing(db, user_id, conversation_id, typing=typing)
 
 
+async def subscribe_presence(db: AsyncSession, user_id: str, conversation_id: int) -> Dict[str, Any]:
+    return await _messaging_orchestrator.subscribe_presence(db, user_id, conversation_id)
+
+
 async def send_reaction(
     db: AsyncSession, user_id: str, conversation_id: int, message_id: int, emoji: str
 ) -> Dict[str, Any]:

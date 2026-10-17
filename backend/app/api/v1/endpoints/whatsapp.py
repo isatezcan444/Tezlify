@@ -798,6 +798,28 @@ async def send_typing(
     )
 
 
+@router.post("/conversations/{conversation_id}/presence/subscribe", response_model=WhatsAppReadResult)
+async def subscribe_conversation_presence(
+    conversation_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+) -> WhatsAppReadResult:
+    try:
+        result = await whatsapp_service.subscribe_presence(db, current_user.id, conversation_id)
+    except WhatsAppRelinkRequired as exc:
+        raise _relink_required(exc) from exc
+    except NoWhatsAppSession as exc:
+        raise _no_session(exc) from exc
+    except LookupError as exc:
+        raise _not_found(exc) from exc
+    except Exception as exc:
+        raise _bad_gateway(exc) from exc
+    return WhatsAppReadResult(
+        success=bool(result.get("success", True)),
+        error=result.get("error"),
+    )
+
+
 @router.patch(
     "/conversations/{conversation_id}/status",
     response_model=WhatsAppConversationStatusResult,

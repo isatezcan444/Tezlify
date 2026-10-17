@@ -1162,17 +1162,35 @@ export function bindSocketEvents({
     const chat = chats.get(key);
     let pVal = null;
     let participantJid = null;
+
     if (Array.isArray(presences) && presences.length > 0) {
-      pVal = presences[0]?.presence || presences[0]?.lastKnownPresence || null;
-      participantJid = presences[0]?.id || presences[0]?.participant || null;
+      for (const item of presences) {
+        const itemPresence = item?.presence || item?.lastKnownPresence || null;
+        if (itemPresence === 'composing' || itemPresence === 'recording') {
+          pVal = itemPresence;
+          participantJid = item?.id || item?.participant || null;
+          break;
+        }
+        if (!pVal && itemPresence) {
+          pVal = itemPresence;
+          participantJid = item?.id || item?.participant || null;
+        }
+      }
     } else if (presences && typeof presences === 'object') {
-      const entries = Object.entries(presences);
-      if (entries.length > 0) {
-        const [firstJid, firstData] = entries[0];
-        participantJid = firstJid;
-        pVal = firstData?.lastKnownPresence || firstData?.presence || null;
+      for (const [pId, pData] of Object.entries(presences)) {
+        const presence = typeof pData === 'string' ? pData : (pData?.lastKnownPresence || pData?.presence || null);
+        if (presence === 'composing' || presence === 'recording') {
+          pVal = presence;
+          participantJid = pId;
+          break;
+        }
+        if (!pVal && presence) {
+          pVal = presence;
+          participantJid = pId;
+        }
       }
     }
+
     if (chat) {
       chat.presence = pVal;
     }
@@ -1183,6 +1201,7 @@ export function bindSocketEvents({
     emitEvent({
       event: 'presence_updated',
       conversation_id: key,
+      jid: key,
       presence: pVal,
       participant: participantJid,
       participant_name: resolvedSenderName,

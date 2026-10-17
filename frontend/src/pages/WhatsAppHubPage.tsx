@@ -1443,6 +1443,9 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     if (!selectedConv?.id) return;
     const convId = selectedConv.id;
 
+    // Live presence subscription ("yazıyor..." ve çevrimiçi varlık sinyalleri)
+    void WhatsAppRepository?.subscribePresence?.(convId)?.catch?.(() => {});
+
     // Faz 5: secilen sohbeti acmak okundu sayilir (WhatsApp Web paritesi) —
     // tiklama ya da otomatik secim yoluyla gelmesi farketmez; okundu boylece
     // telefona da geri yazilir.
@@ -3062,13 +3065,48 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       // 4. PRESENCE UPDATE ('yazıyor...' göstergesi) — backend jid'yi sayısal
       // conversation_id'ye çevirip `typing` boolean'ı ekler.
       if (eventData.event === 'presence_updated') {
-        const rawId = eventData.conversation_id;
-        const convId = typeof rawId === 'number' ? rawId : parseInt(String(rawId), 10);
-        if (!Number.isNaN(convId)) {
-          const typing = !!eventData.typing;
+        const rawId = eventData.conversation_id ?? eventData.jid;
+        let convId: number | null = null;
+        if (typeof rawId === 'number' && Number.isInteger(rawId) && rawId > 0) {
+          convId = rawId;
+        } else if (typeof rawId === 'string' && /^\d+$/.test(rawId)) {
+          const num = Number(rawId);
+          if (conversations.some((c) => c.id === num) || selectedConvRef.current?.id === num) {
+            convId = num;
+          }
+        }
+
+        if (convId == null) {
+          // Resolve by comparing against conversations using identityKeys
+          const targetKeys = identityKeys(rawId);
+          if (eventData.jid) for (const k of identityKeys(eventData.jid)) targetKeys.add(k);
+          if (eventData.phone) for (const k of identityKeys(eventData.phone)) targetKeys.add(k);
+          if (eventData.participant) for (const k of identityKeys(eventData.participant)) targetKeys.add(k);
+
+          const matchedConv = conversations.find((c) => {
+            for (const k of identityKeys(c)) {
+              if (targetKeys.has(k)) return true;
+            }
+            return false;
+          });
+          if (matchedConv) {
+            convId = matchedConv.id;
+          } else if (selectedConvRef.current) {
+            for (const k of identityKeys(selectedConvRef.current)) {
+              if (targetKeys.has(k)) {
+                convId = selectedConvRef.current.id;
+                break;
+              }
+            }
+          }
+        }
+
+        if (convId != null) {
+          const presenceStr = String(eventData.presence || '').toLowerCase();
+          const typing = Boolean(eventData.typing ?? (presenceStr === 'composing' || presenceStr === 'recording'));
           if (typing) {
             // F-11: TTL applies to ALL conversations. The single sweep interval
-            // (above) removes the indicator ~10s after the last update even if
+            // removes the indicator ~10s after the last update even if
             // the 'paused' event never arrives.
             peerTypingExpiryRef.current[convId] = Date.now() + PEER_TYPING_TTL_MS;
             setPeerTypingMap((prev) => ({

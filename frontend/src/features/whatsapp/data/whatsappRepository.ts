@@ -315,6 +315,11 @@ export class WhatsAppRepository {
     await WhatsAppApi.sendTyping(conversationId, typing);
   }
 
+  /** Sohbet icin karsi taraftan 'yazıyor...' dinlemesini baslatir. */
+  static async subscribePresence(conversationId: number): Promise<void> {
+    await WhatsAppApi.subscribePresence(conversationId);
+  }
+
   /**
    * Bir mesaja ifade birakir/degistirir/kaldirir (`emoji === ''` geri ceker).
    *

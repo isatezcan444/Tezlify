@@ -1079,6 +1079,7 @@ export function createSessionManager({
       const session = this._requireSession(sessionId);
       const store = this._storeOf(session);
       const key = resolveJidKey(store, jid);
+      this._ensurePresenceSubscribed(session, key);
       let list = store.messagesByChat.get(key) || [];
       const getMsgTime = (m) => {
         if (typeof m.timestamp_s === 'number' && Number.isFinite(m.timestamp_s) && m.timestamp_s > 0) return m.timestamp_s * 1000;
@@ -1369,9 +1370,39 @@ export function createSessionManager({
       return msg;
     },
 
+    _ensurePresenceSubscribed(session, jid) {
+      if (!session?.sock || typeof session.sock.presenceSubscribe !== 'function') return;
+      const key = resolveJidKey(this._storeOf(session), jid);
+      if (!session._presenceSubs) session._presenceSubs = new Set();
+      if (session._presenceSubs.has(key)) return;
+      session._presenceSubs.add(key);
+      setTimeout(() => session._presenceSubs?.delete(key), 300000);
+      session.sock.presenceSubscribe(key).catch((err) => {
+        logger.debug({ err: err?.message, jid: key }, 'presenceSubscribe auto-subscribe skipped');
+      });
+    },
+
+    async subscribePresence(sessionId, jid) {
+      const session = this._requireConnectedSession(sessionId);
+      const key = resolveJidKey(this._storeOf(session), jid);
+      if (session.sock && typeof session.sock.presenceSubscribe === 'function') {
+        try {
+          if (!session._presenceSubs) session._presenceSubs = new Set();
+          session._presenceSubs.add(key);
+          await session.sock.presenceSubscribe(key);
+          return { success: true, jid: key };
+        } catch (err) {
+          logger.debug({ err: err?.message, jid: key }, 'presenceSubscribe error');
+          return { success: false, error: err?.message };
+        }
+      }
+      return { success: false, error: 'Socket unavailable' };
+    },
+
     async sendTyping(sessionId, jid, typing = true, durationMs = 4000) {
       const session = this._requireConnectedSession(sessionId);
       const key = resolveJidKey(this._storeOf(session), jid);
+      this._ensurePresenceSubscribed(session, key);
       try {
         await session.sock.sendPresenceUpdate(typing ? 'composing' : 'paused', key);
       } catch (err) {
@@ -1385,6 +1416,7 @@ export function createSessionManager({
       const session = this._requireConnectedSession(sessionId);
       const { chats, messagesByChat } = this._storeOf(session);
       const key = resolveJidKey(this._storeOf(session), jid);
+      this._ensurePresenceSubscribed(session, key);
       const isGroup = key.includes('@g.us');
       let gatewayOk = true;
       let gatewayError = null;
@@ -1862,6 +1894,7 @@ export function createSessionManager({
       const jid = msg.key?.remoteJid;
       if (!jid) return null;
       if (isBroadcastOnlyJid(jid)) return null;
+      this._ensurePresenceSubscribed(session, jid);
 
       if (msg.key?.senderLid && msg.key?.senderPn) {
         this._applyLidMapping(session, msg.key.senderLid, msg.key.senderPn);

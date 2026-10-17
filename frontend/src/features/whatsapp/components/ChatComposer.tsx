@@ -346,9 +346,31 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
     setIsFileModalOpen(true);
   };
 
+  // Helper to deduplicate files by name, size, and lastModified
+  const deduplicateFiles = (existing: File[], incoming: File[]): File[] => {
+    const result = [...existing];
+    for (const inc of incoming) {
+      const exists = result.some(
+        (f) => f.name === inc.name && f.size === inc.size && f.lastModified === inc.lastModified
+      );
+      if (!exists) {
+        result.push(inc);
+      }
+    }
+    return result;
+  };
+
+  const lastPasteTimeRef = useRef<number>(0);
+
   // Clipboard paste (Ctrl+V / Cmd+V) for screenshots, images and files
   const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement | HTMLInputElement>) => {
     if (disabled || isClosed || !isWindowOpen) return;
+    const now = Date.now();
+    if (now - lastPasteTimeRef.current < 250) {
+      return;
+    }
+    lastPasteTimeRef.current = now;
+
     const items = e.clipboardData?.items;
     const filesFound: File[] = [];
     if (items) {
@@ -365,7 +387,8 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
 
     if (filesFound.length > 0 && onSendMediaFile) {
       e.preventDefault();
-      setPendingFiles((prev) => (prev.length > 0 ? [...prev, ...filesFound] : filesFound));
+      e.stopPropagation();
+      setPendingFiles((prev) => deduplicateFiles(prev, filesFound));
       setIsFileModalOpen(true);
     }
   };
@@ -375,9 +398,21 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
     const handleGlobalPaste = (e: ClipboardEvent) => {
       if (disabled || isClosed || !isWindowOpen || !onSendMediaFile) return;
       const target = e.target as HTMLElement | null;
-      if (target && target !== draftInputRef.current && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) {
-        if (!e.clipboardData?.files || e.clipboardData.files.length === 0) return;
+      // If paste originated inside draftInputRef, handlePaste already processed it.
+      if (target && (target === draftInputRef.current || draftInputRef.current?.contains(target))) {
+        return;
       }
+      // If paste was inside any other input or textarea (e.g. search bar), ignore.
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) {
+        return;
+      }
+
+      const now = Date.now();
+      if (now - lastPasteTimeRef.current < 250) {
+        return;
+      }
+      lastPasteTimeRef.current = now;
+
       const items = e.clipboardData?.items;
       const filesFound: File[] = [];
       if (items) {
@@ -394,7 +429,8 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
 
       if (filesFound.length > 0) {
         e.preventDefault();
-        setPendingFiles((prev) => (prev.length > 0 ? [...prev, ...filesFound] : filesFound));
+        e.stopPropagation();
+        setPendingFiles((prev) => deduplicateFiles(prev, filesFound));
         setIsFileModalOpen(true);
       }
     };

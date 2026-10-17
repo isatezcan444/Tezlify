@@ -132,9 +132,19 @@ async def find_whatsapp_conversation(
         if mapped:
             lookup_jid = mapped
     phone = contact_phone_for_jid(lookup_jid)
+    phone_candidates = [phone]
+    if phone.startswith("+"):
+        phone_candidates.append(phone[1:])
+    elif not phone.startswith("jid:"):
+        phone_candidates.append(f"+{phone}")
+    if phone.startswith("jid:"):
+        phone_candidates.append(phone[4:])
+    elif "@g.us" in phone:
+        phone_candidates.append(f"jid:{phone}")
+
     contact_id = await db.scalar(
         select(Contact.id).where(
-            Contact.phone_e164 == phone,
+            Contact.phone_e164.in_(phone_candidates),
             get_user_filter(Contact.user_id, user_id),
         )
     )

@@ -460,6 +460,12 @@ async def send_typing(gateway_id: str, jid: str, typing: bool = True, duration_m
     )
 
 
+async def subscribe_presence(gateway_id: str, jid: str) -> Dict[str, Any]:
+    return await _request(
+        "POST", f"{_s(gateway_id)}/conversations/{jid}/presence/subscribe"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Media
 # ---------------------------------------------------------------------------

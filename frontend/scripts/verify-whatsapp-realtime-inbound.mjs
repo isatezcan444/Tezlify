@@ -118,6 +118,7 @@ export const WhatsAppRepository = {
   async sendMediaFile() { calls.push('sendMediaFile'); return ok({}); },
   async sendTemplate() { calls.push('sendTemplate'); return ok({}); },
   async sendTyping() { calls.push('sendTyping'); return ok({}); },
+  async subscribePresence() { calls.push('subscribePresence'); return ok({}); },
   async disconnectSession() { calls.push('disconnectSession'); return ok({}); },
   async deleteSession() { calls.push('deleteSession'); return ok({}); },
   async requestAvatarBackfill() { calls.push('requestAvatarBackfill'); return { success: true }; },
