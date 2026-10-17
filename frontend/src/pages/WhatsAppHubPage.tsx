@@ -3317,39 +3317,38 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   return (
     <div className={`select-none animate-fade-in ${hubTab === 'conversations' ? 'space-y-2 md:space-y-6 pb-2 md:pb-16' : 'space-y-6 pb-16'}`}>
       {/* Top Header & Tab Switcher */}
-      {/* Top Header & Tab Switcher */}
-      <div className={`flex-col xl:flex-row xl:items-center justify-between gap-3 ${
+      <div className={`flex flex-col xl:flex-row xl:items-center justify-between gap-3 ${
         hubTab === 'conversations' && selectedConv ? 'hidden md:flex' : 'flex'
       }`}>
-        <div className="min-w-0">
-          <div className="flex items-center gap-2.5 flex-wrap">
-            <h2 className="text-lg sm:text-xl font-extrabold text-slate-800 dark:text-white flex items-center gap-2">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <h2 className="text-sm sm:text-base md:text-lg xl:text-xl font-extrabold text-slate-800 dark:text-white flex items-center gap-2 whitespace-nowrap min-w-0">
               {hubTab === 'conversations' ? (
                 <>
-                  <MessageSquare className="w-5 h-5 text-[#25D366] shrink-0" />
-                  <span>{t('whatsapp.conversationsTitle')}</span>
+                  <MessageSquare className="w-4 h-4 sm:w-5 sm:h-5 text-[#25D366] shrink-0" />
+                  <span className="truncate">{t('whatsapp.conversationsTitle')}</span>
                 </>
               ) : hubTab === 'sessions' ? (
                 <>
-                  <Smartphone className="w-5 h-5 text-[#28C76F] shrink-0" />
-                  <span>{t('whatsapp.sessionsTitle')}</span>
+                  <Smartphone className="w-4 h-4 sm:w-5 sm:h-5 text-[#28C76F] shrink-0" />
+                  <span className="truncate">{t('whatsapp.sessionsTitle')}</span>
                 </>
               ) : hubTab === 'settings' ? (
                 <>
-                  <Sliders className="w-5 h-5 text-[#7367F0] shrink-0" />
-                  <span>{t('whatsapp.settingsTitle')}</span>
+                  <Sliders className="w-4 h-4 sm:w-5 sm:h-5 text-[#7367F0] shrink-0" />
+                  <span className="truncate">{t('whatsapp.settingsTitle')}</span>
                 </>
               ) : (
                 <>
-                  <ShieldCheck className="w-5 h-5 text-[#7367F0] shrink-0" />
-                  <span>{t('whatsapp.antiBanTitle')}</span>
+                  <ShieldCheck className="w-4 h-4 sm:w-5 sm:h-5 text-[#7367F0] shrink-0" />
+                  <span className="truncate">{t('whatsapp.antiBanTitle')}</span>
                 </>
               )}
             </h2>
 
             {/* Live Gateway Status Badge */}
             <Badge
-              className={`text-[10px] font-extrabold px-2.5 py-1 rounded-xl transition-all shrink-0 ${
+              className={`text-[9px] sm:text-[10px] font-extrabold px-1.5 sm:px-2 py-0.5 rounded-lg transition-all shrink-0 whitespace-nowrap ${
                 liveStatus === LiveModeStatus.LIVE_CONNECTED
                   ? 'bg-[#25D366]/20 text-[#25D366] dark:bg-[#25D366]/15'
                   : liveStatus === LiveModeStatus.LIVE_CONNECTING
@@ -3365,7 +3364,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
             </Badge>
           </div>
 
-          <p className="text-xs text-slate-500 dark:text-[#7E7F96] mt-0.5 font-medium truncate sm:whitespace-normal">
+          <p className="text-[11px] sm:text-xs text-slate-500 dark:text-[#7E7F96] mt-0.5 font-medium whitespace-nowrap truncate max-w-full">
             {hubTab === 'conversations'
               ? t('whatsapp.conversationsSubtitle')
               : hubTab === 'sessions'
@@ -3377,11 +3376,11 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         </div>
 
         {/* Segmented Tab Switcher */}
-        <div className="flex p-1 rounded-2xl bg-slate-200/80 dark:bg-white/[0.04] border border-slate-200 dark:border-white/[0.08] w-full xl:w-auto shrink-0 overflow-x-auto scrollbar-none [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
+        <div className="flex p-1 rounded-2xl bg-slate-200/80 dark:bg-white/[0.04] border border-slate-200 dark:border-white/[0.08] shrink-0 overflow-x-auto scrollbar-none [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
           <button
             type="button"
             onClick={() => setHubTab('conversations')}
-            className={`flex-1 xl:flex-initial py-1.5 px-3.5 rounded-xl text-xs font-extrabold transition-all flex items-center justify-center space-x-2 cursor-pointer whitespace-nowrap ${
+            className={`py-1.5 px-3 rounded-xl text-[11px] sm:text-xs font-bold sm:font-extrabold transition-all flex items-center justify-center space-x-1.5 sm:space-x-2 cursor-pointer whitespace-nowrap ${
               hubTab === 'conversations'
                 ? 'bg-white dark:bg-[#7367F0] text-slate-900 dark:text-white shadow-xs'
                 : 'text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white'
@@ -3399,7 +3398,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
           <button
             type="button"
             onClick={() => setHubTab('sessions')}
-            className={`flex-1 xl:flex-initial py-1.5 px-3.5 rounded-xl text-xs font-extrabold transition-all flex items-center justify-center space-x-2 cursor-pointer whitespace-nowrap ${
+            className={`py-1.5 px-3 rounded-xl text-[11px] sm:text-xs font-bold sm:font-extrabold transition-all flex items-center justify-center space-x-1.5 sm:space-x-2 cursor-pointer whitespace-nowrap ${
               hubTab === 'sessions'
                 ? 'bg-white dark:bg-[#7367F0] text-slate-900 dark:text-white shadow-xs'
                 : 'text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white'
@@ -3412,7 +3411,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
           <button
             type="button"
             onClick={() => setHubTab('antiban')}
-            className={`flex-1 xl:flex-initial py-1.5 px-3.5 rounded-xl text-xs font-extrabold transition-all flex items-center justify-center space-x-2 cursor-pointer whitespace-nowrap ${
+            className={`py-1.5 px-3 rounded-xl text-[11px] sm:text-xs font-bold sm:font-extrabold transition-all flex items-center justify-center space-x-1.5 sm:space-x-2 cursor-pointer whitespace-nowrap ${
               hubTab === 'antiban'
                 ? 'bg-white dark:bg-[#7367F0] text-slate-900 dark:text-white shadow-xs'
                 : 'text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white'
@@ -3428,7 +3427,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
           <button
             type="button"
             onClick={() => setHubTab('settings')}
-            className={`flex-1 xl:flex-initial py-1.5 px-3.5 rounded-xl text-xs font-extrabold transition-all flex items-center justify-center space-x-2 cursor-pointer whitespace-nowrap ${
+            className={`py-1.5 px-3 rounded-xl text-[11px] sm:text-xs font-bold sm:font-extrabold transition-all flex items-center justify-center space-x-1.5 sm:space-x-2 cursor-pointer whitespace-nowrap ${
               hubTab === 'settings'
                 ? 'bg-white dark:bg-[#7367F0] text-slate-900 dark:text-white shadow-xs'
                 : 'text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white'

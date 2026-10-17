@@ -38,52 +38,52 @@ export const AntiBanPanel: React.FC = () => {
     <div className="space-y-6">
       <Card className="p-4 sm:p-6 space-y-6">
     <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 dark:border-white/[0.08] pb-4">
-      <div className="flex items-center space-x-2.5">
-        <div className="w-9 h-9 rounded-xl bg-[#28C76F]/15 text-[#28C76F] flex items-center justify-center font-bold">
-          <ShieldCheck className="w-5 h-5" />
+      <div className="flex items-center space-x-2.5 min-w-0">
+        <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-[#28C76F]/15 text-[#28C76F] flex items-center justify-center font-bold shrink-0">
+          <ShieldCheck className="w-4 h-4 sm:w-5 sm:h-5" />
         </div>
-        <div>
-          <div className="flex items-center gap-2">
-            <h3 className="text-base font-extrabold text-slate-800 dark:text-white">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 min-w-0">
+            <h3 className="text-xs sm:text-sm md:text-base font-extrabold text-slate-800 dark:text-white truncate whitespace-nowrap">
               {t('whatsapp.antiBanTitle')}
             </h3>
             {hasUnsavedChanges ? (
-              <Badge variant="warning" className="text-[10px] animate-pulse">
+              <Badge variant="warning" className="text-[9px] sm:text-[10px] shrink-0 font-bold whitespace-nowrap animate-pulse">
                 ⚠️ {t('whatsapp.unsavedChanges')}
               </Badge>
             ) : (
-              <Badge variant="success" className="text-[10px]">
+              <Badge variant="success" className="text-[9px] sm:text-[10px] shrink-0 font-bold whitespace-nowrap">
                 ✅ {t('whatsapp.synchronized')}
               </Badge>
             )}
           </div>
-          <p className="text-[11px] text-slate-400 dark:text-[#7E7F96] font-medium">
+          <p className="text-[10px] sm:text-[11px] text-slate-400 dark:text-[#7E7F96] font-medium truncate whitespace-nowrap">
             {t('whatsapp.antiBanSubtitle')}
           </p>
         </div>
       </div>
 
-      <div className="flex items-center space-x-2">
+      <div className="flex items-center space-x-2 shrink-0 self-start sm:self-auto">
         {hasUnsavedChanges && (
           <button
             type="button"
             onClick={handleRevert}
-            className="text-xs font-bold text-slate-500 hover:text-[#7367F0] dark:text-[#7E7F96] dark:hover:text-white flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 dark:border-white/[0.08] hover:bg-slate-50 dark:hover:bg-white/[0.04] transition-all cursor-pointer"
+            className="text-[11px] sm:text-xs font-bold text-slate-500 hover:text-[#7367F0] dark:text-[#7E7F96] dark:hover:text-white flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg border border-slate-200 dark:border-white/[0.08] hover:bg-slate-50 dark:hover:bg-white/[0.04] transition-all cursor-pointer whitespace-nowrap"
             title={t('whatsapp.discardChanges')}
           >
-            <Undo2 className="w-3.5 h-3.5" />
-            <span>{t('whatsapp.revertChanges')}</span>
+            <Undo2 className="w-3.5 h-3.5 shrink-0" />
+            <span className="whitespace-nowrap">{t('whatsapp.revertChanges')}</span>
           </button>
         )}
 
         <button
           type="button"
           onClick={handleResetDefaults}
-          className="text-xs font-bold text-slate-500 hover:text-[#7367F0] dark:text-[#7E7F96] dark:hover:text-white flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 dark:border-white/[0.08] hover:bg-slate-50 dark:hover:bg-white/[0.04] transition-all cursor-pointer"
+          className="text-[11px] sm:text-xs font-bold text-slate-500 hover:text-[#7367F0] dark:text-[#7E7F96] dark:hover:text-white flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg border border-slate-200 dark:border-white/[0.08] hover:bg-slate-50 dark:hover:bg-white/[0.04] transition-all cursor-pointer whitespace-nowrap"
           title={t('whatsapp.resetDefaults')}
         >
-          <RotateCcw className="w-3.5 h-3.5" />
-          <span>{t('whatsapp.resetDefaults')}</span>
+          <RotateCcw className="w-3.5 h-3.5 shrink-0" />
+          <span className="whitespace-nowrap">{t('whatsapp.resetDefaults')}</span>
         </button>
       </div>
     </div>

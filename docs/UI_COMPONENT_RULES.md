@@ -116,3 +116,27 @@ All table row actions, card footer actions, and isolated icon buttons across eve
   - WhatsApp / Success: `hover:text-[#28C76F] hover:bg-[#28C76F]/10`
 - **Strict Prohibition**: Ad-hoc icon button sizes (e.g. `w-9 h-9`, `w-7 h-7`, unpadded SVGs, oversized inline icons) in table or card action zones are strictly prohibited.
 
+---
+
+## RULE 10 — UNIFIED CONTAINER WIDTH, TOPOLOGY & ANTI-TEXT-DROP RESPONSIVENESS (PERMANENT SYSTEM MEMORY)
+All pages, tabs, settings suites, and sub-views **MUST** share an identical component topology and standardized container width:
+
+1. **Standard Full-Width Topology**:
+   - All panels (e.g. `AntiBanPanel`, `WhatsAppSettingsPanel`, `SessionCard` grid) must fill `w-full` within the page layout.
+   - Ad-hoc width constraints like `max-w-5xl mx-auto` or divergent outer margins are strictly forbidden because they destroy horizontal harmony between tabs.
+   - Main settings card container must strictly follow `<Card className="p-4 sm:p-6 space-y-6">`.
+   - Inner configuration blocks must strictly follow `<div className="p-4 sm:p-5 rounded-xl bg-slate-50/70 dark:bg-[#25293C] border border-slate-200/70 dark:border-white/[0.06] space-y-4">`.
+
+2. **Unified Sub-Header Hierarchy**:
+   - Header icon container: `w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-[color]/15 text-[color] font-bold shrink-0`.
+   - Title: `text-xs sm:text-sm md:text-base font-extrabold text-slate-800 dark:text-white truncate whitespace-nowrap`.
+   - Status Badge: `text-[9px] sm:text-[10px] shrink-0 font-bold whitespace-nowrap`.
+   - Subtitle: `text-[10px] sm:text-[11px] text-slate-400 dark:text-[#7E7F96] font-medium truncate whitespace-nowrap`.
+   - Action / Reset button: `text-[11px] sm:text-xs font-bold text-slate-500 hover:text-[#7367F0] ... px-2.5 sm:px-3 py-1.5 rounded-lg border border-slate-200 dark:border-white/[0.08] whitespace-nowrap`.
+
+3. **Anti-Text-Drop & Responsive Typography Invariant**:
+   - Titles, badges, tab buttons, and descriptions **MUST NEVER** drop awkwardly to multi-line breaks on tablet, split-screen, or mobile viewports (e.g. "Title & \n Subtitle" with badge pushed to line 3).
+   - If horizontal space is tight, text **MUST** scale down responsively (`text-xs sm:text-sm md:text-base xl:text-xl`) or gracefully truncate (`truncate whitespace-nowrap min-w-0`), never breaking words or dropping badges.
+   - Headers with segmented tab switchers must stack at tablet/split breakpoints (`flex flex-col xl:flex-row xl:items-center justify-between gap-3`), ensuring 100% horizontal freedom for both title and tabs without squeeze.
+
+

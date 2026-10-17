@@ -68,6 +68,10 @@ This document defines the core architecture, non-negotiable rules, invariants, a
   - All UI elements must follow the design contracts in [`docs/UI_COMPONENT_RULES.md`](file:///Users/isatezcan/Documents/Github/Tezlify/docs/UI_COMPONENT_RULES.md) and [`docs/component-registry.md`](file:///Users/isatezcan/Documents/Github/Tezlify/docs/component-registry.md).
   - Page-specific ad-hoc duplicate components are strictly prohibited.
   - Any new reusable UI component or domain composite created during development must be automatically registered in `docs/component-registry.md` and exported via the corresponding `components/<category>/index.ts` barrel.
+- **Unified Container Width & Anti-Text-Drop Invariant (Rule 10)**:
+  - All page panels and settings suites must maintain a unified full-width standard (`w-full`, standard `<Card className="p-4 sm:p-6 space-y-6">`). Ad-hoc max-width constraints (e.g. `max-w-5xl`) are strictly forbidden.
+  - Subheaders, cards, and tab headers must share the same component topology, icon box dimensions, typography hierarchy, and borders.
+  - Text, badges, and headers must NEVER break into disjointed multi-line wraps on tablet/split viewports; they must scale down responsively (`text-xs sm:text-sm md:text-base`) with `whitespace-nowrap min-w-0 truncate`.
 
 ---
 
