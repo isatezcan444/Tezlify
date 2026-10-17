@@ -1764,7 +1764,7 @@ export function createSessionManager({
 
             if (isRetry) {
               const startWait = Date.now();
-              while (Date.now() - startWait < 1500) {
+              while (Date.now() - startWait < 4000) {
                 await new Promise((r) => setTimeout(r, 200));
                 const byId = store.rawMessagesByChat?.get(foundJid);
                 if (byId?.has(strId)) {

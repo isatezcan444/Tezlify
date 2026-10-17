@@ -73,6 +73,39 @@ export function getSenderColorClass(name: string): string {
   return GROUP_SENDER_COLORS[hash % GROUP_SENDER_COLORS.length];
 }
 
+const EXPIRED_MEDIA_CACHE = new Set<string>();
+
+export function markMediaExpired(id?: string | null) {
+  if (!id) return;
+  const strId = String(id);
+  EXPIRED_MEDIA_CACHE.add(strId);
+  try {
+    const raw = sessionStorage.getItem('tezlify_expired_media');
+    const list: string[] = raw ? JSON.parse(raw) : [];
+    if (!list.includes(strId)) {
+      list.push(strId);
+      sessionStorage.setItem('tezlify_expired_media', JSON.stringify(list.slice(-500)));
+    }
+  } catch { /* best effort */ }
+}
+
+export function isMediaExpired(id?: string | null): boolean {
+  if (!id) return false;
+  const strId = String(id);
+  if (EXPIRED_MEDIA_CACHE.has(strId)) return true;
+  try {
+    const raw = sessionStorage.getItem('tezlify_expired_media');
+    if (raw) {
+      const list = JSON.parse(raw);
+      if (Array.isArray(list) && list.includes(strId)) {
+        EXPIRED_MEDIA_CACHE.add(strId);
+        return true;
+      }
+    }
+  } catch { /* best effort */ }
+  return false;
+}
+
 export interface ChatBubbleProps {
   message: Message;
   /** Faz 6a: grup sohbetlerinde balon ustunde gonderen adi gosterilir. */
@@ -127,9 +160,10 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
   const [imageLoadError, setImageLoadError] = useState(false);
   const [imageLoaded, setImageLoaded] = useState(false);
   const [videoLoadError, setVideoLoadError] = useState(false);
+  const mediaWaId = message.wa_message_id || message.media_id;
   const [mediaRetryTs, setMediaRetryTs] = useState<number | null>(null);
   const [mediaRetrying, setMediaRetrying] = useState(false);
-  const [mediaRetryFailed, setMediaRetryFailed] = useState(false);
+  const [mediaRetryFailed, setMediaRetryFailed] = useState<boolean>(() => isMediaExpired(mediaWaId));
   const [copied, setCopied] = useState(false);
   const [isStarred, setIsStarred] = useState<boolean>(() => isMessageStarred(message.id));
   const [isPinned, setIsPinned] = useState<boolean>(() => isMessagePinned(message.id));
@@ -225,6 +259,9 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
     setTimeout(() => setCopied(false), 2000);
   };
   const resolvedMediaUrl = React.useMemo(() => {
+    if (!message.media_id && !message.media_url && (mediaRetryFailed || isMediaExpired(mediaWaId))) {
+      return undefined;
+    }
     const raw =
       message.media_url ||
       (message.media_id
@@ -239,7 +276,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
       return `${resolved}${sep}_retry=${mediaRetryTs}`;
     }
     return resolved;
-  }, [message.media_url, message.media_id, message.wa_message_id, message.message_type, mediaRetryTs]);
+  }, [message.media_url, message.media_id, message.wa_message_id, message.message_type, mediaRetryTs, mediaRetryFailed, mediaWaId]);
 
   React.useEffect(() => {
     setImageLoaded(false);
@@ -589,6 +626,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                       setMediaRetrying(false);
                       if (mediaRetryTs) {
                         setMediaRetryFailed(true);
+                        markMediaExpired(mediaWaId);
                       }
                     }}
                     className={`w-full h-full object-cover group-hover:scale-105 transition-all duration-200 ${
@@ -607,7 +645,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                   <span className="text-[11px] font-bold text-slate-700 dark:text-slate-300">
                     {t('whatsapp.mediaLoadFailed')}
                   </span>
-                  {mediaRetryFailed ? (
+                  {(mediaRetryFailed || isMediaExpired(mediaWaId)) ? (
                     <span className="text-[10px] text-slate-500 dark:text-slate-400 mt-1 text-center px-2">
                       {t('whatsapp.mediaExpiredOrUnavailable')}
                     </span>
@@ -634,20 +672,26 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                   <span className="text-[11px] font-bold">{t('leads.imagePreview')}</span>
                   <span className="text-[9px] opacity-70 font-mono mt-0.5">{message.media_mime_type || 'image/jpeg'}</span>
                   {message.wa_message_id && (
-                    <button
-                      type="button"
-                      disabled={mediaRetrying}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setImageLoadError(false);
-                        setMediaRetrying(true);
-                        setMediaRetryTs(Date.now());
-                      }}
-                      className="mt-2 px-2.5 py-1 text-[10px] font-semibold rounded bg-[#00a884] hover:bg-[#009272] disabled:opacity-50 text-white transition-colors cursor-pointer flex items-center justify-center gap-1"
-                    >
-                      {mediaRetrying && <Loader2 className="w-3 h-3 animate-spin" />}
-                      {mediaRetrying ? t('whatsapp.mediaRetrying') : t('whatsapp.mediaRetry')}
-                    </button>
+                    (mediaRetryFailed || isMediaExpired(mediaWaId)) ? (
+                      <span className="text-[10px] text-slate-500 dark:text-slate-400 mt-1 text-center px-2">
+                        {t('whatsapp.mediaExpiredOrUnavailable')}
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        disabled={mediaRetrying}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setImageLoadError(false);
+                          setMediaRetrying(true);
+                          setMediaRetryTs(Date.now());
+                        }}
+                        className="mt-2 px-2.5 py-1 text-[10px] font-semibold rounded bg-[#00a884] hover:bg-[#009272] disabled:opacity-50 text-white transition-colors cursor-pointer flex items-center justify-center gap-1"
+                      >
+                        {mediaRetrying && <Loader2 className="w-3 h-3 animate-spin" />}
+                        {mediaRetrying ? t('whatsapp.mediaRetrying') : t('whatsapp.mediaRetry')}
+                      </button>
+                    )
                   )}
                 </div>
               )}
@@ -688,7 +732,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                     <span className="text-[9px] font-mono text-slate-400">{message.media_mime_type || 'audio/ogg'}</span>
                   </div>
                   {message.wa_message_id && (
-                    mediaRetryFailed ? (
+                    (mediaRetryFailed || isMediaExpired(mediaWaId)) ? (
                       <span className="text-[10px] text-slate-400 italic">
                         {t('whatsapp.mediaExpiredOrUnavailable')}
                       </span>
@@ -755,7 +799,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                   <span className="text-[9px] font-mono text-slate-400">{message.media_mime_type || 'audio/ogg'}</span>
                 </div>
                 {message.wa_message_id && (
-                  mediaRetryFailed ? (
+                  (mediaRetryFailed || isMediaExpired(mediaWaId)) ? (
                     <span className="text-[10px] text-slate-400 italic">
                       {t('whatsapp.mediaExpiredOrUnavailable')}
                     </span>
@@ -811,6 +855,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                       setMediaRetrying(false);
                       if (mediaRetryTs) {
                         setMediaRetryFailed(true);
+                        markMediaExpired(mediaWaId);
                       }
                       notifyVideoEnded();
                     }}
@@ -840,7 +885,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                     <Video className="w-5 h-5 opacity-70" />
                   </div>
                   <span className="text-[11px] font-bold text-slate-700 dark:text-slate-300">{t('whatsapp.mediaLoadFailed')}</span>
-                  {mediaRetryFailed ? (
+                  {(mediaRetryFailed || isMediaExpired(mediaWaId)) ? (
                     <span className="text-[10px] text-slate-500 dark:text-slate-400 mt-1 text-center px-2">
                       {t('whatsapp.mediaExpiredOrUnavailable')}
                     </span>
