@@ -86,3 +86,65 @@ export function getPrevSearchMatchIndex(totalMatches: number, currentIndex: numb
   }
   return (currentIndex - 1 + totalMatches) % totalMatches;
 }
+
+/**
+ * Filters and returns full message objects matching the search query.
+ * Case-insensitive match on body, media_caption, or media_filename.
+ */
+export function filterMatchingMessages<T extends SearchableMessage>(
+  messages: T[] | undefined | null,
+  query: string
+): T[] {
+  const q = (query || '').trim().toLowerCase();
+  if (!q || !messages || messages.length === 0) {
+    return [];
+  }
+
+  return messages.filter((msg) => {
+    const body = (msg.body || '').toLowerCase();
+    const caption = (msg.media_caption || '').toLowerCase();
+    const filename = (msg.media_filename || '').toLowerCase();
+    return body.includes(q) || caption.includes(q) || filename.includes(q);
+  });
+}
+
+/**
+ * Finds the first message occurring on or closest to a specified ISO date (YYYY-MM-DD).
+ * Useful for "Jump to Date" feature in WhatsApp chat threads.
+ *
+ * @param messages List of messages sorted chronologically
+ * @param targetDateStr Date string formatted as 'YYYY-MM-DD'
+ * @returns Message ID (number) or null if not found
+ */
+export function findMessageIdByDate(
+  messages: Array<SearchableMessage & { created_at?: string | null; timestamp?: string | number | null }> | undefined | null,
+  targetDateStr: string
+): number | null {
+  if (!messages || messages.length === 0 || !targetDateStr) {
+    return null;
+  }
+
+  const cleanTarget = targetDateStr.trim().slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(cleanTarget)) {
+    return null;
+  }
+
+  // Find exact day match first
+  for (const msg of messages) {
+    const rawDate = msg.created_at || (msg.timestamp ? new Date(msg.timestamp).toISOString() : null);
+    if (rawDate && rawDate.slice(0, 10) === cleanTarget) {
+      return Number(msg.id);
+    }
+  }
+
+  // If no exact match, find closest message on or after target date
+  for (const msg of messages) {
+    const rawDate = msg.created_at || (msg.timestamp ? new Date(msg.timestamp).toISOString() : null);
+    if (rawDate && rawDate.slice(0, 10) >= cleanTarget) {
+      return Number(msg.id);
+    }
+  }
+
+  // Fallback to the last available message
+  return Number(messages[messages.length - 1].id);
+}

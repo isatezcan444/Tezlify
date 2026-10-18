@@ -26,7 +26,9 @@ await writeFile(
     filterMatchingMessageIds,
     resolveActiveSearchMessageId,
     getNextSearchMatchIndex,
-    getPrevSearchMatchIndex
+    getPrevSearchMatchIndex,
+    filterMatchingMessages,
+    findMessageIdByDate
   } from '${SRC}/features/whatsapp/lib/whatsappChatSearch';`,
   'utf8'
 );
@@ -45,6 +47,8 @@ const {
   resolveActiveSearchMessageId,
   getNextSearchMatchIndex,
   getPrevSearchMatchIndex,
+  filterMatchingMessages,
+  findMessageIdByDate,
 } = await import(out);
 
 let passed = 0;
@@ -192,6 +196,37 @@ test('12. filterMatchingMessageIds: handles completely empty message objects gra
     { id: 403, body: 'Hedef bulundu' },
   ];
   assert.deepEqual(filterMatchingMessageIds(emptyMsgs, 'hedef'), [403]);
+});
+
+// Scenario 13: filterMatchingMessages: returns complete objects with body/caption/filename
+test('13. filterMatchingMessages: returns matching message objects with full properties', () => {
+  const matches = filterMatchingMessages(sampleMessages, 'teklif');
+  assert.equal(matches.length, 2);
+  assert.equal(matches[0].id, 103);
+  assert.equal(matches[0].media_filename, 'teklif_dokumani.pdf');
+  assert.equal(matches[1].id, 104);
+  assert.equal(matches[1].body, 'İyi günler dilerim, teklif hazır.');
+});
+
+// Scenario 14: findMessageIdByDate: jumps accurately to the first message on a specific date
+test('14. findMessageIdByDate: locates message matching given ISO date', () => {
+  const dateMessages = [
+    { id: 1, body: 'Eski mesaj', created_at: '2026-10-10T09:00:00Z' },
+    { id: 2, body: 'İkinci gün mesajı', created_at: '2026-10-12T14:30:00Z' },
+    { id: 3, body: 'İkinci gün akşam', created_at: '2026-10-12T19:00:00Z' },
+    { id: 4, body: 'Üçüncü gün mesajı', created_at: '2026-10-15T11:00:00Z' },
+  ];
+
+  // Exact match
+  assert.equal(findMessageIdByDate(dateMessages, '2026-10-12'), 2);
+  assert.equal(findMessageIdByDate(dateMessages, '2026-10-15'), 4);
+
+  // Date with no messages -> closest following date
+  assert.equal(findMessageIdByDate(dateMessages, '2026-10-11'), 2);
+
+  // Invalid or empty date string returns null
+  assert.equal(findMessageIdByDate(dateMessages, ''), null);
+  assert.equal(findMessageIdByDate(dateMessages, 'invalid-date'), null);
 });
 
 console.log(`\nAll ${passed} WhatsApp in-thread search tests PASSED!`);

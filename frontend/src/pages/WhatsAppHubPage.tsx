@@ -71,6 +71,7 @@ import {
   AntiBanPanel,
   WhatsAppSettingsPanel,
   ChatSearchBar,
+  ChatSearchResultsDrawer,
   ChatInfoDrawer,
   ForwardModal,
   type QuotedMessage,
@@ -281,6 +282,9 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   const {
     isChatSearchOpen,
     setIsChatSearchOpen,
+    isSearchResultsDrawerOpen,
+    setIsSearchResultsDrawerOpen,
+    toggleSearchResultsDrawer,
     chatSearchQuery,
     setChatSearchQuery,
     chatSearchCurrentIndex,
@@ -289,6 +293,8 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     activeSearchMessageId,
     handleNextSearchMatch,
     handlePrevSearchMatch,
+    jumpToMessageId,
+    jumpToDate,
     resetSearch: resetChatSearch,
   } = useChatSearch({
     selectedConvId: selectedConv?.id,
@@ -1697,6 +1703,16 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       }, 2000);
     }
   }, []);
+
+  const handleSearchJumpToDate = useCallback((dateStr: string) => {
+    const targetId = jumpToDate(dateStr);
+    if (targetId != null) {
+      handleJumpToMessage(targetId);
+      toast.success(t('whatsapp.jumpedToDateToast', { date: dateStr }), t('common.success'));
+    } else {
+      toast.warning(t('whatsapp.noMessageFoundOnDate'), t('common.warning'));
+    }
+  }, [jumpToDate, handleJumpToMessage, toast, t]);
 
   const handleStatusChange = async (convId: number, newStatus: ConversationStatus) => {
     // Truthfulness (AGENTS.md §1.1): eskiden yalnizca yerel state degistirilip
@@ -3719,7 +3735,16 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                       <Tooltip content={t('whatsapp.searchInChat')} position="bottom">
                         <button
                           type="button"
-                          onClick={() => setIsChatSearchOpen((open) => !open)}
+                          onClick={() => {
+                            setIsChatSearchOpen((open) => {
+                              if (open) {
+                                setIsSearchResultsDrawerOpen(false);
+                                setChatSearchQuery('');
+                                setChatSearchCurrentIndex(0);
+                              }
+                              return !open;
+                            });
+                          }}
                           data-testid="header-chat-search-btn"
                           aria-label={t('whatsapp.searchInChat')}
                           title={t('whatsapp.searchInChat')}
@@ -3820,8 +3845,12 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                     currentMatchIndex={chatSearchCurrentIndex}
                     onNextMatch={handleNextSearchMatch}
                     onPrevMatch={handlePrevSearchMatch}
+                    onJumpToDate={handleSearchJumpToDate}
+                    onToggleResultsDrawer={toggleSearchResultsDrawer}
+                    isResultsDrawerOpen={isSearchResultsDrawerOpen}
                     onClose={() => {
                       setIsChatSearchOpen(false);
+                      setIsSearchResultsDrawerOpen(false);
                       setChatSearchQuery('');
                       setChatSearchCurrentIndex(0);
                     }}
@@ -3995,10 +4024,33 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                     conversation={selectedConv}
                     messages={activeMessages}
                     onOpenLead={handleOpenLead}
-                    onSearchInChat={() => setIsChatSearchOpen(true)}
+                    onSearchInChat={() => {
+                      setIsChatSearchOpen(true);
+                      setIsSearchResultsDrawerOpen(true);
+                      setIsChatInfoOpen(false);
+                    }}
                     onStatusChange={handleStatusChange}
                     onJumpToMessage={handleJumpToMessage}
                     onDirectMessageParticipant={handleDirectMessageSender}
+                  />
+                )}
+
+                {/* WhatsApp Web Authentic Right Drawer: Message Search Results */}
+                {isSearchResultsDrawerOpen && (
+                  <ChatSearchResultsDrawer
+                    isOpen={isSearchResultsDrawerOpen}
+                    onClose={() => setIsSearchResultsDrawerOpen(false)}
+                    messages={activeMessages}
+                    query={chatSearchQuery}
+                    onQueryChange={(q) => setChatSearchQuery(q)}
+                    activeMessageId={activeSearchMessageId}
+                    onSelectMessage={(msgId) => {
+                      jumpToMessageId(msgId);
+                      handleJumpToMessage(msgId);
+                    }}
+                    onJumpToDate={handleSearchJumpToDate}
+                    conversationTitle={selectedConv.lead_name || selectedConv.lead_phone}
+                    isGroup={Boolean(selectedConv.is_group)}
                   />
                 )}
               </div>

@@ -250,9 +250,14 @@ src/
 - **Import**: `import { VoiceNotePlayer } from '@/features/whatsapp/components';`
 
 #### `ChatSearchBar`
-- **Purpose**: WhatsApp Web authentic in-chat message search toolbar. Features debounced query input, occurrence counter (`X / Y`), previous/next match navigation, keyboard shortcuts (Enter / Shift+Enter / Esc), and smooth scroll target integration.
-- **Props**: `query: string`, `onQueryChange`, `totalMatches: number`, `currentMatchIndex: number`, `onNextMatch`, `onPrevMatch`, `onClose`.
+- **Purpose**: WhatsApp Web authentic in-chat message search toolbar. Features debounced query input, occurrence counter (`X / Y`), previous/next match navigation with keyboard shortcuts (`Enter` / `Shift+Enter` / `Esc`), jump-to-date calendar picker, toggleable results drawer, and smooth scroll target integration.
+- **Props**: `query: string`, `onQueryChange: (query: string) => void`, `totalMatches: number`, `currentMatchIndex: number`, `onNextMatch: () => void`, `onPrevMatch: () => void`, `onClose: () => void`, `onJumpToDate?: (dateStr: string) => void`, `onToggleResultsDrawer?: () => void`, `isResultsDrawerOpen?: boolean`.
 - **Import**: `import { ChatSearchBar } from '@/features/whatsapp/components';`
+
+#### `ChatSearchResultsDrawer`
+- **Purpose**: WhatsApp Web authentic right-hand search drawer displaying the complete list of matching messages in the current conversation thread. Shows sender name, date/time timestamps, highlighted text snippet matching query, media type badge indicators, jump-to-date shortcut, and smooth scroll focus on card click.
+- **Props**: `isOpen: boolean`, `onClose: () => void`, `messages: Message[]`, `query: string`, `onQueryChange: (query: string) => void`, `activeMessageId: number | null`, `onSelectMessage: (messageId: number) => void`, `onJumpToDate?: (dateStr: string) => void`, `conversationTitle?: string`, `isGroup?: boolean`.
+- **Import**: `import { ChatSearchResultsDrawer } from '@/features/whatsapp/components';`
 
 #### `MediaLightbox`
 - **Purpose**: WhatsApp Web authentic full-screen media inspection overlay. Portaled to `document.body` with `z-[99999]`. Supports high-resolution zoom (wheel, double-click, buttons), draggable panning when zoomed, 90° clockwise rotation, fail-closed media retry, direct download with revocation, keyboard shortcuts (Escape, +/-, R, 0), and floating caption pill.

@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from 'react';
-import { Search, ChevronUp, ChevronDown, X } from 'lucide-react';
+import { Search, ChevronUp, ChevronDown, X, Calendar, ListFilter } from 'lucide-react';
 import { useI18n } from '../../../context/I18nContext';
 
 export interface ChatSearchBarProps {
@@ -10,6 +10,9 @@ export interface ChatSearchBarProps {
   onNextMatch: () => void;
   onPrevMatch: () => void;
   onClose: () => void;
+  onJumpToDate?: (dateStr: string) => void;
+  onToggleResultsDrawer?: () => void;
+  isResultsDrawerOpen?: boolean;
 }
 
 export const ChatSearchBar: React.FC<ChatSearchBarProps> = ({
@@ -20,12 +23,17 @@ export const ChatSearchBar: React.FC<ChatSearchBarProps> = ({
   onNextMatch,
   onPrevMatch,
   onClose,
+  onJumpToDate,
+  onToggleResultsDrawer,
+  isResultsDrawerOpen = false,
 }) => {
   const { t } = useI18n();
   const inputRef = useRef<HTMLInputElement>(null);
+  const dateInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     inputRef.current?.focus();
+    inputRef.current?.select();
   }, []);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -39,6 +47,23 @@ export const ChatSearchBar: React.FC<ChatSearchBarProps> = ({
       } else {
         onNextMatch();
       }
+    }
+  };
+
+  const handleOpenDatePicker = () => {
+    if (dateInputRef.current) {
+      if (typeof dateInputRef.current.showPicker === 'function') {
+        dateInputRef.current.showPicker();
+      } else {
+        dateInputRef.current.focus();
+      }
+    }
+  };
+
+  const handleDateSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = e.target.value;
+    if (val && onJumpToDate) {
+      onJumpToDate(val);
     }
   };
 
@@ -59,7 +84,7 @@ export const ChatSearchBar: React.FC<ChatSearchBarProps> = ({
           value={query}
           onChange={(e) => onQueryChange(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder={t('whatsapp.searchInChat')}
+          placeholder={t('whatsapp.searchMessagesPlaceholder')}
           aria-label={t('whatsapp.searchInChat')}
           className="w-full pl-9 pr-8 py-1.5 text-xs rounded-lg bg-slate-100 dark:bg-[#111b21] text-slate-800 dark:text-[#e9edef] placeholder-slate-400 dark:placeholder-[#8696a0] border border-transparent focus:border-[#00a884] dark:focus:border-[#00a884] focus:outline-none transition-colors"
         />
@@ -75,6 +100,31 @@ export const ChatSearchBar: React.FC<ChatSearchBarProps> = ({
         )}
       </div>
 
+      {/* Jump to Date Trigger */}
+      {onJumpToDate && (
+        <div className="relative shrink-0 flex items-center">
+          <input
+            ref={dateInputRef}
+            type="date"
+            onChange={handleDateSelected}
+            className="sr-only"
+            aria-label={t('whatsapp.jumpToDate')}
+            tabIndex={-1}
+          />
+          <button
+            type="button"
+            onClick={handleOpenDatePicker}
+            title={t('whatsapp.jumpToDate')}
+            aria-label={t('whatsapp.jumpToDate')}
+            data-testid="search-jump-to-date-btn"
+            className="p-1.5 rounded-lg text-slate-500 hover:text-slate-700 dark:text-[#8696a0] dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/[0.08] transition-colors cursor-pointer"
+          >
+            <Calendar className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
+      {/* Matches Counter & Navigation */}
       {isQueryActive && (
         <div className="flex items-center gap-1.5 shrink-0 text-xs select-none">
           <span className="text-[11px] font-semibold text-slate-500 dark:text-[#8696a0] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-white/[0.06]">
@@ -91,7 +141,7 @@ export const ChatSearchBar: React.FC<ChatSearchBarProps> = ({
               type="button"
               onClick={onPrevMatch}
               disabled={!hasMatches}
-              title={t('whatsapp.searchPrev')}
+              title={`${t('whatsapp.searchPrev')} (Shift+Enter)`}
               aria-label={t('whatsapp.searchPrev')}
               className="p-1 rounded-md text-slate-500 dark:text-[#8696a0] hover:text-slate-800 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/[0.08] disabled:opacity-30 disabled:cursor-not-allowed transition-colors cursor-pointer"
             >
@@ -101,7 +151,7 @@ export const ChatSearchBar: React.FC<ChatSearchBarProps> = ({
               type="button"
               onClick={onNextMatch}
               disabled={!hasMatches}
-              title={t('whatsapp.searchNext')}
+              title={`${t('whatsapp.searchNext')} (Enter)`}
               aria-label={t('whatsapp.searchNext')}
               className="p-1 rounded-md text-slate-500 dark:text-[#8696a0] hover:text-slate-800 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/[0.08] disabled:opacity-30 disabled:cursor-not-allowed transition-colors cursor-pointer"
             >
@@ -111,6 +161,25 @@ export const ChatSearchBar: React.FC<ChatSearchBarProps> = ({
         </div>
       )}
 
+      {/* Toggle Results Drawer */}
+      {onToggleResultsDrawer && hasMatches && (
+        <button
+          type="button"
+          onClick={onToggleResultsDrawer}
+          title={isResultsDrawerOpen ? t('whatsapp.hideAllMatches') : t('whatsapp.showAllMatches')}
+          aria-label={isResultsDrawerOpen ? t('whatsapp.hideAllMatches') : t('whatsapp.showAllMatches')}
+          data-testid="search-toggle-drawer-btn"
+          className={`p-1.5 rounded-lg transition-colors cursor-pointer shrink-0 ${
+            isResultsDrawerOpen
+              ? 'bg-[#00a884]/15 text-[#00a884] dark:text-[#25D366] ring-1 ring-[#00a884]/30'
+              : 'text-slate-500 hover:text-slate-700 dark:text-[#8696a0] dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/[0.08]'
+          }`}
+        >
+          <ListFilter className="w-4 h-4" />
+        </button>
+      )}
+
+      {/* Close Search */}
       <button
         type="button"
         onClick={onClose}
@@ -123,3 +192,4 @@ export const ChatSearchBar: React.FC<ChatSearchBarProps> = ({
     </div>
   );
 };
+

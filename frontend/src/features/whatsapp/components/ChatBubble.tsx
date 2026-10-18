@@ -267,7 +267,11 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
         regex.test(token) ? (
           <mark
             key={i}
-            className="bg-yellow-300 dark:bg-yellow-500/50 text-slate-900 dark:text-white rounded-xs px-0.5"
+            className={
+              isSearchActiveMatch
+                ? 'bg-[#00a884] dark:bg-[#25D366] text-white font-semibold rounded-xs px-1 shadow-xs transition-all duration-200'
+                : 'bg-yellow-300 dark:bg-yellow-500/50 text-slate-900 dark:text-white rounded-xs px-0.5'
+            }
           >
             {token}
           </mark>
@@ -276,7 +280,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
         )
       );
     },
-    [searchQuery]
+    [searchQuery, isSearchActiveMatch]
   );
 
   const handleCopy = (e: React.MouseEvent) => {
@@ -1300,7 +1304,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
           data-msg-id={message.id}
           data-wa-id={message.wa_message_id}
           className={`relative group max-w-[85%] sm:max-w-[75%] min-w-[76px] pl-2.5 pr-2.5 pt-1.5 pb-1 sm:pl-3 sm:pr-3 shadow-[0_1px_0.5px_rgba(11,20,26,0.13)] text-[13px] leading-relaxed transition-all duration-150 select-text ${
-            isSearchActiveMatch ? 'ring-2 ring-[#00a884] dark:ring-[#25D366] shadow-md scale-[1.01]' : ''
+            isSearchActiveMatch ? 'ring-2 ring-[#00a884] dark:ring-[#25D366] shadow-lg scale-[1.01] ring-offset-2 ring-offset-[#00a884]/20 dark:ring-offset-black/40 animate-[pulse_2.5s_ease-in-out_1]' : ''
           } ${
             isInbound
               ? 'bg-white dark:bg-[#202c33] text-[#111b21] dark:text-[#e9edef] rounded-[7.5px] rounded-tl-none border-none'
