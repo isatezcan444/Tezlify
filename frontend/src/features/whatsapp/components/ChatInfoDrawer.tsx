@@ -49,6 +49,8 @@ import {
 import { MediaLightbox } from './MediaLightbox';
 import { DocumentViewer, resolveDocVisual } from './DocumentViewer';
 import { getSenderColorClass } from './ChatBubble';
+import { AddParticipantModal } from './AddParticipantModal';
+
 
 export interface ChatInfoDrawerProps {
   isOpen: boolean;
@@ -145,6 +147,8 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
   // Group Admin actions & leaving states
   const [isLeavingGroup, setIsLeavingGroup] = useState<boolean>(false);
   const [participantActionId, setParticipantActionId] = useState<string | null>(null);
+  const [isAddParticipantModalOpen, setIsAddParticipantModalOpen] = useState<boolean>(false);
+
 
   const isGroup = Boolean(conversation.is_group);
   const cleanPhone =
@@ -1016,20 +1020,36 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
                     {t('whatsapp.groupParticipantsCount', { count: String(effectiveParticipants.length) })}
                   </span>
                 </div>
-                {effectiveParticipants.length > 5 && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsSearchingParticipants((v) => !v);
-                      if (isSearchingParticipants) setParticipantSearch('');
-                    }}
-                    title={t('whatsapp.searchParticipants')}
-                    className="p-1 rounded-md text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-white/[0.08] transition-colors cursor-pointer"
-                  >
-                    <Search className="w-4 h-4" />
-                  </button>
-                )}
+                <div className="flex items-center space-x-1.5">
+                  {isCurrentUserAdmin && (
+                    <button
+                      type="button"
+                      onClick={() => setIsAddParticipantModalOpen(true)}
+                      title={t('whatsapp.addParticipant')}
+                      aria-label={t('whatsapp.addParticipant')}
+                      data-testid="drawer-add-participant-btn"
+                      className="inline-flex items-center space-x-1 px-2 py-1 rounded-lg text-xs font-bold text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 hover:bg-emerald-500/20 transition-all cursor-pointer border border-emerald-500/20"
+                    >
+                      <UserPlus className="w-3.5 h-3.5" />
+                      <span className="hidden sm:inline">{t('whatsapp.addParticipant')}</span>
+                    </button>
+                  )}
+                  {effectiveParticipants.length > 5 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsSearchingParticipants((v) => !v);
+                        if (isSearchingParticipants) setParticipantSearch('');
+                      }}
+                      title={t('whatsapp.searchParticipants')}
+                      className="p-1 rounded-md text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-white/[0.08] transition-colors cursor-pointer"
+                    >
+                      <Search className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
               </div>
+
 
               {isSearchingParticipants && (
                 <div className="p-2 border-b border-slate-100 dark:border-white/[0.06] bg-slate-50/50 dark:bg-black/10">
@@ -1520,6 +1540,25 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
         mimeType={docViewerMime || undefined}
         senderName={displayName}
       />
+
+      {/* Add Participant Modal for Group Admins */}
+      {isGroup && isAddParticipantModalOpen && (
+        <AddParticipantModal
+          isOpen={isAddParticipantModalOpen}
+          onClose={() => setIsAddParticipantModalOpen(false)}
+          conversationId={conversation.id}
+          groupSubject={groupSubject || displayName}
+          existingParticipants={effectiveParticipants}
+          onParticipantsAdded={() => {
+            void WhatsAppApi.getGroupParticipants(conversation.id).then((res) => {
+              if (res && Array.isArray(res.participants)) {
+                setGroupParticipants(res.participants);
+              }
+            });
+          }}
+        />
+      )}
     </aside>
+
   );
 };

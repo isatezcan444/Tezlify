@@ -228,6 +228,12 @@ src/
 - **Props**: `isOpen: boolean`, `onClose: () => void`, `onSuccess: (conv: ConversationDetail) => void`.
 - **Import**: `import { NewChatModal } from '@/features/whatsapp/components';`
 
+#### `AddParticipantModal`
+- **Purpose**: Modal for adding participants to WhatsApp group chats with dual-tab support: address book selection with real-time search, multi-selection, and automatic duplicate detection for existing members, plus direct manual phone number entry with international formatting.
+- **Props**: `isOpen: boolean`, `onClose: () => void`, `conversationId: number`, `groupSubject?: string`, `existingParticipants: Array<{ id: string; phone?: string; name?: string }>`, `onParticipantsAdded?: () => void`.
+- **Import**: `import { AddParticipantModal } from '@/features/whatsapp/components';`
+
+
 #### `WhatsAppQrConnectModal`
 - **Purpose**: Multi-step full-lifecycle QR pairing modal with pairing code fallback, retry cooldowns, and live WebSocket connection state synchronization.
 - **Props**: `isOpen: boolean`, `onClose: () => void`, `session: WhatsAppSession | null`, `onConnected: () => void`.

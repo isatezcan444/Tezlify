@@ -18,3 +18,5 @@ export * from './ChatInfoDrawer';
 export * from './ForwardModal';
 export * from './MediaSendModal';
 export * from './WhatsAppSettingsPanel';
+export * from './AddParticipantModal';
+
