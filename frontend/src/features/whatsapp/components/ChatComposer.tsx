@@ -148,9 +148,10 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
   // Group Mention ('@') Autocomplete Logic
   const [isMentionDismissed, setIsMentionDismissed] = useState(false);
   const [mentionIndex, setMentionIndex] = useState(0);
+  const justSelectedMentionRef = useRef(false);
 
   const cursorMentionMatch = useMemo(() => {
-    if (!isGroup || !groupParticipants || groupParticipants.length === 0) return null;
+    if (!isGroup || !groupParticipants || groupParticipants.length === 0 || justSelectedMentionRef.current) return null;
     const el = draftInputRef.current;
     const cursor = el ? el.selectionStart ?? text.length : text.length;
     const textBeforeCursor = text.slice(0, cursor);
@@ -164,7 +165,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
   }, [isGroup, groupParticipants, text]);
 
   const matchedMentions = useMemo(() => {
-    if (!cursorMentionMatch || !groupParticipants) return [];
+    if (!cursorMentionMatch || !groupParticipants || justSelectedMentionRef.current) return [];
     const q = cursorMentionMatch.query;
     return groupParticipants.filter((p) => {
       if (p.is_me) return false;
@@ -176,17 +177,23 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
     });
   }, [cursorMentionMatch, groupParticipants]);
 
-  const isMentionActive = Boolean(cursorMentionMatch && matchedMentions.length > 0 && !isMentionDismissed);
+  const isMentionActive = Boolean(
+    !justSelectedMentionRef.current &&
+    cursorMentionMatch &&
+    matchedMentions.length > 0 &&
+    !isMentionDismissed
+  );
 
   useEffect(() => {
     setMentionIndex(0);
   }, [cursorMentionMatch?.query]);
 
   useEffect(() => {
-    if (!cursorMentionMatch) {
+    if (!cursorMentionMatch && !justSelectedMentionRef.current) {
       setIsMentionDismissed(false);
     }
   }, [cursorMentionMatch]);
+
 
   // Live Voice Recording State
   const [isRecording, setIsRecording] = useState(false);
@@ -598,21 +605,29 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
       const beforeAt = text.slice(0, cursorMentionMatch.atIndex);
       const afterCursor = text.slice(cursorMentionMatch.cursor);
       const newText = `${beforeAt}${mentionText}${afterCursor}`;
+      const newPos = beforeAt.length + mentionText.length;
+
+      justSelectedMentionRef.current = true;
+      setIsMentionDismissed(true);
       setText(newText);
-      setIsMentionDismissed(false);
+
+      if (draftInputRef.current) {
+        draftInputRef.current.value = newText;
+        draftInputRef.current.setSelectionRange(newPos, newPos);
+        draftInputRef.current.style.height = 'auto';
+        draftInputRef.current.style.height = `${Math.min(draftInputRef.current.scrollHeight, 120)}px`;
+      }
 
       setTimeout(() => {
         refocusDraft();
         if (draftInputRef.current) {
-          const newPos = beforeAt.length + mentionText.length;
           draftInputRef.current.setSelectionRange(newPos, newPos);
-          draftInputRef.current.style.height = 'auto';
-          draftInputRef.current.style.height = `${Math.min(draftInputRef.current.scrollHeight, 120)}px`;
         }
       }, 30);
     },
     [cursorMentionMatch, text, refocusDraft]
   );
+
 
   useEffect(() => {
     if (insertedText && insertedText.text) {
@@ -717,6 +732,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
       }
       if (e.key === 'Enter' || e.key === 'Tab') {
         e.preventDefault();
+        e.stopPropagation();
         const chosen = matchedMentions[mentionIndex];
         if (chosen) {
           handleSelectMention(chosen);
@@ -725,9 +741,12 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
       }
       if (e.key === 'Escape') {
         e.preventDefault();
+        e.stopPropagation();
+        justSelectedMentionRef.current = true;
         setIsMentionDismissed(true);
         return;
       }
+
     }
 
     if (isTypingShortcut && matchedQuickReplies.length > 0) {
@@ -1219,11 +1238,15 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
                     </div>
                     <button
                       type="button"
-                      onClick={() => setIsMentionDismissed(true)}
+                      onClick={() => {
+                        justSelectedMentionRef.current = true;
+                        setIsMentionDismissed(true);
+                      }}
                       className="p-1 rounded-md text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-200/50 dark:hover:bg-white/10 transition-colors cursor-pointer"
                     >
                       <X className="w-3 h-3" />
                     </button>
+
                   </div>
 
                   <div className="max-h-56 overflow-y-auto custom-scrollbar p-1.5 space-y-0.5">
@@ -1290,11 +1313,14 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
                   setIsAttachMenuOpen(false);
                 }}
                 onChange={(e) => {
+                  justSelectedMentionRef.current = false;
+                  setIsMentionDismissed(false);
                   setText(e.target.value);
                   notifyTypingActivity();
                   e.target.style.height = 'auto';
                   e.target.style.height = `${Math.min(e.target.scrollHeight, 120)}px`;
                 }}
+
                 onKeyDown={handleKeyDown}
                 onPaste={handlePaste}
                 placeholder={
