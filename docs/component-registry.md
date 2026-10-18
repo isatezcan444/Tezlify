@@ -530,3 +530,15 @@ restarting a service and shipping code are different risk classes.
 - **Callbacks must have stable identities** (`statusChangeRef` + four `useCallback([])` wrappers in `WhatsAppHubPage`). The row is `React.memo`-wrapped, so a callback whose identity changes every render re-renders every row. The same reason `handleSelectById` exists.
 - **Gate**: `npm run verify:conv-menu` (`scripts/verify-conversation-menu-dom.mjs`) — 9 checks, including that the menu is portalled **out of** the scroll container and that opening it does not also select the chat.
 - **Import**: `import { ConversationList } from '@/features/whatsapp/components';`
+
+### `PinDurationModal` (`features/whatsapp/components/PinDurationModal.tsx`)
+- **Purpose**: Authenticated modal dialog for selecting message pinning duration (24 Hours, 7 Days, 30 Days) before dispatching native Baileys protocol pin.
+- **Props**: `{ isOpen: boolean; onClose: () => void; onConfirm: (durationSeconds: number) => Promise<void> | void; message?: Message | null; isSubmitting?: boolean }`
+- **Portalled Dialog Invariant**: Portaled to `document.body` via `createPortal(..., document.body)` with `z-[99999]`. Handles Escape key dismiss, backdrop click, message snippet preview, and full i18n support.
+- **Import**: `import { PinDurationModal } from '@/features/whatsapp/components';`
+
+### `PinnedMessagesBar` (`features/whatsapp/components/PinnedMessagesBar.tsx`)
+- **Purpose**: Sticky header bar placed immediately above the chat thread to display active pinned messages, message previews, multi-pin pagination counters (`1/3`), jump-to-message smooth scroll navigation, and direct unpin triggers.
+- **Props**: `{ pinnedMessages: Message[]; onJumpToMessage: (message: Message) => void; onUnpinMessage?: (message: Message) => void; className?: string }`
+- **Import**: `import { PinnedMessagesBar } from '@/features/whatsapp/components';`
+

@@ -426,6 +426,32 @@ async def send_reaction(
     )
 
 
+async def pin_message(
+    gateway_id: str,
+    jid: str,
+    *,
+    target_wa_message_id: str,
+    target_from_me: bool = False,
+    action: str = "PIN",
+    duration_seconds: int = 86400,
+    participant_jid: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Bir mesajı sabitler veya sabitini kaldırır (WhatsApp Pin Message)."""
+    body: Dict[str, Any] = {
+        "target_wa_message_id": target_wa_message_id,
+        "target_from_me": bool(target_from_me),
+        "action": action,
+        "duration_seconds": duration_seconds,
+    }
+    if participant_jid:
+        body["participant_jid"] = participant_jid
+    return await _request(
+        "POST",
+        f"{_s(gateway_id)}/conversations/{jid}/pin",
+        json=body,
+    )
+
+
 async def get_group_participants(
     gateway_id: str,
     jid: str,

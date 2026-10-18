@@ -39,6 +39,8 @@ from backend.app.schemas.whatsapp import (
     WhatsAppReadResult,
     WhatsAppForwardMessageRequest,
     WhatsAppForwardMessageResult,
+    WhatsAppPinMessageRequest,
+    WhatsAppPinMessageResult,
     WhatsAppSendMediaRequest,
     WhatsAppSendReactionRequest,
     WhatsAppSendResult,
@@ -709,6 +711,40 @@ async def forward_message(
     except Exception as exc:
         raise _bad_gateway(exc) from exc
     return WhatsAppForwardMessageResult(**result)
+
+
+@router.post(
+    "/conversations/{conversation_id}/messages/{message_id}/pin",
+    response_model=WhatsAppPinMessageResult,
+)
+async def pin_message(
+    conversation_id: int,
+    message_id: int,
+    payload: WhatsAppPinMessageRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+) -> WhatsAppPinMessageResult:
+    """Bir mesajı sabitler veya sabitlemeyi kaldırır (WhatsApp Pin Message)."""
+    try:
+        result = await whatsapp_service.pin_message(
+            db,
+            current_user.id,
+            conversation_id,
+            message_id,
+            action=payload.action,
+            duration_seconds=payload.duration_seconds,
+        )
+    except WhatsAppRelinkRequired as exc:
+        raise _relink_required(exc) from exc
+    except NoWhatsAppSession as exc:
+        raise _no_session(exc) from exc
+    except LookupError as exc:
+        raise _not_found(exc) from exc
+    except ValueError as exc:
+        raise _unprocessable(exc) from exc
+    except Exception as exc:
+        raise _bad_gateway(exc) from exc
+    return WhatsAppPinMessageResult(**result)
 
 
 @router.post("/conversations/{conversation_id}/messages", response_model=WhatsAppSendResult)

@@ -1354,6 +1354,19 @@ async def forward_message(
     )
 
 
+async def pin_message(
+    db: AsyncSession,
+    user_id: str,
+    conversation_id: int,
+    message_id: int,
+    action: str = "PIN",
+    duration_seconds: int = 86400,
+) -> Dict[str, Any]:
+    return await _messaging_orchestrator.pin_message(
+        db, user_id, conversation_id, message_id, action=action, duration_seconds=duration_seconds
+    )
+
+
 async def mark_conversation_read(db: AsyncSession, user_id: str, conversation_id: int) -> Dict[str, Any]:
     return await _messaging_orchestrator.mark_conversation_read(db, user_id, conversation_id)
 

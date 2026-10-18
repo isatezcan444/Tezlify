@@ -396,6 +396,9 @@ interface BackendMessage {
   link_preview?: LinkPreview | null;
   quoted_message?: QuotedMessageData | null;
   is_forwarded?: boolean | null;
+  is_pinned?: boolean | null;
+  pinned_at?: string | null;
+  pinned_until?: string | null;
   created_at?: string | null;
 }
 
@@ -441,6 +444,9 @@ function mapMessage(m: BackendMessage, convId: number): Message {
     link_preview: m.link_preview ?? undefined,
     quoted_message: m.quoted_message ?? undefined,
     is_forwarded: Boolean(m.is_forwarded),
+    is_pinned: Boolean(m.is_pinned),
+    pinned_at: m.pinned_at || null,
+    pinned_until: m.pinned_until || null,
     external_timestamp: m.created_at ?? undefined,
     created_at: m.created_at || '',
   };
@@ -1320,6 +1326,27 @@ export const WhatsAppApi = {
 
   async deleteQuickReply(id: number): Promise<{ success: boolean; id: number }> {
     return apiSend<{ success: boolean; id: number }>(`/whatsapp/quick-replies/${id}`, 'DELETE');
+  },
+
+  async pinMessage(
+    conversationId: number,
+    messageId: number | string,
+    action: 'PIN' | 'UNPIN' = 'PIN',
+    durationSeconds: number = 86400
+  ): Promise<{
+    success: boolean;
+    conversation_id: number;
+    message_id: number;
+    wa_message_id?: string | null;
+    action: string;
+    is_pinned: boolean;
+    pinned_at?: string | null;
+    pinned_until?: string | null;
+  }> {
+    return apiSend(`/whatsapp/conversations/${conversationId}/messages/${messageId}/pin`, 'POST', {
+      action,
+      duration_seconds: durationSeconds,
+    });
   },
 
   useLiveMode,

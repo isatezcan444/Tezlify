@@ -68,6 +68,11 @@ class Message(Base):
     # WhatsApp native forwarded message indicator (contextInfo.isForwarded)
     is_forwarded = Column(Boolean, default=False, nullable=False, index=True)
 
+    # WhatsApp native pinned message indicator and duration window
+    is_pinned = Column(Boolean, default=False, nullable=False, index=True)
+    pinned_at = Column(DateTime, nullable=True)
+    pinned_until = Column(DateTime, nullable=True)
+
     # D3: nullable — LID (privacy-mode) senders have no resolvable phone number.
     # Hard invariant (AGENTS.md): never synthesize fake phone numbers; unknown
     # senders persist NULL instead of a placeholder literal.

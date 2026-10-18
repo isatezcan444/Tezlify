@@ -66,6 +66,7 @@ import {
   extractLinkPreviewMetadata,
   extractQuotedMessageMetadata,
   extractForwardedMetadata,
+  extractPinMetadata,
   extractContactPayload,
   extractLocationPayload,
   extractPollPayload,
@@ -1277,6 +1278,72 @@ export function createSessionManager({
       };
     },
 
+    /**
+     * Bir mesajı sohbet içinde sabitler veya sabitini kaldırır (WhatsApp Pin Message).
+     */
+    async pinMessage(sessionId, jid, { target_wa_message_id, target_from_me, action = 'PIN', duration_seconds = 86400, participant_jid }) {
+      const session = this._requireConnectedSession(sessionId);
+      const store = this._storeOf(session);
+      const key = resolveJidKey(store, jid);
+      if (!target_wa_message_id) throw new Error('target_wa_message_id is required');
+
+      let resolvedParticipant = participant_jid || null;
+      if (key.endsWith('@g.us') && !target_from_me) {
+        if (!resolvedParticipant) {
+          const cachedMsg = (store.messagesByChat.get(key) || []).find((m) => m.wa_message_id === target_wa_message_id);
+          resolvedParticipant = cachedMsg?.participant_jid || null;
+        }
+        if (!resolvedParticipant) {
+          const rawMsg = store.rawMessagesByChat?.get(key)?.get(target_wa_message_id);
+          resolvedParticipant = rawMsg?.key?.participant || null;
+        }
+      }
+
+      const pinKey = {
+        remoteJid: key,
+        fromMe: Boolean(target_from_me),
+        id: target_wa_message_id,
+      };
+      if (key.endsWith('@g.us') && !target_from_me && resolvedParticipant) {
+        pinKey.participant = resolvedParticipant;
+      }
+
+      const isUnpin = String(action || '').toUpperCase() === 'UNPIN';
+      const type = isUnpin ? 2 : 1; // 1 = PIN_FOR_ALL, 2 = UNPIN_FOR_ALL
+      const validDurations = [86400, 604800, 2592000];
+      const duration = validDurations.includes(Number(duration_seconds)) ? Number(duration_seconds) : 86400;
+
+      await session.sock.sendMessage(key, {
+        pin: pinKey,
+        type,
+        time: duration,
+      });
+
+      const now = Date.now();
+      const pinnedAt = isUnpin ? null : new Date(now).toISOString();
+      const pinnedUntil = isUnpin ? null : new Date(now + (duration * 1000)).toISOString();
+
+      // Memory store'daki mesaj kaydını güncelle
+      const list = store.messagesByChat.get(key) || [];
+      const targetRecord = list.find((m) => m.wa_message_id === target_wa_message_id);
+      if (targetRecord) {
+        targetRecord.is_pinned = !isUnpin;
+        targetRecord.pinned_at = pinnedAt;
+        targetRecord.pinned_until = pinnedUntil;
+      }
+
+      return {
+        success: true,
+        conversation_id: key,
+        wa_message_id: target_wa_message_id,
+        action: isUnpin ? 'UNPIN' : 'PIN',
+        is_pinned: !isUnpin,
+        duration_seconds: isUnpin ? 0 : duration,
+        pinned_at: pinnedAt,
+        pinned_until: pinnedUntil,
+      };
+    },
+
     async sendMediaMessage(sessionId, jid, { media_type, media_url, media_base64, mime_type, caption, filename, client_message_id }) {
       const session = this._requireConnectedSession(sessionId);
       const key = resolveJidKey(this._storeOf(session), jid);
@@ -2022,6 +2089,44 @@ export function createSessionManager({
       return event;
     },
 
+    _ingestPinMessage(sessionId, msg, key, pinMetadata) {
+      const targetWaId = pinMetadata?.target_wa_message_id;
+      if (!targetWaId) return null;
+      const isUnpin = pinMetadata.action === 'UNPIN';
+      const duration = pinMetadata.duration_seconds || 86400;
+      const fromMe = Boolean(msg.key?.fromMe);
+      const senderJid = fromMe ? null : (msg.key?.participant || msg.key?.remoteJid || null);
+      const ts = messageTimestampMs(msg.messageTimestamp) || Date.now();
+      const pinnedAt = isUnpin ? null : new Date(ts).toISOString();
+      const pinnedUntil = isUnpin ? null : new Date(ts + (duration * 1000)).toISOString();
+
+      const session = sessions.get(sessionId);
+      if (session) {
+        const store = this._storeOf(session);
+        const list = store.messagesByChat.get(key) || [];
+        const targetRecord = list.find((m) => m.wa_message_id === targetWaId);
+        if (targetRecord) {
+          targetRecord.is_pinned = !isUnpin;
+          targetRecord.pinned_at = pinnedAt;
+          targetRecord.pinned_until = pinnedUntil;
+        }
+      }
+
+      const event = {
+        event: 'message_pinned',
+        conversation_id: key,
+        target_wa_message_id: targetWaId,
+        action: isUnpin ? 'UNPIN' : 'PIN',
+        is_pinned: !isUnpin,
+        pinned_at: pinnedAt,
+        pinned_until: pinnedUntil,
+        from_me: fromMe,
+        sender_jid: senderJid,
+      };
+      this._emit({ gateway_session_id: sessionId, ...event });
+      return event;
+    },
+
     async _ingestUpsertMessage(msg, sock, sessionId) {
       const session = this._requireSession(sessionId);
       const store = this._storeOf(session);
@@ -2063,6 +2168,12 @@ export function createSessionManager({
       const reactionContent = msg.message?.reactionMessage;
       if (reactionContent) {
         return this._ingestReactionMessage(sessionId, msg, key, reactionContent);
+      }
+
+      // Mesaj sabitleme/kaldırma kontrolü (PinInChatMessage)
+      const pinMetadata = extractPinMetadata(msg);
+      if (pinMetadata) {
+        return this._ingestPinMessage(sessionId, msg, key, pinMetadata);
       }
 
       if (msg.key?.id && msg.message) {
@@ -2230,6 +2341,9 @@ export function createSessionManager({
         native_link_preview: nativeLinkPreview,
         quoted_message: quotedMeta || null,
         is_forwarded: extractForwardedMetadata(msg.message),
+        is_pinned: Boolean(existingRecord?.is_pinned),
+        pinned_at: existingRecord?.pinned_at || null,
+        pinned_until: existingRecord?.pinned_until || null,
         wa_message_id: msg.key?.id || null,
         client_message_id: existingRecord?.client_message_id || null,
         sender_phone: fromMe ? 'ME' : (jidToPhone(msg.key?.participant || key) || (msg.key?.participant || key)),
@@ -3703,6 +3817,9 @@ export function createSessionManager({
         media_caption: text || null,
         quoted_message: quotedMeta || null,
         is_forwarded: extractForwardedMetadata(msg.message),
+        is_pinned: false,
+        pinned_at: null,
+        pinned_until: null,
         wa_message_id: waMsgId,
         sender_phone: msg.key?.fromMe ? 'ME' : (jidToPhone(msg.key?.participant || key) || key),
         recipient_phone: msg.key?.fromMe ? (jidToPhone(key) || key) : 'ME',

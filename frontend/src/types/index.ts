@@ -394,6 +394,10 @@ export interface Message {
   quoted_message?: QuotedMessageData | null;
   /** WhatsApp native iletildi (forwarded) bayragi. */
   is_forwarded?: boolean;
+  /** WhatsApp native sabitlendi (pinned) bilgileri. */
+  is_pinned?: boolean;
+  pinned_at?: string | null;
+  pinned_until?: string | null;
   external_timestamp?: string;
   created_at: string;
 }

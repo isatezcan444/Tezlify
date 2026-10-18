@@ -279,6 +279,7 @@ export function systemContentMarker(waMsg) {
     const ptype = Number(c.protocolMessage.type);
     return ptype === 0 ? '[REVOKED]' : '[SYSTEM]';
   }
+  if (c.pinInChatMessage) return '[PIN]';
   if (c.reactionMessage) return '[REACTION]';
   if (c.call || c.callLogMessage) return '[CALL]';
   if (
@@ -493,4 +494,25 @@ export function buildMediaContent({
     fileName: filename || 'belge.bin',
     caption: caption || '',
   };
+}
+
+/**
+ * Extracts native pin/unpin metadata from a WhatsApp message envelope.
+ */
+export function extractPinMetadata(waMsg) {
+  const rawContent = waMsg?.message || {};
+  const c = extractMessageContent(rawContent) || rawContent || {};
+  if (c.pinInChatMessage) {
+    const key = c.pinInChatMessage.key;
+    const type = Number(c.pinInChatMessage.type); // 1 = PIN_FOR_ALL, 2 = UNPIN_FOR_ALL
+    const duration = rawContent.messageContextInfo?.messageAddOnDurationInSecs || 86400;
+    return {
+      target_wa_message_id: key?.id || null,
+      target_jid: key?.remoteJid || null,
+      target_from_me: Boolean(key?.fromMe),
+      action: type === 2 ? 'UNPIN' : 'PIN',
+      duration_seconds: duration,
+    };
+  }
+  return null;
 }

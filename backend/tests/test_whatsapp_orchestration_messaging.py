@@ -18,6 +18,7 @@ from backend.app.models.whatsapp_session import WhatsAppSession, SessionStatus
 from backend.app.services.whatsapp.orchestration.messaging import (
     WhatsAppMessagingOrchestrator,
     forward_message,
+    pin_message,
     get_media_bytes,
     mark_conversation_read,
     send_media_message,
@@ -447,4 +448,111 @@ class TestWhatsAppMessagingOrchestration:
                     assert result["results"][0]["wa_message_id"] == "BAE5_FWD_TARGET_1"
                     assert result["results"][0]["is_forwarded"] is True
                     assert result["results"][0]["body"] == "Forwarded secret payload"
+
+    @pytest.mark.asyncio
+    async def test_pin_message_success(self):
+        db = AsyncMock()
+        conv = MagicMock()
+        conv.id = 10
+        conv.is_group = False
+
+        msg = Message(
+            id=55,
+            conversation_id=10,
+            direction=MessageDirection.INBOUND,
+            message_type=MessageType.TEXT,
+            status=ConversationMessageStatus.DELIVERED,
+            body="Important pin target",
+            wa_message_id="BAE5_PIN_TARGET_1",
+            recipient_phone="+905550001122",
+        )
+
+        mock_exec = MagicMock()
+        mock_exec.scalar_one_or_none.return_value = msg
+        db.execute.return_value = mock_exec
+
+        session_row = WhatsAppSession(
+            id=1,
+            user_id="usr-1",
+            gateway_id="gw-1",
+            status=SessionStatus.CONNECTED,
+        )
+
+        with patch("backend.app.services.whatsapp.orchestration.messaging._resolve_jid", return_value=(conv, "905550001122@s.whatsapp.net")):
+            with patch("backend.app.services.whatsapp.orchestration.messaging._conversation_session", return_value=session_row):
+                with patch("backend.app.services.whatsapp_gateway.pin_message", new_callable=AsyncMock) as mock_gw_pin:
+                    mock_gw_pin.return_value = {
+                        "success": True,
+                        "wa_message_id": "BAE5_PIN_TARGET_1",
+                        "action": "PIN",
+                        "duration_seconds": 86400,
+                    }
+                    result = await pin_message(db, "usr-1", 10, 55, action="PIN", duration_seconds=86400)
+                    assert result["success"] is True
+                    assert result["is_pinned"] is True
+                    assert result["action"] == "PIN"
+                    assert result["wa_message_id"] == "BAE5_PIN_TARGET_1"
+                    assert result["pinned_at"] is not None
+                    assert result["pinned_until"] is not None
+
+    @pytest.mark.asyncio
+    async def test_unpin_message_success(self):
+        db = AsyncMock()
+        conv = MagicMock()
+        conv.id = 10
+        conv.is_group = False
+
+        msg = Message(
+            id=55,
+            conversation_id=10,
+            direction=MessageDirection.INBOUND,
+            message_type=MessageType.TEXT,
+            status=ConversationMessageStatus.DELIVERED,
+            body="Important pin target",
+            wa_message_id="BAE5_PIN_TARGET_1",
+            recipient_phone="+905550001122",
+            is_pinned=True,
+            pinned_at=datetime(2026, 10, 18, 12, 0, 0),
+        )
+
+        mock_exec = MagicMock()
+        mock_exec.scalar_one_or_none.return_value = msg
+        db.execute.return_value = mock_exec
+
+        session_row = WhatsAppSession(
+            id=1,
+            user_id="usr-1",
+            gateway_id="gw-1",
+            status=SessionStatus.CONNECTED,
+        )
+
+        with patch("backend.app.services.whatsapp.orchestration.messaging._resolve_jid", return_value=(conv, "905550001122@s.whatsapp.net")):
+            with patch("backend.app.services.whatsapp.orchestration.messaging._conversation_session", return_value=session_row):
+                with patch("backend.app.services.whatsapp_gateway.pin_message", new_callable=AsyncMock) as mock_gw_pin:
+                    mock_gw_pin.return_value = {
+                        "success": True,
+                        "wa_message_id": "BAE5_PIN_TARGET_1",
+                        "action": "UNPIN",
+                        "duration_seconds": 0,
+                    }
+                    result = await pin_message(db, "usr-1", 10, 55, action="UNPIN")
+                    assert result["success"] is True
+                    assert result["is_pinned"] is False
+                    assert result["action"] == "UNPIN"
+                    assert result["pinned_at"] is None
+                    assert result["pinned_until"] is None
+
+    @pytest.mark.asyncio
+    async def test_pin_message_not_found(self):
+        db = AsyncMock()
+        conv = MagicMock()
+        conv.id = 10
+        mock_exec = MagicMock()
+        mock_exec.scalar_one_or_none.return_value = None
+        db.execute.return_value = mock_exec
+
+        with patch("backend.app.services.whatsapp.orchestration.messaging._resolve_jid", return_value=(conv, "905550001122@s.whatsapp.net")):
+            with pytest.raises(LookupError, match="Mesaj #999 bulunamadı"):
+                await pin_message(db, "usr-1", 10, 999, action="PIN")
+
 

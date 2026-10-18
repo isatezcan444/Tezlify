@@ -1334,6 +1334,61 @@ class WhatsAppEventOrchestrator:
             "conversation_reaction": await _conversation_reaction(db, conv.id),
         }
 
+    async def _ingest_message_pinned(self, db: AsyncSession, event: Dict[str, Any]) -> Dict[str, Any]:
+        """Processes inbound message_pinned event from gateway socket."""
+        resolve_event_owner_and_session = self._get_helper(
+            "_resolve_event_owner_and_session", _resolve_event_owner_and_session
+        )
+        owner, session = await resolve_event_owner_and_session(db, event)
+        if not owner:
+            return _skip_event(event, "message_pinned: kiracı çözülemedi")
+
+        jid_str = event.get("conversation_id")
+        target_wa_id = event.get("target_wa_message_id")
+        action = str(event.get("action") or "PIN").upper()
+        is_pinned = bool(event.get("is_pinned", action != "UNPIN"))
+
+        if not target_wa_id:
+            return _skip_event(event, "message_pinned: hedef wa_message_id yok")
+
+        stmt = (
+            select(Message, Conversation)
+            .join(Conversation, Message.conversation_id == Conversation.id)
+            .where(
+                Message.wa_message_id == str(target_wa_id),
+                get_user_filter(Conversation.user_id, owner),
+            )
+        )
+        row = (await db.execute(stmt)).first()
+        if not row:
+            return _skip_event(event, f"message_pinned: hedef mesaj #{target_wa_id} bulunamadı")
+
+        target_msg, conv = row
+        target_msg.is_pinned = is_pinned
+        if is_pinned:
+            pinned_at_str = event.get("pinned_at")
+            target_msg.pinned_at = datetime.fromisoformat(pinned_at_str) if pinned_at_str else utc_now_naive()
+            pinned_until_str = event.get("pinned_until")
+            target_msg.pinned_until = datetime.fromisoformat(pinned_until_str) if pinned_until_str else None
+        else:
+            target_msg.pinned_at = None
+            target_msg.pinned_until = None
+
+        await db.commit()
+
+        return {
+            "event": "message_pinned",
+            "user_id": owner,
+            "conversation_id": conv.id,
+            "jid": jid_str,
+            "message_id": target_msg.id,
+            "wa_message_id": str(target_wa_id),
+            "action": action,
+            "is_pinned": is_pinned,
+            "pinned_at": target_msg.pinned_at.isoformat() if target_msg.pinned_at else None,
+            "pinned_until": target_msg.pinned_until.isoformat() if target_msg.pinned_until else None,
+        }
+
     async def _ingest_lid_mapped(self, db: AsyncSession, event: Dict[str, Any]) -> Dict[str, Any]:
         resolve_event_owner_and_session = self._get_helper(
             "_resolve_event_owner_and_session", _resolve_event_owner_and_session
@@ -2401,6 +2456,8 @@ class WhatsAppEventOrchestrator:
                     result = await self._ingest_messages_deleted(db, event)
                 elif evt == "message_reaction":
                     result = await self._ingest_message_reaction(db, event)
+                elif evt == "message_pinned":
+                    result = await self._ingest_message_pinned(db, event)
                 elif evt == "lid_mapped":
                     result = await self._ingest_lid_mapped(db, event)
                 elif evt == "connection_error" or str(evt).startswith("session_"):

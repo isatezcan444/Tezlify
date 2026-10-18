@@ -10,12 +10,13 @@ Preserves strict transaction boundaries:
 """
 import asyncio
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 import re
 from typing import Any, Dict, List, Optional, Tuple
 import uuid
 
+from backend.app.api.v1.websocket import ws_manager
 from backend.app.core.datetime_utils import utc_now_naive
 
 from sqlalchemy import or_, select, update
@@ -167,6 +168,9 @@ def serialize_message(
         "link_preview": preview or None,
         "quoted_message": getattr(row, "quoted_message", None),
         "is_forwarded": bool(getattr(row, "is_forwarded", False)),
+        "is_pinned": bool(getattr(row, "is_pinned", False)),
+        "pinned_at": row.pinned_at.isoformat() if getattr(row, "pinned_at", None) else None,
+        "pinned_until": row.pinned_until.isoformat() if getattr(row, "pinned_until", None) else None,
         "created_at": row.external_timestamp.isoformat()
         if row.external_timestamp
         else (row.created_at.isoformat() if row.created_at else None),
@@ -284,6 +288,109 @@ class WhatsAppMessagingOrchestrator:
             "from_me": True,
             "reaction": _serialize_reaction(row) if row is not None else None,
             "conversation_reaction": await _conversation_reaction(db, conv.id),
+        }
+
+    @profiled("pin_message")
+    async def pin_message(
+        self,
+        db: AsyncSession,
+        user_id: str,
+        conversation_id: int,
+        message_id: int,
+        action: str = "PIN",
+        duration_seconds: int = 86400,
+    ) -> Dict[str, Any]:
+        """Pins or unpins a message inside a conversation with native Baileys protocol."""
+        resolve_jid = self._get_helper("_resolve_jid", _resolve_jid)
+        conversation_session = self._get_helper("_conversation_session", _conversation_session)
+        gateway_op_or_mark_relink = self._get_helper("_gateway_op_or_mark_relink", _gateway_op_or_mark_relink)
+        gateway_client = self._get_helper("gw", gw)
+
+        conv, jid = await resolve_jid(db, user_id, conversation_id)
+        stmt = (
+            select(Message)
+            .where(
+                Message.id == message_id,
+                Message.conversation_id == conversation_id,
+            )
+        )
+        target = (await db.execute(stmt)).scalar_one_or_none()
+        if not target:
+            raise LookupError(f"Mesaj #{message_id} bulunamadı.")
+
+        if not target.wa_message_id:
+            raise ValueError("Bu mesaja henüz sabitleme uygulanamaz (sağlayıcı kimliği yok).")
+
+        participant_jid = None
+        if conv.is_group and target.direction == MessageDirection.INBOUND:
+            if target.sender_phone:
+                sp = target.sender_phone.strip()
+                if "@" in sp:
+                    participant_jid = sp
+                else:
+                    digits = re.sub(r"[^\d]", "", sp)
+                    if digits:
+                        participant_jid = f"{digits}@s.whatsapp.net"
+
+        is_unpin = str(action or "").strip().upper() == "UNPIN"
+        valid_durations = [86400, 604800, 2592000]
+        duration = duration_seconds if duration_seconds in valid_durations else 86400
+
+        session_row = await conversation_session(db, user_id, conv)
+        await gateway_op_or_mark_relink(
+            db,
+            session_row,
+            lambda gid: gateway_client.pin_message(
+                gid,
+                jid,
+                target_wa_message_id=target.wa_message_id,
+                target_from_me=target.direction == MessageDirection.OUTBOUND,
+                action="UNPIN" if is_unpin else "PIN",
+                duration_seconds=duration,
+                participant_jid=participant_jid,
+            ),
+        )
+
+        now = utc_now_naive()
+        if is_unpin:
+            target.is_pinned = False
+            target.pinned_at = None
+            target.pinned_until = None
+        else:
+            target.is_pinned = True
+            target.pinned_at = now
+            target.pinned_until = now + timedelta(seconds=duration)
+
+        await db.commit()
+        await db.refresh(target)
+
+        # Broadcast via WebSocket manager so frontend pin bar updates in real time
+        try:
+            ws_mgr = self._get_helper("ws_manager", ws_manager)
+            await ws_mgr.broadcast_to_user(
+                user_id,
+                {
+                    "type": "message_pinned",
+                    "conversation_id": conv.id,
+                    "message_id": target.id,
+                    "wa_message_id": target.wa_message_id,
+                    "is_pinned": target.is_pinned,
+                    "pinned_at": target.pinned_at.isoformat() if target.pinned_at else None,
+                    "pinned_until": target.pinned_until.isoformat() if target.pinned_until else None,
+                },
+            )
+        except Exception:
+            pass
+
+        return {
+            "success": True,
+            "conversation_id": conv.id,
+            "message_id": target.id,
+            "wa_message_id": target.wa_message_id,
+            "action": "UNPIN" if is_unpin else "PIN",
+            "is_pinned": target.is_pinned,
+            "pinned_at": target.pinned_at.isoformat() if target.pinned_at else None,
+            "pinned_until": target.pinned_until.isoformat() if target.pinned_until else None,
         }
 
     @profiled("send_text")
@@ -1171,6 +1278,7 @@ _default_orchestrator = WhatsAppMessagingOrchestrator()
 send_text_message = _default_orchestrator.send_text_message
 send_media_message = _default_orchestrator.send_media_message
 forward_message = _default_orchestrator.forward_message
+pin_message = _default_orchestrator.pin_message
 mark_conversation_read = _default_orchestrator.mark_conversation_read
 send_typing = _default_orchestrator.send_typing
 subscribe_presence = _default_orchestrator.subscribe_presence

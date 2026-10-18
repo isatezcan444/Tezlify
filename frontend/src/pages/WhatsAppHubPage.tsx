@@ -74,6 +74,8 @@ import {
   ChatSearchResultsDrawer,
   ChatInfoDrawer,
   ForwardModal,
+  PinDurationModal,
+  PinnedMessagesBar,
   type QuotedMessage,
 } from '../features/whatsapp/components';
 import { LeadDetailDrawer } from '../features/leads/components';
@@ -498,6 +500,100 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     }
   }, []);
 
+  // Message Pinning State & Handlers
+  const [pinModalOpen, setPinModalOpen] = useState(false);
+  const [pinTargetMessage, setPinTargetMessage] = useState<Message | null>(null);
+  const [isPinning, setIsPinning] = useState(false);
+
+  const handleRequestPinMessage = useCallback((message: Message) => {
+    setPinTargetMessage(message);
+    setPinModalOpen(true);
+  }, []);
+
+  const handleConfirmPin = useCallback(async (durationSeconds: number) => {
+    const currentConv = selectedConvRef.current;
+    if (!currentConv || !pinTargetMessage) return;
+    setIsPinning(true);
+    try {
+      const res = await WhatsAppApi.pinMessage(currentConv.id, pinTargetMessage.id, 'PIN', durationSeconds);
+      if (res.success) {
+        toastRef.current.success(tRef.current('whatsapp.messagePinned'));
+        setMessagesMap((prev) => {
+          const list = prev[currentConv.id] || [];
+          return {
+            ...prev,
+            [currentConv.id]: list.map((m) =>
+              m.id === pinTargetMessage.id
+                ? {
+                    ...m,
+                    is_pinned: true,
+                    pinned_at: res.pinned_at || new Date().toISOString(),
+                    pinned_until: res.pinned_until || null,
+                  }
+                : m
+            ),
+          };
+        });
+        setPinModalOpen(false);
+        setPinTargetMessage(null);
+      } else {
+        toastRef.current.error(tRef.current('whatsapp.pinError'), tRef.current('common.error'));
+      }
+    } catch (err: any) {
+      toastRef.current.error(
+        translateApiError(err, tRef.current) || tRef.current('whatsapp.pinError'),
+        tRef.current('common.error')
+      );
+    } finally {
+      setIsPinning(false);
+    }
+  }, [pinTargetMessage]);
+
+  const handleUnpinMessage = useCallback(async (message: Message) => {
+    const currentConv = selectedConvRef.current;
+    if (!currentConv) return;
+    try {
+      const res = await WhatsAppApi.pinMessage(currentConv.id, message.id, 'UNPIN', 0);
+      if (res.success) {
+        toastRef.current.success(tRef.current('whatsapp.messageUnpinned'));
+        setMessagesMap((prev) => {
+          const list = prev[currentConv.id] || [];
+          return {
+            ...prev,
+            [currentConv.id]: list.map((m) =>
+              m.id === message.id
+                ? {
+                    ...m,
+                    is_pinned: false,
+                    pinned_at: null,
+                    pinned_until: null,
+                  }
+                : m
+            ),
+          };
+        });
+      } else {
+        toastRef.current.error(tRef.current('whatsapp.unpinError'), tRef.current('common.error'));
+      }
+    } catch (err: any) {
+      toastRef.current.error(
+        translateApiError(err, tRef.current) || tRef.current('whatsapp.unpinError'),
+        tRef.current('common.error')
+      );
+    }
+  }, []);
+
+  const handleJumpToPinnedMessage = useCallback((message: Message) => {
+    const el = document.getElementById(`msg-${message.id}`);
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      el.classList.add('ring-2', 'ring-amber-500', 'dark:ring-amber-400');
+      setTimeout(() => {
+        el.classList.remove('ring-2', 'ring-amber-500', 'dark:ring-amber-400');
+      }, 2500);
+    }
+  }, []);
+
 
   const lastMarkedReadConvIdRef = useRef<number | null>(null);
   const messagesMapRef = useRef(messagesMap);
@@ -888,6 +984,9 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   const { status: liveStatus } = useLiveMode();
 
   const activeMessages = selectedConv ? (messagesMap[selectedConv.id] || []) : [];
+  const pinnedMessages = React.useMemo(() => {
+    return activeMessages.filter((m) => Boolean(m.is_pinned));
+  }, [activeMessages]);
   const activePaging = selectedConv ? messagePaging[selectedConv.id] : undefined;
   const activeHasMore = Boolean(activeMessages.length >= 50 && activePaging?.hasMore && activePaging.oldest);
   const activeLoadingOlder = Boolean(activePaging?.loading);
@@ -2312,6 +2411,36 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       if (!eventData) return;
       if (eventData.event === 'message_new' && eventData.message?.id) {
         startWaLatency('event_handler_to_message_commit_ms', eventData.message.id);
+      }
+
+      if (eventData.event === 'message_pinned') {
+        const targetConvId = eventData.conversation_id;
+        const targetMsgId = eventData.message_id;
+        const waMsgId = eventData.wa_message_id;
+        const isPinned = Boolean(eventData.is_pinned);
+        const pinnedAt = eventData.pinned_at || null;
+        const pinnedUntil = eventData.pinned_until || null;
+
+        if (targetConvId) {
+          setMessagesMap((prev) => {
+            const currentList = prev[targetConvId] || [];
+            return {
+              ...prev,
+              [targetConvId]: currentList.map((m) => {
+                const matches = (targetMsgId && m.id === targetMsgId) || (waMsgId && m.wa_message_id === waMsgId);
+                if (matches) {
+                  return {
+                    ...m,
+                    is_pinned: isPinned,
+                    pinned_at: pinnedAt,
+                    pinned_until: pinnedUntil,
+                  };
+                }
+                return m;
+              }),
+            };
+          });
+        }
       }
 
       // 1. INBOUND MESSAGE & OUTBOUND CONFIRMATION
@@ -3867,6 +3996,13 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                   />
                 )}
 
+                {/* Pinned Messages Bar (Right under header / search bar) */}
+                <PinnedMessagesBar
+                  pinnedMessages={pinnedMessages}
+                  onJumpToMessage={handleJumpToPinnedMessage}
+                  onUnpinMessage={handleUnpinMessage}
+                />
+
                 {/* Chat Thread with Pagination */}
                 <ChatThread
                   conversationKey={selectedConv.id}
@@ -3891,6 +4027,8 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                   onPrivateReply={handlePrivateReply}
                   onDirectMessageSender={handleDirectMessageSender}
                   onReportMessage={handleReportMessage}
+                  onPin={handleRequestPinMessage}
+                  onUnpin={handleUnpinMessage}
                   isSelectMode={isSelectMode}
                   selectedMessageIds={selectedMessageIds}
                   onToggleSelectMessage={handleToggleSelectMessage}
@@ -4251,6 +4389,18 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         messagesToForward={messagesToForward}
         conversations={conversations}
         onConfirmForward={handleConfirmForward}
+      />
+
+      {/* WhatsApp Pin Message Duration Modal */}
+      <PinDurationModal
+        isOpen={pinModalOpen}
+        onClose={() => {
+          setPinModalOpen(false);
+          setPinTargetMessage(null);
+        }}
+        onConfirm={handleConfirmPin}
+        message={pinTargetMessage}
+        isSubmitting={isPinning}
       />
     </div>
   );

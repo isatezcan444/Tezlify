@@ -203,6 +203,9 @@ class WhatsAppMessageItem(BaseModel):
     link_preview: Optional[WhatsAppLinkPreviewItem] = None
     quoted_message: Optional[Dict[str, Any]] = None
     is_forwarded: bool = False
+    is_pinned: bool = False
+    pinned_at: Optional[str] = None
+    pinned_until: Optional[str] = None
     created_at: Optional[str] = None
 
 
@@ -319,6 +322,9 @@ class WhatsAppSendResult(BaseModel):
     media_id: Optional[str] = None
     media_url: Optional[str] = None
     is_forwarded: bool = False
+    is_pinned: bool = False
+    pinned_at: Optional[str] = None
+    pinned_until: Optional[str] = None
 
 
 class WhatsAppForwardMessageRequest(BaseModel):
@@ -331,6 +337,22 @@ class WhatsAppForwardMessageResult(BaseModel):
     success: bool = True
     forwarded_count: int = 0
     results: List[WhatsAppSendResult] = Field(default_factory=list)
+
+
+class WhatsAppPinMessageRequest(BaseModel):
+    action: str = Field(default="PIN", description="'PIN' | 'UNPIN'")
+    duration_seconds: int = Field(default=86400, description="Pin süresi: 86400 (24s), 604800 (7g), 2592000 (30g)")
+
+
+class WhatsAppPinMessageResult(BaseModel):
+    success: bool = True
+    conversation_id: int
+    message_id: int
+    wa_message_id: Optional[str] = None
+    action: str = "PIN"
+    is_pinned: bool = True
+    pinned_at: Optional[str] = None
+    pinned_until: Optional[str] = None
 
 
 class WhatsAppStartConversationRequest(BaseModel):

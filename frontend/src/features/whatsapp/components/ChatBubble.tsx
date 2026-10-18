@@ -141,6 +141,8 @@ export interface ChatBubbleProps {
   onPrivateReply?: (message: Message) => void;
   onDirectMessageSender?: (senderPhone: string, senderName?: string) => void;
   onReport?: (message: Message) => void;
+  onPin?: (message: Message) => void;
+  onUnpin?: (message: Message) => void;
   isSelectMode?: boolean;
   isSelected?: boolean;
   onToggleSelect?: (messageId: number | string) => void;
@@ -161,6 +163,8 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
   onPrivateReply,
   onDirectMessageSender,
   onReport,
+  onPin,
+  onUnpin,
   isSelectMode = false,
   isSelected = false,
   onToggleSelect,
@@ -195,7 +199,8 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
   const [mediaRetryFailed, setMediaRetryFailed] = useState<boolean>(() => isPermanentlyExpired);
   const [copied, setCopied] = useState(false);
   const [isStarred, setIsStarred] = useState<boolean>(() => isMessageStarred(message.id));
-  const [isPinned, setIsPinned] = useState<boolean>(() => isMessagePinned(message.id));
+  const [isPinned, setIsPinned] = useState<boolean>(() => Boolean(message.is_pinned) || isMessagePinned(message.id));
+  const isActuallyPinned = Boolean(message.is_pinned || isPinned);
 
   const {
     isMenuOpen,
@@ -238,8 +243,6 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
     }
   }, [isLightboxOpen]);
 
-
-
   React.useEffect(() => {
     setIsStarred(isMessageStarred(message.id));
     return subscribeStarredChanges(() => {
@@ -248,11 +251,33 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
   }, [message.id]);
 
   React.useEffect(() => {
-    setIsPinned(isMessagePinned(message.id));
+    setIsPinned(Boolean(message.is_pinned) || isMessagePinned(message.id));
     return subscribePinnedChanges(() => {
-      setIsPinned(isMessagePinned(message.id));
+      setIsPinned(Boolean(message.is_pinned) || isMessagePinned(message.id));
     });
-  }, [message.id]);
+  }, [message.id, message.is_pinned]);
+
+  const handlePinToggle = useCallback((e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    setIsMenuOpen(false);
+    if (isActuallyPinned) {
+      if (onUnpin) {
+        onUnpin(message);
+      } else {
+        const nextPinned = toggleMessagePin(message.id, message.conversation_id);
+        setIsPinned(nextPinned);
+        toast.success(t('whatsapp.messageUnpinned'));
+      }
+    } else {
+      if (onPin) {
+        onPin(message);
+      } else {
+        const nextPinned = toggleMessagePin(message.id, message.conversation_id);
+        setIsPinned(nextPinned);
+        toast.success(t('whatsapp.messagePinned'));
+      }
+    }
+  }, [isActuallyPinned, message, onPin, onUnpin, setIsMenuOpen, t, toast]);
 
 
 
@@ -1332,6 +1357,17 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
             </svg>
           )}
 
+          {/* Pinned Header Badge */}
+          {isActuallyPinned && (
+            <div
+              data-testid={`msg-pinned-badge-${message.id}`}
+              className="inline-flex items-center gap-1 text-amber-600 dark:text-amber-400 text-[10.5px] font-medium mb-1 select-none"
+            >
+              <Pin className="w-2.5 h-2.5 -rotate-45 shrink-0 fill-amber-600 dark:fill-amber-400" />
+              <span>{t('whatsapp.pinned')}</span>
+            </div>
+          )}
+
           {/* Group Sender Name */}
           {senderLabel && (
             <div className={`text-[12.5px] font-semibold leading-tight tracking-wide mb-1 select-none flex items-center gap-1 ${getSenderColorClass(senderLabel, message.sender_phone)}`}>
@@ -1362,9 +1398,9 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
               isInbound ? 'text-[#667781] dark:text-[#8696a0]' : 'text-[#667781] dark:text-[#8696a0]'
             }`}
           >
-            {isPinned && (
+            {isActuallyPinned && (
               <Pin
-                className="w-2.5 h-2.5 text-slate-500 dark:text-slate-400 -rotate-45 shrink-0 inline-block mr-0.5"
+                className="w-2.5 h-2.5 text-amber-500 fill-amber-500 -rotate-45 shrink-0 inline-block mr-0.5"
                 data-testid={`msg-pinned-icon-${message.id}`}
                 aria-label={t('whatsapp.menuPin')}
               />
@@ -1468,6 +1504,32 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
             </div>
           )}
 
+          {/* Quick Pin / Unpin Button (outside bubble on hover) */}
+          {!isSelectMode && (
+            <div
+              className={`absolute top-1 ${
+                isInbound
+                  ? (canReact && onForward ? '-right-22' : (canReact || onForward ? '-right-15' : '-right-8'))
+                  : (canReact && onForward ? '-left-22' : (canReact || onForward ? '-left-15' : '-left-8'))
+              } z-10 opacity-0 sm:group-hover:opacity-100 transition-opacity`}
+            >
+              <button
+                type="button"
+                onClick={handlePinToggle}
+                title={isActuallyPinned ? t('whatsapp.menuUnpin') : t('whatsapp.menuPin')}
+                aria-label={isActuallyPinned ? t('whatsapp.menuUnpin') : t('whatsapp.menuPin')}
+                data-testid={isActuallyPinned ? `unpin-trigger-${message.id}` : `pin-trigger-${message.id}`}
+                className={`w-6 h-6 rounded-full flex items-center justify-center transition-colors cursor-pointer ${
+                  isActuallyPinned
+                    ? 'text-amber-500 hover:text-amber-600 bg-amber-50 dark:bg-amber-950/30 hover:bg-amber-100 dark:hover:bg-amber-900/40'
+                    : 'text-slate-400 hover:text-slate-700 dark:text-slate-400 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/10'
+                }`}
+              >
+                <Pin className={`w-3.5 h-3.5 ${isActuallyPinned ? 'fill-amber-500 -rotate-45' : '-rotate-45'}`} />
+              </button>
+            </div>
+          )}
+
           {/* WhatsApp Web Message Chevron Down Trigger ("Ok Butonu") */}
           {!isSelectMode && (
             <div className="absolute top-1 right-1 z-20">
@@ -1557,17 +1619,11 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
               {/* 4. Sabitle / Sabitlemeyi Kaldır */}
               <button
                 type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setIsMenuOpen(false);
-                  const nextPinned = toggleMessagePin(message.id, message.conversation_id);
-                  setIsPinned(nextPinned);
-                  toast.success(nextPinned ? t('whatsapp.messagePinned') : t('whatsapp.messageUnpinned'));
-                }}
+                onClick={handlePinToggle}
                 data-testid={`menu-pin-${message.id}`}
                 className="w-full text-left px-3.5 py-1.5 text-[12.5px] text-[#3b4a54] dark:text-[#d1d7db] hover:bg-[#f5f6f6] dark:hover:bg-[#182229] active:bg-slate-200/50 dark:active:bg-white/[0.08] transition-colors cursor-pointer select-none font-normal"
               >
-                {isPinned ? t('whatsapp.menuUnpin') : t('whatsapp.menuPin')}
+                {isActuallyPinned ? t('whatsapp.menuUnpin') : t('whatsapp.menuPin')}
               </button>
 
               {/* 5. İlet */}

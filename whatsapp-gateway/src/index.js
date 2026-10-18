@@ -685,6 +685,22 @@ app.post('/sessions/:sessionId/conversations/:jid/reactions', withSession(async 
   res.status(201).json(result);
 }));
 
+// Pin or unpin an existing message
+app.post('/sessions/:sessionId/conversations/:jid/pin', withSession(async (req, res, sessionId) => {
+  const { target_wa_message_id, target_from_me, action = 'PIN', duration_seconds = 86400, participant_jid } = req.body || {};
+  if (!target_wa_message_id) {
+    return res.status(400).json({ error: 'target_wa_message_id is required' });
+  }
+  const result = await sessionManager.pinMessage(sessionId, req.params.jid, {
+    target_wa_message_id,
+    target_from_me,
+    action,
+    duration_seconds,
+    participant_jid,
+  });
+  res.status(200).json(result);
+}));
+
 // Typing indicator ("yazıyor…")
 app.post('/sessions/:sessionId/conversations/:jid/typing', withSession(async (req, res, sessionId) => {
   const { typing = true, duration_ms = 4000 } = req.body || {};
