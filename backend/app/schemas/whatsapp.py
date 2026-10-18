@@ -497,3 +497,16 @@ class WhatsAppLidSplitMergeResponse(BaseModel):
     deferred: int = 0
     errors: int = 0
     results: List[WhatsAppLidSplitMergeItem] = Field(default_factory=list)
+
+
+class WhatsAppGroupDescriptionUpdate(BaseModel):
+    description: str = Field(default="", max_length=2048)
+
+
+class WhatsAppGroupSubjectUpdate(BaseModel):
+    subject: str = Field(..., min_length=1, max_length=100)
+
+
+class WhatsAppGroupParticipantsUpdate(BaseModel):
+    action: str = Field(..., pattern="^(add|remove|promote|demote)$")
+    participants: List[str] = Field(..., min_length=1)

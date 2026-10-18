@@ -1425,6 +1425,58 @@ async def get_group_participants(
         return {"id": "", "subject": "", "participants": [], "error": str(exc)}
 
 
+async def update_group_description(
+    db: AsyncSession,
+    user_id: str,
+    conversation_id: int,
+    description: str,
+) -> Dict[str, Any]:
+    """Grup açıklamasını günceller."""
+    conv, jid = await _resolve_jid(db, user_id, conversation_id)
+    ws_session = await _require_user_session(db, user_id, session_id=conv.session_id)
+    return await gw.update_group_description(str(ws_session.gateway_id), jid, description)
+
+
+async def update_group_subject(
+    db: AsyncSession,
+    user_id: str,
+    conversation_id: int,
+    subject: str,
+) -> Dict[str, Any]:
+    """Grup başlığını günceller ve veritabanı sohbet adını günceller."""
+    conv, jid = await _resolve_jid(db, user_id, conversation_id)
+    ws_session = await _require_user_session(db, user_id, session_id=conv.session_id)
+    res = await gw.update_group_subject(str(ws_session.gateway_id), jid, subject)
+    if conv and subject:
+        conv.lead_name = subject
+        await db.commit()
+    return res
+
+
+async def leave_group(
+    db: AsyncSession,
+    user_id: str,
+    conversation_id: int,
+) -> Dict[str, Any]:
+    """Gruptan ayrılır."""
+    conv, jid = await _resolve_jid(db, user_id, conversation_id)
+    ws_session = await _require_user_session(db, user_id, session_id=conv.session_id)
+    return await gw.leave_group(str(ws_session.gateway_id), jid)
+
+
+async def update_group_participants(
+    db: AsyncSession,
+    user_id: str,
+    conversation_id: int,
+    participants: list[str],
+    action: str,
+) -> Dict[str, Any]:
+    """Grup katılımcılarını yönetir (add, remove, promote, demote)."""
+    conv, jid = await _resolve_jid(db, user_id, conversation_id)
+    ws_session = await _require_user_session(db, user_id, session_id=conv.session_id)
+    return await gw.update_group_participants(str(ws_session.gateway_id), jid, participants, action)
+
+
 async def start_conversation(
     db: AsyncSession,
     user_id: str,

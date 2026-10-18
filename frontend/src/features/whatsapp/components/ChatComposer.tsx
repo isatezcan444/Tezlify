@@ -18,8 +18,10 @@ import {
   Trash2,
   X,
   Zap,
+  AtSign,
 } from 'lucide-react';
 import { Button } from '../../../components/ui/button';
+import { Avatar } from '../../../components/ui/Avatar';
 import { Tooltip } from '../../../components/ui/Tooltip';
 import { Modal } from '../../../components/ui/Modal';
 import { EmojiPicker } from './EmojiPicker';
@@ -29,6 +31,7 @@ import { useToast } from '../../../context/ToastContext';
 import { QuickReply } from '../../../types';
 import { WhatsAppRepository } from '../data/whatsappRepository';
 import { filterQuickReplies, renderQuickReplyContent } from '../lib/whatsappQuickReplies';
+import { formatPhoneNumber } from '../lib/whatsappIdentity';
 
 export interface QuotedMessage {
   id: number | string;
@@ -54,6 +57,8 @@ export interface ChatComposerProps {
   insertedText?: { text: string; timestamp: number } | null;
   stagedFiles?: { files: File[]; timestamp: number } | null;
   onClearStagedFiles?: () => void;
+  isGroup?: boolean;
+  groupParticipants?: Array<{ id: string; name: string; phone?: string; is_me?: boolean; admin?: string }>;
 }
 
 export const ChatComposer: React.FC<ChatComposerProps> = ({
@@ -73,6 +78,8 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
   insertedText,
   stagedFiles,
   onClearStagedFiles,
+  isGroup = false,
+  groupParticipants,
 }) => {
   const { t } = useI18n();
   const toast = useToast();
@@ -130,6 +137,49 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
       setIsQuickRepliesDismissed(false);
     }
   }, [text]);
+
+  // Group Mention ('@') Autocomplete Logic
+  const [isMentionDismissed, setIsMentionDismissed] = useState(false);
+  const [mentionIndex, setMentionIndex] = useState(0);
+
+  const cursorMentionMatch = useMemo(() => {
+    if (!isGroup || !groupParticipants || groupParticipants.length === 0) return null;
+    const el = draftInputRef.current;
+    const cursor = el ? el.selectionStart ?? text.length : text.length;
+    const textBeforeCursor = text.slice(0, cursor);
+    const match = textBeforeCursor.match(/(?:^|\s)@([^\s@]*)$/);
+    if (!match) return null;
+    return {
+      query: match[1].toLowerCase(),
+      atIndex: textBeforeCursor.lastIndexOf('@'),
+      cursor,
+    };
+  }, [isGroup, groupParticipants, text]);
+
+  const matchedMentions = useMemo(() => {
+    if (!cursorMentionMatch || !groupParticipants) return [];
+    const q = cursorMentionMatch.query;
+    return groupParticipants.filter((p) => {
+      if (p.is_me) return false;
+      if (!q) return true;
+      const nameMatch = (p.name || '').toLowerCase().includes(q);
+      const phoneDigits = (p.phone || '').replace(/\D/g, '');
+      const phoneMatch = phoneDigits.includes(q);
+      return nameMatch || phoneMatch;
+    });
+  }, [cursorMentionMatch, groupParticipants]);
+
+  const isMentionActive = Boolean(cursorMentionMatch && matchedMentions.length > 0 && !isMentionDismissed);
+
+  useEffect(() => {
+    setMentionIndex(0);
+  }, [cursorMentionMatch?.query]);
+
+  useEffect(() => {
+    if (!cursorMentionMatch) {
+      setIsMentionDismissed(false);
+    }
+  }, [cursorMentionMatch]);
 
   // Live Voice Recording State
   const [isRecording, setIsRecording] = useState(false);
@@ -539,6 +589,29 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
     [leadName, refocusDraft]
   );
 
+  const handleSelectMention = useCallback(
+    (participant: { id: string; name: string; phone?: string }) => {
+      if (!cursorMentionMatch) return;
+      const mentionText = `@${participant.name && participant.name !== 'ME' ? participant.name : formatPhoneNumber(participant.phone) || participant.phone || 'Katılımcı'} `;
+      const beforeAt = text.slice(0, cursorMentionMatch.atIndex);
+      const afterCursor = text.slice(cursorMentionMatch.cursor);
+      const newText = `${beforeAt}${mentionText}${afterCursor}`;
+      setText(newText);
+      setIsMentionDismissed(false);
+
+      setTimeout(() => {
+        refocusDraft();
+        if (draftInputRef.current) {
+          const newPos = beforeAt.length + mentionText.length;
+          draftInputRef.current.setSelectionRange(newPos, newPos);
+          draftInputRef.current.style.height = 'auto';
+          draftInputRef.current.style.height = `${Math.min(draftInputRef.current.scrollHeight, 120)}px`;
+        }
+      }, 30);
+    },
+    [cursorMentionMatch, text, refocusDraft]
+  );
+
   useEffect(() => {
     if (insertedText && insertedText.text) {
       setText((current) => {
@@ -629,6 +702,32 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement | HTMLInputElement>) => {
+    if (isMentionActive && matchedMentions.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setMentionIndex((prev) => (prev + 1) % matchedMentions.length);
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setMentionIndex((prev) => (prev - 1 + matchedMentions.length) % matchedMentions.length);
+        return;
+      }
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault();
+        const chosen = matchedMentions[mentionIndex];
+        if (chosen) {
+          handleSelectMention(chosen);
+        }
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setIsMentionDismissed(true);
+        return;
+      }
+    }
+
     if (isTypingShortcut && matchedQuickReplies.length > 0) {
       if (e.key === 'ArrowDown') {
         e.preventDefault();
@@ -1100,6 +1199,81 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
                         );
                       })
                     )}
+                  </div>
+                </div>
+              )}
+
+              {/* Group Mention ('@') Floating Popover */}
+              {isMentionActive && (
+                <div
+                  data-testid="composer-mentions-popover"
+                  className="absolute bottom-full mb-2 left-0 right-0 z-30 bg-white dark:bg-[#202c33] rounded-2xl shadow-xl border border-slate-200/90 dark:border-white/[0.08] overflow-hidden animate-in fade-in slide-in-from-bottom-2 duration-150"
+                >
+                  <div className="px-3.5 py-2 border-b border-slate-100 dark:border-white/[0.06] flex items-center justify-between bg-slate-50/70 dark:bg-black/20">
+                    <div className="flex items-center space-x-1.5 text-xs font-bold text-slate-700 dark:text-slate-200">
+                      <AtSign className="w-3.5 h-3.5 text-[#00a884]" />
+                      <span>{t('whatsapp.mentionParticipant')}</span>
+                      <span className="text-[10px] text-slate-400 font-normal">({matchedMentions.length})</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setIsMentionDismissed(true)}
+                      className="p-1 rounded-md text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-200/50 dark:hover:bg-white/10 transition-colors cursor-pointer"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+
+                  <div className="max-h-56 overflow-y-auto custom-scrollbar p-1.5 space-y-0.5">
+                    {matchedMentions.map((part, idx) => {
+                      const isSelected = idx === mentionIndex;
+                      const displayName = part.name && part.name !== 'ME' ? part.name : formatPhoneNumber(part.phone) || part.phone || 'Katılımcı';
+                      return (
+                        <div
+                          key={part.id}
+                          data-testid={`mention-item-${part.id}`}
+                          onClick={() => handleSelectMention(part)}
+                          onMouseEnter={() => setMentionIndex(idx)}
+                          className={`flex items-center justify-between p-2 rounded-xl text-left cursor-pointer transition-colors ${
+                            isSelected
+                              ? 'bg-[#00a884]/10 dark:bg-[#00a884]/20 text-[#00a884]'
+                              : 'hover:bg-slate-100 dark:hover:bg-white/[0.04] text-slate-700 dark:text-slate-200'
+                          }`}
+                        >
+                          <div className="flex items-center space-x-2.5 min-w-0 flex-1 pr-2">
+                            <Avatar
+                              name={displayName}
+                              phone={part.phone || undefined}
+                              size="sm"
+                              shape="circle"
+                              className="w-7 h-7 text-[10px] shrink-0"
+                            />
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center space-x-1.5">
+                                <span className="text-xs font-bold truncate">
+                                  {displayName}
+                                </span>
+                                {part.admin && (
+                                  <span className="px-1.5 py-0.2 rounded text-[9px] font-bold border border-emerald-500/30 text-emerald-600 dark:text-emerald-400 bg-emerald-500/10">
+                                    {t('whatsapp.groupAdmin')}
+                                  </span>
+                                )}
+                              </div>
+                              {part.phone && part.name && (
+                                <p className="text-[11px] text-slate-400 font-mono truncate">
+                                  {formatPhoneNumber(part.phone)}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                          {isSelected && (
+                            <span className="text-[10px] font-mono text-[#00a884] shrink-0 self-center hidden sm:inline">
+                              Enter ↵
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               )}

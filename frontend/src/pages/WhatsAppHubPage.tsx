@@ -294,7 +294,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     selectedConvId: selectedConv?.id,
     messages: selectedConv ? messagesMap[selectedConv.id] : undefined,
   });
-  const [groupParticipantsMap, setGroupParticipantsMap] = useState<Record<number, Array<{ id: string; name: string; is_me: boolean }>>>({});
+  const [groupParticipantsMap, setGroupParticipantsMap] = useState<Record<number, Array<{ id: string; name: string; phone?: string; is_me: boolean; admin?: string }>>>({});
   const {
     isChatDragOver,
     stagedComposerFiles,
@@ -3910,6 +3910,8 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                   <ChatComposer
                     key={selectedConv.id}
                     leadName={selectedConv.lead_name || ''}
+                    isGroup={Boolean(selectedConv.is_group)}
+                    groupParticipants={selectedConv.id ? groupParticipantsMap[selectedConv.id] : undefined}
                     replyingTo={replyingTo}
                     onCancelReply={() => setReplyingTo(null)}
                     insertedText={insertedComposerText}

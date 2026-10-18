@@ -433,6 +433,57 @@ async def get_group_participants(
     )
 
 
+async def update_group_description(
+    gateway_id: str,
+    jid: str,
+    description: str,
+) -> Dict[str, Any]:
+    """Grup açıklamasını günceller."""
+    return await _request(
+        "PATCH",
+        f"{_s(gateway_id)}/groups/{jid}/description",
+        json={"description": description},
+    )
+
+
+async def update_group_subject(
+    gateway_id: str,
+    jid: str,
+    subject: str,
+) -> Dict[str, Any]:
+    """Grup başlığını günceller."""
+    return await _request(
+        "PATCH",
+        f"{_s(gateway_id)}/groups/{jid}/subject",
+        json={"subject": subject},
+    )
+
+
+async def leave_group(
+    gateway_id: str,
+    jid: str,
+) -> Dict[str, Any]:
+    """Gruptan ayrılır."""
+    return await _request(
+        "POST",
+        f"{_s(gateway_id)}/groups/{jid}/leave",
+    )
+
+
+async def update_group_participants(
+    gateway_id: str,
+    jid: str,
+    participants: list[str],
+    action: str,
+) -> Dict[str, Any]:
+    """Grup katılımcılarını yönetir (add, remove, promote, demote)."""
+    return await _request(
+        "POST",
+        f"{_s(gateway_id)}/groups/{jid}/participants",
+        json={"action": action, "participants": participants},
+    )
+
+
 async def mark_conversation_read(gateway_id: str, jid: str) -> Dict[str, Any]:
     return await _request("POST", f"{_s(gateway_id)}/conversations/{jid}/read")
 

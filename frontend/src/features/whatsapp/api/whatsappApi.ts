@@ -1187,12 +1187,42 @@ export const WhatsAppApi = {
     }
   },
 
-  async getGroupParticipants(conversationId: number): Promise<{ id: string; subject: string; participants: Array<{ id: string; name: string; phone?: string; is_me: boolean; admin?: string }> }> {
+  async getGroupParticipants(conversationId: number): Promise<{
+    id: string;
+    subject: string;
+    description?: string;
+    owner?: string;
+    creation?: number;
+    participants: Array<{ id: string; name: string; phone?: string; is_me: boolean; admin?: string }>;
+  }> {
     try {
       return await apiGet(`/whatsapp/conversations/${conversationId}/participants`);
     } catch {
-      return { id: '', subject: '', participants: [] };
+      return { id: '', subject: '', description: '', participants: [] };
     }
+  },
+
+  async updateGroupDescription(conversationId: number, description: string): Promise<{ success: boolean; description: string }> {
+    return await apiSend(`/whatsapp/conversations/${conversationId}/group/description`, 'PATCH', { description });
+  },
+
+  async updateGroupSubject(conversationId: number, subject: string): Promise<{ success: boolean; subject: string }> {
+    return await apiSend(`/whatsapp/conversations/${conversationId}/group/subject`, 'PATCH', { subject });
+  },
+
+  async leaveGroup(conversationId: number): Promise<{ success: boolean }> {
+    return await apiSend(`/whatsapp/conversations/${conversationId}/group/leave`, 'POST');
+  },
+
+  async updateGroupParticipants(
+    conversationId: number,
+    participants: string[],
+    action: 'add' | 'remove' | 'promote' | 'demote'
+  ): Promise<{ success: boolean; action: string; result?: any }> {
+    return await apiSend(`/whatsapp/conversations/${conversationId}/group/participants`, 'POST', {
+      participants,
+      action,
+    });
   },
 
   getLiveMessages(conversationId: number, onMessage: (msg: Message) => void): () => void {

@@ -49,6 +49,9 @@ from backend.app.schemas.whatsapp import (
     WhatsAppSyncJobResponse,
     WhatsAppSyncStatusResponse,
     WhatsAppTypingRequest,
+    WhatsAppGroupDescriptionUpdate,
+    WhatsAppGroupSubjectUpdate,
+    WhatsAppGroupParticipantsUpdate,
 )
 from backend.app.schemas.quick_reply import (
     QuickReplyCreate,
@@ -1057,6 +1060,57 @@ async def get_group_participants(
     """WhatsApp grup katılımcılarını ve metadata'sını çeker."""
     return await whatsapp_service.get_group_participants(
         db, current_user.id, conversation_id
+    )
+
+
+@router.patch("/conversations/{conversation_id}/group/description")
+async def update_group_description(
+    conversation_id: int,
+    payload: WhatsAppGroupDescriptionUpdate,
+    current_user: AuthUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> Dict[str, Any]:
+    """WhatsApp grup açıklamasını günceller."""
+    return await whatsapp_service.update_group_description(
+        db, current_user.id, conversation_id, payload.description
+    )
+
+
+@router.patch("/conversations/{conversation_id}/group/subject")
+async def update_group_subject(
+    conversation_id: int,
+    payload: WhatsAppGroupSubjectUpdate,
+    current_user: AuthUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> Dict[str, Any]:
+    """WhatsApp grup başlığını günceller."""
+    return await whatsapp_service.update_group_subject(
+        db, current_user.id, conversation_id, payload.subject
+    )
+
+
+@router.post("/conversations/{conversation_id}/group/leave")
+async def leave_group(
+    conversation_id: int,
+    current_user: AuthUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> Dict[str, Any]:
+    """WhatsApp grubundan ayrılır."""
+    return await whatsapp_service.leave_group(
+        db, current_user.id, conversation_id
+    )
+
+
+@router.post("/conversations/{conversation_id}/group/participants")
+async def update_group_participants(
+    conversation_id: int,
+    payload: WhatsAppGroupParticipantsUpdate,
+    current_user: AuthUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> Dict[str, Any]:
+    """WhatsApp grup katılımcılarını yönetir (add, remove, promote, demote)."""
+    return await whatsapp_service.update_group_participants(
+        db, current_user.id, conversation_id, payload.participants, payload.action
     )
 
 

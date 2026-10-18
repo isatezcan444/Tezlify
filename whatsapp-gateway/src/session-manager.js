@@ -3307,11 +3307,71 @@ export function createSessionManager({
         }
       }
 
+      const rawDesc = meta?.desc ? (typeof meta.desc === 'string' ? meta.desc : meta.desc?.toString ? meta.desc.toString() : '') : '';
       return {
         id: key,
         subject: meta?.subject || '',
+        description: rawDesc || '',
+        owner: meta?.owner || null,
+        creation: meta?.creation || null,
         participants: dedupedParticipants,
       };
+    },
+
+    async updateGroupDescription(sessionId, jid, description) {
+      const session = this._requireConnectedSession(sessionId);
+      const store = this._storeOf(session);
+      const key = resolveJidKey(store, jid);
+      if (!key.endsWith('@g.us')) {
+        throw new Error('Not a group JID');
+      }
+      await session.sock.groupUpdateDescription(key, String(description || ''));
+      return { success: true, id: key, description: String(description || '') };
+    },
+
+    async updateGroupSubject(sessionId, jid, subject) {
+      const session = this._requireConnectedSession(sessionId);
+      const store = this._storeOf(session);
+      const key = resolveJidKey(store, jid);
+      if (!key.endsWith('@g.us')) {
+        throw new Error('Not a group JID');
+      }
+      const cleanSubject = String(subject || '').trim();
+      if (!cleanSubject) {
+        throw new Error('Subject cannot be empty');
+      }
+      await session.sock.groupUpdateSubject(key, cleanSubject);
+      return { success: true, id: key, subject: cleanSubject };
+    },
+
+    async leaveGroup(sessionId, jid) {
+      const session = this._requireConnectedSession(sessionId);
+      const store = this._storeOf(session);
+      const key = resolveJidKey(store, jid);
+      if (!key.endsWith('@g.us')) {
+        throw new Error('Not a group JID');
+      }
+      await session.sock.groupLeave(key);
+      return { success: true, id: key };
+    },
+
+    async updateGroupParticipants(sessionId, jid, participants, action) {
+      const session = this._requireConnectedSession(sessionId);
+      const store = this._storeOf(session);
+      const key = resolveJidKey(store, jid);
+      if (!key.endsWith('@g.us')) {
+        throw new Error('Not a group JID');
+      }
+      if (!['add', 'remove', 'promote', 'demote'].includes(action)) {
+        throw new Error(`Invalid action: ${action}`);
+      }
+      const partList = Array.isArray(participants) ? participants : [participants];
+      const jids = partList.map((p) => resolveJidKey(store, p)).filter(Boolean);
+      if (jids.length === 0) {
+        throw new Error('No participants provided');
+      }
+      const result = await session.sock.groupParticipantsUpdate(key, jids, action);
+      return { success: true, id: key, action, result };
     },
 
     _resolveDisplayName(session, jid, fallbackPushName) {

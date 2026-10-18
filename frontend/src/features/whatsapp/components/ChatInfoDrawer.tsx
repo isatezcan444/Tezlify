@@ -25,6 +25,11 @@ import {
   Loader2,
   MessageSquare,
   UserPlus,
+  Pen,
+  ShieldCheck,
+  ShieldAlert,
+  UserMinus,
+  LogOut,
 } from 'lucide-react';
 import { Conversation, Message } from '../../../types';
 import { ApiClient } from '../../../api/client';
@@ -126,6 +131,21 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
   const [copiedPartPhone, setCopiedPartPhone] = useState<string | null>(null);
   const [addingPartPhone, setAddingPartPhone] = useState<string | null>(null);
 
+  // Group Description & Subject states
+  const [groupDescription, setGroupDescription] = useState<string>('');
+  const [isEditingDescription, setIsEditingDescription] = useState<boolean>(false);
+  const [editDescriptionText, setEditDescriptionText] = useState<string>('');
+  const [isSavingDescription, setIsSavingDescription] = useState<boolean>(false);
+
+  const [groupSubject, setGroupSubject] = useState<string>(conversation.lead_name || '');
+  const [isEditingSubject, setIsEditingSubject] = useState<boolean>(false);
+  const [editSubjectText, setEditSubjectText] = useState<string>('');
+  const [isSavingSubject, setIsSavingSubject] = useState<boolean>(false);
+
+  // Group Admin actions & leaving states
+  const [isLeavingGroup, setIsLeavingGroup] = useState<boolean>(false);
+  const [participantActionId, setParticipantActionId] = useState<string | null>(null);
+
   const isGroup = Boolean(conversation.is_group);
   const cleanPhone =
     conversation.lead_phone ||
@@ -174,15 +194,29 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
       setGroupParticipants([]);
       setIsSearchingParticipants(false);
       setParticipantSearch('');
+      setIsEditingDescription(false);
+      setIsEditingSubject(false);
       return;
     }
     let active = true;
     setLoadingParticipants(true);
+    setGroupSubject(conversation.lead_name || '');
+    setEditSubjectText(conversation.lead_name || '');
     WhatsAppApi.getGroupParticipants(conversation.id)
       .then((res) => {
         if (!active) return;
-        if (res && Array.isArray(res.participants)) {
-          setGroupParticipants(res.participants);
+        if (res) {
+          if (Array.isArray(res.participants)) {
+            setGroupParticipants(res.participants);
+          }
+          if (res.description !== undefined) {
+            setGroupDescription(res.description || '');
+            setEditDescriptionText(res.description || '');
+          }
+          if (res.subject) {
+            setGroupSubject(res.subject);
+            setEditSubjectText(res.subject);
+          }
         }
       })
       .catch(() => {})
@@ -193,7 +227,7 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
     return () => {
       active = false;
     };
-  }, [isOpen, isGroup, conversation.id]);
+  }, [isOpen, isGroup, conversation.id, conversation.lead_name]);
 
   // Merged & fallback participants: combine API participants with unique participants from chat messages
   const effectiveParticipants = useMemo(() => {
@@ -418,6 +452,104 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
       toast.error(err.message || 'CRM adayı eklenemedi');
     } finally {
       setIsAddingLead(false);
+    }
+  };
+
+  const isCurrentUserAdmin = useMemo(() => {
+    return effectiveParticipants.some(
+      (p) => p.is_me && (p.admin === 'admin' || p.admin === 'superadmin')
+    );
+  }, [effectiveParticipants]);
+
+  const handleSaveDescription = async () => {
+    setIsSavingDescription(true);
+    try {
+      await WhatsAppApi.updateGroupDescription(conversation.id, editDescriptionText.trim());
+      setGroupDescription(editDescriptionText.trim());
+      setIsEditingDescription(false);
+      toast.success(t('whatsapp.groupDescriptionUpdated'));
+    } catch (err: any) {
+      toast.error(err?.message || t('whatsapp.groupDescriptionUpdateError'));
+    } finally {
+      setIsSavingDescription(false);
+    }
+  };
+
+  const handleSaveSubject = async () => {
+    if (!editSubjectText.trim()) return;
+    setIsSavingSubject(true);
+    try {
+      await WhatsAppApi.updateGroupSubject(conversation.id, editSubjectText.trim());
+      setGroupSubject(editSubjectText.trim());
+      conversation.lead_name = editSubjectText.trim();
+      setIsEditingSubject(false);
+      toast.success(t('whatsapp.groupSubjectUpdated'));
+      window.dispatchEvent(new CustomEvent('tezlify:refresh_conversations'));
+    } catch (err: any) {
+      toast.error(err?.message || t('common.error'));
+    } finally {
+      setIsSavingSubject(false);
+    }
+  };
+
+  const handleToggleAdmin = async (p: { id: string; name: string; admin?: string }) => {
+    setParticipantActionId(p.id);
+    const newAction = p.admin ? 'demote' : 'promote';
+    try {
+      await WhatsAppApi.updateGroupParticipants(conversation.id, [p.id], newAction);
+      setGroupParticipants((prev) =>
+        prev.map((item) =>
+          item.id === p.id ? { ...item, admin: newAction === 'promote' ? 'admin' : undefined } : item
+        )
+      );
+      toast.success(newAction === 'promote' ? t('whatsapp.participantPromoted') : t('whatsapp.participantDemoted'));
+    } catch (err: any) {
+      toast.error(err?.message || t('common.error'));
+    } finally {
+      setParticipantActionId(null);
+    }
+  };
+
+  const handleRemoveParticipant = async (p: { id: string; name: string; phone?: string }) => {
+    const partName = (p.name && isRealContactName(p.name) && p.name !== 'ME') ? p.name : (p.phone ? formatPhoneNumber(p.phone) : 'Katılımcı');
+    const confirmed = await toast.confirm({
+      title: t('whatsapp.removeParticipant'),
+      message: t('whatsapp.confirmRemoveParticipant', { name: partName }),
+      confirmText: t('whatsapp.removeParticipant'),
+    });
+    if (!confirmed) return;
+
+    setParticipantActionId(p.id);
+    try {
+      await WhatsAppApi.updateGroupParticipants(conversation.id, [p.id], 'remove');
+      setGroupParticipants((prev) => prev.filter((item) => item.id !== p.id));
+      toast.success(t('whatsapp.participantRemoved'));
+    } catch (err: any) {
+      toast.error(err?.message || t('common.error'));
+    } finally {
+      setParticipantActionId(null);
+    }
+  };
+
+  const handleLeaveGroup = async () => {
+    const groupName = groupSubject || conversation.lead_name || 'Grup';
+    const confirmed = await toast.confirm({
+      title: t('whatsapp.leaveGroup'),
+      message: t('whatsapp.confirmLeaveGroup', { group: groupName }),
+      confirmText: t('whatsapp.leaveGroup'),
+    });
+    if (!confirmed) return;
+
+    setIsLeavingGroup(true);
+    try {
+      await WhatsAppApi.leaveGroup(conversation.id);
+      toast.success(t('whatsapp.leftGroupSuccess'));
+      onClose();
+      window.dispatchEvent(new CustomEvent('tezlify:refresh_conversations'));
+    } catch (err: any) {
+      toast.error(err?.message || t('whatsapp.leaveGroupError'));
+    } finally {
+      setIsLeavingGroup(false);
     }
   };
 
@@ -662,9 +794,51 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
             )}
           </div>
 
-          <h4 className="mt-3.5 font-extrabold text-base text-slate-800 dark:text-slate-100 break-words max-w-full">
-            {displayName}
-          </h4>
+          {isGroup && isEditingSubject ? (
+            <div className="mt-2.5 w-full max-w-xs flex items-center gap-1.5 justify-center">
+              <input
+                type="text"
+                value={editSubjectText}
+                onChange={(e) => setEditSubjectText(e.target.value)}
+                maxLength={100}
+                className="w-full px-2.5 py-1 text-sm font-bold rounded-lg border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-[#111b21] text-slate-800 dark:text-[#e9edef] focus:outline-none focus:border-[#00a884] text-center"
+              />
+              <button
+                type="button"
+                onClick={handleSaveSubject}
+                disabled={isSavingSubject}
+                className="p-1.5 rounded-lg bg-[#00a884] text-white hover:bg-[#009272] transition-colors cursor-pointer disabled:opacity-50 shrink-0"
+              >
+                {isSavingSubject ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsEditingSubject(false)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition-colors cursor-pointer shrink-0"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          ) : (
+            <div className="mt-3.5 flex items-center justify-center gap-1.5 max-w-full">
+              <h4 className="font-extrabold text-base text-slate-800 dark:text-slate-100 break-words">
+                {isGroup ? (groupSubject || displayName) : displayName}
+              </h4>
+              {isGroup && isCurrentUserAdmin && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditSubjectText(groupSubject || displayName);
+                    setIsEditingSubject(true);
+                  }}
+                  title={t('whatsapp.editGroupSubject')}
+                  className="p-1 rounded-md text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-white/10 transition-colors cursor-pointer"
+                >
+                  <Pen className="w-3 h-3" />
+                </button>
+              )}
+            </div>
+          )}
 
           {isSelf ? (
             <div className="mt-1 flex items-center gap-1.5 text-xs font-medium text-slate-500 dark:text-slate-400">
@@ -776,12 +950,62 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
           /* Group Description & Participants Sections for Groups */
           <>
             <div className="bg-white dark:bg-[#202c33] p-4 rounded-2xl shadow-sm border border-slate-200/80 dark:border-white/[0.06] space-y-2">
-              <h5 className="text-[11px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-400">
-                {t('whatsapp.groupDescription')}
-              </h5>
-              <p className="text-xs text-slate-600 dark:text-slate-300 select-text">
-                {t('whatsapp.noDescription')}
-              </p>
+              <div className="flex items-center justify-between">
+                <h5 className="text-[11px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-400">
+                  {t('whatsapp.groupDescription')}
+                </h5>
+                {!isEditingDescription && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditDescriptionText(groupDescription);
+                      setIsEditingDescription(true);
+                    }}
+                    title={t('whatsapp.editGroupDescription')}
+                    className="p-1 rounded-md text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-white/10 transition-colors cursor-pointer"
+                  >
+                    <Pen className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+              {isEditingDescription ? (
+                <div className="space-y-2 pt-1">
+                  <textarea
+                    value={editDescriptionText}
+                    onChange={(e) => setEditDescriptionText(e.target.value)}
+                    maxLength={2048}
+                    rows={3}
+                    className="w-full p-2.5 text-xs rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-[#111b21] text-slate-800 dark:text-[#e9edef] focus:outline-none focus:border-[#00a884] resize-none"
+                    placeholder={t('whatsapp.noDescription')}
+                  />
+                  <div className="flex items-center justify-between text-[11px] text-slate-400">
+                    <span>{editDescriptionText.length}/2048</span>
+                    <div className="flex items-center space-x-1.5">
+                      <button
+                        type="button"
+                        onClick={() => setIsEditingDescription(false)}
+                        disabled={isSavingDescription}
+                        className="px-2.5 py-1 rounded-lg text-slate-500 hover:bg-slate-100 dark:hover:bg-white/10 transition-colors cursor-pointer"
+                      >
+                        {t('common.cancel')}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleSaveDescription}
+                        disabled={isSavingDescription}
+                        className="inline-flex items-center space-x-1 px-3 py-1 rounded-lg bg-[#00a884] text-white hover:bg-[#009272] transition-colors cursor-pointer disabled:opacity-50 font-bold"
+                      >
+                        {isSavingDescription ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
+                        <span>{t('whatsapp.saveGroupDescription')}</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <p className="text-xs text-slate-600 dark:text-slate-300 select-text whitespace-pre-wrap">
+                  {groupDescription || <span className="italic text-slate-400">{t('whatsapp.noDescription')}</span>}
+                </p>
+              )}
             </div>
 
             <div className="bg-white dark:bg-[#202c33] rounded-2xl shadow-sm border border-slate-200/80 dark:border-white/[0.06] overflow-hidden">
@@ -884,38 +1108,42 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
                               {t('whatsapp.groupAdmin')}
                             </span>
                           )}
-                          {!isMe && p.phone && (
+                          {!isMe && (
                             <div className="flex items-center space-x-0.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
-                              <button
-                                type="button"
-                                onClick={() => handleCopyParticipantPhone(p.phone)}
-                                title={t('whatsapp.copyParticipantPhone')}
-                                aria-label={t('whatsapp.copyParticipantPhone')}
-                                data-testid={`copy-participant-${p.id}`}
-                                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-200/50 dark:hover:bg-white/10 transition-all cursor-pointer"
-                              >
-                                {copiedPartPhone === p.phone ? (
-                                  <Check className="w-3.5 h-3.5 text-emerald-500" />
-                                ) : (
-                                  <Copy className="w-3.5 h-3.5" />
-                                )}
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => handleAddParticipantToCrm(p)}
-                                disabled={addingPartPhone === p.phone}
-                                title={t('whatsapp.addParticipantToCrm')}
-                                aria-label={t('whatsapp.addParticipantToCrm')}
-                                data-testid={`add-lead-participant-${p.id}`}
-                                className="p-1.5 rounded-lg text-slate-400 hover:text-emerald-600 dark:hover:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/30 transition-all cursor-pointer"
-                              >
-                                {addingPartPhone === p.phone ? (
-                                  <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-500" />
-                                ) : (
-                                  <UserPlus className="w-3.5 h-3.5" />
-                                )}
-                              </button>
-                              {onDirectMessageParticipant && (
+                              {p.phone && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleCopyParticipantPhone(p.phone)}
+                                  title={t('whatsapp.copyParticipantPhone')}
+                                  aria-label={t('whatsapp.copyParticipantPhone')}
+                                  data-testid={`copy-participant-${p.id}`}
+                                  className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-200/50 dark:hover:bg-white/10 transition-all cursor-pointer"
+                                >
+                                  {copiedPartPhone === p.phone ? (
+                                    <Check className="w-3.5 h-3.5 text-emerald-500" />
+                                  ) : (
+                                    <Copy className="w-3.5 h-3.5" />
+                                  )}
+                                </button>
+                              )}
+                              {p.phone && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleAddParticipantToCrm(p)}
+                                  disabled={addingPartPhone === p.phone}
+                                  title={t('whatsapp.addParticipantToCrm')}
+                                  aria-label={t('whatsapp.addParticipantToCrm')}
+                                  data-testid={`add-lead-participant-${p.id}`}
+                                  className="p-1.5 rounded-lg text-slate-400 hover:text-emerald-600 dark:hover:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/30 transition-all cursor-pointer"
+                                >
+                                  {addingPartPhone === p.phone ? (
+                                    <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-500" />
+                                  ) : (
+                                    <UserPlus className="w-3.5 h-3.5" />
+                                  )}
+                                </button>
+                              )}
+                              {p.phone && onDirectMessageParticipant && (
                                 <button
                                   type="button"
                                   onClick={() => onDirectMessageParticipant(p.phone!, partName)}
@@ -925,6 +1153,46 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
                                   className="p-1.5 rounded-lg text-slate-400 hover:text-[#7367F0] hover:bg-slate-200/50 dark:hover:bg-white/10 transition-all cursor-pointer"
                                 >
                                   <MessageSquare className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                              {isCurrentUserAdmin && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleToggleAdmin(p)}
+                                  disabled={participantActionId === p.id}
+                                  title={p.admin ? t('whatsapp.dismissGroupAdmin') : t('whatsapp.makeGroupAdmin')}
+                                  aria-label={p.admin ? t('whatsapp.dismissGroupAdmin') : t('whatsapp.makeGroupAdmin')}
+                                  data-testid={`toggle-admin-${p.id}`}
+                                  className={`p-1.5 rounded-lg transition-all cursor-pointer ${
+                                    p.admin
+                                      ? 'text-amber-500 hover:bg-amber-50 dark:hover:bg-amber-950/30'
+                                      : 'text-slate-400 hover:text-emerald-500 hover:bg-emerald-50 dark:hover:bg-emerald-950/30'
+                                  }`}
+                                >
+                                  {participantActionId === p.id ? (
+                                    <Loader2 className="w-3.5 h-3.5 animate-spin text-slate-500" />
+                                  ) : p.admin ? (
+                                    <ShieldAlert className="w-3.5 h-3.5" />
+                                  ) : (
+                                    <ShieldCheck className="w-3.5 h-3.5" />
+                                  )}
+                                </button>
+                              )}
+                              {isCurrentUserAdmin && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleRemoveParticipant(p)}
+                                  disabled={participantActionId === p.id}
+                                  title={t('whatsapp.removeParticipant')}
+                                  aria-label={t('whatsapp.removeParticipant')}
+                                  data-testid={`remove-participant-${p.id}`}
+                                  className="p-1.5 rounded-lg text-slate-400 hover:text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/30 transition-all cursor-pointer"
+                                >
+                                  {participantActionId === p.id ? (
+                                    <Loader2 className="w-3.5 h-3.5 animate-spin text-rose-500" />
+                                  ) : (
+                                    <UserMinus className="w-3.5 h-3.5" />
+                                  )}
                                 </button>
                               )}
                             </div>
@@ -1199,16 +1467,33 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
             )}
 
             {!isSelf && (
-              <button
-                type="button"
-                onClick={() => {
-                  toast.info(t('whatsapp.blockContact'), t('common.info'));
-                }}
-                className="w-full flex items-center space-x-2.5 px-3 py-2 rounded-xl text-xs font-bold text-rose-500 hover:bg-rose-500/10 transition-colors cursor-pointer"
-              >
-                <UserX className="w-4 h-4" />
-                <span>{isGroup ? t('whatsapp.exitGroup') : t('whatsapp.blockContact')}</span>
-              </button>
+              isGroup ? (
+                <button
+                  type="button"
+                  onClick={handleLeaveGroup}
+                  disabled={isLeavingGroup}
+                  data-testid="leave-group-btn"
+                  className="w-full flex items-center space-x-2.5 px-3 py-2 rounded-xl text-xs font-bold text-rose-500 hover:bg-rose-500/10 transition-colors cursor-pointer disabled:opacity-50"
+                >
+                  {isLeavingGroup ? (
+                    <Loader2 className="w-4 h-4 animate-spin text-rose-500" />
+                  ) : (
+                    <LogOut className="w-4 h-4" />
+                  )}
+                  <span>{t('whatsapp.leaveGroup')}</span>
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => {
+                    toast.info(t('whatsapp.blockContact'), t('common.info'));
+                  }}
+                  className="w-full flex items-center space-x-2.5 px-3 py-2 rounded-xl text-xs font-bold text-rose-500 hover:bg-rose-500/10 transition-colors cursor-pointer"
+                >
+                  <UserX className="w-4 h-4" />
+                  <span>{t('whatsapp.blockContact')}</span>
+                </button>
+              )
             )}
           </div>
         )}
