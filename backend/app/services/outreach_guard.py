@@ -26,7 +26,10 @@ class OutreachGuard:
 
     @classmethod
     def can_enroll_in_campaign(
-        cls, lead: Lead, sender_phone: Optional[str] = None
+        cls,
+        lead: Lead,
+        sender_phone: Optional[str] = None,
+        allow_self_outreach: bool = False,
     ) -> Tuple[bool, Optional[str]]:
         """
         Evaluates a single Lead record for campaign enrollment.
@@ -37,7 +40,7 @@ class OutreachGuard:
             return False, "Telefon numarası WhatsApp uyumlu değil."
 
         # 2. Self-Outreach Prevention: A sender cannot target their own connected line
-        if sender_phone and lead.phone_e164:
+        if not allow_self_outreach and sender_phone and lead.phone_e164:
             from backend.app.services.whatsapp.identity import is_self_identity
             if is_self_identity(lead.phone_e164, sender_phone):
                 return False, "Lead telefon numarası gönderici WhatsApp hattı ile aynıdır (Kendi kendine outreach yapılamaz)."
@@ -57,7 +60,10 @@ class OutreachGuard:
 
     @classmethod
     def filter_qualified_for_outreach(
-        cls, leads: List[Lead], sender_phone: Optional[str] = None
+        cls,
+        leads: List[Lead],
+        sender_phone: Optional[str] = None,
+        allow_self_outreach: bool = False,
     ) -> Tuple[List[Lead], List[Dict[str, Any]]]:
         """
         Filters a list of leads, partitioning into allowed leads and blocked reports.
@@ -66,7 +72,9 @@ class OutreachGuard:
         blocked: List[Dict[str, Any]] = []
 
         for lead in leads:
-            can_enroll, block_reason = cls.can_enroll_in_campaign(lead, sender_phone=sender_phone)
+            can_enroll, block_reason = cls.can_enroll_in_campaign(
+                lead, sender_phone=sender_phone, allow_self_outreach=allow_self_outreach
+            )
             if can_enroll:
                 allowed.append(lead)
             else:

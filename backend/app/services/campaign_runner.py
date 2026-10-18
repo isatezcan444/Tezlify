@@ -161,7 +161,6 @@ class CampaignRunner:
                         tenant_scope,
                         Lead.id.in_(lead_ids),
                         Lead.is_whatsapp_eligible == True,
-                        Lead.status == LeadStatus.NEW
                     )
                 else:
                     stmt = select(Lead).where(
@@ -174,7 +173,10 @@ class CampaignRunner:
                 raw_leads = res.scalars().all()
 
                 # Enforce OutreachGuard
-                leads, blocked_leads = OutreachGuard.filter_qualified_for_outreach(raw_leads, sender_phone=sender_phone)
+                allow_self = bool(lead_ids)
+                leads, blocked_leads = OutreachGuard.filter_qualified_for_outreach(
+                    raw_leads, sender_phone=sender_phone, allow_self_outreach=allow_self
+                )
 
                 campaign.total_leads_target = len(leads)
                 await db.commit()
