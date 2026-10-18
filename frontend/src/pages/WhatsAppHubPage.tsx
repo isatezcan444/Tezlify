@@ -4032,6 +4032,16 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                     onStatusChange={handleStatusChange}
                     onJumpToMessage={handleJumpToMessage}
                     onDirectMessageParticipant={handleDirectMessageSender}
+                    onAvatarUpdated={(newAvatar) => {
+                      setConversations((prev) =>
+                        prev.map((c) =>
+                          c.id === selectedConv.id ? { ...c, lead_avatar_url: newAvatar || undefined } : c
+                        )
+                      );
+                      setSelectedConv((prev) =>
+                        prev ? { ...prev, lead_avatar_url: newAvatar || undefined } : null
+                      );
+                    }}
                   />
                 )}
 

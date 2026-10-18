@@ -484,6 +484,30 @@ async def update_group_participants(
     )
 
 
+async def update_group_avatar(
+    gateway_id: str,
+    jid: str,
+    image_base64: str,
+) -> Dict[str, Any]:
+    """Grup profil resmini (avatar) günceller."""
+    return await _request(
+        "POST",
+        f"{_s(gateway_id)}/groups/{jid}/avatar",
+        json={"image_base64": image_base64},
+    )
+
+
+async def remove_group_avatar(
+    gateway_id: str,
+    jid: str,
+) -> Dict[str, Any]:
+    """Grup profil resmini (avatar) kaldırır."""
+    return await _request(
+        "DELETE",
+        f"{_s(gateway_id)}/groups/{jid}/avatar",
+    )
+
+
 async def mark_conversation_read(gateway_id: str, jid: str) -> Dict[str, Any]:
     return await _request("POST", f"{_s(gateway_id)}/conversations/{jid}/read")
 

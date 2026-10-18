@@ -494,6 +494,32 @@ app.post('/sessions/:sessionId/groups/:jid/participants', withSession(async (req
   }
 }));
 
+// Update group profile picture (avatar)
+app.post('/sessions/:sessionId/groups/:jid/avatar', withSession(async (req, res, sessionId) => {
+  try {
+    const { image_base64 } = req.body || {};
+    if (!image_base64) {
+      return res.status(400).json({ error: 'image_base64 is required' });
+    }
+    const cleanBase64 = String(image_base64).replace(/^data:image\/[a-z]+;base64,/, '');
+    const buffer = Buffer.from(cleanBase64, 'base64');
+    const result = await sessionManager.updateGroupProfilePicture(sessionId, req.params.jid, buffer);
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+}));
+
+// Remove group profile picture (avatar)
+app.delete('/sessions/:sessionId/groups/:jid/avatar', withSession(async (req, res, sessionId) => {
+  try {
+    const result = await sessionManager.removeGroupProfilePicture(sessionId, req.params.jid);
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+}));
+
 // List conversations (chats) for one session
 app.get('/sessions/:sessionId/conversations', withSession(async (req, res, sessionId) => {
   const { search, limit, offset } = req.query;

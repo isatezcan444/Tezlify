@@ -1225,6 +1225,21 @@ export const WhatsAppApi = {
     });
   },
 
+  async updateGroupAvatar(
+    conversationId: number,
+    imageBase64: string
+  ): Promise<{ success: boolean; id?: string; avatar_url?: string }> {
+    return await apiSend(`/whatsapp/conversations/${conversationId}/group/avatar`, 'POST', {
+      image_base64: imageBase64,
+    });
+  },
+
+  async removeGroupAvatar(
+    conversationId: number
+  ): Promise<{ success: boolean; id?: string }> {
+    return await apiSend(`/whatsapp/conversations/${conversationId}/group/avatar`, 'DELETE');
+  },
+
   getLiveMessages(conversationId: number, onMessage: (msg: Message) => void): () => void {
     if (typeof window === 'undefined') return () => {};
     const handler = (e: Event) => {

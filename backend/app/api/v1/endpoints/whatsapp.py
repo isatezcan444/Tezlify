@@ -52,6 +52,7 @@ from backend.app.schemas.whatsapp import (
     WhatsAppGroupDescriptionUpdate,
     WhatsAppGroupSubjectUpdate,
     WhatsAppGroupParticipantsUpdate,
+    WhatsAppGroupAvatarUpdate,
 )
 from backend.app.schemas.quick_reply import (
     QuickReplyCreate,
@@ -1112,6 +1113,32 @@ async def update_group_participants(
     return await whatsapp_service.update_group_participants(
         db, current_user.id, conversation_id, payload.participants, payload.action
     )
+
+
+@router.post("/conversations/{conversation_id}/group/avatar")
+async def update_group_avatar(
+    conversation_id: int,
+    payload: WhatsAppGroupAvatarUpdate,
+    current_user: AuthUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> Dict[str, Any]:
+    """WhatsApp grup profil resmini (avatar) günceller."""
+    return await whatsapp_service.update_group_avatar(
+        db, current_user.id, conversation_id, payload.image_base64
+    )
+
+
+@router.delete("/conversations/{conversation_id}/group/avatar")
+async def remove_group_avatar(
+    conversation_id: int,
+    current_user: AuthUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> Dict[str, Any]:
+    """WhatsApp grup profil resmini (avatar) kaldırır."""
+    return await whatsapp_service.remove_group_avatar(
+        db, current_user.id, conversation_id
+    )
+
 
 
 # ---------------------------------------------------------------------------

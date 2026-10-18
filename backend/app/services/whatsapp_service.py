@@ -1477,6 +1477,42 @@ async def update_group_participants(
     return await gw.update_group_participants(str(ws_session.gateway_id), jid, participants, action)
 
 
+async def update_group_avatar(
+    db: AsyncSession,
+    user_id: str,
+    conversation_id: int,
+    image_base64: str,
+) -> Dict[str, Any]:
+    """Grup profil resmini (avatar) günceller."""
+    conv, jid = await _resolve_jid(db, user_id, conversation_id)
+    if not conv.is_group:
+        raise HTTPException(status_code=400, detail="Bu işlem yalnızca grup sohbetleri için geçerlidir.")
+    ws_session = await _require_user_session(db, user_id, session_id=conv.session_id)
+    res = await gw.update_group_avatar(str(ws_session.gateway_id), jid, image_base64)
+    refreshed_url = res.get("avatar_url")
+    if conv and refreshed_url:
+        conv.avatar_url = refreshed_url
+        await db.commit()
+    return res
+
+
+async def remove_group_avatar(
+    db: AsyncSession,
+    user_id: str,
+    conversation_id: int,
+) -> Dict[str, Any]:
+    """Grup profil resmini (avatar) kaldırır."""
+    conv, jid = await _resolve_jid(db, user_id, conversation_id)
+    if not conv.is_group:
+        raise HTTPException(status_code=400, detail="Bu işlem yalnızca grup sohbetleri için geçerlidir.")
+    ws_session = await _require_user_session(db, user_id, session_id=conv.session_id)
+    res = await gw.remove_group_avatar(str(ws_session.gateway_id), jid)
+    if conv:
+        conv.avatar_url = None
+        await db.commit()
+    return res
+
+
 async def start_conversation(
     db: AsyncSession,
     user_id: str,

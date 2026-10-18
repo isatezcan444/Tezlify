@@ -30,6 +30,8 @@ import {
   ShieldAlert,
   UserMinus,
   LogOut,
+  Camera,
+  Trash2,
 } from 'lucide-react';
 import { Conversation, Message } from '../../../types';
 import { ApiClient } from '../../../api/client';
@@ -62,6 +64,7 @@ export interface ChatInfoDrawerProps {
   onStatusChange?: (convId: number, status: 'ACTIVE' | 'ARCHIVED' | 'CLOSED') => void;
   onJumpToMessage?: (messageId: string | number) => void;
   onDirectMessageParticipant?: (phone: string, name?: string) => void;
+  onAvatarUpdated?: (newAvatarUrl: string | null) => void;
 }
 
 type GalleryTab = 'MEDIA' | 'DOCS' | 'LINKS';
@@ -83,6 +86,7 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
   onStatusChange,
   onJumpToMessage,
   onDirectMessageParticipant,
+  onAvatarUpdated,
 }) => {
   const { t, language } = useI18n();
   const toast = useToast();
@@ -148,6 +152,89 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
   const [isLeavingGroup, setIsLeavingGroup] = useState<boolean>(false);
   const [participantActionId, setParticipantActionId] = useState<string | null>(null);
   const [isAddParticipantModalOpen, setIsAddParticipantModalOpen] = useState<boolean>(false);
+
+  // Group Avatar state & handlers
+  const [groupAvatarUrl, setGroupAvatarUrl] = useState<string | null>(conversation.lead_avatar_url || null);
+  const [isUpdatingAvatar, setIsUpdatingAvatar] = useState<boolean>(false);
+  const avatarFileInputRef = React.useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    setGroupAvatarUrl(conversation.lead_avatar_url || null);
+  }, [conversation.id, conversation.lead_avatar_url]);
+
+  const handleAvatarFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = '';
+
+    if (file.size > 10 * 1024 * 1024) {
+      toast.error(t('whatsapp.imageTooLarge'), t('common.error'));
+      return;
+    }
+
+    setIsUpdatingAvatar(true);
+    try {
+      const jpegDataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = (loadEvent) => {
+          const img = new Image();
+          img.onload = () => {
+            const canvas = document.createElement('canvas');
+            const size = Math.min(640, Math.max(img.width, img.height));
+            canvas.width = size;
+            canvas.height = size;
+            const ctx = canvas.getContext('2d');
+            if (!ctx) return reject(new Error('Canvas context unavailable'));
+
+            // Center-crop into square
+            const minDim = Math.min(img.width, img.height);
+            const sx = (img.width - minDim) / 2;
+            const sy = (img.height - minDim) / 2;
+            ctx.drawImage(img, sx, sy, minDim, minDim, 0, 0, size, size);
+
+            const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+            resolve(dataUrl);
+          };
+          img.onerror = () => reject(new Error('Image decode error'));
+          img.src = loadEvent.target?.result as string;
+        };
+        reader.onerror = () => reject(new Error('File read error'));
+        reader.readAsDataURL(file);
+      });
+
+      const res = await WhatsAppApi.updateGroupAvatar(conversation.id, jpegDataUrl);
+      const newUrl = res?.avatar_url || jpegDataUrl;
+      setGroupAvatarUrl(newUrl);
+      onAvatarUpdated?.(newUrl);
+      toast.success(t('whatsapp.groupAvatarUpdated'), t('common.success'));
+    } catch (err: any) {
+      toast.error(t('whatsapp.groupAvatarFailed'), t('common.error'));
+    } finally {
+      setIsUpdatingAvatar(false);
+    }
+  };
+
+  const handleRemoveGroupAvatar = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const confirmed = await toast.confirm({
+      title: t('whatsapp.removeGroupAvatar'),
+      message: t('whatsapp.confirmRemoveGroupAvatar'),
+      confirmText: t('whatsapp.removeGroupAvatar'),
+    });
+    if (!confirmed) return;
+
+    setIsUpdatingAvatar(true);
+    try {
+      await WhatsAppApi.removeGroupAvatar(conversation.id);
+      setGroupAvatarUrl(null);
+      onAvatarUpdated?.(null);
+      toast.success(t('whatsapp.groupAvatarRemoved'), t('common.success'));
+    } catch (err: any) {
+      toast.error(t('whatsapp.groupAvatarFailed'), t('common.error'));
+    } finally {
+      setIsUpdatingAvatar(false);
+    }
+  };
 
 
   const isGroup = Boolean(conversation.is_group);
@@ -773,27 +860,82 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
         <div className="flex-1 overflow-y-auto overflow-x-hidden space-y-2.5 p-3 custom-scrollbar">
         {/* Profile Card */}
         <div className="bg-white dark:bg-[#202c33] p-5 rounded-2xl shadow-sm border border-slate-200/80 dark:border-white/[0.06] flex flex-col items-center text-center">
-          <div
-            className="relative group/avatar cursor-pointer"
-            onClick={() => {
-              if (conversation.lead_avatar_url) {
-                setLightboxSrc(conversation.lead_avatar_url);
-                setLightboxType('IMAGE');
-                setLightboxCaption(displayName);
-              }
-            }}
-          >
-            <Avatar
-              name={displayName}
-              image={conversation.lead_avatar_url}
-              phone={cleanPhone}
-              size="xl"
-              shape="rounded"
-              className="w-28 h-28 md:w-32 md:h-32 text-2xl font-bold shadow-md ring-4 ring-slate-100 dark:ring-white/[0.06]"
+          {/* Hidden Avatar File Input for Groups */}
+          {isGroup && isCurrentUserAdmin && (
+            <input
+              ref={avatarFileInputRef}
+              type="file"
+              accept="image/*"
+              onChange={handleAvatarFileSelect}
+              className="sr-only"
+              data-testid="group-avatar-file-input"
+              tabIndex={-1}
             />
-            {conversation.lead_avatar_url && (
-              <div className="absolute inset-0 rounded-2xl bg-black/40 opacity-0 group-hover/avatar:opacity-100 flex items-center justify-center transition-opacity text-white text-xs font-bold gap-1">
-                <Search className="w-4 h-4" />
+          )}
+
+          <div className="relative group/avatar">
+            <div
+              className={`cursor-pointer ${isUpdatingAvatar ? 'pointer-events-none' : ''}`}
+              onClick={() => {
+                const currentImg = isGroup ? groupAvatarUrl : conversation.lead_avatar_url;
+                if (currentImg) {
+                  setLightboxSrc(currentImg);
+                  setLightboxType('IMAGE');
+                  setLightboxCaption(displayName);
+                } else if (isGroup && isCurrentUserAdmin) {
+                  avatarFileInputRef.current?.click();
+                }
+              }}
+            >
+              <Avatar
+                name={displayName}
+                image={isGroup ? groupAvatarUrl : conversation.lead_avatar_url}
+                phone={cleanPhone}
+                size="xl"
+                shape="rounded"
+                className="w-28 h-28 md:w-32 md:h-32 text-2xl font-bold shadow-md ring-4 ring-slate-100 dark:ring-white/[0.06]"
+              />
+
+              {/* View/Zoom Hover Overlay */}
+              {(isGroup ? groupAvatarUrl : conversation.lead_avatar_url) && !isUpdatingAvatar && (
+                <div className="absolute inset-0 rounded-2xl bg-black/40 opacity-0 group-hover/avatar:opacity-100 flex items-center justify-center transition-opacity text-white text-xs font-bold gap-1 pointer-events-none">
+                  <Search className="w-4 h-4" />
+                </div>
+              )}
+
+              {/* Updating Spinner Overlay */}
+              {isUpdatingAvatar && (
+                <div className="absolute inset-0 rounded-2xl bg-black/60 flex items-center justify-center text-white z-10">
+                  <Loader2 className="w-8 h-8 animate-spin text-[#00a884]" />
+                </div>
+              )}
+            </div>
+
+            {/* Group Admin Avatar Action Floating Badges */}
+            {isGroup && isCurrentUserAdmin && !isUpdatingAvatar && (
+              <div className="absolute -bottom-1 -right-1 flex items-center gap-1 z-10">
+                {groupAvatarUrl && (
+                  <button
+                    type="button"
+                    onClick={handleRemoveGroupAvatar}
+                    title={t('whatsapp.removeGroupAvatar')}
+                    aria-label={t('whatsapp.removeGroupAvatar')}
+                    data-testid="group-avatar-remove-btn"
+                    className="p-1.5 rounded-full bg-rose-500 hover:bg-rose-600 text-white shadow-md ring-2 ring-white dark:ring-[#202c33] active:scale-95 transition-all cursor-pointer"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => avatarFileInputRef.current?.click()}
+                  title={t('whatsapp.changeGroupAvatar')}
+                  aria-label={t('whatsapp.changeGroupAvatar')}
+                  data-testid="group-avatar-upload-btn"
+                  className="p-2 rounded-full bg-[#00a884] hover:bg-[#009272] text-white shadow-md ring-2 ring-white dark:ring-[#202c33] active:scale-95 transition-all cursor-pointer"
+                >
+                  <Camera className="w-4 h-4" />
+                </button>
               </div>
             )}
           </div>

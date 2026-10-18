@@ -3374,6 +3374,80 @@ export function createSessionManager({
       return { success: true, id: key, action, result };
     },
 
+    async updateGroupProfilePicture(sessionId, jid, imageBuffer) {
+      const session = this._requireConnectedSession(sessionId);
+      const store = this._storeOf(session);
+      const key = resolveJidKey(store, jid);
+      if (!key.endsWith('@g.us')) {
+        throw new Error('Not a group JID');
+      }
+      if (!imageBuffer || !Buffer.isBuffer(imageBuffer) || imageBuffer.length === 0) {
+        throw new Error('Invalid or empty image buffer');
+      }
+      // Send IQ stanza to WhatsApp servers updating the group profile picture
+      await session.sock.query({
+        tag: 'iq',
+        attrs: {
+          to: 's.whatsapp.net',
+          type: 'set',
+          xmlns: 'w:profile:picture',
+          target: key,
+        },
+        content: [
+          {
+            tag: 'picture',
+            attrs: { type: 'image' },
+            content: imageBuffer,
+          },
+        ],
+      });
+      // Invalidate and refresh avatar in local store
+      let refreshedUrl = null;
+      try {
+        const refreshRes = await this.refreshAvatar(sessionId, key, true, 'high');
+        refreshedUrl = refreshRes?.avatar_url || null;
+      } catch (err) {
+        logger.debug({ err: err?.message, jid: key }, 'Immediate avatar refresh after group avatar update had non-fatal error');
+      }
+      return { success: true, id: key, avatar_url: refreshedUrl };
+    },
+
+    async removeGroupProfilePicture(sessionId, jid) {
+      const session = this._requireConnectedSession(sessionId);
+      const store = this._storeOf(session);
+      const key = resolveJidKey(store, jid);
+      if (!key.endsWith('@g.us')) {
+        throw new Error('Not a group JID');
+      }
+      if (typeof session.sock.removeProfilePicture === 'function') {
+        await session.sock.removeProfilePicture(key);
+      } else {
+        await session.sock.query({
+          tag: 'iq',
+          attrs: {
+            to: 's.whatsapp.net',
+            type: 'set',
+            xmlns: 'w:profile:picture',
+            target: key,
+          },
+          content: [
+            {
+              tag: 'picture',
+              attrs: { type: 'delete' },
+            },
+          ],
+        });
+      }
+      // Invalidate avatar in memory store
+      try {
+        const chat = store.chats.get(key);
+        if (chat) {
+          chat.avatar_url = null;
+        }
+      } catch {}
+      return { success: true, id: key, avatar_url: null };
+    },
+
     _resolveDisplayName(session, jid, fallbackPushName) {
       session = this._sess(session);
       const store = this._storeOf(session);

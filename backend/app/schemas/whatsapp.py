@@ -510,3 +510,8 @@ class WhatsAppGroupSubjectUpdate(BaseModel):
 class WhatsAppGroupParticipantsUpdate(BaseModel):
     action: str = Field(..., pattern="^(add|remove|promote|demote)$")
     participants: List[str] = Field(..., min_length=1)
+
+
+class WhatsAppGroupAvatarUpdate(BaseModel):
+    image_base64: str = Field(..., min_length=1, description="Base64 encoded JPEG/PNG image data")
+
