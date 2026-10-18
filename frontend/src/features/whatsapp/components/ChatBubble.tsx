@@ -56,7 +56,7 @@ export const QUICK_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🙏'
 /** WhatsApp Web grup katilimcilari icin otantik 20 renkli palet (light & dark mode uyumlu) */
 export const GROUP_SENDER_COLORS = [
   'text-[#00a884] dark:text-[#25D366]', // 0: WhatsApp Teal / Green
-  'text-[#e11d48] dark:text-[#ff5b5b]', // 1: Coral Red (Cevat Aydın)
+  'text-[#d05858] dark:text-[#f28b82]', // 1: Soft Coral Red (Cevat Aydın)
   'text-[#0284c7] dark:text-[#53bdeb]', // 2: Sky Blue
   'text-[#d97706] dark:text-[#ffb03a]', // 3: Amber Orange
   'text-[#7c3aed] dark:text-[#b388ff]', // 4: Purple / Violet
@@ -64,7 +64,7 @@ export const GROUP_SENDER_COLORS = [
   'text-[#0d9488] dark:text-[#2dd4bf]', // 6: Teal Mint
   'text-[#4f46e5] dark:text-[#818cf8]', // 7: Indigo
   'text-[#ca8a04] dark:text-[#facc15]', // 8: Sunflower Gold
-  'text-[#be123c] dark:text-[#fb7185]', // 9: Crimson Red
+  'text-[#c05265] dark:text-[#f48fb1]', // 9: Soft Crimson Red
   'text-[#0891b2] dark:text-[#22d3ee]', // 10: Deep Cyan
   'text-[#65a30d] dark:text-[#a3e635]', // 11: Lime
   'text-[#c026d3] dark:text-[#f472b6]', // 12: Hot Pink
@@ -72,7 +72,7 @@ export const GROUP_SENDER_COLORS = [
   'text-[#ea580c] dark:text-[#fb923c]', // 14: Tangerine Orange
   'text-[#9333ea] dark:text-[#c084fc]', // 15: Orchid / Lavender
   'text-[#2563eb] dark:text-[#38bdf8]', // 16: Electric Blue
-  'text-[#9f1239] dark:text-[#f43f5e]', // 17: Deep Rose
+  'text-[#bf4358] dark:text-[#f07186]', // 17: Soft Rose
   'text-[#047857] dark:text-[#34d399]', // 18: Sea Green
   'text-[#6d28d9] dark:text-[#a78bfa]', // 19: Royal Violet
 ];

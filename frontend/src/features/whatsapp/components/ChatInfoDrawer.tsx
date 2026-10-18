@@ -33,7 +33,7 @@ import { useI18n } from '../../../context/I18nContext';
 import { useToast } from '../../../context/ToastContext';
 import { Avatar } from '../../../components/ui/Avatar';
 import { resolveMediaUrl } from '../../../lib/mediaUrl';
-import { formatPhoneNumber, isRealContactName } from '../lib/whatsappIdentity';
+import { formatPhoneNumber, isRealContactName, stripJidPrefix } from '../lib/whatsappIdentity';
 import { formatMessageTime } from '../../../lib/utils';
 import {
   getStarredMessagesForConversation,
@@ -197,48 +197,165 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
 
   // Merged & fallback participants: combine API participants with unique participants from chat messages
   const effectiveParticipants = useMemo(() => {
-    const map = new Map<string, { id: string; name: string; phone?: string; is_me: boolean; admin?: string }>();
+    const list: Array<{ id: string; name: string; phone?: string; is_me: boolean; admin?: string }> = [];
 
-    // 1. Group participants returned by backend API
+    const isRealPhone = (val?: string | null): boolean => {
+      if (!val) return false;
+      const clean = stripJidPrefix(val);
+      if (clean.includes('@lid') || clean.includes('@g.us')) return false;
+      const digits = clean.replace(/\D/g, '');
+      // Turkey numbers: 905XXXXXXXXX (12) or 5XXXXXXXXX (10)
+      if (digits.startsWith('90') && digits.length === 12) return true;
+      if (digits.startsWith('5') && digits.length === 10) return true;
+      // Valid international E.164 phone numbers (7 to 13 digits)
+      if (digits.length >= 7 && digits.length <= 13) return true;
+      return false;
+    };
+
+    const normalizePhoneDigits = (val?: string | null): string => {
+      if (!val) return '';
+      let digits = val.replace(/\D/g, '');
+      if (digits.length === 10 && digits.startsWith('5')) {
+        digits = `90${digits}`;
+      } else if (digits.length === 11 && digits.startsWith('05')) {
+        digits = `90${digits.slice(1)}`;
+      }
+      return digits;
+    };
+
+    const normalizeName = (name?: string | null): string => {
+      if (!name) return '';
+      return name.trim().toLowerCase();
+    };
+
+    const upsertParticipant = (p: { id: string; name: string; phone?: string; is_me: boolean; admin?: string }) => {
+      // 1. If Me
+      if (p.is_me) {
+        const existingMe = list.find((item) => item.is_me);
+        if (existingMe) {
+          if (p.admin && !existingMe.admin) existingMe.admin = p.admin;
+        } else {
+          list.push({
+            id: 'me',
+            name: language === 'tr' ? 'Siz' : 'You',
+            phone: undefined,
+            is_me: true,
+            admin: p.admin,
+          });
+        }
+        return;
+      }
+
+      const pHasRealPhone = isRealPhone(p.phone);
+      const pDigits = pHasRealPhone ? normalizePhoneDigits(p.phone) : '';
+      const pNormName = isRealContactName(p.name) && p.name !== 'ME' ? normalizeName(p.name) : '';
+
+      // Find existing match by real phone or by contact name
+      const match = list.find((item) => {
+        if (item.is_me) return false;
+        // Match by real phone digits
+        if (pDigits && isRealPhone(item.phone)) {
+          if (normalizePhoneDigits(item.phone) === pDigits) return true;
+        }
+        // Match by contact name (e.g. "Cevat Aydın" or "Tolga Cebeci")
+        if (pNormName && isRealContactName(item.name)) {
+          if (normalizeName(item.name) === pNormName) return true;
+        }
+        return false;
+      });
+
+      if (match) {
+        // Merge attributes: real phone always wins over LID/empty
+        if (!isRealPhone(match.phone) && pHasRealPhone) {
+          match.phone = p.phone;
+          match.id = p.phone || match.id;
+        }
+        if (!match.admin && p.admin) {
+          match.admin = p.admin;
+        }
+        if ((!match.name || !isRealContactName(match.name)) && isRealContactName(p.name)) {
+          match.name = p.name;
+        }
+      } else {
+        // New participant: ensure fake LID is not stored as phone
+        const cleanPhone = pHasRealPhone ? p.phone : undefined;
+        list.push({
+          id: p.id || cleanPhone || p.name,
+          name: p.name,
+          phone: cleanPhone,
+          is_me: false,
+          admin: p.admin,
+        });
+      }
+    };
+
+    // 1. Feed group participants from API
     for (const p of groupParticipants) {
-      const key = (p.phone || p.id).replace(/\D/g, '') || p.id;
-      map.set(key, { ...p });
+      upsertParticipant(p);
     }
 
-    // 2. Discover from messages (essential fallback when gateway participant list is not yet synced)
+    // 2. Feed participants discovered from messages
     if (isGroup && messages && messages.length > 0) {
       for (const m of messages) {
         if (m.direction === 'OUTBOUND') {
-          if (!Array.from(map.values()).some((v) => v.is_me)) {
-            map.set('me', {
-              id: 'me',
-              name: language === 'tr' ? 'Siz' : 'You',
-              phone: undefined,
-              is_me: true,
-            });
-          }
+          upsertParticipant({
+            id: 'me',
+            name: language === 'tr' ? 'Siz' : 'You',
+            is_me: true,
+          });
         } else {
           const phone = m.sender_phone;
-          const name = m.sender_name || (phone ? formatPhoneNumber(phone) : undefined);
-          const rawKey = phone ? phone.replace(/\D/g, '') : name;
-          if (rawKey) {
-            const existing = map.get(rawKey);
-            if (!existing) {
-              map.set(rawKey, {
-                id: phone || rawKey,
-                name: name || phone || (language === 'tr' ? 'Katılımcı' : 'Participant'),
-                phone: phone || undefined,
-                is_me: false,
-              });
-            } else if ((!existing.name || !isRealContactName(existing.name)) && name && isRealContactName(name)) {
-              existing.name = name;
-            }
+          const name = m.sender_name || (phone && isRealPhone(phone) ? formatPhoneNumber(phone) : undefined);
+          if (phone || name) {
+            upsertParticipant({
+              id: phone || name || 'part',
+              name: name || phone || (language === 'tr' ? 'Katılımcı' : 'Participant'),
+              phone: isRealPhone(phone) ? phone : undefined,
+              is_me: false,
+            });
           }
         }
       }
     }
 
-    return Array.from(map.values());
+    // Final deduplication sweep: guarantees exactly 1 entry per contact name or phone
+    const finalizedMap = new Map<string, (typeof list)[0]>();
+    for (const item of list) {
+      const key = item.is_me
+        ? 'me'
+        : isRealContactName(item.name) && item.name !== 'ME'
+        ? `name:${normalizeName(item.name)}`
+        : item.phone && isRealPhone(item.phone)
+        ? `phone:${normalizePhoneDigits(item.phone)}`
+        : `id:${item.id}`;
+
+      const existing = finalizedMap.get(key);
+      if (!existing) {
+        finalizedMap.set(key, { ...item });
+      } else {
+        if (!isRealPhone(existing.phone) && isRealPhone(item.phone)) {
+          existing.phone = item.phone;
+          existing.id = item.phone;
+        }
+        if (!existing.admin && item.admin) {
+          existing.admin = item.admin;
+        }
+        if ((!existing.name || !isRealContactName(existing.name)) && isRealContactName(item.name)) {
+          existing.name = item.name;
+        }
+      }
+    }
+
+    // Sort: 'Siz' first, then Admins, then alphabetical by name
+    return Array.from(finalizedMap.values()).sort((a, b) => {
+      if (a.is_me) return -1;
+      if (b.is_me) return 1;
+      const aAdmin = Boolean(a.admin && (a.admin === 'admin' || a.admin === 'superadmin'));
+      const bAdmin = Boolean(b.admin && (b.admin === 'admin' || b.admin === 'superadmin'));
+      if (aAdmin && !bAdmin) return -1;
+      if (!aAdmin && bAdmin) return 1;
+      return (a.name || '').localeCompare(b.name || '', language === 'tr' ? 'tr' : 'en');
+    });
   }, [groupParticipants, isGroup, messages, language]);
 
   const filteredParticipants = useMemo(() => {
@@ -721,7 +838,9 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
                       ? t('whatsapp.youLabel')
                       : (p.name && isRealContactName(p.name) && p.name !== 'ME')
                       ? p.name
-                      : formatPhoneNumber(p.phone || p.id);
+                      : p.phone
+                      ? formatPhoneNumber(p.phone)
+                      : t('whatsapp.participants');
                     const partSub = !isMe && p.name && isRealContactName(p.name) && p.phone
                       ? formatPhoneNumber(p.phone)
                       : !isMe && p.name && !isRealContactName(p.name) && p.name !== partName
@@ -740,7 +859,7 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
                         <div className="flex items-center space-x-2.5 min-w-0 flex-1">
                           <Avatar
                             name={partName}
-                            phone={p.phone || p.id}
+                            phone={p.phone || undefined}
                             size="sm"
                             shape="circle"
                             className="w-9 h-9 text-xs shrink-0"

@@ -3260,9 +3260,15 @@ export function createSessionManager({
       const participants = (meta?.participants || []).map((p) => {
         const participantJid = p.id;
         const resolvedKey = resolveJidKey(store, participantJid);
-        const partPhone = jidToPhone(resolvedKey) || jidToPhone(participantJid);
+        let partPhone = jidToPhone(resolvedKey) || jidToPhone(participantJid);
         const partUser = (participantJid || '').split(':')[0].split('@')[0].replace(/\D/g, '');
         const resolvedUser = (resolvedKey || '').split(':')[0].split('@')[0].replace(/\D/g, '');
+
+        // If partPhone is null, check contacts store
+        const contact = (resolvedKey ? store.contacts.get(resolvedKey) : null) || store.contacts.get(participantJid);
+        if (!partPhone && contact?.phone) {
+          partPhone = contact.phone;
+        }
 
         const isMe = Boolean(
           (mePhoneUser && (partUser === mePhoneUser || resolvedUser === mePhoneUser)) ||
@@ -3280,10 +3286,31 @@ export function createSessionManager({
           is_me: isMe,
         };
       });
+
+      // Deduplicate participants to ensure each user appears only once
+      const dedupedParticipants = [];
+      for (const p of participants) {
+        const existing = dedupedParticipants.find((d) => {
+          if (d.is_me && p.is_me) return true;
+          if (d.phone && p.phone && d.phone.replace(/\D/g, '') === p.phone.replace(/\D/g, '')) return true;
+          if (d.name && p.name && d.name !== 'ME' && !d.name.includes('@') && d.name.toLowerCase() === p.name.toLowerCase()) return true;
+          return false;
+        });
+        if (existing) {
+          if (!existing.phone && p.phone) existing.phone = p.phone;
+          if (!existing.admin && p.admin) existing.admin = p.admin;
+          if ((!existing.name || existing.name.includes('@')) && p.name && !p.name.includes('@')) {
+            existing.name = p.name;
+          }
+        } else {
+          dedupedParticipants.push(p);
+        }
+      }
+
       return {
         id: key,
         subject: meta?.subject || '',
-        participants,
+        participants: dedupedParticipants,
       };
     },
 

@@ -20,6 +20,9 @@ import { Conversation } from '../../../types';
 export function formatPhoneNumber(phone?: string | null): string {
   if (!phone) return '';
   let raw = stripJidPrefix(phone);
+  if (raw.endsWith('@lid') || raw.includes('@lid') || raw.includes('@g.us')) {
+    return '';
+  }
   if (raw.endsWith('@s.whatsapp.net') || raw.endsWith('@c.us')) {
     raw = raw.split('@')[0];
   }
@@ -36,6 +39,7 @@ export function formatPhoneNumber(phone?: string | null): string {
 
   let digits = raw.replace(/\D/g, '');
   if (!digits || digits.length < 5) return `${raw}${suffix}`;
+  if (digits.length >= 14 && !digits.startsWith('90')) return '';
 
   // Turkish 10 digits starting with 5 (e.g. 5322334968) -> 905322334968
   if (digits.length === 10 && digits.startsWith('5')) {
