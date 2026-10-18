@@ -17,6 +17,7 @@ import {
   LiveModeStatus,
   Message,
   MessageReaction,
+  QuotedMessageData,
   QuickReply,
   QuickReplyCreateRequest,
   QuickReplyUpdateRequest,
@@ -393,6 +394,8 @@ interface BackendMessage {
   reactions?: BackendReaction[] | null;
   media_url?: string | null;
   link_preview?: LinkPreview | null;
+  quoted_message?: QuotedMessageData | null;
+  is_forwarded?: boolean | null;
   created_at?: string | null;
 }
 
@@ -436,6 +439,8 @@ function mapMessage(m: BackendMessage, convId: number): Message {
     recipient_phone: m.recipient_phone ?? undefined,
     error_message: m.error_message ?? undefined,
     link_preview: m.link_preview ?? undefined,
+    quoted_message: m.quoted_message ?? undefined,
+    is_forwarded: Boolean(m.is_forwarded),
     external_timestamp: m.created_at ?? undefined,
     created_at: m.created_at || '',
   };
@@ -979,6 +984,31 @@ export const WhatsAppApi = {
               updated_at: data.conversation_reaction.updated_at ?? null,
             }
           : null,
+    };
+  },
+
+  async forwardMessage(
+    conversationId: number,
+    messageId: number | string,
+    targetConversationIds: number[]
+  ): Promise<{
+    success: boolean;
+    forwarded_count: number;
+    results: Message[];
+  }> {
+    const data = await apiSend<{
+      success?: boolean;
+      forwarded_count?: number;
+      results?: BackendMessage[];
+    }>(
+      `/whatsapp/conversations/${conversationId}/messages/${messageId}/forward`,
+      'POST',
+      { target_conversation_ids: targetConversationIds }
+    );
+    return {
+      success: data.success !== false,
+      forwarded_count: data.forwarded_count ?? (data.results ? data.results.length : 0),
+      results: (data.results || []).map((m) => mapMessage(m, Number(m.conversation_id || conversationId))),
     };
   },
 

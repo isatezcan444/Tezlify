@@ -1339,6 +1339,17 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
             </div>
           )}
 
+          {/* Forwarded Header (WhatsApp Web Parity) */}
+          {message.is_forwarded && (
+            <div
+              data-testid={`msg-forwarded-badge-${message.id}`}
+              className="flex items-center space-x-1 text-slate-500 dark:text-slate-400 italic text-[11px] mb-1 select-none font-normal"
+            >
+              <Forward className="w-3.5 h-3.5 shrink-0 opacity-80" />
+              <span>{t('whatsapp.forwarded')}</span>
+            </div>
+          )}
+
           {/* Quoted Message Card */}
           {message.quoted_message && renderQuotedBlock(message.quoted_message)}
 
@@ -1430,6 +1441,29 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                 ) : (
                   <SmilePlus className="w-3.5 h-3.5" />
                 )}
+              </button>
+            </div>
+          )}
+
+          {/* Quick Forward Button (outside bubble on hover) */}
+          {onForward && (
+            <div
+              className={`absolute top-1 ${
+                isInbound ? (canReact && !isSelectMode ? '-right-15' : '-right-8') : (canReact && !isSelectMode ? '-left-15' : '-left-8')
+              } z-10 opacity-0 sm:group-hover:opacity-100 transition-opacity`}
+            >
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onForward(message);
+                }}
+                title={t('whatsapp.menuForward')}
+                aria-label={t('whatsapp.menuForward')}
+                data-testid={`forward-trigger-${message.id}`}
+                className="w-6 h-6 rounded-full flex items-center justify-center text-slate-400 hover:text-slate-700 dark:text-slate-400 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/10 transition-colors cursor-pointer"
+              >
+                <Forward className="w-3.5 h-3.5" />
               </button>
             </div>
           )}

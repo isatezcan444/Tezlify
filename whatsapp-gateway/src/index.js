@@ -639,6 +639,37 @@ app.post('/sessions/:sessionId/conversations/:jid/media', withSession(async (req
   res.status(201).json(result);
 }));
 
+// Forward an existing message to this conversation
+app.post('/sessions/:sessionId/conversations/:jid/forward', withSession(async (req, res, sessionId) => {
+  const {
+    source_jid,
+    wa_message_id,
+    body,
+    media_type,
+    media_id,
+    media_url,
+    media_base64,
+    media_mime_type,
+    media_filename,
+    media_caption,
+    client_message_id,
+  } = req.body || {};
+  const result = await sessionManager.forwardMessage(sessionId, req.params.jid, {
+    source_jid,
+    wa_message_id,
+    body,
+    media_type,
+    media_id,
+    media_url,
+    media_base64,
+    media_mime_type,
+    media_filename,
+    media_caption,
+    client_message_id,
+  });
+  res.status(201).json(result);
+}));
+
 // React to an existing message (an empty `emoji` withdraws the reaction)
 app.post('/sessions/:sessionId/conversations/:jid/reactions', withSession(async (req, res, sessionId) => {
   const { target_wa_message_id, target_from_me, emoji, participant_jid } = req.body || {};

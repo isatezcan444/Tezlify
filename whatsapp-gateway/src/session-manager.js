@@ -65,6 +65,7 @@ import {
   buildMediaContent,
   extractLinkPreviewMetadata,
   extractQuotedMessageMetadata,
+  extractForwardedMetadata,
   extractContactPayload,
   extractLocationPayload,
   extractPollPayload,
@@ -1370,6 +1371,109 @@ export function createSessionManager({
       return msg;
     },
 
+    /**
+     * Bir mesaji baska bir sohbete iletir (WhatsApp Forward).
+     */
+    async forwardMessage(sessionId, targetJid, opts = {}) {
+      const session = this._requireConnectedSession(sessionId);
+      const store = this._storeOf(session);
+      const key = resolveJidKey(store, targetJid);
+      const clientMessageId = opts.client_message_id || crypto.randomUUID();
+
+      let rawMsg = null;
+      if (opts.wa_message_id) {
+        if (opts.source_jid) {
+          const sourceKey = resolveJidKey(store, opts.source_jid);
+          rawMsg = lookupRawMessage(store, { remoteJid: sourceKey, id: opts.wa_message_id });
+        }
+        if (!rawMsg) {
+          const direct = store.rawMessagesByChat?.get(key)?.get(opts.wa_message_id);
+          if (direct) rawMsg = direct;
+        }
+        if (!rawMsg && store.rawMediaCache && typeof store.rawMediaCache.get === 'function') {
+          const cached = store.rawMediaCache.get(opts.wa_message_id);
+          if (cached?.message) rawMsg = cached.message;
+        }
+      }
+
+      const messageId = crypto.createHash('sha256')
+        .update(`${session.id}\0${key}\0${clientMessageId}`)
+        .digest('hex').slice(0, 32).toUpperCase();
+
+      const isMedia = Boolean(opts.media_type && opts.media_type.toUpperCase() !== 'TEXT');
+      const recordedType = isMedia ? opts.media_type.toUpperCase() : 'TEXT';
+
+      const pending = this._recordOutbound(key, {
+        body: opts.body || opts.media_caption || '',
+        message_type: recordedType,
+        client_message_id: clientMessageId,
+        wa_message_id: messageId,
+        status: 'PENDING',
+        media_id: opts.media_id || null,
+        media_mime_type: opts.media_mime_type || null,
+        media_filename: opts.media_filename || null,
+        media_caption: opts.media_caption || null,
+      }, session.id);
+
+      let sendPayload;
+      if (rawMsg) {
+        sendPayload = {
+          forward: {
+            key: {
+              remoteJid: opts.source_jid || key,
+              id: opts.wa_message_id,
+              fromMe: false,
+            },
+            message: rawMsg,
+          },
+          force: true,
+        };
+      } else if (isMedia) {
+        const mediaPayload = {
+          media_type: (opts.media_type || 'document').toLowerCase(),
+          media_url: opts.media_url,
+          media_base64: opts.media_base64,
+          mime_type: opts.media_mime_type,
+          caption: opts.media_caption || opts.body || '',
+          filename: opts.media_filename,
+        };
+        sendPayload = buildMediaContent(mediaPayload);
+        const topKey = Object.keys(sendPayload)[0];
+        if (sendPayload[topKey]) {
+          sendPayload[topKey].contextInfo = {
+            ...(sendPayload[topKey].contextInfo || {}),
+            isForwarded: true,
+            forwardingScore: 1,
+          };
+        }
+      } else {
+        sendPayload = {
+          text: opts.body || '',
+          contextInfo: {
+            isForwarded: true,
+            forwardingScore: 1,
+          },
+        };
+      }
+
+      let result;
+      try {
+        result = await session.sock.sendMessage(key, sendPayload, { messageId });
+      } catch (error) {
+        this._failOutbound(session.id, key, messageId, error);
+        throw error;
+      }
+
+      const resolvedWaId = result?.key?.id || messageId;
+      if (result?.message) {
+        try {
+          rememberRawMessage(store, key, resolvedWaId, result.message);
+        } catch { /* best effort */ }
+      }
+      const msg = this._confirmOutboundSent(session.id, key, resolvedWaId, pending.client_message_id);
+      return { ...msg, is_forwarded: true };
+    },
+
     _ensurePresenceSubscribed(session, jid) {
       if (!session?.sock || typeof session.sock.presenceSubscribe !== 'function') return;
       const key = resolveJidKey(this._storeOf(session), jid);
@@ -2125,6 +2229,7 @@ export function createSessionManager({
         media_caption: text || existingRecord?.media_caption || null,
         native_link_preview: nativeLinkPreview,
         quoted_message: quotedMeta || null,
+        is_forwarded: extractForwardedMetadata(msg.message),
         wa_message_id: msg.key?.id || null,
         client_message_id: existingRecord?.client_message_id || null,
         sender_phone: fromMe ? 'ME' : (jidToPhone(msg.key?.participant || key) || (msg.key?.participant || key)),
@@ -3597,6 +3702,7 @@ export function createSessionManager({
         media_filename: mediaFilename,
         media_caption: text || null,
         quoted_message: quotedMeta || null,
+        is_forwarded: extractForwardedMetadata(msg.message),
         wa_message_id: waMsgId,
         sender_phone: msg.key?.fromMe ? 'ME' : (jidToPhone(msg.key?.participant || key) || key),
         recipient_phone: msg.key?.fromMe ? (jidToPhone(key) || key) : 'ME',

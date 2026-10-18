@@ -5,10 +5,15 @@ from backend.app.core.config import settings
 def run_db_migrations():
     import asyncio
     from backend.app.core.database import engine
-    from backend.app.core.migrations import ensure_campaigns_columns, ensure_quick_replies_table
+    from backend.app.core.migrations import (
+        ensure_campaigns_columns,
+        ensure_quick_replies_table,
+        ensure_messages_media_columns,
+    )
     async def _run():
         await ensure_campaigns_columns(engine)
         await ensure_quick_replies_table(engine)
+        await ensure_messages_media_columns(engine)
 
     try:
         loop = asyncio.get_event_loop()

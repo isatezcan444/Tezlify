@@ -393,6 +393,10 @@ async def send_media_message(gateway_id: str, jid: str, media: Dict[str, Any]) -
     return await _request("POST", f"{_s(gateway_id)}/conversations/{jid}/media", json=media)
 
 
+async def forward_message(gateway_id: str, jid: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    return await _request("POST", f"{_s(gateway_id)}/conversations/{jid}/forward", json=payload)
+
+
 async def send_reaction(
     gateway_id: str,
     jid: str,

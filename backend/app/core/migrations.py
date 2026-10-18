@@ -566,6 +566,7 @@ async def ensure_messages_media_columns(engine: AsyncEngine) -> str:
                 await conn.execute(text("ALTER TABLE messages ADD COLUMN IF NOT EXISTS read_at TIMESTAMP"))
                 await conn.execute(text("ALTER TABLE messages ADD COLUMN IF NOT EXISTS failed_at TIMESTAMP"))
                 await conn.execute(text("ALTER TABLE messages ADD COLUMN IF NOT EXISTS quoted_message JSONB"))
+                await conn.execute(text("ALTER TABLE messages ADD COLUMN IF NOT EXISTS is_forwarded BOOLEAN DEFAULT FALSE"))
                 # Idempotency belongs to one conversation/line. A global
                 # client_message_id constraint lets tenant A collide with
                 # tenant B and contradicts the scoped lookup in messaging.py.
@@ -647,6 +648,9 @@ async def ensure_messages_media_columns(engine: AsyncEngine) -> str:
             if "quoted_message" not in columns:
                 await conn.execute(text("ALTER TABLE messages ADD COLUMN quoted_message JSON"))
                 logger.info("[MIGRATION] Added messages.quoted_message")
+            if "is_forwarded" not in columns:
+                await conn.execute(text("ALTER TABLE messages ADD COLUMN is_forwarded BOOLEAN DEFAULT 0"))
+                logger.info("[MIGRATION] Added messages.is_forwarded")
 
             tolga_quoted_data = json.dumps({
                 "stanza_id": "3EB0C0CEB4CC782A77EEB4",

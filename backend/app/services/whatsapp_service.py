@@ -1342,6 +1342,18 @@ async def send_media_message(
     return await _messaging_orchestrator.send_media_message(db, user_id, conversation_id, media)
 
 
+async def forward_message(
+    db: AsyncSession,
+    user_id: str,
+    conversation_id: int,
+    message_id: int,
+    target_conversation_ids: List[int],
+) -> Dict[str, Any]:
+    return await _messaging_orchestrator.forward_message(
+        db, user_id, conversation_id, message_id, target_conversation_ids
+    )
+
+
 async def mark_conversation_read(db: AsyncSession, user_id: str, conversation_id: int) -> Dict[str, Any]:
     return await _messaging_orchestrator.mark_conversation_read(db, user_id, conversation_id)
 

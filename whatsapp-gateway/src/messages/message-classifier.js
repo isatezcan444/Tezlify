@@ -113,9 +113,9 @@ export function bufferToDataUrl(val, mimeType = 'image/jpeg') {
   return null;
 }
 
-export function extractQuotedMessageMetadata(messageContent, resolveSenderName) {
+export function extractContextInfo(messageContent) {
   const content = unwrapMessageContent(messageContent) || messageContent || {};
-  const contextInfo =
+  return (
     content.extendedTextMessage?.contextInfo ||
     content.imageMessage?.contextInfo ||
     content.videoMessage?.contextInfo ||
@@ -126,7 +126,22 @@ export function extractQuotedMessageMetadata(messageContent, resolveSenderName) 
     content.contactMessage?.contextInfo ||
     content.buttonsResponseMessage?.contextInfo ||
     content.templateButtonReplyMessage?.contextInfo ||
-    content.listResponseMessage?.contextInfo;
+    content.listResponseMessage?.contextInfo ||
+    null
+  );
+}
+
+export function extractForwardedMetadata(messageContent) {
+  const contextInfo = extractContextInfo(messageContent);
+  if (!contextInfo) return false;
+  return Boolean(
+    contextInfo.isForwarded ||
+    (typeof contextInfo.forwardingScore === 'number' && contextInfo.forwardingScore > 0)
+  );
+}
+
+export function extractQuotedMessageMetadata(messageContent, resolveSenderName) {
+  const contextInfo = extractContextInfo(messageContent);
 
   if (!contextInfo || !contextInfo.quotedMessage) {
     return null;

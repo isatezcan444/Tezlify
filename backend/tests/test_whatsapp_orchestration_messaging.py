@@ -17,6 +17,7 @@ from backend.app.models.message import (
 from backend.app.models.whatsapp_session import WhatsAppSession, SessionStatus
 from backend.app.services.whatsapp.orchestration.messaging import (
     WhatsAppMessagingOrchestrator,
+    forward_message,
     get_media_bytes,
     mark_conversation_read,
     send_media_message,
@@ -62,6 +63,7 @@ class TestWhatsAppMessagingOrchestration:
         assert serialized["wa_message_id"] == "wa_msg_123"
         assert serialized["client_message_id"] == "client_uuid_456"
         assert serialized["created_at"] == "2026-09-17T12:00:00"
+        assert serialized["is_forwarded"] is False
 
     def test_client_message_id_uniqueness_is_conversation_scoped(self):
         column = Message.__table__.c.client_message_id
@@ -388,3 +390,61 @@ class TestWhatsAppMessagingOrchestration:
                     res = await whatsapp_service.send_text_message(db, "usr-1", 10, "Facade message")
                     assert res["body"] == "Facade message"
                     assert res["wa_message_id"] == "wa_facade_1"
+
+    @pytest.mark.asyncio
+    async def test_forward_message_source_not_found(self):
+        db = AsyncMock()
+        mock_result = MagicMock()
+        mock_result.first.return_value = None
+        db.execute.return_value = mock_result
+
+        with pytest.raises(LookupError, match="Mesaj #999 bulunamadı"):
+            await forward_message(db, "usr-1", 10, 999, [20, 30])
+
+    @pytest.mark.asyncio
+    async def test_forward_message_orchestration_success(self):
+        db = AsyncMock()
+        source_conv = MagicMock()
+        source_conv.id = 10
+        source_msg = Message(
+            id=100,
+            conversation_id=10,
+            direction=MessageDirection.INBOUND,
+            message_type=MessageType.TEXT,
+            status=ConversationMessageStatus.DELIVERED,
+            body="Forwarded secret payload",
+            wa_message_id="BAE5_SOURCE_MSG_1",
+            recipient_phone="+905550001122",
+        )
+        target_conv = MagicMock()
+        target_conv.id = 20
+        target_conv.last_message_at = None
+
+        mock_first = MagicMock()
+        mock_first.first.return_value = (source_msg, source_conv)
+        mock_first.scalar_one_or_none.return_value = target_conv
+        db.execute.return_value = mock_first
+
+        session_row = WhatsAppSession(
+            id=1,
+            user_id="usr-1",
+            gateway_id="gw-1",
+            status=SessionStatus.CONNECTED,
+        )
+
+        with patch("backend.app.services.whatsapp_service._resolve_jid", return_value=(target_conv, "905553334455@s.whatsapp.net")):
+            with patch("backend.app.services.whatsapp_service._conversation_session", return_value=session_row):
+                with patch("backend.app.services.whatsapp_gateway.forward_message", new_callable=AsyncMock) as mock_gw_fwd:
+                    mock_gw_fwd.return_value = {
+                        "success": True,
+                        "wa_message_id": "BAE5_FWD_TARGET_1",
+                        "status": "SENT",
+                    }
+                    result = await forward_message(db, "usr-1", 10, 100, [20])
+                    assert result["success"] is True
+                    assert result["forwarded_count"] == 1
+                    assert len(result["results"]) == 1
+                    assert result["results"][0]["wa_message_id"] == "BAE5_FWD_TARGET_1"
+                    assert result["results"][0]["is_forwarded"] is True
+                    assert result["results"][0]["body"] == "Forwarded secret payload"
+

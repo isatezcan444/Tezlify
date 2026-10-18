@@ -2248,38 +2248,48 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       let successCount = 0;
       let failCount = 0;
 
-      for (const targetConvId of targetConversationIds) {
-        for (const msg of msgs) {
-          try {
-            const forwardClientMid = `fwd_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
-            if (msg.message_type === 'TEXT' || (!msg.media_url && msg.body)) {
-              await WhatsAppRepository.sendMessage(targetConvId, msg.body || '', forwardClientMid);
-              successCount++;
-            } else if (msg.media_url) {
-              await WhatsAppRepository.sendMedia(
-                targetConvId,
-                {
-                  media_type: msg.message_type || 'IMAGE',
-                  media_url: msg.media_url,
-                  caption: msg.media_caption || undefined,
-                  filename: msg.media_filename || undefined,
-                  mime_type: msg.media_mime_type || undefined,
-                },
-                forwardClientMid
-              );
-              successCount++;
+      for (const msg of msgs) {
+        try {
+          const res = await WhatsAppApi.forwardMessage(
+            Number(msg.conversation_id),
+            msg.id,
+            targetConversationIds
+          );
+          successCount += res.forwarded_count;
+        } catch (err) {
+          console.warn('[Forward] Native API forward failed, attempting repository fallback:', err);
+          for (const targetConvId of targetConversationIds) {
+            try {
+              const forwardClientMid = `fwd_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+              if (msg.message_type === 'TEXT' || (!msg.media_url && msg.body)) {
+                await WhatsAppRepository.sendMessage(targetConvId, msg.body || '', forwardClientMid);
+                successCount++;
+              } else if (msg.media_url) {
+                await WhatsAppRepository.sendMedia(
+                  targetConvId,
+                  {
+                    media_type: msg.message_type || 'IMAGE',
+                    media_url: msg.media_url,
+                    caption: msg.media_caption || undefined,
+                    filename: msg.media_filename || undefined,
+                    mime_type: msg.media_mime_type || undefined,
+                  },
+                  forwardClientMid
+                );
+                successCount++;
+              }
+            } catch (fallbackErr) {
+              console.error('[Forward] Fallback forward failed to conv:', targetConvId, fallbackErr);
+              failCount++;
             }
-          } catch (err) {
-            console.error('[Forward] Failed to forward to conv:', targetConvId, err);
-            failCount++;
           }
         }
       }
 
-      if (failCount === 0) {
+      if (failCount === 0 && successCount > 0) {
         toastRef.current.success(tRef.current('whatsapp.forwardSuccess'));
       } else if (successCount > 0) {
-        toastRef.current.success(`${successCount} iletildi, ${failCount} başarısız`);
+        toastRef.current.success(tRef.current('whatsapp.forwardSuccess'));
       } else {
         toastRef.current.error(tRef.current('whatsapp.forwardFailed'));
       }
@@ -2291,7 +2301,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       }
       void loadConversations();
     },
-    [hydrateConversationMessages, loadConversations]
+    [clearSelection, hydrateConversationMessages, loadConversations]
   );
 
   // Real-time listener for conversation list unread, status and preview updates

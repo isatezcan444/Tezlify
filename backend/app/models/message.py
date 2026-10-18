@@ -1,6 +1,6 @@
 import enum
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, DateTime, Text, Enum, ForeignKey, Index, Uuid, text, JSON
+from sqlalchemy import Boolean, Column, Integer, String, DateTime, Text, Enum, ForeignKey, Index, Uuid, text, JSON
 from sqlalchemy.orm import relationship
 from backend.app.core.database import Base
 from backend.app.core.datetime_utils import utc_now_naive
@@ -64,6 +64,9 @@ class Message(Base):
 
     # Quoted message metadata snapshot (reply preview)
     quoted_message = Column(JSON, nullable=True)
+
+    # WhatsApp native forwarded message indicator (contextInfo.isForwarded)
+    is_forwarded = Column(Boolean, default=False, nullable=False, index=True)
 
     # D3: nullable — LID (privacy-mode) senders have no resolvable phone number.
     # Hard invariant (AGENTS.md): never synthesize fake phone numbers; unknown

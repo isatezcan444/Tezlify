@@ -20,3 +20,4 @@ export * from './MediaSendModal';
 export * from './WhatsAppSettingsPanel';
 export * from './AddParticipantModal';
 export * from './ChatSearchResultsDrawer';
+export * from './ForwardMessageModal';

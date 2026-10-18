@@ -392,6 +392,8 @@ export interface Message {
   link_preview?: LinkPreview | null;
   /** Yanitlanan (alintilanan) mesaj bilgisi snapshot'i (WhatsApp native reply). */
   quoted_message?: QuotedMessageData | null;
+  /** WhatsApp native iletildi (forwarded) bayragi. */
+  is_forwarded?: boolean;
   external_timestamp?: string;
   created_at: string;
 }

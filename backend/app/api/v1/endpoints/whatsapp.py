@@ -37,6 +37,8 @@ from backend.app.schemas.whatsapp import (
     WhatsAppQrResponse,
     WhatsAppReactionResult,
     WhatsAppReadResult,
+    WhatsAppForwardMessageRequest,
+    WhatsAppForwardMessageResult,
     WhatsAppSendMediaRequest,
     WhatsAppSendReactionRequest,
     WhatsAppSendResult,
@@ -674,6 +676,39 @@ async def send_reaction(
     except Exception as exc:
         raise _bad_gateway(exc) from exc
     return WhatsAppReactionResult(**result)
+
+
+@router.post(
+    "/conversations/{conversation_id}/messages/{message_id}/forward",
+    response_model=WhatsAppForwardMessageResult,
+)
+async def forward_message(
+    conversation_id: int,
+    message_id: int,
+    payload: WhatsAppForwardMessageRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+) -> WhatsAppForwardMessageResult:
+    """Bir mesajı seçilen hedef sohbetlere iletir (WhatsApp Forward)."""
+    try:
+        result = await whatsapp_service.forward_message(
+            db,
+            current_user.id,
+            conversation_id,
+            message_id,
+            payload.target_conversation_ids,
+        )
+    except WhatsAppRelinkRequired as exc:
+        raise _relink_required(exc) from exc
+    except NoWhatsAppSession as exc:
+        raise _no_session(exc) from exc
+    except LookupError as exc:
+        raise _not_found(exc) from exc
+    except ValueError as exc:
+        raise _unprocessable(exc) from exc
+    except Exception as exc:
+        raise _bad_gateway(exc) from exc
+    return WhatsAppForwardMessageResult(**result)
 
 
 @router.post("/conversations/{conversation_id}/messages", response_model=WhatsAppSendResult)

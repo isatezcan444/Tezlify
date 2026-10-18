@@ -166,6 +166,7 @@ def serialize_message(
         "reactions": reactions or [],
         "link_preview": preview or None,
         "quoted_message": getattr(row, "quoted_message", None),
+        "is_forwarded": bool(getattr(row, "is_forwarded", False)),
         "created_at": row.external_timestamp.isoformat()
         if row.external_timestamp
         else (row.created_at.isoformat() if row.created_at else None),
@@ -756,6 +757,163 @@ class WhatsAppMessagingOrchestrator:
             await db.commit()
             return self.serialize_message(row)
 
+    async def forward_message(
+        self,
+        db: AsyncSession,
+        user_id: str,
+        conversation_id: int,
+        message_id: int,
+        target_conversation_ids: List[int],
+    ) -> Dict[str, Any]:
+        """Forwards an existing message to one or more target conversations."""
+        resolve_jid = self._get_helper("_resolve_jid", _resolve_jid)
+        conversation_session = self._get_helper("_conversation_session", _conversation_session)
+        gateway_op_or_mark_relink = self._get_helper("_gateway_op_or_mark_relink", _gateway_op_or_mark_relink)
+        advance_message_status = self._get_helper("_advance_message_status", _advance_message_status)
+        apply_last_message = self._get_helper("_apply_last_message", _apply_last_message)
+        gateway_client = self._get_helper("gw", gw)
+
+        # 1. Fetch source message and ensure user access
+        stmt = (
+            select(Message, Conversation)
+            .join(Conversation, Message.conversation_id == Conversation.id)
+            .where(
+                Message.id == message_id,
+                Message.conversation_id == conversation_id,
+                get_user_filter(Conversation.user_id, user_id),
+            )
+        )
+        res = (await db.execute(stmt)).first()
+        if not res:
+            raise LookupError(f"Mesaj #{message_id} bulunamadı.")
+        source_msg, source_conv = res
+
+        try:
+            _, source_jid = await resolve_jid(db, user_id, source_conv.id)
+        except Exception:
+            source_jid = None
+
+        results = []
+        unique_target_ids = list(dict.fromkeys(target_conversation_ids))[:10]
+
+        for target_id in unique_target_ids:
+            try:
+                target_conv, target_jid = await resolve_jid(db, user_id, target_id)
+            except Exception:
+                continue
+
+            session_row = await conversation_session(db, user_id, target_conv)
+            client_msg_id = str(uuid.uuid4())
+            _now = utc_now_naive()
+
+            row = Message(
+                user_id=user_id,
+                conversation_id=target_conv.id,
+                direction=MessageDirection.OUTBOUND,
+                message_type=source_msg.message_type,
+                body=source_msg.body,
+                wa_message_id=None,
+                client_message_id=client_msg_id,
+                sender_phone="ME",
+                recipient_phone=jid_to_phone(target_jid) or target_jid,
+                status=ConversationMessageStatus.PENDING,
+                media_id=source_msg.media_id,
+                media_mime_type=source_msg.media_mime_type,
+                media_filename=source_msg.media_filename,
+                media_caption=source_msg.media_caption,
+                is_forwarded=True,
+                external_timestamp=_now,
+            )
+            db.add(row)
+            await db.commit()
+
+            forward_payload = {
+                "source_jid": source_jid,
+                "wa_message_id": source_msg.wa_message_id,
+                "body": source_msg.body or source_msg.media_caption or "",
+                "media_type": source_msg.message_type.value if hasattr(source_msg.message_type, "value") else str(source_msg.message_type),
+                "media_id": source_msg.media_id,
+                "media_mime_type": source_msg.media_mime_type,
+                "media_filename": source_msg.media_filename,
+                "media_caption": source_msg.media_caption,
+                "client_message_id": client_msg_id,
+            }
+
+            send_res = None
+            try:
+                gw_res = await gateway_op_or_mark_relink(
+                    db,
+                    session_row,
+                    lambda gid: gateway_client.forward_message(gid, target_jid, forward_payload),
+                )
+                send_res = _validated_send_result(gw_res)
+            except Exception as exc:
+                if "404" in str(exc):
+                    try:
+                        if row.media_id:
+                            media_dict = {
+                                "media_type": (row.message_type.value if hasattr(row.message_type, "value") else str(row.message_type)).lower(),
+                                "media_url": f"/api/v1/whatsapp/media/{row.media_id}",
+                                "mime_type": row.media_mime_type,
+                                "caption": row.media_caption,
+                                "filename": row.media_filename,
+                                "client_message_id": client_msg_id,
+                            }
+                            gw_res = await gateway_op_or_mark_relink(
+                                db, session_row, lambda gid: gateway_client.send_media_message(gid, target_jid, media_dict)
+                            )
+                        else:
+                            gw_res = await gateway_op_or_mark_relink(
+                                db, session_row, lambda gid: gateway_client.send_text_message(gid, target_jid, row.body or "", client_msg_id)
+                            )
+                        send_res = _validated_send_result(gw_res)
+                    except Exception as fallback_exc:
+                        row.status = ConversationMessageStatus.FAILED
+                        row.failed_at = utc_now_naive()
+                        row.error_message = str(fallback_exc)[:300]
+                        await db.commit()
+                        results.append(self.serialize_message(row))
+                        continue
+                else:
+                    try:
+                        await db.refresh(row)
+                    except Exception:
+                        pass
+                    row.status = ConversationMessageStatus.FAILED
+                    row.failed_at = utc_now_naive()
+                    row.error_message = str(exc)[:300]
+                    await db.commit()
+                    results.append(self.serialize_message(row))
+                    continue
+
+            try:
+                await db.refresh(row)
+            except Exception:
+                pass
+            row.wa_message_id = send_res.get("wa_message_id")
+            target_status = send_res.get("status")
+            if target_status is None or (getattr(target_conv, "is_group", False) and str(target_status).upper() == "PENDING"):
+                target_status = ConversationMessageStatus.SENT.value
+            advance_message_status(row, target_status)
+            apply_last_message(
+                target_conv,
+                utc_now_naive(),
+                build_last_message_summary(
+                    message_type=row.message_type.value if hasattr(row.message_type, "value") else str(row.message_type),
+                    body=row.body or row.media_caption,
+                    direction=MessageDirection.OUTBOUND.value,
+                ),
+            )
+            await db.commit()
+            await db.refresh(row)
+            results.append(self.serialize_message(row))
+
+        return {
+            "success": True,
+            "forwarded_count": len([r for r in results if r.get("status") != ConversationMessageStatus.FAILED.value]),
+            "results": results,
+        }
+
     async def mark_conversation_read(
         self,
         db: AsyncSession,
@@ -1012,6 +1170,7 @@ _default_orchestrator = WhatsAppMessagingOrchestrator()
 
 send_text_message = _default_orchestrator.send_text_message
 send_media_message = _default_orchestrator.send_media_message
+forward_message = _default_orchestrator.forward_message
 mark_conversation_read = _default_orchestrator.mark_conversation_read
 send_typing = _default_orchestrator.send_typing
 subscribe_presence = _default_orchestrator.subscribe_presence

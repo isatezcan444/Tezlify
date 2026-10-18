@@ -202,6 +202,7 @@ class WhatsAppMessageItem(BaseModel):
     # yasanan A8 hatasinin birebir aynisi (bkz. WhatsAppSessionResponse).
     link_preview: Optional[WhatsAppLinkPreviewItem] = None
     quoted_message: Optional[Dict[str, Any]] = None
+    is_forwarded: bool = False
     created_at: Optional[str] = None
 
 
@@ -317,6 +318,19 @@ class WhatsAppSendResult(BaseModel):
     message_type: Optional[str] = None
     media_id: Optional[str] = None
     media_url: Optional[str] = None
+    is_forwarded: bool = False
+
+
+class WhatsAppForwardMessageRequest(BaseModel):
+    target_conversation_ids: List[int] = Field(
+        ..., min_length=1, max_length=10, description="Mesajın iletileceği hedef sohbet kimlikleri (en fazla 10)"
+    )
+
+
+class WhatsAppForwardMessageResult(BaseModel):
+    success: bool = True
+    forwarded_count: int = 0
+    results: List[WhatsAppSendResult] = Field(default_factory=list)
 
 
 class WhatsAppStartConversationRequest(BaseModel):

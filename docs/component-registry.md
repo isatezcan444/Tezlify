@@ -274,10 +274,10 @@ src/
 - **Props**: `isOpen: boolean`, `onClose: () => void`, `conversation: Conversation`, `messages: Message[]`, `onOpenLead?: (leadId: number) => void`, `onSearchInChat?: () => void`, `onStatusChange?: (convId: number, status: 'ACTIVE' | 'ARCHIVED' | 'CLOSED') => void`, `onJumpToMessage?: (messageId: string | number) => void`, `onDirectMessageParticipant?: (phone: string, name?: string) => void`, `onAvatarUpdated?: (newAvatarUrl: string | null) => void`.
 - **Import**: `import { ChatInfoDrawer } from '@/features/whatsapp/components';`
 
-#### `ForwardModal`
-- **Purpose**: WhatsApp Web authentic message forwarding dialog. Portaled to `document.body` via `Modal`. Features search input with real-time conversation filtering (by contact name and clean phone number), conversation list with avatars and circular multi-target selection indicators, preview banner of the messages being forwarded (text snippet, media/document badge, or multi-item count), and fail-closed dispatch to target conversations via `WhatsAppRepository.sendMessage` / `sendMedia`.
+#### `ForwardModal` & `ForwardMessageModal`
+- **Purpose**: WhatsApp Web authentic message forwarding dialog. Portaled to `document.body` via `Modal` (`z-[99999]`). Features search input with real-time conversation filtering (by contact name and clean phone number), conversation list with avatars and circular multi-target selection indicators, preview banner of the messages being forwarded (text snippet, media/document badge, or multi-item count), and native WhatsApp Forward dispatch (`contextInfo.isForwarded`, forwarding score) via backend `POST /whatsapp/conversations/{id}/messages/{message_id}/forward` and `WhatsAppApi.forwardMessage`.
 - **Props**: `isOpen: boolean`, `onClose: () => void`, `messagesToForward: Message[]`, `conversations: Conversation[]`, `onConfirmForward: (targetConversationIds: number[], messages: Message[]) => Promise<void> | void`.
-- **Import**: `import { ForwardModal } from '@/features/whatsapp/components';`
+- **Import**: `import { ForwardModal, ForwardMessageModal } from '@/features/whatsapp/components';`
 
 #### `MediaSendModal`
 - **Purpose**: WhatsApp Web authentic full-screen media and document send preview modal. Portaled to `document.body` with `z-[99999]`. Supports clipboard paste (`Ctrl+V` / `Cmd+V`), file drag-and-drop, and attachment file picker. Shows high-fidelity previews for images (with 90° rotation and HD badge), videos (with player and size badge), audio, and documents/archives (folded paper card with extension badge and file size). Features a capsule caption input with inline emoji picker and green circular WhatsApp send button.
