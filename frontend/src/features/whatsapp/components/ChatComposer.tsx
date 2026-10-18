@@ -83,6 +83,12 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
 }) => {
   const { t } = useI18n();
   const toast = useToast();
+  const draftInputRef = useRef<HTMLTextAreaElement | HTMLInputElement | null>(null);
+  const composerRootRef = useRef<HTMLDivElement>(null);
+  const attachMenuRef = useRef<HTMLDivElement>(null);
+  const emojiContainerRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
   const [isAttachMenuOpen, setIsAttachMenuOpen] = useState(false);
@@ -97,6 +103,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
   const [sendingFiles, setSendingFiles] = useState(false);
   const [sendingIndex, setSendingIndex] = useState<number>(0);
   const [isFileModalOpen, setIsFileModalOpen] = useState(false);
+
 
   // Quick Replies (Canned Responses) Shortcut ('/') State
   const [quickReplies, setQuickReplies] = useState<QuickReply[]>([]);
@@ -338,11 +345,6 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isRecording, cancelRecording]);
 
-  const attachMenuRef = useRef<HTMLDivElement>(null);
-  const emojiContainerRef = useRef<HTMLDivElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const draftInputRef = useRef<HTMLTextAreaElement | HTMLInputElement | null>(null);
-  const composerRootRef = useRef<HTMLDivElement>(null);
   const [isEmojiOpen, setIsEmojiOpen] = useState(false);
 
   // Click / tap outside handler to auto-close emoji panel and attachment menu
