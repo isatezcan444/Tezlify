@@ -407,7 +407,7 @@ function mapMessage(m: BackendMessage, convId: number): Message {
   // başlığı taşıyamaz, bu yüzden backend'in kabul ettiği ?token= sorgu
   // parametresi eklenir. WhatsApp Web paritesi: medya her zaman kimlikli
   // URL'den gelir; tokensiz URL 401'e düşer ve balon boş kalır.
-  const targetMediaId = m.media_id;
+  const targetMediaId = m.media_id || (m.message_type && String(m.message_type).toUpperCase() !== 'TEXT' ? m.wa_message_id : undefined);
 
   const mediaUrl = m.media_url || (targetMediaId
     ? (() => {

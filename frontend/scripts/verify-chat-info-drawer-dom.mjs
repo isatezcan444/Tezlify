@@ -176,6 +176,17 @@ try {
       media_filename: 'sozlesme.pdf',
       created_at: '2026-10-03T12:02:00Z',
     },
+    {
+      id: 4,
+      conversation_id: 101,
+      direction: 'OUTBOUND',
+      message_type: 'VIDEO',
+      body: 'Tanıtım videosu',
+      media_id: 'media-vid-01',
+      media_mime_type: 'video/mp4',
+      media_filename: 'tanitim.mp4',
+      created_at: '2026-10-03T12:03:00Z',
+    },
   ];
 
   // -------------------------------------------------------------
@@ -235,11 +246,30 @@ try {
       })
     );
 
-    // Initial tab: Media (1 item)
+    // Initial tab: Media (2 items: 1 image, 1 video)
     const mediaGrid = host.querySelector('[data-testid="drawer-media-grid"]');
     assert.ok(mediaGrid, 'Media grid must be rendered on initial MEDIA tab');
-    const mediaItems = mediaGrid.querySelectorAll('img, video');
-    assert.equal(mediaItems.length, 1, 'Media grid must contain 1 image item');
+    const mediaDivs = mediaGrid.querySelectorAll(':scope > div');
+    assert.equal(mediaDivs.length, 2, 'Media grid must contain 2 items (image & video)');
+
+    // Click Video Item -> MediaLightbox must open with video element in document.body
+    const videoItem = host.querySelector('[data-testid="drawer-media-item-4"]');
+    assert.ok(videoItem, 'Video item must have data-testid drawer-media-item-4');
+    await act(async () => {
+      videoItem.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+    });
+
+    const lightboxDialog = window.document.querySelector('[data-testid="media-lightbox-dialog"], [role="dialog"][aria-label*="Lightbox" i], [role="dialog"][aria-label*="medya" i]');
+    assert.ok(lightboxDialog, 'Clicking video item in drawer must open full-screen MediaLightbox dialog');
+    const videoElem = lightboxDialog.querySelector('video');
+    assert.ok(videoElem, 'MediaLightbox must contain a video element for VIDEO media type');
+
+    // Close Lightbox via close button
+    const closeLightboxBtn = lightboxDialog.querySelector('button[aria-label*="Kapat" i], button[title*="Kapat" i], button[aria-label*="Close" i]');
+    assert.ok(closeLightboxBtn, 'Lightbox must have a close button');
+    await act(async () => {
+      closeLightboxBtn.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+    });
 
     // Click Docs Tab
     const docsTabBtn = host.querySelector('[data-testid="drawer-tab-docs"]');
@@ -251,6 +281,23 @@ try {
     const docsList = host.querySelector('[data-testid="drawer-docs-list"]');
     assert.ok(docsList, 'Docs list must be rendered when Docs tab is selected');
     assert.ok(docsList.textContent.includes('sozlesme.pdf'), 'Must show sozlesme.pdf document');
+
+    // Click Document Item -> DocumentViewer must open in document.body
+    const docItem = host.querySelector('[data-testid="drawer-doc-item-3"]');
+    assert.ok(docItem, 'Doc item must exist');
+    await act(async () => {
+      docItem.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+    });
+
+    const docDialog = window.document.querySelector('[data-testid="document-viewer-dialog"], [role="dialog"][aria-label*="Belge" i], [role="dialog"][aria-label*="Document" i]');
+    assert.ok(docDialog, 'Clicking document item in drawer must open DocumentViewer modal');
+
+    // Close DocumentViewer
+    const closeDocBtn = docDialog.querySelector('button[aria-label*="Kapat" i], button[title*="Kapat" i], button[aria-label*="Close" i]');
+    assert.ok(closeDocBtn, 'DocumentViewer must have a close button');
+    await act(async () => {
+      closeDocBtn.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+    });
 
     // Click Links Tab
     const linksTabBtn = host.querySelector('[data-testid="drawer-tab-links"]');
@@ -268,7 +315,7 @@ try {
 
     await cleanup();
     passed += 1;
-    console.log('  ok - Media, Links and Docs gallery parses items and switches tabs');
+    console.log('  ok - Media, Links and Docs gallery parses items, opens Lightbox/DocumentViewer, and switches tabs');
   }
 
   // -------------------------------------------------------------

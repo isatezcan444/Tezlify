@@ -113,11 +113,13 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
   }, [conversation.id, messages]);
 
   // Lightbox & DocumentViewer modal states
+  const [isLightboxOpen, setIsLightboxOpen] = useState(false);
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
   const [lightboxType, setLightboxType] = useState<'IMAGE' | 'VIDEO'>('IMAGE');
   const [lightboxCaption, setLightboxCaption] = useState<string | null>(null);
   const [lightboxFilename, setLightboxFilename] = useState<string | null>(null);
 
+  const [isDocViewerOpen, setIsDocViewerOpen] = useState(false);
   const [docViewerSrc, setDocViewerSrc] = useState<string | null>(null);
   const [docViewerFilename, setDocViewerFilename] = useState<string | null>(null);
   const [docViewerMime, setDocViewerMime] = useState<string | null>(null);
@@ -650,22 +652,26 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         // Only close drawer if internal modals are not open
-        if (!lightboxSrc && !docViewerSrc) {
+        if (!isLightboxOpen && !isDocViewerOpen) {
           onClose();
         }
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, onClose, lightboxSrc, docViewerSrc]);
+  }, [isOpen, onClose, isLightboxOpen, isDocViewerOpen]);
 
   // Extract media items from messages (only those with available media attachments)
   const mediaItems = useMemo(() => {
     return messages.filter((m) => {
-      const hasMedia = Boolean(m.media_id || m.media_url);
-      if (!hasMedia) return false;
       const type = (m.message_type || '').toUpperCase();
       const mime = (m.media_mime_type || '').toLowerCase();
+      const hasMedia = Boolean(
+        m.media_id ||
+        m.media_url ||
+        (m.wa_message_id && (type === 'IMAGE' || type === 'VIDEO' || mime.startsWith('image/') || mime.startsWith('video/')))
+      );
+      if (!hasMedia) return false;
       return (
         type === 'IMAGE' ||
         type === 'VIDEO' ||
@@ -678,10 +684,14 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
   // Extract documents from messages (only those with available media attachments)
   const documentItems = useMemo(() => {
     return messages.filter((m) => {
-      const hasMedia = Boolean(m.media_id || m.media_url);
-      if (!hasMedia) return false;
       const type = (m.message_type || '').toUpperCase();
       const mime = (m.media_mime_type || '').toLowerCase();
+      const hasMedia = Boolean(
+        m.media_id ||
+        m.media_url ||
+        (m.wa_message_id && type === 'DOCUMENT')
+      );
+      if (!hasMedia) return false;
       return (
         type === 'DOCUMENT' ||
         (m.media_filename && !mime.startsWith('image/') && !mime.startsWith('video/') && !mime.startsWith('audio/'))
@@ -882,6 +892,8 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
                   setLightboxSrc(currentImg);
                   setLightboxType('IMAGE');
                   setLightboxCaption(displayName);
+                  setLightboxFilename(null);
+                  setIsLightboxOpen(true);
                 } else if (isGroup && isCurrentUserAdmin) {
                   avatarFileInputRef.current?.click();
                 }
@@ -1431,19 +1443,23 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
               ) : (
                 <div className="grid grid-cols-3 gap-1.5" data-testid="drawer-media-grid">
                   {mediaItems.map((m) => {
+                    const targetId = m.media_id || m.wa_message_id;
                     const rawSrc = resolveMediaUrl(
                       m.media_url ||
-                      (m.media_id ? `/api/v1/whatsapp/media/${m.media_id}` : undefined)
+                      (targetId ? `/api/v1/whatsapp/media/${targetId}` : undefined)
                     );
                     const isVideo = (m.message_type || '').toUpperCase() === 'VIDEO' || (m.media_mime_type || '').includes('video');
                     return (
                       <div
                         key={m.id}
+                        data-testid={`drawer-media-item-${m.id}`}
                         onClick={() => {
-                          setLightboxSrc(rawSrc);
+                          const effectiveSrc = rawSrc || (targetId ? resolveMediaUrl(`/api/v1/whatsapp/media/${targetId}`) || `/api/v1/whatsapp/media/${targetId}` : null);
+                          setLightboxSrc(effectiveSrc);
                           setLightboxType(isVideo ? 'VIDEO' : 'IMAGE');
                           setLightboxCaption(m.media_caption || undefined);
                           setLightboxFilename(m.media_filename || undefined);
+                          setIsLightboxOpen(true);
                         }}
                         className="relative aspect-square rounded-lg overflow-hidden bg-slate-100 dark:bg-black/30 border border-slate-200/60 dark:border-white/10 group cursor-pointer"
                       >
@@ -1482,17 +1498,21 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
                 <div className="space-y-1.5" data-testid="drawer-docs-list">
                   {documentItems.map((m) => {
                     const { Icon, tone } = resolveDocVisual(m.media_filename, m.media_mime_type);
+                    const targetId = m.media_id || m.wa_message_id;
                     const rawSrc = resolveMediaUrl(
                       m.media_url ||
-                      (m.media_id ? `/api/v1/whatsapp/media/${m.media_id}` : undefined)
+                      (targetId ? `/api/v1/whatsapp/media/${targetId}` : undefined)
                     );
                     return (
                       <div
                         key={m.id}
+                        data-testid={`drawer-doc-item-${m.id}`}
                         onClick={() => {
-                          setDocViewerSrc(rawSrc);
+                          const effectiveSrc = rawSrc || (targetId ? resolveMediaUrl(`/api/v1/whatsapp/media/${targetId}`) || `/api/v1/whatsapp/media/${targetId}` : null);
+                          setDocViewerSrc(effectiveSrc);
                           setDocViewerFilename(m.media_filename || t('leads.documentFallbackName'));
                           setDocViewerMime(m.media_mime_type || 'application/octet-stream');
+                          setIsDocViewerOpen(true);
                         }}
                         className="flex items-center space-x-2.5 p-2 rounded-xl hover:bg-slate-100 dark:hover:bg-white/[0.06] transition-colors cursor-pointer border border-transparent hover:border-slate-200 dark:hover:border-white/10"
                       >
@@ -1664,8 +1684,11 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
 
       {/* Lightbox for Avatars & Gallery Media */}
       <MediaLightbox
-        isOpen={Boolean(lightboxSrc)}
-        onClose={() => setLightboxSrc(null)}
+        isOpen={isLightboxOpen}
+        onClose={() => {
+          setIsLightboxOpen(false);
+          setLightboxSrc(null);
+        }}
         src={lightboxSrc}
         mediaType={lightboxType}
         caption={lightboxCaption || undefined}
@@ -1675,8 +1698,11 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
 
       {/* DocumentViewer for Gallery Documents */}
       <DocumentViewer
-        isOpen={Boolean(docViewerSrc)}
-        onClose={() => setDocViewerSrc(null)}
+        isOpen={isDocViewerOpen}
+        onClose={() => {
+          setIsDocViewerOpen(false);
+          setDocViewerSrc(null);
+        }}
         src={docViewerSrc}
         filename={docViewerFilename || undefined}
         mimeType={docViewerMime || undefined}

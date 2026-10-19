@@ -15,6 +15,9 @@ import {
   notifyMediaPlaying,
   pauseAllMedia,
   registerMedia,
+  updateRegisteredMediaElement,
+  notifyMediaPaused,
+  notifyMediaEnded,
 } from '../lib/mediaCoordinator';
 
 export interface MediaLightboxProps {
@@ -55,27 +58,24 @@ export const MediaLightbox: React.FC<MediaLightboxProps> = ({
   const lightboxVideoId = 'lightbox-media-video';
 
   const [isClosing, setIsClosing] = useState(false);
-  const [shouldRender, setShouldRender] = useState(isOpen);
+  const prevIsOpen = useRef(isOpen);
+  const shouldRender = isOpen || isClosing;
 
   useEffect(() => {
     if (isOpen) {
-      setShouldRender(true);
       setIsClosing(false);
       if (mediaType === 'VIDEO') {
         pauseAllMedia(lightboxVideoId);
       }
-    } else if (shouldRender) {
+    } else if (prevIsOpen.current) {
       setIsClosing(true);
-      if (videoRef.current && !videoRef.current.paused) {
-        videoRef.current.pause();
-      }
       const timer = setTimeout(() => {
-        setShouldRender(false);
         setIsClosing(false);
       }, 200);
       return () => clearTimeout(timer);
     }
-  }, [isOpen, shouldRender, mediaType]);
+    prevIsOpen.current = isOpen;
+  }, [isOpen, mediaType]);
 
   // Clean pause on unmount or close
   useEffect(() => {
@@ -98,12 +98,17 @@ export const MediaLightbox: React.FC<MediaLightboxProps> = ({
     };
   }, []);
 
+  useEffect(() => {
+    if (videoRef.current) {
+      updateRegisteredMediaElement(lightboxVideoId, videoRef.current);
+    }
+  }, [isOpen, src]);
+
   const handleClose = () => {
     const finalTime = videoRef.current?.currentTime;
     if (videoRef.current && !videoRef.current.paused) {
       videoRef.current.pause();
     }
-    setIsClosing(true);
     onClose(finalTime);
   };
 
@@ -255,6 +260,7 @@ export const MediaLightbox: React.FC<MediaLightboxProps> = ({
     <div
       ref={containerRef}
       role="dialog"
+      data-testid="media-lightbox-dialog"
       aria-modal="true"
       aria-label={t('whatsapp.mediaOpenLightbox')}
       tabIndex={-1}
@@ -409,7 +415,18 @@ export const MediaLightbox: React.FC<MediaLightboxProps> = ({
               onPlay={() => {
                 notifyMediaPlaying(lightboxVideoId, videoRef.current);
               }}
+              onPause={() => {
+                notifyMediaPaused(lightboxVideoId);
+              }}
+              onEnded={() => {
+                notifyMediaEnded(lightboxVideoId);
+              }}
+              onError={() => {
+                setMediaError(true);
+                setMediaLoaded(true);
+              }}
               onLoadedMetadata={() => {
+                setMediaLoaded(true);
                 if (typeof initialTime === 'number' && initialTime > 0 && videoRef.current) {
                   try {
                     videoRef.current.currentTime = initialTime;

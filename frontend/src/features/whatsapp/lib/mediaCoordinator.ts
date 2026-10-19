@@ -90,10 +90,15 @@ export function notifyMediaPlaying(
   }
 
   // Dispatch custom window event for decoupled subscribers
-  if (typeof window !== 'undefined') {
-    window.dispatchEvent(
-      new CustomEvent(MEDIA_PLAY_EVENT, { detail: { id } })
-    );
+  if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+    try {
+      const EventCtor = (typeof window.CustomEvent === 'function') ? window.CustomEvent : CustomEvent;
+      window.dispatchEvent(
+        new EventCtor(MEDIA_PLAY_EVENT, { detail: { id } })
+      );
+    } catch {
+      // Non-fatal if dispatching fails in test / synthetic environments
+    }
   }
 }
 
@@ -118,10 +123,15 @@ export function pauseAllMedia(exceptId?: string): void {
     activeMediaId = null;
   }
 
-  if (typeof window !== 'undefined') {
-    window.dispatchEvent(
-      new CustomEvent(MEDIA_PAUSE_ALL_EVENT, { detail: { exceptId } })
-    );
+  if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+    try {
+      const EventCtor = (typeof window.CustomEvent === 'function') ? window.CustomEvent : CustomEvent;
+      window.dispatchEvent(
+        new EventCtor(MEDIA_PAUSE_ALL_EVENT, { detail: { exceptId } })
+      );
+    } catch {
+      // Non-fatal if dispatching fails in test / synthetic environments
+    }
   }
 }
 

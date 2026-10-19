@@ -1,3 +1,5 @@
+import { ApiClient } from '../api/client';
+
 /**
  * Resolves a media or image URL by:
  * 1. Prepending API base URL if relative (e.g. starts with /api/v1/)
@@ -36,10 +38,17 @@ export function resolveMediaUrl(url?: string | null): string | undefined {
   }
 
   const apiBase = (envApiUrl || '').replace(/\/$/, '');
-  const storedToken =
-    typeof window !== 'undefined' && typeof localStorage !== 'undefined'
-      ? localStorage.getItem('tezlify_session_token')
-      : null;
+  let storedToken: string | null = null;
+  try {
+    if (typeof window !== 'undefined' && typeof localStorage !== 'undefined') {
+      storedToken = localStorage.getItem('tezlify_session_token');
+    }
+  } catch {}
+  if (!storedToken) {
+    try {
+      storedToken = ApiClient.getAuthToken();
+    } catch {}
+  }
 
   let pathOrUrl = url.trim();
   // Raw media ID or UUID (not a full URL or path) is resolved to the whatsapp media endpoint

@@ -2060,6 +2060,10 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                   id: res.id,
                   client_message_id: res.client_message_id || clientMid,
                   wa_message_id: (res as any).wa_message_id ?? m.wa_message_id,
+                  media_id: (res as any).media_id ?? (m as any).media_id,
+                  media_url: (res as any).media_url ?? m.media_url,
+                  media_filename: (res as any).media_filename ?? m.media_filename,
+                  media_mime_type: (res as any).media_mime_type ?? m.media_mime_type,
                   status: res.status,
                   error_message: undefined,
                 }
@@ -2198,7 +2202,18 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         ...prev,
         [selectedConv.id]: (prev[selectedConv.id] || []).map((m) =>
           m.id === tempId || m.client_message_id === tempClientMid
-            ? { ...m, id: res.id, client_message_id: res.client_message_id || tempClientMid, status: res.status, created_at: res.created_at || m.created_at }
+            ? {
+                ...m,
+                id: res.id,
+                client_message_id: res.client_message_id || tempClientMid,
+                wa_message_id: res.wa_message_id ?? m.wa_message_id,
+                media_id: (res as any).media_id ?? (m as any).media_id,
+                media_url: res.media_url ?? m.media_url,
+                media_filename: (res as any).media_filename ?? m.media_filename,
+                media_mime_type: (res as any).media_mime_type ?? m.media_mime_type,
+                status: res.status,
+                created_at: res.created_at || m.created_at,
+              }
             : m
         ),
       }));
@@ -2275,6 +2290,9 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                 client_message_id: res.client_message_id || tempClientMid,
                 wa_message_id: res.wa_message_id ?? m.wa_message_id,
                 media_url: res.media_url ?? m.media_url,
+                media_id: (res as any).media_id ?? (m as any).media_id,
+                media_filename: (res as any).media_filename ?? m.media_filename,
+                media_mime_type: (res as any).media_mime_type ?? m.media_mime_type,
                 status: res.status,
                 created_at: res.created_at || m.created_at,
               }

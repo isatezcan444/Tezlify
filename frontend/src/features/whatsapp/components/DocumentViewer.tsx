@@ -99,27 +99,24 @@ export const DocumentViewer: React.FC<DocumentViewerProps> = ({
   const displayName = filename || t('leads.documentFallbackName');
 
   const [isClosing, setIsClosing] = useState(false);
-  const [shouldRender, setShouldRender] = useState(isOpen);
+  const prevIsOpen = useRef(isOpen);
+  const shouldRender = isOpen || isClosing;
 
   useEffect(() => {
     if (isOpen) {
-      setShouldRender(true);
       setIsClosing(false);
-    } else if (shouldRender) {
+    } else if (prevIsOpen.current) {
       setIsClosing(true);
       const timer = setTimeout(() => {
-        setShouldRender(false);
         setIsClosing(false);
       }, 200);
       return () => clearTimeout(timer);
     }
-  }, [isOpen, shouldRender]);
+    prevIsOpen.current = isOpen;
+  }, [isOpen]);
 
   const handleClose = () => {
-    setIsClosing(true);
-    setTimeout(() => {
-      onClose();
-    }, 200);
+    onClose();
   };
 
   // Keyboard navigation: Escape to close
@@ -278,6 +275,7 @@ export const DocumentViewer: React.FC<DocumentViewerProps> = ({
   return createPortal(
     <div
       role="dialog"
+      data-testid="document-viewer-dialog"
       aria-modal="true"
       aria-label={displayName}
       tabIndex={-1}
