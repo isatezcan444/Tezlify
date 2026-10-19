@@ -1213,58 +1213,13 @@ class WhatsAppMessagingOrchestrator:
         except Exception as gw_exc:
             logger.debug("Gateway user_receipts alinamadi: %s", gw_exc)
 
-        reactor_jids = [r["reactor_jid"] for r in reactions if r.get("reactor_jid")]
+        # Collect all candidate JIDs/phones across reactions, receipts, and subsequent replies
+        candidate_jids: list[str] = [r["reactor_jid"] for r in reactions if r.get("reactor_jid")]
         for r in gateway_receipts:
             if r.get("user_jid"):
-                reactor_jids.append(r["user_jid"])
+                candidate_jids.append(r["user_jid"])
 
-        reactor_names_map = await batch_resolve_reactor_names(db, user_id, list(set(reactor_jids)))
-
-        read_by_map: Dict[str, Dict[str, Any]] = {}
-        delivered_to_map: Dict[str, Dict[str, Any]] = {}
-
-        # 1. Reaksiyon birakanlar kesinlikle okumustur
-        for rx in reactions:
-            r_jid = rx.get("reactor_jid")
-            if not r_jid or rx.get("from_me"):
-                continue
-            r_name = reactor_names_map.get(r_jid) or rx.get("reactor_name") or jid_to_phone(r_jid) or r_jid
-            rx_ts = rx.get("updated_at")
-            if isinstance(rx_ts, datetime):
-                rx_ts_str = rx_ts.isoformat()
-            else:
-                rx_ts_str = str(rx_ts) if rx_ts else (row.delivered_at.isoformat() if row.delivered_at else (row.created_at.isoformat() if row.created_at else None))
-            read_by_map[r_jid] = {
-                "jid": r_jid,
-                "name": r_name,
-                "phone": jid_to_phone(r_jid),
-                "timestamp": rx_ts_str,
-                "via": "reaction",
-            }
-
-        # 2. Gateway user receipts
-        for rc in gateway_receipts:
-            u_jid = rc.get("user_jid")
-            if not u_jid:
-                continue
-            u_name = reactor_names_map.get(u_jid) or jid_to_phone(u_jid) or u_jid
-            if rc.get("read_timestamp"):
-                read_by_map[u_jid] = {
-                    "jid": u_jid,
-                    "name": u_name,
-                    "phone": jid_to_phone(u_jid),
-                    "timestamp": rc["read_timestamp"],
-                    "via": "receipt",
-                }
-            elif rc.get("receipt_timestamp") and u_jid not in read_by_map:
-                delivered_to_map[u_jid] = {
-                    "jid": u_jid,
-                    "name": u_name,
-                    "phone": jid_to_phone(u_jid),
-                    "timestamp": rc["receipt_timestamp"],
-                }
-
-        # 3. Mesaj sonrasi gelen cevaplar
+        subsequent_msgs = []
         if row.external_timestamp or row.created_at:
             ref_ts = row.external_timestamp or row.created_at
             subsequent_msgs = (
@@ -1276,18 +1231,90 @@ class WhatsAppMessagingOrchestrator:
                         Message.created_at > ref_ts,
                     )
                     .order_by(Message.created_at.asc())
-                    .limit(20)
+                    .limit(50)
                 )
             ).all()
-            for s_phone, s_name, s_ts in subsequent_msgs:
-                if s_phone and s_phone not in [item.get("phone") for item in read_by_map.values()]:
-                    read_by_map[s_phone] = {
-                        "jid": s_phone,
-                        "name": s_name or s_phone,
-                        "phone": s_phone,
-                        "timestamp": s_ts.isoformat() if s_ts else None,
-                        "via": "reply",
+            for s_phone, _s_name, _s_ts in subsequent_msgs:
+                if s_phone:
+                    candidate_jids.append(s_phone)
+
+        unique_jids = list(set(candidate_jids))
+        reactor_names_map = await batch_resolve_reactor_names(db, user_id, unique_jids)
+
+        from backend.app.services.whatsapp.repositories.lid_mappings import resolve_lid_phones
+        lids_to_resolve = [j for j in unique_jids if "@lid" in j]
+        lid_to_phone_map: Dict[str, str] = {}
+        if lids_to_resolve:
+            try:
+                lid_to_phone_map = await resolve_lid_phones(db, lids_to_resolve, user_id=user_id)
+            except Exception as lid_err:
+                logger.debug("LID resolution in get_message_info skipped: %s", lid_err)
+
+        def _resolve_person_details(raw_jid: Optional[str], fallback_name: Optional[str] = None):
+            if not raw_jid:
+                return None, fallback_name, None
+            target_jid = lid_to_phone_map.get(raw_jid) if "@lid" in raw_jid else raw_jid
+            norm_phone = jid_to_phone(target_jid) or jid_to_phone(raw_jid)
+            if not norm_phone and raw_jid.isdigit() and len(raw_jid) >= 7:
+                norm_phone = f"+{raw_jid}"
+
+            name = reactor_names_map.get(raw_jid) or fallback_name or norm_phone or raw_jid
+            return raw_jid, name, norm_phone
+
+        read_by_map: Dict[str, Dict[str, Any]] = {}
+        delivered_to_map: Dict[str, Dict[str, Any]] = {}
+
+        def _put_read(raw_jid: str, name: Optional[str], phone: Optional[str], ts: Optional[str], via: str):
+            dedup_key = phone or raw_jid
+            if dedup_key in read_by_map:
+                existing = read_by_map[dedup_key]
+                if not existing.get("phone") and phone:
+                    existing["phone"] = phone
+                return
+            read_by_map[dedup_key] = {
+                "jid": raw_jid,
+                "name": name,
+                "phone": phone,
+                "timestamp": ts,
+                "via": via,
+            }
+
+        # 1. Reactions
+        for rx in reactions:
+            r_jid = rx.get("reactor_jid")
+            if not r_jid or rx.get("from_me"):
+                continue
+            jid_val, name_val, phone_val = _resolve_person_details(r_jid, rx.get("reactor_name"))
+            rx_ts = rx.get("updated_at")
+            if isinstance(rx_ts, datetime):
+                rx_ts_str = rx_ts.isoformat()
+            else:
+                rx_ts_str = str(rx_ts) if rx_ts else (row.delivered_at.isoformat() if row.delivered_at else (row.created_at.isoformat() if row.created_at else None))
+            _put_read(jid_val, name_val, phone_val, rx_ts_str, "reaction")
+
+        # 2. Gateway user receipts
+        for rc in gateway_receipts:
+            u_jid = rc.get("user_jid")
+            if not u_jid:
+                continue
+            jid_val, name_val, phone_val = _resolve_person_details(u_jid)
+            if rc.get("read_timestamp"):
+                _put_read(jid_val, name_val, phone_val, rc["read_timestamp"], "receipt")
+            elif rc.get("receipt_timestamp"):
+                dedup_key = phone_val or jid_val
+                if dedup_key not in read_by_map and dedup_key not in delivered_to_map:
+                    delivered_to_map[dedup_key] = {
+                        "jid": jid_val,
+                        "name": name_val,
+                        "phone": phone_val,
+                        "timestamp": rc["receipt_timestamp"],
                     }
+
+        # 3. Subsequent replies
+        for s_phone, s_name, s_ts in subsequent_msgs:
+            if s_phone:
+                jid_val, name_val, phone_val = _resolve_person_details(s_phone, s_name)
+                _put_read(jid_val, name_val, phone_val, s_ts.isoformat() if s_ts else None, "reply")
 
         return {
             "message": serialized_msg,

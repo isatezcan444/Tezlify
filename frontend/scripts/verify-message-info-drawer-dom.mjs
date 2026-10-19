@@ -137,7 +137,22 @@ try {
   const sampleParticipants = [
     { id: '1', name: 'İsa Tezcan', phone: '+905413749073', is_me: true },
     { id: '2', name: 'Filiz Ablam', phone: '+905356872662', is_me: false },
+    { id: '195872117768369@lid', name: 'Cevat Aydın', phone: '+905076382749', is_me: false },
     { id: '3', name: 'Tolga Cebeci', phone: '+905551234567', is_me: false },
+  ];
+
+  const sampleAllMessages = [
+    sampleGroupMessage,
+    {
+      id: 993,
+      conversation_id: 35763,
+      direction: 'INBOUND',
+      message_type: 'TEXT',
+      body: 'Geliyorum ben de!',
+      sender_name: 'Cevat Aydın',
+      sender_phone: '195872117768369@lid',
+      created_at: '2026-10-19T11:08:00Z',
+    },
   ];
 
   let instance;
@@ -150,6 +165,7 @@ try {
       message: sampleGroupMessage,
       conversation: sampleGroupConv,
       groupParticipants: sampleParticipants,
+      allMessages: sampleAllMessages,
     });
   });
 
@@ -173,7 +189,12 @@ try {
 
   // Check 4: Filiz Ablam is under Okuyanlar due to reaction
   assert.ok(drawer.textContent.includes('Filiz Ablam'), 'Filiz Ablam should be listed under Okuyanlar');
-  assert.ok(drawer.textContent.includes('Okuyanlar') || drawer.textContent.includes('Read by'), 'Section should include Okuyanlar / Read by');
+
+  // Check 5: Cevat Aydın is under Okuyanlar (replied via LID) and NOT duplicated in remaining
+  assert.ok(drawer.textContent.includes('Cevat Aydın'), 'Cevat Aydın should be listed under Okuyanlar');
+  // Count occurrences of 'Cevat Aydın' in drawer: must be exactly 1!
+  const cevatCount = (drawer.textContent.match(/Cevat Aydın/g) || []).length;
+  assert.equal(cevatCount, 1, 'Cevat Aydın must appear exactly once in drawer (must not be duplicated in remaining/kalanlar)');
 
   await act(async () => {
     instance.destroy();

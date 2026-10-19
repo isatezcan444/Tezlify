@@ -162,12 +162,35 @@ try {
   let forwardedMessage = null;
   let toggledId = null;
 
+  // Test forward trigger via WhatsApp Web message menu
   await renderWithProviders(
     React.createElement(ChatBubble, {
       message: sampleMessage,
       onForward: (msg) => {
         forwardedMessage = msg;
       },
+      isSelectMode: false,
+    })
+  );
+
+  const menuBtn = window.document.querySelector('[data-testid="msg-menu-btn-101"]');
+  assert.ok(menuBtn, 'ChatBubble must render msg-menu-btn-101');
+  await act(async () => {
+    menuBtn.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  });
+
+  const forwardBtn = window.document.querySelector('[data-testid="forward-trigger-101"]');
+  assert.ok(forwardBtn, 'ChatBubble menu must contain forward-trigger-101');
+
+  await act(async () => {
+    forwardBtn.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  });
+  assert.equal(forwardedMessage?.id, 101, 'Clicking forward button should invoke onForward with message');
+
+  // Test multi-select checkbox in select mode
+  await renderWithProviders(
+    React.createElement(ChatBubble, {
+      message: sampleMessage,
       isSelectMode: true,
       isSelected: false,
       onToggleSelect: (id) => {
@@ -175,14 +198,6 @@ try {
       },
     })
   );
-
-  const forwardBtn = window.document.querySelector('[data-testid="forward-trigger-101"]');
-  assert.ok(forwardBtn, 'ChatBubble hover action bar must contain data-testid="forward-trigger-101"');
-
-  await act(async () => {
-    forwardBtn.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
-  });
-  assert.equal(forwardedMessage?.id, 101, 'Clicking forward button should invoke onForward with message');
 
   const selectCheckbox = window.document.querySelector('[data-testid="select-checkbox-101"]');
   assert.ok(selectCheckbox, 'ChatBubble in select mode must render data-testid="select-checkbox-101"');

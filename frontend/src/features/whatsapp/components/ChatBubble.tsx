@@ -1483,28 +1483,6 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
             </div>
           )}
 
-          {/* Quick Forward Button (outside bubble on hover) */}
-          {onForward && (
-            <div
-              className={`absolute top-1 ${
-                isInbound ? (canReact && !isSelectMode ? '-right-15' : '-right-8') : (canReact && !isSelectMode ? '-left-15' : '-left-8')
-              } z-10 opacity-0 sm:group-hover:opacity-100 transition-opacity`}
-            >
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onForward(message);
-                }}
-                title={t('whatsapp.menuForward')}
-                aria-label={t('whatsapp.menuForward')}
-                data-testid={`forward-trigger-${message.id}`}
-                className="w-6 h-6 rounded-full flex items-center justify-center text-slate-400 hover:text-slate-700 dark:text-slate-400 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/10 transition-colors cursor-pointer"
-              >
-                <Forward className="w-3.5 h-3.5" />
-              </button>
-            </div>
-          )}
 
           {/* WhatsApp Web Message Chevron Down Trigger ("Ok Butonu") */}
           {!isSelectMode && (
@@ -1628,7 +1606,8 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                     setIsMenuOpen(false);
                     onForward(message);
                   }}
-                  data-testid={`menu-forward-${message.id}`}
+                  data-testid={`forward-trigger-${message.id}`}
+                  data-menu-forward={`menu-forward-${message.id}`}
                   className="w-full text-left px-3.5 py-1.5 text-[12.5px] text-[#3b4a54] dark:text-[#d1d7db] hover:bg-[#f5f6f6] dark:hover:bg-[#182229] active:bg-slate-200/50 dark:active:bg-white/[0.08] transition-colors cursor-pointer select-none font-normal"
                 >
                   {t('whatsapp.menuForward')}

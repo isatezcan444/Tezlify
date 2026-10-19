@@ -16,7 +16,13 @@ import { Conversation, Message } from '../../../types';
 import { WhatsAppApi } from '../api/whatsappApi';
 import { useI18n } from '../../../context/I18nContext';
 import { Avatar } from '../../../components/ui/Avatar';
-import { formatPhoneNumber } from '../lib/whatsappIdentity';
+import {
+  formatPhoneNumber,
+  canonicalJid,
+  extractCleanPhone,
+  isRealContactName,
+  stripJidPrefix,
+} from '../lib/whatsappIdentity';
 import { formatMessageDate, formatMessageTime, parseServerTime } from '../../../lib/utils';
 import { resolveMediaUrl } from '../../../lib/mediaUrl';
 
@@ -103,13 +109,87 @@ export const ChatMessageInfoDrawer: React.FC<ChatMessageInfoDrawerProps> = ({
       return { readByList: [], deliveredToList: [], remainingList: [] };
     }
 
-    const readMap = new Map<string, ParticipantReceiptItem>();
-    const deliveredMap = new Map<string, ParticipantReceiptItem>();
+    // Helper: Determine if two participant records represent the same human contact
+    const isSameParticipant = (
+      a?: { id?: string | null; phone?: string | null; name?: string | null } | null,
+      b?: { id?: string | null; phone?: string | null; name?: string | null } | null
+    ): boolean => {
+      if (!a || !b) return false;
+
+      // 1. Exact raw ID / phone match
+      if (a.id && b.id && a.id === b.id) return true;
+      if (a.phone && b.phone && a.phone === b.phone) return true;
+      if (a.id && b.phone && a.id === b.phone) return true;
+      if (a.phone && b.id && a.phone === b.id) return true;
+
+      // 2. Canonical JID match (stripping jid:, device suffixes, domain normalization)
+      const jidA = canonicalJid(a.id || a.phone);
+      const jidB = canonicalJid(b.id || b.phone);
+      if (jidA && jidB && jidA === jidB) return true;
+
+      // 3. Clean phone digits match (e.g. +905076382749 vs 905076382749)
+      const cleanA = extractCleanPhone(a.phone) || extractCleanPhone(a.id);
+      const cleanB = extractCleanPhone(b.phone) || extractCleanPhone(b.id);
+      if (cleanA && cleanB) {
+        if (cleanA === cleanB) return true;
+        const digitsA = cleanA.replace(/\D/g, '');
+        const digitsB = cleanB.replace(/\D/g, '');
+        if (
+          digitsA.length >= 7 &&
+          digitsB.length >= 7 &&
+          (digitsA === digitsB || digitsA.endsWith(digitsB.slice(-10)) || digitsB.endsWith(digitsA.slice(-10)))
+        ) {
+          return true;
+        }
+      }
+
+      // 4. Raw digits from user part (in case of LID or PN username match)
+      const rawDigits = (val?: string | null) => {
+        if (!val) return '';
+        const clean = val.replace(/^jid:/, '').split('@')[0].split(':')[0];
+        const d = clean.replace(/\D/g, '');
+        return d.length >= 7 ? d : '';
+      };
+      const d1 = rawDigits(a.phone) || rawDigits(a.id);
+      const d2 = rawDigits(b.phone) || rawDigits(b.id);
+      if (d1 && d2 && (d1 === d2 || (d1.length >= 10 && d2.length >= 10 && (d1.endsWith(d2.slice(-10)) || d2.endsWith(d1.slice(-10)))))) {
+        return true;
+      }
+
+      // 5. Contact Name match: In a WhatsApp group, names are unique human labels.
+      // If two items have the exact same real contact name, they are the same person!
+      if (a.name && b.name && isRealContactName(a.name) && isRealContactName(b.name)) {
+        if (a.name.trim().toLowerCase() === b.name.trim().toLowerCase()) {
+          return true;
+        }
+      }
+
+      return false;
+    };
+
+    const readList: ParticipantReceiptItem[] = [];
+    const deliveredList: ParticipantReceiptItem[] = [];
+
+    const addOrMerge = (targetList: ParticipantReceiptItem[], item: ParticipantReceiptItem) => {
+      const existingIdx = targetList.findIndex((existing) => isSameParticipant(existing, item));
+      if (existingIdx >= 0) {
+        targetList[existingIdx] = {
+          ...targetList[existingIdx],
+          name: isRealContactName(item.name) ? item.name : targetList[existingIdx].name,
+          phone: item.phone || targetList[existingIdx].phone,
+          timestamp: targetList[existingIdx].timestamp || item.timestamp,
+          via: targetList[existingIdx].via || item.via,
+          avatar_url: item.avatar_url || targetList[existingIdx].avatar_url,
+        };
+      } else {
+        targetList.push({ ...item });
+      }
+    };
 
     // 1. Seed from server receipts if available
     if (serverInfo?.read_by && Array.isArray(serverInfo.read_by)) {
       for (const r of serverInfo.read_by) {
-        readMap.set(r.phone || r.jid, {
+        addOrMerge(readList, {
           id: r.jid,
           name: r.name,
           phone: r.phone,
@@ -119,33 +199,18 @@ export const ChatMessageInfoDrawer: React.FC<ChatMessageInfoDrawerProps> = ({
       }
     }
 
-    if (serverInfo?.delivered_to && Array.isArray(serverInfo.delivered_to)) {
-      for (const d of serverInfo.delivered_to) {
-        const key = d.phone || d.jid;
-        if (!readMap.has(key)) {
-          deliveredMap.set(key, {
-            id: d.jid,
-            name: d.name,
-            phone: d.phone,
-            timestamp: d.timestamp,
-          });
-        }
-      }
-    }
-
     // 2. Add reactions as authoritative read evidence
     if (Array.isArray(message.reactions) && message.reactions.length > 0) {
       for (const rx of message.reactions) {
         if (rx.from_me) continue;
-        const key = rx.reactor_jid || rx.reactor_name || '';
-        if (key && !readMap.has(key)) {
-          readMap.set(key, {
-            id: rx.reactor_jid || key,
-            name: rx.reactor_name || key,
-            timestamp: typeof rx.updated_at === 'string' ? rx.updated_at : message.created_at,
-            via: 'reaction',
-          });
-        }
+        const candidate = {
+          id: rx.reactor_jid || '',
+          name: rx.reactor_name || '',
+          phone: extractCleanPhone(rx.reactor_jid),
+          timestamp: typeof rx.updated_at === 'string' ? rx.updated_at : message.created_at,
+          via: 'reaction' as const,
+        };
+        addOrMerge(readList, candidate);
       }
     }
 
@@ -153,50 +218,90 @@ export const ChatMessageInfoDrawer: React.FC<ChatMessageInfoDrawerProps> = ({
     const msgDate = new Date(message.created_at).getTime();
     if (!isNaN(msgDate) && allMessages.length > 0) {
       for (const m of allMessages) {
-        if (m.direction === 'INBOUND' && m.sender_phone) {
+        if (m.direction === 'INBOUND' && (m.sender_phone || m.sender_name)) {
           const mDate = new Date(m.created_at).getTime();
-          if (mDate > msgDate && !readMap.has(m.sender_phone)) {
-            readMap.set(m.sender_phone, {
-              id: m.sender_phone,
-              name: m.sender_name || formatPhoneNumber(m.sender_phone),
+          if (mDate > msgDate) {
+            const candidate = {
+              id: m.sender_phone || m.sender_name || '',
+              name: m.sender_name || (m.sender_phone ? formatPhoneNumber(m.sender_phone) : ''),
               phone: m.sender_phone,
               timestamp: m.created_at,
-              via: 'reply',
-            });
+              via: 'reply' as const,
+            };
+            addOrMerge(readList, candidate);
           }
         }
       }
     }
 
-    // 4. Partition known group participants
-    const remList: ParticipantReceiptItem[] = [];
-    for (const p of groupParticipants) {
-      if (p.is_me) continue;
-      const key = p.phone || p.id;
-      if (!readMap.has(key)) {
-        if (deliveredMap.has(key)) {
-          // already in delivered
-        } else if (message.status === 'READ' || message.status === 'DELIVERED') {
-          // If message is delivered to group, participant received it
-          deliveredMap.set(key, {
-            id: p.id,
-            name: p.name || (p.phone ? formatPhoneNumber(p.phone) : p.id),
-            phone: p.phone,
-            timestamp: message.delivered_at || message.created_at,
-          });
-        } else {
-          remList.push({
-            id: p.id,
-            name: p.name || (p.phone ? formatPhoneNumber(p.phone) : p.id),
-            phone: p.phone,
-          });
+    // 4. Seed server delivered receipts
+    if (serverInfo?.delivered_to && Array.isArray(serverInfo.delivered_to)) {
+      for (const d of serverInfo.delivered_to) {
+        const candidate = {
+          id: d.jid,
+          name: d.name,
+          phone: d.phone,
+          timestamp: d.timestamp,
+        };
+        if (!readList.some((r) => isSameParticipant(r, candidate))) {
+          addOrMerge(deliveredList, candidate);
         }
       }
     }
 
+    // 5. Partition known group participants
+    const remList: ParticipantReceiptItem[] = [];
+    for (const p of groupParticipants) {
+      if (p.is_me) continue;
+      const participantItem = {
+        id: p.id,
+        name: p.name || (p.phone ? formatPhoneNumber(p.phone) : p.id),
+        phone: p.phone,
+      };
+
+      // Check if participant already read the message
+      const readIdx = readList.findIndex((r) => isSameParticipant(r, participantItem));
+      if (readIdx >= 0) {
+        readList[readIdx] = {
+          ...readList[readIdx],
+          name: isRealContactName(p.name) ? p.name : readList[readIdx].name,
+          phone: p.phone || readList[readIdx].phone,
+        };
+        continue; // MUST NOT be added to delivered or remaining!
+      }
+
+      // Check if participant already received the message
+      const delivIdx = deliveredList.findIndex((d) => isSameParticipant(d, participantItem));
+      if (delivIdx >= 0) {
+        deliveredList[delivIdx] = {
+          ...deliveredList[delivIdx],
+          name: isRealContactName(p.name) ? p.name : deliveredList[delivIdx].name,
+          phone: p.phone || deliveredList[delivIdx].phone,
+        };
+        continue; // MUST NOT be added to remaining!
+      }
+
+      // If message itself is delivered/read at group level, mark delivered
+      if (message.status === 'READ' || message.status === 'DELIVERED') {
+        deliveredList.push({
+          id: p.id,
+          name: p.name || (p.phone ? formatPhoneNumber(p.phone) : p.id),
+          phone: p.phone,
+          timestamp: message.delivered_at || message.created_at,
+        });
+      } else {
+        // Participant hasn't received or read yet
+        remList.push({
+          id: p.id,
+          name: p.name || (p.phone ? formatPhoneNumber(p.phone) : p.id),
+          phone: p.phone,
+        });
+      }
+    }
+
     return {
-      readByList: Array.from(readMap.values()),
-      deliveredToList: Array.from(deliveredMap.values()),
+      readByList: readList,
+      deliveredToList: deliveredList,
       remainingList: remList,
     };
   }, [isGroup, serverInfo, message, allMessages, groupParticipants]);
