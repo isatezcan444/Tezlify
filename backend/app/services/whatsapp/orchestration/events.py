@@ -85,6 +85,7 @@ from backend.app.services.whatsapp.repositories.reactions import (
     conversation_reaction as _conversation_reaction,
     reaction_identity as _reaction_identity,
     upsert_reaction as _upsert_reaction,
+    resolve_reactor_display_name as _resolve_reactor_display_name,
 )
 from backend.app.services.whatsapp.repositories.messages import (
     build_message_from_gateway as _message_row_from_gateway,
@@ -1299,16 +1300,16 @@ class WhatsAppEventOrchestrator:
 
         reaction_preview = None
         if emoji:
-            sender_display_name = (
-                event.get("sender_name")
-                or event.get("participant_name")
-                or getattr(conv, "lead_name", None)
-            )
+            is_grp_conv = "@g.us" in jid_str
+            sender_display_name = event.get("sender_name") or event.get("participant_name")
+            if not sender_display_name and is_grp_conv and reactor_jid and not from_me:
+                sender_display_name = await _resolve_reactor_display_name(db, owner, reactor_jid)
+
             reaction_preview = _format_reaction_preview(
                 emoji,
                 from_me=from_me,
-                sender_name=sender_display_name,
-                is_group="@g.us" in jid_str,
+                sender_name=sender_display_name if is_grp_conv else None,
+                is_group=is_grp_conv,
                 lang="tr",
             )
             created_at_dt = _as_naive_utc(_parse_dt(event.get("created_at"))) or utc_now_naive()
@@ -1807,10 +1808,14 @@ class WhatsAppEventOrchestrator:
             canonical_preview = _normalize_preview_text(None, conv.last_message_preview) or None
             conv_rx = await _conversation_reaction(db, conv.id)
             if conv_rx and conv_rx.get("emoji"):
+                reactor_name = None
+                if canonical_is_group and not conv_rx.get("from_me"):
+                    reactor_name = await _resolve_reactor_display_name(db, owner, conv_rx.get("reactor_jid"))
+                conv_rx["reactor_name"] = reactor_name
                 canonical_preview = _format_reaction_preview(
                     conv_rx["emoji"],
                     from_me=bool(conv_rx.get("from_me")),
-                    sender_name=canonical_name if canonical_is_group else None,
+                    sender_name=reactor_name if canonical_is_group else None,
                     is_group=canonical_is_group,
                     lang="tr",
                 )

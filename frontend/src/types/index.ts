@@ -358,6 +358,7 @@ export interface MessageReaction {
   emoji: string;
   from_me: boolean;
   reactor_jid?: string | null;
+  reactor_name?: string | null;
   updated_at?: string | null;
 }
 

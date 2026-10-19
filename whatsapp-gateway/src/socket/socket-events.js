@@ -941,10 +941,14 @@ export function bindSocketEvents({
         if (chat) {
           const chatActivity = chat.last_message_at ? new Date(chat.last_message_at).getTime() : 0;
           if (ts && ts >= chatActivity) {
-            chat.last_reaction = { emoji: rx.text, from_me: fromMe, reactor_jid: reactorJid };
+            const isGroup = key.includes('@g.us');
+            const reactorName = fromMe ? 'ME' : (isGroup && reactorJid ? (resolveDisplayName(reactorJid, rx.pushName) || null) : null);
+            chat.last_reaction = { emoji: rx.text, from_me: fromMe, reactor_jid: reactorJid, reactor_name: reactorName };
             chat.last_message_preview = fromMe
               ? `Şu mesaja ${rx.text} ifadesini bıraktınız`
-              : `Şu mesaja ${rx.text} ifadesini bıraktı`;
+              : (isGroup && reactorName
+                  ? `${reactorName} şu mesaja ${rx.text} ifadesini bıraktı`
+                  : `Şu mesaja ${rx.text} ifadesini bıraktı`);
             chat.last_message_at = new Date(ts).toISOString();
           }
         }
@@ -980,14 +984,21 @@ export function bindSocketEvents({
           if (Array.isArray(newestMsg.reactions) && newestMsg.reactions.length > 0) {
             const newestRx = newestMsg.reactions[newestMsg.reactions.length - 1];
             if (newestRx?.emoji && (!chat.last_reaction || !chat.last_message_preview?.includes('ifadesini'))) {
+              const rxReactorJid = newestRx.reactor_jid || null;
+              const rxFromMe = Boolean(newestRx.from_me);
+              const isGrp = chatKey.includes('@g.us');
+              const rxReactorName = rxFromMe ? 'ME' : (isGrp && rxReactorJid ? (resolveDisplayName(rxReactorJid, null) || null) : null);
               chat.last_reaction = {
                 emoji: newestRx.emoji,
-                from_me: Boolean(newestRx.from_me),
-                reactor_jid: newestRx.reactor_jid || null,
+                from_me: rxFromMe,
+                reactor_jid: rxReactorJid,
+                reactor_name: rxReactorName,
               };
-              chat.last_message_preview = newestRx.from_me
+              chat.last_message_preview = rxFromMe
                 ? `Şu mesaja ${newestRx.emoji} ifadesini bıraktınız`
-                : `Şu mesaja ${newestRx.emoji} ifadesini bıraktı`;
+                : (isGrp && rxReactorName
+                    ? `${rxReactorName} şu mesaja ${newestRx.emoji} ifadesini bıraktı`
+                    : `Şu mesaja ${newestRx.emoji} ifadesini bıraktı`);
             }
           }
         }

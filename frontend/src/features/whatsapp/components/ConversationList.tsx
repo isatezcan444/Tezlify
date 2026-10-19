@@ -85,6 +85,8 @@ interface ConversationRowProps {
   /** SON mesaja birakilan en yeni ifade (WhatsApp Web listesi). Ilkel bir
    * string olarak gecilir ki React.memo deger karsilastirmasiyla calissin. */
   lastReactionEmoji?: string;
+  lastReactionReactorName?: string;
+  lastReactionFromMe?: boolean;
   status: ConversationStatus;
   /** WhatsApp arsiv durumu (gateway metadata, `is_archived`). `status`ten AYRI
    * tutulur cunku ikisi farkli kaynaklardan gelir: `status` CRM durumudur,
@@ -110,7 +112,7 @@ interface ConversationRowProps {
   onAvatarResolved?: (id: number, newUrl: string) => void;
 }
 
-const ConversationRowComponent: React.FC<ConversationRowProps> = ({ id, name, avatarUrl, phone, lastMessagePreview, lastMessageAt, lastMessageState, messageCount, lastReactionEmoji, status, isArchived, unreadCount, isGroup, selected, typing, typingSenderName, isSyncing, priority = 'normal', onSelect, onArchive, onClose, onReopen, onDelete, onAvatarResolved }) => {
+const ConversationRowComponent: React.FC<ConversationRowProps> = ({ id, name, avatarUrl, phone, lastMessagePreview, lastMessageAt, lastMessageState, messageCount, lastReactionEmoji, lastReactionReactorName, lastReactionFromMe, status, isArchived, unreadCount, isGroup, selected, typing, typingSenderName, isSyncing, priority = 'normal', onSelect, onArchive, onClose, onReopen, onDelete, onAvatarResolved }) => {
   const { t, language } = useI18n();
   const isRawJid = isRawWhatsAppJid(phone);
   const cleanPhone = extractCleanPhone(phone);
@@ -230,7 +232,11 @@ const ConversationRowComponent: React.FC<ConversationRowProps> = ({ id, name, av
             ) : (() => {
               const isReactionSnippet = lastMsg.includes('ifadesini') || lastMsg.includes('reacted');
               const displayText = (!isReactionSnippet && lastReactionEmoji)
-                ? (isGroup && name ? t('whatsapp.reactionLeftInGroup', { name, emoji: lastReactionEmoji }) : t('whatsapp.reactionLeftByOther', { emoji: lastReactionEmoji }))
+                ? (lastReactionFromMe
+                    ? t('whatsapp.reactionLeftByYou', { emoji: lastReactionEmoji })
+                    : (isGroup && lastReactionReactorName
+                        ? t('whatsapp.reactionLeftInGroup', { name: lastReactionReactorName, emoji: lastReactionEmoji })
+                        : t('whatsapp.reactionLeftByOther', { emoji: lastReactionEmoji })))
                 : lastMsg;
               const showEmojiBadge = Boolean(lastReactionEmoji && !displayText.includes(lastReactionEmoji));
               return (
@@ -632,6 +638,8 @@ const ConversationListComponent: React.FC<ConversationListProps> = ({
                 lastMessageState={conv.last_message_state}
                 messageCount={conv.message_count}
                 lastReactionEmoji={conv.last_reaction?.emoji || undefined}
+                lastReactionReactorName={conv.last_reaction?.reactor_name || undefined}
+                lastReactionFromMe={Boolean(conv.last_reaction?.from_me)}
                 status={conv.status}
                 isArchived={Boolean(conv.is_archived)}
                 unreadCount={conv.unread_count}

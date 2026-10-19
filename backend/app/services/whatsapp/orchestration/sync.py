@@ -93,6 +93,7 @@ from backend.app.services.whatsapp.orchestration.history_evidence import (
 from backend.app.services.whatsapp.repositories.reactions import (
     upsert_reaction as _upsert_reaction,
     reaction_identity as _reaction_identity,
+    resolve_reactor_display_name as _resolve_reactor_display_name,
 )
 
 logger = logging.getLogger(__name__)
@@ -959,11 +960,15 @@ class WhatsAppSyncOrchestrator:
                 .order_by(MessageReaction.updated_at.desc(), MessageReaction.id.desc())
             )
             if rx_row and rx_row.emoji:
+                is_grp_conv = bool(phone and "@g.us" in phone)
+                rx_reactor_name = None
+                if is_grp_conv and not rx_row.from_me:
+                    rx_reactor_name = await _resolve_reactor_display_name(db, user_id, rx_row.reactor_jid)
                 summary = _format_reaction_preview(
                     rx_row.emoji,
                     from_me=bool(rx_row.from_me),
-                    sender_name=newest.sender_name if bool(phone and "@g.us" in phone) else None,
-                    is_group=bool(phone and "@g.us" in phone),
+                    sender_name=rx_reactor_name if is_grp_conv else None,
+                    is_group=is_grp_conv,
                     lang="tr",
                 )
             else:
@@ -1654,11 +1659,15 @@ class WhatsAppSyncOrchestrator:
                                         existing_msg.status = ConversationMessageStatus.DELIVERED
                                 if rx_list and rx_list[-1].get("emoji"):
                                     last_rx = rx_list[-1]
+                                    is_grp_conv = "@g.us" in str(gm.get("conversation_id") or "")
+                                    rx_reactor_name = None
+                                    if is_grp_conv and not last_rx.get("from_me"):
+                                        rx_reactor_name = await _resolve_reactor_display_name(db, job.user_id, last_rx.get("reactor_jid"))
                                     summary = _format_reaction_preview(
                                         last_rx["emoji"],
                                         from_me=bool(last_rx.get("from_me")),
-                                        sender_name=existing_msg.sender_name if "@g.us" in str(gm.get("conversation_id") or "") else None,
-                                        is_group="@g.us" in str(gm.get("conversation_id") or ""),
+                                        sender_name=rx_reactor_name if is_grp_conv else None,
+                                        is_group=is_grp_conv,
                                         lang="tr",
                                     )
                                     apply_last_message(conv, _as_naive_utc(_parse_dt(gm.get("created_at"))), summary)
@@ -1671,11 +1680,15 @@ class WhatsAppSyncOrchestrator:
                     rows.append((row, str(gm.get("conversation_id") or ""), rx_list))
                     if rx_list and rx_list[-1].get("emoji"):
                         last_rx = rx_list[-1]
+                        is_grp_conv = "@g.us" in str(gm.get("conversation_id") or "")
+                        rx_reactor_name = None
+                        if is_grp_conv and not last_rx.get("from_me"):
+                            rx_reactor_name = await _resolve_reactor_display_name(db, job.user_id, last_rx.get("reactor_jid"))
                         summary = _format_reaction_preview(
                             last_rx["emoji"],
                             from_me=bool(last_rx.get("from_me")),
-                            sender_name=row.sender_name if "@g.us" in str(gm.get("conversation_id") or "") else None,
-                            is_group="@g.us" in str(gm.get("conversation_id") or ""),
+                            sender_name=rx_reactor_name if is_grp_conv else None,
+                            is_group=is_grp_conv,
                             lang="tr",
                         )
                     else:
@@ -2828,11 +2841,15 @@ class WhatsAppSyncOrchestrator:
                             existing_msg.status = ConversationMessageStatus.DELIVERED
                     if rx_list and rx_list[-1].get("emoji"):
                         last_rx = rx_list[-1]
+                        is_grp_conv = "@g.us" in jid
+                        rx_reactor_name = None
+                        if is_grp_conv and not last_rx.get("from_me"):
+                            rx_reactor_name = await _resolve_reactor_display_name(db, owner, last_rx.get("reactor_jid"))
                         summary = _format_reaction_preview(
                             last_rx["emoji"],
                             from_me=bool(last_rx.get("from_me")),
-                            sender_name=existing_msg.sender_name if "@g.us" in jid else None,
-                            is_group="@g.us" in jid,
+                            sender_name=rx_reactor_name if is_grp_conv else None,
+                            is_group=is_grp_conv,
                             lang="tr",
                         )
                         apply_last_message(conv, _as_naive_utc(_parse_dt(gm.get("created_at"))), summary)
@@ -2889,11 +2906,15 @@ class WhatsAppSyncOrchestrator:
         rx_list = matching_last_gm.get("reactions") if matching_last_gm else None
         if rx_list and rx_list[-1].get("emoji"):
             last_rx = rx_list[-1]
+            is_grp_conv = "@g.us" in jid
+            rx_reactor_name = None
+            if is_grp_conv and not last_rx.get("from_me"):
+                rx_reactor_name = await _resolve_reactor_display_name(db, owner, last_rx.get("reactor_jid"))
             summary = _format_reaction_preview(
                 last_rx["emoji"],
                 from_me=bool(last_rx.get("from_me")),
-                sender_name=summary_src.sender_name if "@g.us" in jid else None,
-                is_group="@g.us" in jid,
+                sender_name=rx_reactor_name if is_grp_conv else None,
+                is_group=is_grp_conv,
                 lang="tr",
             )
         else:

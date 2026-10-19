@@ -260,3 +260,105 @@ def reaction_summary(reaction: Optional[Dict[str, Any]]) -> Optional[str]:
     if not reaction or not reaction.get("emoji"):
         return None
     return reaction["emoji"]
+
+
+async def batch_resolve_reactor_names(
+    db: AsyncSession,
+    user_id: Optional[str],
+    reactor_jids: Iterable[str],
+) -> Dict[str, str]:
+    """Grup reaksiyonlarinda reaksiyonu birakan kisi adini WhatsApp Web paritesiyle cozer.
+    
+    1. LID olanlar (@lid) whatsapp_private.lid_mappings uzerinden telefon numarasina cevrilir.
+    2. Elde edilen telefon numaralari contacts tablosunda aranir.
+    3. Rehberdeki display_name (ornegin 'Filiz Ablam') veya push_name / formatli telefon doner.
+    """
+    clean_jids = list(dict.fromkeys(
+        str(j).strip() for j in reactor_jids
+        if j and str(j).strip() not in (SELF_REACTOR_JID, "None", "null")
+    ))
+    if not clean_jids or not user_id:
+        return {}
+
+    from backend.app.services.whatsapp.identity import (
+        jid_to_phone,
+        is_phone_like,
+        is_raw_jid_name,
+        format_phone_spaces,
+    )
+    from backend.app.services.whatsapp.repositories.lid_mappings import resolve_lid_phones
+    from backend.app.models.contact import Contact
+    from backend.app.core.auth import get_user_filter
+
+    lids = [j for j in clean_jids if "@lid" in j]
+    lid_to_pn: Dict[str, str] = {}
+    if lids:
+        try:
+            lid_to_pn = await resolve_lid_phones(db, lids, user_id=user_id)
+        except Exception as lid_err:
+            logger.debug("Reaktor LID cozumleme atlandi: %s", lid_err)
+            lid_to_pn = {}
+
+    jid_to_target_phone: Dict[str, str] = {}
+    search_phones: set[str] = set()
+
+    for jid in clean_jids:
+        pn_jid = lid_to_pn.get(jid) if "@lid" in jid else jid
+        phone = jid_to_phone(pn_jid)
+        if phone:
+            jid_to_target_phone[jid] = phone
+            search_phones.add(phone)
+        elif "@" not in jid and jid.isdigit():
+            norm_phone = f"+{jid}"
+            jid_to_target_phone[jid] = norm_phone
+            search_phones.add(norm_phone)
+
+    contacts_by_phone: Dict[str, Contact] = {}
+    if search_phones:
+        try:
+            c_res = await db.execute(
+                select(Contact).where(
+                    get_user_filter(Contact.user_id, user_id),
+                    Contact.phone_e164.in_(list(search_phones)),
+                )
+            )
+            for c in c_res.scalars().all():
+                if c.phone_e164:
+                    contacts_by_phone[c.phone_e164] = c
+        except Exception as c_err:
+            logger.debug("Reaktor contact sorgusu atlandi: %s", c_err)
+
+    out: Dict[str, str] = {}
+    for jid in clean_jids:
+        phone = jid_to_target_phone.get(jid)
+        c = contacts_by_phone.get(phone) if phone else None
+        if c:
+            disp = getattr(c, "display_name", None)
+            if disp and not is_phone_like(disp) and not is_raw_jid_name(disp) and str(disp).strip():
+                out[jid] = str(disp).strip()
+                continue
+            attrs = getattr(c, "custom_attributes", None) or {}
+            push = attrs.get("push_name") if isinstance(attrs, dict) else None
+            if push and not is_phone_like(push) and not is_raw_jid_name(push) and str(push).strip():
+                out[jid] = str(push).strip()
+                continue
+            if phone:
+                out[jid] = format_phone_spaces(phone)
+                continue
+        elif phone:
+            out[jid] = format_phone_spaces(phone)
+            continue
+    return out
+
+
+async def resolve_reactor_display_name(
+    db: AsyncSession,
+    user_id: Optional[str],
+    reactor_jid: Optional[str],
+) -> Optional[str]:
+    """Tekil reaktor kimligini ada cevirir."""
+    if not reactor_jid or not user_id:
+        return None
+    names = await batch_resolve_reactor_names(db, user_id, [reactor_jid])
+    return names.get(str(reactor_jid).strip())
+

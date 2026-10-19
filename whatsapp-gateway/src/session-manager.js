@@ -2041,10 +2041,16 @@ export function createSessionManager({
       // herkese tek satir yazdirirdi.
       const fromMe = Boolean(msg.key?.fromMe);
       const reactorJid = fromMe ? null : (msg.key?.participant || msg.key?.remoteJid || null);
+      const isGroup = Boolean(key && key.includes('@g.us'));
       const ts = messageTimestampMs(msg.messageTimestamp);
 
       // Memory store'daki hedef mesaja ve sohbete reaksiyonu ilistir
       const session = sessions.get(sessionId);
+      const reactorName = fromMe
+        ? 'ME'
+        : (isGroup && reactorJid && session
+            ? (this._resolveDisplayName(session, reactorJid, msg.pushName) || null)
+            : null);
       if (session) {
         const store = this._storeOf(session);
         const list = store.messagesByChat.get(key) || [];
@@ -2057,6 +2063,7 @@ export function createSessionManager({
               emoji,
               from_me: fromMe,
               reactor_jid: reactorJid,
+              reactor_name: reactorName,
               created_at: ts ? new Date(ts).toISOString() : null,
             });
           }
@@ -2064,10 +2071,12 @@ export function createSessionManager({
         const chat = store.chats.get(key);
         if (chat && emoji) {
           const chatActivity = chat.last_message_at ? new Date(chat.last_message_at).getTime() : 0;
-          chat.last_reaction = { emoji, from_me: fromMe, reactor_jid: reactorJid };
+          chat.last_reaction = { emoji, from_me: fromMe, reactor_jid: reactorJid, reactor_name: reactorName };
           chat.last_message_preview = fromMe
             ? `Şu mesaja ${emoji} ifadesini bıraktınız`
-            : `Şu mesaja ${emoji} ifadesini bıraktı`;
+            : (isGroup && reactorName
+                ? `${reactorName} şu mesaja ${emoji} ifadesini bıraktı`
+                : `Şu mesaja ${emoji} ifadesini bıraktı`);
           if (ts && ts >= chatActivity) {
             chat.last_message_at = new Date(ts).toISOString();
           }
@@ -2083,6 +2092,8 @@ export function createSessionManager({
         removed: !emoji,
         from_me: fromMe,
         reactor_jid: reactorJid,
+        sender_name: reactorName,
+        participant_name: reactorName,
         created_at: ts ? new Date(ts).toISOString() : null,
       };
       this._emit({ gateway_session_id: sessionId, ...event });

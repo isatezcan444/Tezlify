@@ -84,6 +84,8 @@ from backend.app.services.whatsapp.repositories.messages import (
 from backend.app.services.whatsapp.repositories.reactions import (
     latest_reaction_by_conversation as _latest_reaction_by_conversation,
     reactions_by_message as _reactions_by_message,
+    batch_resolve_reactor_names as _batch_resolve_reactor_names,
+    resolve_reactor_display_name as _resolve_reactor_display_name,
 )
 from backend.app.services.link_preview.service import (
     previews_by_message as _previews_by_message,
@@ -713,12 +715,21 @@ async def list_conversations(
     # Tek sorgu; eski bir mesaja birakilan ifadeyi liste gostermez (kural
     # sunucuda, `latest_reaction_by_conversation` icinde).
     reaction_map: Dict[int, Dict[str, Any]] = {}
+    reactor_names_map: Dict[str, str] = {}
     if conv_ids:
         try:
             reaction_map = await _latest_reaction_by_conversation(db, conv_ids)
+            reactor_jids = [
+                rx["reactor_jid"]
+                for rx in reaction_map.values()
+                if rx.get("reactor_jid") and not rx.get("from_me")
+            ]
+            if reactor_jids:
+                reactor_names_map = await _batch_resolve_reactor_names(db, user_id, reactor_jids)
         except Exception as reaction_exc:  # noqa: BLE001 - rozet, listeyi dusurmemeli
             logger.warning("Sohbet listesi reaksiyon rozetleri alinamadi: %s", reaction_exc)
             reaction_map = {}
+            reactor_names_map = {}
 
     active_sess_stmt = (
         select(WhatsAppSession.phone_number)
@@ -792,10 +803,13 @@ async def list_conversations(
         preview = _normalize_preview_text(None, r.last_message_preview) or None
         rx = reaction_map.get(r.id)
         if rx and rx.get("emoji"):
+            reactor_jid = rx.get("reactor_jid")
+            reactor_name = reactor_names_map.get(str(reactor_jid).strip()) if reactor_jid else None
+            rx["reactor_name"] = reactor_name
             preview = _format_reaction_preview(
                 rx["emoji"],
                 from_me=bool(rx.get("from_me")),
-                sender_name=resolved_name if is_grp else None,
+                sender_name=reactor_name if is_grp else None,
                 is_group=is_grp,
                 lang="tr",
             )
