@@ -1390,6 +1390,78 @@ class WhatsAppEventOrchestrator:
             "pinned_until": target_msg.pinned_until.isoformat() if target_msg.pinned_until else None,
         }
 
+    async def _ingest_message_receipt_updated(self, db: AsyncSession, event: Dict[str, Any]) -> Dict[str, Any]:
+        """Processes inbound message_receipt_updated event from gateway socket.
+
+        Advances Message read_at / delivered_at timestamp and status, and propagates
+        receipt metadata to connected frontend clients for real-time checkmarks and
+        message info tracking.
+        """
+        resolve_event_owner_and_session = self._get_helper(
+            "_resolve_event_owner_and_session", _resolve_event_owner_and_session
+        )
+        resolve_event_owner = self._get_helper("_resolve_event_owner", _resolve_event_owner)
+        jid = event.get("conversation_id") or event.get("jid") or ""
+        clean_jid = _strip_jid_prefix(str(jid))
+        try:
+            owner, ws_session_id = await resolve_event_owner_and_session(
+                db, clean_jid, event.get("gateway_session_id")
+            )
+        except EventOwnerUnresolved:
+            owner = await resolve_event_owner(db, clean_jid, event.get("gateway_session_id"))
+            ws_session_id = None
+
+        if not owner:
+            return _skip_event(event, "message_receipt_updated: kiracı çözülemedi")
+
+        event["user_id"] = owner
+        wa_message_id = event.get("wa_message_id")
+        if not wa_message_id:
+            return _skip_event(event, "message_receipt_updated: wa_message_id yok")
+
+        read_ts_str = event.get("read_timestamp")
+        receipt_ts_str = event.get("receipt_timestamp")
+
+        stmt = (
+            select(Message, Conversation)
+            .join(Conversation, Message.conversation_id == Conversation.id)
+            .where(
+                Message.wa_message_id == str(wa_message_id),
+                get_user_filter(Conversation.user_id, owner),
+            )
+        )
+        row = (await db.execute(stmt)).first()
+        conv_id = None
+        target_msg_id = None
+        if row:
+            msg_row, conv_row = row
+            conv_id = conv_row.id
+            target_msg_id = msg_row.id
+            if read_ts_str and not msg_row.read_at:
+                try:
+                    msg_row.read_at = datetime.fromisoformat(read_ts_str.replace("Z", "+00:00")).replace(tzinfo=None)
+                except Exception:
+                    msg_row.read_at = utc_now_naive()
+                _advance_message_status(msg_row, "READ")
+            elif receipt_ts_str and not msg_row.delivered_at and msg_row.status != ConversationMessageStatus.READ:
+                try:
+                    msg_row.delivered_at = datetime.fromisoformat(receipt_ts_str.replace("Z", "+00:00")).replace(tzinfo=None)
+                except Exception:
+                    msg_row.delivered_at = utc_now_naive()
+                _advance_message_status(msg_row, "DELIVERED")
+            await db.commit()
+
+        return {
+            "event": "message_receipt_updated",
+            "user_id": owner,
+            "conversation_id": conv_id or event.get("conversation_id"),
+            "message_id": target_msg_id,
+            "wa_message_id": str(wa_message_id),
+            "user_jid": event.get("user_jid"),
+            "receipt_timestamp": receipt_ts_str,
+            "read_timestamp": read_ts_str,
+        }
+
     async def _ingest_lid_mapped(self, db: AsyncSession, event: Dict[str, Any]) -> Dict[str, Any]:
         resolve_event_owner_and_session = self._get_helper(
             "_resolve_event_owner_and_session", _resolve_event_owner_and_session
@@ -2420,6 +2492,9 @@ class WhatsAppEventOrchestrator:
         ingest_contact_synced = self._get_helper("_ingest_contact_synced", self._ingest_contact_synced)
         map_session_event = self._get_helper("_map_session_event", self._map_session_event)
         passthrough_event = self._get_helper("_passthrough_event", self._passthrough_event)
+        ingest_conversation_deleted = self._get_helper(
+            "_ingest_conversation_deleted", self._ingest_conversation_deleted
+        )
         log_orphan_event = self._get_helper("_log_orphan_event", _log_orphan_event)
         enqueue_orphan_event = self._get_helper(
             "_enqueue_orphan_event", _enqueue_orphan_event
@@ -2456,13 +2531,15 @@ class WhatsAppEventOrchestrator:
                 elif evt == "contact_synced":
                     result = await ingest_contact_synced(db, event)
                 elif evt == "conversation_deleted":
-                    result = await self._ingest_conversation_deleted(db, event)
+                    result = await ingest_conversation_deleted(db, event)
                 elif evt == "messages_deleted":
                     result = await self._ingest_messages_deleted(db, event)
                 elif evt == "message_reaction":
                     result = await self._ingest_message_reaction(db, event)
                 elif evt == "message_pinned":
                     result = await self._ingest_message_pinned(db, event)
+                elif evt == "message_receipt_updated":
+                    result = await self._ingest_message_receipt_updated(db, event)
                 elif evt == "lid_mapped":
                     result = await self._ingest_lid_mapped(db, event)
                 elif evt == "connection_error" or str(evt).startswith("session_"):
@@ -2477,6 +2554,16 @@ class WhatsAppEventOrchestrator:
                     logger.error("Gateway olayi sozluk degil, yayinlanmadi (event=%s)", evt)
                     return None
                 if result.get("_skip"):
+                    event["_skip"] = result.get("_skip")
+                    if event_id and db.bind is not None and db.bind.dialect.name == "postgresql":
+                        await db.execute(
+                            text(
+                                "INSERT INTO whatsapp_private.processed_events (event_id) "
+                                "VALUES (:event_id) ON CONFLICT (event_id) DO NOTHING"
+                            ),
+                            {"event_id": event_id},
+                        )
+                        await db.commit()
                     return None
                 if not result.get("user_id"):
                     logger.warning(

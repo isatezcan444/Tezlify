@@ -471,19 +471,30 @@ async def gateway_websocket_endpoint(
             return
         if persisted is None:
             # Owner unresolvable or an unknown event: skipped rather than
-            # broadcast (multi-tenant isolation, fail-closed). _skip_event now
-            # logs the reason at WARNING, so this counter is explainable.
+            # broadcast (multi-tenant isolation, fail-closed).
             counters["skipped"] += 1
             event_id = event_data.get("event_id")
             if event_id:
-                await websocket.send_json({
-                    "type": "gateway_event_nack",
-                    "event_id": str(event_id),
-                    "permanent": False,
-                })
-                counters["nacked"] += 1
+                if event_data.get("_skip"):
+                    # Event was processed by ingest_gateway_event and intentionally skipped
+                    # (e.g. idempotent conversation delete, broadcast jid, or already handled).
+                    # Acknowledge back to gateway so outbox does not redeliver indefinitely.
+                    await websocket.send_json({
+                        "type": "gateway_event_ack",
+                        "event_id": str(event_id),
+                    })
+                    counters["acked"] += 1
+                else:
+                    await websocket.send_json({
+                        "type": "gateway_event_nack",
+                        "event_id": str(event_id),
+                        "permanent": False,
+                    })
+                    counters["nacked"] += 1
             return
-        if persisted.get("_duplicate") is True:
+        if persisted.get("_duplicate") is True or persisted.get("_skip") is True:
+            # Event was either already processed (duplicate) or intentionally skipped (e.g. idempotent delete, broadcast).
+            # ACK back to gateway so the outbox marks it DELIVERED and does not redeliver indefinitely.
             event_id = event_data.get("event_id")
             if event_id:
                 await websocket.send_json({
@@ -491,6 +502,8 @@ async def gateway_websocket_endpoint(
                     "event_id": str(event_id),
                 })
                 counters["acked"] += 1
+            if persisted.get("_skip"):
+                counters["skipped"] += 1
             return
         await ws_manager.broadcast(persisted)
         counters["broadcast"] += 1

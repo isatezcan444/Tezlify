@@ -229,7 +229,7 @@ export function createPostgresEventOutbox({
         `WITH doomed AS (
            SELECT sequence FROM whatsapp_private.event_outbox
            WHERE (state = 'DELIVERED' AND delivered_at < NOW() - INTERVAL '24 hours')
-              OR (state = 'DEAD_LETTER' AND created_at < NOW() - INTERVAL '7 days')
+              OR (state = 'DEAD_LETTER' AND created_at < NOW() - INTERVAL '48 hours')
            ORDER BY sequence ASC LIMIT 1000
          )
          DELETE FROM whatsapp_private.event_outbox
@@ -237,7 +237,7 @@ export function createPostgresEventOutbox({
       );
       const processed = await pool.query(
         `DELETE FROM whatsapp_private.processed_events
-         WHERE processed_at < NOW() - INTERVAL '7 days'`,
+         WHERE processed_at < NOW() - INTERVAL '3 days'`,
       );
       // Inaktif ve yetim kalmis (public.whatsapp_sessions ile bagi olmayan)
       // 7 gunden eski gateway oturumlarini kademeli temizle. ON DELETE CASCADE

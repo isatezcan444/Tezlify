@@ -290,3 +290,80 @@ async def test_ingest_gateway_event_integrity_error_still_drops_unrecoverable():
 
     assert res is None
     mock_db.rollback.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_ingest_gateway_event_message_receipt_updated():
+    """message_receipt_updated is ingested, advances status, and broadcasts."""
+    mock_db = AsyncMock(spec=AsyncSession)
+    mock_db.bind = MagicMock()
+    mock_db.bind.dialect.name = "sqlite"
+
+    mock_msg = Message(
+        id=99,
+        conversation_id=42,
+        wa_message_id="WAPP-RECEIPT-1",
+        status=ConversationMessageStatus.SENT,
+        delivered_at=None,
+        read_at=None,
+    )
+    mock_conv = Conversation(id=42, user_id="user-1")
+
+    mock_result = MagicMock()
+    mock_result.first.return_value = (mock_msg, mock_conv)
+    mock_db.execute = AsyncMock(return_value=mock_result)
+
+    mock_service = MagicMock(spec=["_resolve_event_owner_and_session", "_resolve_event_owner", "AsyncSessionLocal"])
+    mock_service._resolve_event_owner_and_session = AsyncMock(return_value=("user-1", 1))
+    mock_service._resolve_event_owner = AsyncMock(return_value="user-1")
+    mock_service.AsyncSessionLocal = _FakeSessionFactory(mock_db)
+    orch = WhatsAppEventOrchestrator(service=mock_service)
+
+    event_id = str(uuid.uuid4())
+    event = {
+        "event": "message_receipt_updated",
+        "event_id": event_id,
+        "gateway_session_id": "gw-1",
+        "conversation_id": "905551112233@s.whatsapp.net",
+        "wa_message_id": "WAPP-RECEIPT-1",
+        "user_jid": "905551112233@s.whatsapp.net",
+        "receipt_timestamp": "2026-10-19T14:00:00Z",
+        "read_timestamp": "2026-10-19T14:05:00Z",
+    }
+    res = await orch.ingest_gateway_event(event)
+
+    assert res is not None
+    assert res.get("_skip") is None
+    assert res["event"] == "message_receipt_updated"
+    assert res["conversation_id"] == 42
+    assert res["wa_message_id"] == "WAPP-RECEIPT-1"
+    assert mock_msg.status == ConversationMessageStatus.READ
+    assert mock_msg.read_at is not None
+    mock_db.commit.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ingest_gateway_event_skip_returns_skip_payload():
+    """An event marked _skip returns a dict with _skip: True and the event_id."""
+    mock_db = AsyncMock(spec=AsyncSession)
+    mock_db.bind = MagicMock()
+    mock_db.bind.dialect.name = "sqlite"
+
+    mock_service = MagicMock(spec=["_ingest_conversation_deleted", "AsyncSessionLocal"])
+    mock_service._ingest_conversation_deleted = AsyncMock(
+        return_value={"_skip": "conversation_deleted: sohbet zaten yok"}
+    )
+    mock_service.AsyncSessionLocal = _FakeSessionFactory(mock_db)
+    orch = WhatsAppEventOrchestrator(service=mock_service)
+
+    event_id = str(uuid.uuid4())
+    event = {
+        "event": "conversation_deleted",
+        "event_id": event_id,
+        "conversation_id": "905551112233@s.whatsapp.net",
+    }
+    res = await orch.ingest_gateway_event(event)
+
+    assert res is None
+    assert "sohbet zaten yok" in event.get("_skip", "")
+

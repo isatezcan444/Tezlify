@@ -300,6 +300,8 @@ if [ -n "$FRONTEND_TAR" ]; then
   tar -xzf "$FRONTEND_TAR" -C "$FRONTEND_DIR"
   [ -f "$FRONTEND_DIR/index.html" ] || die "frontend tarball index.html icermiyor"
   log "frontend yazildi: $(find "$FRONTEND_DIR" -type f | wc -l | tr -d ' ') dosya"
+  # Onceki frontend yedeklerini dondur (en son 3'u tutulur, eskiler temizlenir)
+  ls -1dt "$FRONTEND_DIR.prev-"* 2>/dev/null | tail -n +4 | xargs -r rm -rf || true
 fi
 
 # ---------------------------------------------------------------------------

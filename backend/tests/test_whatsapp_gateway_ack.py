@@ -159,3 +159,30 @@ async def test_gateway_ping_message_responds_with_pong(monkeypatch) -> None:
     assert socket.sent == [{"type": "pong"}]
 
 
+@pytest.mark.asyncio
+async def test_skipped_gateway_event_is_acked_to_prevent_redelivery(monkeypatch) -> None:
+    """An event intentionally skipped by the ingest layer (e.g. idempotent delete)
+
+    is acknowledged so the gateway outbox marks it DELIVERED and does not retry.
+    """
+    event_id = "550e8400-e29b-41d4-a716-446655440000"
+    socket = FakeGatewaySocket({"event": "conversation_deleted", "event_id": event_id})
+
+    async def fake_ingest(event_data):
+        event_data["_skip"] = "conversation_deleted: sohbet zaten yok"
+        return None
+
+    monkeypatch.setattr(whatsapp_service, "ingest_gateway_event", fake_ingest)
+    broadcast = AsyncMock()
+    monkeypatch.setattr(ws_manager, "broadcast", broadcast)
+
+    await gateway_websocket_endpoint(socket, token=TEST_GATEWAY_SECRET)
+
+    broadcast.assert_not_awaited()
+    assert socket.sent == [{
+        "type": "gateway_event_ack",
+        "event_id": event_id,
+    }]
+
+
+
