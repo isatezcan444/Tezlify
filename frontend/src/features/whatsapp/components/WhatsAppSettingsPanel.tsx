@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { useI18n } from '../../../context/I18nContext';
 import { useToast } from '../../../context/ToastContext';
+import { useTheme } from '../../../context/ThemeContext';
 import { Card } from '../../../components/ui/card';
 import { Button } from '../../../components/ui/button';
 import { Badge } from '../../../components/ui/badge';
@@ -96,7 +97,30 @@ export const WhatsAppSettingsPanel: React.FC = () => {
   };
 
   // Live preview wallpaper styling
-  const isDark = typeof document !== 'undefined' && document.documentElement.classList.contains('dark');
+  const { theme } = useTheme();
+  const [isDark, setIsDark] = useState<boolean>(() => {
+    if (typeof document !== 'undefined') {
+      return document.documentElement.classList.contains('dark');
+    }
+    return theme === 'dark';
+  });
+
+  useEffect(() => {
+    setIsDark(theme === 'dark');
+  }, [theme]);
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const updateDark = () => {
+      setIsDark(document.documentElement.classList.contains('dark'));
+    };
+    updateDark();
+    const observer = new MutationObserver(() => updateDark());
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+    return () => observer.disconnect();
+  }, []);
+
+  const isDefaultTheme = settings.wallpaperTheme === 'whatsapp_default';
   const previewWallpaperStyle = getChatWallpaperStyle({
     themeId: settings.wallpaperTheme,
     customColor: settings.customWallpaperColor,
@@ -541,8 +565,8 @@ export const WhatsAppSettingsPanel: React.FC = () => {
                 </label>
 
                 <div
-                  className="relative rounded-2xl overflow-hidden border border-slate-200 dark:border-white/[0.12] p-4 shadow-inner min-h-[220px] sm:min-h-[240px] flex flex-col justify-end space-y-3"
-                  style={previewWallpaperStyle}
+                  className={`relative rounded-2xl overflow-hidden border border-slate-200 dark:border-white/[0.12] p-4 shadow-inner min-h-[220px] sm:min-h-[240px] flex flex-col justify-end space-y-3 ${isDefaultTheme ? 'whatsapp-chat-bg' : ''}`}
+                  style={isDefaultTheme ? undefined : previewWallpaperStyle}
                 >
                   {/* Incoming bubble */}
                   <div className="flex justify-start">

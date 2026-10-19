@@ -99,6 +99,16 @@ export function getChatWallpaperStyle(params: {
   const theme = WALLPAPER_THEMES.find((t) => t.id === themeId) || WALLPAPER_THEMES[0];
   const bgColor = isDark ? theme.darkBg : theme.lightBg;
 
+  if (themeId === 'whatsapp_default') {
+    return {
+      backgroundColor: bgColor,
+      backgroundImage: isDark
+        ? 'radial-gradient(circle at 50% 50%, rgba(255, 255, 255, 0.035) 1px, transparent 1px), radial-gradient(circle at 0% 0%, rgba(255, 255, 255, 0.02) 1.5px, transparent 1.5px)'
+        : 'radial-gradient(circle at 50% 50%, rgba(0, 0, 0, 0.04) 1px, transparent 1px), radial-gradient(circle at 0% 0%, rgba(0, 0, 0, 0.02) 1.5px, transparent 1.5px)',
+      backgroundSize: '24px 24px, 48px 48px',
+    };
+  }
+
   return {
     backgroundColor: bgColor,
   };

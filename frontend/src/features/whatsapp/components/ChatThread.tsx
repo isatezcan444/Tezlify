@@ -7,6 +7,7 @@ import { EmptyState } from '../../../components/ui/EmptyState';
 import { Skeleton } from '../../../components/ui/Skeleton';
 import { WhatsAppIcon } from '../../../components/ui/whatsapp-icon';
 import { useI18n } from '../../../context/I18nContext';
+import { useTheme } from '../../../context/ThemeContext';
 import { parseServerTime, formatMessageDate } from '../../../lib/utils';
 import { finishWaLatency } from '../lib/whatsappLatency';
 import { compareMessagesChronological } from '../lib/whatsappOrdering';
@@ -149,7 +150,32 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
 }) => {
   const { t, language } = useI18n();
   const { settings } = useWhatsAppSettings();
-  const isDark = typeof document !== 'undefined' && document.documentElement.classList.contains('dark');
+  const { theme } = useTheme();
+
+  // Reactive dark mode state: reacts immediately to ThemeContext AND any DOM class changes
+  const [isDark, setIsDark] = useState<boolean>(() => {
+    if (typeof document !== 'undefined') {
+      return document.documentElement.classList.contains('dark');
+    }
+    return theme === 'dark';
+  });
+
+  useEffect(() => {
+    setIsDark(theme === 'dark');
+  }, [theme]);
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const updateDark = () => {
+      setIsDark(document.documentElement.classList.contains('dark'));
+    };
+    updateDark();
+    const observer = new MutationObserver(() => updateDark());
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+    return () => observer.disconnect();
+  }, []);
+
+  const isDefaultTheme = settings.wallpaperTheme === 'whatsapp_default';
   const wallpaperStyle = getChatWallpaperStyle({
     themeId: settings.wallpaperTheme,
     customColor: settings.customWallpaperColor,
@@ -1081,7 +1107,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
   // Byte-identical DOM + behaviour to the pre-K.19 production component.
   if (!virtualize) {
     return (
-      <div className="relative flex-1 min-w-0 flex flex-col min-h-0" style={wallpaperStyle}>
+      <div className={`relative flex-1 min-w-0 flex flex-col min-h-0 ${isDefaultTheme ? 'whatsapp-chat-bg' : ''}`} style={isDefaultTheme ? undefined : wallpaperStyle}>
         {pagingBanner}
         <div
           ref={containerRef}
@@ -1124,7 +1150,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
   const mountedRows = win.end >= win.start ? rows.slice(win.start, win.end + 1) : [];
 
   return (
-    <div className="relative flex-1 min-w-0 flex flex-col min-h-0" style={wallpaperStyle}>
+    <div className={`relative flex-1 min-w-0 flex flex-col min-h-0 ${isDefaultTheme ? 'whatsapp-chat-bg' : ''}`} style={isDefaultTheme ? undefined : wallpaperStyle}>
       {pagingBanner}
       <div
         ref={containerRef}
