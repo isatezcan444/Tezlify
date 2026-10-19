@@ -192,6 +192,8 @@ def build_message_from_gateway(
         sender_phone=msg.get("sender_phone") or jid_to_phone(jid_str) or None,
         sender_name=msg.get("participant_name") or msg.get("sender_name"),
         recipient_phone=msg.get("recipient_phone") or "ME",
+        is_forwarded=bool(msg.get("is_forwarded", False)),
+        is_pinned=bool(msg.get("is_pinned", False)),
         status=status,
         external_timestamp=as_naive_utc(ts),
     )

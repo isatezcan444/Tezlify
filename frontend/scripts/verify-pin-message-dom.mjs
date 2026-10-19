@@ -288,6 +288,7 @@ try {
     instance.destroy();
   });
   console.log('PASS: All 11 Pin Message DOM & Interaction verifications passed successfully!');
+  process.exit(0);
 } finally {
-  await rm(tmp, { recursive: true, force: true });
+  await rm(tmp, { recursive: true, force: true }).catch(() => {});
 }

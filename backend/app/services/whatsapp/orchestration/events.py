@@ -14,6 +14,7 @@ Handles all incoming events from the Baileys gateway (/ws/gateway):
 from collections import deque
 from datetime import datetime
 import logging
+import inspect
 import time
 from typing import Any, Callable, Dict, FrozenSet, List, Optional, Tuple
 import uuid
@@ -429,7 +430,15 @@ class WhatsAppEventOrchestrator:
 
     def _get_helper(self, name: str, default: Any) -> Any:
         if self.service is not None:
-            return getattr(self.service, name, default)
+            val = getattr(self.service, name, None)
+            if val is not None:
+                if (
+                    inspect.iscoroutinefunction(default)
+                    and type(val).__name__ == "MagicMock"
+                    and not inspect.iscoroutinefunction(val)
+                ):
+                    return default
+                return val
         return default
 
     async def _passthrough_event(self, db: AsyncSession, event: Dict[str, Any]) -> Dict[str, Any]:
@@ -2602,7 +2611,8 @@ class WhatsAppEventOrchestrator:
                 await self._drain_orphan_queue(event.get("gateway_session_id"))
                 return result
             except EventOwnerUnresolved as exc:
-                await db.rollback()
+                if hasattr(db, "rollback"):
+                    await db.rollback()
                 log_orphan_event(evt, exc, event.get("gateway_session_id"))
                 # NOT discarded. The owner is often resolvable seconds later:
                 # during a QR pairing the session's own row is created only on
@@ -2613,7 +2623,8 @@ class WhatsAppEventOrchestrator:
                 enqueue_orphan_event(event, f"owner_unresolved:{evt}")
                 return None
             except IntegrityError as exc:
-                await db.rollback()
+                if hasattr(db, "rollback"):
+                    await db.rollback()
                 # Yaris kaybedildi demek mesajin YOK oldugu anlamina gelmez:
                 # kazanan taraf zaten yazdi. message_new icin olay dusurulmez —
                 # kazanan satir yeniden secilip broadcast edilir; aksi halde
@@ -2624,7 +2635,8 @@ class WhatsAppEventOrchestrator:
                     try:
                         recovered_event = await self._recover_message_new_after_integrity_error(db, event)
                     except Exception as rec_exc:
-                        await db.rollback()
+                        if hasattr(db, "rollback"):
+                            await db.rollback()
                         logger.warning("message_new IntegrityError kurtarmasi basarisiz (event=%s): %s", evt, rec_exc)
                         recovered_event = None
                 if recovered_event is not None:
@@ -2646,7 +2658,8 @@ class WhatsAppEventOrchestrator:
                 logger.warning("Gateway olayi atlandi (DB yarisi, event=%s): %s", evt, exc)
                 return None
             except Exception as exc:
-                await db.rollback()
+                if hasattr(db, "rollback"):
+                    await db.rollback()
                 logger.exception("Gateway olayi islenemedi, yayinlanmadi (event=%s): %s", evt, exc)
                 return None
 

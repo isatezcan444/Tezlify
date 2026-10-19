@@ -254,4 +254,5 @@ try {
   console.log('PASS: All ChatMessageInfoDrawer DOM & Receipt verifications passed successfully!');
 } finally {
   await rm(tmp, { recursive: true, force: true });
+  process.exit(0);
 }

@@ -130,6 +130,8 @@ async def _insert_messages_resilient(db: AsyncSession, rows: List[Message]) -> L
                         val = ConversationMessageStatus.RECEIVED
                     elif column.name == "message_type":
                         val = MessageType.TEXT
+                    elif column.name in ("is_forwarded", "is_pinned"):
+                        val = False
                 val_dict[column.name] = val
             values.append(val_dict)
         stmt = (
@@ -207,6 +209,8 @@ async def _persist_sync_batch_safely(
                         val = ConversationMessageStatus.RECEIVED
                     elif column.name == "message_type":
                         val = MessageType.TEXT
+                    elif column.name in ("is_forwarded", "is_pinned"):
+                        val = False
                 val_dict[column.name] = val
             normalized_values.append(val_dict)
         stmt = (

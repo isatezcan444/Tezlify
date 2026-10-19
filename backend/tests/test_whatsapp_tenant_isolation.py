@@ -61,10 +61,11 @@ async def _clean_tenant_state():
     """Bu dosyanin kullandigi tenant satirlarini ve WS kayitlarini temizle."""
     async def _wipe():
         async with AsyncSessionLocal() as db:
-            for table in ("messages", "conversations", "contacts", "whatsapp_sessions"):
+            await db.execute(text("DELETE FROM whatsapp_sessions"))
+            for table in ("messages", "conversations", "contacts"):
                 await db.execute(
-                    text(f"DELETE FROM {table} WHERE user_id IN (:a, :b, :c)"),
-                    {"a": U1_HEX, "b": U2_HEX, "c": U3_HEX},
+                    text(f"DELETE FROM {table} WHERE user_id IN (:a, :b, :c, :u1, :u2, :u3)"),
+                    {"a": U1_HEX, "b": U2_HEX, "c": U3_HEX, "u1": U1, "u2": U2, "u3": U3},
                 )
             await db.commit()
 
