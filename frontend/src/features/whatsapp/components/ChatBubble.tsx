@@ -143,6 +143,7 @@ export interface ChatBubbleProps {
   onReport?: (message: Message) => void;
   onPin?: (message: Message) => void;
   onUnpin?: (message: Message) => void;
+  onOpenMessageInfo?: (message: Message) => void;
   isSelectMode?: boolean;
   isSelected?: boolean;
   onToggleSelect?: (messageId: number | string) => void;
@@ -165,6 +166,7 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
   onReport,
   onPin,
   onUnpin,
+  onOpenMessageInfo,
   isSelectMode = false,
   isSelected = false,
   onToggleSelect,
@@ -1504,32 +1506,6 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
             </div>
           )}
 
-          {/* Quick Pin / Unpin Button (outside bubble on hover) */}
-          {!isSelectMode && (
-            <div
-              className={`absolute top-1 ${
-                isInbound
-                  ? (canReact && onForward ? '-right-22' : (canReact || onForward ? '-right-15' : '-right-8'))
-                  : (canReact && onForward ? '-left-22' : (canReact || onForward ? '-left-15' : '-left-8'))
-              } z-10 opacity-0 sm:group-hover:opacity-100 transition-opacity`}
-            >
-              <button
-                type="button"
-                onClick={handlePinToggle}
-                title={isActuallyPinned ? t('whatsapp.menuUnpin') : t('whatsapp.menuPin')}
-                aria-label={isActuallyPinned ? t('whatsapp.menuUnpin') : t('whatsapp.menuPin')}
-                data-testid={isActuallyPinned ? `unpin-trigger-${message.id}` : `pin-trigger-${message.id}`}
-                className={`w-6 h-6 rounded-full flex items-center justify-center transition-colors cursor-pointer ${
-                  isActuallyPinned
-                    ? 'text-amber-500 hover:text-amber-600 bg-amber-50 dark:bg-amber-950/30 hover:bg-amber-100 dark:hover:bg-amber-900/40'
-                    : 'text-slate-400 hover:text-slate-700 dark:text-slate-400 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/10'
-                }`}
-              >
-                <Pin className={`w-3.5 h-3.5 ${isActuallyPinned ? 'fill-amber-500 -rotate-45' : '-rotate-45'}`} />
-              </button>
-            </div>
-          )}
-
           {/* WhatsApp Web Message Chevron Down Trigger ("Ok Butonu") */}
           {!isSelectMode && (
             <div className="absolute top-1 right-1 z-20">
@@ -1564,6 +1540,22 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
               }}
               className="z-[99999] py-1 bg-white dark:bg-[#233138] border border-black/5 dark:border-white/5 rounded-lg shadow-[0_2px_5px_0_rgba(11,20,26,.26),0_2px_10px_0_rgba(11,20,26,.16)] animate-in fade-in zoom-in-95 duration-100 flex flex-col text-[12.5px] select-none"
             >
+              {/* 0. Mesaj Bilgisi (Info) — WhatsApp Web kuralı: giden mesajlarda daima ilk ögedir */}
+              {onOpenMessageInfo && !isInbound && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setIsMenuOpen(false);
+                    onOpenMessageInfo(message);
+                  }}
+                  data-testid={`menu-info-${message.id}`}
+                  className="w-full text-left px-3.5 py-1.5 text-[12.5px] text-[#3b4a54] dark:text-[#d1d7db] hover:bg-[#f5f6f6] dark:hover:bg-[#182229] active:bg-slate-200/50 dark:active:bg-white/[0.08] transition-colors cursor-pointer select-none font-normal"
+                >
+                  {t('whatsapp.menuMessageInfo')}
+                </button>
+              )}
+
               {/* 1. Cevapla */}
               {onReply && (
                 <button
@@ -1620,7 +1612,8 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
               <button
                 type="button"
                 onClick={handlePinToggle}
-                data-testid={`menu-pin-${message.id}`}
+                data-testid={isActuallyPinned ? `unpin-trigger-${message.id}` : `pin-trigger-${message.id}`}
+                data-menu-pin={`menu-pin-${message.id}`}
                 className="w-full text-left px-3.5 py-1.5 text-[12.5px] text-[#3b4a54] dark:text-[#d1d7db] hover:bg-[#f5f6f6] dark:hover:bg-[#182229] active:bg-slate-200/50 dark:active:bg-white/[0.08] transition-colors cursor-pointer select-none font-normal"
               >
                 {isActuallyPinned ? t('whatsapp.menuUnpin') : t('whatsapp.menuPin')}

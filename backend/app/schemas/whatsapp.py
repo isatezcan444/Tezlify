@@ -206,6 +206,9 @@ class WhatsAppMessageItem(BaseModel):
     is_pinned: bool = False
     pinned_at: Optional[str] = None
     pinned_until: Optional[str] = None
+    sent_at: Optional[str] = None
+    delivered_at: Optional[str] = None
+    read_at: Optional[str] = None
     created_at: Optional[str] = None
 
 

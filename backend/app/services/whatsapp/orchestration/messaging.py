@@ -171,6 +171,9 @@ def serialize_message(
         "is_pinned": bool(getattr(row, "is_pinned", False)),
         "pinned_at": row.pinned_at.isoformat() if getattr(row, "pinned_at", None) else None,
         "pinned_until": row.pinned_until.isoformat() if getattr(row, "pinned_until", None) else None,
+        "sent_at": row.sent_at.isoformat() if getattr(row, "sent_at", None) else None,
+        "delivered_at": row.delivered_at.isoformat() if getattr(row, "delivered_at", None) else None,
+        "read_at": row.read_at.isoformat() if getattr(row, "read_at", None) else None,
         "created_at": row.external_timestamp.isoformat()
         if row.external_timestamp
         else (row.created_at.isoformat() if row.created_at else None),
@@ -1150,6 +1153,149 @@ class WhatsAppMessagingOrchestrator:
             logger.warning("Mesaj reaksiyonlari alinamadi (message_id=%s): %s", row.id, reaction_exc)
             reactions = []
         return self.serialize_message(row, reactions=reactions)
+
+    async def get_message_info(
+        self,
+        db: AsyncSession,
+        user_id: str,
+        conversation_id: int,
+        message_id: int,
+    ) -> Dict[str, Any]:
+        """Tek bir mesajin ayrintili okundu ve iletim bilgisini dondurur.
+
+        Birebir sohbetlerde (direct chat):
+        - sent_at, delivered_at, read_at zaman damgalari ve durum bilgisi.
+        Grup sohbetlerinde:
+        - Mesaja ifade birakanlar, sonraki mesaj gonderenler ve gateway'deki
+          kullanici okundu bildirimleri birlestirilerek Okuyanlar (read_by)
+          ve Teslim Edilenler (delivered_to) listesi uretilir.
+        """
+        resolve_jid = self._get_helper("_resolve_jid", _resolve_jid)
+        conv, jid = await resolve_jid(db, user_id, conversation_id)
+        row = await db.scalar(
+            select(Message).where(
+                Message.id == message_id,
+                Message.conversation_id == conv.id,
+                get_user_filter(Message.user_id, user_id),
+            )
+        )
+        if row is None:
+            raise LookupError(f"Mesaj bulunamadi (conversation={conversation_id}, message={message_id}).")
+
+        reactions = []
+        try:
+            reactions = await _list_reactions_for_message(db, row.id)
+        except Exception as reaction_exc:
+            logger.warning("Mesaj reaksiyonlari alinamadi: %s", reaction_exc)
+
+        serialized_msg = self.serialize_message(row, reactions=reactions)
+        is_grp = bool(conv.is_group or jid.endswith("@g.us"))
+
+        if not is_grp:
+            return {
+                "message": serialized_msg,
+                "conversation_id": conv.id,
+                "is_group": False,
+                "sent_at": row.sent_at.isoformat() if row.sent_at else (row.created_at.isoformat() if row.created_at else None),
+                "delivered_at": row.delivered_at.isoformat() if row.delivered_at else None,
+                "read_at": row.read_at.isoformat() if row.read_at else None,
+                "status": row.status.value if hasattr(row.status, "value") else str(row.status),
+            }
+
+        # Grup sohbeti icin katilimci ve okundu detaylari
+        from backend.app.services.whatsapp.repositories.reactions import batch_resolve_reactor_names
+
+        gateway_receipts = []
+        try:
+            gateway_id = await _conversation_gateway_id(db, user_id, conv.id)
+            if gateway_id and row.wa_message_id:
+                gateway_receipts = await gw.get_message_receipts(gateway_id, jid, row.wa_message_id)
+        except Exception as gw_exc:
+            logger.debug("Gateway user_receipts alinamadi: %s", gw_exc)
+
+        reactor_jids = [r["reactor_jid"] for r in reactions if r.get("reactor_jid")]
+        for r in gateway_receipts:
+            if r.get("user_jid"):
+                reactor_jids.append(r["user_jid"])
+
+        reactor_names_map = await batch_resolve_reactor_names(db, user_id, list(set(reactor_jids)))
+
+        read_by_map: Dict[str, Dict[str, Any]] = {}
+        delivered_to_map: Dict[str, Dict[str, Any]] = {}
+
+        # 1. Reaksiyon birakanlar kesinlikle okumustur
+        for rx in reactions:
+            r_jid = rx.get("reactor_jid")
+            if not r_jid or rx.get("from_me"):
+                continue
+            r_name = reactor_names_map.get(r_jid) or rx.get("reactor_name") or jid_to_phone(r_jid) or r_jid
+            rx_ts = rx.get("updated_at")
+            if isinstance(rx_ts, datetime):
+                rx_ts_str = rx_ts.isoformat()
+            else:
+                rx_ts_str = str(rx_ts) if rx_ts else (row.delivered_at.isoformat() if row.delivered_at else (row.created_at.isoformat() if row.created_at else None))
+            read_by_map[r_jid] = {
+                "jid": r_jid,
+                "name": r_name,
+                "phone": jid_to_phone(r_jid),
+                "timestamp": rx_ts_str,
+                "via": "reaction",
+            }
+
+        # 2. Gateway user receipts
+        for rc in gateway_receipts:
+            u_jid = rc.get("user_jid")
+            if not u_jid:
+                continue
+            u_name = reactor_names_map.get(u_jid) or jid_to_phone(u_jid) or u_jid
+            if rc.get("read_timestamp"):
+                read_by_map[u_jid] = {
+                    "jid": u_jid,
+                    "name": u_name,
+                    "phone": jid_to_phone(u_jid),
+                    "timestamp": rc["read_timestamp"],
+                    "via": "receipt",
+                }
+            elif rc.get("receipt_timestamp") and u_jid not in read_by_map:
+                delivered_to_map[u_jid] = {
+                    "jid": u_jid,
+                    "name": u_name,
+                    "phone": jid_to_phone(u_jid),
+                    "timestamp": rc["receipt_timestamp"],
+                }
+
+        # 3. Mesaj sonrasi gelen cevaplar
+        if row.external_timestamp or row.created_at:
+            ref_ts = row.external_timestamp or row.created_at
+            subsequent_msgs = (
+                await db.execute(
+                    select(Message.sender_phone, Message.sender_name, Message.created_at)
+                    .where(
+                        Message.conversation_id == conv.id,
+                        Message.direction == MessageDirection.INBOUND,
+                        Message.created_at > ref_ts,
+                    )
+                    .order_by(Message.created_at.asc())
+                    .limit(20)
+                )
+            ).all()
+            for s_phone, s_name, s_ts in subsequent_msgs:
+                if s_phone and s_phone not in [item.get("phone") for item in read_by_map.values()]:
+                    read_by_map[s_phone] = {
+                        "jid": s_phone,
+                        "name": s_name or s_phone,
+                        "phone": s_phone,
+                        "timestamp": s_ts.isoformat() if s_ts else None,
+                        "via": "reply",
+                    }
+
+        return {
+            "message": serialized_msg,
+            "conversation_id": conv.id,
+            "is_group": True,
+            "read_by": list(read_by_map.values()),
+            "delivered_to": list(delivered_to_map.values()),
+        }
 
     async def get_media_bytes(
         self,

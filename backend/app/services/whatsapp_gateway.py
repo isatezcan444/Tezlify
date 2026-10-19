@@ -310,6 +310,21 @@ async def get_messages(
         raise
 
 
+async def get_message_receipts(
+    gateway_id: str,
+    jid: str,
+    message_id: str,
+) -> List[Dict[str, Any]]:
+    """Fetches user receipts for a specific message from gateway memory store."""
+    try:
+        res = await _request("GET", f"{_s(gateway_id)}/conversations/{jid}/messages/{message_id}/receipts")
+        if isinstance(res, dict) and isinstance(res.get("receipts"), list):
+            return res["receipts"]
+        return []
+    except Exception:
+        return []
+
+
 async def request_older_history(
     gateway_id: str,
     jid: str,

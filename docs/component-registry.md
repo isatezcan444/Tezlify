@@ -542,3 +542,8 @@ restarting a service and shipping code are different risk classes.
 - **Props**: `{ pinnedMessages: Message[]; onJumpToMessage: (message: Message) => void; onUnpinMessage?: (message: Message) => void; className?: string }`
 - **Import**: `import { PinnedMessagesBar } from '@/features/whatsapp/components';`
 
+### `ChatMessageInfoDrawer` (`features/whatsapp/components/ChatMessageInfoDrawer.tsx`)
+- **Purpose**: Authentic WhatsApp Web right-side drawer displaying granular message delivery and read receipts ("Mesaj Bilgisi"). In 1-on-1 chats, displays read, delivered, and sent lifecycle timestamps. In group chats, partitions participants into "Okuyanlar" (Read by), "Teslim edilenler" (Delivered to), and remaining members with contact avatars and individual timestamps.
+- **Props**: `{ isOpen: boolean; onClose: () => void; message: Message; conversation: Conversation; groupParticipants?: Array<{ id: string; name: string; phone?: string; is_me: boolean; admin?: string }>; allMessages?: Message[] }`
+- **Import**: `import { ChatMessageInfoDrawer } from '@/features/whatsapp/components';`
+

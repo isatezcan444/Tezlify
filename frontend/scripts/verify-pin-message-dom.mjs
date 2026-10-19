@@ -205,17 +205,27 @@ try {
   const unpinnedBadge = document.querySelector('[data-testid="msg-pinned-badge-101"]');
   assert.ok(!unpinnedBadge, 'msg-pinned-badge-101 should NOT be rendered on unpinned message');
 
-  // Check 3: Pin trigger on unpinned message
+  // Check 3: Pin trigger on unpinned message (inside message dropdown menu)
+  const menuBtn101 = document.querySelector('[data-testid="msg-menu-btn-101"]');
+  assert.ok(menuBtn101, 'msg-menu-btn-101 should exist on message');
+  await act(async () => {
+    menuBtn101.click();
+  });
   const pinTrigger = document.querySelector('[data-testid="pin-trigger-101"]');
-  assert.ok(pinTrigger, 'pin-trigger-101 should exist on unpinned message');
+  assert.ok(pinTrigger, 'pin-trigger-101 should exist in menu for unpinned message');
   await act(async () => {
     pinTrigger.click();
   });
   assert.equal(pinnedCalledWith?.id, 101, 'Clicking pin-trigger-101 should trigger onPin with msg 101');
 
-  // Check 4: Unpin trigger on pinned message
+  // Check 4: Unpin trigger on pinned message (inside message dropdown menu)
+  const menuBtn102 = document.querySelector('[data-testid="msg-menu-btn-102"]');
+  assert.ok(menuBtn102, 'msg-menu-btn-102 should exist on message');
+  await act(async () => {
+    menuBtn102.click();
+  });
   const unpinTrigger = document.querySelector('[data-testid="unpin-trigger-102"]');
-  assert.ok(unpinTrigger, 'unpin-trigger-102 should exist on pinned message');
+  assert.ok(unpinTrigger, 'unpin-trigger-102 should exist in menu for pinned message');
   await act(async () => {
     unpinTrigger.click();
   });

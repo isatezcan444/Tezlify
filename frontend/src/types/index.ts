@@ -399,6 +399,10 @@ export interface Message {
   is_pinned?: boolean;
   pinned_at?: string | null;
   pinned_until?: string | null;
+  /** Granular message delivery lifecycle timestamps */
+  sent_at?: string | null;
+  delivered_at?: string | null;
+  read_at?: string | null;
   external_timestamp?: string;
   created_at: string;
 }

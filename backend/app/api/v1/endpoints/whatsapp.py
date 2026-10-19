@@ -644,6 +644,26 @@ async def get_message_detail(
         raise _bad_gateway(exc) from exc
 
 
+@router.get(
+    "/conversations/{conversation_id}/messages/{message_id}/info",
+)
+async def get_message_info_detail(
+    conversation_id: int,
+    message_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """Mesaj okundu/iletim ayrintisi (WhatsApp Web Mesaj Bilgisi ekrani)."""
+    try:
+        return await whatsapp_service.get_message_info(
+            db, current_user.id, conversation_id, message_id
+        )
+    except LookupError as exc:
+        raise _not_found(exc) from exc
+    except Exception as exc:
+        raise _bad_gateway(exc) from exc
+
+
 @router.post(
     "/conversations/{conversation_id}/messages/{message_id}/reactions",
     response_model=WhatsAppReactionResult,

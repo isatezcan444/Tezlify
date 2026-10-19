@@ -1241,4 +1241,16 @@ export function bindSocketEvents({
       }
     }
   });
+
+  // --- Message receipts (delivered / read per participant in group chats) ---
+  sock.ev.on('message-receipt.update', async (receiptUpdates) => {
+    if (ignoreStaleSocketEvent('message-receipt.update')) return;
+    for (const item of receiptUpdates || []) {
+      try {
+        manager._applyMessageReceipt(id, item);
+      } catch (rErr) {
+        logger.debug({ rErr, item }, 'Failed to apply message receipt update');
+      }
+    }
+  });
 }

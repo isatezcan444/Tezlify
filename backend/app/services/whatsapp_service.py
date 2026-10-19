@@ -1408,6 +1408,12 @@ async def get_message(
     return await _messaging_orchestrator.get_message(db, user_id, conversation_id, message_id)
 
 
+async def get_message_info(
+    db: AsyncSession, user_id: str, conversation_id: int, message_id: int
+) -> Dict[str, Any]:
+    return await _messaging_orchestrator.get_message_info(db, user_id, conversation_id, message_id)
+
+
 async def refresh_all_avatars(db: AsyncSession, user_id: str, force: bool = False) -> Dict[str, Any]:
     """Sohbet listesinde eksik kalan profil fotoğrafları için gateway'de
     backfill sweep'i tetikler (QR sonrası parite: tüm fotoğraflar iner).

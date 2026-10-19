@@ -92,6 +92,7 @@ export interface ChatThreadProps {
   onReportMessage?: (message: Message) => void;
   onPin?: (message: Message) => void;
   onUnpin?: (message: Message) => void;
+  onOpenMessageInfo?: (message: Message) => void;
   isSelectMode?: boolean;
   selectedMessageIds?: Set<number | string>;
   onToggleSelectMessage?: (messageId: number | string) => void;
@@ -134,6 +135,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
   onReportMessage,
   onPin,
   onUnpin,
+  onOpenMessageInfo,
   isSelectMode = false,
   selectedMessageIds,
   onToggleSelectMessage,
@@ -943,6 +945,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
         onReport={onReportMessage}
         onPin={onPin}
         onUnpin={onUnpin}
+        onOpenMessageInfo={onOpenMessageInfo}
         isSelectMode={isSelectMode}
         isSelected={selectedMessageIds ? selectedMessageIds.has(row.msg.id) : false}
         onToggleSelect={onToggleSelectMessage}

@@ -600,6 +600,11 @@ app.get('/sessions/:sessionId/conversations/:jid/messages', withSession(async (r
   });
 }));
 
+// Get receipts for a specific message within one session
+app.get('/sessions/:sessionId/conversations/:jid/messages/:messageId/receipts', withSession(async (req, res, sessionId) => {
+  const receipts = sessionManager.getMessageReceipts(sessionId, req.params.jid, req.params.messageId);
+  res.json({ success: true, receipts });
+}));
 
 // Request older history explicitly via provider
 app.post('/sessions/:sessionId/conversations/:jid/history', withSession(async (req, res, sessionId) => {

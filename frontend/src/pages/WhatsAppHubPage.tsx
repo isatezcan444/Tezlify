@@ -76,6 +76,7 @@ import {
   ForwardModal,
   PinDurationModal,
   PinnedMessagesBar,
+  ChatMessageInfoDrawer,
   type QuotedMessage,
 } from '../features/whatsapp/components';
 import { LeadDetailDrawer } from '../features/leads/components';
@@ -341,6 +342,8 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     clearStagedFiles();
     resetChatSearch();
     resetSelectionAndForward();
+    setIsMessageInfoOpen(false);
+    setSelectedMessageForInfo(null);
   }, [selectedConv?.id, clearStagedFiles, resetChatSearch, clearInsertedComposerText, resetSelectionAndForward]);
 
   useEffect(() => {
@@ -693,6 +696,17 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   // Lead Detail Drawer State for Conversation -> Lead navigation
   const [drawerLead, setDrawerLead] = useState<Lead | null>(null);
   const [isLeadDrawerOpen, setIsLeadDrawerOpen] = useState<boolean>(false);
+
+  // Message Info Drawer State ("Mesaj Bilgisi" okundu paneli)
+  const [selectedMessageForInfo, setSelectedMessageForInfo] = useState<Message | null>(null);
+  const [isMessageInfoOpen, setIsMessageInfoOpen] = useState<boolean>(false);
+
+  const handleOpenMessageInfo = useCallback((msg: Message) => {
+    setSelectedMessageForInfo(msg);
+    setIsMessageInfoOpen(true);
+    setIsChatInfoOpen(false);
+    setIsSearchResultsDrawerOpen(false);
+  }, []);
   const [isNewChatModalOpen, setIsNewChatModalOpen] = useState<boolean>(false);
   const [isSyncingChats, setIsSyncingChats] = useState<boolean>(false);
   const conversationsGenerationRef = useRef(0);
@@ -4029,6 +4043,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                   onReportMessage={handleReportMessage}
                   onPin={handleRequestPinMessage}
                   onUnpin={handleUnpinMessage}
+                  onOpenMessageInfo={handleOpenMessageInfo}
                   isSelectMode={isSelectMode}
                   selectedMessageIds={selectedMessageIds}
                   onToggleSelectMessage={handleToggleSelectMessage}
@@ -4209,6 +4224,21 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                     onJumpToDate={handleSearchJumpToDate}
                     conversationTitle={selectedConv.lead_name || selectedConv.lead_phone}
                     isGroup={Boolean(selectedConv.is_group)}
+                  />
+                )}
+
+                {/* WhatsApp Web Authentic Right Drawer: Message Info ("Mesaj bilgisi") */}
+                {isMessageInfoOpen && selectedMessageForInfo && (
+                  <ChatMessageInfoDrawer
+                    isOpen={isMessageInfoOpen}
+                    onClose={() => {
+                      setIsMessageInfoOpen(false);
+                      setSelectedMessageForInfo(null);
+                    }}
+                    message={selectedMessageForInfo}
+                    conversation={selectedConv}
+                    groupParticipants={selectedConv.id ? groupParticipantsMap[selectedConv.id] : undefined}
+                    allMessages={activeMessages}
                   />
                 )}
               </div>

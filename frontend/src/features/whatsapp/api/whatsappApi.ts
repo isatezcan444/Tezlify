@@ -1223,6 +1223,20 @@ export const WhatsAppApi = {
     }
   },
 
+  async getMessageInfo(conversationId: number, messageId: number | string): Promise<{
+    message: Message;
+    conversation_id: number;
+    is_group: boolean;
+    sent_at?: string | null;
+    delivered_at?: string | null;
+    read_at?: string | null;
+    status?: string | null;
+    read_by?: Array<{ jid: string; name: string; phone?: string; timestamp?: string | null; via?: string }>;
+    delivered_to?: Array<{ jid: string; name: string; phone?: string; timestamp?: string | null }>;
+  }> {
+    return await apiGet(`/whatsapp/conversations/${conversationId}/messages/${messageId}/info`);
+  },
+
   async getGroupParticipants(conversationId: number): Promise<{
     id: string;
     subject: string;

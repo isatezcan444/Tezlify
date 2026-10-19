@@ -2611,6 +2611,52 @@ export function createSessionManager({
       });
     },
 
+    _applyMessageReceipt(sessionId, item) {
+      const { key, receipt } = item || {};
+      if (!key?.id || !key.remoteJid || !receipt?.userJid) return;
+      const store = this._storeOf(this._requireSession(sessionId));
+      const jid = resolveJidKey(store, key.remoteJid);
+      const msg = (store.messagesByChat.get(jid) || []).find((m) => m.wa_message_id === key.id);
+      if (msg) {
+        msg.user_receipts = msg.user_receipts || {};
+        const prev = msg.user_receipts[receipt.userJid] || {};
+        msg.user_receipts[receipt.userJid] = {
+          user_jid: receipt.userJid,
+          receipt_timestamp: receipt.receiptTimestamp
+            ? new Date(Number(receipt.receiptTimestamp) * 1000).toISOString()
+            : prev.receipt_timestamp || null,
+          read_timestamp: receipt.readTimestamp
+            ? new Date(Number(receipt.readTimestamp) * 1000).toISOString()
+            : prev.read_timestamp || null,
+          played_timestamp: receipt.playedTimestamp
+            ? new Date(Number(receipt.playedTimestamp) * 1000).toISOString()
+            : prev.played_timestamp || null,
+        };
+      }
+      this._emit({
+        event: 'message_receipt_updated',
+        gateway_session_id: sessionId,
+        conversation_id: jid,
+        wa_message_id: key.id,
+        user_jid: receipt.userJid,
+        receipt_timestamp: receipt.receiptTimestamp
+          ? new Date(Number(receipt.receiptTimestamp) * 1000).toISOString()
+          : null,
+        read_timestamp: receipt.readTimestamp
+          ? new Date(Number(receipt.readTimestamp) * 1000).toISOString()
+          : null,
+      });
+    },
+
+    getMessageReceipts(sessionId, chatJid, waMessageId) {
+      const store = this._storeOf(this._requireSession(sessionId));
+      const jid = resolveJidKey(store, chatJid);
+      const msg = (store.messagesByChat.get(jid) || []).find(
+        (m) => m.wa_message_id === waMessageId || String(m.id) === waMessageId
+      );
+      return msg?.user_receipts ? Object.values(msg.user_receipts) : [];
+    },
+
     _applyLidMapping(session, lid, phoneJid) {
       session = this._sess(session);
       const store = this._storeOf(session);
