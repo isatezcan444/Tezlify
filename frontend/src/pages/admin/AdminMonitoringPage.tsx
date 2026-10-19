@@ -6,7 +6,6 @@ import {
   CheckCircle2, 
   Clock, 
   Activity, 
-  Layers, 
   ArrowLeft, 
   RefreshCw, 
   Info,
@@ -92,11 +91,12 @@ export const AdminMonitoringPage: React.FC<AdminMonitoringPageProps> = ({ onNavi
       setError(null);
       const now = new Date();
       setLastUpdated(now.toLocaleTimeString());
-    } catch (err: any) {
-      if (err.message === 'ACCESS_DENIED') {
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg === 'ACCESS_DENIED') {
         setError('ACCESS_DENIED');
       } else {
-        setError(err.message || t('admin.errorDesc'));
+        setError(msg || t('admin.errorDesc'));
       }
     } finally {
       if (isInitial) setLoading(false);

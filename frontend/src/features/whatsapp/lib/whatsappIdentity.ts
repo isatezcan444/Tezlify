@@ -282,7 +282,7 @@ export function getConversationDisplayName(
 /** Canonical `local@domain` form; strips `jid:`, the device suffix and `+`. */
 export function canonicalJid(value?: string | null): string | null {
   if (!value) return null;
-  let raw = String(value).replace(/^jid:/, '').trim();
+  const raw = String(value).replace(/^jid:/, '').trim();
   if (!raw) return null;
   const at = raw.indexOf('@');
   const localRaw = at >= 0 ? raw.slice(0, at) : raw;

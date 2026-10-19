@@ -12,8 +12,6 @@ import {
   RefreshCw,
   ArrowLeft,
   Info,
-  CheckCircle2,
-  XCircle,
   HelpCircle,
   ChevronDown,
   ChevronUp,
@@ -59,11 +57,12 @@ export const AdminSecurityPage: React.FC<AdminSecurityPageProps> = ({ onNavigate
         setData(res);
         setError(null);
         setLastUpdated(new Date().toLocaleTimeString());
-      } catch (err: any) {
-        if (err.message === 'ACCESS_DENIED') {
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg === 'ACCESS_DENIED') {
           setError('ACCESS_DENIED');
         } else {
-          setError(err.message || t('admin.errorDesc'));
+          setError(msg || t('admin.errorDesc'));
         }
       } finally {
         if (isInitial) setLoading(false);

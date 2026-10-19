@@ -24,7 +24,6 @@ import { SOUND_PRESETS, type SoundPresetId } from '../lib/whatsappAudio';
 import {
   WALLPAPER_THEMES,
   getChatWallpaperStyle,
-  type WallpaperThemeId,
 } from '../lib/whatsappWallpapers';
 
 export const WhatsAppSettingsPanel: React.FC = () => {

@@ -6,7 +6,6 @@
  * 2. Subscription mechanism for reactive UI sync across ChatBubble and ChatThread
  * 3. O(1) membership lookups
  */
-import { Message } from '../../../types';
 
 const STORAGE_KEY = 'tezlify_pinned_messages_v1';
 

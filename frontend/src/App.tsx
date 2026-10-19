@@ -124,7 +124,7 @@ const AppContent: React.FC = () => {
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [isWsConnected, setIsWsConnected] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-  const [campaignPrefill, setCampaignPrefill] = useState<any>(null);
+  const [campaignPrefill, setCampaignPrefill] = useState<Record<string, unknown> | null>(null);
   const wasDisconnectedRef = useRef(false);
   const toast = useToast();
   const { t } = useI18n();
@@ -135,26 +135,26 @@ const AppContent: React.FC = () => {
   const activeTabRef = useRef(activeTab);
   activeTabRef.current = activeTab;
 
-  const handleNavigate = (tab: string, prefillData?: any) => {
+  const handleNavigate = useCallback((tab: string, prefillData?: Record<string, unknown> | null) => {
     if (tab === 'campaigns' && prefillData) {
       setCampaignPrefill(prefillData);
     } else if (tab !== 'campaigns') {
       setCampaignPrefill(null);
     }
     setActiveTab(tab);
-  };
+  }, [setActiveTab]);
 
   // Listen to desktop notification clicks or internal cross-tab navigation requests
   useEffect(() => {
     const handleNavEvent = (e: Event) => {
-      const customEvent = e as CustomEvent<{ tab?: string; prefill?: any }>;
+      const customEvent = e as CustomEvent<{ tab?: string; prefill?: Record<string, unknown> | null }>;
       if (customEvent.detail?.tab) {
         handleNavigate(customEvent.detail.tab, customEvent.detail.prefill);
       }
     };
     window.addEventListener('tezlify:navigate_tab', handleNavEvent);
     return () => window.removeEventListener('tezlify:navigate_tab', handleNavEvent);
-  }, []);
+  }, [handleNavigate]);
 
   // Faz 12 (P0 — ağ fırtınası kök nedeni): İSTATİSTİK POLLING'İ KALDIRILDI.
   //

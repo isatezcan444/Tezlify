@@ -70,11 +70,12 @@ export function useMediaCoordinator({
         window.removeEventListener(MEDIA_PAUSE_ALL_EVENT, handlePauseAll);
       }
       unregister();
-      if (pauseOnUnmount && elementRef.current && !elementRef.current.paused) {
-        elementRef.current.pause();
+      const el = elementRef.current;
+      if (pauseOnUnmount && el && !el.paused) {
+        el.pause();
       }
     };
-  }, [mediaId, onExternalPause, pauseOnUnmount]);
+  }, [mediaId, onExternalPause, pauseOnUnmount, elementRef]);
 
   const notifyPlay = useCallback(() => {
     notifyMediaPlaying(mediaId, elementRef.current);

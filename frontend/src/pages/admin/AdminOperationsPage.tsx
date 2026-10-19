@@ -20,7 +20,7 @@ import { useI18n } from '../../context/I18nContext';
 import { useToast } from '../../context/ToastContext';
 import { AdminApi, OpsApi } from '../../api/admin';
 import { AdminShell } from '../../components/admin/AdminShell';
-import { ArrowLeft, ArrowRight, CheckCircle2, Loader2, ShieldAlert, X, XCircle, Terminal, Layers, AlertTriangle, Server } from 'lucide-react';
+import { ArrowLeft, ArrowRight, CheckCircle2, Loader2, ShieldAlert, X, XCircle, AlertTriangle, Server } from 'lucide-react';
 import { Card, CardContent } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
 import { Skeleton } from '../../components/ui/Skeleton';
@@ -57,6 +57,7 @@ const OPS_TABS: { id: OpsTab; key: string }[] = [
 // Stable empty fallback: a literal `[]` in render would be a new reference each
 // time and would invalidate every memo downstream of it.
 const EMPTY_SERVICES: OpsServiceStatus[] = [];
+const DEFAULT_LOG_TABS: string[] = ['gateway'];
 
 interface AdminOperationsPageProps {
   onNavigate?: (tab: string) => void;
@@ -129,8 +130,9 @@ export const AdminOperationsPage: React.FC<AdminOperationsPageProps> = ({ onNavi
       setStatus(await OpsApi.getStatus(20));
       setError(null);
       setLastUpdated(formatOpsDateTime(new Date()));
-    } catch (err: any) {
-      setError(err?.message || t('common.error'));
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setError(msg || t('common.error'));
     } finally {
       if (isInitial) setLoading(false);
       busyRef.current = false;
@@ -253,8 +255,9 @@ export const AdminOperationsPage: React.FC<AdminOperationsPageProps> = ({ onNavi
       setLogs(res.lines);
       setLogsByService((prev) => ({ ...prev, [service]: res.lines }));
       setError(null);
-    } catch (err: any) {
-      setError(err?.message || t('common.error'));
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setError(msg || t('common.error'));
     } finally {
       setLogsLoading(false);
     }
@@ -306,8 +309,9 @@ export const AdminOperationsPage: React.FC<AdminOperationsPageProps> = ({ onNavi
       await OpsApi.startOperation(entry.name, entry.destructive);
       toast.success(t('admin.ops.operationRunning'), entry.label);
       await fetchStatus(false);
-    } catch (err: any) {
-      toast.error(err?.message || t('common.error'), entry.label);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      toast.error(msg || t('common.error'), entry.label);
     } finally {
       setBusyName(null);
     }
@@ -322,7 +326,10 @@ export const AdminOperationsPage: React.FC<AdminOperationsPageProps> = ({ onNavi
     () => services.map((s: OpsServiceStatus) => s.name.replace('tezlify-', '')),
     [services],
   );
-  const logTabs = serviceNames.length > 0 ? serviceNames : ['gateway'];
+  const logTabs = useMemo(
+    () => (serviceNames.length > 0 ? serviceNames : DEFAULT_LOG_TABS),
+    [serviceNames],
+  );
 
   const handleClearLogs = useCallback(async () => {
     const targets = logTabs;

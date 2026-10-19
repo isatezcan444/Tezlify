@@ -64,7 +64,7 @@ export interface ConversationHydratorOptions<T> {
   timeoutMs?: number;
 }
 
-export interface ConversationHydrator<T> {
+export interface ConversationHydrator<_T> {
   hydrate: (conversationId: number) => void;
   release: (conversationId: number) => void;
   getState: (conversationId: number) => ConversationLoadState;

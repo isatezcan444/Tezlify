@@ -1,14 +1,11 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { 
-  Radio, 
   Layers, 
   Send, 
   ShieldAlert, 
-  CheckCircle2, 
   AlertTriangle,
   ArrowLeft,
   Smartphone,
-  Info,
   RefreshCw,
   ChevronDown,
   ChevronUp,
@@ -77,11 +74,12 @@ export const AdminWhatsAppPage: React.FC<AdminWhatsAppPageProps> = ({ onNavigate
       setError(null);
       const now = new Date();
       setLastUpdated(now.toLocaleTimeString());
-    } catch (err: any) {
-      if (err.message === 'ACCESS_DENIED') {
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg === 'ACCESS_DENIED') {
         setError('ACCESS_DENIED');
       } else {
-        setError(err.message || t('admin.errorDesc'));
+        setError(msg || t('admin.errorDesc'));
       }
     } finally {
       if (isInitial) setLoading(false);

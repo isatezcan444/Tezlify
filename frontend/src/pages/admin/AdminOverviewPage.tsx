@@ -18,7 +18,6 @@ import {
   Radio,
   Loader2,
   RefreshCw,
-  ExternalLink,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useI18n } from '../../context/I18nContext';
@@ -130,8 +129,9 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
 
       const now = new Date();
       setLastUpdated(now.toLocaleTimeString());
-    } catch (err: any) {
-      setError(err?.message || t('admin.errorDesc'));
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setError(msg || t('admin.errorDesc'));
     } finally {
       if (isInitial) setLoading(false);
       setRefreshing(false);
@@ -175,8 +175,9 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
       await AdminApi.takeManualBackup('full');
       toast.success(t('admin.overviewAnswers.backupSuccessToast'));
       await fetchOverview(false);
-    } catch (err: any) {
-      toast.error(err?.message || t('admin.overviewAnswers.backupErrorToast'));
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      toast.error(msg || t('admin.overviewAnswers.backupErrorToast'));
     } finally {
       setIsBackingUp(false);
     }
@@ -196,8 +197,9 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
       } else {
         toast.info(t('admin.overviewAnswers.waHealthNoSessions'));
       }
-    } catch (err: any) {
-      toast.error(err?.message || t('admin.errorDesc'));
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      toast.error(msg || t('admin.errorDesc'));
     } finally {
       setIsCheckingWa(false);
     }

@@ -24,8 +24,8 @@ function sanitizeBackendUrl(rawUrl: string | undefined): string | undefined {
   // Automatically heal and rewrite any legacy or stale subdomain references
   if (rawUrl.includes('scoutify') || rawUrl.includes('tezlify-kuv3') || rawUrl.includes('kuv3')) {
     return rawUrl
-      .replace(/https?:\/\/[^\/]+/i, 'https://api.130.162.247.20.sslip.io')
-      .replace(/wss?:\/\/[^\/]+/i, 'wss://api.130.162.247.20.sslip.io/ws');
+      .replace(/https?:\/\/[^/]+/i, 'https://api.130.162.247.20.sslip.io')
+      .replace(/wss?:\/\/[^/]+/i, 'wss://api.130.162.247.20.sslip.io/ws');
   }
   return rawUrl;
 }
@@ -221,7 +221,7 @@ export class ApiClient {
     return res.json();
   }
 
-  static async exportCsv(filters: any = {}): Promise<void> {
+  static async exportCsv(filters: Record<string, unknown> = {}): Promise<void> {
     const res = await authFetch(`${API_BASE}/leads/export/csv`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -241,7 +241,7 @@ export class ApiClient {
     window.URL.revokeObjectURL(url);
   }
 
-  static async exportExcel(filters: any = {}): Promise<void> {
+  static async exportExcel(filters: Record<string, unknown> = {}): Promise<void> {
     const res = await authFetch(`${API_BASE}/leads/export/excel`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -302,7 +302,7 @@ export class ApiClient {
     return res.json();
   }
 
-  static async saveScraperLeads(jobId: number, leads: any[]): Promise<{ job_id: number; saved: any[]; new_count: number; updated_count: number }> {
+  static async saveScraperLeads(jobId: number, leads: Record<string, unknown>[]): Promise<{ job_id: number; saved: Record<string, unknown>[]; new_count: number; updated_count: number }> {
     const res = await authFetch(`${API_BASE}/scraper/jobs/${jobId}/save`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -467,7 +467,7 @@ export class ApiClient {
     return res.json();
   }
 
-  static async launchCampaign(campaignId: number, params: { lead_ids?: number[]; limit?: number; session_id?: number } = {}): Promise<any> {
+  static async launchCampaign(campaignId: number, params: { lead_ids?: number[]; limit?: number; session_id?: number } = {}): Promise<Record<string, unknown>> {
     const res = await authFetch(`${API_BASE}/campaigns/${campaignId}/launch`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -480,7 +480,7 @@ export class ApiClient {
     return res.json();
   }
 
-  static async pauseCampaign(campaignId: number): Promise<any> {
+  static async pauseCampaign(campaignId: number): Promise<Record<string, unknown>> {
     const res = await authFetch(`${API_BASE}/campaigns/${campaignId}/pause`, {
       method: 'POST'
     });
@@ -695,9 +695,11 @@ const WS_BACKOFF_MAX_MS = 30000;
 // Yetki reddi arka arkaya bu kadar denemede sürerse döngü durdurulur.
 const WS_MAX_AUTH_FAILURES = 4;
 // 2 saniyeden kısa süren bağlantı "hemen reddedilmiş" sayılır.
-const WS_RAPID_CLOSE_THRESHOLD_MS = 2000;
+const _WS_RAPID_CLOSE_THRESHOLD_MS = 2000;
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function createWebSocket(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   onMessage: (data: any) => void,
   onStatusChange?: (connected: boolean) => void
 ): ManagedWebSocket {
@@ -710,11 +712,11 @@ export function createWebSocket(
   // remounts every effect) that leaked one live connection per mount — visible
   // in the backend logs as connect/disconnect/connect pairs that never settle.
   let closeGeneration = 0;
-  let reconnectTimeout: any = null;
+  let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
   let attempt = 0;
   let authFailures = 0;
-  let openedAt = 0;
-  let heartbeatTimer: any = null;
+  let _openedAt = 0;
+  let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   const HEARTBEAT_INTERVAL_MS = 25000;
 
   function stopHeartbeat() {
@@ -817,7 +819,7 @@ export function createWebSocket(
 
       ws.onopen = () => {
         console.log('[Tezlify WS] Connected to realtime event stream');
-        openedAt = Date.now();
+        _openedAt = Date.now();
         attempt = 0;
         authFailures = 0;
         startHeartbeat();
@@ -922,11 +924,13 @@ export function createWebSocket(
  */
 let sharedSocket: ManagedWebSocket | null = null;
 let sharedRefCount = 0;
-const sharedSubscribers = new Set<(data: unknown) => void>();
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const sharedSubscribers = new Set<(data: any) => void>();
 const sharedStatusSubscribers = new Set<(connected: boolean) => void>();
 
-export function subscribeRealtime(
-  onMessage: (data: any) => void,
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function subscribeRealtime<T = any>(
+  onMessage: (data: T) => void,
   onStatusChange?: (connected: boolean) => void,
 ): RealtimeSubscription {
   sharedSubscribers.add(onMessage);

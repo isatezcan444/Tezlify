@@ -318,11 +318,12 @@ export const AdminBackupsPage: React.FC<AdminBackupsPageProps> = ({ onNavigate }
         setData(res);
         setError(null);
         setLastUpdated(new Date().toLocaleTimeString());
-      } catch (err: any) {
-        if (err.message === 'ACCESS_DENIED') {
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg === 'ACCESS_DENIED') {
           setError('ACCESS_DENIED');
         } else {
-          setError(err.message || t('admin.errorDesc'));
+          setError(msg || t('admin.errorDesc'));
         }
       } finally {
         if (isInitial) setLoading(false);
@@ -344,8 +345,9 @@ export const AdminBackupsPage: React.FC<AdminBackupsPageProps> = ({ onNavigate }
       setLastUpdated(new Date().toLocaleTimeString());
       setBackupJustFinished(true);
       toast.success(t('admin.backups.backupSuccess'));
-    } catch (err: any) {
-      toast.error(`${t('admin.backups.backupFailed')}: ${err.message || ''}`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      toast.error(`${t('admin.backups.backupFailed')}: ${msg}`);
     } finally {
       setOperatingType(null);
     }

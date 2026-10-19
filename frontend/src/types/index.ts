@@ -41,7 +41,7 @@ export interface Lead {
   verified_by?: string;
   verification_trace?: unknown;
   notes?: string;
-  custom_data?: Record<string, any>;
+  custom_data?: Record<string, unknown>;
   created_at?: string;
   updated_at?: string;
   last_contacted_at?: string;

@@ -13,10 +13,7 @@ import {
   Info,
   CheckCircle2,
   XCircle,
-  Clock,
-  HardDrive,
   Globe,
-  FileCode2,
   ChevronDown,
   ChevronUp,
 } from 'lucide-react';
@@ -102,6 +99,7 @@ export const AdminDeploymentPage: React.FC<AdminDeploymentPageProps> = ({ onNavi
     // fetchDeployment. That closure only reads `t` for an error message, and
     // it is re-registered by useOpsEvents, so the exposure is cosmetic. The
     // honest fix is to hoist fetchDeployment above this callback.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useOpsEvents(Boolean(isAdmin || profile?.is_admin || user?.is_admin), { onOperation: handleOpsEvent });
@@ -129,8 +127,9 @@ export const AdminDeploymentPage: React.FC<AdminDeploymentPageProps> = ({ onNavi
     try {
       setDeploying(await OpsApi.startOperation(entry.name, true));
       toast.success(t('admin.ops.operationRunning'), entry.label);
-    } catch (err: any) {
-      toast.error(err?.message || t('common.error'), entry.label);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      toast.error(msg || t('common.error'), entry.label);
       setBusyName(null);
     }
   }, [toast, t]);
@@ -153,11 +152,12 @@ export const AdminDeploymentPage: React.FC<AdminDeploymentPageProps> = ({ onNavi
         if (overRes) setOverviewData(overRes);
         setError(null);
         setLastUpdated(new Date().toLocaleTimeString());
-      } catch (err: any) {
-        if (err.message === 'ACCESS_DENIED') {
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (message === 'ACCESS_DENIED') {
           setError('ACCESS_DENIED');
         } else {
-          setError(err.message || t('admin.errorDesc'));
+          setError(message || t('admin.errorDesc'));
         }
       } finally {
         if (isInitial) setLoading(false);
@@ -423,7 +423,7 @@ export const AdminDeploymentPage: React.FC<AdminDeploymentPageProps> = ({ onNavi
   const isWarn = !isFailed && (rawStatus === 'WARN' || rawStatus === 'WARNING' || Boolean(rebootRequired) || !isWorkingTreeClean);
   const isHealthy = !isFailed && !isWarn;
 
-  const overallStatus = isFailed ? 'CRITICAL' : isWarn ? 'WARN' : 'OK';
+  const _overallStatus = isFailed ? 'CRITICAL' : isWarn ? 'WARN' : 'OK';
   const overallVariant: StatusVariant = isHealthy ? 'online' : isWarn ? 'warning' : 'danger';
   const overallLabel =
     isHealthy
