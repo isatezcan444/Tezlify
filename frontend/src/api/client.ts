@@ -13,6 +13,13 @@ import {
   CampaignGroupCreatePayload,
   AddLeadsToGroupResponse,
   UserProfile,
+  ApiKeyItem,
+  ApiKeyCreatedItem,
+  WebhookItem,
+  WebhookDeliveryLogItem,
+  WebhookTestResult,
+  QuotaUsageSummary,
+  PlanListResponse,
 } from '../types';
 
 const isHttps = typeof window !== 'undefined' && window.location.protocol === 'https:';
@@ -649,6 +656,109 @@ export class ApiClient {
   static async getUserProfile(): Promise<UserProfile> {
     const res = await authFetch(`${API_BASE}/auth/me`);
     if (!res.ok) throw new Error('Profil bilgisi alınamadı');
+    return res.json();
+  }
+
+  // --- API Keys ---
+  static async getApiKeys(): Promise<{ items: ApiKeyItem[]; total: number }> {
+    const res = await authFetch(`${API_BASE}/api-keys`);
+    if (!res.ok) throw new Error('API anahtarları yüklenemedi');
+    return res.json();
+  }
+
+  static async createApiKey(name: string, expiresInDays?: number): Promise<ApiKeyCreatedItem> {
+    const res = await authFetch(`${API_BASE}/api-keys`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, expires_in_days: expiresInDays }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'API anahtarı oluşturulamadı' }));
+      throw new Error(err.detail || 'API anahtarı oluşturulamadı');
+    }
+    return res.json();
+  }
+
+  static async deleteApiKey(id: number): Promise<void> {
+    const res = await authFetch(`${API_BASE}/api-keys/${id}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error('API anahtarı silinemedi');
+  }
+
+  static async toggleApiKey(id: number): Promise<ApiKeyItem> {
+    const res = await authFetch(`${API_BASE}/api-keys/${id}/toggle`, { method: 'PATCH' });
+    if (!res.ok) throw new Error('API anahtarı durumu güncellenemedi');
+    return res.json();
+  }
+
+  // --- Webhooks ---
+  static async getWebhooks(): Promise<WebhookItem[]> {
+    const res = await authFetch(`${API_BASE}/webhooks`);
+    if (!res.ok) throw new Error('Webhook abonelikleri yüklenemedi');
+    return res.json();
+  }
+
+  static async createWebhook(payload: { name: string; target_url: string; events: string[] }): Promise<WebhookItem> {
+    const res = await authFetch(`${API_BASE}/webhooks`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Webhook oluşturulamadı' }));
+      throw new Error(err.detail || 'Webhook oluşturulamadı');
+    }
+    return res.json();
+  }
+
+  static async updateWebhook(id: number, payload: Partial<{ name: string; target_url: string; events: string[]; is_active: boolean }>): Promise<WebhookItem> {
+    const res = await authFetch(`${API_BASE}/webhooks/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) throw new Error('Webhook güncellenemedi');
+    return res.json();
+  }
+
+  static async deleteWebhook(id: number): Promise<void> {
+    const res = await authFetch(`${API_BASE}/webhooks/${id}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error('Webhook silinemedi');
+  }
+
+  static async testWebhook(id: number): Promise<WebhookTestResult> {
+    const res = await authFetch(`${API_BASE}/webhooks/${id}/test`, { method: 'POST' });
+    if (!res.ok) throw new Error('Webhook test pingi başarısız');
+    return res.json();
+  }
+
+  static async getWebhookLogs(id: number): Promise<WebhookDeliveryLogItem[]> {
+    const res = await authFetch(`${API_BASE}/webhooks/${id}/logs`);
+    if (!res.ok) throw new Error('Webhook logları yüklenemedi');
+    return res.json();
+  }
+
+  static async getBillingUsage(): Promise<QuotaUsageSummary> {
+    const res = await authFetch(`${API_BASE}/billing/usage`);
+    if (!res.ok) throw new Error('Abonelik ve kota bilgileri alınamadı');
+    return res.json();
+  }
+
+  static async getBillingPlans(): Promise<PlanListResponse> {
+    const res = await authFetch(`${API_BASE}/billing/plans`);
+    if (!res.ok) throw new Error('Paket listesi alınamadı');
+    return res.json();
+  }
+
+  static async changeBillingPlan(planTier: string): Promise<QuotaUsageSummary> {
+    const res = await authFetch(`${API_BASE}/billing/change-plan`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ plan_tier: planTier }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Paket değiştirilemedi' }));
+      throw new Error(err.detail || 'Paket değiştirilemedi');
+    }
     return res.json();
   }
 }

@@ -214,6 +214,9 @@ async def launch_campaign(
     if campaign.status == CampaignStatus.ACTIVE or CampaignRunner.is_campaign_running(campaign_id):
         raise HTTPException(status_code=409, detail="Bu kampanya şu anda zaten çalışıyor.")
 
+    from backend.app.services.quota_guard import QuotaGuardService
+    await QuotaGuardService.check_campaign_allowance(db, current_user.id)
+
     # WhatsApp Active Session Check (Fail-Closed)
     from backend.app.models.whatsapp_session import WhatsAppSession, SessionStatus
     target_session_id = req.session_id or getattr(campaign, "whatsapp_session_id", None)

@@ -20,6 +20,7 @@ from typing import Any, Callable, Dict, FrozenSet, List, Optional, Tuple
 import uuid
 
 from backend.app.core.datetime_utils import utc_now_naive
+from backend.app.services.webhook_dispatcher import WebhookDispatcher
 
 from sqlalchemy import delete, func, or_, select, text
 from sqlalchemy.exc import IntegrityError
@@ -2592,6 +2593,24 @@ class WhatsAppEventOrchestrator:
                         {"event_id": event_id},
                     )
                 await db.commit()
+
+                # Dış Webhook Abonelerine Inbound WhatsApp mesajını bildir
+                if evt == "message_new" and isinstance(result, dict) and result.get("message"):
+                    in_msg = result.get("message")
+                    if in_msg.get("direction") == "INBOUND":
+                        WebhookDispatcher.emit(
+                            user_id=result.get("user_id"),
+                            event_type="whatsapp.message_received",
+                            data={
+                                "message_id": in_msg.get("id"),
+                                "conversation_id": in_msg.get("conversation_id"),
+                                "sender_phone": in_msg.get("sender_phone"),
+                                "sender_name": in_msg.get("sender_name"),
+                                "body": in_msg.get("body"),
+                                "type": in_msg.get("type"),
+                                "created_at": in_msg.get("created_at"),
+                            },
+                        )
 
                 if evt in ("session_sync_completed", "session_connected"):
                     owner = result.get("user_id")

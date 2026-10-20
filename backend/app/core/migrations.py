@@ -2116,6 +2116,39 @@ async def clean_invalid_avatar_sentinels(engine: AsyncEngine) -> None:
         logger.warning("[MIGRATION] clean_invalid_avatar_sentinels atlandi: %s", exc)
 
 
+async def ensure_api_keys_and_webhooks_tables(engine: AsyncEngine) -> None:
+    """API anahtarları ve Webhook tablolarını (api_keys, webhook_subscriptions, webhook_delivery_logs) güvence altına alır."""
+    from backend.app.models.api_key import ApiKey
+    from backend.app.models.webhook import WebhookSubscription, WebhookDeliveryLog
+
+    async with engine.begin() as conn:
+        await conn.run_sync(ApiKey.__table__.create, checkfirst=True)
+        await conn.run_sync(WebhookSubscription.__table__.create, checkfirst=True)
+        await conn.run_sync(WebhookDeliveryLog.__table__.create, checkfirst=True)
+    logger.info("[MIGRATION] ensure_api_keys_and_webhooks_tables verified")
+
+
+async def ensure_subscription_and_quota_tables(engine: AsyncEngine) -> None:
+    """Kullanıcı SaaS abonelik ve kota tablolarını (user_subscriptions) güvence altına alır."""
+    from backend.app.models.subscription import UserSubscription
+
+    async with engine.begin() as conn:
+        await conn.run_sync(UserSubscription.__table__.create, checkfirst=True)
+    logger.info("[MIGRATION] ensure_subscription_and_quota_tables verified")
+
+
+async def ensure_task_queue_table(engine: AsyncEngine) -> None:
+    """Arka plan dayanıklı görev kuyruğu tablosunu (task_jobs) güvence altına alır."""
+    from backend.app.models.task_queue import TaskJob
+
+    async with engine.begin() as conn:
+        await conn.run_sync(TaskJob.__table__.create, checkfirst=True)
+    logger.info("[MIGRATION] ensure_task_queue_table verified")
+
+
+
+
+
 
 
 

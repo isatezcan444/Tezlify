@@ -17,6 +17,7 @@ from backend.app.services.outreach_manager import OutreachManager
 from backend.app.services.outreach_guard import OutreachGuard
 from backend.app.services.antiban_policy import AntibanPolicy
 from backend.app.api.v1.websocket import ws_manager
+from backend.app.services.webhook_dispatcher import WebhookDispatcher
 
 logger = logging.getLogger(__name__)
 
@@ -274,6 +275,14 @@ class CampaignRunner:
                         blacklisted_phones=blacklisted_phones,
                     )
 
+                    if success:
+                        sent_today += 1
+                        try:
+                            from backend.app.services.quota_guard import QuotaGuardService
+                            await QuotaGuardService.consume_whatsapp_quota(db, owner, 1)
+                        except Exception as exc:
+                            logger.warning(f"[QuotaGuard] Could not update WhatsApp quota: {exc}")
+
                     # Handle fatal connection drop or working hours pause
                     if not success:
                         if OutreachManager.is_connection_fatal_error(msg):
@@ -348,6 +357,18 @@ class CampaignRunner:
                         "total_sent": campaign.sent_count,
                         "total_failed": campaign.failed_count
                     })
+
+                    WebhookDispatcher.emit(
+                        user_id=owner,
+                        event_type="campaign.completed",
+                        data={
+                            "campaign_id": campaign.id,
+                            "campaign_name": campaign.name,
+                            "sent_count": campaign.sent_count,
+                            "failed_count": campaign.failed_count,
+                            "total_target": campaign.total_leads_target,
+                        },
+                    )
 
         except asyncio.CancelledError:
             logger.warning(f"[CampaignRunner] Campaign #{campaign_id} worker task cancelled.")

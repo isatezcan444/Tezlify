@@ -21,6 +21,7 @@ from backend.app.schemas.lead import (
 from backend.app.services.phone_service import PhoneService
 from backend.app.services.export_service import ExportService
 from backend.app.services.lead_query_service import build_lead_filter_conditions
+from backend.app.services.webhook_dispatcher import WebhookDispatcher
 
 router = APIRouter()
 
@@ -172,6 +173,22 @@ async def create_lead(
     db.add(lead)
     await db.commit()
     await db.refresh(lead)
+
+    WebhookDispatcher.emit(
+        user_id=current_user.id,
+        event_type="lead.created",
+        data={
+            "lead_id": lead.id,
+            "name": lead.name,
+            "phone_e164": lead.phone_e164,
+            "is_whatsapp_eligible": lead.is_whatsapp_eligible,
+            "category": lead.category,
+            "city": lead.city,
+            "district": lead.district,
+            "status": lead.status.value if hasattr(lead.status, "value") else str(lead.status),
+            "created_at": lead.created_at.isoformat() if lead.created_at else None,
+        },
+    )
     return lead
 
 
@@ -203,6 +220,7 @@ async def update_lead(
     if not lead or not check_entity_ownership(lead, current_user):
         raise HTTPException(status_code=404, detail="Müşteri adayı bulunamadı")
 
+    old_status = lead.status
     update_data = lead_in.model_dump(exclude_unset=True)
     if "phone" in update_data and update_data["phone"]:
         phone_data = PhoneService.normalize_to_e164(update_data["phone"])
@@ -225,6 +243,20 @@ async def update_lead(
 
     await db.commit()
     await db.refresh(lead)
+
+    if "status" in update_data and lead.status != old_status:
+        WebhookDispatcher.emit(
+            user_id=current_user.id,
+            event_type="lead.status_updated",
+            data={
+                "lead_id": lead.id,
+                "name": lead.name,
+                "phone_e164": lead.phone_e164,
+                "old_status": old_status.value if hasattr(old_status, "value") else str(old_status),
+                "new_status": lead.status.value if hasattr(lead.status, "value") else str(lead.status),
+                "updated_at": lead.updated_at.isoformat() if lead.updated_at else None,
+            },
+        )
     return lead
 
 

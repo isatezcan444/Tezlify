@@ -8,6 +8,8 @@ from sqlalchemy import select
 from backend.app.core.database import get_db
 from backend.app.core.auth import AuthUser, _is_dev_or_test_context
 from backend.app.models.profile import Profile
+from backend.app.models.api_key import ApiKey
+from backend.app.core.datetime_utils import utc_now_naive
 from backend.app.auth.application.session_service import SessionService
 from backend.app.auth.application.user_service import UserService
 
@@ -16,6 +18,64 @@ logger = logging.getLogger(__name__)
 security = HTTPBearer(auto_error=False)
 session_service = SessionService()
 user_service = UserService()
+
+
+async def resolve_api_key_user(request: Request, db: AsyncSession) -> Optional[AuthUser]:
+    """X-API-Key başlığından API kullanıcısını çözer."""
+    api_key_raw = request.headers.get("X-API-Key") or request.headers.get("x-api-key")
+    if not api_key_raw:
+        return None
+
+    clean_key = api_key_raw.strip()
+    if not clean_key.startswith("tzf_live_"):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Geçersiz API Anahtarı formatı (Must start with tzf_live_)",
+            headers={"WWW-Authenticate": "ApiKey"},
+        )
+
+    key_hash = ApiKey.hash_key(clean_key)
+    stmt = select(ApiKey).where(ApiKey.key_hash == key_hash)
+    res = await db.execute(stmt)
+    key_row = res.scalar_one_or_none()
+
+    if not key_row or not key_row.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Geçersiz veya devre dışı bırakılmış API Anahtarı",
+            headers={"WWW-Authenticate": "ApiKey"},
+        )
+
+    if key_row.expires_at and key_row.expires_at < utc_now_naive():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="API Anahtarının süresi dolmuş",
+            headers={"WWW-Authenticate": "ApiKey"},
+        )
+
+    # Güncelle: last_used_at
+    key_row.last_used_at = utc_now_naive()
+    await db.commit()
+
+    user = None
+    try:
+        import uuid as _uuid
+        user_uuid = _uuid.UUID(str(key_row.user_id)) if not isinstance(key_row.user_id, _uuid.UUID) else key_row.user_id
+        user = await user_service.get_user_by_id(db, user_uuid)
+    except Exception as exc:
+        logger.debug("[API_KEY] User lookup skipped: %s", exc)
+
+    return AuthUser(
+        id=str(key_row.user_id),
+        email=user.email if user else f"api_{key_row.id}@tezlify.local",
+        full_name=f"API: {key_row.name}",
+        avatar_url=user.avatar_url if user else "",
+        plan_tier="DEVELOPER_PRO",
+        leads_monthly_limit=999999,
+        leads_used_this_month=0,
+        messages_daily_limit=999999,
+    )
+
 
 
 def extract_session_token(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None) -> Optional[str]:
@@ -150,3 +210,31 @@ async def require_admin(
             detail="Bu işlem için yönetici yetkisi gerekiyor (Admin authorization required)",
         )
     return current_user
+
+
+async def get_current_user_or_api_key(
+    request: Request,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    db: AsyncSession = Depends(get_db),
+) -> AuthUser:
+    """Hem UI oturumunu (session/cookie/bearer) hem de harici X-API-Key anahtarlarını destekleyen birleşik kimlik doğrulayıcı."""
+    api_user = await resolve_api_key_user(request, db)
+    if api_user:
+        return api_user
+    return await get_current_user_unified(request, credentials, db)
+
+
+async def require_api_key(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> AuthUser:
+    """Yalnızca geçerli bir X-API-Key gerektiren public/harici API uç noktaları için dependency."""
+    api_user = await resolve_api_key_user(request, db)
+    if not api_user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Bu uç nokta için geçerli bir X-API-Key başlığı gereklidir.",
+            headers={"WWW-Authenticate": "ApiKey"},
+        )
+    return api_user
+

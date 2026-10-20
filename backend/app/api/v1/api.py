@@ -12,6 +12,11 @@ from backend.app.api.v1.endpoints import (
     whatsapp,
     admin,
     ops_admin,
+    api_keys,
+    webhooks,
+    public_api,
+    billing,
+    tasks,
 )
 
 api_router = APIRouter()
@@ -27,9 +32,15 @@ api_router.include_router(settings.router, prefix="/settings", tags=["Settings"]
 api_router.include_router(smart_outreach.router, prefix="/smart-outreach", tags=["Smart Outreach"])
 api_router.include_router(whatsapp.router, prefix="/whatsapp", tags=["WhatsApp"])
 api_router.include_router(admin.router, prefix="/admin", tags=["Admin"])
+api_router.include_router(api_keys.router, prefix="/api-keys", tags=["API Keys"])
+api_router.include_router(webhooks.router, prefix="/webhooks", tags=["Webhooks"])
+api_router.include_router(public_api.router, prefix="/public", tags=["Public API"])
+api_router.include_router(billing.router, prefix="/billing", tags=["Billing & Quotas"])
+api_router.include_router(tasks.router, prefix="/tasks", tags=["Task Queue"])
 # Operations Center. Kept on its own router (rather than added to `admin`,
 # which is a strictly read-only surface by contract) so the read-only
 # guarantee and the mutating surface stay visibly separate. Every route here
 # is behind `require_admin` and can only start allowlisted operations.
 api_router.include_router(ops_admin.router, prefix="/admin/ops", tags=["Admin Ops"])
+
 

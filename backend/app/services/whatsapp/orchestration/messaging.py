@@ -147,7 +147,8 @@ def serialize_message(
     # Gelen medya gateway'de durur; frontend kimlik dogrulamali proxy uzerinden ceker.
     raw_type = getattr(row, "message_type", None)
     type_str = str(getattr(raw_type, "value", raw_type) or "").upper()
-    media_key = row.media_id or (row.wa_message_id if type_str and type_str != "TEXT" else None)
+    has_media_metadata = bool(getattr(row, "media_mime_type", None) or getattr(row, "media_filename", None))
+    media_key = row.media_id or (row.wa_message_id if type_str and type_str != "TEXT" and has_media_metadata else None)
     media_url = f"/api/v1/whatsapp/media/{media_key}" if media_key else None
     return {
         "id": row.id,

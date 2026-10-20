@@ -18,6 +18,10 @@ from backend.app.models.profile import Profile
 from backend.app.models.whatsapp_session import WhatsAppSession, SessionStatus
 from backend.app.models.ephemeral_pairing import EphemeralPairing
 from backend.app.models.quick_reply import QuickReply
+from backend.app.models.api_key import ApiKey
+from backend.app.models.webhook import WebhookSubscription, WebhookDeliveryLog
+from backend.app.models.subscription import UserSubscription
+from backend.app.models.task_queue import TaskJob, TaskJobStatus
 
 __all__ = [
     "Base",
@@ -51,4 +55,10 @@ __all__ = [
     "SessionStatus",
     "EphemeralPairing",
     "QuickReply",
+    "ApiKey",
+    "WebhookSubscription",
+    "WebhookDeliveryLog",
+    "UserSubscription",
+    "TaskJob",
+    "TaskJobStatus",
 ]

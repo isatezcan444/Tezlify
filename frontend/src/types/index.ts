@@ -610,4 +610,101 @@ export interface UserProfile {
   is_admin?: boolean;
 }
 
+export interface ApiKeyItem {
+  id: number;
+  name: string;
+  key_prefix: string;
+  is_active: boolean;
+  last_used_at?: string;
+  expires_at?: string;
+  created_at: string;
+}
+
+export interface ApiKeyCreatedItem extends ApiKeyItem {
+  raw_key: string;
+}
+
+export interface WebhookItem {
+  id: number;
+  name: string;
+  target_url: string;
+  events: string[];
+  is_active: boolean;
+  secret: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WebhookDeliveryLogItem {
+  id: number;
+  subscription_id: number;
+  event_type: string;
+  payload?: Record<string, unknown>;
+  status_code?: number;
+  response_body?: string;
+  duration_ms?: number;
+  is_success: boolean;
+  error_message?: string;
+  created_at: string;
+}
+
+export interface WebhookTestResult {
+  success: boolean;
+  status_code?: number;
+  response_body?: string;
+  duration_ms?: number;
+  error?: string;
+}
+
+export interface QuotaMetric {
+  used: number;
+  limit: number;
+  remaining: number;
+  percentage: number;
+}
+
+export interface QuotaUsageSummary {
+  user_id: string;
+  plan_tier: string;
+  plan_name: string;
+  billing_cycle: string;
+  period_start: string;
+  period_end: string;
+  days_until_renewal: number;
+  leads: QuotaMetric;
+  whatsapp_daily: QuotaMetric;
+  ai_daily: QuotaMetric;
+  active_campaigns: QuotaMetric;
+  features: {
+    webhooks: boolean;
+    api_access: boolean;
+    export_csv: boolean;
+    [key: string]: boolean;
+  };
+}
+
+export interface PlanInfo {
+  id: string;
+  name: string;
+  price_try: number;
+  monthly_lead_scrape_limit: number;
+  daily_whatsapp_outreach_limit: number;
+  max_active_campaigns: number;
+  ai_daily_limit: number;
+  webhooks_enabled: boolean;
+  api_access_enabled: boolean;
+  export_csv_enabled: boolean;
+  badge_color: string;
+  description: string;
+  features_list: string[];
+  is_current?: boolean;
+}
+
+export interface PlanListResponse {
+  current_plan_tier: string;
+  plans: PlanInfo[];
+}
+
 export * from './admin';
+
+

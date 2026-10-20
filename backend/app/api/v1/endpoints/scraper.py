@@ -223,6 +223,8 @@ async def start_scraper(
 ):
     # Enforce SaaS Lead Search Quota
     verify_lead_quota(current_user, requested_count=1)
+    from backend.app.services.quota_guard import QuotaGuardService
+    await QuotaGuardService.check_scrape_allowance(db, current_user.id, count=1)
 
     keyword = req.keyword.strip()
     city = req.city.strip()
@@ -299,6 +301,8 @@ async def save_scraper_leads(
 
     # Verify quota for saving leads
     verify_lead_quota(current_user, requested_count=len(req.leads))
+    from backend.app.services.quota_guard import QuotaGuardService
+    await QuotaGuardService.check_scrape_allowance(db, current_user.id, count=len(req.leads))
 
     all_leads, new_count, updated_count = await LeadIngestService.ingest_leads(
         db=db,
@@ -311,10 +315,13 @@ async def save_scraper_leads(
 
     job.total_new_leads = (job.total_new_leads or 0) + new_count
 
-    # Update user monthly usage in Profile table
+    # Update user monthly usage in Profile table and QuotaGuardService
     profile = await db.get(Profile, current_user.id)
     if profile:
         profile.leads_used_this_month = (profile.leads_used_this_month or 0) + new_count
+
+    if new_count > 0:
+        await QuotaGuardService.consume_scrape_quota(db, current_user.id, count=new_count)
 
     await db.commit()
 

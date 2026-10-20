@@ -46,6 +46,9 @@ from backend.app.core.migrations import (
     ensure_keyset_and_ordering_indexes,
     ensure_quick_replies_table,
     clean_invalid_avatar_sentinels,
+    ensure_api_keys_and_webhooks_tables,
+    ensure_subscription_and_quota_tables,
+    ensure_task_queue_table,
 )
 from backend.app.core.seed import seed_demo_data_if_empty
 from backend.app.services.admin.ops_service import init_ops_state
@@ -121,6 +124,11 @@ async def recover_stuck_jobs() -> None:
     - Açıkta kalan PENDING giden mesajlar -> DELIVERY_UNCONFIRMED (SKIP_JOB_RECOVERY'den bağımsız)
     """
     await recover_stranded_outbound_messages()
+    from backend.app.services.task_queue.task_worker import TaskWorker
+    try:
+        await TaskWorker.recover_stranded_tasks()
+    except Exception as exc:
+        logger.warning(f"[RECOVERY] TaskWorker recovery error: {exc}")
 
     if os.getenv("SKIP_JOB_RECOVERY", "false").lower() in ("true", "1"):
         logger.info("[RECOVERY] SKIP_JOB_RECOVERY is set; skipping background job mutations.")
@@ -199,6 +207,9 @@ async def lifespan(app: FastAPI):
     await ensure_keyset_and_ordering_indexes(engine)
     await ensure_quick_replies_table(engine)
     await clean_invalid_avatar_sentinels(engine)
+    await ensure_api_keys_and_webhooks_tables(engine)
+    await ensure_subscription_and_quota_tables(engine)
+    await ensure_task_queue_table(engine)
 
     # Boot tek başına yetmez: artan çiftler, canlı yolun ertelediği birleştirmeler
     # ve arşivlenen sohbette kalmış sahipsiz mesajlar ancak YENİDEN koşan bir
@@ -229,6 +240,7 @@ async def lifespan(app: FastAPI):
 
     # Restart sonrası yarıda kalan arka plan işlerini toparla
     await recover_stuck_jobs()
+    TaskWorker.start()
 
     # Operations Center: restore the operation/audit history that the previous
     # process persisted, and reconcile anything it left marked "running".
@@ -248,6 +260,7 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        TaskWorker.stop()
         # Cleanup
         if sweep_task is not None:
             sweep_task.cancel()
