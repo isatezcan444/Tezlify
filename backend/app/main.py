@@ -60,6 +60,7 @@ from backend.app.services.whatsapp.reconciliation import (
 )
 from backend.app.models.blacklist import ScraperJob, ScraperJobStatus
 from backend.app.models.campaign import Campaign, CampaignStatus
+from backend.app.services.task_queue.task_worker import TaskWorker
 
 from backend.app.core.logging_security import setup_security_logging
 
