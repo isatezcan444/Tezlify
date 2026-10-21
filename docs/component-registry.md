@@ -562,9 +562,10 @@ restarting a service and shipping code are different risk classes.
   - `LandingBentoFeatures`: 4-item bento grid showcasing Google Maps scraper, Anti-Ban & Humanized delays, WhatsApp Web Hub, and Inbound/Outbound Webhook bridges.
   - `LandingInteractiveShowcase`: Interactive 4-tab live product simulator (`#how-it-works`) allowing visitors to test Google Maps radar, AI tone & spintax, anti-ban jitter sliders, and simulated WhatsApp live inbox replies.
   - `LandingRoiCalculator`: Dynamic B2B revenue and lead growth calculator (`#roi-calculator`) featuring volume and deal size sliders, real-time verified mobile estimation, conversion analytics, hours saved metrics, and smart plan tier recommendations.
+  - `LandingBeforeAfter`: High-converting dual comparison matrix (`#comparison`) contrasting the traditional manual route (outdated directories, copy-pasting, phone bans, sky-high ad costs) against the autonomous Tezlify growth engine (live radar, spintax, anti-ban jitter, live inbox, 10x lower CAC).
   - `LandingPricing`: Dynamic monthly/annual switcher (%20 discount) with interactive tier selection and instant upgrade actions.
   - `LandingFAQ`: Smooth accordion answering critical questions regarding WhatsApp safety, data sources, and web form connections.
   - `LandingFooter`: Minimalist footer with live system operational status badge and legal links.
-- **Import**: `import { LandingPage, LandingInteractiveShowcase, LandingRoiCalculator } from '@/features/landing';`
+- **Import**: `import { LandingPage, LandingInteractiveShowcase, LandingRoiCalculator, LandingBeforeAfter } from '@/features/landing';`
 
 

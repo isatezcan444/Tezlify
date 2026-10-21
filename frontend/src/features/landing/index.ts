@@ -8,3 +8,4 @@ export { LandingFAQ } from './components/LandingFAQ';
 export { LandingFooter } from './components/LandingFooter';
 export { LandingInteractiveShowcase } from './components/LandingInteractiveShowcase';
 export { LandingRoiCalculator } from './components/LandingRoiCalculator';
+export { LandingBeforeAfter } from './components/LandingBeforeAfter';
