@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Sparkles,
   ArrowRight,
@@ -187,7 +188,7 @@ export const LandingNavbar: React.FC<LandingNavbarProps> = ({ onGoToApp, onOpenL
             <button
               type="button"
               onClick={onGoToApp}
-              className="h-10 px-3.5 rounded-xl bg-[#7367F0] text-white text-xs font-bold flex items-center gap-1.5 shadow-md shadow-[#7367F0]/25 cursor-pointer active:scale-95"
+              className="hidden sm:inline-flex h-10 px-3.5 rounded-xl bg-[#7367F0] text-white text-xs font-bold items-center gap-1.5 shadow-md shadow-[#7367F0]/25 cursor-pointer active:scale-95"
             >
               <span>{t('landing.goToDashboard')}</span>
               <ArrowRight className="w-3.5 h-3.5" />
@@ -196,7 +197,7 @@ export const LandingNavbar: React.FC<LandingNavbarProps> = ({ onGoToApp, onOpenL
             <button
               type="button"
               onClick={onOpenLogin}
-              className="h-10 px-3.5 rounded-xl bg-[#7367F0] text-white text-xs font-bold flex items-center gap-1.5 shadow-md shadow-[#7367F0]/25 cursor-pointer active:scale-95"
+              className="hidden sm:inline-flex h-10 px-3.5 rounded-xl bg-[#7367F0] text-white text-xs font-bold items-center gap-1.5 shadow-md shadow-[#7367F0]/25 cursor-pointer active:scale-95"
             >
               <span>{t('landing.getStarted')}</span>
               <ArrowRight className="w-3.5 h-3.5" />
@@ -221,115 +222,123 @@ export const LandingNavbar: React.FC<LandingNavbarProps> = ({ onGoToApp, onOpenL
         </div>
       </div>
 
-      {/* Accessible Mobile Drawer Dropdown */}
-      {isMobileMenuOpen && (
-        <div className="fixed inset-0 top-16 sm:top-20 z-40 bg-slate-900/60 backdrop-blur-sm lg:hidden animate-fade-in flex flex-col justify-start">
+      {/* Accessible Mobile Drawer Dropdown Portaled to Body to avoid stacking context traps */}
+      {isMobileMenuOpen && typeof document !== 'undefined' &&
+        createPortal(
           <div
-            className="w-full bg-white dark:bg-[#25293C] border-b border-slate-200/80 dark:border-white/[0.1] shadow-2xl p-5 sm:p-6 space-y-5 animate-slide-down max-h-[calc(100vh-5rem)] overflow-y-auto"
-            role="dialog"
-            aria-modal="true"
-            aria-label="Mobile Navigation"
+            className="fixed inset-0 top-16 sm:top-20 z-[9999] bg-slate-900/60 backdrop-blur-md lg:hidden animate-fade-in flex flex-col justify-start"
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setIsMobileMenuOpen(false);
+            }}
           >
-            {/* Nav Links */}
-            <div className="space-y-1">
-              <button
-                type="button"
-                onClick={() => handleNavClick('features')}
-                className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-bold text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-white/[0.05] transition-colors text-left"
-              >
-                <div className="w-8 h-8 rounded-lg bg-[#7367F0]/10 text-[#7367F0] flex items-center justify-center shrink-0">
-                  <Layers className="w-4 h-4" />
-                </div>
-                <span>{t('landing.navFeatures')}</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => handleNavClick('how-it-works')}
-                className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-bold text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-white/[0.05] transition-colors text-left"
-              >
-                <div className="w-8 h-8 rounded-lg bg-[#00CFE8]/10 text-[#00CFE8] flex items-center justify-center shrink-0">
-                  <Zap className="w-4 h-4" />
-                </div>
-                <span>{t('landing.navHowItWorks')}</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => handleNavClick('pricing')}
-                className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-bold text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-white/[0.05] transition-colors text-left"
-              >
-                <div className="w-8 h-8 rounded-lg bg-[#28C76F]/10 text-[#28C76F] flex items-center justify-center shrink-0">
-                  <Tag className="w-4 h-4" />
-                </div>
-                <span>{t('landing.navPricing')}</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => handleNavClick('faq')}
-                className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-bold text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-white/[0.05] transition-colors text-left"
-              >
-                <div className="w-8 h-8 rounded-lg bg-[#FF9F43]/10 text-[#FF9F43] flex items-center justify-center shrink-0">
-                  <HelpCircle className="w-4 h-4" />
-                </div>
-                <span>{t('landing.navFaq')}</span>
-              </button>
-            </div>
-
-            {/* Language & Extra Setting */}
-            <div className="pt-3 border-t border-slate-100 dark:border-white/[0.06] flex items-center justify-between">
-              <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">
-                {t('settings.language')}
-              </span>
-              <LanguageSwitcher />
-            </div>
-
-            {/* Actions in Drawer */}
-            <div className="pt-3 border-t border-slate-100 dark:border-white/[0.06] space-y-2">
-              {user ? (
+            <div
+              className="w-full bg-white dark:bg-[#25293C] border-b border-slate-200/80 dark:border-white/[0.1] shadow-2xl p-5 sm:p-6 space-y-5 animate-slide-down max-h-[calc(100vh-5rem)] overflow-y-auto"
+              role="dialog"
+              aria-modal="true"
+              aria-label="Mobile Navigation"
+            >
+              {/* Nav Links */}
+              <div className="space-y-1">
                 <button
                   type="button"
-                  onClick={() => {
-                    setIsMobileMenuOpen(false);
-                    onGoToApp();
-                  }}
-                  className="w-full h-12 rounded-xl bg-[#7367F0] text-white text-sm font-bold shadow-md shadow-[#7367F0]/30 flex items-center justify-center gap-2 cursor-pointer active:scale-95"
+                  onClick={() => handleNavClick('features')}
+                  className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-bold text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-white/[0.05] transition-colors text-left cursor-pointer"
                 >
-                  <span>{t('landing.goToDashboard')}</span>
-                  <ArrowRight className="w-4 h-4" />
+                  <div className="w-8 h-8 rounded-lg bg-[#7367F0]/10 text-[#7367F0] flex items-center justify-center shrink-0">
+                    <Layers className="w-4 h-4" />
+                  </div>
+                  <span>{t('landing.navFeatures')}</span>
                 </button>
-              ) : (
-                <>
+
+                <button
+                  type="button"
+                  onClick={() => handleNavClick('how-it-works')}
+                  className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-bold text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-white/[0.05] transition-colors text-left cursor-pointer"
+                >
+                  <div className="w-8 h-8 rounded-lg bg-[#00CFE8]/10 text-[#00CFE8] flex items-center justify-center shrink-0">
+                    <Zap className="w-4 h-4" />
+                  </div>
+                  <span>{t('landing.navHowItWorks')}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => handleNavClick('pricing')}
+                  className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-bold text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-white/[0.05] transition-colors text-left cursor-pointer"
+                >
+                  <div className="w-8 h-8 rounded-lg bg-[#28C76F]/10 text-[#28C76F] flex items-center justify-center shrink-0">
+                    <Tag className="w-4 h-4" />
+                  </div>
+                  <span>{t('landing.navPricing')}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => handleNavClick('faq')}
+                  className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-bold text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-white/[0.05] transition-colors text-left cursor-pointer"
+                >
+                  <div className="w-8 h-8 rounded-lg bg-[#FF9F43]/10 text-[#FF9F43] flex items-center justify-center shrink-0">
+                    <HelpCircle className="w-4 h-4" />
+                  </div>
+                  <span>{t('landing.navFaq')}</span>
+                </button>
+              </div>
+
+              {/* Language & Extra Setting */}
+              <div className="pt-3 border-t border-slate-100 dark:border-white/[0.06] flex items-center justify-between">
+                <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">
+                  {t('landing.language')}
+                </span>
+                <LanguageSwitcher />
+              </div>
+
+              {/* Actions in Drawer */}
+              <div className="pt-3 border-t border-slate-100 dark:border-white/[0.06] space-y-2">
+                {user ? (
                   <button
                     type="button"
                     onClick={() => {
                       setIsMobileMenuOpen(false);
-                      onOpenLogin();
+                      onGoToApp();
                     }}
                     className="w-full h-12 rounded-xl bg-[#7367F0] text-white text-sm font-bold shadow-md shadow-[#7367F0]/30 flex items-center justify-center gap-2 cursor-pointer active:scale-95"
                   >
-                    <span>{t('landing.getStarted')}</span>
+                    <span>{t('landing.goToDashboard')}</span>
                     <ArrowRight className="w-4 h-4" />
                   </button>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsMobileMenuOpen(false);
+                        onOpenLogin();
+                      }}
+                      className="w-full h-12 rounded-xl bg-[#7367F0] text-white text-sm font-bold shadow-md shadow-[#7367F0]/30 flex items-center justify-center gap-2 cursor-pointer active:scale-95"
+                    >
+                      <span>{t('landing.getStarted')}</span>
+                      <ArrowRight className="w-4 h-4" />
+                    </button>
 
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsMobileMenuOpen(false);
-                      onOpenLogin();
-                    }}
-                    className="w-full h-12 rounded-xl border border-slate-200 dark:border-white/[0.1] text-slate-800 dark:text-slate-100 text-sm font-bold flex items-center justify-center gap-2 cursor-pointer hover:bg-slate-50 dark:hover:bg-white/[0.05]"
-                  >
-                    <LogIn className="w-4 h-4" />
-                    <span>{t('landing.login')}</span>
-                  </button>
-                </>
-              )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsMobileMenuOpen(false);
+                        onOpenLogin();
+                      }}
+                      className="w-full h-12 rounded-xl border border-slate-200 dark:border-white/[0.1] text-slate-800 dark:text-slate-100 text-sm font-bold flex items-center justify-center gap-2 cursor-pointer hover:bg-slate-50 dark:hover:bg-white/[0.05]"
+                    >
+                      <LogIn className="w-4 h-4" />
+                      <span>{t('landing.login')}</span>
+                    </button>
+                  </>
+                )}
+              </div>
             </div>
-          </div>
-        </div>
-      )}
+          </div>,
+          document.body
+        )
+      }
     </header>
   );
 };

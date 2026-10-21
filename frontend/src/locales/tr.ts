@@ -2742,6 +2742,7 @@ export const tr = {
     termsNotice: 'Giriş yaparak kullanım koşullarını kabul etmiş olursunuz.',
     mobileMenuClose: 'Menüyü Kapat',
     mobileMenuOpen: 'Menüyü Aç',
+    language: 'Dil',
     previewLabel: 'WhatsApp Mesaj Önizlemesi',
     jitterLabel: 'İnsanlaştırılmış Jitter Gecikmesi',
     jitterValue: '{min}s - {max}s dinamik bekleme',

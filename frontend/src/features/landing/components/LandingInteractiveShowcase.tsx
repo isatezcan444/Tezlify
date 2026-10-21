@@ -247,9 +247,9 @@ export const LandingInteractiveShowcase: React.FC<LandingInteractiveShowcaseProp
 
               {/* Scraped Leads Table */}
               <div className="space-y-3">
-                <div className="text-xs font-bold text-slate-500 flex items-center justify-between">
-                  <span>{presets[selectedPreset].city} • {presets[selectedPreset].category}</span>
-                  <span className="text-[#7367F0] font-mono">{t('landing.scanScore')}</span>
+                <div className="text-xs font-bold text-slate-500 flex flex-col sm:flex-row sm:items-center justify-between gap-1 sm:gap-2">
+                  <span className="min-w-0 truncate">{presets[selectedPreset].city} • {presets[selectedPreset].category}</span>
+                  <span className="text-[#7367F0] font-mono shrink-0">{t('landing.scanScore')}</span>
                 </div>
 
                 <div className="divide-y divide-slate-100 dark:divide-white/[0.06] rounded-2xl border border-slate-200/80 dark:border-white/[0.08] bg-white/60 dark:bg-[#25293C]/60 overflow-hidden">

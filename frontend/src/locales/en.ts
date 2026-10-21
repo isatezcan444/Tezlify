@@ -2742,6 +2742,7 @@ export const en = {
     termsNotice: 'By continuing, you agree to our terms of service.',
     mobileMenuClose: 'Close Menu',
     mobileMenuOpen: 'Open Menu',
+    language: 'Language',
     previewLabel: 'WhatsApp Message Preview',
     jitterLabel: 'Humanized Jitter Delay',
     jitterValue: '{min}s - {max}s dynamic delay',
