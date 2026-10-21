@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { Skeleton } from '../ui/Skeleton';
+import { useI18n } from '../../context/I18nContext';
 
 export interface ColumnDef<T> {
   id: string;
@@ -30,6 +31,7 @@ export interface DataTableProps<T> {
   // Selection
   selectable?: boolean;
   selectedIds?: (string | number)[];
+  isRowSelected?: (item: T) => boolean;
   onToggleSelect?: (id: string | number) => void;
   onToggleSelectAll?: () => void;
   isAllSelected?: boolean;
@@ -40,6 +42,7 @@ export interface DataTableProps<T> {
   onSort?: (columnId: string) => void;
   // Actions & Callbacks
   onRowClick?: (item: T) => void;
+  rowClassName?: (item: T, index: number) => string | undefined;
   emptyState?: React.ReactNode;
   pagination?: React.ReactNode;
   className?: string;
@@ -52,6 +55,7 @@ export function DataTable<T>({
   rowKey = (item: any) => item.id,
   selectable = false,
   selectedIds = [],
+  isRowSelected,
   onToggleSelect,
   onToggleSelectAll,
   isAllSelected = false,
@@ -60,10 +64,12 @@ export function DataTable<T>({
   sortDirection,
   onSort,
   onRowClick,
+  rowClassName,
   emptyState,
   pagination,
   className,
 }: DataTableProps<T>) {
+  const { t } = useI18n();
   const alignClasses = {
     left: 'text-left',
     center: 'text-center',
@@ -84,6 +90,8 @@ export function DataTable<T>({
                     type="button"
                     onClick={onToggleSelectAll}
                     className="p-1 rounded hover:bg-slate-200 dark:hover:bg-white/[0.08] text-slate-500 dark:text-slate-300 transition-colors cursor-pointer"
+                    title={isAllSelected ? t('common.clearSelection') : t('common.selectAll')}
+                    aria-label={isAllSelected ? t('common.clearSelection') : t('common.selectAll')}
                   >
                     {isAllSelected ? (
                       <CheckSquare className="w-4 h-4 text-[#7367F0]" />
@@ -146,7 +154,7 @@ export function DataTable<T>({
                     </td>
                   )}
                   {columns.map((col) => (
-                    <td key={`skeleton-cell-${col.id}`} className="py-4 px-4">
+                    <td key={`skeleton-cell-${col.id}`} className={cn('py-4 px-4', col.className)}>
                       <Skeleton variant="text" width="80%" height={14} />
                     </td>
                   ))}
@@ -158,7 +166,7 @@ export function DataTable<T>({
                 <td colSpan={columns.length + (selectable ? 1 : 0)} className="p-0">
                   {emptyState || (
                     <div className="py-12 text-center text-slate-400 text-xs font-bold">
-                      No records found.
+                      {t('common.noData') || 'No records found.'}
                     </div>
                   )}
                 </td>
@@ -167,7 +175,7 @@ export function DataTable<T>({
               // Actual Data Rows
               data.map((item, idx) => {
                 const key = rowKey(item);
-                const isSelected = selectedIds.includes(key);
+                const isSelected = isRowSelected ? isRowSelected(item) : selectedIds.includes(key);
 
                 return (
                   <tr
@@ -178,7 +186,8 @@ export function DataTable<T>({
                       onRowClick && 'cursor-pointer',
                       isSelected
                         ? 'bg-[#7367F0]/10 dark:bg-[#7367F0]/15'
-                        : 'hover:bg-slate-50/70 dark:hover:bg-white/[0.02]'
+                        : 'hover:bg-slate-50/70 dark:hover:bg-white/[0.02]',
+                      rowClassName && rowClassName(item, idx)
                     )}
                   >
                     {selectable && (
@@ -187,6 +196,8 @@ export function DataTable<T>({
                           type="button"
                           onClick={() => onToggleSelect && onToggleSelect(key)}
                           className="p-1 rounded hover:bg-slate-200 dark:hover:bg-white/[0.08] text-slate-500 dark:text-slate-300 transition-colors cursor-pointer"
+                          title={isSelected ? t('common.clearSelection') : t('common.selectAll')}
+                          aria-label={isSelected ? t('common.clearSelection') : t('common.selectAll')}
                         >
                           {isSelected ? (
                             <CheckSquare className="w-4 h-4 text-[#7367F0]" />

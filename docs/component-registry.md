@@ -163,9 +163,9 @@ src/
 ## 3. Data Display & Navigation (`components/data-display/`, `components/navigation/`)
 
 ### `DataTable<T>`
-- **Purpose**: Generic type-safe table with sortable headers, row selection, custom cells, and loading state.
-- **Props**: `columns: Column<T>[]`, `data: T[]`, `selectedIds`, `onSelectRow`, `onSelectAll`, `isLoading`.
-- **Import**: `import { DataTable } from '@/components/data-display';`
+- **Purpose**: Unified Vuexy type-safe table component with sortable headers, multi-selection (page-level & matching), custom cell renderers, skeleton loading states, empty state injection, and integrated pagination.
+- **Props**: `columns: ColumnDef<T>[]`, `data: T[]`, `loading?: boolean`, `rowKey?: (item: T) => string | number`, `selectable?: boolean`, `selectedIds?: (string | number)[]`, `isRowSelected?: (item: T) => boolean`, `onToggleSelect?: (id: string | number) => void`, `onToggleSelectAll?: () => void`, `isAllSelected?: boolean`, `isSomeSelected?: boolean`, `sortColumn?: string`, `sortDirection?: 'asc' | 'desc'`, `onSort?: (columnId: string) => void`, `onRowClick?: (item: T) => void`, `rowClassName?: (item: T, index: number) => string | undefined`, `emptyState?: React.ReactNode`, `pagination?: React.ReactNode`, `className?: string`.
+- **Import**: `import { DataTable, type ColumnDef } from '@/components/data-display';`
 
 ### `TableToolbar`
 - **Purpose**: Centralized table control bar with search, filter dropdowns, action buttons, and active filter chips.

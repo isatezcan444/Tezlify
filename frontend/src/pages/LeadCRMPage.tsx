@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { 
   Users, 
   Search, 
@@ -13,9 +13,6 @@ import {
   Loader2, 
   X, 
   RotateCcw,
-  CheckSquare,
-  Square,
-  MinusSquare,
   Eye,
   Building2,
   FolderPlus,
@@ -38,7 +35,7 @@ import {
   Dropdown
 } from '../components/ui';
 import { SearchInput, Select } from '../components/forms';
-import { BusinessCell } from '../components/data-display';
+import { BusinessCell, DataTable, type ColumnDef } from '../components/data-display';
 import { 
   LeadDetailDrawer, 
   LocationMultiSelect, 
@@ -449,6 +446,202 @@ export const LeadCRMPage: React.FC<LeadCRMPageProps> = ({ onRefreshStats }) => {
     return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`;
   };
 
+  const columns = useMemo<ColumnDef<Lead>[]>(
+    () => [
+      {
+        id: 'profile',
+        header: t('leads.colProfile'),
+        className: 'max-w-[260px]',
+        cell: (lead) => (
+          <BusinessCell
+            name={lead.name}
+            category={lead.category || t('common.general')}
+            entityType={lead.entity_type}
+            onClick={() => handleOpenLeadDrawer(lead)}
+          />
+        ),
+      },
+      {
+        id: 'contact',
+        header: t('leads.colContact'),
+        className: 'whitespace-nowrap',
+        cell: (lead) => (
+          <div>
+            <div className="flex items-center space-x-2 font-mono font-bold text-xs text-slate-700 dark:text-slate-200">
+              <Phone className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+              <span>{lead.phone_e164 || lead.phone || t('leads.noPhone')}</span>
+            </div>
+            <div className="mt-1">
+              {lead.is_whatsapp_eligible ? (
+                <span className="inline-flex items-center space-x-1 px-1.5 py-0.5 rounded-full bg-[#25D366]/15 text-[#25D366] font-bold text-[10px]">
+                  <WhatsAppIcon className="w-3 h-3" />
+                  <span>{t('leads.whatsappActive')}</span>
+                </span>
+              ) : (
+                <span className="text-[10px] text-slate-400 font-sans">
+                  {t('leads.whatsappUnverified')}
+                </span>
+              )}
+            </div>
+          </div>
+        ),
+      },
+      {
+        id: 'location',
+        header: t('leads.colLocation'),
+        className: 'max-w-[240px]',
+        cell: (lead) => (
+          <a
+            href={getGoogleMapsUrl(lead)}
+            target="_blank"
+            rel="noopener noreferrer"
+            title={t('leads.openInGoogleMaps')}
+            className="group/loc inline-flex items-start space-x-1.5 text-xs text-slate-600 dark:text-slate-300 hover:text-[#7367F0] dark:hover:text-[#7367F0] transition-colors cursor-pointer"
+          >
+            <MapPin className="w-3.5 h-3.5 text-slate-400 group-hover/loc:text-[#7367F0] shrink-0 mt-0.5 transition-colors" />
+            <span className="line-clamp-2 leading-tight group-hover/loc:underline underline-offset-2">
+              {lead.address || `${lead.district ? `${lead.district}, ` : ''}${lead.city || ''}`}
+            </span>
+          </a>
+        ),
+      },
+      {
+        id: 'ratingWeb',
+        header: t('leads.colRatingWeb'),
+        className: 'whitespace-nowrap',
+        cell: (lead) => (
+          <div>
+            {lead.rating ? (
+              <div className="flex items-center space-x-1 text-xs">
+                <Star className="w-3.5 h-3.5 text-[#FF9F43] fill-[#FF9F43]" />
+                <span className="font-bold text-slate-800 dark:text-white">{lead.rating}</span>
+                {lead.reviews_count ? (
+                  <span className="text-slate-400 text-[10px]">({lead.reviews_count})</span>
+                ) : null}
+              </div>
+            ) : (
+              <span className="text-slate-400 text-[10px]">{t('leads.noRating')}</span>
+            )}
+
+            {lead.website ? (
+              <a
+                href={lead.website.startsWith('http') ? lead.website : `https://${lead.website}`}
+                target="_blank"
+                rel="noreferrer"
+                className="mt-1 inline-flex items-center space-x-1 text-[11px] text-[#7367F0] hover:underline truncate max-w-[140px]"
+              >
+                <Globe className="w-3 h-3 shrink-0" />
+                <span className="truncate">{lead.website.replace(/^https?:\/\/(www\.)?/, '')}</span>
+              </a>
+            ) : null}
+          </div>
+        ),
+      },
+      {
+        id: 'status',
+        header: t('leads.colStatus'),
+        className: 'whitespace-nowrap',
+        cell: (lead) => (
+          <select
+            value={lead.status}
+            onChange={(e) => handleStatusChange(lead.id, e.target.value as LeadStatus)}
+            aria-label={t('leads.colStatus')}
+            className={`px-2.5 py-1 rounded-lg text-xs font-bold border transition-colors cursor-pointer ${
+              lead.status === 'NEW'
+                ? 'bg-blue-50 text-blue-600 border-blue-200 dark:bg-blue-500/10 dark:text-blue-400 dark:border-blue-500/20'
+                : lead.status === 'CONTACTED'
+                ? 'bg-amber-50 text-amber-600 border-amber-200 dark:bg-amber-500/10 dark:text-amber-400 dark:border-amber-500/20'
+                : lead.status === 'REPLIED'
+                ? 'bg-emerald-50 text-emerald-600 border-emerald-200 dark:bg-emerald-500/10 dark:text-emerald-400 dark:border-emerald-500/20'
+                : lead.status === 'INTERESTED'
+                ? 'bg-purple-50 text-purple-600 border-purple-200 dark:bg-purple-500/10 dark:text-purple-400 dark:border-purple-500/20'
+                : lead.status === 'INVALID_NUMBER'
+                ? 'bg-slate-100 text-slate-600 border-slate-300 dark:bg-slate-800 dark:text-slate-400 dark:border-slate-700'
+                : 'bg-rose-50 text-rose-600 border-rose-200 dark:bg-rose-500/10 dark:text-rose-400 dark:border-rose-500/20'
+            }`}
+          >
+            <option value="NEW">{t('leads.statusNew')}</option>
+            <option value="CONTACTED">{t('leads.statusContacted')}</option>
+            <option value="REPLIED">{t('leads.statusReplied')}</option>
+            <option value="INTERESTED">{t('leads.statusInterested')}</option>
+            <option value="UNSUBSCRIBED">{t('leads.statusUnsubscribed')}</option>
+            <option value="INVALID_NUMBER">{t('leads.statusInvalid')}</option>
+          </select>
+        ),
+      },
+      {
+        id: 'actions',
+        header: t('leads.colActions'),
+        align: 'right',
+        className: 'text-right whitespace-nowrap',
+        cell: (lead) => (
+          <div className="flex items-center justify-end space-x-1">
+            <IconButton
+              icon={Eye}
+              variant="ghost"
+              size="sm"
+              tooltip={t('leads.tabOverview')}
+              onClick={() => handleOpenLeadDrawer(lead, 'overview')}
+              className="text-slate-400 hover:text-[#7367F0] hover:bg-[#7367F0]/10"
+            />
+            <div className="relative inline-flex">
+              <IconButton
+                icon={WhatsAppIcon}
+                variant="ghost"
+                size="sm"
+                tooltip={t('leads.tabConversation')}
+                onClick={() => handleOpenLeadDrawer(lead, 'chat')}
+                className="text-[#25D366] hover:bg-[#25D366]/10"
+              />
+              {lead.status === 'REPLIED' && (
+                <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-emerald-500 ring-2 ring-white dark:ring-slate-900 animate-pulse" />
+              )}
+            </div>
+            <IconButton
+              icon={Trash2}
+              variant="ghost"
+              size="sm"
+              tooltip={t('common.delete')}
+              onClick={() => handleOpenSingleDelete(lead)}
+              className="text-slate-400 hover:text-[#EA5455] hover:bg-[#EA5455]/10"
+            />
+            <Dropdown
+              portal
+              align="right"
+              trigger={
+                <span
+                  role="button"
+                  tabIndex={0}
+                  className="inline-flex items-center justify-center p-1.5 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-white/[0.08] transition-colors cursor-pointer"
+                  title={t('leads.colActions')}
+                  aria-label={t('leads.colActions')}
+                >
+                  <MoreVertical className="w-4 h-4" />
+                </span>
+              }
+              items={[
+                {
+                  id: 'add-to-group',
+                  label: t('leads.bulkAddToGroup'),
+                  icon: <FolderPlus className="w-3.5 h-3.5 text-[#7367F0]" />,
+                  onClick: () => handleOpenAddToGroup(lead),
+                },
+                {
+                  id: 'blacklist',
+                  label: t('blacklist.addToBlacklist'),
+                  icon: <ShieldAlert className="w-3.5 h-3.5 text-[#FF9F43]" />,
+                  onClick: () => handleOpenSingleBlacklist(lead),
+                  variant: 'warning',
+                },
+              ]}
+            />
+          </div>
+        ),
+      },
+    ],
+    [t, handleOpenLeadDrawer, handleStatusChange, handleOpenSingleDelete, handleOpenAddToGroup, handleOpenSingleBlacklist]
+  );
+
   return (
     <div className="space-y-4 sm:space-y-6 pb-16 select-none animate-fade-in">
       {/* Top Action Bar & Filter Header */}
@@ -655,273 +848,41 @@ export const LeadCRMPage: React.FC<LeadCRMPageProps> = ({ onRefreshStats }) => {
         }
       />
 
-      {/* Leads Table Card */}
-      <Card className="overflow-hidden shadow-sm">
-        <div className="overflow-x-auto min-w-full overscroll-x-contain">
-          <table className="w-full text-left border-collapse text-xs">
-            <thead>
-              <tr className="border-b border-slate-200/80 dark:border-white/[0.08] bg-slate-50/75 dark:bg-white/[0.02] text-slate-500 dark:text-[#7E7F96] font-bold uppercase tracking-wider text-[11px]">
-                {/* Select All Checkbox Header */}
-                <th className="py-3.5 px-4 w-10 text-center">
-                  <button
-                    type="button"
-                    onClick={handleToggleSelectAllPage}
-                    className="p-1 rounded hover:bg-slate-200 dark:hover:bg-white/[0.08] text-slate-500 dark:text-slate-300 transition-colors cursor-pointer"
-                    title={isAllCurrentPageSelected ? t('common.clearSelection') : t('common.selectAll')}
-                    aria-label={isAllCurrentPageSelected ? t('common.clearSelection') : t('common.selectAll')}
-                  >
-                    {selectAllMatching || isAllCurrentPageSelected ? (
-                      <CheckSquare className="w-4 h-4 text-[#7367F0]" />
-                    ) : isSomeCurrentPageSelected ? (
-                      <MinusSquare className="w-4 h-4 text-[#7367F0]" />
-                    ) : (
-                      <Square className="w-4 h-4 text-slate-400" />
-                    )}
-                  </button>
-                </th>
-                <th className="py-3.5 px-4">{t('leads.colProfile')}</th>
-                <th className="py-3.5 px-4">{t('leads.colContact')}</th>
-                <th className="py-3.5 px-4">{t('leads.colLocation')}</th>
-                <th className="py-3.5 px-4">{t('leads.colRatingWeb')}</th>
-                <th className="py-3.5 px-4">{t('leads.colStatus')}</th>
-                <th className="py-3.5 px-4 text-right">{t('leads.colActions')}</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100 dark:divide-white/[0.04]">
-              {loading ? (
-                <tr>
-                  <td colSpan={7} className="py-12 text-center text-slate-400">
-                    <Loader2 className="w-6 h-6 animate-spin mx-auto text-[#7367F0] mb-2" />
-                    <span>{t('common.loading')}</span>
-                  </td>
-                </tr>
-              ) : leads.length === 0 ? (
-                <tr>
-                  <td colSpan={7} className="p-0">
-                    <EmptyState
-                      icon={Users}
-                      title={t('leadFinder.noJobsFound')}
-                      description={t('titles.leadsSub')}
-                    />
-                  </td>
-                </tr>
-              ) : (
-                leads.map((lead) => {
-                  const isSelected = selectedIds.includes(lead.id) || selectAllMatching;
-                  return (
-                    <tr 
-                      key={lead.id} 
-                      className={`transition-colors group ${
-                        isSelected
-                          ? 'bg-[#7367F0]/10 dark:bg-[#7367F0]/15'
-                          : 'hover:bg-slate-50/70 dark:hover:bg-white/[0.02]'
-                      }`}
-                    >
-                      {/* Row Checkbox */}
-                      <td className="py-3.5 px-4 text-center">
-                        <button
-                          type="button"
-                          onClick={() => handleToggleSingleSelect(lead.id)}
-                          className="p-1 rounded hover:bg-slate-200 dark:hover:bg-white/[0.08] text-slate-500 dark:text-slate-300 transition-colors cursor-pointer"
-                          aria-label={isSelected ? t('common.clearSelection') : t('common.selectAll')}
-                          title={isSelected ? t('common.clearSelection') : t('common.selectAll')}
-                        >
-                          {isSelected ? (
-                            <CheckSquare className="w-4 h-4 text-[#7367F0]" />
-                          ) : (
-                            <Square className="w-4 h-4 text-slate-300 dark:text-slate-600 group-hover:text-slate-400" />
-                          )}
-                        </button>
-                      </td>
-
-                      {/* Name & Avatar & Category */}
-                      <td className="py-3.5 px-4 max-w-[260px]">
-                        <BusinessCell
-                          name={lead.name}
-                          category={lead.category || t('common.general')}
-                          entityType={lead.entity_type}
-                          onClick={() => handleOpenLeadDrawer(lead)}
-                        />
-                      </td>
-
-                      {/* Phone & WhatsApp */}
-                      <td className="py-3.5 px-4 whitespace-nowrap">
-                        <div className="flex items-center space-x-2 font-mono font-bold text-xs text-slate-700 dark:text-slate-200">
-                          <Phone className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                          <span>{lead.phone_e164 || lead.phone || t('leads.noPhone')}</span>
-                        </div>
-                        <div className="mt-1">
-                          {lead.is_whatsapp_eligible ? (
-                            <span className="inline-flex items-center space-x-1 px-1.5 py-0.5 rounded-full bg-[#25D366]/15 text-[#25D366] font-bold text-[10px]">
-                              <WhatsAppIcon className="w-3 h-3" />
-                              <span>{t('leads.whatsappActive')}</span>
-                            </span>
-                          ) : (
-                            <span className="text-[10px] text-slate-400 font-sans">
-                              {t('leads.whatsappUnverified')}
-                            </span>
-                          )}
-                        </div>
-                      </td>
-
-                      {/* Location - Clickable to open Google Maps */}
-                      <td className="py-3.5 px-4 max-w-[240px]">
-                        <a
-                          href={getGoogleMapsUrl(lead)}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          title={t('leads.openInGoogleMaps')}
-                          className="group/loc inline-flex items-start space-x-1.5 text-xs text-slate-600 dark:text-slate-300 hover:text-[#7367F0] dark:hover:text-[#7367F0] transition-colors cursor-pointer"
-                        >
-                          <MapPin className="w-3.5 h-3.5 text-slate-400 group-hover/loc:text-[#7367F0] shrink-0 mt-0.5 transition-colors" />
-                          <span className="line-clamp-2 leading-tight group-hover/loc:underline underline-offset-2">
-                            {lead.address || `${lead.district ? `${lead.district}, ` : ''}${lead.city || ''}`}
-                          </span>
-                        </a>
-                      </td>
-
-                      {/* Rating & Website */}
-                      <td className="py-3.5 px-4 whitespace-nowrap">
-                        {lead.rating ? (
-                          <div className="flex items-center space-x-1 text-xs">
-                            <Star className="w-3.5 h-3.5 text-[#FF9F43] fill-[#FF9F43]" />
-                            <span className="font-bold text-slate-800 dark:text-white">{lead.rating}</span>
-                            {lead.reviews_count ? (
-                              <span className="text-slate-400 text-[10px]">({lead.reviews_count})</span>
-                            ) : null}
-                          </div>
-                        ) : (
-                          <span className="text-slate-400 text-[10px]">{t('leads.noRating')}</span>
-                        )}
-
-                        {lead.website ? (
-                          <a
-                            href={lead.website.startsWith('http') ? lead.website : `https://${lead.website}`}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="mt-1 inline-flex items-center space-x-1 text-[11px] text-[#7367F0] hover:underline truncate max-w-[140px]"
-                          >
-                            <Globe className="w-3 h-3 shrink-0" />
-                            <span className="truncate">{lead.website.replace(/^https?:\/\/(www\.)?/, '')}</span>
-                          </a>
-                        ) : null}
-                      </td>
-
-                      {/* Status Dropdown */}
-                      <td className="py-3.5 px-4 whitespace-nowrap">
-                        <select
-                          value={lead.status}
-                          onChange={(e) => handleStatusChange(lead.id, e.target.value as LeadStatus)}
-                          aria-label={t('leads.colStatus')}
-                          className={`px-2.5 py-1 rounded-lg text-xs font-bold border transition-colors cursor-pointer ${
-                            lead.status === 'NEW'
-                              ? 'bg-blue-50 text-blue-600 border-blue-200 dark:bg-blue-500/10 dark:text-blue-400 dark:border-blue-500/20'
-                              : lead.status === 'CONTACTED'
-                              ? 'bg-amber-50 text-amber-600 border-amber-200 dark:bg-amber-500/10 dark:text-amber-400 dark:border-amber-500/20'
-                              : lead.status === 'REPLIED'
-                              ? 'bg-emerald-50 text-emerald-600 border-emerald-200 dark:bg-emerald-500/10 dark:text-emerald-400 dark:border-emerald-500/20'
-                              : lead.status === 'INTERESTED'
-                              ? 'bg-purple-50 text-purple-600 border-purple-200 dark:bg-purple-500/10 dark:text-purple-400 dark:border-purple-500/20'
-                              : lead.status === 'INVALID_NUMBER'
-                              ? 'bg-slate-100 text-slate-600 border-slate-300 dark:bg-slate-800 dark:text-slate-400 dark:border-slate-700'
-                              : 'bg-rose-50 text-rose-600 border-rose-200 dark:bg-rose-500/10 dark:text-rose-400 dark:border-rose-500/20'
-                          }`}
-                        >
-                          <option value="NEW">{t('leads.statusNew')}</option>
-                          <option value="CONTACTED">{t('leads.statusContacted')}</option>
-                          <option value="REPLIED">{t('leads.statusReplied')}</option>
-                          <option value="INTERESTED">{t('leads.statusInterested')}</option>
-                          <option value="UNSUBSCRIBED">{t('leads.statusUnsubscribed')}</option>
-                          <option value="INVALID_NUMBER">{t('leads.statusInvalid')}</option>
-                        </select>
-                      </td>
-
-                      {/* Actions: View Details, WhatsApp Chat, Delete, 3-Dots Dropdown */}
-                      <td className="py-3.5 px-4 text-right whitespace-nowrap">
-                        <div className="flex items-center justify-end space-x-1">
-                          <IconButton
-                            icon={Eye}
-                            variant="ghost"
-                            size="sm"
-                            tooltip={t('leads.tabOverview')}
-                            onClick={() => handleOpenLeadDrawer(lead, 'overview')}
-                            className="text-slate-400 hover:text-[#7367F0] hover:bg-[#7367F0]/10"
-                          />
-                          <div className="relative inline-flex">
-                            <IconButton
-                              icon={WhatsAppIcon}
-                              variant="ghost"
-                              size="sm"
-                              tooltip={t('leads.tabConversation')}
-                              onClick={() => handleOpenLeadDrawer(lead, 'chat')}
-                              className="text-[#25D366] hover:bg-[#25D366]/10"
-                            />
-                            {lead.status === 'REPLIED' && (
-                              <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-emerald-500 ring-2 ring-white dark:ring-slate-900 animate-pulse" />
-                            )}
-                          </div>
-                          <IconButton
-                            icon={Trash2}
-                            variant="ghost"
-                            size="sm"
-                            tooltip={t('common.delete')}
-                            onClick={() => handleOpenSingleDelete(lead)}
-                            className="text-slate-400 hover:text-[#EA5455] hover:bg-[#EA5455]/10"
-                          />
-                          <Dropdown
-                            portal
-                            align="right"
-                            trigger={
-                              <span
-                                role="button"
-                                tabIndex={0}
-                                className="inline-flex items-center justify-center p-1.5 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-white/[0.08] transition-colors cursor-pointer"
-                                title={t('leads.colActions')}
-                                aria-label={t('leads.colActions')}
-                              >
-                                <MoreVertical className="w-4 h-4" />
-                              </span>
-                            }
-                            items={[
-                              {
-                                id: 'add-to-group',
-                                label: t('leads.bulkAddToGroup'),
-                                icon: <FolderPlus className="w-3.5 h-3.5 text-[#7367F0]" />,
-                                onClick: () => handleOpenAddToGroup(lead),
-                              },
-                              {
-                                id: 'blacklist',
-                                label: t('blacklist.addToBlacklist'),
-                                icon: <ShieldAlert className="w-3.5 h-3.5 text-[#FF9F43]" />,
-                                onClick: () => handleOpenSingleBlacklist(lead),
-                                variant: 'warning',
-                              },
-                            ]}
-                          />
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
-
-        {/* Centralized Pagination */}
-        {total > 0 && (
-          <Pagination
-            currentPage={page}
-            totalItems={total}
-            pageSize={pageSize}
-            onPageChange={(newPage) => setPage(newPage)}
-            onPageSizeChange={(newSize) => {
-              setPageSize(newSize);
-              setPage(1);
-            }}
+      {/* Leads Table using unified DataTable */}
+      <DataTable<Lead>
+        columns={columns}
+        data={leads}
+        loading={loading}
+        rowKey={(lead) => lead.id}
+        selectable
+        selectedIds={selectedIds}
+        isRowSelected={(lead) => selectedIds.includes(lead.id) || selectAllMatching}
+        onToggleSelect={handleToggleSingleSelect}
+        onToggleSelectAll={handleToggleSelectAllPage}
+        isAllSelected={selectAllMatching || isAllCurrentPageSelected}
+        isSomeSelected={isSomeCurrentPageSelected}
+        emptyState={
+          <EmptyState
+            icon={Users}
+            title={t('leadFinder.noJobsFound')}
+            description={t('titles.leadsSub')}
           />
-        )}
-      </Card>
+        }
+        pagination={
+          total > 0 ? (
+            <Pagination
+              currentPage={page}
+              totalItems={total}
+              pageSize={pageSize}
+              onPageChange={(newPage) => setPage(newPage)}
+              onPageSizeChange={(newSize) => {
+                setPageSize(newSize);
+                setPage(1);
+              }}
+            />
+          ) : null
+        }
+      />
 
       {/* Offcanvas Slide-over Lead Details Drawer */}
       <LeadDetailDrawer

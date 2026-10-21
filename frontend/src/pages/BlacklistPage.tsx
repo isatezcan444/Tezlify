@@ -1,13 +1,10 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { 
   ShieldAlert,
   Plus, 
   Trash2, 
   Phone,
   Loader2,
-  CheckSquare, 
-  Square, 
-  MinusSquare, 
   RotateCcw 
 } from 'lucide-react';
 import { ApiClient } from '../api/client';
@@ -24,6 +21,7 @@ import {
   Pagination
 } from '../components/ui';
 import { SearchInput, Select } from '../components/forms';
+import { DataTable, type ColumnDef } from '../components/data-display';
 import { BlacklistAddModal } from '../features/leads/components';
 import { useToast } from '../context/ToastContext';
 import { useI18n } from '../context/I18nContext';
@@ -201,6 +199,77 @@ export const BlacklistPage: React.FC = () => {
     }
   };
 
+  const columns = useMemo<ColumnDef<BlacklistEntry>[]>(
+    () => [
+      {
+        id: 'profile',
+        header: t('leads.colProfile'),
+        className: 'max-w-[280px]',
+        cell: (entry) => (
+          <div>
+            <div className="font-bold text-slate-800 dark:text-white text-xs truncate">
+              {entry.lead_name || t('leads.noPhone')}
+            </div>
+            <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+              <span className="text-[10px] font-bold px-1.5 py-0.2 rounded bg-[#7367F0]/10 text-[#7367F0] dark:bg-[#7367F0]/20 dark:text-[#A59DF8]">
+                {entry.lead_category || t('common.general')}
+              </span>
+              {(entry.lead_district || entry.lead_city) && (
+                <span className="text-[10px] text-slate-400 font-medium">
+                  • {[entry.lead_district, entry.lead_city].filter(Boolean).join(', ')}
+                </span>
+              )}
+            </div>
+          </div>
+        ),
+      },
+      {
+        id: 'contact',
+        header: t('leads.colContact'),
+        className: 'whitespace-nowrap',
+        cell: (entry) => (
+          <div className="flex items-center space-x-2 font-mono font-bold text-xs text-slate-700 dark:text-slate-200">
+            <Phone className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+            <span>{entry.phone_e164}</span>
+          </div>
+        ),
+      },
+      {
+        id: 'reason',
+        header: t('blacklist.blockReasonLabel'),
+        className: 'whitespace-nowrap',
+        cell: (entry) => (
+          <Badge variant="danger" className="text-[11px] font-bold">
+            {getReasonLabel(entry.reason)}
+          </Badge>
+        ),
+      },
+      {
+        id: 'date',
+        header: t('common.date'),
+        className: 'whitespace-nowrap text-slate-500 dark:text-[#7E7F96] font-sans',
+        cell: (entry) => new Date(entry.created_at).toLocaleString(),
+      },
+      {
+        id: 'actions',
+        header: t('common.actions'),
+        align: 'right',
+        className: 'text-right whitespace-nowrap',
+        cell: (entry) => (
+          <IconButton
+            icon={Trash2}
+            size="sm"
+            variant="ghost"
+            tooltip={t('blacklist.confirmRemoveTitle')}
+            onClick={() => handleRemove(entry.id, entry.phone_e164, entry.lead_name)}
+            className="text-slate-400 hover:text-[#EA5455] hover:bg-[#EA5455]/10"
+          />
+        ),
+      },
+    ],
+    [t, getReasonLabel, handleRemove]
+  );
+
   return (
     <div className="space-y-6 pb-16 select-none animate-fade-in">
       {/* Page Header & Top Actions */}
@@ -304,154 +373,41 @@ export const BlacklistPage: React.FC = () => {
         }
       />
 
-      {/* Blacklist Table */}
-      <Card className="overflow-hidden shadow-sm">
-        <div className="overflow-x-auto min-w-full overscroll-x-contain">
-          <table className="w-full text-left border-collapse text-xs">
-            <thead>
-              <tr className="border-b border-slate-200/80 dark:border-white/[0.08] bg-slate-50/75 dark:bg-white/[0.02] text-slate-500 dark:text-[#7E7F96] font-bold uppercase tracking-wider text-[11px]">
-                {/* Checkbox Header */}
-                <th className="py-3.5 px-4 w-10 text-center">
-                  <button
-                    type="button"
-                    onClick={handleToggleSelectAllPage}
-                    className="p-1 rounded hover:bg-slate-200 dark:hover:bg-white/[0.08] text-slate-500 dark:text-slate-300 transition-colors cursor-pointer"
-                    title={isAllCurrentPageSelected ? t('common.clearSelection') : t('common.selectAll')}
-                    aria-label={isAllCurrentPageSelected ? t('common.clearSelection') : t('common.selectAll')}
-                  >
-                    {selectAllMatching || isAllCurrentPageSelected ? (
-                      <CheckSquare className="w-4 h-4 text-[#7367F0]" />
-                    ) : isSomeCurrentPageSelected ? (
-                      <MinusSquare className="w-4 h-4 text-[#7367F0]" />
-                    ) : (
-                      <Square className="w-4 h-4 text-slate-400" />
-                    )}
-                  </button>
-                </th>
-                <th className="py-3.5 px-4">{t('leads.colProfile')}</th>
-                <th className="py-3.5 px-4">{t('leads.colContact')}</th>
-                <th className="py-3.5 px-4">{t('blacklist.blockReasonLabel')}</th>
-                <th className="py-3.5 px-4">{t('common.date')}</th>
-                <th className="py-3.5 px-4 text-right">{t('common.actions')}</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100 dark:divide-white/[0.04] text-slate-700 dark:text-slate-300 font-medium">
-              {loading ? (
-                <tr>
-                  <td colSpan={6} className="py-12 text-center text-slate-400">
-                    <Loader2 className="w-6 h-6 animate-spin mx-auto text-[#EA5455] mb-2" />
-                    <span className="text-xs font-bold block">{t('common.loading')}</span>
-                  </td>
-                </tr>
-              ) : blacklist.length === 0 ? (
-                <tr>
-                  <td colSpan={6} className="p-0">
-                    <EmptyState
-                      icon={ShieldAlert}
-                      title={total === 0 ? t('blacklist.emptyList') : t('blacklist.emptySearch')}
-                      description={t('blacklist.subtitle')}
-                    />
-                  </td>
-                </tr>
-              ) : (
-                blacklist.map((entry) => {
-                  const isSelected = selectedIds.includes(entry.id) || selectAllMatching;
-                  return (
-                    <tr 
-                      key={entry.id} 
-                      className={`transition-colors group ${
-                        isSelected 
-                          ? 'bg-[#7367F0]/10 dark:bg-[#7367F0]/15' 
-                          : 'hover:bg-slate-50/60 dark:hover:bg-white/[0.02]'
-                      }`}
-                    >
-                      {/* Checkbox Cell */}
-                      <td className="py-3.5 px-4 text-center">
-                        <button
-                          type="button"
-                          onClick={() => handleToggleSingleSelect(entry.id)}
-                          className="p-1 rounded hover:bg-slate-200 dark:hover:bg-white/[0.08] text-slate-500 dark:text-slate-300 transition-colors cursor-pointer"
-                          aria-label={isSelected ? t('common.clearSelection') : t('common.selectAll')}
-                          title={isSelected ? t('common.clearSelection') : t('common.selectAll')}
-                        >
-                          {isSelected ? (
-                            <CheckSquare className="w-4 h-4 text-[#7367F0]" />
-                          ) : (
-                            <Square className="w-4 h-4 text-slate-300 dark:text-slate-600 group-hover:text-slate-400" />
-                          )}
-                        </button>
-                      </td>
-
-                      {/* 1. Business Profile */}
-                      <td className="py-3.5 px-4 max-w-[280px]">
-                        <div className="font-bold text-slate-800 dark:text-white text-xs truncate">
-                          {entry.lead_name || t('leads.noPhone')}
-                        </div>
-                        <div className="flex items-center gap-1.5 mt-1 flex-wrap">
-                          <span className="text-[10px] font-bold px-1.5 py-0.2 rounded bg-[#7367F0]/10 text-[#7367F0] dark:bg-[#7367F0]/20 dark:text-[#A59DF8]">
-                            {entry.lead_category || t('common.general')}
-                          </span>
-                          {(entry.lead_district || entry.lead_city) && (
-                            <span className="text-[10px] text-slate-400 font-medium">
-                              • {[entry.lead_district, entry.lead_city].filter(Boolean).join(', ')}
-                            </span>
-                          )}
-                        </div>
-                      </td>
-
-                      {/* 2. Contact */}
-                      <td className="py-3.5 px-4 whitespace-nowrap">
-                        <div className="flex items-center space-x-2 font-mono font-bold text-xs text-slate-700 dark:text-slate-200">
-                          <Phone className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                          <span>{entry.phone_e164}</span>
-                        </div>
-                      </td>
-
-                      {/* 3. Block Reason */}
-                      <td className="py-3.5 px-4 whitespace-nowrap">
-                        <Badge variant="danger" className="text-[11px] font-bold">
-                          {getReasonLabel(entry.reason)}
-                        </Badge>
-                      </td>
-
-                      {/* 4. Date */}
-                      <td className="py-3.5 px-4 whitespace-nowrap text-slate-500 dark:text-[#7E7F96] font-sans">
-                        {new Date(entry.created_at).toLocaleString()}
-                      </td>
-
-                      {/* 5. Actions */}
-                      <td className="py-3.5 px-4 text-right whitespace-nowrap">
-                        <IconButton
-                          icon={Trash2}
-                          size="sm"
-                          variant="ghost"
-                          tooltip={t('blacklist.confirmRemoveTitle')}
-                          onClick={() => handleRemove(entry.id, entry.phone_e164, entry.lead_name)}
-                          className="text-slate-400 hover:text-[#EA5455] hover:bg-[#EA5455]/10"
-                        />
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
-
-        {/* Centralized Pagination */}
-        {total > 0 && (
-          <Pagination
-            currentPage={page}
-            totalItems={total}
-            pageSize={pageSize}
-            onPageChange={(newPage) => setPage(newPage)}
-            onPageSizeChange={(newSize) => {
-              setPageSize(newSize);
-              setPage(1);
-            }}
+      {/* Blacklist Table using unified DataTable */}
+      <DataTable<BlacklistEntry>
+        columns={columns}
+        data={blacklist}
+        loading={loading}
+        rowKey={(entry) => entry.id}
+        selectable
+        selectedIds={selectedIds}
+        isRowSelected={(entry) => selectedIds.includes(entry.id) || selectAllMatching}
+        onToggleSelect={handleToggleSingleSelect}
+        onToggleSelectAll={handleToggleSelectAllPage}
+        isAllSelected={selectAllMatching || isAllCurrentPageSelected}
+        isSomeSelected={isSomeCurrentPageSelected}
+        emptyState={
+          <EmptyState
+            icon={ShieldAlert}
+            title={total === 0 ? t('blacklist.emptyList') : t('blacklist.emptySearch')}
+            description={t('blacklist.subtitle')}
           />
-        )}
-      </Card>
+        }
+        pagination={
+          total > 0 ? (
+            <Pagination
+              currentPage={page}
+              totalItems={total}
+              pageSize={pageSize}
+              onPageChange={(newPage) => setPage(newPage)}
+              onPageSizeChange={(newSize) => {
+                setPageSize(newSize);
+                setPage(1);
+              }}
+            />
+          ) : null
+        }
+      />
 
       {/* Centralized Add to Blacklist Modal */}
       <BlacklistAddModal
