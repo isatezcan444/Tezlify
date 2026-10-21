@@ -116,7 +116,7 @@ export const LeadFinderPage: React.FC<LeadFinderPageProps> = ({ onNavigate, onRe
     setSaveMode(initialMode);
     const locationPrefix = [selectedDistricts[0] || selectedCity].filter(Boolean).join(' ');
     const autoName = [locationPrefix, keyword].filter(Boolean).join(' ');
-    setSaveGroupName(autoName || 'Yeni Kampanya Grubu');
+    setSaveGroupName(autoName || t('campaignGroups.defaultNewGroupName'));
 
     try {
       const groups = await ApiClient.getCampaignGroups();
@@ -160,7 +160,7 @@ export const LeadFinderPage: React.FC<LeadFinderPageProps> = ({ onNavigate, onRe
       setIsSaveModalOpen(false);
       onRefreshStats();
     } catch (err: any) {
-      toast.error(err.message || 'Gruba kaydedilemedi.');
+      toast.error(err.message || t('campaignGroups.saveFailed'));
     } finally {
       setIsSavingGroup(false);
     }
@@ -314,7 +314,7 @@ export const LeadFinderPage: React.FC<LeadFinderPageProps> = ({ onNavigate, onRe
             handleJobCompletion(status.total_found || 0, status.total_new_leads || 0);
             closeSocket();
           } else if (status.status === 'FAILED') {
-            handleJobFailure(status.error_message || 'Tarama başarısız oldu');
+            handleJobFailure(status.error_message || t('leadFinder.defaultJobFailed'));
             closeSocket();
           }
         } catch (e) {

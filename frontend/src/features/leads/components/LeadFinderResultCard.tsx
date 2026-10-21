@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   Check,
   Phone,
@@ -8,10 +8,12 @@ import {
   CheckSquare,
   Square,
   Database,
+  Copy,
 } from 'lucide-react';
 import { Card, Avatar, WhatsAppIcon, GoogleMapsIcon } from '../../../components/ui';
 import { toTitleCaseTr } from '../../../lib/utils';
 import { useI18n } from '../../../context/I18nContext';
+import { useToast } from '../../../context/ToastContext';
 
 export const ENTITY_TYPE_LABEL_KEYS: Record<string, string> = {
   BUSINESS: 'leadFinder.entityBusiness',
@@ -41,7 +43,24 @@ export const LeadFinderResultCard: React.FC<LeadFinderResultCardProps> = ({
   googleMapsUrl,
 }) => {
   const { t } = useI18n();
+  const toast = useToast();
+  const [copied, setCopied] = useState(false);
   const isSaved = Boolean(lead.id);
+  const phone = lead.phone_e164 || lead.phone;
+  const cleanPhone = phone ? String(phone).replace(/[^0-9]/g, '') : '';
+
+  const handleCopyPhone = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!phone) return;
+    try {
+      await navigator.clipboard.writeText(String(phone));
+      setCopied(true);
+      toast.success(t('leads.phoneCopied'));
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Fallback
+    }
+  };
 
   return (
     <Card className={`p-5 hover:shadow-md transition-shadow flex flex-col justify-between h-full space-y-4 ${isSelected ? 'border-[#7367F0]/60 bg-[#7367F0]/[0.04] dark:bg-[#7367F0]/[0.07]' : ''}`}>
@@ -102,15 +121,40 @@ export const LeadFinderResultCard: React.FC<LeadFinderResultCardProps> = ({
         </div>
 
         <div className="mt-3.5 space-y-2 text-xs text-slate-500 dark:text-[#7E7F96]">
-          {/* Phone Box with WhatsApp Brand Icon */}
+          {/* Phone Box with WhatsApp Brand Icon & Copy Action */}
           <div className="flex items-center justify-between p-2 rounded-lg bg-slate-50 dark:bg-[#25293C] border border-slate-200/60 dark:border-white/[0.05]">
-            <div className="flex items-center space-x-2 text-[#7367F0] font-mono font-bold text-xs">
-              <Phone className="w-3.5 h-3.5 text-slate-400" />
-              <span>{lead.phone_e164 || lead.phone || t('leads.noPhone')}</span>
+            <div className="flex items-center space-x-1.5 text-[#7367F0] font-mono font-bold text-xs min-w-0">
+              <Phone className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+              <span className="truncate">{phone || t('leads.noPhone')}</span>
+              {phone && (
+                <button
+                  type="button"
+                  onClick={handleCopyPhone}
+                  title={t('leads.copyPhone')}
+                  aria-label={t('leads.copyPhone')}
+                  className="p-1 rounded text-slate-400 hover:text-[#7367F0] hover:bg-slate-200/60 dark:hover:bg-white/[0.08] transition-colors cursor-pointer shrink-0"
+                >
+                  {copied ? (
+                    <Check className="w-3 h-3 text-[#28C76F]" />
+                  ) : (
+                    <Copy className="w-3 h-3" />
+                  )}
+                </button>
+              )}
             </div>
-            {lead.is_whatsapp_eligible && (
-              <WhatsAppIcon className="w-4 h-4 text-[#25D366]" />
-            )}
+            {lead.is_whatsapp_eligible && cleanPhone ? (
+              <a
+                href={`https://wa.me/${cleanPhone}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                title={t('leads.sendWhatsApp')}
+                className="p-1 rounded-md text-[#25D366] hover:bg-[#25D366]/15 hover:scale-110 active:scale-95 transition-all cursor-pointer flex items-center shrink-0"
+              >
+                <WhatsAppIcon className="w-4 h-4" />
+              </a>
+            ) : lead.is_whatsapp_eligible ? (
+              <WhatsAppIcon className="w-4 h-4 text-[#25D366] shrink-0" />
+            ) : null}
           </div>
 
           {/* Address Line */}
