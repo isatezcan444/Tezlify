@@ -499,7 +499,7 @@ export const PlanUsageSection: React.FC = () => {
                       </span>
                     </div>
 
-                    <p className="text-xs text-slate-500 dark:text-slate-400 h-8 line-clamp-2 leading-relaxed">
+                    <p className="text-xs text-slate-500 dark:text-slate-400 min-h-[42px] leading-relaxed">
                       {plan.description}
                     </p>
 
