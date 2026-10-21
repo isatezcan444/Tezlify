@@ -6,3 +6,4 @@ export { LandingBentoFeatures } from './components/LandingBentoFeatures';
 export { LandingPricing } from './components/LandingPricing';
 export { LandingFAQ } from './components/LandingFAQ';
 export { LandingFooter } from './components/LandingFooter';
+export { LandingInteractiveShowcase } from './components/LandingInteractiveShowcase';

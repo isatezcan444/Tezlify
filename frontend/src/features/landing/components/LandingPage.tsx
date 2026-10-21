@@ -6,6 +6,7 @@ import { LandingBentoFeatures } from './LandingBentoFeatures';
 import { LandingPricing } from './LandingPricing';
 import { LandingFAQ } from './LandingFAQ';
 import { LandingFooter } from './LandingFooter';
+import { LandingInteractiveShowcase } from './LandingInteractiveShowcase';
 import { useAuth } from '../../../context/AuthContext';
 import { useI18n } from '../../../context/I18nContext';
 import { useToast } from '../../../context/ToastContext';
@@ -52,13 +53,16 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onEnterApp }) => {
       <LandingHero
         onGetStarted={handleOpenAuth}
         onExploreDemo={() => {
-          const el = document.getElementById('features');
+          const el = document.getElementById('how-it-works');
           el?.scrollIntoView({ behavior: 'smooth' });
         }}
       />
 
       {/* Social Proof Stats */}
       <LandingSocialProof />
+
+      {/* Interactive Showcase / How It Works (Faz 1) */}
+      <LandingInteractiveShowcase onGetStarted={handleOpenAuth} />
 
       {/* Bento Grid Features */}
       <LandingBentoFeatures />
