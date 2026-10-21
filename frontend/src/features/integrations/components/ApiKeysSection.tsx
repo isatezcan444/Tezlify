@@ -20,7 +20,7 @@ import { useI18n } from '../../../context/I18nContext';
 
 export const ApiKeysSection: React.FC = () => {
   const toast = useToast();
-  const { t } = useI18n();
+  const { t, language } = useI18n();
   const [keys, setKeys] = useState<ApiKeyItem[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -40,7 +40,7 @@ export const ApiKeysSection: React.FC = () => {
       const res = await ApiClient.getApiKeys();
       setKeys(res.items);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'API anahtarları alınamadı';
+      const msg = err instanceof Error ? err.message : t('integrations.loading');
       toast.error(msg);
     } finally {
       setLoading(false);
@@ -54,7 +54,7 @@ export const ApiKeysSection: React.FC = () => {
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!keyName.trim()) {
-      toast.error('Lütfen bir anahtar adı girin');
+      toast.error(t('integrations.keyNameRequired'));
       return;
     }
     try {
@@ -65,9 +65,9 @@ export const ApiKeysSection: React.FC = () => {
       setKeyName('');
       setExpiresDays(undefined);
       fetchKeys();
-      toast.success('API anahtarı başarıyla oluşturuldu');
+      toast.success(t('integrations.keyCreatedSuccess'));
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'API anahtarı oluşturulamadı';
+      const msg = err instanceof Error ? err.message : t('toast.errorTitle');
       toast.error(msg);
     } finally {
       setCreating(false);
@@ -78,7 +78,7 @@ export const ApiKeysSection: React.FC = () => {
     if (!createdKeyData?.raw_key) return;
     navigator.clipboard.writeText(createdKeyData.raw_key);
     setCopied(true);
-    toast.success('API anahtarı panoya kopyalandı');
+    toast.success(t('integrations.copiedSuccess', { label: t('integrations.fullKeySecretLabel') }));
     setTimeout(() => setCopied(false), 2500);
   };
 
@@ -86,19 +86,19 @@ export const ApiKeysSection: React.FC = () => {
     try {
       const updated = await ApiClient.toggleApiKey(keyItem.id);
       setKeys((prev) => prev.map((k) => (k.id === updated.id ? updated : k)));
-      toast.success(updated.is_active ? 'Anahtar etkinleştirildi' : 'Anahtar devre dışı bırakıldı');
+      toast.success(updated.is_active ? t('integrations.keyActivatedSuccess') : t('integrations.keyDeactivatedSuccess'));
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Durum güncellenemedi';
+      const msg = err instanceof Error ? err.message : t('toast.errorTitle');
       toast.error(msg);
     }
   };
 
   const handleDelete = async (keyItem: ApiKeyItem) => {
     const confirmed = await toast.confirm({
-      title: 'API Anahtarını Sil',
-      message: `"${keyItem.name}" adlı anahtarı silmek istediğinize emin misiniz? Bu anahtarı kullanan dış sistemlerin erişimi anında kesilecektir.`,
-      confirmText: 'Evet, Sil',
-      cancelText: 'Vazgeç',
+      title: t('integrations.deleteKeyConfirmTitle'),
+      message: t('integrations.deleteKeyConfirmMsg', { name: keyItem.name }),
+      confirmText: t('integrations.delete'),
+      cancelText: t('integrations.cancel'),
       variant: 'danger',
     });
     if (!confirmed) return;
@@ -106,40 +106,45 @@ export const ApiKeysSection: React.FC = () => {
     try {
       await ApiClient.deleteApiKey(keyItem.id);
       setKeys((prev) => prev.filter((k) => k.id !== keyItem.id));
-      toast.success('API anahtarı silindi');
+      toast.success(t('integrations.keyDeletedSuccess'));
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Anahtar silinemedi';
+      const msg = err instanceof Error ? err.message : t('toast.errorTitle');
       toast.error(msg);
     }
   };
 
+  const locale = language === 'tr' ? 'tr-TR' : 'en-US';
+
   return (
     <Card className="p-5 sm:p-6 space-y-4">
       <FormSection
-        title={t('integrations.apiKeysTitle') || 'REST API Anahtarları'}
-        subtitle={t('integrations.apiKeysSubtitle') || 'Dış sistemler, Zapier ve web sitenizden güvenli lead aktarımı için API anahtarları yönetin.'}
+        title={t('integrations.apiKeysTitle')}
+        subtitle={t('integrations.apiKeysSubtitle')}
         icon={Key}
         action={
           <Button
             onClick={() => setIsCreateOpen(true)}
-            className="space-x-1.5 font-bold shadow-md shadow-[#7367F0]/20 shrink-0"
+            size="sm"
+            className="space-x-1.5 font-semibold text-xs shrink-0"
           >
-            <Plus className="w-4 h-4" />
-            <span>{t('integrations.createNewKey') || 'Yeni Anahtar Üret'}</span>
+            <Plus className="w-3.5 h-3.5" />
+            <span>{t('integrations.createNewKey')}</span>
           </Button>
         }
       >
         {loading ? (
           <div className="flex items-center justify-center p-8 text-slate-400">
-            <Loader2 className="w-5 h-5 animate-spin mr-2" />
-            <span>Yükleniyor...</span>
+            <Loader2 className="w-5 h-5 animate-spin mr-2 text-[#7367F0]" />
+            <span className="text-xs">{t('integrations.loading')}</span>
           </div>
         ) : keys.length === 0 ? (
-          <div className="text-center py-8 p-4 rounded-xl bg-slate-50 dark:bg-[#25293C] border border-dashed border-slate-300 dark:border-white/10 space-y-2">
+          <div className="text-center py-8 p-4 rounded-xl bg-slate-50 dark:bg-white/[0.02] border border-dashed border-slate-200 dark:border-white/10 space-y-2">
             <Key className="w-8 h-8 text-slate-400 mx-auto opacity-40" />
-            <p className="text-xs font-bold text-slate-700 dark:text-slate-300">Henüz bir API anahtarı üretmediniz</p>
-            <p className="text-[11px] text-slate-400 max-w-md mx-auto">
-              Zapier, Make, n8n veya kendi web sitenizin iletişim formundan lead aktarmak için yukarıdaki butondan bir anahtar oluşturun.
+            <p className="text-xs font-bold text-slate-700 dark:text-slate-300">
+              {t('integrations.emptyKeysTitle')}
+            </p>
+            <p className="text-[11px] text-slate-400 max-w-md mx-auto leading-relaxed">
+              {t('integrations.emptyKeysDesc')}
             </p>
           </div>
         ) : (
@@ -150,19 +155,30 @@ export const ApiKeysSection: React.FC = () => {
                   <div className="flex items-center gap-2">
                     <span className="font-bold text-xs text-slate-800 dark:text-slate-200">{k.name}</span>
                     {k.is_active ? (
-                      <Badge variant="success">Aktif</Badge>
+                      <Badge variant="success">{t('integrations.active')}</Badge>
                     ) : (
-                      <Badge variant="secondary">Devre Dışı</Badge>
+                      <Badge variant="secondary">{t('integrations.disabled')}</Badge>
                     )}
                   </div>
-                  <div className="flex items-center gap-3 text-[11px] text-slate-400 dark:text-slate-400 font-mono">
-                    <span>Ön Ek: <strong className="text-slate-600 dark:text-slate-300">{k.key_prefix}...</strong></span>
+                  <div className="flex items-center gap-3 text-[11px] text-slate-400 font-mono">
+                    <span>
+                      {t('integrations.prefix')}: <strong className="text-slate-600 dark:text-slate-300">{k.key_prefix}...</strong>
+                    </span>
                     <span>•</span>
-                    <span>Oluşturulma: {new Date(k.created_at).toLocaleDateString('tr-TR')}</span>
-                    {k.last_used_at && (
+                    <span>
+                      {t('integrations.created')}: {new Date(k.created_at).toLocaleDateString(locale)}
+                    </span>
+                    {k.last_used_at ? (
                       <>
                         <span>•</span>
-                        <span className="text-emerald-500">Son Kullanım: {new Date(k.last_used_at).toLocaleDateString('tr-TR')}</span>
+                        <span className="text-emerald-500">
+                          {t('integrations.lastUsed')}: {new Date(k.last_used_at).toLocaleDateString(locale)}
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <span>•</span>
+                        <span className="text-slate-400">{t('integrations.neverUsed')}</span>
                       </>
                     )}
                   </div>
@@ -173,17 +189,17 @@ export const ApiKeysSection: React.FC = () => {
                     variant="outline"
                     size="sm"
                     onClick={() => handleToggle(k)}
-                    className="text-xs space-x-1"
+                    className="text-xs space-x-1 h-8"
                   >
                     {k.is_active ? (
                       <>
-                        <ToggleRight className="w-4 h-4 text-emerald-500" />
-                        <span>Pasife Al</span>
+                        <ToggleRight className="w-3.5 h-3.5 text-emerald-500" />
+                        <span>{t('integrations.deactivate')}</span>
                       </>
                     ) : (
                       <>
-                        <ToggleLeft className="w-4 h-4 text-slate-400" />
-                        <span>Aktifleştir</span>
+                        <ToggleLeft className="w-3.5 h-3.5 text-slate-400" />
+                        <span>{t('integrations.activate')}</span>
                       </>
                     )}
                   </Button>
@@ -191,8 +207,8 @@ export const ApiKeysSection: React.FC = () => {
                     variant="destructive"
                     size="sm"
                     onClick={() => handleDelete(k)}
-                    className="p-1.5 px-2.5"
-                    title="Anahtarı Sil"
+                    className="p-1.5 px-2.5 h-8"
+                    title={t('integrations.delete')}
                   >
                     <Trash2 className="w-3.5 h-3.5" />
                   </Button>
@@ -207,50 +223,50 @@ export const ApiKeysSection: React.FC = () => {
       <Modal
         isOpen={isCreateOpen}
         onClose={() => setIsCreateOpen(false)}
-        title="Yeni API Anahtarı Oluştur"
+        title={t('integrations.createKeyModalTitle')}
       >
         <form onSubmit={handleCreate} className="space-y-4">
-          <p className="text-xs text-slate-500 dark:text-slate-400">
-            Dış sistemlerin (Zapier, formlar, CRM) Tezlify hesabınıza erişmesi için benzersiz bir gizli anahtar oluşturulacaktır.
+          <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+            {t('integrations.createKeyModalDesc')}
           </p>
 
           <div>
             <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
-              Anahtar Adı <span className="text-rose-500">*</span>
+              {t('integrations.keyNameLabel')} <span className="text-rose-500">*</span>
             </label>
             <input
               type="text"
               required
               value={keyName}
               onChange={(e) => setKeyName(e.target.value)}
-              placeholder="Örn: Elementor İletişim Formu, Zapier Webhook"
+              placeholder={t('integrations.keyNamePlaceholder')}
               className="w-full px-3 py-2 text-xs rounded-lg border border-slate-300 dark:border-white/10 bg-white dark:bg-[#1E2235] text-slate-800 dark:text-slate-200 focus:outline-none focus:border-[#7367F0]"
             />
           </div>
 
           <div>
             <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
-              Geçerlilik Süresi (Opsiyonel)
+              {t('integrations.keyExpiryLabel')}
             </label>
             <select
               value={expiresDays || ''}
               onChange={(e) => setExpiresDays(e.target.value ? Number(e.target.value) : undefined)}
               className="w-full px-3 py-2 text-xs rounded-lg border border-slate-300 dark:border-white/10 bg-white dark:bg-[#1E2235] text-slate-800 dark:text-slate-200 focus:outline-none focus:border-[#7367F0]"
             >
-              <option value="">Süresiz (Tavsiye Edilen)</option>
-              <option value="30">30 Gün</option>
-              <option value="90">90 Gün</option>
-              <option value="365">1 Yıl</option>
+              <option value="">{t('integrations.unlimitedExpiry')}</option>
+              <option value="30">{t('integrations.daysUnit', { count: '30' })}</option>
+              <option value="90">{t('integrations.daysUnit', { count: '90' })}</option>
+              <option value="365">{t('integrations.oneYear')}</option>
             </select>
           </div>
 
           <div className="flex justify-end gap-2 pt-2 border-t border-slate-100 dark:border-white/[0.05]">
-            <Button variant="outline" type="button" onClick={() => setIsCreateOpen(false)}>
-              İptal
+            <Button variant="outline" size="sm" type="button" onClick={() => setIsCreateOpen(false)}>
+              {t('integrations.cancel')}
             </Button>
-            <Button type="submit" disabled={creating} className="space-x-1.5 font-bold">
-              {creating ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
-              <span>Üret ve Kaydet</span>
+            <Button type="submit" size="sm" disabled={creating} className="space-x-1.5 font-bold">
+              {creating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ShieldCheck className="w-3.5 h-3.5" />}
+              <span>{t('integrations.generateAndSave')}</span>
             </Button>
           </div>
         </form>
@@ -260,19 +276,19 @@ export const ApiKeysSection: React.FC = () => {
       <Modal
         isOpen={!!createdKeyData}
         onClose={() => setCreatedKeyData(null)}
-        title="API Anahtarınız Hazır"
+        title={t('integrations.keyCreatedTitle')}
       >
         <div className="space-y-4">
           <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/20 flex items-start gap-2.5 text-amber-600 dark:text-amber-400 text-xs">
             <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
             <p>
-              <strong>Dikkat:</strong> Bu anahtar güvenlik gerekçesiyle veritabanında şifrelenmiş (SHA-256) olarak saklanır. <strong>Bu ekranı kapattıktan sonra anahtarı bir daha asla tam olarak görüntüleyemezsiniz.</strong> Lütfen güvenli bir yere kopyalayın.
+              <strong>{t('integrations.keyCreatedWarningTitle')}:</strong> {t('integrations.keyCreatedWarningText')}
             </p>
           </div>
 
           <div>
             <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
-              Tam Gizli API Anahtarı:
+              {t('integrations.fullKeySecretLabel')}:
             </label>
             <div className="flex items-center gap-2">
               <input
@@ -283,18 +299,19 @@ export const ApiKeysSection: React.FC = () => {
               />
               <Button
                 variant={copied ? 'success' : 'default'}
+                size="sm"
                 onClick={handleCopy}
                 className="shrink-0 space-x-1"
               >
-                {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
-                <span>{copied ? 'Kopyalandı' : 'Kopyala'}</span>
+                {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                <span>{copied ? t('integrations.copied') : t('integrations.copy')}</span>
               </Button>
             </div>
           </div>
 
           <div className="flex justify-end pt-2">
-            <Button onClick={() => setCreatedKeyData(null)}>
-              Kaydettim, Kapat
+            <Button size="sm" onClick={() => setCreatedKeyData(null)}>
+              {t('integrations.keySavedCloseBtn')}
             </Button>
           </div>
         </div>

@@ -14,20 +14,13 @@ import {
 import { Card, Badge, Button, Modal } from '../../../components/ui';
 import { FormSection } from '../../../components/forms';
 import { ApiClient } from '../../../api/client';
-import { WebhookItem, WebhookDeliveryLogItem, WebhookTestResult } from '../../../types';
+import { WebhookItem, WebhookDeliveryLogItem } from '../../../types';
 import { useToast } from '../../../context/ToastContext';
 import { useI18n } from '../../../context/I18nContext';
 
-const AVAILABLE_EVENTS = [
-  { id: 'lead.created', label: 'Yeni Müşteri Adayı Eklendi', desc: 'İşletme Ara, Form veya API ile yeni lead eklendiğinde tetiklenir' },
-  { id: 'lead.status_updated', label: 'Lead Durumu Değişti', desc: 'Aşama veya durum (İletişime Geçildi, Sıcak vb.) güncellendiğinde tetiklenir' },
-  { id: 'whatsapp.message_received', label: 'WhatsApp Mesajı Alındı', desc: 'Müşteriden WhatsApp üzerinden yanıt geldiğinde anında tetiklenir' },
-  { id: 'campaign.completed', label: 'Kampanya Tamamlandı', desc: 'Outreach kampanyası tüm alıcılara ulaşıp bittiğinde tetiklenir' },
-];
-
 export const WebhooksSection: React.FC = () => {
   const toast = useToast();
-  const { t } = useI18n();
+  const { t, language } = useI18n();
   const [webhooks, setWebhooks] = useState<WebhookItem[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -46,13 +39,36 @@ export const WebhooksSection: React.FC = () => {
   const [logs, setLogs] = useState<WebhookDeliveryLogItem[]>([]);
   const [loadingLogs, setLoadingLogs] = useState(false);
 
+  const availableEvents = [
+    { 
+      id: 'lead.created', 
+      label: t('integrations.eventLeadCreated'), 
+      desc: t('integrations.eventLeadCreatedDesc') 
+    },
+    { 
+      id: 'lead.status_updated', 
+      label: t('integrations.eventLeadStatusUpdated'), 
+      desc: t('integrations.eventLeadStatusUpdatedDesc') 
+    },
+    { 
+      id: 'whatsapp.message_received', 
+      label: t('integrations.eventWaReceived'), 
+      desc: t('integrations.eventWaReceivedDesc') 
+    },
+    { 
+      id: 'campaign.completed', 
+      label: t('integrations.eventCampaignCompleted'), 
+      desc: t('integrations.eventCampaignCompletedDesc') 
+    },
+  ];
+
   const fetchWebhooks = async () => {
     try {
       setLoading(true);
       const data = await ApiClient.getWebhooks();
       setWebhooks(data);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Webhook listesi alınamadı';
+      const msg = err instanceof Error ? err.message : t('integrations.loading');
       toast.error(msg);
     } finally {
       setLoading(false);
@@ -66,11 +82,11 @@ export const WebhooksSection: React.FC = () => {
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim() || !targetUrl.trim()) {
-      toast.error('Lütfen tüm zorunlu alanları doldurun');
+      toast.error(t('integrations.fillRequiredFields'));
       return;
     }
     if (selectedEvents.length === 0) {
-      toast.error('En az bir olay seçmelisiniz');
+      toast.error(t('integrations.selectAtLeastOneEvent'));
       return;
     }
     try {
@@ -85,9 +101,9 @@ export const WebhooksSection: React.FC = () => {
       setTargetUrl('');
       setSelectedEvents(['lead.created', 'whatsapp.message_received']);
       fetchWebhooks();
-      toast.success('Webhook aboneliği başarıyla oluşturuldu');
+      toast.success(t('integrations.webhookCreatedSuccess'));
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Webhook oluşturulamadı';
+      const msg = err instanceof Error ? err.message : t('toast.errorTitle');
       toast.error(msg);
     } finally {
       setCreating(false);
@@ -99,12 +115,17 @@ export const WebhooksSection: React.FC = () => {
       setTestingId(sub.id);
       const res = await ApiClient.testWebhook(sub.id);
       if (res.success) {
-        toast.success(`Test pingi başarılı! (HTTP ${res.status_code || 200} - ${res.duration_ms}ms)`);
+        toast.success(t('integrations.testSuccessToast', {
+          status: String(res.status_code || 200),
+          duration: String(res.duration_ms || 0),
+        }));
       } else {
-        toast.error(`Hedef sunucu hata döndürdü: ${res.error || `HTTP ${res.status_code}`}`);
+        toast.error(t('integrations.testErrorToast', {
+          error: res.error || `HTTP ${res.status_code}`,
+        }));
       }
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Test başarısız';
+      const msg = err instanceof Error ? err.message : t('integrations.testFailedToast');
       toast.error(msg);
     } finally {
       setTestingId(null);
@@ -118,7 +139,7 @@ export const WebhooksSection: React.FC = () => {
       const data = await ApiClient.getWebhookLogs(sub.id);
       setLogs(data);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Loglar yüklenemedi';
+      const msg = err instanceof Error ? err.message : t('toast.errorTitle');
       toast.error(msg);
     } finally {
       setLoadingLogs(false);
@@ -127,10 +148,10 @@ export const WebhooksSection: React.FC = () => {
 
   const handleDelete = async (sub: WebhookItem) => {
     const confirmed = await toast.confirm({
-      title: 'Webhook Aboneliğini Sil',
-      message: `"${sub.name}" webhook aboneliğini silmek istediğinize emin misiniz? Dış sisteme olay bildirimleri duracaktır.`,
-      confirmText: 'Evet, Sil',
-      cancelText: 'Vazgeç',
+      title: t('integrations.deleteWebhookConfirmTitle'),
+      message: t('integrations.deleteWebhookConfirmMsg', { name: sub.name }),
+      confirmText: t('integrations.delete'),
+      cancelText: t('integrations.cancel'),
       variant: 'danger',
     });
     if (!confirmed) return;
@@ -138,9 +159,9 @@ export const WebhooksSection: React.FC = () => {
     try {
       await ApiClient.deleteWebhook(sub.id);
       setWebhooks((prev) => prev.filter((w) => w.id !== sub.id));
-      toast.success('Webhook silindi');
+      toast.success(t('integrations.webhookDeletedSuccess'));
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Webhook silinemedi';
+      const msg = err instanceof Error ? err.message : t('toast.errorTitle');
       toast.error(msg);
     }
   };
@@ -151,33 +172,38 @@ export const WebhooksSection: React.FC = () => {
     );
   };
 
+  const locale = language === 'tr' ? 'tr-TR' : 'en-US';
+
   return (
     <Card className="p-5 sm:p-6 space-y-4">
       <FormSection
-        title={t('integrations.webhooksTitle') || 'Giden (Outbound) Webhook Bildirimleri'}
-        subtitle={t('integrations.webhooksSubtitle') || 'Yeni lead geldiğinde veya WhatsApp yanıtı alındığında harici sistemlerinizi (Zapier, n8n, Slack) anında tetikleyin.'}
+        title={t('integrations.webhooksTitle')}
+        subtitle={t('integrations.webhooksSubtitle')}
         icon={Webhook}
         action={
           <Button
             onClick={() => setIsCreateOpen(true)}
-            className="space-x-1.5 font-bold shadow-md shadow-[#7367F0]/20 shrink-0"
+            size="sm"
+            className="space-x-1.5 font-semibold text-xs shrink-0"
           >
-            <Plus className="w-4 h-4" />
-            <span>{t('integrations.createNewWebhook') || 'Yeni Webhook Ekle'}</span>
+            <Plus className="w-3.5 h-3.5" />
+            <span>{t('integrations.createNewWebhook')}</span>
           </Button>
         }
       >
         {loading ? (
           <div className="flex items-center justify-center p-8 text-slate-400">
-            <Loader2 className="w-5 h-5 animate-spin mr-2" />
-            <span>Yükleniyor...</span>
+            <Loader2 className="w-5 h-5 animate-spin mr-2 text-[#7367F0]" />
+            <span className="text-xs">{t('integrations.loading')}</span>
           </div>
         ) : webhooks.length === 0 ? (
-          <div className="text-center py-8 p-4 rounded-xl bg-slate-50 dark:bg-[#25293C] border border-dashed border-slate-300 dark:border-white/10 space-y-2">
+          <div className="text-center py-8 p-4 rounded-xl bg-slate-50 dark:bg-white/[0.02] border border-dashed border-slate-200 dark:border-white/10 space-y-2">
             <Webhook className="w-8 h-8 text-slate-400 mx-auto opacity-40" />
-            <p className="text-xs font-bold text-slate-700 dark:text-slate-300">Henüz bir Webhook aboneliği eklemediniz</p>
-            <p className="text-[11px] text-slate-400 max-w-md mx-auto">
-              Zapier, Make veya kendi sunucunuza anlık olay bildirimleri (lead oluşturulduğunda, müşteri yanıt verdiğinde) göndermek için yukarıdaki butondan bir webhook tanımlayın.
+            <p className="text-xs font-bold text-slate-700 dark:text-slate-300">
+              {t('integrations.emptyWebhooksTitle')}
+            </p>
+            <p className="text-[11px] text-slate-400 max-w-md mx-auto leading-relaxed">
+              {t('integrations.emptyWebhooksDesc')}
             </p>
           </div>
         ) : (
@@ -188,9 +214,9 @@ export const WebhooksSection: React.FC = () => {
                   <div className="flex items-center gap-2">
                     <span className="font-bold text-xs text-slate-800 dark:text-slate-200">{sub.name}</span>
                     {sub.is_active ? (
-                      <Badge variant="success">Aktif</Badge>
+                      <Badge variant="success">{t('integrations.active')}</Badge>
                     ) : (
-                      <Badge variant="secondary">Pasif</Badge>
+                      <Badge variant="secondary">{t('integrations.disabled')}</Badge>
                     )}
                   </div>
                   <div className="flex items-center gap-1.5 text-xs font-mono text-[#7367F0] truncate">
@@ -215,32 +241,32 @@ export const WebhooksSection: React.FC = () => {
                     size="sm"
                     disabled={testingId === sub.id}
                     onClick={() => handleTest(sub)}
-                    className="text-xs space-x-1"
+                    className="text-xs space-x-1 h-8"
                   >
                     {testingId === sub.id ? (
                       <Loader2 className="w-3.5 h-3.5 animate-spin text-[#7367F0]" />
                     ) : (
                       <Send className="w-3.5 h-3.5" />
                     )}
-                    <span>Test Et</span>
+                    <span>{t('integrations.testWebhookBtn')}</span>
                   </Button>
 
                   <Button
                     variant="outline"
                     size="sm"
                     onClick={() => openLogs(sub)}
-                    className="text-xs space-x-1"
+                    className="text-xs space-x-1 h-8"
                   >
                     <History className="w-3.5 h-3.5 text-slate-400" />
-                    <span>Loglar</span>
+                    <span>{t('integrations.logsBtn')}</span>
                   </Button>
 
                   <Button
                     variant="destructive"
                     size="sm"
                     onClick={() => handleDelete(sub)}
-                    className="p-1.5 px-2.5"
-                    title="Webhook'u Sil"
+                    className="p-1.5 px-2.5 h-8"
+                    title={t('integrations.delete')}
                   >
                     <Trash2 className="w-3.5 h-3.5" />
                   </Button>
@@ -255,47 +281,47 @@ export const WebhooksSection: React.FC = () => {
       <Modal
         isOpen={isCreateOpen}
         onClose={() => setIsCreateOpen(false)}
-        title="Yeni Webhook Aboneliği Tanımla"
+        title={t('integrations.createWebhookModalTitle')}
       >
         <form onSubmit={handleCreate} className="space-y-4">
-          <p className="text-xs text-slate-500 dark:text-slate-400">
-            Tezlify üzerinde gerçekleşen olaylar, belirttiğiniz uç noktaya HMAC-SHA256 imzalı JSON POST olarak anında aktarılır.
+          <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+            {t('integrations.createWebhookModalDesc')}
           </p>
 
           <div>
             <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
-              Webhook Adı <span className="text-rose-500">*</span>
+              {t('integrations.webhookNameLabel')} <span className="text-rose-500">*</span>
             </label>
             <input
               type="text"
               required
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="Örn: Zapier CRM Sync, Slack Lead Kanalı"
+              placeholder={t('integrations.webhookNamePlaceholder')}
               className="w-full px-3 py-2 text-xs rounded-lg border border-slate-300 dark:border-white/10 bg-white dark:bg-[#1E2235] text-slate-800 dark:text-slate-200 focus:outline-none focus:border-[#7367F0]"
             />
           </div>
 
           <div>
             <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
-              Hedef Webhook URL <span className="text-rose-500">*</span>
+              {t('integrations.webhookTargetUrlLabel')} <span className="text-rose-500">*</span>
             </label>
             <input
               type="url"
               required
               value={targetUrl}
               onChange={(e) => setTargetUrl(e.target.value)}
-              placeholder="https://hooks.zapier.com/hooks/catch/... veya https://api.sirketiniz.com/webhook"
+              placeholder={t('integrations.webhookTargetUrlPlaceholder')}
               className="w-full px-3 py-2 text-xs font-mono rounded-lg border border-slate-300 dark:border-white/10 bg-white dark:bg-[#1E2235] text-slate-800 dark:text-slate-200 focus:outline-none focus:border-[#7367F0]"
             />
           </div>
 
           <div>
             <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-2">
-              Abone Olunacak Olaylar <span className="text-rose-500">*</span>
+              {t('integrations.subscribedEventsLabel')} <span className="text-rose-500">*</span>
             </label>
             <div className="space-y-2">
-              {AVAILABLE_EVENTS.map((evt) => {
+              {availableEvents.map((evt) => {
                 const checked = selectedEvents.includes(evt.id);
                 return (
                   <div
@@ -316,7 +342,7 @@ export const WebhooksSection: React.FC = () => {
                     <div>
                       <p className="text-xs font-bold text-slate-800 dark:text-slate-200">{evt.label}</p>
                       <p className="text-[11px] text-slate-400 font-mono">{evt.id}</p>
-                      <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">{evt.desc}</p>
+                      <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5 leading-relaxed">{evt.desc}</p>
                     </div>
                   </div>
                 );
@@ -325,12 +351,12 @@ export const WebhooksSection: React.FC = () => {
           </div>
 
           <div className="flex justify-end gap-2 pt-2 border-t border-slate-100 dark:border-white/[0.05]">
-            <Button variant="outline" type="button" onClick={() => setIsCreateOpen(false)}>
-              İptal
+            <Button variant="outline" size="sm" type="button" onClick={() => setIsCreateOpen(false)}>
+              {t('integrations.cancel')}
             </Button>
-            <Button type="submit" disabled={creating} className="space-x-1.5 font-bold">
-              {creating ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
-              <span>Webhook Kaydet</span>
+            <Button type="submit" size="sm" disabled={creating} className="space-x-1.5 font-bold">
+              {creating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ShieldCheck className="w-3.5 h-3.5" />}
+              <span>{t('integrations.saveWebhookBtn')}</span>
             </Button>
           </div>
         </form>
@@ -340,16 +366,18 @@ export const WebhooksSection: React.FC = () => {
       <Modal
         isOpen={!!logsSub}
         onClose={() => setLogsSub(null)}
-        title={`Webhook Teslimat Logları (${logsSub?.name || ''})`}
+        title={t('integrations.logsModalTitle', { name: logsSub?.name || '' })}
       >
         <div className="space-y-3 max-h-[60vh] overflow-y-auto pr-1">
           {loadingLogs ? (
             <div className="flex items-center justify-center py-8 text-slate-400">
-              <Loader2 className="w-5 h-5 animate-spin mr-2" />
-              <span>Loglar yükleniyor...</span>
+              <Loader2 className="w-5 h-5 animate-spin mr-2 text-[#7367F0]" />
+              <span className="text-xs">{t('integrations.logsLoading')}</span>
             </div>
           ) : logs.length === 0 ? (
-            <p className="text-xs text-center py-6 text-slate-400">Henüz gerçekleşmiş bir teslimat kaydı bulunmuyor.</p>
+            <p className="text-xs text-center py-6 text-slate-400">
+              {t('integrations.emptyLogs')}
+            </p>
           ) : (
             logs.map((l) => (
               <div 
@@ -368,19 +396,19 @@ export const WebhooksSection: React.FC = () => {
                   <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
                     l.is_success ? 'bg-emerald-500/10 text-emerald-500' : 'bg-rose-500/10 text-rose-500'
                   }`}>
-                    {l.status_code ? `HTTP ${l.status_code}` : 'Bağlantı Hatası'}
+                    {l.status_code ? `HTTP ${l.status_code}` : t('integrations.connError')}
                   </span>
                 </div>
                 <div className="flex items-center justify-between text-[11px] text-slate-400">
-                  <span>{new Date(l.created_at).toLocaleString('tr-TR')}</span>
-                  {l.duration_ms && <span>{l.duration_ms} ms</span>}
+                  <span>{new Date(l.created_at).toLocaleString(locale)}</span>
+                  {l.duration_ms !== undefined && l.duration_ms !== null && <span>{l.duration_ms} ms</span>}
                 </div>
                 {l.error_message && (
                   <p className="text-[11px] text-rose-500 font-mono bg-rose-500/5 p-1.5 rounded">{l.error_message}</p>
                 )}
                 {l.response_body && (
                   <pre className="text-[10px] font-mono text-slate-500 dark:text-slate-400 bg-black/10 p-1.5 rounded truncate">
-                    Yanıt: {l.response_body}
+                    {t('integrations.responseLabel')}: {l.response_body}
                   </pre>
                 )}
               </div>
