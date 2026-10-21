@@ -117,6 +117,7 @@ export const tr = {
     settings: 'Ayarlar',
     adminUser: 'Admin User',
     administrator: 'Yönetici',
+    publicWebsite: 'Web Sitesi',
   },
   titles: {
     dashboard: 'Genel Bakış',

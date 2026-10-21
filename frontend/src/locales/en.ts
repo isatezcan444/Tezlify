@@ -117,6 +117,7 @@ export const en = {
     settings: 'Settings',
     adminUser: 'Admin User',
     administrator: 'Administrator',
+    publicWebsite: 'Website',
   },
   titles: {
     dashboard: 'Overview',

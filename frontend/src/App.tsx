@@ -432,7 +432,6 @@ const AppContent: React.FC<AppContentProps> = ({ onNavigateToLanding }) => {
         <TopHeader
           title={getPageTitle()}
           subtitle={getPageSubtitle()}
-          onOpenQuickScrape={() => handleNavigate('lead-finder')}
           onOpenSettings={() => handleNavigate('settings')}
           onNavigateToLanding={onNavigateToLanding}
           onToggleMobileMenu={() => setIsMobileMenuOpen(!isMobileMenuOpen)}

@@ -1,16 +1,13 @@
 import React from 'react';
-import { Search, Sun, Moon, Bell, Menu, Settings, LogOut, Globe } from 'lucide-react';
-import { Button } from '../ui/button';
+import { Sun, Moon, Bell, Menu, Settings, LogOut, Globe } from 'lucide-react';
 import { useTheme } from '../../context/ThemeContext';
 import { useI18n } from '../../context/I18nContext';
 import { useAuth } from '../../context/AuthContext';
-import { LanguageSwitcher } from '../ui/LanguageSwitcher';
 
 interface TopHeaderProps {
   title: string;
   subtitle?: string;
   menuButtonTitle?: string;
-  onOpenQuickScrape?: () => void;
   onToggleMobileMenu?: () => void;
   onOpenSettings?: () => void;
   onNavigateToLanding?: () => void;
@@ -20,7 +17,6 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
   title,
   subtitle,
   menuButtonTitle,
-  onOpenQuickScrape,
   onToggleMobileMenu,
   onOpenSettings,
   onNavigateToLanding,
@@ -65,31 +61,17 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
 
         {/* Right Side: Quick Actions & Profile */}
         <div className="flex items-center space-x-1.5 sm:space-x-2.5 shrink-0">
-          {onOpenQuickScrape && (
-            <Button
-              onClick={onOpenQuickScrape}
-              size="sm"
-              className="space-x-1.5 font-bold shadow-sm text-xs hidden sm:inline-flex h-9 px-3 cursor-pointer"
-            >
-              <Search className="w-3.5 h-3.5" />
-              <span>{t('header.quickSearch')}</span>
-            </Button>
-          )}
-
           {onNavigateToLanding && (
             <button
               type="button"
               onClick={onNavigateToLanding}
-              title="Landing Sayfası"
-              className="p-2 rounded-lg text-slate-500 hover:text-[#7367F0] dark:text-slate-400 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/[0.05] transition-colors cursor-pointer hidden md:inline-flex items-center gap-1.5 text-xs font-bold"
+              title={t('header.publicWebsite')}
+              className="px-3 py-1.5 rounded-lg border border-slate-200/80 dark:border-white/[0.08] hover:border-[#7367F0]/40 text-slate-600 dark:text-slate-300 hover:text-[#7367F0] dark:hover:text-white hover:bg-slate-50 dark:hover:bg-white/[0.04] transition-all cursor-pointer hidden sm:inline-flex items-center gap-1.5 text-xs font-bold shadow-xs active:scale-95"
             >
               <Globe className="w-4 h-4 text-[#7367F0]" />
-              <span>Landing</span>
+              <span>{t('header.publicWebsite')}</span>
             </button>
           )}
-
-          {/* Language Switcher (EN / TR) */}
-          <LanguageSwitcher />
 
           {/* Theme Switcher Toggle Button */}
           <button
