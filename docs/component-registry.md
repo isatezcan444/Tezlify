@@ -314,8 +314,8 @@ src/
 - **Import**: `import { CampaignGroupCard } from '@/features/campaigns/components';`
 
 #### `SpintaxPreviewCard`
-- **Purpose**: Interactive Spintax sampler card with dynamic variable injection and variation generator.
-- **Props**: `template: string`, `sampleLead?: object`.
+- **Purpose**: High-fidelity WhatsApp chat simulation card with realistic outgoing chat bubble, speech tail notch, verified business header, online status indicator, simulated timestamp, double checkmarks, dynamic variable injection (`{isim}`, `{şehir}`, `{ilçe}`, `{kategori}`, `{puan}`), and one-click Spintax variation re-roller.
+- **Props**: `template: string`, `targetCategory?: string`, `sampleLead?: object`, `className?: string`.
 - **Import**: `import { SpintaxPreviewCard } from '@/features/campaigns/components';`
 
 #### `CampaignDeleteModal`
@@ -324,7 +324,7 @@ src/
 - **Import**: `import { CampaignDeleteModal } from '@/features/campaigns/components';`
 
 #### `CampaignCreateWizard`
-- **Purpose**: Comprehensive multi-step campaign builder and spintax studio supporting 6 communication goals, dynamic goal-specific inputs, AI template generation with debounce, live spintax preview, and anti-ban settings.
+- **Purpose**: 4-step Vuexy Stepper wizard for campaign creation (Step 1: Basics & Audience, Step 2: Communication Goal & AI Strategy, Step 3: Composer & Live WhatsApp Spintax Preview, Step 4: Safety & Anti-Ban Review). Features auto-debounced AI message generation, fail-closed AntibanPolicy metrics summary, step jumping validation, and full i18n support.
 - **Props**: `prefill?: object | null`, `onClearPrefill?: () => void`, `onSuccess: () => void`, `onCancel: () => void`.
 - **Import**: `import { CampaignCreateWizard } from '@/features/campaigns/components';`
 

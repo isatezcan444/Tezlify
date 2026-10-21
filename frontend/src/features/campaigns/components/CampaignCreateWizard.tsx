@@ -9,6 +9,15 @@ import {
   CheckCircle2,
   Target,
   Users,
+  ShieldCheck,
+  Check,
+  ArrowRight,
+  ArrowLeft,
+  Send,
+  MessageSquare,
+  Clock,
+  Lock,
+  Info,
 } from 'lucide-react';
 import { ApiClient } from '../../../api/client';
 import { CommunicationGoal } from '../../../types';
@@ -56,6 +65,8 @@ const initialGoalForm = {
   fuAdditional: '',
 };
 
+type WizardStep = 1 | 2 | 3 | 4;
+
 export const CampaignCreateWizard: React.FC<CampaignCreateWizardProps> = ({
   prefill,
   onClearPrefill,
@@ -66,6 +77,10 @@ export const CampaignCreateWizard: React.FC<CampaignCreateWizardProps> = ({
   const { t, language } = useI18n();
   const storedConfig = getStoredAntiBanConfig();
 
+  // Wizard Stepper State
+  const [currentStep, setCurrentStep] = useState<WizardStep>(1);
+
+  // Form State
   const [selectedGroupId, setSelectedGroupId] = useState<number | null>(null);
   const [name, setName] = useState(prefill && prefill.groupName ? `${prefill.groupName} - Tanıtım` : '');
   const [targetCategory, setTargetCategory] = useState(prefill ? (prefill.targetCategory || prefill.category || '') : '');
@@ -76,6 +91,7 @@ export const CampaignCreateWizard: React.FC<CampaignCreateWizardProps> = ({
   const [template, setTemplate] = useState('');
   const [generating, setGenerating] = useState(false);
   const [variationCount, setVariationCount] = useState(0);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const COMMUNICATION_GOALS: Array<{
     id: CommunicationGoal;
@@ -365,7 +381,7 @@ export const CampaignCreateWizard: React.FC<CampaignCreateWizardProps> = ({
       language,
       variation_seed: seed !== undefined ? seed : variationCount,
     };
-  }, [communicationGoal, goalForm, variationCount, language, targetCategory]);;
+  }, [communicationGoal, goalForm, variationCount, language, targetCategory]);
 
   // Automatic Debounced AI Message Generation
   useEffect(() => {
@@ -480,17 +496,58 @@ export const CampaignCreateWizard: React.FC<CampaignCreateWizardProps> = ({
     setTemplate((prev) => (prev ? prev + ` {${tag}}` : `{${tag}}`));
   };
 
-  const handleCreateCampaign = async (e: React.FormEvent) => {
-    e.preventDefault();
+  // Step Validation & Navigation
+  const handleNextStep = () => {
+    if (currentStep === 1) {
+      if (!name.trim()) {
+        toast.warning(t('campaigns.nameRequiredWarning') || 'Lütfen kampanya adını girin.', t('common.warning'));
+        return;
+      }
+      setCurrentStep(2);
+    } else if (currentStep === 2) {
+      setCurrentStep(3);
+    } else if (currentStep === 3) {
+      if (!template.trim()) {
+        toast.warning(t('campaigns.templateRequiredWarning') || 'Lütfen mesaj şablonu oluşturun veya girin.', t('common.warning'));
+        return;
+      }
+      setCurrentStep(4);
+    }
+  };
+
+  const handlePrevStep = () => {
+    if (currentStep > 1) {
+      setCurrentStep((prev) => (prev - 1) as WizardStep);
+    }
+  };
+
+  const handleStepClick = (step: WizardStep) => {
+    if (step === currentStep) return;
+    if (step > 1 && !name.trim()) {
+      toast.warning(t('campaigns.nameRequiredWarning') || 'Lütfen kampanya adını girin.', t('common.warning'));
+      return;
+    }
+    if (step === 4 && !template.trim()) {
+      toast.warning(t('campaigns.templateRequiredWarning') || 'Lütfen mesaj şablonu oluşturun veya girin.', t('common.warning'));
+      return;
+    }
+    setCurrentStep(step);
+  };
+
+  const handleCreateCampaign = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
     if (!name.trim()) {
-      toast.warning(t('campaigns.nameRequiredWarning'), t('common.warning'));
+      toast.warning(t('campaigns.nameRequiredWarning') || 'Lütfen kampanya adını girin.', t('common.warning'));
+      setCurrentStep(1);
       return;
     }
     if (!template.trim()) {
-      toast.warning(t('campaigns.templateRequiredWarning'), t('common.warning'));
+      toast.warning(t('campaigns.templateRequiredWarning') || 'Lütfen mesaj şablonu oluşturun veya girin.', t('common.warning'));
+      setCurrentStep(3);
       return;
     }
 
+    setIsSubmitting(true);
     try {
       await ApiClient.createCampaign({
         name,
@@ -518,33 +575,129 @@ export const CampaignCreateWizard: React.FC<CampaignCreateWizardProps> = ({
       onSuccess();
     } catch (err: any) {
       toast.error(err.message || t('common.error'), t('toast.errorTitle'));
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
+  const stepItems: Array<{
+    step: WizardStep;
+    title: string;
+    subtitle: string;
+    icon: React.ElementType;
+  }> = [
+    {
+      step: 1,
+      title: t('campaigns.wizardStep1Title') || 'Temel Bilgiler',
+      subtitle: t('campaigns.wizardStep1Subtitle') || 'Hedef Kitle & İsim',
+      icon: Target,
+    },
+    {
+      step: 2,
+      title: t('campaigns.wizardStep2Title') || 'İletişim Amacı',
+      subtitle: t('campaigns.wizardStep2Subtitle') || 'Strateji & Detaylar',
+      icon: Sparkles,
+    },
+    {
+      step: 3,
+      title: t('campaigns.wizardStep3Title') || 'Mesaj & Spintax',
+      subtitle: t('campaigns.wizardStep3Subtitle') || 'Şablon & Önizleme',
+      icon: MessageSquare,
+    },
+    {
+      step: 4,
+      title: t('campaigns.wizardStep4Title') || 'Güvenlik & Özet',
+      subtitle: t('campaigns.wizardStep4Subtitle') || 'Anti-Ban & Onay',
+      icon: ShieldCheck,
+    },
+  ];
+
   return (
-    <form onSubmit={handleCreateCampaign} noValidate className="space-y-6">
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* Left Column: Form Controls (Info, Goals, Dynamic Inputs, Anti-Ban) */}
-        <div className="lg:col-span-7 space-y-6">
-          <Card className="p-6 space-y-6">
-            {/* 1. Basic Info & Target Audience */}
+    <div className="w-full space-y-6">
+      {/* 1. Senior Vuexy Stepper Header Card */}
+      <Card className="p-3 sm:p-5 border-slate-200/70 dark:border-white/[0.06] shadow-xs select-none">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 sm:gap-3">
+          {stepItems.map(({ step, title, subtitle, icon: StepIcon }) => {
+            const isActive = currentStep === step;
+            const isCompleted = currentStep > step;
+
+            return (
+              <button
+                key={step}
+                type="button"
+                onClick={() => handleStepClick(step)}
+                className={`p-2.5 sm:p-3 rounded-xl text-left transition-all cursor-pointer relative flex items-center space-x-3 border ${
+                  isActive
+                    ? 'border-[#7367F0] bg-[#7367F0]/[0.08] dark:bg-[#7367F0]/20 ring-2 ring-[#7367F0]/30 shadow-xs'
+                    : isCompleted
+                    ? 'border-[#28C76F]/30 bg-[#28C76F]/[0.05] dark:bg-[#28C76F]/10 hover:border-[#28C76F]/60'
+                    : 'border-slate-200/60 dark:border-white/[0.05] bg-slate-50/60 dark:bg-white/[0.02] hover:border-slate-300 dark:hover:border-white/10'
+                }`}
+              >
+                <div
+                  className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 font-bold text-xs transition-colors ${
+                    isActive
+                      ? 'bg-[#7367F0] text-white shadow-xs'
+                      : isCompleted
+                      ? 'bg-[#28C76F] text-white shadow-xs'
+                      : 'bg-slate-200/80 dark:bg-white/[0.08] text-slate-500 dark:text-slate-400'
+                  }`}
+                >
+                  {isCompleted ? <Check className="w-4 h-4 stroke-[3]" /> : <StepIcon className="w-4 h-4" />}
+                </div>
+
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center space-x-1.5">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-[#7E7F96]">
+                      0{step}
+                    </span>
+                    {isCompleted && (
+                      <span className="w-1.5 h-1.5 rounded-full bg-[#28C76F]" />
+                    )}
+                  </div>
+                  <h5
+                    className={`text-xs font-extrabold truncate ${
+                      isActive
+                        ? 'text-[#7367F0] dark:text-[#A59DF8]'
+                        : isCompleted
+                        ? 'text-slate-800 dark:text-white'
+                        : 'text-slate-600 dark:text-slate-300'
+                    }`}
+                  >
+                    {title}
+                  </h5>
+                  <p className="text-[10px] text-slate-400 dark:text-[#7E7F96] truncate hidden sm:block">
+                    {subtitle}
+                  </p>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      </Card>
+
+      {/* 2. Step Views */}
+      <form onSubmit={handleCreateCampaign} noValidate className="space-y-6">
+        {/* STEP 1: Basic Info & Target Audience */}
+        {currentStep === 1 && (
+          <Card className="p-4 sm:p-6 space-y-6 animate-fade-in">
             <FormSection
-              title={t('campaigns.campaignName')}
-              subtitle={t('campaigns.builderInfoSubtitle')}
+              title={t('campaigns.wizardStep1Title') || 'Temel Bilgiler & Hedef Kitle'}
+              subtitle={t('campaigns.builderInfoSubtitle') || 'Hedef kitlenizi ve kampanyanızın genel kapsamını belirleyin.'}
               icon={Target}
             >
               {/* Selected Group Badge */}
               {selectedGroupId && prefill?.groupName && (
-                <div className="p-3.5 rounded-xl bg-[#7367F0]/10 border border-[#7367F0]/20 flex items-center justify-between">
-                  <div className="flex items-center space-x-3">
-                    <div className="w-8 h-8 rounded-lg bg-[#7367F0] text-white flex items-center justify-center font-bold shrink-0">
+                <div className="p-4 rounded-xl bg-[#7367F0]/10 border border-[#7367F0]/20 flex items-center justify-between gap-3">
+                  <div className="flex items-center space-x-3 min-w-0">
+                    <div className="w-9 h-9 rounded-xl bg-[#7367F0] text-white flex items-center justify-center font-bold shrink-0 shadow-xs">
                       <Users className="w-4 h-4" />
                     </div>
                     <div className="min-w-0">
-                      <span className="text-xs font-extrabold text-slate-800 dark:text-white truncate block">
+                      <span className="text-xs sm:text-sm font-extrabold text-slate-800 dark:text-white truncate block">
                         {t('campaignGroups.campaignBuilderGroupNotice')}: {prefill.groupName}
                       </span>
-                      <p className="text-[11px] text-slate-500 dark:text-[#7E7F96]">
+                      <p className="text-[11px] text-slate-500 dark:text-[#7E7F96] truncate">
                         {t('campaignGroups.campaignBuilderGroupSubtitle', {
                           count: prefill.totalLeads ?? 0,
                           waCount: prefill.whatsappEligible ?? 0,
@@ -572,7 +725,7 @@ export const CampaignCreateWizard: React.FC<CampaignCreateWizardProps> = ({
                   <SectorAutocomplete
                     value={targetCategory}
                     onChange={(val) => setTargetCategory(val)}
-                    placeholder={t('leadFinder.keywordPlaceholder')}
+                    placeholder={t('leadFinder.keywordPlaceholder') || 'Sektör seçin veya yazın...'}
                   />
                 </FormField>
               </div>
@@ -584,21 +737,29 @@ export const CampaignCreateWizard: React.FC<CampaignCreateWizardProps> = ({
                   placeholder={t('campaigns.descriptionPlaceholder') || 'Açıklama adı yazın (Örn: Yeni işletme tanışma ve ihtiyaç analizi)...'}
                 />
               </FormField>
-            </FormSection>
 
-            {/* 2. Communication Goal Selection (İletişim Amacınız Nedir?) */}
-            <div className="pt-4 border-t border-slate-100 dark:border-white/[0.06] space-y-3">
-              <div>
-                <label className="text-xs font-extrabold text-slate-800 dark:text-white flex items-center gap-1.5">
-                  <Sparkles className="w-3.5 h-3.5 text-[#7367F0]" />
-                  <span>{t('campaigns.communicationGoalTitle') || 'İletişim Amacınız Nedir?'}</span>
-                </label>
-                <p className="text-[11px] text-slate-400 dark:text-[#7E7F96] mt-0.5">
-                  {t('campaigns.communicationGoalSubtitle') || 'Bu kampanyada işletmelerle hangi amaçla temas kurmak istediğinizi seçin.'}
+              {/* Informational Hint Card */}
+              <div className="p-3.5 sm:p-4 rounded-xl bg-slate-50/80 dark:bg-[#25293C] border border-slate-200/60 dark:border-white/[0.06] flex items-start space-x-3">
+                <div className="w-6 h-6 rounded-lg bg-[#7367F0]/15 text-[#7367F0] flex items-center justify-center shrink-0 mt-0.5">
+                  <Info className="w-3.5 h-3.5" />
+                </div>
+                <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+                  {t('campaigns.wizardBasicsTip') || 'Kampanyanıza açıklayıcı bir isim ve sektör belirleyin. Hedef sektör, yapay zekanın mesajlarınızı daha doğru kişiselleştirmesini sağlar.'}
                 </p>
               </div>
+            </FormSection>
+          </Card>
+        )}
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+        {/* STEP 2: Communication Goal & Dynamic Inputs */}
+        {currentStep === 2 && (
+          <Card className="p-4 sm:p-6 space-y-6 animate-fade-in">
+            <FormSection
+              title={t('campaigns.communicationGoalTitle') || 'İletişim Amacınız Nedir?'}
+              subtitle={t('campaigns.communicationGoalSubtitle') || 'Bu kampanyada işletmelerle hangi amaçla temas kurmak istediğinizi seçin.'}
+              icon={Sparkles}
+            >
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                 {COMMUNICATION_GOALS.map((goal) => {
                   const isSelected = communicationGoal === goal.id;
                   const IconComponent = goal.icon;
@@ -607,18 +768,18 @@ export const CampaignCreateWizard: React.FC<CampaignCreateWizardProps> = ({
                     <div
                       key={goal.id}
                       onClick={() => handleSelectGoal(goal.id)}
-                      className={`p-3.5 rounded-xl border text-left transition-all cursor-pointer relative flex flex-col justify-between space-y-2 select-none ${
+                      className={`p-4 rounded-xl border text-left transition-all cursor-pointer relative flex flex-col justify-between space-y-2.5 select-none ${
                         isSelected
                           ? 'border-[#7367F0] bg-[#7367F0]/[0.08] dark:bg-[#7367F0]/15 ring-2 ring-[#7367F0]/30 shadow-xs'
                           : 'border-slate-200/80 dark:border-white/[0.08] bg-white dark:bg-[#2F3349]/60 hover:border-[#7367F0]/50 hover:bg-slate-50 dark:hover:bg-white/[0.03]'
                       }`}
                     >
                       <div className="flex items-start justify-between">
-                        <div className="flex items-center space-x-2">
-                          <div className={`w-7 h-7 rounded-lg flex items-center justify-center ${
-                            isSelected ? 'bg-[#7367F0] text-white' : 'bg-slate-100 dark:bg-white/[0.06] text-slate-500 dark:text-slate-300'
+                        <div className="flex items-center space-x-2.5">
+                          <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${
+                            isSelected ? 'bg-[#7367F0] text-white shadow-xs' : 'bg-slate-100 dark:bg-white/[0.06] text-slate-500 dark:text-slate-300'
                           }`}>
-                            <IconComponent className="w-3.5 h-3.5" />
+                            <IconComponent className="w-4 h-4" />
                           </div>
                           <h5 className="font-extrabold text-xs text-slate-800 dark:text-white">
                             {goal.title}
@@ -642,16 +803,17 @@ export const CampaignCreateWizard: React.FC<CampaignCreateWizardProps> = ({
                   );
                 })}
               </div>
-            </div>
 
-            {/* 3. Goal-Specific Dynamic Form Fields (Amaca Göre Ek Bilgiler) */}
-            {communicationGoal && (
-              <div className="pt-4 border-t border-slate-100 dark:border-white/[0.06] space-y-4 animate-fade-in">
-                <FormSection
-                  title={t('campaigns.goalDetailsTitle') || 'Amaca Özel Detaylar'}
-                  subtitle={t('campaigns.goalDetailsSubtitle') || 'Seçilen iletişim amacına göre mesajınızı şekillendirecek detayları belirleyin.'}
-                  icon={Sparkles}
-                >
+              {/* Goal-Specific Dynamic Form Fields */}
+              {communicationGoal && (
+                <div className="pt-4 border-t border-slate-100 dark:border-white/[0.06] space-y-4 animate-fade-in">
+                  <div className="flex items-center space-x-2">
+                    <span className="w-2 h-2 rounded-full bg-[#7367F0] animate-pulse" />
+                    <h5 className="text-xs font-bold text-slate-800 dark:text-white uppercase tracking-wider">
+                      {t('campaigns.goalDetailsTitle') || 'Amaca Özel Detaylar'}
+                    </h5>
+                  </div>
+
                   {communicationGoal === 'FIRST_CONTACT' && (
                     <div className="space-y-3.5">
                       <FormField label={t('campaigns.fcOfferLabel')}>
@@ -826,120 +988,304 @@ export const CampaignCreateWizard: React.FC<CampaignCreateWizardProps> = ({
                       </FormField>
                     </div>
                   )}
-                </FormSection>
-              </div>
-            )}
-          </Card>
-        </div>
-
-        {/* Right Column: Spintax Live Preview + Message Template Editor & Launch Action */}
-        <div className="lg:col-span-5 space-y-6">
-          {/* 1. Spintax Live Variation Preview Card */}
-          <SpintaxPreviewCard template={template} targetCategory={targetCategory} />
-
-          {/* 2. Message Template Editor Card (Directly Below Live Preview) */}
-          <Card className="p-6 space-y-5">
-            <FormSection
-              title={t('campaigns.templateLabel') || 'Mesaj Şablonu'}
-              subtitle={t('campaigns.templateCardSubtitle') || 'Oluşturulan mesajı buradan düzenleyebilirsiniz.'}
-              icon={Sparkles}
-            >
-              <FormField 
-                label={t('campaigns.templateLabel') || 'Mesaj Şablonu'} 
-                required 
-              >
-                <Textarea
-                  rows={8}
-                  value={template}
-                  onChange={(e) => {
-                    setIsTemplateManuallyEdited(true);
-                    setTemplate(e.target.value);
-                  }}
-                  placeholder={t('campaigns.templatePlaceholder')}
-                  required
-                />
-              </FormField>
-
-              {/* Available Dynamic Field Injection Tags & Regenerate Action */}
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-1">
-                <div>
-                  <label className="text-[11px] font-bold text-slate-500 dark:text-slate-400 block mb-1">
-                    {t('campaigns.personalizationVariables') || 'Kişiselleştirme Değişkenleri'}
-                  </label>
-                  <div className="flex flex-wrap gap-1.5">
-                    {(language === 'tr'
-                      ? [
-                          { tag: 'isim', label: '+{isim}' },
-                          { tag: 'şehir', label: '+{şehir}' },
-                          { tag: 'ilçe', label: '+{ilçe}' },
-                          { tag: 'kategori', label: '+{kategori}' },
-                          { tag: 'puan', label: '+{puan}' },
-                        ]
-                      : [
-                          { tag: 'name', label: '+{name}' },
-                          { tag: 'city', label: '+{city}' },
-                          { tag: 'district', label: '+{district}' },
-                          { tag: 'category', label: '+{category}' },
-                          { tag: 'rating', label: '+{rating}' },
-                        ]
-                    ).map(({ tag, label }) => (
-                      <button
-                        key={tag}
-                        type="button"
-                        onClick={() => insertTag(tag)}
-                        className="text-[11px] font-mono font-bold px-2 py-0.5 rounded bg-[#7367F0]/10 text-[#7367F0] hover:bg-[#7367F0]/20 border border-[#7367F0]/20 transition-all cursor-pointer"
-                      >
-                        {label}
-                      </button>
-                    ))}
-                  </div>
                 </div>
+              )}
 
-                {/* Template Actions: Regenerate */}
-                {communicationGoal && (
-                  <div className="sm:self-end">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      data-testid="regenerate-template-btn"
-                      onClick={handleRegenerateTemplate}
-                      disabled={generating}
-                      className="space-x-1.5 text-xs font-bold border-[#7367F0]/30 text-[#7367F0] hover:bg-[#7367F0]/10 cursor-pointer"
-                    >
-                      <RefreshCw className={`w-3.5 h-3.5 ${generating ? 'animate-spin' : ''}`} />
-                      <span>{t('campaigns.regenerateTemplateBtn') || 'Mesajı Yenile'}</span>
-                    </Button>
-                  </div>
-                )}
+              {/* Informational Hint */}
+              <div className="p-3.5 sm:p-4 rounded-xl bg-slate-50/80 dark:bg-[#25293C] border border-slate-200/60 dark:border-white/[0.06] flex items-start space-x-3">
+                <div className="w-6 h-6 rounded-lg bg-[#7367F0]/15 text-[#7367F0] flex items-center justify-center shrink-0 mt-0.5">
+                  <Sparkles className="w-3.5 h-3.5" />
+                </div>
+                <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+                  {t('campaigns.wizardGoalTip') || 'Bir iletişim amacı seçtiğinizde yapay zeka mesajınızı arka planda otomatik olarak oluşturur.'}
+                </p>
               </div>
             </FormSection>
           </Card>
-        </div>
-      </div>
+        )}
 
-      {/* Full Width Bottom Action Bar: Cancel & Create Campaign */}
-      <Card className="p-5 shadow-sm">
-        <div className="flex flex-col-reverse sm:flex-row sm:items-center sm:justify-end gap-3">
-          <Button
-            type="button"
-            variant="outline"
-            onClick={onCancel}
-            className="cursor-pointer font-bold px-6 border-slate-300 dark:border-white/10 hover:bg-slate-100 dark:hover:bg-white/5"
-          >
-            {t('common.cancel')}
-          </Button>
+        {/* STEP 3: Message & Spintax Composer + Live Preview */}
+        {currentStep === 3 && (
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 animate-fade-in">
+            {/* Left Column: Template Editor */}
+            <div className="lg:col-span-7 space-y-5">
+              <Card className="p-4 sm:p-6 space-y-5">
+                <FormSection
+                  title={t('campaigns.templateLabel') || 'Mesaj Şablonu'}
+                  subtitle={t('campaigns.templateCardSubtitle') || 'Oluşturulan mesajı buradan düzenleyebilirsiniz.'}
+                  icon={MessageSquare}
+                >
+                  <FormField label={t('campaigns.templateLabel') || 'Mesaj Şablonu'} required>
+                    <Textarea
+                      rows={9}
+                      value={template}
+                      onChange={(e) => {
+                        setIsTemplateManuallyEdited(true);
+                        setTemplate(e.target.value);
+                      }}
+                      placeholder={t('campaigns.templatePlaceholder')}
+                      required
+                    />
+                  </FormField>
 
-          <Button
-            type="submit"
-            data-testid="submit-campaign-btn"
-            className="space-x-2 font-bold bg-[#7367F0] text-white shadow-md shadow-[#7367F0]/30 hover:bg-[#685dd8] cursor-pointer px-6"
-          >
-            <Sparkles className="w-4 h-4" />
-            <span>{t('campaigns.createCampaign')}</span>
-          </Button>
-        </div>
-      </Card>
-    </form>
+                  {/* Personalization Tag Chips & Regenerate Action */}
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-1">
+                    <div>
+                      <label className="text-[11px] font-bold text-slate-500 dark:text-slate-400 block mb-1">
+                        {t('campaigns.personalizationVariables') || 'Kişiselleştirme Değişkenleri'}
+                      </label>
+                      <div className="flex flex-wrap gap-1.5">
+                        {(language === 'tr'
+                          ? [
+                              { tag: 'isim', label: '+{isim}' },
+                              { tag: 'şehir', label: '+{şehir}' },
+                              { tag: 'ilçe', label: '+{ilçe}' },
+                              { tag: 'kategori', label: '+{kategori}' },
+                              { tag: 'puan', label: '+{puan}' },
+                            ]
+                          : [
+                              { tag: 'name', label: '+{name}' },
+                              { tag: 'city', label: '+{city}' },
+                              { tag: 'district', label: '+{district}' },
+                              { tag: 'category', label: '+{category}' },
+                              { tag: 'rating', label: '+{rating}' },
+                            ]
+                        ).map(({ tag, label }) => (
+                          <button
+                            key={tag}
+                            type="button"
+                            onClick={() => insertTag(tag)}
+                            className="text-[11px] font-mono font-bold px-2 py-0.5 rounded bg-[#7367F0]/10 text-[#7367F0] hover:bg-[#7367F0]/20 border border-[#7367F0]/20 transition-all cursor-pointer"
+                          >
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Template Actions: Regenerate */}
+                    {communicationGoal && (
+                      <div className="sm:self-end">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          data-testid="regenerate-template-btn"
+                          onClick={handleRegenerateTemplate}
+                          disabled={generating}
+                          className="space-x-1.5 text-xs font-bold border-[#7367F0]/30 text-[#7367F0] hover:bg-[#7367F0]/10 cursor-pointer"
+                        >
+                          <RefreshCw className={`w-3.5 h-3.5 ${generating ? 'animate-spin' : ''}`} />
+                          <span>{t('campaigns.regenerateTemplateBtn') || 'Mesajı Yenile'}</span>
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Spintax Syntax Guidance Hint */}
+                  <div className="p-3.5 rounded-xl bg-slate-50/80 dark:bg-[#25293C] border border-slate-200/60 dark:border-white/[0.06] text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+                    <p className="font-semibold text-slate-700 dark:text-slate-200 mb-1 flex items-center gap-1.5">
+                      <Sparkles className="w-3.5 h-3.5 text-[#7367F0]" />
+                      <span>{t('campaigns.wizardStep3Title')}</span>
+                    </p>
+                    <p>
+                      {t('campaigns.wizardSpintaxHint') ||
+                        'Spintax sözdizimi {Seçenek 1|Seçenek 2|Seçenek 3} şeklinde rastgele varyasyonlar üretir. {isim}, {şehir}, {ilçe}, {kategori} gibi etiketler ise işletme verileriyle otomatik doldurulur.'}
+                    </p>
+                  </div>
+                </FormSection>
+              </Card>
+            </div>
+
+            {/* Right Column: Live WhatsApp Simulation Card */}
+            <div className="lg:col-span-5 space-y-5">
+              <SpintaxPreviewCard template={template} targetCategory={targetCategory} />
+            </div>
+          </div>
+        )}
+
+        {/* STEP 4: Review, Anti-Ban & Launch Confirmation */}
+        {currentStep === 4 && (
+          <div className="space-y-6 animate-fade-in">
+            {/* Overview Summary Card */}
+            <Card className="p-5 sm:p-6 space-y-6">
+              <FormSection
+                title={t('campaigns.wizardReviewTitle') || 'Kampanya ve Güvenlik Özeti'}
+                subtitle={t('campaigns.wizardReviewSubtitle') || 'Kampanyanızı oluşturmadan önce tüm ayarları ve güvenlik önlemlerini inceleyin.'}
+                icon={ShieldCheck}
+              >
+                {/* 4 Summary Metric Tiles */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
+                  <div className="p-4 rounded-xl bg-slate-50/80 dark:bg-[#25293C] border border-slate-200/70 dark:border-white/[0.06] space-y-1">
+                    <span className="text-[11px] font-bold text-slate-400 dark:text-[#7E7F96] uppercase tracking-wider block">
+                      {t('campaigns.wizardSummaryName') || 'Kampanya Adı'}
+                    </span>
+                    <span className="text-xs sm:text-sm font-extrabold text-slate-800 dark:text-white truncate block">
+                      {name || '-'}
+                    </span>
+                  </div>
+
+                  <div className="p-4 rounded-xl bg-slate-50/80 dark:bg-[#25293C] border border-slate-200/70 dark:border-white/[0.06] space-y-1">
+                    <span className="text-[11px] font-bold text-slate-400 dark:text-[#7E7F96] uppercase tracking-wider block">
+                      {t('campaigns.wizardSummaryCategory') || 'Hedef Sektör'}
+                    </span>
+                    <span className="text-xs sm:text-sm font-extrabold text-slate-800 dark:text-white truncate block">
+                      {targetCategory || t('campaigns.wizardAllCategories') || 'Genel'}
+                    </span>
+                  </div>
+
+                  <div className="p-4 rounded-xl bg-slate-50/80 dark:bg-[#25293C] border border-slate-200/70 dark:border-white/[0.06] space-y-1">
+                    <span className="text-[11px] font-bold text-slate-400 dark:text-[#7E7F96] uppercase tracking-wider block">
+                      {t('campaigns.wizardSummaryGoal') || 'İletişim Amacı'}
+                    </span>
+                    <span className="text-xs sm:text-sm font-extrabold text-[#7367F0] truncate block">
+                      {COMMUNICATION_GOALS.find((g) => g.id === communicationGoal)?.title || t('campaigns.wizardAllCategories') || 'Standart'}
+                    </span>
+                  </div>
+
+                  <div className="p-4 rounded-xl bg-slate-50/80 dark:bg-[#25293C] border border-slate-200/70 dark:border-white/[0.06] space-y-1">
+                    <span className="text-[11px] font-bold text-slate-400 dark:text-[#7E7F96] uppercase tracking-wider block">
+                      {t('campaigns.wizardSummaryAudience') || 'Hedef Kitle Grubu'}
+                    </span>
+                    <span className="text-xs sm:text-sm font-extrabold text-slate-800 dark:text-white truncate block">
+                      {prefill?.groupName || t('campaigns.wizardNoGroupSelected') || 'Bağımsız'}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Anti-Ban & Safety Protection Shield */}
+                <div className="p-4 sm:p-5 rounded-xl bg-[#28C76F]/[0.08] dark:bg-[#28C76F]/15 border border-[#28C76F]/30 space-y-3.5">
+                  <div className="flex items-center space-x-3">
+                    <div className="w-9 h-9 rounded-xl bg-[#28C76F] text-white flex items-center justify-center font-bold shrink-0 shadow-xs">
+                      <Lock className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <h5 className="text-xs sm:text-sm font-extrabold text-slate-800 dark:text-white leading-tight">
+                        {t('campaigns.wizardAntibanTitle') || 'Anti-Ban & Mesai Saatleri Koruması'}
+                      </h5>
+                      <p className="text-[11px] text-slate-500 dark:text-[#7E7F96] mt-0.5">
+                        {t('campaigns.wizardAntibanDesc') ||
+                          'Bu kampanya, WhatsApp numaranızın spam engeline takılmasını önlemek için Tezlify Anti-Ban politikasıyla fail-closed olarak korunacaktır.'}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* 3 Parameter Chips */}
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-1">
+                    <div className="px-3.5 py-2.5 rounded-lg bg-white/80 dark:bg-[#2F3349] border border-[#28C76F]/20 text-xs font-semibold text-slate-700 dark:text-slate-200 flex items-center space-x-2">
+                      <Clock className="w-3.5 h-3.5 text-[#28C76F] shrink-0" />
+                      <span className="truncate">
+                        {t('campaigns.wizardAntibanMinMax', {
+                          min: storedConfig.min_delay_seconds,
+                          max: storedConfig.max_delay_seconds,
+                        }) || `Jitter: ${storedConfig.min_delay_seconds}s - ${storedConfig.max_delay_seconds}s`}
+                      </span>
+                    </div>
+
+                    <div className="px-3.5 py-2.5 rounded-lg bg-white/80 dark:bg-[#2F3349] border border-[#28C76F]/20 text-xs font-semibold text-slate-700 dark:text-slate-200 flex items-center space-x-2">
+                      <Sparkles className="w-3.5 h-3.5 text-[#28C76F] shrink-0" />
+                      <span className="truncate">
+                        {t('campaigns.wizardAntibanTyping', {
+                          typing: storedConfig.typing_delay_seconds,
+                        }) || `Yazıyor: ${storedConfig.typing_delay_seconds}s`}
+                      </span>
+                    </div>
+
+                    <div className="px-3.5 py-2.5 rounded-lg bg-white/80 dark:bg-[#2F3349] border border-[#28C76F]/20 text-xs font-semibold text-slate-700 dark:text-slate-200 flex items-center space-x-2">
+                      <ShieldCheck className="w-3.5 h-3.5 text-[#28C76F] shrink-0" />
+                      <span className="truncate">
+                        {storedConfig.working_hours_enabled
+                          ? t('campaigns.wizardAntibanWorkingHoursActive', {
+                              start: storedConfig.working_hours_start,
+                              end: storedConfig.working_hours_end,
+                            }) || `Mesai: ${storedConfig.working_hours_start} - ${storedConfig.working_hours_end}`
+                          : t('campaigns.wizardAntibanWorkingHoursDisabled') || '7/24 Aktif'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Final Message Template Preview Card */}
+                <div className="space-y-2 pt-2">
+                  <label className="text-xs font-bold text-slate-700 dark:text-slate-200 block">
+                    {t('campaigns.templateLabel') || 'Mesaj Şablonu'}
+                  </label>
+                  <div className="p-4 rounded-xl bg-slate-50 dark:bg-[#25293C] border border-slate-200/70 dark:border-white/[0.06] text-xs font-sans text-slate-700 dark:text-slate-200 whitespace-pre-wrap leading-relaxed max-h-48 overflow-y-auto">
+                    {template || '-'}
+                  </div>
+                </div>
+              </FormSection>
+            </Card>
+          </div>
+        )}
+
+        {/* 3. Unified Bottom Stepper Navigation Bar */}
+        <Card className="p-4 sm:p-5 shadow-xs border-slate-200/70 dark:border-white/[0.06]">
+          <div className="flex flex-col-reverse sm:flex-row sm:items-center sm:justify-between gap-3">
+            {/* Cancel Button */}
+            <Button
+              type="button"
+              variant="outline"
+              onClick={onCancel}
+              className="cursor-pointer font-bold px-5 border-slate-300 dark:border-white/10 hover:bg-slate-100 dark:hover:bg-white/5"
+            >
+              {t('common.cancel') || 'Vazgeç'}
+            </Button>
+
+            <div className="flex items-center space-x-2.5 self-end sm:self-center">
+              {/* Previous Step Button */}
+              {currentStep > 1 && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={handlePrevStep}
+                  className="space-x-1.5 font-bold cursor-pointer border-slate-300 dark:border-white/10 hover:bg-slate-100 dark:hover:bg-white/5"
+                >
+                  <ArrowLeft className="w-4 h-4" />
+                  <span>{t('campaigns.wizardPrevStep') || 'Önceki Adım'}</span>
+                </Button>
+              )}
+
+              {/* Next Step Button (Steps 1, 2, 3) */}
+              {currentStep < 4 ? (
+                <>
+                  {currentStep === 3 && (
+                    <Button
+                      type="submit"
+                      data-testid="submit-campaign-btn"
+                      disabled={isSubmitting}
+                      className="space-x-2 font-bold bg-[#7367F0] text-white shadow-md shadow-[#7367F0]/30 hover:bg-[#685dd8] cursor-pointer px-5"
+                    >
+                      <Sparkles className="w-4 h-4" />
+                      <span>{t('campaigns.wizardFinishBtn') || 'Kampanyayı Oluştur'}</span>
+                    </Button>
+                  )}
+
+                  <Button
+                    type="button"
+                    onClick={handleNextStep}
+                    className="space-x-1.5 font-bold bg-[#7367F0] text-white shadow-md shadow-[#7367F0]/30 hover:bg-[#685dd8] cursor-pointer px-5"
+                  >
+                    <span>{t('campaigns.wizardNextStep') || 'Sonraki Adım'}</span>
+                    <ArrowRight className="w-4 h-4" />
+                  </Button>
+                </>
+              ) : (
+                /* Step 4 Final Create Campaign Button */
+                <Button
+                  type="submit"
+                  data-testid="submit-campaign-btn"
+                  disabled={isSubmitting}
+                  className="space-x-2 font-bold bg-[#7367F0] text-white shadow-md shadow-[#7367F0]/30 hover:bg-[#685dd8] cursor-pointer px-6"
+                >
+                  <Sparkles className="w-4 h-4" />
+                  <span>{isSubmitting ? t('common.loading') : (t('campaigns.wizardFinishBtn') || 'Kampanyayı Oluştur')}</span>
+                </Button>
+              )}
+            </div>
+          </div>
+        </Card>
+      </form>
+    </div>
   );
 };
