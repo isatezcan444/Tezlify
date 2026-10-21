@@ -31,24 +31,24 @@ export const LandingFooter: React.FC = () => {
           </div>
 
           {/* Links */}
-          <div className="flex items-center gap-6 text-xs font-semibold text-slate-500 dark:text-slate-400">
-            <a href="#features" className="hover:text-[#7367F0] transition-colors">
+          <div className="flex flex-wrap items-center justify-center gap-4 sm:gap-6 text-xs font-semibold text-slate-500 dark:text-slate-400">
+            <a href="#features" className="hover:text-[#7367F0] transition-colors py-1">
               {t('landing.navFeatures')}
             </a>
-            <a href="#pricing" className="hover:text-[#7367F0] transition-colors">
+            <a href="#pricing" className="hover:text-[#7367F0] transition-colors py-1">
               {t('landing.navPricing')}
             </a>
-            <a href="#faq" className="hover:text-[#7367F0] transition-colors">
+            <a href="#faq" className="hover:text-[#7367F0] transition-colors py-1">
               {t('landing.navFaq')}
             </a>
-            <a href="/docs" target="_blank" rel="noopener noreferrer" className="hover:text-[#7367F0] transition-colors">
+            <a href="/docs" target="_blank" rel="noopener noreferrer" className="hover:text-[#7367F0] transition-colors py-1">
               REST API
             </a>
           </div>
         </div>
 
         {/* Copyright */}
-        <div className="mt-8 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-slate-400 dark:text-slate-500">
+        <div className="mt-8 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-slate-400 dark:text-slate-500 text-center sm:text-left">
           <div>
             © {new Date().getFullYear()} Tezlify. {t('landing.footerRights')}
           </div>

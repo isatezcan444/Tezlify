@@ -190,10 +190,10 @@ export const LandingBeforeAfter: React.FC<LandingBeforeAfterProps> = ({ onGetSta
               <button
                 type="button"
                 onClick={onGetStarted}
-                className="w-full sm:w-auto px-5 py-2.5 rounded-xl bg-gradient-to-r from-[#28C76F] to-[#1f9d57] hover:from-[#24b263] hover:to-[#1a8549] text-white text-xs font-bold shadow-lg shadow-[#28C76F]/25 transition-all cursor-pointer flex items-center justify-center gap-2 active:scale-95 shrink-0"
+                className="w-full sm:w-auto min-h-[44px] px-5 py-2.5 rounded-xl bg-gradient-to-r from-[#28C76F] to-[#1f9d57] hover:from-[#24b263] hover:to-[#1a8549] text-white text-xs sm:text-sm font-bold shadow-lg shadow-[#28C76F]/25 transition-all cursor-pointer flex items-center justify-center gap-2 active:scale-95 shrink-0"
               >
                 <span>{t('landing.comparisonCtaBtn')}</span>
-                <ArrowRight className="w-3.5 h-3.5" />
+                <ArrowRight className="w-4 h-4" />
               </button>
             </div>
           </div>

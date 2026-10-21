@@ -153,56 +153,56 @@ export const LandingInteractiveShowcase: React.FC<LandingInteractiveShowcaseProp
         </div>
 
         {/* 4 Interactive Step Tabs */}
-        <div className="flex items-center justify-start sm:justify-center gap-2 overflow-x-auto pb-4 mb-8 scrollbar-none">
+        <div className="flex items-center justify-start sm:justify-center gap-2 overflow-x-auto pb-4 mb-8 scrollbar-none w-full max-w-full px-1">
           <button
             type="button"
             onClick={() => setActiveTab('scraper')}
-            className={`flex items-center gap-2 px-4 sm:px-5 py-3 rounded-2xl text-xs sm:text-sm font-bold transition-all cursor-pointer whitespace-nowrap active:scale-95 ${
+            className={`flex items-center gap-2 px-4 sm:px-5 py-3 rounded-2xl text-xs sm:text-sm font-bold transition-all cursor-pointer whitespace-nowrap shrink-0 active:scale-95 ${
               activeTab === 'scraper'
                 ? 'bg-[#7367F0] text-white shadow-lg shadow-[#7367F0]/30 scale-[1.02]'
                 : 'landing-glass-card text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
             }`}
           >
-            <MapPin className="w-4 h-4" />
+            <MapPin className="w-4 h-4 shrink-0" />
             <span>{t('landing.showcaseTab1')}</span>
           </button>
 
           <button
             type="button"
             onClick={() => setActiveTab('ai')}
-            className={`flex items-center gap-2 px-4 sm:px-5 py-3 rounded-2xl text-xs sm:text-sm font-bold transition-all cursor-pointer whitespace-nowrap active:scale-95 ${
+            className={`flex items-center gap-2 px-4 sm:px-5 py-3 rounded-2xl text-xs sm:text-sm font-bold transition-all cursor-pointer whitespace-nowrap shrink-0 active:scale-95 ${
               activeTab === 'ai'
                 ? 'bg-[#7367F0] text-white shadow-lg shadow-[#7367F0]/30 scale-[1.02]'
                 : 'landing-glass-card text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
             }`}
           >
-            <Sparkles className="w-4 h-4" />
+            <Sparkles className="w-4 h-4 shrink-0" />
             <span>{t('landing.showcaseTab2')}</span>
           </button>
 
           <button
             type="button"
             onClick={() => setActiveTab('antiban')}
-            className={`flex items-center gap-2 px-4 sm:px-5 py-3 rounded-2xl text-xs sm:text-sm font-bold transition-all cursor-pointer whitespace-nowrap active:scale-95 ${
+            className={`flex items-center gap-2 px-4 sm:px-5 py-3 rounded-2xl text-xs sm:text-sm font-bold transition-all cursor-pointer whitespace-nowrap shrink-0 active:scale-95 ${
               activeTab === 'antiban'
                 ? 'bg-[#7367F0] text-white shadow-lg shadow-[#7367F0]/30 scale-[1.02]'
                 : 'landing-glass-card text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
             }`}
           >
-            <ShieldCheck className="w-4 h-4" />
+            <ShieldCheck className="w-4 h-4 shrink-0" />
             <span>{t('landing.showcaseTab3')}</span>
           </button>
 
           <button
             type="button"
             onClick={() => setActiveTab('inbox')}
-            className={`flex items-center gap-2 px-4 sm:px-5 py-3 rounded-2xl text-xs sm:text-sm font-bold transition-all cursor-pointer whitespace-nowrap active:scale-95 ${
+            className={`flex items-center gap-2 px-4 sm:px-5 py-3 rounded-2xl text-xs sm:text-sm font-bold transition-all cursor-pointer whitespace-nowrap shrink-0 active:scale-95 ${
               activeTab === 'inbox'
                 ? 'bg-[#7367F0] text-white shadow-lg shadow-[#7367F0]/30 scale-[1.02]'
                 : 'landing-glass-card text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
             }`}
           >
-            <MessageSquare className="w-4 h-4" />
+            <MessageSquare className="w-4 h-4 shrink-0" />
             <span>{t('landing.showcaseTab4')}</span>
           </button>
         </div>
@@ -345,7 +345,7 @@ export const LandingInteractiveShowcase: React.FC<LandingInteractiveShowcaseProp
                 <div className="p-5 rounded-2xl bg-white dark:bg-[#25293C] border border-slate-200/80 dark:border-white/[0.08] space-y-3">
                   <div className="text-xs font-black uppercase tracking-wider text-[#7367F0] flex items-center gap-1.5">
                     <Sparkles className="w-3.5 h-3.5" />
-                    <span>Dinamik Spintax Ayrıştırma</span>
+                    <span>{t('landing.spintaxBreakdownTitle')}</span>
                   </div>
                   <div className="font-mono text-xs text-slate-700 dark:text-slate-300 leading-relaxed p-3.5 rounded-xl bg-slate-50 dark:bg-[#1E2235] border border-slate-200/60 dark:border-white/[0.04]">
                     <span className="text-purple-500 font-bold">{'{Selamlar|Merhaba|İyi günler}'}</span>{' '}
@@ -353,7 +353,7 @@ export const LandingInteractiveShowcase: React.FC<LandingInteractiveShowcaseProp
                     <span className="text-blue-500 font-bold">{'{randevu doluluk|yeni hasta çekim}'}</span> oranınızı %40 artıracak...
                   </div>
                   <p className="text-[11px] text-slate-400">
-                    Spintax motoru, WhatsApp sunucularının toplu şablon algılamasını engellemek için her alıcıya metni dinamik olarak türeterek fırlatır.
+                    {t('landing.spintaxBreakdownDesc')}
                   </p>
                 </div>
 
@@ -388,7 +388,7 @@ export const LandingInteractiveShowcase: React.FC<LandingInteractiveShowcaseProp
                   {/* Interactive Slider */}
                   <div className="p-4 rounded-2xl bg-white dark:bg-[#25293C] border border-slate-200/80 dark:border-white/[0.08] space-y-3">
                     <div className="flex items-center justify-between text-xs font-bold">
-                      <span className="text-slate-600 dark:text-slate-300">Rastgele Gecikme Aralığı</span>
+                      <span className="text-slate-600 dark:text-slate-300">{t('landing.jitterRangeLabel')}</span>
                       <span className="text-[#7367F0] font-mono font-black text-sm">
                         {jitterRange}s - {jitterRange + 35}s
                       </span>
@@ -404,9 +404,9 @@ export const LandingInteractiveShowcase: React.FC<LandingInteractiveShowcaseProp
                     />
 
                     <div className="flex justify-between text-[11px] text-slate-400">
-                      <span>15s (Hızlı)</span>
-                      <span>45s (Önerilen)</span>
-                      <span>75s (Ultra Güvenli)</span>
+                      <span>{t('landing.jitterFast')}</span>
+                      <span>{t('landing.jitterRecommended')}</span>
+                      <span>{t('landing.jitterUltraSafe')}</span>
                     </div>
                   </div>
 
@@ -420,7 +420,7 @@ export const LandingInteractiveShowcase: React.FC<LandingInteractiveShowcaseProp
                         <div className="text-xs font-bold text-slate-800 dark:text-white">
                           {t('landing.workingHoursLabel')}
                         </div>
-                        <div className="text-[11px] text-slate-400">Mesai dışı gönderimler fail-closed durdurulur</div>
+                        <div className="text-[11px] text-slate-400">{t('landing.workingHoursSubtext')}</div>
                       </div>
                     </div>
                     <span className="px-3 py-1 rounded-lg text-xs font-extrabold bg-[#28C76F]/10 text-[#28C76F]">
@@ -457,7 +457,7 @@ export const LandingInteractiveShowcase: React.FC<LandingInteractiveShowcaseProp
                     </svg>
                     <div className="absolute flex flex-col items-center">
                       <span className="text-2xl font-black text-[#28C76F]">0%</span>
-                      <span className="text-[10px] font-bold text-slate-400 uppercase">Ban Riski</span>
+                      <span className="text-[10px] font-bold text-slate-400 uppercase">{t('landing.banRiskLabel')}</span>
                     </div>
                   </div>
 
@@ -465,7 +465,7 @@ export const LandingInteractiveShowcase: React.FC<LandingInteractiveShowcaseProp
                     {t('landing.banRiskTitle')}: <span className="text-[#28C76F]">{t('landing.banRiskZero')}</span>
                   </h5>
                   <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 max-w-xs">
-                    Akıllı mesai nöbetçisi ve dinamik jitter gecikmesi sayesinde WhatsApp hesabınız manuel bir insan gibi algılanır.
+                    {t('landing.banRiskExplanation')}
                   </p>
                 </div>
               </div>
@@ -520,20 +520,20 @@ export const LandingInteractiveShowcase: React.FC<LandingInteractiveShowcaseProp
 
               {/* Quick Preset Replies */}
               <div className="flex flex-wrap items-center gap-2 pt-2">
-                <span className="text-[11px] font-bold text-slate-400">Hızlı Yanıtlar:</span>
+                <span className="text-[11px] font-bold text-slate-400">{t('landing.quickRepliesLabel')}</span>
                 <button
                   type="button"
                   onClick={() => handleSendReply('Tabii ki Ahmet Bey, kurumsal hasta çekim PDF dosyamızı ve fiyat tablosunu iletiyorum.')}
-                  className="px-3 py-1 rounded-lg text-xs font-semibold bg-slate-100 dark:bg-white/[0.05] hover:bg-slate-200 dark:hover:bg-white/[0.08] text-slate-700 dark:text-slate-300 transition-colors cursor-pointer"
+                  className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-100 dark:bg-white/[0.05] hover:bg-slate-200 dark:hover:bg-white/[0.08] text-slate-700 dark:text-slate-300 transition-colors cursor-pointer"
                 >
-                  📄 PDF Teklifini İlet
+                  {t('landing.quickReplyPdf')}
                 </button>
                 <button
                   type="button"
                   onClick={() => handleSendReply('Harika! Yarın saat 14:00 veya 16:00 için kısa bir 15 dakikalık online demo planlayabilir miyiz?')}
-                  className="px-3 py-1 rounded-lg text-xs font-semibold bg-slate-100 dark:bg-white/[0.05] hover:bg-slate-200 dark:hover:bg-white/[0.08] text-slate-700 dark:text-slate-300 transition-colors cursor-pointer"
+                  className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-100 dark:bg-white/[0.05] hover:bg-slate-200 dark:hover:bg-white/[0.08] text-slate-700 dark:text-slate-300 transition-colors cursor-pointer"
                 >
-                  📅 Demo Randevusu Ayarla
+                  {t('landing.quickReplyDemo')}
                 </button>
               </div>
 
@@ -547,12 +547,12 @@ export const LandingInteractiveShowcase: React.FC<LandingInteractiveShowcaseProp
                     if (e.key === 'Enter') handleSendReply();
                   }}
                   placeholder={t('landing.replyPlaceholder')}
-                  className="flex-1 h-11 px-4 rounded-xl border border-slate-200 dark:border-white/[0.1] bg-white dark:bg-[#25293C] text-xs text-slate-800 dark:text-white focus:outline-none focus:border-[#7367F0]"
+                  className="flex-1 min-w-0 h-11 px-3 sm:px-4 rounded-xl border border-slate-200 dark:border-white/[0.1] bg-white dark:bg-[#25293C] text-xs text-slate-800 dark:text-white focus:outline-none focus:border-[#7367F0]"
                 />
                 <button
                   type="button"
                   onClick={() => handleSendReply()}
-                  className="h-11 px-5 rounded-xl bg-[#7367F0] hover:bg-[#685DD8] text-white font-bold text-xs flex items-center gap-1.5 shadow-md shadow-[#7367F0]/30 transition-all cursor-pointer active:scale-95"
+                  className="h-11 px-3.5 sm:px-5 shrink-0 rounded-xl bg-[#7367F0] hover:bg-[#685DD8] text-white font-bold text-xs flex items-center gap-1.5 shadow-md shadow-[#7367F0]/30 transition-all cursor-pointer active:scale-95"
                 >
                   <span>{t('landing.sendReplyBtn')}</span>
                   <Send className="w-3.5 h-3.5" />
@@ -564,7 +564,7 @@ export const LandingInteractiveShowcase: React.FC<LandingInteractiveShowcaseProp
           {/* Bottom Action Bar */}
           <div className="mt-8 pt-6 border-t border-slate-100 dark:border-white/[0.06] flex flex-col sm:flex-row items-center justify-between gap-4">
             <div className="text-xs text-slate-500 dark:text-slate-400 text-center sm:text-left">
-              Bu akışı kendi işletmeniz ve sektörünüz için kurmak 2 dakikanızı alır.
+              {t('landing.setupTimeNote')}
             </div>
 
             <button

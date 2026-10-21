@@ -86,11 +86,11 @@ export const LandingPricing: React.FC<LandingPricingProps> = ({ onSelectPlan }) 
           </p>
 
           {/* Billing Switcher (Monthly / Annual) */}
-          <div className="mt-8 inline-flex items-center p-1.5 rounded-2xl bg-slate-100 dark:bg-[#2F3349] border border-slate-200/80 dark:border-white/[0.08] shadow-inner">
+          <div className="mt-8 inline-flex items-center p-1.5 rounded-2xl bg-slate-100 dark:bg-[#2F3349] border border-slate-200/80 dark:border-white/[0.08] shadow-inner max-w-full">
             <button
               type="button"
               onClick={() => setIsAnnual(false)}
-              className={`px-5 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all cursor-pointer ${
+              className={`px-3.5 sm:px-5 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all cursor-pointer ${
                 !isAnnual
                   ? 'bg-white dark:bg-[#25293C] text-slate-900 dark:text-white shadow-sm'
                   : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
@@ -102,7 +102,7 @@ export const LandingPricing: React.FC<LandingPricingProps> = ({ onSelectPlan }) 
             <button
               type="button"
               onClick={() => setIsAnnual(true)}
-              className={`flex items-center gap-2 px-5 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all cursor-pointer ${
+              className={`flex items-center gap-1.5 sm:gap-2 px-3.5 sm:px-5 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all cursor-pointer ${
                 isAnnual
                   ? 'bg-white dark:bg-[#25293C] text-slate-900 dark:text-white shadow-sm'
                   : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
@@ -126,7 +126,7 @@ export const LandingPricing: React.FC<LandingPricingProps> = ({ onSelectPlan }) 
                 key={p.id}
                 className={`rounded-3xl p-6 sm:p-8 flex flex-col justify-between transition-all duration-300 relative landing-card-glow ${
                   p.popular
-                    ? 'landing-glass-card border-2 border-[#7367F0] dark:border-[#7367F0] shadow-2xl shadow-[#7367F0]/15 scale-[1.02] z-10'
+                    ? 'landing-glass-card border-2 border-[#7367F0] dark:border-[#7367F0] shadow-2xl shadow-[#7367F0]/15 md:scale-[1.02] z-10'
                     : 'landing-glass-card border border-slate-200/80 dark:border-white/[0.08]'
                 }`}
               >

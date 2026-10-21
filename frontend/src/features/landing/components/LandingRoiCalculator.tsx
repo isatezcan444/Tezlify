@@ -179,10 +179,10 @@ export const LandingRoiCalculator: React.FC<LandingRoiCalculatorProps> = ({ onGe
                 <button
                   type="button"
                   onClick={onGetStarted}
-                  className="px-4 py-2.5 rounded-xl bg-[#7367F0] hover:bg-[#685DD8] text-white text-xs font-bold shadow-md shadow-[#7367F0]/30 transition-all cursor-pointer flex items-center justify-center gap-1.5 shrink-0 active:scale-95"
+                  className="w-full sm:w-auto min-h-[44px] px-5 py-2.5 rounded-xl bg-[#7367F0] hover:bg-[#685DD8] text-white text-xs sm:text-sm font-bold shadow-md shadow-[#7367F0]/30 transition-all cursor-pointer flex items-center justify-center gap-2 shrink-0 active:scale-95"
                 >
                   <span>{t('landing.startWithThisPlan')}</span>
-                  <ArrowRight className="w-3.5 h-3.5" />
+                  <ArrowRight className="w-4 h-4" />
                 </button>
               </div>
             </div>

@@ -44,7 +44,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onEnterApp }) => {
   };
 
   return (
-    <div className="min-h-screen w-full bg-[#F8F7FA] dark:bg-[#25293C] text-[#4B465C] dark:text-[#DBD7EC] transition-colors duration-200">
+    <div className="min-h-screen w-full overflow-x-clip relative bg-[#F8F7FA] dark:bg-[#25293C] text-[#4B465C] dark:text-[#DBD7EC] transition-colors duration-200">
       {/* Sticky Glass Navbar */}
       <LandingNavbar
         onGoToApp={onEnterApp}
@@ -77,7 +77,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onEnterApp }) => {
 
       {/* Pricing Section */}
       <LandingPricing
-        onSelectPlan={(tier) => {
+        onSelectPlan={(_tier) => {
           handleOpenAuth();
         }}
       />
@@ -147,7 +147,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onEnterApp }) => {
               </button>
 
               <div className="text-center text-[11px] text-slate-400">
-                Giriş yaparak kullanım koşullarını kabul etmiş olursunuz.
+                {t('landing.termsNotice')}
               </div>
             </div>
           </div>

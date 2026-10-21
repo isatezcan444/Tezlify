@@ -60,10 +60,13 @@ export const LandingFAQ: React.FC = () => {
               >
                 <button
                   type="button"
+                  id={`faq-question-${idx}`}
+                  aria-expanded={isOpen}
+                  aria-controls={`faq-answer-${idx}`}
                   onClick={() => setOpenIdx(isOpen ? null : idx)}
-                  className="w-full p-5 sm:p-6 text-left flex items-center justify-between gap-4 cursor-pointer"
+                  className="w-full p-4 sm:p-6 text-left flex items-center justify-between gap-3 sm:gap-4 cursor-pointer"
                 >
-                  <span className="text-sm sm:text-base font-bold text-slate-900 dark:text-white">
+                  <span className="text-sm sm:text-base font-bold text-slate-900 dark:text-white leading-snug">
                     {f.q}
                   </span>
                   <div
@@ -76,7 +79,12 @@ export const LandingFAQ: React.FC = () => {
                 </button>
 
                 {isOpen && (
-                  <div className="px-5 sm:px-6 pb-6 text-xs sm:text-sm text-slate-600 dark:text-slate-300 leading-relaxed border-t border-slate-100 dark:border-white/[0.04] pt-4 animate-fade-in">
+                  <div
+                    id={`faq-answer-${idx}`}
+                    role="region"
+                    aria-labelledby={`faq-question-${idx}`}
+                    className="px-4 sm:px-6 pb-5 sm:pb-6 text-xs sm:text-sm text-slate-600 dark:text-slate-300 leading-relaxed border-t border-slate-100 dark:border-white/[0.04] pt-4 animate-fade-in"
+                  >
                     {f.a}
                   </div>
                 )}
