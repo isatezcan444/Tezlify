@@ -547,3 +547,22 @@ restarting a service and shipping code are different risk classes.
 - **Props**: `{ isOpen: boolean; onClose: () => void; message: Message; conversation: Conversation; groupParticipants?: Array<{ id: string; name: string; phone?: string; is_me: boolean; admin?: string }>; allMessages?: Message[] }`
 - **Import**: `import { ChatMessageInfoDrawer } from '@/features/whatsapp/components';`
 
+---
+
+## 8. SaaS Landing Page Components (`features/landing/`)
+
+### `LandingPage` (`features/landing/components/LandingPage.tsx`)
+- **Purpose**: High-converting, luxury SaaS landing page welcoming unauthenticated visitors and providing a seamless transition into the Tezlify SaaS web application (`/app` or modal). Follows the design benchmark of `https://de71fi.atoms.world/` combined with Tezlify's Vuexy dark-mode and glassmorphic aesthetic.
+- **Typography**: Paired typography featuring `Instrument Serif` (italic display emphasis on conversion headlines) and `Inter` / `Plus Jakarta Sans` for body copy.
+- **Props**: `{ onEnterApp: () => void }`
+- **Subcomponents**:
+  - `LandingNavbar`: Sticky glass navigation bar with live version pill, anchor links, theme/language switcher, and contextual auth CTA (`Panele Git` / `Giriş Yap`).
+  - `LandingHero`: Grand headline with italic serif accent, dual CTAs, and a floating 3D-perspective dashboard mockup with live telemetry badges.
+  - `LandingSocialProof`: Credibility and throughput metrics strip (`100,000+ Verified Businesses`, `98% Delivery Rate`, `10x Speed`).
+  - `LandingBentoFeatures`: 4-item bento grid showcasing Google Maps scraper, Anti-Ban & Humanized delays, WhatsApp Web Hub, and Inbound/Outbound Webhook bridges.
+  - `LandingPricing`: Dynamic monthly/annual switcher (%20 discount) with interactive tier selection and instant upgrade actions.
+  - `LandingFAQ`: Smooth accordion answering critical questions regarding WhatsApp safety, data sources, and web form connections.
+  - `LandingFooter`: Minimalist footer with live system operational status badge and legal links.
+- **Import**: `import { LandingPage } from '@/features/landing';`
+
+

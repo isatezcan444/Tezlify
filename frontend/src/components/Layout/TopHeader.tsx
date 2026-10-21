@@ -1,5 +1,5 @@
 import React from 'react';
-import { Search, Sun, Moon, Bell, Menu, Settings, LogOut } from 'lucide-react';
+import { Search, Sun, Moon, Bell, Menu, Settings, LogOut, Globe } from 'lucide-react';
 import { Button } from '../ui/button';
 import { useTheme } from '../../context/ThemeContext';
 import { useI18n } from '../../context/I18nContext';
@@ -13,6 +13,7 @@ interface TopHeaderProps {
   onOpenQuickScrape?: () => void;
   onToggleMobileMenu?: () => void;
   onOpenSettings?: () => void;
+  onNavigateToLanding?: () => void;
 }
 
 export const TopHeader: React.FC<TopHeaderProps> = ({
@@ -22,6 +23,7 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
   onOpenQuickScrape,
   onToggleMobileMenu,
   onOpenSettings,
+  onNavigateToLanding,
 }) => {
   const { theme, toggleTheme } = useTheme();
   const { t } = useI18n();
@@ -72,6 +74,18 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
               <Search className="w-3.5 h-3.5" />
               <span>{t('header.quickSearch')}</span>
             </Button>
+          )}
+
+          {onNavigateToLanding && (
+            <button
+              type="button"
+              onClick={onNavigateToLanding}
+              title="Landing Sayfası"
+              className="p-2 rounded-lg text-slate-500 hover:text-[#7367F0] dark:text-slate-400 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/[0.05] transition-colors cursor-pointer hidden md:inline-flex items-center gap-1.5 text-xs font-bold"
+            >
+              <Globe className="w-4 h-4 text-[#7367F0]" />
+              <span>Landing</span>
+            </button>
           )}
 
           {/* Language Switcher (EN / TR) */}

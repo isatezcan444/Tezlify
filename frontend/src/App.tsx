@@ -10,6 +10,11 @@ import { DashboardStats } from './types';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { LoginPage } from './pages/LoginPage';
 import { useWhatsAppSettings } from './features/whatsapp/hooks/useWhatsAppSettings';
+import { LandingPage } from './features/landing';
+
+interface AppContentProps {
+  onNavigateToLanding?: () => void;
+}
 
 /* Route-level code splitting.
    The 922 KB bundle was a single file because all 15 pages were static imports,
@@ -119,7 +124,7 @@ export function useTabUrlSync(
   return [tab, navigate];
 }
 
-const AppContent: React.FC = () => {
+const AppContent: React.FC<AppContentProps> = ({ onNavigateToLanding }) => {
   const [activeTab, setActiveTab] = useTabUrlSync('dashboard');
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [isWsConnected, setIsWsConnected] = useState(false);
@@ -429,6 +434,7 @@ const AppContent: React.FC = () => {
           subtitle={getPageSubtitle()}
           onOpenQuickScrape={() => handleNavigate('lead-finder')}
           onOpenSettings={() => handleNavigate('settings')}
+          onNavigateToLanding={onNavigateToLanding}
           onToggleMobileMenu={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
         />
 
@@ -520,6 +526,52 @@ const AppContent: React.FC = () => {
 const AuthGate: React.FC = () => {
   const { user, loading } = useAuth();
 
+  const [currentView, setCurrentView] = useState<'landing' | 'app'>(() => {
+    if (typeof window !== 'undefined') {
+      const searchParams = new URLSearchParams(window.location.search);
+      const viewParam = searchParams.get('view');
+      if (viewParam === 'landing') return 'landing';
+      if (viewParam === 'app' || searchParams.has('tab')) return 'app';
+    }
+    return 'landing';
+  });
+
+  useEffect(() => {
+    const onPop = () => {
+      if (typeof window === 'undefined') return;
+      const searchParams = new URLSearchParams(window.location.search);
+      const viewParam = searchParams.get('view');
+      if (viewParam === 'landing') {
+        setCurrentView('landing');
+      } else if (viewParam === 'app' || searchParams.has('tab')) {
+        setCurrentView('app');
+      }
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
+
+  const handleGoToApp = () => {
+    setCurrentView('app');
+    if (typeof window !== 'undefined') {
+      const url = new URL(window.location.href);
+      url.searchParams.delete('view');
+      if (!url.searchParams.has('tab')) {
+        url.searchParams.set('tab', 'dashboard');
+      }
+      window.history.pushState(null, '', url.toString());
+    }
+  };
+
+  const handleGoToLanding = () => {
+    setCurrentView('landing');
+    if (typeof window !== 'undefined') {
+      const url = new URL(window.location.href);
+      url.searchParams.set('view', 'landing');
+      window.history.pushState(null, '', url.toString());
+    }
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen w-full flex items-center justify-center bg-slate-50 dark:bg-slate-950">
@@ -536,11 +588,17 @@ const AuthGate: React.FC = () => {
     );
   }
 
-  if (!user) {
-    return <LoginPage />;
+  // If view is landing, render LandingPage whether logged in or not
+  if (currentView === 'landing') {
+    return <LandingPage onEnterApp={handleGoToApp} />;
   }
 
-  return <AppContent />;
+  // If view is app, but user is not logged in: show LandingPage
+  if (!user) {
+    return <LandingPage onEnterApp={handleGoToApp} />;
+  }
+
+  return <AppContent onNavigateToLanding={handleGoToLanding} />;
 };
 
 export const App: React.FC = () => {

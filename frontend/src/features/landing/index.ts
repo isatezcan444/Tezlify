@@ -1,0 +1,8 @@
+export { LandingPage } from './components/LandingPage';
+export { LandingNavbar } from './components/LandingNavbar';
+export { LandingHero } from './components/LandingHero';
+export { LandingSocialProof } from './components/LandingSocialProof';
+export { LandingBentoFeatures } from './components/LandingBentoFeatures';
+export { LandingPricing } from './components/LandingPricing';
+export { LandingFAQ } from './components/LandingFAQ';
+export { LandingFooter } from './components/LandingFooter';

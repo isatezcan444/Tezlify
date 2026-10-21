@@ -162,3 +162,45 @@
   background-size: 24px 24px, 48px 48px;
 }
 
+/* Landing Page Ambient & Glass Standards */
+.landing-ambient-glow {
+  background: radial-gradient(circle at 50% 0%, rgba(115, 103, 240, 0.16) 0%, rgba(14, 165, 233, 0.08) 25%, transparent 60%);
+}
+
+.landing-glass-card {
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(47, 43, 61, 0.08);
+  box-shadow: 0 10px 30px -10px rgba(47, 43, 61, 0.08);
+  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.dark .landing-glass-card {
+  background: rgba(47, 51, 73, 0.75);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 14px 40px -10px rgba(0, 0, 0, 0.45);
+}
+
+.landing-glass-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(115, 103, 240, 0.3);
+}
+
+.landing-glass-nav {
+  background: rgba(248, 247, 250, 0.8);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-bottom: 1px solid rgba(47, 43, 61, 0.08);
+}
+
+.dark .landing-glass-nav {
+  background: rgba(37, 41, 60, 0.8);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+

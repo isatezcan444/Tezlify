@@ -40,12 +40,17 @@ export default {
       fontFamily: {
         sans: ['Plus Jakarta Sans', 'Inter', 'sans-serif'],
         mono: ['JetBrains Mono', 'monospace'],
+        serif: ['"Instrument Serif"', 'Georgia', 'serif'],
+        display: ['"Instrument Serif"', 'Georgia', 'serif'],
       },
       boxShadow: {
         'vuexy-card': '0 2px 9px 0 rgba(47, 43, 61, 0.08)',
         'vuexy-card-dark': '0 2px 14px 0 rgba(15, 20, 34, 0.4)',
         'vuexy-primary': '0 2px 6px 0 rgba(115, 103, 240, 0.48)',
         'vuexy-success': '0 2px 6px 0 rgba(40, 199, 111, 0.48)',
+        'glow-primary': '0 0 60px -12px rgba(115, 103, 240, 0.4)',
+        'glow-cyan': '0 0 60px -12px rgba(14, 165, 233, 0.35)',
+        'dashboard': '0 25px 80px -12px rgba(0, 0, 0, 0.35)',
       },
       borderRadius: {
         'vuexy': '0.625rem', // 10px Vuexy card border radius

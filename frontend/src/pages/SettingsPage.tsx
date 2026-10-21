@@ -12,7 +12,12 @@ import {
   Key,
   Sliders,
   Webhook,
-  CreditCard
+  CreditCard,
+  MessageSquare,
+  Sparkles,
+  ArrowRight,
+  Code2,
+  BellRing
 } from 'lucide-react';
 import { Card, Badge, PageHeader, Button } from '../components/ui';
 import { FormSection, Select } from '../components/forms';
@@ -47,6 +52,7 @@ export const SettingsPage: React.FC = () => {
       {/* Settings Navigation Tabs */}
       <div className="flex items-center gap-2 border-b border-slate-200/60 dark:border-white/[0.05] pb-2 text-xs font-bold overflow-x-auto">
         <button
+          type="button"
           onClick={() => setActiveTab('billing')}
           className={`flex items-center gap-2 px-4 py-2.5 rounded-xl transition-all cursor-pointer whitespace-nowrap ${
             activeTab === 'billing'
@@ -55,10 +61,27 @@ export const SettingsPage: React.FC = () => {
           }`}
         >
           <CreditCard className="w-4 h-4" />
-          <span>{t('integrations.tabBilling') || 'Paket & Kota'}</span>
+          <span>{t('integrations.tabBilling') || 'Paket & Kota Kullanımı'}</span>
         </button>
 
         <button
+          type="button"
+          onClick={() => setActiveTab('integrations')}
+          className={`flex items-center gap-2 px-4 py-2.5 rounded-xl transition-all cursor-pointer whitespace-nowrap ${
+            activeTab === 'integrations'
+              ? 'bg-[#7367F0] text-white shadow-md shadow-[#7367F0]/30'
+              : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-white/[0.04]'
+          }`}
+        >
+          <Zap className="w-4 h-4 text-amber-400" />
+          <span>{t('integrations.tabIntegrations') || 'Otomasyon & Entegrasyonlar'}</span>
+          <span className="ml-1 px-1.5 py-0.5 rounded text-[10px] bg-emerald-500/20 text-emerald-400 font-extrabold">
+            API & Webhook
+          </span>
+        </button>
+
+        <button
+          type="button"
           onClick={() => setActiveTab('general')}
           className={`flex items-center gap-2 px-4 py-2.5 rounded-xl transition-all cursor-pointer whitespace-nowrap ${
             activeTab === 'general'
@@ -69,24 +92,71 @@ export const SettingsPage: React.FC = () => {
           <Sliders className="w-4 h-4" />
           <span>{t('integrations.tabGeneral') || 'Genel Tercihler'}</span>
         </button>
-
-        <button
-          onClick={() => setActiveTab('integrations')}
-          className={`flex items-center gap-2 px-4 py-2.5 rounded-xl transition-all cursor-pointer whitespace-nowrap ${
-            activeTab === 'integrations'
-              ? 'bg-[#7367F0] text-white shadow-md shadow-[#7367F0]/30'
-              : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-white/[0.04]'
-          }`}
-        >
-          <Key className="w-4 h-4" />
-          <span>{t('integrations.tabIntegrations') || 'API & Webhook Entegrasyonları'}</span>
-          <span className="ml-1 px-1.5 py-0.2 rounded text-[10px] bg-white/20">Yeni</span>
-        </button>
       </div>
 
       {activeTab === 'billing' ? (
         <PlanUsageSection />
-      ) : activeTab === 'general' ? (
+      ) : activeTab === 'integrations' ? (
+        <div className="space-y-6 animate-fade-in">
+          {/* Visual Education Banner: Why API & Webhooks Matter */}
+          <div className="rounded-3xl p-6 sm:p-7 bg-gradient-to-r from-[#7367F0]/15 via-indigo-600/10 to-[#00CFE8]/10 border border-[#7367F0]/20 shadow-lg space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-[#7367F0] text-white flex items-center justify-center shadow-md shadow-[#7367F0]/30 shrink-0">
+                <Sparkles className="w-5 h-5 text-amber-300" />
+              </div>
+              <div>
+                <h3 className="text-lg font-black text-slate-900 dark:text-white">
+                  {t('integrationsGuide.heroTitle')}
+                </h3>
+                <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-300">
+                  {t('integrationsGuide.heroSubtitle')}
+                </p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2">
+              <div className="p-4 rounded-2xl bg-white/85 dark:bg-[#2F3349]/85 border border-slate-200/80 dark:border-white/[0.08] backdrop-blur space-y-1.5">
+                <div className="flex items-center gap-2 text-xs font-black text-[#7367F0]">
+                  <Webhook className="w-4 h-4" />
+                  <span>Web Sitenizden Lead Toplama</span>
+                </div>
+                <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
+                  {t('integrationsGuide.cardInboundDesc')}
+                </p>
+              </div>
+
+              <div className="p-4 rounded-2xl bg-white/85 dark:bg-[#2F3349]/85 border border-slate-200/80 dark:border-white/[0.08] backdrop-blur space-y-1.5">
+                <div className="flex items-center gap-2 text-xs font-black text-[#28C76F]">
+                  <BellRing className="w-4 h-4" />
+                  <span>WhatsApp Yanıtlarını CRM'e Aktarma</span>
+                </div>
+                <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
+                  {t('integrationsGuide.cardOutboundDesc')}
+                </p>
+              </div>
+
+              <div className="p-4 rounded-2xl bg-white/85 dark:bg-[#2F3349]/85 border border-slate-200/80 dark:border-white/[0.08] backdrop-blur space-y-1.5">
+                <div className="flex items-center gap-2 text-xs font-black text-[#00CFE8]">
+                  <Code2 className="w-4 h-4" />
+                  <span>Özel ERP / Yazılım Bağlantısı</span>
+                </div>
+                <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
+                  {t('integrationsGuide.cardApiDesc')}
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {/* Interactive Inbound Form Guide */}
+          <InboundDocsSection />
+
+          {/* Outbound Webhooks Management */}
+          <WebhooksSection />
+
+          {/* API Keys Management */}
+          <ApiKeysSection />
+        </div>
+      ) : (
         <>
           {/* Language & Localization Card */}
           <Card className="p-5 sm:p-6 space-y-4">
@@ -217,17 +287,6 @@ export const SettingsPage: React.FC = () => {
             </FormSection>
           </Card>
         </>
-      ) : (
-        <div className="space-y-6">
-          {/* API Keys Management */}
-          <ApiKeysSection />
-
-          {/* Outbound Webhooks Management */}
-          <WebhooksSection />
-
-          {/* Interactive Integration & Code Guide */}
-          <InboundDocsSection />
-        </div>
       )}
     </div>
   );
