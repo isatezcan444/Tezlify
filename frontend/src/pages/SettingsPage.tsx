@@ -118,7 +118,7 @@ export const SettingsPage: React.FC = () => {
               <div className="p-4 rounded-2xl bg-white/85 dark:bg-[#2F3349]/85 border border-slate-200/80 dark:border-white/[0.08] backdrop-blur space-y-1.5">
                 <div className="flex items-center gap-2 text-xs font-black text-[#7367F0]">
                   <Webhook className="w-4 h-4" />
-                  <span>Web Sitenizden Lead Toplama</span>
+                  <span>{t('integrationsGuide.cardInboundShort')}</span>
                 </div>
                 <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
                   {t('integrationsGuide.cardInboundDesc')}
@@ -128,7 +128,7 @@ export const SettingsPage: React.FC = () => {
               <div className="p-4 rounded-2xl bg-white/85 dark:bg-[#2F3349]/85 border border-slate-200/80 dark:border-white/[0.08] backdrop-blur space-y-1.5">
                 <div className="flex items-center gap-2 text-xs font-black text-[#28C76F]">
                   <BellRing className="w-4 h-4" />
-                  <span>WhatsApp Yanıtlarını CRM'e Aktarma</span>
+                  <span>{t('integrationsGuide.cardOutboundShort')}</span>
                 </div>
                 <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
                   {t('integrationsGuide.cardOutboundDesc')}
@@ -138,7 +138,7 @@ export const SettingsPage: React.FC = () => {
               <div className="p-4 rounded-2xl bg-white/85 dark:bg-[#2F3349]/85 border border-slate-200/80 dark:border-white/[0.08] backdrop-blur space-y-1.5">
                 <div className="flex items-center gap-2 text-xs font-black text-[#00CFE8]">
                   <Code2 className="w-4 h-4" />
-                  <span>Özel ERP / Yazılım Bağlantısı</span>
+                  <span>{t('integrationsGuide.cardApiShort')}</span>
                 </div>
                 <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
                   {t('integrationsGuide.cardApiDesc')}

@@ -568,4 +568,23 @@ restarting a service and shipping code are different risk classes.
   - `LandingFooter`: Minimalist footer with live system operational status badge and legal links.
 - **Import**: `import { LandingPage, LandingInteractiveShowcase, LandingRoiCalculator, LandingBeforeAfter } from '@/features/landing';`
 
+---
+
+## 9. SaaS Billing & Quotas Suite (`features/billing/`)
+
+### `PlanUsageSection` (`features/billing/components/PlanUsageSection.tsx`)
+- **Purpose**: SaaS quota analytics, active entitlement telemetry, and real-time tier switching dashboard suite integrated into the Settings page (`/settings`).
+- **Hero Telemetry Banner**: Displays current subscription tier, active plan name, live renewal countdown timer (`{days} gün kaldı` / `{days} days left`), and pulsing active status indicator.
+- **Balanced 4-Metric Quota Engine**:
+  - `leads`: Monthly Google Maps lead discovery allowance and percentage consumption track with auto-monthly reset notice.
+  - `whatsapp_daily`: Daily live WhatsApp dispatch throughput quota with midnight reset indicator.
+  - `ai_daily`: Daily AI spintax and copy generation quota with gradient visual track.
+  - `active_campaigns`: Concurrent active scraper and campaign concurrency slots with capacity status badges.
+- **Platform Capability Matrix**: Highlights 4 key architecture abilities (Outbound Webhooks, Developer REST API, CSV/Excel Data Exports, Fail-Closed Anti-Ban Shield).
+- **In-Page 5-Tier Selector**: Complete 5-tier matrix (`FREE`, `STARTER`, `PRO`, `AGENCY`, `DEVELOPER_PRO`) featuring "En Çok Tercih Edilen" / "Most Popular" highlight, transparent monthly pricing, and 1-click mutation state.
+- **Portaled Upgrade Modal Invariant**: Portaled directly to `document.body` via `createPortal(..., document.body)` with `z-[99999]`, responsive backdrop blur, escape key dismissal, and toast notifications.
+- **Strict i18n & Full Width Standard**: 100% synchronized `tr.ts` / `en.ts` dictionaries, zero hardcoded natural language strings, and unified `w-full` width responsive scaling.
+- **Import**: `import { PlanUsageSection } from '@/features/billing';`
+
+
 
