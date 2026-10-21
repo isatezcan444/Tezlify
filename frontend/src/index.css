@@ -203,4 +203,62 @@
   border-bottom: 1px solid rgba(255, 255, 255, 0.07);
 }
 
+/* Senior Art Lead Luxury Keyframes & Utilities */
+@keyframes text-shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+.text-shimmer {
+  background: linear-gradient(
+    90deg,
+    #7367F0 0%,
+    #A59DF8 25%,
+    #00CFE8 50%,
+    #28C76F 75%,
+    #7367F0 100%
+  );
+  background-size: 200% auto;
+  color: transparent !important;
+  -webkit-background-clip: text !important;
+  background-clip: text !important;
+  animation: text-shimmer 8s linear infinite;
+}
+
+@keyframes float-gentle {
+  0%, 100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-5px);
+  }
+}
+
+.animate-float-gentle {
+  animation: float-gentle 4s ease-in-out infinite;
+}
+
+.animate-float-delayed {
+  animation: float-gentle 4.5s ease-in-out 1.5s infinite;
+}
+
+.landing-card-glow {
+  position: relative;
+  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.landing-card-glow:hover {
+  box-shadow: 0 20px 40px -15px rgba(115, 103, 240, 0.18);
+  border-color: rgba(115, 103, 240, 0.35);
+}
+
+.dark .landing-card-glow:hover {
+  box-shadow: 0 20px 40px -15px rgba(115, 103, 240, 0.3);
+  border-color: rgba(115, 103, 240, 0.45);
+}
+
 

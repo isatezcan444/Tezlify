@@ -40,7 +40,7 @@ export const LandingHero: React.FC<LandingHeroProps> = ({ onGetStarted, onExplor
         {/* Hero Headline with Instrument Serif Italic Touch */}
         <h1 className="max-w-4xl text-4xl sm:text-6xl lg:text-7xl font-extrabold text-slate-900 dark:text-white tracking-tight leading-[1.1] sm:leading-[1.1]">
           {t('landing.heroTitlePrefix')}{' '}
-          <span className="font-serif italic font-normal text-transparent bg-clip-text bg-gradient-to-r from-[#7367F0] via-indigo-400 to-[#00CFE8] pr-2">
+          <span className="font-serif italic font-normal text-shimmer pr-2">
             {t('landing.heroTitleHighlight')}
           </span>
         </h1>
@@ -77,33 +77,33 @@ export const LandingHero: React.FC<LandingHeroProps> = ({ onGetStarted, onExplor
           <div className="absolute inset-x-8 sm:inset-x-20 -bottom-10 h-32 bg-gradient-to-r from-[#7367F0]/30 via-indigo-500/20 to-[#00CFE8]/30 blur-3xl pointer-events-none" />
 
           {/* Floating Telemetry Pill 1 (Top Left / Right) */}
-          <div className="hidden md:flex absolute -top-6 -left-6 z-20 items-center gap-3 px-4 py-3 rounded-2xl bg-white/95 dark:bg-[#2F3349]/95 border border-slate-200/80 dark:border-white/[0.1] shadow-2xl backdrop-blur-xl animate-fade-in">
+          <div className="hidden md:flex absolute -top-6 -left-6 z-20 items-center gap-3 px-4 py-3 rounded-2xl bg-white/95 dark:bg-[#2F3349]/95 border border-slate-200/80 dark:border-white/[0.1] shadow-2xl backdrop-blur-xl animate-float-gentle">
             <div className="w-10 h-10 rounded-xl bg-[#28C76F]/10 text-[#28C76F] flex items-center justify-center">
               <Users className="w-5 h-5" />
             </div>
             <div className="text-left">
               <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
-                Canlı Lead Akışı
+                {t('landing.heroLiveLeadStream')}
               </div>
               <div className="text-sm font-extrabold text-slate-800 dark:text-white flex items-center gap-1.5">
                 <span className="w-2 h-2 rounded-full bg-[#28C76F] animate-ping" />
-                +1,840 Yeni İşletme
+                {t('landing.heroNewBusinessesCount')}
               </div>
             </div>
           </div>
 
           {/* Floating Telemetry Pill 2 (Bottom Right) */}
-          <div className="hidden md:flex absolute -bottom-6 -right-6 z-20 items-center gap-3 px-4 py-3 rounded-2xl bg-white/95 dark:bg-[#2F3349]/95 border border-slate-200/80 dark:border-white/[0.1] shadow-2xl backdrop-blur-xl animate-fade-in">
+          <div className="hidden md:flex absolute -bottom-6 -right-6 z-20 items-center gap-3 px-4 py-3 rounded-2xl bg-white/95 dark:bg-[#2F3349]/95 border border-slate-200/80 dark:border-white/[0.1] shadow-2xl backdrop-blur-xl animate-float-delayed">
             <div className="w-10 h-10 rounded-xl bg-[#7367F0]/10 text-[#7367F0] flex items-center justify-center">
               <ShieldCheck className="w-5 h-5" />
             </div>
             <div className="text-left">
               <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
-                Anti-Ban Algoritması
+                {t('landing.heroAntibanAlgorithm')}
               </div>
               <div className="text-sm font-extrabold text-[#28C76F] flex items-center gap-1">
                 <Check className="w-4 h-4 stroke-[3]" />
-                %100 Güvenli Mesai
+                {t('landing.heroSafeWorkingHours')}
               </div>
             </div>
           </div>
@@ -134,22 +134,22 @@ export const LandingHero: React.FC<LandingHeroProps> = ({ onGetStarted, onExplor
                   </div>
                   <div className="text-left">
                     <div className="text-xs font-bold text-slate-800 dark:text-slate-200 flex items-center gap-2">
-                      <span>İstanbul / Kadıköy • Özel Klinikler & Restoranlar</span>
+                      <span>{t('landing.heroMockupLocation')}</span>
                       <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-[#28C76F]/10 text-[#28C76F]">
-                        Canlı Tarama
+                        {t('landing.heroMockupLiveScanning')}
                       </span>
                     </div>
                     <div className="text-[11px] text-slate-400">
-                      Google Haritalar API • 42 İlçe • Otomatik Telefon Ayrıştırma
+                      {t('landing.heroMockupSubtext')}
                     </div>
                   </div>
                 </div>
 
                 <div className="flex items-center gap-2 w-full sm:w-auto shrink-0 justify-end">
-                  <span className="text-xs font-semibold text-slate-500">128 Sonuç</span>
+                  <span className="text-xs font-semibold text-slate-500">{t('landing.heroMockupResultCount')}</span>
                   <div className="px-3 py-1.5 rounded-lg bg-[#7367F0] text-white text-xs font-bold shadow-sm flex items-center gap-1.5">
                     <Filter className="w-3.5 h-3.5" />
-                    WhatsApp Doğrulanmış
+                    {t('landing.heroMockupFilterWhatsapp')}
                   </div>
                 </div>
               </div>
@@ -157,10 +157,10 @@ export const LandingHero: React.FC<LandingHeroProps> = ({ onGetStarted, onExplor
               {/* Sample Lead Table Mockup */}
               <div className="rounded-xl border border-slate-200/80 dark:border-white/[0.08] bg-white dark:bg-[#2F3349] overflow-hidden shadow-sm">
                 <div className="grid grid-cols-12 gap-2 p-3 text-[11px] font-extrabold uppercase tracking-wider text-slate-400 border-b border-slate-200/80 dark:border-white/[0.08]">
-                  <div className="col-span-5 sm:col-span-4">İşletme Adı</div>
-                  <div className="col-span-4 sm:col-span-3">Telefon & Format</div>
-                  <div className="hidden sm:block sm:col-span-3">WhatsApp Durumu</div>
-                  <div className="col-span-3 sm:col-span-2 text-right">Aksiyon</div>
+                  <div className="col-span-5 sm:col-span-4">{t('landing.heroMockupThBusiness')}</div>
+                  <div className="col-span-4 sm:col-span-3">{t('landing.heroMockupThPhone')}</div>
+                  <div className="hidden sm:block sm:col-span-3">{t('landing.heroMockupThStatus')}</div>
+                  <div className="col-span-3 sm:col-span-2 text-right">{t('landing.heroMockupThAction')}</div>
                 </div>
 
                 {/* Rows */}
@@ -168,18 +168,18 @@ export const LandingHero: React.FC<LandingHeroProps> = ({ onGetStarted, onExplor
                   <div className="grid grid-cols-12 gap-2 p-3 items-center hover:bg-slate-50 dark:hover:bg-white/[0.02] transition-colors">
                     <div className="col-span-5 sm:col-span-4 font-bold text-slate-800 dark:text-white flex items-center gap-2 truncate">
                       <div className="w-2 h-2 rounded-full bg-[#28C76F]" />
-                      <span className="truncate">Acıbadem Diş Polikliniği</span>
+                      <span className="truncate">{t('landing.heroMockupBiz1')}</span>
                     </div>
                     <div className="col-span-4 sm:col-span-3 font-mono text-slate-600 dark:text-slate-300 text-[11px]">
                       +90 532 412 88**
                     </div>
                     <div className="hidden sm:flex sm:col-span-3 items-center gap-1.5 text-[#28C76F] font-bold text-[11px]">
                       <CheckCircle2 className="w-3.5 h-3.5" />
-                      Doğrulandı & Uygun
+                      {t('landing.heroMockupVerifiedEligible')}
                     </div>
                     <div className="col-span-3 sm:col-span-2 text-right">
                       <span className="px-2 py-1 rounded-md text-[10px] font-bold bg-[#7367F0]/10 text-[#7367F0]">
-                        Kişiselleştirildi
+                        {t('landing.heroMockupPersonalized')}
                       </span>
                     </div>
                   </div>
@@ -187,18 +187,18 @@ export const LandingHero: React.FC<LandingHeroProps> = ({ onGetStarted, onExplor
                   <div className="grid grid-cols-12 gap-2 p-3 items-center hover:bg-slate-50 dark:hover:bg-white/[0.02] transition-colors">
                     <div className="col-span-5 sm:col-span-4 font-bold text-slate-800 dark:text-white flex items-center gap-2 truncate">
                       <div className="w-2 h-2 rounded-full bg-[#28C76F]" />
-                      <span className="truncate">Moda Estetik & Güzellik</span>
+                      <span className="truncate">{t('landing.heroMockupBiz2')}</span>
                     </div>
                     <div className="col-span-4 sm:col-span-3 font-mono text-slate-600 dark:text-slate-300 text-[11px]">
                       +90 544 892 14**
                     </div>
                     <div className="hidden sm:flex sm:col-span-3 items-center gap-1.5 text-[#28C76F] font-bold text-[11px]">
                       <CheckCircle2 className="w-3.5 h-3.5" />
-                      Doğrulandı & Uygun
+                      {t('landing.heroMockupVerifiedEligible')}
                     </div>
                     <div className="col-span-3 sm:col-span-2 text-right">
                       <span className="px-2 py-1 rounded-md text-[10px] font-bold bg-[#28C76F]/10 text-[#28C76F]">
-                        İletildi • 11:42
+                        {t('landing.heroMockupDeliveredTime')}
                       </span>
                     </div>
                   </div>
@@ -206,18 +206,18 @@ export const LandingHero: React.FC<LandingHeroProps> = ({ onGetStarted, onExplor
                   <div className="grid grid-cols-12 gap-2 p-3 items-center hover:bg-slate-50 dark:hover:bg-white/[0.02] transition-colors">
                     <div className="col-span-5 sm:col-span-4 font-bold text-slate-800 dark:text-white flex items-center gap-2 truncate">
                       <div className="w-2 h-2 rounded-full bg-[#00CFE8]" />
-                      <span className="truncate">Bağdat Cad. Mimarlık Ofisi</span>
+                      <span className="truncate">{t('landing.heroMockupBiz3')}</span>
                     </div>
                     <div className="col-span-4 sm:col-span-3 font-mono text-slate-600 dark:text-slate-300 text-[11px]">
                       +90 555 780 33**
                     </div>
                     <div className="hidden sm:flex sm:col-span-3 items-center gap-1.5 text-[#00CFE8] font-bold text-[11px]">
                       <MessageSquare className="w-3.5 h-3.5" />
-                      Yanıt Alındı 📩
+                      {t('landing.heroMockupReplied')}
                     </div>
                     <div className="col-span-3 sm:col-span-2 text-right">
                       <span className="px-2 py-1 rounded-md text-[10px] font-bold bg-[#00CFE8]/10 text-[#00CFE8]">
-                        Sohbete Git
+                        {t('landing.heroMockupGoToChat')}
                       </span>
                     </div>
                   </div>

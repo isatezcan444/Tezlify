@@ -38,7 +38,7 @@ export const LandingBentoFeatures: React.FC = () => {
         {/* Bento Grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-12 gap-6">
           {/* Card 1: Google Maps Scraper (lg:col-span-7) */}
-          <div className="lg:col-span-7 landing-glass-card rounded-3xl p-6 sm:p-8 flex flex-col justify-between overflow-hidden relative group">
+          <div className="lg:col-span-7 landing-glass-card landing-card-glow rounded-3xl p-6 sm:p-8 flex flex-col justify-between overflow-hidden relative group">
             <div>
               <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-extrabold bg-blue-500/10 text-blue-500 mb-4">
                 <MapPin className="w-3.5 h-3.5" />
@@ -59,16 +59,16 @@ export const LandingBentoFeatures: React.FC = () => {
               <div className="flex items-center justify-between text-xs font-bold text-slate-700 dark:text-slate-300">
                 <span className="flex items-center gap-2">
                   <span className="w-2 h-2 rounded-full bg-[#28C76F] animate-ping" />
-                  İstanbul • 42 İlçe Canlı Taranıyor
+                  {t('landing.bentoVisualDistricts')}
                 </span>
-                <span className="font-mono text-[#7367F0]">1,420 Lead Bulundu</span>
+                <span className="font-mono text-[#7367F0]">{t('landing.bentoVisualLeadsFound')}</span>
               </div>
 
               <div className="space-y-2 text-[11px]">
                 <div>
                   <div className="flex justify-between text-slate-500 dark:text-slate-400 mb-1">
-                    <span>Kadıköy (Diş Poliklinikleri)</span>
-                    <span className="font-bold text-[#28C76F]">%100 Tamamlandı</span>
+                    <span>{t('landing.bentoVisualDistrict1')}</span>
+                    <span className="font-bold text-[#28C76F]">{t('landing.bentoVisualDistrict1Status')}</span>
                   </div>
                   <div className="w-full h-1.5 rounded-full bg-slate-200 dark:bg-white/10 overflow-hidden">
                     <div className="w-full h-full bg-[#28C76F] rounded-full" />
@@ -77,8 +77,8 @@ export const LandingBentoFeatures: React.FC = () => {
 
                 <div>
                   <div className="flex justify-between text-slate-500 dark:text-slate-400 mb-1">
-                    <span>Beşiktaş (Hukuk Büroları)</span>
-                    <span className="font-bold text-[#7367F0]">%78 Taranıyor</span>
+                    <span>{t('landing.bentoVisualDistrict2')}</span>
+                    <span className="font-bold text-[#7367F0]">{t('landing.bentoVisualDistrict2Status')}</span>
                   </div>
                   <div className="w-full h-1.5 rounded-full bg-slate-200 dark:bg-white/10 overflow-hidden">
                     <div className="w-[78%] h-full bg-[#7367F0] rounded-full animate-pulse" />
@@ -89,7 +89,7 @@ export const LandingBentoFeatures: React.FC = () => {
           </div>
 
           {/* Card 2: Anti-Ban Protection (lg:col-span-5) */}
-          <div className="lg:col-span-5 landing-glass-card rounded-3xl p-6 sm:p-8 flex flex-col justify-between overflow-hidden relative group">
+          <div className="lg:col-span-5 landing-glass-card landing-card-glow rounded-3xl p-6 sm:p-8 flex flex-col justify-between overflow-hidden relative group">
             <div>
               <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-extrabold bg-emerald-500/10 text-emerald-500 mb-4">
                 <ShieldCheck className="w-3.5 h-3.5" />
@@ -110,27 +110,27 @@ export const LandingBentoFeatures: React.FC = () => {
               <div className="flex items-center justify-between text-xs">
                 <span className="text-slate-500 dark:text-slate-400 flex items-center gap-1.5">
                   <Clock className="w-3.5 h-3.5 text-[#FF9F43]" />
-                  Mesai Saatleri Koruması
+                  {t('landing.bentoVisualHoursLabel')}
                 </span>
                 <span className="font-bold text-[#28C76F] px-2 py-0.5 rounded bg-[#28C76F]/10 text-[10px]">
-                  09:00 - 18:30 (Aktif)
+                  {t('landing.bentoVisualHoursValue')}
                 </span>
               </div>
 
               <div className="flex items-center justify-between text-xs">
                 <span className="text-slate-500 dark:text-slate-400 flex items-center gap-1.5">
                   <Sliders className="w-3.5 h-3.5 text-[#7367F0]" />
-                  İnsanlaştırılmış Jitter
+                  {t('landing.bentoVisualJitterLabel')}
                 </span>
                 <span className="font-mono text-slate-700 dark:text-slate-300 font-bold text-[11px]">
-                  25s - 75s Dinamik
+                  {t('landing.bentoVisualJitterValue')}
                 </span>
               </div>
             </div>
           </div>
 
           {/* Card 3: WhatsApp Web Hub (lg:col-span-5) */}
-          <div className="lg:col-span-5 landing-glass-card rounded-3xl p-6 sm:p-8 flex flex-col justify-between overflow-hidden relative group">
+          <div className="lg:col-span-5 landing-glass-card landing-card-glow rounded-3xl p-6 sm:p-8 flex flex-col justify-between overflow-hidden relative group">
             <div>
               <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-extrabold bg-[#7367F0]/10 text-[#7367F0] mb-4">
                 <MessageSquare className="w-3.5 h-3.5" />
@@ -149,23 +149,23 @@ export const LandingBentoFeatures: React.FC = () => {
             {/* Visual Element: Chat Snippet */}
             <div className="mt-6 p-4 rounded-2xl bg-slate-50 dark:bg-[#25293C] border border-slate-200/80 dark:border-white/[0.08] space-y-2">
               <div className="p-2.5 rounded-xl bg-white dark:bg-[#2F3349] border border-slate-100 dark:border-white/[0.05] text-xs">
-                <div className="text-[10px] font-bold text-[#7367F0] mb-0.5">Tezlify Bot (Giden)</div>
+                <div className="text-[10px] font-bold text-[#7367F0] mb-0.5">{t('landing.bentoVisualBotLabel')}</div>
                 <div className="text-slate-700 dark:text-slate-300">
-                  "Merhaba Ahmet Bey, Kadıköy kliniğiniz için özel hazırladığımız dijital hasta çekim teklifini incelemek ister misiniz?"
+                  {t('landing.bentoVisualBotMsg')}
                 </div>
               </div>
 
               <div className="p-2.5 rounded-xl bg-[#28C76F]/10 text-xs border border-[#28C76F]/20">
-                <div className="text-[10px] font-bold text-[#28C76F] mb-0.5">Ahmet Bey (Gelen Yanıt • 11:05)</div>
+                <div className="text-[10px] font-bold text-[#28C76F] mb-0.5">{t('landing.bentoVisualClientLabel')}</div>
                 <div className="text-slate-800 dark:text-slate-100 font-semibold">
-                  "Merhaba, detayları ve fiyatlandırmayı PDF olarak iletir misiniz?"
+                  {t('landing.bentoVisualClientMsg')}
                 </div>
               </div>
             </div>
           </div>
 
           {/* Card 4: Webhook & CRM Bridge (lg:col-span-7) */}
-          <div className="lg:col-span-7 landing-glass-card rounded-3xl p-6 sm:p-8 flex flex-col justify-between overflow-hidden relative group">
+          <div className="lg:col-span-7 landing-glass-card landing-card-glow rounded-3xl p-6 sm:p-8 flex flex-col justify-between overflow-hidden relative group">
             <div>
               <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-extrabold bg-[#FF9F43]/10 text-[#FF9F43] mb-4">
                 <Webhook className="w-3.5 h-3.5" />
@@ -184,15 +184,15 @@ export const LandingBentoFeatures: React.FC = () => {
             {/* Visual Element: Integration Connector Flow */}
             <div className="mt-6 p-4 rounded-2xl bg-slate-50 dark:bg-[#25293C] border border-slate-200/80 dark:border-white/[0.08] flex items-center justify-between gap-2 overflow-x-auto">
               <div className="px-3 py-2 rounded-xl bg-white dark:bg-[#2F3349] border border-slate-200 dark:border-white/[0.08] text-xs font-bold text-slate-700 dark:text-slate-200 shrink-0">
-                Web Formu (WordPress)
+                {t('landing.bentoVisualFormStep')}
               </div>
               <ArrowRight className="w-4 h-4 text-slate-400 shrink-0" />
               <div className="px-3.5 py-2 rounded-xl bg-[#7367F0] text-white text-xs font-bold shadow-md shadow-[#7367F0]/30 shrink-0">
-                Tezlify Motoru
+                {t('landing.bentoVisualEngineStep')}
               </div>
               <ArrowRight className="w-4 h-4 text-slate-400 shrink-0" />
               <div className="px-3 py-2 rounded-xl bg-white dark:bg-[#2F3349] border border-slate-200 dark:border-white/[0.08] text-xs font-bold text-slate-700 dark:text-slate-200 shrink-0">
-                Slack & CRM Uyarısı
+                {t('landing.bentoVisualCrmStep')}
               </div>
             </div>
           </div>

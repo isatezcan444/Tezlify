@@ -14,7 +14,7 @@ export const LandingSocialProof: React.FC = () => {
       bg: 'bg-[#7367F0]/10',
     },
     {
-      value: '%98',
+      value: t('landing.statDeliveryRateValue'),
       label: t('landing.statDeliveryRate'),
       icon: CheckCircle2,
       color: 'text-[#28C76F]',

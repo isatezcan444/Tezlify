@@ -18,12 +18,12 @@ export const LandingPricing: React.FC<LandingPricingProps> = ({ onSelectPlan }) 
       priceMonthly: '1.490',
       priceAnnual: '1.190',
       features: [
-        '1,000 Aylık Lead Arama Kotası',
-        '50 Günlük WhatsApp Gönderim Limiti',
-        'Google Haritalar Canlı Kazıma',
-        'Otomatik E.164 Telefon Doğrulama',
-        'Standart Anti-Ban & Mesai Saatleri',
-        'Toplu CSV & Excel Dışa Aktarımı',
+        t('landing.planStarterFeat1'),
+        t('landing.planStarterFeat2'),
+        t('landing.planStarterFeat3'),
+        t('landing.planStarterFeat4'),
+        t('landing.planStarterFeat5'),
+        t('landing.planStarterFeat6'),
       ],
       popular: false,
       buttonVariant: 'secondary',
@@ -35,14 +35,14 @@ export const LandingPricing: React.FC<LandingPricingProps> = ({ onSelectPlan }) 
       priceMonthly: '3.490',
       priceAnnual: '2.790',
       features: [
-        '5,000 Aylık Lead Arama Kotası',
-        '250 Günlük WhatsApp Gönderim Limiti',
-        'Tüm İller & 973 İlçe Eşzamanlı Tarama',
-        'Entegre WhatsApp Web & Canlı Chat Hub',
-        'Gelen & Giden Webhook Otomasyonu',
-        'Sesli Gelen Mesaj Bildirimleri',
-        'Gelişmiş Jitter & Sıfır Ban Algoritması',
-        '7/24 Öncelikli WhatsApp Desteği',
+        t('landing.planProFeat1'),
+        t('landing.planProFeat2'),
+        t('landing.planProFeat3'),
+        t('landing.planProFeat4'),
+        t('landing.planProFeat5'),
+        t('landing.planProFeat6'),
+        t('landing.planProFeat7'),
+        t('landing.planProFeat8'),
       ],
       popular: true,
       buttonVariant: 'primary',
@@ -54,13 +54,13 @@ export const LandingPricing: React.FC<LandingPricingProps> = ({ onSelectPlan }) 
       priceMonthly: '7.990',
       priceAnnual: '6.390',
       features: [
-        '25,000+ Aylık Lead Arama Kotası',
-        '1,000+ Günlük WhatsApp Gönderim Limiti',
-        'Sınırsız Eşzamanlı Tarama Görevi',
-        'Geliştirici REST API & Özel Webhooklar',
-        'Çoklu Oturum & Ajans Ekip Yönetimi',
-        'Özel IP & Proxy Altyapısı',
-        'Birebir Kurulum & Strateji Danışmanlığı',
+        t('landing.planAgencyFeat1'),
+        t('landing.planAgencyFeat2'),
+        t('landing.planAgencyFeat3'),
+        t('landing.planAgencyFeat4'),
+        t('landing.planAgencyFeat5'),
+        t('landing.planAgencyFeat6'),
+        t('landing.planAgencyFeat7'),
       ],
       popular: false,
       buttonVariant: 'secondary',
@@ -124,7 +124,7 @@ export const LandingPricing: React.FC<LandingPricingProps> = ({ onSelectPlan }) 
             return (
               <div
                 key={p.id}
-                className={`rounded-3xl p-6 sm:p-8 flex flex-col justify-between transition-all duration-300 relative ${
+                className={`rounded-3xl p-6 sm:p-8 flex flex-col justify-between transition-all duration-300 relative landing-card-glow ${
                   p.popular
                     ? 'landing-glass-card border-2 border-[#7367F0] dark:border-[#7367F0] shadow-2xl shadow-[#7367F0]/15 scale-[1.02] z-10'
                     : 'landing-glass-card border border-slate-200/80 dark:border-white/[0.08]'

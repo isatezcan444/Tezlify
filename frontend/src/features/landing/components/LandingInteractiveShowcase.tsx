@@ -142,7 +142,7 @@ export const LandingInteractiveShowcase: React.FC<LandingInteractiveShowcaseProp
 
           <h2 className="text-3xl sm:text-5xl font-extrabold text-slate-900 dark:text-white tracking-tight leading-tight">
             {t('landing.heroTitlePrefix')}{' '}
-            <span className="font-serif italic font-normal text-transparent bg-clip-text bg-gradient-to-r from-[#7367F0] via-indigo-400 to-[#00CFE8]">
+            <span className="font-serif italic font-normal text-shimmer">
               {t('landing.showcaseTitle')}
             </span>
           </h2>
