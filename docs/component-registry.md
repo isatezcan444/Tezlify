@@ -561,9 +561,10 @@ restarting a service and shipping code are different risk classes.
   - `LandingSocialProof`: Credibility and throughput metrics strip (`100,000+ Verified Businesses`, `98% Delivery Rate`, `10x Speed`).
   - `LandingBentoFeatures`: 4-item bento grid showcasing Google Maps scraper, Anti-Ban & Humanized delays, WhatsApp Web Hub, and Inbound/Outbound Webhook bridges.
   - `LandingInteractiveShowcase`: Interactive 4-tab live product simulator (`#how-it-works`) allowing visitors to test Google Maps radar, AI tone & spintax, anti-ban jitter sliders, and simulated WhatsApp live inbox replies.
+  - `LandingRoiCalculator`: Dynamic B2B revenue and lead growth calculator (`#roi-calculator`) featuring volume and deal size sliders, real-time verified mobile estimation, conversion analytics, hours saved metrics, and smart plan tier recommendations.
   - `LandingPricing`: Dynamic monthly/annual switcher (%20 discount) with interactive tier selection and instant upgrade actions.
   - `LandingFAQ`: Smooth accordion answering critical questions regarding WhatsApp safety, data sources, and web form connections.
   - `LandingFooter`: Minimalist footer with live system operational status badge and legal links.
-- **Import**: `import { LandingPage, LandingInteractiveShowcase } from '@/features/landing';`
+- **Import**: `import { LandingPage, LandingInteractiveShowcase, LandingRoiCalculator } from '@/features/landing';`
 
 
