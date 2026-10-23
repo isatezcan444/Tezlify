@@ -47,15 +47,17 @@ import {
 } from '../features/leads/components';
 import { useLeadFilters, useLeadSelection } from '../features/leads/hooks';
 import { ApiClient } from '../api/client';
-import { Lead, LeadStatus, CampaignGroup } from '../types';
+import { Lead, LeadStatus, CampaignGroup, DashboardStats } from '../types';
 import { useToast } from '../context/ToastContext';
 import { useI18n } from '../context/I18nContext';
+import { cn } from '../lib/utils';
 
 interface LeadCRMPageProps {
   onRefreshStats: () => void;
+  stats?: DashboardStats | null;
 }
 
-export const LeadCRMPage: React.FC<LeadCRMPageProps> = ({ onRefreshStats }) => {
+export const LeadCRMPage: React.FC<LeadCRMPageProps> = ({ onRefreshStats, stats }) => {
   const toast = useToast();
   const { t } = useI18n();
   const [leads, setLeads] = useState<Lead[]>([]);
@@ -83,6 +85,35 @@ export const LeadCRMPage: React.FC<LeadCRMPageProps> = ({ onRefreshStats }) => {
     buildQueryParams,
     buildExportParams,
   } = useLeadFilters(20);
+
+  const currentActiveTab = useMemo(() => {
+    if (waOnly) return 'WA_ONLY';
+    if (!statusFilter) return 'ALL';
+    return statusFilter;
+  }, [waOnly, statusFilter]);
+
+  const filterTabs = useMemo(() => [
+    { id: 'ALL', label: t('leads.filterAll'), count: stats?.total_leads ?? total },
+    { id: 'NEW', label: t('leads.statusNew'), count: stats?.leads_by_status?.NEW ?? 0 },
+    { id: 'CONTACTED', label: t('leads.statusContacted'), count: stats?.leads_by_status?.CONTACTED ?? 0 },
+    { id: 'REPLIED', label: t('leads.statusReplied'), count: stats?.leads_by_status?.REPLIED ?? 0 },
+    { id: 'INTERESTED', label: t('leads.statusInterested'), count: stats?.leads_by_status?.INTERESTED ?? 0 },
+    { id: 'WA_ONLY', label: t('leads.filterWhatsAppReady'), count: stats?.whatsapp_eligible_leads ?? 0 },
+  ], [t, stats, total]);
+
+  const handleSelectFilterTab = (tabId: string) => {
+    if (tabId === 'ALL') {
+      setStatusFilter('');
+      setWaOnly(false);
+    } else if (tabId === 'WA_ONLY') {
+      setStatusFilter('');
+      setWaOnly(true);
+    } else {
+      setStatusFilter(tabId);
+      setWaOnly(false);
+    }
+    setPage(1);
+  };
 
   const [loading, setLoading] = useState(false);
 
@@ -304,7 +335,7 @@ export const LeadCRMPage: React.FC<LeadCRMPageProps> = ({ onRefreshStats }) => {
       } else {
         const res = await ApiClient.addLeadsToCampaignGroup(selectedTargetGroupId, targetLeadIds);
         const grp = campaignGroups.find((g) => g.id === selectedTargetGroupId);
-        toast.success(t('leads.addedToGroupSuccess', { count: targetLeadIds.length, name: grp?.name || 'Grup' }));
+        toast.success(t('leads.addedToGroupSuccess', { count: targetLeadIds.length, name: grp?.name || t('campaignGroups.defaultNewGroupName') }));
       }
 
       setIsAddToGroupModalOpen(false);
@@ -313,7 +344,7 @@ export const LeadCRMPage: React.FC<LeadCRMPageProps> = ({ onRefreshStats }) => {
       setSelectAllMatching(false);
       onRefreshStats();
     } catch (err: any) {
-      toast.error(err.message || 'İşletmeler gruba eklenemedi.');
+      toast.error(err.message || t('leads.addToGroupError'), t('toast.errorTitle'));
     } finally {
       setIsAddingToGroup(false);
     }
@@ -418,7 +449,7 @@ export const LeadCRMPage: React.FC<LeadCRMPageProps> = ({ onRefreshStats }) => {
       await ApiClient.createLead({
         name: newLeadName,
         phone: newLeadPhone,
-        category: newLeadCategory || 'Genel',
+        category: newLeadCategory || t('common.general'),
         city: newLeadCity,
         district: newLeadDistrict,
       });
@@ -676,14 +707,48 @@ export const LeadCRMPage: React.FC<LeadCRMPageProps> = ({ onRefreshStats }) => {
                 className="space-x-1.5 flex-1 sm:flex-initial justify-center cursor-pointer"
               >
                 <Download className="w-3.5 h-3.5 text-[#28C76F]" />
-                <span>Excel (.xlsx)</span>
+                <span>{t('leads.exportExcel')}</span>
               </Button>
             </>
           }
         />
 
-        {/* Filter Controls Row */}
-        <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-12 gap-3 pt-4 border-t border-slate-100 dark:border-white/[0.06] items-center">
+        {/* Status & WhatsApp Quick Filter Tabs Toolbar */}
+        <div className="mt-4 pt-3.5 border-t border-slate-100 dark:border-white/[0.06] flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-none">
+          {filterTabs.map((tab) => {
+            const isActive = currentActiveTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => handleSelectFilterTab(tab.id)}
+                className={cn(
+                  'px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all whitespace-nowrap cursor-pointer flex items-center space-x-1.5',
+                  isActive
+                    ? 'bg-[#7367F0] text-white shadow-xs'
+                    : 'bg-slate-100/80 dark:bg-white/[0.04] text-slate-600 dark:text-slate-300 hover:bg-slate-200/70 dark:hover:bg-white/[0.08]'
+                )}
+              >
+                <span>{tab.label}</span>
+                {tab.count !== undefined && (
+                  <span
+                    className={cn(
+                      'px-1.5 py-0.2 rounded-full text-[10px] font-mono',
+                      isActive
+                        ? 'bg-white/20 text-white'
+                        : 'bg-slate-200/60 dark:bg-white/10 text-slate-500 dark:text-slate-400'
+                    )}
+                  >
+                    {tab.count}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Filter Controls Row: Search, Location, Category */}
+        <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-12 gap-3 items-center">
           {/* Search Box: 4 cols */}
           <div className="lg:col-span-4">
             <SearchInput
@@ -696,8 +761,8 @@ export const LeadCRMPage: React.FC<LeadCRMPageProps> = ({ onRefreshStats }) => {
             />
           </div>
 
-          {/* Location Multi-Select (City + Districts): 3 cols */}
-          <div className="lg:col-span-3 relative">
+          {/* Location Multi-Select (City + Districts): 4 cols */}
+          <div className="lg:col-span-4 relative">
             <LocationMultiSelect
               selectedCity={selectedCity}
               selectedDistricts={selectedDistricts}
@@ -709,34 +774,14 @@ export const LeadCRMPage: React.FC<LeadCRMPageProps> = ({ onRefreshStats }) => {
             />
           </div>
 
-          {/* Category Multi-Select: 3 cols */}
-          <div className="lg:col-span-3 relative">
+          {/* Category Multi-Select: 4 cols */}
+          <div className="lg:col-span-4 relative">
             <CategoryMultiSelect
               selectedCategories={selectedCategories}
               onChange={(cats) => {
                 setSelectedCategories(cats);
                 setPage(1);
               }}
-            />
-          </div>
-
-          {/* Status Filter: 2 cols */}
-          <div className="lg:col-span-2">
-            <Select
-              value={statusFilter}
-              onChange={(e) => {
-                setStatusFilter(e.target.value);
-                setPage(1);
-              }}
-              options={[
-                { value: '', label: t('leads.filterByStatus') },
-                { value: 'NEW', label: t('leads.statusNew') },
-                { value: 'CONTACTED', label: t('leads.statusContacted') },
-                { value: 'REPLIED', label: t('leads.statusReplied') },
-                { value: 'INTERESTED', label: t('leads.statusInterested') },
-                { value: 'UNSUBSCRIBED', label: t('leads.statusUnsubscribed') },
-                { value: 'INVALID_NUMBER', label: t('leads.statusInvalid') },
-              ]}
             />
           </div>
         </div>

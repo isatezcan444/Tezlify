@@ -471,7 +471,7 @@ const AppContent: React.FC<AppContentProps> = ({ onNavigateToLanding }) => {
             <LeadFinderPage onNavigate={handleNavigate} onRefreshStats={refreshStats} />
           )}
           {activeTab === 'leads' && (
-            <LeadCRMPage onRefreshStats={refreshStats} />
+            <LeadCRMPage onRefreshStats={refreshStats} stats={stats} />
           )}
           {activeTab === 'campaigns' && (
             <CampaignsPage

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   Play,
   Check,
@@ -36,6 +36,9 @@ import {
 import { useI18n } from '../context/I18nContext';
 import { useToast } from '../context/ToastContext';
 import { CampaignGroup } from '../types';
+import { cn } from '../lib/utils';
+
+export type LeadFinderFilter = 'ALL' | 'WA_READY' | 'HAS_PHONE' | 'UNSAVED';
 
 interface LeadFinderPageProps {
   onNavigate: (tab: string, prefillData?: any) => void;
@@ -54,6 +57,7 @@ export const LeadFinderPage: React.FC<LeadFinderPageProps> = ({ onNavigate, onRe
   const [logs, setLogs] = useState<string[]>([]);
   const [discoveredLeads, setDiscoveredLeads] = useState<any[]>([]);
   const [progress, setProgress] = useState(0);
+  const [resultsFilter, setResultsFilter] = useState<LeadFinderFilter>('ALL');
   // Explicit-save selection (Gmail style, keyed by place_id — results carry
   // no CRM id until the user saves them).
   const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
@@ -64,14 +68,31 @@ export const LeadFinderPage: React.FC<LeadFinderPageProps> = ({ onNavigate, onRe
   const [resultsPageSize, setResultsPageSize] = useState(12);
 
   const leadKey = (l: any): string => String(l?.place_id || l?.name || '');
-  const allKeys = discoveredLeads.map(leadKey).filter(Boolean);
   const unsavedLeads = discoveredLeads.filter((l) => !l.id);
   const savedLeads = discoveredLeads.filter((l) => l.id);
+
+  const filteredDiscoveredLeads = useMemo(() => {
+    return discoveredLeads.filter((l) => {
+      if (resultsFilter === 'WA_READY') return Boolean(l.is_whatsapp_eligible);
+      if (resultsFilter === 'HAS_PHONE') return Boolean(l.phone || l.phone_e164);
+      if (resultsFilter === 'UNSAVED') return !l.id;
+      return true;
+    });
+  }, [discoveredLeads, resultsFilter]);
+
+  const finderFilterTabs = useMemo(() => [
+    { id: 'ALL', label: t('leadFinder.filterAll'), count: discoveredLeads.length },
+    { id: 'WA_READY', label: t('leadFinder.filterWhatsApp'), count: discoveredLeads.filter((l) => l.is_whatsapp_eligible).length },
+    { id: 'HAS_PHONE', label: t('leadFinder.filterHasPhone'), count: discoveredLeads.filter((l) => Boolean(l.phone || l.phone_e164)).length },
+    { id: 'UNSAVED', label: t('leadFinder.filterUnsaved'), count: unsavedLeads.length },
+  ], [t, discoveredLeads, unsavedLeads]);
+
+  const allKeys = filteredDiscoveredLeads.map(leadKey).filter(Boolean);
   const isAllSelected = allKeys.length > 0 && allKeys.every((k) => selectedKeys.includes(k));
   // Clamp (never yank the user back): streaming appends keep the current page.
-  const totalResultPages = Math.max(1, Math.ceil(discoveredLeads.length / resultsPageSize));
+  const totalResultPages = Math.max(1, Math.ceil(filteredDiscoveredLeads.length / resultsPageSize));
   const safeResultsPage = Math.min(resultsPage, totalResultPages);
-  const pagedLeads = discoveredLeads.slice(
+  const pagedLeads = filteredDiscoveredLeads.slice(
     (safeResultsPage - 1) * resultsPageSize,
     safeResultsPage * resultsPageSize
   );
@@ -185,6 +206,7 @@ export const LeadFinderPage: React.FC<LeadFinderPageProps> = ({ onNavigate, onRe
     jobDoneRef.current = false;
     setSelectedKeys([]);
     setResultsPage(1);
+    setResultsFilter('ALL');
     const targetLabel = maxResults === 0
       ? t('leadFinder.scopeAll')
       : `${maxResults} ${t('common.entries')}`;
@@ -578,6 +600,41 @@ export const LeadFinderPage: React.FC<LeadFinderPageProps> = ({ onNavigate, onRe
             </div>
           </div>
 
+          {/* Results Filter Pills Toolbar */}
+          <div className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-none">
+            {finderFilterTabs.map((tab) => {
+              const isActive = resultsFilter === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => {
+                    setResultsFilter(tab.id as LeadFinderFilter);
+                    setResultsPage(1);
+                  }}
+                  className={cn(
+                    'px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all whitespace-nowrap cursor-pointer flex items-center space-x-1.5',
+                    isActive
+                      ? 'bg-[#7367F0] text-white shadow-xs'
+                      : 'bg-slate-100/80 dark:bg-white/[0.04] text-slate-600 dark:text-slate-300 hover:bg-slate-200/70 dark:hover:bg-white/[0.08]'
+                  )}
+                >
+                  <span>{tab.label}</span>
+                  <span
+                    className={cn(
+                      'px-1.5 py-0.2 rounded-full text-[10px] font-mono',
+                      isActive
+                        ? 'bg-white/20 text-white'
+                        : 'bg-slate-200/60 dark:bg-white/10 text-slate-500 dark:text-slate-400'
+                    )}
+                  >
+                    {tab.count}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
           {/* Save to Group Inline Banner (only saved CRM rows can be grouped) */}
           {savedLeads.length > 0 && (
           <div className="bg-gradient-to-r from-[#7367F0]/10 via-[#7367F0]/5 to-transparent border border-[#7367F0]/20 rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-sm">
@@ -635,10 +692,10 @@ export const LeadFinderPage: React.FC<LeadFinderPageProps> = ({ onNavigate, onRe
           </div>
 
           {/* Shared pagination (same component as Müşteri Adayları) */}
-          {discoveredLeads.length > resultsPageSize && (
+          {filteredDiscoveredLeads.length > resultsPageSize && (
             <Pagination
               currentPage={safeResultsPage}
-              totalItems={discoveredLeads.length}
+              totalItems={filteredDiscoveredLeads.length}
               pageSize={resultsPageSize}
               onPageChange={(newPage) => {
                 setResultsPage(newPage);
@@ -655,7 +712,7 @@ export const LeadFinderPage: React.FC<LeadFinderPageProps> = ({ onNavigate, onRe
           {/* Bulk Selection Toolbar (CRM pattern): save selection to CRM */}
           <BulkActionToolbar
             selectedCount={selectedKeys.length}
-            totalCount={discoveredLeads.length}
+            totalCount={filteredDiscoveredLeads.length}
             selectAllMatching={false}
             onClearSelection={() => setSelectedKeys([])}
             actions={

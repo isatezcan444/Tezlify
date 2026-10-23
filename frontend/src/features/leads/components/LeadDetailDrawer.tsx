@@ -9,7 +9,9 @@ import {
   ShieldAlert, 
   Trash2, 
   ExternalLink,
-  MessageSquare
+  MessageSquare,
+  Copy,
+  Check
 } from 'lucide-react';
 import { Lead, LeadStatus } from '../../../types';
 import { Drawer } from '../../../components/ui/Drawer';
@@ -54,6 +56,20 @@ export const LeadDetailDrawer: React.FC<LeadDetailDrawerProps> = ({
 
   const [isTemplateModalOpen, setIsTemplateModalOpen] = useState<boolean>(false);
   const [insertedComposerText, setInsertedComposerText] = useState<{ text: string; timestamp: number } | null>(null);
+  const [copiedPhone, setCopiedPhone] = useState(false);
+
+  const handleCopyPhone = async () => {
+    const p = lead?.phone_e164 || lead?.phone;
+    if (!p) return;
+    try {
+      await navigator.clipboard.writeText(p);
+      setCopiedPhone(true);
+      toast.success(t('leads.phoneCopied'));
+      setTimeout(() => setCopiedPhone(false), 1500);
+    } catch {
+      // fallback
+    }
+  };
 
   // Sync initialTab when drawer opens
   useEffect(() => {
@@ -235,18 +251,33 @@ export const LeadDetailDrawer: React.FC<LeadDetailDrawerProps> = ({
               </h5>
 
               <div className="flex items-center justify-between">
-                <div className="flex items-center space-x-2 font-mono font-bold text-slate-700 dark:text-slate-200">
-                  <Phone className="w-4 h-4 text-slate-400" />
-                  <span>{lead.phone_e164 || lead.phone || t('leads.noPhone')}</span>
+                <div className="flex items-center space-x-2 font-mono font-bold text-slate-700 dark:text-slate-200 min-w-0">
+                  <Phone className="w-4 h-4 text-slate-400 shrink-0" />
+                  <span className="truncate">{lead.phone_e164 || lead.phone || t('leads.noPhone')}</span>
+                  {(lead.phone_e164 || lead.phone) && (
+                    <button
+                      type="button"
+                      onClick={handleCopyPhone}
+                      title={t('leads.copyPhone')}
+                      aria-label={t('leads.copyPhone')}
+                      className="p-1 rounded text-slate-400 hover:text-[#7367F0] hover:bg-slate-200/60 dark:hover:bg-white/[0.08] transition-colors cursor-pointer shrink-0"
+                    >
+                      {copiedPhone ? (
+                        <Check className="w-3.5 h-3.5 text-[#28C76F]" />
+                      ) : (
+                        <Copy className="w-3.5 h-3.5" />
+                      )}
+                    </button>
+                  )}
                 </div>
 
                 {lead.is_whatsapp_eligible ? (
-                  <span className="inline-flex items-center space-x-1 px-2 py-0.5 rounded-full bg-[#25D366]/15 text-[#25D366] font-bold text-[10px]">
+                  <span className="inline-flex items-center space-x-1 px-2 py-0.5 rounded-full bg-[#25D366]/15 text-[#25D366] font-bold text-[10px] shrink-0">
                     <WhatsAppIcon className="w-3 h-3" />
                     <span>{t('leads.whatsappActive')}</span>
                   </span>
                 ) : (
-                  <span className="text-[10px] text-slate-400">
+                  <span className="text-[10px] text-slate-400 shrink-0">
                     {t('leads.whatsappUnverified')}
                   </span>
                 )}
@@ -305,14 +336,14 @@ export const LeadDetailDrawer: React.FC<LeadDetailDrawerProps> = ({
             {lead.rating && (
               <div className="p-4 rounded-xl border border-slate-200/80 dark:border-white/[0.06] flex items-center justify-between">
                 <span className="text-slate-400 font-bold uppercase text-[10px] tracking-wider">
-                  Google Rating
+                  {t('leadFinder.cardRating')}
                 </span>
                 <div className="flex items-center space-x-1.5">
                   <Star className="w-4 h-4 text-[#FF9F43] fill-[#FF9F43]" />
                   <span className="font-bold text-slate-800 dark:text-white text-sm">{lead.rating}</span>
-                  {lead.reviews_count && (
-                    <span className="text-slate-400 text-xs">({lead.reviews_count} reviews)</span>
-                  )}
+                  {lead.reviews_count ? (
+                    <span className="text-slate-400 text-xs">({lead.reviews_count} {t('leads.colRatingWeb')})</span>
+                  ) : null}
                 </div>
               </div>
             )}
