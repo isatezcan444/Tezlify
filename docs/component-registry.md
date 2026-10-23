@@ -323,6 +323,11 @@ src/
 - **Props**: `isOpen: boolean`, `onClose: () => void`, `onConfirm: () => void`, `isDeleting: boolean`, `campaignToDelete: Campaign | null`.
 - **Import**: `import { CampaignDeleteModal } from '@/features/campaigns/components';`
 
+#### `CampaignDetailDrawer`
+- **Purpose**: Slide-over inspection drawer for campaigns featuring tabbed layout (Overview & Message/Simulation), key delivery/response metrics, target group integration with deep navigation, anti-ban safety settings review, and live embedded WhatsApp message simulation.
+- **Props**: `campaign: Campaign | null`, `isOpen: boolean`, `onClose: () => void`, `onStart?: (campaignId: number) => void`, `onPause?: (campaignId: number) => void`, `onCancel?: (campaignId: number) => void`, `onDelete?: (campaignId: number) => void`, `onNavigateToGroup?: (groupId: number) => void`.
+- **Import**: `import { CampaignDetailDrawer } from '@/features/campaigns/components';`
+
 #### `CampaignCreateWizard`
 - **Purpose**: 4-step Vuexy Stepper wizard for campaign creation (Step 1: Basics & Audience, Step 2: Communication Goal & AI Strategy, Step 3: Composer & Live WhatsApp Spintax Preview, Step 4: Safety & Anti-Ban Review). Features auto-debounced AI message generation, fail-closed AntibanPolicy metrics summary, step jumping validation, and full i18n support.
 - **Props**: `prefill?: object | null`, `onClearPrefill?: () => void`, `onSuccess: () => void`, `onCancel: () => void`.

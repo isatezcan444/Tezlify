@@ -8,7 +8,8 @@ import {
   MessageSquareReply, 
   AlertCircle,
   Trash2,
-  Check
+  Check,
+  Eye,
 } from 'lucide-react';
 import { Campaign } from '../../../types';
 import { Card } from '../../../components/ui/card';
@@ -23,6 +24,7 @@ export interface CampaignCardProps {
   campaign: Campaign;
   isSelected?: boolean;
   onToggleSelect?: (campaignId: number) => void;
+  onViewDetail?: (campaign: Campaign) => void;
   onStart?: (campaignId: number) => void;
   onPause?: (campaignId: number) => void;
   onCancel?: (campaignId: number) => void;
@@ -34,6 +36,7 @@ export const CampaignCard: React.FC<CampaignCardProps> = ({
   campaign,
   isSelected,
   onToggleSelect,
+  onViewDetail,
   onStart,
   onPause,
   onCancel,
@@ -88,8 +91,11 @@ export const CampaignCard: React.FC<CampaignCardProps> = ({
                 {isSelected && <Check className="w-3.5 h-3.5 stroke-[3]" />}
               </button>
             )}
-            <div className="min-w-0">
-              <h4 className="font-extrabold text-sm text-slate-800 dark:text-white leading-tight truncate">
+            <div
+              className={cn("min-w-0", onViewDetail && "cursor-pointer group/title")}
+              onClick={() => onViewDetail?.(campaign)}
+            >
+              <h4 className="font-extrabold text-sm text-slate-800 dark:text-white leading-tight truncate group-hover/title:text-[#7367F0] transition-colors">
                 {campaign.name}
               </h4>
               {campaign.description && (
@@ -100,9 +106,16 @@ export const CampaignCard: React.FC<CampaignCardProps> = ({
             </div>
           </div>
 
-          <Badge variant={statusVariants[campaign.status] || 'default'} className="text-[10px] uppercase font-mono shrink-0">
-            {campaign.status}
-          </Badge>
+          <div className="flex items-center space-x-1.5 shrink-0">
+            {campaign.sent_count > 0 && campaign.replied_count > 0 && (
+              <Badge variant="success" className="text-[10px] font-mono font-bold px-1.5 py-0.5">
+                %{((campaign.replied_count / campaign.sent_count) * 100).toFixed(0)} {t('campaigns.responseRate')}
+              </Badge>
+            )}
+            <Badge variant={statusVariants[campaign.status] || 'default'} className="text-[10px] uppercase font-mono">
+              {campaign.status}
+            </Badge>
+          </div>
         </div>
 
         {/* Progress Bar */}
@@ -141,6 +154,18 @@ export const CampaignCard: React.FC<CampaignCardProps> = ({
         </div>
 
         <div className="flex items-center space-x-1.5 shrink-0 flex-wrap sm:flex-nowrap justify-end">
+          {onViewDetail && (
+            <IconButton
+              icon={Eye}
+              size="sm"
+              variant="ghost"
+              data-testid={`view-campaign-detail-${campaign.id}`}
+              tooltip={t('campaigns.viewDetails') || 'Detayları İncele'}
+              onClick={() => onViewDetail(campaign)}
+              className="text-slate-400 hover:text-[#7367F0] hover:bg-[#7367F0]/10"
+            />
+          )}
+
           {onDelete && (
             <IconButton
               icon={Trash2}

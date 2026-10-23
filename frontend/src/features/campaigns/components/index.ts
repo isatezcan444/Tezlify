@@ -6,3 +6,4 @@ export * from './CampaignCreateWizard';
 export * from './CampaignGroupDetailModal';
 export * from './CampaignGroupEditModal';
 export * from './CampaignGroupCreateView';
+export * from './CampaignDetailDrawer';
