@@ -133,7 +133,7 @@ export const CampaignGroupEditModal: React.FC<CampaignGroupEditModalProps> = ({
       if (selectedLeadsToAdd.length > 0) {
         const leadIds = selectedLeadsToAdd.map((l) => l.id);
         const addRes = await ApiClient.addLeadsToCampaignGroup(group.id, leadIds);
-        toast.success(addRes.message || `${selectedLeadsToAdd.length} işletme gruba eklendi.`);
+        toast.success(addRes.message || t('campaignGroups.leadsAddedSuccess', { count: selectedLeadsToAdd.length }));
       } else {
         toast.success(t('campaignGroups.groupUpdated', { name: updated.name }));
       }
@@ -141,7 +141,7 @@ export const CampaignGroupEditModal: React.FC<CampaignGroupEditModalProps> = ({
       onClose();
       onSuccess();
     } catch (err: any) {
-      toast.error(err.message || 'Grup güncellenemedi.');
+      toast.error(err.message || t('campaignGroups.updateGroupError'));
     } finally {
       setIsSavingEdit(false);
     }

@@ -76,8 +76,11 @@ export const CampaignGroupCard: React.FC<CampaignGroupCardProps> = ({
                 {isSelected && <Check className="w-3.5 h-3.5 stroke-[3]" />}
               </button>
             )}
-            <div className="min-w-0">
-              <h4 className="font-extrabold text-sm text-slate-800 dark:text-white leading-tight truncate">
+            <div
+              className={cn("min-w-0", onView && "cursor-pointer group/title")}
+              onClick={() => onView?.(group.id)}
+            >
+              <h4 className="font-extrabold text-sm text-slate-800 dark:text-white leading-tight truncate group-hover/title:text-[#7367F0] transition-colors">
                 {group.name}
               </h4>
               <div className="flex items-center gap-2 mt-1 flex-wrap">
@@ -97,9 +100,16 @@ export const CampaignGroupCard: React.FC<CampaignGroupCardProps> = ({
             </div>
           </div>
 
-          <Badge variant="primary" className="text-[10px] uppercase font-mono shrink-0">
-            {totalCount} {t('campaignGroups.businesses')}
-          </Badge>
+          <div className="flex items-center space-x-1.5 shrink-0">
+            {waPercent > 0 && (
+              <Badge variant={waPercent >= 70 ? 'success' : 'warning'} className="text-[10px] font-mono font-bold px-1.5 py-0.5">
+                %{waPercent} WA
+              </Badge>
+            )}
+            <Badge variant="primary" className="text-[10px] uppercase font-mono">
+              {totalCount} {t('campaignGroups.businesses')}
+            </Badge>
+          </div>
         </div>
 
         {/* WhatsApp Readiness Bar */}

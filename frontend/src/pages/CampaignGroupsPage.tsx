@@ -1,9 +1,12 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { 
   Users, 
   Trash2, 
   Plus, 
   FolderKanban,
+  Search,
+  X,
+  Filter,
 } from 'lucide-react';
 import { 
   Card, 
@@ -25,11 +28,14 @@ import { useToast } from '../context/ToastContext';
 import { useI18n } from '../context/I18nContext';
 import { ApiClient } from '../api/client';
 import { CampaignGroup } from '../types';
+import { cn } from '../lib/utils';
 
 interface CampaignGroupsPageProps {
   onNavigate: (tab: string, prefillData?: any) => void;
   onRefreshStats?: () => void;
 }
+
+type GroupFilterType = 'ALL' | 'WHATSAPP_READY' | 'CATEGORIZED';
 
 export const CampaignGroupsPage: React.FC<CampaignGroupsPageProps> = ({
   onNavigate,
@@ -41,6 +47,11 @@ export const CampaignGroupsPage: React.FC<CampaignGroupsPageProps> = ({
   const [groups, setGroups] = useState<CampaignGroup[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'list' | 'create'>('list');
+
+  // Search & Filter State
+  const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedQuery, setDebouncedQuery] = useState('');
+  const [filterType, setFilterType] = useState<GroupFilterType>('ALL');
 
   // Pagination State
   const [page, setPage] = useState(1);
@@ -54,6 +65,15 @@ export const CampaignGroupsPage: React.FC<CampaignGroupsPageProps> = ({
   // Modals state
   const [selectedGroupId, setSelectedGroupId] = useState<number | null>(null);
   const [editingGroup, setEditingGroup] = useState<CampaignGroup | null>(null);
+
+  // 300ms Debounce for Search (Rule 3)
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedQuery(searchQuery);
+      setPage(1);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
 
   const fetchGroups = useCallback(async () => {
     try {
@@ -107,7 +127,42 @@ export const CampaignGroupsPage: React.FC<CampaignGroupsPageProps> = ({
     );
   };
 
-  const currentPageGroups = groups.slice((page - 1) * pageSize, page * pageSize);
+  // Filtered Groups Logic
+  const filteredGroups = useMemo(() => {
+    return groups.filter((group) => {
+      // Type Filter
+      if (filterType === 'WHATSAPP_READY' && (group.whatsapp_eligible_count ?? 0) <= 0) {
+        return false;
+      }
+      if (filterType === 'CATEGORIZED' && !group.target_category) {
+        return false;
+      }
+
+      // Search Filter
+      if (debouncedQuery.trim()) {
+        const q = debouncedQuery.toLowerCase();
+        const matchName = group.name.toLowerCase().includes(q);
+        const matchCategory = group.target_category?.toLowerCase().includes(q);
+        const matchLocation = group.target_location?.toLowerCase().includes(q);
+        if (!matchName && !matchCategory && !matchLocation) {
+          return false;
+        }
+      }
+
+      return true;
+    });
+  }, [groups, filterType, debouncedQuery]);
+
+  // Counts for tabs
+  const counts = useMemo(() => {
+    return {
+      ALL: groups.length,
+      WHATSAPP_READY: groups.filter((g) => (g.whatsapp_eligible_count ?? 0) > 0).length,
+      CATEGORIZED: groups.filter((g) => !!g.target_category).length,
+    };
+  }, [groups]);
+
+  const currentPageGroups = filteredGroups.slice((page - 1) * pageSize, page * pageSize);
   const currentPageIds = currentPageGroups.map((g) => g.id);
   const isAllPageSelected = currentPageIds.length > 0 && currentPageIds.every((id) => selectedIds.includes(id));
 
@@ -121,7 +176,7 @@ export const CampaignGroupsPage: React.FC<CampaignGroupsPageProps> = ({
   };
 
   const handleSelectAllMatching = () => {
-    setSelectedIds(groups.map((g) => g.id));
+    setSelectedIds(filteredGroups.map((g) => g.id));
     setSelectAllMatching(true);
   };
 
@@ -131,7 +186,7 @@ export const CampaignGroupsPage: React.FC<CampaignGroupsPageProps> = ({
   };
 
   const handleBulkDelete = async () => {
-    const count = selectAllMatching ? groups.length : selectedIds.length;
+    const count = selectAllMatching ? filteredGroups.length : selectedIds.length;
     if (count === 0) return;
 
     const confirmed = await toast.confirm({
@@ -144,19 +199,25 @@ export const CampaignGroupsPage: React.FC<CampaignGroupsPageProps> = ({
 
     setIsBulkDeleting(true);
     try {
-      const targetIds = selectAllMatching ? groups.map((g) => g.id) : selectedIds;
+      const targetIds = selectAllMatching ? filteredGroups.map((g) => g.id) : selectedIds;
       const res = await ApiClient.bulkDeleteCampaignGroups(targetIds);
-      toast.success(res.message || `${res.deleted_count} grup silindi.`);
+      toast.success(res.message || t('campaignGroups.bulkDeleteSuccess', { count: res.deleted_count }));
       setSelectedIds([]);
       setSelectAllMatching(false);
       fetchGroups();
       if (onRefreshStats) onRefreshStats();
     } catch (err: any) {
-      toast.error(err.message || 'Toplu silme işlemi başarısız oldu.');
+      toast.error(err.message || t('campaignGroups.bulkDeleteError'));
     } finally {
       setIsBulkDeleting(false);
     }
   };
+
+  const filterTabs: Array<{ id: GroupFilterType; label: string; count: number }> = [
+    { id: 'ALL', label: t('campaignGroups.filterAll') || 'Tümü', count: counts.ALL },
+    { id: 'WHATSAPP_READY', label: t('campaignGroups.filterWhatsAppReady') || 'WhatsApp Hazır', count: counts.WHATSAPP_READY },
+    { id: 'CATEGORIZED', label: t('campaignGroups.filterWithSector') || 'Sektör Belirlenmiş', count: counts.CATEGORIZED },
+  ];
 
   return (
     <div className="space-y-4 sm:space-y-6 pb-16 select-none animate-fade-in">
@@ -208,12 +269,73 @@ export const CampaignGroupsPage: React.FC<CampaignGroupsPageProps> = ({
             </Card>
           ) : (
             <>
-              {/* Centralized Bulk Action Toolbar (Identical to LeadCRMPage & CampaignsPage) */}
+              {/* Search & Filter Bar (Matching CampaignsPage & LeadCRMPage) */}
+              <Card className="p-4 space-y-3.5 border-slate-100 dark:border-white/[0.05] bg-white dark:bg-[#2F3349] shadow-sm">
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+                  {/* Search Input with 300ms Debounce */}
+                  <div className="relative flex-1 max-w-md">
+                    <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 dark:text-slate-500" />
+                    <input
+                      type="text"
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      placeholder={t('campaignGroups.searchPlaceholder') || 'Grup adına, sektöre veya şehre göre ara...'}
+                      className="w-full pl-9 pr-9 py-2 rounded-lg text-xs font-medium border border-slate-200 dark:border-white/10 bg-slate-50/60 dark:bg-[#25293C] text-slate-800 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[#7367F0]/20 focus:border-[#7367F0] transition-all"
+                    />
+                    {searchQuery && (
+                      <button
+                        type="button"
+                        onClick={() => setSearchQuery('')}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-white cursor-pointer"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Filter Pills */}
+                  <div className="flex items-center gap-1.5 overflow-x-auto pb-1 md:pb-0 scrollbar-none">
+                    {filterTabs.map((tab) => {
+                      const isActive = filterType === tab.id;
+                      return (
+                        <button
+                          key={tab.id}
+                          type="button"
+                          onClick={() => {
+                            setFilterType(tab.id);
+                            setPage(1);
+                          }}
+                          className={cn(
+                            'px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all whitespace-nowrap cursor-pointer flex items-center space-x-1.5',
+                            isActive
+                              ? 'bg-[#7367F0] text-white shadow-xs'
+                              : 'bg-slate-100/80 dark:bg-white/[0.04] text-slate-600 dark:text-slate-300 hover:bg-slate-200/70 dark:hover:bg-white/[0.08]'
+                          )}
+                        >
+                          <span>{tab.label}</span>
+                          <span
+                            className={cn(
+                              'text-[10px] font-mono px-1.5 py-0.2 rounded-full',
+                              isActive
+                                ? 'bg-white/20 text-white'
+                                : 'bg-slate-200 dark:bg-white/10 text-slate-600 dark:text-slate-300'
+                            )}
+                          >
+                            {tab.count}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </Card>
+
+              {/* Centralized Bulk Action Toolbar */}
               <BulkActionToolbar
                 selectedCount={selectedIds.length}
-                totalCount={groups.length}
+                totalCount={filteredGroups.length}
                 selectAllMatching={selectAllMatching}
-                onSelectAllMatching={groups.length > selectedIds.length ? handleSelectAllMatching : undefined}
+                onSelectAllMatching={filteredGroups.length > selectedIds.length ? handleSelectAllMatching : undefined}
                 onClearSelection={handleClearSelection}
                 actions={
                   <ToolbarActionButton tone="danger" onClick={handleBulkDelete} disabled={isBulkDeleting}>
@@ -223,7 +345,7 @@ export const CampaignGroupsPage: React.FC<CampaignGroupsPageProps> = ({
                 }
               />
 
-              {/* Selection & Controls Bar (Slim Aesthetic Card Layout) */}
+              {/* Selection & Controls Bar */}
               <Card className="px-4 py-3 sm:px-5 flex items-center justify-between border-slate-100 dark:border-white/[0.05] bg-white dark:bg-[#2F3349] shadow-sm">
                 <label className="flex items-center space-x-2.5 cursor-pointer font-bold text-xs text-slate-700 dark:text-slate-200 select-none group">
                   <input
@@ -240,7 +362,7 @@ export const CampaignGroupsPage: React.FC<CampaignGroupsPageProps> = ({
 
                 {selectedIds.length > 0 ? (
                   <Badge variant="primary" className="text-[10px] font-mono px-2 py-0.5">
-                    {t('campaigns.selectedBadgeCount', { selected: selectedIds.length, total: groups.length })}
+                    {t('campaigns.selectedBadgeCount', { selected: selectedIds.length, total: filteredGroups.length })}
                   </Badge>
                 ) : (
                   <span className="text-[11px] text-slate-400 dark:text-[#7E7F96] font-medium hidden sm:inline">
@@ -249,27 +371,50 @@ export const CampaignGroupsPage: React.FC<CampaignGroupsPageProps> = ({
                 )}
               </Card>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-                {currentPageGroups.map((group) => (
-                  <CampaignGroupCard
-                    key={group.id}
-                    group={group}
-                    isSelected={selectedIds.includes(group.id)}
-                    onToggleSelect={handleToggleSelect}
-                    onLaunch={handleLaunchCampaign}
-                    onView={() => setSelectedGroupId(group.id)}
-                    onEdit={() => setEditingGroup(group)}
-                    onDelete={handleDeleteGroup}
-                  />
-                ))}
-              </div>
+              {/* Groups Grid or Filter Empty State */}
+              {filteredGroups.length === 0 ? (
+                <Card className="p-8 text-center space-y-3">
+                  <div className="w-10 h-10 rounded-xl bg-slate-100 dark:bg-white/[0.05] text-slate-400 flex items-center justify-center mx-auto">
+                    <Filter className="w-5 h-5" />
+                  </div>
+                  <h4 className="text-sm font-extrabold text-slate-800 dark:text-white">
+                    {t('campaignGroups.noSearchResults') || 'Arama kriterlerinize uygun grup bulunamadı.'}
+                  </h4>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      setSearchQuery('');
+                      setFilterType('ALL');
+                    }}
+                    className="text-xs font-bold cursor-pointer border-slate-300 dark:border-white/10"
+                  >
+                    <span>{t('campaignGroups.clearSearch') || 'Aramayı Temizle'}</span>
+                  </Button>
+                </Card>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                  {currentPageGroups.map((group) => (
+                    <CampaignGroupCard
+                      key={group.id}
+                      group={group}
+                      isSelected={selectedIds.includes(group.id)}
+                      onToggleSelect={handleToggleSelect}
+                      onLaunch={handleLaunchCampaign}
+                      onView={() => setSelectedGroupId(group.id)}
+                      onEdit={() => setEditingGroup(group)}
+                      onDelete={handleDeleteGroup}
+                    />
+                  ))}
+                </div>
+              )}
 
-              {/* Centralized Pagination matching LeadCRMPage & CampaignsPage */}
-              {groups.length > 0 && (
+              {/* Centralized Pagination */}
+              {filteredGroups.length > 0 && (
                 <Card className="overflow-hidden border-slate-100 dark:border-white/[0.05]">
                   <Pagination
                     currentPage={page}
-                    totalItems={groups.length}
+                    totalItems={filteredGroups.length}
                     pageSize={pageSize}
                     onPageChange={(newPage) => setPage(newPage)}
                     onPageSizeChange={(newSize) => {

@@ -45,7 +45,7 @@ export const CampaignGroupDetailModal: React.FC<CampaignGroupDetailModalProps> =
       })
       .catch((err: any) => {
         if (isMounted) {
-          toast.error(err.message || 'Grup detayı alınamadı.');
+          toast.error(err.message || t('campaignGroups.loadError'));
           onClose();
         }
       })
@@ -98,7 +98,7 @@ export const CampaignGroupDetailModal: React.FC<CampaignGroupDetailModalProps> =
             </div>
             <div className="p-3 rounded-xl bg-slate-50 dark:bg-white/[0.02] border border-slate-100 dark:border-white/[0.05]">
               <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
-                WhatsApp Uygun
+                {t('campaignGroups.waAvailable')}
               </div>
               <div className="text-xs font-bold text-[#28C76F] mt-0.5">
                 {groupDetail.whatsapp_eligible_count} / {groupDetail.total_leads_count}
@@ -155,9 +155,13 @@ export const CampaignGroupDetailModal: React.FC<CampaignGroupDetailModalProps> =
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
                       {lead.is_whatsapp_eligible ? (
-                        <Badge variant="success" className="text-[9px]">WhatsApp</Badge>
+                        <Badge variant="success" className="text-[9px]">
+                          {t('campaignGroups.waAvailable')}
+                        </Badge>
                       ) : (
-                        <Badge variant="default" className="text-[9px]">No WA</Badge>
+                        <Badge variant="default" className="text-[9px]">
+                          {t('campaignGroups.waNotAvailable')}
+                        </Badge>
                       )}
                     </div>
                   </div>

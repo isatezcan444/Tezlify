@@ -45,7 +45,7 @@ export const CampaignGroupCreateView: React.FC<CampaignGroupCreateViewProps> = (
       setCreateDistricts([]);
       onSuccess();
     } catch (err: any) {
-      toast.error(err.message || 'Grup oluşturulamadı.');
+      toast.error(err.message || t('campaignGroups.createGroupError'));
     } finally {
       setIsSubmitting(false);
     }
