@@ -1292,6 +1292,12 @@ export const tr = {
     wizardCopiedSuccess: 'Mesaj metni panoya kopyalandı!',
     wizardAllCategories: 'Genel / Belirtilmemiş',
     wizardNoGroupSelected: 'Belirli bir gruba bağlı değil (Bağımsız)',
+    spintaxCountBadge: '{count} Benzersiz Varyasyon',
+    spintaxSingleBadge: 'Sabit Şablon',
+    switchSampleLead: 'Farklı İşletme Verisiyle Test Et',
+    todayDivider: 'BUGÜN',
+    charCount: '{count} karakter',
+    stepperProgress: 'Adım {current} / {total}: {title}',
   },
   blacklist: {
     title: 'Kara Liste',

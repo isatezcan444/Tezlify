@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Sparkles,
   Handshake,
@@ -13,18 +13,18 @@ import {
   Check,
   ArrowRight,
   ArrowLeft,
-  Send,
   MessageSquare,
   Clock,
   Lock,
   Info,
+  Copy,
 } from 'lucide-react';
 import { ApiClient } from '../../../api/client';
 import { CommunicationGoal } from '../../../types';
 import { Button, Badge, Card } from '../../../components/ui';
 import { FormField, TextInput, Textarea, FormSection } from '../../../components/forms';
 import { SectorAutocomplete } from '../../leads/components';
-import { SpintaxPreviewCard } from './SpintaxPreviewCard';
+import { SpintaxPreviewCard, countSpintaxVariations } from './SpintaxPreviewCard';
 import { getStoredAntiBanConfig } from '../../../utils/antiBanSettings';
 import { useToast } from '../../../context/ToastContext';
 import { useI18n } from '../../../context/I18nContext';
@@ -76,6 +76,7 @@ export const CampaignCreateWizard: React.FC<CampaignCreateWizardProps> = ({
   const toast = useToast();
   const { t, language } = useI18n();
   const storedConfig = getStoredAntiBanConfig();
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // Wizard Stepper State
   const [currentStep, setCurrentStep] = useState<WizardStep>(1);
@@ -493,7 +494,21 @@ export const CampaignCreateWizard: React.FC<CampaignCreateWizardProps> = ({
 
   const insertTag = (tag: string) => {
     setIsTemplateManuallyEdited(true);
-    setTemplate((prev) => (prev ? prev + ` {${tag}}` : `{${tag}}`));
+    const token = `{${tag}}`;
+    if (textareaRef.current) {
+      const textarea = textareaRef.current;
+      const start = textarea.selectionStart || 0;
+      const end = textarea.selectionEnd || 0;
+      const currentVal = textarea.value;
+      const updated = currentVal.substring(0, start) + token + currentVal.substring(end);
+      setTemplate(updated);
+      setTimeout(() => {
+        textarea.focus();
+        textarea.setSelectionRange(start + token.length, start + token.length);
+      }, 10);
+    } else {
+      setTemplate((prev) => (prev ? prev + ` ${token}` : token));
+    }
   };
 
   // Step Validation & Navigation
@@ -615,7 +630,32 @@ export const CampaignCreateWizard: React.FC<CampaignCreateWizardProps> = ({
   return (
     <div className="w-full space-y-6">
       {/* 1. Senior Vuexy Stepper Header Card */}
-      <Card className="p-3 sm:p-5 border-slate-200/70 dark:border-white/[0.06] shadow-xs select-none">
+      <Card className="p-4 sm:p-5 border-slate-200/70 dark:border-white/[0.06] shadow-xs select-none">
+        {/* Progress Bar & Responsive Status */}
+        <div className="flex items-center justify-between mb-2.5 text-xs">
+          <div className="flex items-center space-x-2">
+            <span className="w-2 h-2 rounded-full bg-[#7367F0] animate-pulse" />
+            <span className="font-extrabold text-slate-800 dark:text-white">
+              {t('campaigns.stepperProgress', {
+                current: currentStep,
+                total: 4,
+                title: stepItems[currentStep - 1].title,
+              })}
+            </span>
+          </div>
+          <span className="text-[11px] font-mono font-bold text-slate-400 dark:text-slate-500">
+            {Math.round((currentStep / 4) * 100)}%
+          </span>
+        </div>
+
+        <div className="w-full bg-slate-100 dark:bg-white/[0.06] h-1.5 rounded-full overflow-hidden mb-4">
+          <div
+            className="bg-[#7367F0] h-full transition-all duration-300 rounded-full"
+            style={{ width: `${(currentStep / 4) * 100}%` }}
+          />
+        </div>
+
+        {/* 4 Interactive Step Buttons */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 sm:gap-3">
           {stepItems.map(({ step, title, subtitle, icon: StepIcon }) => {
             const isActive = currentStep === step;
@@ -686,9 +726,9 @@ export const CampaignCreateWizard: React.FC<CampaignCreateWizardProps> = ({
               subtitle={t('campaigns.builderInfoSubtitle') || 'Hedef kitlenizi ve kampanyanızın genel kapsamını belirleyin.'}
               icon={Target}
             >
-              {/* Selected Group Badge */}
+              {/* Selected Group Glassmorphic Banner */}
               {selectedGroupId && prefill?.groupName && (
-                <div className="p-4 rounded-xl bg-[#7367F0]/10 border border-[#7367F0]/20 flex items-center justify-between gap-3">
+                <div className="p-4 rounded-xl bg-[#7367F0]/10 border border-[#7367F0]/20 flex items-center justify-between gap-3 flex-wrap sm:flex-nowrap">
                   <div className="flex items-center space-x-3 min-w-0">
                     <div className="w-9 h-9 rounded-xl bg-[#7367F0] text-white flex items-center justify-center font-bold shrink-0 shadow-xs">
                       <Users className="w-4 h-4" />
@@ -705,9 +745,14 @@ export const CampaignCreateWizard: React.FC<CampaignCreateWizardProps> = ({
                       </p>
                     </div>
                   </div>
-                  <Badge variant="primary" className="text-[10px] shrink-0 font-bold">
-                    {t('nav.campaignGroups')}
-                  </Badge>
+                  <div className="flex items-center space-x-2 shrink-0">
+                    <Badge variant="success" className="text-[10px] font-bold">
+                      {prefill.whatsappEligible ?? 0} WA
+                    </Badge>
+                    <Badge variant="primary" className="text-[10px] font-bold">
+                      {t('nav.campaignGroups')}
+                    </Badge>
+                  </div>
                 </div>
               )}
 
@@ -897,40 +942,36 @@ export const CampaignCreateWizard: React.FC<CampaignCreateWizardProps> = ({
 
                   {communicationGoal === 'OFFER' && (
                     <div className="space-y-3.5">
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                        <FormField label={t('campaigns.offOfferLabel')} required>
-                          <TextInput
-                            value={goalForm.offOffer}
-                            onChange={(e) => handleGoalFormFieldChange('offOffer', e.target.value)}
-                            placeholder={t('campaigns.offOfferPlaceholder')}
-                            required
-                          />
-                        </FormField>
-                        <FormField label={t('campaigns.offSummaryLabel')} required>
-                          <TextInput
-                            value={goalForm.offSummary}
-                            onChange={(e) => handleGoalFormFieldChange('offSummary', e.target.value)}
-                            placeholder={t('campaigns.offSummaryPlaceholder')}
-                            required
-                          />
-                        </FormField>
-                      </div>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                        <FormField label={t('campaigns.offBenefitLabel')}>
-                          <TextInput
-                            value={goalForm.offBenefit}
-                            onChange={(e) => handleGoalFormFieldChange('offBenefit', e.target.value)}
-                            placeholder={t('campaigns.offBenefitPlaceholder')}
-                          />
-                        </FormField>
-                        <FormField label={t('campaigns.offPricingLabel')}>
-                          <TextInput
-                            value={goalForm.offPricing}
-                            onChange={(e) => handleGoalFormFieldChange('offPricing', e.target.value)}
-                            placeholder={t('campaigns.offPricingPlaceholder')}
-                          />
-                        </FormField>
-                      </div>
+                      <FormField label={t('campaigns.offOfferLabel')} required>
+                        <TextInput
+                          value={goalForm.offOffer}
+                          onChange={(e) => handleGoalFormFieldChange('offOffer', e.target.value)}
+                          placeholder={t('campaigns.offOfferPlaceholder')}
+                          required
+                        />
+                      </FormField>
+                      <FormField label={t('campaigns.offSummaryLabel')} required>
+                        <TextInput
+                          value={goalForm.offSummary}
+                          onChange={(e) => handleGoalFormFieldChange('offSummary', e.target.value)}
+                          placeholder={t('campaigns.offSummaryPlaceholder')}
+                          required
+                        />
+                      </FormField>
+                      <FormField label={t('campaigns.offBenefitLabel')}>
+                        <TextInput
+                          value={goalForm.offBenefit}
+                          onChange={(e) => handleGoalFormFieldChange('offBenefit', e.target.value)}
+                          placeholder={t('campaigns.offBenefitPlaceholder')}
+                        />
+                      </FormField>
+                      <FormField label={t('campaigns.offPricingLabel')}>
+                        <TextInput
+                          value={goalForm.offPricing}
+                          onChange={(e) => handleGoalFormFieldChange('offPricing', e.target.value)}
+                          placeholder={t('campaigns.offPricingPlaceholder')}
+                        />
+                      </FormField>
                     </div>
                   )}
 
@@ -1017,6 +1058,7 @@ export const CampaignCreateWizard: React.FC<CampaignCreateWizardProps> = ({
                 >
                   <FormField label={t('campaigns.templateLabel') || 'Mesaj Şablonu'} required>
                     <Textarea
+                      ref={textareaRef}
                       rows={9}
                       value={template}
                       onChange={(e) => {
@@ -1028,12 +1070,18 @@ export const CampaignCreateWizard: React.FC<CampaignCreateWizardProps> = ({
                     />
                   </FormField>
 
-                  {/* Personalization Tag Chips & Regenerate Action */}
+                  {/* Personalization Tag Chips & Live Counters */}
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-1">
                     <div>
-                      <label className="text-[11px] font-bold text-slate-500 dark:text-slate-400 block mb-1">
-                        {t('campaigns.personalizationVariables') || 'Kişiselleştirme Değişkenleri'}
-                      </label>
+                      <div className="flex items-center justify-between mb-1.5">
+                        <label className="text-[11px] font-bold text-slate-500 dark:text-slate-400 block">
+                          {t('campaigns.personalizationVariables') || 'Kişiselleştirme Değişkenleri'}
+                        </label>
+                        <div className="flex items-center space-x-2 text-[11px] font-mono text-slate-400 dark:text-slate-500 sm:hidden">
+                          <span>{t('campaigns.charCount', { count: template.length })}</span>
+                        </div>
+                      </div>
+
                       <div className="flex flex-wrap gap-1.5">
                         {(language === 'tr'
                           ? [
@@ -1063,9 +1111,13 @@ export const CampaignCreateWizard: React.FC<CampaignCreateWizardProps> = ({
                       </div>
                     </div>
 
-                    {/* Template Actions: Regenerate */}
-                    {communicationGoal && (
-                      <div className="sm:self-end">
+                    <div className="flex items-center space-x-3 sm:self-end">
+                      <div className="hidden sm:flex items-center space-x-2 text-[11px] font-mono text-slate-400 dark:text-slate-500">
+                        <span>{t('campaigns.charCount', { count: template.length })}</span>
+                      </div>
+
+                      {/* Template Actions: Regenerate */}
+                      {communicationGoal && (
                         <Button
                           type="button"
                           variant="outline"
@@ -1078,8 +1130,8 @@ export const CampaignCreateWizard: React.FC<CampaignCreateWizardProps> = ({
                           <RefreshCw className={`w-3.5 h-3.5 ${generating ? 'animate-spin' : ''}`} />
                           <span>{t('campaigns.regenerateTemplateBtn') || 'Mesajı Yenile'}</span>
                         </Button>
-                      </div>
-                    )}
+                      )}
+                    </div>
                   </div>
 
                   {/* Spintax Syntax Guidance Hint */}
@@ -1205,11 +1257,25 @@ export const CampaignCreateWizard: React.FC<CampaignCreateWizardProps> = ({
                   </div>
                 </div>
 
-                {/* Final Message Template Preview Card */}
+                {/* Final Message Template Preview Card with Quick Copy */}
                 <div className="space-y-2 pt-2">
-                  <label className="text-xs font-bold text-slate-700 dark:text-slate-200 block">
-                    {t('campaigns.templateLabel') || 'Mesaj Şablonu'}
-                  </label>
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-bold text-slate-700 dark:text-slate-200 block">
+                      {t('campaigns.templateLabel') || 'Mesaj Şablonu'}
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!template) return;
+                        navigator.clipboard.writeText(template);
+                        toast.success(t('campaigns.wizardCopiedSuccess') || 'Mesaj metni panoya kopyalandı!');
+                      }}
+                      className="text-[11px] font-semibold text-[#7367F0] hover:underline flex items-center space-x-1 cursor-pointer"
+                    >
+                      <Copy className="w-3 h-3" />
+                      <span>{t('campaigns.wizardCopyMessage') || 'Kopyala'}</span>
+                    </button>
+                  </div>
                   <div className="p-4 rounded-xl bg-slate-50 dark:bg-[#25293C] border border-slate-200/70 dark:border-white/[0.06] text-xs font-sans text-slate-700 dark:text-slate-200 whitespace-pre-wrap leading-relaxed max-h-48 overflow-y-auto">
                     {template || '-'}
                   </div>

@@ -1292,6 +1292,12 @@ export const en = {
     wizardCopiedSuccess: 'Message copied to clipboard!',
     wizardAllCategories: 'General / Unspecified',
     wizardNoGroupSelected: 'Standalone (No group assigned)',
+    spintaxCountBadge: '{count} Unique Variations',
+    spintaxSingleBadge: 'Fixed Template',
+    switchSampleLead: 'Test with Different Lead Data',
+    todayDivider: 'TODAY',
+    charCount: '{count} characters',
+    stepperProgress: 'Step {current} of {total}: {title}',
   },
   blacklist: {
     title: 'Blacklist',
