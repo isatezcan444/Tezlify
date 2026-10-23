@@ -323,7 +323,7 @@ export const TemplateSelectModal: React.FC<TemplateSelectModalProps> = ({
                 required
                 value={formTitle}
                 onChange={(e) => setFormTitle(e.target.value)}
-                placeholder="Örn: Fiyat Bilgisi"
+                placeholder={t('whatsapp.quickReplyTitlePlaceholder')}
                 className="w-full px-3 py-2 text-xs rounded-xl vuexy-input font-medium"
               />
             </div>
@@ -336,7 +336,7 @@ export const TemplateSelectModal: React.FC<TemplateSelectModalProps> = ({
                 type="text"
                 value={formShortcut}
                 onChange={(e) => setFormShortcut(e.target.value)}
-                placeholder="/fiyat"
+                placeholder={t('whatsapp.quickReplyShortcutPlaceholder')}
                 className="w-full px-3 py-2 text-xs rounded-xl vuexy-input font-mono font-medium"
               />
             </div>
@@ -350,7 +350,7 @@ export const TemplateSelectModal: React.FC<TemplateSelectModalProps> = ({
               type="text"
               value={formCategory}
               onChange={(e) => setFormCategory(e.target.value)}
-              placeholder="GENEL, SATIS, DESTEK..."
+              placeholder={t('whatsapp.quickReplyCategoryPlaceholder')}
               className="w-full px-3 py-2 text-xs rounded-xl vuexy-input font-medium"
             />
           </div>
@@ -364,7 +364,7 @@ export const TemplateSelectModal: React.FC<TemplateSelectModalProps> = ({
               rows={4}
               value={formContent}
               onChange={(e) => setFormContent(e.target.value)}
-              placeholder="Merhaba {isim}, fiyat bilgimizi aşağıda paylaşıyorum..."
+              placeholder={t('whatsapp.quickReplyContentPlaceholder')}
               className="w-full px-3 py-2 text-xs rounded-xl vuexy-input font-medium resize-none leading-relaxed"
             />
           </div>
@@ -478,7 +478,7 @@ export const TemplateSelectModal: React.FC<TemplateSelectModalProps> = ({
                       <div className="flex items-center justify-between space-x-2">
                         <div className="flex items-center space-x-1.5 min-w-0">
                           <span className="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-[#7367F0]/15 text-[#7367F0] shrink-0">
-                            {qr.shortcut}
+                            {qr.shortcut?.startsWith('/') ? qr.shortcut : `/${qr.shortcut || ''}`}
                           </span>
                           <h4 className="text-xs font-bold text-slate-800 dark:text-slate-100 truncate">
                             {qr.title}

@@ -1201,7 +1201,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
                             <div className="min-w-0 flex-1 pr-2">
                               <div className="flex items-center space-x-1.5">
                                 <span className="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-[#7367F0]/15 text-[#7367F0]">
-                                  /{qr.shortcut}
+                                  {qr.shortcut?.startsWith('/') ? qr.shortcut : `/${qr.shortcut || ''}`}
                                 </span>
                                 <span className="text-xs font-bold truncate">
                                   {qr.title}

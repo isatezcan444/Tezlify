@@ -311,7 +311,7 @@ export const AddParticipantModal: React.FC<AddParticipantModalProps> = ({
                 type="tel"
                 value={manualPhone}
                 onChange={(e) => setManualPhone(e.target.value)}
-                placeholder="+90 5XX XXX XX XX"
+                placeholder={t('whatsapp.phonePlaceholder')}
                 className="w-full px-3.5 py-2.5 text-xs font-mono rounded-xl border border-slate-200/80 dark:border-white/10 bg-slate-50/70 dark:bg-[#111b21] text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-[#7367F0]"
                 autoFocus
               />
