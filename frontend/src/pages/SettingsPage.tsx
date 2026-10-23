@@ -61,7 +61,7 @@ export const SettingsPage: React.FC = () => {
           }`}
         >
           <CreditCard className="w-4 h-4" />
-          <span>{t('integrations.tabBilling') || 'Paket & Kota Kullanımı'}</span>
+          <span>{t('integrations.tabBilling')}</span>
         </button>
 
         <button
@@ -74,7 +74,7 @@ export const SettingsPage: React.FC = () => {
           }`}
         >
           <Zap className="w-4 h-4 text-amber-400" />
-          <span>{t('integrations.tabIntegrations') || 'Otomasyon & Entegrasyonlar'}</span>
+          <span>{t('integrations.tabIntegrations')}</span>
           <span className="ml-1 px-1.5 py-0.5 rounded text-[10px] bg-emerald-500/20 text-emerald-400 font-extrabold">
             API & Webhook
           </span>
@@ -90,7 +90,7 @@ export const SettingsPage: React.FC = () => {
           }`}
         >
           <Sliders className="w-4 h-4" />
-          <span>{t('integrations.tabGeneral') || 'Genel Tercihler'}</span>
+          <span>{t('integrations.tabGeneral')}</span>
         </button>
       </div>
 
@@ -172,7 +172,7 @@ export const SettingsPage: React.FC = () => {
                       {t('settings.languageLabel')}: <span className="text-[#7367F0] font-extrabold">{language === 'en' ? 'English (EN)' : 'Türkçe (TR)'}</span>
                     </p>
                     <p className="text-[11px] text-slate-400 dark:text-[#7E7F96]">
-                      {language === 'en' ? 'System strings and formatters dynamically update.' : 'Tüm sistem bildirimleri ve arayüz anında güncellenir.'}
+                      {t('settings.languageNotice')}
                     </p>
                   </div>
 

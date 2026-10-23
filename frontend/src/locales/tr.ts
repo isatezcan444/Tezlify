@@ -1392,6 +1392,7 @@ export const tr = {
     databaseEngine: 'Veritabanı Motoru',
     crawlerEngine: 'Harita & Tarayıcı Motoru',
     languageSubtitle: 'Tezlify arayüz ve bildirim dilini seçin.',
+    languageNotice: 'Tüm sistem bildirimleri ve arayüz anında güncellenir.',
     themeSubtitle: 'Yüksek kontrastlı koyu mod ile temiz açık tema arasında geçiş yapın.',
     servicesSubtitle: 'Backend mikroservisleri ve veritabanları için durum ve uç nokta yapılandırmaları.',
   },

@@ -78,7 +78,7 @@ export const WhatsAppSettingsPanel: React.FC = () => {
       t('whatsapp.testNotificationBody')
     );
     if (success) {
-      toast.success(t('whatsapp.testNotificationTitle') + ' — ' + (t('whatsapp.testNotification') || 'Bildirim gönderildi'), t('common.success'));
+      toast.success(`${t('whatsapp.testNotificationTitle')} — ${t('whatsapp.testNotification')}`, t('common.success'));
     } else {
       toast.error(t('whatsapp.notificationsDeniedHelp') || t('whatsapp.notificationsDenied'), t('common.error'));
     }
@@ -86,13 +86,13 @@ export const WhatsAppSettingsPanel: React.FC = () => {
 
   const handleReset = async () => {
     const confirmed = await toast.confirm({
-      title: t('whatsapp.resetCustomizationDefaults') || 'Varsayılanlara Sıfırla',
-      message: t('whatsapp.resetCustomizationDefaultsConfirm') || 'Tüm WhatsApp kişiselleştirme ayarlarını varsayılana sıfırlamak istiyor musunuz?',
+      title: t('whatsapp.resetCustomizationDefaults'),
+      message: t('whatsapp.resetCustomizationDefaultsConfirm'),
       variant: 'warning',
     });
     if (confirmed) {
       resetSettings();
-      toast.success(t('whatsapp.resetCustomizationDefaultsSuccess') || 'Ayarlar başarıyla sıfırlandı.', t('common.success'));
+      toast.success(t('whatsapp.resetCustomizationDefaultsSuccess'), t('common.success'));
     }
   };
 
@@ -142,7 +142,7 @@ export const WhatsAppSettingsPanel: React.FC = () => {
                   {t('whatsapp.settingsTitle')}
                 </h3>
                 <Badge variant="primary" className="text-[9px] sm:text-[10px] shrink-0 font-bold whitespace-nowrap">
-                  {t('whatsapp.settingsBadge') || 'Özelleştirme'}
+                  {t('whatsapp.settingsBadge')}
                 </Badge>
               </div>
               <p className="text-[10px] sm:text-[11px] text-slate-400 dark:text-[#7E7F96] font-medium truncate whitespace-nowrap">
@@ -298,7 +298,7 @@ export const WhatsAppSettingsPanel: React.FC = () => {
               ) : (
                 <div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-700 dark:text-amber-400 text-xs flex items-center gap-2">
                   <VolumeX className="w-4 h-4 shrink-0" />
-                  <span>{t('whatsapp.soundsMutedNotice') || 'Bildirim sesleri kapalı. Gelen mesajlarda tarayıcıdan ses çalınmayacak.'}</span>
+                  <span>{t('whatsapp.soundsMutedNotice')}</span>
                 </div>
               )}
             </div>
@@ -360,7 +360,7 @@ export const WhatsAppSettingsPanel: React.FC = () => {
               {notificationPermission === 'granted' && (
                 <div className="flex items-center justify-between pt-2 border-t border-slate-200/60 dark:border-white/[0.06] gap-3">
                   <span className="text-xs font-medium text-slate-600 dark:text-slate-300 min-w-0 pr-2 truncate">
-                    {t('whatsapp.desktopNotificationsActive') || 'Sekme arka plandayken sistem bildirimi göster'}
+                    {t('whatsapp.desktopNotificationsActive')}
                   </span>
                   <label className="relative inline-flex items-center cursor-pointer shrink-0">
                     <input
@@ -386,7 +386,7 @@ export const WhatsAppSettingsPanel: React.FC = () => {
                     {t('whatsapp.chatPreferences')}
                   </h4>
                   <p className="text-[10px] sm:text-[11px] text-slate-400 dark:text-[#7E7F96] truncate">
-                    {t('whatsapp.chatPreferencesDesc') || 'Klavyeden mesaj gönderme ve görünüm ayarları'}
+                    {t('whatsapp.chatPreferencesDesc')}
                   </p>
                 </div>
               </div>
@@ -462,7 +462,7 @@ export const WhatsAppSettingsPanel: React.FC = () => {
               {/* Theme Swatches */}
               <div>
                 <label className="text-xs font-bold text-slate-700 dark:text-slate-200 block mb-2.5">
-                  {t('whatsapp.wallpaperThemeSelect') || 'Renk Teması'}
+                  {t('whatsapp.wallpaperThemeSelect')}
                 </label>
                 <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-2 gap-2">
                   {WALLPAPER_THEMES.map((theme) => {
@@ -503,7 +503,7 @@ export const WhatsAppSettingsPanel: React.FC = () => {
                   </label>
                   {settings.wallpaperTheme === 'custom' && (
                     <Badge variant="primary" className="text-[10px] py-0 px-1.5 font-bold">
-                      {t('common.active') || 'Aktif'}
+                      {t('common.active')}
                     </Badge>
                   )}
                 </div>
@@ -552,7 +552,7 @@ export const WhatsAppSettingsPanel: React.FC = () => {
                     onClick={() => updateSettings({ wallpaperTheme: 'custom' })}
                     className="text-[11px] sm:text-xs font-bold shrink-0 h-7 sm:h-8 px-2 sm:px-3"
                   >
-                    {settings.wallpaperTheme === 'custom' ? '✓ ' + (t('common.selected') || 'Seçildi') : (t('common.select') || 'Seç')}
+                    {settings.wallpaperTheme === 'custom' ? `✓ ${t('common.selected')}` : t('common.select')}
                   </Button>
                 </div>
               </div>

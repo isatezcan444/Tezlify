@@ -1392,6 +1392,7 @@ export const en = {
     databaseEngine: 'Database Engine',
     crawlerEngine: 'Crawler & Scraper Engine',
     languageSubtitle: 'Choose the interface language for Tezlify.',
+    languageNotice: 'All system notifications and interface elements update immediately.',
     themeSubtitle: 'Toggle between high-contrast dark mode and clean light theme.',
     servicesSubtitle: 'Status and endpoint configurations for backend microservices and databases.',
   },
