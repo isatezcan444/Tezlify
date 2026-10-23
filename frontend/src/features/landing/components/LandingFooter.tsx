@@ -24,11 +24,7 @@ export const LandingFooter: React.FC = () => {
             </div>
           </div>
 
-          {/* System Status Indicator */}
-          <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-slate-100 dark:bg-white/[0.04] border border-slate-200/80 dark:border-white/[0.08] text-xs font-semibold text-slate-700 dark:text-slate-300">
-            <span className="w-2 h-2 rounded-full bg-[#28C76F] animate-pulse" />
-            <span>{t('landing.footerOperational')}</span>
-          </div>
+
 
           {/* Links */}
           <div className="flex flex-wrap items-center justify-center gap-4 sm:gap-6 text-xs font-semibold text-slate-500 dark:text-slate-400">

@@ -64,11 +64,6 @@ export const LandingBeforeAfter: React.FC<LandingBeforeAfterProps> = ({ onGetSta
         
         {/* Section Header */}
         <div className="text-center max-w-3xl mx-auto mb-16">
-          <div className="inline-flex items-center gap-1.5 px-3.5 py-1 rounded-full text-xs font-bold bg-[#7367F0]/10 text-[#7367F0] dark:bg-[#7367F0]/20 dark:text-[#9e95f5] mb-4 border border-[#7367F0]/20">
-            <Scale className="w-3.5 h-3.5" />
-            <span>{t('landing.comparisonBadge')}</span>
-          </div>
-
           <h2 className="text-3xl sm:text-5xl font-extrabold text-slate-900 dark:text-white tracking-tight leading-tight">
             <span className="font-serif italic font-normal text-shimmer">
               {t('landing.comparisonTitle')}

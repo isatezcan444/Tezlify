@@ -72,11 +72,6 @@ export const LandingPricing: React.FC<LandingPricingProps> = ({ onSelectPlan }) 
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         {/* Section Header */}
         <div className="text-center max-w-3xl mx-auto mb-12">
-          <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-[#7367F0]/10 text-[#7367F0] dark:bg-[#7367F0]/20 dark:text-[#A59DF8] mb-4">
-            <Sparkles className="w-3.5 h-3.5" />
-            <span>{t('landing.navPricing')}</span>
-          </div>
-
           <h2 className="text-3xl sm:text-5xl font-extrabold text-slate-900 dark:text-white tracking-tight">
             {t('landing.pricingTitle')}
           </h2>

@@ -7,7 +7,6 @@ import { LandingPricing } from './LandingPricing';
 import { LandingFAQ } from './LandingFAQ';
 import { LandingFooter } from './LandingFooter';
 import { LandingInteractiveShowcase } from './LandingInteractiveShowcase';
-import { LandingRoiCalculator } from './LandingRoiCalculator';
 import { LandingBeforeAfter } from './LandingBeforeAfter';
 import { useAuth } from '../../../context/AuthContext';
 import { useI18n } from '../../../context/I18nContext';
@@ -71,9 +70,6 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onEnterApp }) => {
 
       {/* Before / After Comparison Matrix (Faz 3) */}
       <LandingBeforeAfter onGetStarted={handleOpenAuth} />
-
-      {/* ROI & Lead Growth Calculator (Faz 2) */}
-      <LandingRoiCalculator onGetStarted={handleOpenAuth} />
 
       {/* Pricing Section */}
       <LandingPricing

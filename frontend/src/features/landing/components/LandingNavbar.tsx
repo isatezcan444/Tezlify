@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  Sparkles,
   ArrowRight,
   Sun,
   Moon,
@@ -58,20 +57,14 @@ export const LandingNavbar: React.FC<LandingNavbarProps> = ({ onGoToApp, onOpenL
   return (
     <header className="sticky top-0 z-50 w-full landing-glass-nav transition-all duration-200">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 sm:h-20 flex items-center justify-between gap-3">
-        {/* Brand Logo & Version Pill */}
+        {/* Brand Logo */}
         <div className="flex items-center gap-2.5 sm:gap-3 shrink-0">
           <div className="w-9 h-9 sm:w-11 sm:h-11 rounded-xl bg-gradient-to-tr from-[#7367F0] via-indigo-600 to-[#7367F0] text-white flex items-center justify-center font-black text-lg sm:text-xl shadow-lg shadow-[#7367F0]/30 shrink-0">
             T
           </div>
-          <div className="flex items-center gap-2">
-            <span className="font-extrabold text-xl sm:text-2xl text-slate-900 dark:text-white tracking-tight">
-              Tezlify
-            </span>
-            <span className="hidden sm:inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-[#7367F0]/10 text-[#7367F0] dark:bg-[#7367F0]/20 dark:text-[#A59DF8] border border-[#7367F0]/20">
-              <Sparkles className="w-3 h-3 animate-pulse" />
-              {t('landing.pillNew')}
-            </span>
-          </div>
+          <span className="font-extrabold text-xl sm:text-2xl text-slate-900 dark:text-white tracking-tight shrink-0">
+            Tezlify
+          </span>
         </div>
 
         {/* Center Nav Anchors (Desktop lg+) */}

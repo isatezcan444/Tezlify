@@ -28,15 +28,6 @@ export const LandingHero: React.FC<LandingHeroProps> = ({ onGetStarted, onExplor
       <div className="absolute top-0 left-1/2 -translate-x-1/2 w-full max-w-7xl h-[600px] landing-ambient-glow pointer-events-none" />
 
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 relative z-10 flex flex-col items-center text-center">
-        {/* Subtle Announcement Pill */}
-        <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full text-xs font-semibold bg-white/80 dark:bg-[#2F3349]/80 border border-slate-200/80 dark:border-white/[0.1] shadow-sm backdrop-blur mb-6 hover:border-[#7367F0]/40 transition-all cursor-default">
-          <span className="flex h-2 w-2 rounded-full bg-[#28C76F] animate-pulse" />
-          <span className="text-slate-700 dark:text-slate-200">
-            {t('landing.pillNew')}
-          </span>
-          <ArrowRight className="w-3.5 h-3.5 text-slate-400" />
-        </div>
-
         {/* Hero Headline with Instrument Serif Italic Touch */}
         <h1 className="max-w-4xl text-3xl sm:text-5xl md:text-6xl lg:text-7xl font-extrabold text-slate-900 dark:text-white tracking-tight leading-[1.15] sm:leading-[1.1]">
           {t('landing.heroTitlePrefix')}{' '}
