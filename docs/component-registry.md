@@ -204,9 +204,14 @@ src/
 - **Import**: `import { ChatThread } from '@/features/whatsapp/components';`
 
 #### `ChatComposer`
-- **Purpose**: Bottom message composer bar with 24-hour window status alerts, closed conversation notice with one-click reopen, attachment popover (native file picker with base64 upload + legacy URL modal), live microphone voice note recording (`MediaRecorder` with Opus fallback, elapsed timer, animated soundwave, trash/discard, and native `AUDIO` dispatch), outgoing "typing..." presence signals (throttled composing/paused), reply draft quote header with dismiss, and template shortcuts.
-- **Props**: `onSend?: (text: string) => Promise<void> | void`, `onSendTemplate?: () => void`, `onSendMedia?: (mediaType: 'IMAGE' | 'DOCUMENT', mediaUrl: string, caption?: string, filename?: string) => Promise<void>`, `onSendMediaFile?: (file: File, caption?: string) => Promise<void>`, `onTyping?: (typing: boolean) => void`, `onReopenConversation?: () => void`, `disabled?: boolean`, `isClosed?: boolean`, `isWindowOpen?: boolean`, `placeholder?: string`, `replyingTo?: QuotedMessage | null`, `onCancelReply?: () => void`.
+- **Purpose**: Bottom message composer bar with 24-hour window status alerts, closed conversation notice with one-click reopen, attachment popover (native file picker with base64 upload + legacy URL modal), live microphone voice note recording (`MediaRecorder` with Opus fallback, elapsed timer, animated soundwave, trash/discard, and native `AUDIO` dispatch), outgoing "typing..." presence signals (throttled composing/paused), reply draft quote header with dismiss, template shortcuts, and Phase 2 AI Co-Pilot smart reply integration (`AiSuggestPopover`).
+- **Props**: `conversationId?: number`, `onSend?: (text: string) => Promise<void> | void`, `onSendTemplate?: () => void`, `onSendMedia?: (mediaType: 'IMAGE' | 'DOCUMENT', mediaUrl: string, caption?: string, filename?: string) => Promise<void>`, `onSendMediaFile?: (file: File, caption?: string) => Promise<void>`, `onTyping?: (typing: boolean) => void`, `onReopenConversation?: () => void`, `disabled?: boolean`, `isClosed?: boolean`, `isWindowOpen?: boolean`, `placeholder?: string`, `replyingTo?: QuotedMessage | null`, `onCancelReply?: () => void`.
 - **Import**: `import { ChatComposer } from '@/features/whatsapp/components';`
+
+#### `AiSuggestPopover`
+- **Purpose**: Intelligent AI Co-Pilot assistant panel in WhatsApp Hub. Analyzes conversation history and latest incoming customer message to automatically classify intent (Fiyat, Randevu, Katalog/Bilgi, İtiraz, Olumlu Onay, Çalışma Saatleri/Adres), and generates 3 high-converting, tone-varied smart reply options (`PROFESSIONAL`, `PERSUASIVE`, `CALL_TO_ACTION`) plus matched Quick Reply shortcuts. One-click applies selected suggestion directly into the composer.
+- **Props**: `conversationId: number`, `isOpen: boolean`, `onClose: () => void`, `onSelectSuggestion: (text: string) => void`.
+- **Import**: `import { AiSuggestPopover } from '@/features/whatsapp/components';`
 
 #### `ConversationList`
 - **Purpose**: Sidebar list of all active conversation threads with search filtering, avatar hashing, unread badges, and last message previews. Includes filter tabs (`ALL`, `ACTIVE`, `GROUPS`, `ARCHIVED`, `CLOSED`, `UNREAD`) — `GROUPS` filters on persisted `is_group`, `ARCHIVED` on `is_archived OR status=ARCHIVED` (Sorun 4).

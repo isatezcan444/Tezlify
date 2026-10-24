@@ -565,3 +565,30 @@ class WhatsAppGroupParticipantsUpdate(BaseModel):
 class WhatsAppGroupAvatarUpdate(BaseModel):
     image_base64: str = Field(..., min_length=1, description="Base64 encoded JPEG/PNG image data")
 
+
+class AiSuggestionItem(BaseModel):
+    id: str
+    title: str
+    text: str
+    tone: str = "PROFESSIONAL"
+
+
+class AiMatchedQuickReply(BaseModel):
+    id: int
+    shortcut: str
+    title: str
+    content: str
+    category: Optional[str] = None
+
+
+class AiSuggestReplyResponse(BaseModel):
+    conversation_id: int
+    contact_name: Optional[str] = None
+    category: Optional[str] = None
+    detected_intent: str
+    intent_label: str
+    latest_customer_message: Optional[str] = None
+    suggestions: List[AiSuggestionItem] = Field(default_factory=list)
+    matching_quick_replies: List[AiMatchedQuickReply] = Field(default_factory=list)
+
+

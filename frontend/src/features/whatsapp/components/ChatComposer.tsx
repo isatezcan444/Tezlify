@@ -26,6 +26,7 @@ import { Tooltip } from '../../../components/ui/Tooltip';
 import { Modal } from '../../../components/ui/Modal';
 import { EmojiPicker } from './EmojiPicker';
 import { MediaSendModal } from './MediaSendModal';
+import { AiSuggestPopover } from './AiSuggestPopover';
 import { useI18n } from '../../../context/I18nContext';
 import { useToast } from '../../../context/ToastContext';
 import { QuickReply } from '../../../types';
@@ -41,6 +42,7 @@ export interface QuotedMessage {
 }
 
 export interface ChatComposerProps {
+  conversationId?: number;
   onSend?: (text: string) => Promise<void> | void;
   onSendTemplate?: () => void;
   onSendMedia?: (mediaType: 'IMAGE' | 'DOCUMENT', mediaUrl: string, caption?: string, filename?: string) => Promise<void>;
@@ -62,6 +64,7 @@ export interface ChatComposerProps {
 }
 
 export const ChatComposer: React.FC<ChatComposerProps> = ({
+  conversationId,
   onSend,
   onSendTemplate,
   onSendMedia,
@@ -103,6 +106,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
   const [sendingFiles, setSendingFiles] = useState(false);
   const [sendingIndex, setSendingIndex] = useState<number>(0);
   const [isFileModalOpen, setIsFileModalOpen] = useState(false);
+  const [isAiOpen, setIsAiOpen] = useState(false);
 
 
   // Quick Replies (Canned Responses) Shortcut ('/') State
@@ -966,6 +970,19 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
         </div>
       )}
 
+      {/* 2.8 AI Reply Co-Pilot Popover */}
+      {conversationId && (
+        <AiSuggestPopover
+          conversationId={conversationId}
+          isOpen={isAiOpen}
+          onClose={() => setIsAiOpen(false)}
+          onSelectSuggestion={(sugText) => {
+            setText(sugText);
+            draftInputRef.current?.focus();
+          }}
+        />
+      )}
+
       {/* 3. Main Composer Row */}
       <form onSubmit={handleSubmit} className="flex items-end space-x-2">
         {/* Emoji Picker (WhatsApp Web: smiley first, then attach) */}
@@ -1337,21 +1354,42 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
                 }`}
               />
 
-              {/* Quick Template Button inside Input */}
-              {onSendTemplate && !isClosed && (
-                <div className="absolute right-2 top-3 flex items-center">
-                  <Tooltip content={t('whatsapp.useTemplateBtn')}>
-                    <button
-                      type="button"
-                      aria-label={t('whatsapp.useTemplateBtn')}
-                      onClick={onSendTemplate}
-                      disabled={isActionDisabled}
-                      className="flex items-center space-x-1 px-2 py-1 rounded-lg bg-[#7367F0]/10 hover:bg-[#7367F0]/20 text-[#7367F0] text-[10px] font-bold transition-all cursor-pointer disabled:opacity-40"
-                    >
-                      <LayoutTemplate className="w-3 h-3" />
-                      <span className="hidden sm:inline">{t('whatsapp.templateShort')}</span>
-                    </button>
-                  </Tooltip>
+              {/* Action Buttons inside Input: AI Co-Pilot & Quick Template */}
+              {!isClosed && (
+                <div className="absolute right-2 top-3 flex items-center space-x-1">
+                  {conversationId && (
+                    <Tooltip content={t('whatsapp.aiCoPilotBtn')}>
+                      <button
+                        type="button"
+                        aria-label={t('whatsapp.aiCoPilotBtn')}
+                        onClick={() => setIsAiOpen((open) => !open)}
+                        disabled={isActionDisabled}
+                        className={`flex items-center space-x-1 px-2 py-1 rounded-lg text-[10px] font-bold transition-all cursor-pointer disabled:opacity-40 ${
+                          isAiOpen
+                            ? 'bg-[#7367F0] text-white shadow-xs'
+                            : 'bg-[#7367F0]/10 hover:bg-[#7367F0]/20 text-[#7367F0] border border-[#7367F0]/20'
+                        }`}
+                      >
+                        <Sparkles className="w-3 h-3" />
+                        <span className="hidden sm:inline">{t('whatsapp.aiShort')}</span>
+                      </button>
+                    </Tooltip>
+                  )}
+
+                  {onSendTemplate && (
+                    <Tooltip content={t('whatsapp.useTemplateBtn')}>
+                      <button
+                        type="button"
+                        aria-label={t('whatsapp.useTemplateBtn')}
+                        onClick={onSendTemplate}
+                        disabled={isActionDisabled}
+                        className="flex items-center space-x-1 px-2 py-1 rounded-lg bg-[#7367F0]/10 hover:bg-[#7367F0]/20 text-[#7367F0] text-[10px] font-bold transition-all cursor-pointer disabled:opacity-40"
+                      >
+                        <LayoutTemplate className="w-3 h-3" />
+                        <span className="hidden sm:inline">{t('whatsapp.templateShort')}</span>
+                      </button>
+                    </Tooltip>
+                  )}
                 </div>
               )}
             </div>

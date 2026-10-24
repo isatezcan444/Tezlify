@@ -18,6 +18,12 @@ import {
   Lock,
   Info,
   Copy,
+  Paperclip,
+  Upload,
+  FileText,
+  Image as ImageIcon,
+  Trash2,
+  Loader2,
 } from 'lucide-react';
 import { ApiClient } from '../../../api/client';
 import { CommunicationGoal } from '../../../types';
@@ -93,6 +99,40 @@ export const CampaignCreateWizard: React.FC<CampaignCreateWizardProps> = ({
   const [generating, setGenerating] = useState(false);
   const [variationCount, setVariationCount] = useState(0);
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // Campaign Media Attachment State (Phase 2)
+  const [mediaUrl, setMediaUrl] = useState('');
+  const [mediaType, setMediaType] = useState<'IMAGE' | 'DOCUMENT' | ''>('');
+  const [mediaFilename, setMediaFilename] = useState('');
+  const [mediaSizeBytes, setMediaSizeBytes] = useState<number | null>(null);
+  const [uploadingMedia, setUploadingMedia] = useState(false);
+  const mediaFileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleMediaUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploadingMedia(true);
+    try {
+      const res = await ApiClient.uploadCampaignMedia(file);
+      setMediaUrl(res.media_url);
+      setMediaType(res.media_type === 'IMAGE' ? 'IMAGE' : 'DOCUMENT');
+      setMediaFilename(res.filename);
+      setMediaSizeBytes(res.size_bytes);
+      toast.success(t('campaigns.mediaUploadedSuccess'));
+    } catch (err: any) {
+      toast.error(err.message || t('campaigns.mediaUploadError'));
+    } finally {
+      setUploadingMedia(false);
+      if (mediaFileInputRef.current) mediaFileInputRef.current.value = '';
+    }
+  };
+
+  const handleRemoveMedia = () => {
+    setMediaUrl('');
+    setMediaType('');
+    setMediaFilename('');
+    setMediaSizeBytes(null);
+  };
 
   const COMMUNICATION_GOALS: Array<{
     id: CommunicationGoal;
@@ -569,6 +609,9 @@ export const CampaignCreateWizard: React.FC<CampaignCreateWizardProps> = ({
         description,
         message_template: template,
         group_id: selectedGroupId || undefined,
+        media_url: mediaUrl.trim() || undefined,
+        media_type: (mediaType as any) || undefined,
+        media_filename: mediaFilename.trim() || undefined,
         min_delay_seconds: storedConfig.min_delay_seconds,
         max_delay_seconds: storedConfig.max_delay_seconds,
         typing_delay_seconds: storedConfig.typing_delay_seconds,
@@ -587,6 +630,7 @@ export const CampaignCreateWizard: React.FC<CampaignCreateWizardProps> = ({
       setTemplate('');
       setIsTemplateManuallyEdited(false);
       setDescription('');
+      handleRemoveMedia();
       onSuccess();
     } catch (err: any) {
       toast.error(err.message || t('common.error'), t('toast.errorTitle'));
@@ -1147,6 +1191,87 @@ export const CampaignCreateWizard: React.FC<CampaignCreateWizardProps> = ({
                   </div>
                 </FormSection>
               </Card>
+
+              {/* Media Attachment Card (Phase 2) */}
+              <Card className="p-4 sm:p-6 space-y-4">
+                <FormSection
+                  title={t('campaigns.mediaAttachmentTitle')}
+                  subtitle={t('campaigns.mediaAttachmentSubtitle')}
+                  icon={Paperclip}
+                >
+                  {mediaUrl ? (
+                    <div className="flex items-center justify-between p-3.5 rounded-xl bg-[#7367F0]/10 border border-[#7367F0]/30 animate-fade-in">
+                      <div className="flex items-center space-x-3 min-w-0">
+                        <div className="p-2.5 rounded-lg bg-[#7367F0]/20 text-[#7367F0] shrink-0">
+                          {mediaType === 'IMAGE' ? <ImageIcon className="w-5 h-5" /> : <FileText className="w-5 h-5" />}
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-xs sm:text-sm font-extrabold text-slate-800 dark:text-white truncate">
+                            {mediaFilename || (mediaType === 'IMAGE' ? t('campaigns.imageAttachment') : t('campaigns.docAttachment'))}
+                          </p>
+                          <div className="flex items-center space-x-2 text-[11px] text-slate-500 dark:text-slate-400">
+                            <span className="font-bold uppercase">{mediaType}</span>
+                            {mediaSizeBytes && (
+                              <span>• {(mediaSizeBytes / (1024 * 1024)).toFixed(2)} MB</span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={handleRemoveMedia}
+                        className="text-rose-500 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/20 border-rose-200 dark:border-rose-900/40 p-2 h-auto cursor-pointer"
+                        title={t('common.delete')}
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </Button>
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      <input
+                        ref={mediaFileInputRef}
+                        type="file"
+                        accept=".pdf,.png,.jpg,.jpeg,.webp,.doc,.docx"
+                        onChange={handleMediaUpload}
+                        className="hidden"
+                      />
+                      <div
+                        onClick={() => mediaFileInputRef.current?.click()}
+                        className={`border-2 border-dashed rounded-xl p-5 text-center transition-all cursor-pointer ${
+                          uploadingMedia
+                            ? 'border-[#7367F0] bg-[#7367F0]/5 opacity-70'
+                            : 'border-slate-300 dark:border-white/10 hover:border-[#7367F0] hover:bg-slate-50 dark:hover:bg-white/[0.02]'
+                        }`}
+                      >
+                        {uploadingMedia ? (
+                          <div className="flex flex-col items-center justify-center space-y-2 py-2">
+                            <Loader2 className="w-6 h-6 animate-spin text-[#7367F0]" />
+                            <p className="text-xs font-bold text-[#7367F0]">{t('campaigns.uploadingMedia')}</p>
+                          </div>
+                        ) : (
+                          <div className="flex flex-col items-center justify-center space-y-1.5">
+                            <div className="p-2.5 rounded-full bg-[#7367F0]/10 text-[#7367F0]">
+                              <Upload className="w-5 h-5" />
+                            </div>
+                            <p className="text-xs sm:text-sm font-bold text-slate-700 dark:text-slate-200">
+                              {t('campaigns.mediaDropzoneTitle')}
+                            </p>
+                            <p className="text-[11px] text-slate-400">
+                              {t('campaigns.mediaDropzoneSubtitle')}
+                            </p>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="p-3 rounded-lg bg-slate-50/70 dark:bg-white/[0.02] border border-slate-200/50 dark:border-white/[0.05] text-[11px] text-slate-500 dark:text-slate-400 leading-normal">
+                    <p>💡 {t('campaigns.mediaCaptionNotice')}</p>
+                  </div>
+                </FormSection>
+              </Card>
             </div>
 
             {/* Right Column: Live WhatsApp Simulation Card */}
@@ -1166,8 +1291,8 @@ export const CampaignCreateWizard: React.FC<CampaignCreateWizardProps> = ({
                 subtitle={t('campaigns.wizardReviewSubtitle') || 'Kampanyanızı oluşturmadan önce tüm ayarları ve güvenlik önlemlerini inceleyin.'}
                 icon={ShieldCheck}
               >
-                {/* 4 Summary Metric Tiles */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
+                {/* 5 Summary Metric Tiles */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3.5">
                   <div className="p-4 rounded-xl bg-slate-50/80 dark:bg-[#25293C] border border-slate-200/70 dark:border-white/[0.06] space-y-1">
                     <span className="text-[11px] font-bold text-slate-400 dark:text-[#7E7F96] uppercase tracking-wider block">
                       {t('campaigns.wizardSummaryName') || 'Kampanya Adı'}
@@ -1201,6 +1326,15 @@ export const CampaignCreateWizard: React.FC<CampaignCreateWizardProps> = ({
                     </span>
                     <span className="text-xs sm:text-sm font-extrabold text-slate-800 dark:text-white truncate block">
                       {prefill?.groupName || t('campaigns.wizardNoGroupSelected') || 'Bağımsız'}
+                    </span>
+                  </div>
+
+                  <div className="p-4 rounded-xl bg-slate-50/80 dark:bg-[#25293C] border border-slate-200/70 dark:border-white/[0.06] space-y-1">
+                    <span className="text-[11px] font-bold text-slate-400 dark:text-[#7E7F96] uppercase tracking-wider block">
+                      {t('campaigns.mediaAttachmentLabel')}
+                    </span>
+                    <span className="text-xs sm:text-sm font-extrabold text-slate-800 dark:text-white truncate block">
+                      {mediaUrl ? (mediaFilename || mediaType || 'Ekli Medya') : t('campaigns.noMediaAttachment')}
                     </span>
                   </div>
                 </div>

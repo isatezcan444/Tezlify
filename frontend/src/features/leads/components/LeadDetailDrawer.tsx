@@ -372,6 +372,7 @@ export const LeadDetailDrawer: React.FC<LeadDetailDrawerProps> = ({
 
             {/* Live Composer */}
             <ChatComposer
+              conversationId={conversation?.id}
               insertedText={insertedComposerText}
               onSend={async (text) => {
                 try {

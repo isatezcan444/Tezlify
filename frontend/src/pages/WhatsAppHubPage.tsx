@@ -4119,6 +4119,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                 ) : (
                   <ChatComposer
                     key={selectedConv.id}
+                    conversationId={selectedConv.id}
                     leadName={selectedConv.lead_name || ''}
                     isGroup={Boolean(selectedConv.is_group)}
                     groupParticipants={selectedConv.id ? groupParticipantsMap[selectedConv.id] : undefined}

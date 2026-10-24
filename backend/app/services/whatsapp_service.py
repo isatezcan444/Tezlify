@@ -1608,6 +1608,7 @@ async def start_conversation(
     name: Optional[str] = None,
     message: Optional[str] = None,
     session_id: Optional[int] = None,
+    media: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """WhatsApp Web paritesi: numara ile yeni sohbet baslat (A6 kapanisi).
 
@@ -1617,8 +1618,9 @@ async def start_conversation(
       2. Numara `extract_clean_phone` ile E.164'e normalize edilir; cozulemezse
          ValueError (422) — LID/grup kimliklerinden telefon sentezlenmez.
       3. Contact + Conversation satirlari olusturulur/yeniden kullanilir.
-      4. `message` verildiyse bagli hattan GERCEK olarak gönderilir; gönderim
-         başarısızsa sohbet yine kaydedilir ama hata yükseltilir (truthfulness).
+      4. `media` verildiyse (katalog/PDF/gorsel) aciklamasi ile birlikte medya
+         olarak gonderilir; yalnizca `message` verildiyse metin olarak gonderilir.
+         Gonderim basarisizsa sohbet yine kaydedilir ama hata yukseltilir (truthfulness).
       5. Canonical REST sozlugu `list_conversations(conversation_id=...)` ile
          üretilir — WS ve REST aynı contract'ı taşır.
     """
@@ -1644,7 +1646,11 @@ async def start_conversation(
     )
     await db.commit()
 
-    if message and message.strip():
+    if media and (media.get("media_url") or media.get("media_base64")):
+        if message and not media.get("caption"):
+            media["caption"] = message.strip()
+        await send_media_message(db, user_id, conv.id, media)
+    elif message and message.strip():
         # Fail-closed: gönderim başarısızsa hata çağırana taşınır (HTTP 502/409),
         # "sohbet açıldı ama mesaj gitti" yalanı üretilmez.
         await send_text_message(db, user_id, conv.id, message.strip())

@@ -1,7 +1,7 @@
 import os
 import logging
-from typing import List
-from fastapi import APIRouter, Depends, HTTPException
+from typing import List, Optional
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete
 
@@ -276,3 +276,34 @@ async def pause_campaign(
     await CampaignRunner.cancel_campaign(campaign_id)
 
     return {"message": f"'{campaign.name}' kampanyası duraklatıldı.", "campaign_id": campaign.id}
+
+
+@router.post("/upload-media")
+async def upload_campaign_media(
+    file: UploadFile = File(...),
+    current_user: AuthUser = Depends(get_current_user),
+):
+    """
+    Uploads a campaign attachment file (PDF, catalog, brochure, image)
+    and returns its file_id, media_url, media_type, and filename.
+    """
+    from backend.app.services.campaign_media_service import CampaignMediaService
+    return await CampaignMediaService.save_uploaded_media(file, current_user.id)
+
+
+@router.get("/media/{file_id}")
+async def get_campaign_media(file_id: str):
+    """
+    Serves uploaded campaign media file with inline disposition and proper MIME type.
+    """
+    from backend.app.services.campaign_media_service import CampaignMediaService
+    res = CampaignMediaService.get_media_file_info(file_id)
+    if not res:
+        raise HTTPException(status_code=404, detail="Medya dosyası bulunamadı.")
+    content, mime, filename = res
+    headers = {
+        "Content-Disposition": f'inline; filename="{filename}"',
+        "Content-Length": str(len(content)),
+        "Cache-Control": "public, max-age=86400",
+    }
+    return Response(content=content, media_type=mime, headers=headers)

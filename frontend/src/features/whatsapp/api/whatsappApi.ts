@@ -24,6 +24,7 @@ import {
   SessionSyncState,
   WhatsAppSession,
   WhatsAppSyncJob,
+  AiSuggestReplyResponse,
 } from '../../../types';
 
 /**
@@ -1375,6 +1376,10 @@ export const WhatsAppApi = {
       action,
       duration_seconds: durationSeconds,
     });
+  },
+
+  async getAiSuggestedReplies(conversationId: number): Promise<AiSuggestReplyResponse> {
+    return apiSend<AiSuggestReplyResponse>(`/whatsapp/conversations/${conversationId}/suggest-reply`, 'POST', {});
   },
 
   useLiveMode,

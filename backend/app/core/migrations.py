@@ -2020,26 +2020,45 @@ async def purge_empty_ghost_conversations(engine: AsyncEngine) -> None:
 
 
 async def ensure_campaigns_columns(engine: AsyncEngine) -> None:
-    """Idempotently guarantees that campaigns table has whatsapp_session_id and daily_message_limit."""
+    """Idempotently guarantees that campaigns and message_logs have media columns and session bindings."""
     try:
         if engine.dialect.name == "sqlite":
             async with engine.begin() as conn:
                 info_rows = (await conn.execute(text("PRAGMA table_info(campaigns)"))).fetchall()
                 cols = {row[1] for row in info_rows}
-                if not cols:
-                    return  # Tablo henuz yok; create_all yeni model semasini dogru kurar.
-                if "whatsapp_session_id" not in cols:
-                    await conn.execute(text("ALTER TABLE campaigns ADD COLUMN whatsapp_session_id INTEGER REFERENCES whatsapp_sessions(id) ON DELETE SET NULL"))
-                    logger.info("[MIGRATION] Added campaigns.whatsapp_session_id")
-                if "daily_message_limit" not in cols:
-                    await conn.execute(text("ALTER TABLE campaigns ADD COLUMN daily_message_limit INTEGER DEFAULT 50"))
-                    logger.info("[MIGRATION] Added campaigns.daily_message_limit")
+                if cols:
+                    if "whatsapp_session_id" not in cols:
+                        await conn.execute(text("ALTER TABLE campaigns ADD COLUMN whatsapp_session_id INTEGER REFERENCES whatsapp_sessions(id) ON DELETE SET NULL"))
+                        logger.info("[MIGRATION] Added campaigns.whatsapp_session_id")
+                    if "daily_message_limit" not in cols:
+                        await conn.execute(text("ALTER TABLE campaigns ADD COLUMN daily_message_limit INTEGER DEFAULT 50"))
+                        logger.info("[MIGRATION] Added campaigns.daily_message_limit")
+                    if "media_url" not in cols:
+                        await conn.execute(text("ALTER TABLE campaigns ADD COLUMN media_url VARCHAR(500)"))
+                        logger.info("[MIGRATION] Added campaigns.media_url")
+                    if "media_type" not in cols:
+                        await conn.execute(text("ALTER TABLE campaigns ADD COLUMN media_type VARCHAR(50)"))
+                        logger.info("[MIGRATION] Added campaigns.media_type")
+                    if "media_filename" not in cols:
+                        await conn.execute(text("ALTER TABLE campaigns ADD COLUMN media_filename VARCHAR(255)"))
+                        logger.info("[MIGRATION] Added campaigns.media_filename")
+
+                msg_rows = (await conn.execute(text("PRAGMA table_info(message_logs)"))).fetchall()
+                msg_cols = {row[1] for row in msg_rows}
+                if msg_cols and "media_url" not in msg_cols:
+                    await conn.execute(text("ALTER TABLE message_logs ADD COLUMN media_url VARCHAR(500)"))
+                    logger.info("[MIGRATION] Added message_logs.media_url")
+
         elif engine.dialect.name == "postgresql":
             async with engine.begin() as conn:
                 await conn.execute(text("ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS whatsapp_session_id INTEGER REFERENCES whatsapp_sessions(id) ON DELETE SET NULL"))
                 await conn.execute(text("ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS daily_message_limit INTEGER DEFAULT 50"))
+                await conn.execute(text("ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS media_url VARCHAR(500)"))
+                await conn.execute(text("ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS media_type VARCHAR(50)"))
+                await conn.execute(text("ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS media_filename VARCHAR(255)"))
                 await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_campaigns_whatsapp_session_id ON campaigns (whatsapp_session_id)"))
-                logger.info("[MIGRATION] PostgreSQL campaigns columns verified")
+                await conn.execute(text("ALTER TABLE message_logs ADD COLUMN IF NOT EXISTS media_url VARCHAR(500)"))
+                logger.info("[MIGRATION] PostgreSQL campaigns and message_logs media columns verified")
     except Exception as exc:
         logger.warning("[MIGRATION] ensure_campaigns_columns atlandi: %s", exc)
 

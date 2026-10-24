@@ -24,3 +24,4 @@ export * from './ForwardMessageModal';
 export * from './PinDurationModal';
 export * from './PinnedMessagesBar';
 export * from './ChatMessageInfoDrawer';
+export * from './AiSuggestPopover';

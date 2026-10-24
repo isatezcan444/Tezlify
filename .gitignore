@@ -54,3 +54,4 @@ monitoring/*.json
 *_report.json
 logs/
 runtime/
+uploads/

@@ -42,6 +42,11 @@ class Campaign(Base):
     whatsapp_session_id = Column(Integer, ForeignKey("whatsapp_sessions.id", ondelete="SET NULL"), nullable=True, index=True)
     whatsapp_session = relationship("WhatsAppSession", foreign_keys=[whatsapp_session_id])
 
+    # Media Attachment (Catalog, Brochure, Image, PDF)
+    media_url = Column(String(500), nullable=True)
+    media_type = Column(String(50), nullable=True)  # 'IMAGE', 'DOCUMENT', 'VIDEO', 'AUDIO'
+    media_filename = Column(String(255), nullable=True)
+
     # Campaign Group Association (Optional)
     group_id = Column(Integer, ForeignKey("campaign_groups.id", ondelete="SET NULL"), nullable=True)
     group = relationship("CampaignGroup", backref="campaigns")

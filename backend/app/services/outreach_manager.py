@@ -139,14 +139,28 @@ class OutreachManager:
 
         try:
             from backend.app.services import whatsapp_service
+            from backend.app.services.campaign_media_service import CampaignMediaService
+
+            media_payload = None
+            if getattr(campaign, "media_url", None):
+                base64_data = CampaignMediaService.get_campaign_media_base64(campaign.media_url)
+                media_payload = {
+                    "media_type": (campaign.media_type or "DOCUMENT").lower(),
+                    "media_url": campaign.media_url,
+                    "media_base64": base64_data,
+                    "filename": campaign.media_filename,
+                    "caption": rendered_msg,
+                }
+
             # Dispatch message live through connected Baileys session
             result = await whatsapp_service.start_conversation(
                 db=db,
                 user_id=user_id_str,
                 phone=lead.phone_e164,
                 name=lead.name,
-                message=rendered_msg,
+                message=rendered_msg if not media_payload else None,
                 session_id=session_id,
+                media=media_payload,
             )
 
             # Record in MessageLog
@@ -156,6 +170,7 @@ class OutreachManager:
                 campaign_id=campaign.id,
                 target_phone=lead.phone_e164,
                 rendered_message=rendered_msg,
+                media_url=getattr(campaign, "media_url", None),
                 status=MessageStatus.SENT,
                 sent_at=utc_now_naive(),
                 delay_applied_seconds=delay_sec,

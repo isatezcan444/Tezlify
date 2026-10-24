@@ -22,6 +22,7 @@ import {
   WebhookTestResult,
   QuotaUsageSummary,
   PlanListResponse,
+  CampaignMediaUploadResponse,
 } from '../types';
 
 const isHttps = typeof window !== 'undefined' && window.location.protocol === 'https:';
@@ -388,6 +389,20 @@ export class ApiClient {
       body: JSON.stringify(campaign)
     });
     if (!res.ok) throw new Error('Kampanya oluşturulamadı');
+    return res.json();
+  }
+
+  static async uploadCampaignMedia(file: File): Promise<CampaignMediaUploadResponse> {
+    const formData = new FormData();
+    formData.append('file', file);
+    const res = await authFetch(`${API_BASE}/campaigns/upload-media`, {
+      method: 'POST',
+      body: formData,
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || 'Medya yüklenemedi');
+    }
     return res.json();
   }
 

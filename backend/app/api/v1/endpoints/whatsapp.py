@@ -59,6 +59,7 @@ from backend.app.schemas.whatsapp import (
     WhatsAppGroupSubjectUpdate,
     WhatsAppGroupParticipantsUpdate,
     WhatsAppGroupAvatarUpdate,
+    AiSuggestReplyResponse,
 )
 from backend.app.schemas.quick_reply import (
     QuickReplyCreate,
@@ -68,6 +69,7 @@ from backend.app.schemas.quick_reply import (
     QuickReplyDeleteResponse,
 )
 from backend.app.services import whatsapp_service, quick_reply_service
+from backend.app.services.ai_responder_service import AiResponderService
 from backend.app.services.link_preview.service import (
     get_preview_image_bytes as _get_preview_image_bytes,
 )
@@ -966,6 +968,30 @@ async def link_lead_to_conversation(
         lead_id=result["lead_id"],
         lead_status=result["lead_status"],
     )
+
+
+@router.post(
+    "/conversations/{conversation_id}/suggest-reply",
+    response_model=AiSuggestReplyResponse,
+)
+async def suggest_reply(
+    conversation_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+) -> AiSuggestReplyResponse:
+    """
+    Analyzes conversation context and latest customer message to generate
+    3 sales-optimized, tone-varied smart replies and matched quick reply shortcuts.
+    """
+    try:
+        data = await AiResponderService.suggest_replies(db, current_user.id, conversation_id)
+        return AiSuggestReplyResponse(**data)
+    except LookupError as exc:
+        raise _not_found(exc) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)
+        ) from exc
 
 
 @router.delete(

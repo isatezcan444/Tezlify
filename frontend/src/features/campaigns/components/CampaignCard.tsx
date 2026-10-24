@@ -10,6 +10,7 @@ import {
   Trash2,
   Check,
   Eye,
+  Paperclip,
 } from 'lucide-react';
 import { Campaign } from '../../../types';
 import { Card } from '../../../components/ui/card';
@@ -102,6 +103,16 @@ export const CampaignCard: React.FC<CampaignCardProps> = ({
                 <p className="text-[11px] text-slate-400 dark:text-[#7E7F96] mt-0.5 line-clamp-1">
                   {campaign.description}
                 </p>
+              )}
+              {campaign.media_url && (
+                <div className="mt-1">
+                  <span className="inline-flex items-center gap-1 text-[10px] font-bold text-[#7367F0] bg-[#7367F0]/10 px-1.5 py-0.5 rounded border border-[#7367F0]/20">
+                    <Paperclip className="w-2.5 h-2.5" />
+                    <span className="truncate max-w-[140px]">
+                      {campaign.media_filename || (campaign.media_type === 'IMAGE' ? t('campaigns.imageAttachment') : t('campaigns.docAttachment'))}
+                    </span>
+                  </span>
+                </div>
               )}
             </div>
           </div>

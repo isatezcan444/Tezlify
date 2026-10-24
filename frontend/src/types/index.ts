@@ -91,6 +91,9 @@ export interface Campaign {
   session_id?: number;
   whatsapp_session_id?: number;
   group_id?: number;
+  media_url?: string;
+  media_type?: 'IMAGE' | 'DOCUMENT' | 'VIDEO' | 'AUDIO';
+  media_filename?: string;
   total_leads_target: number;
   sent_count: number;
   delivered_count: number;
@@ -730,6 +733,41 @@ export interface PlanInfo {
 export interface PlanListResponse {
   current_plan_tier: string;
   plans: PlanInfo[];
+}
+
+export interface CampaignMediaUploadResponse {
+  file_id: string;
+  media_url: string;
+  media_type: 'IMAGE' | 'DOCUMENT' | 'VIDEO' | 'AUDIO';
+  mime_type: string;
+  filename: string;
+  size_bytes: number;
+}
+
+export interface AiSuggestionItem {
+  id: string;
+  title: string;
+  text: string;
+  tone: 'PROFESSIONAL' | 'PERSUASIVE' | 'CALL_TO_ACTION';
+}
+
+export interface AiMatchedQuickReply {
+  id: number;
+  shortcut: string;
+  title: string;
+  content: string;
+  category?: string;
+}
+
+export interface AiSuggestReplyResponse {
+  conversation_id: number;
+  contact_name?: string;
+  category?: string;
+  detected_intent: string;
+  intent_label: string;
+  latest_customer_message?: string;
+  suggestions: AiSuggestionItem[];
+  matching_quick_replies: AiMatchedQuickReply[];
 }
 
 export * from './admin';

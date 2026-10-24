@@ -33,6 +33,7 @@ class MessageLog(Base):
     # Message Content (Actual evaluated spintax sent)
     target_phone = Column(String(50), nullable=False, index=True)
     rendered_message = Column(Text, nullable=False)
+    media_url = Column(String(500), nullable=True)
     
     # Status & Progress
     status = Column(Enum(MessageStatus), default=MessageStatus.PENDING, index=True)
