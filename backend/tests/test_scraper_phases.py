@@ -88,3 +88,76 @@ def test_scraper_job_model_columns():
     assert job.keyword == "Diş Kliniği"
     assert job.city == "İstanbul"
     assert job.districts_json == ["Kadıköy"]
+
+
+def test_location_validator_explicit_neighborhood_targeting():
+    from backend.app.services.location_validator import LocationValidator, LocationStatus
+
+    # 1. Matching target neighborhood
+    res = LocationValidator.evaluate(
+        target_city="İstanbul",
+        target_districts=["Ataşehir"],
+        result_address="Yenişehir Mah. Baraj Yolu Cad. No: 12 Ataşehir / İstanbul",
+        result_name="Özel Dentanis Diş Kliniği",
+        target_neighborhoods=["Yenişehir"],
+    )
+    assert res.status == LocationStatus.SUBDIVISION
+    assert res.matched_subdivision == "Yenişehir"
+    assert res.confidence == 1.0
+
+    # 2. Non-target neighborhood in the same district
+    res_other = LocationValidator.evaluate(
+        target_city="İstanbul",
+        target_districts=["Ataşehir"],
+        result_address="Barbaros Mah. Halk Cad. No: 5 Ataşehir / İstanbul",
+        result_name="Barbaros Ağız ve Diş Sağlığı",
+        target_neighborhoods=["Yenişehir"],
+    )
+    assert res_other.status == LocationStatus.SUBDIVISION
+    assert res_other.matched_subdivision == "Barbaros"
+
+
+def test_geo_scope_filter_neighborhood_flag():
+    from backend.app.services.geo_scope_filter import GeoScopeFilter, GeoScopeDecision
+
+    geo_filter = GeoScopeFilter()
+
+    # Target neighborhood match -> is_target_neighborhood = True
+    verdict_target = geo_filter.evaluate(
+        target_city="İstanbul",
+        target_districts=["Ataşehir"],
+        place_name="Özel Dentanis Diş Kliniği",
+        place_address="Yenişehir Mah. Baraj Yolu Cad. No: 12 Ataşehir / İstanbul",
+        target_neighborhoods=["Yenişehir"],
+    )
+    assert verdict_target.decision == GeoScopeDecision.ACCEPT_TARGET
+    assert verdict_target.is_target_neighborhood is True
+    assert verdict_target.matched_subdivision == "Yenişehir"
+
+    # Mismatched neighborhood -> is_target_neighborhood = False
+    verdict_mismatch = geo_filter.evaluate(
+        target_city="İstanbul",
+        target_districts=["Ataşehir"],
+        place_name="Barbaros Diş Kliniği",
+        place_address="Barbaros Mah. Halk Cad. No: 5 Ataşehir / İstanbul",
+        target_neighborhoods=["Yenişehir"],
+    )
+    assert verdict_mismatch.decision == GeoScopeDecision.ACCEPT_TARGET
+    assert verdict_mismatch.is_target_neighborhood is False
+    assert verdict_mismatch.matched_subdivision == "Barbaros"
+
+
+def test_http_scraper_query_neighborhood_formatting():
+    # Verify that mahalle queries format as "{keyword} {district} {city}"
+    # to pin Google Maps directly to the neighborhood centroid
+    clean_keyword = "diş kliniği Yenişehir Mahallesi"
+    clean_district = "Ataşehir"
+    clean_city = "İstanbul"
+
+    if "mahallesi" in clean_keyword.lower():
+        query = f"{clean_keyword} {clean_district} {clean_city}".strip()
+    else:
+        query = f"{clean_city} {clean_district} {clean_keyword}".strip()
+
+    assert query == "diş kliniği Yenişehir Mahallesi Ataşehir İstanbul"
+

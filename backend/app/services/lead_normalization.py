@@ -42,9 +42,16 @@ def truncate_column_value(val: Optional[str], limit: int) -> Optional[str]:
 
 
 def build_initial_custom_data(raw: Dict[str, Any]) -> Dict[str, Any]:
-    """Builds the initial custom_data payload preserving the canonical Maps URL."""
+    """Builds the initial custom_data payload preserving the canonical Maps URL and neighborhood."""
+    data: Dict[str, Any] = {}
     maps_url = raw.get("maps_url") or raw.get("google_maps_url")
-    return {"maps_url": maps_url} if maps_url else {}
+    if maps_url:
+        data["maps_url"] = maps_url
+    if raw.get("neighborhood"):
+        data["neighborhood"] = raw.get("neighborhood")
+    if raw.get("is_target_neighborhood"):
+        data["is_target_neighborhood"] = True
+    return data
 
 
 def build_lead_values(

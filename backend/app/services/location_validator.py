@@ -48,7 +48,8 @@ class LocationValidator:
         target_districts: List[str],
         result_address: Optional[str],
         result_name: Optional[str] = None,
-        structured_metadata: Optional[Dict[str, Any]] = None
+        structured_metadata: Optional[Dict[str, Any]] = None,
+        target_neighborhoods: Optional[List[str]] = None,
     ) -> LocationAssessment:
         if not target_city:
             return LocationAssessment(
@@ -64,6 +65,30 @@ class LocationValidator:
 
         corpus = f"{result_name or ''} {result_address or ''}"
         norm_corpus = normalize_turkish(corpus)
+
+        # 0. Check explicit target neighborhood match first
+        if target_neighborhoods:
+            import re
+            for nh in target_neighborhoods:
+                norm_nh = normalize_turkish(nh)
+                if not norm_nh:
+                    continue
+                if (
+                    f"{norm_nh} mah" in norm_corpus
+                    or f"{norm_nh} mh" in norm_corpus
+                    or f"{norm_nh} cad" in norm_corpus
+                    or f"{norm_nh} sok" in norm_corpus
+                    or f", {norm_nh}" in norm_corpus
+                    or f"{norm_nh}," in norm_corpus
+                    or re.search(r"\b" + re.escape(norm_nh) + r"\b", norm_corpus)
+                ):
+                    return LocationAssessment(
+                        status=LocationStatus.SUBDIVISION,
+                        confidence=1.0,
+                        matched_district=target_districts[0] if target_districts else None,
+                        matched_subdivision=nh,
+                        reason=f"Seçilen hedef mahalle doğrulandı: {nh}"
+                    )
 
         # 1. Structured metadata evaluation (OSM address details / Overpass tags)
         if structured_metadata:

@@ -195,6 +195,8 @@ class GoogleMapsScraper(BaseScraper):
         phone_data: Optional[Dict[str, Any]],
         shared_phone_line: bool,
         category_fit: Optional[Any] = None,
+        neighborhood: Optional[str] = None,
+        is_target_neighborhood: bool = False,
     ) -> Dict[str, Any]:
         """
         Converts an inspected place into a canonical lead record.
@@ -253,6 +255,8 @@ class GoogleMapsScraper(BaseScraper):
             "address": place.get("address") or ", ".join(x for x in (proven_district, clean_city) if x),
             "city": clean_city,
             "district": proven_district,
+            "neighborhood": neighborhood,
+            "is_target_neighborhood": is_target_neighborhood,
             "latitude": place.get("latitude"),
             "longitude": place.get("longitude"),
             "website": place.get("website"),
@@ -274,6 +278,8 @@ class GoogleMapsScraper(BaseScraper):
         clean_keyword: str,
         deduplicator: LeadDiscoveryDeduplicator,
         category_fit: Optional[Any] = None,
+        neighborhood: Optional[str] = None,
+        is_target_neighborhood: bool = False,
     ) -> Tuple[Optional[Dict[str, Any]], DedupDecision]:
         """
         Full ingestion pipeline for one inspected place:
@@ -305,6 +311,8 @@ class GoogleMapsScraper(BaseScraper):
             phone_data=phone_data,
             shared_phone_line=(decision == DedupDecision.SHARED_PHONE),
             category_fit=category_fit,
+            neighborhood=neighborhood,
+            is_target_neighborhood=is_target_neighborhood,
         )
 
         deduplicator.register(place_url, name_key, e164, address_key=address_key)
@@ -390,12 +398,20 @@ class GoogleMapsScraper(BaseScraper):
         )
 
         # Faz 2: Explicit neighborhood targeting
+        target_neighborhoods: Optional[List[str]] = None
         if neighborhoods:
             target_neighborhoods = [n.strip() for n in neighborhoods if n.strip()]
             if target_neighborhoods:
-                nh_terms = [f"{clean_keyword} {nh}" for nh in target_neighborhoods]
-                search_terms = nh_terms + search_terms
-                logger.info(f"[GMAPS_ENGINE] Armed explicit neighborhood terms: {nh_terms}")
+                from backend.app.data.turkey_subdivisions import register_subdivisions_for_district
+                for dist in target_districts:
+                    register_subdivisions_for_district(clean_city, dist, target_neighborhoods)
+
+                nh_terms = []
+                for nh in target_neighborhoods:
+                    nh_terms.append(f"{clean_keyword} {nh} Mahallesi")
+                    nh_terms.append(f"{clean_keyword} {nh}")
+                search_terms = nh_terms
+                logger.info(f"[GMAPS_ENGINE] Armed explicit neighborhood terms (exclusive): {nh_terms}")
         target_per_district = compute_district_target(max_results, len(target_districts))
 
         logger.info(
@@ -534,14 +550,24 @@ class GoogleMapsScraper(BaseScraper):
                         target_districts=target_districts,
                         place_name=str(place.get("name") or ""),
                         place_address=place.get("address"),
+                        target_neighborhoods=target_neighborhoods,
                     )
                     if verdict.decision == GeoScopeDecision.REJECT_OUTSIDE:
                         stats["geo_filtered"] += 1
                         return
+
+                    # Explicit neighborhood gating: when target neighborhood(s) are chosen without
+                    # a radius filter, reject places explicitly proven to be in an unrelated neighborhood.
+                    if target_neighborhoods and not radius_km:
+                        if verdict.matched_subdivision and not verdict.is_target_neighborhood:
+                            stats["geo_filtered"] += 1
+                            return
                 else:
                     verdict = GeoScopeVerdict(
                         decision=GeoScopeDecision.ACCEPT_UNPROVEN,
                         resolved_district=None,
+                        matched_subdivision=None,
+                        is_target_neighborhood=False,
                     )
 
                 # --- Category relevance gate (runs BEFORE phone enrichment) ---
@@ -614,6 +640,8 @@ class GoogleMapsScraper(BaseScraper):
                     clean_keyword=clean_keyword,
                     deduplicator=deduplicator,
                     category_fit=category_fit,
+                    neighborhood=verdict.matched_subdivision,
+                    is_target_neighborhood=verdict.is_target_neighborhood,
                 )
                 if processed_record is None:
                     # Suppression reasons are counted explicitly so the final
@@ -719,6 +747,7 @@ class GoogleMapsScraper(BaseScraper):
                 max_results <= 0
                 and settings.SCRAPER_MAHALLE_PHASE_ENABLED
                 and not target_reached
+                and not target_neighborhoods
             ):
                 mah_queries, mah_marginal = await self._run_mahalle_phase(
                     primary_term=QueryExpander.primary_term(clean_keyword),
@@ -789,6 +818,11 @@ class GoogleMapsScraper(BaseScraper):
             f"across {len(target_districts)} districts, {stats['queries_executed']} query sessions, "
             f"{stats['geo_filtered']} out-of-scope places filtered."
         )
+
+        if target_neighborhoods:
+            all_discovered_leads.sort(
+                key=lambda x: (not x.get("is_target_neighborhood", False), not x.get("is_verified", False))
+            )
 
         return all_discovered_leads
 

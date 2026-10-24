@@ -453,7 +453,7 @@ export const LeadFinderPage: React.FC<LeadFinderPageProps> = ({ onNavigate, onRe
               onChange={(e) => setRadiusKm(Number(e.target.value))}
               disabled={isScraping}
               sizeVariant="lg"
-              leftIcon={<Compass className="w-3.5 h-3.5 text-[#00CFE8]" />}
+              leftIcon={<Compass className="w-3.5 h-3.5 text-[#7367F0]" />}
               options={[
                 { value: 0, label: t('leadFinder.radiusDistrict') },
                 { value: 5, label: t('leadFinder.radius5km') },
@@ -525,7 +525,7 @@ export const LeadFinderPage: React.FC<LeadFinderPageProps> = ({ onNavigate, onRe
                   <span className="text-[11px] text-slate-400 italic">({t('leadFinder.allDistricts')})</span>
                 )}
                 {selectedNeighborhoods.length > 0 && (
-                  <Badge variant="info" className="font-bold text-[11px]">
+                  <Badge variant="primary" className="font-bold text-[11px]">
                     {selectedNeighborhoods.length} {t('leadFinder.neighborhoodsLabel')}
                   </Badge>
                 )}

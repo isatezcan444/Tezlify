@@ -294,7 +294,10 @@ class GoogleMapsHttpScraper:
         clean_keyword = keyword.strip()
         clean_city = city.strip()
         clean_district = district.strip()
-        search_query = f"{clean_city} {clean_district} {clean_keyword}".strip()
+        if "mahallesi" in clean_keyword.lower():
+            search_query = f"{clean_keyword} {clean_district} {clean_city}".strip()
+        else:
+            search_query = f"{clean_city} {clean_district} {clean_keyword}".strip()
 
         target_count = max_results if (max_results and max_results > 0) else getattr(
             settings, "SCRAPER_UNLIMITED_DISTRICT_TARGET", 200

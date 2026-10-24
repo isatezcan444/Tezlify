@@ -9,8 +9,9 @@ from backend.app.data.turkey_locations import normalize_turkish
 TURKEY_DISTRICT_SUBDIVISIONS: Dict[str, Dict[str, List[str]]] = {
     "istanbul": {
         "atasehir": [
-            "Barbaros", "İçerenköy", "Küçükbakkalköy", "Atatürk", "Kayışdağı",
-            "Batı Ataşehir", "Örnek", "Esatpaşa", "Fetih", "Mevlana", "Ferhatpaşa"
+            "Yenişehir", "Barbaros", "İçerenköy", "Küçükbakkalköy", "Atatürk", "Kayışdağı",
+            "Batı Ataşehir", "Örnek", "Esatpaşa", "Fetih", "Mevlana", "Ferhatpaşa",
+            "Yenisahra", "İnönü", "Mustafa Kemal", "Yeni Çamlıca", "Aşıkveysel", "Mimar Sinan"
         ],
         "umraniye": [
             "Dudullu", "İmes", "Modoko", "Atakent", "Ihlamurkuyu",
@@ -97,3 +98,16 @@ def get_subdivisions_for_district(city_name: str, district_name: str) -> List[st
 
     # Generic fallback subdivisions
     return ["Merkez", "Sanayi", "Çarşı"]
+
+
+def register_subdivisions_for_district(city_name: str, district_name: str, neighborhoods: List[str]) -> None:
+    """Registers dynamic or live-fetched neighborhoods into the subdivision registry."""
+    if not city_name or not district_name or not neighborhoods:
+        return
+    norm_city = normalize_turkish(city_name)
+    norm_district = normalize_turkish(district_name)
+    if norm_city not in TURKEY_DISTRICT_SUBDIVISIONS:
+        TURKEY_DISTRICT_SUBDIVISIONS[norm_city] = {}
+    existing = TURKEY_DISTRICT_SUBDIVISIONS[norm_city].get(norm_district, [])
+    merged = list(dict.fromkeys(existing + neighborhoods))
+    TURKEY_DISTRICT_SUBDIVISIONS[norm_city][norm_district] = merged

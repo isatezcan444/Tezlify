@@ -40,6 +40,8 @@ class GeoScopeVerdict(BaseModel):
     """
     decision: GeoScopeDecision
     resolved_district: Optional[str] = None
+    matched_subdivision: Optional[str] = None
+    is_target_neighborhood: bool = False
     confidence: float = 0.0
     reason: str = ""
 
@@ -74,6 +76,7 @@ class GeoScopeFilter:
         target_districts: List[str],
         place_name: str,
         place_address: Optional[str],
+        target_neighborhoods: Optional[List[str]] = None,
     ) -> GeoScopeVerdict:
         """Evaluates one discovered place against the requested city/district scope."""
         assessment = LocationValidator.evaluate(
@@ -81,12 +84,22 @@ class GeoScopeFilter:
             target_districts=target_districts,
             result_address=place_address,
             result_name=place_name,
+            target_neighborhoods=target_neighborhoods,
         )
+
+        is_target_nh = False
+        if target_neighborhoods and assessment.matched_subdivision:
+            from backend.app.data.turkey_locations import normalize_turkish
+            norm_sub = normalize_turkish(assessment.matched_subdivision)
+            if any(normalize_turkish(tn) == norm_sub or normalize_turkish(tn) in norm_sub for tn in target_neighborhoods):
+                is_target_nh = True
 
         if assessment.status in (LocationStatus.EXACT, LocationStatus.SUBDIVISION):
             return GeoScopeVerdict(
                 decision=GeoScopeDecision.ACCEPT_TARGET,
                 resolved_district=assessment.matched_district,
+                matched_subdivision=assessment.matched_subdivision,
+                is_target_neighborhood=is_target_nh,
                 confidence=assessment.confidence,
                 reason=assessment.reason,
             )
@@ -95,6 +108,8 @@ class GeoScopeFilter:
             return GeoScopeVerdict(
                 decision=GeoScopeDecision.REJECT_OUTSIDE,
                 resolved_district=None,
+                matched_subdivision=None,
+                is_target_neighborhood=False,
                 confidence=assessment.confidence,
                 reason=assessment.reason,
             )
@@ -104,6 +119,8 @@ class GeoScopeFilter:
             return GeoScopeVerdict(
                 decision=GeoScopeDecision.REJECT_OUTSIDE,
                 resolved_district=None,
+                matched_subdivision=None,
+                is_target_neighborhood=False,
                 confidence=assessment.confidence,
                 reason=f"Kesin ilçe kanıtı yok (strict mod): {assessment.reason}",
             )
@@ -111,6 +128,8 @@ class GeoScopeFilter:
         return GeoScopeVerdict(
             decision=GeoScopeDecision.ACCEPT_UNPROVEN,
             resolved_district=None,
+            matched_subdivision=assessment.matched_subdivision,
+            is_target_neighborhood=is_target_nh,
             confidence=assessment.confidence,
             reason=assessment.reason,
         )

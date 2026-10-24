@@ -188,7 +188,7 @@ export const LocationMultiSelect: React.FC<LocationMultiSelectProps> = ({
         {/* Modal Header */}
         <div className="p-3.5 sm:p-5 border-b border-slate-100 dark:border-white/[0.08] flex items-center justify-between shrink-0">
           <div className="flex items-center space-x-2.5">
-            <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-lg bg-[#00CFE8]/15 text-[#00CFE8] flex items-center justify-center font-bold shrink-0">
+            <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-lg bg-[#7367F0]/15 text-[#7367F0] flex items-center justify-center font-bold shrink-0">
               <MapPin className="w-4 h-4 sm:w-5 sm:h-5" />
             </div>
             <div>
@@ -237,7 +237,7 @@ export const LocationMultiSelect: React.FC<LocationMultiSelectProps> = ({
             )}
 
             {localNeighborhoods.length > 0 && (
-              <Badge variant="outline" className="text-[10px] sm:text-[11px] font-bold text-[#00CFE8] border-[#00CFE8]/40 shrink-0">
+              <Badge variant="primary" className="text-[10px] sm:text-[11px] font-bold shrink-0">
                 {localNeighborhoods.length} {t('leadFinder.neighborhoodsLabel')}
               </Badge>
             )}
@@ -397,8 +397,8 @@ export const LocationMultiSelect: React.FC<LocationMultiSelectProps> = ({
                       }}
                       className={`ml-1.5 p-1 rounded-md text-[10px] transition-all cursor-pointer flex items-center gap-1 ${
                         isNhActive
-                          ? 'bg-[#00CFE8] text-white'
-                          : 'text-slate-400 hover:text-[#00CFE8] hover:bg-[#00CFE8]/10'
+                          ? 'bg-[#7367F0] text-white shadow-sm shadow-[#7367F0]/30'
+                          : 'text-slate-400 hover:text-[#7367F0] hover:bg-[#7367F0]/10'
                       }`}
                     >
                       <Building2 className="w-3 h-3" />
@@ -411,10 +411,10 @@ export const LocationMultiSelect: React.FC<LocationMultiSelectProps> = ({
 
           {/* Right Column: Faz 2 Mahalleler Drilldown (4 cols) */}
           {activeDistrictForNh && (
-            <div className="md:col-span-4 lg:col-span-4 flex flex-col border border-[#00CFE8]/30 dark:border-[#00CFE8]/20 rounded-xl p-2.5 sm:p-3 bg-white dark:bg-[#2F3349] overflow-hidden animate-fade-in">
+            <div className="md:col-span-4 lg:col-span-4 flex flex-col border border-[#7367F0]/30 dark:border-[#7367F0]/20 rounded-xl p-2.5 sm:p-3 bg-white dark:bg-[#2F3349] overflow-hidden animate-fade-in">
               <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-white/[0.08] mb-2 shrink-0">
                 <div className="flex items-center gap-1.5 truncate">
-                  <Building2 className="w-3.5 h-3.5 text-[#00CFE8] shrink-0" />
+                  <Building2 className="w-3.5 h-3.5 text-[#7367F0] shrink-0" />
                   <span className="text-xs font-bold text-slate-800 dark:text-white truncate">
                     {activeDistrictForNh} ({t('leadFinder.neighborhoodsLabel')})
                   </span>
@@ -444,7 +444,7 @@ export const LocationMultiSelect: React.FC<LocationMultiSelectProps> = ({
                   <button
                     type="button"
                     onClick={handleSelectAllNeighborhoods}
-                    className="font-bold text-[#00CFE8] hover:underline px-1 cursor-pointer"
+                    className="font-bold text-[#7367F0] hover:underline px-1 cursor-pointer"
                   >
                     {t('common.selectAll') || 'All'}
                   </button>
@@ -462,7 +462,7 @@ export const LocationMultiSelect: React.FC<LocationMultiSelectProps> = ({
               <div className="flex-1 overflow-y-auto space-y-1 pr-1">
                 {isLoadingNh ? (
                   <div className="flex items-center justify-center py-8 text-xs text-slate-400 gap-2">
-                    <Loader2 className="w-4 h-4 text-[#00CFE8] animate-spin" />
+                    <Loader2 className="w-4 h-4 text-[#7367F0] animate-spin" />
                     <span>{t('leadFinder.loadingNeighborhoods')}</span>
                   </div>
                 ) : filteredNeighborhoods.length === 0 ? (
@@ -478,7 +478,7 @@ export const LocationMultiSelect: React.FC<LocationMultiSelectProps> = ({
                         onClick={() => handleToggleNeighborhood(nh)}
                         className={`flex items-center space-x-2 px-2 py-1.5 rounded-lg text-xs font-semibold cursor-pointer select-none transition-all border ${
                           isNhSelected
-                            ? 'bg-[#00CFE8]/15 text-[#00CFE8] dark:bg-[#00CFE8]/25 border-[#00CFE8]/40 font-bold'
+                            ? 'bg-[#7367F0]/15 text-[#7367F0] dark:bg-[#7367F0]/25 dark:text-[#A59DF8] border-[#7367F0]/40 font-bold'
                             : 'text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-white/[0.04] border-transparent'
                         }`}
                       >
@@ -486,7 +486,7 @@ export const LocationMultiSelect: React.FC<LocationMultiSelectProps> = ({
                           type="checkbox"
                           checked={isNhSelected}
                           onChange={() => {}}
-                          className="rounded border-slate-300 dark:border-slate-700 text-[#00CFE8] focus:ring-0 w-3.5 h-3.5 shrink-0 pointer-events-none"
+                          className="rounded border-slate-300 dark:border-slate-700 text-[#7367F0] focus:ring-0 w-3.5 h-3.5 shrink-0 pointer-events-none accent-[#7367F0]"
                         />
                         <span className="truncate">{nh}</span>
                       </div>
@@ -540,7 +540,7 @@ export const LocationMultiSelect: React.FC<LocationMultiSelectProps> = ({
         className="w-full h-11 flex items-center justify-between px-3.5 rounded-lg vuexy-input text-xs font-medium bg-white dark:bg-[#25293C] text-left transition-all border border-slate-300 dark:border-white/[0.12] hover:border-[#7367F0] focus:outline-none"
       >
         <div className="flex items-center space-x-2 truncate">
-          <MapPin className="w-3.5 h-3.5 text-[#00CFE8] shrink-0" />
+          <MapPin className="w-3.5 h-3.5 text-[#7367F0] shrink-0" />
           <span className={`truncate ${selectedCity ? 'font-medium text-slate-800 dark:text-white' : 'font-normal text-slate-400 dark:text-[#7E7F96]'}`}>
             {getSummaryLabel()}
           </span>
