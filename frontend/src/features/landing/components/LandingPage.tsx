@@ -24,6 +24,14 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onEnterApp }) => {
   const [showLoginModal, setShowLoginModal] = useState(false);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
 
+  // Automatically navigate to app/dashboard when authenticated
+  React.useEffect(() => {
+    if (user) {
+      setShowLoginModal(false);
+      onEnterApp();
+    }
+  }, [user, onEnterApp]);
+
   const handleOpenAuth = () => {
     if (user) {
       onEnterApp();
@@ -36,6 +44,10 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onEnterApp }) => {
     try {
       setIsLoggingIn(true);
       await signInWithGoogle();
+      if (user) {
+        setShowLoginModal(false);
+        onEnterApp();
+      }
     } catch (err: unknown) {
       setIsLoggingIn(false);
       toast.error(t('auth.loginError'));
@@ -139,7 +151,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onEnterApp }) => {
                     />
                   </svg>
                 )}
-                <span>{t('auth.loginGoogle')}</span>
+                <span>{isLoggingIn ? t('auth.signingIn') : t('auth.loginGoogle')}</span>
               </button>
 
               <div className="text-center text-[11px] text-slate-400">

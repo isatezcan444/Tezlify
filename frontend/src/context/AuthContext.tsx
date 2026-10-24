@@ -114,9 +114,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     if (urlToken && typeof window !== 'undefined') {
       localStorage.setItem('tezlify_session_token', urlToken);
-      // Clean query parameter from URL without page reload
-      const newUrl = window.location.pathname;
-      window.history.replaceState({}, '', newUrl);
+      // Clean query parameter from URL without page reload and point to dashboard
+      const url = new URL(window.location.href);
+      url.searchParams.delete('session_token');
+      url.searchParams.delete('view');
+      if (!url.searchParams.has('tab')) {
+        url.searchParams.set('tab', 'dashboard');
+      }
+      window.history.replaceState({}, '', url.toString());
     }
 
     if (effectiveToken) {

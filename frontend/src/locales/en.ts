@@ -1730,6 +1730,7 @@ export const en = {
     welcomeBack: 'Welcome Back',
     welcomeSubtitle: 'B2B Lead Generation & Automated WhatsApp Outreach Platform',
     signInWithGoogle: 'Continue with Google',
+    loginGoogle: 'Sign in with Google',
     signingIn: 'Signing in...',
     signOut: 'Sign Out',
     starterPlan: 'Starter Plan',

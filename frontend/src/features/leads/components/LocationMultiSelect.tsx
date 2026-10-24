@@ -44,13 +44,13 @@ export const LocationMultiSelect: React.FC<LocationMultiSelectProps> = ({
   // Find active city object
   const activeCity = TURKEY_LOCATIONS.find((c) => c.name === activeCityName) || TURKEY_LOCATIONS[0];
 
-  // Filter cities and districts
+  // Filter cities and districts with Turkish diacritics support
   const filteredCities = TURKEY_LOCATIONS.filter((c) =>
-    c.name.toLowerCase().includes(citySearch.toLowerCase())
+    c.name.toLocaleLowerCase('tr-TR').includes(citySearch.trim().toLocaleLowerCase('tr-TR'))
   );
 
   const filteredDistricts = activeCity.districts.filter((d) =>
-    d.toLowerCase().includes(districtSearch.toLowerCase())
+    d.toLocaleLowerCase('tr-TR').includes(districtSearch.trim().toLocaleLowerCase('tr-TR'))
   );
 
   const handleCitySelect = (cityName: string) => {

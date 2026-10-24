@@ -1730,6 +1730,7 @@ export const tr = {
     welcomeBack: 'Tekrar Hoş Geldiniz',
     welcomeSubtitle: 'B2B Lead Toplama ve Otomatik WhatsApp Pazarlama Platformu',
     signInWithGoogle: 'Google ile Devam Et',
+    loginGoogle: 'Google ile Giriş Yap',
     signingIn: 'Giriş yapılıyor...',
     signOut: 'Çıkış Yap',
     starterPlan: 'Başlangıç Paketi',

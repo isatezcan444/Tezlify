@@ -529,6 +529,7 @@ const AuthGate: React.FC = () => {
     if (typeof window !== 'undefined') {
       const searchParams = new URLSearchParams(window.location.search);
       const viewParam = searchParams.get('view');
+      if (searchParams.has('session_token')) return 'app';
       if (viewParam === 'landing') return 'landing';
       if (viewParam === 'app' || searchParams.has('tab')) return 'app';
     }
@@ -550,7 +551,7 @@ const AuthGate: React.FC = () => {
     return () => window.removeEventListener('popstate', onPop);
   }, []);
 
-  const handleGoToApp = () => {
+  const handleGoToApp = useCallback(() => {
     setCurrentView('app');
     if (typeof window !== 'undefined') {
       const url = new URL(window.location.href);
@@ -560,7 +561,17 @@ const AuthGate: React.FC = () => {
       }
       window.history.pushState(null, '', url.toString());
     }
-  };
+  }, []);
+
+  // When user logs in or authenticated profile becomes available, automatically navigate to app dashboard
+  useEffect(() => {
+    if (user && currentView === 'landing') {
+      const searchParams = new URLSearchParams(window.location.search);
+      if (!searchParams.has('view')) {
+        handleGoToApp();
+      }
+    }
+  }, [user, currentView, handleGoToApp]);
 
   const handleGoToLanding = () => {
     setCurrentView('landing');
