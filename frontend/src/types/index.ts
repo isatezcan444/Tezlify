@@ -47,6 +47,32 @@ export interface Lead {
   last_contacted_at?: string;
 }
 
+export interface LeadImportPreviewResult {
+  filename: string;
+  total_rows: number;
+  headers: string[];
+  detected_mapping: {
+    name?: string | null;
+    phone?: string | null;
+    city?: string | null;
+    district?: string | null;
+    category?: string | null;
+    website?: string | null;
+    address?: string | null;
+    notes?: string | null;
+  };
+  preview_rows: Record<string, string>[];
+}
+
+export interface LeadImportResult {
+  total_rows: number;
+  imported_count: number;
+  created_count: number;
+  updated_count: number;
+  skipped_count: number;
+  invalid_phone_count: number;
+}
+
 export type CampaignStatus = 'DRAFT' | 'ACTIVE' | 'PAUSED' | 'COMPLETED' | 'ARCHIVED';
 
 export interface Campaign {
@@ -474,6 +500,7 @@ export interface QuickReplyUpdateRequest {
 export interface Conversation {
   id: number;
   lead_id?: number | null;
+  lead_status?: LeadStatus | null;
   /** Backend WhatsApp line identity; same contact may exist on many lines. */
   session_id?: number | null;
   whatsapp_number_id?: number | null;

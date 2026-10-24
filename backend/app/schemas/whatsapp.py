@@ -146,6 +146,17 @@ class WhatsAppConversationItem(BaseModel):
     unread_count: int = 0
     status: str = "ACTIVE"
     identity_state: Optional[str] = None
+    lead_status: Optional[str] = None
+
+
+class WhatsAppConversationLeadLinkRequest(BaseModel):
+    lead_id: Optional[int] = None
+
+
+class WhatsAppConversationLeadLinkResult(BaseModel):
+    conversation_id: int
+    lead_id: Optional[int] = None
+    lead_status: Optional[str] = None
 
 
 class WhatsAppConversationListResponse(BaseModel):

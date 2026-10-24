@@ -392,6 +392,11 @@ src/
 - **Props**: `isOpen: boolean`, `onClose: () => void`, `onSuccess: () => void`.
 - **Import**: `import { LeadAddManualModal } from '@/features/leads/components';`
 
+#### `LeadImportModal`
+- **Purpose**: Vuexy multi-step modal for bulk importing leads from Excel (.xlsx, .xls) and CSV (.csv, .tsv) files with smart column mapping, live sample row preview, E.164 phone normalization, deduplication, and result summary statistics.
+- **Props**: `isOpen: boolean`, `onClose: () => void`, `onSuccess: () => void`.
+- **Import**: `import { LeadImportModal } from '@/features/leads/components';`
+
 #### `LeadAddToGroupModal`
 - **Purpose**: Selection modal for adding selected leads to an existing or new campaign group.
 - **Props**: `isOpen: boolean`, `onClose: () => void`, `leadIds: number[]`, `onSuccess: () => void`.

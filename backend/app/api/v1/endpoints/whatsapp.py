@@ -22,6 +22,8 @@ from backend.app.schemas.whatsapp import (
     WhatsAppConversationListResponse,
     WhatsAppConversationStatusRequest,
     WhatsAppConversationStatusResult,
+    WhatsAppConversationLeadLinkRequest,
+    WhatsAppConversationLeadLinkResult,
     WhatsAppConversationDeleteResult,
     WhatsAppLidSplitListResponse,
     WhatsAppLidSplitMergeRequest,
@@ -940,6 +942,30 @@ async def update_conversation_status(
     except LookupError as exc:
         raise _not_found(exc) from exc
     return WhatsAppConversationStatusResult(id=result["id"], status=result["status"])
+
+
+@router.post(
+    "/conversations/{conversation_id}/link-lead",
+    response_model=WhatsAppConversationLeadLinkResult,
+)
+async def link_lead_to_conversation(
+    conversation_id: int,
+    payload: WhatsAppConversationLeadLinkRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+) -> WhatsAppConversationLeadLinkResult:
+    """Links or unlinks a CRM Lead to a WhatsApp conversation."""
+    try:
+        result = await whatsapp_service.link_conversation_lead(
+            db, current_user.id, conversation_id, payload.lead_id
+        )
+    except LookupError as exc:
+        raise _not_found(exc) from exc
+    return WhatsAppConversationLeadLinkResult(
+        conversation_id=result["conversation_id"],
+        lead_id=result["lead_id"],
+        lead_status=result["lead_status"],
+    )
 
 
 @router.delete(

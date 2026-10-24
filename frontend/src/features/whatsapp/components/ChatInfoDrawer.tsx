@@ -33,7 +33,7 @@ import {
   Camera,
   Trash2,
 } from 'lucide-react';
-import { Conversation, Message } from '../../../types';
+import { Conversation, Message, LeadStatus } from '../../../types';
 import { ApiClient } from '../../../api/client';
 import { WhatsAppApi } from '../api/whatsappApi';
 import { useI18n } from '../../../context/I18nContext';
@@ -41,7 +41,7 @@ import { useToast } from '../../../context/ToastContext';
 import { Avatar } from '../../../components/ui/Avatar';
 import { resolveMediaUrl } from '../../../lib/mediaUrl';
 import { formatPhoneNumber, isRealContactName, stripJidPrefix } from '../lib/whatsappIdentity';
-import { formatMessageTime } from '../../../lib/utils';
+import { formatMessageTime, cn } from '../../../lib/utils';
 import {
   getStarredMessagesForConversation,
   getStarredCountForConversation,
@@ -124,6 +124,16 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
   const [docViewerFilename, setDocViewerFilename] = useState<string | null>(null);
   const [docViewerMime, setDocViewerMime] = useState<string | null>(null);
   const [isAddingLead, setIsAddingLead] = useState(false);
+  const [currentLeadId, setCurrentLeadId] = useState<number | null>(conversation.lead_id || null);
+  const [currentLeadStatus, setCurrentLeadStatus] = useState<LeadStatus>(
+    (conversation.lead_status as LeadStatus) || 'NEW'
+  );
+  const [isUpdatingStatus, setIsUpdatingStatus] = useState(false);
+
+  useEffect(() => {
+    setCurrentLeadId(conversation.lead_id || null);
+    setCurrentLeadStatus((conversation.lead_status as LeadStatus) || 'NEW');
+  }, [conversation.id, conversation.lead_id, conversation.lead_status]);
 
   // Dynamic WhatsApp About / Status state
   const [dynamicStatus, setDynamicStatus] = useState<string | null>(null);
@@ -526,6 +536,21 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
     }
   };
 
+  const handleLeadStatusChange = async (newStatus: LeadStatus) => {
+    if (!currentLeadId || isUpdatingStatus) return;
+    setIsUpdatingStatus(true);
+    try {
+      await ApiClient.updateLead(currentLeadId, { status: newStatus });
+      setCurrentLeadStatus(newStatus);
+      conversation.lead_status = newStatus;
+      toast.success(t('whatsapp.leadStatusUpdated'));
+    } catch (err: any) {
+      toast.error(err.message || 'Lead durumu güncellenemedi');
+    } finally {
+      setIsUpdatingStatus(false);
+    }
+  };
+
   const handleAddToCrm = async () => {
     if (!cleanPhone || isAddingLead) return;
     setIsAddingLead(true);
@@ -537,6 +562,17 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
         is_whatsapp_eligible: true,
         status: 'NEW' as any,
       });
+      if (created?.id) {
+        try {
+          await WhatsAppApi.linkConversationLead(conversation.id, created.id);
+        } catch (linkErr) {
+          console.warn('Failed to link conversation to lead:', linkErr);
+        }
+        conversation.lead_id = created.id;
+        conversation.lead_status = 'NEW';
+        setCurrentLeadId(created.id);
+        setCurrentLeadStatus('NEW');
+      }
       toast.success(t('whatsapp.addedToCrmSuccess'));
       if (onOpenLead && created?.id) {
         onOpenLead(created.id);
@@ -1013,17 +1049,58 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
             </p>
           ) : null}
 
-          {/* CRM Profile Shortcut (if linked to a Lead) or Add to CRM */}
-          {conversation.lead_id && onOpenLead ? (
-            <button
-              type="button"
-              onClick={() => onOpenLead(conversation.lead_id!)}
-              data-testid="drawer-open-lead-btn"
-              className="mt-3.5 inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-xl bg-[#7367F0]/10 hover:bg-[#7367F0]/20 text-[#7367F0] font-bold text-xs transition-colors cursor-pointer border border-[#7367F0]/20"
-            >
-              <Building2 className="w-3.5 h-3.5" />
-              <span>{t('whatsapp.viewCrmLead')}</span>
-            </button>
+          {/* CRM Profile Shortcut (if linked to a Lead) & Status Selector or Add to CRM */}
+          {currentLeadId ? (
+            <div className="mt-3.5 w-full p-3 rounded-xl bg-slate-50 dark:bg-[#25293C] border border-slate-200/60 dark:border-white/[0.06] space-y-2 text-left">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider flex items-center space-x-1.5">
+                  <Building2 className="w-3.5 h-3.5 text-[#7367F0]" />
+                  <span>{t('whatsapp.crmLeadStatus')}</span>
+                </span>
+                {onOpenLead && (
+                  <button
+                    type="button"
+                    onClick={() => onOpenLead(currentLeadId)}
+                    data-testid="drawer-open-lead-btn"
+                    className="inline-flex items-center space-x-1 text-[11px] font-bold text-[#7367F0] hover:underline cursor-pointer"
+                  >
+                    <span>{t('whatsapp.viewCrmLead')}</span>
+                    <ExternalLink className="w-3 h-3" />
+                  </button>
+                )}
+              </div>
+
+              <div className="flex items-center space-x-2">
+                <select
+                  value={currentLeadStatus}
+                  disabled={isUpdatingStatus}
+                  onChange={(e) => handleLeadStatusChange(e.target.value as LeadStatus)}
+                  aria-label={t('whatsapp.crmLeadStatus')}
+                  className={cn(
+                    'w-full px-2.5 py-1.5 rounded-lg text-xs font-bold border transition-colors cursor-pointer',
+                    currentLeadStatus === 'NEW'
+                      ? 'bg-blue-50 text-blue-600 border-blue-200 dark:bg-blue-500/10 dark:text-blue-400 dark:border-blue-500/20'
+                      : currentLeadStatus === 'CONTACTED'
+                      ? 'bg-amber-50 text-amber-600 border-amber-200 dark:bg-amber-500/10 dark:text-amber-400 dark:border-amber-500/20'
+                      : currentLeadStatus === 'REPLIED'
+                      ? 'bg-emerald-50 text-emerald-600 border-emerald-200 dark:bg-emerald-500/10 dark:text-emerald-400 dark:border-emerald-500/20'
+                      : currentLeadStatus === 'INTERESTED'
+                      ? 'bg-purple-50 text-purple-600 border-purple-200 dark:bg-purple-500/10 dark:text-purple-400 dark:border-purple-500/20'
+                      : currentLeadStatus === 'INVALID_NUMBER'
+                      ? 'bg-slate-100 text-slate-600 border-slate-300 dark:bg-slate-800 dark:text-slate-400 dark:border-slate-700'
+                      : 'bg-rose-50 text-rose-600 border-rose-200 dark:bg-rose-500/10 dark:text-rose-400 dark:border-rose-500/20'
+                  )}
+                >
+                  <option value="NEW">{t('leads.statusNew')}</option>
+                  <option value="CONTACTED">{t('leads.statusContacted')}</option>
+                  <option value="REPLIED">{t('leads.statusReplied')}</option>
+                  <option value="INTERESTED">{t('leads.statusInterested')}</option>
+                  <option value="UNSUBSCRIBED">{t('leads.statusUnsubscribed')}</option>
+                  <option value="INVALID_NUMBER">{t('leads.statusInvalid')}</option>
+                </select>
+                {isUpdatingStatus && <Loader2 className="w-3.5 h-3.5 text-[#7367F0] animate-spin shrink-0" />}
+              </div>
+            </div>
           ) : !isGroup && !isSelf && cleanPhone ? (
             <button
               type="button"
@@ -1031,8 +1108,17 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
               disabled={isAddingLead}
               className="mt-3.5 inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-xl bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 font-bold text-xs transition-colors cursor-pointer border border-emerald-500/20"
             >
-              <Plus className="w-3.5 h-3.5" />
-              <span>{isAddingLead ? t('common.loading') : t('whatsapp.addToCrm')}</span>
+              {isAddingLead ? (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <span>{t('common.loading')}</span>
+                </>
+              ) : (
+                <>
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>{t('whatsapp.addToCrm')}</span>
+                </>
+              )}
             </button>
           ) : null}
 

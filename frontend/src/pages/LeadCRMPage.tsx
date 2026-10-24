@@ -17,7 +17,8 @@ import {
   Building2,
   FolderPlus,
   FolderKanban,
-  MoreVertical
+  MoreVertical,
+  Upload
 } from 'lucide-react';
 import { 
   Button, 
@@ -43,7 +44,8 @@ import {
   LeadDeleteModal,
   LeadBlacklistModal,
   LeadAddManualModal,
-  LeadAddToGroupModal
+  LeadAddToGroupModal,
+  LeadImportModal
 } from '../features/leads/components';
 import { useLeadFilters, useLeadSelection } from '../features/leads/hooks';
 import { ApiClient } from '../api/client';
@@ -161,6 +163,7 @@ export const LeadCRMPage: React.FC<LeadCRMPageProps> = ({ onRefreshStats, stats 
 
   // Add Lead Modal State
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [isImportModalOpen, setIsImportModalOpen] = useState(false);
 
   // New Lead Form State
   const [newLeadName, setNewLeadName] = useState('');
@@ -694,6 +697,15 @@ export const LeadCRMPage: React.FC<LeadCRMPageProps> = ({ onRefreshStats, stats 
               <Button
                 variant="outline"
                 size="sm"
+                onClick={() => setIsImportModalOpen(true)}
+                className="space-x-1.5 flex-1 sm:flex-initial justify-center cursor-pointer font-bold border-[#7367F0]/30 text-[#7367F0] hover:bg-[#7367F0]/10"
+              >
+                <Upload className="w-3.5 h-3.5 text-[#7367F0]" />
+                <span>{t('leads.importLeads')}</span>
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
                 onClick={() => ApiClient.exportCsv(buildExportParams())}
                 className="space-x-1.5 flex-1 sm:flex-initial justify-center cursor-pointer"
               >
@@ -1003,6 +1015,16 @@ export const LeadCRMPage: React.FC<LeadCRMPageProps> = ({ onRefreshStats, stats 
         setSelectedTargetGroupId={setSelectedTargetGroupId}
         newGroupName={newGroupName}
         setNewGroupName={setNewGroupName}
+      />
+
+      {/* Bulk Lead Import Modal (Excel / CSV) */}
+      <LeadImportModal
+        isOpen={isImportModalOpen}
+        onClose={() => setIsImportModalOpen(false)}
+        onSuccess={() => {
+          fetchLeads();
+          onRefreshStats();
+        }}
       />
     </div>
   );

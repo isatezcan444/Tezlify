@@ -766,6 +766,36 @@ async def list_conversations(
                 lid_map[lid_jid.split("@")[0]] = pn
                 lid_map[f"{lid_jid.split('@')[0]}@lid"] = pn
 
+    # Phase 1: Prefetch CRM Lead info (id and status) for all conversations
+    lead_ids_to_fetch = {r.lead_id for r in rows if r.lead_id}
+    contact_phones = set()
+    for r in rows:
+        c = r.contact or contacts_map.get(r.contact_id)
+        if c and c.phone_e164 and "@g.us" not in c.phone_e164 and "@lid" not in c.phone_e164:
+            contact_phones.add(c.phone_e164)
+
+    lead_map_by_id: Dict[int, Lead] = {}
+    lead_map_by_phone: Dict[str, Lead] = {}
+    lead_conds = []
+    if lead_ids_to_fetch:
+        lead_conds.append(Lead.id.in_(lead_ids_to_fetch))
+    if contact_phones:
+        lead_conds.append(Lead.phone_e164.in_(contact_phones))
+
+    if lead_conds:
+        try:
+            l_stmt = select(Lead).where(
+                get_user_filter(Lead.user_id, user_id),
+                or_(*lead_conds),
+            )
+            l_rows = (await db.execute(l_stmt)).scalars().all()
+            for l in l_rows:
+                lead_map_by_id[l.id] = l
+                if l.phone_e164:
+                    lead_map_by_phone[l.phone_e164] = l
+        except Exception as l_exc:
+            logger.warning("Lead prefetch in list_conversations failed: %s", l_exc)
+
     seen_self_conversation = False
     out: List[Dict[str, Any]] = []
     for r in rows:
@@ -776,13 +806,6 @@ async def list_conversations(
             clean_lid = phone.replace("jid:", "").strip()
             resolved_pn = lid_map.get(clean_lid) or lid_map.get(clean_lid.split("@")[0]) or lid_map.get(f"{clean_lid.split('@')[0]}@lid")
             if resolved_pn:
-                # C-5: normalize IN MEMORY only. A GET must never mutate persistence.
-                # Re-keying `contact.phone_e164` and rewriting `messages.sender_phone`
-                # used to happen right here, followed by a `db.commit()` from a read
-                # path — which can also flush and discard unrelated pending work on
-                # the same session. The repair now lives on the write path that
-                # actually learns the mapping: `_heal_lid_contact_identity`, invoked
-                # from the `lid_mapped` event handler.
                 phone = resolved_pn
 
         is_self = bool(phone and active_sess_phone and _is_self_identity(phone, active_sess_phone))
@@ -797,6 +820,25 @@ async def list_conversations(
             clean_pn = _extract_clean_phone(phone) or phone
             formatted_pn = _format_phone_spaces(clean_pn)
             resolved_name = f"{formatted_pn} (Siz)"
+
+        # Resolve associated Lead and LeadStatus
+        resolved_lead = None
+        if r.lead_id and r.lead_id in lead_map_by_id:
+            resolved_lead = lead_map_by_id[r.lead_id]
+        elif phone and phone in lead_map_by_phone:
+            resolved_lead = lead_map_by_phone[phone]
+        elif contact and contact.phone_e164 and contact.phone_e164 in lead_map_by_phone:
+            resolved_lead = lead_map_by_phone[contact.phone_e164]
+
+        effective_lead_id = resolved_lead.id if resolved_lead else r.lead_id
+        effective_lead_status = (
+            resolved_lead.status.value if (resolved_lead and hasattr(resolved_lead.status, "value"))
+            else (str(resolved_lead.status) if resolved_lead else None)
+        )
+
+        # In-memory backfill for response consistency
+        if resolved_lead and not r.lead_id:
+            r.lead_id = resolved_lead.id
 
         # Faz 10: eski kose-parantezli degerler okuma aninda da etikete
         # normalize edilir ('[IMAGE]' -> '📷 Fotoğraf'); normal metin aynen gecer.
@@ -826,7 +868,8 @@ async def list_conversations(
                 "id": r.id,
                 "session_id": r.session_id,
                 "contact_id": r.contact_id,
-                "lead_id": r.lead_id,
+                "lead_id": effective_lead_id,
+                "lead_status": effective_lead_status,
                 # Faz 7 & Phase 15.4: Ham jid/lid presentation'a sızmaz,
                 # 5-tier hiyerarşiyle çözülen temiz ad / telefon / None döner.
                 "name": resolved_name,
@@ -1679,6 +1722,52 @@ async def update_conversation_status(
         )
     except Exception as exc:  # noqa: BLE001 - broadcast is best-effort
         logger.debug("Conversation status broadcast failed (conv=%s): %s", conv.id, exc)
+    return result
+
+
+async def link_conversation_lead(
+    db: AsyncSession, user_id: str, conversation_id: int, lead_id: Optional[int]
+) -> Dict[str, Any]:
+    """Links or unlinks a CRM Lead to a conversation and its contact."""
+    conv = await _get_conversation_or_404(db, user_id, conversation_id)
+
+    lead_status = None
+    if lead_id is not None:
+        lead = await db.get(Lead, lead_id)
+        if not lead or (lead.user_id and str(lead.user_id) != str(user_id)):
+            raise LookupError(f"Lead bulunamadi: {lead_id}")
+        lead_status = lead.status.value if hasattr(lead.status, "value") else str(lead.status)
+
+    conv.lead_id = lead_id
+    if conv.contact_id:
+        contact = await db.get(Contact, conv.contact_id)
+        if contact:
+            contact.lead_id = lead_id
+
+    conv.updated_at = utc_now_naive()
+    await db.commit()
+    await db.refresh(conv)
+
+    result = {
+        "conversation_id": conv.id,
+        "lead_id": conv.lead_id,
+        "lead_status": lead_status,
+    }
+    try:
+        from backend.app.api.v1.websocket import ws_manager
+
+        await ws_manager.broadcast(
+            {
+                "event": "conversation_lead_linked",
+                "user_id": user_id,
+                "conversation_id": conv.id,
+                "lead_id": conv.lead_id,
+                "lead_status": lead_status,
+            },
+            target_user_id=user_id,
+        )
+    except Exception as exc:  # noqa: BLE001 - broadcast is best-effort
+        logger.debug("Conversation lead link broadcast failed (conv=%s): %s", conv.id, exc)
     return result
 
 

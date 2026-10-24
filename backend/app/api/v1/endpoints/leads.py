@@ -1,6 +1,8 @@
 import os
-from typing import Optional, List
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, Body
+import json
+import logging
+from typing import Optional, List, Dict, Any
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, Body, UploadFile, File, Form
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, delete, insert
 from sqlalchemy.exc import IntegrityError
@@ -20,8 +22,11 @@ from backend.app.schemas.lead import (
 )
 from backend.app.services.phone_service import PhoneService
 from backend.app.services.export_service import ExportService
+from backend.app.services.lead_import_service import LeadImportService
 from backend.app.services.lead_query_service import build_lead_filter_conditions
 from backend.app.services.webhook_dispatcher import WebhookDispatcher
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -461,3 +466,66 @@ async def export_leads_excel(
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": "attachment; filename=tezlify_leads.xlsx"}
     )
+
+
+@router.post("/import/preview")
+async def preview_leads_import(
+    file: UploadFile = File(...),
+    current_user: AuthUser = Depends(get_current_user),
+):
+    """
+    Parses an uploaded CSV/Excel file and returns detected column mappings,
+    total row count, and a sample of rows for user verification.
+    """
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="Dosya adı bulunamadı.")
+
+    file_bytes = await file.read()
+    if len(file_bytes) == 0:
+        raise HTTPException(status_code=400, detail="Yüklenen dosya boş.")
+
+    try:
+        preview_data = LeadImportService.preview(file_bytes, file.filename)
+        return preview_data
+    except Exception as e:
+        logger.exception("Lead import preview error: %s", e)
+        raise HTTPException(status_code=400, detail=f"Dosya okunamadı veya ayrıştırılamadı: {str(e)}")
+
+
+@router.post("/import")
+async def import_leads(
+    file: UploadFile = File(...),
+    column_mapping: Optional[str] = Form(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+):
+    """
+    Executes bulk lead import from CSV or Excel file, with optional custom column mapping,
+    phone normalization, deduplication, and blacklist filtering.
+    """
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="Dosya adı bulunamadı.")
+
+    file_bytes = await file.read()
+    if len(file_bytes) == 0:
+        raise HTTPException(status_code=400, detail="Yüklenen dosya boş.")
+
+    mapping_dict = None
+    if column_mapping:
+        try:
+            mapping_dict = json.loads(column_mapping)
+        except Exception:
+            raise HTTPException(status_code=400, detail="Geçersiz sütun eşleştirme JSON formatı.")
+
+    try:
+        result = await LeadImportService.parse_and_import(
+            db=db,
+            file_bytes=file_bytes,
+            filename=file.filename,
+            column_mapping=mapping_dict,
+            user_id=current_user.id,
+        )
+        return result
+    except Exception as e:
+        logger.exception("Lead import execution error: %s", e)
+        raise HTTPException(status_code=400, detail=f"İçe aktarma sırasında hata oluştu: {str(e)}")

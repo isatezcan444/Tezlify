@@ -1177,6 +1177,20 @@ export const WhatsAppApi = {
   },
 
   /**
+   * Sohbeti bir CRM Lead kaydıyla bağlar veya bağını kaldırır.
+   */
+  async linkConversationLead(
+    conversationId: number,
+    leadId: number | null,
+  ): Promise<{ conversation_id: number; lead_id: number | null; lead_status: string | null }> {
+    return apiSend<{ conversation_id: number; lead_id: number | null; lead_status: string | null }>(
+      `/whatsapp/conversations/${conversationId}/link-lead`,
+      'POST',
+      { lead_id: leadId },
+    );
+  },
+
+  /**
    * Sohbeti okundu olarak işaretler.
    *
    * Faz 12 (P0 — ağ fırtınası): eskiden burada `POST /read` sonrasında TÜM

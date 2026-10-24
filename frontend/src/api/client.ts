@@ -1,5 +1,7 @@
 import { 
   Lead, 
+  LeadImportPreviewResult,
+  LeadImportResult,
   Campaign, 
   DashboardStats, 
   ScraperJob, 
@@ -266,6 +268,40 @@ export class ApiClient {
     a.click();
     document.body.removeChild(a);
     window.URL.revokeObjectURL(url);
+  }
+
+  static async previewImportLeads(file: File): Promise<LeadImportPreviewResult> {
+    const formData = new FormData();
+    formData.append('file', file);
+    const res = await authFetch(`${API_BASE}/leads/import/preview`, {
+      method: 'POST',
+      body: formData,
+    });
+    if (!res.ok) {
+      const msg = await parseError(res, 'Dosya önizleme yüklemesi başarısız oldu');
+      throw new Error(msg);
+    }
+    return res.json();
+  }
+
+  static async importLeads(
+    file: File,
+    columnMapping?: Record<string, string>
+  ): Promise<LeadImportResult> {
+    const formData = new FormData();
+    formData.append('file', file);
+    if (columnMapping) {
+      formData.append('column_mapping', JSON.stringify(columnMapping));
+    }
+    const res = await authFetch(`${API_BASE}/leads/import`, {
+      method: 'POST',
+      body: formData,
+    });
+    if (!res.ok) {
+      const msg = await parseError(res, 'İçe aktarma işlemi başarısız oldu');
+      throw new Error(msg);
+    }
+    return res.json();
   }
 
   // --- Scraper ---
