@@ -1,8 +1,7 @@
 import asyncio
 import logging
 import time
-from datetime import datetime
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 from backend.app.core.datetime_utils import utc_now_naive
 from fastapi import APIRouter, Depends, HTTPException
