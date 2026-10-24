@@ -48,6 +48,7 @@ const MediaThumbnailItem: React.FC<{
   onRemove: (e: React.MouseEvent) => void;
   isSending: boolean;
 }> = ({ file, isActive, onClick, onRemove, isSending }) => {
+  const { t } = useI18n();
   const [thumbUrl, setThumbUrl] = useState<string | null>(null);
   const ext = (file.name.split('.').pop() || '').toLowerCase();
   const isImage = file.type?.startsWith('image/') || ['png', 'jpg', 'jpeg', 'gif', 'webp'].includes(ext);
@@ -103,8 +104,8 @@ const MediaThumbnailItem: React.FC<{
         <button
           type="button"
           onClick={onRemove}
-          title="Kaldır"
-          aria-label="Kaldır"
+          title={t('common.remove')}
+          aria-label={t('common.remove')}
           className="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-black/80 hover:bg-red-500 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity z-10 cursor-pointer shadow-sm"
         >
           <X className="w-3 h-3" />
@@ -336,7 +337,7 @@ export const MediaSendModal: React.FC<MediaSendModalProps> = ({
               <button
                 type="button"
                 onClick={handleRotateCurrent}
-                title="Döndür (90°)"
+                title={t('whatsapp.rotate90')}
                 className="p-2 rounded-full text-slate-300 hover:text-white hover:bg-white/10 active:scale-90 transition-all cursor-pointer"
               >
                 <RotateCw className="w-5 h-5" />
@@ -504,7 +505,7 @@ export const MediaSendModal: React.FC<MediaSendModalProps> = ({
             type="button"
             onClick={onSendAll}
             disabled={isSending}
-            title={files.length > 1 ? (t('whatsapp.sendAllFilesBtn') || 'Tümünü Gönder') : (t('whatsapp.sendFileBtn') || 'Gönder')}
+            title={files.length > 1 ? t('whatsapp.sendAllFilesBtn') : t('whatsapp.sendFileBtn')}
             aria-label={t('whatsapp.sendFileBtn')}
             className="w-11 h-11 sm:w-12 sm:h-12 rounded-full bg-[#25D366] hover:bg-[#20ba59] active:scale-95 text-white flex items-center justify-center shadow-lg shadow-[#25D366]/20 transition-all shrink-0 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
           >

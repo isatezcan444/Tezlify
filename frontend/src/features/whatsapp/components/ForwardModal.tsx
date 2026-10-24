@@ -200,7 +200,7 @@ export const ForwardModal: React.FC<ForwardModalProps> = ({
         {/* Modal actions */}
         <div className="pt-3 border-t border-slate-200/80 dark:border-white/[0.08] flex items-center justify-between">
           <span className="text-xs font-semibold text-slate-500 dark:text-slate-400">
-            {selectedIds.size > 0 ? `${selectedIds.size} ${t('common.selected') || 'seçildi'}` : ''}
+            {selectedIds.size > 0 ? `${selectedIds.size} ${t('common.selected')}` : ''}
           </span>
           <div className="flex items-center space-x-2">
             <button

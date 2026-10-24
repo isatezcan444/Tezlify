@@ -436,7 +436,7 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
           if (phone || name) {
             upsertParticipant({
               id: phone || name || 'part',
-              name: name || phone || (language === 'tr' ? 'Katılımcı' : 'Participant'),
+              name: name || phone || t('whatsapp.participantFallback'),
               phone: isRealPhone(phone) ? phone : undefined,
               is_me: false,
             });
@@ -520,7 +520,7 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
         onOpenLead(created.id);
       }
     } catch (err: any) {
-      toast.error(err.message || 'CRM adayı eklenemedi');
+      toast.error(err.message || t('whatsapp.addLeadError'));
     } finally {
       setAddingPartPhone(null);
     }
@@ -542,7 +542,7 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
         onOpenLead(created.id);
       }
     } catch (err: any) {
-      toast.error(err.message || 'CRM adayı eklenemedi');
+      toast.error(err.message || t('whatsapp.addLeadError'));
     } finally {
       setIsAddingLead(false);
     }
@@ -604,7 +604,7 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
   };
 
   const handleRemoveParticipant = async (p: { id: string; name: string; phone?: string }) => {
-    const partName = (p.name && isRealContactName(p.name) && p.name !== 'ME') ? p.name : (p.phone ? formatPhoneNumber(p.phone) : 'Katılımcı');
+    const partName = (p.name && isRealContactName(p.name) && p.name !== 'ME') ? p.name : (p.phone ? formatPhoneNumber(p.phone) : t('whatsapp.participantFallback'));
     const confirmed = await toast.confirm({
       title: t('whatsapp.removeParticipant'),
       message: t('whatsapp.confirmRemoveParticipant', { name: partName }),
