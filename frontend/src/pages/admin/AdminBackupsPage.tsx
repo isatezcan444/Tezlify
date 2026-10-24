@@ -698,12 +698,12 @@ export const AdminBackupsPage: React.FC<AdminBackupsPageProps> = ({ onNavigate }
         {/* Real Issue / Security Warning if failed or off-host unconfigured */}
         {!hasPostgres && (
           <AdminActionIssueCard
-            title="Henüz PostgreSQL Yedeği Bulunmuyor"
-            description="Üretim veritabanına ait kayıtlı bir yedek dosyası bulunamadı. Veri güvenliği için ilk yedeğinizi oluşturun."
+            title={t('admin.backups.noBackupTitle')}
+            description={t('admin.backups.noBackupDesc')}
             severity="warning"
-            statusLabel="Yedek Yok"
-            impact="Olası bir sistem arızasında son verilere ulaşılamama riski doğar."
-            recommendedAction="Aşağıdaki butonu kullanarak hemen bir tam sistem yedeği başlatın."
+            statusLabel={t('admin.backups.noBackupStatus')}
+            impact={t('admin.backups.noBackupImpact')}
+            recommendedAction={t('admin.backups.noBackupAction')}
             primaryAction={{
               label: t('admin.backups.runBackupHeroBtn'),
               onClick: () => handleRunBackup('full'),
@@ -715,14 +715,14 @@ export const AdminBackupsPage: React.FC<AdminBackupsPageProps> = ({ onNavigate }
 
         {!isOffHostConfigured && (
           <AdminActionIssueCard
-            title="Harici (Bulut) Yedekleme Yapılandırılmadı"
-            description="Tüm sistem ve veritabanı yedekleriniz yerel sunucuda güvenle saklanmaktadır; ancak sunucu donanım arızalarına karşı harici bulut senkronizasyonu önerilir."
+            title={t('admin.backups.cloudUnconfiguredTitle')}
+            description={t('admin.backups.cloudUnconfiguredDesc')}
             severity="info"
-            statusLabel="Opsiyonel Güvenlik"
-            impact="Sunucu donanımı arızalanırsa yerel diske erişim kesintiye uğrayabilir."
-            recommendedAction="İsteğe bağlı olarak bulut depolama (S3 / R2) entegrasyon adımlarını inceleyin."
+            statusLabel={t('admin.backups.cloudUnconfiguredStatus')}
+            impact={t('admin.backups.cloudUnconfiguredImpact')}
+            recommendedAction={t('admin.backups.cloudUnconfiguredAction')}
             primaryAction={{
-              label: 'Kurulum Rehberini Aç',
+              label: t('admin.backups.openGuideModal'),
               onClick: () => setShowGuideModal(true),
               icon: Info,
             }}

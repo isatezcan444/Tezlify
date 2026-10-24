@@ -73,7 +73,7 @@ const formatDateTime = (isoString?: string | null): string => {
 };
 
 export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate }) => {
-  const { t } = useI18n();
+  const { t, language } = useI18n();
   const { user, profile, isAdmin } = useAuth();
   const toast = useToast();
 
@@ -800,7 +800,7 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
                 {/* Uptime */}
                 <StatsCard
                   title={t('admin.hostUptime')}
-                  value={formatUptime(data.system.uptime, true)}
+                  value={formatUptime(data.system.uptime, language === 'tr')}
                   subText={data.system.reboot_required ? t('admin.rebootRequiredBadge') : t('admin.rebootNotRequiredBadge')}
                   icon={Clock}
                   iconVariant={data.system.reboot_required ? 'warning' : 'primary'}

@@ -373,20 +373,20 @@ export const AdminWhatsAppPage: React.FC<AdminWhatsAppPageProps> = ({ onNavigate
             {/* Standard Issue Card if Gateway Bridge is Disconnected */}
             {!isBridgeConnected && (
               <AdminActionIssueCard
-                title="WhatsApp Ağ Geçidi Bağlantısı Kesik"
-                description="WhatsApp servis köprüsü ile iletişim kurulamıyor."
+                title={t('admin.whatsapp.gatewayDisconnectedTitle')}
+                description={t('admin.whatsapp.gatewayDisconnectedDesc')}
                 severity="critical"
-                statusLabel="Kritik Kesinti"
-                impact="Gelen ve giden WhatsApp mesajları iletilemez."
-                recommendedAction="Ağ geçidi servisini kontrol edin veya bağlantıyı yenileyin."
+                statusLabel={t('admin.whatsapp.criticalOutage')}
+                impact={t('admin.whatsapp.gatewayDisconnectedImpact')}
+                recommendedAction={t('admin.whatsapp.gatewayDisconnectedAction')}
                 primaryAction={{
-                  label: 'Yeniden Bağlanmayı Dene',
+                  label: t('admin.whatsapp.retryConnection'),
                   onClick: () => void fetchWhatsApp(false),
                   loading: refreshing,
                   icon: RefreshCw,
                 }}
                 secondaryAction={onNavigate ? {
-                  label: 'Sistem İşlemlerine Git',
+                  label: t('admin.whatsapp.goToOperations'),
                   onClick: () => onNavigate('admin-operations'),
                 } : undefined}
               />
@@ -395,18 +395,18 @@ export const AdminWhatsAppPage: React.FC<AdminWhatsAppPageProps> = ({ onNavigate
             {/* Standard Issue Card if sessions need QR action */}
             {isBridgeConnected && (scanQrCount > 0 || relinkCount > 0) && (
               <AdminActionIssueCard
-                title={relinkCount > 0 ? 'WhatsApp Oturumu Sonlandı' : 'WhatsApp QR Kod Doğrulaması Bekliyor'}
+                title={relinkCount > 0 ? t('admin.whatsapp.sessionEndedTitle') : t('admin.whatsapp.qrScanPendingTitle')}
                 description={
                   relinkCount > 0
-                    ? `${relinkCount} oturumun bağlantısı sonlandı; tekrar eşleştirilmesi gerekiyor.`
-                    : `${scanQrCount} oturum QR kod taraması bekliyor.`
+                    ? t('admin.whatsapp.sessionEndedDesc', { count: relinkCount })
+                    : t('admin.whatsapp.qrScanPendingDesc', { count: scanQrCount })
                 }
                 severity="warning"
-                statusLabel="Eşleştirme Gerekli"
-                impact="İlgili hat üzerinden müşterilere mesaj iletimi durduruldu."
-                recommendedAction="WhatsApp Hub sayfasına giderek telefonunuzdan QR kodu taratın."
+                statusLabel={t('admin.whatsapp.pairingRequired')}
+                impact={t('admin.whatsapp.sessionEndedImpact')}
+                recommendedAction={t('admin.whatsapp.sessionEndedAction')}
                 primaryAction={onNavigate ? {
-                  label: 'WhatsApp Hub\'ı Aç',
+                  label: t('admin.whatsapp.openWhatsAppHub'),
                   onClick: () => onNavigate('whatsapp'),
                   icon: Smartphone,
                 } : undefined}
