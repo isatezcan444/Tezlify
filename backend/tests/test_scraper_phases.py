@@ -161,3 +161,36 @@ def test_http_scraper_query_neighborhood_formatting():
 
     assert query == "diş kliniği Yenişehir Mahallesi Ataşehir İstanbul"
 
+
+def test_outside_district_rejected_even_with_shared_neighborhood_name():
+    from backend.app.services.location_validator import LocationValidator, LocationStatus
+
+    # Yenişehir exists in both Ataşehir and Pendik.
+    # An address in Pendik MUST be rejected as OUTSIDE_TARGET even if Yenişehir was the target neighborhood.
+    res = LocationValidator.evaluate(
+        target_city="İstanbul",
+        target_districts=["Ataşehir"],
+        result_address="Yenişehir, Eşref Bitlis Blv. No:23, 34912 Pendik/İstanbul",
+        result_name="Yaşam Başladı",
+        target_neighborhoods=["Yenişehir"],
+    )
+    assert res.status == LocationStatus.OUTSIDE_TARGET
+    assert res.matched_district == "Pendik"
+
+
+def test_veterinary_and_animal_hospital_exclusion():
+    from backend.app.services.query_expander import QueryExpander
+    from backend.app.services.taxonomy_registry import TaxonomyRegistry
+
+    TaxonomyRegistry.initialize()
+    node = TaxonomyRegistry.find_node_by_alias_or_concept("Hayvan Hastanesi")
+    assert node is not None
+    assert node.id == "pet_services"
+    assert TaxonomyRegistry.are_mutually_exclusive("dental", "pet_services") is True
+
+    # Health facility signal must veto animal hospitals
+    assert QueryExpander.has_health_facility_signal("İstanbul Hayvan Hastanesi") is False
+    assert QueryExpander.has_health_facility_signal("Veteriner Kliniği") is False
+    assert QueryExpander.has_health_facility_signal("Ataşehir Diş Hastanesi") is True
+
+

@@ -406,10 +406,13 @@ class GoogleMapsScraper(BaseScraper):
                 for dist in target_districts:
                     register_subdivisions_for_district(clean_city, dist, target_neighborhoods)
 
+                # Use clean, concise primary terms (e.g. 'Diş Klinikleri' instead of 'Diş Klinikleri & Ağız Sağlığı Merkezleri')
+                # so Google Maps does not choke on long multi-word conjunctive queries and drop sector targeting.
+                base_term = QueryExpander.primary_term(clean_keyword) or clean_keyword
                 nh_terms = []
                 for nh in target_neighborhoods:
-                    nh_terms.append(f"{clean_keyword} {nh} Mahallesi")
-                    nh_terms.append(f"{clean_keyword} {nh}")
+                    nh_terms.append(f"{base_term} {nh} Mahallesi")
+                    nh_terms.append(f"{base_term} {nh}")
                 search_terms = nh_terms
                 logger.info(f"[GMAPS_ENGINE] Armed explicit neighborhood terms (exclusive): {nh_terms}")
         target_per_district = compute_district_target(max_results, len(target_districts))
@@ -557,9 +560,9 @@ class GoogleMapsScraper(BaseScraper):
                         return
 
                     # Explicit neighborhood gating: when target neighborhood(s) are chosen without
-                    # a radius filter, reject places explicitly proven to be in an unrelated neighborhood.
+                    # a radius filter, only accept candidates verified to belong to the target neighborhood(s).
                     if target_neighborhoods and not radius_km:
-                        if verdict.matched_subdivision and not verdict.is_target_neighborhood:
+                        if not verdict.is_target_neighborhood:
                             stats["geo_filtered"] += 1
                             return
                 else:

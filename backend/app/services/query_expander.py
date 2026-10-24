@@ -243,6 +243,9 @@ class QueryExpander:
         if not text:
             return False
         norm_text = normalize_turkish(text).lower()
+        # Veto: an animal / veterinary signal proves this is not human healthcare
+        if any(v in norm_text for v in ("hayvan", "veteriner", "pet shop", "petshop", "kedi", "kopek")):
+            return False
         return any(
             normalize_turkish(marker).lower() in norm_text
             for marker in _HEALTH_FACILITY_MARKERS

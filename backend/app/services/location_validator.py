@@ -66,30 +66,6 @@ class LocationValidator:
         corpus = f"{result_name or ''} {result_address or ''}"
         norm_corpus = normalize_turkish(corpus)
 
-        # 0. Check explicit target neighborhood match first
-        if target_neighborhoods:
-            import re
-            for nh in target_neighborhoods:
-                norm_nh = normalize_turkish(nh)
-                if not norm_nh:
-                    continue
-                if (
-                    f"{norm_nh} mah" in norm_corpus
-                    or f"{norm_nh} mh" in norm_corpus
-                    or f"{norm_nh} cad" in norm_corpus
-                    or f"{norm_nh} sok" in norm_corpus
-                    or f", {norm_nh}" in norm_corpus
-                    or f"{norm_nh}," in norm_corpus
-                    or re.search(r"\b" + re.escape(norm_nh) + r"\b", norm_corpus)
-                ):
-                    return LocationAssessment(
-                        status=LocationStatus.SUBDIVISION,
-                        confidence=1.0,
-                        matched_district=target_districts[0] if target_districts else None,
-                        matched_subdivision=nh,
-                        reason=f"Seçilen hedef mahalle doğrulandı: {nh}"
-                    )
-
         # 1. Structured metadata evaluation (OSM address details / Overpass tags)
         if structured_metadata:
             addr_details = structured_metadata.get("address_details") or structured_metadata.get("tags") or {}
@@ -129,32 +105,9 @@ class LocationValidator:
                         )
 
         # 2. Text Corpus Evaluation
-        # A. Check Subdivision Matches First
-        for td in target_districts:
-            subs = get_subdivisions_for_district(target_city, td)
-            for sub in subs:
-                norm_sub = normalize_turkish(sub)
-                if f"{norm_sub} mah" in norm_corpus or f"{norm_sub} sok" in norm_corpus or f"{norm_sub} cad" in norm_corpus or f"{norm_sub} " in norm_corpus:
-                    return LocationAssessment(
-                        status=LocationStatus.SUBDIVISION,
-                        confidence=0.9,
-                        matched_district=td,
-                        matched_subdivision=sub,
-                        reason=f"Adres metninde mahalle/semt doğrulandı: {sub} ({td})"
-                    )
-
-        # B. Check Exact Target District in Address
-        for idx, td in enumerate(target_districts):
-            norm_td = norm_targets[idx]
-            if norm_td in norm_corpus:
-                return LocationAssessment(
-                    status=LocationStatus.EXACT,
-                    confidence=0.85,
-                    matched_district=td,
-                    reason=f"Adres metninde ilçe doğrulandı: {td}"
-                )
-
-        # C. Check if Address Contains Another District in Same City -> OUTSIDE_TARGET
+        # A. Check if Address Contains Another District in Same City -> OUTSIDE_TARGET
+        # District boundaries are strict: a mention of another district (e.g. Pendik/İstanbul)
+        # must always be rejected even if a shared neighborhood name is mentioned.
         for d in all_city_districts:
             nd = normalize_turkish(d)
             if nd not in norm_targets:
@@ -169,6 +122,58 @@ class LocationValidator:
                         matched_district=d,
                         reason=f"Farklı ilçe adresi tespit edildi: {d} (Hedef: {', '.join(target_districts)})"
                     )
+
+        # B. Check Subdivisions of Target Districts
+        import re
+        matched_sub: Optional[str] = None
+        matched_td: Optional[str] = None
+        for td in target_districts:
+            subs = get_subdivisions_for_district(target_city, td)
+            if target_neighborhoods:
+                # Prioritize explicit target neighborhoods
+                subs = [s for s in subs if any(normalize_turkish(tn) == normalize_turkish(s) for tn in target_neighborhoods)] + [
+                    s for s in subs if not any(normalize_turkish(tn) == normalize_turkish(s) for tn in target_neighborhoods)
+                ]
+            for sub in subs:
+                norm_sub = normalize_turkish(sub)
+                if not norm_sub:
+                    continue
+                # Match word boundary (handles "Barbaros,", "Yenişehir Mah.", "Barbaros Cad.")
+                pattern = r"\b" + re.escape(norm_sub) + r"\b"
+                if re.search(pattern, norm_corpus):
+                    matched_sub = sub
+                    matched_td = td
+                    break
+            if matched_sub:
+                break
+
+        # C. Check Exact Target District in Address
+        for idx, td in enumerate(target_districts):
+            norm_td = norm_targets[idx]
+            if norm_td in norm_corpus:
+                if matched_sub:
+                    return LocationAssessment(
+                        status=LocationStatus.SUBDIVISION,
+                        confidence=1.0,
+                        matched_district=td,
+                        matched_subdivision=matched_sub,
+                        reason=f"Adres metninde ilçe ve mahalle doğrulandı: {td} > {matched_sub}"
+                    )
+                return LocationAssessment(
+                    status=LocationStatus.EXACT,
+                    confidence=0.85,
+                    matched_district=td,
+                    reason=f"Adres metninde ilçe doğrulandı: {td}"
+                )
+
+        if matched_sub and matched_td:
+            return LocationAssessment(
+                status=LocationStatus.SUBDIVISION,
+                confidence=0.9,
+                matched_district=matched_td,
+                matched_subdivision=matched_sub,
+                reason=f"Adres metninde mahalle/semt doğrulandı: {matched_sub} ({matched_td})"
+            )
 
         # D. Check City Only Match
         if norm_city in norm_corpus:

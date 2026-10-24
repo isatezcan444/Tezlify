@@ -144,7 +144,7 @@ class GoogleMapsHttpScraper:
             return clean_extracted_website(raw_u)
         return None
 
-    def _extract_category(self, pd: List[Any], keyword: str) -> str:
+    def _extract_category(self, pd: List[Any], keyword: str) -> Optional[str]:
         """Extracts clean primary sector category from pd[13]."""
         if len(pd) > 13 and isinstance(pd[13], list) and pd[13]:
             first_cat = str(pd[13][0]).strip()
@@ -153,7 +153,7 @@ class GoogleMapsHttpScraper:
             if 2 <= len(first_cat) <= 50:
                 return first_cat
 
-        return keyword.title()[:50]
+        return None
 
     def _extract_coordinates(self, pd: List[Any]) -> tuple[Optional[float], Optional[float]]:
         """Extracts (latitude, longitude) from pd[9]."""

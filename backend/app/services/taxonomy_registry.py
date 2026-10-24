@@ -118,7 +118,8 @@ class TaxonomyRegistry:
             display_name="Pet Shop & Veteriner Klinikleri",
             aliases=[
                 "pet shop", "petshop", "pet shoplar", "evcil hayvan", "veteriner", "veteriner kliniği",
-                "veteriner klinikleri", "pet kuaför", "kedi köpek maması", "akvaryum"
+                "veteriner klinikleri", "pet kuaför", "kedi köpek maması", "akvaryum",
+                "hayvan hastanesi", "hayvan hastaneleri"
             ],
             semantic_concepts=[
                 "pet shop", "petshop", "veteriner", "evcil hayvan", "mama", "kedi", "köpek",
