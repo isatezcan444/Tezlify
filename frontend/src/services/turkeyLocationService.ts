@@ -113,6 +113,64 @@ export class TurkeyLocationService {
   public static getCityNames(): string[] {
     return this.getAllLocations().map((c) => c.name);
   }
+
+  /**
+   * Fetches official neighborhoods for a given district on demand (lazy-loaded).
+   * Caches in memory and localStorage for fast subsequent access.
+   */
+  public static async fetchNeighborhoods(cityName: string, districtName: string): Promise<string[]> {
+    const cleanCity = cityName.trim();
+    const cleanDist = districtName.trim();
+    const cacheKey = `tezlify_nh_${cleanCity}_${cleanDist}`.toLowerCase();
+
+    if (typeof window !== 'undefined') {
+      try {
+        const cached = localStorage.getItem(cacheKey);
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        }
+      } catch {}
+    }
+
+    // Try backend proxy first
+    try {
+      const res = await fetch(
+        `/api/v1/scraper/neighborhoods?city=${encodeURIComponent(cleanCity)}&district=${encodeURIComponent(cleanDist)}`
+      );
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data.neighborhoods) && data.neighborhoods.length > 0) {
+          if (typeof window !== 'undefined') {
+            localStorage.setItem(cacheKey, JSON.stringify(data.neighborhoods));
+          }
+          return data.neighborhoods;
+        }
+      }
+    } catch {}
+
+    // Fallback: query Turkiye API directly if district ID is known
+    try {
+      const { getDistrictMetric } = await import('../data/turkeyLocations');
+      const metric = getDistrictMetric(cleanCity, cleanDist);
+      if (metric && metric.id) {
+        const directRes = await fetch(`https://api.turkiyeapi.dev/v2/neighborhoods?districtId=${metric.id}`);
+        if (directRes.ok) {
+          const directData = await directRes.json();
+          const names: string[] = (directData.data || []).map((x: any) => x.name).filter(Boolean);
+          if (names.length > 0) {
+            names.sort((a, b) => a.localeCompare(b, 'tr'));
+            if (typeof window !== 'undefined') {
+              localStorage.setItem(cacheKey, JSON.stringify(names));
+            }
+            return names;
+          }
+        }
+      }
+    } catch {}
+
+    return [];
+  }
 }
 
 function jsonParseSafe(str: string): any {

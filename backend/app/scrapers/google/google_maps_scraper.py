@@ -345,6 +345,9 @@ class GoogleMapsScraper(BaseScraper):
         districts: Optional[List[str]] = None,
         max_results: int = 0,
         progress_callback: Optional[Callable[[Dict[str, Any]], Any]] = None,
+        neighborhoods: Optional[List[str]] = None,
+        min_population: Optional[int] = None,
+        radius_km: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         if not city or not city.strip():
             raise ValueError("City is required")
@@ -360,6 +363,19 @@ class GoogleMapsScraper(BaseScraper):
             if not target_districts:
                 raise ValueError(f"FAIL CLOSED: unknown city '{clean_city}' has no district registry")
 
+        # Faz 3: Filter districts by minimum population if requested
+        if min_population and min_population > 0:
+            from backend.app.data.turkey_locations import get_district_population
+            pop_filtered = [
+                d for d in target_districts
+                if get_district_population(clean_city, d) >= min_population
+            ]
+            if pop_filtered:
+                target_districts = pop_filtered
+                logger.info(
+                    f"[GMAPS_ENGINE] min_population={min_population} filtered districts to {target_districts}"
+                )
+
         # Defensive hygiene: drop city/district names typed inside the sector keyword
         # ('Diş Klinikleri & Ağız Sağlığı Merkezleri + istanbul + ataşehir') so the
         # connector-splitter never turns location words into search terms.
@@ -372,6 +388,14 @@ class GoogleMapsScraper(BaseScraper):
         search_terms = QueryExpander.build_search_terms(
             clean_keyword, max_terms=settings.SCRAPER_MAX_QUERY_VARIANTS
         )
+
+        # Faz 2: Explicit neighborhood targeting
+        if neighborhoods:
+            target_neighborhoods = [n.strip() for n in neighborhoods if n.strip()]
+            if target_neighborhoods:
+                nh_terms = [f"{clean_keyword} {nh}" for nh in target_neighborhoods]
+                search_terms = nh_terms + search_terms
+                logger.info(f"[GMAPS_ENGINE] Armed explicit neighborhood terms: {nh_terms}")
         target_per_district = compute_district_target(max_results, len(target_districts))
 
         logger.info(
@@ -429,9 +453,15 @@ class GoogleMapsScraper(BaseScraper):
                 f"'{category_profile.canonical_id}'."
             )
 
-        for dist_idx, district in enumerate(target_districts):
+        active_engine = self._resolve_active_engine()
+        concurrency = getattr(settings, "SCRAPER_CONCURRENT_DISTRICTS", 3)
+        stream_lock = asyncio.Lock()
+        data_lock = asyncio.Lock()
+
+        async def _scrape_single_district(dist_idx: int, district: str) -> None:
+            nonlocal target_reached
             if target_reached:
-                break
+                return
 
             base_pct = int(10 + (dist_idx / len(target_districts)) * 80)
             district_span_pct = int(80 / len(target_districts))
@@ -453,7 +483,8 @@ class GoogleMapsScraper(BaseScraper):
                         event["key"] = key
                     if params:
                         event["params"] = params
-                    await progress_callback(event)
+                    async with stream_lock:
+                        await progress_callback(event)
 
             async def handle_place_inspected(
                 place: Dict[str, Any],
@@ -595,42 +626,41 @@ class GoogleMapsScraper(BaseScraper):
 
                 lead_record = processed_record
                 decision = dup_decision
-                # Ingest FIRST: the lead must survive even when no progress
-                # callback is attached (headless runs) — never silently drop it.
-                all_discovered_leads.append(lead_record)
+                async with data_lock:
+                    all_discovered_leads.append(lead_record)
+                    if max_results > 0 and len(all_discovered_leads) >= max_results:
+                        target_reached = True
 
                 if not progress_callback:
                     return
 
-                # Live satellite-tuner stream: each accepted place is pushed to the
-                # UI the instant it is inspected (frontend renders its card on this).
-                await progress_callback({
-                    "type": "lead_found",
-                    "lead": lead_record
-                })
-
                 intra_pct = int((current_idx / max(total_count, 1)) * _span)
                 phone_display = lead_record.get("phone") or "—"
                 shared = decision == DedupDecision.SHARED_PHONE
-                await progress_callback({
-                    "type": "log",
-                    "key": (
-                        "leadFinder.stream.placeFoundSharedLine"
-                        if shared else "leadFinder.stream.placeFound"
-                    ),
-                    "params": {
-                        "count": len(all_discovered_leads),
-                        "name": lead_record["name"],
-                        "address": lead_record["address"],
-                        "phone": phone_display,
-                    },
-                    "message": (
-                        f"📡 Bulundu ({len(all_discovered_leads)}): {lead_record['name']} — "
-                        f"{lead_record['address']} ({phone_display}"
-                        f"{' — paylaşımlı hat' if shared else ''})"
-                    ),
-                    "progress": min(95, _b + intra_pct)
-                })
+                async with stream_lock:
+                    await progress_callback({
+                        "type": "lead_found",
+                        "lead": lead_record
+                    })
+                    await progress_callback({
+                        "type": "log",
+                        "key": (
+                            "leadFinder.stream.placeFoundSharedLine"
+                            if shared else "leadFinder.stream.placeFound"
+                        ),
+                        "params": {
+                            "count": len(all_discovered_leads),
+                            "name": lead_record["name"],
+                            "address": lead_record["address"],
+                            "phone": phone_display,
+                        },
+                        "message": (
+                            f"📡 Bulundu ({len(all_discovered_leads)}): {lead_record['name']} — "
+                            f"{lead_record['address']} ({phone_display}"
+                            f"{' — paylaşımlı hat' if shared else ''})"
+                        ),
+                        "progress": min(95, _b + intra_pct)
+                    })
 
             for term_idx, term in enumerate(search_terms):
                 remaining = self._remaining_budget(max_results, len(all_discovered_leads))
@@ -704,16 +734,29 @@ class GoogleMapsScraper(BaseScraper):
                 stats["mahalle_queries"] += mah_queries
                 stats["mahalle_marginals"] += mah_marginal
 
-            # District closure line always fires (even when the global target was
-            # just hit): the stream must never go silent about a finished area.
+            # District closure line always fires
             if progress_callback:
-                await progress_callback({
-                    "type": "log",
-                    "key": "leadFinder.stream.districtDone",
-                    "params": {"district": district, "count": len(all_discovered_leads)},
-                    "message": f"✅ {district} tamamlandı. Toplam {len(all_discovered_leads)} işletme keşfedildi.",
-                    "progress": min(95, base_pct + district_span_pct)
-                })
+                async with stream_lock:
+                    await progress_callback({
+                        "type": "log",
+                        "key": "leadFinder.stream.districtDone",
+                        "params": {"district": district, "count": len(all_discovered_leads)},
+                        "message": f"✅ {district} tamamlandı. Toplam {len(all_discovered_leads)} işletme keşfedildi.",
+                        "progress": min(95, base_pct + district_span_pct)
+                    })
+
+        # Faz 4: Concurrent HTTP Workers for multiple districts
+        if len(target_districts) > 1 and active_engine == self.http_scraper:
+            sem = asyncio.Semaphore(concurrency)
+            async def bounded_district(idx: int, dist: str):
+                async with sem:
+                    await _scrape_single_district(idx, dist)
+            await asyncio.gather(*(bounded_district(i, d) for i, d in enumerate(target_districts)))
+        else:
+            for dist_idx, district in enumerate(target_districts):
+                if target_reached:
+                    break
+                await _scrape_single_district(dist_idx, district)
 
         metrics = {
             "queries_executed": stats["queries_executed"],

@@ -273,6 +273,9 @@ export class ApiClient {
     keyword: string;
     city: string;
     districts: string[];
+    neighborhoods?: string[];
+    min_population?: number;
+    radius_km?: number;
     max_results: number;
     auto_save_to_crm?: boolean;
   }): Promise<ScraperJob> {
@@ -286,6 +289,19 @@ export class ApiClient {
       throw new Error(msg);
     }
     return res.json();
+  }
+
+  static async getNeighborhoods(city: string, district: string): Promise<string[]> {
+    try {
+      const res = await authFetch(
+        `${API_BASE}/scraper/neighborhoods?city=${encodeURIComponent(city)}&district=${encodeURIComponent(district)}`
+      );
+      if (!res.ok) return [];
+      const data = await res.json();
+      return Array.isArray(data.neighborhoods) ? data.neighborhoods : [];
+    } catch {
+      return [];
+    }
   }
 
   static async cancelScraper(jobId: number): Promise<ScraperJob> {

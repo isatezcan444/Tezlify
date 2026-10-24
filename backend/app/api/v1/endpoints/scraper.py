@@ -20,7 +20,12 @@ from backend.app.schemas.scraper import ScraperRunRequest, ScraperSaveRequest, S
 from backend.app.scrapers.google.google_maps_scraper import GoogleMapsScraper
 from backend.app.services.lead_ingest_service import LeadIngestService
 from backend.app.api.v1.websocket import ws_manager
-from backend.app.data.turkey_locations import get_districts_for_city, get_supported_cities
+from backend.app.data.turkey_locations import (
+    get_districts_for_city,
+    get_supported_cities,
+    get_district_id,
+    get_district_population,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +33,60 @@ router = APIRouter()
 
 active_tasks: dict[int, asyncio.Task] = {}
 scraper_semaphore = asyncio.Semaphore(settings.SCRAPER_MAX_CONCURRENT_TASKS)
+_NEIGHBORHOOD_CACHE: Dict[str, List[str]] = {}
+
+
+@router.get("/neighborhoods")
+async def get_neighborhoods_for_district(
+    city: str,
+    district: str,
+    current_user: AuthUser = Depends(get_current_user),
+):
+    """
+    Returns official 2025 neighborhoods for a given city and district (Faz 2).
+    Uses in-memory cache and falls back to live Türkiye API or subdivision data.
+    """
+    clean_city = city.strip()
+    clean_district = district.strip()
+    cache_key = f"{clean_city}:{clean_district}".lower()
+    if cache_key in _NEIGHBORHOOD_CACHE:
+        return {
+            "city": clean_city,
+            "district": clean_district,
+            "neighborhoods": _NEIGHBORHOOD_CACHE[cache_key]
+        }
+
+    district_id = get_district_id(clean_city, clean_district)
+    neighborhood_names: List[str] = []
+
+    if district_id:
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=6.0) as client:
+                res = await client.get(
+                    f"https://api.turkiyeapi.dev/v2/neighborhoods?districtId={district_id}",
+                    headers={"User-Agent": "Tezlify/1.0"}
+                )
+                if res.status_code == 200:
+                    payload = res.json()
+                    data = payload.get("data", [])
+                    neighborhood_names = [item["name"] for item in data if "name" in item]
+        except Exception as err:
+            logger.warning(f"[NEIGHBORHOODS] Live fetch failed for {clean_city} > {clean_district}: {err}")
+
+    # Fallback to local subdivisions if API returned empty
+    if not neighborhood_names:
+        from backend.app.data.turkey_subdivisions import get_subdivisions_for_district
+        neighborhood_names = get_subdivisions_for_district(clean_city, clean_district)
+
+    if neighborhood_names:
+        _NEIGHBORHOOD_CACHE[cache_key] = neighborhood_names
+
+    return {
+        "city": clean_city,
+        "district": clean_district,
+        "neighborhoods": neighborhood_names
+    }
 
 
 def lead_to_dict(l: Lead) -> Dict[str, Any]:
@@ -64,6 +123,9 @@ async def run_scraper_task(
     districts: List[str],
     max_results: int,
     auto_save_to_crm: bool = False,
+    neighborhoods: Optional[List[str]] = None,
+    min_population: Optional[int] = None,
+    radius_km: Optional[int] = None,
 ):
     """Background execution of scraper with structured location snapshot and WebSocket dispatch."""
     start_time = time.time()
@@ -71,7 +133,7 @@ async def run_scraper_task(
 
     logger.info(
         f"[SEARCH_JOB] job_id={job_id} keyword={keyword!r} "
-        f"city={city!r} districts={districts!r} max_results={max_results}"
+        f"city={city!r} districts={districts!r} neighborhoods={neighborhoods!r} max_results={max_results}"
     )
 
     async with AsyncSessionLocal() as db:
@@ -126,6 +188,9 @@ async def run_scraper_task(
                     districts=districts,
                     max_results=max_results,
                     progress_callback=on_progress,
+                    neighborhoods=neighborhoods,
+                    min_population=min_population,
+                    radius_km=radius_km,
                 )
 
             persisted_leads = []
@@ -271,6 +336,9 @@ async def start_scraper(
             districts=districts,
             max_results=req.max_results,
             auto_save_to_crm=bool(req.auto_save_to_crm),
+            neighborhoods=req.neighborhoods or [],
+            min_population=req.min_population,
+            radius_km=req.radius_km,
         )
     )
     active_tasks[job.id] = task

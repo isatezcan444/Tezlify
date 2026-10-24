@@ -13,6 +13,9 @@ class ScraperRunRequest(BaseModel):
     keyword: str
     city: str
     districts: List[str] = []
+    neighborhoods: List[str] = []
+    min_population: Optional[int] = None
+    radius_km: Optional[int] = None
     max_results: int = Field(default=0, ge=0, le=10000)
     source: str = "GOOGLE_MAPS"
     auto_save_to_crm: Optional[bool] = False

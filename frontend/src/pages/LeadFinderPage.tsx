@@ -13,7 +13,8 @@ import {
   CheckSquare,
   Square,
   Save,
-  Database
+  Database,
+  Compass
 } from 'lucide-react';
 import { ApiClient, subscribeRealtime, type RealtimeSubscription } from '../api/client';
 import {
@@ -51,6 +52,8 @@ export const LeadFinderPage: React.FC<LeadFinderPageProps> = ({ onNavigate, onRe
   const [keyword, setKeyword] = useState('');
   const [selectedCity, setSelectedCity] = useState('');
   const [selectedDistricts, setSelectedDistricts] = useState<string[]>([]);
+  const [selectedNeighborhoods, setSelectedNeighborhoods] = useState<string[]>([]);
+  const [radiusKm, setRadiusKm] = useState<number>(0);
   const [maxResults, setMaxResults] = useState<number>(0); // 0 means Unlimited
   const [autoSaveToCrm, setAutoSaveToCrm] = useState<boolean>(true);
   const [isScraping, setIsScraping] = useState(false);
@@ -197,9 +200,12 @@ export const LeadFinderPage: React.FC<LeadFinderPageProps> = ({ onNavigate, onRe
   const handleStartScrape = async () => {
     if (!keyword.trim() || !selectedCity) return;
 
-    const locationDisplay = selectedDistricts.length > 0
-      ? `${selectedCity} > ${selectedDistricts.join(', ')}`
-      : `${selectedCity} (${t('leadFinder.allDistricts')})`;
+    const locationDisplay = [
+      selectedCity,
+      selectedDistricts.length > 0 ? selectedDistricts.join(', ') : `(${t('leadFinder.allDistricts')})`,
+      selectedNeighborhoods.length > 0 ? `[${selectedNeighborhoods.length} ${t('leadFinder.neighborhoodsLabel')}]` : '',
+      radiusKm > 0 ? `(±${radiusKm} km)` : '',
+    ].filter(Boolean).join(' > ');
 
     setIsScraping(true);
     setProgress(5);
@@ -224,6 +230,8 @@ export const LeadFinderPage: React.FC<LeadFinderPageProps> = ({ onNavigate, onRe
         keyword: keyword.trim(),
         city: selectedCity,
         districts: selectedDistricts,
+        neighborhoods: selectedNeighborhoods,
+        radius_km: radiusKm > 0 ? radiusKm : undefined,
         max_results: maxResults,
         auto_save_to_crm: autoSaveToCrm,
       });
@@ -407,8 +415,8 @@ export const LeadFinderPage: React.FC<LeadFinderPageProps> = ({ onNavigate, onRe
 
         {/* Form Controls Grid - Responsive across Mobile, Tablet, and Desktop */}
         <div className="grid grid-cols-1 sm:grid-cols-12 lg:grid-cols-12 gap-3 pt-1 items-center">
-          {/* Sector Autocomplete Input: 4 cols on desktop, 6 cols on tablet, 12 cols on mobile */}
-          <div className="sm:col-span-6 lg:col-span-4">
+          {/* Sector Autocomplete Input: 3 cols on desktop, 6 cols on tablet, 12 cols on mobile */}
+          <div className="sm:col-span-6 lg:col-span-3">
             <SectorAutocomplete
               value={keyword}
               onChange={setKeyword}
@@ -416,18 +424,42 @@ export const LeadFinderPage: React.FC<LeadFinderPageProps> = ({ onNavigate, onRe
             />
           </div>
 
-          {/* Location Multi-Select (City + Districts): 4 cols on desktop, 6 cols on tablet, 12 cols on mobile */}
-          <div className="sm:col-span-6 lg:col-span-4">
+          {/* Location Multi-Select (City + Districts + Mahalleler): 3 cols on desktop, 6 cols on tablet, 12 cols on mobile */}
+          <div className="sm:col-span-6 lg:col-span-3">
             <LocationMultiSelect
               selectedCity={selectedCity}
               selectedDistricts={selectedDistricts}
-              onChange={(city, districts) => {
+              selectedNeighborhoods={selectedNeighborhoods}
+              onChange={(city, districts, neighborhoods) => {
                 setSelectedCity(city);
                 setSelectedDistricts(districts);
+                setSelectedNeighborhoods(neighborhoods || []);
               }}
-              onCityChange={(city) => setSelectedCity(city)}
+              onCityChange={(city) => {
+                setSelectedCity(city);
+                setSelectedDistricts([]);
+                setSelectedNeighborhoods([]);
+              }}
               onDistrictsChange={(districts) => setSelectedDistricts(districts)}
+              onNeighborhoodsChange={(neighborhoods) => setSelectedNeighborhoods(neighborhoods || [])}
               disabled={isScraping}
+            />
+          </div>
+
+          {/* Radius Selector: 2 cols on desktop, 6 cols on tablet, 12 cols on mobile */}
+          <div className="sm:col-span-6 lg:col-span-2">
+            <Select
+              value={radiusKm}
+              onChange={(e) => setRadiusKm(Number(e.target.value))}
+              disabled={isScraping}
+              sizeVariant="lg"
+              leftIcon={<Compass className="w-3.5 h-3.5 text-[#00CFE8]" />}
+              options={[
+                { value: 0, label: t('leadFinder.radiusDistrict') },
+                { value: 5, label: t('leadFinder.radius5km') },
+                { value: 10, label: t('leadFinder.radius10km') },
+                { value: 25, label: t('leadFinder.radius25km') },
+              ]}
             />
           </div>
 
@@ -450,7 +482,7 @@ export const LeadFinderPage: React.FC<LeadFinderPageProps> = ({ onNavigate, onRe
           </div>
 
           {/* Search Button: 2 cols on desktop, 6 cols on tablet, 12 cols on mobile */}
-          <div className="sm:col-span-6 lg:col-span-2">
+          <div className="sm:col-span-12 lg:col-span-2">
             <Button
               onClick={handleStartScrape}
               disabled={isScraping || !keyword || !selectedCity}
@@ -491,6 +523,21 @@ export const LeadFinderPage: React.FC<LeadFinderPageProps> = ({ onNavigate, onRe
                   ))
                 ) : (
                   <span className="text-[11px] text-slate-400 italic">({t('leadFinder.allDistricts')})</span>
+                )}
+                {selectedNeighborhoods.length > 0 && (
+                  <Badge variant="info" className="font-bold text-[11px]">
+                    {selectedNeighborhoods.length} {t('leadFinder.neighborhoodsLabel')}
+                  </Badge>
+                )}
+                {radiusKm > 0 && (
+                  <Badge variant="warning" className="font-bold text-[11px]">
+                    ±{radiusKm} km
+                  </Badge>
+                )}
+                {selectedDistricts.length > 1 && (
+                  <Badge variant="success" className="font-bold text-[11px]">
+                    ⚡ {t('leadFinder.concurrentWorkers', { workers: Math.min(selectedDistricts.length, 3) })}
+                  </Badge>
                 )}
               </>
             ) : (
