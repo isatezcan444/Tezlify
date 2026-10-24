@@ -63,7 +63,7 @@ export const LeadAddManualModal: React.FC<LeadAddManualModalProps> = ({
             type="text"
             value={newLeadName}
             onChange={(e) => setNewLeadName(e.target.value)}
-            placeholder="e.g. Dentgroup Ataşehir"
+            placeholder={t('leads.manualNamePlaceholder')}
             className="w-full px-3 py-2 rounded-lg vuexy-input"
             required
           />
@@ -77,7 +77,7 @@ export const LeadAddManualModal: React.FC<LeadAddManualModalProps> = ({
             type="text"
             value={newLeadPhone}
             onChange={(e) => setNewLeadPhone(e.target.value)}
-            placeholder="e.g. +905321234567"
+            placeholder={t('leads.manualPhonePlaceholder')}
             className="w-full px-3 py-2 rounded-lg vuexy-input font-mono"
             required
           />
@@ -91,7 +91,7 @@ export const LeadAddManualModal: React.FC<LeadAddManualModalProps> = ({
             type="text"
             value={newLeadCategory}
             onChange={(e) => setNewLeadCategory(e.target.value)}
-            placeholder="e.g. Dental Clinic"
+            placeholder={t('leads.manualCategoryPlaceholder')}
             className="w-full px-3 py-2 rounded-lg vuexy-input"
           />
         </div>
@@ -105,7 +105,7 @@ export const LeadAddManualModal: React.FC<LeadAddManualModalProps> = ({
               type="text"
               value={newLeadCity}
               onChange={(e) => setNewLeadCity(e.target.value)}
-              placeholder="İstanbul"
+              placeholder={t('leads.manualCityPlaceholder')}
               className="w-full px-3 py-2 rounded-lg vuexy-input"
             />
           </div>
@@ -117,7 +117,7 @@ export const LeadAddManualModal: React.FC<LeadAddManualModalProps> = ({
               type="text"
               value={newLeadDistrict}
               onChange={(e) => setNewLeadDistrict(e.target.value)}
-              placeholder="Ataşehir"
+              placeholder={t('leads.manualDistrictPlaceholder')}
               className="w-full px-3 py-2 rounded-lg vuexy-input"
             />
           </div>

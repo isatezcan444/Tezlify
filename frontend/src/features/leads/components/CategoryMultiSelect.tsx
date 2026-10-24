@@ -79,10 +79,10 @@ export const CategoryMultiSelect: React.FC<CategoryMultiSelectProps> = ({
   };
 
   const getSummaryLabel = () => {
-    if (!selectedCategories || selectedCategories.length === 0) return t('leads.filterByCategory') || 'Kategori ve Sektörler';
+    if (!selectedCategories || selectedCategories.length === 0) return t('leads.filterByCategory');
     if (selectedCategories.length === 1) return selectedCategories[0];
     if (selectedCategories.length === 2) return `${selectedCategories[0]}, ${selectedCategories[1]}`;
-    return `${selectedCategories.length} ${t('common.category') || 'Kategori'} (${selectedCategories.slice(0, 2).join(', ')}...)`;
+    return `${selectedCategories.length} ${t('common.category')} (${selectedCategories.slice(0, 2).join(', ')}...)`;
   };
 
   const modalContent = isOpen && mounted ? (

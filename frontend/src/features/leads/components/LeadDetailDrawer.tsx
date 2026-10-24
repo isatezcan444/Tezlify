@@ -363,7 +363,7 @@ export const LeadDetailDrawer: React.FC<LeadDetailDrawerProps> = ({
               onRetry={async (msgId) => {
                 try {
                   await retryMessage(msgId);
-                  toast.success(t('whatsapp.messageSent') || 'Mesaj tekrar gönderildi', t('common.success'));
+                  toast.success(t('whatsapp.messageSent'), t('common.success'));
                 } catch (err: any) {
                   toast.error(translateApiError(err, t) || t('whatsapp.msgFailed'), t('common.error'));
                 }
@@ -376,13 +376,13 @@ export const LeadDetailDrawer: React.FC<LeadDetailDrawerProps> = ({
               onSend={async (text) => {
                 try {
                   await sendMessage(text);
-                  toast.success(t('whatsapp.messageSent') || 'Mesaj başarıyla gönderildi', t('common.success'));
+                  toast.success(t('whatsapp.messageSent'), t('common.success'));
                 } catch (err: any) {
                   const msg = (err?.message || '').toLowerCase();
                   if (msg.includes('24 saat') || msg.includes('window')) {
-                    toast.error(t('whatsapp.windowExpiredNotice') || 'Bu konuşmaya devam etmek için bir şablon kullanın.', t('common.error'));
+                    toast.error(t('whatsapp.windowExpiredNotice'), t('common.error'));
                   } else {
-                    toast.error(t('whatsapp.msgFailed') || 'Mesaj gönderilemedi', t('common.error'));
+                    toast.error(t('whatsapp.msgFailed'), t('common.error'));
                   }
                 }
               }}
@@ -390,9 +390,9 @@ export const LeadDetailDrawer: React.FC<LeadDetailDrawerProps> = ({
               onSendMedia={async (mediaType, mediaUrl, caption, filename) => {
                 try {
                   await sendMedia(mediaType, mediaUrl, caption, filename);
-                  toast.success(t('whatsapp.mediaSent') || 'Medya başarıyla gönderildi', t('common.success'));
+                  toast.success(t('whatsapp.mediaSent'), t('common.success'));
                 } catch (err: any) {
-                  toast.error(t('whatsapp.mediaFailed') || 'Medya gönderilemedi', t('common.error'));
+                  toast.error(t('whatsapp.mediaFailed'), t('common.error'));
                 }
               }}
               onReopenConversation={async () => {
