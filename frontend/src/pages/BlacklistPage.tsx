@@ -4,6 +4,7 @@ import {
   Plus, 
   Trash2, 
   Phone,
+  Copy,
   Loader2,
   RotateCcw 
 } from 'lucide-react';
@@ -184,20 +185,46 @@ export const BlacklistPage: React.FC = () => {
     }
   };
 
-  const getReasonLabel = (reason: string) => {
+  const getReasonBadge = useCallback((reason: string) => {
     switch (reason) {
       case 'USER_REQUEST':
-        return t('blacklist.reasonUserRequest');
+        return {
+          label: t('blacklist.reasonUserRequest'),
+          variant: 'warning' as const,
+        };
       case 'BOUNCED':
-        return t('blacklist.reasonBounced');
+        return {
+          label: t('blacklist.reasonBounced'),
+          variant: 'secondary' as const,
+        };
       case 'SPAM_COMPLAINT':
-        return t('blacklist.reasonSpamComplaint');
+        return {
+          label: t('blacklist.reasonSpamComplaint'),
+          variant: 'danger' as const,
+        };
       case 'MANUAL_BLACKLIST':
-        return t('blacklist.reasonManual');
+        return {
+          label: t('blacklist.reasonManual'),
+          variant: 'primary' as const,
+        };
       default:
-        return reason;
+        return {
+          label: reason,
+          variant: 'secondary' as const,
+        };
     }
-  };
+  }, [t]);
+
+  const filterPills = useMemo(
+    () => [
+      { id: '', label: t('blacklist.filterAllReasons') },
+      { id: 'USER_REQUEST', label: t('blacklist.reasonUserRequest') },
+      { id: 'BOUNCED', label: t('blacklist.reasonBounced') },
+      { id: 'SPAM_COMPLAINT', label: t('blacklist.reasonSpamComplaint') },
+      { id: 'MANUAL_BLACKLIST', label: t('blacklist.reasonManual') },
+    ],
+    [t]
+  );
 
   const columns = useMemo<ColumnDef<BlacklistEntry>[]>(
     () => [
@@ -228,9 +255,23 @@ export const BlacklistPage: React.FC = () => {
         header: t('leads.colContact'),
         className: 'whitespace-nowrap',
         cell: (entry) => (
-          <div className="flex items-center space-x-2 font-mono font-bold text-xs text-slate-700 dark:text-slate-200">
+          <div className="flex items-center space-x-2 font-mono font-bold text-xs text-slate-700 dark:text-slate-200 group">
             <Phone className="w-3.5 h-3.5 text-slate-400 shrink-0" />
             <span>{entry.phone_e164}</span>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                if (entry.phone_e164) {
+                  navigator.clipboard.writeText(entry.phone_e164);
+                  toast.success(t('leads.phoneCopied'), t('common.success'));
+                }
+              }}
+              title={t('common.copy')}
+              className="p-1 rounded text-slate-400 hover:text-[#7367F0] hover:bg-[#7367F0]/10 transition-colors opacity-0 group-hover:opacity-100 focus:opacity-100 cursor-pointer"
+            >
+              <Copy className="w-3 h-3" />
+            </button>
           </div>
         ),
       },
@@ -238,11 +279,14 @@ export const BlacklistPage: React.FC = () => {
         id: 'reason',
         header: t('blacklist.blockReasonLabel'),
         className: 'whitespace-nowrap',
-        cell: (entry) => (
-          <Badge variant="danger" className="text-[11px] font-bold">
-            {getReasonLabel(entry.reason)}
-          </Badge>
-        ),
+        cell: (entry) => {
+          const badge = getReasonBadge(entry.reason);
+          return (
+            <Badge variant={badge.variant} className="text-[11px] font-bold">
+              {badge.label}
+            </Badge>
+          );
+        },
       },
       {
         id: 'date',
@@ -267,7 +311,7 @@ export const BlacklistPage: React.FC = () => {
         ),
       },
     ],
-    [t, getReasonLabel, handleRemove]
+    [t, getReasonBadge, handleRemove, toast]
   );
 
   return (
@@ -291,7 +335,31 @@ export const BlacklistPage: React.FC = () => {
       />
 
       {/* Filter & Search Bar */}
-      <Card className="p-4">
+      <Card className="p-4 space-y-3">
+        {/* Quick Reason Filter Pills */}
+        <div className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-none [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden text-xs">
+          {filterPills.map((pill) => {
+            const isActive = reasonFilter === pill.id;
+            return (
+              <button
+                key={pill.id}
+                type="button"
+                onClick={() => {
+                  setReasonFilter(pill.id);
+                  setPage(1);
+                }}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl font-bold transition-all cursor-pointer whitespace-nowrap ${
+                  isActive
+                    ? 'bg-[#7367F0] text-white shadow-xs'
+                    : 'bg-slate-100 dark:bg-white/[0.04] text-slate-600 dark:text-slate-300 hover:bg-slate-200/70 dark:hover:bg-white/[0.08]'
+                }`}
+              >
+                <span>{pill.label}</span>
+              </button>
+            );
+          })}
+        </div>
+
         <div className="flex flex-col md:flex-row items-center gap-3">
           <div className="flex-1 w-full">
             <SearchInput
