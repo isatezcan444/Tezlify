@@ -52,7 +52,6 @@ export const LeadFinderPage: React.FC<LeadFinderPageProps> = ({ onNavigate, onRe
   const [keyword, setKeyword] = useState('');
   const [selectedCity, setSelectedCity] = useState('');
   const [selectedDistricts, setSelectedDistricts] = useState<string[]>([]);
-  const [selectedNeighborhoods, setSelectedNeighborhoods] = useState<string[]>([]);
   const [radiusKm, setRadiusKm] = useState<number>(0);
   const [maxResults, setMaxResults] = useState<number>(0); // 0 means Unlimited
   const [autoSaveToCrm, setAutoSaveToCrm] = useState<boolean>(true);
@@ -203,7 +202,6 @@ export const LeadFinderPage: React.FC<LeadFinderPageProps> = ({ onNavigate, onRe
     const locationDisplay = [
       selectedCity,
       selectedDistricts.length > 0 ? selectedDistricts.join(', ') : `(${t('leadFinder.allDistricts')})`,
-      selectedNeighborhoods.length > 0 ? `[${selectedNeighborhoods.length} ${t('leadFinder.neighborhoodsLabel')}]` : '',
       radiusKm > 0 ? `(±${radiusKm} km)` : '',
     ].filter(Boolean).join(' > ');
 
@@ -230,7 +228,6 @@ export const LeadFinderPage: React.FC<LeadFinderPageProps> = ({ onNavigate, onRe
         keyword: keyword.trim(),
         city: selectedCity,
         districts: selectedDistricts,
-        neighborhoods: selectedNeighborhoods,
         radius_km: radiusKm > 0 ? radiusKm : undefined,
         max_results: maxResults,
         auto_save_to_crm: autoSaveToCrm,
@@ -424,24 +421,20 @@ export const LeadFinderPage: React.FC<LeadFinderPageProps> = ({ onNavigate, onRe
             />
           </div>
 
-          {/* Location Multi-Select (City + Districts + Mahalleler): 3 cols on desktop, 6 cols on tablet, 12 cols on mobile */}
+          {/* Location Multi-Select (City + Districts): 3 cols on desktop, 6 cols on tablet, 12 cols on mobile */}
           <div className="sm:col-span-6 lg:col-span-3">
             <LocationMultiSelect
               selectedCity={selectedCity}
               selectedDistricts={selectedDistricts}
-              selectedNeighborhoods={selectedNeighborhoods}
-              onChange={(city, districts, neighborhoods) => {
+              onChange={(city, districts) => {
                 setSelectedCity(city);
                 setSelectedDistricts(districts);
-                setSelectedNeighborhoods(neighborhoods || []);
               }}
               onCityChange={(city) => {
                 setSelectedCity(city);
                 setSelectedDistricts([]);
-                setSelectedNeighborhoods([]);
               }}
               onDistrictsChange={(districts) => setSelectedDistricts(districts)}
-              onNeighborhoodsChange={(neighborhoods) => setSelectedNeighborhoods(neighborhoods || [])}
               disabled={isScraping}
             />
           </div>
@@ -523,11 +516,6 @@ export const LeadFinderPage: React.FC<LeadFinderPageProps> = ({ onNavigate, onRe
                   ))
                 ) : (
                   <span className="text-[11px] text-slate-400 italic">({t('leadFinder.allDistricts')})</span>
-                )}
-                {selectedNeighborhoods.length > 0 && (
-                  <Badge variant="primary" className="font-bold text-[11px]">
-                    {selectedNeighborhoods.length} {t('leadFinder.neighborhoodsLabel')}
-                  </Badge>
                 )}
                 {radiusKm > 0 && (
                   <Badge variant="warning" className="font-bold text-[11px]">

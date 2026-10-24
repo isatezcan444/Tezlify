@@ -397,24 +397,6 @@ class GoogleMapsScraper(BaseScraper):
             clean_keyword, max_terms=settings.SCRAPER_MAX_QUERY_VARIANTS
         )
 
-        # Faz 2: Explicit neighborhood targeting
-        target_neighborhoods: Optional[List[str]] = None
-        if neighborhoods:
-            target_neighborhoods = [n.strip() for n in neighborhoods if n.strip()]
-            if target_neighborhoods:
-                from backend.app.data.turkey_subdivisions import register_subdivisions_for_district
-                for dist in target_districts:
-                    register_subdivisions_for_district(clean_city, dist, target_neighborhoods)
-
-                # Use clean, concise primary terms (e.g. 'Diş Klinikleri' instead of 'Diş Klinikleri & Ağız Sağlığı Merkezleri')
-                # so Google Maps does not choke on long multi-word conjunctive queries and drop sector targeting.
-                base_term = QueryExpander.primary_term(clean_keyword) or clean_keyword
-                nh_terms = []
-                for nh in target_neighborhoods:
-                    nh_terms.append(f"{base_term} {nh} Mahallesi")
-                    nh_terms.append(f"{base_term} {nh}")
-                search_terms = nh_terms
-                logger.info(f"[GMAPS_ENGINE] Armed explicit neighborhood terms (exclusive): {nh_terms}")
         target_per_district = compute_district_target(max_results, len(target_districts))
 
         logger.info(
@@ -553,18 +535,10 @@ class GoogleMapsScraper(BaseScraper):
                         target_districts=target_districts,
                         place_name=str(place.get("name") or ""),
                         place_address=place.get("address"),
-                        target_neighborhoods=target_neighborhoods,
                     )
                     if verdict.decision == GeoScopeDecision.REJECT_OUTSIDE:
                         stats["geo_filtered"] += 1
                         return
-
-                    # Explicit neighborhood gating: when target neighborhood(s) are chosen without
-                    # a radius filter, only accept candidates verified to belong to the target neighborhood(s).
-                    if target_neighborhoods and not radius_km:
-                        if not verdict.is_target_neighborhood:
-                            stats["geo_filtered"] += 1
-                            return
                 else:
                     verdict = GeoScopeVerdict(
                         decision=GeoScopeDecision.ACCEPT_UNPROVEN,
@@ -750,7 +724,6 @@ class GoogleMapsScraper(BaseScraper):
                 max_results <= 0
                 and settings.SCRAPER_MAHALLE_PHASE_ENABLED
                 and not target_reached
-                and not target_neighborhoods
             ):
                 mah_queries, mah_marginal = await self._run_mahalle_phase(
                     primary_term=QueryExpander.primary_term(clean_keyword),
@@ -821,11 +794,6 @@ class GoogleMapsScraper(BaseScraper):
             f"across {len(target_districts)} districts, {stats['queries_executed']} query sessions, "
             f"{stats['geo_filtered']} out-of-scope places filtered."
         )
-
-        if target_neighborhoods:
-            all_discovered_leads.sort(
-                key=lambda x: (not x.get("is_target_neighborhood", False), not x.get("is_verified", False))
-            )
 
         return all_discovered_leads
 

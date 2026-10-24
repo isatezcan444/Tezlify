@@ -147,19 +147,14 @@ def test_geo_scope_filter_neighborhood_flag():
     assert verdict_mismatch.matched_subdivision == "Barbaros"
 
 
-def test_http_scraper_query_neighborhood_formatting():
-    # Verify that mahalle queries format as "{keyword} {district} {city}"
-    # to pin Google Maps directly to the neighborhood centroid
-    clean_keyword = "diş kliniği Yenişehir Mahallesi"
+def test_http_scraper_query_formatting():
+    # Standard query format pins Google Maps to city and district
+    clean_keyword = "diş kliniği"
     clean_district = "Ataşehir"
     clean_city = "İstanbul"
 
-    if "mahallesi" in clean_keyword.lower():
-        query = f"{clean_keyword} {clean_district} {clean_city}".strip()
-    else:
-        query = f"{clean_city} {clean_district} {clean_keyword}".strip()
-
-    assert query == "diş kliniği Yenişehir Mahallesi Ataşehir İstanbul"
+    query = f"{clean_city} {clean_district} {clean_keyword}".strip()
+    assert query == "İstanbul Ataşehir diş kliniği"
 
 
 def test_outside_district_rejected_even_with_shared_neighborhood_name():
