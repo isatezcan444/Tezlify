@@ -35,7 +35,7 @@ interface DashboardPageProps {
 }
 
 export const DashboardPage: React.FC<DashboardPageProps> = ({ stats, onNavigate }) => {
-  const { t } = useI18n();
+  const { t, language } = useI18n();
 
   if (!stats) {
     return (
@@ -58,6 +58,29 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ stats, onNavigate 
       ? 'warning'
       : 'primary';
 
+    const getStatusLabel = (status: string): string => {
+      switch (status) {
+        case 'REPLIED':
+          return t('dashboard.statusReplied');
+        case 'READ':
+          return t('dashboard.statusRead');
+        case 'SENT':
+          return t('dashboard.statusSent');
+        case 'DELIVERED':
+          return t('dashboard.statusDelivered');
+        case 'FAILED':
+          return t('dashboard.statusFailed');
+        case 'CANCELLED':
+          return t('dashboard.statusCancelled');
+        case 'QUEUED':
+          return t('dashboard.statusQueued');
+        case 'PENDING':
+          return t('dashboard.statusPending');
+        default:
+          return status;
+      }
+    };
+
     return {
       id: act.id,
       title: <span className="font-mono font-bold text-slate-800 dark:text-white">{act.phone}</span>,
@@ -65,7 +88,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ stats, onNavigate 
       timestamp: act.time,
       badge: (
         <Badge variant={variant} className="text-[9px] font-bold">
-          {act.status}
+          {getStatusLabel(act.status)}
         </Badge>
       ),
       variant: variant,
@@ -161,7 +184,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ stats, onNavigate 
 
         <StatsCard
           title={t('dashboard.responseRate')}
-          value={`%${stats.response_rate_percentage}`}
+          value={language === 'tr' ? `%${stats.response_rate_percentage}` : `${stats.response_rate_percentage}%`}
           icon={MessageSquareReply}
           iconVariant="success"
           badge={{
