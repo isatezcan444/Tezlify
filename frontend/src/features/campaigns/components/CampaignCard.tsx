@@ -160,7 +160,7 @@ export const CampaignCard: React.FC<CampaignCardProps> = ({
               size="sm"
               variant="ghost"
               data-testid={`view-campaign-detail-${campaign.id}`}
-              tooltip={t('campaigns.viewDetails') || 'Detayları İncele'}
+              tooltip={t('campaigns.viewDetails')}
               onClick={() => onViewDetail(campaign)}
               className="text-slate-400 hover:text-[#7367F0] hover:bg-[#7367F0]/10"
             />
@@ -172,7 +172,7 @@ export const CampaignCard: React.FC<CampaignCardProps> = ({
               size="sm"
               variant="ghost"
               data-testid={`delete-campaign-btn-${campaign.id}`}
-              tooltip={t('campaigns.deleteCampaign') || 'Kampanyayı Sil'}
+              tooltip={t('campaigns.deleteCampaign')}
               onClick={() => onDelete(campaign.id)}
               className="text-slate-400 hover:text-[#EA5455] hover:bg-[#EA5455]/10"
             />

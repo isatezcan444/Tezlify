@@ -25,11 +25,8 @@ export const CampaignDeleteModal: React.FC<CampaignDeleteModalProps> = ({
     <Modal
       isOpen={isOpen}
       onClose={() => !isDeleting && onClose()}
-      title={t('campaigns.deleteCampaignTitle') || 'Kampanyayı sil?'}
-      subtitle={
-        t('campaigns.deleteCampaignConfirmMsg') ||
-        'Bu kampanyayı silmek istediğinizden emin misiniz? Bu işlem geri alınamaz.'
-      }
+      title={t('campaigns.deleteCampaignTitle')}
+      subtitle={t('campaigns.deleteCampaignConfirmMsg')}
       icon={Trash2}
       variant="danger"
       maxWidth="sm"
@@ -44,7 +41,7 @@ export const CampaignDeleteModal: React.FC<CampaignDeleteModalProps> = ({
             onClick={onClose}
             className="cursor-pointer font-bold"
           >
-            {t('campaigns.deleteCampaignCancelBtn') || t('common.cancel')}
+            {t('campaigns.deleteCampaignCancelBtn')}
           </Button>
           <Button
             type="button"
@@ -62,7 +59,7 @@ export const CampaignDeleteModal: React.FC<CampaignDeleteModalProps> = ({
             ) : (
               <>
                 <Trash2 className="w-4 h-4" />
-                <span>{t('campaigns.deleteCampaignBtn') || 'Kampanyayı Sil'}</span>
+                <span>{t('campaigns.deleteCampaignBtn')}</span>
               </>
             )}
           </Button>

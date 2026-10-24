@@ -105,7 +105,7 @@ export const CampaignDetailDrawer: React.FC<CampaignDetailDrawerProps> = ({
     if (!campaign.message_template) return;
     navigator.clipboard.writeText(campaign.message_template);
     setCopiedTemplate(true);
-    toast.success(t('campaigns.wizardCopiedSuccess') || 'Mesaj şablonu panoya kopyalandı!');
+    toast.success(t('campaigns.wizardCopiedSuccess'));
     setTimeout(() => setCopiedTemplate(false), 2000);
   };
 
@@ -143,7 +143,7 @@ export const CampaignDetailDrawer: React.FC<CampaignDetailDrawerProps> = ({
               size="sm"
               variant="ghost"
               data-testid={`drawer-delete-campaign-${campaign.id}`}
-              tooltip={t('campaigns.deleteCampaign') || 'Kampanyayı Sil'}
+              tooltip={t('campaigns.deleteCampaign')}
               onClick={() => {
                 onDelete(campaign.id);
                 onClose();
@@ -214,7 +214,7 @@ export const CampaignDetailDrawer: React.FC<CampaignDetailDrawerProps> = ({
             )}
           >
             <BarChart3 className="w-4 h-4" />
-            <span>{t('campaigns.overviewTab') || 'Genel Bakış'}</span>
+            <span>{t('campaigns.overviewTab')}</span>
           </button>
 
           <button
@@ -228,7 +228,7 @@ export const CampaignDetailDrawer: React.FC<CampaignDetailDrawerProps> = ({
             )}
           >
             <MessageSquare className="w-4 h-4" />
-            <span>{t('campaigns.messageTab') || 'Mesaj & Simülasyon'}</span>
+            <span>{t('campaigns.messageTab')}</span>
           </button>
         </div>
 
@@ -286,7 +286,7 @@ export const CampaignDetailDrawer: React.FC<CampaignDetailDrawerProps> = ({
               {/* Delivered */}
               <div className="p-3.5 rounded-xl bg-slate-50/80 dark:bg-[#25293C] border border-slate-200/60 dark:border-white/[0.06] text-center">
                 <span className="text-[10px] font-bold text-slate-400 dark:text-[#7E7F96] uppercase tracking-wider block">
-                  {t('campaigns.deliveredCount') || 'İletildi'}
+                  {t('campaigns.deliveredCount')}
                 </span>
                 <span className="text-base font-extrabold text-[#28C76F] font-mono mt-1 block">
                   {campaign.delivered_count || campaign.sent_count}

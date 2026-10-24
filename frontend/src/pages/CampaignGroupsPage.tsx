@@ -214,9 +214,9 @@ export const CampaignGroupsPage: React.FC<CampaignGroupsPageProps> = ({
   };
 
   const filterTabs: Array<{ id: GroupFilterType; label: string; count: number }> = [
-    { id: 'ALL', label: t('campaignGroups.filterAll') || 'Tümü', count: counts.ALL },
-    { id: 'WHATSAPP_READY', label: t('campaignGroups.filterWhatsAppReady') || 'WhatsApp Hazır', count: counts.WHATSAPP_READY },
-    { id: 'CATEGORIZED', label: t('campaignGroups.filterWithSector') || 'Sektör Belirlenmiş', count: counts.CATEGORIZED },
+    { id: 'ALL', label: t('campaignGroups.filterAll'), count: counts.ALL },
+    { id: 'WHATSAPP_READY', label: t('campaignGroups.filterWhatsAppReady'), count: counts.WHATSAPP_READY },
+    { id: 'CATEGORIZED', label: t('campaignGroups.filterWithSector'), count: counts.CATEGORIZED },
   ];
 
   return (
@@ -279,7 +279,7 @@ export const CampaignGroupsPage: React.FC<CampaignGroupsPageProps> = ({
                       type="text"
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
-                      placeholder={t('campaignGroups.searchPlaceholder') || 'Grup adına, sektöre veya şehre göre ara...'}
+                      placeholder={t('campaignGroups.searchPlaceholder')}
                       className="w-full pl-9 pr-9 py-2 rounded-lg text-xs font-medium border border-slate-200 dark:border-white/10 bg-slate-50/60 dark:bg-[#25293C] text-slate-800 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[#7367F0]/20 focus:border-[#7367F0] transition-all"
                     />
                     {searchQuery && (
@@ -378,7 +378,7 @@ export const CampaignGroupsPage: React.FC<CampaignGroupsPageProps> = ({
                     <Filter className="w-5 h-5" />
                   </div>
                   <h4 className="text-sm font-extrabold text-slate-800 dark:text-white">
-                    {t('campaignGroups.noSearchResults') || 'Arama kriterlerinize uygun grup bulunamadı.'}
+                    {t('campaignGroups.noSearchResults')}
                   </h4>
                   <Button
                     size="sm"

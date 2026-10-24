@@ -213,7 +213,7 @@ export const CampaignsPage: React.FC<CampaignsPageProps> = ({
   const handleLaunchCampaign = async (campaignId: number) => {
     if (!connectedSession) {
       toast.warning(
-        t('campaigns.noConnectedSessionToast') || 'Kampanyayı başlatmak için lütfen önce WhatsApp sekmesinden bir hat bağlayın.',
+        t('campaigns.noConnectedSessionToast'),
         t('common.warning')
       );
       if (onNavigate) {
@@ -278,7 +278,7 @@ export const CampaignsPage: React.FC<CampaignsPageProps> = ({
     setIsDeleting(true);
     try {
       await ApiClient.deleteCampaign(campaignToDelete.id);
-      toast.success(t('campaigns.campaignDeletedSuccess') || 'Kampanya başarıyla silindi.', t('common.success'));
+      toast.success(t('campaigns.campaignDeletedSuccess'), t('common.success'));
       setCampaigns((prev) => prev.filter((c) => c.id !== campaignToDelete.id));
       if (selectedCampaignForDetail?.id === campaignToDelete.id) {
         setIsDetailDrawerOpen(false);
@@ -389,11 +389,11 @@ export const CampaignsPage: React.FC<CampaignsPageProps> = ({
   };
 
   const filterTabs: Array<{ id: CampaignStatusFilter; label: string; count: number }> = [
-    { id: 'ALL', label: t('campaigns.filterAll') || 'Tümü', count: counts.ALL },
-    { id: 'ACTIVE', label: t('campaigns.filterActive') || 'Aktif', count: counts.ACTIVE },
-    { id: 'PAUSED', label: t('campaigns.filterPaused') || 'Duraklatıldı', count: counts.PAUSED },
-    { id: 'COMPLETED', label: t('campaigns.filterCompleted') || 'Tamamlandı', count: counts.COMPLETED },
-    { id: 'DRAFT', label: t('campaigns.filterDraft') || 'Taslak', count: counts.DRAFT },
+    { id: 'ALL', label: t('campaigns.filterAll'), count: counts.ALL },
+    { id: 'ACTIVE', label: t('campaigns.filterActive'), count: counts.ACTIVE },
+    { id: 'PAUSED', label: t('campaigns.filterPaused'), count: counts.PAUSED },
+    { id: 'COMPLETED', label: t('campaigns.filterCompleted'), count: counts.COMPLETED },
+    { id: 'DRAFT', label: t('campaigns.filterDraft'), count: counts.DRAFT },
   ];
 
   return (
