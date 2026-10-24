@@ -424,6 +424,7 @@ const AppContent: React.FC<AppContentProps> = ({ onNavigateToLanding }) => {
         activeCampaignsCount={stats?.active_campaigns}
         isOpenMobile={isMobileMenuOpen}
         onCloseMobile={() => setIsMobileMenuOpen(false)}
+        onNavigateToLanding={onNavigateToLanding}
       />
 
       {/* Main Content Area: Responsive left padding (pl-0 on mobile, pl-64 on desktop) */}
@@ -563,24 +564,15 @@ const AuthGate: React.FC = () => {
     }
   }, []);
 
-  // When user logs in or authenticated profile becomes available, automatically navigate to app dashboard
-  useEffect(() => {
-    if (user && currentView === 'landing') {
-      const searchParams = new URLSearchParams(window.location.search);
-      if (!searchParams.has('view')) {
-        handleGoToApp();
-      }
-    }
-  }, [user, currentView, handleGoToApp]);
-
-  const handleGoToLanding = () => {
+  const handleGoToLanding = useCallback(() => {
     setCurrentView('landing');
     if (typeof window !== 'undefined') {
       const url = new URL(window.location.href);
+      url.searchParams.delete('tab');
       url.searchParams.set('view', 'landing');
       window.history.pushState(null, '', url.toString());
     }
-  };
+  }, []);
 
   if (loading) {
     return (

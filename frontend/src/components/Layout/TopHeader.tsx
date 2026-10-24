@@ -66,10 +66,10 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
               type="button"
               onClick={onNavigateToLanding}
               title={t('header.publicWebsite')}
-              className="px-3 py-1.5 rounded-lg border border-slate-200/80 dark:border-white/[0.08] hover:border-[#7367F0]/40 text-slate-600 dark:text-slate-300 hover:text-[#7367F0] dark:hover:text-white hover:bg-slate-50 dark:hover:bg-white/[0.04] transition-all cursor-pointer hidden sm:inline-flex items-center gap-1.5 text-xs font-bold shadow-xs active:scale-95"
+              className="px-2.5 sm:px-3 py-1.5 rounded-lg border border-slate-200/80 dark:border-white/[0.08] hover:border-[#7367F0]/40 text-slate-600 dark:text-slate-300 hover:text-[#7367F0] dark:hover:text-white hover:bg-slate-50 dark:hover:bg-white/[0.04] transition-all cursor-pointer inline-flex items-center gap-1.5 text-xs font-bold shadow-xs active:scale-95"
             >
               <Globe className="w-4 h-4 text-[#7367F0]" />
-              <span>{t('header.publicWebsite')}</span>
+              <span className="hidden sm:inline">{t('header.publicWebsite')}</span>
             </button>
           )}
 

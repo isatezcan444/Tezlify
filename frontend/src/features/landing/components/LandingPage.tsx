@@ -23,10 +23,12 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onEnterApp }) => {
   const toast = useToast();
   const [showLoginModal, setShowLoginModal] = useState(false);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const isExplicitLoginTriggeredRef = React.useRef(false);
 
-  // Automatically navigate to app/dashboard when authenticated
+  // When user explicitly completes login via the modal, navigate to app
   React.useEffect(() => {
-    if (user) {
+    if (user && isExplicitLoginTriggeredRef.current) {
+      isExplicitLoginTriggeredRef.current = false;
       setShowLoginModal(false);
       onEnterApp();
     }
@@ -43,13 +45,13 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onEnterApp }) => {
   const handleGoogleLogin = async () => {
     try {
       setIsLoggingIn(true);
+      isExplicitLoginTriggeredRef.current = true;
       await signInWithGoogle();
-      if (user) {
-        setShowLoginModal(false);
-        onEnterApp();
-      }
+      setShowLoginModal(false);
+      onEnterApp();
     } catch (err: unknown) {
       setIsLoggingIn(false);
+      isExplicitLoginTriggeredRef.current = false;
       toast.error(t('auth.loginError'));
     }
   };

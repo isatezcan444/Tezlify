@@ -18,6 +18,7 @@ import {
   Server,
   Wrench,
   Lock,
+  Globe,
   X
 } from 'lucide-react';
 import { Badge } from '../ui/badge';
@@ -32,6 +33,7 @@ interface SidebarProps {
   activeCampaignsCount?: number;
   isOpenMobile?: boolean;
   onCloseMobile?: () => void;
+  onNavigateToLanding?: () => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({ 
@@ -42,6 +44,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   activeCampaignsCount = 0,
   isOpenMobile = false,
   onCloseMobile = () => {},
+  onNavigateToLanding,
 }) => {
   const { t } = useI18n();
 
@@ -193,6 +196,23 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </div>
         ))}
       </nav>
+
+      {/* Website Navigation Link */}
+      {onNavigateToLanding && (
+        <div className="px-3 pt-2 shrink-0">
+          <button
+            type="button"
+            onClick={() => {
+              if (onCloseMobile) onCloseMobile();
+              onNavigateToLanding();
+            }}
+            className="w-full min-h-[38px] flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-semibold text-slate-600 dark:text-[#DBD7EC] hover:bg-slate-100 dark:hover:bg-white/[0.04] hover:text-[#7367F0] dark:hover:text-white transition-all cursor-pointer border border-slate-200/60 dark:border-white/[0.06] hover:border-[#7367F0]/30 shadow-xs"
+          >
+            <Globe className="w-4 h-4 text-[#7367F0] shrink-0" />
+            <span className="truncate">{t('header.publicWebsite')}</span>
+          </button>
+        </div>
+      )}
 
       {/* Anti-Ban Safeguard Status Footer */}
       <div className="p-4 border-t border-slate-100 dark:border-white/[0.06] shrink-0">
