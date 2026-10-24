@@ -687,7 +687,7 @@ export const AdminOperationsPage: React.FC<AdminOperationsPageProps> = ({ onNavi
                   onClick={() => onNavigate('admin-deployment')}
                   className="text-xs font-semibold gap-1.5 cursor-pointer"
                 >
-                  <span>Tam Dağıtım Sayfası</span>
+                  <span>{t('admin.ops.fullDeploymentPage')}</span>
                   <ArrowRight className="w-3.5 h-3.5" />
                 </Button>
               )}
@@ -703,7 +703,7 @@ export const AdminOperationsPage: React.FC<AdminOperationsPageProps> = ({ onNavi
               <div className="space-y-4">
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
                   <div className="p-4 rounded-xl bg-slate-50 dark:bg-white/[0.02] border border-slate-100 dark:border-white/[0.04] space-y-1">
-                    <span className="text-[10px] text-slate-400 uppercase font-semibold block">Aktif Git Dalı & Commit</span>
+                    <span className="text-[10px] text-slate-400 uppercase font-semibold block">{t('admin.ops.activeGitBranchCommit')}</span>
                     <span className="font-mono text-sm font-bold text-slate-800 dark:text-white block">
                       {(deployment.git?.branch || deployment.branch || 'main')} @ {(deployment.git?.commit_hash || deployment.commit_hash)?.slice(0, 7) || '—'}
                     </span>
@@ -713,9 +713,9 @@ export const AdminOperationsPage: React.FC<AdminOperationsPageProps> = ({ onNavi
                   </div>
 
                   <div className="p-4 rounded-xl bg-slate-50 dark:bg-white/[0.02] border border-slate-100 dark:border-white/[0.04] space-y-1">
-                    <span className="text-[10px] text-slate-400 uppercase font-semibold block">Dağıtılan Frontend Sürümü</span>
+                    <span className="text-[10px] text-slate-400 uppercase font-semibold block">{t('admin.ops.deployedFrontendVersion')}</span>
                     <span className="font-mono text-sm font-bold text-emerald-600 dark:text-emerald-400 block">
-                      {deployment.frontend?.current_release || 'v2.4 Pro'}
+                      {deployment.frontend?.current_release || '—'}
                     </span>
                     <span className="text-[11px] text-slate-500 block">
                       {deployment.frontend?.deployed_at || deployment.timestamp}
@@ -723,12 +723,12 @@ export const AdminOperationsPage: React.FC<AdminOperationsPageProps> = ({ onNavi
                   </div>
 
                   <div className="p-4 rounded-xl bg-slate-50 dark:bg-white/[0.02] border border-slate-100 dark:border-white/[0.04] space-y-1">
-                    <span className="text-[10px] text-slate-400 uppercase font-semibold block">Sürüm Hazırlığı</span>
+                    <span className="text-[10px] text-slate-400 uppercase font-semibold block">{t('admin.deployment.releaseReadiness')}</span>
                     <span className="text-sm font-bold block text-emerald-600 dark:text-emerald-400">
-                      {deployment.release_readiness || 'HAZIR ✓'}
+                      {deployment.release_readiness || t('admin.deployment.ready')}
                     </span>
                     <span className="text-[11px] text-slate-500 block">
-                      Çalışma Ağacı: {(deployment.git?.working_tree_clean ?? deployment.working_tree_clean) ? 'Temiz' : 'Değişiklik Var'}
+                      {t('admin.deployment.workingTree')}: {(deployment.git?.working_tree_clean ?? deployment.working_tree_clean) ? t('admin.deployment.clean') : t('admin.deployment.dirty')}
                     </span>
                   </div>
                 </div>
@@ -736,7 +736,7 @@ export const AdminOperationsPage: React.FC<AdminOperationsPageProps> = ({ onNavi
                 <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-white/[0.02] border border-slate-100 dark:border-white/[0.04] flex items-center justify-between text-xs text-slate-600 dark:text-slate-300">
                   <div className="flex items-center gap-2">
                     <CheckCircle2 className="w-4 h-4 text-[#28C76F]" />
-                    <span>Ortam: <strong>{deployment.distro}</strong> ({deployment.host?.architecture || 'aarch64'}) • Çekirdek: {deployment.kernel}</span>
+                    <span>{t('admin.deployment.environment')}: <strong>{deployment.distro}</strong> ({deployment.host?.architecture || 'aarch64'}) • {t('admin.deployment.kernel')}: {deployment.kernel}</span>
                   </div>
                   <span className="text-emerald-600 dark:text-emerald-400 font-semibold">{deployment.environment.toUpperCase()}</span>
                 </div>

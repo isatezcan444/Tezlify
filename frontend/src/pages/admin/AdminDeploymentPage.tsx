@@ -1029,7 +1029,7 @@ export const AdminDeploymentPage: React.FC<AdminDeploymentPageProps> = ({ onNavi
           {!showHostDetails ? (
             <CardContent className="pt-3 pb-3">
               <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
-                <span>{hostState.distro} • {hostState.cpu_cores || 4} Cores ({hostState.architecture || 'aarch64'}) • {hostState.memory_total_mb ? `${(hostState.memory_total_mb / 1024).toFixed(1)} GB` : '23.9 GB'} RAM</span>
+                <span>{hostState.distro} • {hostState.cpu_cores || 4} {t('admin.cores')} ({hostState.architecture || 'aarch64'}) • {hostState.memory_total_mb ? `${(hostState.memory_total_mb / 1024).toFixed(1)} GB` : '23.9 GB'} RAM</span>
                 <span className="font-mono text-[11px]">{t('admin.deployment.uptime')}: {hostState.uptime || '—'}</span>
               </div>
             </CardContent>
@@ -1059,7 +1059,7 @@ export const AdminDeploymentPage: React.FC<AdminDeploymentPageProps> = ({ onNavi
                     {t('admin.deployment.cpuCores')} / {t('admin.deployment.architecture')}
                   </span>
                   <span className="font-mono text-xs font-bold text-slate-800 dark:text-white mt-1 block">
-                    {hostState.cpu_cores || 4} Cores ({hostState.architecture || 'aarch64'})
+                    {hostState.cpu_cores || 4} {t('admin.cores')} ({hostState.architecture || 'aarch64'})
                   </span>
                 </div>
 
