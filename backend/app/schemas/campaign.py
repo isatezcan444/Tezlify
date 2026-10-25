@@ -4,6 +4,15 @@ from pydantic import BaseModel, ConfigDict
 from backend.app.models.campaign import CampaignStatus
 from backend.app.core.config import settings
 
+class SequenceStep(BaseModel):
+    step_number: int
+    delay_days: int = 1
+    delay_hours: int = 0
+    message_template: str
+    media_url: Optional[str] = None
+    media_type: Optional[str] = None
+    media_filename: Optional[str] = None
+
 class CampaignBase(BaseModel):
     name: str
     description: Optional[str] = None
@@ -22,6 +31,9 @@ class CampaignBase(BaseModel):
     media_url: Optional[str] = None
     media_type: Optional[str] = None
     media_filename: Optional[str] = None
+    sequence_enabled: bool = False
+    sequence_steps: Optional[List[Dict[str, Any]]] = None
+    auto_stop_on_reply: bool = True
 
 class CampaignCreate(CampaignBase):
     pass
@@ -45,6 +57,9 @@ class CampaignUpdate(BaseModel):
     media_url: Optional[str] = None
     media_type: Optional[str] = None
     media_filename: Optional[str] = None
+    sequence_enabled: Optional[bool] = None
+    sequence_steps: Optional[List[Dict[str, Any]]] = None
+    auto_stop_on_reply: Optional[bool] = None
 
 class CampaignScheduleRequest(BaseModel):
     scheduled_at: datetime
@@ -53,6 +68,25 @@ class CampaignScheduleRequest(BaseModel):
 
 class CampaignBulkDeleteRequest(BaseModel):
     campaign_ids: List[int]
+
+class SequenceLeadResponse(BaseModel):
+    id: int
+    campaign_id: int
+    lead_id: int
+    lead_name: Optional[str] = None
+    lead_phone: Optional[str] = None
+    whatsapp_session_id: Optional[int] = None
+    current_step: int
+    total_steps: int
+    status: str
+    next_step_at: Optional[datetime] = None
+    last_step_sent_at: Optional[datetime] = None
+    stopped_at: Optional[datetime] = None
+    stop_reason: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
 
 class CampaignResponse(CampaignBase):
     id: int

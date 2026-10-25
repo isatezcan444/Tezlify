@@ -18,8 +18,12 @@ import {
   AlertTriangle,
   ExternalLink,
   Layers,
+  GitFork,
+  RotateCw,
+  CheckCircle2,
+  Loader2,
 } from 'lucide-react';
-import { Campaign, CampaignGroup } from '../../../types';
+import { Campaign, CampaignGroup, SequenceLeadItem } from '../../../types';
 import { Drawer } from '../../../components/ui/Drawer';
 import { Badge } from '../../../components/ui/badge';
 import { Button } from '../../../components/ui/button';
@@ -56,10 +60,53 @@ export const CampaignDetailDrawer: React.FC<CampaignDetailDrawerProps> = ({
 }) => {
   const { t, language } = useI18n();
   const toast = useToast();
-  const [activeTab, setActiveTab] = useState<'overview' | 'message'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'message' | 'sequence'>('overview');
   const [targetGroup, setTargetGroup] = useState<CampaignGroup | null>(null);
   const [loadingGroup, setLoadingGroup] = useState(false);
   const [copiedTemplate, setCopiedTemplate] = useState(false);
+  const [sequenceLeads, setSequenceLeads] = useState<SequenceLeadItem[]>([]);
+  const [loadingSequenceLeads, setLoadingSequenceLeads] = useState(false);
+  const [stoppingLeadId, setStoppingLeadId] = useState<number | null>(null);
+
+  const fetchSequenceLeads = React.useCallback(async () => {
+    if (!campaign?.id) return;
+    setLoadingSequenceLeads(true);
+    try {
+      const data = await ApiClient.getCampaignSequenceLeads(campaign.id);
+      setSequenceLeads(data);
+    } catch (err: any) {
+      console.error('Failed to fetch sequence leads:', err);
+    } finally {
+      setLoadingSequenceLeads(false);
+    }
+  }, [campaign?.id]);
+
+  useEffect(() => {
+    if (isOpen && activeTab === 'sequence' && campaign?.id) {
+      fetchSequenceLeads();
+    }
+  }, [isOpen, activeTab, campaign?.id, fetchSequenceLeads]);
+
+  const handleStopSequenceLead = async (seqLeadId: number) => {
+    if (!campaign?.id) return;
+    const confirmed = await toast.confirm({
+      title: t('common.warning') || 'Uyarı',
+      message: t('campaigns.sequenceStopConfirm') || 'Bu işletme için kalan takip adımlarını durdurmak istediğinizden emin misiniz?',
+      variant: 'warning',
+    });
+    if (!confirmed) return;
+
+    setStoppingLeadId(seqLeadId);
+    try {
+      await ApiClient.stopCampaignSequenceLead(campaign.id, seqLeadId);
+      toast.success(t('campaigns.sequenceStopSuccess') || 'İşletme için sekans takibi durduruldu.');
+      fetchSequenceLeads();
+    } catch (err: any) {
+      toast.error(err.message || t('common.error'));
+    } finally {
+      setStoppingLeadId(null);
+    }
+  };
 
   // Sync tab on open
   useEffect(() => {
@@ -237,7 +284,7 @@ export const CampaignDetailDrawer: React.FC<CampaignDetailDrawerProps> = ({
     >
       <div className="flex flex-col h-full space-y-5">
         {/* Subheader Segmented Tabs */}
-        <div className="grid grid-cols-2 p-1 rounded-xl bg-slate-100 dark:bg-white/[0.04] border border-slate-200/60 dark:border-white/[0.05]">
+        <div className={cn("grid p-1 rounded-xl bg-slate-100 dark:bg-white/[0.04] border border-slate-200/60 dark:border-white/[0.05]", campaign.sequence_enabled ? "grid-cols-3" : "grid-cols-2")}>
           <button
             type="button"
             onClick={() => setActiveTab('overview')}
@@ -265,6 +312,27 @@ export const CampaignDetailDrawer: React.FC<CampaignDetailDrawerProps> = ({
             <MessageSquare className="w-4 h-4" />
             <span>{t('campaigns.messageTab')}</span>
           </button>
+
+          {campaign.sequence_enabled && (
+            <button
+              type="button"
+              onClick={() => setActiveTab('sequence')}
+              className={cn(
+                'py-2 px-3 rounded-lg text-xs font-bold transition-all flex items-center justify-center space-x-2 cursor-pointer',
+                activeTab === 'sequence'
+                  ? 'bg-white dark:bg-emerald-600 text-slate-800 dark:text-white shadow-xs'
+                  : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-white'
+              )}
+            >
+              <GitFork className="w-4 h-4" />
+              <span>{t('campaigns.sequenceTab')}</span>
+              {campaign.sequence_steps && campaign.sequence_steps.length > 0 && (
+                <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-black/10 dark:bg-white/20">
+                  {campaign.sequence_steps.length}
+                </span>
+              )}
+            </button>
+          )}
         </div>
 
         {/* TAB 1: OVERVIEW */}
@@ -569,6 +637,202 @@ export const CampaignDetailDrawer: React.FC<CampaignDetailDrawerProps> = ({
                 template={campaign.message_template}
                 targetCategory={targetGroup?.target_category}
               />
+            </div>
+          </div>
+        )}
+
+        {/* TAB 3: SEQUENCE DRIP TRACKING */}
+        {activeTab === 'sequence' && (
+          <div className="space-y-5 animate-fade-in">
+            {/* Sequence Steps Timeline Card */}
+            <div className="p-4 rounded-xl bg-slate-50/80 dark:bg-[#25293C] border border-slate-200/70 dark:border-white/[0.06] space-y-3.5">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center space-x-2.5">
+                  <div className="w-8 h-8 rounded-lg bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 flex items-center justify-center font-bold">
+                    <GitFork className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h5 className="text-xs sm:text-sm font-extrabold text-slate-800 dark:text-white leading-tight">
+                      {t('campaigns.sequenceModeTitle')}
+                    </h5>
+                    <p className="text-[11px] text-slate-400">
+                      {campaign.sequence_steps?.length || 1} {t('campaigns.sequenceSummaryStepsCount', { count: campaign.sequence_steps?.length || 1 })}
+                      {campaign.auto_stop_on_reply && ` • ${t('campaigns.autoStopOnReplyTitle')}`}
+                    </p>
+                  </div>
+                </div>
+
+                <Badge variant="success" className="text-[10px] font-bold">
+                  {campaign.sequence_enabled ? t('campaigns.sequenceStatusActive') : 'Pasif'}
+                </Badge>
+              </div>
+
+              {/* Steps timeline list */}
+              <div className="space-y-2.5 pt-1">
+                {campaign.sequence_steps?.map((step: any, idx: number) => (
+                  <div
+                    key={idx}
+                    className="p-3 rounded-lg border border-slate-200/60 dark:border-white/[0.05] bg-white dark:bg-[#2F3349]/50 flex items-start space-x-3 text-xs"
+                  >
+                    <span className="w-6 h-6 rounded-full bg-emerald-500 text-white flex items-center justify-center text-[10px] font-bold shrink-0 mt-0.5">
+                      {step.step_number || idx + 1}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="font-extrabold text-slate-800 dark:text-white">
+                          {idx === 0
+                            ? t('campaigns.sequenceStepRecap1')
+                            : t('campaigns.sequenceStepTitle', { step: step.step_number || idx + 1 })}
+                        </span>
+                        {idx > 0 && (
+                          <span className="text-[10px] font-mono text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded">
+                            +{step.delay_days} Gün {step.delay_hours ? `${step.delay_hours}s ` : ''}sonra
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-[11px] text-slate-600 dark:text-slate-300 line-clamp-2 font-sans whitespace-pre-wrap">
+                        {step.message_template || '-'}
+                      </p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Live Sequence Leads Table */}
+            <div className="p-4 rounded-xl bg-slate-50/80 dark:bg-[#25293C] border border-slate-200/70 dark:border-white/[0.06] space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h5 className="text-xs sm:text-sm font-extrabold text-slate-800 dark:text-white">
+                    {t('campaigns.sequenceLeadsTitle')}
+                  </h5>
+                  <p className="text-[11px] text-slate-400">
+                    {t('campaigns.sequenceLeadsSubtitle')}
+                  </p>
+                </div>
+
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={fetchSequenceLeads}
+                  disabled={loadingSequenceLeads}
+                  className="h-7 text-xs font-bold space-x-1.5 cursor-pointer border-slate-300 dark:border-white/10"
+                >
+                  <RotateCw className={cn("w-3.5 h-3.5", loadingSequenceLeads && "animate-spin")} />
+                  <span>{t('common.refresh') || 'Yenile'}</span>
+                </Button>
+              </div>
+
+              {loadingSequenceLeads ? (
+                <div className="flex items-center justify-center py-8 text-xs text-slate-400">
+                  <Loader2 className="w-5 h-5 animate-spin mr-2 text-[#7367F0]" />
+                  <span>{t('common.loading')}</span>
+                </div>
+              ) : sequenceLeads.length === 0 ? (
+                <div className="p-6 text-center text-xs text-slate-400 rounded-lg bg-white/40 dark:bg-[#1F2C34]/40 border border-slate-200/40 dark:border-white/[0.04]">
+                  {t('campaigns.sequenceEmptyLeads')}
+                </div>
+              ) : (
+                <div className="overflow-x-auto rounded-lg border border-slate-200/60 dark:border-white/[0.06]">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-slate-100 dark:bg-white/[0.04] text-[10px] font-extrabold uppercase text-slate-400 border-b border-slate-200/60 dark:border-white/[0.06]">
+                      <tr>
+                        <th className="py-2.5 px-3">{t('campaigns.sequenceLeadHeaderName')}</th>
+                        <th className="py-2.5 px-3">{t('campaigns.sequenceLeadHeaderStep')}</th>
+                        <th className="py-2.5 px-3">{t('campaigns.sequenceLeadHeaderStatus')}</th>
+                        <th className="py-2.5 px-3">{t('campaigns.sequenceLeadHeaderNextAt')}</th>
+                        <th className="py-2.5 px-3 text-right">{t('campaigns.sequenceLeadHeaderActions')}</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-200/40 dark:divide-white/[0.04]">
+                      {sequenceLeads.map((sl) => {
+                        const isStoppedReply = sl.status === 'STOPPED_ON_REPLY';
+                        const isCompleted = sl.status === 'COMPLETED';
+                        const isActive = sl.status === 'ACTIVE';
+                        const isManual = sl.status === 'STOPPED_MANUAL';
+
+                        return (
+                          <tr key={sl.id} className="hover:bg-slate-50/50 dark:hover:bg-white/[0.01] transition-colors">
+                            <td className="py-2.5 px-3 min-w-0">
+                              <p className="font-extrabold text-slate-800 dark:text-white truncate max-w-[120px]">
+                                {sl.lead_name || `İşletme #${sl.lead_id}`}
+                              </p>
+                              <p className="font-mono text-[10px] text-slate-400">
+                                {sl.lead_phone || '-'}
+                              </p>
+                            </td>
+
+                            <td className="py-2.5 px-3 font-mono font-bold text-slate-700 dark:text-slate-200">
+                              {sl.current_step} / {sl.total_steps}
+                            </td>
+
+                            <td className="py-2.5 px-3">
+                              {isActive && (
+                                <span className="inline-flex items-center gap-1 text-[10px] font-bold text-blue-600 dark:text-blue-400 bg-blue-500/10 px-1.5 py-0.5 rounded border border-blue-500/20">
+                                  <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" />
+                                  {t('campaigns.sequenceStatusActive')}
+                                </span>
+                              )}
+                              {isStoppedReply && (
+                                <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/20">
+                                  <CheckCircle2 className="w-3 h-3" />
+                                  {t('campaigns.sequenceStatusStoppedReply')}
+                                </span>
+                              )}
+                              {isCompleted && (
+                                <span className="inline-flex items-center gap-1 text-[10px] font-bold text-indigo-600 dark:text-indigo-400 bg-indigo-500/10 px-1.5 py-0.5 rounded border border-indigo-500/20">
+                                  {t('campaigns.sequenceStatusCompleted')}
+                                </span>
+                              )}
+                              {isManual && (
+                                <span className="inline-flex items-center gap-1 text-[10px] font-bold text-slate-500 dark:text-slate-400 bg-slate-500/10 px-1.5 py-0.5 rounded border border-slate-500/20">
+                                  {t('campaigns.sequenceStatusStoppedManual')}
+                                </span>
+                              )}
+                            </td>
+
+                            <td className="py-2.5 px-3 font-mono text-[11px] text-slate-500 dark:text-slate-400 whitespace-nowrap">
+                              {sl.next_step_at
+                                ? new Date(sl.next_step_at).toLocaleDateString(language === 'tr' ? 'tr-TR' : 'en-US', {
+                                    day: 'numeric',
+                                    month: 'short',
+                                    hour: '2-digit',
+                                    minute: '2-digit',
+                                  })
+                                : sl.stopped_at
+                                ? new Date(sl.stopped_at).toLocaleDateString(language === 'tr' ? 'tr-TR' : 'en-US', {
+                                    day: 'numeric',
+                                    month: 'short',
+                                    hour: '2-digit',
+                                    minute: '2-digit',
+                                  })
+                                : '-'}
+                            </td>
+
+                            <td className="py-2.5 px-3 text-right">
+                              {isActive && (
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  disabled={stoppingLeadId === sl.id}
+                                  onClick={() => handleStopSequenceLead(sl.id)}
+                                  className="h-6 px-2 text-[10px] font-bold text-rose-500 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/20 cursor-pointer"
+                                >
+                                  {stoppingLeadId === sl.id ? (
+                                    <Loader2 className="w-3 h-3 animate-spin" />
+                                  ) : (
+                                    <span>{t('campaigns.sequenceStopBtn')}</span>
+                                  )}
+                                </Button>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           </div>
         )}

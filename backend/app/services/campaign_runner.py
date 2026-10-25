@@ -177,6 +177,238 @@ class CampaignRunner:
         return started_count
 
     @classmethod
+    async def process_due_sequence_followups(cls) -> int:
+        """
+        Polls for active CampaignSequenceLead rows whose next_step_at <= utc_now_naive().
+        Dispatches the next sequential step (Step 2, Step 3, etc.) while checking:
+        1. Anti-Ban policy & working hours (fails-closed)
+        2. Lead status (if replied, opt-out, blacklisted -> auto-stop)
+        3. Line continuity / active WhatsApp session
+        4. Advances current_step or marks COMPLETED.
+        """
+        from datetime import timedelta
+        from backend.app.core.datetime_utils import utc_now_naive
+        from backend.app.models.campaign import Campaign, CampaignStatus
+        from backend.app.models.campaign_sequence_lead import CampaignSequenceLead, SequenceLeadStatus
+        from backend.app.models.lead import Lead, LeadStatus
+        from backend.app.models.whatsapp_session import WhatsAppSession, SessionStatus
+        from backend.app.services.outreach_manager import OutreachManager
+        from backend.app.services.spintax_service import SpintaxService
+        from backend.app.services import whatsapp_service
+        from backend.app.models.message_log import MessageLog, MessageStatus
+        from sqlalchemy import func
+
+        now = utc_now_naive()
+        processed_count = 0
+
+        async with AsyncSessionLocal() as db:
+            due_stmt = (
+                select(CampaignSequenceLead)
+                .where(
+                    CampaignSequenceLead.status == SequenceLeadStatus.ACTIVE,
+                    CampaignSequenceLead.next_step_at.isnot(None),
+                    CampaignSequenceLead.next_step_at <= now,
+                )
+                .order_by(CampaignSequenceLead.next_step_at.asc())
+                .limit(20)
+            )
+            due_rows = (await db.execute(due_stmt)).scalars().all()
+            if not due_rows:
+                return 0
+
+            for seq_lead in due_rows:
+                campaign = await db.get(Campaign, seq_lead.campaign_id)
+                if not campaign or campaign.status != CampaignStatus.ACTIVE:
+                    continue
+
+                policy = AntibanPolicy.from_campaign(campaign)
+                if not policy.is_within_working_hours():
+                    continue
+
+                lead = await db.get(Lead, seq_lead.lead_id)
+                if not lead or not lead.is_whatsapp_eligible or not lead.phone_e164:
+                    seq_lead.status = SequenceLeadStatus.FAILED
+                    seq_lead.stop_reason = "LEAD_INELIGIBLE"
+                    await db.commit()
+                    continue
+
+                # Auto-stop if lead has replied or unsubscribed
+                if lead.status in (LeadStatus.REPLIED, LeadStatus.UNSUBSCRIBED):
+                    seq_lead.status = (
+                        SequenceLeadStatus.STOPPED_ON_REPLY
+                        if lead.status == LeadStatus.REPLIED
+                        else SequenceLeadStatus.OPT_OUT
+                    )
+                    seq_lead.stopped_at = now
+                    seq_lead.stop_reason = lead.status.value
+                    seq_lead.next_step_at = None
+                    await db.commit()
+                    continue
+
+                # Check Blacklist
+                if await OutreachManager.is_blacklisted(db, lead.phone_e164):
+                    seq_lead.status = SequenceLeadStatus.OPT_OUT
+                    seq_lead.stopped_at = now
+                    seq_lead.stop_reason = "BLACKLISTED"
+                    seq_lead.next_step_at = None
+                    await db.commit()
+                    continue
+
+                steps = campaign.sequence_steps or []
+                step_idx = seq_lead.current_step  # 1-based completed step, index seq_lead.current_step is next
+                if step_idx >= len(steps):
+                    seq_lead.status = SequenceLeadStatus.COMPLETED
+                    seq_lead.next_step_at = None
+                    await db.commit()
+                    continue
+
+                step_data = steps[step_idx]
+                step_number = step_data.get("step_number", step_idx + 1)
+                template_str = step_data.get("message_template") or campaign.message_template
+                step_media_url = step_data.get("media_url")
+                step_media_type = step_data.get("media_type")
+                step_media_filename = step_data.get("media_filename")
+
+                lead_dict = {
+                    "name": lead.name,
+                    "category": lead.category or "",
+                    "city": lead.city or "",
+                    "district": lead.district or "",
+                    "address": lead.address or "",
+                    "rating": lead.rating or "",
+                    "website": lead.website or "",
+                    "phone": lead.phone_e164,
+                }
+                rendered_msg = SpintaxService.render_template(template_str, lead_dict)
+
+                # Resolve session: prefer same line for conversation continuity
+                target_session_id = seq_lead.whatsapp_session_id
+                active_session = None
+                if target_session_id:
+                    active_session = await db.get(WhatsAppSession, target_session_id)
+                    if not active_session or active_session.status != SessionStatus.CONNECTED:
+                        active_session = None
+
+                if not active_session:
+                    owner = str(campaign.user_id) if campaign.user_id else None
+                    sess_res = await db.execute(
+                        select(WhatsAppSession).where(
+                            WhatsAppSession.user_id == owner,
+                            WhatsAppSession.status == SessionStatus.CONNECTED,
+                        ).order_by(WhatsAppSession.id.desc()).limit(1)
+                    )
+                    active_session = sess_res.scalars().first()
+
+                if not active_session:
+                    logger.warning("[SequenceRunner] No connected session for Campaign #%s sequence step %s", campaign.id, step_number)
+                    continue
+
+                # Prepare media payload if step specifies media
+                media_payload = None
+                if step_media_url:
+                    from backend.app.services.campaign_media_service import CampaignMediaService
+                    base64_data = CampaignMediaService.get_campaign_media_base64(step_media_url)
+                    if base64_data or step_media_url.startswith(("http://", "https://")):
+                        media_payload = {
+                            "media_type": (step_media_type or "DOCUMENT").lower(),
+                            "media_url": step_media_url,
+                            "media_base64": base64_data,
+                            "filename": step_media_filename,
+                            "caption": rendered_msg,
+                        }
+
+                user_id_str = str(campaign.user_id) if campaign.user_id else None
+                try:
+                    result = await whatsapp_service.start_conversation(
+                        db=db,
+                        user_id=user_id_str,
+                        phone=lead.phone_e164,
+                        name=lead.name,
+                        message=rendered_msg if not media_payload else None,
+                        session_id=active_session.id,
+                        media=media_payload,
+                    )
+                    success = bool(result.get("id")) if isinstance(result, dict) else False
+                except Exception as send_err:
+                    logger.error("[SequenceRunner] Error sending sequence step %s to lead #%s: %s", step_number, lead.id, send_err)
+                    success = False
+
+                if success:
+                    processed_count += 1
+                    seq_lead.current_step = step_number
+                    seq_lead.last_step_sent_at = now
+                    campaign.sent_count = (campaign.sent_count or 0) + 1
+
+                    msg_log = MessageLog(
+                        user_id=campaign.user_id,
+                        lead_id=lead.id,
+                        campaign_id=campaign.id,
+                        whatsapp_session_id=active_session.id,
+                        target_phone=lead.phone_e164,
+                        rendered_message=rendered_msg,
+                        media_url=step_media_url,
+                        status=MessageStatus.SENT,
+                        sent_at=now,
+                        delay_applied_seconds=0,
+                    )
+                    db.add(msg_log)
+
+                    if step_idx + 1 < len(steps):
+                        next_step_data = steps[step_idx + 1]
+                        d_days = int(next_step_data.get("delay_days", 1) or 0)
+                        d_hours = int(next_step_data.get("delay_hours", 0) or 0)
+                        seq_lead.next_step_at = now + timedelta(days=d_days, hours=d_hours)
+                        seq_lead.status = SequenceLeadStatus.ACTIVE
+                    else:
+                        seq_lead.status = SequenceLeadStatus.COMPLETED
+                        seq_lead.next_step_at = None
+
+                    await db.commit()
+
+                    await ws_manager.broadcast({
+                        "event": "sequence_step_sent",
+                        "campaign_id": campaign.id,
+                        "lead_id": lead.id,
+                        "lead_name": lead.name,
+                        "phone": lead.phone_e164,
+                        "step_number": step_number,
+                        "total_steps": len(steps),
+                        "user_id": user_id_str,
+                        "next_step_at": seq_lead.next_step_at.isoformat() if seq_lead.next_step_at else None,
+                        "status": seq_lead.status.value,
+                    })
+                else:
+                    logger.warning("[SequenceRunner] Failed to send step %s to lead #%s", step_number, lead.id)
+
+            # Check if all sequence leads for active campaigns are completed
+            active_camps = (await db.execute(
+                select(Campaign).where(
+                    Campaign.status == CampaignStatus.ACTIVE,
+                    Campaign.sequence_enabled == True,
+                )
+            )).scalars().all()
+            for c in active_camps:
+                remaining_active = await db.scalar(
+                    select(func.count(CampaignSequenceLead.id)).where(
+                        CampaignSequenceLead.campaign_id == c.id,
+                        CampaignSequenceLead.status == SequenceLeadStatus.ACTIVE,
+                    )
+                )
+                if (remaining_active or 0) == 0:
+                    c.status = CampaignStatus.COMPLETED
+                    await db.commit()
+                    await ws_manager.broadcast({
+                        "event": "campaign_completed",
+                        "campaign_id": c.id,
+                        "user_id": str(c.user_id) if c.user_id else None,
+                        "total_sent": c.sent_count,
+                        "total_failed": c.failed_count,
+                        "sequence_completed": True,
+                    })
+
+        return processed_count
+
+    @classmethod
     async def _execute_campaign_worker(
         cls,
         campaign_id: int,
@@ -442,6 +674,49 @@ class CampaignRunner:
                         except Exception as exc:
                             logger.warning(f"[QuotaGuard] Could not update WhatsApp quota: {exc}")
 
+                        # If Sequence / Drip campaign is enabled, initialize sequence lead tracking
+                        if getattr(campaign, "sequence_enabled", False) and campaign.sequence_steps:
+                            from backend.app.models.campaign_sequence_lead import CampaignSequenceLead, SequenceLeadStatus
+                            from datetime import timedelta
+                            steps = campaign.sequence_steps or []
+                            total_st = max(1, len(steps))
+                            now_utc = utc_now_naive()
+                            next_at = None
+                            init_status = SequenceLeadStatus.COMPLETED
+                            if len(steps) > 1:
+                                step2 = steps[1]
+                                delay_d = int(step2.get("delay_days", 1) or 0)
+                                delay_h = int(step2.get("delay_hours", 0) or 0)
+                                next_at = now_utc + timedelta(days=delay_d, hours=delay_h)
+                                init_status = SequenceLeadStatus.ACTIVE
+
+                            seq_rec_stmt = select(CampaignSequenceLead).where(
+                                CampaignSequenceLead.campaign_id == campaign.id,
+                                CampaignSequenceLead.lead_id == lead.id,
+                            ).limit(1)
+                            seq_lead_row = (await db.execute(seq_rec_stmt)).scalars().first()
+                            if not seq_lead_row:
+                                seq_lead_row = CampaignSequenceLead(
+                                    user_id=campaign.user_id,
+                                    campaign_id=campaign.id,
+                                    lead_id=lead.id,
+                                    whatsapp_session_id=curr_sess.id,
+                                    current_step=1,
+                                    total_steps=total_st,
+                                    status=init_status,
+                                    next_step_at=next_at,
+                                    last_step_sent_at=now_utc,
+                                )
+                                db.add(seq_lead_row)
+                            else:
+                                seq_lead_row.current_step = 1
+                                seq_lead_row.total_steps = total_st
+                                seq_lead_row.status = init_status
+                                seq_lead_row.next_step_at = next_at
+                                seq_lead_row.last_step_sent_at = now_utc
+                                seq_lead_row.whatsapp_session_id = curr_sess.id
+                            await db.commit()
+
                     # Handle fatal connection drop or working hours pause
                     if not success:
                         if OutreachManager.is_connection_fatal_error(msg):
@@ -514,28 +789,56 @@ class CampaignRunner:
                     select(Campaign.status).where(Campaign.id == campaign_id)
                 )
                 if not was_stopped_early and live_status == CampaignStatus.ACTIVE:
-                    campaign.status = CampaignStatus.COMPLETED
-                    await db.commit()
+                    has_pending_sequences = False
+                    if getattr(campaign, "sequence_enabled", False) and campaign.sequence_steps and len(campaign.sequence_steps) > 1:
+                        from backend.app.models.campaign_sequence_lead import CampaignSequenceLead, SequenceLeadStatus
+                        pending_count = await db.scalar(
+                            select(func.count(CampaignSequenceLead.id)).where(
+                                CampaignSequenceLead.campaign_id == campaign_id,
+                                CampaignSequenceLead.status == SequenceLeadStatus.ACTIVE,
+                            )
+                        )
+                        if (pending_count or 0) > 0:
+                            has_pending_sequences = True
+                            logger.info(
+                                "[CampaignRunner] Campaign #%s Step 1 completed, but %s sequence follow-ups are active. Keeping campaign ACTIVE.",
+                                campaign_id, pending_count
+                            )
 
-                    await ws_manager.broadcast({
-                        "event": "campaign_completed",
-                        "campaign_id": campaign_id,
-                        "user_id": owner,
-                        "total_sent": campaign.sent_count,
-                        "total_failed": campaign.failed_count
-                    })
+                    if not has_pending_sequences:
+                        campaign.status = CampaignStatus.COMPLETED
+                        await db.commit()
 
-                    WebhookDispatcher.emit(
-                        user_id=owner,
-                        event_type="campaign.completed",
-                        data={
-                            "campaign_id": campaign.id,
-                            "campaign_name": campaign.name,
+                        await ws_manager.broadcast({
+                            "event": "campaign_completed",
+                            "campaign_id": campaign_id,
+                            "user_id": owner,
+                            "total_sent": campaign.sent_count,
+                            "total_failed": campaign.failed_count
+                        })
+
+                        WebhookDispatcher.emit(
+                            user_id=owner,
+                            event_type="campaign.completed",
+                            data={
+                                "campaign_id": campaign.id,
+                                "campaign_name": campaign.name,
+                                "sent_count": campaign.sent_count,
+                                "failed_count": campaign.failed_count,
+                                "total_target": campaign.total_leads_target,
+                            },
+                        )
+                    else:
+                        await ws_manager.broadcast({
+                            "event": "campaign_progress",
+                            "campaign_id": campaign_id,
+                            "user_id": owner,
+                            "status": CampaignStatus.ACTIVE.value,
                             "sent_count": campaign.sent_count,
                             "failed_count": campaign.failed_count,
-                            "total_target": campaign.total_leads_target,
-                        },
-                    )
+                            "step1_completed": True,
+                            "sequence_active": True,
+                        })
 
         except asyncio.CancelledError:
             logger.warning(f"[CampaignRunner] Campaign #{campaign_id} worker task cancelled.")

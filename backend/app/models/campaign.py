@@ -50,6 +50,11 @@ class Campaign(Base):
     media_type = Column(String(50), nullable=True)  # 'IMAGE', 'DOCUMENT', 'VIDEO', 'AUDIO'
     media_filename = Column(String(255), nullable=True)
 
+    # Sequence / Kademeli Takip (Drip Sequences & Auto-Stop on Reply)
+    sequence_enabled = Column(Boolean, default=False, nullable=False)
+    sequence_steps = Column(JSON, nullable=True, default=list)
+    auto_stop_on_reply = Column(Boolean, default=True, nullable=False)
+
     # Campaign Group Association (Optional)
     group_id = Column(Integer, ForeignKey("campaign_groups.id", ondelete="SET NULL"), nullable=True)
     group = relationship("CampaignGroup", backref="campaigns")

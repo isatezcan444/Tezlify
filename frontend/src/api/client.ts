@@ -30,6 +30,7 @@ import {
   BulkEnrichRequest,
   BulkEnrichResponse,
   SmtpConfig,
+  SequenceLeadItem,
 } from '../types';
 
 const isHttps = typeof window !== 'undefined' && window.location.protocol === 'https:';
@@ -613,6 +614,26 @@ export class ApiClient {
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       throw new Error(err.detail || 'Zamanlama kaldırılamadı');
+    }
+    return res.json();
+  }
+
+  static async getCampaignSequenceLeads(campaignId: number): Promise<SequenceLeadItem[]> {
+    const res = await authFetch(`${API_BASE}/campaigns/${campaignId}/sequence-leads`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || 'Sekans detayları yüklenemedi');
+    }
+    return res.json();
+  }
+
+  static async stopCampaignSequenceLead(campaignId: number, seqLeadId: number): Promise<SequenceLeadItem> {
+    const res = await authFetch(`${API_BASE}/campaigns/${campaignId}/sequence-leads/${seqLeadId}/stop`, {
+      method: 'POST'
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || 'Sekans takibi durdurulamadı');
     }
     return res.json();
   }

@@ -43,6 +43,7 @@ from backend.app.core.migrations import (
     ensure_repair_raw_lid_mentions,
     purge_empty_ghost_conversations,
     ensure_campaigns_columns,
+    ensure_campaign_sequence_leads_table,
     ensure_keyset_and_ordering_indexes,
     ensure_quick_replies_table,
     clean_invalid_avatar_sentinels,
@@ -170,6 +171,7 @@ async def campaign_scheduler_loop(interval_seconds: float = 15.0) -> None:
     while True:
         try:
             await CampaignRunner.check_and_start_scheduled_campaigns()
+            await CampaignRunner.process_due_sequence_followups()
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -224,6 +226,7 @@ async def lifespan(app: FastAPI):
     await ensure_repair_raw_lid_mentions(engine)
     await purge_empty_ghost_conversations(engine)
     await ensure_campaigns_columns(engine)
+    await ensure_campaign_sequence_leads_table(engine)
     await ensure_keyset_and_ordering_indexes(engine)
     await ensure_quick_replies_table(engine)
     await clean_invalid_avatar_sentinels(engine)

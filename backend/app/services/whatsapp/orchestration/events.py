@@ -354,6 +354,51 @@ class WhatsAppEventOrchestrator:
     def __init__(self, service: Optional[Any] = None) -> None:
         self.service = service
 
+    @classmethod
+    async def handle_auto_stop_on_reply(cls, db: AsyncSession, lead_id: int, owner: Optional[str] = None) -> int:
+        """Halts all active sequence leads for a recipient when they send an inbound reply."""
+        from backend.app.models.campaign_sequence_lead import (
+            CampaignSequenceLead,
+            SequenceLeadStatus,
+        )
+        from backend.app.models.lead import Lead
+        from backend.app.models.campaign import Campaign
+        from backend.app.api.v1.websocket import ws_manager
+        seq_stmt = select(CampaignSequenceLead).where(
+            CampaignSequenceLead.lead_id == lead_id,
+            CampaignSequenceLead.status == SequenceLeadStatus.ACTIVE,
+        )
+        active_seq_leads = (await db.execute(seq_stmt)).scalars().all()
+        stopped_count = 0
+        target_lead = await db.get(Lead, lead_id)
+        for seq_lead in active_seq_leads:
+            seq_camp = await db.get(Campaign, seq_lead.campaign_id)
+            if seq_camp and not getattr(seq_camp, "auto_stop_on_reply", True):
+                continue
+            seq_lead.status = SequenceLeadStatus.STOPPED_ON_REPLY
+            seq_lead.stopped_at = utc_now_naive()
+            seq_lead.stop_reason = "REPLIED"
+            seq_lead.next_step_at = None
+            stopped_count += 1
+            logger.info(
+                "[AutoStop] Sequence #%s for Campaign #%s auto-stopped at step %s because lead #%s replied.",
+                seq_lead.id,
+                seq_lead.campaign_id,
+                seq_lead.current_step,
+                lead_id,
+            )
+            await ws_manager.broadcast({
+                "event": "sequence_stopped_on_reply",
+                "campaign_id": seq_lead.campaign_id,
+                "lead_id": lead_id,
+                "lead_name": target_lead.name if target_lead else None,
+                "phone": target_lead.phone_e164 if target_lead else None,
+                "current_step": seq_lead.current_step,
+                "user_id": str(seq_lead.user_id) if seq_lead.user_id else owner,
+            })
+        await db.commit()
+        return stopped_count
+
     async def _drain_orphan_queue(self, gateway_session_id: Optional[str]) -> int:
         """Replays held events once their owner has become resolvable.
 
@@ -1018,7 +1063,8 @@ class WhatsAppEventOrchestrator:
                                 camp = await db.get(Campaign, latest_log.campaign_id)
                                 if camp:
                                     camp.replied_count = (camp.replied_count or 0) + 1
-                    await db.flush()
+                    # Auto-Stop on Reply for active sequence runs
+                    await self.handle_auto_stop_on_reply(db, target_lead.id, owner=owner)
             except Exception as reply_err:
                 logger.warning("Inbound campaign reply sync failed: %s", reply_err)
         # A provider ACK may have arrived while this record was being persisted

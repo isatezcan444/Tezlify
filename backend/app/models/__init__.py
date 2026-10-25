@@ -3,6 +3,7 @@ from backend.app.core.database import Base
 from backend.app.models.lead import Lead, LeadStatus, EntityType, VerificationStatus, ConfidenceLevel
 from backend.app.models.contact import Contact
 from backend.app.models.campaign import Campaign, CampaignStatus
+from backend.app.models.campaign_sequence_lead import CampaignSequenceLead, SequenceLeadStatus
 from backend.app.models.campaign_group import CampaignGroup, campaign_group_leads
 from backend.app.models.message_log import MessageLog, MessageStatus
 from backend.app.models.blacklist import Blacklist, ScraperJob, ScraperJobStatus
@@ -33,6 +34,8 @@ __all__ = [
     "Contact",
     "Campaign",
     "CampaignStatus",
+    "CampaignSequenceLead",
+    "SequenceLeadStatus",
     "MessageLog",
     "MessageStatus",
     "Blacklist",

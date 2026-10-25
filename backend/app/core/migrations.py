@@ -2051,6 +2051,15 @@ async def ensure_campaigns_columns(engine: AsyncEngine) -> None:
                     if "whatsapp_session_ids" not in cols:
                         await conn.execute(text("ALTER TABLE campaigns ADD COLUMN whatsapp_session_ids TEXT DEFAULT '[]'"))
                         logger.info("[MIGRATION] Added campaigns.whatsapp_session_ids")
+                    if "sequence_enabled" not in cols:
+                        await conn.execute(text("ALTER TABLE campaigns ADD COLUMN sequence_enabled BOOLEAN DEFAULT 0"))
+                        logger.info("[MIGRATION] Added campaigns.sequence_enabled")
+                    if "sequence_steps" not in cols:
+                        await conn.execute(text("ALTER TABLE campaigns ADD COLUMN sequence_steps TEXT DEFAULT '[]'"))
+                        logger.info("[MIGRATION] Added campaigns.sequence_steps")
+                    if "auto_stop_on_reply" not in cols:
+                        await conn.execute(text("ALTER TABLE campaigns ADD COLUMN auto_stop_on_reply BOOLEAN DEFAULT 1"))
+                        logger.info("[MIGRATION] Added campaigns.auto_stop_on_reply")
 
                 msg_rows = (await conn.execute(text("PRAGMA table_info(message_logs)"))).fetchall()
                 msg_cols = {row[1] for row in msg_rows}
@@ -2070,6 +2079,9 @@ async def ensure_campaigns_columns(engine: AsyncEngine) -> None:
                 await conn.execute(text("ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS media_type VARCHAR(50)"))
                 await conn.execute(text("ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS media_filename VARCHAR(255)"))
                 await conn.execute(text("ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS scheduled_at TIMESTAMP"))
+                await conn.execute(text("ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS sequence_enabled BOOLEAN DEFAULT FALSE"))
+                await conn.execute(text("ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS sequence_steps JSONB DEFAULT '[]'::jsonb"))
+                await conn.execute(text("ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS auto_stop_on_reply BOOLEAN DEFAULT TRUE"))
                 await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_campaigns_whatsapp_session_id ON campaigns (whatsapp_session_id)"))
                 await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_campaigns_scheduled_at ON campaigns (scheduled_at)"))
                 await conn.execute(text("ALTER TABLE message_logs ADD COLUMN IF NOT EXISTS media_url VARCHAR(500)"))
@@ -2078,6 +2090,76 @@ async def ensure_campaigns_columns(engine: AsyncEngine) -> None:
                 logger.info("[MIGRATION] PostgreSQL campaigns and message_logs media and session pool columns verified")
     except Exception as exc:
         logger.warning("[MIGRATION] ensure_campaigns_columns atlandi: %s", exc)
+
+
+async def ensure_campaign_sequence_leads_table(engine: AsyncEngine) -> None:
+    """Idempotently guarantees that campaign_sequence_leads table and indexes exist."""
+    try:
+        if engine.dialect.name == "sqlite":
+            async with engine.begin() as conn:
+                table_check = (await conn.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name='campaign_sequence_leads'"))).scalar()
+                if not table_check:
+                    await conn.execute(text("""
+                        CREATE TABLE IF NOT EXISTS campaign_sequence_leads (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            user_id VARCHAR(36),
+                            campaign_id INTEGER NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+                            lead_id INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+                            whatsapp_session_id INTEGER REFERENCES whatsapp_sessions(id) ON DELETE SET NULL,
+                            current_step INTEGER NOT NULL DEFAULT 1,
+                            total_steps INTEGER NOT NULL DEFAULT 1,
+                            status VARCHAR(50) NOT NULL DEFAULT 'ACTIVE',
+                            next_step_at DATETIME,
+                            last_step_sent_at DATETIME,
+                            stopped_at DATETIME,
+                            stop_reason VARCHAR(100),
+                            created_at DATETIME NOT NULL,
+                            updated_at DATETIME NOT NULL
+                        )
+                    """))
+                    await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_csl_campaign_id ON campaign_sequence_leads (campaign_id)"))
+                    await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_csl_lead_id ON campaign_sequence_leads (lead_id)"))
+                    await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_csl_status ON campaign_sequence_leads (status)"))
+                    await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_csl_next_step ON campaign_sequence_leads (status, next_step_at)"))
+                    await conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_csl_camp_lead ON campaign_sequence_leads (campaign_id, lead_id)"))
+                    logger.info("[MIGRATION] SQLite campaign_sequence_leads table created")
+        elif engine.dialect.name == "postgresql":
+            async with engine.begin() as conn:
+                await conn.execute(text("""
+                    DO $$ BEGIN
+                        CREATE TYPE sequenceleadstatus AS ENUM (
+                            'ACTIVE', 'COMPLETED', 'STOPPED_ON_REPLY', 'STOPPED_MANUAL', 'OPT_OUT', 'FAILED'
+                        );
+                    EXCEPTION
+                        WHEN duplicate_object THEN null;
+                    END $$;
+                """))
+                await conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS campaign_sequence_leads (
+                        id SERIAL PRIMARY KEY,
+                        user_id UUID,
+                        campaign_id INTEGER NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+                        lead_id INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+                        whatsapp_session_id INTEGER REFERENCES whatsapp_sessions(id) ON DELETE SET NULL,
+                        current_step INTEGER NOT NULL DEFAULT 1,
+                        total_steps INTEGER NOT NULL DEFAULT 1,
+                        status sequenceleadstatus NOT NULL DEFAULT 'ACTIVE',
+                        next_step_at TIMESTAMP,
+                        last_step_sent_at TIMESTAMP,
+                        stopped_at TIMESTAMP,
+                        stop_reason VARCHAR(100),
+                        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                        updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+                    )
+                """))
+                await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_csl_campaign_id ON campaign_sequence_leads (campaign_id)"))
+                await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_csl_lead_id ON campaign_sequence_leads (lead_id)"))
+                await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_csl_status ON campaign_sequence_leads (status)"))
+                await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_csl_next_step ON campaign_sequence_leads (status, next_step_at)"))
+                await conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_csl_camp_lead ON campaign_sequence_leads (campaign_id, lead_id)"))
+                logger.info("[MIGRATION] PostgreSQL campaign_sequence_leads table verified")
+    except Exception as exc:
+        logger.warning("[MIGRATION] ensure_campaign_sequence_leads_table atlandi: %s", exc)
 
 
 async def ensure_keyset_and_ordering_indexes(engine: AsyncEngine) -> None:

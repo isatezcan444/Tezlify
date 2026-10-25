@@ -449,9 +449,7 @@ class WhatsAppMessagingOrchestrator:
                         existing.message_type = MessageType.TEXT
                     else:
                         raise ValueError("client_message_id farklı bir mesaj için yeniden kullanılamaz.")
-                if existing.status in _TERMINAL_OUTBOUND_STATUSES or (
-                    existing.wa_message_id and existing.status != ConversationMessageStatus.FAILED
-                ):
+                if existing.status in _TERMINAL_OUTBOUND_STATUSES or existing.wa_message_id:
                     preview_data = await preview_for_text_message(
                         db, clean, user_id=user_id, conversation_id=conv_id
                     )

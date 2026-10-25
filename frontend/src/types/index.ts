@@ -131,11 +131,44 @@ export interface Campaign {
   media_url?: string;
   media_type?: 'IMAGE' | 'DOCUMENT' | 'VIDEO' | 'AUDIO';
   media_filename?: string;
+  sequence_enabled?: boolean;
+  sequence_steps?: SequenceStep[];
+  auto_stop_on_reply?: boolean;
   total_leads_target: number;
   sent_count: number;
   delivered_count: number;
   replied_count: number;
   failed_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SequenceStep {
+  step_number: number;
+  delay_days: number;
+  delay_hours: number;
+  message_template: string;
+  media_url?: string;
+  media_type?: 'IMAGE' | 'DOCUMENT' | 'VIDEO' | 'AUDIO';
+  media_filename?: string;
+}
+
+export type SequenceLeadStatus = 'ACTIVE' | 'COMPLETED' | 'STOPPED_ON_REPLY' | 'STOPPED_MANUAL' | 'OPT_OUT' | 'FAILED';
+
+export interface SequenceLeadItem {
+  id: number;
+  campaign_id: number;
+  lead_id: number;
+  lead_name?: string;
+  lead_phone?: string;
+  whatsapp_session_id?: number;
+  current_step: number;
+  total_steps: number;
+  status: SequenceLeadStatus;
+  next_step_at?: string;
+  last_step_sent_at?: string;
+  stopped_at?: string;
+  stop_reason?: string;
   created_at: string;
   updated_at: string;
 }

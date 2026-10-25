@@ -25,6 +25,9 @@ import {
   Trash2,
   Loader2,
   Layers,
+  GitFork,
+  Plus,
+  Clock3,
 } from 'lucide-react';
 import { ApiClient } from '../../../api/client';
 import { CommunicationGoal, WhatsAppSession } from '../../../types';
@@ -106,6 +109,49 @@ export const CampaignCreateWizard: React.FC<CampaignCreateWizardProps> = ({
   // Scheduled Campaign State
   const [isScheduled, setIsScheduled] = useState(false);
   const [scheduledAt, setScheduledAt] = useState('');
+
+  // Kademeli Takip / Sekans (Drip Sequence) State (Faz 5)
+  const [sequenceEnabled, setSequenceEnabled] = useState(false);
+  const [autoStopOnReply, setAutoStopOnReply] = useState(true);
+  const [sequenceSteps, setSequenceSteps] = useState<Array<{
+    delay_days: number;
+    delay_hours: number;
+    message_template: string;
+  }>>([
+    {
+      delay_days: 2,
+      delay_hours: 0,
+      message_template: '',
+    },
+  ]);
+
+  const handleAddSequenceStep = () => {
+    if (sequenceSteps.length >= 4) {
+      toast.warning(t('campaigns.sequenceMaxStepsWarning') || 'En fazla 5 adımlı sekans oluşturabilirsiniz.');
+      return;
+    }
+    const lastDelayDays = sequenceSteps.length > 0 ? sequenceSteps[sequenceSteps.length - 1].delay_days : 2;
+    setSequenceSteps((prev) => [
+      ...prev,
+      {
+        delay_days: lastDelayDays + 3,
+        delay_hours: 0,
+        message_template: '',
+      },
+    ]);
+  };
+
+  const handleRemoveSequenceStep = (index: number) => {
+    setSequenceSteps((prev) => prev.filter((_, idx) => idx !== index));
+  };
+
+  const handleUpdateSequenceStep = (index: number, field: string, value: any) => {
+    setSequenceSteps((prev) => {
+      const copy = [...prev];
+      copy[index] = { ...copy[index], [field]: value };
+      return copy;
+    });
+  };
 
   // Hat Havuzu / Multi-Session Pool State
   const [sessions, setSessions] = useState<WhatsAppSession[]>([]);
@@ -663,8 +709,38 @@ export const CampaignCreateWizard: React.FC<CampaignCreateWizardProps> = ({
       return;
     }
 
+    if (sequenceEnabled) {
+      for (let i = 0; i < sequenceSteps.length; i++) {
+        if (!sequenceSteps[i].message_template.trim()) {
+          toast.warning(t('campaigns.sequenceStepRequiredWarning', { step: i + 2 }) || `Lütfen ${i + 2}. adım takip mesajı şablonunu girin.`, t('common.warning'));
+          setCurrentStep(3);
+          return;
+        }
+      }
+    }
+
     setIsSubmitting(true);
     try {
+      const fullSequenceSteps = sequenceEnabled
+        ? [
+            {
+              step_number: 1,
+              delay_days: 0,
+              delay_hours: 0,
+              message_template: template,
+              media_url: mediaUrl.trim() || undefined,
+              media_type: (mediaType as any) || undefined,
+              media_filename: mediaFilename.trim() || undefined,
+            },
+            ...sequenceSteps.map((s, idx) => ({
+              step_number: idx + 2,
+              delay_days: Number(s.delay_days) || 0,
+              delay_hours: Number(s.delay_hours) || 0,
+              message_template: s.message_template,
+            })),
+          ]
+        : undefined;
+
       await ApiClient.createCampaign({
         name,
         description,
@@ -676,6 +752,9 @@ export const CampaignCreateWizard: React.FC<CampaignCreateWizardProps> = ({
         media_url: mediaUrl.trim() || undefined,
         media_type: (mediaType as any) || undefined,
         media_filename: mediaFilename.trim() || undefined,
+        sequence_enabled: sequenceEnabled,
+        sequence_steps: fullSequenceSteps,
+        auto_stop_on_reply: autoStopOnReply,
         min_delay_seconds: storedConfig.min_delay_seconds,
         max_delay_seconds: storedConfig.max_delay_seconds,
         typing_delay_seconds: storedConfig.typing_delay_seconds,
@@ -1339,6 +1418,173 @@ export const CampaignCreateWizard: React.FC<CampaignCreateWizardProps> = ({
                   </div>
                 </FormSection>
               </Card>
+
+              {/* Drip Sequence (Kademeli Takip) Builder Card (Faz 5) */}
+              <Card className="p-4 sm:p-6 space-y-5 border-emerald-500/20 dark:border-emerald-500/20 shadow-xs">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center space-x-3">
+                    <div className="w-10 h-10 rounded-xl bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 flex items-center justify-center font-bold shrink-0 shadow-xs">
+                      <GitFork className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h5 className="text-sm sm:text-base font-extrabold text-slate-800 dark:text-white leading-tight">
+                        {t('campaigns.sequenceModeTitle')}
+                      </h5>
+                      <p className="text-[11px] sm:text-xs text-slate-500 dark:text-[#7E7F96] mt-0.5">
+                        {t('campaigns.sequenceModeSubtitle')}
+                      </p>
+                    </div>
+                  </div>
+
+                  <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                    <input
+                      type="checkbox"
+                      checked={sequenceEnabled}
+                      onChange={(e) => setSequenceEnabled(e.target.checked)}
+                      className="sr-only peer"
+                    />
+                    <div className="w-11 h-6 bg-slate-200 peer-focus:outline-hidden rounded-full peer dark:bg-white/10 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-white/10 peer-checked:bg-emerald-500"></div>
+                  </label>
+                </div>
+
+                {sequenceEnabled && (
+                  <div className="space-y-4 pt-2 border-t border-slate-200/60 dark:border-white/[0.06] animate-fade-in">
+                    {/* Auto-Stop on Reply Guard */}
+                    <div className="p-3.5 rounded-xl bg-emerald-500/[0.06] dark:bg-emerald-500/10 border border-emerald-500/20 flex items-start space-x-3">
+                      <input
+                        type="checkbox"
+                        id="autoStopCheckbox"
+                        checked={autoStopOnReply}
+                        onChange={(e) => setAutoStopOnReply(e.target.checked)}
+                        className="rounded border-emerald-400 text-emerald-600 focus:ring-emerald-500 cursor-pointer mt-0.5"
+                      />
+                      <label htmlFor="autoStopCheckbox" className="cursor-pointer">
+                        <span className="text-xs font-bold text-slate-800 dark:text-white block">
+                          {t('campaigns.autoStopOnReplyTitle')}
+                        </span>
+                        <span className="text-[11px] text-slate-500 dark:text-slate-400 block mt-0.5 leading-normal">
+                          {t('campaigns.autoStopOnReplyDesc')}
+                        </span>
+                      </label>
+                    </div>
+
+                    {/* Step 1 Recap Timeline Node */}
+                    <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-white/[0.02] border border-slate-200/60 dark:border-white/[0.05] flex items-center space-x-3">
+                      <div className="w-6 h-6 rounded-full bg-[#7367F0] text-white flex items-center justify-center text-[10px] font-bold shrink-0">
+                        1
+                      </div>
+                      <div className="min-w-0">
+                        <span className="text-xs font-extrabold text-slate-800 dark:text-white block">
+                          {t('campaigns.sequenceStepRecap1')}
+                        </span>
+                        <span className="text-[11px] text-slate-400 line-clamp-1">
+                          {template || 'Ana şablon'}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Dynamic Follow-up Steps List */}
+                    <div className="space-y-3.5">
+                      {sequenceSteps.map((s, idx) => (
+                        <div
+                          key={idx}
+                          className="p-4 rounded-xl border border-slate-200/70 dark:border-white/[0.06] bg-slate-50/50 dark:bg-white/[0.01] space-y-3 relative group"
+                        >
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center space-x-2">
+                              <span className="w-6 h-6 rounded-full bg-emerald-500 text-white flex items-center justify-center text-[10px] font-bold">
+                                {idx + 2}
+                              </span>
+                              <span className="text-xs font-extrabold text-slate-800 dark:text-white">
+                                {t('campaigns.sequenceStepTitle', { step: idx + 2 })}
+                              </span>
+                            </div>
+
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => handleRemoveSequenceStep(idx)}
+                              className="text-rose-500 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/20 p-1.5 h-auto cursor-pointer"
+                              title={t('common.delete')}
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </Button>
+                          </div>
+
+                          {/* Delay selectors */}
+                          <div className="grid grid-cols-2 gap-3">
+                            <div>
+                              <label className="text-[11px] font-bold text-slate-500 dark:text-slate-400 block mb-1">
+                                {t('campaigns.sequenceDelayDays')}
+                              </label>
+                              <input
+                                type="number"
+                                min={0}
+                                max={90}
+                                value={s.delay_days}
+                                onChange={(e) => handleUpdateSequenceStep(idx, 'delay_days', parseInt(e.target.value) || 0)}
+                                className="w-full px-3 py-1.5 text-xs font-mono rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-[#2F3349] text-slate-800 dark:text-white focus:ring-1 focus:ring-emerald-500 focus:outline-hidden"
+                              />
+                            </div>
+                            <div>
+                              <label className="text-[11px] font-bold text-slate-500 dark:text-slate-400 block mb-1">
+                                {t('campaigns.sequenceDelayHours')}
+                              </label>
+                              <input
+                                type="number"
+                                min={0}
+                                max={23}
+                                value={s.delay_hours}
+                                onChange={(e) => handleUpdateSequenceStep(idx, 'delay_hours', parseInt(e.target.value) || 0)}
+                                className="w-full px-3 py-1.5 text-xs font-mono rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-[#2F3349] text-slate-800 dark:text-white focus:ring-1 focus:ring-emerald-500 focus:outline-hidden"
+                              />
+                            </div>
+                          </div>
+
+                          {/* Follow-up template textarea */}
+                          <div>
+                            <Textarea
+                              rows={3}
+                              value={s.message_template}
+                              onChange={(e) => handleUpdateSequenceStep(idx, 'message_template', e.target.value)}
+                              placeholder={t('campaigns.sequenceStepPlaceholder')}
+                              required
+                            />
+                            {/* Personalization variable tags for step */}
+                            <div className="flex flex-wrap gap-1 mt-1.5">
+                              {['isim', 'şehir', 'ilçe'].map((tag) => (
+                                <button
+                                  key={tag}
+                                  type="button"
+                                  onClick={() => handleUpdateSequenceStep(idx, 'message_template', s.message_template + ` {${tag}}`)}
+                                  className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/20 border border-emerald-500/20 cursor-pointer"
+                                >
+                                  +{`{${tag}}`}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Add Step Button */}
+                    {sequenceSteps.length < 4 && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={handleAddSequenceStep}
+                        className="w-full border-dashed border-emerald-500/40 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/5 font-bold cursor-pointer"
+                      >
+                        <Plus className="w-3.5 h-3.5 mr-1.5" />
+                        <span>{t('campaigns.sequenceAddStepBtn')}</span>
+                      </Button>
+                    )}
+                  </div>
+                )}
+              </Card>
             </div>
 
             {/* Right Column: Live WhatsApp Simulation Card */}
@@ -1634,6 +1880,50 @@ export const CampaignCreateWizard: React.FC<CampaignCreateWizardProps> = ({
                     </div>
                   )}
                 </div>
+
+                {/* Drip Sequence Summary Tile (Faz 5) */}
+                {sequenceEnabled && (
+                  <div className="p-4 sm:p-5 rounded-xl bg-emerald-500/[0.08] dark:bg-emerald-500/15 border border-emerald-500/30 space-y-3">
+                    <div className="flex items-center space-x-3">
+                      <div className="w-9 h-9 rounded-xl bg-emerald-500 text-white flex items-center justify-center font-bold shrink-0 shadow-xs">
+                        <GitFork className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <h5 className="text-xs sm:text-sm font-extrabold text-slate-800 dark:text-white leading-tight">
+                          {t('campaigns.sequenceSummaryActive')}
+                        </h5>
+                        <p className="text-[11px] text-slate-500 dark:text-[#7E7F96] mt-0.5">
+                          {t('campaigns.sequenceSummaryStepsCount', { count: sequenceSteps.length + 1 })}
+                          {autoStopOnReply && ` • ${t('campaigns.autoStopOnReplyTitle')}`}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2 pt-1">
+                      <div className="p-2.5 rounded-lg bg-white/80 dark:bg-[#2F3349] border border-emerald-500/20 text-xs">
+                        <span className="font-extrabold text-emerald-600 dark:text-emerald-400 block text-[11px]">
+                          {t('campaigns.sequenceStep1SummaryTitle')}
+                        </span>
+                        <span className="text-[11px] text-slate-500 truncate block mt-0.5">
+                          {t('campaigns.sequenceStep1SummaryDesc')}
+                        </span>
+                      </div>
+                      {sequenceSteps.map((s, idx) => (
+                        <div key={idx} className="p-2.5 rounded-lg bg-white/80 dark:bg-[#2F3349] border border-emerald-500/20 text-xs">
+                          <span className="font-extrabold text-emerald-600 dark:text-emerald-400 block text-[11px]">
+                            {t('campaigns.sequenceFollowupSummaryTitle', { step: idx + 2 })}
+                          </span>
+                          <span className="text-[11px] text-slate-500 truncate block mt-0.5">
+                            {t('campaigns.sequenceFollowupSummaryDesc', {
+                              days: s.delay_days,
+                              hours: s.delay_hours > 0 ? `${s.delay_hours}h` : '',
+                            })}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
 
                 {/* Final Message Template Preview Card with Quick Copy */}
                 <div className="space-y-2 pt-2">

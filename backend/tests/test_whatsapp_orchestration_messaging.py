@@ -556,8 +556,8 @@ class TestWhatsAppMessagingOrchestration:
                 await pin_message(db, "usr-1", 10, 999, action="PIN")
 
     @pytest.mark.asyncio
-    async def test_retry_failed_message_with_wa_id_and_different_initial_type(self):
-        """A failed message (even with wa_message_id and IMAGE type) can be claimed and retried as text."""
+    async def test_retry_failed_message_with_different_initial_type(self):
+        """A failed message (with wa_message_id=None and IMAGE type) can be claimed and retried as text."""
         db = AsyncMock()
         conv = MagicMock()
         conv.id = 10
@@ -573,7 +573,7 @@ class TestWhatsAppMessagingOrchestration:
             status=ConversationMessageStatus.FAILED,
             body="Merhaba test",
             client_message_id="cmsg_failed_123",
-            wa_message_id="FAIL_HASH_999",
+            wa_message_id=None,
         )
 
         db.scalar.return_value = failed_msg

@@ -634,6 +634,23 @@ restarting a service and shipping code are different risk classes.
 - **Features**: Host, port, username, password, sender email, sender name, STARTTLS/SSL toggles, live connection testing with target email, status badge, and full Vuexy card styling.
 - **Import**: `import { SmtpSettingsSection } from '@/features/integrations';`
 
+---
 
+## 11. Campaign Sequence Drip Components (`features/campaigns/`)
 
+### `CampaignCreateWizard` Sequence Mode (Phase 5)
+- **Purpose**: Interactive multi-step campaign builder incorporating automated drip follow-up sequences.
+- **Features**:
+  - Drip Sequence toggle in Step 3 enabling up to 4 follow-up steps (5 total touches).
+  - Delay scheduling per step (configurable days and hours relative to previous touch).
+  - Anti-spam safeguard toggle: "Yanıt Geldiğinde Sekansı Otomatik Durdur" (Auto-Stop on Reply).
+  - Message template inputs with Spintax & parameter chips (`{isim}`, `{sehir}`, `{sektor}`).
+  - Step 4 summary tile with sequence badges and step cadence recap.
 
+### `CampaignDetailDrawer` Sequence Tracker Tab (Phase 5)
+- **Purpose**: Deep inspection and live monitoring drawer for active and historical campaigns.
+- **Features**:
+  - Dedicated "Sekans Takibi" / "Sequence Drip" tab.
+  - Visual step-by-step pipeline timeline card detailing touch number, delay schedule, and template snippet.
+  - Live lead tracking table: Recipient name, current sequence step, lifecycle status (`ACTIVE`, `COMPLETED`, `STOPPED_ON_REPLY`, `STOPPED_MANUAL`, `FAILED`), and next scheduled dispatch timestamp (`next_step_at`).
+  - Action trigger: Real-time manual stop button (`stopCampaignSequenceLead`) with confirmation dialog.

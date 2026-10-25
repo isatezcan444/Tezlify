@@ -18,8 +18,11 @@ from backend.app.schemas.campaign import (
     SpintaxPreviewRequest,
     SpintaxPreviewResponse,
     GenerateMessageRequest,
-    GenerateMessageResponse
+    GenerateMessageResponse,
+    SequenceLeadResponse,
 )
+from backend.app.models.campaign_sequence_lead import CampaignSequenceLead, SequenceLeadStatus
+from backend.app.models.lead import Lead
 from backend.app.core.datetime_utils import utc_now_naive
 from backend.app.services.spintax_service import SpintaxService
 from backend.app.services.campaign_runner import CampaignRunner
@@ -165,6 +168,7 @@ async def delete_campaign(
     if CampaignRunner.is_campaign_running(campaign_id):
         await CampaignRunner.cancel_campaign(campaign_id)
 
+    await db.execute(delete(CampaignSequenceLead).where(CampaignSequenceLead.campaign_id == campaign_id))
     await db.delete(campaign)
     await db.commit()
     return None
@@ -185,6 +189,7 @@ async def bulk_delete_campaigns(
         if CampaignRunner.is_campaign_running(cid):
             await CampaignRunner.cancel_campaign(cid)
 
+    await db.execute(delete(CampaignSequenceLead).where(CampaignSequenceLead.campaign_id.in_(distinct_ids)))
     # Single bulk delete scoped to user
     del_stmt = delete(Campaign).where(
         Campaign.id.in_(distinct_ids),
@@ -372,3 +377,92 @@ async def get_campaign_media(file_id: str):
         "Cache-Control": "public, max-age=86400",
     }
     return Response(content=content, media_type=mime, headers=headers)
+
+
+@router.get("/{campaign_id}/sequence-leads", response_model=List[SequenceLeadResponse])
+async def get_campaign_sequence_leads(
+    campaign_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+):
+    """
+    Returns the real-time status of all leads in a multi-step drip sequence campaign.
+    """
+    campaign = await db.get(Campaign, campaign_id)
+    if not campaign or not check_entity_ownership(campaign, current_user):
+        raise HTTPException(status_code=404, detail="Kampanya bulunamadı")
+
+    stmt = (
+        select(CampaignSequenceLead, Lead.name, Lead.phone_e164)
+        .outerjoin(Lead, CampaignSequenceLead.lead_id == Lead.id)
+        .where(CampaignSequenceLead.campaign_id == campaign_id)
+        .order_by(CampaignSequenceLead.created_at.desc())
+    )
+    results = (await db.execute(stmt)).all()
+
+    resp = []
+    for seq_lead, lead_name, lead_phone in results:
+        data = SequenceLeadResponse(
+            id=seq_lead.id,
+            campaign_id=seq_lead.campaign_id,
+            lead_id=seq_lead.lead_id,
+            lead_name=lead_name,
+            lead_phone=lead_phone,
+            whatsapp_session_id=seq_lead.whatsapp_session_id,
+            current_step=seq_lead.current_step,
+            total_steps=seq_lead.total_steps,
+            status=seq_lead.status.value if hasattr(seq_lead.status, "value") else str(seq_lead.status),
+            next_step_at=seq_lead.next_step_at,
+            last_step_sent_at=seq_lead.last_step_sent_at,
+            stopped_at=seq_lead.stopped_at,
+            stop_reason=seq_lead.stop_reason,
+            created_at=seq_lead.created_at,
+            updated_at=seq_lead.updated_at,
+        )
+        resp.append(data)
+    return resp
+
+
+@router.post("/{campaign_id}/sequence-leads/{seq_lead_id}/stop", response_model=SequenceLeadResponse)
+async def stop_campaign_sequence_lead(
+    campaign_id: int,
+    seq_lead_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+):
+    """
+    Manually halts future sequence follow-ups for a specific lead.
+    """
+    campaign = await db.get(Campaign, campaign_id)
+    if not campaign or not check_entity_ownership(campaign, current_user):
+        raise HTTPException(status_code=404, detail="Kampanya bulunamadı")
+
+    seq_lead = await db.get(CampaignSequenceLead, seq_lead_id)
+    if not seq_lead or seq_lead.campaign_id != campaign_id:
+        raise HTTPException(status_code=404, detail="Sekans kaydı bulunamadı")
+
+    seq_lead.status = SequenceLeadStatus.STOPPED_MANUAL
+    seq_lead.stopped_at = utc_now_naive()
+    seq_lead.stop_reason = "MANUAL"
+    seq_lead.next_step_at = None
+    await db.commit()
+    await db.refresh(seq_lead)
+
+    lead = await db.get(Lead, seq_lead.lead_id)
+    return SequenceLeadResponse(
+        id=seq_lead.id,
+        campaign_id=seq_lead.campaign_id,
+        lead_id=seq_lead.lead_id,
+        lead_name=lead.name if lead else None,
+        lead_phone=lead.phone_e164 if lead else None,
+        whatsapp_session_id=seq_lead.whatsapp_session_id,
+        current_step=seq_lead.current_step,
+        total_steps=seq_lead.total_steps,
+        status=seq_lead.status.value if hasattr(seq_lead.status, "value") else str(seq_lead.status),
+        next_step_at=seq_lead.next_step_at,
+        last_step_sent_at=seq_lead.last_step_sent_at,
+        stopped_at=seq_lead.stopped_at,
+        stop_reason=seq_lead.stop_reason,
+        created_at=seq_lead.created_at,
+        updated_at=seq_lead.updated_at,
+    )
