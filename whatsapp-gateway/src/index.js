@@ -826,3 +826,28 @@ async function shutdown(signal) {
 
 process.once('SIGTERM', () => { void shutdown('SIGTERM'); });
 process.once('SIGINT', () => { void shutdown('SIGINT'); });
+
+// ---------------------------------------------------------------------------
+// Process Error Boundary: Protect gateway from transient socket/fetch terminations
+// ---------------------------------------------------------------------------
+process.on('uncaughtException', (err) => {
+  const isNetworkDrop =
+    err?.code === 'UND_ERR_SOCKET' ||
+    err?.code === 'ECONNRESET' ||
+    err?.code === 'EPIPE' ||
+    err?.code === 'ETIMEDOUT' ||
+    err?.message?.includes('terminated') ||
+    err?.message?.includes('other side closed') ||
+    err?.message?.includes('Connection Terminated') ||
+    err?.message?.includes('Connection Closed');
+
+  if (isNetworkDrop) {
+    logger?.warn({ err: err?.message, code: err?.code }, 'Transient network error caught in gateway; process kept alive');
+    return;
+  }
+  logger?.error({ err }, 'Fatal uncaughtException in WhatsApp Gateway');
+});
+
+process.on('unhandledRejection', (reason) => {
+  logger?.warn({ reason: reason instanceof Error ? reason.message : reason }, 'Unhandled promise rejection caught in WhatsApp Gateway');
+});
