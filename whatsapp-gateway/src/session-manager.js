@@ -3492,7 +3492,7 @@ export function createSessionManager({
               }
             } catch { /* ignored */ }
             if (session._groupSubjectsInFlight === 'cancelled') return;
-            await new Promise((r) => setTimeout(r, 50));
+            await new Promise((r) => setTimeout(r, 500));
           }
         };
 
@@ -3500,7 +3500,7 @@ export function createSessionManager({
           try {
             await Promise.all(
               Array.from(
-                { length: Math.min(3, unresolved.length) },
+                { length: Math.min(2, unresolved.length) },
                 () => processUnresolvedGroup(),
               ),
             );
@@ -3521,8 +3521,13 @@ export function createSessionManager({
         };
 
         if (unresolved.length > 0) {
-          // Detach targeted fallback so HTTP callers (backend sync) are never blocked for 25+ seconds
-          void runTargetedFallback();
+          // Detach targeted fallback for background sweeps so HTTP callers are not blocked,
+          // but await when explicitly forced or requested via extraJids.
+          if (force || (Array.isArray(extraJids) && extraJids.length > 0)) {
+            await runTargetedFallback();
+          } else {
+            void runTargetedFallback();
+          }
         } else {
           if (session._pendingGroupJids) session._pendingGroupJids.clear();
           session._groupSubjectsInFlight = false;

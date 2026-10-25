@@ -22,7 +22,7 @@ import uuid
 from backend.app.core.datetime_utils import utc_now_naive
 from backend.app.services.webhook_dispatcher import WebhookDispatcher
 
-from sqlalchemy import delete, func, or_, select, text
+from sqlalchemy import delete, func, inspect as sa_inspect, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -1512,7 +1512,18 @@ class WhatsAppEventOrchestrator:
             # undefined kaliyor ve `{...existing, ...mapped}` birlestirmesi
             # sohbetin adini VE telefonunu siliyordu (kimlik kaybi).
             # Artik REST `list_conversations` ile ayni alan adlari uretilir.
-            rc_contact = reconciled.contact
+            rc_contact = getattr(reconciled, "_contact", None)
+            if rc_contact is None:
+                try:
+                    insp = sa_inspect(reconciled, raiseerr=False)
+                    if insp is not None and hasattr(insp, "dict"):
+                        rc_contact = insp.dict.get("contact")
+                    else:
+                        rc_contact = getattr(reconciled, "contact", None)
+                except Exception:
+                    rc_contact = None
+            if rc_contact is None and getattr(reconciled, "contact_id", None):
+                rc_contact = await db.get(Contact, reconciled.contact_id)
             rc_phone = rc_contact.phone_e164 if rc_contact else clean_phone
             rc_is_group = bool(reconciled.is_group) or bool(rc_phone and "@g.us" in str(rc_phone))
             rc_name, rc_id_state = _resolve_contact_identity(

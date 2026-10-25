@@ -755,6 +755,7 @@ async def _merge_under_lease(
 
         await db.commit()
         await db.refresh(canonical_conv)
+        canonical_conv._contact = canonical_contact
         return canonical_conv
 
     # Süreçler arası lease zaten alındı; bu kilit aynı süreçteki eşzamanlı
