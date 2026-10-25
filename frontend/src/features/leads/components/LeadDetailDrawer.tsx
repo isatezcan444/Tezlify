@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   Building2, 
   Phone, 
@@ -62,6 +62,7 @@ export const LeadDetailDrawer: React.FC<LeadDetailDrawerProps> = ({
   const [currentLead, setCurrentLead] = useState<Lead | null>(lead);
   const [isEnriching, setIsEnriching] = useState<boolean>(false);
   const [copiedEmail, setCopiedEmail] = useState<string | null>(null);
+  const autoEnrichInProgressRef = useRef<number | null>(null);
 
   useEffect(() => {
     setCurrentLead(lead);
@@ -97,7 +98,7 @@ export const LeadDetailDrawer: React.FC<LeadDetailDrawerProps> = ({
     }
   };
 
-  const handleEnrichLead = async () => {
+  const handleEnrichLead = async (silent: boolean = false) => {
     if (!displayLead || !displayLead.website) return;
     setIsEnriching(true);
     try {
@@ -105,20 +106,36 @@ export const LeadDetailDrawer: React.FC<LeadDetailDrawerProps> = ({
       if (res.success && res.lead) {
         setCurrentLead(res.lead);
         onLeadUpdated?.(res.lead);
-        toast.success(t('leads.enrichSuccess'));
+        if (!silent) {
+          toast.success(t('leads.enrichSuccess'));
+        }
       } else {
         if (res.lead) {
           setCurrentLead(res.lead);
           onLeadUpdated?.(res.lead);
         }
-        toast.error(res.error || t('leads.enrichFailed'));
+        if (!silent) {
+          toast.error(res.error || t('leads.enrichFailed'));
+        }
       }
     } catch (err: any) {
-      toast.error(err.message || t('leads.enrichFailed'));
+      if (!silent) {
+        toast.error(err.message || t('leads.enrichFailed'));
+      }
     } finally {
       setIsEnriching(false);
     }
   };
+
+  // Auto-enrich lead if website exists and not yet enriched
+  useEffect(() => {
+    if (!isOpen || activeTab !== 'overview' || !displayLead) return;
+    if (!displayLead.website) return;
+    if (displayLead.enrichment_status === 'ENRICHED') return;
+    if (autoEnrichInProgressRef.current === displayLead.id) return;
+    autoEnrichInProgressRef.current = displayLead.id;
+    handleEnrichLead(true);
+  }, [isOpen, activeTab, displayLead?.id, displayLead?.website, displayLead?.enrichment_status]);
 
   // Sync initialTab when drawer opens
   useEffect(() => {
@@ -274,23 +291,67 @@ export const LeadDetailDrawer: React.FC<LeadDetailDrawerProps> = ({
               </div>
             </div>
 
-            {/* Status Dropdown Picker */}
-            <div className="p-4 rounded-xl border border-slate-200/80 dark:border-white/[0.06] space-y-2">
-              <label className="text-slate-400 font-bold block uppercase tracking-wider text-[10px]">
-                {t('leads.colStatus')}
-              </label>
-              <select
-                value={displayLead.status}
-                onChange={(e) => onStatusChange && onStatusChange(displayLead.id, e.target.value as LeadStatus)}
-                className="w-full p-2.5 rounded-lg vuexy-input text-xs font-bold cursor-pointer"
-              >
-                <option value="NEW">{t('leads.statusNew')}</option>
-                <option value="CONTACTED">{t('leads.statusContacted')}</option>
-                <option value="REPLIED">{t('leads.statusReplied')}</option>
-                <option value="INTERESTED">{t('leads.statusInterested')}</option>
-                <option value="UNSUBSCRIBED">{t('leads.statusUnsubscribed')}</option>
-                <option value="INVALID_NUMBER">{t('leads.statusInvalid')}</option>
-              </select>
+            {/* Status Display Card (Automatic CRM Pipeline) */}
+            <div className="p-4 rounded-xl border border-slate-200/80 dark:border-white/[0.06] space-y-2 bg-slate-50/50 dark:bg-white/[0.02]">
+              <div className="flex items-center justify-between">
+                <label className="text-slate-400 dark:text-slate-500 font-bold block uppercase tracking-wider text-[10px]">
+                  {t('leads.colStatus')}
+                </label>
+                <span className="text-[10px] text-slate-400 dark:text-slate-500 flex items-center gap-1 font-medium">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                  {t('leads.statusAutoManaged')}
+                </span>
+              </div>
+              <div className="flex items-center justify-between pt-1">
+                <span className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold ${
+                  displayLead.status === 'NEW'
+                    ? 'bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20'
+                    : displayLead.status === 'CONTACTED'
+                    ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20'
+                    : displayLead.status === 'REPLIED'
+                    ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20'
+                    : displayLead.status === 'INTERESTED'
+                    ? 'bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-500/20'
+                    : displayLead.status === 'UNSUBSCRIBED'
+                    ? 'bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/20'
+                    : 'bg-slate-500/10 text-slate-600 dark:text-slate-400 border border-slate-500/20'
+                }`}>
+                  <span className={`w-1.5 h-1.5 rounded-full ${
+                    displayLead.status === 'NEW'
+                      ? 'bg-blue-500'
+                      : displayLead.status === 'CONTACTED'
+                      ? 'bg-amber-500'
+                      : displayLead.status === 'REPLIED'
+                      ? 'bg-emerald-500 animate-pulse'
+                      : displayLead.status === 'INTERESTED'
+                      ? 'bg-purple-500'
+                      : displayLead.status === 'UNSUBSCRIBED'
+                      ? 'bg-rose-500'
+                      : 'bg-slate-400'
+                  }`} />
+                  <span>
+                    {displayLead.status === 'NEW'
+                      ? t('leads.statusNew')
+                      : displayLead.status === 'CONTACTED'
+                      ? t('leads.statusContacted')
+                      : displayLead.status === 'REPLIED'
+                      ? t('leads.statusReplied')
+                      : displayLead.status === 'INTERESTED'
+                      ? t('leads.statusInterested')
+                      : displayLead.status === 'UNSUBSCRIBED'
+                      ? t('leads.statusUnsubscribed')
+                      : t('leads.statusInvalid')}
+                  </span>
+                </span>
+                <span className="text-[11px] text-slate-500 dark:text-slate-400 font-medium">
+                  {displayLead.status === 'NEW' && t('leads.statusNewDesc')}
+                  {displayLead.status === 'CONTACTED' && t('leads.statusContactedDesc')}
+                  {displayLead.status === 'REPLIED' && t('leads.statusRepliedDesc')}
+                  {displayLead.status === 'INTERESTED' && t('leads.statusInterestedDesc')}
+                  {displayLead.status === 'UNSUBSCRIBED' && t('leads.statusUnsubscribedDesc')}
+                  {displayLead.status === 'INVALID_NUMBER' && t('leads.statusInvalidDesc')}
+                </span>
+              </div>
             </div>
 
             {/* Contact Information */}
@@ -331,6 +392,47 @@ export const LeadDetailDrawer: React.FC<LeadDetailDrawerProps> = ({
                   </span>
                 )}
               </div>
+
+              {/* Discovered Info Email */}
+              {(displayLead.email || (displayLead.emails && displayLead.emails.length > 0)) && (
+                <div className="flex items-center justify-between pt-2 border-t border-slate-100 dark:border-white/[0.05]">
+                  <div className="flex items-center space-x-2 text-slate-700 dark:text-slate-200 font-mono text-xs min-w-0">
+                    <Mail className="w-4 h-4 text-[#7367F0] shrink-0" />
+                    <span className="truncate font-semibold">{displayLead.email || displayLead.emails?.[0]}</span>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => handleCopyEmail(displayLead.email || displayLead.emails![0])}
+                      title={t('leads.copyEmail')}
+                      aria-label={t('leads.copyEmail')}
+                      className="p-1 rounded text-slate-400 hover:text-[#7367F0] hover:bg-slate-200/60 dark:hover:bg-white/[0.08] transition-colors cursor-pointer"
+                    >
+                      {copiedEmail === (displayLead.email || displayLead.emails?.[0]) ? (
+                        <Check className="w-3.5 h-3.5 text-[#28C76F]" />
+                      ) : (
+                        <Copy className="w-3.5 h-3.5" />
+                      )}
+                    </button>
+                    <a
+                      href={`mailto:${displayLead.email || displayLead.emails?.[0]}`}
+                      className="p-1 rounded text-slate-400 hover:text-[#7367F0] hover:bg-slate-200/60 dark:hover:bg-white/[0.08] transition-colors"
+                      title={t('leads.sendEmail')}
+                      aria-label={t('leads.sendEmail')}
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" />
+                    </a>
+                  </div>
+                </div>
+              )}
+
+              {/* Auto-enrichment in progress notice in contact card */}
+              {isEnriching && !displayLead.email && (!displayLead.emails || displayLead.emails.length === 0) && (
+                <div className="flex items-center space-x-2 pt-2 border-t border-slate-100 dark:border-white/[0.05] text-xs text-[#7367F0] animate-pulse">
+                  <Sparkles className="w-3.5 h-3.5 animate-spin shrink-0" />
+                  <span className="text-[11px] font-medium">{t('leads.autoEnrichingNotice')}</span>
+                </div>
+              )}
 
               {displayLead.website && (
                 <div className="flex items-center justify-between pt-2 border-t border-slate-100 dark:border-white/[0.05]">
@@ -389,7 +491,7 @@ export const LeadDetailDrawer: React.FC<LeadDetailDrawerProps> = ({
                       size="sm"
                       variant="outline"
                       disabled={isEnriching}
-                      onClick={handleEnrichLead}
+                      onClick={() => handleEnrichLead(false)}
                       className="h-7 px-2.5 text-[11px] font-bold space-x-1 border-[#7367F0]/30 text-[#7367F0] hover:bg-[#7367F0]/10 cursor-pointer"
                     >
                       <Sparkles className={`w-3 h-3 ${isEnriching ? 'animate-spin' : ''}`} />
@@ -398,6 +500,13 @@ export const LeadDetailDrawer: React.FC<LeadDetailDrawerProps> = ({
                   )}
                 </div>
               </div>
+
+              {isEnriching && (
+                <div className="flex items-center gap-2 p-2.5 rounded-lg bg-[#7367F0]/10 border border-[#7367F0]/20 text-[#7367F0] dark:text-[#A59DF8] text-xs font-medium animate-pulse">
+                  <Sparkles className="w-4 h-4 animate-spin shrink-0" />
+                  <span>{t('leads.autoEnrichingNotice')}</span>
+                </div>
+              )}
 
               {/* Emails List */}
               {displayLead.emails && displayLead.emails.length > 0 ? (

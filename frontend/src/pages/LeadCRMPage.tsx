@@ -582,25 +582,27 @@ export const LeadCRMPage: React.FC<LeadCRMPageProps> = ({ onRefreshStats, stats 
         header: t('leads.colRatingWeb'),
         className: 'whitespace-nowrap',
         cell: (lead) => (
-          <div>
-            {lead.rating ? (
-              <div className="flex items-center space-x-1 text-xs">
-                <Star className="w-3.5 h-3.5 text-[#FF9F43] fill-[#FF9F43]" />
-                <span className="font-bold text-slate-800 dark:text-white">{lead.rating}</span>
-                {lead.reviews_count ? (
-                  <span className="text-slate-400 text-[10px]">({lead.reviews_count})</span>
-                ) : null}
-              </div>
-            ) : (
-              <span className="text-slate-400 text-[10px]">{t('leads.noRating')}</span>
-            )}
+          <div className="flex flex-col items-start gap-1">
+            <div className="flex items-center space-x-1 text-xs">
+              {lead.rating ? (
+                <>
+                  <Star className="w-3.5 h-3.5 text-[#FF9F43] fill-[#FF9F43]" />
+                  <span className="font-bold text-slate-800 dark:text-white">{lead.rating}</span>
+                  {lead.reviews_count ? (
+                    <span className="text-slate-400 text-[10px]">({lead.reviews_count})</span>
+                  ) : null}
+                </>
+              ) : (
+                <span className="text-slate-400 text-[10px]">{t('leads.noRating')}</span>
+              )}
+            </div>
 
             {lead.website ? (
               <a
                 href={lead.website.startsWith('http') ? lead.website : `https://${lead.website}`}
                 target="_blank"
                 rel="noreferrer"
-                className="mt-1 inline-flex items-center space-x-1 text-[11px] text-[#7367F0] hover:underline truncate max-w-[140px]"
+                className="inline-flex items-center space-x-1 text-[11px] text-[#7367F0] hover:underline truncate max-w-[150px]"
               >
                 <Globe className="w-3 h-3 shrink-0" />
                 <span className="truncate">{lead.website.replace(/^https?:\/\/(www\.)?/, '')}</span>
@@ -608,7 +610,7 @@ export const LeadCRMPage: React.FC<LeadCRMPageProps> = ({ onRefreshStats, stats 
             ) : null}
 
             {lead.enrichment_status === 'ENRICHED' && (
-              <div className="flex items-center gap-1 mt-1 text-[10px]">
+              <div className="flex items-center gap-1 text-[10px]">
                 {lead.emails && lead.emails.length > 0 && (
                   <span className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded bg-indigo-500/10 text-indigo-500 font-bold" title={lead.emails.join(', ')}>
                     <Mail className="w-2.5 h-2.5" />
@@ -630,33 +632,49 @@ export const LeadCRMPage: React.FC<LeadCRMPageProps> = ({ onRefreshStats, stats 
         id: 'status',
         header: t('leads.colStatus'),
         className: 'whitespace-nowrap',
-        cell: (lead) => (
-          <select
-            value={lead.status}
-            onChange={(e) => handleStatusChange(lead.id, e.target.value as LeadStatus)}
-            aria-label={t('leads.colStatus')}
-            className={`px-2.5 py-1 rounded-lg text-xs font-bold border transition-colors cursor-pointer ${
-              lead.status === 'NEW'
-                ? 'bg-blue-50 text-blue-600 border-blue-200 dark:bg-blue-500/10 dark:text-blue-400 dark:border-blue-500/20'
-                : lead.status === 'CONTACTED'
-                ? 'bg-amber-50 text-amber-600 border-amber-200 dark:bg-amber-500/10 dark:text-amber-400 dark:border-amber-500/20'
-                : lead.status === 'REPLIED'
-                ? 'bg-emerald-50 text-emerald-600 border-emerald-200 dark:bg-emerald-500/10 dark:text-emerald-400 dark:border-emerald-500/20'
-                : lead.status === 'INTERESTED'
-                ? 'bg-purple-50 text-purple-600 border-purple-200 dark:bg-purple-500/10 dark:text-purple-400 dark:border-purple-500/20'
-                : lead.status === 'INVALID_NUMBER'
-                ? 'bg-slate-100 text-slate-600 border-slate-300 dark:bg-slate-800 dark:text-slate-400 dark:border-slate-700'
-                : 'bg-rose-50 text-rose-600 border-rose-200 dark:bg-rose-500/10 dark:text-rose-400 dark:border-rose-500/20'
-            }`}
-          >
-            <option value="NEW">{t('leads.statusNew')}</option>
-            <option value="CONTACTED">{t('leads.statusContacted')}</option>
-            <option value="REPLIED">{t('leads.statusReplied')}</option>
-            <option value="INTERESTED">{t('leads.statusInterested')}</option>
-            <option value="UNSUBSCRIBED">{t('leads.statusUnsubscribed')}</option>
-            <option value="INVALID_NUMBER">{t('leads.statusInvalid')}</option>
-          </select>
-        ),
+        cell: (lead) => {
+          const statusConfig: Record<LeadStatus, { label: string; badgeClass: string; dotClass: string }> = {
+            NEW: {
+              label: t('leads.statusNew'),
+              badgeClass: 'bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20',
+              dotClass: 'bg-blue-500',
+            },
+            CONTACTED: {
+              label: t('leads.statusContacted'),
+              badgeClass: 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20',
+              dotClass: 'bg-amber-500',
+            },
+            REPLIED: {
+              label: t('leads.statusReplied'),
+              badgeClass: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20',
+              dotClass: 'bg-emerald-500 animate-pulse',
+            },
+            INTERESTED: {
+              label: t('leads.statusInterested'),
+              badgeClass: 'bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-500/20',
+              dotClass: 'bg-purple-500',
+            },
+            UNSUBSCRIBED: {
+              label: t('leads.statusUnsubscribed'),
+              badgeClass: 'bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/20',
+              dotClass: 'bg-rose-500',
+            },
+            INVALID_NUMBER: {
+              label: t('leads.statusInvalid'),
+              badgeClass: 'bg-slate-500/10 text-slate-600 dark:text-slate-400 border border-slate-500/20',
+              dotClass: 'bg-slate-400',
+            },
+          };
+
+          const config = statusConfig[lead.status] || statusConfig.NEW;
+
+          return (
+            <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold ${config.badgeClass}`}>
+              <span className={`w-1.5 h-1.5 rounded-full ${config.dotClass}`} />
+              <span>{config.label}</span>
+            </span>
+          );
+        },
       },
       {
         id: 'actions',

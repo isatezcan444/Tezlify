@@ -114,9 +114,9 @@ class EnrichmentService:
             if EnrichmentService._is_valid_email(clean):
                 found_emails.add(clean)
 
-        # Sort so that info@, iletisim@, contact@ come first
+        # Sort so that info@, iletisim@, contact@, bilgi@, satis@ come first
         def email_priority(e: str) -> int:
-            if any(pref in e for pref in ["info@", "iletisim@", "contact@", "destek@", "satist@", "hello@"]):
+            if any(pref in e for pref in ["info@", "iletisim@", "contact@", "bilgi@", "destek@", "satis@", "satist@", "hello@", "merhaba@"]):
                 return 0
             return 1
 
