@@ -5,7 +5,8 @@ import {
   BatteryCharging, 
   PowerOff, 
   QrCode, 
-  Trash2 
+  Trash2,
+  Sliders
 } from 'lucide-react';
 import { WhatsAppSession } from '../../../types';
 import { Card } from '../../../components/ui/card';
@@ -19,6 +20,7 @@ export interface SessionCardProps {
   onDisconnect?: (sessionId: number) => void;
   onScanQR?: (sessionId: number) => void;
   onDelete?: (sessionId: number) => void;
+  onConfigureWarmup?: (session: WhatsAppSession) => void;
   className?: string;
 }
 
@@ -27,6 +29,7 @@ export const SessionCard: React.FC<SessionCardProps> = ({
   onDisconnect,
   onScanQR,
   onDelete,
+  onConfigureWarmup,
   className,
 }) => {
   const { t } = useI18n();
@@ -89,12 +92,22 @@ export const SessionCard: React.FC<SessionCardProps> = ({
         <div className="mt-4 space-y-2.5 p-3.5 rounded-xl bg-slate-50 dark:bg-[#25293C] border border-slate-200/60 dark:border-white/[0.05]">
           <div className="flex items-center justify-between text-xs">
             <span className="text-slate-500 dark:text-[#7E7F96] flex items-center gap-1.5 font-bold">
-              <Flame className="w-3.5 h-3.5 text-[#FF9F43]" />
+              <Flame className={cn("w-3.5 h-3.5", session.is_warmup_enabled ? "text-[#FF9F43] animate-pulse" : "text-slate-400")} />
               {t('whatsapp.warmUpDayLabel')}:
+              <span className="font-extrabold text-[#FF9F43] font-mono ml-0.5">
+                {typeof session.warm_up_day === 'number' ? `#${session.warm_up_day}` : '—'}
+              </span>
             </span>
-            <span className="font-extrabold text-[#FF9F43] font-mono">
-              {typeof session.warm_up_day === 'number' ? `#${session.warm_up_day}` : '—'}
-            </span>
+            {onConfigureWarmup && (
+              <button
+                type="button"
+                onClick={() => onConfigureWarmup(session)}
+                className="text-[11px] font-bold text-[#7367F0] hover:text-[#685DD8] flex items-center gap-1 transition-colors cursor-pointer"
+              >
+                <Sliders className="w-3 h-3" />
+                <span>{t('whatsapp.warmupConfigureBtn')}</span>
+              </button>
+            )}
           </div>
 
           <div>

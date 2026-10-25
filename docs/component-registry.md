@@ -562,6 +562,12 @@ restarting a service and shipping code are different risk classes.
 - **Props**: `{ isOpen: boolean; onClose: () => void; message: Message; conversation: Conversation; groupParticipants?: Array<{ id: string; name: string; phone?: string; is_me: boolean; admin?: string }>; allMessages?: Message[] }`
 - **Import**: `import { ChatMessageInfoDrawer } from '@/features/whatsapp/components';`
 
+### `WarmupModal` (`features/whatsapp/components/WarmupModal.tsx`)
+- **Purpose**: Interactive configuration modal for WhatsApp Automated Number Warm-Up Engine. Provides schedule ramp-up visualization (Days 1 to 6+: 10 -> 20 -> 35 -> 50 -> 75 -> 100+ msg/day), target daily quota selection, real-time quota progress bar, and automated fail-safe campaign gating explanation.
+- **Props**: `{ isOpen: boolean; onClose: () => void; session: WhatsAppSession | null; onWarmupUpdated?: (updatedSession: WhatsAppSession) => void }`
+- **Portalled Dialog Invariant**: Portaled to `document.body` via `createPortal(..., document.body)` with `z-[99999]`. Handles Escape key dismiss, backdrop click, live backend status syncing, and full i18n support.
+- **Import**: `import { WarmupModal } from '@/features/whatsapp/components';`
+
 ---
 
 ## 8. SaaS Landing Page Components (`features/landing/`)
@@ -600,6 +606,17 @@ restarting a service and shipping code are different risk classes.
 - **Portaled Upgrade Modal Invariant**: Portaled directly to `document.body` via `createPortal(..., document.body)` with `z-[99999]`, responsive backdrop blur, escape key dismissal, and toast notifications.
 - **Strict i18n & Full Width Standard**: 100% synchronized `tr.ts` / `en.ts` dictionaries, zero hardcoded natural language strings, and unified `w-full` width responsive scaling.
 - **Import**: `import { PlanUsageSection } from '@/features/billing';`
+
+---
+
+## 10. Integrations & Scraper Settings Components (`features/integrations/`)
+
+### `ProxySettingsSection` (`features/integrations/components/ProxySettingsSection.tsx`)
+- **Purpose**: Full-width settings panel for Scraper Proxy Pool and rotation management. Supports sequential (round-robin) and random rotation strategies, proxy health checking with live latency and exit IP probing, and thread-safe persistence in `SystemSetting(key="proxy_config")`.
+- **Props**: None (self-contained data-fetching and persistence component).
+- **Features**: Toggle switch, rotation strategy selectors, multi-line proxy textarea, live test action with visual badge feedback, strict i18n parity, and full Vuexy card styling.
+- **Import**: `import { ProxySettingsSection } from '@/features/integrations';`
+
 
 
 

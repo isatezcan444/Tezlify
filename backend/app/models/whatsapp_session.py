@@ -52,6 +52,15 @@ class WhatsAppSession(Base):
     # eslesme yeni satir uretirse kapi kendiliginden yeniden kapanir.
     initial_sync_completed_at = Column(DateTime, nullable=True)
 
+    # Faz 3: Numara Isıtma Motoru (Warm-Up Mode)
+    # Yeni ve dinlenmiş hatların banlanmasını önleyen kademeli gönderim takvimi
+    is_warmup_enabled = Column(Boolean, default=False, nullable=False)
+    warmup_started_at = Column(DateTime, nullable=True)
+    warmup_current_day = Column(Integer, default=1, nullable=False)
+    warmup_daily_limit = Column(Integer, default=10, nullable=False)
+    warmup_target_limit = Column(Integer, default=100, nullable=False)
+    warmup_graduated_at = Column(DateTime, nullable=True)
+
     created_at = Column(DateTime, default=utc_now_naive, nullable=False)
     updated_at = Column(DateTime, default=utc_now_naive, onupdate=utc_now_naive, nullable=False)
 

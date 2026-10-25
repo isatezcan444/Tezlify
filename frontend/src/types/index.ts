@@ -250,6 +250,13 @@ export interface WhatsAppSession {
   warm_up_day?: number;
   daily_sent_count?: number;
   max_daily_limit?: number;
+  // Faz 3: Numara Isıtma (Warm-Up Mode)
+  is_warmup_enabled?: boolean;
+  warmup_started_at?: string | null;
+  warmup_current_day?: number;
+  warmup_daily_limit?: number;
+  warmup_target_limit?: number;
+  warmup_graduated_at?: string | null;
   is_phone_online: boolean;
   battery_level?: number;
   error_message?: string;
@@ -770,6 +777,47 @@ export interface AiSuggestReplyResponse {
   matching_quick_replies: AiMatchedQuickReply[];
 }
 
+export interface WhatsAppWarmupStatus {
+  session_id: number;
+  session_name: string;
+  phone_number?: string | null;
+  is_warmup_enabled: boolean;
+  current_day: number;
+  daily_limit: number;
+  sent_today: number;
+  remaining_today: number;
+  target_limit: number;
+  is_graduated: boolean;
+  started_at?: string | null;
+  graduated_at?: string | null;
+  schedule: Array<{ day: number; daily_limit: number; label: string }>;
+}
+
+export interface ProxyPoolStatus {
+  enabled: boolean;
+  total_proxies: number;
+  active_proxies: number;
+  rotation_strategy: string;
+  proxies: string[];
+  timeout_seconds: number;
+}
+
+export interface ProxyConfigPayload {
+  enabled: boolean;
+  proxies: string[];
+  rotation_strategy: string;
+  timeout_seconds?: number;
+}
+
+export interface ProxyTestResult {
+  success: boolean;
+  proxy_url: string;
+  latency_ms?: number | null;
+  exit_ip?: string | null;
+  error?: string | null;
+}
+
 export * from './admin';
+
 
 

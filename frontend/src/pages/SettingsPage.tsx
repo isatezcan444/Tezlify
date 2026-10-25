@@ -27,7 +27,8 @@ import { API_BASE } from '../api/client';
 import { 
   ApiKeysSection, 
   WebhooksSection, 
-  InboundDocsSection 
+  InboundDocsSection,
+  ProxySettingsSection
 } from '../features/integrations';
 import { PlanUsageSection } from '../features/billing';
 
@@ -227,6 +228,9 @@ export const SettingsPage: React.FC = () => {
               </div>
             </FormSection>
           </Card>
+
+          {/* Scraper Proxy Pool & Rotation Section */}
+          <ProxySettingsSection />
 
           {/* Services Connections Card */}
           <Card className="p-5 sm:p-6 space-y-4 sm:space-y-6">

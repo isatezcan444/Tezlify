@@ -110,6 +110,15 @@ def _session_dict(row: WhatsAppSession) -> Dict[str, Any]:
         # damga — gateway'in bellek ici sync durumundan farkli olarak restart
         # sonrasi da dogruyu soyler.
         "initial_sync_completed": row.initial_sync_completed_at is not None,
+        # Faz 3: Numara Isıtma (Warm-Up Mode)
+        "is_warmup_enabled": bool(getattr(row, "is_warmup_enabled", False)),
+        "warmup_started_at": getattr(row, "warmup_started_at", None),
+        "warmup_current_day": getattr(row, "warmup_current_day", 1) or 1,
+        "warmup_daily_limit": getattr(row, "warmup_daily_limit", 10) or 10,
+        "warmup_target_limit": getattr(row, "warmup_target_limit", 100) or 100,
+        "warmup_graduated_at": getattr(row, "warmup_graduated_at", None),
+        "warm_up_day": getattr(row, "warmup_current_day", 1) if getattr(row, "is_warmup_enabled", False) else None,
+        "max_daily_limit": getattr(row, "warmup_daily_limit", 50) if getattr(row, "is_warmup_enabled", False) else 50,
         "created_at": row.created_at,
         "updated_at": row.updated_at,
     }
@@ -355,11 +364,40 @@ async def _list_sessions_internal(
         await db.commit()
     except Exception as exc:
         gateway_error = str(exc)[:300]
-        logger.warning("Gateway canli durum tazelenemedi: %s", exc)
+    start_of_day = utc_now_naive().replace(hour=0, minute=0, second=0, microsecond=0)
+    session_ids = [r.id for r in rows]
+    sent_counts: Dict[int, int] = {}
+    if session_ids:
+        try:
+            from backend.app.models.message_log import MessageLog, MessageStatus
+            from backend.app.models.campaign import Campaign
+            counts_res = await db.execute(
+                select(Campaign.whatsapp_session_id, func.count(MessageLog.id))
+                .select_from(MessageLog)
+                .join(Campaign, MessageLog.campaign_id == Campaign.id)
+                .where(
+                    Campaign.whatsapp_session_id.in_(session_ids),
+                    MessageLog.status.in_([
+                        MessageStatus.SENT,
+                        MessageStatus.DELIVERED,
+                        MessageStatus.READ,
+                        MessageStatus.REPLIED,
+                    ]),
+                    MessageLog.sent_at >= start_of_day,
+                )
+                .group_by(Campaign.whatsapp_session_id)
+            )
+            for sid, cnt in counts_res.all():
+                if sid is not None:
+                    sent_counts[sid] = cnt
+        except Exception as cnt_err:
+            logger.debug("[WhatsApp] Sent count aggregation error: %s", cnt_err)
+
     out: List[Dict[str, Any]] = []
     for r in rows:
         d = _session_dict(r)
         d["sync"] = gw_sync.get(r.id, {"phase": "idle", "progress": 0})
+        d["daily_sent_count"] = sent_counts.get(r.id, 0)
         out.append(d)
     return out, gateway_error
 

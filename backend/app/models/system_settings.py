@@ -1,5 +1,4 @@
-from datetime import datetime
-from sqlalchemy import Column, Integer, String, Boolean, DateTime
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text
 from backend.app.core.database import Base
 from backend.app.core.datetime_utils import utc_now_naive
 
@@ -12,6 +11,9 @@ class SystemSetting(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     key = Column(String(100), unique=True, nullable=False, index=True)
     
+    # Generic JSON storage for extensible system configs (e.g. 'proxy_config')
+    value_json = Column(Text, nullable=True)
+
     # Anti-ban structured fields (for 'antiban_config' key)
     preset = Column(String(50), default="standard_balanced")
     min_delay_seconds = Column(Integer, default=45)

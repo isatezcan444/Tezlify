@@ -670,11 +670,22 @@ class GoogleMapsPlaywrightScraper:
                     "--renderer-process-limit=1",
                 ]
             )
-            context = await browser.new_context(
-                locale="tr-TR",
-                user_agent=settings.SCRAPER_USER_AGENT,
-                viewport={"width": 1280, "height": 800}
-            )
+            # Faz 3: Scraper Proxy Integration
+            context_kwargs = {
+                "locale": "tr-TR",
+                "user_agent": settings.SCRAPER_USER_AGENT,
+                "viewport": {"width": 1280, "height": 800},
+            }
+            try:
+                from backend.app.services.proxy_manager import ProxyManager
+                proxy_url = await ProxyManager.get_next_proxy()
+                if proxy_url:
+                    context_kwargs["proxy"] = {"server": proxy_url}
+                    logger.info(f"[GMAPS_PLAYWRIGHT] Routing browser context via proxy: {proxy_url.split('@')[-1]}")
+            except Exception as proxy_err:
+                logger.debug(f"[GMAPS_PLAYWRIGHT] Proxy resolution skipped: {proxy_err}")
+
+            context = await browser.new_context(**context_kwargs)
             page = await context.new_page()
             await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
 

@@ -77,6 +77,7 @@ import {
   PinDurationModal,
   PinnedMessagesBar,
   ChatMessageInfoDrawer,
+  WarmupModal,
   type QuotedMessage,
 } from '../features/whatsapp/components';
 import { LeadDetailDrawer } from '../features/leads/components';
@@ -211,6 +212,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   const [reconnectSessionId, setReconnectSessionId] = useState<number | undefined>(undefined);
   const [disconnectingSessionId, setDisconnectingSessionId] = useState<number | null>(null);
   const [deletingSessionId, setDeletingSessionId] = useState<number | null>(null);
+  const [warmupModalSession, setWarmupModalSession] = useState<WhatsAppSession | null>(null);
 
   // Tab State: 'conversations' | 'sessions' | 'antiban' | 'settings'
   const [hubTab, setHubTab] = useState<'conversations' | 'sessions' | 'antiban' | 'settings'>('conversations');
@@ -4370,6 +4372,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                   session={session}
                   onDisconnect={handleDisconnectSession}
                   onDelete={handleDeleteSession}
+                  onConfigureWarmup={(sess) => setWarmupModalSession(sess)}
                   onScanQR={(sessionId) => {
                     setReconnectSessionId(sessionId);
                     setIsQrConnectModalOpen(true);
@@ -4450,6 +4453,16 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
         onConfirm={handleConfirmPin}
         message={pinTargetMessage}
         isSubmitting={isPinning}
+      />
+
+      {/* WhatsApp Automated Number Warmup Modal */}
+      <WarmupModal
+        isOpen={warmupModalSession !== null}
+        onClose={() => setWarmupModalSession(null)}
+        session={warmupModalSession}
+        onWarmupUpdated={(updatedSession) => {
+          setSessions((prev) => prev.map((s) => (s.id === updatedSession.id ? updatedSession : s)));
+        }}
       />
     </div>
   );

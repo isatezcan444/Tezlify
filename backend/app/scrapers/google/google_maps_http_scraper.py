@@ -318,7 +318,24 @@ class GoogleMapsHttpScraper:
         consecutive_empty = 0
         page_budget = max_pages if (max_pages and max_pages > 0) else self.max_pages
 
-        async with httpx.AsyncClient(headers=self.headers, timeout=self.timeout) as client:
+        # Faz 3: Scraper Proxy Integration
+        proxy_url = None
+        try:
+            from backend.app.services.proxy_manager import ProxyManager
+            proxy_url = await ProxyManager.get_next_proxy()
+            if proxy_url:
+                logger.info(f"[GMAPS_HTTP] Routing query via proxy: {proxy_url.split('@')[-1]}")
+        except Exception as proxy_err:
+            logger.debug(f"[GMAPS_HTTP] Proxy resolution skipped: {proxy_err}")
+
+        client_kwargs: Dict[str, Any] = {
+            "headers": self.headers,
+            "timeout": self.timeout,
+        }
+        if proxy_url:
+            client_kwargs["proxy"] = proxy_url
+
+        async with httpx.AsyncClient(**client_kwargs) as client:
             for page_num in range(page_budget):
                 if len(discovered) >= target_count:
                     logger.info(f"[GMAPS_HTTP] Target count {target_count} satisfied.")

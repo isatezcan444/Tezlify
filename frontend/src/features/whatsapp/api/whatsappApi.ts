@@ -25,6 +25,7 @@ import {
   WhatsAppSession,
   WhatsAppSyncJob,
   AiSuggestReplyResponse,
+  WhatsAppWarmupStatus,
 } from '../../../types';
 
 /**
@@ -241,6 +242,13 @@ interface BackendSession {
   warm_up_day?: number | null;
   daily_sent_count?: number | null;
   max_daily_limit?: number | null;
+  // Faz 3: Numara Isıtma (Warm-Up Mode)
+  is_warmup_enabled?: boolean | null;
+  warmup_started_at?: string | null;
+  warmup_current_day?: number | null;
+  warmup_daily_limit?: number | null;
+  warmup_target_limit?: number | null;
+  warmup_graduated_at?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
 }
@@ -259,19 +267,18 @@ function mapSession(s: BackendSession): WhatsAppSession {
     warm_up_day: s.warm_up_day ?? undefined,
     daily_sent_count: s.daily_sent_count ?? undefined,
     max_daily_limit: s.max_daily_limit ?? undefined,
+    // Faz 3: Numara Isıtma (Warm-Up Mode)
+    is_warmup_enabled: s.is_warmup_enabled ?? undefined,
+    warmup_started_at: s.warmup_started_at ?? undefined,
+    warmup_current_day: s.warmup_current_day ?? undefined,
+    warmup_daily_limit: s.warmup_daily_limit ?? undefined,
+    warmup_target_limit: s.warmup_target_limit ?? undefined,
+    warmup_graduated_at: s.warmup_graduated_at ?? undefined,
     is_phone_online: s.is_phone_online ?? false,
     battery_level: s.battery_level ?? undefined,
     error_message: s.error_message ?? undefined,
-    // A8: pass the backend `sync` state through unchanged. `?? undefined`
-    // would hide a legitimate `sync: null`; only a truly absent field maps
-    // to undefined.
     sync: s.sync,
-    // Faz 14: kalici ilk-senkron damgasi. Alan gelmezse `undefined` kalir —
-    // "bilinmiyor" ile "tamamlanmadi" ayrimi UI'da korunur ve kapi yalnizca
-    // gercek bir senkron calisirken kapanir (sonsuza kadar kapanmaz).
     initial_sync_completed: s.initial_sync_completed ?? undefined,
-    // Preserve missing server timestamps; fabricating "now" hides a broken
-    // session contract and can reorder line status displays.
     created_at: s.created_at ?? undefined,
     updated_at: s.updated_at ?? undefined,
   };
@@ -685,6 +692,18 @@ export const WhatsAppApi = {
       throw new WhatsAppApiError(data.error || '');
     }
   },
+
+  async getWarmupStatus(sessionId: number): Promise<WhatsAppWarmupStatus> {
+    return apiGet<WhatsAppWarmupStatus>(`/whatsapp/sessions/${sessionId}/warmup`);
+  },
+
+  async toggleWarmup(sessionId: number, enabled: boolean, targetLimit?: number): Promise<WhatsAppWarmupStatus> {
+    return apiSend<WhatsAppWarmupStatus>(`/whatsapp/sessions/${sessionId}/warmup`, 'POST', {
+      enabled,
+      target_limit: targetLimit,
+    });
+  },
+
 
   /**
    * Sohbeti ve o sohbete ait TUM mesajlari kalici olarak siler.

@@ -205,7 +205,18 @@ class CampaignRunner:
                 default_daily_limit = sys_setting.daily_message_limit if sys_setting and sys_setting.daily_message_limit else 50
                 policy = AntibanPolicy.from_campaign(campaign, default_daily_limit=default_daily_limit)
 
-                # Check today's sent count against policy daily limit
+                # Faz 3: Session Warm-Up Mode integration
+                from backend.app.services.warmup_service import WarmupService
+                effective_daily_limit = policy.daily_message_limit
+                is_warmup_active = False
+                warmup_day_num = 1
+                if active_sess and getattr(active_sess, "is_warmup_enabled", False):
+                    await WarmupService.sync_session_warmup(active_sess, db)
+                    effective_daily_limit = min(effective_daily_limit, active_sess.warmup_daily_limit)
+                    is_warmup_active = True
+                    warmup_day_num = active_sess.warmup_current_day
+
+                # Check today's sent count against policy/warmup daily limit
                 start_of_day = utc_now_naive().replace(hour=0, minute=0, second=0, microsecond=0)
                 sent_today = (await db.scalar(
                     select(func.count(MessageLog.id)).where(
@@ -215,9 +226,15 @@ class CampaignRunner:
                     )
                 )) or 0
 
-                if policy.is_daily_limit_reached(sent_today):
+                if sent_today >= effective_daily_limit:
+                    reason = "warmup_limit_reached" if is_warmup_active else "daily_limit_reached"
+                    msg_txt = (
+                        f"WhatsApp hattı Isıtma Modundadır (Gün {warmup_day_num}: {sent_today}/{effective_daily_limit} mesaj). Ban riskini önlemek için bugünkü kota tamamlandı."
+                        if is_warmup_active
+                        else f"Günlük Anti-Ban mesaj limitine ({sent_today}/{effective_daily_limit}) ulaşıldı. WhatsApp hesabınızın güvenliği için kampanya otomatik duraklatıldı."
+                    )
                     logger.warning(
-                        f"[CampaignRunner] Campaign #{campaign_id} paused: daily anti-ban limit reached ({sent_today}/{policy.daily_message_limit})."
+                        f"[CampaignRunner] Campaign #{campaign_id} paused: {reason} ({sent_today}/{effective_daily_limit})."
                     )
                     campaign.status = CampaignStatus.PAUSED
                     await db.commit()
@@ -225,8 +242,8 @@ class CampaignRunner:
                         "event": "campaign_paused",
                         "campaign_id": campaign_id,
                         "user_id": owner,
-                        "reason": "daily_limit_reached",
-                        "message": f"Günlük Anti-Ban mesaj limitine ({sent_today}/{policy.daily_message_limit}) ulaşıldı. WhatsApp hesabınızın güvenliği için kampanya otomatik duraklatıldı.",
+                        "reason": reason,
+                        "message": msg_txt,
                     })
                     return
 
@@ -247,10 +264,16 @@ class CampaignRunner:
                         was_stopped_early = True
                         break
 
-                    # Check daily limit before each message
-                    if policy.is_daily_limit_reached(sent_today):
+                    # Check daily / warmup limit before each message
+                    if sent_today >= effective_daily_limit:
+                        reason = "warmup_limit_reached" if is_warmup_active else "daily_limit_reached"
+                        msg_txt = (
+                            f"WhatsApp hattı Isıtma Modundadır (Gün {warmup_day_num}: {sent_today}/{effective_daily_limit} mesaj). Ban riskini önlemek için bugünkü kota tamamlandı."
+                            if is_warmup_active
+                            else f"Günlük Anti-Ban limitine ({sent_today}/{effective_daily_limit}) ulaşıldı. WhatsApp hattınızın güvenliği için kampanya duraklatıldı."
+                        )
                         logger.warning(
-                            f"[CampaignRunner] Campaign #{campaign_id} reached daily limit ({sent_today}/{policy.daily_message_limit}) during loop. Pausing."
+                            f"[CampaignRunner] Campaign #{campaign_id} reached limit ({sent_today}/{effective_daily_limit}) during loop. Pausing."
                         )
                         campaign.status = CampaignStatus.PAUSED
                         await db.commit()
@@ -258,8 +281,8 @@ class CampaignRunner:
                             "event": "campaign_paused",
                             "campaign_id": campaign_id,
                             "user_id": owner,
-                            "reason": "daily_limit_reached",
-                            "message": f"Günlük Anti-Ban limitine ({sent_today}/{policy.daily_message_limit}) ulaşıldı. WhatsApp hattınızın güvenliği için kampanya duraklatıldı.",
+                            "reason": reason,
+                            "message": msg_txt,
                         })
                         was_stopped_early = True
                         break

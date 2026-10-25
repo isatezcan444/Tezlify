@@ -50,6 +50,8 @@ from backend.app.schemas.whatsapp import (
     WhatsAppSessionCreate,
     WhatsAppSessionListResponse,
     WhatsAppSessionResponse,
+    WhatsAppWarmupToggleRequest,
+    WhatsAppWarmupStatusResponse,
     WhatsAppStartConversationRequest,
     WhatsAppStatusResult,
     WhatsAppSyncJobResponse,
@@ -380,6 +382,51 @@ async def delete_session(
         raise _not_found(exc) from exc
     except Exception as exc:
         raise _bad_gateway(exc) from exc
+
+
+@router.get("/sessions/{session_id}/warmup", response_model=WhatsAppWarmupStatusResponse)
+async def get_session_warmup(
+    session_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+) -> WhatsAppWarmupStatusResponse:
+    """Oturumun Numara Isıtma (Warm-Up Mode) durumunu ve takvimini döndürür."""
+    from backend.app.services.warmup_service import WarmupService
+    stmt = select(WhatsAppSession).where(
+        WhatsAppSession.id == session_id,
+        get_user_filter(WhatsAppSession.user_id, current_user.id),
+    )
+    session = (await db.execute(stmt)).scalar_one_or_none()
+    if not session:
+        raise HTTPException(status_code=404, detail="WhatsApp oturumu bulunamadı")
+    data = await WarmupService.get_warmup_status(session, db)
+    return WhatsAppWarmupStatusResponse(**data)
+
+
+@router.post("/sessions/{session_id}/warmup", response_model=WhatsAppWarmupStatusResponse)
+async def toggle_session_warmup(
+    session_id: int,
+    payload: WhatsAppWarmupToggleRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+) -> WhatsAppWarmupStatusResponse:
+    """Oturumun Numara Isıtma (Warm-Up Mode) modunu açar/kapatır."""
+    from backend.app.services.warmup_service import WarmupService
+    stmt = select(WhatsAppSession).where(
+        WhatsAppSession.id == session_id,
+        get_user_filter(WhatsAppSession.user_id, current_user.id),
+    )
+    session = (await db.execute(stmt)).scalar_one_or_none()
+    if not session:
+        raise HTTPException(status_code=404, detail="WhatsApp oturumu bulunamadı")
+    updated = await WarmupService.toggle_warmup(
+        session_id=session.id,
+        enabled=payload.enabled,
+        target_limit=payload.target_limit,
+        db=db,
+    )
+    data = await WarmupService.get_warmup_status(updated, db)
+    return WhatsAppWarmupStatusResponse(**data)
 
 
 @router.get("/sync-status", response_model=WhatsAppSyncStatusResponse)

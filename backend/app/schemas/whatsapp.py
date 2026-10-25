@@ -30,8 +30,39 @@ class WhatsAppSessionResponse(BaseModel):
     # sohbetleri bu alan `True` olana kadar kapali tutar — WhatsApp Web paritesi.
     # response_model bu alani listelemezse sessizce silinir (bkz. A8 notu).
     initial_sync_completed: bool = False
+    # Faz 3: Numara Isıtma (Warm-Up Mode)
+    is_warmup_enabled: bool = False
+    warmup_started_at: Optional[datetime] = None
+    warmup_current_day: int = 1
+    warmup_daily_limit: int = 10
+    warmup_target_limit: int = 100
+    warmup_graduated_at: Optional[datetime] = None
+    warm_up_day: Optional[int] = None
+    daily_sent_count: Optional[int] = None
+    max_daily_limit: Optional[int] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+
+
+class WhatsAppWarmupToggleRequest(BaseModel):
+    enabled: bool
+    target_limit: Optional[int] = Field(default=100, ge=10, le=500)
+
+
+class WhatsAppWarmupStatusResponse(BaseModel):
+    session_id: int
+    session_name: str
+    phone_number: Optional[str] = None
+    is_warmup_enabled: bool
+    current_day: int
+    daily_limit: int
+    sent_today: int
+    remaining_today: int
+    target_limit: int
+    is_graduated: bool
+    started_at: Optional[datetime] = None
+    graduated_at: Optional[datetime] = None
+    schedule: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 class WhatsAppSessionListResponse(BaseModel):

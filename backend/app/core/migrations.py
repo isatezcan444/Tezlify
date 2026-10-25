@@ -2165,6 +2165,74 @@ async def ensure_task_queue_table(engine: AsyncEngine) -> None:
     logger.info("[MIGRATION] ensure_task_queue_table verified")
 
 
+async def ensure_whatsapp_sessions_warmup_columns(engine: AsyncEngine) -> None:
+    """`whatsapp_sessions` tablosuna Numara Isıtma (Warm-Up Mode) sütunlarını ekler."""
+    warmup_cols = [
+        ("is_warmup_enabled", "BOOLEAN DEFAULT FALSE"),
+        ("warmup_started_at", "TIMESTAMP"),
+        ("warmup_current_day", "INTEGER DEFAULT 1"),
+        ("warmup_daily_limit", "INTEGER DEFAULT 10"),
+        ("warmup_target_limit", "INTEGER DEFAULT 100"),
+        ("warmup_graduated_at", "TIMESTAMP"),
+    ]
+    if engine.dialect.name == "postgresql":
+        async with engine.begin() as conn:
+            await conn.execute(text("SET LOCAL lock_timeout = '3s'"))
+            for col_name, col_type in warmup_cols:
+                await conn.execute(text(
+                    f"ALTER TABLE whatsapp_sessions ADD COLUMN IF NOT EXISTS {col_name} {col_type}"
+                ))
+        logger.info("[MIGRATION] ensure_whatsapp_sessions_warmup_columns verified (postgresql)")
+        return
+
+    if engine.dialect.name != "sqlite":
+        return
+
+    async with engine.begin() as conn:
+        exists = await conn.execute(
+            text("SELECT name FROM sqlite_master WHERE type='table' AND name='whatsapp_sessions'")
+        )
+        if exists.first() is None:
+            return
+        info_rows = (await conn.execute(text("PRAGMA table_info(whatsapp_sessions)"))).fetchall()
+        existing = {row[1] for row in info_rows}
+        for col_name, col_type in warmup_cols:
+            if col_name not in existing:
+                sqlite_type = col_type.replace("TIMESTAMP", "DATETIME")
+                await conn.execute(text(
+                    f"ALTER TABLE whatsapp_sessions ADD COLUMN {col_name} {sqlite_type}"
+                ))
+                logger.info(f"[MIGRATION] Added whatsapp_sessions.{col_name} (sqlite)")
+
+
+async def ensure_system_settings_value_json(engine: AsyncEngine) -> None:
+    """`system_settings.value_json` sütununu güvence altına alır."""
+    if engine.dialect.name == "postgresql":
+        async with engine.begin() as conn:
+            await conn.execute(text("SET LOCAL lock_timeout = '3s'"))
+            await conn.execute(text(
+                "ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS value_json TEXT"
+            ))
+        logger.info("[MIGRATION] ensure_system_settings_value_json verified (postgresql)")
+        return
+
+    if engine.dialect.name != "sqlite":
+        return
+
+    async with engine.begin() as conn:
+        exists = await conn.execute(
+            text("SELECT name FROM sqlite_master WHERE type='table' AND name='system_settings'")
+        )
+        if exists.first() is None:
+            return
+        info_rows = (await conn.execute(text("PRAGMA table_info(system_settings)"))).fetchall()
+        existing = {row[1] for row in info_rows}
+        if "value_json" not in existing:
+            await conn.execute(text("ALTER TABLE system_settings ADD COLUMN value_json TEXT"))
+            logger.info("[MIGRATION] Added system_settings.value_json (sqlite)")
+
+
+
 
 
 

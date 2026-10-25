@@ -23,6 +23,9 @@ import {
   QuotaUsageSummary,
   PlanListResponse,
   CampaignMediaUploadResponse,
+  ProxyPoolStatus,
+  ProxyConfigPayload,
+  ProxyTestResult,
 } from '../types';
 
 const isHttps = typeof window !== 'undefined' && window.location.protocol === 'https:';
@@ -576,6 +579,33 @@ export class ApiClient {
       body: JSON.stringify(settings)
     });
     if (!res.ok) throw new Error('Anti-ban ayarları güncellenemedi');
+    return res.json();
+  }
+
+  // --- Scraper Proxy Pool ---
+  static async getProxySettings(): Promise<ProxyPoolStatus> {
+    const res = await authFetch(`${API_BASE}/settings/proxy`);
+    if (!res.ok) throw new Error('Proxy ayarları alınamadı');
+    return res.json();
+  }
+
+  static async updateProxySettings(config: ProxyConfigPayload): Promise<ProxyPoolStatus> {
+    const res = await authFetch(`${API_BASE}/settings/proxy`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(config),
+    });
+    if (!res.ok) throw new Error('Proxy ayarları güncellenemedi');
+    return res.json();
+  }
+
+  static async testProxy(proxyUrl?: string): Promise<ProxyTestResult[]> {
+    const res = await authFetch(`${API_BASE}/settings/proxy/test`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ proxy_url: proxyUrl || undefined }),
+    });
+    if (!res.ok) throw new Error('Proxy testi başarısız oldu');
     return res.json();
   }
 

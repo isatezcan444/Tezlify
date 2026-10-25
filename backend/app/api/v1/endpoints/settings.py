@@ -9,6 +9,14 @@ from backend.app.core.database import get_db
 from backend.app.core.config import settings as app_settings
 from backend.app.models.system_settings import SystemSetting
 from backend.app.schemas.settings import AntiBanSettingsSchema, AntiBanSettingsResponse
+from backend.app.schemas.proxy import (
+    ProxyConfigSchema,
+    ProxyPoolStatusResponse,
+    ProxyTestRequest,
+    ProxyTestResponse,
+)
+from backend.app.services.proxy_manager import ProxyManager
+from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -67,3 +75,34 @@ async def update_antiban_settings(
     await db.refresh(setting)
     logger.info(f"[Settings] Global Anti-Ban yapılandırması güncellendi: preset={setting.preset}, limit={setting.daily_message_limit}")
     return setting
+
+
+# ---------------------------------------------------------------------------
+# Scraper Proxy Pool & Rotation Endpoints (Faz 3)
+# ---------------------------------------------------------------------------
+@router.get("/proxy", response_model=ProxyPoolStatusResponse)
+async def get_proxy_settings(db: AsyncSession = Depends(get_db)):
+    """Scraper proxy havuzunun mevcut durumunu ve yapılandırmasını döndürür."""
+    return await ProxyManager.get_status(db)
+
+
+@router.patch("/proxy", response_model=ProxyPoolStatusResponse)
+async def update_proxy_settings(
+    payload: ProxyConfigSchema,
+    db: AsyncSession = Depends(get_db)
+):
+    """Scraper proxy havuzu yapılandırmasını günceller."""
+    await ProxyManager.save_config(db, payload)
+    return await ProxyManager.get_status(db)
+
+
+@router.post("/proxy/test", response_model=List[ProxyTestResponse])
+async def test_proxies(
+    payload: Optional[ProxyTestRequest] = None,
+    db: AsyncSession = Depends(get_db)
+):
+    """Tek bir proxy adresini veya havuzdaki tüm proxy'leri canlı test eder."""
+    if payload and payload.proxy_url:
+        result = await ProxyManager.test_proxy(payload.proxy_url)
+        return [result]
+    return await ProxyManager.test_all_proxies(db)

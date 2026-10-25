@@ -336,9 +336,13 @@ def _mp_worker_post_recovery_retry(proc_id, counter, sync_e, start_e, q):
 def isolated_pg_db():
     """Sets up fresh test conversation in isolated PostgreSQL."""
     async def _setup():
-        from backend.app.core.migrations import ensure_messages_media_columns
+        from backend.app.core.migrations import (
+            ensure_messages_media_columns,
+            ensure_whatsapp_sessions_warmup_columns,
+        )
         eng = create_async_engine(POSTGRES_TEST_URL)
         await ensure_messages_media_columns(eng)
+        await ensure_whatsapp_sessions_warmup_columns(eng)
         session_maker = async_sessionmaker(eng, expire_on_commit=False)
         async with session_maker() as db:
             await db.execute(delete(Message))
