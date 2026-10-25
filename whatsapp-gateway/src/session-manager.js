@@ -3472,7 +3472,7 @@ export function createSessionManager({
             try {
               const metaPromise = session.sock.groupMetadata(jid);
               const timeoutPromise = new Promise((_, reject) =>
-                setTimeout(() => reject(new Error('groupMetadata timeout')), 2500)
+                setTimeout(() => reject(new Error('groupMetadata timeout')), 1200)
               );
               const meta = await Promise.race([metaPromise, timeoutPromise]);
               if (session._groupSubjectsInFlight === 'cancelled') return;
@@ -3492,35 +3492,48 @@ export function createSessionManager({
               }
             } catch { /* ignored */ }
             if (session._groupSubjectsInFlight === 'cancelled') return;
-            await new Promise((r) => setTimeout(r, 500));
+            await new Promise((r) => setTimeout(r, 50));
           }
         };
-        await Promise.all(
-          Array.from(
-            { length: Math.min(2, unresolved.length) },
-            () => processUnresolvedGroup(),
-          ),
-        );
-        // Once the targeted pass has run, the pending set has been honoured.
-        // Clear it: the next pass must rebuild it from current state, not
-        // carry stale entries across restarts.
-        if (session._pendingGroupJids) session._pendingGroupJids.clear();
-      } catch (err) {
-        logger.warn({ err }, 'targeted groupMetadata fallback failed');
-      } finally {
-        session._groupSubjectsInFlight = false;
-      }
-      if (typeof session.sock?.resyncAppState === 'function') {
-        try {
-          await session.sock.resyncAppState(['regular_low', 'regular_high'], false);
-          logger.info({ sessionId: session.id }, 'App state resync completed for regular collections');
-        } catch (resyncErr) {
-          logger.warn({ err: resyncErr?.message, sessionId: session.id }, 'App state resync failed after group subjects');
+
+        const runTargetedFallback = async () => {
+          try {
+            await Promise.all(
+              Array.from(
+                { length: Math.min(3, unresolved.length) },
+                () => processUnresolvedGroup(),
+              ),
+            );
+            if (session._pendingGroupJids) session._pendingGroupJids.clear();
+          } catch (err) {
+            logger.warn({ err }, 'targeted groupMetadata fallback failed');
+          } finally {
+            session._groupSubjectsInFlight = false;
+          }
+          if (typeof session.sock?.resyncAppState === 'function') {
+            try {
+              await session.sock.resyncAppState(['regular_low', 'regular_high'], false);
+              logger.info({ sessionId: session.id }, 'App state resync completed for regular collections');
+            } catch (resyncErr) {
+              logger.warn({ err: resyncErr?.message, sessionId: session.id }, 'App state resync failed after group subjects');
+            }
+          }
+        };
+
+        if (unresolved.length > 0) {
+          // Detach targeted fallback so HTTP callers (backend sync) are never blocked for 25+ seconds
+          void runTargetedFallback();
+        } else {
+          if (session._pendingGroupJids) session._pendingGroupJids.clear();
+          session._groupSubjectsInFlight = false;
         }
+      } catch (err) {
+        session._groupSubjectsInFlight = false;
+        logger.warn({ err }, 'targeted groupMetadata fallback setup failed');
       }
       this._applyArchivedState(session);
       this._scheduleBackgroundAvatarFetch(session);
-      return { applied: true, reason: null };
+      return { applied: true, reason: null, broad_resolved: resolvedKeys.size };
     },
 
     async getGroupMetadata(sessionId, jid) {

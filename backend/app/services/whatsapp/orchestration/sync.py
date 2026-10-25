@@ -1985,6 +1985,32 @@ class WhatsAppSyncOrchestrator:
                     )
                     _mark_phase("contacts")
 
+                    # Progressive Gate Unlock: Sohbetler ve kisiler bu asamada
+                    # veritabanina eksiksiz yazilmistir. WhatsApp Web paritesinde
+                    # oldugu gibi kullanici hemen sohbet listesini gormelidir;
+                    # tam ekran kilit (WhatsAppSyncGate) acilir, mesaj ve medya
+                    # senkronu arka planda calismayi surdurur.
+                    _early_sync_stamp = datetime.now(timezone.utc).replace(tzinfo=None)
+                    _session_ids = [getattr(_ws, "id", None) for _ws in sessions_to_sync if getattr(_ws, "id", None) is not None]
+                    if _session_ids and (len(conv_out) > 0 or gw_ready_phase != "syncing"):
+                        await db.execute(
+                            update(WhatsAppSession)
+                            .where(
+                                WhatsAppSession.id.in_(_session_ids),
+                                WhatsAppSession.initial_sync_completed_at.is_(None),
+                            )
+                            .values(initial_sync_completed_at=_early_sync_stamp)
+                        )
+                        for _ws in sessions_to_sync:
+                            if hasattr(_ws, "__dict__"):
+                                _ws.__dict__["initial_sync_completed_at"] = _early_sync_stamp
+                        await db.commit()
+                        try:
+                            from backend.app.api.v1.websocket import ws_manager
+                            await ws_manager.broadcast({"event": "conversations_updated", "user_id": owner})
+                        except Exception:
+                            pass
+
                     try:
                         await reapply_chat_names(db, owner, items)
                     except Exception as exc:
