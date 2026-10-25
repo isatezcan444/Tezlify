@@ -26,6 +26,9 @@ import {
   ProxyPoolStatus,
   ProxyConfigPayload,
   ProxyTestResult,
+  LeadEnrichResponse,
+  BulkEnrichRequest,
+  BulkEnrichResponse,
 } from '../types';
 
 const isHttps = typeof window !== 'undefined' && window.location.protocol === 'https:';
@@ -231,6 +234,30 @@ export class ApiClient {
       body: JSON.stringify(payload)
     });
     if (!res.ok) throw new Error('Toplu kara listeye ekleme işlemi başarısız oldu');
+    return res.json();
+  }
+
+  static async enrichLead(id: number): Promise<LeadEnrichResponse> {
+    const res = await authFetch(`${API_BASE}/leads/${id}/enrich`, {
+      method: 'POST',
+    });
+    if (!res.ok) {
+      const msg = await parseError(res, 'Zenginleştirme işlemi başarısız oldu');
+      throw new Error(msg);
+    }
+    return res.json();
+  }
+
+  static async bulkEnrichLeads(payload: BulkEnrichRequest): Promise<BulkEnrichResponse> {
+    const res = await authFetch(`${API_BASE}/leads/bulk-enrich`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const msg = await parseError(res, 'Toplu zenginleştirme işlemi başarısız oldu');
+      throw new Error(msg);
+    }
     return res.json();
   }
 

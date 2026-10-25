@@ -18,7 +18,9 @@ import {
   FolderPlus,
   FolderKanban,
   MoreVertical,
-  Upload
+  Upload,
+  Sparkles,
+  Mail
 } from 'lucide-react';
 import { 
   Button, 
@@ -413,6 +415,42 @@ export const LeadCRMPage: React.FC<LeadCRMPageProps> = ({ onRefreshStats, stats 
     }
   };
 
+  const [isBulkEnriching, setIsBulkEnriching] = useState(false);
+
+  const handleBulkEnrich = async () => {
+    if (selectedCount === 0) return;
+    setIsBulkEnriching(true);
+    try {
+      let res;
+      if (selectAllMatching) {
+        res = await ApiClient.bulkEnrichLeads({
+          enrich_all_matching: true,
+          search: search || undefined,
+          city: selectedCity || undefined,
+          districts: selectedDistricts.length > 0 ? selectedDistricts : undefined,
+          categories: selectedCategories.length > 0 ? selectedCategories : undefined,
+          status: statusFilter || undefined,
+          whatsapp_eligible_only: waOnly,
+        });
+      } else {
+        res = await ApiClient.bulkEnrichLeads({ lead_ids: selectedIds });
+      }
+      toast.success(
+        t('leads.bulkEnrichSuccess', {
+          enriched: res.enriched_count,
+          skipped: res.skipped_count,
+          failed: res.failed_count,
+        }),
+        t('common.success')
+      );
+      fetchLeads();
+    } catch (err: any) {
+      toast.error(err.message || t('leads.bulkEnrichFailed'), t('toast.errorTitle'));
+    } finally {
+      setIsBulkEnriching(false);
+    }
+  };
+
   const getStatusLabel = (status: LeadStatus) => {
     switch (status) {
       case 'NEW': return t('leads.statusNew');
@@ -568,6 +606,23 @@ export const LeadCRMPage: React.FC<LeadCRMPageProps> = ({ onRefreshStats, stats 
                 <span className="truncate">{lead.website.replace(/^https?:\/\/(www\.)?/, '')}</span>
               </a>
             ) : null}
+
+            {lead.enrichment_status === 'ENRICHED' && (
+              <div className="flex items-center gap-1 mt-1 text-[10px]">
+                {lead.emails && lead.emails.length > 0 && (
+                  <span className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded bg-indigo-500/10 text-indigo-500 font-bold" title={lead.emails.join(', ')}>
+                    <Mail className="w-2.5 h-2.5" />
+                    <span>{lead.emails.length}</span>
+                  </span>
+                )}
+                {lead.social_links && Object.keys(lead.social_links).length > 0 && (
+                  <span className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded bg-purple-500/10 text-purple-600 dark:text-purple-400 font-bold" title={Object.keys(lead.social_links).join(', ')}>
+                    <Sparkles className="w-2.5 h-2.5" />
+                    <span>{Object.keys(lead.social_links).length}</span>
+                  </span>
+                )}
+              </div>
+            )}
           </div>
         ),
       },
@@ -895,6 +950,16 @@ export const LeadCRMPage: React.FC<LeadCRMPageProps> = ({ onRefreshStats, stats 
 
             <button
               type="button"
+              disabled={isBulkEnriching}
+              onClick={handleBulkEnrich}
+              className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold text-xs flex items-center gap-1.5 shadow-md transition-all active:scale-95 cursor-pointer"
+            >
+              <Sparkles className={`w-3.5 h-3.5 ${isBulkEnriching ? 'animate-spin' : ''}`} />
+              <span>{isBulkEnriching ? t('leads.bulkEnriching') : t('leads.bulkEnrich')}</span>
+            </button>
+
+            <button
+              type="button"
               onClick={handleOpenBulkDelete}
               className="px-3 py-1.5 rounded-lg bg-rose-500 hover:bg-rose-600 text-white font-bold text-xs flex items-center gap-1.5 shadow-md transition-all active:scale-95 cursor-pointer"
             >
@@ -951,6 +1016,10 @@ export const LeadCRMPage: React.FC<LeadCRMPageProps> = ({ onRefreshStats, stats 
         onBlacklist={handleOpenSingleBlacklist}
         onDelete={handleOpenSingleDelete}
         onStatusChange={handleStatusChange}
+        onLeadUpdated={(updated) => {
+          setLeads((prev) => prev.map((l) => (l.id === updated.id ? updated : l)));
+          setSelectedLeadForDrawer(updated);
+        }}
       />
 
       {/* Centralized Delete Confirmation Modal */}

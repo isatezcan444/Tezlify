@@ -82,6 +82,12 @@ class Lead(Base):
     # Online Presence & Metrics
     website = Column(String(255), nullable=True)
     email = Column(String(255), nullable=True)
+    emails = Column(JSON, nullable=True)
+    social_links = Column(JSON, nullable=True)
+    meta_title = Column(String(255), nullable=True)
+    meta_description = Column(Text, nullable=True)
+    enrichment_status = Column(String(50), default="NOT_ENRICHED", index=True)
+    enriched_at = Column(DateTime, nullable=True)
     rating = Column(Float, nullable=True)
     reviews_count = Column(Integer, nullable=True, default=0)
     place_id = Column(String(255), nullable=True, unique=True, index=True)

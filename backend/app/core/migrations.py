@@ -2232,6 +2232,49 @@ async def ensure_system_settings_value_json(engine: AsyncEngine) -> None:
             logger.info("[MIGRATION] Added system_settings.value_json (sqlite)")
 
 
+async def ensure_leads_enrichment_columns(engine: AsyncEngine) -> None:
+    """`leads` tablosuna web sitesi ve sosyal medya zenginleştirme sütunlarını ekler."""
+    cols = [
+        ("emails", "JSON"),
+        ("social_links", "JSON"),
+        ("meta_title", "VARCHAR(255)"),
+        ("meta_description", "TEXT"),
+        ("enrichment_status", "VARCHAR(50) DEFAULT 'NOT_ENRICHED'"),
+        ("enriched_at", "TIMESTAMP"),
+    ]
+
+    if engine.dialect.name == "postgresql":
+        async with engine.begin() as conn:
+            await conn.execute(text("SET LOCAL lock_timeout = '3s'"))
+            for col_name, col_type in cols:
+                await conn.execute(text(
+                    f"ALTER TABLE leads ADD COLUMN IF NOT EXISTS {col_name} {col_type}"
+                ))
+            await conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_leads_enrichment_status ON leads (enrichment_status)"
+            ))
+        logger.info("[MIGRATION] ensure_leads_enrichment_columns verified (postgresql)")
+        return
+
+    if engine.dialect.name != "sqlite":
+        return
+
+    async with engine.begin() as conn:
+        exists = await conn.execute(
+            text("SELECT name FROM sqlite_master WHERE type='table' AND name='leads'")
+        )
+        if exists.first() is None:
+            return
+        info_rows = (await conn.execute(text("PRAGMA table_info(leads)"))).fetchall()
+        existing = {row[1] for row in info_rows}
+        for col_name, col_type in cols:
+            if col_name not in existing:
+                sqlite_type = col_type.replace("TIMESTAMP", "DATETIME")
+                await conn.execute(text(f"ALTER TABLE leads ADD COLUMN {col_name} {sqlite_type}"))
+                logger.info(f"[MIGRATION] Added leads.{col_name} (sqlite)")
+
+
+
 
 
 

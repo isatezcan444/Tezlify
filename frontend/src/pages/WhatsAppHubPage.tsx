@@ -4403,6 +4403,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
           setDrawerLead(null);
         }}
         initialTab="overview"
+        onLeadUpdated={(updated) => setDrawerLead(updated)}
       />
 
       {/* New WhatsApp Conversation Modal */}

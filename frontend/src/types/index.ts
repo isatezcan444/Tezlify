@@ -42,9 +42,44 @@ export interface Lead {
   verification_trace?: unknown;
   notes?: string;
   custom_data?: Record<string, unknown>;
+  emails?: string[];
+  social_links?: Record<string, string>;
+  meta_title?: string;
+  meta_description?: string;
+  enrichment_status?: 'NOT_ENRICHED' | 'ENRICHED' | 'FAILED' | 'NO_WEBSITE';
+  enriched_at?: string;
   created_at?: string;
   updated_at?: string;
   last_contacted_at?: string;
+}
+
+export interface LeadEnrichResponse {
+  success: boolean;
+  lead: Lead;
+  found_emails: string[];
+  found_socials: Record<string, string>;
+  meta_title?: string | null;
+  meta_description?: string | null;
+  error?: string | null;
+}
+
+export interface BulkEnrichRequest {
+  lead_ids?: number[];
+  enrich_all_matching?: boolean;
+  search?: string;
+  city?: string;
+  districts?: string[];
+  categories?: string[];
+  status?: LeadStatus | string;
+  whatsapp_eligible_only?: boolean;
+}
+
+export interface BulkEnrichResponse {
+  total_requested: number;
+  enriched_count: number;
+  skipped_count: number;
+  failed_count: number;
+  items: Lead[];
 }
 
 export interface LeadImportPreviewResult {

@@ -14,6 +14,7 @@ def run_db_migrations():
         ensure_task_queue_table,
         ensure_whatsapp_sessions_warmup_columns,
         ensure_system_settings_value_json,
+        ensure_leads_enrichment_columns,
     )
     async def _run():
         await ensure_campaigns_columns(engine)
@@ -24,6 +25,7 @@ def run_db_migrations():
         await ensure_task_queue_table(engine)
         await ensure_whatsapp_sessions_warmup_columns(engine)
         await ensure_system_settings_value_json(engine)
+        await ensure_leads_enrichment_columns(engine)
 
     try:
         loop = asyncio.get_event_loop()

@@ -18,13 +18,17 @@ from backend.app.schemas.lead import (
     LeadUpdate,
     BulkDeleteRequest,
     BulkBlacklistRequest,
-    ExportLeadsRequest
+    ExportLeadsRequest,
+    LeadEnrichResponse,
+    BulkEnrichRequest,
+    BulkEnrichResponse,
 )
 from backend.app.services.phone_service import PhoneService
 from backend.app.services.export_service import ExportService
 from backend.app.services.lead_import_service import LeadImportService
 from backend.app.services.lead_query_service import build_lead_filter_conditions
 from backend.app.services.webhook_dispatcher import WebhookDispatcher
+from backend.app.services.enrichment_service import EnrichmentService
 
 logger = logging.getLogger(__name__)
 
@@ -374,6 +378,65 @@ async def bulk_blacklist_leads(
 
     await db.commit()
     return {"blacklisted_count": count, "leads_updated": len(leads)}
+
+
+@router.post("/bulk-enrich", response_model=BulkEnrichResponse)
+async def bulk_enrich_leads(
+    payload: BulkEnrichRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+):
+    """
+    Enriches selected leads or all matching leads with website emails, social links,
+    and meta tags.
+    """
+    user_filter = get_user_filter(Lead.user_id, current_user.id)
+    if payload.enrich_all_matching:
+        conditions = build_lead_filter_conditions(
+            search=payload.search,
+            city=payload.city,
+            districts=payload.districts,
+            categories=payload.categories,
+            status=payload.status,
+            whatsapp_eligible_only=payload.whatsapp_eligible_only or False
+        )
+        stmt = select(Lead).where(user_filter)
+        for c in conditions:
+            stmt = stmt.where(c)
+        res = await db.execute(stmt)
+        leads = list(res.scalars().all())
+    elif payload.lead_ids:
+        stmt = select(Lead).where(Lead.id.in_(payload.lead_ids), user_filter)
+        res = await db.execute(stmt)
+        leads = list(res.scalars().all())
+    else:
+        raise HTTPException(status_code=400, detail="Zenginleştirilecek lead belirtilmedi")
+
+    result = await EnrichmentService.bulk_enrich_leads(db, leads)
+    return result
+
+
+@router.post("/{lead_id}/enrich", response_model=LeadEnrichResponse)
+async def enrich_single_lead(
+    lead_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+):
+    """
+    Fetches the website for a single lead and enriches it with emails, social links,
+    and website metadata.
+    """
+    stmt = select(Lead).where(
+        Lead.id == lead_id,
+        get_user_filter(Lead.user_id, current_user.id),
+    )
+    res = await db.execute(stmt)
+    lead = res.scalar_one_or_none()
+    if not lead:
+        raise HTTPException(status_code=404, detail="Müşteri adayı bulunamadı")
+
+    result = await EnrichmentService.enrich_lead(db, lead)
+    return result
 
 
 _lead_export_dict = ExportService.lead_to_export_dict

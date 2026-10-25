@@ -24,6 +24,9 @@ class ExportService:
             "rating": l.rating,
             "reviews_count": l.reviews_count,
             "website": l.website,
+            "emails": ", ".join(l.emails) if getattr(l, "emails", None) else "",
+            "social_links": l.social_links if getattr(l, "social_links", None) else {},
+            "enrichment_status": getattr(l, "enrichment_status", "NOT_ENRICHED") or "NOT_ENRICHED",
             "search_keyword": l.search_keyword,
             "status": l.status.value if hasattr(l.status, "value") else str(l.status),
             "created_at": l.created_at,
@@ -33,6 +36,7 @@ class ExportService:
     def leads_to_dataframe(leads: List[Dict[str, Any]]) -> "pd.DataFrame":
         formatted = []
         for l in leads:
+            socials = l.get("social_links") or {}
             formatted.append({
                 "ID": l.get("id"),
                 "İşletme Adı": l.get("name"),
@@ -47,6 +51,11 @@ class ExportService:
                 "Puan": l.get("rating"),
                 "Yorum Sayısı": l.get("reviews_count"),
                 "Web Sitesi": l.get("website"),
+                "E-postalar": l.get("emails", ""),
+                "Instagram": socials.get("instagram", "") if isinstance(socials, dict) else "",
+                "Facebook": socials.get("facebook", "") if isinstance(socials, dict) else "",
+                "LinkedIn": socials.get("linkedin", "") if isinstance(socials, dict) else "",
+                "Zenginleştirme Durumu": l.get("enrichment_status", ""),
                 "Arama Kelimesi": l.get("search_keyword"),
                 "Durum": l.get("status"),
                 "Kayıt Tarihi": str(l.get("created_at")),

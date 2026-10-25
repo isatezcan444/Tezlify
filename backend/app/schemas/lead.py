@@ -54,6 +54,12 @@ class LeadResponse(LeadBase):
     discovered_from: Optional[str] = None
     verified_by: Optional[str] = None
     verification_trace: Optional[Dict[str, Any]] = None
+    emails: Optional[List[str]] = None
+    social_links: Optional[Dict[str, str]] = None
+    meta_title: Optional[str] = None
+    meta_description: Optional[str] = None
+    enrichment_status: Optional[str] = "NOT_ENRICHED"
+    enriched_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
     last_contacted_at: Optional[datetime] = None
@@ -100,3 +106,33 @@ class ExportLeadsRequest(BaseModel):
     categories: Optional[List[str]] = None
     status: Optional[LeadStatus] = None
     whatsapp_eligible_only: Optional[bool] = False
+
+
+class LeadEnrichResponse(BaseModel):
+    success: bool
+    lead: LeadResponse
+    found_emails: List[str] = []
+    found_socials: Dict[str, str] = {}
+    meta_title: Optional[str] = None
+    meta_description: Optional[str] = None
+    error: Optional[str] = None
+
+
+class BulkEnrichRequest(BaseModel):
+    lead_ids: Optional[List[int]] = None
+    enrich_all_matching: Optional[bool] = False
+    search: Optional[str] = None
+    city: Optional[str] = None
+    districts: Optional[List[str]] = None
+    categories: Optional[List[str]] = None
+    status: Optional[LeadStatus] = None
+    whatsapp_eligible_only: Optional[bool] = False
+
+
+class BulkEnrichResponse(BaseModel):
+    total_requested: int
+    enriched_count: int
+    skipped_count: int
+    failed_count: int
+    items: List[LeadResponse]
+

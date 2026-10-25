@@ -11,7 +11,10 @@ import {
   ExternalLink,
   MessageSquare,
   Copy,
-  Check
+  Check,
+  Sparkles,
+  Mail,
+  RefreshCw
 } from 'lucide-react';
 import { Lead, LeadStatus } from '../../../types';
 import { Drawer } from '../../../components/ui/Drawer';
@@ -28,6 +31,7 @@ import { useWhatsAppConversation } from '../../whatsapp/hooks/useWhatsAppConvers
 import { useI18n } from '../../../context/I18nContext';
 import { translateApiError } from '../../whatsapp/lib/translateError';
 import { useToast } from '../../../context/ToastContext';
+import { ApiClient } from '../../../api/client';
 
 export interface LeadDetailDrawerProps {
   lead: Lead | null;
@@ -38,6 +42,7 @@ export interface LeadDetailDrawerProps {
   onBlacklist?: (lead: Lead) => void;
   onDelete?: (lead: Lead) => void;
   onStatusChange?: (leadId: number, status: LeadStatus) => void;
+  onLeadUpdated?: (lead: Lead) => void;
 }
 
 export const LeadDetailDrawer: React.FC<LeadDetailDrawerProps> = ({
@@ -49,17 +54,27 @@ export const LeadDetailDrawer: React.FC<LeadDetailDrawerProps> = ({
   onBlacklist,
   onDelete,
   onStatusChange,
+  onLeadUpdated,
 }) => {
   const { t } = useI18n();
   const toast = useToast();
   const [activeTab, setActiveTab] = useState<'overview' | 'chat'>(initialTab);
+  const [currentLead, setCurrentLead] = useState<Lead | null>(lead);
+  const [isEnriching, setIsEnriching] = useState<boolean>(false);
+  const [copiedEmail, setCopiedEmail] = useState<string | null>(null);
+
+  useEffect(() => {
+    setCurrentLead(lead);
+  }, [lead]);
+
+  const displayLead = currentLead || lead;
 
   const [isTemplateModalOpen, setIsTemplateModalOpen] = useState<boolean>(false);
   const [insertedComposerText, setInsertedComposerText] = useState<{ text: string; timestamp: number } | null>(null);
   const [copiedPhone, setCopiedPhone] = useState(false);
 
   const handleCopyPhone = async () => {
-    const p = lead?.phone_e164 || lead?.phone;
+    const p = displayLead?.phone_e164 || displayLead?.phone;
     if (!p) return;
     try {
       await navigator.clipboard.writeText(p);
@@ -68,6 +83,40 @@ export const LeadDetailDrawer: React.FC<LeadDetailDrawerProps> = ({
       setTimeout(() => setCopiedPhone(false), 1500);
     } catch {
       // fallback
+    }
+  };
+
+  const handleCopyEmail = async (emailText: string) => {
+    try {
+      await navigator.clipboard.writeText(emailText);
+      setCopiedEmail(emailText);
+      toast.success(t('leads.emailCopied'));
+      setTimeout(() => setCopiedEmail(null), 1500);
+    } catch {
+      // fallback
+    }
+  };
+
+  const handleEnrichLead = async () => {
+    if (!displayLead || !displayLead.website) return;
+    setIsEnriching(true);
+    try {
+      const res = await ApiClient.enrichLead(displayLead.id);
+      if (res.success && res.lead) {
+        setCurrentLead(res.lead);
+        onLeadUpdated?.(res.lead);
+        toast.success(t('leads.enrichSuccess'));
+      } else {
+        if (res.lead) {
+          setCurrentLead(res.lead);
+          onLeadUpdated?.(res.lead);
+        }
+        toast.error(res.error || t('leads.enrichFailed'));
+      }
+    } catch (err: any) {
+      toast.error(err.message || t('leads.enrichFailed'));
+    } finally {
+      setIsEnriching(false);
     }
   };
 
@@ -92,18 +141,18 @@ export const LeadDetailDrawer: React.FC<LeadDetailDrawerProps> = ({
     retryMessage,
     sendMedia,
   } = useWhatsAppConversation({
-    leadId: lead?.id,
+    leadId: displayLead?.id,
     enabled: isOpen && activeTab === 'chat',
   });
 
-  if (!lead) return null;
+  if (!displayLead) return null;
 
   const getGoogleMapsUrl = () => {
-    if ((lead as any).maps_url) return (lead as any).maps_url;
-    if ((lead as any).google_maps_url) return (lead as any).google_maps_url;
-    if (lead.custom_data?.google_maps_url) return lead.custom_data.google_maps_url;
-    if (lead.custom_data?.maps_url) return lead.custom_data.maps_url;
-    const query = [lead.name, lead.address || [lead.district, lead.city].filter(Boolean).join(', ')].filter(Boolean).join(' ');
+    if ((displayLead as any).maps_url) return (displayLead as any).maps_url;
+    if ((displayLead as any).google_maps_url) return (displayLead as any).google_maps_url;
+    if (displayLead.custom_data?.google_maps_url) return displayLead.custom_data.google_maps_url;
+    if (displayLead.custom_data?.maps_url) return displayLead.custom_data.maps_url;
+    const query = [displayLead.name, displayLead.address || [displayLead.district, displayLead.city].filter(Boolean).join(', ')].filter(Boolean).join(' ');
     return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`;
   };
 
@@ -111,8 +160,8 @@ export const LeadDetailDrawer: React.FC<LeadDetailDrawerProps> = ({
     <Drawer
       isOpen={isOpen}
       onClose={onClose}
-      title={lead.name}
-      subtitle={lead.category || t('common.general')}
+      title={displayLead.name}
+      subtitle={displayLead.category || t('common.general')}
       icon={Building2}
       size="lg"
       footer={
@@ -125,7 +174,7 @@ export const LeadDetailDrawer: React.FC<LeadDetailDrawerProps> = ({
                 size="sm"
                 tooltip={t('blacklist.addNumber')}
                 onClick={() => {
-                  onBlacklist(lead);
+                  onBlacklist(displayLead);
                   onClose();
                 }}
               />
@@ -137,7 +186,7 @@ export const LeadDetailDrawer: React.FC<LeadDetailDrawerProps> = ({
                 size="sm"
                 tooltip={t('common.delete')}
                 onClick={() => {
-                  onDelete(lead);
+                  onDelete(displayLead);
                   onClose();
                 }}
               />
@@ -195,7 +244,7 @@ export const LeadDetailDrawer: React.FC<LeadDetailDrawerProps> = ({
             >
               <WhatsAppIcon className="w-3.5 h-3.5" />
               <span>{t('leads.tabConversation')}</span>
-              {lead.status === 'REPLIED' && (
+              {displayLead.status === 'REPLIED' && (
                 <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
               )}
             </button>
@@ -207,18 +256,18 @@ export const LeadDetailDrawer: React.FC<LeadDetailDrawerProps> = ({
           <div className="flex-1 p-6 space-y-6 overflow-y-auto text-xs">
             {/* Business Hero Card */}
             <div className="p-4 rounded-xl bg-slate-50 dark:bg-black/20 border border-slate-200/80 dark:border-white/[0.06] flex items-center space-x-3.5">
-              <Avatar name={lead.name} size="lg" shape="rounded" />
+              <Avatar name={displayLead.name} size="lg" shape="rounded" />
               <div className="min-w-0 flex-1">
                 <h4 className="font-extrabold text-sm text-slate-800 dark:text-white truncate">
-                  {lead.name}
+                  {displayLead.name}
                 </h4>
                 <div className="flex items-center gap-2 mt-1 flex-wrap">
                   <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-[#7367F0]/15 text-[#7367F0] dark:bg-[#7367F0]/25 dark:text-[#A59DF8]">
-                    {lead.category || t('common.general')}
+                    {displayLead.category || t('common.general')}
                   </span>
-                  {lead.entity_type && (
+                  {displayLead.entity_type && (
                     <span className="text-[9px] font-mono uppercase px-1.5 py-0.5 rounded bg-slate-200 dark:bg-white/[0.08] text-slate-600 dark:text-slate-300">
-                      {lead.entity_type}
+                      {displayLead.entity_type}
                     </span>
                   )}
                 </div>
@@ -231,8 +280,8 @@ export const LeadDetailDrawer: React.FC<LeadDetailDrawerProps> = ({
                 {t('leads.colStatus')}
               </label>
               <select
-                value={lead.status}
-                onChange={(e) => onStatusChange && onStatusChange(lead.id, e.target.value as LeadStatus)}
+                value={displayLead.status}
+                onChange={(e) => onStatusChange && onStatusChange(displayLead.id, e.target.value as LeadStatus)}
                 className="w-full p-2.5 rounded-lg vuexy-input text-xs font-bold cursor-pointer"
               >
                 <option value="NEW">{t('leads.statusNew')}</option>
@@ -253,8 +302,8 @@ export const LeadDetailDrawer: React.FC<LeadDetailDrawerProps> = ({
               <div className="flex items-center justify-between">
                 <div className="flex items-center space-x-2 font-mono font-bold text-slate-700 dark:text-slate-200 min-w-0">
                   <Phone className="w-4 h-4 text-slate-400 shrink-0" />
-                  <span className="truncate">{lead.phone_e164 || lead.phone || t('leads.noPhone')}</span>
-                  {(lead.phone_e164 || lead.phone) && (
+                  <span className="truncate">{displayLead.phone_e164 || displayLead.phone || t('leads.noPhone')}</span>
+                  {(displayLead.phone_e164 || displayLead.phone) && (
                     <button
                       type="button"
                       onClick={handleCopyPhone}
@@ -271,7 +320,7 @@ export const LeadDetailDrawer: React.FC<LeadDetailDrawerProps> = ({
                   )}
                 </div>
 
-                {lead.is_whatsapp_eligible ? (
+                {displayLead.is_whatsapp_eligible ? (
                   <span className="inline-flex items-center space-x-1 px-2 py-0.5 rounded-full bg-[#25D366]/15 text-[#25D366] font-bold text-[10px] shrink-0">
                     <WhatsAppIcon className="w-3 h-3" />
                     <span>{t('leads.whatsappActive')}</span>
@@ -283,14 +332,14 @@ export const LeadDetailDrawer: React.FC<LeadDetailDrawerProps> = ({
                 )}
               </div>
 
-              {lead.website && (
+              {displayLead.website && (
                 <div className="flex items-center justify-between pt-2 border-t border-slate-100 dark:border-white/[0.05]">
                   <div className="flex items-center space-x-2 text-slate-600 dark:text-slate-300">
                     <Globe className="w-4 h-4 text-[#7367F0]" />
-                    <span className="truncate max-w-[200px]">{lead.website}</span>
+                    <span className="truncate max-w-[200px]">{displayLead.website}</span>
                   </div>
                   <a
-                    href={lead.website.startsWith('http') ? lead.website : `https://${lead.website}`}
+                    href={displayLead.website.startsWith('http') ? displayLead.website : `https://${displayLead.website}`}
                     target="_blank"
                     rel="noreferrer"
                     className="text-[#7367F0] hover:underline font-bold text-[11px] flex items-center gap-1"
@@ -298,6 +347,144 @@ export const LeadDetailDrawer: React.FC<LeadDetailDrawerProps> = ({
                     <span>{t('leads.colRatingWeb')}</span>
                     <ExternalLink className="w-3 h-3" />
                   </a>
+                </div>
+              )}
+            </div>
+
+            {/* Web & Social Media Intelligence (Data Enrichment) */}
+            <div className="p-4 rounded-xl border border-slate-200/80 dark:border-white/[0.06] space-y-3 bg-gradient-to-b from-transparent to-slate-50/50 dark:to-white/[0.01]">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <div className="flex items-center space-x-1.5">
+                  <Sparkles className="w-4 h-4 text-[#7367F0]" />
+                  <h5 className="text-[11px] font-extrabold uppercase text-slate-700 dark:text-slate-200 tracking-wider">
+                    {t('leads.enrichmentTitle')}
+                  </h5>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  {displayLead.enrichment_status === 'ENRICHED' && (
+                    <Badge variant="outline" className="border-emerald-500/40 text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 text-[10px] font-bold">
+                      <Check className="w-3 h-3 mr-1" />
+                      {t('leads.enrichmentStatusEnriched')}
+                    </Badge>
+                  )}
+                  {displayLead.enrichment_status === 'FAILED' && (
+                    <Badge variant="outline" className="border-rose-500/40 text-rose-600 dark:text-rose-400 bg-rose-500/10 text-[10px] font-bold">
+                      {t('leads.enrichmentStatusFailed')}
+                    </Badge>
+                  )}
+                  {displayLead.enrichment_status === 'NO_WEBSITE' && (
+                    <Badge variant="outline" className="border-slate-400/40 text-slate-500 dark:text-slate-400 bg-slate-500/10 text-[10px] font-bold">
+                      {t('leads.enrichmentStatusNoWebsite')}
+                    </Badge>
+                  )}
+                  {(!displayLead.enrichment_status || displayLead.enrichment_status === 'NOT_ENRICHED') && (
+                    <Badge variant="outline" className="border-[#7367F0]/40 text-[#7367F0] dark:text-[#A59DF8] bg-[#7367F0]/10 text-[10px] font-bold">
+                      {t('leads.enrichmentStatusNotEnriched')}
+                    </Badge>
+                  )}
+
+                  {displayLead.website && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={isEnriching}
+                      onClick={handleEnrichLead}
+                      className="h-7 px-2.5 text-[11px] font-bold space-x-1 border-[#7367F0]/30 text-[#7367F0] hover:bg-[#7367F0]/10 cursor-pointer"
+                    >
+                      <Sparkles className={`w-3 h-3 ${isEnriching ? 'animate-spin' : ''}`} />
+                      <span>{isEnriching ? t('leads.enriching') : (displayLead.enrichment_status === 'ENRICHED' ? t('leads.retryEnrich') : t('leads.enrichBtn'))}</span>
+                    </Button>
+                  )}
+                </div>
+              </div>
+
+              {/* Emails List */}
+              {displayLead.emails && displayLead.emails.length > 0 ? (
+                <div className="space-y-1.5 pt-1">
+                  <span className="text-[10px] font-bold uppercase text-slate-400 tracking-wider block">
+                    {t('leads.foundEmails')}
+                  </span>
+                  <div className="flex flex-col gap-1.5">
+                    {displayLead.emails.map((em, idx) => (
+                      <div
+                        key={idx}
+                        className="flex items-center justify-between px-2.5 py-1.5 rounded-lg bg-slate-100 dark:bg-white/[0.04] border border-slate-200/60 dark:border-white/[0.04]"
+                      >
+                        <div className="flex items-center space-x-2 text-slate-700 dark:text-slate-200 font-mono text-xs truncate">
+                          <Mail className="w-3.5 h-3.5 text-[#7367F0] shrink-0" />
+                          <span className="truncate">{em}</span>
+                          {idx === 0 && (
+                            <span className="text-[9px] px-1.5 py-0.2 rounded bg-[#7367F0]/15 text-[#7367F0] font-sans font-bold">
+                              Primary
+                            </span>
+                          )}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleCopyEmail(em)}
+                          title={t('leads.copyEmail')}
+                          className="p-1 rounded text-slate-400 hover:text-[#7367F0] hover:bg-slate-200/60 dark:hover:bg-white/[0.08] transition-colors cursor-pointer shrink-0"
+                        >
+                          {copiedEmail === em ? (
+                            <Check className="w-3.5 h-3.5 text-[#28C76F]" />
+                          ) : (
+                            <Copy className="w-3.5 h-3.5" />
+                          )}
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : displayLead.enrichment_status === 'ENRICHED' ? (
+                <div className="text-[11px] text-slate-400 italic">
+                  {t('leads.noEmailsFound')}
+                </div>
+              ) : null}
+
+              {/* Social Media Profiles */}
+              {displayLead.social_links && Object.keys(displayLead.social_links).length > 0 ? (
+                <div className="space-y-1.5 pt-1">
+                  <span className="text-[10px] font-bold uppercase text-slate-400 tracking-wider block">
+                    {t('leads.foundSocials')}
+                  </span>
+                  <div className="flex flex-wrap gap-2">
+                    {Object.entries(displayLead.social_links).map(([network, url]) => (
+                      <a
+                        key={network}
+                        href={url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-bold transition-transform hover:scale-105 active:scale-95 bg-slate-100 hover:bg-slate-200 dark:bg-white/[0.06] dark:hover:bg-white/[0.1] text-slate-800 dark:text-slate-200 border border-slate-200/80 dark:border-white/[0.08]"
+                      >
+                        <span className="capitalize font-mono text-[11px]">{network}</span>
+                        <ExternalLink className="w-3 h-3 text-slate-400" />
+                      </a>
+                    ))}
+                  </div>
+                </div>
+              ) : displayLead.enrichment_status === 'ENRICHED' ? (
+                <div className="text-[11px] text-slate-400 italic">
+                  {t('leads.noSocialsFound')}
+                </div>
+              ) : null}
+
+              {/* Meta Summary */}
+              {(displayLead.meta_title || displayLead.meta_description) && (
+                <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-white/[0.02] border border-slate-200/60 dark:border-white/[0.04] space-y-1">
+                  <span className="text-[10px] font-bold uppercase text-slate-400 tracking-wider block">
+                    {t('leads.aboutSummary')}
+                  </span>
+                  {displayLead.meta_title && (
+                    <div className="font-bold text-slate-800 dark:text-slate-100 text-[11px]">
+                      {displayLead.meta_title}
+                    </div>
+                  )}
+                  {displayLead.meta_description && (
+                    <p className="text-slate-600 dark:text-slate-300 text-[11px] leading-relaxed line-clamp-3">
+                      {displayLead.meta_description}
+                    </p>
+                  )}
                 </div>
               )}
             </div>
