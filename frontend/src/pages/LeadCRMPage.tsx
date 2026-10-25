@@ -415,42 +415,6 @@ export const LeadCRMPage: React.FC<LeadCRMPageProps> = ({ onRefreshStats, stats 
     }
   };
 
-  const [isBulkEnriching, setIsBulkEnriching] = useState(false);
-
-  const handleBulkEnrich = async () => {
-    if (selectedCount === 0) return;
-    setIsBulkEnriching(true);
-    try {
-      let res;
-      if (selectAllMatching) {
-        res = await ApiClient.bulkEnrichLeads({
-          enrich_all_matching: true,
-          search: search || undefined,
-          city: selectedCity || undefined,
-          districts: selectedDistricts.length > 0 ? selectedDistricts : undefined,
-          categories: selectedCategories.length > 0 ? selectedCategories : undefined,
-          status: statusFilter || undefined,
-          whatsapp_eligible_only: waOnly,
-        });
-      } else {
-        res = await ApiClient.bulkEnrichLeads({ lead_ids: selectedIds });
-      }
-      toast.success(
-        t('leads.bulkEnrichSuccess', {
-          enriched: res.enriched_count,
-          skipped: res.skipped_count,
-          failed: res.failed_count,
-        }),
-        t('common.success')
-      );
-      fetchLeads();
-    } catch (err: any) {
-      toast.error(err.message || t('leads.bulkEnrichFailed'), t('toast.errorTitle'));
-    } finally {
-      setIsBulkEnriching(false);
-    }
-  };
-
   const getStatusLabel = (status: LeadStatus) => {
     switch (status) {
       case 'NEW': return t('leads.statusNew');
@@ -964,16 +928,6 @@ export const LeadCRMPage: React.FC<LeadCRMPageProps> = ({ onRefreshStats, stats 
             >
               <ShieldAlert className="w-3.5 h-3.5 text-[#FF9F43]" />
               <span>{t('leads.bulkBlacklist')}</span>
-            </button>
-
-            <button
-              type="button"
-              disabled={isBulkEnriching}
-              onClick={handleBulkEnrich}
-              className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold text-xs flex items-center gap-1.5 shadow-md transition-all active:scale-95 cursor-pointer"
-            >
-              <Sparkles className={`w-3.5 h-3.5 ${isBulkEnriching ? 'animate-spin' : ''}`} />
-              <span>{isBulkEnriching ? t('leads.bulkEnriching') : t('leads.bulkEnrich')}</span>
             </button>
 
             <button

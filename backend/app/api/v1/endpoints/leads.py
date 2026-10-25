@@ -392,21 +392,14 @@ async def bulk_enrich_leads(
     """
     user_filter = get_user_filter(Lead.user_id, current_user.id)
     if payload.enrich_all_matching:
-        conditions = build_lead_filter_conditions(
-            search=payload.search,
-            city=payload.city,
-            districts=payload.districts,
-            categories=payload.categories,
-            status=payload.status,
-            whatsapp_eligible_only=payload.whatsapp_eligible_only or False
+        raise HTTPException(
+            status_code=400,
+            detail="Sunucu kaynaklarını korumak için tümünü toplu zenginleştirme devre dışı bırakılmıştır. Lütfen tek tek firma özetinden zenginleştir butonunu kullanın."
         )
-        stmt = select(Lead).where(user_filter)
-        for c in conditions:
-            stmt = stmt.where(c)
-        res = await db.execute(stmt)
-        leads = list(res.scalars().all())
     elif payload.lead_ids:
-        stmt = select(Lead).where(Lead.id.in_(payload.lead_ids), user_filter)
+        # Cap to a maximum of 10 leads to avoid overloading network/DB
+        capped_ids = payload.lead_ids[:10]
+        stmt = select(Lead).where(Lead.id.in_(capped_ids), user_filter)
         res = await db.execute(stmt)
         leads = list(res.scalars().all())
     else:

@@ -218,7 +218,7 @@ class EnrichmentService:
         # First attempt with normal SSL verify
         try:
             async with httpx.AsyncClient(
-                timeout=httpx.Timeout(8.0, connect=4.0),
+                timeout=httpx.Timeout(4.0, connect=2.0),
                 follow_redirects=True,
                 verify=False,  # tolerates SME self-signed or expired certificates
                 headers=headers,

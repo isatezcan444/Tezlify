@@ -62,7 +62,6 @@ export const LeadDetailDrawer: React.FC<LeadDetailDrawerProps> = ({
   const [currentLead, setCurrentLead] = useState<Lead | null>(lead);
   const [isEnriching, setIsEnriching] = useState<boolean>(false);
   const [copiedEmail, setCopiedEmail] = useState<string | null>(null);
-  const autoEnrichInProgressRef = useRef<number | null>(null);
 
   useEffect(() => {
     setCurrentLead(lead);
@@ -98,7 +97,7 @@ export const LeadDetailDrawer: React.FC<LeadDetailDrawerProps> = ({
     }
   };
 
-  const handleEnrichLead = async (silent: boolean = false) => {
+  const handleEnrichLead = async () => {
     if (!displayLead || !displayLead.website) return;
     setIsEnriching(true);
     try {
@@ -106,36 +105,20 @@ export const LeadDetailDrawer: React.FC<LeadDetailDrawerProps> = ({
       if (res.success && res.lead) {
         setCurrentLead(res.lead);
         onLeadUpdated?.(res.lead);
-        if (!silent) {
-          toast.success(t('leads.enrichSuccess'));
-        }
+        toast.success(t('leads.enrichSuccess'));
       } else {
         if (res.lead) {
           setCurrentLead(res.lead);
           onLeadUpdated?.(res.lead);
         }
-        if (!silent) {
-          toast.error(res.error || t('leads.enrichFailed'));
-        }
+        toast.error(res.error || t('leads.enrichFailed'));
       }
     } catch (err: any) {
-      if (!silent) {
-        toast.error(err.message || t('leads.enrichFailed'));
-      }
+      toast.error(err.message || t('leads.enrichFailed'));
     } finally {
       setIsEnriching(false);
     }
   };
-
-  // Auto-enrich lead if website exists and not yet enriched
-  useEffect(() => {
-    if (!isOpen || activeTab !== 'overview' || !displayLead) return;
-    if (!displayLead.website) return;
-    if (displayLead.enrichment_status === 'ENRICHED') return;
-    if (autoEnrichInProgressRef.current === displayLead.id) return;
-    autoEnrichInProgressRef.current = displayLead.id;
-    handleEnrichLead(true);
-  }, [isOpen, activeTab, displayLead?.id, displayLead?.website, displayLead?.enrichment_status]);
 
   // Sync initialTab when drawer opens
   useEffect(() => {
@@ -491,7 +474,7 @@ export const LeadDetailDrawer: React.FC<LeadDetailDrawerProps> = ({
                       size="sm"
                       variant="outline"
                       disabled={isEnriching}
-                      onClick={() => handleEnrichLead(false)}
+                      onClick={handleEnrichLead}
                       className="h-7 px-2.5 text-[11px] font-bold space-x-1 border-[#7367F0]/30 text-[#7367F0] hover:bg-[#7367F0]/10 cursor-pointer"
                     >
                       <Sparkles className={`w-3 h-3 ${isEnriching ? 'animate-spin' : ''}`} />
