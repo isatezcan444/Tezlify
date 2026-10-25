@@ -148,7 +148,10 @@ def serialize_message(
     raw_type = getattr(row, "message_type", None)
     type_str = str(getattr(raw_type, "value", raw_type) or "").upper()
     has_media_metadata = bool(getattr(row, "media_mime_type", None) or getattr(row, "media_filename", None))
-    media_key = row.media_id or (row.wa_message_id if type_str and type_str != "TEXT" and has_media_metadata else None)
+    dir_val = getattr(getattr(row, "direction", None), "value", getattr(row, "direction", None))
+    st_val = getattr(getattr(row, "status", None), "value", getattr(row, "status", None))
+    is_failed_outbound = (str(dir_val).upper() == "OUTBOUND" and str(st_val).upper() == "FAILED" and not row.media_id)
+    media_key = None if is_failed_outbound else (row.media_id or (row.wa_message_id if type_str and type_str != "TEXT" and has_media_metadata else None))
     media_url = f"/api/v1/whatsapp/media/{media_key}" if media_key else None
     return {
         "id": row.id,
@@ -439,9 +442,16 @@ class WhatsAppMessagingOrchestrator:
                 )
             )
             if existing is not None:
-                if existing.body != clean or existing.message_type != MessageType.TEXT:
+                if existing.body != clean:
                     raise ValueError("client_message_id farklı bir mesaj için yeniden kullanılamaz.")
-                if existing.status in _TERMINAL_OUTBOUND_STATUSES or existing.wa_message_id:
+                if existing.message_type != MessageType.TEXT:
+                    if existing.status == ConversationMessageStatus.FAILED:
+                        existing.message_type = MessageType.TEXT
+                    else:
+                        raise ValueError("client_message_id farklı bir mesaj için yeniden kullanılamaz.")
+                if existing.status in _TERMINAL_OUTBOUND_STATUSES or (
+                    existing.wa_message_id and existing.status != ConversationMessageStatus.FAILED
+                ):
                     preview_data = await preview_for_text_message(
                         db, clean, user_id=user_id, conversation_id=conv_id
                     )
@@ -459,7 +469,7 @@ class WhatsAppMessagingOrchestrator:
                             )
                             .execution_options(populate_existing=True)
                         )
-                        if refreshed and (refreshed.status in _TERMINAL_OUTBOUND_STATUSES or refreshed.wa_message_id):
+                        if refreshed and (refreshed.status in _TERMINAL_OUTBOUND_STATUSES or (refreshed.wa_message_id and refreshed.status != ConversationMessageStatus.FAILED)):
                             preview_data = await preview_for_text_message(
                                 db, clean, user_id=user_id, conversation_id=conv_id
                             )
@@ -486,13 +496,14 @@ class WhatsAppMessagingOrchestrator:
                     .where(
                         Message.id == existing.id,
                         Message.status == ConversationMessageStatus.FAILED,
-                        Message.wa_message_id.is_(None),
                         get_user_filter(Message.user_id, user_id),
                     )
                     .values(
                         status=ConversationMessageStatus.PENDING,
                         failed_at=None,
                         error_message=None,
+                        wa_message_id=None,
+                        message_type=MessageType.TEXT,
                     )
                 )
                 claim_res = await db.execute(claim_stmt)
@@ -509,7 +520,7 @@ class WhatsAppMessagingOrchestrator:
                             )
                             .execution_options(populate_existing=True)
                         )
-                        if refreshed and (refreshed.status in _TERMINAL_OUTBOUND_STATUSES or refreshed.wa_message_id):
+                        if refreshed and (refreshed.status in _TERMINAL_OUTBOUND_STATUSES or (refreshed.wa_message_id and refreshed.status != ConversationMessageStatus.FAILED)):
                             preview_data = await preview_for_text_message(
                                 db, clean, user_id=user_id, conversation_id=conv_id
                             )
@@ -558,9 +569,16 @@ class WhatsAppMessagingOrchestrator:
                     )
                     if existing is None:
                         raise
-                    if existing.body != clean or existing.message_type != MessageType.TEXT:
+                    if existing.body != clean:
                         raise ValueError("client_message_id farklı bir mesaj için yeniden kullanılamaz.")
-                    if existing.status in _TERMINAL_OUTBOUND_STATUSES or existing.wa_message_id:
+                    if existing.message_type != MessageType.TEXT:
+                        if existing.status == ConversationMessageStatus.FAILED:
+                            existing.message_type = MessageType.TEXT
+                        else:
+                            raise ValueError("client_message_id farklı bir mesaj için yeniden kullanılamaz.")
+                    if existing.status in _TERMINAL_OUTBOUND_STATUSES or (
+                        existing.wa_message_id and existing.status != ConversationMessageStatus.FAILED
+                    ):
                         preview_data = await preview_for_text_message(
                             db, clean, user_id=user_id, conversation_id=conv_id
                         )
@@ -575,7 +593,7 @@ class WhatsAppMessagingOrchestrator:
                             )
                             .execution_options(populate_existing=True)
                         )
-                        if refreshed and (refreshed.status in _TERMINAL_OUTBOUND_STATUSES or refreshed.wa_message_id):
+                        if refreshed and (refreshed.status in _TERMINAL_OUTBOUND_STATUSES or (refreshed.wa_message_id and refreshed.status != ConversationMessageStatus.FAILED)):
                             preview_data = await preview_for_text_message(
                                 db, clean, user_id=user_id, conversation_id=conv_id
                             )
@@ -692,7 +710,9 @@ class WhatsAppMessagingOrchestrator:
             if existing is not None:
                 if existing.body != expected_body or existing.message_type != msg_type:
                     raise ValueError("client_message_id farklı bir medya için yeniden kullanılamaz.")
-                if existing.status in _TERMINAL_OUTBOUND_STATUSES or existing.wa_message_id:
+                if existing.status in _TERMINAL_OUTBOUND_STATUSES or (
+                    existing.wa_message_id and existing.status != ConversationMessageStatus.FAILED
+                ):
                     return self.serialize_message(existing)
 
                 # Medya PENDING durumundaysa eşzamanlı/aktif bir gönderim süreci devam ediyor olabilir:
@@ -707,7 +727,7 @@ class WhatsAppMessagingOrchestrator:
                             )
                             .execution_options(populate_existing=True)
                         )
-                        if refreshed and (refreshed.status in _TERMINAL_OUTBOUND_STATUSES or refreshed.wa_message_id):
+                        if refreshed and (refreshed.status in _TERMINAL_OUTBOUND_STATUSES or (refreshed.wa_message_id and refreshed.status != ConversationMessageStatus.FAILED)):
                             return self.serialize_message(refreshed)
                         if refreshed and refreshed.status == ConversationMessageStatus.FAILED:
                             existing = refreshed
@@ -728,13 +748,13 @@ class WhatsAppMessagingOrchestrator:
                     .where(
                         Message.id == existing.id,
                         Message.status == ConversationMessageStatus.FAILED,
-                        Message.wa_message_id.is_(None),
                         get_user_filter(Message.user_id, user_id),
                     )
                     .values(
                         status=ConversationMessageStatus.PENDING,
                         failed_at=None,
                         error_message=None,
+                        wa_message_id=None,
                     )
                 )
                 claim_res = await db.execute(claim_stmt)
@@ -751,7 +771,7 @@ class WhatsAppMessagingOrchestrator:
                             )
                             .execution_options(populate_existing=True)
                         )
-                        if refreshed and (refreshed.status in _TERMINAL_OUTBOUND_STATUSES or refreshed.wa_message_id):
+                        if refreshed and (refreshed.status in _TERMINAL_OUTBOUND_STATUSES or (refreshed.wa_message_id and refreshed.status != ConversationMessageStatus.FAILED)):
                             return self.serialize_message(refreshed)
                     if refreshed and refreshed.status == ConversationMessageStatus.PENDING and not refreshed.wa_message_id:
                         refreshed.status = ConversationMessageStatus.FAILED
@@ -797,7 +817,9 @@ class WhatsAppMessagingOrchestrator:
                         raise
                     if existing.body != expected_body or existing.message_type != msg_type:
                         raise ValueError("client_message_id farklı bir medya için yeniden kullanılamaz.")
-                    if existing.status in _TERMINAL_OUTBOUND_STATUSES or existing.wa_message_id:
+                    if existing.status in _TERMINAL_OUTBOUND_STATUSES or (
+                        existing.wa_message_id and existing.status != ConversationMessageStatus.FAILED
+                    ):
                         return self.serialize_message(existing)
                     for _ in range(25):
                         await asyncio.sleep(0.2)
@@ -809,7 +831,7 @@ class WhatsAppMessagingOrchestrator:
                             )
                             .execution_options(populate_existing=True)
                         )
-                        if refreshed and (refreshed.status in _TERMINAL_OUTBOUND_STATUSES or refreshed.wa_message_id):
+                        if refreshed and (refreshed.status in _TERMINAL_OUTBOUND_STATUSES or (refreshed.wa_message_id and refreshed.status != ConversationMessageStatus.FAILED)):
                             return self.serialize_message(refreshed)
                         if refreshed and refreshed.status == ConversationMessageStatus.FAILED:
                             existing = refreshed

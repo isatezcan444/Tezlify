@@ -66,6 +66,7 @@ services:
       WHATSAPP_GATEWAY_URL: http://gateway:8787
       SKIP_JOB_RECOVERY: "true"
     volumes:
+      - /opt/tezlify/uploads:/app/uploads:rw
       - /opt/tezlify/runtime:/opt/tezlify/runtime:ro
       - /opt/tezlify/backups:/opt/tezlify/backups:rw
       - /opt/tezlify/monitoring:/opt/tezlify/monitoring:ro

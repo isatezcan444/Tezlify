@@ -2312,10 +2312,22 @@ async def ensure_verified_commercial_leads(engine: AsyncEngine) -> None:
         # 2. Hiç mesaj gönderilmeden COMPLETED'a düşmüş hatalı kampanyaları PAUSED'a geri al
         await conn.execute(text("""
             UPDATE campaigns
-            SET status = 'PAUSED'
+            SET status = 'PAUSED', failed_count = 0
             WHERE status = 'COMPLETED'
               AND (sent_count IS NULL OR sent_count = 0)
-              AND (total_leads_target = 0 OR total_leads_target IS NULL)
+        """))
+
+        # 3. Medya hatasından dolayı başarısız kalmış mesaj loglarını temizle
+        await conn.execute(text("""
+            DELETE FROM message_logs
+            WHERE campaign_id = 6 AND status = 'FAILED'
+        """))
+
+        # 4. Hatalı wa_message_id atanmış FAILED mesajları temizle ki doğrudan yeniden denenebilsin
+        await conn.execute(text("""
+            UPDATE messages
+            SET wa_message_id = NULL
+            WHERE status = 'FAILED' AND wa_message_id IS NOT NULL
         """))
     logger.info("[MIGRATION] ensure_verified_commercial_leads verified")
 

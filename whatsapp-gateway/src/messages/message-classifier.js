@@ -461,6 +461,10 @@ export function buildMediaContent({
 }) {
   const type = (media_type || 'document').toLowerCase();
   const buffer = media_base64 ? Buffer.from(media_base64, 'base64') : null;
+  const isHttpUrl = typeof media_url === 'string' && (media_url.startsWith('http://') || media_url.startsWith('https://'));
+  if (!buffer && !isHttpUrl) {
+    throw new Error('Geçersiz medya kaynağı: media_base64 veya erişilebilir bir HTTP media_url zorunludur.');
+  }
   const source = buffer || { url: media_url };
   if (type === 'image') {
     return { image: source, mimetype: mime_type || undefined, caption: caption || '' };

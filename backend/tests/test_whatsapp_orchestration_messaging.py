@@ -555,4 +555,51 @@ class TestWhatsAppMessagingOrchestration:
             with pytest.raises(LookupError, match="Mesaj #999 bulunamadı"):
                 await pin_message(db, "usr-1", 10, 999, action="PIN")
 
+    @pytest.mark.asyncio
+    async def test_retry_failed_message_with_wa_id_and_different_initial_type(self):
+        """A failed message (even with wa_message_id and IMAGE type) can be claimed and retried as text."""
+        db = AsyncMock()
+        conv = MagicMock()
+        conv.id = 10
+        session_row = MagicMock()
+        session_row.id = 1
+
+        failed_msg = Message(
+            id=143903,
+            user_id="usr-1",
+            conversation_id=10,
+            direction=MessageDirection.OUTBOUND,
+            message_type=MessageType.IMAGE,
+            status=ConversationMessageStatus.FAILED,
+            body="Merhaba test",
+            client_message_id="cmsg_failed_123",
+            wa_message_id="FAIL_HASH_999",
+        )
+
+        db.scalar.return_value = failed_msg
+        claim_mock = MagicMock()
+        claim_mock.rowcount = 1
+        db.execute.return_value = claim_mock
+
+        with patch("backend.app.services.whatsapp.orchestration.messaging._resolve_jid", return_value=(conv, "905550001122@s.whatsapp.net")), \
+             patch("backend.app.services.whatsapp.orchestration.messaging._conversation_session", return_value=session_row), \
+             patch("backend.app.services.whatsapp_gateway.send_text_message", new_callable=AsyncMock) as mock_send, \
+             patch("backend.app.services.whatsapp.orchestration.messaging._apply_last_message"):
+            mock_send.return_value = {
+                "success": True,
+                "wa_message_id": "WA_RETRY_SUCCESS_1",
+                "status": "SENT",
+            }
+            res = await send_text_message(
+                db=db,
+                user_id="usr-1",
+                conversation_id=10,
+                body="Merhaba test",
+                client_message_id="cmsg_failed_123",
+            )
+            assert res["status"] == "SENT"
+            assert res["wa_message_id"] == "WA_RETRY_SUCCESS_1"
+            assert failed_msg.message_type == MessageType.TEXT
+
+
 

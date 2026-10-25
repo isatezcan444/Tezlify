@@ -144,13 +144,19 @@ class OutreachManager:
             media_payload = None
             if getattr(campaign, "media_url", None):
                 base64_data = CampaignMediaService.get_campaign_media_base64(campaign.media_url)
-                media_payload = {
-                    "media_type": (campaign.media_type or "DOCUMENT").lower(),
-                    "media_url": campaign.media_url,
-                    "media_base64": base64_data,
-                    "filename": campaign.media_filename,
-                    "caption": rendered_msg,
-                }
+                if base64_data or campaign.media_url.startswith(("http://", "https://")):
+                    media_payload = {
+                        "media_type": (campaign.media_type or "DOCUMENT").lower(),
+                        "media_url": campaign.media_url,
+                        "media_base64": base64_data,
+                        "filename": campaign.media_filename,
+                        "caption": rendered_msg,
+                    }
+                else:
+                    logger.warning(
+                        f"[OutreachManager] Campaign #{campaign.id} media file missing on disk ({campaign.media_url}). "
+                        f"Falling back to text-only dispatch to preserve outreach continuity."
+                    )
 
             # Dispatch message live through connected Baileys session
             result = await whatsapp_service.start_conversation(
