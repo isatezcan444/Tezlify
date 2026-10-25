@@ -44,7 +44,8 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
   const { t } = useI18n();
   const { Icon, tone, label } = resolveDocVisual(filename, mimeType);
   const displayName = filename || t('leads.documentFallbackName');
-  const resolvedUrl = resolveMediaUrl(url);
+  const [loadFailed, setLoadFailed] = useState(false);
+  const resolvedUrl = loadFailed ? undefined : resolveMediaUrl(url);
 
   const [isViewerOpen, setIsViewerOpen] = useState(false);
   const [resolvedSize, setResolvedSize] = useState<string | null>(() => {
@@ -59,6 +60,10 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
     const controller = new AbortController();
     fetch(resolvedUrl, { method: 'HEAD', signal: controller.signal })
       .then((res) => {
+        if (!res.ok) {
+          if (res.status === 404) setLoadFailed(true);
+          return;
+        }
         const len = res.headers.get('content-length');
         if (len) {
           const parsed = parseInt(len, 10);

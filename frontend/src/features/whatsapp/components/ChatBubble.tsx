@@ -684,9 +684,9 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                       setImageLoaded(false);
                       setImageLoadError(true);
                       setMediaRetrying(false);
+                      if (mediaWaId) markMediaExpired(mediaWaId);
                       if (mediaRetryTs) {
                         setMediaRetryFailed(true);
-                        markMediaExpired(mediaWaId);
                       }
                     }}
                     className={`w-full h-full object-cover group-hover:scale-105 transition-all duration-200 ${
@@ -913,9 +913,9 @@ const ChatBubbleComponent: React.FC<ChatBubbleProps> = ({
                     onError={() => {
                       setVideoLoadError(true);
                       setMediaRetrying(false);
+                      if (mediaWaId) markMediaExpired(mediaWaId);
                       if (mediaRetryTs) {
                         setMediaRetryFailed(true);
-                        markMediaExpired(mediaWaId);
                       }
                       notifyVideoEnded();
                     }}

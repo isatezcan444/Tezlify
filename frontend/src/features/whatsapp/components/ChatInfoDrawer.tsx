@@ -50,7 +50,7 @@ import {
 } from '../lib/starredMessages';
 import { MediaLightbox } from './MediaLightbox';
 import { DocumentViewer, resolveDocVisual } from './DocumentViewer';
-import { getSenderColorClass } from './ChatBubble';
+import { getSenderColorClass, isMediaExpired, markMediaExpired } from './ChatBubble';
 import { AddParticipantModal } from './AddParticipantModal';
 
 
@@ -1530,16 +1530,20 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
                 <div className="grid grid-cols-3 gap-1.5" data-testid="drawer-media-grid">
                   {mediaItems.map((m) => {
                     const targetId = m.media_id || m.wa_message_id;
-                    const rawSrc = resolveMediaUrl(
-                      m.media_url ||
-                      (targetId ? `/api/v1/whatsapp/media/${targetId}` : undefined)
-                    );
+                    const isExpired = m.error_message === 'MEDIA_EXPIRED' || isMediaExpired(targetId);
+                    const rawSrc = isExpired
+                      ? undefined
+                      : resolveMediaUrl(
+                          m.media_url ||
+                          (targetId ? `/api/v1/whatsapp/media/${targetId}` : undefined)
+                        );
                     const isVideo = (m.message_type || '').toUpperCase() === 'VIDEO' || (m.media_mime_type || '').includes('video');
                     return (
                       <div
                         key={m.id}
                         data-testid={`drawer-media-item-${m.id}`}
                         onClick={() => {
+                          if (isExpired) return;
                           const effectiveSrc = rawSrc || (targetId ? resolveMediaUrl(`/api/v1/whatsapp/media/${targetId}`) || `/api/v1/whatsapp/media/${targetId}` : null);
                           setLightboxSrc(effectiveSrc);
                           setLightboxType(isVideo ? 'VIDEO' : 'IMAGE');
@@ -1547,9 +1551,17 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
                           setLightboxFilename(m.media_filename || undefined);
                           setIsLightboxOpen(true);
                         }}
-                        className="relative aspect-square rounded-lg overflow-hidden bg-slate-100 dark:bg-black/30 border border-slate-200/60 dark:border-white/10 group cursor-pointer"
+                        className={`relative aspect-square rounded-lg overflow-hidden bg-slate-100 dark:bg-black/30 border border-slate-200/60 dark:border-white/10 group ${
+                          isExpired ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'
+                        }`}
+                        title={isExpired ? t('whatsapp.mediaExpiredOrUnavailable') : (m.media_filename || undefined)}
                       >
-                        {isVideo ? (
+                        {isExpired ? (
+                          <div className="w-full h-full flex flex-col items-center justify-center p-2 text-center text-slate-400">
+                            <ImageIcon className="w-5 h-5 opacity-40 mb-1" />
+                            <span className="text-[9px] opacity-60 leading-tight">{t('whatsapp.mediaExpiredOrUnavailable')}</span>
+                          </div>
+                        ) : isVideo ? (
                           <div className="w-full h-full flex items-center justify-center bg-slate-900 text-white">
                             <Play className="w-5 h-5 fill-white" />
                           </div>
@@ -1560,13 +1572,16 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
                             loading="lazy"
                             onError={(e) => {
                               e.currentTarget.style.display = 'none';
+                              if (targetId) markMediaExpired(targetId);
                             }}
                             className="w-full h-full object-cover transition-transform group-hover:scale-105"
                           />
                         )}
-                        <div className="absolute inset-0 bg-black/30 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-white">
-                          <Search className="w-4 h-4" />
-                        </div>
+                        {!isExpired && (
+                          <div className="absolute inset-0 bg-black/30 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-white">
+                            <Search className="w-4 h-4" />
+                          </div>
+                        )}
                       </div>
                     );
                   })}
@@ -1585,22 +1600,31 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
                   {documentItems.map((m) => {
                     const { Icon, tone } = resolveDocVisual(m.media_filename, m.media_mime_type);
                     const targetId = m.media_id || m.wa_message_id;
-                    const rawSrc = resolveMediaUrl(
-                      m.media_url ||
-                      (targetId ? `/api/v1/whatsapp/media/${targetId}` : undefined)
-                    );
+                    const isExpired = m.error_message === 'MEDIA_EXPIRED' || isMediaExpired(targetId);
+                    const rawSrc = isExpired
+                      ? undefined
+                      : resolveMediaUrl(
+                          m.media_url ||
+                          (targetId ? `/api/v1/whatsapp/media/${targetId}` : undefined)
+                        );
                     return (
                       <div
                         key={m.id}
                         data-testid={`drawer-doc-item-${m.id}`}
                         onClick={() => {
+                          if (isExpired) return;
                           const effectiveSrc = rawSrc || (targetId ? resolveMediaUrl(`/api/v1/whatsapp/media/${targetId}`) || `/api/v1/whatsapp/media/${targetId}` : null);
                           setDocViewerSrc(effectiveSrc);
                           setDocViewerFilename(m.media_filename || t('leads.documentFallbackName'));
                           setDocViewerMime(m.media_mime_type || 'application/octet-stream');
                           setIsDocViewerOpen(true);
                         }}
-                        className="flex items-center space-x-2.5 p-2 rounded-xl hover:bg-slate-100 dark:hover:bg-white/[0.06] transition-colors cursor-pointer border border-transparent hover:border-slate-200 dark:hover:border-white/10"
+                        className={`flex items-center space-x-2.5 p-2 rounded-xl transition-colors border border-transparent ${
+                          isExpired
+                            ? 'opacity-50 cursor-not-allowed'
+                            : 'hover:bg-slate-100 dark:hover:bg-white/[0.06] cursor-pointer hover:border-slate-200 dark:hover:border-white/10'
+                        }`}
+                        title={isExpired ? t('whatsapp.mediaExpiredOrUnavailable') : undefined}
                       >
                         <div className={`p-2 rounded-lg border ${tone} shrink-0`}>
                           <Icon className="w-4 h-4" />
