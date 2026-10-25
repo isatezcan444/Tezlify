@@ -2332,6 +2332,144 @@ async def ensure_verified_commercial_leads(engine: AsyncEngine) -> None:
     logger.info("[MIGRATION] ensure_verified_commercial_leads verified")
 
 
+async def ensure_conversation_preview_messages(engine: AsyncEngine) -> None:
+    """Conversations having last_message_preview but 0 messages in DB get their last message synthesized.
+    
+    This eliminates the false 'Henüz WhatsApp Mesajı Yok' state when a conversation
+    clearly has message activity, and gives on-demand history fetch an anchor wa_message_id.
+    """
+    try:
+        dialect = engine.dialect.name
+        async with engine.begin() as conn:
+            if dialect == "postgresql":
+                await conn.execute(text("SET LOCAL lock_timeout = '5s'"))
+                res = await conn.execute(text("""
+                    INSERT INTO messages (
+                        conversation_id,
+                        user_id,
+                        direction,
+                        message_type,
+                        status,
+                        body,
+                        sender_phone,
+                        recipient_phone,
+                        created_at,
+                        updated_at,
+                        external_timestamp,
+                        wa_message_id
+                    )
+                    SELECT
+                        c.id,
+                        c.user_id,
+                        (CASE 
+                            WHEN c.last_message_preview LIKE 'Siz: %' THEN 'OUTBOUND'
+                            WHEN c.last_message_preview LIKE 'Şu mesaja %' THEN 'OUTBOUND'
+                            ELSE 'INBOUND'
+                        END)::messagedirection,
+                        (CASE
+                            WHEN c.last_message_preview LIKE '%📷 Fotoğraf%' OR c.last_message_preview LIKE '%[IMAGE]%' THEN 'IMAGE'
+                            WHEN c.last_message_preview LIKE '%📄 Dosya%' OR c.last_message_preview LIKE '%[DOCUMENT]%' THEN 'DOCUMENT'
+                            WHEN c.last_message_preview LIKE '%📍 Konum%' OR c.last_message_preview LIKE '%[LOCATION]%' THEN 'LOCATION'
+                            WHEN c.last_message_preview LIKE '%👤 %' OR c.last_message_preview LIKE '%[CONTACT]%' THEN 'CONTACT'
+                            WHEN c.last_message_preview LIKE '%🎤 Ses%' OR c.last_message_preview LIKE '%[AUDIO]%' THEN 'AUDIO'
+                            WHEN c.last_message_preview LIKE '%🎥 Video%' OR c.last_message_preview LIKE '%[VIDEO]%' THEN 'VIDEO'
+                            WHEN c.last_message_preview LIKE '%🎭 Çıkartma%' OR c.last_message_preview LIKE '%[STICKER]%' THEN 'STICKER'
+                            ELSE 'TEXT'
+                        END)::messagetype,
+                        'READ'::conversationmessagestatus,
+                        CASE
+                            WHEN c.last_message_preview LIKE 'Siz: %' THEN SUBSTRING(c.last_message_preview FROM 6)
+                            ELSE c.last_message_preview
+                        END,
+                        CASE
+                            WHEN c.last_message_preview LIKE 'Siz: %' OR c.last_message_preview LIKE 'Şu mesaja %' THEN 'ME'
+                            ELSE ct.phone_e164
+                        END,
+                        CASE
+                            WHEN c.last_message_preview LIKE 'Siz: %' OR c.last_message_preview LIKE 'Şu mesaja %' THEN COALESCE(ct.phone_e164, 'CONTACT')
+                            ELSE 'ME'
+                        END,
+                        COALESCE(c.last_message_at, c.created_at, NOW()),
+                        COALESCE(c.last_message_at, c.created_at, NOW()),
+                        COALESCE(c.last_message_at, c.created_at, NOW()),
+                        'preview_' || c.id || '_' || EXTRACT(EPOCH FROM COALESCE(c.last_message_at, c.created_at, NOW()))::bigint
+                    FROM conversations c
+                    LEFT JOIN contacts ct ON ct.id = c.contact_id
+                    WHERE c.last_message_preview IS NOT NULL
+                      AND TRIM(c.last_message_preview) != ''
+                      AND NOT EXISTS (
+                          SELECT 1 FROM messages m WHERE m.conversation_id = c.id
+                      )
+                """))
+                if res.rowcount:
+                    logger.info("[MIGRATION] ensure_conversation_preview_messages: %d mesaj sentezlendi (postgresql)", res.rowcount)
+            elif dialect == "sqlite":
+                res = await conn.execute(text("""
+                    INSERT INTO messages (
+                        conversation_id,
+                        user_id,
+                        direction,
+                        message_type,
+                        status,
+                        body,
+                        sender_phone,
+                        recipient_phone,
+                        created_at,
+                        updated_at,
+                        external_timestamp,
+                        wa_message_id
+                    )
+                    SELECT
+                        c.id,
+                        c.user_id,
+                        CASE 
+                            WHEN c.last_message_preview LIKE 'Siz: %' THEN 'OUTBOUND'
+                            WHEN c.last_message_preview LIKE 'Şu mesaja %' THEN 'OUTBOUND'
+                            ELSE 'INBOUND'
+                        END,
+                        CASE
+                            WHEN c.last_message_preview LIKE '%📷 Fotoğraf%' OR c.last_message_preview LIKE '%[IMAGE]%' THEN 'IMAGE'
+                            WHEN c.last_message_preview LIKE '%📄 Dosya%' OR c.last_message_preview LIKE '%[DOCUMENT]%' THEN 'DOCUMENT'
+                            WHEN c.last_message_preview LIKE '%📍 Konum%' OR c.last_message_preview LIKE '%[LOCATION]%' THEN 'LOCATION'
+                            WHEN c.last_message_preview LIKE '%👤 %' OR c.last_message_preview LIKE '%[CONTACT]%' THEN 'CONTACT'
+                            WHEN c.last_message_preview LIKE '%🎤 Ses%' OR c.last_message_preview LIKE '%[AUDIO]%' THEN 'AUDIO'
+                            WHEN c.last_message_preview LIKE '%🎥 Video%' OR c.last_message_preview LIKE '%[VIDEO]%' THEN 'VIDEO'
+                            WHEN c.last_message_preview LIKE '%🎭 Çıkartma%' OR c.last_message_preview LIKE '%[STICKER]%' THEN 'STICKER'
+                            ELSE 'TEXT'
+                        END,
+                        'READ',
+                        CASE
+                            WHEN c.last_message_preview LIKE 'Siz: %' THEN SUBSTR(c.last_message_preview, 6)
+                            ELSE c.last_message_preview
+                        END,
+                        CASE
+                            WHEN c.last_message_preview LIKE 'Siz: %' OR c.last_message_preview LIKE 'Şu mesaja %' THEN 'ME'
+                            ELSE ct.phone_e164
+                        END,
+                        CASE
+                            WHEN c.last_message_preview LIKE 'Siz: %' OR c.last_message_preview LIKE 'Şu mesaja %' THEN COALESCE(ct.phone_e164, 'CONTACT')
+                            ELSE 'ME'
+                        END,
+                        COALESCE(c.last_message_at, c.created_at, datetime('now')),
+                        COALESCE(c.last_message_at, c.created_at, datetime('now')),
+                        COALESCE(c.last_message_at, c.created_at, datetime('now')),
+                        'preview_' || c.id || '_' || strftime('%s', COALESCE(c.last_message_at, c.created_at, datetime('now')))
+                    FROM conversations c
+                    LEFT JOIN contacts ct ON ct.id = c.contact_id
+                    WHERE c.last_message_preview IS NOT NULL
+                      AND TRIM(c.last_message_preview) != ''
+                      AND NOT EXISTS (
+                          SELECT 1 FROM messages m WHERE m.conversation_id = c.id
+                      )
+                """))
+                if res.rowcount:
+                    logger.info("[MIGRATION] ensure_conversation_preview_messages: %d mesaj sentezlendi (sqlite)", res.rowcount)
+        logger.info("[MIGRATION] ensure_conversation_preview_messages verified")
+    except Exception as exc:  # noqa: BLE001 - startup'ı düşürmez, loglanır
+        logger.warning("[MIGRATION] ensure_conversation_preview_messages atlandı: %s", exc)
+
+
+
 
 
 

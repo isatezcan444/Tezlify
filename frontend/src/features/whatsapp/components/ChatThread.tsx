@@ -115,10 +115,16 @@ export interface ChatThreadProps {
   conversationKey?: string | number | null;
   searchQuery?: string;
   activeMessageId?: number | null;
+  /** Preview of the last message if DB message rows haven't loaded yet. */
+  lastMessagePreview?: string | null;
+  /** Timestamp of the last message preview. */
+  lastMessageAt?: string | null;
 }
 
 export const ChatThread: React.FC<ChatThreadProps> = ({
   messages,
+  lastMessagePreview,
+  lastMessageAt,
   loading = false,
   hasMore = false,
   loadingOlder = false,
@@ -205,9 +211,39 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
       }
     };
   }, []);
+  // Fallback if DB has not yet returned messages, but conversation has verified last message preview
+  const effectiveMessages = React.useMemo<Message[]>(() => {
+    if (messages && messages.length > 0) return messages;
+    if (lastMessagePreview && lastMessagePreview.trim()) {
+      const previewText = lastMessagePreview.trim();
+      const isOutbound = previewText.startsWith('Siz: ') || previewText.startsWith('Şu mesaja ');
+      const cleanBody = previewText.startsWith('Siz: ') ? previewText.slice(5) : previewText;
+      let mtype: Message['message_type'] = 'TEXT';
+      if (previewText.includes('📷 Fotoğraf') || previewText.includes('[IMAGE]')) mtype = 'IMAGE';
+      else if (previewText.includes('📄 Dosya') || previewText.includes('[DOCUMENT]')) mtype = 'DOCUMENT';
+      else if (previewText.includes('📍 Konum') || previewText.includes('[LOCATION]')) mtype = 'LOCATION';
+      else if (previewText.includes('👤 ') || previewText.includes('[CONTACT]')) mtype = 'CONTACT';
+      else if (previewText.includes('🎤 Ses') || previewText.includes('[AUDIO]')) mtype = 'AUDIO';
+      else if (previewText.includes('🎥 Video') || previewText.includes('[VIDEO]')) mtype = 'VIDEO';
+      else if (previewText.includes('🎭 Çıkartma') || previewText.includes('[STICKER]')) mtype = 'STICKER';
+
+      const fallbackMsg: Message = {
+        id: typeof conversationKey === 'number' ? 999000000 + conversationKey : 'preview-fallback',
+        conversation_id: typeof conversationKey === 'number' ? conversationKey : 0,
+        direction: isOutbound ? 'OUTBOUND' : 'INBOUND',
+        message_type: mtype,
+        body: cleanBody,
+        status: 'READ',
+        created_at: lastMessageAt || new Date().toISOString(),
+      };
+      return [fallbackMsg];
+    }
+    return messages || [];
+  }, [messages, lastMessagePreview, lastMessageAt, conversationKey]);
+
   useLayoutEffect(() => {
-    if (messages.length) finishWaLatency('chat_request_to_commit_ms', messages[0].conversation_id);
-  }, [messages]);
+    if (effectiveMessages.length) finishWaLatency('chat_request_to_commit_ms', effectiveMessages[0].conversation_id);
+  }, [effectiveMessages]);
 
   const prevScrollHeightRef = useRef<number>(0);
   const prevScrollTopRef = useRef<number>(0);
@@ -217,7 +253,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
   // apart from any other change, so an unrelated event can never apply a
   // bogus scrollTop or leave the guard stuck.
   const pendingPrependRef = useRef<{ firstId: string | number | null; count: number } | null>(null);
-  const prevMessagesCountRef = useRef<number>(messages.length);
+  const prevMessagesCountRef = useRef<number>(effectiveMessages.length);
   // P6-7: pagination must not fire before the thread has taken its initial
   // position. On mount `scrollTop` is still 0, so any scroll event raised while
   // the initial scroll is running looks exactly like "the user is at the top".
@@ -229,8 +265,8 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
 
   // Guarantee strictly chronological message order in the thread
   const sortedMessages = React.useMemo(() => {
-    return [...messages].sort(compareMessagesChronological);
-  }, [messages]);
+    return [...effectiveMessages].sort(compareMessagesChronological);
+  }, [effectiveMessages]);
 
   // ------------------------------------------------------------- K.19 state
   const rows = React.useMemo<ThreadRow[]>(() => {

@@ -601,5 +601,106 @@ class TestWhatsAppMessagingOrchestration:
             assert res["wa_message_id"] == "WA_RETRY_SUCCESS_1"
             assert failed_msg.message_type == MessageType.TEXT
 
+    @pytest.mark.asyncio
+    async def test_get_messages_auto_synthesizes_preview_when_empty(self, tmp_path):
+        """When DB has 0 messages, but conversation has last_message_preview,
+        get_messages auto-synthesizes the preview into a Message row rather than falsely claiming no messages."""
+        import uuid
+        from sqlalchemy import text
+        from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+        from backend.app.core.database import Base
+        from backend.app.models.conversation import ConversationStatus
+
+        owner = str(uuid.uuid4())
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/synth_test.db")
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+            await conn.execute(
+                text("""
+                    CREATE TABLE IF NOT EXISTS history_sync_states (
+                        session_id TEXT NOT NULL,
+                        jid VARCHAR(100) NOT NULL,
+                        oldest_msg_id VARCHAR(100),
+                        oldest_timestamp_ms BIGINT,
+                        has_more BOOLEAN NOT NULL DEFAULT 1,
+                        completed_at TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        state VARCHAR(50) DEFAULT 'NOT_CHECKED',
+                        stall_count INTEGER DEFAULT 0,
+                        timeout_count INTEGER DEFAULT 0,
+                        error_count INTEGER DEFAULT 0,
+                        last_attempt_at TIMESTAMP,
+                        last_success_at TIMESTAMP,
+                        last_error TEXT,
+                        provider_checked BOOLEAN NOT NULL DEFAULT 0,
+                        provider_checked_at TIMESTAMP,
+                        provider_exhausted BOOLEAN DEFAULT 0,
+                        provider_signal VARCHAR(32),
+                        provider_msgs_returned INTEGER DEFAULT 0,
+                        provider_cursor_used VARCHAR(255),
+                        last_sweep_count INTEGER NOT NULL DEFAULT 0,
+                        PRIMARY KEY (session_id, jid)
+                    )
+                """)
+            )
+
+        async with sessions() as db:
+            conv = Conversation(
+                id=999,
+                user_id=owner,
+                channel="WHATSAPP",
+                status=ConversationStatus.ACTIVE,
+                unread_count=0,
+                last_message_preview="haftaya bu iş tamam abi :D",
+                last_message_at=datetime(2026, 10, 25, 12, 0, 0),
+            )
+            db.add(conv)
+            await db.commit()
+
+            with patch("backend.app.services.whatsapp_service._conversation_session", return_value=None):
+                res = await whatsapp_service.get_messages(db, owner, 999)
+                assert len(res["messages"]) == 1
+                msg = res["messages"][0]
+                assert msg["body"] == "haftaya bu iş tamam abi :D"
+                assert msg["direction"] == "INBOUND"
+                assert msg["conversation_id"] == 999
+
+        await engine.dispose()
+
+    @pytest.mark.asyncio
+    async def test_ensure_conversation_preview_messages_migration(self):
+        """Test ensure_conversation_preview_messages on SQLite in-memory engine."""
+        from sqlalchemy import text
+        from sqlalchemy.ext.asyncio import create_async_engine
+        from backend.app.core.database import Base
+        from backend.app.core.migrations import ensure_conversation_preview_messages
+
+        test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+        async with test_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+            await conn.execute(text("""
+                INSERT INTO conversations (id, user_id, contact_id, channel, status, unread_count, is_group, is_archived, last_message_preview, last_message_at, created_at, updated_at)
+                VALUES (777, '00000000-0000-0000-0000-000000000001', NULL, 'WHATSAPP', 'ACTIVE', 0, 0, 0, 'Siz: Merhaba nasılsınız?', datetime('now'), datetime('now'), datetime('now'))
+            """))
+            await conn.execute(text("""
+                INSERT INTO conversations (id, user_id, contact_id, channel, status, unread_count, is_group, is_archived, last_message_preview, last_message_at, created_at, updated_at)
+                VALUES (778, '00000000-0000-0000-0000-000000000001', NULL, 'WHATSAPP', 'ACTIVE', 0, 0, 0, 'Teşekkürler iyiyim', datetime('now'), datetime('now'), datetime('now'))
+            """))
+
+        await ensure_conversation_preview_messages(test_engine)
+
+        async with test_engine.connect() as conn:
+            rows = (await conn.execute(text("SELECT conversation_id, direction, body FROM messages ORDER BY conversation_id"))).fetchall()
+            assert len(rows) == 2
+            assert rows[0][0] == 777
+            assert rows[0][1] == "OUTBOUND"
+            assert rows[0][2] == "Merhaba nasılsınız?"
+            assert rows[1][0] == 778
+            assert rows[1][1] == "INBOUND"
+            assert rows[1][2] == "Teşekkürler iyiyim"
+        await test_engine.dispose()
+
+
 
 

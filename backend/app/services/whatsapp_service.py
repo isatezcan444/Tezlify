@@ -1295,6 +1295,66 @@ async def get_messages(
                 _in_flight_history_fetches.pop(flight_key, None)
             break
 
+    # Truthfulness Invariant 1.1: If DB messages table has 0 rows and provider returned 0,
+    # but the conversation record carries a verified last_message_preview, synthesize that message
+    # so the chat thread renders honestly rather than falsely claiming "Henüz WhatsApp Mesajı Yok".
+    # This also persists the message with an anchor wa_message_id for any future pagination.
+    if not rows and before is None and conv.last_message_preview and conv.last_message_preview.strip():
+        try:
+            preview_text = conv.last_message_preview.strip()
+            is_outbound = preview_text.startswith("Siz: ") or preview_text.startswith("Şu mesaja ")
+            direction = MessageDirection.OUTBOUND if is_outbound else MessageDirection.INBOUND
+            body = preview_text[5:] if preview_text.startswith("Siz: ") else preview_text
+
+            contact_phone = None
+            if conv.contact_id:
+                cres = await db.execute(select(Contact.phone_e164).where(Contact.id == conv.contact_id))
+                contact_phone = cres.scalar_one_or_none()
+
+            mtype = MessageType.TEXT
+            if "📷 Fotoğraf" in preview_text or "[IMAGE]" in preview_text:
+                mtype = MessageType.IMAGE
+            elif "📄 Dosya" in preview_text or "[DOCUMENT]" in preview_text:
+                mtype = MessageType.DOCUMENT
+            elif "📍 Konum" in preview_text or "[LOCATION]" in preview_text:
+                mtype = MessageType.LOCATION
+            elif "👤 " in preview_text or "[CONTACT]" in preview_text:
+                mtype = MessageType.CONTACT
+            elif "🎤 Ses" in preview_text or "[AUDIO]" in preview_text:
+                mtype = MessageType.AUDIO
+            elif "🎥 Video" in preview_text or "[VIDEO]" in preview_text:
+                mtype = MessageType.VIDEO
+            elif "🎭 Çıkartma" in preview_text or "[STICKER]" in preview_text:
+                mtype = MessageType.STICKER
+
+            ts = conv.last_message_at or conv.created_at or utc_now_naive()
+            wa_id = f"preview_{conv.id}_{int(ts.timestamp())}"
+
+            synth_msg = Message(
+                conversation_id=conv.id,
+                user_id=user_id,
+                direction=direction,
+                message_type=mtype,
+                status=ConversationMessageStatus.READ,
+                body=body,
+                sender_phone="ME" if is_outbound else contact_phone,
+                recipient_phone=(contact_phone or "CONTACT") if is_outbound else "ME",
+                created_at=ts,
+                updated_at=ts,
+                external_timestamp=ts,
+                wa_message_id=wa_id,
+            )
+            db.add(synth_msg)
+            await db.commit()
+            await db.refresh(synth_msg)
+            rows = [synth_msg]
+            logger.info("Auto-synthesized preview message for conv=%s (id=%s)", conv.id, synth_msg.id)
+        except Exception as synth_exc:
+            await db.rollback()
+            logger.warning("Auto-synthesize preview message failed for conv=%s: %s", conv.id, synth_exc)
+            res = await db.execute(base)
+            rows = list(res.scalars().all())
+
     # Kronolojik cikis siralamasi (eski→yeni)
     rows.sort(key=lambda r: (_msg_time(r) or datetime.min, r.id or 0))
 

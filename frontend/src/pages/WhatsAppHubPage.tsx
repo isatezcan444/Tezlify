@@ -4041,6 +4041,8 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
                 <ChatThread
                   conversationKey={selectedConv.id}
                   messages={activeMessages}
+                  lastMessagePreview={selectedConv.last_message_preview}
+                  lastMessageAt={selectedConv.last_message_at}
                   loading={activeChatLoading}
                   error={activeMessagesError}
                   onRetryLoad={retrySelectedConversationMessages}
