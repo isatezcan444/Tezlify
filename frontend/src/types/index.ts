@@ -853,6 +853,18 @@ export interface ProxyTestResult {
   error?: string | null;
 }
 
+export interface SmtpConfig {
+  host: string;
+  port: number;
+  username?: string;
+  password?: string;
+  sender_email: string;
+  sender_name?: string;
+  use_tls?: boolean;
+  use_ssl?: boolean;
+  is_configured?: boolean;
+}
+
 export * from './admin';
 
 

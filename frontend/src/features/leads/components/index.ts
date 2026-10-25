@@ -11,3 +11,4 @@ export * from './LeadFinderSaveModal';
 export * from './LeadFinderResultCard';
 export * from './BlacklistAddModal';
 export * from './LeadImportModal';
+export * from './SendEmailModal';

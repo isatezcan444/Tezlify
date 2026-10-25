@@ -18,3 +18,36 @@ class AntiBanSettingsResponse(AntiBanSettingsSchema):
     updated_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class SmtpConfigSchema(BaseModel):
+    host: str = Field(..., description="SMTP server hostname e.g. smtp.gmail.com")
+    port: int = Field(default=587, ge=1, le=65535)
+    username: str = Field(default="")
+    password: str = Field(default="")
+    sender_email: str = Field(..., description="Outbound sender email address")
+    sender_name: Optional[str] = Field(default="Tezlify")
+    use_tls: bool = Field(default=True)
+    use_ssl: bool = Field(default=False)
+
+
+class SmtpConfigResponse(BaseModel):
+    host: str = ""
+    port: int = 587
+    username: str = ""
+    password: str = ""
+    sender_email: str = ""
+    sender_name: str = "Tezlify"
+    use_tls: bool = True
+    use_ssl: bool = False
+    is_configured: bool = False
+
+
+class SmtpTestRequest(BaseModel):
+    target_email: str = Field(..., description="Destination email address for test message")
+
+
+class SendLeadEmailRequest(BaseModel):
+    subject: str = Field(..., min_length=1, max_length=255)
+    body: str = Field(..., min_length=1)
+    is_html: bool = Field(default=False)

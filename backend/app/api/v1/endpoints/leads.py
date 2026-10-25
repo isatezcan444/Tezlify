@@ -23,6 +23,7 @@ from backend.app.schemas.lead import (
     BulkEnrichRequest,
     BulkEnrichResponse,
 )
+from backend.app.schemas.settings import SendLeadEmailRequest
 from backend.app.services.phone_service import PhoneService
 from backend.app.services.export_service import ExportService
 from backend.app.services.lead_import_service import LeadImportService
@@ -585,3 +586,34 @@ async def import_leads(
     except Exception as e:
         logger.exception("Lead import execution error: %s", e)
         raise HTTPException(status_code=400, detail=f"İçe aktarma sırasında hata oluştu: {str(e)}")
+
+
+@router.post("/{lead_id}/send-email")
+async def send_lead_email(
+    lead_id: int,
+    payload: SendLeadEmailRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+):
+    """
+    Sends an outbound outreach email to the lead's enriched corporate email address
+    via the configured SMTP credentials.
+    """
+    stmt = select(Lead).where(
+        Lead.id == lead_id,
+        get_user_filter(Lead.user_id, current_user.id),
+    )
+    res = await db.execute(stmt)
+    lead = res.scalar_one_or_none()
+    if not lead:
+        raise HTTPException(status_code=404, detail="Müşteri adayı bulunamadı")
+
+    from backend.app.services.email_service import EmailService
+    result = await EmailService.send_lead_email(
+        db=db,
+        lead_id=lead_id,
+        subject=payload.subject,
+        body=payload.body,
+        is_html=payload.is_html,
+    )
+    return result

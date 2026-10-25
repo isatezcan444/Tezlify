@@ -27,6 +27,7 @@ import { GoogleMapsIcon } from '../../../components/ui/google-maps-icon';
 import { ChatThread } from '../../whatsapp/components/ChatThread';
 import { ChatComposer } from '../../whatsapp/components/ChatComposer';
 import { TemplateSelectModal } from '../../whatsapp/components/TemplateSelectModal';
+import { SendEmailModal } from './SendEmailModal';
 import { useWhatsAppConversation } from '../../whatsapp/hooks/useWhatsAppConversation';
 import { useI18n } from '../../../context/I18nContext';
 import { translateApiError } from '../../whatsapp/lib/translateError';
@@ -70,6 +71,7 @@ export const LeadDetailDrawer: React.FC<LeadDetailDrawerProps> = ({
   const displayLead = currentLead || lead;
 
   const [isTemplateModalOpen, setIsTemplateModalOpen] = useState<boolean>(false);
+  const [isSendEmailModalOpen, setIsSendEmailModalOpen] = useState<boolean>(false);
   const [insertedComposerText, setInsertedComposerText] = useState<{ text: string; timestamp: number } | null>(null);
   const [copiedPhone, setCopiedPhone] = useState(false);
 
@@ -383,7 +385,16 @@ export const LeadDetailDrawer: React.FC<LeadDetailDrawerProps> = ({
                     <Mail className="w-4 h-4 text-[#7367F0] shrink-0" />
                     <span className="truncate font-semibold">{displayLead.email || displayLead.emails?.[0]}</span>
                   </div>
-                  <div className="flex items-center gap-1 shrink-0">
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => setIsSendEmailModalOpen(true)}
+                      className="inline-flex items-center gap-1 px-2 py-1 rounded bg-[#7367F0]/10 hover:bg-[#7367F0]/20 text-[#7367F0] font-semibold text-[11px] transition-colors cursor-pointer"
+                      title={t('leads.sendDirectEmail') || 'E-posta Gönder'}
+                    >
+                      <Send className="w-3 h-3" />
+                      <span>{t('leads.sendDirectEmail') || 'E-posta Gönder'}</span>
+                    </button>
                     <button
                       type="button"
                       onClick={() => handleCopyEmail(displayLead.email || displayLead.emails![0])}
@@ -512,18 +523,28 @@ export const LeadDetailDrawer: React.FC<LeadDetailDrawerProps> = ({
                             </span>
                           )}
                         </div>
-                        <button
-                          type="button"
-                          onClick={() => handleCopyEmail(em)}
-                          title={t('leads.copyEmail')}
-                          className="p-1 rounded text-slate-400 hover:text-[#7367F0] hover:bg-slate-200/60 dark:hover:bg-white/[0.08] transition-colors cursor-pointer shrink-0"
-                        >
-                          {copiedEmail === em ? (
-                            <Check className="w-3.5 h-3.5 text-[#28C76F]" />
-                          ) : (
-                            <Copy className="w-3.5 h-3.5" />
-                          )}
-                        </button>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => setIsSendEmailModalOpen(true)}
+                            title={t('leads.sendDirectEmail') || 'E-posta Gönder'}
+                            className="p-1 rounded text-slate-400 hover:text-[#7367F0] hover:bg-slate-200/60 dark:hover:bg-white/[0.08] transition-colors cursor-pointer"
+                          >
+                            <Send className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleCopyEmail(em)}
+                            title={t('leads.copyEmail')}
+                            className="p-1 rounded text-slate-400 hover:text-[#7367F0] hover:bg-slate-200/60 dark:hover:bg-white/[0.08] transition-colors cursor-pointer"
+                          >
+                            {copiedEmail === em ? (
+                              <Check className="w-3.5 h-3.5 text-[#28C76F]" />
+                            ) : (
+                              <Copy className="w-3.5 h-3.5" />
+                            )}
+                          </button>
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -708,6 +729,21 @@ export const LeadDetailDrawer: React.FC<LeadDetailDrawerProps> = ({
           </div>
         )}
       </div>
+
+      {/* Direct SMTP Outreach Modal */}
+      <SendEmailModal
+        lead={displayLead}
+        isOpen={isSendEmailModalOpen}
+        onClose={() => setIsSendEmailModalOpen(false)}
+        onSuccess={() => {
+          setIsSendEmailModalOpen(false);
+          if (displayLead) {
+            const updated = { ...displayLead, status: 'CONTACTED' as LeadStatus };
+            setCurrentLead(updated);
+            onLeadUpdated?.(updated);
+          }
+        }}
+      />
     </Drawer>
   );
 };

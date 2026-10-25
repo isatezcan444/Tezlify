@@ -17,7 +17,8 @@ import {
   Sparkles,
   ArrowRight,
   Code2,
-  BellRing
+  BellRing,
+  Mail
 } from 'lucide-react';
 import { Card, Badge, PageHeader, Button } from '../components/ui';
 import { FormSection, Select } from '../components/forms';
@@ -28,14 +29,15 @@ import {
   ApiKeysSection, 
   WebhooksSection, 
   InboundDocsSection,
-  ProxySettingsSection
+  ProxySettingsSection,
+  SmtpSettingsSection
 } from '../features/integrations';
 import { PlanUsageSection } from '../features/billing';
 
 export const SettingsPage: React.FC = () => {
   const { theme, toggleTheme } = useTheme();
   const { language, setLanguage, t } = useI18n();
-  const [activeTab, setActiveTab] = useState<'billing' | 'general' | 'integrations'>('billing');
+  const [activeTab, setActiveTab] = useState<'billing' | 'general' | 'integrations' | 'smtp'>('billing');
 
   const apiBaseLabel = API_BASE;
   const gatewayBaseLabel =
@@ -79,6 +81,19 @@ export const SettingsPage: React.FC = () => {
           <span className="ml-1 px-1.5 py-0.5 rounded text-[10px] bg-emerald-500/20 text-emerald-400 font-extrabold">
             API & Webhook
           </span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveTab('smtp')}
+          className={`flex items-center gap-2 px-4 py-2.5 rounded-xl transition-all cursor-pointer whitespace-nowrap ${
+            activeTab === 'smtp'
+              ? 'bg-[#7367F0] text-white shadow-md shadow-[#7367F0]/30'
+              : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-white/[0.04]'
+          }`}
+        >
+          <Mail className="w-4 h-4 text-blue-400" />
+          <span>{t('settings.tabSmtp') || 'E-posta (SMTP)'}</span>
         </button>
 
         <button
@@ -156,6 +171,10 @@ export const SettingsPage: React.FC = () => {
 
           {/* API Keys Management */}
           <ApiKeysSection />
+        </div>
+      ) : activeTab === 'smtp' ? (
+        <div className="space-y-6 animate-fade-in">
+          <SmtpSettingsSection />
         </div>
       ) : (
         <>

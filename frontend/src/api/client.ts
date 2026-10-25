@@ -29,6 +29,7 @@ import {
   LeadEnrichResponse,
   BulkEnrichRequest,
   BulkEnrichResponse,
+  SmtpConfig,
 } from '../types';
 
 const isHttps = typeof window !== 'undefined' && window.location.protocol === 'https:';
@@ -657,6 +658,48 @@ export class ApiClient {
       body: JSON.stringify({ proxy_url: proxyUrl || undefined }),
     });
     if (!res.ok) throw new Error('Proxy testi başarısız oldu');
+    return res.json();
+  }
+
+  // --- SMTP Email Outreach (Item 3) ---
+  static async getSmtpSettings(): Promise<SmtpConfig> {
+    const res = await authFetch(`${API_BASE}/settings/smtp`);
+    if (!res.ok) throw new Error('SMTP ayarları alınamadı');
+    return res.json();
+  }
+
+  static async updateSmtpSettings(config: SmtpConfig): Promise<SmtpConfig> {
+    const res = await authFetch(`${API_BASE}/settings/smtp`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(config),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || 'SMTP ayarları kaydedilemedi');
+    }
+    return res.json();
+  }
+
+  static async testSmtpConnection(targetEmail: string): Promise<{ success: boolean; message?: string; error?: string }> {
+    const res = await authFetch(`${API_BASE}/settings/smtp/test`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ target_email: targetEmail }),
+    });
+    return res.json();
+  }
+
+  static async sendLeadEmail(leadId: number, data: { subject: string; body: string; is_html?: boolean }): Promise<{ success: boolean; message: string; recipient_email: string; subject: string }> {
+    const res = await authFetch(`${API_BASE}/leads/${leadId}/send-email`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || 'E-posta gönderilemedi');
+    }
     return res.json();
   }
 

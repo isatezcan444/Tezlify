@@ -8,7 +8,14 @@ from sqlalchemy import select
 from backend.app.core.database import get_db
 from backend.app.core.config import settings as app_settings
 from backend.app.models.system_settings import SystemSetting
-from backend.app.schemas.settings import AntiBanSettingsSchema, AntiBanSettingsResponse
+from backend.app.schemas.settings import (
+    AntiBanSettingsSchema,
+    AntiBanSettingsResponse,
+    SmtpConfigSchema,
+    SmtpConfigResponse,
+    SmtpTestRequest,
+)
+from backend.app.services.email_service import EmailService
 from backend.app.schemas.proxy import (
     ProxyConfigSchema,
     ProxyPoolStatusResponse,
@@ -106,3 +113,33 @@ async def test_proxies(
         result = await ProxyManager.test_proxy(payload.proxy_url)
         return [result]
     return await ProxyManager.test_all_proxies(db)
+
+
+# ---------------------------------------------------------------------------
+# SMTP Email Outreach Configuration Endpoints (Item 3)
+# ---------------------------------------------------------------------------
+@router.get("/smtp", response_model=SmtpConfigResponse)
+async def get_smtp_settings(db: AsyncSession = Depends(get_db)):
+    """Mevcut kurumsal SMTP e-posta yapılandırmasını döndürür."""
+    return await EmailService.get_smtp_config(db)
+
+
+@router.patch("/smtp", response_model=SmtpConfigResponse)
+async def update_smtp_settings(
+    payload: SmtpConfigSchema,
+    db: AsyncSession = Depends(get_db)
+):
+    """Kurumsal SMTP e-posta yapılandırmasını günceller."""
+    return await EmailService.save_smtp_config(db, payload.model_dump())
+
+
+@router.post("/smtp/test")
+async def test_smtp(
+    payload: SmtpTestRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """Yapılandırılmış SMTP üzerinden hedef adrese canlı test e-postası gönderir."""
+    config = await EmailService.get_smtp_config(db)
+    if not config.get("is_configured"):
+        return {"success": False, "error": "SMTP ayarları henüz yapılandırılmamış."}
+    return await EmailService.test_smtp_connection(config, payload.target_email)

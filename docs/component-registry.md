@@ -412,6 +412,12 @@ src/
 - **Props**: `isOpen: boolean`, `onClose: () => void`, `leadIds: number[]`, `onSuccess: () => void`.
 - **Import**: `import { LeadAddToGroupModal } from '@/features/leads/components';`
 
+#### `SendEmailModal` (`features/leads/components/SendEmailModal.tsx`)
+- **Purpose**: Glassmorphic modal portaled to document body (`z-[99999]`) for direct corporate email outreach to leads with discovered/enriched email addresses.
+- **Props**: `lead: Lead | null`, `isOpen: boolean`, `onClose: () => void`, `onSuccess?: () => void`.
+- **Features**: Quick preset templates (Corporate Intro, Partnership, Special Offer), dynamic token insertion chips (`{name}`, `{category}`, `{city}`), recipient preview, fail-closed validation, and auto status advancement to `CONTACTED`.
+- **Import**: `import { SendEmailModal } from '@/features/leads/components';`
+
 #### `LeadFinderSaveModal`
 - **Purpose**: Modal to save discovered scraper leads into a new or existing campaign group.
 - **Props**: `isOpen: boolean`, `onClose: () => void`, `onConfirm: (mode: 'NEW' | 'EXISTING', groupName: string, groupId: number | null) => void`, `isSavingGroup: boolean`, `savedLeadsCount: number`, `existingGroups: CampaignGroup[]`, `defaultMode?: 'NEW' | 'EXISTING'`, `defaultGroupName?: string`.
@@ -621,6 +627,12 @@ restarting a service and shipping code are different risk classes.
 - **Props**: None (self-contained data-fetching and persistence component).
 - **Features**: Toggle switch, rotation strategy selectors, multi-line proxy textarea, live test action with visual badge feedback, strict i18n parity, and full Vuexy card styling.
 - **Import**: `import { ProxySettingsSection } from '@/features/integrations';`
+
+### `SmtpSettingsSection` (`features/integrations/components/SmtpSettingsSection.tsx`)
+- **Purpose**: Full-width settings panel for corporate SMTP email configuration and delivery testing.
+- **Props**: None (self-contained data-fetching and persistence component).
+- **Features**: Host, port, username, password, sender email, sender name, STARTTLS/SSL toggles, live connection testing with target email, status badge, and full Vuexy card styling.
+- **Import**: `import { SmtpSettingsSection } from '@/features/integrations';`
 
 
 
