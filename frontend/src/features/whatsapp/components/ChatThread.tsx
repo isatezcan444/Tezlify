@@ -928,7 +928,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
   // switch, and on the chat first getting content. Pre-paint positioning ensures
   // the thread is directly positioned at its newest message without visible jumping.
   useLayoutEffect(() => {
-    if (loading) {
+    if (loading && effectiveMessages.length === 0) {
       setIsReady(false);
       return;
     }
@@ -948,13 +948,21 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
         setIsNearBottom(true);
         setShowNewMessagePill(false);
         setIsReady(true);
+
+        // Double pin via requestAnimationFrame to guarantee bottom position after initial layout
+        requestAnimationFrame(() => {
+          if (containerRef.current && !userScrolledUpRef.current) {
+            containerRef.current.scrollTop = containerRef.current.scrollHeight;
+          }
+        });
       }
     } else {
       setIsReady(true);
     }
-  }, [loading, conversationKey, sortedMessages.length, newestKey]);
+  }, [loading, conversationKey, sortedMessages.length, newestKey, effectiveMessages.length]);
 
   // ResizeObserver: when media (videos, images, posters) load and expand the content wrapper,
+  // or when composer / smart reply bar resizes the container viewport,
   // ensure the chat stays pinned to the bottom if the user hasn't explicitly scrolled up and is near bottom.
   useEffect(() => {
     if (virtualizeRef.current) return;
@@ -965,12 +973,13 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
     const ro = new ResizeObserver(() => {
       if (isPrependingRef.current || !initialScrollDoneRef.current) return;
       const distanceFromBottom = cont.scrollHeight - cont.scrollTop - cont.clientHeight;
-      if (!userScrolledUpRef.current && distanceFromBottom > 0 && distanceFromBottom <= 300) {
+      if (!userScrolledUpRef.current && distanceFromBottom > 0 && distanceFromBottom <= 400) {
         cont.scrollTop = cont.scrollHeight;
       }
     });
 
     ro.observe(contentEl);
+    ro.observe(cont);
     return () => ro.disconnect();
   }, [conversationKey]);
 
@@ -1022,7 +1031,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
     else elsRef.current.delete(key);
   }, []);
 
-  if (loading) {
+  if (loading && effectiveMessages.length === 0) {
     return (
       <div
         role="status"

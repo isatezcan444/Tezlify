@@ -637,7 +637,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
       onMessages: (convId, messages, meta) => {
         setMessagePaging((prev) => {
           const alreadyExhausted = prev[convId]?.hasMore === false && prev[convId]?.oldest === meta.oldest;
-          const hasMore = Boolean(!alreadyExhausted && messages.length >= 50 && meta.has_more);
+          const hasMore = Boolean(!alreadyExhausted && meta.has_more);
           return {
             ...prev,
             [convId]: {
@@ -1004,15 +1004,16 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     return activeMessages.filter((m) => Boolean(m.is_pinned));
   }, [activeMessages]);
   const activePaging = selectedConv ? messagePaging[selectedConv.id] : undefined;
-  const activeHasMore = Boolean(activeMessages.length >= 50 && activePaging?.hasMore && activePaging.oldest);
+  const activeHasMore = Boolean(activePaging?.hasMore && (activePaging.oldest != null || activeMessages.length > 0));
   const activeLoadingOlder = Boolean(activePaging?.loading);
   const activePagingError = Boolean(activePaging?.error);
   // Faz 16 (Sorun 2/10): ilk hidrasyon SURERKEN "mesaj yok" gosterilmez —
   // skeleton gosterilir. Hata ayri bir in-thread error + retry durumudur;
-  // mevcut mesajlar varsa hicbir zaman loading/empty ekranina dusulmez.
+  // mevcut mesajlar veya son mesaj onizlemesi varsa loading skeleton'ina dusulmez.
   const activeChatLoading = Boolean(
     selectedConv &&
       activeMessages.length === 0 &&
+      !selectedConv.last_message_preview &&
       messageLoadState[selectedConv.id] !== 'ready' &&
       messageLoadState[selectedConv.id] !== 'error',
   );
@@ -1020,7 +1021,8 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
   const activeConv = selectedConv;
 
   const activeLoadOlder = useCallback(async () => {
-    if (!selectedConv || !activePaging?.hasMore || !activePaging.oldest || activePaging.loading) return;
+    const oldestId = activePaging?.oldest ?? (activeMessages[0] ? (activeMessages[0].id as number) : undefined);
+    if (!selectedConv || !activePaging?.hasMore || !oldestId || activePaging.loading) return;
     const convId = selectedConv.id;
     // Claim the lock BEFORE reading any state. The `activePaging.loading` check
     // above cannot see a fetch that started in this same tick, because React has
@@ -1036,7 +1038,7 @@ export const WhatsAppHubPage: React.FC<WhatsAppHubPageProps> = ({ onRefreshStats
     try {
       const res = await WhatsAppRepository.getConversationMessages(convId, {
         limit: 50,
-        before: activePaging.oldest,
+        before: oldestId,
         signal: controller.signal,
       });
       if (!isCurrentOlderPage(pagingLocksRef.current, convId, request)) return;
