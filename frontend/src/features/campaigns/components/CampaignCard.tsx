@@ -13,6 +13,7 @@ import {
   Paperclip,
   Calendar,
   CalendarX,
+  Layers,
 } from 'lucide-react';
 import { Campaign } from '../../../types';
 import { Card } from '../../../components/ui/card';
@@ -132,6 +133,14 @@ export const CampaignCard: React.FC<CampaignCardProps> = ({
                         minute: '2-digit',
                       })}
                     </span>
+                  </span>
+                </div>
+              )}
+              {campaign.whatsapp_session_ids && campaign.whatsapp_session_ids.length > 1 && (
+                <div className="mt-1">
+                  <span className="inline-flex items-center gap-1 text-[10px] font-bold text-[#7367F0] bg-[#7367F0]/10 px-1.5 py-0.5 rounded border border-[#7367F0]/20">
+                    <Layers className="w-2.5 h-2.5" />
+                    <span>{t('campaigns.multiSessionPoolBadge', { count: campaign.whatsapp_session_ids.length })}</span>
                   </span>
                 </div>
               )}

@@ -24,9 +24,11 @@ import {
   Image as ImageIcon,
   Trash2,
   Loader2,
+  Layers,
 } from 'lucide-react';
 import { ApiClient } from '../../../api/client';
-import { CommunicationGoal } from '../../../types';
+import { CommunicationGoal, WhatsAppSession } from '../../../types';
+import { WhatsAppRepository } from '../../whatsapp/data/whatsappRepository';
 import { Button, Badge, Card } from '../../../components/ui';
 import { FormField, TextInput, Textarea, FormSection } from '../../../components/forms';
 import { SectorAutocomplete } from '../../leads/components';
@@ -34,6 +36,7 @@ import { SpintaxPreviewCard, countSpintaxVariations } from './SpintaxPreviewCard
 import { getStoredAntiBanConfig } from '../../../utils/antiBanSettings';
 import { useToast } from '../../../context/ToastContext';
 import { useI18n } from '../../../context/I18nContext';
+import { cn } from '../../../lib/utils';
 
 export interface CampaignCreateWizardProps {
   prefill?: {
@@ -103,6 +106,60 @@ export const CampaignCreateWizard: React.FC<CampaignCreateWizardProps> = ({
   // Scheduled Campaign State
   const [isScheduled, setIsScheduled] = useState(false);
   const [scheduledAt, setScheduledAt] = useState('');
+
+  // Hat Havuzu / Multi-Session Pool State
+  const [sessions, setSessions] = useState<WhatsAppSession[]>([]);
+  const [loadingSessions, setLoadingSessions] = useState(false);
+  const [selectedSessionIds, setSelectedSessionIds] = useState<number[]>([]);
+  const [useAllSessions, setUseAllSessions] = useState(true);
+
+  useEffect(() => {
+    let isMounted = true;
+    const fetchConnectedSessions = async () => {
+      try {
+        setLoadingSessions(true);
+        const allSessions = await WhatsAppRepository.getWhatsAppSessions();
+        if (!isMounted) return;
+        const connected = allSessions.filter((s) => s.status === 'CONNECTED');
+        setSessions(connected);
+        setSelectedSessionIds(connected.map((s) => s.id));
+      } catch (err) {
+        console.error('Failed to load connected WhatsApp sessions in wizard:', err);
+      } finally {
+        if (isMounted) setLoadingSessions(false);
+      }
+    };
+    fetchConnectedSessions();
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  const handleToggleSession = (sessionId: number) => {
+    setSelectedSessionIds((prev) => {
+      const next = prev.includes(sessionId)
+        ? prev.filter((id) => id !== sessionId)
+        : [...prev, sessionId];
+      setUseAllSessions(next.length === sessions.length);
+      return next;
+    });
+  };
+
+  const handleToggleAllSessions = (checkAll: boolean) => {
+    setUseAllSessions(checkAll);
+    if (checkAll) {
+      setSelectedSessionIds(sessions.map((s) => s.id));
+    } else {
+      setSelectedSessionIds([]);
+    }
+  };
+
+  const combinedDailyPoolCapacity = selectedSessionIds.reduce((acc, sId) => {
+    const s = sessions.find((x) => x.id === sId);
+    if (!s) return acc;
+    const lineLimit = s.is_warmup_enabled && s.warmup_daily_limit ? s.warmup_daily_limit : storedConfig.daily_message_limit;
+    return acc + (lineLimit || 50);
+  }, 0);
 
   // Campaign Media Attachment State (Phase 2)
   const [mediaUrl, setMediaUrl] = useState('');
@@ -614,6 +671,8 @@ export const CampaignCreateWizard: React.FC<CampaignCreateWizardProps> = ({
         message_template: template,
         scheduled_at: isScheduled && scheduledAt ? new Date(scheduledAt).toISOString() : undefined,
         group_id: selectedGroupId || undefined,
+        whatsapp_session_ids: selectedSessionIds.length > 0 ? selectedSessionIds : undefined,
+        whatsapp_session_id: selectedSessionIds.length === 1 ? selectedSessionIds[0] : (selectedSessionIds[0] || undefined),
         media_url: mediaUrl.trim() || undefined,
         media_type: (mediaType as any) || undefined,
         media_filename: mediaFilename.trim() || undefined,
@@ -1345,6 +1404,121 @@ export const CampaignCreateWizard: React.FC<CampaignCreateWizardProps> = ({
                       {mediaUrl ? (mediaFilename || mediaType || 'Ekli Medya') : t('campaigns.noMediaAttachment')}
                     </span>
                   </div>
+                </div>
+
+                {/* WhatsApp Hat Havuzu (Multi-Session Load Balancing) */}
+                <div className="p-4 sm:p-5 rounded-xl bg-[#7367F0]/[0.06] dark:bg-[#7367F0]/10 border border-[#7367F0]/25 space-y-4">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="flex items-center space-x-3">
+                      <div className="w-9 h-9 rounded-xl bg-[#7367F0] text-white flex items-center justify-center font-bold shrink-0 shadow-xs">
+                        <Layers className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <h5 className="text-xs sm:text-sm font-extrabold text-slate-800 dark:text-white leading-tight">
+                          {t('campaigns.poolSectionTitle')}
+                        </h5>
+                        <p className="text-[11px] text-slate-500 dark:text-[#7E7F96] mt-0.5">
+                          {t('campaigns.poolSectionSubtitle')}
+                        </p>
+                      </div>
+                    </div>
+
+                    {sessions.length > 1 && (
+                      <div className="flex items-center space-x-2 shrink-0">
+                        <Badge variant="primary" className="text-[11px] font-bold font-mono">
+                          {t('campaigns.poolSelectedLines', { count: selectedSessionIds.length })}
+                        </Badge>
+                      </div>
+                    )}
+                  </div>
+
+                  {loadingSessions ? (
+                    <div className="flex items-center justify-center py-4 text-xs text-slate-400">
+                      <Loader2 className="w-4 h-4 animate-spin mr-2 text-[#7367F0]" />
+                      <span>{t('common.loading')}</span>
+                    </div>
+                  ) : sessions.length === 0 ? (
+                    <div className="p-3.5 rounded-lg bg-amber-500/10 border border-amber-500/20 text-xs text-amber-700 dark:text-amber-400">
+                      {t('campaigns.poolNoConnectedSessions')}
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      {sessions.length > 1 && (
+                        <div className="flex items-center justify-between pt-1">
+                          <label className="flex items-center space-x-2 text-xs font-bold text-slate-700 dark:text-slate-200 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={useAllSessions}
+                              onChange={(e) => handleToggleAllSessions(e.target.checked)}
+                              className="rounded border-slate-300 dark:border-white/20 text-[#7367F0] focus:ring-[#7367F0] cursor-pointer"
+                            />
+                            <span>{t('campaigns.poolModeAll')}</span>
+                          </label>
+
+                          <span className="text-[11px] font-mono font-bold text-[#7367F0]">
+                            {t('campaigns.poolCombinedCapacity', { count: combinedDailyPoolCapacity })}
+                          </span>
+                        </div>
+                      )}
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                        {sessions.map((sess) => {
+                          const isSelected = selectedSessionIds.includes(sess.id);
+                          const limit = sess.is_warmup_enabled && sess.warmup_daily_limit
+                            ? sess.warmup_daily_limit
+                            : (storedConfig.daily_message_limit || 50);
+
+                          return (
+                            <div
+                              key={sess.id}
+                              onClick={() => handleToggleSession(sess.id)}
+                              className={cn(
+                                'p-3 rounded-lg border transition-all flex items-center justify-between cursor-pointer',
+                                isSelected
+                                  ? 'bg-white dark:bg-[#2F3349] border-[#7367F0] shadow-xs'
+                                  : 'bg-white/40 dark:bg-[#2F3349]/40 border-slate-200/60 dark:border-white/[0.05] opacity-60'
+                              )}
+                            >
+                              <div className="flex items-center space-x-2.5 min-w-0">
+                                <input
+                                  type="checkbox"
+                                  checked={isSelected}
+                                  onChange={() => {}} // handled by parent onClick
+                                  className="rounded border-slate-300 dark:border-white/20 text-[#7367F0] focus:ring-[#7367F0] cursor-pointer"
+                                />
+                                <div className="min-w-0">
+                                  <p className="text-xs font-bold text-slate-800 dark:text-white truncate">
+                                    {sess.session_name}
+                                  </p>
+                                  <p className="text-[10px] font-mono text-slate-400 dark:text-[#7E7F96] truncate">
+                                    {sess.phone_number || '-'}
+                                  </p>
+                                </div>
+                              </div>
+
+                              <div className="flex items-center space-x-1.5 shrink-0 ml-2">
+                                {sess.is_warmup_enabled && (
+                                  <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20">
+                                    Warm-Up
+                                  </span>
+                                )}
+                                <span className="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold bg-[#7367F0]/10 text-[#7367F0] border border-[#7367F0]/20">
+                                  {limit}
+                                </span>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+
+                      {selectedSessionIds.length > 1 && (
+                        <div className="p-3 rounded-lg bg-white/70 dark:bg-[#2F3349]/60 border border-[#7367F0]/20 text-[11px] text-slate-600 dark:text-slate-300 flex items-start space-x-2">
+                          <Sparkles className="w-3.5 h-3.5 text-[#7367F0] shrink-0 mt-0.5" />
+                          <span>{t('campaigns.poolDistributionInfo')}</span>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 {/* Anti-Ban & Safety Protection Shield */}

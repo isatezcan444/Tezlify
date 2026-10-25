@@ -211,7 +211,8 @@ export const CampaignsPage: React.FC<CampaignsPageProps> = ({
   }, []);
 
   const handleLaunchCampaign = async (campaignId: number) => {
-    if (!connectedSession) {
+    const connectedSessions = sessions.filter((s) => s.status === 'CONNECTED');
+    if (connectedSessions.length === 0) {
       toast.warning(
         t('campaigns.noConnectedSessionToast'),
         t('common.warning')
@@ -222,10 +223,18 @@ export const CampaignsPage: React.FC<CampaignsPageProps> = ({
       return;
     }
 
+    const camp = campaigns.find((c) => c.id === campaignId);
+    const poolIds = (camp?.whatsapp_session_ids && camp.whatsapp_session_ids.length > 0)
+      ? camp.whatsapp_session_ids
+      : (connectedSessions.length > 1 ? connectedSessions.map((s) => s.id) : undefined);
+
+    const singleId = (!poolIds && connectedSessions.length === 1) ? connectedSessions[0].id : undefined;
+
     try {
       await ApiClient.launchCampaign(campaignId, {
         limit: 50,
-        session_id: connectedSession.id,
+        session_id: singleId,
+        session_ids: poolIds,
       });
       toast.success(t('campaigns.campaignLaunched'), t('common.success'));
       fetchCampaigns();

@@ -17,6 +17,7 @@ import {
   CalendarX,
   AlertTriangle,
   ExternalLink,
+  Layers,
 } from 'lucide-react';
 import { Campaign, CampaignGroup } from '../../../types';
 import { Drawer } from '../../../components/ui/Drawer';
@@ -415,6 +416,52 @@ export const CampaignDetailDrawer: React.FC<CampaignDetailDrawerProps> = ({
                     : (t('campaigns.wizardNoGroupSelected') || 'Bağımsız (Grup atanmamış)')}
                 </p>
               )}
+            </div>
+
+            {/* WhatsApp Line & Pool Configuration */}
+            <div className="p-4 rounded-xl bg-[#7367F0]/[0.08] dark:bg-[#7367F0]/15 border border-[#7367F0]/25 space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center space-x-2.5">
+                  <div className="w-7 h-7 rounded-lg bg-[#7367F0] text-white flex items-center justify-center shrink-0 shadow-xs">
+                    <Layers className="w-3.5 h-3.5" />
+                  </div>
+                  <div>
+                    <h5 className="text-xs font-extrabold text-slate-800 dark:text-white">
+                      {t('campaigns.poolDetailsTitle')}
+                    </h5>
+                    <p className="text-[10px] text-slate-500 dark:text-[#7E7F96]">
+                      {campaign.whatsapp_session_ids && campaign.whatsapp_session_ids.length > 1
+                        ? t('campaigns.poolDistributionInfo')
+                        : t('campaigns.poolDistributionStatus')}
+                    </p>
+                  </div>
+                </div>
+
+                {campaign.whatsapp_session_ids && campaign.whatsapp_session_ids.length > 1 ? (
+                  <Badge variant="primary" className="text-[10px] font-mono font-bold">
+                    {t('campaigns.poolLinesCount', { count: campaign.whatsapp_session_ids.length })}
+                  </Badge>
+                ) : (
+                  <Badge variant="default" className="text-[10px] font-mono">
+                    {campaign.whatsapp_session_id ? `Hat #${campaign.whatsapp_session_id}` : 'Varsayılan Hat'}
+                  </Badge>
+                )}
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1 text-xs">
+                <div className="p-2 rounded-lg bg-white/80 dark:bg-[#2F3349] border border-[#7367F0]/20 flex items-center space-x-2">
+                  <Sparkles className="w-3 h-3 text-[#7367F0] shrink-0" />
+                  <span className="truncate text-[11px] font-semibold text-slate-700 dark:text-slate-200">
+                    {t('campaigns.poolDistributionStatus')}
+                  </span>
+                </div>
+                <div className="p-2 rounded-lg bg-white/80 dark:bg-[#2F3349] border border-[#7367F0]/20 flex items-center space-x-2">
+                  <ShieldCheck className="w-3 h-3 text-[#28C76F] shrink-0" />
+                  <span className="truncate text-[11px] font-semibold text-slate-700 dark:text-slate-200">
+                    {t('campaigns.poolFailoverProtection')}
+                  </span>
+                </div>
+              </div>
             </div>
 
             {/* Safety & Anti-Ban Runtime Settings */}

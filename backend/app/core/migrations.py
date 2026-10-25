@@ -2048,16 +2048,23 @@ async def ensure_campaigns_columns(engine: AsyncEngine) -> None:
                     if "scheduled_at" not in cols:
                         await conn.execute(text("ALTER TABLE campaigns ADD COLUMN scheduled_at DATETIME"))
                         logger.info("[MIGRATION] Added campaigns.scheduled_at")
+                    if "whatsapp_session_ids" not in cols:
+                        await conn.execute(text("ALTER TABLE campaigns ADD COLUMN whatsapp_session_ids TEXT DEFAULT '[]'"))
+                        logger.info("[MIGRATION] Added campaigns.whatsapp_session_ids")
 
                 msg_rows = (await conn.execute(text("PRAGMA table_info(message_logs)"))).fetchall()
                 msg_cols = {row[1] for row in msg_rows}
                 if msg_cols and "media_url" not in msg_cols:
                     await conn.execute(text("ALTER TABLE message_logs ADD COLUMN media_url VARCHAR(500)"))
                     logger.info("[MIGRATION] Added message_logs.media_url")
+                if msg_cols and "whatsapp_session_id" not in msg_cols:
+                    await conn.execute(text("ALTER TABLE message_logs ADD COLUMN whatsapp_session_id INTEGER REFERENCES whatsapp_sessions(id) ON DELETE SET NULL"))
+                    logger.info("[MIGRATION] Added message_logs.whatsapp_session_id")
 
         elif engine.dialect.name == "postgresql":
             async with engine.begin() as conn:
                 await conn.execute(text("ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS whatsapp_session_id INTEGER REFERENCES whatsapp_sessions(id) ON DELETE SET NULL"))
+                await conn.execute(text("ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS whatsapp_session_ids JSONB DEFAULT '[]'::jsonb"))
                 await conn.execute(text("ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS daily_message_limit INTEGER DEFAULT 50"))
                 await conn.execute(text("ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS media_url VARCHAR(500)"))
                 await conn.execute(text("ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS media_type VARCHAR(50)"))
@@ -2066,7 +2073,9 @@ async def ensure_campaigns_columns(engine: AsyncEngine) -> None:
                 await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_campaigns_whatsapp_session_id ON campaigns (whatsapp_session_id)"))
                 await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_campaigns_scheduled_at ON campaigns (scheduled_at)"))
                 await conn.execute(text("ALTER TABLE message_logs ADD COLUMN IF NOT EXISTS media_url VARCHAR(500)"))
-                logger.info("[MIGRATION] PostgreSQL campaigns and message_logs media columns verified")
+                await conn.execute(text("ALTER TABLE message_logs ADD COLUMN IF NOT EXISTS whatsapp_session_id INTEGER REFERENCES whatsapp_sessions(id) ON DELETE SET NULL"))
+                await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_message_logs_whatsapp_session_id ON message_logs (whatsapp_session_id)"))
+                logger.info("[MIGRATION] PostgreSQL campaigns and message_logs media and session pool columns verified")
     except Exception as exc:
         logger.warning("[MIGRATION] ensure_campaigns_columns atlandi: %s", exc)
 

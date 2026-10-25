@@ -1,6 +1,6 @@
 import enum
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text, Enum, ForeignKey, Uuid
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text, Enum, ForeignKey, Uuid, JSON
 from sqlalchemy.orm import relationship
 
 from backend.app.core.config import settings
@@ -40,9 +40,10 @@ class Campaign(Base):
     working_hours_end = Column(String(10), default=settings.DEFAULT_WORKING_HOURS_END)  # HH:MM
     daily_message_limit = Column(Integer, default=settings.DEFAULT_DAILY_LIMIT_PER_SESSION)
     
-    # WhatsApp Session Binding (Optional explicit multi-session line)
+    # WhatsApp Session Binding (Optional explicit multi-session line or Hat Havuzu pool)
     whatsapp_session_id = Column(Integer, ForeignKey("whatsapp_sessions.id", ondelete="SET NULL"), nullable=True, index=True)
     whatsapp_session = relationship("WhatsAppSession", foreign_keys=[whatsapp_session_id])
+    whatsapp_session_ids = Column(JSON, nullable=True, default=list)
 
     # Media Attachment (Catalog, Brochure, Image, PDF)
     media_url = Column(String(500), nullable=True)

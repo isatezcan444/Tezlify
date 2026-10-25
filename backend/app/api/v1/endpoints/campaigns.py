@@ -227,19 +227,22 @@ async def launch_campaign(
     from backend.app.services.quota_guard import QuotaGuardService
     await QuotaGuardService.check_campaign_allowance(db, current_user.id)
 
-    # WhatsApp Active Session Check (Fail-Closed)
+    # WhatsApp Active Session Check (Fail-Closed with Multi-Session Hat Havuzu support)
     from backend.app.models.whatsapp_session import WhatsAppSession, SessionStatus
+    target_session_ids = req.session_ids or getattr(campaign, "whatsapp_session_ids", None)
     target_session_id = req.session_id or getattr(campaign, "whatsapp_session_id", None)
     sess_stmt = select(WhatsAppSession).where(
         WhatsAppSession.user_id == current_user.id,
         WhatsAppSession.status == SessionStatus.CONNECTED,
     )
-    if target_session_id:
+    if target_session_ids and len(target_session_ids) > 0:
+        sess_stmt = sess_stmt.where(WhatsAppSession.id.in_(target_session_ids))
+    elif target_session_id:
         sess_stmt = sess_stmt.where(WhatsAppSession.id == target_session_id)
-    active_sess = (await db.execute(sess_stmt.order_by(WhatsAppSession.id.desc()).limit(1))).scalars().first()
+    active_sessions = (await db.execute(sess_stmt.order_by(WhatsAppSession.id.desc()))).scalars().all()
 
     # Fail-closed in live environment (outside unit tests that mock the worker)
-    if not active_sess and os.getenv("PYTEST_CURRENT_TEST") is None:
+    if not active_sessions and os.getenv("PYTEST_CURRENT_TEST") is None:
         raise HTTPException(
             status_code=400,
             detail="Bağlı aktif bir WhatsApp hattı bulunamadı. Kampanyayı başlatmak için lütfen önce WhatsApp Hub sekmesinden QR kod ile bir hat bağlayın.",
@@ -257,7 +260,8 @@ async def launch_campaign(
         campaign_id=campaign.id,
         lead_ids=target_lead_ids,
         limit=req.limit or 50,
-        session_id=active_sess.id if active_sess else None,
+        session_id=active_sessions[0].id if active_sessions else None,
+        session_ids=[s.id for s in active_sessions],
     )
 
     if not started:
@@ -266,8 +270,10 @@ async def launch_campaign(
     return {
         "message": f"'{campaign.name}' kampanyası başlatıldı ve arka planda işleniyor.",
         "campaign_id": campaign.id,
-        "sender_session_id": active_sess.id if active_sess else None,
-        "sender_phone": active_sess.phone_number if active_sess else None,
+        "sender_session_id": active_sessions[0].id if active_sessions else None,
+        "sender_phone": active_sessions[0].phone_number if active_sessions else None,
+        "pool_size": len(active_sessions),
+        "pool_session_ids": [s.id for s in active_sessions],
     }
 
 
@@ -308,6 +314,8 @@ async def schedule_campaign(
 
     campaign.scheduled_at = sched_dt
     campaign.status = CampaignStatus.SCHEDULED
+    if req.session_ids:
+        campaign.whatsapp_session_ids = req.session_ids
     if req.session_id:
         campaign.whatsapp_session_id = req.session_id
 

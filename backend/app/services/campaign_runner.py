@@ -40,6 +40,7 @@ class CampaignRunner:
         lead_ids: Optional[List[int]] = None,
         limit: int = 50,
         session_id: Optional[int] = None,
+        session_ids: Optional[List[int]] = None,
     ) -> bool:
         if cls.is_campaign_running(campaign_id):
             logger.warning(f"[CampaignRunner] Campaign #{campaign_id} is already running.")
@@ -65,7 +66,7 @@ class CampaignRunner:
                 return False
 
         task = asyncio.create_task(
-            cls._execute_campaign_worker(campaign_id, lead_ids, limit, session_id=session_id)
+            cls._execute_campaign_worker(campaign_id, lead_ids, limit, session_id=session_id, session_ids=session_ids)
         )
         active_campaign_tasks[campaign_id] = task
         return True
@@ -108,27 +109,30 @@ class CampaignRunner:
                 if cls.is_campaign_running(campaign.id):
                     continue
 
-                # Session resolution (prefer campaign.whatsapp_session_id, fallback to user's connected session)
+                # Multi-session pool (Hat Havuzu) or single session resolution
+                pool_sess_ids = getattr(campaign, "whatsapp_session_ids", None)
                 target_sess_id = campaign.whatsapp_session_id
                 sess_stmt = select(WhatsAppSession).where(
                     WhatsAppSession.status == SessionStatus.CONNECTED
                 )
                 if campaign.user_id:
                     sess_stmt = sess_stmt.where(WhatsAppSession.user_id == campaign.user_id)
-                if target_sess_id:
+                if pool_sess_ids and isinstance(pool_sess_ids, list) and len(pool_sess_ids) > 0:
+                    sess_stmt = sess_stmt.where(WhatsAppSession.id.in_(pool_sess_ids))
+                elif target_sess_id:
                     sess_stmt = sess_stmt.where(WhatsAppSession.id == target_sess_id)
 
-                active_sess = (await db.execute(sess_stmt.order_by(WhatsAppSession.id.desc()).limit(1))).scalars().first()
+                active_sessions = (await db.execute(sess_stmt.order_by(WhatsAppSession.id.desc()))).scalars().all()
 
-                # If specific session was requested but not found/connected, try any connected session of same user
-                if not active_sess and target_sess_id and campaign.user_id:
+                # Fallback to any connected session of same user if specific was offline
+                if not active_sessions and campaign.user_id:
                     fallback_stmt = select(WhatsAppSession).where(
                         WhatsAppSession.user_id == campaign.user_id,
                         WhatsAppSession.status == SessionStatus.CONNECTED,
-                    ).order_by(WhatsAppSession.id.desc()).limit(1)
-                    active_sess = (await db.execute(fallback_stmt)).scalars().first()
+                    ).order_by(WhatsAppSession.id.desc())
+                    active_sessions = (await db.execute(fallback_stmt)).scalars().all()
 
-                if not active_sess:
+                if not active_sessions:
                     logger.warning(
                         f"[CampaignRunner] Scheduled campaign #{campaign.id} ('{campaign.name}') reached its scheduled time, but no connected WhatsApp session was found. Waiting for active line."
                     )
@@ -142,12 +146,20 @@ class CampaignRunner:
                     )
                     target_lead_ids = [row[0] for row in group_leads_res.fetchall()]
 
-                started = await cls.start_campaign(
-                    campaign_id=campaign.id,
-                    lead_ids=target_lead_ids,
-                    limit=50,
-                    session_id=active_sess.id,
-                )
+                if pool_sess_ids and len(pool_sess_ids) > 0:
+                    started = await cls.start_campaign(
+                        campaign_id=campaign.id,
+                        lead_ids=target_lead_ids,
+                        limit=50,
+                        session_ids=[s.id for s in active_sessions],
+                    )
+                else:
+                    started = await cls.start_campaign(
+                        campaign_id=campaign.id,
+                        lead_ids=target_lead_ids,
+                        limit=50,
+                        session_id=target_sess_id or (active_sessions[0].id if active_sessions else None),
+                    )
                 if started:
                     started_count += 1
                     logger.info(
@@ -157,8 +169,9 @@ class CampaignRunner:
                         "event": "campaign_started",
                         "campaign_id": campaign.id,
                         "name": campaign.name,
+                        "user_id": str(campaign.user_id) if campaign.user_id else None,
                         "scheduled": True,
-                        "sender_phone": active_sess.phone_number,
+                        "sender_phone": active_sessions[0].phone_number if active_sessions else None,
                     })
 
         return started_count
@@ -170,6 +183,7 @@ class CampaignRunner:
         lead_ids: Optional[List[int]] = None,
         limit: int = 50,
         session_id: Optional[int] = None,
+        session_ids: Optional[List[int]] = None,
     ):
         logger.info(f"[CampaignRunner] Campaign #{campaign_id} outreach worker started.")
 
@@ -197,19 +211,33 @@ class CampaignRunner:
                     await db.commit()
                     return
 
-                # Resolve sender line (session_id if specified, else campaign.whatsapp_session_id, else latest CONNECTED session)
+                # Resolve sender line(s) / Hat Havuzu pool:
                 from backend.app.models.whatsapp_session import WhatsAppSession, SessionStatus
-                target_sess_id = session_id or getattr(campaign, "whatsapp_session_id", None)
-                sess_stmt = select(WhatsAppSession).where(
-                    WhatsAppSession.user_id == owner,
-                    WhatsAppSession.status == SessionStatus.CONNECTED,
-                )
-                if target_sess_id:
-                    sess_stmt = sess_stmt.where(WhatsAppSession.id == target_sess_id)
-                active_sess = (await db.execute(sess_stmt.order_by(WhatsAppSession.id.desc()).limit(1))).scalars().first()
+                candidate_pool_ids = session_ids or getattr(campaign, "whatsapp_session_ids", None)
+                if candidate_pool_ids and isinstance(candidate_pool_ids, list) and len(candidate_pool_ids) > 0:
+                    sess_stmt = select(WhatsAppSession).where(
+                        WhatsAppSession.user_id == owner,
+                        WhatsAppSession.status == SessionStatus.CONNECTED,
+                        WhatsAppSession.id.in_(candidate_pool_ids),
+                    ).order_by(WhatsAppSession.id.asc())
+                    active_sessions = (await db.execute(sess_stmt)).scalars().all()
+                elif session_id or getattr(campaign, "whatsapp_session_id", None):
+                    single_target_id = session_id or getattr(campaign, "whatsapp_session_id", None)
+                    sess_stmt = select(WhatsAppSession).where(
+                        WhatsAppSession.user_id == owner,
+                        WhatsAppSession.status == SessionStatus.CONNECTED,
+                        WhatsAppSession.id == single_target_id,
+                    )
+                    active_sessions = (await db.execute(sess_stmt)).scalars().all()
+                else:
+                    sess_stmt = select(WhatsAppSession).where(
+                        WhatsAppSession.user_id == owner,
+                        WhatsAppSession.status == SessionStatus.CONNECTED,
+                    ).order_by(WhatsAppSession.id.desc())
+                    active_sessions = (await db.execute(sess_stmt)).scalars().all()
 
                 # Fail-Closed Early Check: If no connected WhatsApp line exists, do NOT burn leads
-                if not active_sess:
+                if not active_sessions:
                     logger.warning(
                         "[CampaignRunner] Campaign #%s has no connected WhatsAppSession for user %s — pausing safely.",
                         campaign_id,
@@ -225,7 +253,7 @@ class CampaignRunner:
                     })
                     return
 
-                sender_phone = active_sess.phone_number
+                sender_phone = active_sessions[0].phone_number if active_sessions else None
 
                 campaign.status = CampaignStatus.ACTIVE
                 await db.commit()
@@ -236,6 +264,8 @@ class CampaignRunner:
                     "campaign_name": campaign.name,
                     "user_id": owner,
                     "sender_phone": sender_phone,
+                    "pool_size": len(active_sessions),
+                    "pool_session_ids": [s.id for s in active_sessions],
                 })
 
                 # Fetch Target Leads — ZORUNLU tenant filtresi. Filtresiz sorgu
@@ -258,11 +288,14 @@ class CampaignRunner:
                 res = await db.execute(stmt)
                 raw_leads = res.scalars().all()
 
-                # Enforce OutreachGuard
+                # Enforce OutreachGuard against ALL line numbers in the pool
                 allow_self = bool(lead_ids)
                 leads, blocked_leads = OutreachGuard.filter_qualified_for_outreach(
                     raw_leads, sender_phone=sender_phone, allow_self_outreach=allow_self
                 )
+                if not allow_self:
+                    all_pool_phones = {s.phone_number for s in active_sessions if s.phone_number}
+                    leads = [l for l in leads if l.phone_e164 not in all_pool_phones]
 
                 campaign.total_leads_target = len(leads)
                 await db.commit()
@@ -282,6 +315,7 @@ class CampaignRunner:
                 from backend.app.models.system_settings import SystemSetting
                 from backend.app.models.message_log import MessageLog, MessageStatus
                 from backend.app.core.datetime_utils import utc_now_naive
+                from backend.app.services.warmup_service import WarmupService
                 from sqlalchemy import func
 
                 sys_setting = (await db.execute(
@@ -290,36 +324,35 @@ class CampaignRunner:
                 default_daily_limit = sys_setting.daily_message_limit if sys_setting and sys_setting.daily_message_limit else 50
                 policy = AntibanPolicy.from_campaign(campaign, default_daily_limit=default_daily_limit)
 
-                # Faz 3: Session Warm-Up Mode integration
-                from backend.app.services.warmup_service import WarmupService
-                effective_daily_limit = policy.daily_message_limit
-                is_warmup_active = False
-                warmup_day_num = 1
-                if active_sess and getattr(active_sess, "is_warmup_enabled", False):
-                    await WarmupService.sync_session_warmup(active_sess, db)
-                    effective_daily_limit = min(effective_daily_limit, active_sess.warmup_daily_limit)
-                    is_warmup_active = True
-                    warmup_day_num = active_sess.warmup_current_day
+                # Initialize Hat Havuzu: Track limits and daily sent count for each line in pool
+                session_limits: Dict[int, int] = {}
+                session_daily_sent: Dict[int, int] = {}
+                for sess in active_sessions:
+                    limit_val = policy.daily_message_limit
+                    if getattr(sess, "is_warmup_enabled", False):
+                        await WarmupService.sync_session_warmup(sess, db)
+                        limit_val = min(limit_val, sess.warmup_daily_limit)
+                    session_limits[sess.id] = limit_val
+                    sent_cnt = await WarmupService.count_sent_today(sess, db)
+                    session_daily_sent[sess.id] = sent_cnt
 
-                # Check today's sent count against policy/warmup daily limit
-                start_of_day = utc_now_naive().replace(hour=0, minute=0, second=0, microsecond=0)
-                sent_today = (await db.scalar(
-                    select(func.count(MessageLog.id)).where(
-                        MessageLog.user_id == owner,
-                        MessageLog.status.in_([MessageStatus.SENT, MessageStatus.DELIVERED, MessageStatus.READ, MessageStatus.REPLIED]),
-                        MessageLog.sent_at >= start_of_day,
-                    )
-                )) or 0
-
-                if sent_today >= effective_daily_limit:
-                    reason = "warmup_limit_reached" if is_warmup_active else "daily_limit_reached"
-                    msg_txt = (
-                        f"WhatsApp hattı Isıtma Modundadır (Gün {warmup_day_num}: {sent_today}/{effective_daily_limit} mesaj). Ban riskini önlemek için bugünkü kota tamamlandı."
-                        if is_warmup_active
-                        else f"Günlük Anti-Ban mesaj limitine ({sent_today}/{effective_daily_limit}) ulaşıldı. WhatsApp hesabınızın güvenliği için kampanya otomatik duraklatıldı."
-                    )
+                # Check if all sessions in pool are already exhausted
+                usable_sessions = [s for s in active_sessions if session_daily_sent[s.id] < session_limits[s.id]]
+                if not usable_sessions:
+                    reason = "pool_limits_reached" if len(active_sessions) > 1 else "daily_limit_reached"
+                    if len(active_sessions) > 1:
+                        msg_txt = (
+                            f"Seçilen hat havuzundaki tüm WhatsApp hatlarının ({len(active_sessions)} hat) "
+                            f"günlük Anti-Ban / Isıtma limitine ulaşıldı. Hesapların güvenliği için kampanya otomatik duraklatıldı."
+                        )
+                    else:
+                        limit_val = session_limits[active_sessions[0].id]
+                        msg_txt = (
+                            f"WhatsApp hattınızın günlük Anti-Ban / Isıtma limitine ({limit_val} mesaj) "
+                            f"ulaşıldı. Hesabınızın güvenliği için kampanya otomatik duraklatıldı."
+                        )
                     logger.warning(
-                        f"[CampaignRunner] Campaign #{campaign_id} paused: {reason} ({sent_today}/{effective_daily_limit})."
+                        f"[CampaignRunner] Campaign #{campaign_id} paused: {reason} (pool size: {len(active_sessions)})."
                     )
                     campaign.status = CampaignStatus.PAUSED
                     await db.commit()
@@ -337,6 +370,7 @@ class CampaignRunner:
                 # Campaign-scoped batch blacklist pre-resolution: 1 query instead of N per-lead queries
                 candidate_phones = [l.phone_e164 for l in leads if l.phone_e164]
                 blacklisted_phones = await OutreachManager.get_blacklisted_phones(db, candidate_phones)
+                round_robin_idx = 0
 
                 for idx, lead in enumerate(leads):
                     # Re-check if campaign was paused or cancelled. Narrow
@@ -349,16 +383,23 @@ class CampaignRunner:
                         was_stopped_early = True
                         break
 
-                    # Check daily / warmup limit before each message
-                    if sent_today >= effective_daily_limit:
-                        reason = "warmup_limit_reached" if is_warmup_active else "daily_limit_reached"
-                        msg_txt = (
-                            f"WhatsApp hattı Isıtma Modundadır (Gün {warmup_day_num}: {sent_today}/{effective_daily_limit} mesaj). Ban riskini önlemek için bugünkü kota tamamlandı."
-                            if is_warmup_active
-                            else f"Günlük Anti-Ban limitine ({sent_today}/{effective_daily_limit}) ulaşıldı. WhatsApp hattınızın güvenliği için kampanya duraklatıldı."
-                        )
+                    # Check which lines in the pool have available quota remaining
+                    usable_sessions = [s for s in active_sessions if session_daily_sent[s.id] < session_limits[s.id]]
+                    if not usable_sessions:
+                        reason = "pool_limits_reached" if len(active_sessions) > 1 else "daily_limit_reached"
+                        if len(active_sessions) > 1:
+                            msg_txt = (
+                                f"Hat havuzundaki tüm WhatsApp hatlarının ({len(active_sessions)} hat) "
+                                f"günlük Anti-Ban / Isıtma limitine ulaşıldı. WhatsApp hesaplarınızın güvenliği için kampanya duraklatıldı."
+                            )
+                        else:
+                            limit_val = session_limits[active_sessions[0].id]
+                            msg_txt = (
+                                f"WhatsApp hattınızın günlük Anti-Ban / Isıtma limitine ({limit_val} mesaj) "
+                                f"ulaşıldı. WhatsApp hesabınızın güvenliği için kampanya duraklatıldı."
+                            )
                         logger.warning(
-                            f"[CampaignRunner] Campaign #{campaign_id} reached limit ({sent_today}/{effective_daily_limit}) during loop. Pausing."
+                            f"[CampaignRunner] Campaign #{campaign_id} all {len(active_sessions)} pool lines reached limit. Pausing."
                         )
                         campaign.status = CampaignStatus.PAUSED
                         await db.commit()
@@ -372,19 +413,23 @@ class CampaignRunner:
                         was_stopped_early = True
                         break
 
-                    # Process single outreach (reusing in-memory lead and campaign objects, plus batch blacklist)
+                    # Pick next session using round-robin distribution
+                    curr_sess = usable_sessions[round_robin_idx % len(usable_sessions)]
+                    round_robin_idx += 1
+
+                    # Process single outreach with selected line from the pool
                     success, msg, log_id = await OutreachManager.process_single_outreach(
                         db=db,
                         lead_id=lead.id,
                         campaign_id=campaign.id,
-                        session_id=active_sess.id,
+                        session_id=curr_sess.id,
                         lead=lead,
                         campaign=campaign,
                         blacklisted_phones=blacklisted_phones,
                     )
 
                     if success:
-                        sent_today += 1
+                        session_daily_sent[curr_sess.id] += 1
                         try:
                             from backend.app.services.quota_guard import QuotaGuardService
                             await QuotaGuardService.consume_whatsapp_quota(db, owner, 1)
@@ -395,19 +440,29 @@ class CampaignRunner:
                     if not success:
                         if OutreachManager.is_connection_fatal_error(msg):
                             logger.warning(
-                                f"[CampaignRunner] WhatsApp session disconnected during campaign #{campaign_id}: {msg}. Pausing campaign."
+                                f"[CampaignRunner] WhatsApp line #{curr_sess.id} ({curr_sess.session_name}) disconnected: {msg}."
                             )
-                            campaign.status = CampaignStatus.PAUSED
-                            await db.commit()
-                            await ws_manager.broadcast({
-                                "event": "campaign_paused",
-                                "campaign_id": campaign_id,
-                                "user_id": owner,
-                                "reason": "session_disconnected",
-                                "message": "WhatsApp hattının bağlantısı koptu. Kalan kayıtların yanmaması için kampanya otomatik duraklatıldı. Lütfen WhatsApp sekmesinden hattınızı yeniden bağlayın.",
-                            })
-                            was_stopped_early = True
-                            break
+                            # Remove disconnected line from active pool
+                            active_sessions = [s for s in active_sessions if s.id != curr_sess.id]
+                            if not active_sessions:
+                                logger.warning(
+                                    f"[CampaignRunner] All WhatsApp lines in pool disconnected during campaign #{campaign_id}. Pausing."
+                                )
+                                campaign.status = CampaignStatus.PAUSED
+                                await db.commit()
+                                await ws_manager.broadcast({
+                                    "event": "campaign_paused",
+                                    "campaign_id": campaign_id,
+                                    "user_id": owner,
+                                    "reason": "session_disconnected",
+                                    "message": "WhatsApp hat havuzundaki tüm hatların bağlantısı koptu. Kalan kayıtların yanmaması için kampanya otomatik duraklatıldı. Lütfen WhatsApp sekmesinden hatlarınızı kontrol edin.",
+                                })
+                                was_stopped_early = True
+                                break
+                            else:
+                                logger.info(
+                                    f"[CampaignRunner] Failing over to remaining {len(active_sessions)} active lines in pool."
+                                )
                         elif "Mesai saatleri dışında" in msg:
                             logger.info(
                                 f"[CampaignRunner] Outside working hours for campaign #{campaign_id}. Pausing campaign."
@@ -423,8 +478,6 @@ class CampaignRunner:
                             })
                             was_stopped_early = True
                             break
-                    else:
-                        sent_today += 1
 
                     # Broadcast progress — yalnizca sahibine (lead adi/telefon
                     # tasiyor; genis yayin diger tenant'lara PII sizdirirdi).

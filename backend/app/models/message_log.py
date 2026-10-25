@@ -25,10 +25,12 @@ class MessageLog(Base):
     user_id = Column(Uuid(as_uuid=False), nullable=True, index=True)
     lead_id = Column(Integer, ForeignKey("leads.id", ondelete="CASCADE"), nullable=False, index=True)
     campaign_id = Column(Integer, ForeignKey("campaigns.id", ondelete="SET NULL"), nullable=True, index=True)
+    whatsapp_session_id = Column(Integer, ForeignKey("whatsapp_sessions.id", ondelete="SET NULL"), nullable=True, index=True)
     
     # Relationships
     lead = relationship("Lead", backref="message_logs")
     campaign = relationship("Campaign", backref="message_logs")
+    whatsapp_session = relationship("WhatsAppSession", foreign_keys=[whatsapp_session_id])
     
     # Message Content (Actual evaluated spintax sent)
     target_phone = Column(String(50), nullable=False, index=True)

@@ -572,7 +572,7 @@ export class ApiClient {
     return res.json();
   }
 
-  static async launchCampaign(campaignId: number, params: { lead_ids?: number[]; limit?: number; session_id?: number } = {}): Promise<Record<string, unknown>> {
+  static async launchCampaign(campaignId: number, params: { lead_ids?: number[]; limit?: number; session_id?: number; session_ids?: number[] } = {}): Promise<Record<string, unknown>> {
     const res = await authFetch(`${API_BASE}/campaigns/${campaignId}/launch`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -593,11 +593,11 @@ export class ApiClient {
     return res.json();
   }
 
-  static async scheduleCampaign(campaignId: number, scheduledAt: string, sessionId?: number): Promise<Campaign> {
+  static async scheduleCampaign(campaignId: number, scheduledAt: string, sessionId?: number, sessionIds?: number[]): Promise<Campaign> {
     const res = await authFetch(`${API_BASE}/campaigns/${campaignId}/schedule`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ scheduled_at: scheduledAt, session_id: sessionId })
+      body: JSON.stringify({ scheduled_at: scheduledAt, session_id: sessionId, session_ids: sessionIds })
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));

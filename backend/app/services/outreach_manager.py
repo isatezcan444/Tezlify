@@ -168,6 +168,7 @@ class OutreachManager:
                 user_id=campaign.user_id,
                 lead_id=lead.id,
                 campaign_id=campaign.id,
+                whatsapp_session_id=session_id,
                 target_phone=lead.phone_e164,
                 rendered_message=rendered_msg,
                 media_url=getattr(campaign, "media_url", None),

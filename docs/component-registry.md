@@ -314,7 +314,7 @@ src/
 ### Campaign Feature Components (`features/campaigns/components/`)
 
 #### `CampaignCard`
-- **Purpose**: Reusable outreach campaign card with live progress bar, sent/replied/failed counters, and start/pause/cancel triggers.
+- **Purpose**: Reusable outreach campaign card with live progress bar, sent/replied/failed counters, Hat Havuzu multi-session badge, media/schedule indicator tags, and start/pause/cancel triggers.
 - **Props**: `campaign: Campaign`, `onStart`, `onPause`, `onCancel`.
 - **Import**: `import { CampaignCard } from '@/features/campaigns/components';`
 
@@ -334,12 +334,12 @@ src/
 - **Import**: `import { CampaignDeleteModal } from '@/features/campaigns/components';`
 
 #### `CampaignDetailDrawer`
-- **Purpose**: Slide-over inspection drawer for campaigns featuring tabbed layout (Overview & Message/Simulation), key delivery/response metrics, target group integration with deep navigation, anti-ban safety settings review, and live embedded WhatsApp message simulation.
+- **Purpose**: Slide-over inspection drawer for campaigns featuring tabbed layout (Overview & Message/Simulation), Hat Havuzu sender lines status and round-robin/failover badges, key delivery/response metrics, target group integration with deep navigation, anti-ban safety settings review, and live embedded WhatsApp message simulation.
 - **Props**: `campaign: Campaign | null`, `isOpen: boolean`, `onClose: () => void`, `onStart?: (campaignId: number) => void`, `onPause?: (campaignId: number) => void`, `onCancel?: (campaignId: number) => void`, `onDelete?: (campaignId: number) => void`, `onNavigateToGroup?: (groupId: number) => void`.
 - **Import**: `import { CampaignDetailDrawer } from '@/features/campaigns/components';`
 
 #### `CampaignCreateWizard`
-- **Purpose**: 4-step Vuexy Stepper wizard for campaign creation (Step 1: Basics & Audience, Step 2: Communication Goal & AI Strategy, Step 3: Composer & Live WhatsApp Spintax Preview, Step 4: Safety & Anti-Ban Review). Features auto-debounced AI message generation, fail-closed AntibanPolicy metrics summary, step jumping validation, and full i18n support.
+- **Purpose**: 4-step Vuexy Stepper wizard for campaign creation (Step 1: Basics & Audience, Step 2: Communication Goal & AI Strategy, Step 3: Composer & Live WhatsApp Spintax Preview, Step 4: Safety & Hat Havuzu Multi-Session Review). Features Hat Havuzu line selection with combined quota capacity indicator, auto-debounced AI message generation, fail-closed AntibanPolicy metrics summary, step jumping validation, and full i18n support.
 - **Props**: `prefill?: object | null`, `onClearPrefill?: () => void`, `onSuccess: () => void`, `onCancel: () => void`.
 - **Import**: `import { CampaignCreateWizard } from '@/features/campaigns/components';`
 

@@ -126,6 +126,7 @@ export interface Campaign {
   daily_message_limit?: number;
   session_id?: number;
   whatsapp_session_id?: number;
+  whatsapp_session_ids?: number[];
   group_id?: number;
   media_url?: string;
   media_type?: 'IMAGE' | 'DOCUMENT' | 'VIDEO' | 'AUDIO';

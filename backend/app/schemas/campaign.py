@@ -18,6 +18,7 @@ class CampaignBase(BaseModel):
     daily_message_limit: int = settings.DEFAULT_DAILY_LIMIT_PER_SESSION
     group_id: Optional[int] = None
     whatsapp_session_id: Optional[int] = None
+    whatsapp_session_ids: Optional[List[int]] = None
     media_url: Optional[str] = None
     media_type: Optional[str] = None
     media_filename: Optional[str] = None
@@ -40,6 +41,7 @@ class CampaignUpdate(BaseModel):
     daily_message_limit: Optional[int] = None
     group_id: Optional[int] = None
     whatsapp_session_id: Optional[int] = None
+    whatsapp_session_ids: Optional[List[int]] = None
     media_url: Optional[str] = None
     media_type: Optional[str] = None
     media_filename: Optional[str] = None
@@ -47,6 +49,7 @@ class CampaignUpdate(BaseModel):
 class CampaignScheduleRequest(BaseModel):
     scheduled_at: datetime
     session_id: Optional[int] = None
+    session_ids: Optional[List[int]] = None
 
 class CampaignBulkDeleteRequest(BaseModel):
     campaign_ids: List[int]
@@ -79,6 +82,7 @@ class CampaignLaunchRequest(BaseModel):
     filter_status: Optional[str] = "NEW"
     limit: Optional[int] = 50
     session_id: Optional[int] = None
+    session_ids: Optional[List[int]] = None
 
 class GenerateMessageRequest(BaseModel):
     communication_goal: str
