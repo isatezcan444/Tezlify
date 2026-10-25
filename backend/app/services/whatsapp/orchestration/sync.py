@@ -2311,7 +2311,7 @@ class WhatsAppSyncOrchestrator:
                                 "VALUES (:sid, :jid, TRUE, 'NOT_CHECKED', FALSE, :now) "
                                 "ON CONFLICT (session_id, jid) DO NOTHING"
                             ),
-                            {"sid": gateway_id, "jid": jid, "now": datetime.now(timezone.utc)},
+                            {"sid": gateway_id, "jid": jid, "now": utc_now_naive()},
                         )
                     await db.commit()
 
@@ -2389,7 +2389,7 @@ class WhatsAppSyncOrchestrator:
                                             "         ELSE 'NO_ANCHOR' END, "
                                             "updated_at = :now"
                                         ),
-                                        {"sid": gateway_id, "jid": jid, "now": datetime.now(timezone.utc)},
+                                        {"sid": gateway_id, "jid": jid, "now": utc_now_naive()},
                                     )
                                     await db.commit()
                                 continue

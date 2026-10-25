@@ -11,7 +11,11 @@ import pytest
 from backend.app.models.contact import Contact
 from backend.app.models.whatsapp_session import SessionStatus, WhatsAppSession
 from backend.app.services.whatsapp.orchestration.sessions import refresh_contact_avatar
-from backend.app.services.whatsapp.repositories.contacts import get_contact_avatar, set_contact_avatar
+from backend.app.services.whatsapp.repositories.contacts import (
+    get_contact_avatar,
+    set_contact_avatar,
+    is_whatsapp_avatar_expired,
+)
 
 
 class TestWhatsAppAvatarPersistence:
@@ -119,3 +123,31 @@ class TestWhatsAppAvatarPersistence:
         assert result["avatar_url"] == "https://pps.whatsapp.net/v/avatar_with_plus.jpg"
         assert get_contact_avatar(contact) == "https://pps.whatsapp.net/v/avatar_with_plus.jpg"
         db.commit.assert_awaited_once()
+
+    def test_expired_whatsapp_avatar_filtered_and_purged(self):
+        # oe=6AD8EB1C corresponds to epoch 1792598812 (Oct 21, 2026), which is in the past
+        expired_url = "https://pps.whatsapp.net/v/t61.24694-24/566638859_788599220678526_3305792808332190461_n.jpg?stp=dst-jpg_s96x96_tt6&ccb=11-4&oh=01_Q5Aa5wHRekH3lcK4WwmvD9Y9gyx9IMoqYmwcrKwQGt5q0bm2lg&oe=6AD8EB1C&_nc_sid=5e03e0&_nc_cat=107"
+        assert is_whatsapp_avatar_expired(expired_url) is True
+
+        # Future URL (oe=7FFFFFFF = year 2038)
+        future_url = "https://pps.whatsapp.net/v/t61.24694-24/test.jpg?oe=7FFFFFFF"
+        assert is_whatsapp_avatar_expired(future_url) is False
+
+        # Static URL without oe parameter
+        static_url = "https://pps.whatsapp.net/v/avatar_static.jpg"
+        assert is_whatsapp_avatar_expired(static_url) is False
+
+        # Contact with expired avatar stored previously in custom_attributes:
+        # get_contact_avatar must fail-closed and return None to prevent client 403s
+        contact = Contact(
+            id=3,
+            user_id="u-test",
+            phone_e164="+905553334455",
+            custom_attributes={"avatar_url": expired_url},
+        )
+        assert get_contact_avatar(contact) is None
+
+        # Attempting to set an expired avatar should purge it from custom_attributes
+        set_contact_avatar(contact, expired_url)
+        assert "avatar_url" not in (contact.custom_attributes or {})
+        assert get_contact_avatar(contact) is None

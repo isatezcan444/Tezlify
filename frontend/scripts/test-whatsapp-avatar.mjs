@@ -81,12 +81,12 @@ assert.equal(failedAvatarUrls.size, 0);
 console.log('✓ clearFailedAvatarUrlsCache passed');
 
 // 5. Test Avatar component HTML attributes invariant in source
-console.log('Verifying Avatar.tsx invariant tags and attributes...');
-assert.ok(avatarSource.includes('loading="lazy"'), 'Must have lazy loading attribute');
+assert.ok(avatarSource.includes('loading="lazy"') || avatarSource.includes("'lazy'"), 'Must have lazy loading attribute');
 assert.ok(avatarSource.includes('decoding="async"'), 'Must have async decoding attribute');
 assert.ok(avatarSource.includes('aspect-square'), 'Must preserve square aspect ratio');
 assert.ok(avatarSource.includes('object-cover'), 'Must use object-cover to avoid distorted stretch');
 assert.ok(avatarSource.includes('onError='), 'Must handle image loading errors gracefully');
+assert.ok(avatarSource.includes('isWhatsAppUrlExpired'), 'Must check isWhatsAppUrlExpired to prevent 403 network failures');
 console.log('✓ Avatar.tsx markup invariants passed');
 
 // 6. Test Avatar Storm Prevention (20 simulated errors for same contact)

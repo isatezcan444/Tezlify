@@ -1,6 +1,24 @@
 import { ApiClient } from '../api/client';
 
 /**
+ * Checks whether a WhatsApp / Meta CDN URL has an expired 'oe=' hex timestamp signature.
+ * Meta CDN URLs contain an `oe=<hex_timestamp>` parameter indicating UNIX epoch seconds of expiration.
+ * If the current time is past or within 30 seconds of that expiration timestamp, the URL is expired.
+ */
+export function isWhatsAppUrlExpired(url?: string | null): boolean {
+  if (!url || typeof url !== 'string') return false;
+  const match = url.match(/[?&]oe=([0-9a-fA-F]+)/);
+  if (!match) return false;
+  try {
+    const expirySec = parseInt(match[1], 16);
+    if (isNaN(expirySec) || expirySec <= 0) return false;
+    return Date.now() >= (expirySec - 30) * 1000;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Resolves a media or image URL by:
  * 1. Prepending API base URL if relative (e.g. starts with /api/v1/)
  * 2. Appending auth token query parameter (?token=...) if not already present,
@@ -20,6 +38,11 @@ export function resolveMediaUrl(url?: string | null): string | undefined {
     'image', 'video', 'audio', 'document', 'file', 'null', 'undefined',
     'changed', 'remove', 'error', 'none', 'false', 'true', 'unknown'
   ].includes(lower)) {
+    return undefined;
+  }
+
+  // Pre-check for expired WhatsApp / Meta CDN URLs: avoid rendering <img> that will 403
+  if (isWhatsAppUrlExpired(trimmed)) {
     return undefined;
   }
 

@@ -1,7 +1,9 @@
 import * as React from "react";
 import { cn } from "../../lib/utils";
 import { WhatsAppRepository } from "../../features/whatsapp/data/whatsappRepository";
-import { resolveMediaUrl } from "../../lib/mediaUrl";
+import { resolveMediaUrl, isWhatsAppUrlExpired } from "../../lib/mediaUrl";
+
+export { isWhatsAppUrlExpired };
 
 export interface AvatarProps {
   name: string;
@@ -56,7 +58,12 @@ export function loadAvatarSessionCache(): void {
     const parsed = JSON.parse(raw);
     if (parsed && typeof parsed === 'object') {
       for (const [k, v] of Object.entries(parsed)) {
-        if (typeof v === 'string' && v && !['changed', 'remove', 'null', 'undefined'].includes(v.trim().toLowerCase())) {
+        if (
+          typeof v === 'string' &&
+          v &&
+          !['changed', 'remove', 'null', 'undefined'].includes(v.trim().toLowerCase()) &&
+          !isWhatsAppUrlExpired(v)
+        ) {
           resolvedAvatarCache.set(k, v);
         }
       }
@@ -67,6 +74,7 @@ export function loadAvatarSessionCache(): void {
 }
 
 export function saveAvatarToSessionCache(phoneKey: string, url: string): void {
+  if (!url || isWhatsAppUrlExpired(url)) return;
   try {
     if (typeof window === 'undefined' || !window.sessionStorage) return;
     const raw = window.sessionStorage.getItem(AVATAR_SESSION_CACHE_KEY);
@@ -158,12 +166,31 @@ export const Avatar: React.FC<AvatarProps> = ({
   priority = "normal",
   onRefresh,
 }) => {
-  const resolved = React.useMemo(() => resolveMediaUrl(image), [image]);
-  const cached = phone ? resolvedAvatarCache.get(phone) : undefined;
+  const isInputExpired = React.useMemo(() => isWhatsAppUrlExpired(image), [image]);
+
+  const resolved = React.useMemo(() => {
+    if (isInputExpired && image) {
+      failedAvatarUrls.add(image);
+      return undefined;
+    }
+    return resolveMediaUrl(image);
+  }, [image, isInputExpired]);
+
+  const cached = React.useMemo(() => {
+    if (!phone) return undefined;
+    const c = resolvedAvatarCache.get(phone);
+    if (c && isWhatsAppUrlExpired(c)) {
+      resolvedAvatarCache.delete(phone);
+      failedAvatarUrls.add(c);
+      return undefined;
+    }
+    return c;
+  }, [phone]);
+
   const initialEffective = resolved || cached;
 
   const [currentImage, setCurrentImage] = React.useState<string | undefined>(() => {
-    if (initialEffective && !failedAvatarUrls.has(initialEffective)) {
+    if (initialEffective && !failedAvatarUrls.has(initialEffective) && !isWhatsAppUrlExpired(initialEffective)) {
       if (!resolved && cached) avatarMetrics.avatar_cache_hit++;
       return initialEffective;
     }
@@ -171,11 +198,11 @@ export const Avatar: React.FC<AvatarProps> = ({
   });
 
   const [imageError, setImageError] = React.useState<boolean>(() => {
-    return initialEffective ? failedAvatarUrls.has(initialEffective) : false;
+    return initialEffective ? (failedAvatarUrls.has(initialEffective) || isWhatsAppUrlExpired(initialEffective)) : false;
   });
 
   const [isImageLoaded, setIsImageLoaded] = React.useState<boolean>(() => {
-    return Boolean(initialEffective && !failedAvatarUrls.has(initialEffective));
+    return Boolean(initialEffective && !failedAvatarUrls.has(initialEffective) && !isWhatsAppUrlExpired(initialEffective));
   });
 
   React.useEffect(() => {
@@ -195,16 +222,26 @@ export const Avatar: React.FC<AvatarProps> = ({
     } else if (phone && resolvedAvatarCache.has(phone)) {
       // Phase 22 (Rule 1 & 2): Incoming prop is empty/undefined, but we already have
       // a verified avatar URL in the client cache — preserve it!
-      avatarMetrics.avatar_url_preserved_after_empty_update++;
       const cachedUrl = resolvedAvatarCache.get(phone);
-      setCurrentImage((prev) => {
-        if (prev !== cachedUrl) {
-          setIsImageLoaded(Boolean(cachedUrl));
-          setImageError(cachedUrl ? failedAvatarUrls.has(cachedUrl) : false);
-          return cachedUrl;
+      if (cachedUrl && !isWhatsAppUrlExpired(cachedUrl)) {
+        avatarMetrics.avatar_url_preserved_after_empty_update++;
+        setCurrentImage((prev) => {
+          if (prev !== cachedUrl) {
+            setIsImageLoaded(Boolean(cachedUrl));
+            setImageError(cachedUrl ? failedAvatarUrls.has(cachedUrl) : false);
+            return cachedUrl;
+          }
+          return prev;
+        });
+      } else {
+        if (cachedUrl) {
+          resolvedAvatarCache.delete(phone);
+          failedAvatarUrls.add(cachedUrl);
         }
-        return prev;
-      });
+        setCurrentImage(undefined);
+        setIsImageLoaded(false);
+        setImageError(false);
+      }
     } else {
       setCurrentImage(undefined);
       setIsImageLoaded(false);
@@ -268,6 +305,13 @@ export const Avatar: React.FC<AvatarProps> = ({
     }
   }, [currentImage, phone, priority, fetchAvatar]);
 
+  // Proactive refresh on expired image URL: avoid broken <img> and quietly fetch fresh URL
+  React.useEffect(() => {
+    if (isInputExpired && phone) {
+      fetchAvatar(true);
+    }
+  }, [isInputExpired, phone, fetchAvatar]);
+
   const sizeClasses = {
     xs: "w-6 h-6 text-[10px]",
     sm: "w-8 h-8 text-xs",
@@ -290,7 +334,12 @@ export const Avatar: React.FC<AvatarProps> = ({
 
   const colorClass = getAvatarColor(name);
   const initials = getInitials(name);
-  const shouldRenderImage = Boolean(currentImage && !imageError && !failedAvatarUrls.has(currentImage));
+  const shouldRenderImage = Boolean(
+    currentImage &&
+    !imageError &&
+    !failedAvatarUrls.has(currentImage) &&
+    !isWhatsAppUrlExpired(currentImage)
+  );
 
   return (
     <div className="relative inline-flex shrink-0">

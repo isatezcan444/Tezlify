@@ -11,6 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.auth import get_user_filter
+from backend.app.core.datetime_utils import utc_now_naive
 from backend.app.models.campaign_group import CampaignGroup, campaign_group_leads
 from backend.app.models.lead import Lead
 from backend.app.schemas.campaign_group import AddLeadsToGroupResponse
@@ -30,7 +31,7 @@ class CampaignGroupService:
         distinct_ids = list(set(lead_ids))
         if not distinct_ids:
             return 0
-        now = datetime.now(timezone.utc)
+        now = utc_now_naive()
         try:
             async with db.begin_nested():
                 await db.execute(
@@ -50,7 +51,7 @@ class CampaignGroupService:
                         insert(campaign_group_leads).values(
                             group_id=group_id,
                             lead_id=lid,
-                            added_at=datetime.now(timezone.utc),
+                            added_at=utc_now_naive(),
                         )
                     )
                 added += 1
@@ -151,7 +152,7 @@ class CampaignGroupService:
         # 4. Bulk insert (single round-trip; per-row savepoint fallback on races)
         actually_added_count = await cls.bulk_insert_memberships(db, group.id, new_lead_ids)
 
-        group.updated_at = datetime.now(timezone.utc)
+        group.updated_at = utc_now_naive()
         await db.commit()
 
         total, wa = await cls.get_group_counts(db, group.id)

@@ -49,6 +49,8 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.core.datetime_utils import utc_now_naive
+
 logger = logging.getLogger(__name__)
 
 
@@ -240,7 +242,7 @@ async def record_on_demand_provider_result(
     tbl = _table_name(db)
     sid_str = str(session_id)
     jid_str = str(jid)
-    now_dt = datetime.now(timezone.utc)
+    now_dt = utc_now_naive()
     returned_count = len([m for m in (gw_msgs or []) if isinstance(m, dict)])
     sweep_delta = 1 if increment_sweep_count else 0
 
@@ -405,7 +407,7 @@ async def record_on_demand_provider_result(
             new_state = "FULLY_EXHAUSTED"
             new_exhausted = True
             new_has_more = False
-            completed_at = datetime.now(timezone.utc)
+            completed_at = utc_now_naive()
             new_signal = "OK"
         else:
             # First time receiving 0 messages: transition to EXHAUSTION_CANDIDATE

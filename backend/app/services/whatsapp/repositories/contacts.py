@@ -4,6 +4,8 @@ Persistence queries and entity mutation policies for WhatsApp contacts.
 DOES NOT own transaction lifecycle (no commit/rollback).
 """
 
+import re
+import time
 from typing import Optional
 
 from sqlalchemy import select
@@ -21,6 +23,20 @@ from backend.app.services.whatsapp.identity import (
 _INVALID_AVATAR_SENTINELS = frozenset({"changed", "remove", "null", "undefined", "none", "error", "false", "true"})
 
 
+def is_whatsapp_avatar_expired(url: Optional[str]) -> bool:
+    """Checks whether a WhatsApp CDN URL has an expired 'oe=' hex timestamp signature."""
+    if not url or not isinstance(url, str):
+        return False
+    match = re.search(r"[?&]oe=([0-9a-fA-F]+)", url)
+    if not match:
+        return False
+    try:
+        expiry_ts = int(match.group(1), 16)
+        return time.time() >= (expiry_ts - 30)
+    except Exception:
+        return False
+
+
 def set_contact_avatar(contact: Contact, avatar_url: Optional[str]) -> None:
     """Contact avatarini custom_attributes icine yazar."""
     attrs = dict(contact.custom_attributes or {})
@@ -30,6 +46,11 @@ def set_contact_avatar(contact: Contact, avatar_url: Optional[str]) -> None:
             contact.custom_attributes = attrs
         return
     clean_url = str(avatar_url).strip()
+    if is_whatsapp_avatar_expired(clean_url):
+        if "avatar_url" in attrs:
+            del attrs["avatar_url"]
+            contact.custom_attributes = attrs
+        return
     if attrs.get("avatar_url") == clean_url:
         return
     attrs["avatar_url"] = clean_url
@@ -46,6 +67,8 @@ def get_contact_avatar(contact: Optional[Contact]) -> Optional[str]:
         return None
     val_str = str(value).strip()
     if val_str.lower() in _INVALID_AVATAR_SENTINELS:
+        return None
+    if is_whatsapp_avatar_expired(val_str):
         return None
     return val_str
 

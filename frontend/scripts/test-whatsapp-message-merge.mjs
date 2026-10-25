@@ -73,8 +73,8 @@ const realtimeWithUrl = {
 const updatedMedia = mergeWhatsAppMessages(mergedMedia, [realtimeWithUrl]);
 assert.equal(updatedMedia[0].media_url, '/api/v1/whatsapp/media/med_uuid_123');
 
-// --- resolveMediaUrl tests ---
-const { resolveMediaUrl } = await importTsModule('../src/lib/mediaUrl', import.meta.url);
+// --- resolveMediaUrl and isWhatsAppUrlExpired tests ---
+const { resolveMediaUrl, isWhatsAppUrlExpired } = await importTsModule('../src/lib/mediaUrl', import.meta.url);
 assert.equal(resolveMediaUrl(undefined), undefined);
 assert.equal(resolveMediaUrl(null), undefined);
 assert.equal(resolveMediaUrl(''), undefined);
@@ -84,6 +84,16 @@ const fromRawId = resolveMediaUrl('44710c36-2e6a-4786-8724-738eccae781d');
 assert.ok(fromRawId?.includes('/api/v1/whatsapp/media/44710c36-2e6a-4786-8724-738eccae781d'));
 const fromRelative = resolveMediaUrl('/api/v1/whatsapp/media/44710c36-2e6a-4786-8724-738eccae781d');
 assert.ok(fromRelative?.includes('/api/v1/whatsapp/media/44710c36-2e6a-4786-8724-738eccae781d'));
+
+// Expired WhatsApp signed CDN URL (oe=6AD8EB1C -> Oct 21, 2026, past)
+const expiredUrl = 'https://pps.whatsapp.net/v/t61.24694-24/566638859_788599220678526_3305792808332190461_n.jpg?stp=dst-jpg_s96x96_tt6&ccb=11-4&oh=01_Q5Aa5wHRekH3lcK4WwmvD9Y9gyx9IMoqYmwcrKwQGt5q0bm2lg&oe=6AD8EB1C&_nc_sid=5e03e0&_nc_cat=107';
+assert.equal(isWhatsAppUrlExpired(expiredUrl), true);
+assert.equal(resolveMediaUrl(expiredUrl), undefined, 'Expired WhatsApp CDN URL must resolve to undefined to avoid 403 network failures');
+
+// Future WhatsApp signed CDN URL (oe=7FFFFFFF -> year 2038)
+const futureUrl = 'https://pps.whatsapp.net/v/t61.24694-24/test.jpg?oe=7FFFFFFF';
+assert.equal(isWhatsAppUrlExpired(futureUrl), false);
+assert.equal(resolveMediaUrl(futureUrl), futureUrl);
 
 console.log('Identity/status/reconnect retention PASS; 1200+pending merge ms:', performance.now() - start);
 console.log('Media retention and resolveMediaUrl PASS');
