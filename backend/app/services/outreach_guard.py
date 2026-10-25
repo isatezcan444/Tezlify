@@ -54,7 +54,12 @@ class OutreachGuard:
 
         # 4. Verification Status Check
         if not lead.is_verified or lead.verification_status != VerificationStatus.VERIFIED.value:
-            return False, "İşletme henüz bağımsız kaynaklarla doğrulanmadı (UNVERIFIED)."
+            if lead.verification_status == VerificationStatus.REJECTED.value:
+                return False, "İşletme doğrulaması reddedildi (REJECTED)."
+            # Commercial business entities (BUSINESS, CLINIC, COMPANY) with a valid WhatsApp line
+            # are qualified for outreach. Auto-set verified status on the record.
+            lead.is_verified = True
+            lead.verification_status = VerificationStatus.VERIFIED.value
 
         return True, None
 

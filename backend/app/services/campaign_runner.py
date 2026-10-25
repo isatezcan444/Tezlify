@@ -301,13 +301,19 @@ class CampaignRunner:
                 await db.commit()
 
                 if not leads:
-                    campaign.status = CampaignStatus.COMPLETED
+                    campaign.status = CampaignStatus.PAUSED
                     await db.commit()
+                    err_msg = (
+                        f"Gönderilecek doğrulanmış işletme lead'i bulunamadı ({len(blocked_leads)} kayıt engellendi)."
+                        if blocked_leads
+                        else "Kampanyaya eklenecek uygun müşteri adayı bulunamadı."
+                    )
                     await ws_manager.broadcast({
-                        "event": "campaign_completed",
+                        "event": "campaign_failed",
                         "campaign_id": campaign_id,
                         "user_id": owner,
-                        "message": f"Gönderilecek doğrulanmış işletme lead'i bulunamadı ({len(blocked_leads)} kayıt doğrulanamadığı için engellendi)."
+                        "error": err_msg,
+                        "message": err_msg,
                     })
                     return
 

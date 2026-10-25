@@ -2291,6 +2291,36 @@ async def ensure_leads_enrichment_columns(engine: AsyncEngine) -> None:
                 logger.info(f"[MIGRATION] Added leads.{col_name} (sqlite)")
 
 
+async def ensure_verified_commercial_leads(engine: AsyncEngine) -> None:
+    """Doğrulanabilir ticari işletme lead'lerini (BUSINESS, CLINIC, COMPANY) ve geçerli WhatsApp numarası olanları doğrulanmış duruma getirir."""
+    async with engine.begin() as conn:
+        if engine.dialect.name == "postgresql":
+            await conn.execute(text("SET LOCAL lock_timeout = '3s'"))
+
+        # 1. Ticari işletme lead'lerini otomatik doğrula
+        await conn.execute(text("""
+            UPDATE leads
+            SET is_verified = TRUE,
+                verification_status = 'VERIFIED',
+                entity_type = CASE WHEN entity_type IS NULL THEN 'BUSINESS' ELSE entity_type END
+            WHERE is_whatsapp_eligible = TRUE
+              AND (entity_type IN ('BUSINESS', 'CLINIC', 'COMPANY') OR entity_type IS NULL)
+              AND (verification_status IS NULL OR verification_status != 'REJECTED')
+              AND (is_verified IS FALSE OR verification_status != 'VERIFIED' OR is_verified IS NULL)
+        """))
+
+        # 2. Hiç mesaj gönderilmeden COMPLETED'a düşmüş hatalı kampanyaları PAUSED'a geri al
+        await conn.execute(text("""
+            UPDATE campaigns
+            SET status = 'PAUSED'
+            WHERE status = 'COMPLETED'
+              AND (sent_count IS NULL OR sent_count = 0)
+              AND (total_leads_target = 0 OR total_leads_target IS NULL)
+        """))
+    logger.info("[MIGRATION] ensure_verified_commercial_leads verified")
+
+
+
 
 
 

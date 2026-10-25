@@ -783,6 +783,40 @@ class TestOutreachGuard:
         assert can_enroll_diff is True
         assert reason_diff is None
 
+    def test_unverified_commercial_business_auto_qualifies_for_campaign(self):
+        """A valid commercial business lead with WhatsApp eligibility is auto-qualified."""
+        lead = Lead(
+            id=6,
+            name="Cevat Oto Galeri",
+            phone="05076382749",
+            phone_e164="+905076382749",
+            is_whatsapp_eligible=True,
+            entity_type=EntityType.BUSINESS.value,
+            verification_status=VerificationStatus.UNVERIFIED.value,
+            is_verified=False,
+        )
+        can_enroll, reason = OutreachGuard.can_enroll_in_campaign(lead)
+        assert can_enroll is True
+        assert reason is None
+        assert lead.is_verified is True
+        assert lead.verification_status == VerificationStatus.VERIFIED.value
+
+    def test_rejected_commercial_business_is_blocked(self):
+        """A commercial entity with REJECTED verification status is strictly blocked."""
+        lead = Lead(
+            id=7,
+            name="Engellenen Galeri",
+            phone="05071112233",
+            phone_e164="+905071112233",
+            is_whatsapp_eligible=True,
+            entity_type=EntityType.BUSINESS.value,
+            verification_status=VerificationStatus.REJECTED.value,
+            is_verified=False,
+        )
+        can_enroll, reason = OutreachGuard.can_enroll_in_campaign(lead)
+        assert can_enroll is False
+        assert "REJECTED" in reason
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "--tb=short"])

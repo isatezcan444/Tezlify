@@ -142,7 +142,7 @@ export const CampaignsPage: React.FC<CampaignsPageProps> = ({
   useEffect(() => {
     const sub = subscribeRealtime((event: any) => {
       if (!event || !event.event) return;
-      const { event: evType, campaign_id, success, message } = event;
+      const { event: evType, campaign_id, success, message, error } = event;
 
       // Re-fetch sessions on session lifecycle events
       if (
@@ -172,6 +172,16 @@ export const CampaignsPage: React.FC<CampaignsPageProps> = ({
         if (message) {
           toast.warning(message, t('campaigns.pauseCampaign'));
         }
+      } else if (evType === 'campaign_failed') {
+        setCampaigns((prev) =>
+          prev.map((c) => (c.id === campaign_id ? { ...c, status: 'PAUSED' } : c))
+        );
+        setSelectedCampaignForDetail((prev) =>
+          prev?.id === campaign_id ? { ...prev, status: 'PAUSED' } : prev
+        );
+        const errMsg = error || message || t('campaigns.campaignFailed');
+        toast.error(errMsg, t('common.error'));
+        fetchCampaigns();
       } else if (evType === 'campaign_completed') {
         setCampaigns((prev) =>
           prev.map((c) => (c.id === campaign_id ? { ...c, status: 'COMPLETED' } : c))
@@ -179,7 +189,17 @@ export const CampaignsPage: React.FC<CampaignsPageProps> = ({
         setSelectedCampaignForDetail((prev) =>
           prev?.id === campaign_id ? { ...prev, status: 'COMPLETED' } : prev
         );
-        toast.success(message || t('campaigns.campaignLaunched'), t('common.success'));
+        const isWarningMsg = message && (
+          message.toLowerCase().includes('bulunamadı') ||
+          message.toLowerCase().includes('engellendi') ||
+          message.toLowerCase().includes('not found') ||
+          message.toLowerCase().includes('blocked')
+        );
+        if (isWarningMsg) {
+          toast.warning(message, t('common.warning'));
+        } else {
+          toast.success(message || t('campaigns.campaignCompleted'), t('common.success'));
+        }
         fetchCampaigns();
         onRefreshStats();
       } else if (evType === 'message_sent' || evType === 'message_failed') {

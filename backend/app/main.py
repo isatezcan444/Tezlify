@@ -52,6 +52,7 @@ from backend.app.core.migrations import (
     ensure_whatsapp_sessions_warmup_columns,
     ensure_system_settings_value_json,
     ensure_leads_enrichment_columns,
+    ensure_verified_commercial_leads,
 )
 from backend.app.core.seed import seed_demo_data_if_empty
 from backend.app.services.admin.ops_service import init_ops_state
@@ -231,6 +232,7 @@ async def lifespan(app: FastAPI):
     await ensure_whatsapp_sessions_warmup_columns(engine)
     await ensure_system_settings_value_json(engine)
     await ensure_leads_enrichment_columns(engine)
+    await ensure_verified_commercial_leads(engine)
 
     # Boot tek başına yetmez: artan çiftler, canlı yolun ertelediği birleştirmeler
     # ve arşivlenen sohbette kalmış sahipsiz mesajlar ancak YENİDEN koşan bir

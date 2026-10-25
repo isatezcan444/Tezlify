@@ -1383,6 +1383,8 @@ export const en = {
     pauseCampaignConfirmMsg: 'Are you sure you want to pause this campaign dispatch?',
     bulkDeleteConfirm: 'Are you sure you want to delete {count} campaigns? This action cannot be undone.',
     campaignLaunched: 'Campaign launched and running safely in the background!',
+    campaignCompleted: 'Campaign delivery completed successfully.',
+    campaignFailed: 'Campaign could not be started or was paused.',
     builderInfoSubtitle: 'Define your target audience and the overall scope of your campaign.',
     sampleContactName: 'Director',
     sampleCityFallback: 'London',

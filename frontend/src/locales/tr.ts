@@ -1383,6 +1383,8 @@ export const tr = {
     pauseCampaignConfirmMsg: 'Bu kampanya gönderimini duraklatmak istediğinizden emin misiniz?',
     bulkDeleteConfirm: '{count} kampanyayı silmek istediğinizden emin misiniz? Bu işlem geri alınamaz.',
     campaignLaunched: 'Kampanya başlatıldı ve arka planda güvenle çalışıyor!',
+    campaignCompleted: 'Kampanya gönderimi başarıyla tamamlandı.',
+    campaignFailed: 'Kampanya başlatılamadı veya durduruldu.',
     builderInfoSubtitle: 'Hedef kitlenizi ve kampanyanızın genel kapsamını belirleyin.',
     sampleContactName: 'Yetkili',
     sampleCityFallback: 'İstanbul',

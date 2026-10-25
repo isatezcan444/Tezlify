@@ -9,7 +9,7 @@ from sqlalchemy.exc import IntegrityError
 
 from backend.app.core.database import get_db
 from backend.app.core.auth import AuthUser, get_current_user, get_user_filter, check_entity_ownership
-from backend.app.models.lead import Lead, LeadStatus
+from backend.app.models.lead import Lead, LeadStatus, EntityType, VerificationStatus, ConfidenceLevel
 from backend.app.models.blacklist import Blacklist
 from backend.app.schemas.lead import (
     LeadResponse,
@@ -160,13 +160,23 @@ async def create_lead(
     if existing_res.scalar_one_or_none():
         raise HTTPException(status_code=409, detail="Bu numara ile kayıtlı bir müşteri adayı zaten mevcut.")
 
+    is_wa = phone_data.get("is_whatsapp_eligible", False)
+    is_valid = phone_data.get("is_valid", False)
+    is_verified = bool(is_valid and e164)
+
     lead = Lead(
         name=lead_in.name,
         category=lead_in.category,
+        entity_type=EntityType.BUSINESS.value,
+        verification_status=VerificationStatus.VERIFIED.value if is_verified else VerificationStatus.UNVERIFIED.value,
+        confidence_level=ConfidenceLevel.HIGH.value if is_verified else ConfidenceLevel.MEDIUM.value,
+        confidence_score=90 if is_verified else 50,
+        is_verified=is_verified,
+        verified_by="Manual CRM Entry" if is_verified else None,
         phone=lead_in.phone,
         phone_e164=e164,
         is_mobile=phone_data.get("is_mobile", False),
-        is_whatsapp_eligible=phone_data.get("is_whatsapp_eligible", False),
+        is_whatsapp_eligible=is_wa,
         city=lead_in.city,
         district=lead_in.district,
         address=lead_in.address,
