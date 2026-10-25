@@ -48,7 +48,7 @@ interface CampaignsPageProps {
   onClearPrefill?: () => void;
 }
 
-type CampaignStatusFilter = 'ALL' | 'ACTIVE' | 'PAUSED' | 'COMPLETED' | 'DRAFT';
+type CampaignStatusFilter = 'ALL' | 'ACTIVE' | 'SCHEDULED' | 'PAUSED' | 'COMPLETED' | 'DRAFT';
 
 export const CampaignsPage: React.FC<CampaignsPageProps> = ({
   onRefreshStats,
@@ -246,6 +246,17 @@ export const CampaignsPage: React.FC<CampaignsPageProps> = ({
     }
   };
 
+  const handleUnscheduleCampaign = async (campaignId: number) => {
+    try {
+      await ApiClient.unscheduleCampaign(campaignId);
+      toast.info(t('campaigns.unscheduleSuccess') || 'Kampanya zamanlaması kaldırıldı.', t('common.info'));
+      fetchCampaigns();
+      onRefreshStats();
+    } catch (err: any) {
+      toast.error(err.message || t('common.error'), t('toast.errorTitle'));
+    }
+  };
+
   const handleCancelCampaign = async (campaignId: number) => {
     const confirmed = await toast.confirm({
       title: t('campaigns.pauseCampaign') + '?',
@@ -331,6 +342,7 @@ export const CampaignsPage: React.FC<CampaignsPageProps> = ({
     return {
       ALL: campaigns.length,
       ACTIVE: campaigns.filter((c) => c.status === 'ACTIVE').length,
+      SCHEDULED: campaigns.filter((c) => c.status === 'SCHEDULED').length,
       PAUSED: campaigns.filter((c) => c.status === 'PAUSED').length,
       COMPLETED: campaigns.filter((c) => c.status === 'COMPLETED').length,
       DRAFT: campaigns.filter((c) => c.status === 'DRAFT').length,
@@ -391,6 +403,7 @@ export const CampaignsPage: React.FC<CampaignsPageProps> = ({
   const filterTabs: Array<{ id: CampaignStatusFilter; label: string; count: number }> = [
     { id: 'ALL', label: t('campaigns.filterAll'), count: counts.ALL },
     { id: 'ACTIVE', label: t('campaigns.filterActive'), count: counts.ACTIVE },
+    { id: 'SCHEDULED', label: t('campaigns.filterScheduled') || 'Zamanlandı', count: counts.SCHEDULED },
     { id: 'PAUSED', label: t('campaigns.filterPaused'), count: counts.PAUSED },
     { id: 'COMPLETED', label: t('campaigns.filterCompleted'), count: counts.COMPLETED },
     { id: 'DRAFT', label: t('campaigns.filterDraft'), count: counts.DRAFT },
@@ -639,6 +652,7 @@ export const CampaignsPage: React.FC<CampaignsPageProps> = ({
                       onPause={handlePauseCampaign}
                       onCancel={handleCancelCampaign}
                       onDelete={handleOpenDeleteModal}
+                      onUnschedule={handleUnscheduleCampaign}
                     />
                   ))}
                 </div>
@@ -698,6 +712,7 @@ export const CampaignsPage: React.FC<CampaignsPageProps> = ({
         onPause={handlePauseCampaign}
         onCancel={handleCancelCampaign}
         onDelete={handleOpenDeleteModal}
+        onUnschedule={handleUnscheduleCampaign}
         onNavigateToGroup={(groupId) => onNavigate?.('campaign-groups', { groupId })}
       />
     </div>

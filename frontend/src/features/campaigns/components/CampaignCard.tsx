@@ -11,6 +11,8 @@ import {
   Check,
   Eye,
   Paperclip,
+  Calendar,
+  CalendarX,
 } from 'lucide-react';
 import { Campaign } from '../../../types';
 import { Card } from '../../../components/ui/card';
@@ -30,6 +32,7 @@ export interface CampaignCardProps {
   onPause?: (campaignId: number) => void;
   onCancel?: (campaignId: number) => void;
   onDelete?: (campaignId: number) => void;
+  onUnschedule?: (campaignId: number) => void;
   className?: string;
 }
 
@@ -42,9 +45,10 @@ export const CampaignCard: React.FC<CampaignCardProps> = ({
   onPause,
   onCancel,
   onDelete,
+  onUnschedule,
   className,
 }) => {
-  const { t } = useI18n();
+  const { t, language } = useI18n();
   const progressPercent = campaign.total_leads_target > 0
     ? Math.round((campaign.sent_count / campaign.total_leads_target) * 100)
     : 0;
@@ -52,12 +56,14 @@ export const CampaignCard: React.FC<CampaignCardProps> = ({
   const isRunning = campaign.status === 'ACTIVE';
   const isPaused = campaign.status === 'PAUSED';
   const isDraft = campaign.status === 'DRAFT';
+  const isScheduled = campaign.status === 'SCHEDULED';
   const isCompleted = campaign.status === 'COMPLETED';
 
   const statusVariants: Record<string, 'primary' | 'success' | 'warning' | 'danger' | 'default'> = {
     ACTIVE: 'success',
     RUNNING: 'success',
     PAUSED: 'warning',
+    SCHEDULED: 'warning',
     DRAFT: 'default',
     COMPLETED: 'primary',
     CANCELLED: 'danger',
@@ -110,6 +116,21 @@ export const CampaignCard: React.FC<CampaignCardProps> = ({
                     <Paperclip className="w-2.5 h-2.5" />
                     <span className="truncate max-w-[140px]">
                       {campaign.media_filename || (campaign.media_type === 'IMAGE' ? t('campaigns.imageAttachment') : t('campaigns.docAttachment'))}
+                    </span>
+                  </span>
+                </div>
+              )}
+              {campaign.scheduled_at && isScheduled && (
+                <div className="mt-1">
+                  <span className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-600 dark:text-amber-400 bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20">
+                    <Calendar className="w-2.5 h-2.5" />
+                    <span>
+                      {new Date(campaign.scheduled_at).toLocaleDateString(language === 'tr' ? 'tr-TR' : 'en-US', {
+                        day: 'numeric',
+                        month: 'short',
+                        hour: '2-digit',
+                        minute: '2-digit',
+                      })}
                     </span>
                   </span>
                 </div>
@@ -187,6 +208,29 @@ export const CampaignCard: React.FC<CampaignCardProps> = ({
               onClick={() => onDelete(campaign.id)}
               className="text-slate-400 hover:text-[#EA5455] hover:bg-[#EA5455]/10"
             />
+          )}
+
+          {isScheduled && onUnschedule && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => onUnschedule(campaign.id)}
+              className="text-amber-600 dark:text-amber-400 border-amber-500/30 hover:bg-amber-500/10 font-bold space-x-1 cursor-pointer h-8 text-xs"
+            >
+              <CalendarX className="w-3 h-3" />
+              <span>{t('campaigns.cancelSchedule')}</span>
+            </Button>
+          )}
+
+          {isScheduled && onStart && (
+            <Button
+              size="sm"
+              onClick={() => onStart(campaign.id)}
+              className="bg-[#28C76F] hover:bg-[#20A159] text-white font-bold space-x-1 cursor-pointer h-8 text-xs"
+            >
+              <Play className="w-3 h-3 fill-current" />
+              <span>{t('campaigns.startImmediately')}</span>
+            </Button>
           )}
 
           {(isDraft || isPaused) && onStart && (

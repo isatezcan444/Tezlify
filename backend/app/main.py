@@ -245,9 +245,24 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("[SWEEP] LID kimlik süpürmesi kapalı (kill-switch).")
 
+async def campaign_scheduler_loop(interval_seconds: float = 15.0) -> None:
+    """Periodically checks for and triggers scheduled campaigns whose execution time has arrived."""
+    from backend.app.services.campaign_runner import CampaignRunner
+    logger.info("[CAMPAIGN_SCHEDULER] Scheduled campaign worker loop started (interval=%ss).", interval_seconds)
+    while True:
+        try:
+            await CampaignRunner.check_and_start_scheduled_campaigns()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("[CAMPAIGN_SCHEDULER] Scheduler tick encountered an error: %s", exc)
+        await asyncio.sleep(max(5.0, float(interval_seconds)))
+
+
     # Restart sonrası yarıda kalan arka plan işlerini toparla
     await recover_stuck_jobs()
     TaskWorker.start()
+    scheduler_task: Optional[asyncio.Task] = asyncio.create_task(campaign_scheduler_loop(15.0))
 
     # Operations Center: restore the operation/audit history that the previous
     # process persisted, and reconcile anything it left marked "running".
@@ -268,6 +283,14 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         TaskWorker.stop()
+        if scheduler_task is not None:
+            scheduler_task.cancel()
+            try:
+                await scheduler_task
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                logger.warning(f"Scheduler task kapanis hatasi: {e}")
         # Cleanup
         if sweep_task is not None:
             sweep_task.cancel()

@@ -14,6 +14,7 @@ import {
   Check, 
   Sparkles,
   Calendar,
+  CalendarX,
   AlertTriangle,
   ExternalLink,
 } from 'lucide-react';
@@ -37,6 +38,7 @@ export interface CampaignDetailDrawerProps {
   onPause?: (campaignId: number) => void;
   onCancel?: (campaignId: number) => void;
   onDelete?: (campaignId: number) => void;
+  onUnschedule?: (campaignId: number) => void;
   onNavigateToGroup?: (groupId: number) => void;
 }
 
@@ -48,6 +50,7 @@ export const CampaignDetailDrawer: React.FC<CampaignDetailDrawerProps> = ({
   onPause,
   onCancel,
   onDelete,
+  onUnschedule,
   onNavigateToGroup,
 }) => {
   const { t, language } = useI18n();
@@ -82,6 +85,7 @@ export const CampaignDetailDrawer: React.FC<CampaignDetailDrawerProps> = ({
   const isRunning = campaign.status === 'ACTIVE';
   const isPaused = campaign.status === 'PAUSED';
   const isDraft = campaign.status === 'DRAFT';
+  const isScheduled = campaign.status === 'SCHEDULED';
   const isCompleted = campaign.status === 'COMPLETED';
 
   const progressPercent = campaign.total_leads_target > 0
@@ -96,6 +100,7 @@ export const CampaignDetailDrawer: React.FC<CampaignDetailDrawerProps> = ({
     ACTIVE: 'success',
     RUNNING: 'success',
     PAUSED: 'warning',
+    SCHEDULED: 'warning',
     DRAFT: 'default',
     COMPLETED: 'primary',
     CANCELLED: 'danger',
@@ -161,6 +166,35 @@ export const CampaignDetailDrawer: React.FC<CampaignDetailDrawerProps> = ({
             >
               {t('common.close') || 'Kapat'}
             </Button>
+
+            {isScheduled && onUnschedule && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  onUnschedule(campaign.id);
+                  onClose();
+                }}
+                className="text-amber-600 dark:text-amber-400 border-amber-500/40 hover:bg-amber-500/10 font-bold space-x-1.5 cursor-pointer h-9 px-4"
+              >
+                <CalendarX className="w-3.5 h-3.5" />
+                <span>{t('campaigns.cancelSchedule')}</span>
+              </Button>
+            )}
+
+            {isScheduled && onStart && (
+              <Button
+                size="sm"
+                onClick={() => {
+                  onStart(campaign.id);
+                  onClose();
+                }}
+                className="bg-[#28C76F] hover:bg-[#20A159] text-white font-bold space-x-1 cursor-pointer h-9 px-4 shadow-sm"
+              >
+                <Play className="w-3.5 h-3.5 fill-current" />
+                <span>{t('campaigns.startImmediately')}</span>
+              </Button>
+            )}
 
             {(isDraft || isPaused) && onStart && (
               <Button
@@ -427,6 +461,12 @@ export const CampaignDetailDrawer: React.FC<CampaignDetailDrawerProps> = ({
 
             {/* Campaign Timeline / Dates */}
             <div className="p-3.5 rounded-xl bg-slate-50/80 dark:bg-[#25293C] border border-slate-200/60 dark:border-white/[0.06] text-[11px] text-slate-500 dark:text-slate-400 space-y-1.5">
+              {campaign.scheduled_at && (
+                <div className="flex items-center justify-between text-amber-600 dark:text-amber-400 font-semibold">
+                  <span>{t('campaigns.scheduledAt') || 'Planlanan Başlangıç'}:</span>
+                  <span className="font-mono">{formatDate(campaign.scheduled_at)}</span>
+                </div>
+              )}
               <div className="flex items-center justify-between">
                 <span>{t('campaigns.createdAt') || 'Oluşturulma Tarihi'}:</span>
                 <span className="font-mono font-medium text-slate-700 dark:text-slate-300">{formatDate(campaign.created_at)}</span>

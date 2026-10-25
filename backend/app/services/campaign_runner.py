@@ -79,6 +79,91 @@ class CampaignRunner:
         return False
 
     @classmethod
+    async def check_and_start_scheduled_campaigns(cls) -> int:
+        """
+        Polls for campaigns in SCHEDULED status whose scheduled_at <= utc_now_naive().
+        Transitions and kicks off CampaignRunner for each.
+        Returns the count of successfully initiated campaigns.
+        """
+        from backend.app.core.datetime_utils import utc_now_naive
+        from backend.app.models.whatsapp_session import WhatsAppSession, SessionStatus
+        from backend.app.models.campaign_group import campaign_group_leads
+
+        now = utc_now_naive()
+        started_count = 0
+
+        async with AsyncSessionLocal() as db:
+            stmt = (
+                select(Campaign)
+                .where(
+                    Campaign.status == CampaignStatus.SCHEDULED,
+                    Campaign.scheduled_at <= now,
+                )
+                .order_by(Campaign.scheduled_at.asc())
+            )
+            res = await db.execute(stmt)
+            scheduled_campaigns = res.scalars().all()
+
+            for campaign in scheduled_campaigns:
+                if cls.is_campaign_running(campaign.id):
+                    continue
+
+                # Session resolution (prefer campaign.whatsapp_session_id, fallback to user's connected session)
+                target_sess_id = campaign.whatsapp_session_id
+                sess_stmt = select(WhatsAppSession).where(
+                    WhatsAppSession.status == SessionStatus.CONNECTED
+                )
+                if campaign.user_id:
+                    sess_stmt = sess_stmt.where(WhatsAppSession.user_id == campaign.user_id)
+                if target_sess_id:
+                    sess_stmt = sess_stmt.where(WhatsAppSession.id == target_sess_id)
+
+                active_sess = (await db.execute(sess_stmt.order_by(WhatsAppSession.id.desc()).limit(1))).scalars().first()
+
+                # If specific session was requested but not found/connected, try any connected session of same user
+                if not active_sess and target_sess_id and campaign.user_id:
+                    fallback_stmt = select(WhatsAppSession).where(
+                        WhatsAppSession.user_id == campaign.user_id,
+                        WhatsAppSession.status == SessionStatus.CONNECTED,
+                    ).order_by(WhatsAppSession.id.desc()).limit(1)
+                    active_sess = (await db.execute(fallback_stmt)).scalars().first()
+
+                if not active_sess:
+                    logger.warning(
+                        f"[CampaignRunner] Scheduled campaign #{campaign.id} ('{campaign.name}') reached its scheduled time, but no connected WhatsApp session was found. Waiting for active line."
+                    )
+                    continue
+
+                # Target leads if group_id is set
+                target_lead_ids = None
+                if campaign.group_id:
+                    group_leads_res = await db.execute(
+                        select(campaign_group_leads.c.lead_id).where(campaign_group_leads.c.group_id == campaign.group_id)
+                    )
+                    target_lead_ids = [row[0] for row in group_leads_res.fetchall()]
+
+                started = await cls.start_campaign(
+                    campaign_id=campaign.id,
+                    lead_ids=target_lead_ids,
+                    limit=50,
+                    session_id=active_sess.id,
+                )
+                if started:
+                    started_count += 1
+                    logger.info(
+                        f"[CampaignRunner] Scheduled campaign #{campaign.id} ('{campaign.name}') automatically started at scheduled time ({campaign.scheduled_at})."
+                    )
+                    await ws_manager.broadcast({
+                        "event": "campaign_started",
+                        "campaign_id": campaign.id,
+                        "name": campaign.name,
+                        "scheduled": True,
+                        "sender_phone": active_sess.phone_number,
+                    })
+
+        return started_count
+
+    @classmethod
     async def _execute_campaign_worker(
         cls,
         campaign_id: int,

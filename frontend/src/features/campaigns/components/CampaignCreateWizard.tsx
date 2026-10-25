@@ -100,6 +100,10 @@ export const CampaignCreateWizard: React.FC<CampaignCreateWizardProps> = ({
   const [variationCount, setVariationCount] = useState(0);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  // Scheduled Campaign State
+  const [isScheduled, setIsScheduled] = useState(false);
+  const [scheduledAt, setScheduledAt] = useState('');
+
   // Campaign Media Attachment State (Phase 2)
   const [mediaUrl, setMediaUrl] = useState('');
   const [mediaType, setMediaType] = useState<'IMAGE' | 'DOCUMENT' | ''>('');
@@ -608,6 +612,7 @@ export const CampaignCreateWizard: React.FC<CampaignCreateWizardProps> = ({
         name,
         description,
         message_template: template,
+        scheduled_at: isScheduled && scheduledAt ? new Date(scheduledAt).toISOString() : undefined,
         group_id: selectedGroupId || undefined,
         media_url: mediaUrl.trim() || undefined,
         media_type: (mediaType as any) || undefined,
@@ -620,7 +625,10 @@ export const CampaignCreateWizard: React.FC<CampaignCreateWizardProps> = ({
         working_hours_end: storedConfig.working_hours_end,
       });
 
-      toast.success(t('campaigns.campaignCreatedSuccess') || 'Kampanya taslak olarak başarıyla oluşturuldu.', t('common.success'));
+      const successMsg = isScheduled
+        ? (t('campaigns.scheduleSuccess') || 'Kampanya başarıyla ileri bir tarihe zamanlandı.')
+        : (t('campaigns.campaignCreatedSuccess') || 'Kampanya taslak olarak başarıyla oluşturuldu.');
+      toast.success(successMsg, t('common.success'));
       setName('');
       setTargetCategory('');
       setSelectedGroupId(null);
@@ -1389,6 +1397,68 @@ export const CampaignCreateWizard: React.FC<CampaignCreateWizardProps> = ({
                       </span>
                     </div>
                   </div>
+                </div>
+
+                {/* Scheduled Execution Option */}
+                <div className="p-4 sm:p-5 rounded-xl bg-purple-500/[0.06] dark:bg-purple-500/10 border border-purple-500/20 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center space-x-3">
+                      <div className="w-9 h-9 rounded-xl bg-[#7367F0] text-white flex items-center justify-center font-bold shrink-0 shadow-xs">
+                        <Calendar className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <h5 className="text-xs sm:text-sm font-extrabold text-slate-800 dark:text-white leading-tight">
+                          {t('campaigns.scheduleForLater') || 'İleri Bir Tarihte Otomatik Başlat (Zamanla)'}
+                        </h5>
+                        <p className="text-[11px] text-slate-500 dark:text-[#7E7F96] mt-0.5">
+                          {t('campaigns.scheduleDescription') || 'Belirlediğiniz gün ve saat geldiğinde kampanya otomatik olarak aktif edilir ve gönderim başlar.'}
+                        </p>
+                      </div>
+                    </div>
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={isScheduled}
+                        onChange={(e) => {
+                          const checked = e.target.checked;
+                          setIsScheduled(checked);
+                          if (checked && !scheduledAt) {
+                            const tmr = new Date();
+                            tmr.setDate(tmr.getDate() + 1);
+                            tmr.setHours(9, 30, 0, 0);
+                            const pad = (n: number) => String(n).padStart(2, '0');
+                            const localIso = `${tmr.getFullYear()}-${pad(tmr.getMonth() + 1)}-${pad(tmr.getDate())}T${pad(tmr.getHours())}:${pad(tmr.getMinutes())}`;
+                            setScheduledAt(localIso);
+                          }
+                        }}
+                        className="sr-only peer"
+                      />
+                      <div className="w-11 h-6 bg-slate-200 peer-focus:outline-hidden rounded-full peer dark:bg-white/10 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-white/10 peer-checked:bg-[#7367F0]"></div>
+                    </label>
+                  </div>
+
+                  {isScheduled && (
+                    <div className="pt-2 grid grid-cols-1 sm:grid-cols-2 gap-3 items-center">
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-700 dark:text-slate-200 mb-1">
+                          {t('campaigns.schedulePickerLabel') || 'Başlangıç Tarihi ve Saati'}
+                        </label>
+                        <input
+                          type="datetime-local"
+                          value={scheduledAt}
+                          min={new Date().toISOString().slice(0, 16)}
+                          onChange={(e) => setScheduledAt(e.target.value)}
+                          className="w-full px-3 py-2 text-xs font-mono rounded-lg border border-slate-300 dark:border-white/10 bg-white dark:bg-[#1F2C34] text-slate-800 dark:text-white focus:outline-hidden focus:border-[#7367F0] focus:ring-1 focus:ring-[#7367F0]"
+                        />
+                      </div>
+                      <div className="p-3 rounded-lg bg-white/70 dark:bg-white/[0.04] border border-purple-500/20 text-[11px] text-slate-600 dark:text-slate-300">
+                        <span className="font-bold text-[#7367F0] block mb-0.5">
+                          {t('campaigns.scheduledNoticeTitle') || 'Otomatik Yürütme'}
+                        </span>
+                        {t('campaigns.scheduledNoticeBody') || 'Zamanı geldiğinde bağlı aktif WhatsApp hattınız üzerinden anti-ban mesai kurallarına uygun olarak dağıtılacaktır.'}
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 {/* Final Message Template Preview Card with Quick Copy */}

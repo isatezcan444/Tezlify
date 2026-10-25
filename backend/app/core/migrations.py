@@ -742,6 +742,9 @@ async def ensure_message_status_enum(engine: AsyncEngine) -> None:
     from backend.app.models.whatsapp_session import SessionStatus
     targets["sessionstatus"] = [e.value for e in SessionStatus]
 
+    from backend.app.models.campaign import CampaignStatus
+    targets["campaignstatus"] = [e.value for e in CampaignStatus]
+
     try:
         async with engine.connect() as conn:
             for typname, wanted in targets.items():
@@ -2042,6 +2045,9 @@ async def ensure_campaigns_columns(engine: AsyncEngine) -> None:
                     if "media_filename" not in cols:
                         await conn.execute(text("ALTER TABLE campaigns ADD COLUMN media_filename VARCHAR(255)"))
                         logger.info("[MIGRATION] Added campaigns.media_filename")
+                    if "scheduled_at" not in cols:
+                        await conn.execute(text("ALTER TABLE campaigns ADD COLUMN scheduled_at DATETIME"))
+                        logger.info("[MIGRATION] Added campaigns.scheduled_at")
 
                 msg_rows = (await conn.execute(text("PRAGMA table_info(message_logs)"))).fetchall()
                 msg_cols = {row[1] for row in msg_rows}
@@ -2056,7 +2062,9 @@ async def ensure_campaigns_columns(engine: AsyncEngine) -> None:
                 await conn.execute(text("ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS media_url VARCHAR(500)"))
                 await conn.execute(text("ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS media_type VARCHAR(50)"))
                 await conn.execute(text("ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS media_filename VARCHAR(255)"))
+                await conn.execute(text("ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS scheduled_at TIMESTAMP"))
                 await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_campaigns_whatsapp_session_id ON campaigns (whatsapp_session_id)"))
+                await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_campaigns_scheduled_at ON campaigns (scheduled_at)"))
                 await conn.execute(text("ALTER TABLE message_logs ADD COLUMN IF NOT EXISTS media_url VARCHAR(500)"))
                 logger.info("[MIGRATION] PostgreSQL campaigns and message_logs media columns verified")
     except Exception as exc:

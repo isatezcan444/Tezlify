@@ -9,6 +9,7 @@ from backend.app.core.datetime_utils import utc_now_naive
 
 class CampaignStatus(str, enum.Enum):
     DRAFT = "DRAFT"
+    SCHEDULED = "SCHEDULED"
     ACTIVE = "ACTIVE"
     PAUSED = "PAUSED"
     COMPLETED = "COMPLETED"
@@ -28,6 +29,7 @@ class Campaign(Base):
     
     # Campaign Controls & Anti-Ban Config
     status = Column(Enum(CampaignStatus), default=CampaignStatus.DRAFT, index=True)
+    scheduled_at = Column(DateTime, nullable=True, index=True)
     min_delay_seconds = Column(Integer, default=settings.DEFAULT_MIN_DELAY_SECONDS)  # Random delay lower bound
     max_delay_seconds = Column(Integer, default=settings.DEFAULT_MAX_DELAY_SECONDS)  # Random delay upper bound
     typing_delay_seconds = Column(Integer, default=settings.DEFAULT_TYPING_DELAY_SECONDS)  # Typing simulation

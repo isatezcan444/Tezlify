@@ -592,6 +592,30 @@ export class ApiClient {
     return res.json();
   }
 
+  static async scheduleCampaign(campaignId: number, scheduledAt: string, sessionId?: number): Promise<Campaign> {
+    const res = await authFetch(`${API_BASE}/campaigns/${campaignId}/schedule`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scheduled_at: scheduledAt, session_id: sessionId })
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || 'Kampanya zamanlanamadı');
+    }
+    return res.json();
+  }
+
+  static async unscheduleCampaign(campaignId: number): Promise<Campaign> {
+    const res = await authFetch(`${API_BASE}/campaigns/${campaignId}/unschedule`, {
+      method: 'POST'
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || 'Zamanlama kaldırılamadı');
+    }
+    return res.json();
+  }
+
   // --- Settings & Anti-Ban Suite ---
   static async getAntiBanSettings(): Promise<AntiBanConfig> {
     const res = await authFetch(`${API_BASE}/settings/antiban`);

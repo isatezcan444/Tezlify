@@ -12,6 +12,7 @@ from backend.app.schemas.campaign import (
     CampaignResponse,
     CampaignCreate,
     CampaignUpdate,
+    CampaignScheduleRequest,
     CampaignBulkDeleteRequest,
     CampaignLaunchRequest,
     SpintaxPreviewRequest,
@@ -19,6 +20,7 @@ from backend.app.schemas.campaign import (
     GenerateMessageRequest,
     GenerateMessageResponse
 )
+from backend.app.core.datetime_utils import utc_now_naive
 from backend.app.services.spintax_service import SpintaxService
 from backend.app.services.campaign_runner import CampaignRunner
 from backend.app.services.message_strategy_service import MessageStrategyService
@@ -103,7 +105,15 @@ async def create_campaign(
     current_user: AuthUser = Depends(get_current_user),
 ):
     campaign_dict = campaign_in.model_dump()
-    campaign = Campaign(**campaign_dict, user_id=current_user.id, status=CampaignStatus.DRAFT)
+    initial_status = CampaignStatus.DRAFT
+    sched_dt = campaign_in.scheduled_at
+    if sched_dt:
+        sched_dt_naive = sched_dt.replace(tzinfo=None) if sched_dt.tzinfo else sched_dt
+        campaign_dict["scheduled_at"] = sched_dt_naive
+        if sched_dt_naive > utc_now_naive():
+            initial_status = CampaignStatus.SCHEDULED
+
+    campaign = Campaign(**campaign_dict, user_id=current_user.id, status=initial_status)
     db.add(campaign)
     await db.commit()
     await db.refresh(campaign)
@@ -276,6 +286,53 @@ async def pause_campaign(
     await CampaignRunner.cancel_campaign(campaign_id)
 
     return {"message": f"'{campaign.name}' kampanyası duraklatıldı.", "campaign_id": campaign.id}
+
+
+@router.post("/{campaign_id}/schedule", response_model=CampaignResponse)
+async def schedule_campaign(
+    campaign_id: int,
+    req: CampaignScheduleRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+):
+    campaign = await db.get(Campaign, campaign_id)
+    if not campaign or not check_entity_ownership(campaign, current_user):
+        raise HTTPException(status_code=404, detail="Kampanya bulunamadı")
+
+    sched_dt = req.scheduled_at.replace(tzinfo=None) if req.scheduled_at.tzinfo else req.scheduled_at
+    if sched_dt <= utc_now_naive():
+        raise HTTPException(status_code=400, detail="Planlanan tarih gelecekte bir zaman olmalıdır.")
+
+    if CampaignRunner.is_campaign_running(campaign_id):
+        await CampaignRunner.cancel_campaign(campaign_id)
+
+    campaign.scheduled_at = sched_dt
+    campaign.status = CampaignStatus.SCHEDULED
+    if req.session_id:
+        campaign.whatsapp_session_id = req.session_id
+
+    await db.commit()
+    await db.refresh(campaign)
+    return campaign
+
+
+@router.post("/{campaign_id}/unschedule", response_model=CampaignResponse)
+async def unschedule_campaign(
+    campaign_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+):
+    campaign = await db.get(Campaign, campaign_id)
+    if not campaign or not check_entity_ownership(campaign, current_user):
+        raise HTTPException(status_code=404, detail="Kampanya bulunamadı")
+
+    campaign.scheduled_at = None
+    if campaign.status == CampaignStatus.SCHEDULED:
+        campaign.status = CampaignStatus.DRAFT
+
+    await db.commit()
+    await db.refresh(campaign)
+    return campaign
 
 
 @router.post("/upload-media")

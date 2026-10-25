@@ -108,7 +108,7 @@ export interface LeadImportResult {
   invalid_phone_count: number;
 }
 
-export type CampaignStatus = 'DRAFT' | 'ACTIVE' | 'PAUSED' | 'COMPLETED' | 'ARCHIVED';
+export type CampaignStatus = 'DRAFT' | 'SCHEDULED' | 'ACTIVE' | 'PAUSED' | 'COMPLETED' | 'ARCHIVED';
 
 export interface Campaign {
   id: number;
@@ -116,6 +116,7 @@ export interface Campaign {
   description?: string;
   message_template: string;
   status: CampaignStatus;
+  scheduled_at?: string;
   min_delay_seconds: number;
   max_delay_seconds: number;
   typing_delay_seconds: number;

@@ -8,6 +8,7 @@ class CampaignBase(BaseModel):
     name: str
     description: Optional[str] = None
     message_template: str
+    scheduled_at: Optional[datetime] = None
     min_delay_seconds: int = settings.DEFAULT_MIN_DELAY_SECONDS
     max_delay_seconds: int = settings.DEFAULT_MAX_DELAY_SECONDS
     typing_delay_seconds: int = settings.DEFAULT_TYPING_DELAY_SECONDS
@@ -28,6 +29,7 @@ class CampaignUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     message_template: Optional[str] = None
+    scheduled_at: Optional[datetime] = None
     status: Optional[CampaignStatus] = None
     min_delay_seconds: Optional[int] = None
     max_delay_seconds: Optional[int] = None
@@ -41,6 +43,10 @@ class CampaignUpdate(BaseModel):
     media_url: Optional[str] = None
     media_type: Optional[str] = None
     media_filename: Optional[str] = None
+
+class CampaignScheduleRequest(BaseModel):
+    scheduled_at: datetime
+    session_id: Optional[int] = None
 
 class CampaignBulkDeleteRequest(BaseModel):
     campaign_ids: List[int]
