@@ -161,6 +161,20 @@ async def recover_stuck_jobs() -> None:
             logger.warning("[RECOVERY] %d takılı tarama işi FAILED durumuna alındı.", failed.rowcount)
 
 
+async def campaign_scheduler_loop(interval_seconds: float = 15.0) -> None:
+    """Periodically checks for and triggers scheduled campaigns whose execution time has arrived."""
+    from backend.app.services.campaign_runner import CampaignRunner
+    logger.info("[CAMPAIGN_SCHEDULER] Scheduled campaign worker loop started (interval=%ss).", interval_seconds)
+    while True:
+        try:
+            await CampaignRunner.check_and_start_scheduled_campaigns()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("[CAMPAIGN_SCHEDULER] Scheduler tick encountered an error: %s", exc)
+        await asyncio.sleep(max(5.0, float(interval_seconds)))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Connecting to Database & Creating Tables...")
@@ -244,20 +258,6 @@ async def lifespan(app: FastAPI):
         )
     else:
         logger.info("[SWEEP] LID kimlik süpürmesi kapalı (kill-switch).")
-
-async def campaign_scheduler_loop(interval_seconds: float = 15.0) -> None:
-    """Periodically checks for and triggers scheduled campaigns whose execution time has arrived."""
-    from backend.app.services.campaign_runner import CampaignRunner
-    logger.info("[CAMPAIGN_SCHEDULER] Scheduled campaign worker loop started (interval=%ss).", interval_seconds)
-    while True:
-        try:
-            await CampaignRunner.check_and_start_scheduled_campaigns()
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            logger.warning("[CAMPAIGN_SCHEDULER] Scheduler tick encountered an error: %s", exc)
-        await asyncio.sleep(max(5.0, float(interval_seconds)))
-
 
     # Restart sonrası yarıda kalan arka plan işlerini toparla
     await recover_stuck_jobs()
