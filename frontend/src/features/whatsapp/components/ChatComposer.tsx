@@ -27,6 +27,7 @@ import { Modal } from '../../../components/ui/Modal';
 import { EmojiPicker } from './EmojiPicker';
 import { MediaSendModal } from './MediaSendModal';
 import { AiSuggestPopover } from './AiSuggestPopover';
+import { AiSmartReplyBar } from './AiSmartReplyBar';
 import { useI18n } from '../../../context/I18nContext';
 import { useToast } from '../../../context/ToastContext';
 import { QuickReply } from '../../../types';
@@ -107,6 +108,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
   const [sendingIndex, setSendingIndex] = useState<number>(0);
   const [isFileModalOpen, setIsFileModalOpen] = useState(false);
   const [isAiOpen, setIsAiOpen] = useState(false);
+  const [isAiBarVisible, setIsAiBarVisible] = useState(true);
 
 
   // Quick Replies (Canned Responses) Shortcut ('/') State
@@ -970,6 +972,20 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
         </div>
       )}
 
+      {/* 2.7 AI Smart Reply Bar */}
+      {conversationId && !isClosed && (
+        <AiSmartReplyBar
+          conversationId={conversationId}
+          isVisible={isAiBarVisible}
+          onToggleVisible={() => setIsAiBarVisible((prev) => !prev)}
+          onOpenFullModal={() => setIsAiOpen(true)}
+          onSelectSuggestion={(sugText) => {
+            setText(sugText);
+            draftInputRef.current?.focus();
+          }}
+        />
+      )}
+
       {/* 2.8 AI Reply Co-Pilot Popover */}
       {conversationId && (
         <AiSuggestPopover
@@ -1362,10 +1378,16 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
                       <button
                         type="button"
                         aria-label={t('whatsapp.aiCoPilotBtn')}
-                        onClick={() => setIsAiOpen((open) => !open)}
+                        onClick={() => {
+                          if (!isAiBarVisible) {
+                            setIsAiBarVisible(true);
+                          } else {
+                            setIsAiOpen((open) => !open);
+                          }
+                        }}
                         disabled={isActionDisabled}
                         className={`flex items-center space-x-1 px-2 py-1 rounded-lg text-[10px] font-bold transition-all cursor-pointer disabled:opacity-40 ${
-                          isAiOpen
+                          isAiOpen || isAiBarVisible
                             ? 'bg-[#7367F0] text-white shadow-xs'
                             : 'bg-[#7367F0]/10 hover:bg-[#7367F0]/20 text-[#7367F0] border border-[#7367F0]/20'
                         }`}

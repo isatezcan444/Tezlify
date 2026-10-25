@@ -25,4 +25,5 @@ export * from './PinDurationModal';
 export * from './PinnedMessagesBar';
 export * from './ChatMessageInfoDrawer';
 export * from './AiSuggestPopover';
+export * from './AiSmartReplyBar';
 export * from './WarmupModal';

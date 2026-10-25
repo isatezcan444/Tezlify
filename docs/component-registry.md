@@ -213,6 +213,11 @@ src/
 - **Props**: `conversationId: number`, `isOpen: boolean`, `onClose: () => void`, `onSelectSuggestion: (text: string) => void`.
 - **Import**: `import { AiSuggestPopover } from '@/features/whatsapp/components';`
 
+#### `AiSmartReplyBar`
+- **Purpose**: Compact glassmorphic quick-action pill strip rendered directly above the WhatsApp live composer. Displays auto-classified intent label and 3 tone-varied suggestion chips (`PROFESSIONAL`, `PERSUASIVE`, `CALL_TO_ACTION`) with one-click insertion into the composer, tooltip full-text preview, live refresh, expand-to-full-modal, and collapse toggles.
+- **Props**: `conversationId: number`, `onSelectSuggestion: (text: string) => void`, `onOpenFullModal: () => void`, `isVisible: boolean`, `onToggleVisible: () => void`.
+- **Import**: `import { AiSmartReplyBar } from '@/features/whatsapp/components';`
+
 #### `ConversationList`
 - **Purpose**: Sidebar list of all active conversation threads with search filtering, avatar hashing, unread badges, and last message previews. Includes filter tabs (`ALL`, `ACTIVE`, `GROUPS`, `ARCHIVED`, `CLOSED`, `UNREAD`) — `GROUPS` filters on persisted `is_group`, `ARCHIVED` on `is_archived OR status=ARCHIVED` (Sorun 4).
 - **Props**: `conversations: Conversation[]`, `selectedId?: number`, `onSelect: (conv: Conversation) => void`, `loading?: boolean`, `searchQuery?: string`, `onSearchChange?: (q: string) => void`, `activeFilter?: FilterTab`, `onFilterChange?: (filter: FilterTab) => void`, `onNewChat?: () => void`, `onSync?: () => void`, `isSyncing?: boolean`.
