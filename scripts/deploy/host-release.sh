@@ -312,13 +312,10 @@ fi
 
 # Caddyfile ve observer guncellemesi
 if [ -f "$PROJECT_DIR/Caddyfile" ]; then
-  cp -a "$PROJECT_DIR/Caddyfile" /opt/tezlify/Caddyfile
   docker exec tezlify-caddy caddy reload --config /etc/caddy/Caddyfile >/dev/null 2>&1 || true
 fi
 if [ -f "$PROJECT_DIR/scripts/whatsapp_reliability_collector.py" ]; then
-  mkdir -p /opt/tezlify/scripts
-  cp -a "$PROJECT_DIR/scripts/whatsapp_reliability_collector.py" /opt/tezlify/scripts/whatsapp_reliability_collector.py
-  python3 /opt/tezlify/scripts/whatsapp_reliability_collector.py >/dev/null 2>&1 || true
+  python3 "$PROJECT_DIR/scripts/whatsapp_reliability_collector.py" >/dev/null 2>&1 || true
 fi
 
 # ---------------------------------------------------------------------------
